@@ -105,6 +105,9 @@ fn error_hint(code: &str) -> Option<&'static str> {
              as --args-json '{\"name\": value}'",
         ),
         "session_locked" => Some("unlock the session at the device, then retry"),
+        "stale_cursor" => {
+            Some("the actions changed while you paged; list again from the first page")
+        }
         _ => None,
     }
 }
@@ -163,9 +166,13 @@ enum Command {
     },
     StateDump {
         pretty: bool,
+        /// `--history`: keep the workspaces' append-only history (effect
+        /// receipts, task audit trails), which the dump leaves out by default.
+        history: bool,
     },
-    /// The open windows, read from the state dump in the desktop's own
-    /// terms: workspace, strip, window group, tab.
+    /// The open windows in the desktop's own terms: workspace, strip, window
+    /// group, tab. Asked of the `windows` op; a compositor that predates it
+    /// is read through its state dump instead.
     Windows {
         json: bool,
     },
@@ -174,6 +181,7 @@ enum Command {
         query: String,
         json: bool,
         include_programmatic: bool,
+        page: ListPage,
     },
     /// Invoke one enumerated action by its stable `(provider, id)`
     /// address — no synthetic input, no window, no scene.
@@ -226,6 +234,15 @@ impl Command {
                 | Self::Read { .. }
         )
     }
+}
+
+/// Which page of `actions list` to ask for: `--limit ROWS` and `--cursor
+/// NEXT`, the `next_cursor` the previous page answered. Neither means the
+/// desktop's default first page.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct ListPage {
+    limit: Option<usize>,
+    cursor: Option<String>,
 }
 
 /// Top-level CLI invocation — the `--socket` override, if given, + the
@@ -456,6 +473,7 @@ fn run_read(stream: &mut UnixStream, app: &str, item: Option<&str>, json: bool) 
                     include_programmatic: false,
                     query: "read".into(),
                     json,
+                    page: ListPage::default(),
                 },
                 &response,
             );
@@ -649,31 +667,37 @@ fn print_read_answer(response: &serde_json::Value, json: bool) -> u8 {
     }
 }
 
-/// Parse `state-dump [--pretty]` and `windows [--json]`, the two reads of
-/// the session's state.
+/// Parse `state-dump [--pretty] [--history]` and `windows [--json]`, the
+/// two reads of the session's state.
 fn parse_state_read<'a>(
     op: &str,
     iter: &mut impl Iterator<Item = &'a String>,
 ) -> Result<Command, ParseError> {
-    let flag = if op == "windows" {
-        "--json"
+    let flags: &[&str] = if op == "windows" {
+        &["--json"]
     } else {
-        "--pretty"
+        &["--pretty", "--history"]
     };
-    let mut set = false;
+    let mut set = [false; 2];
     for rest in iter.by_ref() {
-        if rest == flag {
-            set = true;
-        } else {
+        let Some(index) = flags.iter().position(|flag| rest == flag) else {
             return Err(ParseError::Usage(format!(
-                "{op}: unknown flag `{rest}` (only {flag})"
+                "{op}: unknown flag `{rest}` (only {})",
+                flags.join(", ")
             )));
+        };
+        if let Some(slot) = set.get_mut(index) {
+            *slot = true;
         }
     }
+    let [first, history] = set;
     Ok(if op == "windows" {
-        Command::Windows { json: set }
+        Command::Windows { json: first }
     } else {
-        Command::StateDump { pretty: set }
+        Command::StateDump {
+            pretty: first,
+            history,
+        }
     })
 }
 
@@ -812,12 +836,33 @@ fn parse_actions_command<'a>(
             // the caller having to quote it.
             let mut json = false;
             let mut include_programmatic = false;
+            let mut page = ListPage::default();
             let mut words: Vec<String> = Vec::new();
-            for rest in iter.by_ref() {
+            while let Some(rest) = iter.next() {
                 if rest == "--json" {
                     json = true;
                 } else if rest == "--programmatic" {
                     include_programmatic = true;
+                } else if rest == "--limit" {
+                    let raw = iter.next().ok_or_else(|| {
+                        ParseError::Usage("actions list --limit needs a number of rows".into())
+                    })?;
+                    page.limit = Some(raw.parse::<usize>().map_err(|_| {
+                        ParseError::Usage(format!(
+                            "actions list --limit: `{raw}` is not a number of rows"
+                        ))
+                    })?);
+                } else if rest == "--cursor" {
+                    page.cursor = Some(
+                        iter.next()
+                            .ok_or_else(|| {
+                                ParseError::Usage(
+                                    "actions list --cursor needs the next_cursor a page gave"
+                                        .into(),
+                                )
+                            })?
+                            .clone(),
+                    );
                 } else {
                     words.push(rest.clone());
                 }
@@ -826,6 +871,7 @@ fn parse_actions_command<'a>(
                 query: words.join(" "),
                 json,
                 include_programmatic,
+                page,
             })
         }
         "invoke" => parse_action_invocation(iter),
@@ -958,12 +1004,31 @@ fn action_arguments(
         .map(|value| value.unwrap_or_else(|| serde_json::json!({})))
 }
 
-fn actions_list_wire(query: &str, include_programmatic: bool) -> serde_json::Value {
-    if include_programmatic {
-        serde_json::json!({ "op": "actions_enumerate", "query": query, "include_programmatic": true })
-    } else {
-        serde_json::json!({ "op": "actions_enumerate", "query": query })
+/// `actions list`'s request. The table prints no contracts, so it asks for
+/// compact rows; `--json` prints what the desktop answers, so it asks for
+/// full ones.
+fn actions_list_wire(
+    query: &str,
+    include_programmatic: bool,
+    json: bool,
+    page: &ListPage,
+) -> serde_json::Value {
+    let mut wire = serde_json::json!({ "op": "actions_enumerate", "query": query });
+    if let Some(object) = wire.as_object_mut() {
+        if include_programmatic {
+            object.insert("include_programmatic".into(), true.into());
+        }
+        if !json {
+            object.insert("detail".into(), "compact".into());
+        }
+        if let Some(limit) = page.limit {
+            object.insert("limit".into(), limit.into());
+        }
+        if let Some(cursor) = &page.cursor {
+            object.insert("cursor".into(), cursor.clone().into());
+        }
     }
+    wire
 }
 
 fn command_to_wire(cmd: &Command) -> Result<String, ParseError> {
@@ -1020,13 +1085,18 @@ fn command_to_wire(cmd: &Command) -> Result<String, ParseError> {
             steps,
         } => json!({ "op": "pinch", "fingers": fingers, "scale": scale, "steps": steps }),
         Command::Watch { watching } => json!({ "op": "watch", "watching": watching }),
-        Command::StateDump { .. } | Command::Windows { .. } => json!({ "op": "state_dump" }),
+        Command::StateDump { history: true, .. } => {
+            json!({ "op": "state_dump", "include_history": true })
+        }
+        Command::StateDump { .. } => json!({ "op": "state_dump" }),
+        Command::Windows { .. } => json!({ "op": "windows" }),
         Command::Read { .. } => json!({ "op": "actions_enumerate", "query": "read" }),
         Command::ActionsList {
             query,
             include_programmatic,
-            ..
-        } => actions_list_wire(query, *include_programmatic),
+            json,
+            page,
+        } => actions_list_wire(query, *include_programmatic, *json, page),
         Command::ActionsInvoke {
             provider,
             id,
@@ -1160,6 +1230,14 @@ fn print_actions_list(response: &serde_json::Value, json: bool) -> u8 {
         let address = format!("{provider}:{id}");
         println!("{address:<width$}  {kind:<12}  {title}");
     }
+    if let Some(next) = answer.get("next_cursor").and_then(|v| v.as_str()) {
+        let total = answer.get("total").and_then(serde_json::Value::as_u64);
+        eprintln!(
+            "showing {} of {} actions; the next page: --cursor {next}",
+            actions.len(),
+            total.map_or_else(|| "more".to_string(), |total| total.to_string()),
+        );
+    }
     0
 }
 
@@ -1178,7 +1256,7 @@ fn print_response(cmd: &Command, response: &serde_json::Value) -> u8 {
     }
     match cmd {
         Command::ListTargets => print_list_targets(response),
-        Command::StateDump { pretty } => {
+        Command::StateDump { pretty, .. } => {
             // `Response::State` serialises as `{"state": {...}}`; print the
             // inner object so consumers can pipe to `jq .workspace_tree`
             // without an outer level.
@@ -1193,42 +1271,7 @@ fn print_response(cmd: &Command, response: &serde_json::Value) -> u8 {
             };
             println!("{out}");
         }
-        Command::Windows { json } => {
-            let tree = response
-                .get("state")
-                .and_then(|state| state.get("workspace_tree"))
-                .cloned()
-                .unwrap_or(serde_json::Value::Null);
-            let windows = windows_of(&tree);
-            if *json {
-                println!("{}", serde_json::Value::Array(windows));
-            } else if windows.is_empty() {
-                println!("no windows are open");
-            } else {
-                for window in &windows {
-                    let field = |name: &str| {
-                        window.get(name).map_or_else(String::new, |v| match v {
-                            serde_json::Value::String(text) => text.clone(),
-                            other => other.to_string(),
-                        })
-                    };
-                    let active = if window.get("active") == Some(&serde_json::Value::Bool(true)) {
-                        "*"
-                    } else {
-                        " "
-                    };
-                    println!(
-                        "{active} {}/{}  group {}  tab {}  {}  {}",
-                        field("workspace"),
-                        field("strip"),
-                        field("group"),
-                        field("tab"),
-                        field("app_id"),
-                        field("title"),
-                    );
-                }
-            }
-        }
+        Command::Windows { json } => print_windows(response, *json),
         Command::Snapshot { path } => {
             // The wire's `Ok { frame }` doesn't echo the path back, so print
             // it here to make `snapshot /tmp/x.png | xclip` work.
@@ -1274,8 +1317,65 @@ fn print_response(cmd: &Command, response: &serde_json::Value) -> u8 {
     0
 }
 
+/// Print `windows`' rows: the `windows` op's answer, or the rows read from
+/// the state dump a compositor without that op answered instead.
+fn print_windows(response: &serde_json::Value, json: bool) {
+    let windows = response
+        .get("answer")
+        .and_then(|answer| answer.get("windows"))
+        .and_then(serde_json::Value::as_array)
+        .cloned()
+        .unwrap_or_else(|| {
+            windows_of(
+                response
+                    .get("state")
+                    .and_then(|state| state.get("workspace_tree"))
+                    .unwrap_or(&serde_json::Value::Null),
+            )
+        });
+    if json {
+        println!("{}", serde_json::Value::Array(windows));
+    } else if windows.is_empty() {
+        println!("no windows are open");
+    } else {
+        for window in &windows {
+            let field = |name: &str| {
+                window.get(name).map_or_else(String::new, |v| match v {
+                    serde_json::Value::String(text) => text.clone(),
+                    other => other.to_string(),
+                })
+            };
+            let active = if window.get("active") == Some(&serde_json::Value::Bool(true)) {
+                "*"
+            } else {
+                " "
+            };
+            println!(
+                "{active} {}/{}  group {}  tab {}  {}  {}",
+                field("workspace"),
+                field("strip"),
+                field("group"),
+                field("tab"),
+                field("app_id"),
+                field("title"),
+            );
+        }
+    }
+}
+
+/// The request to send instead when `response` says the socket does not know
+/// the op `cmd` sent: a compositor that predates `windows` answers it from its
+/// state dump. Its parser calls an unknown op a `parse_error`; the
+/// installer's and greeter's consoles call it `not_implemented`.
+fn fallback_request(cmd: &Command, response: &serde_json::Value) -> Option<&'static str> {
+    let code = response.get("err")?.get("code")?.as_str()?;
+    (matches!(cmd, Command::Windows { .. }) && matches!(code, "parse_error" | "not_implemented"))
+        .then_some(r#"{"op":"state_dump"}"#)
+}
+
 /// One row per tab in `workspace_tree`: where it is, which app shows it, and
 /// whether it is the tab in front of the active workspace's active group.
+/// How `windows` reads a compositor that predates the `windows` op.
 fn windows_of(tree: &serde_json::Value) -> Vec<serde_json::Value> {
     let str_or_id = |value: &serde_json::Value, name: &str| {
         value
@@ -1366,6 +1466,9 @@ fn print_usage() {
          \x20 actions list [QUERY] [--json] [--programmatic] search: list actions as `PROVIDER:ID  KIND  TITLE`\n\
          \x20                               (read-only; empty QUERY lists everything;\n\
          \x20                               --json adds params, contract and hierarchy)\n\
+         \x20              [--limit ROWS] [--cursor NEXT]\n\
+         \x20                               one page at a time (default 200 rows); a\n\
+         \x20                               longer listing names its next page's cursor\n\
          \x20 actions invoke PROVIDER ID [--device DEVICE] [--args-json OBJECT | --args-stdin]\n\
          \x20               [--wait[=MS]]   run one action by its address; answers the\n\
          \x20                               typed receipt. --wait answers once it has\n\
@@ -1382,7 +1485,10 @@ fn print_usage() {
          \x20                               (e.g. `read so.tilo.notes`, then a page's item)\n\
          \x20 windows [--json]              open windows: workspace/strip, group, tab, app\n\
          \x20                               (`*` marks the one in front)\n\
-         \x20 state-dump [--pretty]         the whole workspace_tree + chrome as JSON\n\
+         \x20 state-dump [--pretty] [--history]\n\
+         \x20                               the whole workspace_tree + chrome as JSON;\n\
+         \x20                               --history keeps effect receipts and audit\n\
+         \x20                               trails, which grow with every action\n\
          \x20 raw '<json>'                  passthrough — escape hatch for new commands\n\
          \n\
          For example: `actions list notes`, then `actions invoke applications so.tilo.notes`,\n\
@@ -1549,6 +1655,16 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
+    let response = match fallback_request(&invocation.command, &response) {
+        Some(fallback) => match round_trip(&mut stream, fallback) {
+            Ok(v) => v,
+            Err(e) => {
+                eprintln!("tilo-control: socket round-trip: {e}");
+                return ExitCode::from(2);
+            }
+        },
+        None => response,
+    };
 
     let code = print_response(&invocation.command, &response);
     if code == 0 {
@@ -1597,6 +1713,24 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    /// The table asks for compact rows; paging flags pass through.
+    #[test]
+    fn actions_list_pages_and_asks_for_compact_rows_for_the_table() {
+        let table = parse(&[
+            "actions", "list", "open", "--limit", "50", "--cursor", "50.ab",
+        ])
+        .unwrap();
+        assert_eq!(
+            wire(&table.command),
+            serde_json::json!({
+                "op": "actions_enumerate", "query": "open", "detail": "compact",
+                "limit": 50, "cursor": "50.ab",
+            })
+        );
+        assert!(parse(&["actions", "list", "--limit", "many"]).is_err());
+        assert!(parse(&["actions", "list", "--cursor"]).is_err());
     }
 
     #[test]
@@ -1722,6 +1856,10 @@ mod tests {
 
     #[test]
     fn subcommands_and_modifier_flags_parse_into_their_values() {
+        let dump = |pretty| Command::StateDump {
+            pretty,
+            history: false,
+        };
         let drag = |steps| Command::Drag {
             x1: 0.0,
             y1: 0.0,
@@ -1775,11 +1913,8 @@ mod tests {
             ),
             (&["watch", "on"], Command::Watch { watching: true }),
             (&["watch", "off"], Command::Watch { watching: false }),
-            (&["state-dump"], Command::StateDump { pretty: false }),
-            (
-                &["state-dump", "--pretty"],
-                Command::StateDump { pretty: true },
-            ),
+            (&["state-dump"], dump(false)),
+            (&["state-dump", "--pretty"], dump(true)),
             (
                 &[
                     "actions",
@@ -2110,6 +2245,48 @@ mod tests {
         assert!(windows_of(&serde_json::Value::Null).is_empty());
     }
 
+    /// A compositor that predates the `windows` op is read through its
+    /// state dump; any other answer, refusals included, stands.
+    #[test]
+    fn windows_falls_back_to_the_state_dump_only_for_an_unknown_op() {
+        let windows = Command::Windows { json: false };
+        let err = |code: &str| serde_json::json!({ "err": { "code": code, "message": "" } });
+        for code in ["parse_error", "not_implemented"] {
+            assert_eq!(
+                fallback_request(&windows, &err(code)),
+                Some(r#"{"op":"state_dump"}"#)
+            );
+        }
+        assert_eq!(fallback_request(&windows, &err("not_permitted")), None);
+        assert_eq!(
+            fallback_request(
+                &windows,
+                &serde_json::json!({ "answer": { "windows": [] } })
+            ),
+            None
+        );
+        let dump = Command::StateDump {
+            pretty: false,
+            history: false,
+        };
+        assert_eq!(fallback_request(&dump, &err("parse_error")), None);
+    }
+
+    /// History is opt-in, beside `--pretty` and in any order.
+    #[test]
+    fn state_dump_takes_history_beside_pretty() {
+        assert_eq!(
+            parse(&["state-dump", "--history", "--pretty"])
+                .unwrap()
+                .command,
+            Command::StateDump {
+                pretty: true,
+                history: true,
+            }
+        );
+        assert!(parse(&["state-dump", "--json"]).is_err());
+    }
+
     #[test]
     fn socket_resolution_prefers_flag_then_env_then_runtime_dir() {
         let flag = Some(PathBuf::from("/flag.sock"));
@@ -2205,11 +2382,25 @@ mod tests {
         assert_eq!(v["alt"], true);
         assert_eq!(v["logo"], false);
 
-        let v = wire(&Command::StateDump { pretty: true });
-        assert_eq!(v["op"], "state_dump");
+        let v = wire(&Command::StateDump {
+            pretty: true,
+            history: false,
+        });
         // `pretty` is purely a print-time concern; the wire payload
-        // never carries it (the compositor doesn't need to know).
-        assert!(v.get("pretty").is_none());
+        // never carries it (the compositor doesn't need to know). Without
+        // `--history` the request is the one every compositor understands.
+        assert_eq!(v, serde_json::json!({ "op": "state_dump" }));
+        assert_eq!(
+            wire(&Command::StateDump {
+                pretty: false,
+                history: true,
+            }),
+            serde_json::json!({ "op": "state_dump", "include_history": true })
+        );
+        assert_eq!(
+            wire(&Command::Windows { json: true }),
+            serde_json::json!({ "op": "windows" })
+        );
 
         // Action invocations preserve structured arguments.
         let value = wire(&Command::ActionsInvoke {

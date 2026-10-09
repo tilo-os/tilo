@@ -130,7 +130,9 @@ qc key Enter                                # named key OR single char
 qc type "hello"                             # one press+release per character
 qc modifiers ctrl,shift                     # comma-separated set; empty clears all
 qc snapshot /tmp/state.png                  # PNG to disk
-qc state-dump --pretty                      # live WorkspaceTree + Chrome as JSON
+qc windows                                  # open windows: workspace/strip, group, tab, app
+qc state-dump --pretty                      # live WorkspaceTree + Chrome as JSON, without history
+qc state-dump --history                     # ... with effect receipts and audit trails
 qc raw '{"op":"list_targets"}'              # escape hatch for unwrapped commands
 ```
 
@@ -206,8 +208,13 @@ echo '{"op":"type","text":"hello"}' | nc -U $TILO_TEST_CONTROL
 # Capture a PNG of the current state:
 echo '{"op":"snapshot","path":"/tmp/state.png"}' | nc -U $TILO_TEST_CONTROL
 
-# Get the live workspace tree + chrome state as JSON:
+# Get the live workspace tree + chrome state as JSON. A workspace's
+# append-only history (effect receipts, task audit trails, ownership-transfer
+# records) is left out; add "include_history":true to get it:
 echo '{"op":"state_dump"}' | nc -U $TILO_TEST_CONTROL
+
+# Just the open windows, one row per tab:
+echo '{"op":"windows"}' | nc -U $TILO_TEST_CONTROL
 
 # Copy and paste as the compositor's own in-process widgets do. Both call
 # straight into `ui::text_selection`, the same functions the terminal, the

@@ -4,6 +4,8 @@ use super::state::WorkspaceAuthority as _;
 use super::state::WorkspaceTreeHandle;
 #[cfg(target_os = "linux")]
 mod airdrop_transfer;
+#[cfg(target_os = "linux")]
+pub mod approved_checks;
 mod committed_document;
 #[cfg(target_os = "linux")]
 mod file_clipboard;
@@ -1527,6 +1529,10 @@ pub fn native_services(
         Arc::new(NativeAppActionGrants(tree.clone()))
             as Arc<dyn tilo_action_broker::services::AppActionGrants>
     });
+    #[cfg(target_os = "linux")]
+    let approved_checks = membership
+        .as_ref()
+        .map(|tree| approved_checks::service(tree.clone(), network.clone()));
     let launcher = Arc::new(NativeLauncher(membership.clone(), network.clone()));
     let display_control = membership
         .as_ref()
@@ -1543,6 +1549,8 @@ pub fn native_services(
         }) as Arc<dyn tilo_action_broker::services::LocalPersonServices>
     });
     HostServices {
+        #[cfg(target_os = "linux")]
+        approved_checks,
         #[cfg(target_os = "linux")]
         file_clipboard: membership.as_ref().map(|tree| {
             Arc::new(file_clipboard::NativeFileClipboard::new(tree.clone()))
