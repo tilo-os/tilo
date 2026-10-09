@@ -4731,9 +4731,7 @@ mod tests {
         activate: impl FnOnce(&mut crate::shell::app_notice_card::AppNoticeCard),
     ) {
         use crate::shell::peer_windows::work_counts;
-        use crate::shell::state::{
-            CapOverride, Effect, Principal, Scope, Subject, TileContent, Verb,
-        };
+        use crate::shell::state::TileContent;
         use tilo_desktop_model::MissingApp;
 
         let mut frame = FrameBuilder::new((1280, 800));
@@ -4746,17 +4744,10 @@ mod tests {
             let chrome = frame.chrome.borrow();
             let mut tree = chrome.tree_mut();
             let workspace = tree.desktop.workspaces.last_mut().unwrap();
-            workspace.owner = Some("quinten".into());
             // The production install path must refuse before reaching the
-            // catalogue: this disposable fixture can never install an app.
-            let _ = workspace.grant_capability(CapOverride {
-                effect: Effect::Restrict,
-                ..CapOverride::grant(
-                    Subject::Principal(Principal::Person("quinten".into())),
-                    Scope::App("so.tilo.word-processor".into()),
-                    Verb::Read,
-                )
-            });
+            // catalogue: this disposable fixture has no owner, so no one may
+            // install an app into it.
+            assert!(workspace.owner().is_none());
             let TileContent::PeerWindow { note, missing, .. } =
                 &mut workspace.strips[0].window_groups[0].tabs[0].tile
             else {
@@ -4798,7 +4789,7 @@ mod tests {
             else {
                 panic!("a refused install must keep the peer window");
             };
-            assert!(note.contains("does not permit"), "existing refusal: {note}");
+            assert!(note.contains("no owner"), "existing refusal: {note}");
             assert_eq!(*missing, None);
         }
         assert_eq!(frame.peer_windows_poll(), None, "the request was drained");
