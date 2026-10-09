@@ -28,10 +28,10 @@
 //! reasoning covers `rmdir` on a directory whose only remaining children
 //! are hidden: `EROFS`, not `ENOTEMPTY`.
 use fuser::{
-    BackingId, BsdFileFlags, Errno, FileHandle, FileType, Filesystem, FopenFlags, Generation,
-    INodeNo, InitFlags, KernelConfig, LockOwner, OpenAccMode, OpenFlags, RenameFlags, ReplyAttr,
-    ReplyCreate, ReplyData, ReplyDirectory, ReplyDirectoryPlus, ReplyEmpty, ReplyEntry, ReplyOpen,
-    ReplyWrite, ReplyXattr, Request, TimeOrNow, WriteFlags,
+    BackingId, BsdFileFlags, Errno, FileAttr, FileHandle, FileType, Filesystem, FopenFlags,
+    Generation, INodeNo, InitFlags, KernelConfig, LockOwner, OpenAccMode, OpenFlags, RenameFlags,
+    ReplyAttr, ReplyCreate, ReplyData, ReplyDirectory, ReplyDirectoryPlus, ReplyEmpty, ReplyEntry,
+    ReplyOpen, ReplyWrite, ReplyXattr, Request, TimeOrNow, WriteFlags,
 };
 use libc::{EBUSY, EDQUOT, EEXIST, EFBIG, EINVAL, EIO, EISDIR, ENOENT, ENOTDIR, ENOTEMPTY, EROFS};
 use std::collections::HashMap;
@@ -54,7 +54,7 @@ use crate::availability::{
 use crate::clock::unix_now_ms as now_ms;
 use crate::eviction::{EvictionMode, EvictionQueue, EvictionRequestId, EvictionRequestState};
 use crate::hydration::Hydrator;
-use crate::namespace::Namespace;
+use crate::namespace::{InodeQuery, InodeView, Namespace};
 use crate::smart::Heuristics;
 use crate::sync::SyncHandle;
 
@@ -66,7 +66,15 @@ const PINNED_HYDRATION_INTERVAL: Duration = Duration::from_secs(5);
 const MAX_PINNED_FETCHES_PER_PASS: usize = 4;
 const HYDRATION_PROGRESS_PERSIST_BYTES: u64 = 8 * 1024 * 1024;
 
-type DocExports = HashMap<u64, (Vec<automerge::ChangeHash>, Vec<u8>)>;
+/// Each document's serialized form and the namespace heads it was last
+/// known current at; shared, so a read slices it instead of copying it.
+type DocExports = HashMap<u64, (Vec<automerge::ChangeHash>, Arc<[u8]>)>;
+
+/// The in-flight write stages of a mount, by inode. Holding this map's lock
+/// fixes the set of inodes with pending writes (storage eviction and checked
+/// restore rely on that); the bytes of a stage sit behind its own lock, so
+/// one inode's writes, reads and commits never wait for another's.
+pub type WriteStages = HashMap<u64, Arc<Stage>>;
 
 #[derive(Serialize)]
 struct VersionMetadataDigest {
@@ -258,6 +266,50 @@ pub(crate) enum VersionSource<'a> {
     },
 }
 
+/// Create `dir` owner-only and remove stage files a previous run left.
+fn prepare_stage_dir(dir: &std::path::Path) -> io::Result<()> {
+    use std::os::unix::fs::PermissionsExt as _;
+    std::fs::create_dir_all(dir)?;
+    std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
+    for entry in std::fs::read_dir(dir)?.flatten() {
+        if entry
+            .file_name()
+            .as_bytes()
+            .starts_with(write_stage::STAGE_FILE_PREFIX.as_bytes())
+        {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
+    Ok(())
+}
+
+/// Test-only hook run with an inode's stage locked for its commit.
+#[cfg(test)]
+type CommitPause = Arc<dyn Fn(u64) + Send + Sync>;
+
+/// How a FUSE `read` is answered, decided by `QuickFS::plan_read` before
+/// any reply is sent.
+enum ReadPlan {
+    /// Refused, or failed, with this errno.
+    Error(i32),
+    /// From the inode's write stage or a document's export.
+    Buffered(BufferedRead),
+    /// Bytes already on this device (empty for a file with no content).
+    Local(Vec<u8>),
+    /// Content a peer must supply, hydrated off the FUSE worker.
+    Remote(Hash),
+}
+
+/// A read answered without the committed content's read path.
+enum BufferedRead {
+    /// A range of a document's shared export.
+    Shared(Arc<[u8]>, std::ops::Range<usize>),
+    /// A read of the inode's write stage.
+    Staged(io::Result<StagedRead>),
+    /// The document could not be exported.
+    Failed,
+}
+
 /// What a caller of [`QuickFS::persist_buffer`] needs from it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum PersistIntent {
@@ -281,7 +333,12 @@ fn commit_errno(error: &io::Error) -> i32 {
 /// Name of the sibling that preserves bytes which could not be committed to
 /// their own record, derived from the bytes so a retry finds the same copy.
 fn unsaved_copy_name(name: &[u8], bytes: &[u8]) -> Vec<u8> {
-    let hex = blake3::hash(bytes).to_hex();
+    unsaved_copy_name_for(name, &blake3::hash(bytes))
+}
+
+/// [`unsaved_copy_name`] of bytes whose blake3 hash is `digest`.
+fn unsaved_copy_name_for(name: &[u8], digest: &blake3::Hash) -> Vec<u8> {
+    let hex = digest.to_hex();
     let suffix = [
         b".unsaved-".as_slice(),
         hex.as_bytes().get(..16).unwrap_or_default(),
@@ -356,6 +413,9 @@ mod checked_restore;
 #[path = "history_read.rs"]
 mod history_read;
 pub mod native_ops;
+mod write_stage;
+use write_stage::{MissingRanges, SharedStage, StagedRead};
+pub use write_stage::{Stage, WriteStage};
 
 pub struct QuickFS {
     pub namespace: Arc<Mutex<Namespace>>,
@@ -367,10 +427,13 @@ pub struct QuickFS {
     document_content: tilo_content::ContentStore,
     /// Broadcasts local CRDT deltas to peers (None when running standalone).
     sync: Option<Arc<SyncHandle>>,
-    /// Per-inode in-flight write buffers (content-addressed on flush/release).
-    write_buffers: Arc<Mutex<HashMap<u64, Vec<u8>>>>,
-    /// Commit bookkeeping for `write_buffers`. Lock order: `write_buffers`
-    /// before `buffer_states`.
+    /// Per-inode in-flight write stages (content-addressed on flush/release).
+    write_buffers: Arc<Mutex<WriteStages>>,
+    /// Where stages keep written bytes; `None` keeps them in memory.
+    stage_dir: Option<std::path::PathBuf>,
+    /// Commit bookkeeping for `write_buffers`. Lock order: `write_buffers`,
+    /// then one inode's stage, then `buffer_states`; the namespace lock is
+    /// taken after a stage lock, never before.
     buffer_states: Mutex<HashMap<u64, BufferState>>,
     /// Serialises persistence of one inode's buffer so concurrent FUSE workers
     /// never commit the same buffer twice or interleave stage and commit.
@@ -448,6 +511,12 @@ pub struct QuickFS {
     /// Test-only: make content commits of one inode fail with an errno.
     #[cfg(test)]
     commit_fault: Mutex<Option<(u64, i32)>>,
+    /// Test-only: run while an inode's stage is locked for its commit.
+    #[cfg(test)]
+    commit_pause: Mutex<Option<CommitPause>>,
+    /// Test-only: how many times [`Self::ns`] has taken the namespace lock.
+    #[cfg(test)]
+    namespace_locks: std::sync::atomic::AtomicUsize,
 }
 
 impl QuickFS {
@@ -478,6 +547,7 @@ impl QuickFS {
             document_content: tilo_content::ContentStore::memory(),
             sync: None,
             write_buffers: Arc::new(Mutex::new(HashMap::new())),
+            stage_dir: None,
             buffer_states: Mutex::new(HashMap::new()),
             commit_locks: Mutex::new(HashMap::new()),
             unsaved: None,
@@ -508,6 +578,10 @@ impl QuickFS {
             share_control_path: None,
             #[cfg(test)]
             commit_fault: Mutex::new(None),
+            #[cfg(test)]
+            commit_pause: Mutex::new(None),
+            #[cfg(test)]
+            namespace_locks: std::sync::atomic::AtomicUsize::new(0),
         }
     }
 
@@ -518,17 +592,56 @@ impl QuickFS {
     }
 
     /// Shared dirty-inode view for the storage authority.
-    pub fn write_buffers_handle(&self) -> Arc<Mutex<HashMap<u64, Vec<u8>>>> {
+    pub fn write_buffers_handle(&self) -> Arc<Mutex<WriteStages>> {
         Arc::clone(&self.write_buffers)
     }
 
+    /// Keep written bytes of opaque files in sparse files under `dir`
+    /// instead of in memory, so a large write never has to fit in RAM.
+    /// Stage files a previous run left are removed: bytes that had to
+    /// survive it were staged in the unsaved store. When the directory
+    /// cannot be prepared, writes keep staging in memory.
+    #[must_use]
+    pub fn with_write_stage_dir(mut self, dir: std::path::PathBuf) -> Self {
+        match prepare_stage_dir(&dir) {
+            Ok(()) => self.stage_dir = Some(dir),
+            Err(error) => eprintln!(
+                "write staging directory unavailable at {} ({error}); staging writes in memory",
+                dir.display()
+            ),
+        }
+        self
+    }
+
     fn ns(&self) -> std::sync::MutexGuard<'_, Namespace> {
+        #[cfg(test)]
+        self.namespace_locks.fetch_add(1, Ordering::Relaxed);
         self.namespace
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    fn buffers(&self) -> std::sync::MutexGuard<'_, HashMap<u64, Vec<u8>>> {
+    /// [`Namespace::inode_view`] under one namespace lock, with the path
+    /// built only when this mount has an ACL to check it against.
+    fn inode_view(&self, ino: u64, unlinked: bool) -> Option<InodeView> {
+        let query = InodeQuery {
+            unlinked,
+            path: self.enforcement.is_some(),
+        };
+        self.ns().inode_view(ino, query)
+    }
+
+    /// The state of kernel handle `fh`, when it was opened on `ino`.
+    fn open_handle(&self, ino: u64, fh: u64) -> Option<OpenFileHandleState> {
+        self.open_file_handles
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&fh)
+            .filter(|handle| handle.ino == ino)
+            .cloned()
+    }
+
+    fn buffers(&self) -> std::sync::MutexGuard<'_, WriteStages> {
         self.write_buffers
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -566,26 +679,44 @@ impl QuickFS {
         (key, record_id)
     }
 
+    /// Stage the complete bytes of `stage` (an `fsync`, or a failed commit)
+    /// in `store`; a file-backed stage is copied file to file.
     fn stage_unsaved(
         &self,
         store: &crate::unsaved::UnsavedStore,
         ino: u64,
-        data: &[u8],
+        stage: &mut WriteStage,
         base_hash: Option<Hash>,
         error: Option<String>,
     ) -> io::Result<()> {
         let (key, record_id) = self.unsaved_key(ino);
         let path = self.ns().path_for(ino);
-        let entry = crate::unsaved::UnsavedEntry::describe(
-            key,
-            record_id,
-            path,
-            base_hash,
-            data,
-            now_ms(),
-            error,
-        );
-        store.stage(&entry, data)
+        match stage.source()? {
+            VersionSource::Bytes(data) => {
+                let entry = crate::unsaved::UnsavedEntry::describe(
+                    key,
+                    record_id,
+                    path,
+                    base_hash,
+                    data,
+                    now_ms(),
+                    error,
+                );
+                store.stage(&entry, data)
+            }
+            VersionSource::File { path: file, .. } => {
+                let entry = crate::unsaved::UnsavedEntry::describe_file(
+                    key,
+                    record_id,
+                    path,
+                    base_hash,
+                    file,
+                    now_ms(),
+                    error,
+                )?;
+                store.stage_file(&entry, file)
+            }
+        }
     }
 
     fn clear_unsaved(&self, ino: u64) {
@@ -620,49 +751,63 @@ impl QuickFS {
         drop(states);
     }
 
-    /// Persist the in-memory buffer of `ino`, if it has unpersisted bytes.
+    /// Persist the stage of `ino`, if it has unpersisted bytes.
     ///
     /// [`PersistIntent::Close`] commits the bytes as a version. On failure
-    /// the errno is returned, the buffer stays in memory (reads keep seeing
-    /// it) and the bytes are staged in the unsaved store; the next flush,
-    /// fsync or close retries.
+    /// the errno is returned, the stage stays (reads keep seeing it) and the
+    /// bytes are staged in the unsaved store; the next flush, fsync or close
+    /// retries.
     ///
     /// [`PersistIntent::Sync`] only guarantees durability: with an unsaved
     /// store the bytes are staged there, so a database that syncs every
     /// transaction produces one version per close instead of one per sync.
     /// Without a store it commits like `Close`.
+    ///
+    /// Ranges nobody wrote are read from the committed content first, outside
+    /// the stage lock. The commit then runs under this inode's stage lock
+    /// only, so the bytes and their generation describe one state while other
+    /// inodes' writes and reads proceed.
     #[allow(
         clippy::significant_drop_tightening,
-        reason = "the buffer bytes and their generation are read under one buffer lock so they describe the same state"
+        reason = "the stage stays locked while it is committed or staged so the bytes and their generation describe one state"
     )]
     fn persist_buffer(&self, ino: u64, intent: PersistIntent) -> Result<(), i32> {
         let lock = self.commit_lock_for(ino);
         let _serialised = lock
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let (data, state) = {
-            let buffers = self.buffers();
-            let Some(data) = buffers.get(&ino) else {
-                return Ok(());
-            };
-            let state = self.buffer_states().get(&ino).copied().unwrap_or_default();
-            let settled = match intent {
-                PersistIntent::Close => state.is_committed(),
-                PersistIntent::Sync => state.is_durable(),
-            };
-            if settled {
-                return Ok(());
-            }
-            (data.clone(), state)
+        let Some(staged) = self.stage(ino) else {
+            return Ok(());
         };
+        let settled = |state: &BufferState| match intent {
+            PersistIntent::Close => state.is_committed(),
+            PersistIntent::Sync => state.is_durable(),
+        };
+        if settled(&self.buffer_states().get(&ino).copied().unwrap_or_default()) {
+            return Ok(());
+        }
         // An unlinked inode's bytes belong to no file any more.
         if self.ns().getattr(ino).is_none() {
             return Ok(());
         }
+        if let Err(error) = self.fill_stage(&staged) {
+            self.buffer_states().entry(ino).or_default().failure = Some(EIO);
+            eprintln!(
+                "inode {ino}: the unwritten parts of its committed content could not be read ({error}); the written bytes stay in its stage and are not staged durably"
+            );
+            return Err(EIO);
+        }
+        let mut guard = staged.lock();
+        let state = self.buffer_states().get(&ino).copied().unwrap_or_default();
+        if settled(&state) {
+            return Ok(());
+        }
+        #[cfg(test)]
+        self.pause_commit(ino);
         if intent == PersistIntent::Sync
             && let Some(store) = &self.unsaved
         {
-            return match self.stage_unsaved(store, ino, &data, state.base_hash, None) {
+            return match self.stage_unsaved(store, ino, &mut guard, state.base_hash, None) {
                 Ok(()) => {
                     if let Some(current) = self.buffer_states().get_mut(&ino) {
                         current.staged = Some(state.generation);
@@ -675,7 +820,7 @@ impl QuickFS {
                 }
             };
         }
-        match self.commit_buffer(ino, &data) {
+        match self.commit_buffer(ino, &mut guard) {
             Ok(()) => {
                 let committed_hash = self.ns().hash_for(ino);
                 if let Some(current) = self.buffer_states().get_mut(&ino) {
@@ -694,7 +839,7 @@ impl QuickFS {
                     Some(store) => match self.stage_unsaved(
                         store,
                         ino,
-                        &data,
+                        &mut guard,
                         state.base_hash,
                         Some(detail.clone()),
                     ) {
@@ -715,31 +860,241 @@ impl QuickFS {
         }
     }
 
-    /// Keep `data` as a new sibling of `ino` because it cannot be committed
-    /// to `ino`'s own record. Returns the copy's workspace path.
-    fn preserve_as_sibling(&self, ino: u64, data: &[u8]) -> Result<String, i32> {
+    /// Test-only: give `ino` a stage holding exactly `bytes`.
+    #[cfg(test)]
+    fn install_stage(&self, ino: u64, bytes: Vec<u8>) {
+        self.buffers()
+            .insert(ino, WriteStage::complete(bytes, None).shared());
+    }
+
+    /// Test-only: every byte `ino`'s stage reads as, if it has one.
+    #[cfg(test)]
+    fn staged_bytes(&self, ino: u64) -> Option<Vec<u8>> {
+        let stage = self.stage(ino)?;
+        self.read_stage_blocking(&stage, 0, u64::MAX).ok()
+    }
+
+    #[cfg(test)]
+    fn pause_commit(&self, ino: u64) {
+        let pause = self
+            .commit_pause
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        if let Some(pause) = pause {
+            pause(ino);
+        }
+    }
+
+    /// The stage of `ino`, if it has one.
+    fn stage(&self, ino: u64) -> Option<SharedStage> {
+        self.buffers().get(&ino).cloned()
+    }
+
+    /// The length of `ino`'s stage: what `stat` reports while it is open.
+    fn staged_len(&self, ino: u64) -> Option<u64> {
+        Some(self.stage(ino)?.len())
+    }
+
+    /// A stage for `ino` over its committed content, reading none of it. A
+    /// document is staged whole from its export (local, never a peer).
+    fn new_stage(&self, ino: u64) -> Result<(WriteStage, Option<Hash>), i32> {
+        if self.is_document(ino) {
+            let base = self.ns().hash_for(ino);
+            let bytes = self.document_export(ino).ok_or(EIO)?;
+            return Ok((WriteStage::complete(bytes.to_vec(), base), base));
+        }
+        let (base, base_len) = {
+            let ns = self.ns();
+            let base = ns.hash_for(ino);
+            let len = ns
+                .getattr_including_unlinked(ino)
+                .map_or(0, |attr| attr.size);
+            drop(ns);
+            (base, len)
+        };
+        let stage =
+            WriteStage::over(base, base_len, self.stage_dir.as_deref()).map_err(|error| {
+                eprintln!("inode {ino}: could not open a write stage: {error}");
+                EIO
+            })?;
+        Ok((stage, base))
+    }
+
+    /// An empty stage for a file `create` just committed empty.
+    fn empty_stage(&self, document: bool) -> WriteStage {
+        if document {
+            return WriteStage::complete(Vec::new(), None);
+        }
+        WriteStage::over(None, 0, self.stage_dir.as_deref()).unwrap_or_else(|error| {
+            eprintln!("could not open a file-backed write stage ({error}); staging in memory");
+            WriteStage::complete(Vec::new(), None)
+        })
+    }
+
+    /// `ino`'s stage, opened if it has none. Returns whether this call
+    /// opened it and the committed content it was opened over.
+    fn stage_for_write(&self, ino: u64) -> Result<(SharedStage, bool, Option<Hash>), i32> {
+        if let Some(stage) = self.stage(ino) {
+            return Ok((stage, false, None));
+        }
+        let (fresh, base) = self.new_stage(ino)?;
+        // A racing write may have opened one meanwhile; it wins.
+        let mut stages = self.buffers();
+        Ok(match stages.entry(ino) {
+            std::collections::hash_map::Entry::Occupied(entry) => {
+                (Arc::clone(entry.get()), false, None)
+            }
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                (Arc::clone(entry.insert(fresh.shared())), true, base)
+            }
+        })
+    }
+
+    /// Read every range of `stage` nobody wrote from its committed content,
+    /// so it can be committed. Bounded pieces, each fetched without the stage
+    /// lock; a failure leaves the stage as it was and is the caller's error.
+    fn fill_stage(&self, stage: &SharedStage) -> io::Result<()> {
+        const PIECE: u64 = 8 * 1024 * 1024;
+        let (base, gaps) = {
+            let guard = stage.lock();
+            (guard.base(), guard.gaps())
+        };
+        if gaps.is_empty() {
+            return Ok(());
+        }
+        let base = base
+            .ok_or_else(|| io::Error::other("staged file lacks bytes but has no base content"))?;
+        for gap in gaps {
+            let mut at = gap.start;
+            while at < gap.end {
+                let len = gap.end.saturating_sub(at).min(PIECE);
+                let bytes = self.read_base_blocking(base, at, len)?;
+                stage.lock().fill(at, &bytes)?;
+                at = at.saturating_add(len);
+            }
+        }
+        Ok(())
+    }
+
+    /// Exactly `len` bytes of committed content `base` from `offset`: local
+    /// bytes directly, the rest from a peer.
+    fn read_base_blocking(&self, base: Hash, offset: u64, len: u64) -> io::Result<Vec<u8>> {
+        let hydrator = Arc::clone(&self.hydrator);
+        let rt = hydrator.runtime_handle.clone();
+        let bytes = tokio::task::block_in_place(|| {
+            rt.block_on(async move {
+                match hydrator.read_local(base, offset, len).await {
+                    Some(bytes) => Ok(bytes),
+                    None => hydrator.read(base, offset, len).await,
+                }
+            })
+        })
+        .map_err(|error| io::Error::other(error.to_string()))?;
+        if bytes.len() as u64 != len {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "committed content is shorter than the file it backs",
+            ));
+        }
+        Ok(bytes)
+    }
+
+    /// Read `ino`'s stage: `None` when it has none. Ranges nobody wrote come
+    /// from the committed content: local bytes inline, anything that needs a
+    /// peer is left in [`StagedRead::Missing`] for the caller to hydrate
+    /// without holding the stage.
+    fn read_staged(&self, ino: u64, offset: u64, size: u64) -> Option<io::Result<StagedRead>> {
+        let stage = self.stage(ino)?;
+        Some(self.read_stage(&stage, offset, size))
+    }
+
+    fn read_stage(&self, stage: &SharedStage, offset: u64, size: u64) -> io::Result<StagedRead> {
+        let read = stage.lock().read(offset, size)?;
+        let StagedRead::Missing(missing) = read else {
+            return Ok(read);
+        };
+        let hydrator = Arc::clone(&self.hydrator);
+        let rt = hydrator.runtime_handle.clone();
+        Ok(
+            match tokio::task::block_in_place(|| rt.block_on(missing.finish_local(&hydrator))) {
+                Ok(bytes) => StagedRead::Ready(bytes),
+                Err(missing) => StagedRead::Missing(missing),
+            },
+        )
+    }
+
+    /// [`Self::read_stage`], waiting for ranges a peer has to supply.
+    fn read_stage_blocking(
+        &self,
+        stage: &SharedStage,
+        offset: u64,
+        size: u64,
+    ) -> io::Result<Vec<u8>> {
+        match self.read_stage(stage, offset, size)? {
+            StagedRead::Ready(bytes) => Ok(bytes),
+            StagedRead::Missing(missing) => Self::finish_blocking(&self.hydrator, missing),
+        }
+    }
+
+    fn finish_blocking(hydrator: &Arc<Hydrator>, missing: MissingRanges) -> io::Result<Vec<u8>> {
+        let hydrator = Arc::clone(hydrator);
+        let rt = hydrator.runtime_handle.clone();
+        tokio::task::block_in_place(|| rt.block_on(missing.finish(&hydrator)))
+    }
+
+    /// `truncate` of a file nobody has open: commit its first `new_size`
+    /// bytes. Truncating to zero reads nothing; otherwise only the kept
+    /// prefix of the committed content is read.
+    fn commit_resized(&self, ino: u64, new_size: u64) -> io::Result<()> {
+        if new_size == 0 {
+            return self.commit_content(ino, &[]);
+        }
+        let (stage, _) = self.new_stage(ino).map_err(io::Error::from_raw_os_error)?;
+        let stage = stage.shared();
+        stage.lock().set_len(new_size)?;
+        self.fill_stage(&stage)?;
+        let mut guard = stage.lock();
+        let committed = guard
+            .source()
+            .and_then(|source| self.commit_version_at(ino, source, now_ms(), None));
+        drop(guard);
+        committed
+    }
+
+    /// Keep the bytes of `stage` as a new sibling of `ino` because they
+    /// cannot be committed to `ino`'s own record. Returns the copy's
+    /// workspace path.
+    fn preserve_as_sibling(&self, ino: u64, stage: &mut WriteStage) -> Result<String, i32> {
         let (parent, name) = {
             let mut ns = self.ns();
             let name = ns.file_name_for(ino).ok_or(ENOENT)?;
             (ns.parent_ino(ino).ok_or(ENOENT)?, name)
         };
-        self.create_preserved_copy(parent, name.as_bytes(), data)
+        let digest = stage.digest().map_err(|_| EIO)?;
+        let copy_name = unsaved_copy_name_for(name.as_bytes(), &digest);
+        let source = stage.source().map_err(|_| EIO)?;
+        self.create_preserved_copy(parent, &copy_name, source)
     }
 
-    fn create_preserved_copy(&self, parent: u64, name: &[u8], data: &[u8]) -> Result<String, i32> {
-        let copy_name = unsaved_copy_name(name, data);
-        self.check_new_name(parent, &copy_name)?;
-        let existing = self.ns().lookup(parent, &copy_name).map(|attr| attr.ino.0);
+    fn create_preserved_copy(
+        &self,
+        parent: u64,
+        copy_name: &[u8],
+        source: VersionSource<'_>,
+    ) -> Result<String, i32> {
+        self.check_new_name(parent, copy_name)?;
+        let existing = self.ns().lookup(parent, copy_name).map(|attr| attr.ino.0);
         let ino = if let Some(ino) = existing {
             // The name is derived from the bytes: an earlier attempt that got
             // as far as creating it is finished by committing into it.
             ino
         } else {
-            let (ino, delta) = self.create_empty_file(parent, &copy_name)?;
+            let (ino, delta) = self.create_empty_file(parent, copy_name)?;
             self.publish(delta);
             ino
         };
-        self.commit_content(ino, data)
+        self.commit_version_at(ino, source, now_ms(), None)
             .map_err(|error| commit_errno(&error))?;
         self.ns().path_for(ino).ok_or(EIO)
     }
@@ -748,10 +1103,10 @@ impl QuickFS {
     /// can never be committed to this record are preserved as a sibling
     /// copy; anything else stays in memory (and staged) for a later retry.
     fn settle_last_close(&self, ino: u64, live: bool) {
-        if !self.buffers().contains_key(&ino) {
+        let Some(staged) = self.stage(ino) else {
             self.drop_buffer(ino);
             return;
-        }
+        };
         if !live {
             self.clear_unsaved(ino);
             self.drop_buffer(ino);
@@ -771,10 +1126,8 @@ impl QuickFS {
             );
             return;
         };
-        let Some(data) = self.buffers().get(&ino).cloned() else {
-            return;
-        };
-        match self.preserve_as_sibling(ino, &data) {
+        let preserved = self.preserve_as_sibling(ino, &mut staged.lock());
+        match preserved {
             Ok(path) => {
                 eprintln!(
                     "inode {ino} could not take another version ({}); its bytes were kept as {path}",
@@ -860,7 +1213,9 @@ impl QuickFS {
             };
             let (parent, name) = location
                 .unwrap_or_else(|| (crate::namespace::ROOT_INO, entry.key.clone().into_bytes()));
-            match self.create_preserved_copy(parent, &name, &item.bytes) {
+            let copy_name = unsaved_copy_name(&name, &item.bytes);
+            match self.create_preserved_copy(parent, &copy_name, VersionSource::Bytes(&item.bytes))
+            {
                 Ok(path) => {
                     eprintln!("staged bytes for {label} were restored as {path}");
                     let _ = store.remove(&entry.key);
@@ -877,45 +1232,206 @@ impl QuickFS {
     }
 
     /// `write` after its access check: apply `data` at `offset` to the
-    /// inode's in-memory buffer.
-    #[allow(
-        clippy::significant_drop_tightening,
-        reason = "the lock is already scoped to its own block, after the blocking hydration \
-                  read and offset validation happen outside it; what remains inside is the \
-                  buffer lookup/resize/write itself, which needs the lock held throughout"
-    )]
+    /// inode's stage. Never reads the committed content: ranges nobody
+    /// writes stay the base's until a read or the commit needs them.
     fn write_buffer(&self, ino: u64, offset: u64, data: &[u8]) -> Result<u32, i32> {
-        // Seed the buffer with current content if this is the first write,
-        // outside the buffer lock (may do blocking I/O) — a hydration
-        // failure must fail the write, never seed-from-empty and truncate.
-        let absent = self.buffers().get(&ino).is_none();
-        let seed = if absent {
-            // Seed from current content (export for documents, hydrated bytes
-            // for opaque files) so a partial/append write modifies it correctly.
-            let base = self.ns().hash_for(ino);
-            let bytes = self.read_full_blocking(ino).map_err(|_| EIO)?;
-            Some((bytes, base))
+        // `offset` crosses the FUSE boundary as an untrusted request value.
+        offset.checked_add(data.len() as u64).ok_or(EINVAL)?;
+        let (stage, opened, base) = self.stage_for_write(ino)?;
+        let mut guard = stage.lock();
+        guard
+            .write(offset, data)
+            .map_err(|error| error.raw_os_error().unwrap_or(EIO))?;
+        stage.note_len(&guard);
+        // The generation moves under the stage lock, so a commit's
+        // generation always describes the bytes it committed.
+        self.note_buffer_mutation(ino, opened, base);
+        drop(guard);
+        Ok(u32::try_from(data.len()).unwrap_or(u32::MAX))
+    }
+
+    /// `setattr(size)` after its access check. Documents always stage
+    /// (imported as a whole on release), as do files that are open; other
+    /// opaque files commit the new length immediately.
+    fn truncate_inode(&self, ino: u64, new_size: u64) -> Result<(), i32> {
+        let open = self.buffers().contains_key(&ino);
+        if !open && !self.is_document(ino) {
+            return self
+                .commit_resized(ino, new_size)
+                .map_err(|error| commit_errno(&error));
+        }
+        let (stage, opened, base) = self.stage_for_write(ino)?;
+        let mut guard = stage.lock();
+        guard
+            .set_len(new_size)
+            .map_err(|error| error.raw_os_error().unwrap_or(EIO))?;
+        stage.note_len(&guard);
+        self.note_buffer_mutation(ino, opened, base);
+        drop(guard);
+        Ok(())
+    }
+
+    /// A range of document `ino`'s shared export, clamped to its length.
+    ///
+    /// `offset`/`size` cross the FUSE boundary as untrusted request values,
+    /// so they are clamped rather than trusted to fit `usize`.
+    fn read_document_export(&self, ino: u64, offset: u64, size: u32) -> BufferedRead {
+        match self.document_export(ino) {
+            Some(bytes) => {
+                let start = usize::try_from(offset)
+                    .unwrap_or(usize::MAX)
+                    .min(bytes.len());
+                let end = start.saturating_add(size as usize).min(bytes.len());
+                BufferedRead::Shared(bytes, start..end)
+            }
+            None => BufferedRead::Failed,
+        }
+    }
+
+    /// What a FUSE `getattr` answers for `ino` (through kernel handle `fh`,
+    /// when it has one): the attributes and whether `ino` is a document.
+    /// The inode is read under one namespace lock; a document's export size
+    /// and a directory's visible link count are the only further reads.
+    fn attr_for_request(&self, ino: u64, fh: Option<u64>) -> Result<(FileAttr, bool), i32> {
+        // Reflect an in-flight write stage so stat() sees read-your-writes size.
+        let buf_len = self.staged_len(ino);
+        let open_handle = fh.and_then(|fh| self.open_handle(ino, fh));
+        let view = self.inode_view(ino, open_handle.is_some()).ok_or(ENOENT)?;
+        // Outside the live view there is nothing to describe, except an inode
+        // retained by this exact open kernel handle after unlink/replacement.
+        let visible = if view.live {
+            self.view_in_view(&view)
+        } else {
+            open_handle
+                .as_ref()
+                .is_some_and(|handle| self.in_view(&handle.opened_path))
+        };
+        if !visible {
+            return Err(ENOENT);
+        }
+        let mut attr = view.attr;
+        // Documents have no stored byte length — report the current export
+        // size (so a collaboratively-edited document isn't read truncated).
+        let doc_len = if buf_len.is_none() && view.document {
+            self.document_export(ino).map(|b| b.len() as u64)
         } else {
             None
         };
-        // `offset` crosses the FUSE boundary as an untrusted request value.
-        let start = usize::try_from(offset).map_err(|_| EINVAL)?;
-        let end = start.checked_add(data.len()).ok_or(EINVAL)?;
-        {
-            let mut bufs = self.buffers();
-            let created = !bufs.contains_key(&ino);
-            // or_insert keeps any buffer a racing op already created.
-            let (buf, seeded_from) = match seed {
-                Some((bytes, base)) => (bufs.entry(ino).or_insert(bytes), Some(base)),
-                None => (bufs.entry(ino).or_default(), None),
-            };
-            if end > buf.len() {
-                buf.resize(end, 0);
-            }
-            buf.get_mut(start..end).ok_or(EINVAL)?.copy_from_slice(data);
-            self.note_buffer_mutation(ino, created && seeded_from.is_some(), seeded_from.flatten());
+        if let Some(len) = buf_len.or(doc_len) {
+            attr.size = len;
+            attr.blocks = len.div_ceil(512);
         }
-        Ok(u32::try_from(data.len()).unwrap_or(u32::MAX))
+        if attr.kind == FileType::Directory {
+            // Matches the filtered listing: an identity granted
+            // nothing sees an ordinary empty directory (nlink == 2).
+            attr.nlink = self.visible_dir_nlink(ino);
+        }
+        Ok((attr, view.document))
+    }
+
+    /// Everything a FUSE `read` decides before it replies: authorization,
+    /// then the write stage, a document's export, or the committed content.
+    /// The inode is read under **one** namespace lock — its liveness, path,
+    /// kind, content hash and whether it is a document come back together —
+    /// so a read of local content never queues behind a sync apply more than
+    /// once. Only a document read takes the lock again, to export it.
+    fn plan_read(&self, ino: u64, fh: u64, offset: u64, size: u32) -> ReadPlan {
+        let open_handle = self.open_handle(ino, fh);
+        let Some(view) = self.inode_view(ino, open_handle.is_some()) else {
+            return ReadPlan::Error(ENOENT);
+        };
+        // Live inodes use their current path. An unlinked/replaced inode has
+        // no path, so only the matching kernel handle may continue, with the
+        // access path captured when it was opened.
+        let access = if view.live {
+            self.check_view_access(&view, Access::Read)
+        } else if let Some(handle) = &open_handle {
+            self.check_path(&handle.opened_path, Access::Read)
+        } else {
+            Err(ENOENT)
+        };
+        if let Err(e) = access {
+            return ReadPlan::Error(e);
+        }
+        // Read-your-writes from the stage, else a document's shared export.
+        if let Some(staged) = self.read_staged(ino, offset, u64::from(size)) {
+            return ReadPlan::Buffered(BufferedRead::Staged(staged));
+        }
+        if view.document {
+            return ReadPlan::Buffered(self.read_document_export(ino, offset, size));
+        }
+        if view.attr.kind != FileType::RegularFile {
+            return ReadPlan::Error(EISDIR);
+        }
+        let Some(hash) = view.hash else {
+            return ReadPlan::Local(Vec::new());
+        };
+        // Local bytes are answered inline; bytes a peer must supply are
+        // left to the caller to hydrate off the FUSE worker.
+        let hydrator = Arc::clone(&self.hydrator);
+        let rt = hydrator.runtime_handle.clone();
+        let size = u64::from(size);
+        match tokio::task::block_in_place(|| rt.block_on(hydrator.read_local(hash, offset, size))) {
+            Some(data) => ReadPlan::Local(data),
+            None => ReadPlan::Remote(hash),
+        }
+    }
+
+    /// Answer a `read` whose bytes must come from a peer. The read still
+    /// blocks its caller as POSIX expects, but no FUSE worker waits on the
+    /// network, so a slow peer stalls only the readers of that file.
+    fn reply_remote(&self, hash: Hash, range: (u64, u64), nonblocking: bool, reply: ReplyData) {
+        let (offset, size) = range;
+        let hydrator = Arc::clone(&self.hydrator);
+        let rt = hydrator.runtime_handle.clone();
+        if nonblocking {
+            // A non-blocking reader gets EAGAIN at once; the range keeps
+            // hydrating so a retry finds it local.
+            rt.spawn(async move {
+                if let Err(error) = hydrator.read(hash, offset, size).await {
+                    eprintln!("content hydration failed for {hash}: {error:#}");
+                }
+            });
+            reply.error(to_errno(libc::EAGAIN));
+            return;
+        }
+        rt.spawn(async move {
+            match hydrator.read(hash, offset, size).await {
+                Ok(data) => reply.data(&data),
+                Err(error) => {
+                    eprintln!("content hydration failed for {hash}: {error:#}");
+                    reply.error(to_errno(EIO));
+                }
+            }
+        });
+    }
+
+    /// Answer a FUSE `read` that [`Self::plan_read`] sent to a buffer.
+    /// Unwritten ranges a peer must supply are hydrated on the runtime, like
+    /// an unbuffered read: no FUSE worker waits on the network.
+    fn reply_buffered(&self, ino: u64, buffered: BufferedRead, reply: ReplyData) {
+        match buffered {
+            BufferedRead::Shared(bytes, range) => reply.data(bytes.get(range).unwrap_or_default()),
+            BufferedRead::Staged(Ok(StagedRead::Ready(bytes))) => reply.data(&bytes),
+            BufferedRead::Staged(Ok(StagedRead::Missing(missing))) => {
+                let hydrator = Arc::clone(&self.hydrator);
+                let rt = hydrator.runtime_handle.clone();
+                rt.spawn(async move {
+                    match missing.finish(&hydrator).await {
+                        Ok(bytes) => reply.data(&bytes),
+                        Err(error) => {
+                            eprintln!("content hydration for a staged read failed: {error:#}");
+                            reply.error(to_errno(EIO));
+                        }
+                    }
+                });
+            }
+            BufferedRead::Staged(Err(error)) => {
+                eprintln!("read of the write stage of inode {ino} failed: {error}");
+                reply.error(to_errno(EIO));
+            }
+            BufferedRead::Failed => reply.error(to_errno(EIO)),
+        }
     }
 
     /// `flush` (every `close` of a descriptor): commit the buffer.
@@ -973,7 +1489,7 @@ impl QuickFS {
     /// The attributes `lookup`/`getattr` report for a live inode: in-flight
     /// buffer or document export size, and the view-filtered link count.
     fn presented_attr(&self, ino: u64) -> Option<(fuser::FileAttr, Duration)> {
-        let buf_len = self.buffers().get(&ino).map(|b| b.len() as u64);
+        let buf_len = self.staged_len(ino);
         let is_doc = self.is_document(ino);
         let doc_len = if buf_len.is_none() && is_doc {
             self.document_export(ino).map(|b| b.len() as u64)
@@ -1132,48 +1648,41 @@ impl QuickFS {
         if is_doc { Duration::ZERO } else { TTL }
     }
 
-    /// Commit an in-flight write buffer: import it as a document, or ingest it
-    /// as opaque chunked content. Returns the errno the writer should see
-    /// when the bytes did not become the file's committed content.
-    fn commit_buffer(&self, ino: u64, data: &[u8]) -> Result<(), i32> {
-        self.remember_rich_metadata(ino, data);
-        let is_doc = self.is_document(ino);
-        if is_doc {
-            if self
-                .document_export(ino)
-                .is_some_and(|current| current == data)
-            {
-                return Ok(());
-            }
-            // import_document validates before replacing; an invalid input
-            // leaves the previous content intact and returns false.
-            let delta = {
-                let mut ns = self.ns();
-                if ns.import_document(ino, &self.registry, data, now_ms(), &self.document_content) {
-                    ns.save_incremental()
-                } else {
-                    Vec::new()
-                }
-            };
-            self.doc_export_cache().remove(&ino);
-            if delta.is_empty() {
-                eprintln!("document import rejected (invalid format); previous content kept");
-                return Err(EINVAL);
-            }
-            self.publish(delta);
-            self.record_version(
-                ino,
-                collab_types::FileProvenance::Edit,
-                Some(collab_types::ContentHash(*blake3::hash(data).as_bytes())),
-            );
-            return Ok(());
+    /// Commit a complete stage: import it as a document, or ingest it as
+    /// opaque chunked content (a file-backed stage straight from its file).
+    /// Returns the errno the writer should see when the bytes did not become
+    /// the file's committed content.
+    fn commit_buffer(&self, ino: u64, stage: &mut WriteStage) -> Result<(), i32> {
+        if self.is_document(ino) {
+            let data = stage.contiguous().map_err(|error| commit_errno(&error))?;
+            return self.commit_document(ino, &data);
         }
-        // `EBUSY` means the committed revision moved under this commit (a
-        // remote replay or a concurrent local commit); the bytes still have
-        // to land, so try again against the new revision.
+        Self::commit_retrying(ino, || {
+            stage
+                .source()
+                .and_then(|source| self.commit_version_at(ino, source, now_ms(), None))
+        })?;
+        self.remember_staged_metadata(ino, stage);
+        Ok(())
+    }
+
+    /// [`Self::commit_buffer`] of whole bytes held in memory.
+    fn commit_bytes(&self, ino: u64, data: &[u8]) -> Result<(), i32> {
+        if self.is_document(ino) {
+            return self.commit_document(ino, data);
+        }
+        self.remember_rich_metadata(ino, data);
+        Self::commit_retrying(ino, || self.commit_content(ino, data))
+    }
+
+    /// Run `commit` until it succeeds or fails for good. `EBUSY` means the
+    /// committed revision moved under the commit (a remote replay or a
+    /// concurrent local commit); the bytes still have to land, so it is
+    /// tried again against the new revision.
+    fn commit_retrying(ino: u64, mut commit: impl FnMut() -> io::Result<()>) -> Result<(), i32> {
         let mut attempts = 0_u8;
         loop {
-            match self.commit_content(ino, data) {
+            match commit() {
                 Ok(()) => return Ok(()),
                 Err(error) if commit_errno(&error) == EBUSY && attempts < 3 => {
                     attempts = attempts.saturating_add(1);
@@ -1186,10 +1695,99 @@ impl QuickFS {
         }
     }
 
+    /// Import `data` as the content of document `ino`.
+    fn commit_document(&self, ino: u64, data: &[u8]) -> Result<(), i32> {
+        if self
+            .document_export(ino)
+            .is_some_and(|current| *current == *data)
+        {
+            self.remember_rich_metadata(ino, data);
+            return Ok(());
+        }
+        // The version records the written bytes by the content id the store
+        // serves them under, like any other file's, so history can read and
+        // restore it. A failed ingest fails the write before anything changes.
+        let content = self
+            .write_content_blocking(data)
+            .map_err(|error| commit_errno(&error))?
+            .map(|hash| collab_types::ContentHash(*hash.as_bytes()));
+        // The version's metadata finds these facts by its content id.
+        self.remember_rich_metadata_as(
+            ino,
+            data,
+            content.unwrap_or_else(|| collab_types::ContentHash(*blake3::hash(data).as_bytes())),
+        );
+        // import_document validates before replacing; an invalid input
+        // leaves the previous content intact and returns false.
+        let delta = {
+            let mut ns = self.ns();
+            if ns.import_document(ino, &self.registry, data, now_ms(), &self.document_content) {
+                ns.save_incremental()
+            } else {
+                Vec::new()
+            }
+        };
+        self.doc_export_cache().remove(&ino);
+        if delta.is_empty() {
+            eprintln!("document import rejected (invalid format); previous content kept");
+            return Err(EINVAL);
+        }
+        self.publish(delta);
+        self.record_version(ino, collab_types::FileProvenance::Edit, content);
+        Ok(())
+    }
+
+    /// Rich facts of a just-committed opaque stage, from the bounded prefix
+    /// the extractor reads, keyed by the content id the version committed.
+    fn remember_staged_metadata(&self, ino: u64, stage: &WriteStage) {
+        let (record_id, name, hash) = {
+            let ns = self.ns();
+            let Some(record_id) = ns.record_id_for(ino) else {
+                return;
+            };
+            let Some(path) = ns.path_for(ino) else {
+                return;
+            };
+            let Some(hash) = ns.hash_for(ino) else {
+                return;
+            };
+            drop(ns);
+            let name = path.rsplit('/').next().unwrap_or_default().to_owned();
+            (record_id, name, hash)
+        };
+        if !crate::rich_metadata::recognizes(&name) {
+            return;
+        }
+        let Ok(prefix) = stage.prefix(crate::rich_metadata::MAX_METADATA_SCAN_BYTES as u64) else {
+            return;
+        };
+        if let Some(properties) = crate::rich_metadata::extract(&name, &prefix) {
+            self.rich_metadata
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .insert(
+                    record_id,
+                    (collab_types::ContentHash(*hash.as_bytes()), properties),
+                );
+        }
+    }
+
     fn remember_rich_metadata(
         &self,
         ino: u64,
         bytes: &[u8],
+    ) -> Option<collab_types::FilePropertiesV1> {
+        let hash = collab_types::ContentHash(*blake3::hash(bytes).as_bytes());
+        self.remember_rich_metadata_as(ino, bytes, hash)
+    }
+
+    /// [`Self::remember_rich_metadata`] keyed by `hash`, the content id the
+    /// version holding `bytes` records.
+    fn remember_rich_metadata_as(
+        &self,
+        ino: u64,
+        bytes: &[u8],
+        hash: collab_types::ContentHash,
     ) -> Option<collab_types::FilePropertiesV1> {
         let (record_id, name) = {
             let ns = self.ns();
@@ -1199,7 +1797,6 @@ impl QuickFS {
             (record_id, name)
         };
         let properties = crate::rich_metadata::extract(&name, bytes)?;
-        let hash = collab_types::ContentHash(*blake3::hash(bytes).as_bytes());
         self.rich_metadata
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -1208,20 +1805,30 @@ impl QuickFS {
     }
 
     /// The serialized (on-wire) bytes of a document inode, exported once per
-    /// change and cached so multi-chunk reads and `getattr` are cheap + consistent.
-    fn document_export(&self, ino: u64) -> Option<Vec<u8>> {
-        let heads = self.ns().heads();
-        if let Some((h, bytes)) = self.doc_export_cache().get(&ino)
-            && *h == heads
+    /// change of that document and shared, so multi-chunk reads and `getattr`
+    /// are cheap and consistent. A change elsewhere in the namespace only
+    /// advances the heads the cached export is known current at.
+    fn document_export(&self, ino: u64) -> Option<Arc<[u8]>> {
+        let cached = self.doc_export_cache().get(&ino).cloned();
+        let mut ns = self.ns();
+        let heads = ns.heads();
+        if let Some((known, bytes)) = cached
+            && (known == heads || !ns.document_changed_between(ino, &known, &heads))
         {
-            return Some(bytes.clone());
+            drop(ns);
+            if known != heads {
+                self.doc_export_cache()
+                    .insert(ino, (heads, Arc::clone(&bytes)));
+            }
+            return Some(bytes);
         }
-        let (heads, bytes) = {
-            let mut ns = self.ns();
-            let bytes = ns.export_document(ino, &self.registry, &self.document_content)?;
-            (ns.heads(), bytes)
-        };
-        self.doc_export_cache().insert(ino, (heads, bytes.clone()));
+        let bytes: Arc<[u8]> = ns
+            .export_document(ino, &self.registry, &self.document_content)?
+            .into();
+        let heads = ns.heads();
+        drop(ns);
+        self.doc_export_cache()
+            .insert(ino, (heads, Arc::clone(&bytes)));
         Some(bytes)
     }
 
@@ -2215,11 +2822,12 @@ impl QuickFS {
         {
             return Err(EBUSY);
         }
-        if Self::restore_codec(&self.ns(), ino).is_err() {
-            // Document restoration needs codec-aware CRDT checkout rather
-            // than replacing its exported bytes as if it were a plain file.
-            return Err(libc::ENOTSUP);
-        }
+        // A namespace-held document needs a codec-aware CRDT checkout rather
+        // than replacing its exported bytes as if it were a plain file.
+        let kind = Self::restore_kind(&self.ns(), ino).map_err(|outcome| match outcome {
+            collab_types::files::CheckedHistoryOutcomeV1::UnsupportedOwner { .. } => libc::ENOTSUP,
+            _ => ENOENT,
+        })?;
         let (history, _) = self.history.as_ref().ok_or(libc::ENOTSUP)?;
         let record_id = self.ns().record_id_for(ino).ok_or(ENOENT)?;
         let version = history
@@ -2244,31 +2852,28 @@ impl QuickFS {
             }
             None => Vec::new(),
         };
-        if tilo_doc::Document::load(&data).is_ok() {
-            return Err(libc::ENOTSUP);
-        }
-        let current_hash = self.ns().hash_for(ino);
-        if let Some(hash) = current_hash.filter(|hash| {
-            Some(collab_types::ContentHash(*hash.as_bytes())) != version.content_hash
-        }) {
-            let hydrator = self.hydrator.clone();
-            let runtime = hydrator.runtime_handle.clone();
-            let current =
-                tokio::task::block_in_place(|| runtime.block_on(hydrator.read(hash, 0, u64::MAX)))
-                    .map_err(|_| EIO)?;
-            if tilo_doc::Document::load(&current).is_ok() {
-                return Err(libc::ENOTSUP);
-            }
-        }
-        let restored_hash = self.write_content_blocking(&data).map_err(|_| EIO)?;
-        if restored_hash.map(|hash| *hash.as_bytes()) != version.content_hash.map(|hash| hash.0) {
-            return Err(EIO);
-        }
         let (expected_hash, expected_len) = {
             let namespace = self.ns();
             let attr = namespace.getattr(ino).ok_or(ENOENT)?;
             (namespace.hash_for(ino), attr.size)
         };
+        // A serialized document is restored as a new CRDT revision of the
+        // current document; any other content gets the version's bytes back.
+        let data = if kind.is_serialized_document() {
+            self.restored_document(expected_hash, version.content_hash, &data)
+                .map_err(|error| match error {
+                    checked_restore::DocumentRestoreError::Unavailable => EIO,
+                    checked_restore::DocumentRestoreError::NotADocument(_) => libc::ENOTSUP,
+                })?
+        } else {
+            data
+        };
+        let restored_hash = self.write_content_blocking(&data).map_err(|_| EIO)?;
+        if !kind.is_serialized_document()
+            && restored_hash.map(|hash| *hash.as_bytes()) != version.content_hash.map(|hash| hash.0)
+        {
+            return Err(EIO);
+        }
         let snapshot = self
             .replacement_snapshot(ino, restored_hash, data.len() as u64)
             .ok_or(EIO)?;
@@ -3693,6 +4298,20 @@ impl QuickFS {
         self.check_path(&path, access)
     }
 
+    /// [`Self::check_access`] of an inode already read by
+    /// [`Self::inode_view`], so the check takes no namespace lock of its own.
+    fn check_view_access(&self, view: &InodeView, access: Access) -> Result<(), i32> {
+        if self.enforcement.is_none() {
+            return Ok(());
+        }
+        self.check_path(view.path.as_deref().ok_or(ENOENT)?, access)
+    }
+
+    /// [`Self::ino_in_view`] of an inode already read by [`Self::inode_view`].
+    fn view_in_view(&self, view: &InodeView) -> bool {
+        self.enforcement.is_none() || view.path.as_deref().is_some_and(|path| self.in_view(path))
+    }
+
     /// [`Self::check_access`] against a path rather than an inode, for the
     /// operations whose subject is a name that may not exist yet.
     fn check_path(&self, path: &str, access: Access) -> Result<(), i32> {
@@ -3977,19 +4596,17 @@ impl QuickFS {
         stored.map_err(|e| io::Error::other(e.to_string()))
     }
 
-    /// Current full content of an inode: the in-flight buffer if any, else
-    /// the hydrated blob. `Ok(empty)` only for an empty/hashless
-    /// file; a hydration failure is `Err` so a write never seeds from empty
-    /// and silently truncates a not-yet-local file.
+    /// Current full content of an inode: its stage if any, else the
+    /// document export or the hydrated blob. `Ok(empty)` only for an
+    /// empty/hashless file; a hydration failure is `Err`.
     fn read_full_blocking(&self, ino: u64) -> io::Result<Vec<u8>> {
-        if let Some(buf) = self.buffers().get(&ino) {
-            return Ok(buf.clone());
+        if let Some(stage) = self.stage(ino) {
+            return self.read_stage_blocking(&stage, 0, u64::MAX);
         }
-        // Documents seed from their current serialized form (so a partial /
-        // append write modifies the current content rather than an empty buffer).
         if self.is_document(ino) {
             return self
                 .document_export(ino)
+                .map(|bytes| bytes.to_vec())
                 .ok_or_else(|| io::Error::other("document export failed"));
         }
         let hash = self.ns().hash_for(ino);
@@ -5208,19 +5825,6 @@ fn pinned_candidate_is_current(
             .is_some_and(|attr| attr.size == candidate.size)
 }
 
-/// `offset`/`size` cross the FUSE boundary as untrusted request values,
-/// so clamp rather than trust them to fit `usize` before bounding against `bytes.len()`.
-fn slice(bytes: &[u8], offset: u64, size: u32) -> Vec<u8> {
-    let start = usize::try_from(offset)
-        .unwrap_or(usize::MAX)
-        .min(bytes.len());
-    let end = start.saturating_add(size as usize).min(bytes.len());
-    bytes
-        .get(start..end)
-        .map(<[u8]>::to_vec)
-        .unwrap_or_default()
-}
-
 /// The ACL accesses an open of the given mode requires: read for
 /// `O_RDONLY`, write for `O_WRONLY`, both for `O_RDWR`.
 fn required_accesses(mode: OpenAccMode) -> &'static [Access] {
@@ -5262,17 +5866,19 @@ impl Filesystem for QuickFS {
     /// hidden by the view cost the same work and return the same `ENOENT`.
     fn lookup(&self, _req: &Request, parent: INodeNo, name: &OsStr, reply: ReplyEntry) {
         let name = name.as_bytes();
-        let (found, child) = {
+        let (found, child, is_doc) = {
             let mut ns = self.ns();
             let found = ns.lookup(parent.0, name);
             let child = ns.path_for(parent.0).map(|p| child_path(&p, name));
+            let is_doc = found
+                .as_ref()
+                .is_some_and(|attr| ns.document_codec(attr.ino.0).is_some());
             drop(ns);
-            (found, child)
+            (found, child, is_doc)
         };
         let in_view = child.is_some_and(|c| self.in_view(&c));
         match found {
             Some(attr) if in_view => {
-                let is_doc = self.ns().document_codec(attr.ino.0).is_some();
                 let mut attr = attr;
                 if attr.kind == FileType::Directory {
                     attr.nlink = self.visible_dir_nlink(attr.ino.0);
@@ -5284,60 +5890,9 @@ impl Filesystem for QuickFS {
     }
 
     fn getattr(&self, _req: &Request, ino: INodeNo, fh: Option<FileHandle>, reply: ReplyAttr) {
-        // Reflect an in-flight write buffer so stat() sees read-your-writes size.
-        let buf_len = self.buffers().get(&ino.0).map(|b| b.len() as u64);
-        // Documents have no stored byte length — report the current export size
-        // (so a collaboratively-edited document isn't read truncated).
-        let is_doc = self.is_document(ino.0);
-        let doc_len = if buf_len.is_none() && is_doc {
-            self.document_export(ino.0).map(|b| b.len() as u64)
-        } else {
-            None
-        };
-        let open_handle = fh.and_then(|fh| {
-            self.open_file_handles
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .get(&fh.0)
-                .filter(|handle| handle.ino == ino.0)
-                .cloned()
-        });
-        let live = self.ns().getattr(ino.0).is_some();
-        // Outside the live view there is nothing to describe, except an inode
-        // retained by this exact open kernel handle after unlink/replacement.
-        let visible = if live {
-            self.ino_in_view(ino.0)
-        } else {
-            open_handle
-                .as_ref()
-                .is_some_and(|handle| self.in_view(&handle.opened_path))
-        };
-        if !visible {
-            reply.error(to_errno(ENOENT));
-            return;
-        }
-        let found = {
-            let namespace = self.ns();
-            namespace.getattr(ino.0).or_else(|| {
-                open_handle
-                    .as_ref()
-                    .and_then(|_| namespace.getattr_including_unlinked(ino.0))
-            })
-        };
-        match found {
-            Some(mut attr) => {
-                if let Some(len) = buf_len.or(doc_len) {
-                    attr.size = len;
-                    attr.blocks = len.div_ceil(512);
-                }
-                if attr.kind == FileType::Directory {
-                    // Matches the filtered listing: an identity granted
-                    // nothing sees an ordinary empty directory (nlink == 2).
-                    attr.nlink = self.visible_dir_nlink(ino.0);
-                }
-                reply.attr(&Self::ttl_for(is_doc), &attr);
-            }
-            None => reply.error(to_errno(ENOENT)),
+        match self.attr_for_request(ino.0, fh.map(|fh| fh.0)) {
+            Ok((attr, is_doc)) => reply.attr(&Self::ttl_for(is_doc), &attr),
+            Err(e) => reply.error(to_errno(e)),
         }
     }
 
@@ -5427,7 +5982,7 @@ impl Filesystem for QuickFS {
         // Outside the view ⇒ `ENOENT`; in the view but not writable ⇒
         // `EROFS`, so opening for writing falls back to read-only.
         for access in required_accesses(flags.acc_mode()) {
-            if let Err(e) = self.check_access(ino.0, *access) {
+            if let Err(e) = self.check_path(&opened_path, *access) {
                 reply.error(to_errno(e));
                 return;
             }
@@ -5484,101 +6039,17 @@ impl Filesystem for QuickFS {
         _lock_owner: Option<LockOwner>,
         reply: ReplyData,
     ) {
-        let open_handle = self
-            .open_file_handles
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .get(&fh.0)
-            .filter(|handle| handle.ino == ino.0)
-            .cloned();
-        // Live inodes use their current path. An unlinked/replaced inode has
-        // no path, so only the matching kernel handle may continue, with the
-        // access path captured when it was opened.
-        let live = self.ns().getattr(ino.0).is_some();
-        let access = if live {
-            self.check_access(ino.0, Access::Read)
-        } else if let Some(handle) = &open_handle {
-            self.check_path(&handle.opened_path, Access::Read)
-        } else {
-            Err(ENOENT)
-        };
-        if let Err(e) = access {
-            reply.error(to_errno(e));
-            return;
+        match self.plan_read(ino.0, fh.0, offset, size) {
+            ReadPlan::Error(e) => reply.error(to_errno(e)),
+            ReadPlan::Buffered(buffered) => self.reply_buffered(ino.0, buffered, reply),
+            ReadPlan::Local(data) => reply.data(&data),
+            ReadPlan::Remote(hash) => self.reply_remote(
+                hash,
+                (offset, u64::from(size)),
+                flags.0 & libc::O_NONBLOCK != 0,
+                reply,
+            ),
         }
-        // Read-your-writes: serve from the in-flight buffer if present.
-        if let Some(buf) = self.buffers().get(&ino.0) {
-            reply.data(&slice(buf, offset, size));
-            return;
-        }
-
-        // Documents: serve the cached serialization (one export per change).
-        if self.is_document(ino.0) {
-            match self.document_export(ino.0) {
-                Some(b) => reply.data(&slice(&b, offset, size)),
-                None => reply.error(to_errno(EIO)),
-            }
-            return;
-        }
-
-        let hash = {
-            let ns = self.ns();
-            match ns.getattr(ino.0).or_else(|| {
-                open_handle
-                    .as_ref()
-                    .and_then(|_| ns.getattr_including_unlinked(ino.0))
-            }) {
-                Some(attr) if attr.kind == FileType::RegularFile => ns.hash_for(ino.0),
-                Some(_) => {
-                    reply.error(to_errno(EISDIR));
-                    return;
-                }
-                None => {
-                    reply.error(to_errno(ENOENT));
-                    return;
-                }
-            }
-        };
-        let Some(hash) = hash else {
-            reply.data(&[]);
-            return;
-        };
-
-        let hydrator = self.hydrator.clone();
-        let rt = hydrator.runtime_handle.clone();
-        let size = u64::from(size);
-        // Local bytes are answered inline. Bytes that must come from a peer
-        // are hydrated on the runtime and answered from there: the read
-        // still blocks its caller as POSIX expects, but no FUSE worker waits
-        // on the network, so a slow peer stalls only the readers of that file.
-        let local = {
-            let hydrator = Arc::clone(&hydrator);
-            tokio::task::block_in_place(|| rt.block_on(hydrator.read_local(hash, offset, size)))
-        };
-        if let Some(data) = local {
-            reply.data(&data);
-            return;
-        }
-        if flags.0 & libc::O_NONBLOCK != 0 {
-            // A non-blocking reader gets EAGAIN at once; the range keeps
-            // hydrating so a retry finds it local.
-            rt.spawn(async move {
-                if let Err(error) = hydrator.read(hash, offset, size).await {
-                    eprintln!("content hydration failed for {hash}: {error:#}");
-                }
-            });
-            reply.error(to_errno(libc::EAGAIN));
-            return;
-        }
-        rt.spawn(async move {
-            match hydrator.read(hash, offset, size).await {
-                Ok(data) => reply.data(&data),
-                Err(error) => {
-                    eprintln!("content hydration failed for {hash}: {error:#}");
-                    reply.error(to_errno(EIO));
-                }
-            }
-        });
     }
 
     #[allow(
@@ -5625,11 +6096,12 @@ impl Filesystem for QuickFS {
             reply.error(to_errno(EIO));
             return;
         };
-        // Start a fresh empty buffer so subsequent writes accumulate. The
+        // Start a fresh empty stage so subsequent writes accumulate. The
         // empty file was committed by the create itself.
         {
+            let stage = self.empty_stage(self.is_document(attr.ino.0)).shared();
             let mut buffers = self.buffers();
-            buffers.insert(attr.ino.0, Vec::new());
+            buffers.insert(attr.ino.0, stage);
             self.buffer_states().insert(
                 attr.ino.0,
                 BufferState {
@@ -5774,28 +6246,16 @@ impl Filesystem for QuickFS {
             return;
         }
         // Handle truncation/extension; ignore perm/owner/time changes.
-        if let Some(new_size) = size {
-            let is_doc = self.is_document(ino.0);
-            let Ok(mut data) = self.read_full_blocking(ino.0) else {
-                reply.error(to_errno(EIO));
-                return;
-            };
-            // `new_size` crosses the FUSE boundary as an untrusted request value.
-            data.resize(usize::try_from(new_size).unwrap_or(usize::MAX), 0);
-            let open = self.buffers().contains_key(&ino.0);
-            // Documents always stage in the buffer (imported as a whole on
-            // release); opaque files commit immediately when not open.
-            if open || is_doc {
-                let base = self.ns().hash_for(ino.0);
-                let created = self.buffers().insert(ino.0, data).is_none();
-                self.note_buffer_mutation(ino.0, created, base);
-            } else if let Err(error) = self.commit_content(ino.0, &data) {
-                reply.error(to_errno(commit_errno(&error)));
-                return;
-            }
+        // Truncation never reads the bytes it drops: a stage only changes its
+        // length, and an unopened file commits the kept prefix.
+        if let Some(new_size) = size
+            && let Err(errno) = self.truncate_inode(ino.0, new_size)
+        {
+            reply.error(to_errno(errno));
+            return;
         }
 
-        let buf_len = self.buffers().get(&ino.0).map(|b| b.len() as u64);
+        let buf_len = self.staged_len(ino.0);
         let found = self.ns().getattr(ino.0);
         match found {
             Some(mut attr) => {

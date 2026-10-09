@@ -434,7 +434,8 @@ fn catalogue_page_offers(catalogue: &tilo_actions::remote::CataloguePage) -> Vec
 /// operations under one name would make a grant in one of them a grant in
 /// all.
 ///
-/// * `Scope::Action { app, action }` authorises one operation inside an app
+/// * `Scope::Action { app, resource, action }` authorises one operation on
+///   one resource inside an app
 ///   that is *already running*, and confers no ability to start one.
 /// * `Scope::App(app)` authorises this application: both its operations and
 ///   opening it.
@@ -452,6 +453,7 @@ pub fn scope_for(address: &ActionAddress) -> PermissionScope {
     PermissionScope {
         resource: ResourceRef::Action {
             app: app_id_of(app_of(&address.resource)).to_string(),
+            resource: address.resource.clone(),
             action: address.action.clone(),
         },
         op: Verb::Write,
@@ -484,7 +486,12 @@ pub(crate) fn permitted_descriptor(
     let mut scope = if opens(&descriptor.address).is_some() {
         scope_for(&descriptor.address)
     } else {
-        PermissionScope::action(app_id, descriptor.address.action.clone(), Verb::Write)
+        PermissionScope::action(
+            app_id,
+            descriptor.address.resource.clone(),
+            descriptor.address.action.clone(),
+            Verb::Write,
+        )
     };
     scope.op = match descriptor.contract.permission {
         PermissionRequirement::None | PermissionRequirement::Read => Verb::Read,
@@ -1173,6 +1180,7 @@ mod tests {
                 scope_for(&post).resource,
                 ResourceRef::Action {
                     app: "so.tilo.chat".to_string(),
+                    resource: "chat.channel:c1".to_string(),
                     action: "post".to_string(),
                 },
                 "and an operation is still asked about as an operation"
@@ -1185,9 +1193,14 @@ mod tests {
             // running." Not leave to start it.
             let one_action = granting(vec![grant(Scope::Action {
                 app: "so.tilo.chat".to_string(),
+                resource: "chat.channel:c1".to_string(),
                 action: "post".to_string(),
             })]);
             assert!(permitted(&one_action, &post));
+            assert!(
+                !permitted(&one_action, &ActionAddress::new("chat.channel:c2", "post")),
+                "leave to post in one channel is not leave to post in another"
+            );
             assert!(
                 !permitted(&one_action, &open),
                 "leave to perform one operation in an app must not be leave to \

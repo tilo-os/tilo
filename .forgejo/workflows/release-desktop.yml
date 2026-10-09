@@ -355,7 +355,9 @@ jobs:
 
   release:
     if: startsWith(github.ref, 'refs/tags/desktop-v')
-    needs: [validate, package]
+    # Publication must retain the native session result for these exact RPMs.
+    # The reviewed Desktop catalog additionally requires the complete journey.
+    needs: [validate, package, host-session-e2e]
     runs-on: runner
     timeout-minutes: 60
     steps:

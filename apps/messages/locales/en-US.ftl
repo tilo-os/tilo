@@ -84,3 +84,6 @@ messages-first-sms = Choose an SMS SIM
 messages-select-sim = Use this SIM
 messages-no-sims = No available SIMs were found on this device.
 messages-select-sim-name = Use { $sim }
+
+messages-first-tilo = Use my Tilo identity
+messages-first-account-prepare = Set up a private Messages account

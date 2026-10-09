@@ -65,6 +65,7 @@ use zeroize::Zeroizing;
 
 #[cfg(feature = "conformance")]
 pub mod conformance;
+pub mod http;
 pub mod tree;
 
 /// A provider's stable identity for an item.
@@ -538,6 +539,11 @@ pub enum Error {
     /// The upload session is gone; start the upload again.
     #[error("the upload session expired")]
     SessionExpired,
+    /// The server asks to slow down. One policy for every provider
+    /// ([`http::classify`]): 429, 503 and 509 always, and any other 5xx
+    /// that carries a `Retry-After`. `retry_after` is the server's
+    /// `Retry-After` and `None` without one; no provider invents a delay,
+    /// because how long to back off is the consumer's policy.
     #[error("rate limited")]
     RateLimited { retry_after: Option<Duration> },
     #[error("the account is out of storage")]

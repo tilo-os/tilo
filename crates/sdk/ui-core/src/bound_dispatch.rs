@@ -1041,19 +1041,28 @@ pub(crate) fn discover_cached_bound_resources(
     Ok(snapshots)
 }
 
-/// Action-scoped authority shared by native and headless legacy hosts.
+/// Action-scoped authority shared by native and headless legacy hosts: the
+/// action `action` on the resource `resource_id`.
 pub(crate) fn permits_local_action(
     permissions: &PermissionContext,
     app_id: &str,
+    resource_id: &str,
     action: &tilo_actions::ActionSpec,
 ) -> bool {
-    permits_local_invocation(permissions, app_id, action, action.contract.permission)
+    permits_local_invocation(
+        permissions,
+        app_id,
+        resource_id,
+        action,
+        action.contract.permission,
+    )
 }
 
 /// [`permits_local_action`] for one invocation: what its arguments ask.
 pub(crate) fn permits_local_value(
     permissions: &PermissionContext,
     app_id: &str,
+    resource_id: &str,
     action: &tilo_actions::ActionSpec,
     typed: Option<&serde_json::Map<String, serde_json::Value>>,
     argument: Option<&str>,
@@ -1062,12 +1071,13 @@ pub(crate) fn permits_local_value(
         Some(arguments) => action.permission_for_json(arguments),
         None => action.permission_for_argument(argument),
     };
-    permits_local_invocation(permissions, app_id, action, requirement)
+    permits_local_invocation(permissions, app_id, resource_id, action, requirement)
 }
 
 fn permits_local_invocation(
     permissions: &PermissionContext,
     app_id: &str,
+    resource_id: &str,
     action: &tilo_actions::ActionSpec,
     requirement: tilo_actions::PermissionRequirement,
 ) -> bool {
@@ -1082,15 +1092,19 @@ fn permits_local_invocation(
         Requirement::Admin => Verb::Admin,
     };
     permissions.check(&crate::permissions::PermissionScope::action(
-        app_id, &action.id, verb,
+        app_id,
+        resource_id,
+        &action.id,
+        verb,
     ))
 }
 
 /// May the component's participant take this one invocation of `action`:
-/// what its arguments ask, under the same app scope the published tree is
+/// what its arguments ask, under the same resource scope the published tree is
 /// filtered by.
 fn permits_invocation(
     binding: &CallbackBinding,
+    resource_id: &str,
     action: &tilo_actions::ActionSpec,
     typed: Option<&serde_json::Map<String, serde_json::Value>>,
     argument: Option<&str>,
@@ -1112,8 +1126,10 @@ fn permits_invocation(
     binding
         .permissions
         .borrow()
-        .check(&crate::permissions::PermissionScope::app(
+        .check(&crate::permissions::PermissionScope::action(
             &binding.app_id,
+            resource_id,
+            &action.id,
             verb,
         ))
 }
@@ -1130,6 +1146,7 @@ pub(crate) fn filter_resource(
     binding: &CallbackBinding,
     mut resource: tilo_actions::Resource,
 ) -> Option<tilo_actions::Resource> {
+    let resource_id = resource.id.as_str().to_owned();
     resource.actions.retain(|action| {
         use crate::permissions::Verb;
         use tilo_actions::PermissionRequirement as Requirement;
@@ -1144,8 +1161,10 @@ pub(crate) fn filter_resource(
         binding
             .permissions
             .borrow()
-            .check(&crate::permissions::PermissionScope::app(
+            .check(&crate::permissions::PermissionScope::action(
                 &binding.app_id,
+                &resource_id,
+                &action.id,
                 verb,
             ))
     });
@@ -2139,7 +2158,7 @@ pub(crate) fn invoke_resource_action(
                     }
                     // The tree offers an action under the least it needs;
                     // this invocation needs what its value asks.
-                    if !permits_invocation(binding, spec, arguments.as_ref(), argument) {
+                    if !permits_invocation(binding, &target.address.address.resource, spec, arguments.as_ref(), argument) {
                         return Err(denied(spec).into());
                     }
                     crate::invocation_scope::check_continuation(

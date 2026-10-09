@@ -25,13 +25,7 @@ use std::process::Stdio;
 use std::collections::{HashMap, HashSet};
 use std::ffi::{OsStr, OsString};
 #[cfg(any(test, target_os = "linux"))]
-use std::io::{self, Read, Write};
-#[cfg(any(test, target_os = "linux"))]
-use std::os::fd::AsRawFd;
-#[cfg(any(test, target_os = "linux"))]
-use std::os::unix::net::UnixStream;
-#[cfg(any(test, target_os = "linux"))]
-use std::os::unix::process::CommandExt;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{LazyLock, Mutex};
@@ -187,36 +181,6 @@ fn register_launched_process(
             },
         );
     }
-}
-
-#[cfg(any(test, target_os = "linux"))]
-const LAUNCH_REGISTRATION_FD_ENV: &str = "TILO_INTERNAL_LAUNCH_REGISTRATION_FD";
-
-/// Hand the launcher a private inherited descriptor that its process entry
-/// waits on before doing any launch work. `Command::spawn` can therefore
-/// return after exec, the compositor registers the real pid, and only then
-/// releases the launcher without a fork/exec race.
-#[cfg(any(test, target_os = "linux"))]
-fn install_launch_registration_gate(command: &mut Command) -> io::Result<UnixStream> {
-    let (release, wait) = UnixStream::pair()?;
-    let wait_fd = wait.as_raw_fd();
-    command.env(LAUNCH_REGISTRATION_FD_ENV, wait_fd.to_string());
-    // SAFETY: the closure runs after fork and before exec and calls only the
-    // async-signal-safe `fcntl(2)`. The closure retains the child copy through
-    // exec; the launcher closes it immediately after reading release.
-    unsafe {
-        command.pre_exec(move || {
-            let inherited_fd = wait.as_raw_fd();
-            let flags = libc::fcntl(inherited_fd, libc::F_GETFD);
-            if flags == -1
-                || libc::fcntl(inherited_fd, libc::F_SETFD, flags & !libc::FD_CLOEXEC) == -1
-            {
-                return Err(io::Error::last_os_error());
-            }
-            Ok(())
-        });
-    }
-    Ok(release)
 }
 
 /// Durable room ids for live, launcher-verified instances of `package_id`.
@@ -3670,7 +3634,9 @@ fn start_launch(
         cmd.stdout(Stdio::piped());
         cmd.stderr(Stdio::piped());
 
-        let mut launch_gate = match install_launch_registration_gate(&mut cmd) {
+        // The launcher waits on this gate before any launch work; see
+        // `launcher::registration_gate`.
+        let launch_gate = match launcher::registration_gate::install(&mut cmd) {
             Ok(gate) => gate,
             Err(error) => {
                 events.startup.fail(startup_token, error.to_string());
@@ -3758,7 +3724,7 @@ fn start_launch(
         });
         // The child cannot exec the launcher (and therefore cannot reach the
         // public Wayland socket) until both registries above are complete.
-        let _ = launch_gate.write_all(&[1]);
+        let _ = launch_gate.release();
 
         // Drain both pipes concurrently. A GUI normally keeps both streams
         // open for its entire lifetime, so reading either one to EOF before
@@ -4297,6 +4263,35 @@ pub fn set_pending_placement_for_identities(
     });
 }
 
+/// Automatic restoration waits for the preceding window of this app to map.
+/// The existing launch failure and expiry paths retire unanswered placements;
+/// claimed placements remain briefly for the compositor's second lookup.
+pub(crate) fn has_unclaimed_launch(app_id: &str) -> bool {
+    lock(&LaunchSession::current().pending)
+        .iter()
+        .any(|note| note.matches(app_id) && note.claimed_by.is_none())
+}
+
+/// Saved tabs with a live placement in this session. A mapped note stays
+/// valid through the existing claim grace; no deadline or placement is changed.
+pub(crate) fn pending_restore_tabs() -> std::collections::HashSet<u64> {
+    pending_restore_tabs_at(Instant::now())
+}
+
+fn pending_restore_tabs_at(now: Instant) -> std::collections::HashSet<u64> {
+    lock(&LaunchSession::current().pending)
+        .iter()
+        .filter(|note| {
+            note.retire_after.is_none_or(|deadline| now < deadline)
+                && (note.claimed_by.is_some() || now < note.present_before)
+        })
+        .filter_map(|note| match note.placement {
+            crate::shell::tab_binding::Placement::IntoTab(tab) => Some(tab),
+            _ => None,
+        })
+        .collect()
+}
+
 /// The first surface to ask claims the note and gets the same answer on
 /// every later ask; a different surface retires it and gets `None`. `None`
 /// also covers: not launched by us, or nothing special asked.
@@ -4422,7 +4417,9 @@ fn take_staged_resume(
 
 /// Take the continuation staged for the next launch of `package_id` into
 /// `room`: the record instance, and the resume projection when there is one.
-/// Taking it means exactly one launch receives it.
+/// Taking it means exactly one launch receives it. The projection is checked
+/// once more against the package's installed manifest, which may not have
+/// existed when the checkpoint arrived from another device.
 pub fn take_staged_resume_for_package(
     package_id: &str,
     room: RoomId,
@@ -4432,7 +4429,13 @@ pub fn take_staged_resume_for_package(
         .rev()
         .find(|note| note.key == package_id)
         .map(|note| note.placement)?;
-    take_staged_resume(placement, room)
+    let (resume, record_instance) = take_staged_resume(placement, room)?;
+    let resume = resume.and_then(|(schema, bytes)| {
+        crate::shell::personal_continuity_registry::resume_for_installed_launch(
+            package_id, schema, bytes,
+        )
+    });
+    Some((resume, record_instance))
 }
 
 /// Drop the newest unclaimed placement note for `package_id`, if any —
@@ -4521,7 +4524,10 @@ fn expire_pending_placements_at(now: Instant) -> Vec<String> {
         let presentation_timed_out = note.claimed_by.is_none() && now >= note.present_before;
         let retired = note.retire_after.is_some_and(|deadline| now >= deadline);
         let keep = !presentation_timed_out && !retired;
-        if presentation_timed_out {
+        // A clean parent's handoff deadline can precede the presentation
+        // deadline. Report its unclaimed launch too, so the saved opening
+        // card is answered rather than losing the only expiry observer.
+        if presentation_timed_out || (retired && note.claimed_by.is_none()) {
             expired.push(note.key.clone());
         }
         if !keep {
@@ -5034,6 +5040,69 @@ mod tests {
         );
     }
 
+    #[test]
+    fn automatic_restore_gate_is_released_by_the_existing_expiry_paths() {
+        let package = "dev.tilo.restore-expiry";
+        set_pending_placement(package, crate::shell::tab_binding::Placement::IntoTab(55));
+        assert!(has_unclaimed_launch(package));
+        assert!(has_unclaimed_launch("RESTORE-EXPIRY"));
+        assert!(!has_unclaimed_launch("dev.tilo.another-restore"));
+
+        // A clean parent exit retains its destination for the existing
+        // handoff grace. Expiry of that grace releases automatic siblings.
+        let now = Instant::now();
+        retire_pending_placement_at(package, now);
+        assert!(has_unclaimed_launch(package));
+        assert_eq!(
+            expire_pending_placements_at(now),
+            vec![package],
+            "a windowless retired launch reports its failure as it releases the gate"
+        );
+        assert!(!has_unclaimed_launch(package));
+
+        // A still-running but windowless parent also cannot pin restore.
+        set_pending_placement(package, crate::shell::tab_binding::Placement::IntoTab(66));
+        let deadline = lock(&LaunchSession::current().pending)[0].present_before;
+        assert_eq!(expire_pending_placements_at(deadline), vec![package]);
+        assert!(!has_unclaimed_launch(package));
+        clear_pending_placements();
+    }
+
+    #[test]
+    fn saved_opening_status_only_tracks_live_exact_restore_destinations() {
+        clear_pending_placements();
+        let package = "dev.tilo.restore-status-lifetime";
+        set_pending_placement(package, crate::shell::tab_binding::Placement::IntoTab(91));
+        set_pending_placement(package, crate::shell::tab_binding::Placement::NewGroup);
+        set_pending_placement(package, crate::shell::tab_binding::Placement::IntoTab(92));
+        assert_eq!(
+            pending_restore_tabs(),
+            std::collections::HashSet::from([91, 92])
+        );
+        let deadline = lock(&LaunchSession::current().pending)
+            .iter()
+            .map(|note| note.present_before)
+            .max()
+            .unwrap();
+        assert!(
+            pending_restore_tabs_at(deadline).is_empty(),
+            "expired tickets cannot keep a saved card opening before the event drain"
+        );
+        assert_eq!(
+            lock(&LaunchSession::current().pending).len(),
+            3,
+            "status observation must not consume or reorder placements"
+        );
+        clear_pending_placements();
+        set_pending_placement(package, crate::shell::tab_binding::Placement::IntoTab(93));
+        retire_pending_placement_at(package, Instant::now());
+        assert!(
+            pending_restore_tabs().is_empty(),
+            "retired destination is recoverable"
+        );
+        clear_pending_placements();
+    }
+
     /// The startup metrics of `package_id`'s launches. The metrics registry
     /// is process-wide, and tests in other sessions launch alongside.
     fn launch_metrics_of(package_id: &str) -> Vec<(u64, String, bool, Option<u64>)> {
@@ -5159,7 +5228,11 @@ mod tests {
 
             let now = Instant::now();
             retire_pending_placement_at(package, now);
-            assert_eq!(expire_pending_placements_at(now), Vec::<String>::new());
+            assert_eq!(expire_pending_placements_at(now), vec![package.to_string()]);
+            assert!(
+                expire_pending_placements_at(now).is_empty(),
+                "retirement reports once"
+            );
             assert_eq!(placement_for_toplevel("windowless", 702), None);
             clear_pending_placements();
         }
@@ -5188,7 +5261,10 @@ mod tests {
             let deadline = lock(&LaunchSession::current().pending)[0]
                 .retire_after
                 .expect("claim receives a bounded retirement deadline");
-            expire_pending_placements_at(deadline);
+            assert!(
+                expire_pending_placements_at(deadline).is_empty(),
+                "a mapped window must not be reported as a windowless launch"
+            );
             assert_eq!(placement_for_toplevel("claimed-once", 703), None);
             clear_pending_placements();
         }

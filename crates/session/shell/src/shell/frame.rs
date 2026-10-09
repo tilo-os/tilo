@@ -487,6 +487,10 @@ pub struct FrameBuilder {
     /// The [`WorkspaceTree::room_epoch`] this builder has already reacted
     /// to; compared each frame by [`Self::pump_room_contents`].
     last_room_epoch: u64,
+    /// The tree revisions at which [`Self::pump_room_contents`] last walked
+    /// the tabs and found no window owed a look. While they hold, the walk
+    /// is skipped; `None` means a look is owed.
+    peer_windows_quiet_at: Option<TreeRevisions>,
     taffy: TaffyTree<()>,
     /// Widget-pointer map captured during `build_layout`, kept alive so the
     /// measure closure in `compute_layout_with_measure` can re-borrow each frame.
@@ -506,6 +510,10 @@ pub struct FrameBuilder {
     /// [`Self::theme`].
     configured_theme: Theme,
     watch_configured_theme: bool,
+    /// Offscreen capture asked for a theme or text scale
+    /// ([`Self::shots_theme_override`]), so the settings file is not
+    /// watched. Read once when watching starts, not on every paint.
+    shots_theme_pinned: bool,
     /// Every workspace's temperature and the person's colour: what the
     /// chrome wears for the active workspace, and what each app window is
     /// sent for the workspace it is in.
@@ -618,6 +626,27 @@ struct FramePresentationInputs {
     theme_store_stamp: Option<std::time::SystemTime>,
 }
 
+/// Every counter that moves when the desktop tree may have changed: a peer's
+/// round landing (`room_epoch`, from the network thread), a mutation outside
+/// retained chrome (`external_revision`), and the chrome's own revision. The
+/// overlay host's strip reconcile relies on the same three to see a new tab.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct TreeRevisions {
+    room_epoch: u64,
+    external: u64,
+    chrome: u64,
+}
+
+impl TreeRevisions {
+    fn read(chrome: &ChromeState, tree: &WorkspaceTree) -> Self {
+        Self {
+            room_epoch: tree.desktop.room_epoch(),
+            external: tree.desktop.external_revision,
+            chrome: chrome.revision,
+        }
+    }
+}
+
 /// The theme `shots --theme NAME` asked for; read before
 /// `TILO_SHOTS_THEME`, for callers that cannot set the environment.
 static SHOTS_THEME: std::sync::OnceLock<String> = std::sync::OnceLock::new();
@@ -627,6 +656,14 @@ static SHOTS_THEME: std::sync::OnceLock<String> = std::sync::OnceLock::new();
 /// request wins.
 pub fn request_shots_theme(name: String) {
     let _ = SHOTS_THEME.set(name);
+}
+
+/// Whether offscreen capture asked for a theme or a text scale, which then
+/// wins over the settings file.
+fn shots_theme_requested() -> bool {
+    SHOTS_THEME.get().is_some()
+        || std::env::var_os("TILO_SHOTS_THEME").is_some()
+        || std::env::var_os("TILO_SHOTS_TEXT_SCALE").is_some()
 }
 
 impl FrameBuilder {
@@ -784,9 +821,11 @@ impl FrameBuilder {
             root_node: None,
             text_renderer: presentation.text_renderer,
             last_room_epoch: 0,
+            peer_windows_quiet_at: None,
             configured_theme: presentation.theme.clone(),
             theme: presentation.theme,
             watch_configured_theme: false,
+            shots_theme_pinned: false,
             windows: super::window_appearance::WindowAppearances::new(
                 ui::tokens::PresenceHue::Blue,
             ),
@@ -1525,23 +1564,28 @@ impl FrameBuilder {
     /// chrome revision; peer-sync writes the tree from the network thread,
     /// which can't touch the chrome, so this bumps the revision whenever the
     /// room epoch (or a pending peer-window decision) has moved. Cheap on a
-    /// quiet frame — one `u64` read under the tree's read lock.
+    /// quiet frame — three counters read under one acquisition of the tree's
+    /// read lock, plus the queued-retry and hydration checks; no tab walk.
     fn pump_room_contents(&mut self) -> bool {
-        let epoch = {
-            let chrome = self.chrome.borrow();
-            let tree = chrome.tree();
-            tree.desktop.room_epoch()
-        };
         // Peer windows are examined on rounds after an arrival too, not just
         // the arrival itself: `peer_windows::examine` starts at most one
         // launch per app per pass, so several windows at once need more than
-        // one look.
-        let owed = {
+        // one look. The tabs are walked again only once the tree may have
+        // changed; while a window is owed a look, every round walks.
+        let (revisions, pending) = {
             let chrome = self.chrome.borrow();
             let tree = chrome.tree();
-            crate::shell::peer_windows::any_pending(&tree)
-                || crate::shell::record_hydration::any_waiting()
+            let revisions = TreeRevisions::read(&chrome, &tree);
+            let pending = self.peer_windows_quiet_at != Some(revisions)
+                && crate::shell::peer_windows::any_pending(&tree);
+            drop(tree);
+            (revisions, pending)
         };
+        self.peer_windows_quiet_at = (!pending).then_some(revisions);
+        let epoch = revisions.room_epoch;
+        let owed = pending
+            || crate::shell::peer_windows::retry_requested()
+            || crate::shell::record_hydration::any_waiting();
         let decided = if owed {
             let chrome = self.chrome.borrow();
             let mut tree = chrome.tree_mut();
@@ -2607,11 +2651,7 @@ impl FrameBuilder {
     }
 
     fn refresh_configured_theme(&mut self) {
-        if !self.watch_configured_theme
-            || std::env::var_os("TILO_SHOTS_THEME").is_some()
-            || SHOTS_THEME.get().is_some()
-            || std::env::var_os("TILO_SHOTS_TEXT_SCALE").is_some()
-        {
+        if !self.watch_configured_theme || self.shots_theme_pinned {
             return;
         }
         let appearance_generation = self.chrome.borrow().appearance_generation;
@@ -2734,11 +2774,18 @@ impl FrameBuilder {
         self.windows.in_workspace(id.as_deref())
     }
 
+    /// The OS palette before the window's workspace tint is applied.
+    #[must_use]
+    pub fn configured_app_theme(&self) -> &Theme {
+        &self.configured_theme
+    }
+
     /// Enable the session-wide configured theme and live settings watcher.
     /// Offscreen builders stay deterministic unless the shots override asks
     /// for a specific palette.
     pub fn enable_configured_theme(&mut self) {
         self.watch_configured_theme = true;
+        self.shots_theme_pinned = shots_theme_requested();
         self.apply_configured_theme();
         crate::shell::i18n::apply_configured_locale();
         self.appearance_generation = self.chrome.borrow().appearance_generation;
@@ -3008,11 +3055,17 @@ impl FrameBuilder {
 
     /// A round soon while a peer's window waits to be opened here: its room's
     /// update may land after this round's decision, with nothing left to wake
-    /// an idle session for it (a window waiting on its record, too).
+    /// an idle session for it (a window waiting on its record, too). The tabs
+    /// are walked only when the tree may have changed since the last round
+    /// found none owed a look.
     fn peer_windows_poll(&self) -> Option<Instant> {
-        let chrome = self.chrome.borrow();
-        let tree = chrome.tree();
-        crate::shell::peer_windows::any_pending(&tree)
+        let owed = {
+            let chrome = self.chrome.borrow();
+            let tree = chrome.tree();
+            self.peer_windows_quiet_at != Some(TreeRevisions::read(&chrome, &tree))
+                && crate::shell::peer_windows::any_pending(&tree)
+        };
+        (owed || crate::shell::peer_windows::retry_requested())
             .then(|| Instant::now().checked_add(std::time::Duration::from_millis(250)))
             .flatten()
     }
@@ -4390,6 +4443,127 @@ mod tests {
     use winit::event::{ElementState, KeyEvent};
     use winit::keyboard::{KeyLocation, ModifiersState, PhysicalKey};
 
+    /// A peer's window arriving in a workspace nobody governs yet: owed a
+    /// look, but [`crate::shell::peer_windows::examine`] keeps it pending
+    /// until the room's authority arrives, so it launches nothing here.
+    fn arrive_peer_window(frame: &FrameBuilder) -> u64 {
+        use crate::shell::state::{
+            Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace, WorkspaceId,
+            next_id,
+        };
+        let tab = Tab {
+            id: next_id(),
+            title: "Word Processor".into(),
+            tile: TileContent::PeerWindow {
+                app_id: "so.tilo.word-processor".into(),
+                label: "Word Processor".into(),
+                note: String::new(),
+                missing: None,
+            },
+        };
+        let tab_id = tab.id;
+        let mut strip = Strip::new(StripId::from(next_id()), "main");
+        strip.window_groups = vec![WindowGroup {
+            id: next_id(),
+            tabs: vec![tab],
+            active_tab: tab_id,
+            width: WindowWidth::Normal,
+            maximized: false,
+        }];
+        let mut workspace = Workspace::new(WorkspaceId::from(next_id()), "shared");
+        workspace.strips = vec![strip];
+        let chrome = frame.chrome.borrow();
+        let mut tree = chrome.tree_mut();
+        tree.desktop.workspaces.push(workspace);
+        // What peer sync does after a round lands, from the network thread.
+        tree.desktop.room_epoch = tree.desktop.room_epoch.wrapping_add(1);
+        tab_id
+    }
+
+    #[test]
+    fn pump_room_contents_walks_the_tabs_only_after_the_tree_changes() {
+        use crate::shell::peer_windows::work_counts;
+        let mut frame = FrameBuilder::new((1280, 800));
+        let mut doc = AutoCommit::new();
+        assert!(
+            !crate::shell::peer_windows::any_pending(&frame.chrome().tree()),
+            "the demo desktop owes no window a look"
+        );
+        // The first rounds find the tree as it is and settle what they built.
+        for _ in 0..3 {
+            frame.pump_apps(&mut doc, &automerge::ROOT);
+        }
+        let quiet = work_counts();
+        for _ in 0..5 {
+            frame.pump_apps(&mut doc, &automerge::ROOT);
+            assert_eq!(frame.peer_windows_poll(), None, "nothing to wake for");
+        }
+        assert_eq!(
+            work_counts().0,
+            quiet.0,
+            "quiet rounds read three counters and never walk the tabs"
+        );
+
+        let tab = arrive_peer_window(&frame);
+        let arrived = work_counts();
+        frame.pump_apps(&mut doc, &automerge::ROOT);
+        let after_arrival = work_counts();
+        assert!(after_arrival.0 > arrived.0, "a landed round is looked at");
+        assert_eq!(
+            after_arrival.1,
+            arrived.1.saturating_add(1),
+            "the arriving window is examined once in its round"
+        );
+        // Still pending: every round looks again, and the loop keeps waking
+        // for it, as before.
+        for round in 1..=3 {
+            frame.pump_apps(&mut doc, &automerge::ROOT);
+            assert_eq!(
+                work_counts().1,
+                after_arrival.1.saturating_add(round),
+                "a window still owed a look is examined every round"
+            );
+            assert!(
+                frame.peer_windows_poll().is_some(),
+                "a pending window keeps the 250 ms wake"
+            );
+        }
+
+        // Answered outside the chrome (as a lifecycle callback would), the
+        // next round sees it once and the loop goes quiet again.
+        {
+            let chrome = frame.chrome.borrow();
+            let mut tree = chrome.tree_mut();
+            for workspace in &mut tree.desktop.workspaces {
+                for strip in &mut workspace.strips {
+                    for group in &mut strip.window_groups {
+                        for candidate in &mut group.tabs {
+                            if candidate.id == tab
+                                && let crate::shell::state::TileContent::PeerWindow { note, .. } =
+                                    &mut candidate.tile
+                            {
+                                "Answered".clone_into(note);
+                            }
+                        }
+                    }
+                }
+            }
+            tree.desktop.external_revision = tree.desktop.external_revision.wrapping_add(1);
+        }
+        frame.pump_apps(&mut doc, &automerge::ROOT);
+        frame.pump_apps(&mut doc, &automerge::ROOT);
+        let answered = work_counts();
+        for _ in 0..5 {
+            frame.pump_apps(&mut doc, &automerge::ROOT);
+            assert_eq!(frame.peer_windows_poll(), None);
+        }
+        assert_eq!(
+            work_counts().0,
+            answered.0,
+            "once answered, quiet rounds stop walking"
+        );
+    }
+
     #[test]
     fn frame_pump_settles_a_launchpad_request_once() {
         let mut frame = FrameBuilder::new((1280, 800));
@@ -4803,7 +4977,9 @@ mod tests {
                 let chrome = fb.chrome();
                 let mut tree = chrome.tree_mut();
                 let active = tree.desktop.active;
-                tree.set_room(active, room)
+                // Joined through the peer's invite, which pins it (hub 1)
+                // as the room's governor.
+                tree.set_room(active, room) && tree.pin_room_authority(room, PeerOrigin::hub(1))
             };
             assert!(joined, "this session joins the peer's room");
 

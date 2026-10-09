@@ -181,10 +181,10 @@ mod presenter_screen;
 mod qs_actions_click_routing;
 #[path = "real_apps_visual.rs"]
 mod real_apps_visual;
-#[path = "remote_cursors_test.rs"]
-mod remote_cursors_test;
 #[path = "remote_typing_wire.rs"]
 mod remote_typing_wire;
+#[path = "removed_run_modes.rs"]
+mod removed_run_modes;
 #[path = "reopen_closed_tab.rs"]
 mod reopen_closed_tab;
 #[path = "runtime_daemon_process.rs"]
@@ -217,8 +217,6 @@ mod state_file_format;
 mod strip_navigation;
 #[path = "surface_substream_e2e.rs"]
 mod surface_substream_e2e;
-#[path = "system_monitor_test.rs"]
-mod system_monitor_test;
 #[path = "tilo_e2e_test.rs"]
 mod tilo_e2e_test;
 #[path = "toplevel_configure_states.rs"]

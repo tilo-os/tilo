@@ -233,6 +233,7 @@ fn bounded_current_member_copies_all_capability_fields() {
         Scope::NetHost(long.clone()),
         Scope::Action {
             app: long.clone(),
+            resource: long.clone(),
             action: long.clone(),
         },
         Scope::Room(long.clone()),

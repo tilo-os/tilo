@@ -3,6 +3,7 @@
 use std::collections::BTreeMap;
 use std::future::Future;
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::task::{Context, Poll, Waker};
 
 use collab_types::{PermissionProfileRule, Scope, Verb};
@@ -14,8 +15,8 @@ use tilo_actions::outcome::{ActionOutput, InvocationId, InvocationUpdate};
 use tilo_actions::params::{ActionParam, ParamType};
 use tilo_actions::remote::{
     ActionHost, ActionHostError, Caller, CataloguePage, CatalogueQuery, CatalogueResource,
-    CatalogueRow, Confirmation, InvocationLedger, InvocationReceipt, InvocationState,
-    InvokeArgument, InvokeRequest, Pending,
+    CatalogueRow, Completer, Confirmation, InvocationLedger, InvocationReceipt, InvocationState,
+    InvokeArgument, InvokeRequest, Pending, pending,
 };
 
 use crate::{
@@ -284,6 +285,8 @@ struct Hooks {
     confirmation: Option<Confirmation>,
     answer: Option<Value>,
     confirmations: Mutex<Vec<ConfirmationRequest>>,
+    /// How many times a run fell back to waiting out a poll interval.
+    settles: AtomicUsize,
 }
 
 impl RunHooks for Hooks {
@@ -297,6 +300,7 @@ impl RunHooks for Hooks {
     }
 
     fn settle(&self, _invocation: InvocationId) -> Pending<()> {
+        self.settles.fetch_add(1, Ordering::Relaxed);
         Pending::ready(())
     }
 }
@@ -1193,4 +1197,198 @@ fn binding_options_are_exactly_what_the_checker_accepts_in_scope() {
             .any(|option| option.binding == Binding::Var("title".into())),
         "the loop item is gone after the loop"
     );
+}
+
+/// A host whose every action keeps running after it is accepted, as a
+/// background job does, until the test or enough observations finish it.
+struct RunningHost {
+    offers: FakeHost,
+    /// Whether the host can tell a waiter when the job changes.
+    pushes: bool,
+    job: Mutex<RunningJob>,
+}
+
+#[derive(Default)]
+struct RunningJob {
+    invocation: Option<InvocationId>,
+    finished: bool,
+    observes: usize,
+    /// For a host that cannot push: how many more observations still find
+    /// the job running.
+    running_for: usize,
+    /// The waiter [`ActionHost::next_change`] handed out.
+    change: Option<Completer<()>>,
+}
+
+impl RunningHost {
+    fn new(pushes: bool, running_for: usize) -> Self {
+        Self {
+            offers: FakeHost::new(),
+            pushes,
+            job: Mutex::new(RunningJob {
+                running_for,
+                ..RunningJob::default()
+            }),
+        }
+    }
+
+    /// The job ends, and whoever waits on it is told.
+    fn finish(&self) {
+        let change = {
+            let mut job = self.job.lock().unwrap();
+            job.finished = true;
+            job.change.take()
+        };
+        change.expect("the run waits on the host").complete(());
+    }
+
+    fn observes(&self) -> usize {
+        self.job.lock().unwrap().observes
+    }
+}
+
+impl ActionHost for RunningHost {
+    fn query(
+        &self,
+        caller: &Caller,
+        query: CatalogueQuery,
+    ) -> Pending<Result<CataloguePage, ActionHostError>> {
+        self.offers.query(caller, query)
+    }
+
+    fn invoke(
+        &self,
+        _caller: &Caller,
+        request: InvokeRequest,
+    ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
+        let id = request.invocation;
+        self.job.lock().unwrap().invocation = Some(id);
+        Pending::ready(Ok(InvocationState::new(
+            id,
+            InvocationUpdate::Accepted { invocation: id },
+        )
+        .receipt()))
+    }
+
+    fn observe(&self, _caller: &Caller, id: &InvocationId) -> Option<InvocationState> {
+        let finished = {
+            let mut job = self.job.lock().unwrap();
+            job.observes = job.observes.saturating_add(1);
+            if job.invocation != Some(*id) {
+                return None;
+            }
+            if !self.pushes {
+                match job.running_for.checked_sub(1) {
+                    Some(left) => job.running_for = left,
+                    None => job.finished = true,
+                }
+            }
+            job.finished
+        };
+        let update = if finished {
+            InvocationUpdate::Succeeded {
+                invocation: *id,
+                output: ActionOutput::default(),
+            }
+        } else {
+            InvocationUpdate::Accepted { invocation: *id }
+        };
+        Some(InvocationState::new(*id, update))
+    }
+
+    fn next_change(&self, _caller: &Caller, _id: &InvocationId) -> Option<Pending<()>> {
+        if !self.pushes {
+            return None;
+        }
+        let (change, waiter) = pending();
+        self.job.lock().unwrap().change = Some(change);
+        Some(waiter)
+    }
+
+    fn cancel(&self, _caller: &Caller, _id: &InvocationId) -> Result<(), ActionHostError> {
+        Err(ActionHostError::NotCancellable {
+            reason: "not in these tests".into(),
+        })
+    }
+}
+
+fn archive_shortcut() -> Shortcut {
+    shortcut(
+        "archive",
+        vec![invoke(
+            "archive",
+            NOTES,
+            Selector::Fixed(NOTE.into()),
+            "archive",
+            &[],
+        )],
+    )
+}
+
+fn archive_run<'a>(
+    host: &'a RunningHost,
+    hooks: &'a Hooks,
+    shortcut: &'a Shortcut,
+) -> impl Future<Output = RunReport> + 'a {
+    run(
+        host,
+        hooks,
+        RunRequest {
+            shortcut,
+            run: RunId::new(),
+            caller: caller(),
+            mode: RunMode::Unattended,
+            trigger: RunTrigger::Manual,
+            inputs: serde_json::Map::new(),
+            consents: Vec::new(),
+        },
+    )
+}
+
+#[test]
+fn a_running_step_wakes_on_host_change_not_on_a_timer() {
+    let host = RunningHost::new(true, 0);
+    let hooks = Hooks::default();
+    let archive = archive_shortcut();
+    let mut running = std::pin::pin!(archive_run(&host, &hooks, &archive));
+    let mut cx = Context::from_waker(Waker::noop());
+
+    assert!(
+        running.as_mut().poll(&mut cx).is_pending(),
+        "an accepted step waits for its host"
+    );
+    // Only the look for an earlier invocation has observed so far: the run
+    // is parked on the host's change, not re-observing on a schedule.
+    assert_eq!(host.observes(), 1);
+    assert!(running.as_mut().poll(&mut cx).is_pending());
+    assert_eq!(
+        host.observes(),
+        1,
+        "polling without a change observes nothing"
+    );
+
+    host.finish();
+    let Poll::Ready(report) = running.as_mut().poll(&mut cx) else {
+        panic!("the change finishes the step");
+    };
+    assert_eq!(report.outcome, RunOutcome::Completed, "{report:?}");
+    assert_eq!(host.observes(), 2, "one observation per change");
+    assert_eq!(
+        hooks.settles.load(Ordering::Relaxed),
+        0,
+        "the poll fallback is unused"
+    );
+}
+
+#[test]
+fn a_host_without_next_change_still_completes_via_settle() {
+    let host = RunningHost::new(false, 2);
+    let hooks = Hooks::default();
+    let archive = archive_shortcut();
+    let report = block_on(archive_run(&host, &hooks, &archive));
+    assert_eq!(report.outcome, RunOutcome::Completed, "{report:?}");
+    // The look for an earlier invocation, two observations still running,
+    // then the one that finds it finished: each after a poll interval.
+    assert_eq!(host.observes(), 4);
+    assert_eq!(hooks.settles.load(Ordering::Relaxed), 3);
 }

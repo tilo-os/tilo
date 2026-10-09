@@ -93,10 +93,13 @@ impl OriginalInvocationData {
             Command::Paste { .. } => {
                 self.spec.kind == tilo_actions::OperationKind::Effect && action == "paste"
             }
+            Command::RestoreTrash { .. } => {
+                self.spec.kind == tilo_actions::OperationKind::Effect && action == "restore"
+            }
             Command::Observe { .. } | Command::Cancel { .. } => {
                 matches!(
                     action,
-                    "paste" | "undo" | "redo" | "recover-clipboard-transfers"
+                    "paste" | "restore" | "undo" | "redo" | "recover-clipboard-transfers"
                 )
             }
             Command::Undo { .. } => self.clipboard_compensation() && action == "undo",
@@ -124,6 +127,10 @@ impl OriginalInvocationData {
     pub(super) fn clipboard_action(&self) -> &str {
         &self.request.address.action
     }
+    pub(super) fn clipboard_resource(&self) -> &str {
+        &self.request.address.resource
+    }
+
     pub(super) fn revalidate_clipboard_origin(
         &self,
         state: &CapnpBrokerState,
@@ -241,6 +248,7 @@ impl OriginalInvocationData {
                 &actor,
                 &ResourceRef::Action {
                     app: self.route.app_id.clone(),
+                    resource: self.request.address.resource.clone(),
                     action: self.request.address.action.clone(),
                 },
                 verb,
@@ -429,7 +437,7 @@ impl OriginalInvocation {
                     caller
                         .network
                         .as_ref()
-                        .map(tilo_relay::client::CertifiedAction::certificate)
+                        .map(tilo_relay_session::client::CertifiedAction::certificate)
                 })
             }
             InvocationCaller::Local { admitted, .. } => admitted.certificate.as_ref(),
@@ -592,6 +600,7 @@ impl OriginalInvocation {
                 &actor,
                 &ResourceRef::Action {
                     app: self.data.route.app_id.clone(),
+                    resource: self.data.request.address.resource.clone(),
                     action: self.data.request.address.action.clone(),
                 },
                 verb,

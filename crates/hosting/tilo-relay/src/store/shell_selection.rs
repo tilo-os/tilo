@@ -115,6 +115,26 @@ fn input_identity(source: [u8; 32], channel: [u8; 32], checkpoint: bool, body: &
     hash.update(body);
     *hash.finalize().as_bytes()
 }
+
+/// A retained lineage supplies a negative channel hint only. Positive room
+/// and application proofs still decode and verify the actual frame, and Check
+/// visits every input even when the hint excludes it from Rooms or Pair.
+fn retained_channel_hint(meta: &Meta) -> Option<[u8; 32]> {
+    let [prefix, lineage, _, _] = meta.key.as_slice() else {
+        return None;
+    };
+    if prefix != "1" {
+        return None;
+    }
+    let lineage = lineage.to_str()?;
+    let (author, channel) = lineage.split_once('-')?;
+    if author.len() != 64 || channel.len() != 64 || !author.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return None;
+    }
+    let mut decoded = [0; 32];
+    hex::decode_to_slice(channel, &mut decoded).ok()?;
+    Some(decoded)
+}
 pub(crate) fn incoming_identity(bytes: &[u8], workspace: u64) -> Option<[u8; 32]> {
     let (source, payload) = retained::payload(bytes, workspace)?;
     Some(match payload {
@@ -249,6 +269,7 @@ pub(crate) struct Selection {
     old_read: SelectedRead,
     old: Basis,
     basis: Basis,
+    pair_channels: Vec<[u8; 32]>,
     phase: Phase,
     outer: Option<fs::ReadDir>,
     child: Option<fs::ReadDir>,
@@ -375,6 +396,7 @@ impl Selection {
             old_read,
             old: Basis::default(),
             basis: Basis::default(),
+            pair_channels: Vec::new(),
             phase: Phase::Old,
             outer: None,
             child: None,
@@ -723,7 +745,11 @@ impl Selection {
                         if meta.key.first().is_some_and(|v| v == "tail") {
                             return Ok(Step::More);
                         }
+                        let role = meta.key.first().cloned();
                         meta.key = vec!["0".into(), format!("{:016x}", self.ordinal).into()];
+                        if let Some(role) = role {
+                            meta.key.push(role);
+                        }
                         bounded::increment(&mut self.ordinal)?;
                         self.sorter.push(meta)?;
                         return Ok(Step::More);
@@ -804,6 +830,13 @@ impl Selection {
             }
             Phase::Rooms => {
                 if let Some(meta) = read_meta(self.input.as_mut().invariant("input missing")?)? {
+                    if meta.key.get(2).is_some_and(|role| role == "app")
+                        || retained_channel_hint(&meta).is_some_and(|channel| {
+                            channel != *blake3::hash(b"shell-tree").as_bytes()
+                        })
+                    {
+                        return Ok(Step::More);
+                    }
                     if let Some(value) = self.read(&meta)?
                         && value.room()
                     {
@@ -830,11 +863,23 @@ impl Selection {
                         }
                     }
                 } else {
+                    self.pair_channels = self
+                        .basis
+                        .routes
+                        .keys()
+                        .map(|route| *blake3::hash(format!("app\0{route}").as_bytes()).as_bytes())
+                        .collect();
                     self.restart(Phase::Pair)?;
                 }
             }
             Phase::Pair => {
                 if let Some(meta) = read_meta(self.input.as_mut().invariant("input missing")?)? {
+                    if meta.key.get(2).is_some_and(|role| role == "room")
+                        || retained_channel_hint(&meta)
+                            .is_some_and(|channel| !self.pair_channels.contains(&channel))
+                    {
+                        return Ok(Step::More);
+                    }
                     if let Some(value) = self.read(&meta)? {
                         // Rooms has finished. A different route/sequence cannot
                         // match this basis's exact receipt; Check still sees the
