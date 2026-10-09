@@ -280,18 +280,24 @@ crosshair, which follow the pointer, keep every frame dense.
 
 ### Composited frames: GBM render targets, dumb-buffer fallback
 
-Eligibility is decided per output. An output with a normal transform, no
-colour transform, a hardware cursor plane, event-driven page flips, and a
-renderer on the same PCI function as its scanout card renders direct,
+Eligibility is decided per output. An output with no colour transform, a
+hardware cursor plane, event-driven page flips, and a renderer on the same
+PCI function as its scanout card renders direct, however it is rotated and
 however many other outputs there are: the DRM backend allocates two linear
-GBM buffer objects the size of that output (XRGB8888, or a 10-bit or
+GBM buffer objects the size of that output's mode (XRGB8888, or a 10-bit or
 half-float format in HDR) with `SCANOUT | RENDERING`, registers them as KMS
 framebuffers (`add_planar_framebuffer`), and imports them into Vulkan as
 render targets (`ui::dmabuf_import`). Vello renders the scene through the
 output's `OutputView` (the scene translated to the output's position) into
-a retained surface of the output's size, then copies, PQ-encodes or
+a retained surface of the output's upright size, then copies, PQ-encodes or
 HDR-composites it into the back slot, and the backend flips to it
-(`VelloDrmBridge::paint_output_until`). Every output keeps its own retained
+(`VelloDrmBridge::paint_output_until`). A rotated output's final pass reads
+each scanout pixel from the surface pixel it shows
+(`shell/output_orientation.wgsl`, `shell::render::orientation`): the same
+permutation the readback applies on the CPU, so the pixels are identical,
+and damage still maps onto the upright surface by translation alone. KMS
+plane rotation is not used: the legacy KMS path and linear buffers leave
+quarter turns unsupported on most drivers. Every output keeps its own retained
 surface and two-slot ring; the renderer and the device are shared. A slot
 stays owned by KMS until its page-flip event retires it, so the renderer
 never touches the front or flip-pending slot. Page-flip events are drained
@@ -333,6 +339,11 @@ swizzles straight into its dumb buffer; with several outputs the bridge's
 target grows to the bounding box of all of them (logged once), which is
 rendered once, and only the outputs on the readback receive their sub-rect.
 It returns to one output's size once every output renders direct again.
+The phase summary's `readback_bytes` and `cpu_pixel_passes` (passes over an
+output's pixels on the CPU: rotate and swizzle or PQ encode, and an ICC
+profile's copy and qcms pass) are both zero while every output renders
+direct. An ICC-profiled output still takes this path every frame; a GPU
+colour LUT is the remaining step (TIL-660).
 
 ### No client fullscreen fast path
 
