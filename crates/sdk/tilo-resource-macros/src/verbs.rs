@@ -948,10 +948,10 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
             let ids = verb
                 .params
                 .iter()
-                .take(depth + 1)
+                .take(depth.saturating_add(1))
                 .filter(|param| last_ident(&param.ty).is_some_and(|(name, _)| name == "Id"))
                 .count();
-            if ids != depth + 1 {
+            if ids != depth.saturating_add(1) {
                 return Err(syn::Error::new(
                     verb.method.span(),
                     "an action on an item of a nested collection takes the enclosing items' ids, then the item's, first",
