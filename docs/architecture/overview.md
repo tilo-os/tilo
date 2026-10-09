@@ -87,7 +87,8 @@ xdg_toplevel maps → app-id present
 ### CRDT replication
 ```
 Local mutation → WorkspaceTree write (cache + automerge AutoCommit)
-  → SyncReq heartbeat (every 2 s) or immediate Publish
+  → immediate Publish (SyncResp); SyncReq repair pull 2 s after activity settles,
+    on a peer joining, and every 5 min while idle
   → Iroh gossip workspace topic and optional persistent workspace host
   → remote peer: NeighbourMsg::SyncResp { changes }
   → WorkspaceTree::apply_changes → rebuild_cache_from_doc → re-render
