@@ -93,7 +93,10 @@ impl<R: Resource> Bound<R> {
             move |args, now_ms| {
                 let mut arguments = args.to_json();
                 for (name, value) in &values {
-                    arguments.insert(name.clone(), value.clone());
+                    // An optional parameter bound to nothing is left out.
+                    if !value.is_null() {
+                        arguments.insert(name.clone(), value.clone());
+                    }
                 }
                 let args = tilo_actions::ActionArgs::bind_json(&all, &arguments)
                     .map_err(|error| error.to_string())?;

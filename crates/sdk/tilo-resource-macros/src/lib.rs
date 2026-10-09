@@ -704,8 +704,17 @@ fn derive_named(input: &DeriveInput, fields: &syn::FieldsNamed) -> syn::Result<T
         || quote!(),
         |path| {
             quote! {
-                let current = <Self as #krate::Fields>::read_fields(doc, obj)?;
-                #krate::__private::check_outcome(#path(&current)).map_err(#krate::ModelError::refused)?;
+                let checked = ::core::clone::Clone::clone(obj);
+                #krate::group::check_or_defer(
+                    ::std::format!("{}@{:?}", ::core::any::type_name::<Self>(), obj),
+                    doc,
+                    move |doc| {
+                        let current = <Self as #krate::Fields>::read_fields(doc, &checked)
+                            .map_err(|error| #krate::Refusal::new(error.to_string()))?;
+                        #krate::__private::check_outcome(#path(&current))
+                    },
+                )
+                .map_err(#krate::ModelError::refused)?;
             }
         },
     );

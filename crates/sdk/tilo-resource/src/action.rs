@@ -610,7 +610,21 @@ impl<O: Operation> tilo_actions::Action for Stamped<O> {
         }
         drop(minting);
         performed.map_err(|refusal| ActionError::Refused(refusal.0))?;
-        crate::Model::check(&record).map_err(|refusal| ActionError::Refused(refusal.0))?;
+        if crate::group::grouping() {
+            // The group checks the record once, at its end.
+            crate::group::check_or_defer(
+                format!("{}@root", std::any::type_name::<O::Record>()),
+                doc,
+                |doc| {
+                    O::Record::read_fields(doc, &ROOT)
+                        .map_err(|error| Refusal::new(error.to_string()))
+                        .and_then(|record| crate::Model::check(&record))
+                },
+            )
+            .map_err(|refusal| ActionError::Refused(refusal.0))?;
+        } else {
+            crate::Model::check(&record).map_err(|refusal| ActionError::Refused(refusal.0))?;
+        }
         if let (Some(before), true) = (&before, units) {
             crate::footprint::check(before, &record, &self.operation.writes())
                 .map_err(|refusal| ActionError::Refused(refusal.0))?;

@@ -80,6 +80,12 @@ impl Board {
         }
     }
 
+    /// Retitle the board, with an optional suffix.
+    #[action]
+    pub fn retitle(&mut self, title: String, suffix: Option<String>) {
+        self.title = format!("{title}{}", suffix.unwrap_or_default());
+    }
+
     /// Clear a note's lines, answering what it cleared.
     #[action(answers)]
     pub fn clear_note(&mut self, notes: &Id) {
@@ -447,4 +453,129 @@ fn an_answering_verb_published_on_its_item_still_answers() {
         on_item.contract.result, on_root.contract.result,
         "the item's copy declares the same answer"
     );
+}
+
+/// What to look at.
+#[derive(
+    Clone,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    serde::Serialize,
+    serde::Deserialize,
+    tilo_resource::JsonSchema,
+)]
+pub struct LookAt {
+    /// The region, as x, y, width, height.
+    pub region: Vec<u32>,
+    /// Whether to draw the grid.
+    pub grid: Option<bool>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, tilo_resource::Effect)]
+#[effect(operation = "test.board.view")]
+pub enum BoardView {
+    /// Look at part of the board.
+    #[effect(view)]
+    Look {
+        #[param(flatten)]
+        look: LookAt,
+    },
+}
+
+#[test]
+fn a_flattened_struct_is_the_effects_arguments() {
+    use tilo_resource::Effect as _;
+    let decl = BoardView::declarations().into_iter().next().unwrap();
+    let params: Vec<(String, bool, tilo_actions::ParamType)> = decl
+        .params
+        .iter()
+        .map(|param| (param.name.to_string(), param.required, param.ty))
+        .collect();
+    assert_eq!(
+        params,
+        [
+            ("region".to_owned(), true, tilo_actions::ParamType::Array),
+            ("grid".to_owned(), false, tilo_actions::ParamType::Boolean),
+        ]
+    );
+    let look = BoardView::Look {
+        look: LookAt {
+            region: vec![0, 0, 10, 10],
+            grid: Some(true),
+        },
+    };
+    let arguments = look.arguments();
+    assert_eq!(arguments["region"], serde_json::json!([0, 0, 10, 10]));
+    assert_eq!(BoardView::decode("look", &arguments).unwrap(), look);
+}
+
+#[test]
+fn an_optional_parameter_bound_to_nothing_is_left_out() {
+    let decl = Board::RETITLE
+        .bind(board::Retitle::paths().title, "Sprint".to_owned())
+        .and(board::Retitle::paths().suffix, None)
+        .declaration("retitle-sprint", "Call it Sprint")
+        .unwrap();
+    let action = (decl.build)(&tilo_actions::ActionArgs::default(), 0).expect("it builds");
+    let mut board = Replica::<Board>::new();
+    board.apply_action(&action).unwrap();
+    assert_eq!(board.state().unwrap().title, "Sprint");
+}
+
+#[derive(Model, Default, Debug, Clone, PartialEq)]
+#[model(check = Pair::matched)]
+pub struct Pair {
+    pub left: u32,
+    pub right: u32,
+}
+
+impl Pair {
+    fn matched(&self) -> Result<(), tilo_resource::Refusal> {
+        if self.left == self.right {
+            Ok(())
+        } else {
+            Err(tilo_resource::Refusal::new("the two sides differ"))
+        }
+    }
+}
+
+#[resource(kind = "test.pair", label = "Pair")]
+impl Pair {
+    /// Move the left side.
+    #[action]
+    pub fn move_left(&mut self, to: u32) {
+        self.left = to;
+    }
+}
+
+#[test]
+fn a_group_is_checked_once_at_its_end() {
+    let mut pair = Replica::<Pair>::new();
+    let paths = Pair::paths();
+    assert!(
+        pair.apply(paths.left.set(1)).is_err(),
+        "alone it breaks the pair"
+    );
+    pair.apply(Invoke::group([
+        paths.left.set(1).into(),
+        paths.right.set(1).into(),
+    ]))
+    .expect("together they keep it");
+    pair.apply(Invoke::group([
+        Pair::MOVE_LEFT.with(2),
+        paths.right.set(2).into(),
+    ]))
+    .expect("a verb and an edit together keep it too");
+    assert!(
+        pair.apply(Invoke::group([
+            paths.left.set(3).into(),
+            paths.right.set(4).into()
+        ]))
+        .is_err(),
+        "a group that ends broken is refused"
+    );
+    let state = pair.state().unwrap();
+    assert_eq!((state.left, state.right), (2, 2));
 }

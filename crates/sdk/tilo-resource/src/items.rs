@@ -518,7 +518,10 @@ pub fn bound<R: Resource, N: AsRef<str>>(
         move |args| {
             let mut arguments = args.to_json();
             for (name, value) in &values {
-                arguments.insert(name.clone(), value.clone());
+                // An optional parameter bound to nothing is left out.
+                if !value.is_null() {
+                    arguments.insert(name.clone(), value.clone());
+                }
             }
             let action = ActionArgs::bind_json(&all, &arguments)
                 .map_err(|error| error.to_string())

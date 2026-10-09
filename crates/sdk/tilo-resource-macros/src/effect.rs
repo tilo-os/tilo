@@ -15,6 +15,9 @@ use crate::{doc_lines, humanize, krate, param_type, snake_case};
 #[derive(Default)]
 struct Param {
     secret: bool,
+    /// A documented struct whose fields are the effect's arguments
+    /// (`#[param(flatten)]`, the effect's only field).
+    flatten: bool,
     description: Option<String>,
     choices: Option<syn::Expr>,
 }
@@ -24,10 +27,16 @@ impl syn::parse::Parse for Param {
         let mut param = Self::default();
         if input.peek(syn::Ident) && !input.peek2(syn::Token![=]) {
             let flag: syn::Ident = input.parse()?;
-            if flag != "secret" {
-                return Err(syn::Error::new(flag.span(), "expected `secret`"));
+            if flag == "flatten" {
+                param.flatten = true;
+            } else if flag == "secret" {
+                param.secret = true;
+            } else {
+                return Err(syn::Error::new(
+                    flag.span(),
+                    "expected `secret` or `flatten`",
+                ));
             }
-            param.secret = true;
             if input.is_empty() {
                 return Ok(param);
             }
@@ -287,7 +296,19 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
             }
         }
 
+        let flattened = fields.iter().any(|(_, _, described)| described.flatten);
+        if flattened && fields.len() != 1 {
+            return Err(syn::Error::new(
+                variant.span(),
+                "a `#[param(flatten)]` is the effect's only field: its fields are the arguments",
+            ));
+        }
         let params = fields.iter().map(|(field, ty, described)| {
+            if described.flatten {
+                return quote!(#krate::__private::flat_params(
+                    &<#ty as #krate::JsonSchema>::json_schema()
+                ));
+            }
             let param = field.to_string();
             let description = described
                 .description
@@ -304,10 +325,11 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
             } else {
                 quote!(#krate::__private::ActionParam::required_owned(#param, #param_ty, #description))
             };
-            match &described.choices {
+            let declared = match &described.choices {
                 Some(choices) => quote!(#declared.with_choices(#choices)),
                 None => declared,
-            }
+            };
+            quote!(::std::vec![#declared])
         });
         let answers = if options.job || options.cancellable {
             let cancellable = options.cancellable;
@@ -380,7 +402,12 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
                 id: #id,
                 label: #label,
                 description: #description,
-                params: ::std::vec![#(#params),*],
+                params: {
+                    let mut params: ::std::vec::Vec<#krate::__private::ActionParam> =
+                        ::std::vec::Vec::new();
+                    #(params.extend(#params);)*
+                    params
+                },
                 kind: #krate::__private::OperationKind::#kind,
                 row: #row,
                 answers: #answers,
@@ -410,16 +437,35 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
             quote!(Self::#ident { .. })
         };
         ids.push(quote!(#ignore => #id,));
+        let (encode, build) = if let Some(field) = field_idents.first().filter(|_| flattened) {
+            (
+                quote! {
+                    if let ::core::result::Result::Ok(#krate::__private::serde_json::Value::Object(fields)) =
+                        #krate::__private::serde_json::to_value(#field)
+                    {
+                        arguments.extend(fields);
+                    }
+                },
+                quote!(Self::#ident {
+                    #field: #krate::__private::serde_json::from_value(
+                        #krate::__private::serde_json::Value::Object(::core::clone::Clone::clone(arguments)),
+                    )
+                    .map_err(|error| ::std::string::ToString::to_string(&error))?,
+                }),
+            )
+        } else if matches!(variant.fields, Fields::Unit) {
+            (quote!(), quote!(Self::#ident))
+        } else {
+            (
+                quote!(#(#krate::effect::put(&mut arguments, #field_names, #field_idents);)*),
+                quote!(Self::#ident { #(#field_idents: #krate::effect::argument(arguments, #field_names)?,)* }),
+            )
+        };
         encodes.push(quote! {
             #pattern => {
-                #(#krate::effect::put(&mut arguments, #field_names, #field_idents);)*
+                #encode
             }
         });
-        let build = if matches!(variant.fields, Fields::Unit) {
-            quote!(Self::#ident)
-        } else {
-            quote!(Self::#ident { #(#field_idents: #krate::effect::argument(arguments, #field_names)?,)* })
-        };
         decodes.push(quote!(#id => ::core::result::Result::Ok(#build),));
 
         let const_ident = format_ident!("{}", snake_case(&ident.to_string()).to_uppercase());

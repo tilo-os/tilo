@@ -34,6 +34,10 @@ impl Board {
 }
 
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "the expected shape spelled out field by field"
+)]
 fn a_derived_record_lists_its_stored_fields() {
     const COLUMN: Shape = Shape::Record(&[
         FieldShape {

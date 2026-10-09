@@ -49,6 +49,84 @@ pub(crate) fn current_member() -> Option<([u8; 32], u64)> {
     MEMBER.with(Cell::get)
 }
 
+type DeferredCheck = Box<dyn Fn(&Doc) -> Result<(), crate::Refusal>>;
+
+thread_local! {
+    /// The record checks deferred to the end of the group applying on this
+    /// thread, by what they check; `None` outside a group.
+    static DEFERRED: std::cell::RefCell<Option<Vec<(String, DeferredCheck)>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Run a record's `#[model(check)]` now, or, inside a group, once at its
+/// end: a group valid as a whole may pass through a state that is not (two
+/// dangling references cleared one after the other). `key` names what is
+/// checked, so it runs once however many members touched it.
+///
+/// # Errors
+/// The check's refusal, when it runs now.
+#[doc(hidden)]
+pub fn check_or_defer(
+    key: String,
+    doc: &Doc,
+    check: impl Fn(&Doc) -> Result<(), crate::Refusal> + 'static,
+) -> Result<(), crate::Refusal> {
+    let grouping = DEFERRED.with(|deferred| deferred.borrow().is_some());
+    if !grouping {
+        return check(doc);
+    }
+    DEFERRED.with(|deferred| {
+        if let Some(checks) = deferred.borrow_mut().as_mut()
+            && !checks.iter().any(|(existing, _)| *existing == key)
+        {
+            checks.push((key, Box::new(check)));
+        }
+    });
+    Ok(())
+}
+
+/// Whether a group is applying on this thread: record checks wait for its
+/// end.
+pub(crate) fn grouping() -> bool {
+    DEFERRED.with(|deferred| deferred.borrow().is_some())
+}
+
+/// Runs the checks deferred in a group when the outermost group ends.
+struct Deferring(bool);
+
+impl Deferring {
+    fn begin() -> Self {
+        Self(DEFERRED.with(|deferred| {
+            let mut deferred = deferred.borrow_mut();
+            if deferred.is_some() {
+                return false;
+            }
+            *deferred = Some(Vec::new());
+            true
+        }))
+    }
+
+    /// The deferred checks, run once on the group's result.
+    fn finish(&self, doc: &Doc) -> Result<(), ActionError> {
+        if !self.0 {
+            return Ok(());
+        }
+        let checks = DEFERRED.with(|deferred| deferred.borrow_mut().take().unwrap_or_default());
+        for (_, check) in checks {
+            check(doc).map_err(|refusal| ActionError::Refused(refusal.0))?;
+        }
+        Ok(())
+    }
+}
+
+impl Drop for Deferring {
+    fn drop(&mut self) {
+        if self.0 {
+            DEFERRED.with(|deferred| deferred.borrow_mut().take());
+        }
+    }
+}
+
 /// Restores the enclosing member (for a group applied inside a group) even
 /// when a member unwinds.
 struct MemberScope(Option<([u8; 32], u64)>);
@@ -69,12 +147,15 @@ where
         if current_member().is_none() {
             drop(crate::action::take_minted());
         }
-        let _restore = MemberScope(current_member());
-        for (position, action) in (0_u64..).zip(&self.actions) {
-            MEMBER.with(|member| member.set(Some((seed, position))));
-            action.apply(doc)?;
+        let deferring = Deferring::begin();
+        {
+            let _restore = MemberScope(current_member());
+            for (position, action) in (0_u64..).zip(&self.actions) {
+                MEMBER.with(|member| member.set(Some((seed, position))));
+                action.apply(doc)?;
+            }
         }
-        Ok(())
+        deferring.finish(doc)
     }
 
     /// A group is as consequential as its most consequential member: one
