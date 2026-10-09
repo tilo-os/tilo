@@ -5,8 +5,8 @@
 //! action a change claims is granted to its author and that the change
 //! writes only the storage units that action may write; a device that has
 //! the app replays the action and checks that it produces exactly the change.
-//! The claim is what both read. It is signed with the op, one per change,
-//! and it is derived from the change itself on the author's device: the
+//! The claim is what both read, one per change, derived from the change
+//! itself on the author's device: the
 //! history entry the executor writes into every change names the action
 //! ([`tilo_actions::Did`]), and the units are listed from the record.
 //!
