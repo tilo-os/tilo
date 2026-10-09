@@ -51,6 +51,12 @@ pub struct McpServer<H> {
     /// invocation that showed each: the same picture again is named, not
     /// sent again.
     shown: std::sync::Mutex<std::collections::HashMap<String, tilo_actions::InvocationId>>,
+    /// The live, browsable instances of this bridge's workspace its last
+    /// instance list named, with their app ids. An invocation on one does
+    /// not list them again first: discovery only, never authority — the host
+    /// decides every invocation, and one it refuses as not offered lists
+    /// them again ([`Self::invoke_one`]).
+    seen: std::sync::Mutex<std::collections::HashMap<u64, Option<String>>>,
 }
 
 /// Where an answer carries the images it shows until [`tool_result`] moves
@@ -413,6 +419,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             media: None,
             produced_by: std::sync::Mutex::default(),
             shown: std::sync::Mutex::default(),
+            seen: std::sync::Mutex::default(),
         }
     }
     pub(crate) fn execution_caller(&self) -> Caller {
@@ -1104,7 +1111,16 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             })
             .collect::<Vec<_>>();
         apps.sort_by_key(|(peer, _)| *peer);
+        *self.seen() = apps
+            .iter()
+            .map(|(peer, app)| (*peer, app["app_id"].as_str().map(str::to_owned)))
+            .collect();
         Ok((page.revision, apps))
+    }
+    fn seen(&self) -> std::sync::MutexGuard<'_, std::collections::HashMap<u64, Option<String>>> {
+        self.seen
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
     async fn apps(&self, args: ListArgs) -> Result<Value, String> {
         let (generation, apps) = self.instances().await?;
@@ -1200,6 +1216,28 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         self.addressed(peer_id, app_id, workspace)
             .await
             .map(|addressed| addressed.provider)
+    }
+    /// [`Self::addressed`] for an invocation: an instance this session's
+    /// last instance list named is taken as it was, without listing them
+    /// again. One that has gone since is refused by the host, and
+    /// [`Self::invoke_one`] asks then. A browse still lists them, so a gone
+    /// instance's empty page never reads as "no actions".
+    async fn invoked(
+        &self,
+        peer_id: Option<u64>,
+        app_id: Option<&str>,
+        workspace: bool,
+    ) -> Result<Addressed, String> {
+        let seen = peer_id
+            .filter(|_| app_id.is_none() && !workspace)
+            .and_then(|peer| Some((peer, self.seen().get(&peer)?.clone())));
+        if let Some((peer, app_id)) = seen {
+            return Ok(Addressed {
+                provider: peer.to_string(),
+                app_id,
+            });
+        }
+        self.addressed(peer_id, app_id, workspace).await
     }
     /// [`Self::provider`], with the app of the instance it names, read from
     /// the one listing of live instances it takes.
@@ -1584,7 +1622,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             .ok_or("name resource and action, or calls")?;
         let _running = self.hold_invocation(a.invocation_id.as_deref()).await;
         let provider = self
-            .addressed(a.peer_id, a.app_id.as_deref(), a.workspace)
+            .invoked(a.peer_id, a.app_id.as_deref(), a.workspace)
             .await?;
         // Boxed: an invocation's future is large, and every tool call's
         // future would otherwise carry it.
@@ -1612,7 +1650,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
     /// under an id derived from that one, so a retry does not run twice.
     async fn invoke_calls(&self, a: InvokeArgs, calls: Vec<InvokeCall>) -> Result<Value, String> {
         let provider = match self
-            .addressed(a.peer_id, a.app_id.as_deref(), a.workspace)
+            .invoked(a.peer_id, a.app_id.as_deref(), a.workspace)
             .await
         {
             Ok(provider) => provider,
@@ -1725,8 +1763,12 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             )
             .await
         {
-            // Nothing ran: the resource may be named by its kind or label.
+            // Nothing ran: the instance may have gone since this session
+            // saw it, or the resource be named by its kind or label.
             Err(error) if error.contains(&not_offered) => {
+                if let Ok(peer) = target.provider.parse::<u64>() {
+                    self.addressed(Some(peer), None, false).await?;
+                }
                 let Some(named) = self.named_resource(&target).await else {
                     return Err(self.not_offered(&target).await);
                 };
