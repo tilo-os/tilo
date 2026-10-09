@@ -389,13 +389,7 @@ impl Widget for BrowserWindow {
         let Ok(layout) = taffy.layout(node) else {
             return;
         };
-        self.rect = Rect::from_origin_size(
-            (
-                origin.x + f64::from(layout.location.x),
-                origin.y + f64::from(layout.location.y),
-            ),
-            (f64::from(layout.size.width), f64::from(layout.size.height)),
-        );
+        self.rect = ui::widget::placed(layout, origin);
         let Ok(children) = taffy.children(node) else {
             return;
         };
