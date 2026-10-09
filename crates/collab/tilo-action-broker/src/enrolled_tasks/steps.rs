@@ -264,6 +264,7 @@ fn plan(caller: &LocalCaller, handle: &Context, request: &Request<'_>) -> Result
     handle.state.authorize_invocation_permission(
         &connection.route.cluster_id,
         &offered.0.app_id,
+        &offered.1.resource,
         &offered.1.action,
         offered.1.contract.permission,
         &actor,

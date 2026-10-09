@@ -201,7 +201,36 @@ struct Actor {
     attempt: RefCell<Option<Attempt>>,
 }
 pub(in crate::shell::in_process) fn new(principal: String, wake: Wake) -> Rc<dyn FirstAccounts> {
-    with_source(principal, wake, Arc::new(SignedSource))
+    let signal = with_source(principal.clone(), wake.clone(), Arc::new(SignedSource));
+    let sms = super::sms_first::new(principal.clone(), wake.clone());
+    let native = super::native_first::new(principal.clone(), wake);
+    combine_all(principal, signal, sms, Some(native))
+}
+#[cfg(test)]
+fn combine(
+    principal: String,
+    signal: Rc<dyn FirstAccounts>,
+    sms: Rc<dyn FirstAccounts>,
+) -> Rc<dyn FirstAccounts> {
+    combine_all(principal, signal, sms, None)
+}
+fn combine_all(
+    principal: String,
+    signal: Rc<dyn FirstAccounts>,
+    sms: Rc<dyn FirstAccounts>,
+    native: Option<Rc<dyn FirstAccounts>>,
+) -> Rc<dyn FirstAccounts> {
+    Rc::new(Combined {
+        port: Arc::new(CombinedPort {
+            principal,
+            signal: signal.client(),
+            sms: sms.client(),
+            native: native.as_ref().map(|owner| owner.client()),
+        }),
+        signal,
+        sms,
+        native,
+    })
 }
 fn with_source(principal: String, wake: Wake, source: Arc<dyn Source>) -> Rc<dyn FirstAccounts> {
     let (sender, requests) = mpsc::sync_channel(CAPACITY);
@@ -709,7 +738,7 @@ impl Actor {
         );
     }
 }
-fn ensure_contacts(
+pub(super) fn ensure_contacts(
     apps: &mut super::super::InProcessApps,
     identity: &NativeMessagingIdentity,
 ) -> Result<(), SendError> {
@@ -738,4 +767,100 @@ pub(super) fn fixture(
     source: Arc<dyn Source>,
 ) -> Rc<dyn FirstAccounts> {
     with_source(principal, wake, source)
+}
+
+struct Combined {
+    native: Option<Rc<dyn FirstAccounts>>,
+    port: Arc<CombinedPort>,
+    signal: Rc<dyn FirstAccounts>,
+    sms: Rc<dyn FirstAccounts>,
+}
+struct CombinedPort {
+    native: Option<EnrollmentClient>,
+    principal: String,
+    signal: EnrollmentClient,
+    sms: EnrollmentClient,
+}
+impl CombinedPort {
+    fn account(&self, account: &ServiceAccount) -> &EnrollmentClient {
+        if account.service == "tilo"
+            && let Some(native) = &self.native
+        {
+            return native;
+        }
+        if account.service == "sms" {
+            &self.sms
+        } else {
+            &self.signal
+        }
+    }
+}
+impl FirstAccounts for Combined {
+    fn client(&self) -> EnrollmentClient {
+        EnrollmentClient::new(self.port.principal.clone(), self.port.clone())
+    }
+    fn pump(&self, apps: &mut super::super::InProcessApps) {
+        self.signal.pump(apps);
+        self.sms.pump(apps);
+        if let Some(native) = &self.native {
+            native.pump(apps);
+        }
+    }
+}
+impl EnrollmentHost for CombinedPort {
+    fn prepare(&self, service: String) -> EnrollmentReviewFuture {
+        let native = self.native.clone();
+        Box::pin(async move {
+            if service != "tilo" {
+                return Err(SendError::Unavailable);
+            }
+            native.ok_or(SendError::Unavailable)?.prepare(service).await
+        })
+    }
+    fn begin(&self, service: String) -> PairingFuture {
+        let client = self.signal.clone();
+        Box::pin(async move { client.begin(service).await })
+    }
+    fn finish(&self, account: ServiceAccount, attempt: String) -> EnrollmentReviewFuture {
+        let client = self.account(&account).clone();
+        Box::pin(async move { client.finish(account, attempt).await })
+    }
+    fn review(&self, account: ServiceAccount, name: String) -> EnrollmentApprovalFuture {
+        let client = self.account(&account).clone();
+        Box::pin(async move { client.review(account, name).await })
+    }
+    fn phase(&self, account: &ServiceAccount) -> EnrollmentPhase {
+        self.account(account).phase(account)
+    }
+    fn linked(&self, account: &ServiceAccount) -> Option<LinkedAccount> {
+        self.account(account).linked(account)
+    }
+    fn cancel(&self, account: &ServiceAccount) {
+        self.account(account).cancel(account);
+    }
+    fn supports_sim_selection(&self) -> bool {
+        self.sms.supports_sim_selection()
+    }
+    fn sim_choices(&self) -> tilo_messaging::SimChoicesFuture {
+        let client = self.sms.clone();
+        Box::pin(async move { client.sim_choices().await })
+    }
+    fn select_sim(&self, token: String) -> EnrollmentReviewFuture {
+        let client = self.sms.clone();
+        Box::pin(async move { client.select_sim(token).await })
+    }
+    fn cancel_sim_selection(&self) {
+        self.sms.cancel_sim_selection();
+    }
+}
+
+#[cfg(test)]
+pub(super) fn fixture_sms(
+    principal: String,
+    wake: Wake,
+    source: Arc<dyn super::sms_first::Source>,
+) -> Rc<dyn FirstAccounts> {
+    let signal = with_source(principal.clone(), wake.clone(), Arc::new(SignedSource));
+    let sms = super::sms_first::fixture(principal.clone(), wake, source);
+    combine(principal, signal, sms)
 }

@@ -7,7 +7,7 @@ use tilo_desktop::workspace_settings::{
 
 use crate::shell::state::WorkspaceAuthority as _;
 use crate::shell::state::{
-    Actor, CapOverride, Effect, Expiry, Principal, ResourceRef, Scope, Subject, Verb,
+    Actor, CapOverride, Effect, Expiry, Principal, Scope, Subject, Verb,
     WORKSPACE_GOVERNANCE_APP_ID, WorkspaceId, WorkspaceTree,
 };
 
@@ -31,23 +31,44 @@ pub(crate) fn apply_app_action_operation(
     actor: &Actor,
     operation: &PermissionProfileOperation,
 ) -> Result<(), String> {
-    let (action_id, app, target_app, action) = match operation {
+    let (action_id, app, target_app, resource, action) = match operation {
         PermissionProfileOperation::GrantAppAction {
             app,
             target_app,
+            resource,
             action,
             ..
-        } => (APP_ACTION_GRANT_ACTION_ID, app, target_app, action),
+        } => (
+            APP_ACTION_GRANT_ACTION_ID,
+            app,
+            target_app,
+            resource,
+            action,
+        ),
         PermissionProfileOperation::RevokeAppAction {
             app,
             target_app,
+            resource,
             action,
-        } => (APP_ACTION_REVOKE_ACTION_ID, app, target_app, action),
+        } => (
+            APP_ACTION_REVOKE_ACTION_ID,
+            app,
+            target_app,
+            resource,
+            action,
+        ),
         _ => return Err("not an app action grant".into()),
     };
-    let (app, target_app, action) = (app.trim(), target_app.trim(), action.trim());
-    if app.is_empty() || target_app.is_empty() || action.is_empty() {
-        return Err("name the application, the other application and its action".into());
+    let (app, target_app, resource, action) = (
+        app.trim(),
+        target_app.trim(),
+        resource.trim(),
+        action.trim(),
+    );
+    if app.is_empty() || target_app.is_empty() || resource.is_empty() || action.is_empty() {
+        return Err(
+            "name the application, the other application, its resource and the action".into(),
+        );
     }
     let room = tree
         .room_of(workspace_id)
@@ -61,18 +82,12 @@ pub(crate) fn apply_app_action_operation(
         .iter_mut()
         .find(|workspace| workspace.id == workspace_id)
         .ok_or_else(|| "no such workspace".to_string())?;
-    if !workspace.allows(
-        actor,
-        &ResourceRef::Action {
-            app: WORKSPACE_GOVERNANCE_APP_ID.into(),
-            action: action_id.into(),
-        },
-        Verb::Admin,
-    ) {
+    if !workspace.allows(actor, &workspace.governance_action(action_id), Verb::Admin) {
         return Err("the caller is not allowed to change what apps may use".into());
     }
     let scope = Scope::Action {
         app: target_app.to_string(),
+        resource: resource.to_string(),
         action: action.to_string(),
     };
     let subject = Subject::app(app);
@@ -120,10 +135,14 @@ pub(crate) fn apply_app_action_operation(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::shell::state::Workspace;
+    use crate::shell::state::{ResourceRef, Workspace};
     use tilo_desktop::workspace_settings::{is_governance_action, permission_profile_resource};
 
     #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one grant's whole life: offered, refused to strangers, granted, scoped to its resource, revoked"
+    )]
     fn app_action_grants_are_typed_admin_actions_that_only_governors_apply() {
         let mut tree = WorkspaceTree::default();
         let mut ws = Workspace::new(WorkspaceId(93), "Research");
@@ -153,6 +172,7 @@ mod tests {
         let grant = |lifetime: &str, target_app: &str| PermissionProfileOperation::GrantAppAction {
             app: "so.tilo.shortcuts".into(),
             target_app: target_app.into(),
+            resource: "agent.transform:freeform".into(),
             action: "freeform".into(),
             lifetime: lifetime.into(),
         };
@@ -193,11 +213,24 @@ mod tests {
         let as_app = Actor::app("so.tilo.shortcuts").in_room(room);
         let freeform = ResourceRef::Action {
             app: "so.tilo.agent".into(),
+            resource: "agent.transform:freeform".into(),
             action: "freeform".into(),
         };
         let ws = &tree.desktop.workspaces[0];
         assert!(ws.allows(&as_app, &freeform, Verb::Write));
         assert!(!ws.allows(&as_app, &freeform, Verb::Admin));
+        assert!(
+            !ws.allows(
+                &as_app,
+                &ResourceRef::Action {
+                    app: "so.tilo.agent".into(),
+                    resource: "agent.transform:summarise".into(),
+                    action: "freeform".into(),
+                },
+                Verb::Write
+            ),
+            "the grant names one resource's action, not the same action elsewhere"
+        );
         let granted = ws
             .capabilities
             .iter()
@@ -213,6 +246,7 @@ mod tests {
             &PermissionProfileOperation::RevokeAppAction {
                 app: "so.tilo.shortcuts".into(),
                 target_app: "so.tilo.agent".into(),
+                resource: "agent.transform:freeform".into(),
                 action: "freeform".into(),
             },
         )

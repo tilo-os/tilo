@@ -100,6 +100,60 @@ fn search_projection_rebuilds_only_on_revisions_or_an_exhausted_generation() {
     exhausted_search_projection_generation_rebuilds_instead_of_reusing_a_cursor();
 }
 
+#[test]
+fn navigation_and_result_changes_reuse_symbols_but_pending_forks_do_not() {
+    use automerge::transaction::Transactable;
+    let mut sample = synced_sample();
+    sample.with_doc(|app, doc| {
+        let before = app.search_refresh_stats();
+        app.invalidate_search_projection();
+        app.refresh_search_entries(doc.doc());
+        assert_eq!(app.search_refresh_stats().buffer_reads, before.buffer_reads);
+        let node = app.active_file_node().expect("sample source");
+        let key = app.buffer_key(node);
+        let object = EditorDoc::buffer_text_key(doc, &key).expect("authoritative text");
+        let mut first = doc.doc().clone();
+        let mut second = doc.doc().clone();
+        first
+            .splice_text(&object, 0, 0, "fn pending_first() {}\n")
+            .unwrap();
+        second
+            .splice_text(&object, 0, 0, "fn pending_other() {}\n")
+            .unwrap();
+        assert_eq!(first.pending_ops(), second.pending_ops());
+        assert!(first.pending_ops() > 0);
+        assert_eq!(first.committed_heads(), second.committed_heads());
+        app.refresh_search_entries(&first);
+        assert!(
+            app.search_symbols
+                .iter()
+                .any(|symbol| symbol.name == "pending_first")
+        );
+        app.refresh_search_entries(&second);
+        assert!(
+            app.search_symbols
+                .iter()
+                .any(|symbol| symbol.name == "pending_other")
+        );
+        assert!(
+            !app.search_symbols
+                .iter()
+                .any(|symbol| symbol.name == "pending_first")
+        );
+        app.refresh_search_entries(doc.doc());
+        assert!(
+            !app.search_symbols
+                .iter()
+                .any(|symbol| symbol.name.starts_with("pending_"))
+        );
+        assert_eq!(
+            first.pending_ops(),
+            second.pending_ops(),
+            "reading did not commit either fork"
+        );
+    });
+}
+
 fn search_projection_rebuilds_only_for_document_project_or_result_revisions() {
     let mut sample = synced_sample();
     sample.with_doc(|app, doc| {
@@ -161,6 +215,10 @@ fn search_projection_rebuilds_only_for_document_project_or_result_revisions() {
         app.invalidate_search_projection();
         app.sync(doc.doc(), &automerge::ROOT);
         let after_results = app.search_refresh_stats();
+        assert_eq!(
+            after_results.buffer_reads, after_project.buffer_reads,
+            "new result previews do not rescan authoritative source bodies"
+        );
         assert_eq!(
             after_results.rebuilds,
             after_project.rebuilds.saturating_add(1)

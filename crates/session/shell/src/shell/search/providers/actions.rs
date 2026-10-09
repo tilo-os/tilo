@@ -515,6 +515,7 @@ fn apply_permission_profile_action(
                     PermissionProfileOperation::GrantAppAction {
                         app: text("app"),
                         target_app: text("target_app"),
+                        resource: text("resource"),
                         action: text("action"),
                         lifetime: text("lifetime"),
                     }
@@ -522,6 +523,7 @@ fn apply_permission_profile_action(
                     PermissionProfileOperation::RevokeAppAction {
                         app: text("app"),
                         target_app: text("target_app"),
+                        resource: text("resource"),
                         action: text("action"),
                     }
                 };
@@ -881,11 +883,14 @@ fn request_window_shortcut(
     Ok(())
 }
 
+/// Store an appearance change the action `action` made, then apply it.
 fn persist_appearance(
     st: &mut ChromeState,
-    values: serde_json::Map<String, serde_json::Value>,
+    action: &str,
+    write: settings_store::SectionWrite,
 ) -> Result<(), ActionError> {
-    settings_store::update_section("appearance", values)
+    write
+        .commit_by(&settings_store::ChangeOrigin::action(action))
         .map_err(|err| ActionError::Refused(err.to_string()))?;
     crate::shell::i18n::apply_configured_locale();
     st.note_appearance_change();
@@ -894,21 +899,19 @@ fn persist_appearance(
 
 /// Dark or light mode, keeping whichever theme the person chose for it.
 /// Choosing a mode leaves high contrast.
-fn set_mode(st: &mut ChromeState, mode: &str) -> Result<(), ActionError> {
-    let mut values = serde_json::Map::new();
-    values.insert(
-        ui::theme::MODE_KEY.into(),
-        serde_json::Value::String(mode.into()),
-    );
-    values.insert("high_contrast".into(), serde_json::Value::Bool(false));
-    persist_appearance(st, values)
+fn set_mode(st: &mut ChromeState, action: &str, mode: &str) -> Result<(), ActionError> {
+    use settings_store::appearance::{HIGH_CONTRAST, MODE};
+    let write = settings_store::SectionWrite::new()
+        .set(&MODE, &Some(mode.to_string()))
+        .set(&HIGH_CONTRAST, &false);
+    persist_appearance(st, action, write)
 }
 
 /// High contrast in the current mode's polarity.
 fn set_high_contrast(st: &mut ChromeState) -> Result<(), ActionError> {
-    let mut values = serde_json::Map::new();
-    values.insert("high_contrast".into(), serde_json::Value::Bool(true));
-    persist_appearance(st, values)
+    let write =
+        settings_store::SectionWrite::new().set(&settings_store::appearance::HIGH_CONTRAST, &true);
+    persist_appearance(st, "appearance.high-contrast", write)
 }
 
 fn set_language(st: &mut ChromeState, requested: &str) -> Result<(), ActionError> {
@@ -921,12 +924,11 @@ fn set_language(st: &mut ChromeState, requested: &str) -> Result<(), ActionError
             )));
         }
     };
-    let mut values = serde_json::Map::new();
-    values.insert(
-        "language".into(),
-        serde_json::Value::String(language.into()),
+    let write = settings_store::SectionWrite::new().set(
+        &settings_store::appearance::LANGUAGE,
+        &Some(language.to_string()),
     );
-    persist_appearance(st, values)
+    persist_appearance(st, "appearance.language", write)
 }
 
 /// One action row. `id` is the palette command id (`overview.toggle`,
@@ -1917,13 +1919,13 @@ impl Action {
             "appearance.theme.dark",
             "search-action-appearance-theme-dark",
             "search-action-appearance-theme-dark-subtitle",
-            |st, _| set_mode(st, "dark"),
+            |st, _| set_mode(st, "appearance.theme.dark", "dark"),
         ),
         chrome(
             "appearance.theme.light",
             "search-action-appearance-theme-light",
             "search-action-appearance-theme-light-subtitle",
-            |st, _| set_mode(st, "light"),
+            |st, _| set_mode(st, "appearance.theme.light", "light"),
         ),
         chrome(
             "appearance.high-contrast",
@@ -2094,6 +2096,15 @@ impl SharedQsDispatcher {
         }
         let _ = pending.as_ref()?.result()?;
         pending.take()
+    }
+
+    /// What the Quick Settings rows are built from; see [`QuickSettingsKey`].
+    fn catalogue_key(&self) -> QuickSettingsKey {
+        QuickSettingsKey {
+            backend: Rc::as_ptr(&*self.actions.borrow()).cast::<()>().addr(),
+            availability: self.availability.get(),
+            radio_pending: self.radio_job.borrow().is_some(),
+        }
     }
 
     fn action_available(&self, id: &str) -> bool {
@@ -2425,11 +2436,13 @@ fn decline_bluetooth_pairing() -> Result<(), ActionError> {
 /// Stage a whole-desktop layout through the same confirm-or-restore
 /// transaction as Super+P, and open the display sheet so whoever is at the
 /// machine sees Keep/Revert and the countdown.
-fn stage_display_layout(st: &mut ChromeState, mode: DisplayLayoutMode) -> Result<(), ActionError> {
-    settings_store::display_mode::stage_layout(mode)
-        .map_err(|error| ActionError::Refused(error.to_string()))?;
-    st.overlays.projection = true;
-    Ok(())
+fn stage_display_layout(
+    _st: &mut ChromeState,
+    _mode: DisplayLayoutMode,
+) -> Result<(), ActionError> {
+    Err(ActionError::Refused(
+        "display layouts require lifecycle dispatch".into(),
+    ))
 }
 
 /// Keep or revert the display change that is waiting for confirmation.
@@ -2495,6 +2508,66 @@ pub struct ActionsProvider {
     ranker: ListIndex,
     search_preferences: Option<crate::shell::search::SearchPreferencesHandle>,
     provider_catalog: Option<crate::shell::search::SearchProviderCatalogHandle>,
+    /// Every row this provider offers, built once per state they are built
+    /// from rather than once per keystroke or lookup.
+    catalogue: std::cell::RefCell<Option<Rc<Catalogue>>>,
+    /// How many times the catalogue has been built.
+    #[cfg(test)]
+    builds: Rc<std::cell::Cell<usize>>,
+}
+
+/// The shell's action rows for one [`CatalogueKey`], before any query
+/// narrows them.
+struct Catalogue {
+    key: CatalogueKey,
+    rows: Vec<SearchResult>,
+    /// Each row's searchable text, in row order.
+    fields: Vec<Vec<(String, FieldWeight)>>,
+    /// The first row with each id.
+    by_id: std::collections::HashMap<String, usize>,
+    /// The per-source on/off switches, offered only to a query about search
+    /// itself ([`asks_about_search_sources`]).
+    source_switches: std::ops::Range<usize>,
+}
+
+/// Everything the catalogue's rows are built from: whether a row exists,
+/// what it says, its contract, its parameters and what its callbacks hold.
+/// Invocation still rechecks authority against the live workspace.
+#[derive(Clone, PartialEq, Eq)]
+struct CatalogueKey {
+    state: CatalogueState,
+    /// Whose ownership and role actions the governance rows offer.
+    actor: crate::shell::state::UserId,
+}
+
+/// The part of [`CatalogueKey`] that is cheap to read on every palette
+/// refresh, and so also the provider's search revision.
+#[derive(Clone, PartialEq, Eq, Hash)]
+struct CatalogueState {
+    chrome: u64,
+    /// Workspaces, their names and governance: the chrome bumps this on every
+    /// tree mutation it makes...
+    chrome_revision: u64,
+    /// ...and mutations from outside the chrome bump this, until the next
+    /// tick folds them into `chrome_revision`.
+    external_tree_revision: u64,
+    locale: String,
+    peer_sync: bool,
+    collab: bool,
+    active_workspace: Option<crate::shell::state::WorkspaceId>,
+    quick_settings: QuickSettingsKey,
+    /// The search sources and whether each is on, for their switches.
+    search_sources: Vec<(String, String, bool)>,
+}
+
+/// The Quick Settings backend the rows call, what it can do, and whether a
+/// radio change is pending. The backend is named by address: the rows hold
+/// it, so it cannot be freed and another take its place while they live.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+struct QuickSettingsKey {
+    backend: usize,
+    availability: crate::shell::quick_settings::actions::QsActionAvailability,
+    radio_pending: bool,
 }
 
 impl ActionsProvider {
@@ -2507,6 +2580,9 @@ impl ActionsProvider {
                 crate::shell::quick_settings::actions::QsActionAvailability::default(),
             )),
             ranker: ListIndex::default(),
+            catalogue: std::cell::RefCell::default(),
+            #[cfg(test)]
+            builds: Rc::default(),
         }
     }
 
@@ -2520,6 +2596,9 @@ impl ActionsProvider {
             provider_catalog: Some(provider_catalog),
             qs_actions,
             ranker: ListIndex::default(),
+            catalogue: std::cell::RefCell::default(),
+            #[cfg(test)]
+            builds: Rc::default(),
         }
     }
 
@@ -2575,13 +2654,150 @@ impl SearchProvider for ActionsProvider {
     /// actions than one palette page shows, so the first page of an empty
     /// query would leave the later ones unreachable by id.
     fn resolve(&self, id: &str, ctx: SearchContext<'_>) -> Option<SearchResult> {
-        self.query(ctx).into_iter().find(|result| result.id == id)
+        if !ctx.wanted.contains(&ResourceKind::Action) {
+            return None;
+        }
+        let catalogue = self.catalogue(&ctx);
+        let found = match catalogue.by_id.get(id) {
+            Some(&at) => catalogue.rows.get(at).cloned(),
+            None => crate::shell::notification::alarm_action_rows(ctx.chrome)
+                .into_iter()
+                .find(|row| row.id == id),
+        };
+        found.map(|mut row| {
+            // What an empty query scores it.
+            row.score = crate::shell::search::provider_score(0);
+            row
+        })
     }
+
+    fn search_revision(&self, ctx: &SearchContext<'_>) -> String {
+        use std::hash::{Hash as _, Hasher as _};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        self.catalogue_state(ctx).hash(&mut hasher);
+        format!("{:016x}", hasher.finish())
+    }
+
+    fn query(&self, ctx: SearchContext<'_>) -> Vec<SearchResult> {
+        if !ctx.wanted.contains(&ResourceKind::Action) {
+            return Vec::new();
+        }
+        let catalogue = self.catalogue(&ctx);
+        // Alarm actions follow the notification log, so they are read fresh.
+        let alarms = crate::shell::notification::alarm_action_rows(ctx.chrome);
+        let mut alarm_fields = ActionCandidates::default();
+        for row in &alarms {
+            alarm_fields.record(
+                &row.title.to_lowercase(),
+                &row.subtitle.clone().unwrap_or_default().to_lowercase(),
+                &row.id,
+            );
+        }
+        let withheld = if asks_about_search_sources(ctx.needle) {
+            0..0
+        } else {
+            catalogue.source_switches.clone()
+        };
+        let offered = || {
+            catalogue
+                .rows
+                .iter()
+                .zip(&catalogue.fields)
+                .enumerate()
+                .filter(|(at, _)| !withheld.contains(at))
+                .map(|(_, offered)| offered)
+        };
+        let mut ranks = self
+            .ranker
+            .ranks(
+                ctx.needle,
+                offered()
+                    .map(|(_, fields)| fields)
+                    .chain(&alarm_fields.0)
+                    .map(|fields| fields.iter().map(|(text, weight)| (text.as_str(), *weight))),
+            )
+            .into_iter();
+        let mut out = Vec::new();
+        for (row, _) in offered() {
+            if let Some(rank) = ranks.next().flatten() {
+                out.push(SearchResult {
+                    score: crate::shell::search::provider_score(rank),
+                    ..row.clone()
+                });
+            }
+        }
+        for (mut row, rank) in alarms.into_iter().zip(ranks) {
+            if let Some(rank) = rank {
+                row.score = crate::shell::search::provider_score(rank);
+                out.push(row);
+            }
+        }
+        out
+    }
+}
+
+impl ActionsProvider {
+    /// The catalogue for the current state, built only if that is not the
+    /// state the retained one was built from.
+    fn catalogue(&self, ctx: &SearchContext<'_>) -> Rc<Catalogue> {
+        let key = CatalogueKey {
+            state: self.catalogue_state(ctx),
+            actor: ctx.chrome.active_local_user(),
+        };
+        let retained = self.catalogue.borrow().clone();
+        if let Some(catalogue) = retained.filter(|catalogue| catalogue.key == key) {
+            return catalogue;
+        }
+        let catalogue = Rc::new(self.build_catalogue(*ctx, key));
+        *self.catalogue.borrow_mut() = Some(Rc::clone(&catalogue));
+        catalogue
+    }
+
+    fn catalogue_state(&self, ctx: &SearchContext<'_>) -> CatalogueState {
+        let tree = ctx.chrome.tree();
+        let external_tree_revision = tree.desktop.external_revision;
+        let active_workspace = tree
+            .desktop
+            .active_workspace()
+            .map(|workspace| workspace.id);
+        drop(tree);
+        CatalogueState {
+            chrome: ctx.chrome.instance(),
+            chrome_revision: ctx.chrome.revision,
+            external_tree_revision,
+            locale: crate::shell::i18n::current_locale(),
+            peer_sync: ctx.chrome.peer_sync_enabled,
+            collab: ctx.chrome.collab_available(),
+            active_workspace,
+            quick_settings: self.qs_actions.catalogue_key(),
+            search_sources: self.search_sources(),
+        }
+    }
+
+    /// Each search source and whether it is on: what its switch says and
+    /// does. Empty without the preferences the switches write.
+    fn search_sources(&self) -> Vec<(String, String, bool)> {
+        let (Some(preferences), Some(catalog)) = (&self.search_preferences, &self.provider_catalog)
+        else {
+            return Vec::new();
+        };
+        let preferences = preferences.borrow();
+        let sources = catalog
+            .borrow()
+            .iter()
+            .map(|(id, name)| (id.clone(), name.clone(), preferences.provider_enabled(id)))
+            .collect();
+        drop(preferences);
+        sources
+    }
+
+    /// Build every row the provider offers, whatever the needle; see
+    /// [`CatalogueKey`] for what they are built from.
     #[expect(
         clippy::too_many_lines,
         reason = "the catalog lists every shell action with its contract in one table-like pass"
     )]
-    fn query(&self, ctx: SearchContext<'_>) -> Vec<SearchResult> {
+    fn build_catalogue(&self, ctx: SearchContext<'_>, key: CatalogueKey) -> Catalogue {
         const QUICK_SETTINGS_ACTIONS: &[(&str, &str, &str)] = &[
             (
                 QS_BRIGHTNESS_ID,
@@ -2619,12 +2835,11 @@ impl SearchProvider for ActionsProvider {
                 "search-action-quick-settings-airplane-mode-set-enabled-subtitle",
             ),
         ];
-        if !ctx.wanted.contains(&ResourceKind::Action) {
-            return Vec::new();
-        }
+        #[cfg(test)]
+        self.builds.set(self.builds.get().wrapping_add(1));
         let mut out = Vec::new();
-        // Every row is built with its searchable text; ranking them together
-        // then keeps the matches and scores them.
+        // Every row is built with its searchable text; a query ranks them
+        // together to keep the matches and score them.
         let mut candidates = ActionCandidates::default();
         for action in Action::ALL {
             // A session not running peer sync has nothing to invite into.
@@ -2770,6 +2985,98 @@ impl SearchProvider for ActionsProvider {
                                         )),
                                         Some(Err(error)) => Err(ActionError::Refused(error)),
                                     }
+                                });
+                            Ok(crate::shell::search::InvocationDisposition::Pending(ticket))
+                        },
+                    ) as Rc<crate::shell::search::BeginInvokeFn>;
+                    (on_open, Some(begin))
+                } else if let Some(mode) = action
+                    .id
+                    .strip_prefix("display.layout.")
+                    .and_then(DisplayLayoutMode::from_id)
+                {
+                    let action_id = action.id;
+                    let on_open = Rc::new(
+                        |_doc: &mut ui::widget::Edits<'_>,
+                         _root: &automerge::ObjId,
+                         _chrome: &Chrome,
+                         _args: &ActionArgs| {
+                            Err(ActionError::Refused(
+                                "display layouts require lifecycle dispatch".into(),
+                            ))
+                        },
+                    ) as Rc<crate::shell::search::OpenFn>;
+                    let begin = Rc::new(
+                        move |_doc: &mut ui::widget::Edits<'_>,
+                              _root: &automerge::ObjId,
+                              chrome: &Chrome,
+                              _args: &ActionArgs| {
+                            if !current_shell_action_authorized(&chrome.borrow(), action_id) {
+                                return Err(ActionError::Refused("current workspace authority no longer permits this display layout".into()));
+                            }
+                            let pending = crate::shell::display_persistence::stage_layout(mode)
+                                .map_err(|error| ActionError::Refused(error.to_string()))?;
+                            {
+                                let mut state = chrome.borrow_mut();
+                                state.overlays.projection = true;
+                                state.bump();
+                            }
+                            let chrome = chrome.clone();
+                            let ticket: crate::shell::search::PendingInvocation =
+                                Rc::new(move || {
+                                    pending
+                                        .poll()
+                                        .map(|done| {
+                                            done.map(|_| {
+                                                chrome.borrow_mut().bump();
+                                                crate::shell::search::ActionReceipt::completed()
+                                            })
+                                        })
+                                        .map_err(|error| ActionError::Refused(error.to_string()))
+                                });
+                            Ok(crate::shell::search::InvocationDisposition::Pending(ticket))
+                        },
+                    ) as Rc<crate::shell::search::BeginInvokeFn>;
+                    (on_open, Some(begin))
+                } else if matches!(action.id, DISPLAY_KEEP_ID | DISPLAY_REVERT_ID) {
+                    use crate::shell::display_persistence::{Answer, answer};
+                    let action_id = action.id;
+                    let on_open = Rc::new(
+                        |_doc: &mut ui::widget::Edits<'_>,
+                         _root: &automerge::ObjId,
+                         _chrome: &Chrome,
+                         _args: &ActionArgs| {
+                            Err(ActionError::Refused(
+                                "display answers require lifecycle dispatch".into(),
+                            ))
+                        },
+                    ) as Rc<crate::shell::search::OpenFn>;
+                    let begin = Rc::new(
+                        move |_doc: &mut ui::widget::Edits<'_>,
+                              _root: &automerge::ObjId,
+                              chrome: &Chrome,
+                              _args: &ActionArgs| {
+                            if !current_shell_action_authorized(&chrome.borrow(), action_id) {
+                                return Err(ActionError::Refused("current workspace authority no longer permits this display answer".into()));
+                            }
+                            let pending = answer(if action_id == DISPLAY_KEEP_ID {
+                                Answer::Keep
+                            } else {
+                                Answer::Revert
+                            })
+                            .map_err(|error| ActionError::Refused(error.to_string()))?;
+                            let chrome = chrome.clone();
+                            let ticket: crate::shell::search::PendingInvocation =
+                                Rc::new(move || {
+                                    pending
+                                        .poll()
+                                        .map(|done| {
+                                            done.map(|()| {
+                                                chrome.borrow_mut().bump();
+                                                crate::shell::search::ActionReceipt::completed()
+                                            })
+                                        })
+                                        .map_err(|error| ActionError::Refused(error.to_string()))
                                 });
                             Ok(crate::shell::search::InvocationDisposition::Pending(ticket))
                         },
@@ -3052,7 +3359,7 @@ impl SearchProvider for ActionsProvider {
                 on_begin_invoke,
             });
         }
-        let actor = ctx.chrome.active_local_user();
+        let actor = key.actor.clone();
         let ownership_resource = {
             let tree = ctx.chrome.tree();
             tree.desktop.active_workspace().map(|workspace| {
@@ -3148,6 +3455,7 @@ impl SearchProvider for ActionsProvider {
                 }
             }
         }
+        let mut source_switches = 0..0;
         if let Some(preferences) = &self.search_preferences {
             let id = "search.provider.set";
             let label = t("search-action-search-provider-set");
@@ -3195,9 +3503,8 @@ impl SearchProvider for ActionsProvider {
                     on_begin_invoke: None,
                 });
             }
-            if let Some(catalog) = &self.provider_catalog
-                && asks_about_search_sources(ctx.needle)
-            {
+            if let Some(catalog) = &self.provider_catalog {
+                source_switches.start = out.len();
                 for (provider_id, provider_name) in catalog.borrow().iter() {
                     if provider_id == "actions" {
                         continue;
@@ -3259,113 +3566,20 @@ impl SearchProvider for ActionsProvider {
                         on_begin_invoke: None,
                     });
                 }
+                source_switches.end = out.len();
             }
         }
-        let actor = ctx.chrome.active_local_user();
-        let ownership_resource = {
-            let tree = ctx.chrome.tree();
-            tree.desktop.active_workspace().map(|workspace| {
-                tilo_desktop::workspace_settings::ownership_transfer_resource(workspace, &actor)
-            })
-        };
-        if let Some(resource) = ownership_resource {
-            for action in resource.actions {
-                let subtitle = action
-                    .description
-                    .clone()
-                    .unwrap_or_else(|| t("search-action-governance-subtitle"));
-                {
-                    candidates.record(
-                        &action.label.to_lowercase(),
-                        &subtitle.to_lowercase(),
-                        &action.id,
-                    );
-                    let score = 0;
-                    let action_id = action.id.clone();
-                    let params = action.params().to_vec();
-                    out.push(SearchResult {
-                        kind: ResourceKind::Action,
-                        operation_kind: tilo_actions::OperationKind::Document,
-                        provider_id: self.id().to_string(),
-                        id: format!("{}#{}", resource.id.as_str(), action.id),
-                        title: action.label,
-                        subtitle: Some(subtitle),
-                        badge: None,
-                        score,
-                        params,
-                        contract: Some(action.contract),
-                        on_open: Rc::new(move |_doc, _root, chrome: &Chrome, arguments| {
-                            let mut state = chrome.borrow_mut();
-                            apply_ownership_action(&state, &action_id, arguments)?;
-                            state.bump();
-                            Ok(())
-                        }),
-                        on_invoke: None,
-                        on_begin_invoke: None,
-                    });
-                }
-            }
+        let mut by_id = std::collections::HashMap::with_capacity(out.len());
+        for (at, row) in out.iter().enumerate() {
+            by_id.entry(row.id.clone()).or_insert(at);
         }
-        let profile_resource = {
-            let tree = ctx.chrome.tree();
-            tree.desktop.active_workspace().map(|workspace| {
-                tilo_desktop::workspace_settings::permission_profile_resource(workspace, &actor)
-            })
-        };
-        if let Some(resource) = profile_resource {
-            let mut surfaces = vec![(resource.id.as_str().to_string(), resource.actions)];
-            surfaces.extend(
-                resource
-                    .children
-                    .into_iter()
-                    .map(|child| (child.id.as_str().to_string(), child.actions)),
-            );
-            for (resource_id, actions) in surfaces {
-                for action in actions {
-                    let subtitle = action
-                        .description
-                        .clone()
-                        .unwrap_or_else(|| t("search-action-permission-roles-subtitle"));
-                    candidates.record(
-                        &action.label.to_lowercase(),
-                        &subtitle.to_lowercase(),
-                        &action.id,
-                    );
-                    let score = 0;
-                    let action_id = action.id.clone();
-                    let params = action.params().to_vec();
-                    out.push(SearchResult {
-                        kind: ResourceKind::Action,
-                        operation_kind: tilo_actions::OperationKind::Document,
-                        provider_id: self.id().to_string(),
-                        id: format!("{}#{}", resource_id, action.id),
-                        title: action.label,
-                        subtitle: Some(subtitle),
-                        badge: None,
-                        score,
-                        params,
-                        contract: Some(action.contract),
-                        on_open: Rc::new(move |_doc, _root, chrome: &Chrome, arguments| {
-                            let mut state = chrome.borrow_mut();
-                            apply_permission_profile_action(&state, &action_id, arguments)?;
-                            state.bump();
-                            Ok(())
-                        }),
-                        on_invoke: None,
-                        on_begin_invoke: None,
-                    });
-                }
-            }
+        Catalogue {
+            key,
+            rows: out,
+            fields: candidates.0,
+            by_id,
+            source_switches,
         }
-        for row in crate::shell::notification::alarm_action_rows(ctx.chrome) {
-            candidates.record(
-                &row.title.to_lowercase(),
-                &row.subtitle.clone().unwrap_or_default().to_lowercase(),
-                &row.id,
-            );
-            out.push(row);
-        }
-        crate::shell::search::rank_rows(&self.ranker, ctx.needle, out, &candidates.0)
     }
 }
 
@@ -3530,6 +3744,277 @@ mod tests {
             &ActionArgs::none(),
         )
         .unwrap();
+    }
+
+    #[test]
+    fn published_display_keep_waits_for_durability_without_blocking_dispatch() {
+        use settings_store::SettingsSource as _;
+        use settings_store::hardware::{
+            DisplayConfig, DisplaySet, DisplayTransaction, DisplayTransactionState,
+        };
+        use std::sync::mpsc;
+        use std::time::Duration;
+        let _home = tilo_test_env::TestHome::new().unwrap();
+        let paths = settings_store::SessionPaths::configured().unwrap();
+        let session = Arc::new(settings_store::SessionSettings::open(paths.clone()).unwrap());
+        settings_store::install_source(Some(session.host_view().unwrap()));
+        let mut transaction =
+            DisplayTransaction::request(DisplaySet::default(), DisplayConfig::default()).unwrap();
+        transaction.state = DisplayTransactionState::AwaitingConfirmation;
+        transaction.save().unwrap();
+        let chrome = chrome_with_room();
+        let results = action_results(&ActionsProvider::new(), &chrome);
+        let action = results
+            .iter()
+            .find(|row| row.id == DISPLAY_KEEP_ID)
+            .expect("published Keep action");
+        let lock_path = paths.copy.with_file_name("settings.json.lock");
+        let (dir, name) = tilo_files::file_at(&lock_path).unwrap();
+        let lock =
+            tilo_files::blocking::lock(&dir, &name, tilo_files::LockMode::Exclusive).unwrap();
+        let (sent, received) = mpsc::channel();
+        let release = std::thread::spawn(move || {
+            let responsive = received.recv_timeout(Duration::from_millis(500)).is_ok();
+            drop(lock);
+            responsive
+        });
+        let mut doc = AutoCommit::new();
+        let mut edits = ui::widget::Edits::lend(&mut doc);
+        let disposition = if let Some(begin) = &action.on_begin_invoke {
+            begin(&mut edits, &automerge::ROOT, &chrome, &ActionArgs::none()).unwrap()
+        } else {
+            (action.on_open)(&mut edits, &automerge::ROOT, &chrome, &ActionArgs::none()).unwrap();
+            crate::shell::search::InvocationDisposition::Accepted(
+                crate::shell::search::ActionReceipt::completed(),
+            )
+        };
+        if let crate::shell::search::InvocationDisposition::Pending(ticket) = &disposition {
+            assert!(
+                ticket().unwrap().is_none(),
+                "held storage cannot already complete the job"
+            );
+        }
+        let _ = sent.send(());
+        let responsive = release.join().unwrap();
+        settings_store::install_source(None);
+        assert!(
+            responsive,
+            "published Keep dispatch blocked on the real storage lock"
+        );
+        let crate::shell::search::InvocationDisposition::Pending(ticket) = disposition else {
+            panic!("a storage command must retain its published job until durable completion");
+        };
+        crate::shell::durable_writer::global().flush();
+        assert!(ticket().unwrap().is_some());
+        let reopened = settings_store::SessionSettings::open(paths).unwrap();
+        assert_eq!(reopened.load()["display_transaction"]["id"], transaction.id);
+        assert_eq!(
+            reopened.load()["display_transaction"]["state"],
+            "confirm_requested"
+        );
+    }
+
+    fn begin_display_answer(chrome: &Chrome, id: &str) -> crate::shell::search::PendingInvocation {
+        let results = action_results(&ActionsProvider::new(), chrome);
+        let row = results
+            .iter()
+            .find(|row| row.id == id)
+            .expect("published answer");
+        let mut doc = AutoCommit::new();
+        let disposition = row.on_begin_invoke.as_ref().expect("answer lifecycle")(
+            &mut ui::widget::Edits::lend(&mut doc),
+            &automerge::ROOT,
+            chrome,
+            &ActionArgs::none(),
+        )
+        .unwrap();
+        let crate::shell::search::InvocationDisposition::Pending(ticket) = disposition else {
+            panic!("storage must retain a real job");
+        };
+        ticket
+    }
+
+    #[test]
+    fn published_display_answers_refuse_a_replacement_adopted_under_the_copy_lock() {
+        use settings_store::SettingsSource as _;
+        use settings_store::hardware::{
+            DisplayConfig, DisplaySet, DisplayTransaction, DisplayTransactionState,
+        };
+        for id in [DISPLAY_KEEP_ID, DISPLAY_REVERT_ID] {
+            let _home = tilo_test_env::TestHome::new().unwrap();
+            let paths = settings_store::SessionPaths::configured().unwrap();
+            let session = Arc::new(settings_store::SessionSettings::open(paths.clone()).unwrap());
+            settings_store::install_source(Some(session.host_view().unwrap()));
+            let mut transaction =
+                DisplayTransaction::request(DisplaySet::default(), DisplayConfig::default())
+                    .unwrap();
+            transaction.state = DisplayTransactionState::AwaitingConfirmation;
+            transaction.save().unwrap();
+            let lock_path = paths.copy.with_file_name("settings.json.lock");
+            let (dir, name) = tilo_files::file_at(&lock_path).unwrap();
+            let lock =
+                tilo_files::blocking::lock(&dir, &name, tilo_files::LockMode::Exclusive).unwrap();
+            let ticket = begin_display_answer(&chrome_with_room(), id);
+            assert!(ticket().unwrap().is_none());
+            let mut replacement = transaction.clone();
+            replacement.id += 100;
+            replacement.state = DisplayTransactionState::Requested;
+            let copy = serde_json::json!({"display_transaction": replacement});
+            // The external writer owns the same canonical lock. Its copy is
+            // adopted by SessionSettings before the conditional comparison.
+            tilo_files::native::atomic::write_creating_parent(
+                &paths.copy,
+                &serde_json::to_vec(&copy).unwrap(),
+            )
+            .unwrap();
+            drop(lock);
+            crate::shell::durable_writer::global().flush();
+            assert!(
+                matches!(ticket(), Err(ActionError::Refused(message)) if message.contains("replaced"))
+            );
+            let reopened = settings_store::SessionSettings::open(paths).unwrap();
+            assert_eq!(
+                reopened.load()["display_transaction"],
+                copy["display_transaction"]
+            );
+            settings_store::install_source(None);
+        }
+    }
+
+    #[test]
+    fn published_display_answers_report_real_record_failure_and_preserve_old_intent() {
+        use settings_store::SettingsSource as _;
+        use settings_store::hardware::{
+            DisplayConfig, DisplaySet, DisplayTransaction, DisplayTransactionState,
+        };
+        for id in [DISPLAY_KEEP_ID, DISPLAY_REVERT_ID] {
+            let _home = tilo_test_env::TestHome::new().unwrap();
+            let paths = settings_store::SessionPaths::configured().unwrap();
+            let session = Arc::new(settings_store::SessionSettings::open(paths.clone()).unwrap());
+            settings_store::install_source(Some(session.host_view().unwrap()));
+            let mut transaction =
+                DisplayTransaction::request(DisplaySet::default(), DisplayConfig::default())
+                    .unwrap();
+            transaction.state = DisplayTransactionState::AwaitingConfirmation;
+            transaction.save().unwrap();
+            std::fs::remove_file(&paths.device).unwrap();
+            std::fs::create_dir(&paths.device).unwrap();
+            let ticket = begin_display_answer(&chrome_with_room(), id);
+            crate::shell::durable_writer::global().flush();
+            assert!(matches!(ticket(), Err(ActionError::Refused(_))));
+            assert_eq!(
+                session.load()["display_transaction"],
+                serde_json::to_value(&transaction).unwrap()
+            );
+            std::fs::remove_dir(&paths.device).unwrap();
+            transaction.save().unwrap();
+            let reopened = settings_store::SessionSettings::open(paths).unwrap();
+            assert_eq!(
+                reopened.load()["display_transaction"],
+                serde_json::to_value(&transaction).unwrap()
+            );
+            settings_store::install_source(None);
+        }
+    }
+
+    #[test]
+    fn published_display_answer_requires_an_atomic_storage_receipt_even_if_state_matches() {
+        use settings_store::SettingsSource as _;
+        use settings_store::hardware::{DisplayTransaction, DisplayTransactionState};
+        use std::sync::mpsc;
+        let _home = tilo_test_env::TestHome::new().unwrap();
+        let transaction = DisplayTransaction {
+            id: 77,
+            state: DisplayTransactionState::AwaitingConfirmation,
+            ..DisplayTransaction::default()
+        };
+        let document = serde_json::json!({"display_transaction": transaction})
+            .as_object()
+            .unwrap()
+            .clone();
+        let source = Arc::new(settings_store::HostDocument::new(document, |_| Ok(())));
+        settings_store::install_source(Some(source.clone()));
+        let (entered, started) = mpsc::channel();
+        let (release, blocked) = mpsc::channel();
+        crate::shell::durable_writer::global()
+            .submit_ordered(move || {
+                entered.send(()).unwrap();
+                blocked.recv().unwrap();
+            })
+            .unwrap();
+        started.recv().unwrap();
+        let ticket = begin_display_answer(&chrome_with_room(), DISPLAY_KEEP_ID);
+        assert!(ticket().unwrap().is_none());
+        // Another legitimate writer reaches the desired state. This cannot
+        // turn an unsupported atomic operation into our storage receipt.
+        source
+            .update_section(
+                "display_transaction",
+                serde_json::json!({"state":"confirm_requested"})
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+            )
+            .unwrap();
+        release.send(()).unwrap();
+        crate::shell::durable_writer::global().flush();
+        assert!(
+            matches!(ticket(), Err(ActionError::Refused(message)) if message.contains("conditional settings persistence is unavailable"))
+        );
+        assert_eq!(
+            source.load()["display_transaction"]["state"],
+            "confirm_requested"
+        );
+        settings_store::install_source(None);
+    }
+
+    #[test]
+    fn published_display_answers_accept_real_durable_record_with_copy_repair_pending() {
+        use settings_store::SettingsSource as _;
+        use settings_store::hardware::{
+            DisplayConfig, DisplaySet, DisplayTransaction, DisplayTransactionState,
+        };
+        for id in [DISPLAY_KEEP_ID, DISPLAY_REVERT_ID] {
+            let _home = tilo_test_env::TestHome::new().unwrap();
+            let paths = settings_store::SessionPaths::configured().unwrap();
+            let session = Arc::new(settings_store::SessionSettings::open(paths.clone()).unwrap());
+            settings_store::install_source(Some(session.host_view().unwrap()));
+            let mut transaction =
+                DisplayTransaction::request(DisplaySet::default(), DisplayConfig::default())
+                    .unwrap();
+            transaction.state = DisplayTransactionState::AwaitingConfirmation;
+            transaction.save().unwrap();
+            std::fs::remove_file(&paths.copy).unwrap();
+            std::fs::create_dir(&paths.copy).unwrap();
+            let ticket = begin_display_answer(&chrome_with_room(), id);
+            crate::shell::durable_writer::global().flush();
+            assert!(ticket().unwrap().is_some());
+            let state = if id == DISPLAY_KEEP_ID {
+                "confirm_requested"
+            } else {
+                "revert_requested"
+            };
+            assert_eq!(session.load()["display_transaction"]["state"], state);
+            let record: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(&paths.device).unwrap()).unwrap();
+            assert_eq!(record["display_transaction"]["id"], transaction.id);
+            assert_eq!(record["display_transaction"]["state"], state);
+            let accepted_revision = session.revision();
+            std::fs::remove_dir(&paths.copy).unwrap();
+            session.refresh();
+            assert_eq!(
+                session.revision(),
+                accepted_revision,
+                "copy repair must not republish unchanged committed state"
+            );
+            let repaired: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(&paths.copy).unwrap()).unwrap();
+            assert_eq!(
+                repaired["display_transaction"],
+                record["display_transaction"]
+            );
+            settings_store::install_source(None);
+        }
     }
 
     #[test]
@@ -3986,6 +4471,393 @@ mod tests {
                 "{id} is offered but does not resolve"
             );
         }
+    }
+
+    /// The rows `provider` offers for `needle` against `chrome` as it is now.
+    fn rows_for(
+        provider: &ActionsProvider,
+        chrome: &Chrome,
+        needle: &str,
+    ) -> Vec<crate::shell::search::SearchResult> {
+        let doc = AutoCommit::new();
+        let state = chrome.borrow();
+        provider.query(SearchContext {
+            query_scope: None,
+            include_programmatic: false,
+            needle,
+            wanted: &[ResourceKind::Action],
+            chrome: &state,
+            doc: &doc,
+            doc_root: &automerge::ROOT,
+        })
+    }
+
+    fn row<'a>(
+        rows: &'a [crate::shell::search::SearchResult],
+        id: &str,
+    ) -> Option<&'a crate::shell::search::SearchResult> {
+        rows.iter().find(|row| row.id == id)
+    }
+
+    #[test]
+    fn empty_palette_builds_the_catalogue_once() {
+        let provider = Rc::new(ActionsProvider::new());
+        let builds = Rc::clone(&provider.builds);
+        let mut registry = crate::shell::search::SearchRegistry::new();
+        registry.register(provider);
+        let chrome = chrome_with_room();
+        let doc = AutoCommit::new();
+        let state = chrome.borrow();
+        let grouped = |needle: &str| {
+            registry.query_grouped(
+                &crate::shell::search::QueryArgs {
+                    needle,
+                    scope: crate::shell::search::SearchScope::All,
+                    active_provider_id: None,
+                    wanted_kinds: &[],
+                    chrome: &state,
+                    doc: &doc,
+                    doc_root: &automerge::ROOT,
+                },
+                // The palette's row budget.
+                8,
+            )
+        };
+
+        let empty = grouped("");
+        let suggestions = empty
+            .iter()
+            .filter(|group| group.kind == ResourceKind::Action)
+            .flat_map(|group| group.results.iter().map(|result| result.id.as_str()))
+            .collect::<Vec<_>>();
+        assert!(
+            suggestions.contains(&"room.activity.open")
+                && suggestions.contains(&"shortcut-help.toggle"),
+            "the empty palette looks its suggestions up: {suggestions:?}"
+        );
+        assert_eq!(
+            builds.get(),
+            1,
+            "one fan-out query and its suggestion lookups share one build"
+        );
+        grouped("");
+        assert_eq!(builds.get(), 1, "nothing changed, so nothing is rebuilt");
+        for needle in ["d", "da", "dar"] {
+            assert!(!grouped(needle).is_empty(), "{needle:?} finds actions");
+        }
+        let found = grouped("dark")
+            .into_iter()
+            .flat_map(|group| group.results)
+            .any(|result| result.id == "appearance.theme.dark");
+        assert!(found, "\"dark\" finds the dark theme");
+        assert_eq!(builds.get(), 1, "typing narrows the retained rows");
+    }
+
+    #[test]
+    fn resolve_does_not_rank() {
+        let provider = ActionsProvider::new();
+        let chrome = chrome_with_room();
+        let doc = AutoCommit::new();
+        let state = chrome.borrow();
+        let ctx = |needle| SearchContext {
+            query_scope: None,
+            include_programmatic: false,
+            needle,
+            wanted: &[ResourceKind::Action],
+            chrome: &state,
+            doc: &doc,
+            doc_root: &automerge::ROOT,
+        };
+        let tour = provider
+            .resolve("desktop-tour.open", ctx(""))
+            .expect("the tour resolves by its address");
+        assert_eq!(tour.id, "desktop-tour.open");
+        assert_eq!(tour.title, t("search-action-desktop-tour-open"));
+        assert_eq!(provider.builds.get(), 1);
+        assert!(
+            provider.resolve("shortcut-help.toggle", ctx("")).is_some()
+                && provider.resolve("no.such.action", ctx("")).is_none()
+        );
+        assert!(
+            provider
+                .resolve("desktop-tour.open", ctx("something else entirely"))
+                .is_some(),
+            "an address is not a search"
+        );
+        assert_eq!(
+            provider
+                .query(ctx("tour"))
+                .first()
+                .map(|row| row.id.as_str()),
+            Some("desktop-tour.open")
+        );
+        assert_eq!(
+            provider.builds.get(),
+            1,
+            "lookups and queries in one state share one build"
+        );
+        assert!(
+            provider
+                .resolve(
+                    "desktop-tour.open",
+                    SearchContext {
+                        wanted: &[ResourceKind::File],
+                        ..ctx("")
+                    }
+                )
+                .is_none(),
+            "a lookup that does not want actions finds none"
+        );
+    }
+
+    #[test]
+    fn catalogue_rebuilds_on_locale_and_workspace_change() {
+        struct RestoreLocale;
+        impl Drop for RestoreLocale {
+            fn drop(&mut self) {
+                ui::i18n::I18nManager::set_locale("en-US");
+            }
+        }
+        let provider = ActionsProvider::new();
+        let chrome = chrome_with_room();
+        let language = |provider: &ActionsProvider| {
+            row(&rows_for(provider, &chrome, ""), "appearance.language")
+                .map(|row| row.title.clone())
+        };
+
+        // Locale.
+        assert_eq!(language(&provider).as_deref(), Some("Set language"));
+        let _restore = RestoreLocale;
+        ui::i18n::I18nManager::set_locale("de-DE");
+        assert_eq!(crate::shell::i18n::current_locale(), "de-DE");
+        assert_eq!(language(&provider).as_deref(), Some("Sprache festlegen"));
+        ui::i18n::I18nManager::set_locale("en-US");
+        assert_eq!(language(&provider).as_deref(), Some("Set language"));
+
+        // Active workspace: governance rows address the workspace now active.
+        let (first_room, second, second_room) = {
+            use crate::shell::state::{Workspace, WorkspaceId};
+            let state = chrome.borrow();
+            let mut tree = state.tree_mut();
+            let first_room = tree.desktop.active_workspace().expect("fixture").room;
+            let id = WorkspaceId::new();
+            let mut workspace = Workspace::new(id, "Second");
+            workspace.set_owner("shell-fixture");
+            let room = workspace.room;
+            tree.desktop.workspaces.push(workspace);
+            drop(tree);
+            (first_room, id, room)
+        };
+        assert_ne!(first_room, second_room);
+        let proposal = |provider: &ActionsProvider| {
+            rows_for(provider, &chrome, "ownership")
+                .into_iter()
+                .find(|row| row.id.ends_with("#ownership.propose"))
+                .map(|row| row.id)
+        };
+        assert_eq!(
+            proposal(&provider),
+            Some(format!("workspace:{first_room}#ownership.propose"))
+        );
+        chrome.borrow().tree_mut().desktop.active = second;
+        assert_eq!(
+            proposal(&provider),
+            Some(format!("workspace:{second_room}#ownership.propose")),
+            "switching workspace rebuilds its governance rows"
+        );
+    }
+
+    #[test]
+    fn catalogue_rebuilds_on_tree_mutations_and_per_desktop() {
+        let provider = ActionsProvider::new();
+        let chrome = chrome_with_room();
+        let (workspace_id, workspace_room) = {
+            let state = chrome.borrow();
+            let tree = state.tree();
+            let workspace = tree.desktop.active_workspace().expect("fixture");
+            let located = (workspace.id, workspace.room);
+            drop(tree);
+            located
+        };
+
+        // A tree mutation the chrome made, which it bumps the revision for.
+        let switch_to = |provider: &ActionsProvider| {
+            row(
+                &rows_for(provider, &chrome, ""),
+                &format!("workspace.select.{}", workspace_id.0),
+            )
+            .map(|row| row.title.clone())
+            .expect("every workspace can be switched to")
+        };
+        assert!(switch_to(&provider).contains("Demo"));
+        {
+            let mut state = chrome.borrow_mut();
+            state
+                .tree_mut()
+                .desktop
+                .active_workspace_mut()
+                .expect("workspace")
+                .name = "Renamed".into();
+            state.bump();
+        }
+        assert!(switch_to(&provider).contains("Renamed"));
+
+        // A mutation from outside the chrome, before a tick folds it in.
+        {
+            let state = chrome.borrow();
+            let mut tree = state.tree_mut();
+            tree.desktop.active_workspace_mut().expect("workspace").name = "Remote".into();
+            tree.desktop.external_revision = tree.desktop.external_revision.wrapping_add(1);
+        }
+        assert!(switch_to(&provider).contains("Remote"));
+
+        // Another desktop that differs only in being another: the same
+        // workspace id and revisions, its own room.
+        let other = {
+            use crate::shell::state::Workspace;
+            let mut tree = WorkspaceTree::default();
+            let mut workspace = Workspace::new(workspace_id, "Remote");
+            workspace.set_owner("shell-fixture");
+            tree.desktop.workspaces.push(workspace);
+            tree.desktop.active = workspace_id;
+            tree.desktop.external_revision = chrome.borrow().tree().desktop.external_revision;
+            ChromeState::new_with_fixture_handle(
+                Arc::new(RwLock::new(tree)),
+                crate::shell::hosted_inputs::HostedTileInputs::default(),
+            )
+        };
+        other.borrow_mut().revision = chrome.borrow().revision;
+        let other_room = other
+            .borrow()
+            .tree()
+            .desktop
+            .active_workspace()
+            .expect("fixture")
+            .room;
+        assert_ne!(other_room, workspace_room);
+        let other_proposal = rows_for(&provider, &other, "ownership")
+            .into_iter()
+            .find(|row| row.id.ends_with("#ownership.propose"))
+            .map(|row| row.id);
+        assert_eq!(
+            other_proposal,
+            Some(format!("workspace:{other_room}#ownership.propose")),
+            "one provider asked about two desktops answers for each"
+        );
+    }
+
+    #[test]
+    fn catalogue_rebuilds_on_collaboration_and_search_sources() {
+        // Peer sync and the collaboration broker.
+        let provider = ActionsProvider::new();
+        let chrome = chrome_with_room();
+        let offers = |provider: &ActionsProvider, id: &str| {
+            row(&rows_for(provider, &chrome, ""), id).is_some()
+        };
+        assert!(!offers(&provider, "peer.invite"));
+        chrome.borrow_mut().peer_sync_enabled = true;
+        assert!(offers(&provider, "peer.invite"), "peer sync started");
+        assert!(offers(&provider, "agent.invite"));
+        chrome
+            .borrow_mut()
+            .set_collab_unavailable("the broker could not start");
+        assert!(!offers(&provider, "agent.invite"), "the broker went away");
+
+        // Search sources: one registered, and one turned off.
+        let mut registry = crate::shell::search::SearchRegistry::new();
+        let provider = ActionsProvider::with_preferences_and_catalog(
+            registry.preferences_handle(),
+            registry.provider_catalog_handle(),
+        );
+        let chrome = chrome_rc();
+        let switch = |provider: &ActionsProvider, id: &str| {
+            row(
+                &rows_for(provider, &chrome, ""),
+                &format!("search.provider.toggle:{id}"),
+            )
+            .map(|row| row.title.clone())
+        };
+        let windows = super::super::desktop_windows::DesktopWindowsProvider::new();
+        let windows_id = windows.id().to_string();
+        let windows_name = windows.display_name();
+        assert_eq!(switch(&provider, &windows_id), None);
+        registry.register(Rc::new(windows));
+        let source: &[(&str, ui::i18n::ArgValue)] = &[
+            ("source", windows_name.into()),
+            ("id", windows_id.clone().into()),
+        ];
+        assert_eq!(
+            switch(&provider, &windows_id),
+            Some(t_args("search-action-provider-disable", source)),
+            "a newly registered source gets its switch"
+        );
+        registry.set_provider_enabled(&windows_id, false);
+        assert_eq!(
+            switch(&provider, &windows_id),
+            Some(t_args("search-action-provider-enable", source)),
+            "a source turned off is offered to turn back on"
+        );
+    }
+
+    #[test]
+    fn catalogue_rebuilds_on_quick_settings_backend_and_availability() {
+        // The Quick Settings backend, what it can do, and a swap of either.
+        let first = Rc::new(RecordingQsActions::default());
+        let slot = Rc::new(SharedQsDispatcher::new(
+            first.clone(),
+            crate::shell::quick_settings::actions::QsActionAvailability::all(),
+        ));
+        let provider = ActionsProvider::with_shared_qs_actions(Rc::clone(&slot));
+        let chrome = chrome_with_room();
+        let set_volume = |provider: &ActionsProvider| {
+            let rows = rows_for(provider, &chrome, "");
+            let volume = row(&rows, QS_VOLUME_ID).expect("volume action");
+            let args = ActionArgs::bind(
+                &volume.params,
+                [(
+                    "percent".into(),
+                    crate::shell::search::action_api::ArgValue::Number(40.0),
+                )],
+            )
+            .expect("volume arguments");
+            let mut doc = AutoCommit::new();
+            (volume.on_open)(
+                &mut ui::widget::Edits::lend(&mut doc),
+                &automerge::ROOT,
+                &chrome,
+                &args,
+            )
+        };
+        set_volume(&provider).expect("the first backend sets the volume");
+        assert_eq!(*first.calls.borrow(), ["volume:40"]);
+        let second = Rc::new(RecordingQsActions::default());
+        slot.replace(
+            second.clone(),
+            crate::shell::quick_settings::actions::QsActionAvailability::all(),
+        );
+        set_volume(&provider).expect("the second backend sets the volume");
+        assert_eq!(
+            *first.calls.borrow(),
+            ["volume:40"],
+            "a replaced backend is not called"
+        );
+        assert_eq!(*second.calls.borrow(), ["volume:40"]);
+        let volume_available = |provider: &ActionsProvider| {
+            row(&rows_for(provider, &chrome, ""), QS_VOLUME_ID)
+                .and_then(|row| row.contract.as_ref())
+                .expect("volume contract")
+                .availability
+                .is_available()
+        };
+        assert!(volume_available(&provider));
+        slot.replace(
+            second,
+            crate::shell::quick_settings::actions::QsActionAvailability {
+                volume: false,
+                ..crate::shell::quick_settings::actions::QsActionAvailability::all()
+            },
+        );
+        assert!(!volume_available(&provider), "the volume control went away");
     }
 
     #[test]
@@ -4483,6 +5355,71 @@ mod tests {
         assert_eq!(
             settings_store::str_at(&settings_store::load(), "appearance", "language"),
             Some("de-DE")
+        );
+    }
+
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn a_theme_action_records_its_action_id_with_both_leaves_it_sets() {
+        struct Uninstall;
+        impl Drop for Uninstall {
+            fn drop(&mut self) {
+                settings_store::install_source(None);
+            }
+        }
+        let config = tempfile::tempdir().expect("isolated settings");
+        let paths = settings_store::SessionPaths::beside(config.path().join("settings.json"));
+        let records = settings_store::SessionSettings::open(paths.clone()).expect("records");
+        settings_store::install_source(Some(std::sync::Arc::new(records)));
+        let _uninstall = Uninstall;
+
+        let provider = ActionsProvider::new();
+        let chrome = chrome_with_room();
+        let doc = AutoCommit::new();
+        let rows = {
+            let state = chrome.borrow();
+            provider.query(SearchContext {
+                query_scope: None,
+                include_programmatic: false,
+                needle: "light theme",
+                wanted: &[ResourceKind::Action],
+                chrome: &state,
+                doc: &doc,
+                doc_root: &automerge::ROOT,
+            })
+        };
+        invoke_action(&rows, "appearance.theme.light", &chrome);
+
+        let log = std::fs::read_to_string(paths.change_log()).expect("change log");
+        let entries: Vec<serde_json::Value> = log
+            .lines()
+            .map(|line| serde_json::from_str(line).expect("one JSON entry per line"))
+            .collect();
+        let mut leaves: Vec<_> = entries
+            .iter()
+            .map(|entry| {
+                assert_eq!(entry["section"], "appearance");
+                assert_eq!(entry["action"], "appearance.theme.light");
+                assert_eq!(entry["via"], "session");
+                (
+                    entry["leaf"].as_str().unwrap_or_default(),
+                    entry["after"].clone(),
+                )
+            })
+            .collect();
+        leaves.sort_by_key(|(leaf, _)| *leaf);
+        assert_eq!(
+            leaves,
+            [
+                ("high_contrast", serde_json::json!(false)),
+                ("mode", serde_json::json!("light")),
+            ],
+            "one merge sets both leaves, each attributed to the action"
+        );
+        assert_eq!(
+            settings_store::load_at(&paths.copy)["appearance"]["mode"],
+            "light",
+            "processes reading the copy see the typed write"
         );
     }
 
@@ -5489,6 +6426,7 @@ mod tests {
         let rules = serde_json::to_string(&vec![collab_types::PermissionProfileRule::grant(
             collab_types::Scope::Action {
                 app: "so.tilo.notes".into(),
+                resource: "notes.page:1".into(),
                 action: "note.open".into(),
             },
             collab_types::Verb::Read,
@@ -5574,6 +6512,7 @@ mod tests {
             &workspace.actor_for_agent("researcher"),
             &crate::shell::state::ResourceRef::Action {
                 app: "so.tilo.notes".into(),
+                resource: "notes.page:1".into(),
                 action: "note.open".into(),
             },
             crate::shell::state::Verb::Read,

@@ -1041,19 +1041,28 @@ pub(crate) fn discover_cached_bound_resources(
     Ok(snapshots)
 }
 
-/// Action-scoped authority shared by native and headless legacy hosts.
+/// Action-scoped authority shared by native and headless legacy hosts: the
+/// action `action` on the resource `resource_id`.
 pub(crate) fn permits_local_action(
     permissions: &PermissionContext,
     app_id: &str,
+    resource_id: &str,
     action: &tilo_actions::ActionSpec,
 ) -> bool {
-    permits_local_invocation(permissions, app_id, action, action.contract.permission)
+    permits_local_invocation(
+        permissions,
+        app_id,
+        resource_id,
+        action,
+        action.contract.permission,
+    )
 }
 
 /// [`permits_local_action`] for one invocation: what its arguments ask.
 pub(crate) fn permits_local_value(
     permissions: &PermissionContext,
     app_id: &str,
+    resource_id: &str,
     action: &tilo_actions::ActionSpec,
     typed: Option<&serde_json::Map<String, serde_json::Value>>,
     argument: Option<&str>,
@@ -1062,12 +1071,13 @@ pub(crate) fn permits_local_value(
         Some(arguments) => action.permission_for_json(arguments),
         None => action.permission_for_argument(argument),
     };
-    permits_local_invocation(permissions, app_id, action, requirement)
+    permits_local_invocation(permissions, app_id, resource_id, action, requirement)
 }
 
 fn permits_local_invocation(
     permissions: &PermissionContext,
     app_id: &str,
+    resource_id: &str,
     action: &tilo_actions::ActionSpec,
     requirement: tilo_actions::PermissionRequirement,
 ) -> bool {
@@ -1082,15 +1092,19 @@ fn permits_local_invocation(
         Requirement::Admin => Verb::Admin,
     };
     permissions.check(&crate::permissions::PermissionScope::action(
-        app_id, &action.id, verb,
+        app_id,
+        resource_id,
+        &action.id,
+        verb,
     ))
 }
 
 /// May the component's participant take this one invocation of `action`:
-/// what its arguments ask, under the same app scope the published tree is
+/// what its arguments ask, under the same resource scope the published tree is
 /// filtered by.
 fn permits_invocation(
     binding: &CallbackBinding,
+    resource_id: &str,
     action: &tilo_actions::ActionSpec,
     typed: Option<&serde_json::Map<String, serde_json::Value>>,
     argument: Option<&str>,
@@ -1112,8 +1126,10 @@ fn permits_invocation(
     binding
         .permissions
         .borrow()
-        .check(&crate::permissions::PermissionScope::app(
+        .check(&crate::permissions::PermissionScope::action(
             &binding.app_id,
+            resource_id,
+            &action.id,
             verb,
         ))
 }
@@ -1130,6 +1146,7 @@ pub(crate) fn filter_resource(
     binding: &CallbackBinding,
     mut resource: tilo_actions::Resource,
 ) -> Option<tilo_actions::Resource> {
+    let resource_id = resource.id.as_str().to_owned();
     resource.actions.retain(|action| {
         use crate::permissions::Verb;
         use tilo_actions::PermissionRequirement as Requirement;
@@ -1144,8 +1161,10 @@ pub(crate) fn filter_resource(
         binding
             .permissions
             .borrow()
-            .check(&crate::permissions::PermissionScope::app(
+            .check(&crate::permissions::PermissionScope::action(
                 &binding.app_id,
+                &resource_id,
+                &action.id,
                 verb,
             ))
     });
@@ -2139,7 +2158,7 @@ pub(crate) fn invoke_resource_action(
                     }
                     // The tree offers an action under the least it needs;
                     // this invocation needs what its value asks.
-                    if !permits_invocation(binding, spec, arguments.as_ref(), argument) {
+                    if !permits_invocation(binding, &target.address.address.resource, spec, arguments.as_ref(), argument) {
                         return Err(denied(spec).into());
                     }
                     crate::invocation_scope::check_continuation(
@@ -2350,12 +2369,95 @@ pub(crate) struct ComponentRequest<'a> {
     pub(crate) visit: &'a mut ComponentVisitor<'a>,
 }
 
+/// One original ordinary model pass for the current retained owner. No callback
+/// is omitted from a wake reason, document frontier or presentation state.
+pub(crate) fn service_retained_owner_model(
+    root: &mut dyn Widget,
+    outer: &mut AutoCommit,
+    work: &crate::owner_wake::OwnerWakeRequest,
+) -> Result<(), BoundDispatchError> {
+    let captured = work.binding();
+    let _entry = captured.enter()?;
+    let mut result = None;
+    let mut visit = |current: &CallbackBinding,
+                     owner: &mut dyn crate::widget::AppWidget,
+                     _: &tilo_actions::ActionRegistry| {
+        if current.same_component(captured) {
+            let updated = current
+                .with_settlement(outer, |document, record_root| {
+                    owner.update(document, record_root);
+                    owner.settle(&mut crate::widget::Edits::lend(document), record_root);
+                    current.drain_owned_tree(owner, document).map(|_| ())
+                })
+                .and_then(|result| result);
+            // Preserve the original separate update and sync admissions/actor
+            // restoration, rather than holding a canonical loan across both.
+            let synced = current
+                .with_document(outer, |document, record_root| {
+                    owner.sync(document, record_root);
+                    current.drain_owned_tree(owner, document).map(|_| ())
+                })
+                .and_then(|result| result);
+            // The original host attempts sync after a nonpanic update/drain
+            // refusal. Retain its first error without omitting the fresh door.
+            let admitted = updated.and(synced);
+            // Original status projection follows the canonical loan, including
+            // refusal. No application callback runs under a record-store loan.
+            let projected = current.enter().and_then(|_entry| {
+                current
+                    .records
+                    .save_status(&current.checkout.id)
+                    .map_err(BoundDispatchError::Record)
+                    .map(|status| owner.record_save_status(status))
+            });
+            // Offer only this admitted record, after both canonical loans.
+            // Pending host acknowledgement is accepted, not a model retry.
+            let offered = current.enter().and_then(|_entry| {
+                current
+                    .records
+                    .offer_record(&current.checkout.id)
+                    .map_err(BoundDispatchError::Persistence)
+            });
+            result = Some(admitted.and(projected).and(offered));
+        }
+        None
+    };
+    let mut request = ComponentRequest {
+        target: Some(captured),
+        found: false,
+        visit: &mut visit,
+    };
+    root.visit_retained_components(&mut RetainedComponentRequest {
+        inner: &mut request,
+    })?;
+    result.unwrap_or(Err(BoundDispatchError::ClosedLifetime))
+}
+
+/// SDK-owned retained component traversal, separate from public callback reach.
+pub struct RetainedComponentRequest<'a, 'b> {
+    inner: &'a mut ComponentRequest<'b>,
+}
+impl<'b> RetainedComponentRequest<'_, 'b> {
+    pub(crate) fn inner(&mut self) -> &mut ComponentRequest<'b> {
+        self.inner
+    }
+    /// Forward only through actual retained storage. Unknown roots preserve their
+    /// original `visit_components` callback, including refusals and side effects.
+    pub fn visit(&mut self, child: &mut dyn Widget) -> Result<(), BoundDispatchError> {
+        if self.inner.found {
+            return Ok(());
+        }
+        child.visit_retained_components(self)
+    }
+}
+
 #[derive(Debug)]
 pub enum BoundDispatchError {
     MissingNode,
     ClosedLifetime,
     CrossRecordReentry,
     Record(RecordOpenError),
+    Persistence(String),
 }
 
 /// Logical typing ownership survives physical commits made when an opaque
@@ -3501,6 +3603,8 @@ impl CallbackBinding {
         outer: &mut AutoCommit,
         callback: impl FnOnce(&mut AutoCommit, &ObjId) -> R,
     ) -> Result<R, BoundDispatchError> {
+        #[cfg(test)]
+        document_admission_probe::record(self);
         self.with_record_frame(outer, true, callback)
     }
     /// Lend typed edits without opening a mutation merely because a frame polls.
@@ -3510,6 +3614,8 @@ impl CallbackBinding {
         outer: &mut AutoCommit,
         callback: impl FnOnce(&mut AutoCommit, &ObjId) -> R,
     ) -> Result<R, BoundDispatchError> {
+        #[cfg(test)]
+        document_admission_probe::record(self);
         self.with_record_frame(outer, false, |document, root| {
             let handle = ACTIVE
                 .with_borrow(|active| active.as_ref().and_then(|entry| entry.3.clone()))
@@ -4574,3 +4680,46 @@ mod device_actor_tests;
 #[cfg(test)]
 #[path = "bound_dispatch/native_text_tests.rs"]
 mod native_text_tests;
+
+#[cfg(test)]
+pub(crate) mod document_admission_probe {
+    use super::*;
+    struct Observation {
+        owner: std::rc::Weak<Cell<bool>>,
+        closing: Rc<RefCell<Vec<bool>>>,
+    }
+    thread_local! { static CURRENT: RefCell<Option<Observation>> = const { RefCell::new(None) }; }
+    pub(crate) struct Probe {
+        previous: Option<Observation>,
+        closing: Rc<RefCell<Vec<bool>>>,
+    }
+    impl Probe {
+        pub(crate) fn new(binding: &CallbackBinding) -> Self {
+            let closing = Rc::new(RefCell::new(Vec::new()));
+            let previous = CURRENT.with_borrow_mut(|current| {
+                current.replace(Observation {
+                    owner: Rc::downgrade(&binding.closing),
+                    closing: closing.clone(),
+                })
+            });
+            Self { previous, closing }
+        }
+        pub(crate) fn attempts(&self) -> Vec<bool> {
+            self.closing.borrow().clone()
+        }
+    }
+    impl Drop for Probe {
+        fn drop(&mut self) {
+            CURRENT.with_borrow_mut(|current| *current = self.previous.take());
+        }
+    }
+    pub(super) fn record(binding: &CallbackBinding) {
+        CURRENT.with_borrow(|current| {
+            if let Some(current) = current
+                && std::rc::Weak::ptr_eq(&current.owner, &Rc::downgrade(&binding.closing))
+            {
+                current.closing.borrow_mut().push(binding.closing.get());
+            }
+        });
+    }
+}

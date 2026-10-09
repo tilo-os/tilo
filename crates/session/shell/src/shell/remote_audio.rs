@@ -592,6 +592,18 @@ struct RemoteAudioState {
     local: BTreeMap<[u8; 16], LocalGroupRoute>,
 }
 
+impl RemoteAudioState {
+    /// Nothing for [`pump`] to reconcile, capture, send or expire. Picker
+    /// source tokens need no pumping.
+    fn is_idle(&self) -> bool {
+        self.pending.is_empty()
+            && self.outbound.is_empty()
+            && self.inbound.is_empty()
+            && self.interrupted.is_empty()
+            && self.local.is_empty()
+    }
+}
+
 fn record_interruption(
     state: &mut RemoteAudioState,
     session_id: [u8; 16],
@@ -1890,14 +1902,25 @@ pub fn handle_action(network: &ShellNetwork, envelope: &PersonalFabricActionEnve
 
 /// Drive capture, bounded frame transmission, and all lifecycle revocations.
 pub fn pump(network: &ShellNetwork, enabled: bool, focus: Option<&PhysicalGamepadBinding>) {
-    let online = network
-        .device_fabric()
-        .online_devices()
-        .map(|presence| presence.device.clone())
-        .collect::<BTreeSet<_>>();
+    pump_state(state(), network, enabled, focus);
+}
+
+/// [`pump`] over `state`. Runs every compositor frame, so with no route,
+/// request or notice it returns before touching the device fabric, and
+/// otherwise reads the fabric in place rather than cloning it.
+fn pump_state(
+    state: &Mutex<RemoteAudioState>,
+    network: &ShellNetwork,
+    enabled: bool,
+    focus: Option<&PhysicalGamepadBinding>,
+) {
+    if state.lock().is_ok_and(|state| state.is_idle()) {
+        return;
+    }
+    let online = network.online_device_ids();
     let now = Instant::now();
     let mut egress = Vec::new();
-    let Ok(mut guard) = state().lock() else {
+    let Ok(mut guard) = state.lock() else {
         return;
     };
     egress.extend(reconcile_lifecycle(
@@ -1959,7 +1982,7 @@ pub fn pump(network: &ShellNetwork, enabled: bool, focus: Option<&PhysicalGamepa
     for message in egress {
         let outbound_session = message.outbound_session;
         if let Err(error) = network.try_send_personal_fabric_action(&message.target, message.action)
-            && let Ok(mut state) = state().lock()
+            && let Ok(mut state) = state.lock()
         {
             apply_send_failure(&mut state, outbound_session, &error, Instant::now());
         }
@@ -2097,6 +2120,42 @@ mod tests {
 
     fn before(now: Instant, elapsed: Duration) -> Instant {
         now.checked_sub(elapsed).unwrap()
+    }
+
+    #[test]
+    fn pump_does_not_clone_fabric_when_idle() {
+        let (network, mut commands) = crate::shell::network::shell_network_for_test(
+            crate::shell::state::WorkspaceTree::default().shared(),
+            0xA0D1,
+        );
+        let state = Mutex::new(RemoteAudioState::default());
+        for _ in 0..100 {
+            pump_state(&state, &network, true, None);
+        }
+        assert_eq!(
+            network.device_fabric_reads(),
+            (0, 0),
+            "an idle pump does not look at the fabric"
+        );
+        assert!(commands.try_recv().is_err(), "an idle pump sends nothing");
+
+        // A live notice needs the online set, read in place.
+        state.lock().unwrap().interrupted.insert(
+            [9; 16],
+            InterruptedRoute {
+                peer: DeviceId::new("peer").unwrap(),
+                label: "Music".into(),
+                inbound: false,
+                at: Instant::now(),
+            },
+        );
+        pump_state(&state, &network, true, None);
+        assert_eq!(
+            network.device_fabric_reads(),
+            (0, 1),
+            "borrowed, never cloned"
+        );
+        assert_eq!(state.lock().unwrap().interrupted.len(), 1);
     }
 
     #[test]

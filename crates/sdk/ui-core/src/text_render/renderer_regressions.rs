@@ -1056,7 +1056,11 @@ fn the_generic_sans_follows_the_theme_ui_face() {
 fn features_renderer() -> TextRenderer {
     let mut renderer = renderer();
     renderer.font_system.db_mut().load_font_data(
-        include_bytes!("../../tests/fixtures/fonts/TiloSansFeaturesFixture-Regular.ttf").to_vec(),
+        include_bytes!(concat!(
+            env!("OUT_DIR"),
+            "/TiloSansFeaturesFixture-Regular.ttf"
+        ))
+        .to_vec(),
     );
     renderer
 }

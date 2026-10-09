@@ -146,7 +146,7 @@ struct CheckpointBytes {
     decoded: std::sync::OnceLock<Result<std::sync::Arc<DecodedCheckpoint>, String>>,
 }
 struct DecodedCheckpoint {
-    doc: automerge::Automerge,
+    doc: AutoCommit,
     heads: Vec<String>,
     payload_hash: [u8; 32],
 }
@@ -165,7 +165,7 @@ impl AcceptedCheckpoint {
     fn decode(&self) -> Result<std::sync::Arc<DecodedCheckpoint>, String> {
         #[cfg(test)]
         CHECKPOINT_DECODES.with(|count| count.set(count.get().saturating_add(1)));
-        let doc = automerge::Automerge::load(&self.0.bytes).map_err(err)?;
+        let mut doc = AutoCommit::load(&self.0.bytes).map_err(err)?;
         let heads = doc.get_heads().iter().map(ToString::to_string).collect();
         let payload_hash = crate::document::snapshot_hash(&self.0.bytes).map_err(err)?;
         Ok(std::sync::Arc::new(DecodedCheckpoint {
@@ -1291,13 +1291,19 @@ impl StatePeer {
         let Ok(checkpoint) = snapshot.decoded() else {
             return false;
         };
-        let mut proof = checkpoint.doc.clone();
-        let before = proof.get_heads();
         // A sequence floor is not causal coverage: an out-of-order incremental
         // may have been validated while its dependencies were unavailable.
-        proof.load_incremental(&bytes).is_ok()
-            && proof.get_missing_deps(&[]).is_empty()
-            && proof.get_heads() == before
+        // Contained: applied in the isolate to a copy of the checkpoint, the
+        // peer's bytes leave its heads where they were and nothing waiting.
+        let mut proof = checkpoint.doc.clone();
+        matches!(
+            tilo_automerge_isolate::apply(
+                &mut proof,
+                &bytes,
+                tilo_automerge_isolate::Dependencies::RequireComplete
+            ),
+            Ok(tilo_automerge_isolate::Applied::Changed(false))
+        )
     }
     pub fn rows(&self) -> Vec<DocumentRow> {
         self.core
@@ -1339,7 +1345,7 @@ impl StatePeer {
             app: app.into(),
             record: record.into(),
         })?;
-        if entry.encryption_required || !ReadDoc::get_missing_deps(&entry.doc, &[]).is_empty() {
+        if entry.encryption_required || !ReadDoc::get_missing_deps(&*entry.doc, &[]).is_empty() {
             return None;
         }
         Some(entry.doc.base_heads())
@@ -1351,7 +1357,7 @@ impl StatePeer {
                 app: app.into(),
                 record: record.into(),
             })
-            .map(|entry| entry.doc.clone().save())
+            .map(|entry| entry.doc.saved())
     }
     fn certificate(&self, source: &[u8; 32], now: SystemTime) -> Result<&DeviceCert, String> {
         self.core.certificate_typed(source, now).map_err(err)
@@ -1634,60 +1640,36 @@ impl StatePeer {
                 if received != self.core.room {
                     return Err("room topic mismatch".into());
                 }
-                self.certificate(&source, now)?;
-                if self.core.room_doc.is_some() || source != self.core.authority.device_public_key {
-                    let role = self.role(&source, now)?;
-                    let certificate = self.certificate(&source, now)?;
-                    let person = Principal::person_from_key(Ed25519PublicKey::from_bytes(
-                        certificate.user_public_key,
-                    ));
-                    let (_, _, caps) = room::extract_governed_fields(
-                        self.core
-                            .room_doc
-                            .as_deref()
-                            .ok_or("room governance missing")?,
-                    );
-                    let actor =
-                        Actor::person(Some(role), person.id()).in_room(self.core.room.clone());
-                    if decide_capability(
-                        &actor,
-                        &ResourceRef::Room(self.core.room.clone()),
-                        collab_types::caps::Verb::Write,
-                        &caps,
-                        Some(now_secs(now)),
-                    ) != CapDecision::Allow
-                    {
-                        return Err("room write forbidden".into());
-                    }
-                }
-                let candidate =
-                    room::candidate(self.core.room_doc.as_deref(), &changes).map_err(err)?;
-                if room::declared_room_mismatches(
-                    &candidate,
-                    uuid::Uuid::parse_str(&self.core.room).map_err(err)?,
-                ) {
-                    return Err("declared room mismatch".into());
-                }
+                let person = self.certificate(&source, now)?.user_public_key;
+                // Bootstrap: the invite's authority device supplies the first
+                // governance before any roster exists to resolve it against.
+                let role = if self.core.room_doc.is_some()
+                    || source != self.core.authority.device_public_key
+                {
+                    Some(self.role(&source, now)?)
+                } else {
+                    None
+                };
                 let pinned = hex::encode(self.core.authority.device_public_key);
                 let from = hex::encode(source);
-                if !room::governance_change_allowed(
-                    self.core.room_doc.as_deref(),
-                    &candidate,
-                    false,
-                    Some(&pinned),
-                    &from,
-                ) {
-                    return Err("governance writer is not pinned authority".into());
-                }
-                crate::topology::validate(
-                    self.core.room_doc.as_deref(),
-                    &candidate,
-                    &from,
-                    &pinned,
-                )?;
-                if !room::immutable_receipts(self.core.room_doc.as_deref(), &candidate) {
-                    return Err("effect receipt is immutable".into());
-                }
+                // The one room admission the shell's workspace tree runs too.
+                let room::AdmittedRoom { candidate, media } = room::admit_room_changes(
+                    room::RoomAdmission {
+                        before: self.core.room_doc.as_deref(),
+                        room: &self.core.room,
+                        source: room::Writer {
+                            key: &from,
+                            standing: room::Standing::Member { person, role },
+                        },
+                        authority: room::AuthorityPin::Device(&pinned),
+                        contents: room::ContentOwnership::Registry,
+                        caps_now: now_secs(now),
+                    },
+                    &changes,
+                )
+                .map_err(err)?;
+                // Receipts this peer admitted earlier stay immutable even once
+                // the room document omits them.
                 let mut receipts = self.core.receipts.clone();
                 for (key, value) in room::receipt_values(&candidate) {
                     let bytes = serde_json::to_vec(&value).map_err(err)?;
@@ -1696,19 +1678,11 @@ impl StatePeer {
                     }
                     receipts.insert(key, bytes);
                 }
-                crate::coverage::monotonic(self.core.room_doc.as_deref(), &candidate)?;
-                crate::durability::monotonic(self.core.room_doc.as_deref(), &candidate)?;
                 let changed = self
                     .core
                     .room_doc
                     .as_deref()
                     .is_none_or(|doc| doc.base_heads() != candidate.base_heads());
-                let media = room::media::validate_transition(
-                    self.core.room_doc.as_deref(),
-                    &candidate,
-                    room::media::TransitionMode::Admission,
-                )
-                .map_err(err)?;
                 if let Some(policy) = &media {
                     self.validate_media_bindings(policy, false)?;
                 }
@@ -1996,7 +1970,7 @@ impl StatePeer {
             .get(&route)
             .cloned()
             .unwrap_or_else(|| Document {
-                doc: AutoCommit::new(),
+                doc: AutoCommit::new().into(),
                 channel: ChannelState::default(),
                 encryption_required: false,
                 covered: BTreeMap::new(),
@@ -2241,7 +2215,7 @@ impl StatePeer {
                 &policy,
                 &route.app,
                 &route.record,
-                &candidate.doc,
+                &*candidate.doc,
             )
             .map_err(err)?;
         }
@@ -2649,7 +2623,7 @@ impl StatePeer {
                 self.prepare_signed_mutation(
                     &route.app,
                     &route.record,
-                    DocumentMutation::Snapshot(entry.doc.clone().save()),
+                    DocumentMutation::Snapshot(entry.doc.saved()),
                     key,
                     now,
                 )
@@ -2948,7 +2922,7 @@ impl StatePeer {
                     || old_receipts.get(&route_key) != receipts.get(&route_key)
             });
             if changed {
-                dirty.push((route.clone(), document.doc.clone().save()));
+                dirty.push((route.clone(), document.doc.saved()));
             }
         }
         let snapshots = if dirty.is_empty() {
@@ -3117,7 +3091,7 @@ impl StatePeer {
             .iter()
             .map(|(route, entry)| DurableDocument {
                 route: route.clone(),
-                bytes: entry.doc.clone().save(),
+                bytes: entry.doc.saved(),
                 watermarks: entry
                     .channel
                     .last_seq_per_author
@@ -3315,7 +3289,9 @@ impl StatePeer {
             peer.core.documents.insert(
                 document.route,
                 Document {
-                    doc: tilo_automerge_isolate::load(&document.bytes).map_err(err)?,
+                    doc: tilo_automerge_isolate::load(&document.bytes)
+                        .map(CachedDocument::from)
+                        .map_err(err)?,
                     channel,
                     encryption_required: document.encryption_required,
                     covered: document.covered,

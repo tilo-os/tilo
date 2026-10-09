@@ -54,7 +54,7 @@ pub use image::{
 pub use layout::Layout;
 pub use registry::{InstalledPackage, Pinning, Registry, RegistryError};
 #[cfg(feature = "store")]
-pub use store::{Admission, DiskUsage, Installed, PackageStore, Removed};
+pub use store::{Admission, DiskUsage, InstallSelection, Installed, PackageStore, Removed};
 pub use tilo_app_package::BlobFetcher;
 #[cfg(feature = "store")]
 pub use tilo_user_identity::{CertifiedFleet, DeviceStanding};

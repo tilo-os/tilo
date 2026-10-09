@@ -180,6 +180,7 @@ mod host_appearance;
 #[cfg(not(target_arch = "wasm32"))]
 mod host_chrome;
 pub mod host_data;
+pub mod owner_wake;
 /// The session's read-only vello pipeline cache every app starts from.
 pub mod pipeline_seed;
 #[cfg(all(windows, feature = "native"))]
@@ -529,3 +530,5 @@ pub use control_custody::{
     ControlCoverage, ControlDomain, ControlOutbox, ControlProducerDiscipline,
 };
 mod focus_navigation;
+
+pub use widget::{KeyboardMap, KeyboardMapInput, KeyboardMapKey, KeyboardMapSelection};

@@ -1720,6 +1720,39 @@ fn clipboard_crosses_between_clients_and_in_process_chrome_as_text_and_png() {
 }
 
 #[test]
+fn native_borrowed_display_pastes_the_compositors_current_selection() {
+    let compositor = Compositor::start();
+    let mut client = TestClient::new(compositor.connect(), "org.tilo.test.native-paste");
+    client.assert_is_tilo_compositor();
+    // This is the native runner's constructor, including its smithay-clipboard
+    // readers, rather than the publication-only protocol fixture constructor.
+    // SAFETY: client owns the display and outlives this backend.
+    let clipboard =
+        unsafe { ui::clipboard::WaylandClipboard::new(client.conn.backend().display_ptr().cast()) };
+    assert!(clipboard.wait_ready_for_wayland_test(deadline()));
+    client.map_window(&compositor);
+    compositor.key("a");
+    client.roundtrip();
+    let payload = "https://example.com/native-paste";
+    compositor.chrome_copy(payload, false);
+    client.roundtrip();
+    assert_eq!(
+        clipboard.text(ClipboardTarget::Clipboard).as_deref(),
+        Some(payload),
+        "the actual native reader lost a selection published by the compositor"
+    );
+    assert_eq!(
+        clipboard
+            .request_text(ClipboardTarget::Clipboard)
+            .recv_timeout(deadline())
+            .expect("explicit native paste reply")
+            .as_deref(),
+        Some(payload),
+        "explicit paste must read the focused compositor selection"
+    );
+}
+
+#[test]
 fn wayland_rich_clipboard_pairs_one_offer_and_clears_on_focus_loss() {
     let compositor = Compositor::start();
     let mut source = TestClient::new(compositor.connect(), "org.tilo.test.rich-source");

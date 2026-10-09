@@ -717,6 +717,55 @@ impl LiveAppActionsProvider {
     /// contracts, confirmation handling, and archived-launch behaviour in
     /// precisely one implementation while `query_page` accounts for this
     /// candidate explicitly.
+    /// A disclosed directory descriptor is the canonical route for that
+    /// exact publisher capability. Keep compatibility rows until it arrives.
+    fn has_disclosed_directory_alias(
+        &self,
+        ctx: &SearchContext<'_>,
+        surface: &PublishedSurface,
+        action: &PublishedAction,
+    ) -> bool {
+        let root = self
+            .broker
+            .state()
+            .action_directory_root_page(surface.peer_id.checked_sub(1), 1)
+            .roots
+            .into_iter()
+            .find(|root| {
+                root.peer_id == surface.peer_id
+                    && root.app_id == surface.app_id
+                    && root.cluster_id == surface.route.cluster_id
+                    && root.record_id == surface.route.record_id
+            });
+        if root.is_none() {
+            return false;
+        }
+        let actor = ctx
+            .chrome
+            .tree()
+            .desktop
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.room.to_string() == surface.route.cluster_id)
+            .map(|workspace| ctx.chrome.local_user_for_room(&workspace.room));
+        let Some(actor) = actor else {
+            return false;
+        };
+        let needle = ctx.needle.trim().to_lowercase();
+        self.directory_pages.borrow().iter().any(|(key, page)| {
+            key.0 == surface.peer_id
+                && key.1 == actor
+                && key.2 == needle
+                && page.rows.iter().any(|row| {
+                    row.app_id == surface.app_id
+                        && row.action.as_ref().is_some_and(|descriptor| {
+                            descriptor.address.resource == action.resource
+                                && descriptor.address.action == action.action
+                        })
+                })
+        })
+    }
+
     fn materialize_local_action(
         &self,
         ctx: &SearchContext<'_>,
@@ -746,19 +795,29 @@ impl LiveAppActionsProvider {
 
     fn poll_directory_pages_at(&self, now: Instant) {
         let mut ready = Vec::new();
+        let mut expired = false;
         self.directory_pending.borrow_mut().retain(|key, pending| {
-            if pending.deadline <= now {
-                return false;
-            }
+            // The UI may have been idle after the reply arrived. The deadline
+            // bounds unanswered work, not how soon a completed page is read.
             match pending.receiver.poll_ready() {
                 PendingPoll::Ready(Ok(page)) if !page.stale_cursor => {
                     ready.push((key.clone(), page, pending.initial_page));
                     false
                 }
                 PendingPoll::Ready(_) | PendingPoll::Abandoned => false,
+                PendingPoll::Waiting if pending.deadline <= now => {
+                    expired = true;
+                    false
+                }
                 PendingPoll::Waiting => true,
             }
         });
+        if expired {
+            // An empty projection must not prevent another bounded request
+            // after a stalled directory ticket has been cancelled.
+            self.auxiliary_snapshot.borrow_mut().take();
+            self.directory_epoch.fetch_add(1, Ordering::Relaxed);
+        }
         if !ready.is_empty() {
             let mut pages = self.directory_pages.borrow_mut();
             for (key, page, initial_page) in ready {
@@ -1488,8 +1547,8 @@ impl LiveAppActionsProvider {
 
     pub fn capability_target(
         id: &str,
-    ) -> Option<(&str, tilo_actions::PermissionRequirement, &str)> {
-        let (app, permission, _cluster, _record, _resource, action) = Self::result_parts(id)?;
+    ) -> Option<(&str, tilo_actions::PermissionRequirement, &str, &str)> {
+        let (app, permission, _cluster, _record, resource, action) = Self::result_parts(id)?;
         let permission = match permission {
             "none" => tilo_actions::PermissionRequirement::None,
             "read" => tilo_actions::PermissionRequirement::Read,
@@ -1499,7 +1558,7 @@ impl LiveAppActionsProvider {
             "admin" => tilo_actions::PermissionRequirement::Admin,
             _ => return None,
         };
-        Some((app, permission, action))
+        Some((app, permission, resource, action))
     }
 
     /// The application, room, record, resource, and operation represented by
@@ -2022,6 +2081,22 @@ impl SearchProvider for LiveAppActionsProvider {
             for (surface, owned_action, rank) in
                 self.local_action_candidates(&ctx, SearchBudget::PALETTE.max_results)
             {
+                // The index is a retained search accelerator, not a live
+                // publication. A closed/replaced window can disappear while
+                // its replacement index is still building. Resolve only this
+                // bounded candidate, preserving its disclosed authority, and
+                // construct metadata and callbacks from the selected source.
+                let id = Self::result_id(&surface, &owned_action);
+                let Some((surface, owned_action)) = self.broker.published_action(
+                    &surface.route,
+                    &owned_action.resource,
+                    &owned_action.action,
+                ) else {
+                    continue;
+                };
+                if Self::result_id(&surface, &owned_action) != id {
+                    continue;
+                }
                 let action = &owned_action;
                 let expected_person = ctx
                     .chrome
@@ -2528,9 +2603,20 @@ impl SearchProvider for LiveAppActionsProvider {
         };
         let mut considered = 0usize;
         for candidate in candidates {
-            let row = candidate.and_then(|(surface, action, rank)| {
-                self.materialize_local_action(&ctx, surface, action, rank)
-            });
+            let row = candidate
+                .filter(|(surface, action, _)| {
+                    !self.has_disclosed_directory_alias(&ctx, surface, action)
+                })
+                .and_then(|(surface, action, rank)| {
+                    self.materialize_local_action(&ctx, surface, action, rank)
+                })
+                .filter(|row| {
+                    ctx.include_programmatic
+                        || !row
+                            .contract
+                            .as_ref()
+                            .is_some_and(tilo_actions::ActionContract::is_programmatic)
+                });
             if let Some(row) = row {
                 let row_bytes = row
                     .title
@@ -2942,6 +3028,167 @@ mod tests {
             view: None,
             input: PublishedInput::None,
         }
+    }
+
+    #[test]
+    fn cached_directory_action_replaces_only_its_exact_local_alias() {
+        let chrome = chrome();
+        let broker = broker_for(&chrome);
+        let state = chrome.borrow();
+        let cluster_id = state.tree().desktop.workspaces[0].room.to_string();
+        let actor = state.local_user_for_room(&state.tree().desktop.workspaces[0].room);
+        let surface = PublishedSurface {
+            peer_id: 7,
+            app_id: "so.tilo.fixture".into(),
+            route: CrdtRoute::app("so.tilo.fixture", &cluster_id),
+            actions: vec![
+                local_action("Inspect playback", "inspect"),
+                local_action("Inspect playback", "inspect-other"),
+            ],
+            live: true,
+        };
+        broker.replace_published_surfaces_for_test(vec![surface.clone()]);
+        let root = ActionDirectoryRoot {
+            peer_id: surface.peer_id,
+            app_id: surface.app_id.clone(),
+            cluster_id,
+            record_id: surface.route.record_id.clone(),
+        };
+        broker.replace_action_directory_roots_for_test(vec![root]);
+        let provider = LiveAppActionsProvider::new_with_fixture_identity(broker.clone());
+        let doc = AutoCommit::new();
+        let ctx = context("Inspect playback", &state, &doc);
+        *provider.surface_snapshot.borrow_mut() =
+            Some(LiveAppActionsProvider::build_local_snapshot(
+                &broker,
+                &LiveAppActionsProvider::build_scope(&ctx),
+                &provider.build_probe,
+            ));
+        let before = provider.query_page(ctx, None, SearchBudget::PALETTE);
+        assert_eq!(
+            before.results.len(),
+            2,
+            "cold directories retain the local action"
+        );
+        let row = CatalogueRow {
+            provider: "7".into(),
+            app_id: surface.app_id.clone(),
+            parent_resource: String::new(),
+            resource: CatalogueResource {
+                id: "resource:inspect".into(),
+                kind: "fixture".into(),
+                label: "Fixture".into(),
+                presentation: None,
+            },
+            action: Some(exported("Inspect playback", "inspect")),
+            has_children: false,
+            visibility: None,
+        };
+        let key = (7, actor, "inspect playback".into(), Vec::new());
+        provider
+            .directory_pages
+            .borrow_mut()
+            .insert(key.clone(), page(vec![row], Vec::new()));
+        provider
+            .directory_epoch
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let cached = provider.query_page(ctx, None, SearchBudget::PALETTE);
+        assert_eq!(
+            cached.results.len(),
+            2,
+            "replace the exact alias while preserving a different capability with the same label"
+        );
+        assert_eq!(
+            cached
+                .results
+                .iter()
+                .filter(|row| row.id.starts_with("directory\u{1f}"))
+                .count(),
+            1
+        );
+        assert!(cached.results.iter().any(|row| {
+            row.id == LiveAppActionsProvider::result_id(&surface, &surface.actions[1])
+        }));
+        provider.directory_pages.borrow_mut().remove(&key);
+        provider
+            .directory_epoch
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let restored = provider.query_page(ctx, None, SearchBudget::PALETTE);
+        assert_eq!(restored.results.len(), 2);
+        assert!(restored.results.iter().any(|row| {
+            row.id == LiveAppActionsProvider::result_id(&surface, &surface.actions[0])
+        }));
+    }
+
+    #[test]
+    fn completed_directory_page_survives_idle_poll() {
+        let provider = LiveAppActionsProvider::new(
+            crate::shell::collab_broker_capnp::CapnpBrokerState::test_broker_with_idle_directory_queue(),
+        );
+        let key: DirectoryCacheKey = (7, "actor".into(), "read".into(), Vec::new());
+        let (sender, receiver) = pending();
+        let deadline = Instant::now();
+        provider.directory_pending.borrow_mut().insert(
+            key.clone(),
+            PendingDirectoryPage {
+                receiver,
+                deadline,
+                initial_page: true,
+            },
+        );
+        sender.complete(Ok(page(Vec::new(), Vec::new())));
+
+        provider.poll_directory_pages_at(deadline + Duration::from_secs(3));
+
+        assert_eq!(provider.directory_pages.borrow()[&key].revision, "r1");
+        assert!(provider.directory_pending.borrow().is_empty());
+        assert_eq!(
+            provider
+                .directory_epoch
+                .load(std::sync::atomic::Ordering::Relaxed),
+            1
+        );
+    }
+
+    #[test]
+    fn expired_directory_page_retries_empty_projection() {
+        let provider = LiveAppActionsProvider::new(
+            crate::shell::collab_broker_capnp::CapnpBrokerState::test_broker_with_idle_directory_queue(),
+        );
+        let (sender, receiver) = pending();
+        let deadline = Instant::now();
+        provider.directory_pending.borrow_mut().insert(
+            (7, "actor".into(), "read".into(), Vec::new()),
+            PendingDirectoryPage {
+                receiver,
+                deadline,
+                initial_page: true,
+            },
+        );
+        *provider.auxiliary_snapshot.borrow_mut() = Some(AuxiliarySnapshot {
+            revision: "r1".into(),
+            query: "read".into(),
+            scope: String::new(),
+            resume: AuxiliaryResume {
+                root_after: None,
+                directory: None,
+            },
+            entries: Vec::new(),
+            pending_directory: Vec::new(),
+            next_resume: None,
+        });
+
+        provider.poll_directory_pages_at(deadline + Duration::from_secs(3));
+
+        assert!(sender.is_abandoned(), "unanswered work still expires");
+        assert!(provider.directory_pending.borrow().is_empty());
+        assert!(provider.auxiliary_snapshot.borrow().is_none());
+        assert_eq!(
+            provider
+                .directory_epoch
+                .load(std::sync::atomic::Ordering::Relaxed),
+            1
+        );
     }
 
     #[test]
@@ -3689,6 +3936,221 @@ mod tests {
     }
 
     #[test]
+    fn retained_local_rows_reject_closed_windows_and_changed_authority() {
+        let chrome = chrome();
+        let broker = broker_for(&chrome);
+        let room = chrome.borrow().tree().desktop.workspaces[0]
+            .room
+            .to_string();
+        let surface = PublishedSurface {
+            peer_id: 7,
+            app_id: "so.tilo.store".into(),
+            route: CrdtRoute::app("so.tilo.store", &room),
+            actions: vec![local_action("Inspect catalogue", "inspect-catalogue")],
+            live: true,
+        };
+        broker.replace_published_surfaces_for_test(vec![surface.clone()]);
+        let provider = LiveAppActionsProvider::new(broker.clone());
+        let doc = AutoCommit::new();
+        let chrome = chrome.borrow();
+        let ctx = context("", &chrome, &doc);
+        *provider.surface_snapshot.borrow_mut() =
+            Some(LiveAppActionsProvider::build_local_snapshot(
+                &broker,
+                &LiveAppActionsProvider::build_scope(&ctx),
+                &provider.build_probe,
+            ));
+        let id = LiveAppActionsProvider::result_id(&surface, &surface.actions[0]);
+        assert_eq!(
+            provider
+                .query_page(ctx, None, SearchBudget::PALETTE)
+                .results
+                .len(),
+            1
+        );
+
+        let mut changed = surface.clone();
+        changed.actions[0].contract.permission = tilo_actions::PermissionRequirement::Admin;
+        broker.replace_published_surfaces_for_test(vec![changed]);
+        assert!(
+            provider
+                .query_page(ctx, None, SearchBudget::PALETTE)
+                .results
+                .is_empty(),
+            "a retained index must not advertise an address with obsolete authority"
+        );
+        assert!(provider.resolve(&id, ctx).is_none());
+
+        broker.replace_published_surfaces_for_test(Vec::new());
+        assert!(
+            provider
+                .query_page(ctx, None, SearchBudget::PALETTE)
+                .results
+                .is_empty(),
+            "a closed window must disappear before the replacement index is ready"
+        );
+        assert!(provider.resolve(&id, ctx).is_none());
+
+        let mut reopened = surface;
+        reopened.peer_id = 8;
+        reopened.actions[0].resource = "new-window:catalogue".into();
+        broker.replace_published_surfaces_for_test(vec![reopened.clone()]);
+        assert!(
+            provider
+                .query_page(ctx, None, SearchBudget::PALETTE)
+                .results
+                .is_empty()
+        );
+        *provider.surface_snapshot.borrow_mut() =
+            Some(LiveAppActionsProvider::build_local_snapshot(
+                &broker,
+                &LiveAppActionsProvider::build_scope(&ctx),
+                &provider.build_probe,
+            ));
+        let fresh = provider.query_page(ctx, None, SearchBudget::PALETTE);
+        assert_eq!(fresh.results.len(), 1);
+        assert_eq!(
+            fresh.results[0].id,
+            LiveAppActionsProvider::result_id(&reopened, &reopened.actions[0])
+        );
+        assert!(provider.resolve(&fresh.results[0].id, ctx).is_some());
+    }
+
+    #[test]
+    fn retained_local_rows_apply_current_programmatic_visibility() {
+        let chrome = chrome();
+        let broker = broker_for(&chrome);
+        let room = chrome.borrow().tree().desktop.workspaces[0]
+            .room
+            .to_string();
+        let surface = PublishedSurface {
+            peer_id: 7,
+            app_id: "so.tilo.store".into(),
+            route: CrdtRoute::app("so.tilo.store", &room),
+            actions: vec![local_action("Inspect catalogue", "inspect-catalogue")],
+            live: true,
+        };
+        broker.replace_published_surfaces_for_test(vec![surface.clone()]);
+        let provider = LiveAppActionsProvider::new(broker.clone());
+        let doc = AutoCommit::new();
+        let chrome = chrome.borrow();
+        let ctx = context("", &chrome, &doc);
+        *provider.surface_snapshot.borrow_mut() =
+            Some(LiveAppActionsProvider::build_local_snapshot(
+                &broker,
+                &LiveAppActionsProvider::build_scope(&ctx),
+                &provider.build_probe,
+            ));
+        let id = LiveAppActionsProvider::result_id(&surface, &surface.actions[0]);
+        assert_eq!(
+            provider
+                .query_page(ctx, None, SearchBudget::PALETTE)
+                .results
+                .len(),
+            1
+        );
+
+        let mut programmatic = surface;
+        programmatic.actions[0]
+            .contract
+            .tags
+            .push(tilo_actions::PROGRAMMATIC_TAG.into());
+        broker.replace_published_surfaces_for_test(vec![programmatic]);
+        assert!(
+            provider
+                .query_page(ctx, None, SearchBudget::PALETTE)
+                .results
+                .is_empty(),
+            "current programmatic visibility supersedes the retained palette index"
+        );
+        assert!(
+            provider.resolve(&id, ctx).is_some(),
+            "programmatic actions remain exactly addressable"
+        );
+        assert_eq!(
+            provider
+                .query_page(
+                    SearchContext {
+                        include_programmatic: true,
+                        ..ctx
+                    },
+                    None,
+                    SearchBudget::PALETTE
+                )
+                .results
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn retained_local_rows_materialize_and_invoke_the_current_publication() {
+        use crate::shell::search::action_api::ActionArgs;
+        let chrome = chrome();
+        chrome.borrow_mut().act_as("store-row-owner".into());
+        chrome.borrow().tree_mut().desktop.workspaces[0].set_owner("store-row-owner");
+        let broker = broker_for(&chrome);
+        let room = chrome.borrow().tree().desktop.workspaces[0]
+            .room
+            .to_string();
+        let surface = PublishedSurface {
+            peer_id: 7,
+            app_id: "so.tilo.store".into(),
+            route: CrdtRoute::app("so.tilo.store", &room),
+            actions: vec![local_action("Old catalogue", "inspect-catalogue")],
+            live: true,
+        };
+        broker.replace_published_surfaces_for_test(vec![surface.clone()]);
+        let provider = LiveAppActionsProvider::new_with_fixture_identity(broker.clone());
+        let mut doc = AutoCommit::new();
+        {
+            let chrome = chrome.borrow();
+            let ctx = context("", &chrome, &doc);
+            *provider.surface_snapshot.borrow_mut() =
+                Some(LiveAppActionsProvider::build_local_snapshot(
+                    &broker,
+                    &LiveAppActionsProvider::build_scope(&ctx),
+                    &provider.build_probe,
+                ));
+        }
+        let mut old_peer = broker.capture_invocations_for_test(7);
+        let mut new_peer = broker.capture_invocations_for_test(8);
+        let mut current = surface;
+        current.peer_id = 8;
+        current.actions[0].action_label = "Current catalogue".into();
+        broker.replace_published_surfaces_for_test(vec![current]);
+        let row = provider
+            .query_page(
+                context("", &chrome.borrow(), &doc),
+                None,
+                SearchBudget::PALETTE,
+            )
+            .results
+            .pop()
+            .expect("unchanged address remains available");
+        assert_eq!(row.title, "Current catalogue");
+        let resolved = provider
+            .resolve(&row.id, context("", &chrome.borrow(), &doc))
+            .unwrap();
+        assert_eq!(resolved.title, row.title);
+        (row.on_open)(
+            &mut ui::widget::Edits::lend(&mut doc),
+            &automerge::ROOT,
+            &chrome,
+            &ActionArgs::bind(&[], []).unwrap(),
+        )
+        .unwrap();
+        let delivered = new_peer
+            .try_recv()
+            .expect("browse callback routes to the current peer");
+        assert_eq!(delivered.action, "inspect-catalogue");
+        assert!(
+            old_peer.try_recv().is_err(),
+            "the replaced publisher receives no invocation"
+        );
+    }
+
+    #[test]
     fn a_100001_action_snapshot_reaches_a_unique_tail_without_scanning_the_corpus() {
         let provider = LiveAppActionsProvider::new_with_fixture_identity(
             crate::shell::collab_broker_capnp::CapnpBrokerState::test_broker_with_idle_directory_queue(),
@@ -3720,6 +4182,11 @@ mod tests {
                 )
             })
             .collect::<Vec<_>>();
+        let mut published = surface;
+        published.actions = entries.iter().map(|(_, action)| action.clone()).collect();
+        provider
+            .broker
+            .replace_published_surfaces_for_test(vec![published]);
         let index = Some(index_actions(&entries, false));
         let machine_index = Some(index_actions(&entries, true));
         *provider.surface_snapshot.borrow_mut() = Some(SurfaceSnapshot {

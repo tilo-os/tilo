@@ -19,9 +19,13 @@ mod durable_local_matrix {
     }
     impl Environment {
         fn new() -> Self {
+            Self::with_owner_initializer(crate::test_owner::SessionOwner::initialize)
+        }
+        fn with_owner_initializer(
+            initialize: impl FnOnce(&std::path::Path) -> Result<crate::test_owner::SessionOwner, String>,
+        ) -> Self {
             let root = tempfile::tempdir().unwrap();
-            let mut owner =
-                crate::test_owner::SessionOwner::initialize(&root.path().join("owner")).unwrap();
+            let mut owner = initialize(&root.path().join("owner")).unwrap();
             let cert = owner.peer().authority().clone();
             let key = owner.signing_key().clone();
             let person = owner.person_key().clone();
@@ -116,7 +120,7 @@ mod durable_local_matrix {
             let (worker, authorize) =
                 join_worker(&state, &directories, &env.route, &env.cert, &env.key, 903).await;
             let handle = &worker.handle;
-            publish(handle).await;
+            publish_for(handle, &env.route.app_id).await;
             let stream = handle.subscribe_stable_invocations().await.unwrap();
             let (_, binding) = handle
                 .resolve_published_action_for_invocation(
@@ -194,10 +198,16 @@ mod durable_local_matrix {
         }
     }
     async fn publish(handle: &runtime_collab::ChannelHandle) -> Rc<RefCell<TestActionDirectory>> {
+        publish_for(handle, "so.tilo.word-processor").await
+    }
+    async fn publish_for(
+        handle: &runtime_collab::ChannelHandle,
+        app: &str,
+    ) -> Rc<RefCell<TestActionDirectory>> {
         let state = directory_state("original-r1");
         handle
             .publish_action_directory(
-                "so.tilo.word-processor",
+                app,
                 capnp_rpc::new_client(DurableDirectory {
                     state: state.clone(),
                 }),
@@ -453,6 +463,7 @@ mod durable_local_matrix {
                         Subject::agent("scribe"),
                         collab_types::Scope::Action {
                             app: env.route.app_id.clone(),
+                            resource: "document-1:body".into(),
                             action: "erase".into(),
                         },
                         collab_types::Effect::Restrict,
@@ -1087,7 +1098,9 @@ mod durable_local_matrix {
             .await;
     }
 
+    include!("display_control_tests.rs");
     include!("admitted_local_host_tests.rs");
     include!("certified_launch_tests.rs");
     include!("observed_launch_tests.rs");
+    include!("keyboard_map_read_authority_tests.rs");
 }

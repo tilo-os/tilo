@@ -2593,7 +2593,7 @@ fn sort_and_group_filters_reorder_and_filter_the_list() {
         act_named(
             &mut h.app,
             "Sort contacts",
-            &ui::a11y::Action::SetValue("Sort by name".into()),
+            &ui::a11y::Action::SetValue("Sort by last name".into()),
         );
         assert_eq!(h.app.sort, SortKey::Name);
     }

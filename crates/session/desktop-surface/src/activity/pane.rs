@@ -8959,7 +8959,19 @@ fn describe_scope(scope: &Scope) -> String {
         Scope::FsRecord(_) => t("activity-capability-one-shared-file"),
         Scope::Device(d) => d.clone(),
         Scope::NetHost(h) => t_args("activity-capability-network", &[("host", h.into())]),
-        Scope::Action { app, action } => format!("{app}:{action}"),
+        Scope::Action {
+            app,
+            resource,
+            action,
+        } => format!("{app}:{resource}:{action}"),
+        Scope::ActionOnKind { app, kind, action } => t_args(
+            "activity-capability-action-on-kind",
+            &[
+                ("app", app.into()),
+                ("kind", kind.into()),
+                ("action", action.into()),
+            ],
+        ),
     }
 }
 

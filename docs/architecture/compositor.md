@@ -80,6 +80,14 @@ intervals — rather than growing a queue the display can never drain.
 Resize and DPMS travel the same channel as frames, so a blank cannot
 overtake a frame already queued.
 
+Clip-only workspace and overview transitions require a separate presenter
+capability. Multi-output DRM GPU readback can retain and replay those frames;
+single-output direct/XRGB, CPU, nested and headless paths receive complete scenes.
+The native loop refreshes this capability from the current output topology before
+each paint, without disabling ordinary retained damage. If an old empty held frame
+is still queued when a display is unplugged, the single-output presenter keeps its
+shown pixels until the next complete frame instead of rasterising the empty scene.
+
 With `TILO_PROFILE_GPU_STAGES=1`, the existing `FRAME-LIFECYCLE` retirement
 record includes the exact pipe serial and scene revision, CPU encode/submission
 wall time, GPU completion wait, bump-counter settlement and separate KMS
@@ -91,6 +99,26 @@ and `VELLO_GPU_DISPATCH_TIMESTAMPS=1` before device/renderer creation. Enable
 these fixed options through the greeter's ordinary next-sign-in diagnostics
 action. A disabled/unsupported recorder and discarded presentation remain
 ineligible for a hardware latency claim.
+
+Native app render workers use those same startup options and the existing
+Vello timestamp trackers. `tilo-native-gpu-stages` reports bounded pass and
+per-dispatch samples with observer session, worker, worker frame, CPU frame and
+Vello recording IDs. A delayed sample retains its originating frame; it never
+settles a newer frame. Attempt rows have provisional `missing_current=true`;
+only a completed row with `matched_current=true` proves a sample. Unknown,
+duplicate or evicted owners are explicitly stale. The final Vello recording
+of a frame is observed; backdrop or recovery recordings are not a complete
+GPU timeline. Pass spans and dispatch totals overlap and must not be added.
+
+The recorder is disabled unless startup GPU timestamps and native presentation
+observation are both enabled. It keeps 32 owners per tracker and emits at most
+2048 content-free rows per render-worker lifetime. Existing latest-recording
+readback slots can skip a recording while another map is pending. Idle workers
+service those callbacks with nonblocking `device.poll(Poll)`, at most 128 polls
+of 5 ms per received frame; no synchronous GPU wait, repaint or render request
+is introduced. Missing, unsupported, stale or exhausted evidence cannot certify
+client shader duration. Startup options require a new renderer; the live
+session diagnostic setter does not reconfigure an existing renderer.
 
 `crates/session/shell/src/compositor/metrics.rs` instruments all of it
 (`TILO_FRAME_TRACE`, `TILO_FRAME_SUMMARY`); `scripts/perf/frame-loop-bench.py`
@@ -170,19 +198,33 @@ The frame builder (`crates/session/shell/src/compositor/frame.rs`) produces one 
 
 ### Composited frames: GBM render targets, dumb-buffer fallback
 
-On a single output with a normal transform, no colour transform, a hardware
-cursor plane, event-driven page flips, and a renderer on the same PCI
-function as the scanout card, the DRM backend allocates two linear
-XRGB8888 GBM buffer objects with `SCANOUT | RENDERING`, registers them as
-KMS framebuffers (`add_planar_framebuffer`), and imports them into Vulkan as
-render targets (`ui::dmabuf_import`). Vello renders the composited scene
-straight into the back slot and the backend flips to it; a slot stays
-owned by KMS until its page-flip event retires it, so the renderer never
-touches the front or flip-pending slot. When any eligibility check fails
-(`direct_scanout_rejection` in `backend/drm/mod.rs` names the reason in
-the log), or a direct submission fails, presentation falls back to the
-readback path: render, copy to CPU bytes, write the two dumb buffers the
-backend allocates at modeset.
+Eligibility is decided per output. An output with a normal transform, no
+colour transform, a hardware cursor plane, event-driven page flips, and a
+renderer on the same PCI function as its scanout card renders direct,
+however many other outputs there are: the DRM backend allocates two linear
+GBM buffer objects the size of that output (XRGB8888, or a 10-bit or
+half-float format in HDR) with `SCANOUT | RENDERING`, registers them as KMS
+framebuffers (`add_planar_framebuffer`), and imports them into Vulkan as
+render targets (`ui::dmabuf_import`). Vello renders the scene through the
+output's `OutputView` (the scene translated to the output's position) into
+a retained surface of the output's size, then copies, PQ-encodes or
+HDR-composites it into the back slot, and the backend flips to it
+(`VelloDrmBridge::paint_output_until`). Every output keeps its own retained
+surface and two-slot ring; the renderer and the device are shared. A slot
+stays owned by KMS until its page-flip event retires it, so the renderer
+never touches the front or flip-pending slot. Page-flip events are drained
+once per card and routed to the output whose CRTC they name, and a frame
+retires only when every output's queued flip has, so outputs at different
+refresh rates pace to the slowest direct output for now.
+
+When an output fails a check (`direct_scanout_rejection` in
+`backend/drm/mod.rs` logs the reason as `direct_scanout_status=unavailable
+reason=… output=…`), or its direct submission fails, that output alone
+falls back to the readback path: render, copy to CPU bytes, write the two
+dumb buffers the backend allocates at modeset. One such output renders and
+swizzles straight into its dumb buffer; with several outputs the bounding
+box of all of them is rendered once and only the outputs on the readback
+receive their sub-rect.
 
 ### No client fullscreen fast path
 
@@ -285,7 +327,7 @@ backend enumerates every seat GPU and connector via udev, configures the saved
 or preferred mode, and drives every enabled connector across all retained
 cards.
 
-**Hotplug.** Every udev edge re-probes the connectors and reconciles against what is live (`backend::drm::hotplug`): new connectors are modeset, gone ones torn down, re-moded ones rebuilt keeping their id. Configured `x/y`, rotation and mirror topology is reapplied after every change; connectors without saved placement fall back to a gap-free side-by-side layout. The pointer is projected back onto the nearest live output rectangle, never merely into the arrangement's bounding box. Windows are *not* pinned to an output — the shell places groups across whatever displays it is told about — so re-pushing the display geometry re-homes whatever was on the display that went away. Each card is held open on the loop thread for the whole session because libseat refuses a second `open` of the same node.
+**Hotplug.** Every udev edge re-probes the connectors and reconciles against what is live (`backend::drm::hotplug`): new connectors are modeset, gone ones torn down, re-moded ones rebuilt keeping their id. Configured `x/y`, rotation and mirror topology is reapplied after every change; connectors without saved placement fall back to a gap-free side-by-side layout. The pointer is projected back onto the nearest live output rectangle, never merely into the arrangement's bounding box. Windows are *not* pinned to an output — the shell places groups across whatever displays it is told about — so re-pushing the display geometry re-homes whatever was on the display that went away. Each card is held open on the loop thread for the whole session because libseat refuses a second `open` of the same node. Only startup and udev edges force-probe connectors: a forced probe of every connector, slow on DP-MST docks, runs on the input thread. A display settings change (`display`, `display_transaction`, `display_profiles`) and capability publication re-apply intent to the connectors the last probe found.
 
 **Per-output scale.** Each output's factor is derived from the panel's physical size against its resolution (`backend::drm::scale`), snapped to quarter steps and clamped to 100–200 %, with the `display.scale` setting as an override. Each surface is told the scale of the output it is actually on as its preferred `wp_fractional_scale` — a laptop docked to an external monitor has two right answers.
 
@@ -314,7 +356,7 @@ Resume from sleep runs the *same* sequence, driven off `PowerSignal::ResumedFrom
 
 `Ctrl+Alt+F1..F12` is handled by the compositor, ahead of every other chord and never offered to a client. The kernel does not see it: the compositor holds the keyboard in a raw mode, so without this the user cannot leave the terminal for the life of the session.
 
-**Input device configuration.** The persisted `input.*` preferences reach libinput on every `DEVICE_ADDED` and are re-applied to attached devices when the settings file changes (`backend::drm::input_config`). Tap-to-click defaults **on** — libinput's default off is right for a tablet on a desk and wrong for a laptop — with disable-while-typing and tap-and-drag turned on alongside it. Keyboard auto-repeat comes from the same `key_repeat` slider.
+**Input device configuration.** The persisted `input.*` preferences reach libinput on every `DEVICE_ADDED` and are re-applied to attached devices when the settings file's `input`, `accessibility` or `shortcuts` section changes (`backend::drm::input_config`). The compositor fingerprints each top-level section of the settings file and runs only the work a changed section needs, so a theme or notification toggle neither reconfigures input devices nor touches outputs. Tap-to-click defaults **on** — libinput's default off is right for a tablet on a desk and wrong for a laptop — with disable-while-typing and tap-and-drag turned on alongside it. Keyboard auto-repeat comes from the same `key_repeat` slider.
 
 **Gestures and touch.** Three- and four-finger swipes and pinches belong to the shell: three fingers pan the strip and step between strips, four switch workspaces, and a pinch opens the overview, in the same directions as the equivalent chords and inverted by `natural_scroll`. One- and two-finger gestures belong to the focused client and go out over `zwp_pointer_gestures_v1`. The split is by finger count, made in one place (`backend::drm::gestures::claims`), so a gesture is never handled twice. Touch reaches clients over `wl_touch` and the shell chrome as synthesised pointer events, since the chrome has no touch path of its own.
 
@@ -333,3 +375,15 @@ Fallback if bare DRM init fails: relaunch under `cage` as a single-window Waylan
 - `crates/session/shell/src/compositor/{mod.rs, state.rs, native.rs, hosted.rs, frame.rs, tab_binding.rs, test_control.rs}` — the live wiring.
 - `crates/session/shell/src/compositor/backend/{mod.rs, winit.rs, drm/}` — backend implementations.
 - `crates/session/shell/tests/{compositor_test.rs, interaction_test.rs, drm_backend_boot.rs, control_socket_test.rs}` — the integration coverage.
+
+### Client close admission
+
+Closing a native client tab sends its ordinary `xdg_toplevel.close` request.
+The tab stays in the authoritative tree and remains visible while the client
+saves or presents its declared close decision. Only actual surface destruction
+removes and persists the tab; a successful close-request receipt does not mean
+that the application has exited. Chrome cancels a provisional pill/host fade
+when the tree still owns the tab, preserving position, metadata and focus.
+Undo history is published only after the captured tabs have actually gone.
+The existing separately supervised unconfined host-launch teardown retains its
+own scoped lifecycle; native close admission does not add a process kill rule.

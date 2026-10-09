@@ -316,7 +316,7 @@ pub fn publisher_identity_in(dir: &std::path::Path) -> std::io::Result<(u32, u64
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     if !leases.iter().any(|(held, _)| *held == path) {
-        std::fs::create_dir_all(dir)?;
+        tilo_files::native::create_dir_all(dir)?;
         let lease = advisory_lock::FileLock::try_open(&path, advisory_lock::LockMode::Exclusive)
             .map_err(|error| match error {
                 advisory_lock::TryLockError::WouldBlock => {
@@ -375,6 +375,9 @@ pub enum DisplayTransactionState {
     Rejected,
 }
 
+/// The section a [`DisplayTransaction`] is stored in, whole.
+pub const DISPLAY_TRANSACTION_SECTION: &str = "display_transaction";
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct DisplayTransaction {
@@ -410,18 +413,35 @@ impl DisplayTransaction {
     ///
     /// Returns an error if the transaction can't be serialised or written.
     pub fn request(set: DisplaySet, candidate: DisplayConfig) -> std::io::Result<Self> {
+        let transaction = Self::prepare_request(set, candidate)?;
+        transaction.save()?;
+        Ok(transaction)
+    }
+
+    /// Construct an admitted request without writing storage. Its identity
+    /// stays unique among requests in this process even within one clock tick.
+    /// The request becomes effective only after its normal durable save.
+    ///
+    /// # Errors
+    /// Returns an error if the request identity counter is exhausted.
+    pub fn prepare_request(set: DisplaySet, candidate: DisplayConfig) -> std::io::Result<Self> {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static LAST_REQUEST: AtomicU64 = AtomicU64::new(0);
         let now = unix_now_ms();
-        let transaction = Self {
-            id: now,
+        let previous = LAST_REQUEST
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |previous| {
+                previous.checked_add(1).map(|next| next.max(now))
+            })
+            .map_err(|_| std::io::Error::other("display request identities exhausted"))?;
+        Ok(Self {
+            id: previous.saturating_add(1).max(now),
             state: DisplayTransactionState::Requested,
             previous: DisplayConfig::load_for(&set),
             set,
             candidate,
             deadline_unix_ms: None,
             message: None,
-        };
-        transaction.save()?;
-        Ok(transaction)
+        })
     }
 
     pub fn load() -> Option<Self> {
@@ -551,6 +571,8 @@ pub struct InputHardwareSnapshot {
     /// outlive its compositor.
     pub publisher_start_ticks: u64,
     pub devices: Vec<InputDeviceSnapshot>,
+    /// Last typing keyboard; presentation state, never a saved assignment.
+    pub active_keyboard: Option<String>,
 }
 
 impl InputHardwareSnapshot {
@@ -1135,6 +1157,28 @@ pub const TOUCHPAD_ENABLED_KEY: &str = "touchpad_enabled";
 /// means off.
 pub const TOUCHPAD_DISABLED_ON_EXTERNAL_MOUSE_KEY: &str = "touchpad_disabled_on_external_mouse";
 
+/// The section of [`RichInputConfig`]: pointer, touchpad and keyboard.
+pub const INPUT_SECTION: &str = "input";
+/// The section of [`DisplayConfig`] and the display toggles below.
+pub const DISPLAY_SECTION: &str = "display";
+
+/// Whether touchpads send events at all ([`TOUCHPAD_ENABLED_KEY`]).
+pub const TOUCHPAD_ENABLED: crate::Key<bool> =
+    crate::Key::new(INPUT_SECTION, TOUCHPAD_ENABLED_KEY, || true);
+/// Mouse keys: the numeric keypad moves the pointer. The Shift+Alt+Num Lock
+/// chord flips it.
+pub const MOUSE_KEYS: crate::Key<bool> =
+    crate::Key::new(crate::magnifier::SECTION, "mouse_keys", || false);
+/// Whether the built-in panel stays put when a convertible is turned (the
+/// Quick Settings rotation tile).
+pub const ROTATION_LOCK: crate::Key<bool> =
+    crate::Key::new(DISPLAY_SECTION, "rotation_lock", || false);
+/// Whether the backlight follows the ambient light sensor.
+pub const AUTO_BRIGHTNESS: crate::Key<bool> =
+    crate::Key::new(DISPLAY_SECTION, "auto_brightness", || false);
+/// Night light (the Quick Settings tile).
+pub const NIGHT_LIGHT: crate::Key<bool> = crate::Key::new(DISPLAY_SECTION, "night_light", || false);
+
 /// How a clickpad (a touchpad whose whole surface is the button) decides
 /// which button a physical press means. libinput decides per device which of
 /// these it supports; the compositor asks only for a supported one.
@@ -1260,6 +1304,11 @@ pub struct RichInputConfig {
     pub keyboard_layout: String,
     /// Ordered source ids.
     pub keyboard_layouts: Vec<String>,
+    /// Explicit XKB physical model, bounded to the supported PC geometries.
+    pub keyboard_model: String,
+    /// Scoped keyboard choices survive device removal; the default retains legacy fields.
+    #[serde(deserialize_with = "crate::keyboard_sources::lenient_profiles")]
+    pub keyboard_assignments: BTreeMap<String, crate::keyboard_sources::KeyboardProfile>,
     pub compose_key: Option<String>,
     /// What Caps Lock does: `None` keeps it Caps Lock; `ctrl`, `escape` or
     /// `backspace` turn it into that key.
@@ -1297,6 +1346,8 @@ impl Default for RichInputConfig {
             key_repeat_rate_hz: None,
             keyboard_layout: "us".into(),
             keyboard_layouts: vec!["us".into()],
+            keyboard_model: "pc105".into(),
+            keyboard_assignments: BTreeMap::new(),
             compose_key: None,
             caps_lock: None,
             touchpad_gestures: true,
@@ -1512,6 +1563,12 @@ impl RichInputConfig {
             .get("caps_lock")
             .and_then(serde_json::Value::as_str)
             .map(str::to_string);
+        section
+            .get("keyboard_model")
+            .and_then(serde_json::Value::as_str)
+            .filter(|model| matches!(*model, "pc104" | "pc105" | "jp106" | "kr106"))
+            .unwrap_or("pc105")
+            .clone_into(&mut config.keyboard_model);
         config.normalise_sources();
         config
     }
@@ -2299,9 +2356,9 @@ impl Default for ShortcutConfig {
             ),
             (ShortcutAction::ResizeNarrower, super_chord("-")),
             (ShortcutAction::ResizeWider, super_chord("=")),
-            // Browsers' reopen-closed-tab chord, on the desktop's own
-            // modifier; plain Super+T keeps adding a tab.
-            (ShortcutAction::ReopenClosedTab, super_shift_chord("t")),
+            // Restore the most recently closed frame in this workspace.
+            // Plain Super+T keeps adding a tab.
+            (ShortcutAction::ReopenClosedTab, ctrl_shift_chord("t")),
             (ShortcutAction::FocusGroup1, super_chord("1")),
             (ShortcutAction::FocusGroup2, super_chord("2")),
             (ShortcutAction::FocusGroup3, super_chord("3")),
@@ -2353,6 +2410,7 @@ const RETIRED_DEFAULTS: &[(ShortcutAction, &[&str], &str)] = &[
     (ShortcutAction::NextStrip, &["Shift", "Super"], "down"),
     (ShortcutAction::ToggleMaximize, &["Super"], "up"),
     (ShortcutAction::Search, &["Super"], "k"),
+    (ShortcutAction::ReopenClosedTab, &["Shift", "Super"], "t"),
 ];
 
 impl ShortcutConfig {
@@ -2823,13 +2881,34 @@ mod tests {
     }
 
     #[test]
-    fn reopen_closed_tab_defaults_to_super_shift_t_without_colliding() {
+    fn reopen_closed_tab_defaults_to_ctrl_shift_t_without_colliding() {
         let cfg = ShortcutConfig::default();
         assert_eq!(
             cfg.bindings[&ShortcutAction::ReopenClosedTab],
-            KeyChord::parse("Super+Shift+T").unwrap()
+            KeyChord::parse("Ctrl+Shift+T").unwrap()
         );
         assert!(cfg.validate().is_ok(), "no other default claims the chord");
+    }
+
+    #[test]
+    fn saved_reopen_default_migrates_without_overwriting_a_custom_chord() {
+        let mut loaded = ShortcutConfig::default();
+        loaded.bindings.insert(
+            ShortcutAction::ReopenClosedTab,
+            KeyChord::parse("Super+Shift+T").unwrap(),
+        );
+        assert_eq!(
+            ShortcutConfig::normalise(loaded.clone()).bindings[&ShortcutAction::ReopenClosedTab],
+            KeyChord::parse("Ctrl+Shift+T").unwrap()
+        );
+        loaded.bindings.insert(
+            ShortcutAction::ReopenClosedTab,
+            KeyChord::parse("Alt+Shift+T").unwrap(),
+        );
+        assert_eq!(
+            ShortcutConfig::normalise(loaded).bindings[&ShortcutAction::ReopenClosedTab],
+            KeyChord::parse("Alt+Shift+T").unwrap()
+        );
     }
 
     #[test]
@@ -3291,6 +3370,7 @@ mod tests {
             publisher_pid,
             publisher_start_ticks,
             devices: vec![pen.clone(), pen],
+            active_keyboard: None,
         };
         live.save_at(&path).unwrap();
         let back = InputHardwareSnapshot::load_at(&path).expect("live publisher");

@@ -195,6 +195,45 @@ impl TestGovernor {
         Ok(fixture)
     }
 
+    /// Use a separately certified delivery host without making the governor
+    /// a sealed-channel steward. Admission uses the ordinary signed delegation.
+    ///
+    /// # Errors
+    /// Rejects a mismatched host key or invalid workspace delegation.
+    pub fn with_delivery_host(
+        mut self,
+        host: DeviceCert,
+        host_key: SigningKey,
+    ) -> Result<Self, String> {
+        if host.device_public_key != host_key.verifying_key().to_bytes() {
+            return Err("delivery host key does not match its certificate".into());
+        }
+        let delegation = join::sign_workspace_delegation(
+            self.room(),
+            self.workspace_id,
+            self.governor(),
+            host.clone(),
+            WorkspaceDelegationPermissions {
+                issue_invitations: true,
+                admit_invited_members: true,
+            },
+            random(),
+            None,
+            &self.governor_key,
+        )?;
+        self.peer.admit_certificate_with_workspace_delegation(
+            host.clone(),
+            delegation.clone(),
+            &self.governor_key,
+            SystemTime::now(),
+        )?;
+        self.host = host;
+        self.host_key = host_key;
+        self.delegation = Some(delegation);
+        self.refresh_checkpoint()?;
+        Ok(self)
+    }
+
     #[must_use]
     pub fn peer(&self) -> &StatePeer {
         &self.peer
@@ -375,7 +414,20 @@ impl TestGovernor {
         let now = SystemTime::now();
         let mut candidate = self.peer.clone();
         candidate.reconcile_media_governance(&self.governor_key, now)?;
-        let generation = self.generation.saturating_add(1);
+        let admitted_generation = candidate
+            .admitted_room()
+            .map(tilo_peer_state::durability::entries)
+            .transpose()?
+            .unwrap_or_default()
+            .values()
+            .map(|receipt| receipt.generation)
+            .max()
+            .unwrap_or(0);
+        let generation = self
+            .generation
+            .max(admitted_generation)
+            .checked_add(1)
+            .ok_or("fixture checkpoint generation exhausted")?;
         let messages = candidate.durable_bootstrap_messages(&self.governor_key, now, generation)?;
         self.outgoing = messages
             .iter()
@@ -395,9 +447,13 @@ impl TestGovernor {
         origin: TransportOrigin,
         message: NeighbourMsg,
     ) -> Result<(), String> {
-        self.peer
-            .receive_from(origin, message, SystemTime::now())
-            .map(|_| ())
+        let id = tracing::enabled!(tracing::Level::DEBUG)
+            .then(|| postcard::to_stdvec(&message).ok())
+            .flatten()
+            .map(|bytes| blake3::hash(&bytes).to_hex().to_string());
+        let outcome = self.peer.receive_from(origin, message, SystemTime::now())?;
+        tracing::debug!(?id, ?outcome, "native fixture governor admission");
+        Ok(())
     }
 
     /// Answer one join request from the authenticated endpoint `remote`.
@@ -548,6 +604,34 @@ mod empty_interactive_tests {
     use super::{TestGovernor, certificate};
     use ed25519_dalek::SigningKey;
     use tilo_delivery_protocol::workspace_join::{IrohWorkspaceHostHintV1, WorkspaceHostMode};
+
+    #[test]
+    fn checkpoint_refresh_follows_admitted_native_receipts() {
+        let mut governor = TestGovernor::new();
+        let key = governor.governor_key().clone();
+        let publisher = governor.governor().device_public_key;
+        let messages = governor
+            .peer()
+            .clone()
+            .durable_bootstrap_messages(&key, std::time::SystemTime::now(), 20)
+            .unwrap();
+        for message in messages {
+            governor
+                .receive(
+                    tilo_peer_state::TransportOrigin::RetainedNativePublication { publisher },
+                    message,
+                )
+                .unwrap();
+        }
+        governor.refresh_checkpoint().unwrap();
+        let receipts =
+            tilo_peer_state::durability::entries(governor.peer().admitted_room().unwrap()).unwrap();
+        assert!(
+            !receipts.is_empty(),
+            "the signed cut must carry actual document receipts"
+        );
+        assert!(receipts.values().all(|receipt| receipt.generation > 20));
+    }
 
     #[test]
     fn empty_interactive_preserves_certified_custody_without_seeding_apps_or_host_bits() {

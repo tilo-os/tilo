@@ -465,7 +465,7 @@ def proof_environment(profile, app_state):
 
 def run_proof(repo, root, host_source_snapshot):
     fixture = root / "source.png"
-    shutil.copy2(repo / "ui/tests/fixtures/test_image.png", fixture)
+    fixture.write_bytes(bytes.fromhex((repo / "crates/sdk/ui-core/tests/fixtures/test_image.png.hex").read_text(encoding="ascii")))
     profile = pathlib.Path(tempfile.mkdtemp(prefix="tilo-auto-", dir="/tmp"))
     os.chmod(profile, 0o700)
     app_state = root / "isolated-app-state"

@@ -391,6 +391,7 @@ fn grant_reader(fixture: &RunningFixture, allowed: bool) -> Qualification<()> {
                         Subject::agent("fixture-agent"),
                         Scope::Action {
                             app: "so.tilo.step-fixture-reader".into(),
+                            resource: "reader:fixture".into(),
                             action: "inspect".into(),
                         },
                         Verb::Read,

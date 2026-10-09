@@ -23,7 +23,7 @@ use std::time::Duration;
 use cloud_source::{CloudSource, Credential, StaticCredential};
 use cloud_source_dav::DavSource;
 use cloud_source_dav::fake::{FakeDav, PASSWORD, USER};
-use fs::cloud::volume::{Health, ROOT_INO};
+use fs::cloud::volume::{DEFAULT_IDLE_POLL_MAX, Health, ROOT_INO};
 use fs::cloud::{CloudService, CloudVolume, InProcessLauncher, ServiceConfig, VolumeConfig};
 
 fn credential() -> Credential {
@@ -39,6 +39,15 @@ struct Mount {
 }
 
 fn mount_volume(server: &FakeDav, dir: &Path) -> Mount {
+    mount_polling(server, dir, Duration::from_secs(30), DEFAULT_IDLE_POLL_MAX)
+}
+
+fn mount_polling(
+    server: &FakeDav,
+    dir: &Path,
+    poll_interval: Duration,
+    idle_poll_max: Duration,
+) -> Mount {
     let source = DavSource::new(server.config(), Arc::new(StaticCredential(credential()))).unwrap();
     let _ = source.probe();
     let health = Arc::new(Mutex::new(Vec::new()));
@@ -48,7 +57,8 @@ fn mount_volume(server: &FakeDav, dir: &Path) -> Mount {
         VolumeConfig {
             dir: dir.to_path_buf(),
             cache_budget: 64 << 20,
-            poll_interval: Duration::from_secs(30),
+            poll_interval,
+            idle_poll_max,
         },
         Box::new(move |h| seen.lock().unwrap().push(h)),
     )
@@ -324,6 +334,140 @@ fn offline_reads_come_from_cache_and_writes_queue_across_restarts() {
     );
     mount.volume.upload_pending().unwrap();
     assert_eq!(server.get("offline-note.txt").unwrap(), b"written offline");
+}
+
+/// The identity of the `tree.json` on disk: every write replaces it with a
+/// new file (temp + rename), so an unchanged inode means it was not written.
+fn tree_json(dir: &Path) -> Option<u64> {
+    use std::os::unix::fs::MetadataExt;
+    std::fs::metadata(dir.join("tree.json"))
+        .ok()
+        .map(|m| m.ino())
+}
+
+#[test]
+fn idle_sync_does_not_rewrite_tree_json() {
+    // A walking provider (generic WebDAV) and a cursor feed (sync-collection).
+    for server in [FakeDav::generic(), FakeDav::generic_with_sync_collection()] {
+        server.put("Notes/plan.md", b"# plan");
+        server.put("readme.txt", b"hello");
+        let dir = tempfile::tempdir().unwrap();
+        let mount = mount_volume(&server, dir.path());
+        mount.volume.sync_once().unwrap();
+        let written = tree_json(dir.path()).expect("the first sync writes tree.json");
+
+        mount.volume.sync_once().unwrap();
+        mount.volume.sync_once().unwrap();
+        assert_eq!(
+            tree_json(dir.path()),
+            Some(written),
+            "a pass that changed nothing rewrote tree.json"
+        );
+
+        server.put("Notes/todo.md", b"- ship");
+        mount.volume.sync_once().unwrap();
+        assert_ne!(
+            tree_json(dir.path()),
+            Some(written),
+            "a remote change was not persisted"
+        );
+        let saved = std::fs::read_to_string(dir.path().join("tree.json")).unwrap();
+        assert!(saved.contains("todo.md"), "{saved}");
+
+        // What was persisted is what a restart lists, without the server.
+        mount.volume.shutdown();
+        drop(mount);
+        server.set_offline(true);
+        let mount = mount_volume(&server, dir.path());
+        assert_eq!(names(&mount.volume, "Notes"), ["plan.md", "todo.md"]);
+    }
+}
+
+#[test]
+fn failed_sync_does_not_rewrite_tree_json() {
+    let server = FakeDav::generic();
+    server.put("readme.txt", b"hello");
+    let dir = tempfile::tempdir().unwrap();
+    let mount = mount_volume(&server, dir.path());
+
+    server.set_offline(true);
+    assert!(mount.volume.sync_once().is_err());
+    assert_eq!(
+        tree_json(dir.path()),
+        None,
+        "a failed first sync wrote tree.json"
+    );
+
+    server.set_offline(false);
+    mount.volume.sync_once().unwrap();
+    let written = tree_json(dir.path()).unwrap();
+    server.set_offline(true);
+    assert!(mount.volume.sync_once().is_err());
+    assert_eq!(mount.health.lock().unwrap().last(), Some(&Health::Offline));
+    assert_eq!(tree_json(dir.path()), Some(written));
+}
+
+#[test]
+fn idle_polls_back_off_and_reset_on_activity() {
+    const POLL: Duration = Duration::from_millis(10);
+    let server = FakeDav::generic();
+    server.put("readme.txt", b"hello");
+    let dir = tempfile::tempdir().unwrap();
+    let mount = mount_polling(&server, dir.path(), POLL, Duration::from_secs(60));
+    mount.volume.sync_once().unwrap();
+    // What one pass costs, so passes can be counted from the server side.
+    let before = server.stats().propfinds;
+    mount.volume.sync_once().unwrap();
+    let per_pass = server.stats().propfinds.saturating_sub(before);
+    assert!(per_pass > 0);
+    let base = server.stats().propfinds;
+    let passes = || {
+        server
+            .stats()
+            .propfinds
+            .saturating_sub(base)
+            .checked_div(per_pass)
+            .unwrap()
+    };
+    let wait_for_passes = |count: usize| {
+        let waiting = std::time::Instant::now();
+        while passes() < count {
+            assert!(
+                waiting.elapsed() < tilo_test_env::hang_bound(),
+                "only {} sync passes ran",
+                passes()
+            );
+            std::thread::sleep(Duration::from_millis(2));
+        }
+    };
+
+    let started = std::time::Instant::now();
+    let workers = mount.volume.spawn_workers();
+    // Nothing changes: after pass k the loop waits POLL * 2^k (±10 %), so
+    // seven passes take at least 0.9 * (20 + 40 + … + 640) ms. Without the
+    // back-off they would take about 70 ms.
+    wait_for_passes(7);
+    let elapsed = started.elapsed();
+    assert!(
+        elapsed >= Duration::from_millis(1100),
+        "seven idle passes ran in {elapsed:?}: the poll did not back off"
+    );
+
+    // The loop now waits at least 0.9 * 1280 ms. Listing the mount brings
+    // the next pass back within the poll interval.
+    let touched = std::time::Instant::now();
+    mount.volume.readdir(ROOT_INO).unwrap();
+    wait_for_passes(8);
+    let reset = touched.elapsed();
+    assert!(
+        reset < Duration::from_millis(800),
+        "the next pass came {reset:?} after local activity"
+    );
+
+    mount.volume.shutdown();
+    for worker in workers {
+        worker.join().unwrap();
+    }
 }
 
 /// Settings publishing the account's handoff credential, the way custody

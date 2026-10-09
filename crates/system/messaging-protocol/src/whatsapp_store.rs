@@ -51,17 +51,43 @@ pub struct EncryptedBackend {
     owner: Owner,
 }
 
+/// The host retains its original native credential grant on SDK state access.
+/// This does not mint a credential or authorize network endpoints.
+pub trait StateAuthority: Send + Sync {
+    fn allowed(&self) -> bool;
+}
+
 impl EncryptedBackend {
     /// Look up an existing OS-keychain key. Linking/provisioning is separate.
     ///
     /// # Errors
     /// Refuses missing/locked keys, weaker custody and invalid existing state.
-    pub fn open_system(root: &Path, owner: Owner) -> Result<Self> {
-        let store = tilo_secrets::SecretStore::for_app("so.tilo.messaging-broker");
-        if store.protection() != tilo_secrets::Protection::OsKeychain {
+    pub fn open_system(
+        root: &Path,
+        owner: Owner,
+        authority: Arc<dyn StateAuthority>,
+    ) -> Result<Self> {
+        Self::open_authorized(root, owner, authority, || {
+            let store = tilo_secrets::SecretStore::for_app("so.tilo.messaging-broker");
+            if store.protection() != tilo_secrets::Protection::OsKeychain {
+                return Err(unavailable());
+            }
+            STATE_FORMAT
+                .load_or_create_system_key_in(true, &store)
+                .ok_or_else(unavailable)
+        })
+    }
+
+    fn open_authorized(
+        root: &Path,
+        owner: Owner,
+        authority: Arc<dyn StateAuthority>,
+        lookup: impl FnOnce() -> Result<VaultKey>,
+    ) -> Result<Self> {
+        if !authority.allowed() {
             return Err(unavailable());
         }
-        Self::open_existing_in(root, owner, &store)
+        Self::open_state(root, owner, lookup()?, Some(authority))
     }
 
     /// Use a host's existing scoped key without provisioning or fallback.
@@ -87,6 +113,15 @@ impl EncryptedBackend {
     /// # Errors
     /// Refuses wrong service/authority, competing writers or corrupt state.
     pub fn open_with_key(root: &Path, owner: Owner, key: VaultKey) -> Result<Self> {
+        Self::open_state(root, owner, key, None)
+    }
+
+    fn open_state(
+        root: &Path,
+        owner: Owner,
+        key: VaultKey,
+        authority: Option<Arc<dyn StateAuthority>>,
+    ) -> Result<Self> {
         if !owner.valid_principal()
             || owner.service != Service::Whatsapp
             || !crate::identifier(&owner.device)
@@ -94,11 +129,29 @@ impl EncryptedBackend {
         {
             return Err(unavailable());
         }
-        let disk = Disk::open(root, owner.clone(), key)?;
+        let disk = Disk::open(root, owner.clone(), key, authority)?;
         Ok(Self {
             inner: Arc::new(Mutex::new(disk)),
             owner,
         })
+    }
+
+    /// Retain the original native account grant on every SDK state operation.
+    /// The supplied key constructor alone does not establish host authority.
+    /// # Errors
+    /// Refuses a grant which is already revoked.
+    pub fn guarded(self, authority: Arc<dyn StateAuthority>) -> Result<Self> {
+        if !authority.allowed() {
+            return Err(unavailable());
+        }
+        {
+            let mut disk = self.inner.lock().map_err(|_| unavailable())?;
+            if disk.authority.is_some() {
+                return Err(unavailable());
+            }
+            disk.authority = Some(authority);
+        }
+        Ok(self)
     }
 
     pub fn owner(&self) -> &Owner {
@@ -112,6 +165,7 @@ impl EncryptedBackend {
         let inner = self.inner.clone();
         tokio::task::spawn_blocking(move || {
             let mut disk = inner.lock().map_err(|_| unavailable())?;
+            disk.check_authority()?;
             if !disk.usable {
                 return Err(unavailable());
             }
@@ -214,11 +268,22 @@ struct Disk {
     log_bytes: u64,
     live_bytes: usize,
     usable: bool,
+    authority: Option<Arc<dyn StateAuthority>>,
     _lock: FileLock,
 }
 
 impl Disk {
-    fn open(root: &Path, owner: Owner, key: VaultKey) -> Result<Self> {
+    fn open(
+        root: &Path,
+        owner: Owner,
+        key: VaultKey,
+        authority: Option<Arc<dyn StateAuthority>>,
+    ) -> Result<Self> {
+        if let Some(grant) = &authority
+            && !grant.allowed()
+        {
+            return Err(unavailable());
+        }
         private_fs::directory(root).map_err(|_| unavailable())?;
         let lock = private_fs::lock_file(&root.join("owner.lock")).map_err(|_| unavailable())?;
         let lock = FileLock::try_exclusive(lock).map_err(|_| unavailable())?;
@@ -231,6 +296,7 @@ impl Disk {
             log_bytes: 0,
             live_bytes: 0,
             usable: true,
+            authority,
             _lock: lock,
         };
         match private_fs::open_owned_for_read(&disk.path, MAX_LOG_BYTES) {
@@ -280,6 +346,7 @@ impl Disk {
                 disk.log_bytes = len;
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                disk.check_authority()?;
                 let initial = disk.encode(0, &[])?;
                 if !private_fs::create_atomic(&disk.path, &initial).map_err(|_| unavailable())? {
                     return Err(unavailable());
@@ -288,7 +355,17 @@ impl Disk {
             }
             Err(_) => return Err(unavailable()),
         }
+        disk.check_authority()?;
         Ok(disk)
+    }
+
+    fn check_authority(&self) -> Result<()> {
+        if let Some(authority) = &self.authority
+            && !authority.allowed()
+        {
+            return Err(unavailable());
+        }
+        Ok(())
     }
 
     fn get<T: DeserializeOwned>(&self, key: &Key) -> Result<Option<T>> {

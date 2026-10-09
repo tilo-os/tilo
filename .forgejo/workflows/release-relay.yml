@@ -32,6 +32,7 @@ on:
       - "crates/hosting/tilo-delivery-protocol/**"
       - "crates/hosting/tilo-relay-client/**"
       - "crates/hosting/tilo-relay-protocol/**"
+      - "crates/hosting/tilo-relay-session/**"
       - "crates/hosting/tilo-relay/**"
       - "crates/media/thumbnail/**"
       - "crates/packaging/launcher/**"
@@ -73,6 +74,7 @@ on:
       - "crates/system/secret-vault/**"
       - "crates/system/tilo-dav/**"
       - "crates/system/tilo-native-certs/**"
+      - "crates/system/tilo-nm/**"
       - "crates/system/tilo-seal/**"
       - "crates/system/wire-frame/**"
       - "crates/system/xdg-paths/**"
@@ -127,6 +129,7 @@ on:
       - "crates/hosting/tilo-delivery-protocol/**"
       - "crates/hosting/tilo-relay-client/**"
       - "crates/hosting/tilo-relay-protocol/**"
+      - "crates/hosting/tilo-relay-session/**"
       - "crates/hosting/tilo-relay/**"
       - "crates/media/thumbnail/**"
       - "crates/packaging/launcher/**"
@@ -168,6 +171,7 @@ on:
       - "crates/system/secret-vault/**"
       - "crates/system/tilo-dav/**"
       - "crates/system/tilo-native-certs/**"
+      - "crates/system/tilo-nm/**"
       - "crates/system/tilo-seal/**"
       - "crates/system/wire-frame/**"
       - "crates/system/xdg-paths/**"
@@ -238,7 +242,7 @@ jobs:
     runs-on: runner-quality
     timeout-minutes: 180
     container:
-      image: registry.tilo.so/tilo/ci-control@sha256:cc33624d156302fa0c62c065b9babf1d18c6d3103116ff9b0ecf4e0f316d9ce5
+      image: registry.tilo.so/tilo/ci-control@sha256:0f205596aa1753a7ca1f2f496aa25095f68668ff80a28acbfdc6d0f35f6dcfde
     outputs:
       rpms_ref: ${{ steps.resolve.outputs.rpms_ref }}
     steps:

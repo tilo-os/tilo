@@ -2618,10 +2618,7 @@ mod event_tests {
         app.recompute_regions();
         app.sync_viewport_frame();
         assert!(!app.has_document, "empty app starts with no document");
-        let path = std::path::PathBuf::from(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/tests/fixtures/sample.pdf"
-        ));
+        let path = std::path::PathBuf::from(concat!(env!("OUT_DIR"), "/sample.pdf"));
         let (services, recorder) = ui::host::HostServices::recording();
         recorder.respond_to_pick(ui::portal::PortalOutcome::Opened(path));
         ui::host::scoped(&services, || {
@@ -2708,7 +2705,7 @@ mod event_tests {
             .expect("the annotation is published as a resource");
         let spec = res.actions.iter().find(|a| a.id == "delete").unwrap();
         let spec_encoded = match &spec.input {
-            ActionInput::Immediate(e) => e.clone(),
+            ActionInput::Immediate(e) => e.as_ref().clone(),
             ActionInput::Prompted { .. } | ActionInput::Deferred { .. } => {
                 panic!("delete is an immediate action")
             }

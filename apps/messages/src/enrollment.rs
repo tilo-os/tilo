@@ -16,6 +16,7 @@ struct Projection {
     account: Option<ServiceAccount>,
     pending: bool,
     proposal: Option<String>,
+    sims: Option<Vec<tilo_messaging::SimChoice>>,
 }
 #[derive(Clone)]
 pub(crate) struct EnrollmentView {
@@ -62,6 +63,9 @@ impl EnrollmentView {
     }
     pub(crate) fn close(&self) {
         self.epoch.update(|epoch| *epoch = epoch.saturating_add(1));
+        if let Some(client) = &self.client {
+            client.cancel_sim_selection();
+        }
         if self.phase() != EnrollmentPhase::Ready
             && let Some(client) = &self.client
             && let Some(account) = self.state.with(|state| state.account.clone())
@@ -74,6 +78,8 @@ impl EnrollmentView {
         matches!(
             effect,
             MessagesEffect::BeginFirstEnrollment { .. }
+                | MessagesEffect::ListSmsSims
+                | MessagesEffect::SelectSmsSim { .. }
                 | MessagesEffect::CompleteFirstEnrollment { .. }
                 | MessagesEffect::ReviewFirstEnrollment { .. }
         )
@@ -88,6 +94,11 @@ impl EnrollmentView {
             .clone()
             .ok_or_else(|| CATALOG.t("messages-setup-unavailable"))?;
         match effect {
+            MessagesEffect::ListSmsSims => self.sims(client, cx),
+            MessagesEffect::SelectSmsSim { selection } => self.select_sim(client, selection, cx),
+            MessagesEffect::BeginFirstEnrollment { service } if service == "tilo" => {
+                self.prepare(client, service, cx)
+            }
             MessagesEffect::BeginFirstEnrollment { service } => self.begin(client, service, cx),
             MessagesEffect::CompleteFirstEnrollment {
                 service,
@@ -106,6 +117,101 @@ impl EnrollmentView {
             ),
             _ => Err(CATALOG.t("messages-setup-unavailable")),
         }
+    }
+    fn sims(&self, client: EnrollmentClient, cx: &mut EffectCx<Messages>) -> EffectAnswer {
+        if !client.supports_sim_selection()
+            || self
+                .state
+                .with(|state| state.pending || state.account.is_some())
+        {
+            return Err(CATALOG.t("messages-setup-active"));
+        }
+        self.state.update(|state| state.pending = true);
+        self.epoch.update(|epoch| *epoch = epoch.saturating_add(1));
+        let admitted = self.epoch.get();
+        let epoch = self.epoch.clone();
+        let state = self.state.clone();
+        let invalidated = client.clone();
+        Ok(cx.spawn(move |_| async move { client.sim_choices().await }, move |(), result, _| {
+            if epoch.get() != admitted {
+                invalidated.cancel_sim_selection();
+                return Err(CATALOG.t("messages-setup-interrupted"));
+            }
+            state.update(|state| state.pending = false);
+            let choices = result.map_err(|_| CATALOG.t("messages-setup-unavailable"))?;
+            let value = serde_json::json!({"state":"select_sim", "choices": choices.iter().map(|choice| serde_json::json!({"selection": choice.selection, "label": choice.label})).collect::<Vec<_>>()});
+            state.update(|state| state.sims = Some(choices));
+            epoch.update(|epoch| *epoch = epoch.saturating_add(1));
+            Ok(Effected::value(value))
+        }))
+    }
+    fn select_sim(
+        &self,
+        client: EnrollmentClient,
+        selection: String,
+        cx: &mut EffectCx<Messages>,
+    ) -> EffectAnswer {
+        if !self.state.with(|state| {
+            !state.pending
+                && state.account.is_none()
+                && state.sims.as_ref().is_some_and(|choices| {
+                    choices.iter().any(|choice| choice.selection == selection)
+                })
+        }) {
+            return Err(CATALOG.t("messages-setup-active"));
+        }
+        self.state.update(|state| state.pending = true);
+        self.epoch.update(|epoch| *epoch = epoch.saturating_add(1));
+        let admitted = self.epoch.get();
+        let epoch = self.epoch.clone();
+        let state = self.state.clone();
+        let invalidated = client.clone();
+        Ok(cx.spawn(move |_| async move { client.select_sim(selection).await }, move |(), result, _| {
+            if epoch.get() != admitted {
+                if let Ok(review) = result { invalidated.cancel(&review.account); }
+                return Err(CATALOG.t("messages-setup-interrupted"));
+            }
+            state.update(|state| state.pending = false);
+            let review = result.map_err(|_| CATALOG.t("messages-setup-unavailable"))?;
+            let value = serde_json::json!({"state":"review","service":"sms","account":review.account.account});
+            state.update(|state| {
+                state.account = Some(review.account.clone());
+                state.review = Some(review);
+                state.sims = None;
+            });
+            epoch.update(|epoch| *epoch = epoch.saturating_add(1));
+            Ok(Effected::value(value))
+        }))
+    }
+    fn prepare(
+        &self,
+        client: EnrollmentClient,
+        service: String,
+        cx: &mut EffectCx<Messages>,
+    ) -> EffectAnswer {
+        if self
+            .state
+            .with(|state| state.pending || state.account.is_some())
+        {
+            return Err(CATALOG.t("messages-setup-active"));
+        }
+        self.state.update(|state| state.pending = true);
+        self.epoch.update(|epoch| *epoch = epoch.saturating_add(1));
+        let admitted = self.epoch.get();
+        let epoch = self.epoch.clone();
+        let projection = self.state.clone();
+        let invalidated = client.clone();
+        Ok(cx.spawn(move |_| async move { client.prepare(service).await }, move |(), result, _| {
+            if epoch.get() != admitted {
+                if let Ok(review) = result { invalidated.cancel(&review.account); }
+                return Err(CATALOG.t("messages-setup-interrupted"));
+            }
+            projection.update(|state| state.pending = false);
+            let review = result.map_err(|_| CATALOG.t("messages-setup-unavailable"))?;
+            let value = serde_json::json!({"state":"review","service":review.account.service,"account":review.account.account});
+            projection.update(|state| { state.account = Some(review.account.clone()); state.review = Some(review); });
+            Ok(Effected::value(value))
+        }))
     }
     fn begin(
         &self,
@@ -265,7 +371,7 @@ impl EnrollmentView {
                     &MessagesEffect::ReviewFirstEnrollment {
                         service: review.account.service.clone(),
                         account: review.account.account.clone(),
-                        display_name: CATALOG.t("messages-signal"),
+                        display_name: CATALOG.t(&format!("messages-{}", review.account.service)),
                     },
                 ),
             ));
@@ -275,6 +381,16 @@ impl EnrollmentView {
                 &CATALOG.t("messages-setup-interrupted"),
             )));
         }
+        content = self.sim_panel(content, actions, &state);
+        content =
+            content.push(Box::new(actions.bind_effect_invocation(
+                Button::new("messages.first-tilo", "messages-first-tilo").with_enabled(
+                    self.client.is_some() && !state.pending && state.account.is_none(),
+                ),
+                &MessagesEffect::BeginFirstEnrollment {
+                    service: "tilo".into(),
+                },
+            )));
         content.push(Box::new(
             actions.bind_effect_invocation(
                 Button::new("messages.first-account-start", "messages-first-signal").with_enabled(
@@ -285,5 +401,46 @@ impl EnrollmentView {
                 },
             ),
         ))
+    }
+    fn sim_panel(
+        &self,
+        mut content: Column,
+        actions: &Actions<Messages>,
+        state: &Projection,
+    ) -> Column {
+        if let Some(choices) = &state.sims {
+            if choices.is_empty() {
+                content = content.push(Box::new(Text::new(&CATALOG.t("messages-no-sims"))));
+            }
+            for choice in choices {
+                let label = CATALOG.t_args(
+                    "messages-select-sim-name",
+                    &[("sim", ui::i18n::ArgValue::Text(choice.label.clone()))],
+                );
+                content = content.push(Box::new(
+                    actions.bind_effect_invocation(
+                        Button::new(&format!("messages.sim.{}", choice.selection), &label)
+                            .with_enabled(!state.pending),
+                        &MessagesEffect::SelectSmsSim {
+                            selection: choice.selection.clone(),
+                        },
+                    ),
+                ));
+            }
+        }
+        if self
+            .client
+            .as_ref()
+            .is_some_and(EnrollmentClient::supports_sim_selection)
+        {
+            content = content.push(Box::new(
+                actions.bind_effect_invocation(
+                    Button::new("messages.first-sms", "messages-first-sms")
+                        .with_enabled(!state.pending && state.account.is_none()),
+                    &MessagesEffect::ListSmsSims,
+                ),
+            ));
+        }
+        content
     }
 }

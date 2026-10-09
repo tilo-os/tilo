@@ -14,14 +14,14 @@ impl CapnpBrokerState {
 
     pub(super) fn verify_network_action_caller(
         &self,
-        evidence: &tilo_relay::client::CertifiedAction,
+        evidence: &tilo_relay_session::client::CertifiedAction,
     ) -> Result<VerifiedActionCaller, String> {
         let registered = self.registered_policy_time()?;
         self.verify_network_action_caller_with_policy_time(evidence, registered.as_ref())
     }
     pub(super) fn verify_network_action_caller_with_policy_time(
         &self,
-        evidence: &tilo_relay::client::CertifiedAction,
+        evidence: &tilo_relay_session::client::CertifiedAction,
         submitted: Option<&crate::peer_actions::PolicyTime>,
     ) -> Result<VerifiedActionCaller, String> {
         let cert = evidence.certificate();
@@ -159,7 +159,7 @@ impl CapnpBrokerState {
     async fn peer_action(
         &self,
         directories: &LocalActionDirectoryRegistry,
-        evidence: &tilo_relay::client::CertifiedAction,
+        evidence: &tilo_relay_session::client::CertifiedAction,
         poll: Option<tilo_actions::InvocationId>,
         notification: Option<tilo_actions::InvocationUpdate>,
         policy_time: Option<&crate::peer_actions::PolicyTime>,
@@ -184,6 +184,25 @@ impl CapnpBrokerState {
             return Ok(observation);
         }
         match &evidence.action().message {
+            ActionMessage::RecordEffectReceipt {
+                invocation,
+                redacted,
+            } => {
+                let request = tilo_peer_state::owner_commit::OwnerCommitRequest {
+                    room: caller.room.clone(),
+                    operation: tilo_peer_state::owner_commit::CommitOperation::EffectReceipt {
+                        invocation: invocation.0,
+                        redacted: redacted.as_bytes().to_vec(),
+                    },
+                };
+                let _order = self.owner_commit_order.lock().await;
+                self.publisher
+                    .commit_member_effect_receipt(request, evidence.certificate().clone())
+                    .await?;
+                Ok(ActionMessage::EffectReceiptCommitted {
+                    invocation: *invocation,
+                })
+            }
             ActionMessage::CatalogueRefresh { scope } => {
                 let catalogue = serde_json::from_str(&self.action_catalogue_json_for(
                     &caller.room,

@@ -11,7 +11,7 @@
 //! commit point. The tree of a replaced version is removed afterwards and
 //! every blob no remaining package references is evicted.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -74,6 +74,13 @@ pub struct Admission {
     /// Keep this version in front of a newer one the system image ships;
     /// see [`InstalledPackage::held`].
     pub held: bool,
+}
+
+/// The outcome of a development install that preserves explicit version holds.
+#[derive(Clone, Debug)]
+pub enum InstallSelection {
+    Installed(Box<Installed>),
+    Preserved(Box<InstalledPackage>),
 }
 
 /// The result of an install.
@@ -458,6 +465,47 @@ impl PackageStore {
         })
     }
 
+    /// Install an explicitly selected development package while preserving a
+    /// user's held version. The admission policy still runs first; the held
+    /// decision reads the current registry under the normal installation lock.
+    /// Existing pins are retained by the same commit path as ordinary installs.
+    /// `Preserved` carries the held row observed under the canonical lock.
+    ///
+    /// # Errors
+    /// Returns the same verification, admission and storage errors as [`Self::install`].
+    pub fn install_preserving_hold<F>(
+        &self,
+        tapp: impl Read + Send,
+        admit: F,
+        fetcher: Option<&dyn BlobFetcher>,
+    ) -> Result<InstallSelection, StoreError>
+    where
+        F: FnOnce(&PackageMeta) -> Result<Admission, String> + Send,
+    {
+        let mut preserved = None;
+        let result = self.install(
+            tapp,
+            |meta| {
+                let admission = admit(meta)?;
+                let registry = self.registry().map_err(|error| error.to_string())?;
+                if let Some(row) = registry.find(&meta.manifest.package.id)
+                    && row.held
+                {
+                    preserved = Some(row.clone());
+                    return Err("the explicitly held package is preserved".into());
+                }
+                Ok(admission)
+            },
+            fetcher,
+        );
+        match (result, preserved) {
+            (Err(StoreError::Refused(_)), Some(row)) => {
+                Ok(InstallSelection::Preserved(Box::new(row)))
+            }
+            (result, _) => result.map(|installed| InstallSelection::Installed(Box::new(installed))),
+        }
+    }
+
     /// Decode `tapp`, admit it, store its payload and materialise it.
     /// With `keep_present`, a package already materialised in full is left
     /// exactly as it is. Returns the package, its admission, how many blobs
@@ -720,8 +768,20 @@ impl PackageStore {
             runtime: meta.manifest.package.runtime.clone().unwrap_or_default(),
             source: admission.source,
             held: admission.held,
+            payload_bytes: self.materialised_bytes(meta),
             system: false,
         }
+    }
+
+    /// Bytes of `meta`'s materialised payload tree, measured once so that
+    /// listing the package later never walks it.
+    fn materialised_bytes(&self, meta: &PackageMeta) -> u64 {
+        let root = self.layout.payload(meta.id);
+        meta.collection
+            .entries
+            .keys()
+            .map(|rel| std::fs::metadata(root.join(rel)).map_or(0, |m| m.len()))
+            .fold(0u64, u64::saturating_add)
     }
 
     /// Remove the files of a row that is no longer in the registry.
@@ -747,14 +807,7 @@ impl PackageStore {
     pub fn remove(&self, app_id: &str, force: bool) -> Result<Removed, StoreError> {
         let _lock = self.lock()?;
         let mut registry = self.registry()?;
-        let row = registry
-            .find(app_id)
-            .cloned()
-            .ok_or_else(|| StoreError::NotInstalled(app_id.to_string()))?;
-        if row.pinned && !force {
-            return Err(StoreError::Pinned(app_id.to_string()));
-        }
-        registry.remove(app_id);
+        let row = Self::remove_row_locked(&mut registry, app_id, force)?;
         registry.save(&self.layout.registry())?;
         self.retire_tree(&row)?;
         let evicted_blobs = self.collect_garbage_locked()?;
@@ -762,6 +815,25 @@ impl PackageStore {
             package: Some(row),
             evicted_blobs,
         })
+    }
+
+    /// Drop `app_id`'s row from `registry` (in memory only) and return it.
+    /// The caller holds the lock, saves the registry, retires the tree and
+    /// collects garbage.
+    fn remove_row_locked(
+        registry: &mut Registry,
+        app_id: &str,
+        force: bool,
+    ) -> Result<InstalledPackage, StoreError> {
+        let row = registry
+            .find(app_id)
+            .ok_or_else(|| StoreError::NotInstalled(app_id.to_string()))?;
+        if row.pinned && !force {
+            return Err(StoreError::Pinned(app_id.to_string()));
+        }
+        registry
+            .remove(app_id)
+            .ok_or_else(|| StoreError::NotInstalled(app_id.to_string()))
     }
 
     /// Set the pin of `app_id`.
@@ -816,6 +888,10 @@ impl PackageStore {
     }
 
     /// Every payload blob installed packages reference.
+    ///
+    /// Reads each record's collection without replaying its signature:
+    /// which blobs a package names is bookkeeping, not trust, and the
+    /// signature was checked when the package was installed.
     fn referenced_blobs(&self) -> Result<BTreeSet<BlobHash>, StoreError> {
         let mut live = BTreeSet::new();
         for row in self.registry()?.entries() {
@@ -824,13 +900,9 @@ impl PackageStore {
                 // it existed); it references nothing here.
                 continue;
             }
-            let record = integrity::read_record(
-                &integrity::record_dir(row),
-                &row.id,
-                &row.package_id_hex,
-            )
-            .map_err(|error| StoreError::CorruptPackage(row.id.clone(), error.to_string()))?;
-            live.extend(record.collection.entries.values().copied());
+            let collection = integrity::read_collection(&integrity::record_dir(row))
+                .map_err(|error| StoreError::CorruptPackage(row.id.clone(), error.to_string()))?;
+            live.extend(collection.entries.values().copied());
         }
         for image in self.images()? {
             live.extend(image.collection.entries.values().copied());
@@ -854,40 +926,61 @@ impl PackageStore {
         })
     }
 
+    /// What each row of `registry` occupies, in one pass: each record's
+    /// collection is read without replaying its signature, and each
+    /// distinct blob's length is read once from a materialised file.
+    fn usage_index(registry: &Registry) -> UsageIndex {
+        let mut sizes: BTreeMap<BlobHash, u64> = BTreeMap::new();
+        let rows = registry
+            .entries()
+            .iter()
+            .map(|row| {
+                let mut usage = UsageRow {
+                    id: row.id.clone(),
+                    pinned: row.pinned,
+                    last_used: row.last_used,
+                    ..UsageRow::default()
+                };
+                let Ok(collection) = integrity::read_collection(&integrity::record_dir(row)) else {
+                    // No readable record: the tree's bytes cannot be told
+                    // apart, so they count as this row's alone.
+                    usage.loose_bytes = crate::tree_size(&row.payload_root);
+                    return usage;
+                };
+                for (rel, hash) in &collection.entries {
+                    let len = match sizes.get(hash) {
+                        Some(len) => *len,
+                        None => match std::fs::metadata(row.payload_root.join(rel)) {
+                            Ok(meta) => *sizes.entry(*hash).or_insert(meta.len()),
+                            Err(_) => 0,
+                        },
+                    };
+                    usage.blobs.push((*hash, len));
+                }
+                usage
+            })
+            .collect();
+        UsageIndex::new(rows)
+    }
+
     /// Distinct payload bytes each installed package references, and the
-    /// total with shared blobs counted once.
+    /// total with shared blobs counted once. Bookkeeping only: no record's
+    /// signature is replayed here ([`integrity::verify`] does that).
     ///
     /// # Errors
     ///
     /// Returns an error if the registry cannot be read.
     pub fn disk_usage(&self) -> Result<DiskUsage, StoreError> {
-        let mut usage = DiskUsage::default();
-        let mut counted = BTreeSet::new();
-        for row in self.registry()?.entries() {
-            let Ok(record) =
-                integrity::read_record(&integrity::record_dir(row), &row.id, &row.package_id_hex)
-            else {
-                let size = crate::tree_size(&row.payload_root);
-                usage.add(row.pinned, size, size);
-                continue;
-            };
-            let mut own = 0u64;
-            let mut fresh = 0u64;
-            for (rel, hash) in &record.collection.entries {
-                let len = std::fs::metadata(row.payload_root.join(rel)).map_or(0, |m| m.len());
-                own = own.saturating_add(len);
-                if counted.insert(*hash) {
-                    fresh = fresh.saturating_add(len);
-                }
-            }
-            usage.add(row.pinned, own, fresh);
-        }
-        Ok(usage)
+        Ok(Self::usage_index(&self.registry()?).disk_usage())
     }
 
     /// Evict unpinned packages, least recently used first, until the
     /// store's distinct payload bytes are at most `max_bytes`. `0` disables
     /// the sweep. Returns the app ids removed.
+    ///
+    /// The whole sweep runs under the store's lock: usage is measured once,
+    /// the evictions are planned from it, the registry is rewritten once and
+    /// garbage is collected once.
     ///
     /// # Errors
     ///
@@ -896,27 +989,117 @@ impl PackageStore {
         if max_bytes == 0 {
             return Ok(Vec::new());
         }
-        let mut candidates: Vec<InstalledPackage> = self
-            .registry()?
-            .into_entries()
-            .into_iter()
-            .filter(|row| !row.pinned)
-            .collect();
-        candidates.sort_by_key(|row| row.last_used);
-        let mut removed = Vec::new();
-        for row in candidates {
-            if self.disk_usage()?.total_bytes <= max_bytes {
-                break;
-            }
-            match self.remove(&row.id, false) {
-                Ok(_) => removed.push(row.id),
-                // Pinned or removed concurrently since the snapshot.
-                Err(StoreError::Pinned(_) | StoreError::NotInstalled(_)) => {}
-                Err(other) => return Err(other),
+        let _lock = self.lock()?;
+        let mut registry = self.registry()?;
+        let plan = plan_eviction(&Self::usage_index(&registry), max_bytes);
+        if plan.is_empty() {
+            return Ok(plan);
+        }
+        let mut retired = Vec::with_capacity(plan.len());
+        for id in &plan {
+            retired.push(Self::remove_row_locked(&mut registry, id, false)?);
+        }
+        registry.save(&self.layout.registry())?;
+        for row in &retired {
+            self.retire_tree(row)?;
+        }
+        self.collect_garbage_locked()?;
+        Ok(plan)
+    }
+}
+
+/// One package's share of the store, for accounting.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct UsageRow {
+    id: String,
+    pinned: bool,
+    last_used: u64,
+    /// Each payload file's blob and length, in collection order.
+    blobs: Vec<(BlobHash, u64)>,
+    /// Bytes that belong to no known blob: the tree of a row whose record
+    /// cannot be read. Counted as this row's alone.
+    loose_bytes: u64,
+}
+
+/// Every row's share, with how many rows reference each blob and the
+/// length each blob is counted at (its first occurrence).
+#[derive(Clone, Debug, Default)]
+struct UsageIndex {
+    rows: Vec<UsageRow>,
+    refcount: BTreeMap<BlobHash, u32>,
+    sizes: BTreeMap<BlobHash, u64>,
+}
+
+impl UsageIndex {
+    fn new(rows: Vec<UsageRow>) -> Self {
+        let mut refcount: BTreeMap<BlobHash, u32> = BTreeMap::new();
+        let mut sizes = BTreeMap::new();
+        for row in &rows {
+            let mut seen = BTreeSet::new();
+            for (hash, len) in &row.blobs {
+                sizes.entry(*hash).or_insert(*len);
+                if seen.insert(*hash) {
+                    let count = refcount.entry(*hash).or_default();
+                    *count = count.saturating_add(1);
+                }
             }
         }
-        Ok(removed)
+        Self {
+            rows,
+            refcount,
+            sizes,
+        }
     }
+
+    fn disk_usage(&self) -> DiskUsage {
+        let mut usage = DiskUsage::default();
+        let mut counted = BTreeSet::new();
+        for row in &self.rows {
+            let mut own = row.loose_bytes;
+            let mut fresh = row.loose_bytes;
+            for (hash, len) in &row.blobs {
+                own = own.saturating_add(*len);
+                if counted.insert(*hash) {
+                    fresh = fresh.saturating_add(*len);
+                }
+            }
+            usage.add(row.pinned, own, fresh);
+        }
+        usage
+    }
+}
+
+/// The unpinned rows to evict, least recently used first, until the
+/// distinct bytes left are at most `max_bytes`. Evicting a row frees its
+/// loose bytes and every blob no remaining row references; a blob another
+/// row still shares frees nothing. `0` plans nothing.
+fn plan_eviction(index: &UsageIndex, max_bytes: u64) -> Vec<String> {
+    let mut plan = Vec::new();
+    if max_bytes == 0 {
+        return plan;
+    }
+    let mut total = index.disk_usage().total_bytes;
+    let mut refcount = index.refcount.clone();
+    let mut candidates: Vec<&UsageRow> = index.rows.iter().filter(|row| !row.pinned).collect();
+    candidates.sort_by_key(|row| row.last_used);
+    for row in candidates {
+        if total <= max_bytes {
+            break;
+        }
+        total = total.saturating_sub(row.loose_bytes);
+        let distinct: BTreeSet<BlobHash> = row.blobs.iter().map(|(hash, _)| *hash).collect();
+        for hash in distinct {
+            let Some(count) = refcount.get_mut(&hash) else {
+                continue;
+            };
+            *count = count.saturating_sub(1);
+            if *count == 0 {
+                total = total.saturating_sub(index.sizes.get(&hash).copied().unwrap_or(0));
+            }
+        }
+        plan.push(row.id.clone());
+    }
+    plan
 }
 
 /// On-disk accounting, with blobs shared between packages counted once in
@@ -942,6 +1125,88 @@ impl DiskUsage {
 impl From<TappError> for StoreError {
     fn from(error: TappError) -> Self {
         Self::Tapp(error.to_string())
+    }
+}
+
+#[cfg(test)]
+mod eviction_plan_tests {
+    use super::{BlobHash, UsageIndex, UsageRow, plan_eviction};
+
+    fn blob(seed: u8) -> BlobHash {
+        BlobHash::of(&[seed])
+    }
+
+    fn row(id: &str, last_used: u64, pinned: bool, blobs: &[(u8, u64)]) -> UsageRow {
+        UsageRow {
+            id: id.into(),
+            pinned,
+            last_used,
+            blobs: blobs
+                .iter()
+                .map(|(seed, len)| (blob(*seed), *len))
+                .collect(),
+            loose_bytes: 0,
+        }
+    }
+
+    #[test]
+    fn plan_eviction_counts_shared_blobs_once() {
+        // a and b each own 100 bytes and share a 300-byte library.
+        let index = UsageIndex::new(vec![
+            row("so.tilo.a", 1, false, &[(1, 100), (9, 300)]),
+            row("so.tilo.b", 2, false, &[(2, 100), (9, 300)]),
+        ]);
+        assert_eq!(
+            index.disk_usage().total_bytes,
+            500,
+            "the library counts once"
+        );
+        assert_eq!(index.disk_usage().tried_bytes, 800, "each row's own bytes");
+        // Evicting a frees only its own 100 bytes: b still holds the library.
+        assert_eq!(plan_eviction(&index, 450), vec!["so.tilo.a"]);
+        assert_eq!(plan_eviction(&index, 400), vec!["so.tilo.a"]);
+        // 400 left after a is still over 399, and b then frees 400.
+        assert_eq!(plan_eviction(&index, 399), vec!["so.tilo.a", "so.tilo.b"]);
+        assert!(
+            plan_eviction(&index, 500).is_empty(),
+            "already under the cap"
+        );
+        assert!(plan_eviction(&index, 0).is_empty(), "0 disables the sweep");
+    }
+
+    #[test]
+    fn plan_eviction_never_picks_pinned() {
+        let index = UsageIndex::new(vec![
+            row("so.tilo.kept", 0, true, &[(1, 1_000)]),
+            row("so.tilo.tried", 5, false, &[(2, 1_000)]),
+        ]);
+        assert_eq!(
+            plan_eviction(&index, 1),
+            vec!["so.tilo.tried"],
+            "the oldest row is pinned, and the cap is never met, yet it stays"
+        );
+    }
+
+    #[test]
+    fn plan_eviction_is_lru() {
+        let mut loose = row("so.tilo.legacy", 20, false, &[]);
+        loose.loose_bytes = 50;
+        let index = UsageIndex::new(vec![
+            row("so.tilo.newest", 30, false, &[(1, 100)]),
+            row("so.tilo.oldest", 10, false, &[(2, 100)]),
+            loose,
+        ]);
+        assert_eq!(index.disk_usage().total_bytes, 250);
+        assert_eq!(plan_eviction(&index, 150), vec!["so.tilo.oldest"]);
+        assert_eq!(
+            plan_eviction(&index, 100),
+            vec!["so.tilo.oldest", "so.tilo.legacy"],
+            "a row without a record frees its whole tree"
+        );
+        assert_eq!(
+            plan_eviction(&index, 1),
+            vec!["so.tilo.oldest", "so.tilo.legacy", "so.tilo.newest"]
+        );
     }
 }
 

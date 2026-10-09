@@ -350,8 +350,9 @@ pub struct QuickSettingsState {
     pub bluetooth_available: bool,
     /// Primary `NetworkManager` Ethernet interface. `None` means no adapter.
     pub wired: Option<os_actions::WiredInfo>,
-    /// Read-only kernel battery snapshot for the quick status row.
-    pub battery: os_actions::BatteryInfo,
+    /// The top bar's battery reading — same type, same sysfs parser — so
+    /// the panel and the tray cannot disagree about the charge.
+    pub battery: tilo_power_mgmt::BatterySnapshot,
     /// `None` when fwupd is unavailable, otherwise the offered update count.
     pub firmware_updates: Option<usize>,
     pub radios: os_actions::RadioState,
@@ -444,22 +445,14 @@ impl Default for QuickSettingsState {
             bluetooth: false,
             bluetooth_available: false,
             wired: None,
-            battery: os_actions::BatteryInfo::from_root(std::path::Path::new(
-                "/nonexistent/tilo-power-supply",
-            )),
+            battery: tilo_power_mgmt::BatterySnapshot::absent(),
             firmware_updates: None,
             radios: os_actions::RadioState::default(),
             vpns: Vec::new(),
             privacy: os_actions::get_privacy_status(),
-            night_light: settings_store::bool_at(&settings_store::load(), "display", "night_light")
-                .unwrap_or(false),
+            night_light: settings_store::hardware::NIGHT_LIGHT.get(),
             rotation_available: os_actions::has_accelerometer(),
-            rotation_lock: settings_store::bool_at(
-                &settings_store::load(),
-                "display",
-                "rotation_lock",
-            )
-            .unwrap_or(false),
+            rotation_lock: settings_store::hardware::ROTATION_LOCK.get(),
             nav_stack: vec![QsLevel::Root],
             // Populated by nmcli/bluetoothctl on the popover's rising
             // edge — no fake content.
@@ -492,16 +485,7 @@ impl QuickSettingsState {
             bluetooth: false,
             bluetooth_available: false,
             wired: None,
-            battery: os_actions::BatteryInfo {
-                present: false,
-                capacity: 0,
-                status: String::new(),
-                cycle_count: None,
-                on_ac: false,
-                full_capacity: None,
-                design_capacity: None,
-                charge_limit: None,
-            },
+            battery: tilo_power_mgmt::BatterySnapshot::absent(),
             firmware_updates: None,
             radios: os_actions::RadioState::default(),
             vpns: Vec::new(),
@@ -608,6 +592,10 @@ pub struct ChromeState {
     /// Bumped on every tree mutation. Widgets poll this in `update` to
     /// re-sync caches — cheaper than diffing, simpler than an event bus.
     pub revision: u64,
+    /// Which chrome this is, unique in the process. [`Self::revision`]
+    /// counts from zero in every chrome, so a cache keyed on it names the
+    /// chrome too.
+    instance: u64,
     /// Bumped when an appearance action writes the store so the live frame
     /// applies theme and locale on the next paint without waiting for the
     /// settings-file poll.
@@ -771,6 +759,7 @@ pub struct ChromeState {
     continuity_suggestions: crate::shell::continuity_suggestion::ContinuitySuggestions,
     /// Recently closed tabs, for `tab.reopen` and the close toast's Undo.
     closed_tabs: crate::shell::closed_tabs::ClosedTabStack,
+    pending_closed_tabs: Vec<crate::shell::closed_tabs::ClosedTab>,
     /// Close toasts still offering Undo: notification id -> closed entry.
     /// They never enter notification history.
     undo_toasts: BTreeMap<u64, u64>,
@@ -857,6 +846,10 @@ impl ChromeState {
             workspace_settings_anchor: vello::kurbo::Rect::ZERO,
             ws_grant_draft: tilo_desktop::workspace_settings::GrantDraft::default(),
             revision: 0,
+            instance: {
+                static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+                NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            },
             appearance_generation: 0,
             observed_external_tree_revision: 0,
             activity_glance: ActivityGlance::default(),
@@ -914,6 +907,7 @@ impl ChromeState {
             continuity_suggestions:
                 crate::shell::continuity_suggestion::ContinuitySuggestions::default(),
             closed_tabs: crate::shell::closed_tabs::ClosedTabStack::default(),
+            pending_closed_tabs: Vec::new(),
             undo_toasts: BTreeMap::new(),
             workspace_undo_toasts: BTreeMap::new(),
             records: RecordStore::in_memory(),
@@ -1462,6 +1456,11 @@ impl ChromeState {
         self.revision = self.revision.wrapping_add(1);
     }
 
+    /// This chrome's identity, unique in the process; see `instance`.
+    pub(crate) fn instance(&self) -> u64 {
+        self.instance
+    }
+
     /// Persist-side appearance change: chrome rebuilds, and the live frame
     /// applies the configured theme and locale on the next paint instead of
     /// waiting for the settings-file poll.
@@ -1478,6 +1477,7 @@ impl ChromeState {
             return false;
         }
         self.observed_external_tree_revision = external;
+        self.publish_completed_closes();
         self.bump();
         true
     }
@@ -1722,8 +1722,51 @@ impl ChromeState {
         Some(suggestion)
     }
 
-    /// Remember a close so it can be undone, and say so with a short toast
-    /// whose activation puts the tab back.
+    /// Publish Undo and its toast only after removal. A live client may
+    /// refuse its close request and keep the tab present.
+    pub fn remember_closed_tab_after_removal(
+        &mut self,
+        entry: crate::shell::closed_tabs::ClosedTab,
+    ) {
+        if self.pending_closed_tabs.iter().any(|pending| {
+            pending
+                .tabs
+                .iter()
+                .map(|content| content.tab.id)
+                .eq(entry.tabs.iter().map(|content| content.tab.id))
+        }) {
+            return;
+        }
+        self.pending_closed_tabs.push(entry);
+        self.publish_completed_closes();
+    }
+
+    fn publish_completed_closes(&mut self) {
+        let present: std::collections::HashSet<_> = self
+            .tree()
+            .desktop
+            .workspaces
+            .iter()
+            .flat_map(|workspace| workspace.strips.iter())
+            .flat_map(|strip| strip.window_groups.iter())
+            .flat_map(|group| group.tabs.iter())
+            .map(|tab| tab.id)
+            .collect();
+        let entries = std::mem::take(&mut self.pending_closed_tabs);
+        for entry in entries {
+            if entry
+                .tabs
+                .iter()
+                .any(|content| present.contains(&content.tab.id))
+            {
+                self.pending_closed_tabs.push(entry);
+            } else {
+                self.remember_closed_tab(entry);
+            }
+        }
+    }
+
+    /// Remember a completed close and offer a toast whose activation restores it.
     pub fn remember_closed_tab(&mut self, entry: crate::shell::closed_tabs::ClosedTab) -> u64 {
         use crate::shell::i18n::{t, t_args};
 
@@ -3718,6 +3761,8 @@ mod active_tab_tests {
             let mut replica = tree_with(100);
             let replica_workspace = replica.desktop.active;
             assert!(replica.set_room(replica_workspace, room));
+            // The host's invite pins it (hub 1) as the room's governor.
+            assert!(replica.pin_room_authority(room, crate::shell::state::PeerOrigin::hub(1)));
             let baseline = tree
                 .export_room_changes_since(room, &[])
                 .expect("host room baseline");
