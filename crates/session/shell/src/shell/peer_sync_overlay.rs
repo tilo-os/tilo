@@ -346,6 +346,10 @@ impl PeerSyncOverlay {
         self.finish_typed_request(request, outcome, copy_result);
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one arm per request and response pair keeps every outcome of the card in one table"
+    )]
     pub fn finish_typed_request(
         &mut self,
         request: &PeerSyncRequest,
