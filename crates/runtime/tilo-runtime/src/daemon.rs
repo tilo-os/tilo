@@ -839,11 +839,11 @@ fn serve_connection<H: tilo_actions::remote::ActionHost + Send + Sync + 'static>
             _ => return mcp_answer(server, value),
         })
     };
-    let served = serve_lines(runtime, input, &mut stream, answer, None);
+    let ended = serve_lines(runtime, input, &mut stream, answer, None);
     // The reader thread holds a clone of the socket: shut it, so the reader
     // sees its end and the client its connection close.
     let _ = stream.shutdown(std::net::Shutdown::Both);
-    served
+    ended
 }
 
 /// A native activation request's answer: the newest live instance of the

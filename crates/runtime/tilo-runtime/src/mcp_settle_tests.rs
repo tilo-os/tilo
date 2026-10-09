@@ -451,9 +451,10 @@ async fn states(
     let mut states = std::collections::BTreeMap::new();
     while let Some(state) = calls.join_next().await {
         let state = state.unwrap();
-        *states
+        let count = states
             .entry(state.as_str().unwrap_or("none").to_owned())
-            .or_default() += 1;
+            .or_default();
+        *count = usize::saturating_add(*count, 1);
     }
     states
 }
@@ -468,7 +469,12 @@ fn a_cancel_answers_at_once_while_its_invoke_waits_and_stops_it() {
     run(async {
         let session = gated_session(&endpoint).await;
         let invocation = InvocationId::new();
-        let invoking = call(&endpoint, &session, "tilo_invoke", long_invoke(invocation));
+        let invoking = Box::pin(call(
+            &endpoint,
+            &session,
+            "tilo_invoke",
+            long_invoke(invocation),
+        ));
         let cancelling = async {
             until_invoked(&host, 1).await;
             let asked = Instant::now();
@@ -579,7 +585,7 @@ fn a_session_refuses_calls_beyond_those_it_admits() {
 
 /// Wait, a bounded while, until `condition` holds.
 fn wait_until(condition: impl Fn() -> bool, what: &str) {
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now().checked_add(Duration::from_secs(5)).unwrap();
     while !condition() {
         assert!(Instant::now() < deadline, "{what}");
         std::thread::sleep(Duration::from_millis(1));
@@ -592,7 +598,7 @@ fn wait_until(condition: impl Fn() -> bool, what: &str) {
 /// in under 100 ms, stopping its invoke — and each reply comes back whole,
 /// on a line of its own, as soon as it is ready rather than in the order
 /// asked. Closing the client's side ends the connection.
-pub(crate) fn overlapping_lines(host: &GatedHost, client: std::os::unix::net::UnixStream) {
+pub(crate) fn overlapping_lines(host: &GatedHost, client: &std::os::unix::net::UnixStream) {
     client
         .set_read_timeout(Some(Duration::from_secs(10)))
         .unwrap();
@@ -603,7 +609,7 @@ pub(crate) fn overlapping_lines(host: &GatedHost, client: std::os::unix::net::Un
     };
     let send = |id: u64, method: &str, params: Value| {
         let request = json!({"jsonrpc":"2.0","id":id,"method":method,"params":params});
-        writeln!(&client, "{request}").unwrap();
+        writeln!(&*client, "{request}").unwrap();
     };
     let tool = |name: &str, invocation: InvocationId| {
         let arguments = if name == "tilo_invoke" {
@@ -641,10 +647,10 @@ pub(crate) fn overlapping_lines(host: &GatedHost, client: std::os::unix::net::Un
         let next = reply();
         answered.insert(next["id"].as_u64().unwrap(), next);
     }
-    let took = asked.elapsed();
+    let waited = asked.elapsed();
     assert!(
-        took < Duration::from_millis(100),
-        "the cancel answered after {took:?}"
+        waited < Duration::from_millis(100),
+        "the cancel answered after {waited:?}"
     );
     assert_eq!(state(&answered[&5]), "cancelled", "{}", answered[&5]);
     if !answered.contains_key(&2) {
