@@ -18,9 +18,6 @@ use ui::theme::Theme;
 use ui::tilo_actions::ResourcePresentation;
 use ui::tilo_resource::{self, Effect};
 use ui::widget::{AppModel, Button, Dropdown, ModelPath, Widget};
-use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
-use winit::event::WindowEvent;
 
 use crate::effects::{SettingsEffect, effect};
 use crate::host::{Followed, PaneCx};
@@ -449,34 +446,10 @@ impl Widget for PersonalAppsPane {
         };
         taffy.widget_node(style, &[child], node_map, self)
     }
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.composed.apply_layout(taffy, node, origin);
-    }
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut ui::text_render::TextRenderer,
-        theme: &Theme,
-        presence: &ui::presence::PresenceCtx,
-    ) {
-        self.composed
-            .draw(scene, transform, text_renderer, theme, presence);
-    }
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
-        self.composed.handle_event(event, ctx);
-    }
-    fn children(&self) -> Vec<&dyn Widget> {
-        self.composed.children()
-    }
-    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        self.composed.children_mut()
-    }
+    ui::forward_to_composed!(composed);
+
     fn name(&self) -> &'static str {
         "PersonalAppsPane"
-    }
-    fn get_rect(&self) -> Rect {
-        self.composed.rect()
     }
 }
 

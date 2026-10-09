@@ -1590,7 +1590,10 @@ impl App {
         let Ok(current) = self.try_action_directory_revision() else {
             return runtime_collab::ActionDirectoryResolution::Unavailable;
         };
-        if revision != current {
+        // No revision asks for the directory as it is now: a caller that
+        // names an action it already knows (an agent's) chose it from no
+        // page, and reading the revision first would cost it a round trip.
+        if !revision.is_empty() && revision != current {
             return runtime_collab::ActionDirectoryResolution::StaleRevision;
         }
         if let Some(row) = self
@@ -2166,8 +2169,10 @@ impl App {
         // edit intact; the executor still receives the same committed baseline.
         let before = self.state.doc.get_heads();
         let route = self.primary_document_route();
-        let started =
-            crate::invocation_scope::with_mounted_document(route, &mut self.state.doc, |doc| {
+        let started = crate::invocation_scope::with_mounted_document(
+            route.clone(),
+            &mut self.state.doc,
+            |doc| {
                 crate::bound_dispatch::execute_resource_operation(
                     self.root_widget.as_mut(),
                     doc,
@@ -2175,6 +2180,7 @@ impl App {
                     &self.actions.action_registry,
                     self.actions.action_transport.as_mut(),
                     crate::bound_dispatch::ResourceOperation {
+                        target_route: route.clone(),
                         address,
                         resource,
                         spec,
@@ -2188,7 +2194,8 @@ impl App {
                         scope,
                     },
                 )
-            })?;
+            },
+        )?;
         if before != self.state.doc.get_heads() {
             self.state.record_committed_action_authored(
                 before,
@@ -2861,28 +2868,33 @@ impl App {
             })()
         } else {
             let route = self.primary_document_route();
-            crate::invocation_scope::with_mounted_document(route, &mut self.state.doc, |doc| {
-                crate::bound_dispatch::execute_resource_operation(
-                    self.root_widget.as_mut(),
-                    doc,
-                    &self.state.root,
-                    &self.actions.action_registry,
-                    self.actions.action_transport.as_mut(),
-                    crate::bound_dispatch::ResourceOperation {
-                        address,
-                        resource,
-                        spec: resolved,
-                        encoded,
-                        actor,
-                        local_author: &self.collaboration.local_author.0,
-                        broker_admitted,
-                        invocation: operation_invocation,
-                        source_invocation: broker_admitted.then_some(operation_invocation),
-                        ambient: ambient_context,
-                        scope: None,
-                    },
-                )
-            })
+            crate::invocation_scope::with_mounted_document(
+                route.clone(),
+                &mut self.state.doc,
+                |doc| {
+                    crate::bound_dispatch::execute_resource_operation(
+                        self.root_widget.as_mut(),
+                        doc,
+                        &self.state.root,
+                        &self.actions.action_registry,
+                        self.actions.action_transport.as_mut(),
+                        crate::bound_dispatch::ResourceOperation {
+                            target_route: route.clone(),
+                            address,
+                            resource,
+                            spec: resolved,
+                            encoded,
+                            actor,
+                            local_author: &self.collaboration.local_author.0,
+                            broker_admitted,
+                            invocation: operation_invocation,
+                            source_invocation: broker_admitted.then_some(operation_invocation),
+                            ambient: ambient_context,
+                            scope: None,
+                        },
+                    )
+                },
+            )
         };
         let started = match operation_result {
             Ok(started) => started,

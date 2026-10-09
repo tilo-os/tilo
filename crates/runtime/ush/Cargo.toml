@@ -17,6 +17,8 @@ path = "src/main.rs"
 
 [dependencies]
 tilo-clock = { path = "../../platform/tilo-clock" }
+bounded-command = { path = "../../system/bounded-command" }
+sha2.workspace = true
 runtime-portal = { path = "../runtime-portal" }
 collab-types = { path = "../../collab/collab-types" }
 # The environment record a guest is built from, and the tool builder seam.

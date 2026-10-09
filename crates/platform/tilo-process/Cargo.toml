@@ -13,6 +13,7 @@ description = "The current process and, later, child processes: one API on Linux
 workspace = true
 
 [dependencies]
+tilo-platform-caps = { version = "0.1.0", path = "../tilo-platform-caps" }
 
 [target.'cfg(unix)'.dependencies]
 # The rendezvous lock and the socket wait.
