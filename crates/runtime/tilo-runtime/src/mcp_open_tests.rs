@@ -935,6 +935,10 @@ fn assert_failed_mutation(reply: &Value, id: tilo_actions::InvocationId) {
     assert_eq!(reply["update"]["state"], "failed", "{reply}");
     assert_eq!(reply["update"]["error"]["code"], "write_failed", "{reply}");
     assert_eq!(
+        reply["update"]["error"]["message"],
+        "mutation applied; completion failed"
+    );
+    assert_eq!(
         reply["update"]["error"]["details"],
         json!({"applied": true})
     );
