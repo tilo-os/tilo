@@ -467,9 +467,19 @@ impl Harness {
 
     /// Give `surface` a first buffer, so it is mapped and can take focus.
     fn map(&mut self, surface: &wl_surface::WlSurface, surface_id: u64) {
+        self.map_sized(surface, surface_id, (64, 64));
+    }
+
+    fn map_sized(
+        &mut self,
+        surface: &wl_surface::WlSurface,
+        surface_id: u64,
+        (width, height): (i32, i32),
+    ) {
         use std::os::fd::{AsFd as _, FromRawFd as _, OwnedFd};
-        // 64×64 ARGB.
-        let (width, height, stride, len) = (64, 64, 256, 16_384_usize);
+        let stride = width.checked_mul(4).expect("ARGB stride");
+        let len = usize::try_from(stride.checked_mul(height).expect("ARGB extent"))
+            .expect("positive ARGB extent");
         let shm = self.bind::<wl_shm::WlShm>("wl_shm", 1);
         // SAFETY: a null-terminated name and a valid flag word are the whole
         // contract of `memfd_create`.
@@ -495,6 +505,10 @@ impl Harness {
         surface.damage(0, 0, width, height);
         surface.commit();
         self.pump();
+        assert!(
+            shell::compositor::foreign::store().is_mapped(surface_id),
+            "the applied non-null commit maps for input before pixel presentation"
+        );
         let _ = self.fb.paint_settled();
         assert!(
             shell::compositor::foreign::store().is_mapped(surface_id),
@@ -1390,4 +1404,13 @@ fn an_inhibiting_vm_gets_super_chords_until_focus_or_the_release_chord_takes_the
     drop(h);
     assert!(released);
     assert!(!still_active);
+}
+
+#[test]
+fn a_non_null_shm_commit_maps_for_input_before_async_conversion_finishes() {
+    let mut harness = Harness::new();
+    let (surface, id) = harness.open("org.tilo.test.pending-shm-input");
+    // A valid larger buffer keeps conversion in flight across the wire pump.
+    // Mapping must follow the applied commit, not worker scheduling or paint.
+    harness.map_sized(&surface, id, (2048, 2048));
 }
