@@ -4,8 +4,8 @@
 //! reports.
 //!
 //! After every change, each device running the app carries the overrides to
-//! its own compatibility service (a projection drain), comparing them with
-//! the routes the service reports back. Install and appliance lifecycle are
+//! its own compatibility service, comparing them with the routes the
+//! service reports back (level state the window keeps in step). Install and appliance lifecycle are
 //! effects with no document delta (published on the root and on the live
 //! rows the surface reports).
 
@@ -14,7 +14,7 @@ use std::collections::BTreeMap;
 use std::rc::Rc;
 
 use ui::framework::{
-    EffectAnswer, EffectCx, EffectStatus, Effected, Fixture, LaunchInput, LiveRow, ResourceApp,
+    EffectAnswer, EffectCx, EffectStatus, Fixture, LaunchInput, LiveRow, ResourceApp,
     ResourceSurface, RunMode, SurfaceCx, ViewCx,
 };
 use ui::tilo_resource::{self, Invoke, Model, resource};
@@ -88,19 +88,16 @@ impl ReportedRoutes {
     /// for each application whose reported route differs from the stored one,
     /// a reset for each that still runs an override the document no longer
     /// holds. Keyed by application and desired override.
-    pub(crate) fn pending(&self, state: &Windows) -> Vec<(RouteChange, RouteChange)> {
+    pub(crate) fn pending(&self, state: &Windows) -> Vec<RouteChange> {
         self.0
             .borrow()
             .iter()
             .filter(|reported| reported.overridable)
             .filter_map(|reported| {
                 let desired = state.route(&reported.app_id);
-                (desired.unwrap_or(reported.recommended) != reported.route).then(|| {
-                    let change = RouteChange {
-                        app_id: reported.app_id.clone(),
-                        route: desired,
-                    };
-                    (change.clone(), change)
+                (desired.unwrap_or(reported.recommended) != reported.route).then(|| RouteChange {
+                    app_id: reported.app_id.clone(),
+                    route: desired,
                 })
             })
             .collect()
@@ -116,7 +113,7 @@ pub(crate) struct RouteChange {
 }
 
 /// Carry `change` to the service.
-fn carry(provider: &SharedProvider, change: &RouteChange) -> Result<(), String> {
+pub(crate) fn carry(provider: &SharedProvider, change: &RouteChange) -> Result<(), String> {
     let mut provider = provider.borrow_mut();
     match change.route {
         Some(route) => provider.set_route_override(&change.app_id, route),
@@ -199,8 +196,12 @@ impl ResourceApp for WindowsShell {
 
 impl ResourceSurface<Windows, WindowsEffect> for WindowsApp {
     /// The routes the window shows are the ones the service reports; the
-    /// stored overrides reach the service through the route projection.
-    fn present(&mut self, _state: &Rc<Windows>) {}
+    /// stored overrides are carried to this device's service.
+    fn present(&mut self, state: &Rc<Windows>) {
+        if self.mode.is_live() {
+            self.follow_routes(state);
+        }
+    }
 
     fn attach(&mut self, cx: SurfaceCx<Windows>) {
         match cx.mode() {
@@ -213,20 +214,8 @@ impl ResourceSurface<Windows, WindowsEffect> for WindowsApp {
             // A past version reaches no service.
             RunMode::Past => {}
         }
-        let reported = self.reported_routes.clone();
-        let provider = self.provider();
-        let notice = Rc::clone(&self.route_notice);
-        let projection = cx.drain(
-            move |state: &Windows| reported.pending(state),
-            move |change: RouteChange, _| {
-                if let Err(error) = carry(&provider, &change) {
-                    *notice.borrow_mut() = Some(error.clone());
-                    return Err(error);
-                }
-                Ok(Effected::done())
-            },
-        );
-        self.attach_framework(cx.dispatcher(), projection);
+        self.mode = cx.mode();
+        self.attach_framework(cx.dispatcher());
     }
 
     fn stage(&mut self, scenario: Option<&str>) {
@@ -300,7 +289,7 @@ mod tests {
     /// an override the service still runs after the document cleared it —
     /// the reset of the last override reaches the service too.
     #[test]
-    fn the_route_projection_carries_overrides_and_resets_to_the_service() {
+    fn the_overrides_carry_to_the_service_and_reset_there() {
         let routes = ReportedRoutes::default();
         assert!(routes.report(&reported("adobe-reader", Route::Wine, Route::Wine)));
         assert!(
@@ -312,10 +301,7 @@ mod tests {
         };
         let pending = routes.pending(&overridden);
         assert_eq!(
-            pending
-                .iter()
-                .map(|(key, _)| key.clone())
-                .collect::<Vec<_>>(),
+            pending,
             [RouteChange {
                 app_id: "adobe-reader".into(),
                 route: Some(Route::Proton),
@@ -330,7 +316,7 @@ mod tests {
         );
         let reset = routes.pending(&Windows::default());
         assert_eq!(
-            reset.iter().map(|(key, _)| key.clone()).collect::<Vec<_>>(),
+            reset,
             [RouteChange {
                 app_id: "adobe-reader".into(),
                 route: None,
@@ -338,7 +324,7 @@ mod tests {
         );
 
         let provider: SharedProvider = Rc::new(RefCell::new(Box::new(SampleProvider::new())));
-        carry(&provider, &reset[0].1).unwrap();
+        carry(&provider, &reset[0]).unwrap();
         let catalogue = provider.borrow_mut().catalogue();
         let reader = catalogue.app("adobe-reader").unwrap();
         assert_eq!(reader.route, reader.recommended_route);

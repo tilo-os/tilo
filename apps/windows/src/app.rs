@@ -269,12 +269,17 @@ pub struct WindowsApp {
     /// the service or the appliance settles.
     resource_reply: Option<ui::framework::EffectReply>,
     resource_waits_for_appliance: bool,
-    /// The routes the service reports, which the route projection compares
-    /// the shared overrides against.
+    /// The routes the service reports, which the shared overrides are
+    /// compared against.
     pub(crate) reported_routes: crate::resource::ReportedRoutes,
-    /// The route projection, told when the service reports new routes.
-    route_projection: ui::framework::Projection,
-    /// Why the route projection could not reach the service, until the
+    /// The shared overrides as last presented, carried to this device's
+    /// service while they differ from what it reports; `None` where the
+    /// window reaches no service of its own (a capture, a past version).
+    routes: Option<Rc<crate::resource::Windows>>,
+    /// How the window runs: only a live one carries the overrides to a
+    /// service of its own.
+    pub(crate) mode: ui::framework::RunMode,
+    /// Why carrying the overrides could not reach the service, until the
     /// notice line shows it.
     pub(crate) route_notice: Rc<RefCell<Option<String>>>,
     /// The application a search hit or an agent's `open` named, shown
@@ -317,19 +322,43 @@ impl WindowsApp {
         *self.provider.borrow_mut() = provider;
         self.refresh();
     }
-    /// The service, shared with the route projection.
-    pub(crate) fn provider(&self) -> SharedProvider {
-        Rc::clone(&self.provider)
-    }
-    /// Take part in the resource: route edits go through `dispatcher`, and
-    /// `projection` is told when the service reports new routes.
+    /// Take part in the resource: route edits go through `dispatcher`.
     pub(crate) fn attach_framework(
         &mut self,
         dispatcher: ui::framework::Dispatcher<crate::resource::Windows>,
-        projection: ui::framework::Projection,
     ) {
         self.dispatcher = Some(dispatcher);
-        self.route_projection = projection;
+    }
+
+    /// Carry the shared overrides `state` holds to this device's service.
+    pub(crate) fn follow_routes(&mut self, state: &Rc<crate::resource::Windows>) {
+        self.routes = Some(Rc::clone(state));
+        self.carry_routes();
+    }
+
+    /// Bring the service's routes to the shared overrides: an override for
+    /// each application whose reported route differs, a reset for one still
+    /// running an override nobody holds. Level state, the latest winning; a
+    /// failure is shown and tried again when the overrides or the reported
+    /// routes next change.
+    fn carry_routes(&mut self) {
+        let Some(state) = &self.routes else {
+            return;
+        };
+        let changes = self.reported_routes.pending(state);
+        if changes.is_empty() {
+            return;
+        }
+        for change in changes {
+            if let Err(error) = crate::resource::carry(&self.provider, &change) {
+                *self.route_notice.borrow_mut() = Some(error);
+                break;
+            }
+        }
+        // Show, and compare against, what the service runs now.
+        let catalogue = self.provider.borrow_mut().catalogue();
+        self.reported_routes.report(&catalogue);
+        self.catalogue = catalogue;
     }
     /// The bare widget over the sample catalogue the capture of `scenario`
     /// shows, staged as that capture is.
@@ -440,7 +469,8 @@ impl WindowsApp {
             resource_reply: None,
             resource_waits_for_appliance: false,
             reported_routes: crate::resource::ReportedRoutes::default(),
-            route_projection: ui::framework::Projection::default(),
+            routes: None,
+            mode: ui::framework::RunMode::Capture,
             route_notice: Rc::default(),
             opened: Rc::default(),
         };
@@ -748,7 +778,7 @@ impl WindowsApp {
         let catalogue = self.provider.borrow_mut().catalogue();
         self.catalogue = catalogue;
         if self.reported_routes.report(&self.catalogue) {
-            self.route_projection.outside_changed();
+            self.carry_routes();
         }
         if let Some(notice) = self.route_notice.borrow_mut().take() {
             self.notice = Some(Notice::error(notice));
@@ -2108,6 +2138,51 @@ mod tests {
     use crate::provider::SampleProvider;
     use std::io::Read;
     use std::sync::{Arc, Mutex};
+
+    /// A live window brings its service's routes to the shared overrides
+    /// when they change, and when the service reports routes that differ;
+    /// one reaching no service of its own carries nothing.
+    #[test]
+    fn the_window_keeps_its_service_in_step_with_the_shared_overrides() {
+        use crate::model::Route;
+        let route = |app: &WindowsApp| {
+            app.provider
+                .borrow_mut()
+                .catalogue()
+                .app("adobe-reader")
+                .map(|reader| reader.route)
+        };
+        let overridden = Rc::new(crate::resource::Windows {
+            routes: std::collections::BTreeMap::from([("adobe-reader".into(), Route::Proton)]),
+        });
+
+        let mut capture = WindowsApp::new_offline();
+        capture.refresh();
+        let before = route(&capture);
+        ui::framework::ResourceSurface::present(&mut capture, &overridden);
+        assert_eq!(route(&capture), before, "a capture reaches no service");
+
+        let mut app = WindowsApp::new_offline();
+        app.mode = ui::framework::RunMode::Live;
+        app.refresh();
+        ui::framework::ResourceSurface::present(&mut app, &overridden);
+        assert_eq!(route(&app), Some(Route::Proton), "the override is carried");
+
+        // The service reverting it on its own is brought back.
+        app.provider
+            .borrow_mut()
+            .reset_route_override("adobe-reader")
+            .unwrap();
+        app.refresh();
+        assert_eq!(route(&app), Some(Route::Proton));
+
+        // Clearing the override resets the service.
+        ui::framework::ResourceSurface::present(
+            &mut app,
+            &Rc::new(crate::resource::Windows::default()),
+        );
+        assert_ne!(route(&app), Some(Route::Proton));
+    }
 
     type RecordedInstall = Arc<Mutex<Option<(Vec<u8>, String)>>>;
     type RecordedDocument = Arc<Mutex<Option<(String, Vec<u8>)>>>;
