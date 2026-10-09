@@ -1071,6 +1071,15 @@ impl SearchEntry {
         }
     }
 
+    /// List the hit inside the scope `scope` (an item's anchor) though its
+    /// own anchor lies elsewhere: an article in its feed's scope, related by
+    /// a field rather than by nesting.
+    #[must_use]
+    pub fn inside(mut self, scope: impl Into<String>) -> Self {
+        self.within = Some(scope.into());
+        self
+    }
+
     /// The item a hit opens.
     #[must_use]
     pub fn anchored(mut self, anchor: impl Into<String>) -> Self {

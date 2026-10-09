@@ -720,3 +720,11 @@ fn a_verb_reads_who_its_invoker_acted_for() {
     board.apply(Board::ADD_CARD_FOR.with(())).unwrap();
     assert_eq!(board.state().unwrap().author, "Agent for quinten");
 }
+
+#[test]
+fn a_search_entry_lies_in_a_scope_it_names() {
+    let entry = tilo_resource::SearchEntry::new("Rust 2.0", "news")
+        .anchored("feeds.library/articles/a1")
+        .inside("feeds.library/feeds/f1");
+    assert_eq!(entry.within.as_deref(), Some("feeds.library/feeds/f1"));
+}
