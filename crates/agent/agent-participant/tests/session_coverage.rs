@@ -207,7 +207,6 @@ async fn every_web_app_over_the_session() {
         AgentScope {
             rooms: vec![ROOM.into()],
             apps: catalogue.iter().map(|d| d.app_id.to_owned()).collect(),
-            may_confirm: false,
         },
         now,
         now + 3_600_000_000_000,

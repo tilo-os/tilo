@@ -10469,7 +10469,6 @@ mod private_transport_tests {
                 tilo_relay_protocol::agents::AgentScope {
                     rooms: vec![room.to_string()],
                     apps: Vec::new(),
-                    may_confirm: false,
                 },
                 1,
                 2,

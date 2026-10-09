@@ -372,7 +372,6 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
         AgentScope {
             rooms: vec![ROOM.into()],
             apps: vec![SCRATCHPAD.into()],
-            may_confirm: false,
         },
         now,
         now + 3_600_000_000_000,

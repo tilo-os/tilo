@@ -961,14 +961,14 @@ user may steer; an agent caller is refused.
 |---|---|---|
 | capabilities, list | `agents#status` | `AgentsStatus {agents: AgentInfo[], grants: AgentGrant[]}` |
 | `spawnAgent({name, task, grantSetId})` | `agents#spawn` `{grant, task}` | `{agentId, taskId}` |
-| grant picker | `agents#request-grant` `{label, rooms, apps, expiresInSecs, color?, mayConfirm?}` | `{grant, pairingCode}` |
+| grant picker | `agents#request-grant` `{label, rooms, apps, expiresInSecs, color?}` | `{grant, pairingCode}` |
 | revoke | `agent:<id>#revoke` | `{}` |
 | `sendMessage(agentId, text)` | `agent:<id>#message` (text) | `{taskId}` |
 | `stopTask` | `agent:<id>#stop` | `{}` |
 | (new) pause, resume | `agent:<id>#pause`, `#resume` | `{}` |
 
 `AgentGrant` carries `state` (`pending|approved|denied|expired|revoked`),
-`color`, `expiresAtMs`, `mayConfirm`, and the `pairingCode` while pending.
+`color`, `expiresAtMs`, and the `pairingCode` while pending.
 `AgentInfo` carries `status` (`starting|running|waiting|paused|stopped|failed`), `room`,
 `tasks[]` (`queued|running|completed|failed|cancelled`, each with the app
 actions it performed), the conversation, the activity line, the device
@@ -982,7 +982,7 @@ key (the live publisher of its cursor) and the delegation.
 interface Agents {                       // certifiedPeer.agents (web/agents.mjs)
   status(): Promise<AgentsStatus>;
   requestGrant(input: {label: string; rooms: string[]; apps: string[]; expiresInSecs: number;
-    color?: string; mayConfirm?: boolean}): Promise<{grant: string; pairingCode: string}>;
+    color?: string}): Promise<{grant: string; pairingCode: string}>;
   spawn(input: {grant: string; task: string; room?: string}): Promise<{agentId: string; taskId: string}>;
   message(agentId: string, text: string): Promise<{taskId: string}>;
   pause(agentId: string): Promise<void>;

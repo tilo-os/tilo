@@ -50,7 +50,7 @@ pub mod worker;
 pub use apps::{AppCatalogue, AppError, Replica, Seed, component_apps};
 pub use control::{
     AgentControl, AgentHostLink, AgentIdentity, AgentSupervisor, ApprovalDone, GrantRecord,
-    Spawner, SupervisorHost, SupervisorSnapshot,
+    Spawner, SupervisorHost, SupervisorSnapshot, Witness,
 };
 pub use host::{AgentHost, CatalogueFactory, HostEndpoint};
 pub use model::{

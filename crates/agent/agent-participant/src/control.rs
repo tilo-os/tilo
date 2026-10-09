@@ -116,7 +116,17 @@ pub struct AgentControl {
     delegation: AgentDelegation,
     state: Mutex<ControlState>,
     changed: Changed,
+    /// Who confirms an action the agent's grants leave to the person: the
+    /// person's own host, never the agent.
+    witness: Mutex<Option<Witness>>,
 }
+
+/// The person's host an agent asks before an action that asks first
+/// ([`tilo_actions::remote::ActionHost::confirm`]): it puts the question to
+/// the person on their own device and answers with their
+/// [`Confirmation::Witnessed`](tilo_actions::remote::Confirmation::Witnessed),
+/// or refuses.
+pub type Witness = Arc<dyn tilo_actions::remote::ActionHost + Send + Sync>;
 
 impl AgentControl {
     /// A starting agent under `delegation`.
@@ -133,6 +143,7 @@ impl AgentControl {
                 room: None,
             }),
             changed: Changed::default(),
+            witness: Mutex::new(None),
         })
     }
 
@@ -165,6 +176,7 @@ impl AgentControl {
                 room: info.room.clone(),
             }),
             changed: Changed::default(),
+            witness: Mutex::new(None),
         })
     }
 
@@ -251,6 +263,19 @@ impl AgentControl {
                 .unwrap_or_else(PoisonError::into_inner),
         };
         *raised = false;
+    }
+
+    /// The person's host that confirms what the agent's grants leave to
+    /// them. Without one, such an action is refused.
+    pub fn set_witness(&self, witness: Option<Witness>) {
+        *self.witness.lock().unwrap_or_else(PoisonError::into_inner) = witness;
+    }
+
+    pub(crate) fn witness(&self) -> Option<Witness> {
+        self.witness
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
     }
 
     /// The agent's delegation.
@@ -612,6 +637,14 @@ pub trait AgentHostLink: Send + Sync {
 
     /// Refuse the agent device from now on.
     fn withdraw(&self, agent_device_public_key: [u8; 32]);
+
+    /// The host of the person `delegation` names, which puts an action the
+    /// agent's grants leave to them to them on their own device. `None`: no
+    /// such host here, and the agent's actions that ask first are refused.
+    fn witness(&self, delegation: &AgentDelegation) -> Option<Witness> {
+        let _ = delegation;
+        None
+    }
 }
 
 /// Receives the outcome of [`AgentHostLink::request_approval`].
@@ -745,6 +778,10 @@ impl AgentSupervisor {
     /// Connect the host: grants can then be requested, and approved ones
     /// are registered and withdrawn with it.
     pub fn set_link(&self, link: Arc<dyn AgentHostLink>) {
+        // Agents already running ask the person through this host too.
+        for control in self.state().agents.values() {
+            control.set_witness(link.witness(control.delegation()));
+        }
         *self.link.lock().unwrap_or_else(PoisonError::into_inner) = Some(link);
     }
 
@@ -805,7 +842,6 @@ impl AgentSupervisor {
             scope: AgentScope {
                 rooms: request.rooms.clone(),
                 apps: request.apps.clone(),
-                may_confirm: request.may_confirm,
             },
             expires_at_ns: now_ns
                 .saturating_add(request.expires_in_secs.saturating_mul(1_000_000_000)),
@@ -978,6 +1014,10 @@ impl AgentSupervisor {
             }
             let control = AgentControl::new(identity.delegation.clone());
             control.set_room(&room);
+            control.set_witness(
+                self.link()
+                    .and_then(|link| link.witness(&identity.delegation)),
+            );
             state.agents.insert(grant.to_owned(), control.clone());
             drop(state);
             (identity, control)
@@ -1018,7 +1058,6 @@ impl AgentSupervisor {
                     state: grant.state,
                     color: color_hex(grant.proposal.color),
                     expires_at_ms: grant.proposal.expires_at_ns / 1_000_000,
-                    may_confirm: grant.proposal.scope.may_confirm,
                     pairing_code: grant.pairing_code.clone(),
                     reason: grant.reason.clone(),
                 })
@@ -1124,6 +1163,10 @@ impl AgentSupervisor {
                 (None, Err(_)) => continue,
             };
             let control = AgentControl::restore(delegation, &info);
+            control.set_witness(
+                self.link()
+                    .and_then(|link| link.witness(control.delegation())),
+            );
             match identity {
                 Some(identity) if !control.ended() => resume.push((identity, control.clone())),
                 Some(_) => {}
@@ -1461,7 +1504,6 @@ mod tests {
             AgentScope {
                 rooms: vec![ROOM.into()],
                 apps: Vec::new(),
-                may_confirm: false,
             },
             1,
             u64::MAX,

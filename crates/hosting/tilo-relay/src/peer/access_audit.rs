@@ -216,7 +216,6 @@ mod tests {
             AgentScope {
                 rooms: vec![uuid::Uuid::from_u128(7).to_string()],
                 apps: Vec::new(),
-                may_confirm: false,
             },
             1,
             in_secs(2),
