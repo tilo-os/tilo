@@ -1499,8 +1499,10 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
     && rm -rf /var/cache/swcatalog
 
 # Flatpak applies predefined remotes to the default system installation offline,
-# importing their embedded GPG key. Its applied-remotes history preserves an
-# owner's disabled or removed default instead of recreating it on each boot.
+# importing their embedded GPG key. The root initializer completes this before
+# login, so the first Store discovery sees defaults instead of racing lazy
+# initialization. Flatpak's applied-remotes history preserves disabled/removed
+# defaults; the initializer never uses unconditional remote-add.
 COPY os/usr/share/flatpak/remotes.d/flathub.flatpakrepo /usr/share/flatpak/remotes.d/flathub.flatpakrepo
 
 # xdg-desktop-portal — the frontend that proxies sandboxed-app
@@ -2102,6 +2104,7 @@ COPY \
     os/usr/lib/systemd/system/tilo-growfs-sysroot.service \
     os/usr/lib/systemd/system/tilo-growfs-sysroot.timer \
     os/usr/lib/systemd/system/tilo-firstboot-user.service \
+    os/usr/lib/systemd/system/tilo-flatpak-defaults.service \
     os/usr/lib/systemd/system/tilo-firstboot-autologin-cleanup.service \
     os/usr/lib/systemd/system/tilo-session-recovery.service \
     /usr/lib/systemd/system/
@@ -2506,6 +2509,7 @@ RUN systemctl enable greetd.service && \
        /etc/systemd/system/graphical.target.wants/power-profiles-daemon.service \
        /etc/systemd/system/multi-user.target.wants/virtqemud.service && \
     systemctl enable tilo-device-key-init.service && \
+    systemctl enable tilo-flatpak-defaults.service && \
     systemctl set-default graphical.target && \
     systemctl enable tilo-growfs-sysroot.timer && \
     systemctl enable tilo-fs-start.timer fs-identity.path && \

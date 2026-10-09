@@ -91,6 +91,7 @@ pub(crate) mod local_audio_graph;
 mod local_person;
 pub mod magnifier;
 pub mod media_keys;
+pub(crate) mod membership;
 pub mod mpris;
 pub(crate) mod native_media;
 pub(crate) mod native_workspace_owner;

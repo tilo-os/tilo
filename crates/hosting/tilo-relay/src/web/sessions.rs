@@ -90,6 +90,8 @@ pub(crate) struct Session {
     /// Signalled when acknowledged events leave the log.
     drained: Notify,
     end: watch::Sender<bool>,
+    /// [`Sessions::ended`], shared by every session of the host.
+    ended: Arc<Notify>,
 }
 
 impl Session {
@@ -104,6 +106,7 @@ impl Session {
         self.log().closed = true;
         self.changed.notify_waiters();
         self.drained.notify_one();
+        self.ended.notify_one();
     }
 
     /// Log `envelope` for the device unless that would exceed
@@ -137,6 +140,8 @@ pub(crate) struct Sessions {
     mac_key: [u8; 32],
     handshakes: Mutex<HashMap<[u8; 16], Handshake>>,
     live: Mutex<HashMap<[u8; 32], Arc<Session>>>,
+    /// Signalled when any session ends, for the live authority's observer.
+    ended: Arc<Notify>,
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -152,6 +157,7 @@ impl Sessions {
             mac_key: rand::random(),
             handshakes: Mutex::default(),
             live: Mutex::default(),
+            ended: Arc::default(),
         })
     }
 
@@ -265,6 +271,7 @@ impl Sessions {
             changed: Notify::new(),
             drained: Notify::new(),
             end,
+            ended: Arc::clone(&self.ended),
         });
         let context = self.web.relay.peer_context();
         let peer = pending.peer;
@@ -440,6 +447,22 @@ impl Sessions {
             .filter(|(_, session)| session.is_open())
             .map(|(token, session)| (*token, session.peer.clone()))
             .collect()
+    }
+
+    /// Resolves after a session ended (closed or swept) since the last call
+    /// returned; an end before the first wait is not lost.
+    pub(crate) async fn ended(&self) {
+        self.ended.notified().await;
+    }
+
+    /// When the soonest open session's lifetime runs out: it stops being
+    /// open then without anything announcing it.
+    pub(crate) fn next_expiry(&self) -> Option<Instant> {
+        lock(&self.live)
+            .values()
+            .filter(|session| session.is_open())
+            .map(|session| session.expires)
+            .min()
     }
 
     pub(crate) fn context(&self) -> &WebContext {

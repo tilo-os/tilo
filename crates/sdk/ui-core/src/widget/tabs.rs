@@ -2552,13 +2552,7 @@ impl Widget for TabBar {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).copied().unwrap_or_default();
-        let next_rect = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
-            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
-        );
+        let next_rect = crate::widget::layout_rect(taffy, node, origin);
         // Press/hover reveal grows a pill and translates its neighbours. Once
         // lifted, only the carried preview follows the pointer: preserve the
         // source row's painted and hit-test geometry until release. Never hold

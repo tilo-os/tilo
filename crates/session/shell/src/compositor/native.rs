@@ -194,6 +194,97 @@ fn desired_legacy_shares(
     desired
 }
 
+/// What [`LegacySharePlan`] last derived the shares from.
+struct LegacyShareInputs {
+    /// [`crate::shell::state::WorkspaceTreeHandle::generation`].
+    tree: u64,
+    /// Whether the backend was watched once the plan had asked for it.
+    watched: bool,
+    viewer_hosts: std::collections::HashSet<u64>,
+    personal: PersonalViewers,
+}
+
+/// The legacy windows to stream and to whom, derived from the tree and the
+/// viewers only when one of them changed: a wakeup that wrote nothing and
+/// heard of no new viewer walks no tab.
+#[derive(Default)]
+struct LegacySharePlan {
+    inputs: Option<LegacyShareInputs>,
+    /// Each window to stream, with the room its tab is in.
+    desired: DesiredShares,
+    /// The same shares without their rooms, as reconciling takes them.
+    shares: HashMap<u64, crate::compositor::state::LegacyShare>,
+    /// Derivations so far, each a walk of every tab.
+    #[cfg(test)]
+    derivations: u64,
+}
+
+impl LegacySharePlan {
+    /// Derive the shares again if `tree` was written, or the viewers or the
+    /// backend's `watched` state changed, since they were last derived.
+    /// `watch` is told whether a viewer needs the backend watched for it and
+    /// answers whether the backend is watched then. Returns whether the
+    /// shares were derived again, which is when what they feed is told.
+    fn refresh(
+        &mut self,
+        tree: &crate::shell::state::WorkspaceTreeHandle,
+        viewers: (std::collections::HashSet<u64>, PersonalViewers),
+        watched: bool,
+        watch: impl FnOnce(bool) -> bool,
+    ) -> bool {
+        let (viewer_hosts, personal) = viewers;
+        // Loaded before the tree is read: a write racing the read below is
+        // read again on the next call.
+        let generation = tree.generation();
+        if self.inputs.as_ref().is_some_and(|seen| {
+            seen.tree == generation
+                && seen.watched == watched
+                && seen.viewer_hosts == viewer_hosts
+                && seen.personal == personal
+        }) {
+            return false;
+        }
+        let (desired, watched) = {
+            let tree = tree.read();
+            // A headless session whose active room has a host shows its
+            // legacy windows to the host's viewers (browsers that opened
+            // them), and the person's other devices the windows they show:
+            // it paints and encodes while it has a viewer, and stops with
+            // the last.
+            let for_host = (!viewer_hosts.is_empty() && has_legacy_windows(&tree))
+                || hosts_viewed_window(&tree, &personal);
+            let watched = watch(for_host);
+            let desired = desired_legacy_shares(&tree, watched, &viewer_hosts, &personal);
+            drop(tree);
+            (desired, watched)
+        };
+        self.shares = desired
+            .iter()
+            .map(|(surface, (share, _))| (*surface, share.clone()))
+            .collect();
+        self.desired = desired;
+        self.inputs = Some(LegacyShareInputs {
+            tree: generation,
+            watched,
+            viewer_hosts,
+            personal,
+        });
+        #[cfg(test)]
+        {
+            self.derivations = self.derivations.saturating_add(1);
+        }
+        true
+    }
+
+    /// The headless host viewers and the person's devices the shares were
+    /// derived for.
+    fn viewers(&self) -> Option<(&std::collections::HashSet<u64>, &PersonalViewers)> {
+        self.inputs
+            .as_ref()
+            .map(|inputs| (&inputs.viewer_hosts, &inputs.personal))
+    }
+}
+
 /// Whether one of the person's other devices shows a legacy window this
 /// session hosts.
 fn hosts_viewed_window(
@@ -7133,6 +7224,9 @@ fn install_session_peer_sync(
                         role,
                     )
                     .map(crate::shell::overlay_host::PeerSyncResponse::Message),
+                PeerSyncRequest::IssueInvitation(terms) => bridge_net
+                    .issue_invitation(active, &terms)
+                    .map(crate::shell::overlay_host::PeerSyncResponse::Message),
                 PeerSyncRequest::AcceptInvite(token) => {
                     bridge_net.accept_peer_invitation(active, &token)
                 }
@@ -9111,6 +9205,7 @@ pub fn run() {
     let mut early_legacy_frames = crate::shell::peer_view::EarlyFrames::default();
     let legacy_share_config = crate::config::load_config().flatpak_share;
     let mut hosted_legacy_checked = Instant::now();
+    let mut legacy_shares = LegacySharePlan::default();
     // Whether this loop, not a viewer's watch request, made the headless
     // backend watched: for legacy windows its room's host relays.
     let mut watched_for_host = false;
@@ -11326,84 +11421,80 @@ pub fn run() {
             } else {
                 std::collections::HashSet::new()
             };
-            let desired = {
-                let tree_handle = frame_builder.chrome_handle().borrow().tree_handle();
-                let tree = tree_handle.read();
-                // A headless session whose active room has a host shows its
-                // legacy windows to the host's viewers (browsers that opened
-                // them), and the person's other devices the windows they
-                // show: it paints and encodes while it has a viewer, and
-                // stops with the last.
-                let for_host = (!viewer_hosts.is_empty() && has_legacy_windows(&tree))
-                    || hosts_viewed_window(&tree, &personal_viewers);
-                if for_host != watched_for_host
-                    && (for_host != backend.watched() || watched_for_host)
-                {
-                    if backend.set_watched(for_host) {
-                        injected_redraw_pending = true;
+            let tree_handle = frame_builder.chrome_handle().borrow().tree_handle();
+            let watched_before = backend.watched();
+            let replanned = legacy_shares.refresh(
+                &tree_handle,
+                (viewer_hosts, personal_viewers),
+                watched_before,
+                |for_host| {
+                    if for_host != watched_for_host
+                        && (for_host != backend.watched() || watched_for_host)
+                    {
+                        if backend.set_watched(for_host) {
+                            injected_redraw_pending = true;
+                        }
+                        watched_for_host = for_host;
                     }
-                    watched_for_host = for_host;
-                }
-                desired_legacy_shares(&tree, backend.watched(), &viewer_hosts, &personal_viewers)
-            };
-            state.set_headless_host_viewers(
-                desired
-                    .iter()
-                    .flat_map(|(surface, (share, _))| {
-                        share
-                            .viewers
-                            .iter()
-                            .filter(|peer| viewer_hosts.contains(peer))
-                            .map(|peer| (*peer, *surface))
-                    })
-                    .collect(),
+                    backend.watched()
+                },
             );
-            // A window hidden here is sized for the devices showing it.
-            crate::compositor::foreign::store()
-                .set_remote_extents(remote_extents(&desired, &personal_viewers));
-            state.set_personal_stream_viewers(
-                desired
-                    .iter()
-                    .flat_map(|(surface, (share, _))| {
-                        personal_viewers
-                            .get(&share.tab)
-                            .into_iter()
-                            .flatten()
-                            .map(|viewer| (viewer.peer, *surface))
-                    })
-                    .collect(),
-            );
-            state.route_legacy_streams(desired.iter().map(|(surface, (_, room))| {
-                (*surface, crate::shell::network::room_topic_id(*room))
-            }));
-            let desired = desired
-                .into_iter()
-                .map(|(surface, (share, _))| (surface, share))
-                .collect::<HashMap<_, _>>();
+            // What the shares feed is a function of them and their viewers,
+            // so it is told only when they were derived again.
+            if replanned && let Some((viewer_hosts, personal_viewers)) = legacy_shares.viewers() {
+                let desired = &legacy_shares.desired;
+                state.set_headless_host_viewers(
+                    desired
+                        .iter()
+                        .flat_map(|(surface, (share, _))| {
+                            share
+                                .viewers
+                                .iter()
+                                .filter(|peer| viewer_hosts.contains(peer))
+                                .map(|peer| (*peer, *surface))
+                        })
+                        .collect(),
+                );
+                // A window hidden here is sized for the devices showing it.
+                crate::compositor::foreign::store()
+                    .set_remote_extents(remote_extents(desired, personal_viewers));
+                state.set_personal_stream_viewers(
+                    desired
+                        .iter()
+                        .flat_map(|(surface, (share, _))| {
+                            personal_viewers
+                                .get(&share.tab)
+                                .into_iter()
+                                .flatten()
+                                .map(|viewer| (viewer.peer, *surface))
+                        })
+                        .collect(),
+                );
+                state.route_legacy_streams(desired.iter().map(|(surface, (_, room))| {
+                    (*surface, crate::shell::network::room_topic_id(*room))
+                }));
+            }
             // This session's legacy windows, as its own tabs in the rooms
             // other devices govern, so their members have a tab to show.
+            // Only those rooms' tabs are copied, and only their own legacy ones.
             if hosted_legacy_checked.elapsed() >= std::time::Duration::from_millis(500) {
                 hosted_legacy_checked = Instant::now();
-                let (salt, rooms) = {
-                    let tree_handle = frame_builder.chrome_handle().borrow().tree_handle();
-                    let tree = tree_handle.read();
-                    let rooms = tree
-                        .desktop
-                        .workspaces
-                        .iter()
-                        .map(|workspace| (workspace.room, workspace.strips.clone()))
-                        .collect::<Vec<_>>();
-                    (tree.local_salt(), rooms)
-                };
-                for (room, strips) in rooms {
-                    net.publish_hosted_legacy_windows(room, &strips, salt);
+                let rooms = tree_handle
+                    .read()
+                    .desktop
+                    .workspaces
+                    .iter()
+                    .map(|workspace| workspace.room)
+                    .collect::<Vec<_>>();
+                for room in rooms {
+                    net.publish_hosted_legacy_windows(room, &tree_handle);
                 }
             }
             pump_phase!(
                 "legacy-share-reconcile",
                 state.reconcile_legacy_share_sessions(
                     net.local_peer_id_hash(),
-                    &desired,
+                    &legacy_shares.shares,
                     &legacy_share_config,
                 )
             );
@@ -14591,6 +14682,177 @@ mod tests {
             desired_legacy_shares(&tree, false, &hosts, &nobody).is_empty(),
             "unwatched, every encoder stops"
         );
+    }
+
+    #[test]
+    fn legacy_shares_are_derived_again_only_after_an_input_changed() {
+        use crate::shell::device_fabric_runtime::WindowViewer;
+        use crate::shell::state::{Tab, TileContent, WindowGroup, WindowWidth, WorkspaceTree};
+        let mut tree = WorkspaceTree::bootstrap_default();
+        tree.desktop.workspaces[0].strips[0]
+            .window_groups
+            .push(WindowGroup {
+                id: 11,
+                tabs: vec![Tab {
+                    id: 12,
+                    title: "GIMP".into(),
+                    tile: TileContent::Foreign {
+                        app_id: "org.gimp.GIMP".into(),
+                        surface_id: 7,
+                    },
+                }],
+                active_tab: 12,
+                width: WindowWidth::Normal,
+                maximized: false,
+            });
+        tree.desktop.workspaces[0].shared_surfaces.share(7, 9);
+        let tree = tree.shared();
+        let nobody = || {
+            (
+                std::collections::HashSet::new(),
+                std::collections::BTreeMap::new(),
+            )
+        };
+        let viewers_of = |plan: &LegacySharePlan| {
+            plan.shares.get(&7).map(|share| {
+                share
+                    .viewers
+                    .iter()
+                    .copied()
+                    .collect::<std::collections::BTreeSet<_>>()
+            })
+        };
+        let mut plan = LegacySharePlan::default();
+        let mut asked = 0;
+
+        // Phase `idle_wakeups_walk_nothing`.
+        assert!(plan.refresh(&tree, nobody(), true, |_| {
+            asked += 1;
+            true
+        }));
+        assert_eq!(viewers_of(&plan), Some([9].into()));
+        for _ in 0..100 {
+            assert!(!plan.refresh(&tree, nobody(), true, |_| {
+                asked += 1;
+                true
+            }));
+        }
+        assert_eq!(
+            (plan.derivations, asked),
+            (1, 1),
+            "a hundred wakeups without a change walk the tabs once"
+        );
+
+        // Phase `a_tree_write_is_derived_on_the_next_wakeup`.
+        tree.write().desktop.workspaces[0]
+            .shared_surfaces
+            .share(7, 10);
+        assert!(plan.refresh(&tree, nobody(), true, |_| true));
+        assert_eq!(viewers_of(&plan), Some([9, 10].into()));
+
+        // Phase `a_new_viewer_is_derived_on_the_next_wakeup`.
+        let personal = std::collections::BTreeMap::from([(
+            12,
+            vec![WindowViewer {
+                device: crate::shell::personal_continuity::DeviceId::new(hex::encode([1; 32]))
+                    .unwrap(),
+                peer: 501,
+                width: 800,
+                height: 600,
+                decode_limits: std::collections::BTreeMap::new(),
+            }],
+        )]);
+        let with_device = || (std::collections::HashSet::new(), personal.clone());
+        assert!(plan.refresh(&tree, with_device(), true, |for_host| {
+            assert!(
+                for_host,
+                "a device showing the window wants the backend watched"
+            );
+            true
+        }));
+        assert_eq!(viewers_of(&plan), Some([9, 10, 501].into()));
+        assert_eq!(
+            plan.viewers().map(|(_, personal)| personal.len()),
+            Some(1),
+            "what the shares feed is told the viewers they were derived for"
+        );
+        assert!(!plan.refresh(&tree, with_device(), true, |_| true));
+
+        // Phase `the_backend_going_unwatched_is_derived_on_the_next_wakeup`.
+        assert!(plan.refresh(&tree, nobody(), false, |_| false));
+        assert!(plan.shares.is_empty() && plan.desired.is_empty());
+        assert!(!plan.refresh(&tree, nobody(), false, |_| false));
+        assert_eq!(plan.derivations, 4);
+    }
+
+    /// What an idle wakeup cost the legacy-share pass before (walking every
+    /// tab of every workspace) against now, on a desktop of 8 workspaces
+    /// with 24 windows each. Printed for the record.
+    #[test]
+    fn an_idle_wakeup_costs_the_legacy_share_pass_a_fraction_of_walking_the_tabs() {
+        use crate::shell::state::{
+            RoomId, Tab, TileContent, WindowGroup, WindowWidth, WorkspaceId, WorkspaceTree,
+        };
+        const WAKEUPS: u32 = 2_000;
+        let mut tree = WorkspaceTree::bootstrap_default();
+        let template = tree.desktop.workspaces[0].clone();
+        tree.desktop.workspaces.clear();
+        for desk in 0..8_u64 {
+            let mut workspace = template.clone();
+            workspace.id = WorkspaceId(100 + desk);
+            workspace.room = RoomId::new();
+            workspace.strips.truncate(1);
+            workspace.strips[0].window_groups = (0..24_u64)
+                .map(|window| {
+                    let id = desk * 1_000 + window * 10;
+                    WindowGroup {
+                        id,
+                        tabs: vec![Tab {
+                            id: id + 1,
+                            title: "Terminal".into(),
+                            tile: TileContent::Foreign {
+                                app_id: "org.gnome.Ptyxis".into(),
+                                surface_id: id + 2,
+                            },
+                        }],
+                        active_tab: id + 1,
+                        width: WindowWidth::Normal,
+                        maximized: false,
+                    }
+                })
+                .collect();
+            workspace.shared_surfaces.share(desk * 1_000 + 2, 9);
+            tree.desktop.workspaces.push(workspace);
+        }
+        tree.desktop.active = WorkspaceId(100);
+        let nobody = std::collections::HashSet::new();
+        let no_device = std::collections::BTreeMap::new();
+
+        let started = Instant::now();
+        for _ in 0..WAKEUPS {
+            let for_host = hosts_viewed_window(&tree, &no_device);
+            assert!(!for_host);
+            assert_eq!(
+                desired_legacy_shares(&tree, true, &nobody, &no_device).len(),
+                1
+            );
+        }
+        let walked = started.elapsed();
+        let tree = tree.shared();
+        let mut plan = LegacySharePlan::default();
+        assert!(plan.refresh(&tree, (nobody.clone(), no_device.clone()), true, |_| true));
+        let started = Instant::now();
+        for _ in 0..WAKEUPS {
+            assert!(!plan.refresh(&tree, (nobody.clone(), no_device.clone()), true, |_| true));
+        }
+        let gated = started.elapsed();
+        eprintln!(
+            "TIL-136 legacy-share pass per idle wakeup, 8 workspaces x 24 windows: walked {:?}, gated {:?}",
+            walked / WAKEUPS,
+            gated / WAKEUPS,
+        );
+        assert_eq!(plan.derivations, 1);
+        assert!(gated < walked, "gated {gated:?} vs walked {walked:?}");
     }
 
     #[test]

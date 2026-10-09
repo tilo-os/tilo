@@ -257,7 +257,7 @@ async fn stamped_action_frames_route_to_their_addressee_or_are_answered() {
 }
 
 /// How the relay answered a frame it must refuse: the typed reason it led
-/// with, or `None` when the 1 s access audit closed the session first —
+/// with, or `None` when the access audit closed the session first —
 /// either way nothing was served. A served frame fails the test.
 async fn refusal(client: &RelayClient, who: &str) -> Option<UnavailableReason> {
     loop {
