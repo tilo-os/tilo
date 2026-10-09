@@ -104,7 +104,8 @@ serde.workspace = true
 serde_json = { workspace = true, features = ["raw_value"] }
 toml.workspace = true
 tracing.workspace = true
-tracing-subscriber.workspace = true
+# `env-filter`: RUST_LOG plus the always-on launch-latency target (linux_main).
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
 zeroize.workspace = true
 # Every sealing construction (per-device envelopes, the portal store) goes
 # through the reviewed tilo-seal crate.

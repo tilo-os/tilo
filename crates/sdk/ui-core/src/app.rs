@@ -1326,7 +1326,7 @@ impl App {
             self.controlled_installed_history_definition = Some(controlled_definition);
         }
         self.init_layout();
-        self.validate_history_registration()
+        tilo_startup_metrics::span("history-validate", || self.validate_history_registration())
     }
 
     /// Construct an explicitly detached app for headless or test execution.
@@ -2388,14 +2388,19 @@ impl App {
     /// from the previous process; shell continuation still wins when both exist.
     pub(crate) fn init_layout_with_dev_view(&mut self, dev_view: Option<crate::view::View>) {
         let _entry = self.enter_wake_scope();
-        self.refresh_control_action_availability();
+        // Startup marks name each step, so a slow first layout says which one.
+        tilo_startup_metrics::span("init-layout-actions", || {
+            self.refresh_control_action_availability();
+        });
         self.component_close_reports.extend(
             crate::component_lifecycle::take_component_close_reports(self.root_widget.as_mut()),
         );
         self.bindings.clear();
         self.layout.node_map.clear();
-        self.build_history_presentation();
-        self.update_focusable_order();
+        tilo_startup_metrics::span("init-layout-history", || self.build_history_presentation());
+        tilo_startup_metrics::span("init-layout-focus-order", || {
+            self.update_focusable_order();
+        });
         if let Some(view) = self.continuation.pending_view.take() {
             <Self as crate::view::FreezeThaw>::restore_view(self, &view);
         } else if let Some(view) = dev_view {

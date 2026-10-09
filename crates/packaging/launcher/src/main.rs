@@ -272,10 +272,12 @@ fn exit_code(code: i32) -> ExitCode {
 }
 
 fn main() -> ExitCode {
+    tilo_startup_metrics::handoff_mark("launcher-start");
     if let Err(error) = wait_for_shell_registration() {
         eprintln!("tilo-launcher: {error}");
         return ExitCode::from(126);
     }
+    tilo_startup_metrics::handoff_mark("shell-registered");
     // Hidden subcommand: parsed BEFORE clap so its argv shape (positional
     // paths, `--` separator) doesn't collide with clap's flag parsing.
     let raw_args: Vec<String> = std::env::args().collect();
@@ -457,6 +459,7 @@ fn run_gui_command(args: RunCliArgs) -> ExitCode {
     };
     if let Some(app_id) = opts.app_id.as_deref() {
         enter_app_scope(app_id);
+        tilo_startup_metrics::handoff_mark("scope-joined");
     }
     match run(&args.manifest, &args.payload_root, &opts) {
         Ok(status) => {

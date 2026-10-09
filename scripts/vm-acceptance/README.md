@@ -150,7 +150,15 @@ run here on every full run instead, on the dev disk under KVM:
   applications <app>`) and timed to the app's own `first-frame-presented` startup mark,
   so the time holds the compositor's dispatch, the launcher and the sandbox as well as
   the app's start; it waits for the app's processes to exit before the next open. The
-  median is held to the app's budget on the session's renderer (`app_startup.budget_ms`).
+  median is held to the app's budget on the session's renderer (`app_startup.budget_ms`);
+  on a GPU the p95 is also held to the KPI document's target (`tools/perf/kpi-budgets.toml`).
+  Each open is split into segments that add up to it (`open_segments`): request to the
+  launcher's start, the launcher's own phases (the marks it hands the app in
+  `TILO_STARTUP_LAUNCHER_MARKS`), the launcher's hand-off to the app's `main` (bubblewrap,
+  the Landlock shim and the dynamic loader; `exec_to_main` is its end, from the kernel's
+  process start time) and `main` to the first frame. The compositor's
+  `tilo::launch_latency` lines, which it logs whatever `RUST_LOG` says, add its own
+  request→spawn→map→first-present split. An open without either is unobservable.
 - A16 is `app_startup_check.py`'s judgement over every app the run launched.
 
 The greeter keystroke check (`os/dev/greeter-acceptance.py`) needs QEMU's monitor, which
@@ -174,6 +182,9 @@ the store (DEVELOPMENT.md, "Performance results") and publishes the nightly run'
 | `memory.shell_anon_mib`, `memory.session_mib`, `memory.app_mib.<app>`, `memory.app_anon_mib.<app>` | MiB | R03 | the compositor's anonymous RSS; the compositor's and apps' cgroups |
 | `app.open.warm_ms.<app>` | ms | A15 | open request to first presented frame, ten warm opens |
 | `app.startup_ms.<app>`, `app.startup_ms.file-explorer.first_in_session` | ms | A15, A14 | process start to first presented frame |
+| `app.open.{request_to_launcher,launcher,sandbox_to_main,exec_to_main}_ms.<app>` | ms | A15 | the open before the app's `main`, by segment |
+| `app.open.launcher_phase_ms.<app>.<mark>` | ms | A15 | each launcher phase, the interval ending at its mark |
+| `app.open.{request_to_spawn,spawn_to_map,map_to_first_present,request_to_first_present}_ms.<app>` | ms | A15 | the compositor's own split of the open |
 | `render.frame_cpu_ms` | ms | R04 | compositor CPU per painted frame during interactions |
 
 The records name the commit whose code ran (the swapped ref's, else the disk's) and keep
