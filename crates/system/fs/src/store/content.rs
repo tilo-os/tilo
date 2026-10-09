@@ -271,17 +271,7 @@ pub(crate) fn copy_part(out: &mut Vec<u8>, chunk: &[u8], chunk_start: u64, start
 mod tests {
     use super::*;
 
-    fn pseudo(len: usize, seed: u64) -> Vec<u8> {
-        let mut x = seed | 1;
-        (0..len)
-            .map(|_| {
-                x ^= x << 13;
-                x ^= x >> 7;
-                x ^= x << 17;
-                x.to_le_bytes()[0]
-            })
-            .collect()
-    }
+    use crate::test_bytes::pseudo;
 
     #[tokio::test]
     async fn small_content_is_loose_and_large_content_file_backed() {
