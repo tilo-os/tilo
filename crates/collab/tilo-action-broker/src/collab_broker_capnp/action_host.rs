@@ -2123,7 +2123,7 @@ impl CapnpBrokerState {
                 actor,
                 (&workspace, &policy, now),
                 &address.action,
-                argument,
+                (argument, request.confirmation.as_ref()),
             );
         }
         if let Some(service) = self.services.keyboard_shortcuts.as_ref()
@@ -2135,7 +2135,7 @@ impl CapnpBrokerState {
                 actor,
                 (&workspace, &policy, now),
                 address,
-                argument,
+                (argument, request.confirmation.as_ref()),
             );
         }
         if let Some(governance) = self.services.workspace_governance.as_ref()
@@ -2155,6 +2155,50 @@ impl CapnpBrokerState {
         Err(ActionHostError::UnknownAction)
     }
 
+    /// Admit `descriptor`, published by `app`, for `policy` in `workspace`
+    /// at `now`: allowed; or, where the room's grants ask first, with the
+    /// confirmation of the person — their own word when they act
+    /// themselves, else the answer they gave on their device.
+    fn admit_answer(
+        &self,
+        (workspace, policy, now): (&Workspace, &BrokerActor, u64),
+        app: &str,
+        descriptor: &ActionDescriptor,
+        (argument, confirmation): (Option<&str>, Option<&Confirmation>),
+    ) -> Result<(), ActionHostError> {
+        let node = Self::target_node(
+            workspace,
+            app,
+            (
+                &descriptor.resource_kind,
+                &descriptor.address.resource,
+                &descriptor.address.action,
+            ),
+            &descriptor.contract,
+        );
+        match policy.answer_in(workspace, &node, descriptor.contract.kind, now) {
+            tilo_action_policy::Answer::Allow => Ok(()),
+            tilo_action_policy::Answer::Deny => Err(ActionHostError::NotPermitted),
+            tilo_action_policy::Answer::Ask => {
+                let confirmed = match confirmation {
+                    Some(Confirmation::Witnessed(token)) => self.take_witness(
+                        token,
+                        policy.id(),
+                        (&descriptor.address.resource, &descriptor.address.action),
+                        argument,
+                    ),
+                    Some(Confirmation::Confirmed) => policy.direct(),
+                    _ => false,
+                };
+                if confirmed {
+                    Ok(())
+                } else {
+                    Err(ActionHostError::ConfirmationRequired)
+                }
+            }
+        }
+    }
+
     /// Apply one shortcut library action for `caller` in `workspace`. A
     /// saved shortcut is checked against exactly what `caller` is offered now.
     fn start_shortcut_library(
@@ -2163,7 +2207,7 @@ impl CapnpBrokerState {
         actor: &BrokerActor,
         (workspace, policy, now): (&Workspace, &BrokerActor, u64),
         action: &str,
-        argument: Option<&str>,
+        (argument, confirmation): (Option<&str>, Option<&Confirmation>),
     ) -> Result<u64, ActionHostError> {
         let library = self
             .services
@@ -2172,20 +2216,12 @@ impl CapnpBrokerState {
             .ok_or(ActionHostError::UnknownAction)?;
         let descriptor =
             automation::library_descriptor(action).ok_or(ActionHostError::UnknownAction)?;
-        if !Self::allowed(
-            workspace,
-            policy,
-            now,
+        self.admit_answer(
+            (workspace, policy, now),
             SHORTCUTS_APP_ID,
-            (
-                &descriptor.resource_kind,
-                &descriptor.address.resource,
-                action,
-            ),
-            &descriptor.contract,
-        ) {
-            return Err(ActionHostError::NotPermitted);
-        }
+            &descriptor,
+            (argument, confirmation),
+        )?;
         let operation = automation::decode_library(action, argument)
             .map_err(|reason| ActionHostError::InvalidRequest { reason })?;
         let catalog =
@@ -2241,26 +2277,18 @@ impl CapnpBrokerState {
         actor: &BrokerActor,
         (workspace, policy, now): (&Workspace, &BrokerActor, u64),
         address: &ActionAddress,
-        argument: Option<&str>,
+        (argument, confirmation): (Option<&str>, Option<&Confirmation>),
     ) -> Result<u64, ActionHostError> {
         let mut keymap = settings_store::hardware::ShortcutConfig::load();
         let descriptor = service
             .descriptor(&keymap, address)
             .ok_or(ActionHostError::UnknownAction)?;
-        if !Self::allowed(
-            workspace,
-            policy,
-            now,
+        self.admit_answer(
+            (workspace, policy, now),
             service.app_id(),
-            (
-                &descriptor.resource_kind,
-                &address.resource,
-                &address.action,
-            ),
-            &descriptor.contract,
-        ) {
-            return Err(ActionHostError::NotPermitted);
-        }
+            &descriptor,
+            (argument, confirmation),
+        )?;
         let id = self
             .invocation_id
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
