@@ -1103,6 +1103,45 @@ where
         state.set(initial);
         state
     }
+
+    /// A toolkit control whose value is not the field's own type: a slider
+    /// (`f64`) for an optional hue (`Option<f64>`), a dropdown of names for
+    /// a flag. It shows `show` of the value at `path` and sets the field to
+    /// `store` of each committed value:
+    /// `cx.control_map(Slider::from_state, p.hue, |hue| hue.unwrap_or(0.5), Some)`.
+    pub fn control_map<V, I, C>(
+        &self,
+        make: impl FnOnce(&LocalState<I>) -> C,
+        path: Path<R, V>,
+        show: impl Fn(&V) -> I + 'static,
+        store: impl Fn(I) -> V + Send + Sync + 'static,
+    ) -> C
+    where
+        V: Settable + PartialEq + Default + Clone + 'static,
+        I: PartialEq + Clone + Send + Sync + 'static,
+        C: ActionControl<I>,
+    {
+        let read = path.clone();
+        let initial = show(&V::default());
+        let state = LocalState::new(initial);
+        let sink = state.clone();
+        let shown = self.follow_state(
+            Reads::At(path.segments().to_vec()),
+            move |record| show(&read.get(record).cloned().unwrap_or_default()),
+            move |value| sink.set(value),
+        );
+        state.set(shown);
+        let control = make(&state);
+        let binding = self
+            .actions()
+            .edit_binding(path.cast::<I>(), move |path, input| {
+                path.clone().cast::<V>().set(store(input))
+            });
+        match binding {
+            Some(binding) => control.bind_action(binding),
+            None => control.unavailable(),
+        }
+    }
 }
 
 /// What a control shows and changes: a field of the record, by its

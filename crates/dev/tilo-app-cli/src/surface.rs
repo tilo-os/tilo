@@ -277,12 +277,13 @@ fn incompatible(before: &Value, now: &Value) -> Vec<String> {
         .collect()
 }
 
-/// The history messages `resource` asks of `locales/en-US.ftl`: one per
-/// verb that changes something (`<app>-<verb>`) and one per editable field
-/// (`<app>-<type>-<field>`), the app being the first part of the kind.
-fn history_messages(resource: &Value) -> Vec<String> {
-    let kind = text(resource, "kind");
-    let app = kind.split('.').next().unwrap_or(kind);
+/// The history messages `resource` asks of `locales/en-US.ftl`, as history
+/// renders entries of the app `app` (its id): one per verb that changes
+/// something (`<app>-<verb>`) and one per editable field
+/// (`<app>-<type>-<field>`).
+fn history_messages(app: &str, resource: &Value) -> Vec<String> {
+    let app = tilo_history::app_prefix(app);
+    let kebab = tilo_actions::entry::kebab;
     let mut keys = Vec::new();
     for verb in resource
         .get("verbs")
@@ -291,7 +292,7 @@ fn history_messages(resource: &Value) -> Vec<String> {
         .flatten()
     {
         if text(verb, "kind") != "read" {
-            keys.push(format!("{app}-{}", text(verb, "id")));
+            keys.push(format!("{app}-{}", kebab(text(verb, "id"))));
         }
     }
     for field in resource
@@ -307,7 +308,11 @@ fn history_messages(resource: &Value) -> Vec<String> {
                 .unwrap_or(false);
         if editable {
             let key = text(field, "path").rsplit('.').next().unwrap_or_default();
-            keys.push(format!("{app}-{}-{key}", text(field, "owner")));
+            keys.push(format!(
+                "{app}-{}-{}",
+                kebab(text(field, "owner")),
+                kebab(key)
+            ));
         }
     }
     keys
@@ -319,6 +324,7 @@ fn history_messages(resource: &Value) -> Vec<String> {
 /// `missing`'s level.
 #[must_use]
 pub fn findings(
+    app: &str,
     report: &SurfaceReport,
     committed: Option<&[Value]>,
     catalog: Option<&BTreeSet<String>>,
@@ -393,7 +399,7 @@ pub fn findings(
         let missing: Vec<String> = report
             .resources
             .iter()
-            .flat_map(history_messages)
+            .flat_map(|resource| history_messages(app, resource))
             .filter(|key| !catalog.contains(key))
             .collect();
         if !missing.is_empty() {
@@ -423,6 +429,19 @@ pub fn write_app(start: &Path) -> Result<(PathBuf, SurfaceReport)> {
     Ok((path, report))
 }
 
+/// The app id `tilo-app.toml` declares.
+///
+/// # Errors
+/// Returns why the manifest does not read.
+pub fn app_id(app_dir: &Path) -> Result<String> {
+    let path = app_dir.join("tilo-app.toml");
+    let source =
+        std::fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
+    let manifest = tilo_app_package::Manifest::from_toml_str(&source)
+        .with_context(|| format!("parsing {}", path.display()))?;
+    Ok(manifest.package.id)
+}
+
 /// Check the surface of the app containing `start` against its committed
 /// [`FILE`]; `None` for an app whose binary reports none.
 ///
@@ -436,6 +455,7 @@ pub fn check_app(start: &Path) -> Result<Option<ContractReport>> {
     let report = read_report(&app_dir)?;
     let catalog = crate::contract::source_catalog(&app_dir)?;
     Ok(Some(findings(
+        &app_id(&app_dir)?,
         &report,
         committed(&app_dir)?.as_deref(),
         catalog.as_ref(),
@@ -492,7 +512,13 @@ mod tests {
             .into_iter()
             .map(str::to_owned)
             .collect();
-        let found = findings(&now, Some(&committed), Some(&catalog), Level::Error);
+        let found = findings(
+            "so.tilo.notes",
+            &now,
+            Some(&committed),
+            Some(&catalog),
+            Level::Error,
+        );
         assert!(found.findings.is_empty(), "{}", found.render());
     }
 
@@ -502,7 +528,13 @@ mod tests {
         // A renamed verb is drift; a field read as another type is a
         // storage change that needs a version.
         let now = report(&[resource(1, "Atom", &["retitle"])]);
-        let found = findings(&now, Some(&before), Some(&BTreeSet::new()), Level::Error);
+        let found = findings(
+            "so.tilo.notes",
+            &now,
+            Some(&before),
+            Some(&BTreeSet::new()),
+            Level::Error,
+        );
         assert_eq!(
             rules(&found),
             [
@@ -518,12 +550,12 @@ mod tests {
 
         // With a new storage version the change is drift to commit only.
         let bumped = report(&[resource(2, "Atom", &["rename"])]);
-        let found = findings(&bumped, Some(&before), None, Level::Error);
+        let found = findings("so.tilo.notes", &bumped, Some(&before), None, Level::Error);
         assert_eq!(rules(&found), [("surface", Level::Error)]);
 
         let mut unbound = report(&[resource(1, "String", &["rename"])]);
         unbound.unbound.push("a control is bound to `x`".into());
-        let found = findings(&unbound, None, None, Level::Warning);
+        let found = findings("so.tilo.notes", &unbound, None, None, Level::Warning);
         assert_eq!(
             rules(&found),
             [("binding", Level::Error), ("surface", Level::Warning)]

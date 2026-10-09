@@ -9,6 +9,7 @@ use tilo_app::prelude::*;
 pub struct Mixer {
     pub name: String,
     pub level: f64,
+    pub pan: Option<f64>,
 }
 
 #[resource(kind = "test.mixer", label = "Mixer")]
@@ -26,6 +27,12 @@ impl ResourceApp for MixerApp {
         Box::new(tilo_app::column![
             cx.input(p.name).with_id("name"),
             cx.control(|state| Slider::from_state(state).with_id("level"), p.level),
+            cx.control_map(
+                |state| Slider::from_state(state).with_id("pan"),
+                p.pan,
+                |pan| pan.unwrap_or(0.5),
+                Some,
+            ),
         ])
     }
 }
@@ -96,4 +103,20 @@ fn a_text_control_at_a_path_splices_the_field_and_undoes_a_word() {
     assert_eq!(app.state().name, "Bass");
     assert!(app.undo());
     assert_eq!(app.state().name, "");
+}
+
+#[test]
+fn a_control_of_another_type_maps_to_the_field() {
+    let mut app = TestApp::<MixerApp>::new().unwrap();
+    assert_eq!(app.state().pan, None);
+    let targets = app.harness().targets();
+    let slider = targets
+        .get("pan")
+        .copied()
+        .unwrap_or_else(|| panic!("{:?}", targets.keys().collect::<Vec<_>>()));
+    let y = f64::midpoint(slider.y0, slider.y1);
+    let at = |fraction: f64| slider.x0 + (slider.x1 - slider.x0) * fraction;
+    app.harness().drag_at((at(0.5), y), (at(0.9), y));
+    let pan = app.state().pan.expect("the drag set the pan");
+    assert!(pan > 0.6, "{pan}");
 }

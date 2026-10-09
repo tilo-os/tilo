@@ -2485,6 +2485,7 @@ fn certify_surface(app: &Path, executable: &Path) -> Result<()> {
     let report = tilo_app_cli::surface::report_of(executable, app)?;
     let committed = tilo_app_cli::surface::committed(app)?;
     let findings = tilo_app_cli::surface::findings(
+        &tilo_app_cli::surface::app_id(app)?,
         &report,
         committed.as_deref(),
         None,
