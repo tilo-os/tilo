@@ -5065,8 +5065,7 @@ impl CapnpBrokerState {
                 caller: continuing,
                 activity: ActivityTarget::new(
                     execution.clone(),
-                    actor,
-                    caller,
+                    (actor, caller, context.as_ref()),
                     &offered.0,
                     &offered.1,
                 ),
@@ -5202,7 +5201,7 @@ impl CapnpBrokerState {
             action: shown.action.clone(),
             resource: shown.resource.clone(),
             anchor: tilo_actions::InteractionAnchor::Resource,
-            group: None,
+            group: shown.group.clone(),
         };
         if interaction.validate().is_err() {
             return;

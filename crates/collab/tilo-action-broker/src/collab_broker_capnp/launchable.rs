@@ -742,6 +742,29 @@ mod tests {
         );
         assert_eq!(interaction.phase, tilo_actions::InteractionPhase::Applying);
         assert_eq!(interaction.action.id, "new-window");
+
+        // A Shortcut's step keeps the person's authority, yet the view shows
+        // the Shortcut acting for them.
+        let shortcut = Caller::local_person("owner")
+            .in_room(&room)
+            .running_shortcut("morning");
+        invoke(&state, &shortcut, "5", "new-window", None).expect("the step runs");
+        assert_eq!(app.try_recv().expect("delivered").actor, "owner");
+        let Ok(ui::collaboration::CollabEvent::RemotePresenceUpdate {
+            payload: ui::collaboration::PresencePayload::Interaction(interaction),
+            ..
+        }) = heard.try_recv()
+        else {
+            panic!("the Shortcut's step shows in its view");
+        };
+        assert_eq!(
+            interaction.actor,
+            tilo_actions::InteractionActor::new(
+                "shortcut:morning",
+                tilo_actions::ActorKind::Shortcut
+            )
+            .acting_for("owner")
+        );
     }
 
     /// An application target reaches an app that never ran in the workspace:

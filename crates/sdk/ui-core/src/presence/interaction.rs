@@ -150,6 +150,14 @@ impl PresenceCtx {
         let user = UserId(interaction.actor.id.clone());
         self.set_participant_kind(&user, ParticipantKind::from(interaction.actor.kind));
         self.set_acting_for(&user, interaction.actor.for_person.clone().map(UserId));
+        // Software the room's roster does not know (a Shortcut's run) is
+        // named by the run it works in.
+        if interaction.actor.kind.acts_for_someone()
+            && !self.names.contains_key(&user)
+            && let Some(group) = &interaction.group
+        {
+            self.set_display_name(user.clone(), group.label.clone());
+        }
         let first_received_at = self
             .interactions
             .get(&interaction.invocation)
@@ -1024,10 +1032,18 @@ mod tests {
 
         let mut shortcut = interaction(31, 1, InteractionPhase::Applying);
         shortcut.actor = InteractionActor::new("shortcut:morning", ActorKind::Shortcut);
-        presence.set_display_name(UserId("shortcut:morning".into()), "Morning");
+        shortcut.group = Some(tilo_actions::ActionGroup {
+            id: "run-7".into(),
+            label: "Morning".into(),
+            kind: "shortcut".into(),
+        });
         assert!(presence.apply_interaction_at(shortcut, at).unwrap());
         let morning = UserId("shortcut:morning".into());
-        assert_eq!(presence.display_name(&morning), "Morning · Shortcut");
+        assert_eq!(
+            presence.display_name(&morning),
+            "Morning · Shortcut",
+            "named by its run when the roster does not know it"
+        );
         assert_eq!(presence.agent_marker_interactions(at).len(), 2);
 
         let mut person = interaction(32, 1, InteractionPhase::Applying);

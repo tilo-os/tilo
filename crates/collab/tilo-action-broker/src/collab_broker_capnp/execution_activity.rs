@@ -104,6 +104,9 @@ pub(super) struct ShownActor {
     pub(super) actor: tilo_actions::InteractionActor,
     pub(super) action: tilo_actions::InteractionAction,
     pub(super) resource: tilo_actions::ActionResource,
+    /// The run or task it works in, whose label names an actor the room's
+    /// roster does not know (a Shortcut's run).
+    pub(super) group: Option<tilo_actions::ActionGroup>,
     /// Last sequence published for this invocation.
     pub(super) sequence: Arc<std::sync::atomic::AtomicU64>,
 }
@@ -115,24 +118,27 @@ impl ShownActor {
     fn of(
         caller: Option<&Caller>,
         actor: &BrokerActor,
+        context: Option<&tilo_actions::ActionContext>,
         surface: &PublishedSurface,
         action: &PublishedAction,
     ) -> Option<Self> {
-        let kind = match caller.map(Caller::principal) {
-            Some(CallerPrincipal::Agent(_)) => tilo_actions::ActorKind::Agent,
-            Some(CallerPrincipal::App(_)) => tilo_actions::ActorKind::App,
-            Some(CallerPrincipal::Person(_)) | None if actor.is_agent => {
-                tilo_actions::ActorKind::Agent
-            }
-            Some(CallerPrincipal::Person(_)) | None => tilo_actions::ActorKind::Person,
-        };
-        let for_person = caller.and_then(Caller::acting_for_person);
+        let shown = caller.map_or_else(
+            || {
+                tilo_actions::InteractionActor::new(
+                    actor.id.clone(),
+                    if actor.is_agent {
+                        tilo_actions::ActorKind::Agent
+                    } else {
+                        tilo_actions::ActorKind::Person
+                    },
+                )
+            },
+            Caller::actor,
+        );
         let remote = caller.is_some_and(|caller| caller.device_public_key().is_some());
-        if !kind.acts_for_someone() && for_person.is_none() && !remote {
+        if !shown.kind.acts_for_someone() && shown.for_person.is_none() && !remote {
             return None;
         }
-        let mut shown = tilo_actions::InteractionActor::new(actor.id.clone(), kind);
-        shown.for_person = for_person.map(str::to_owned);
         Some(Self {
             actor: shown,
             action: tilo_actions::InteractionAction {
@@ -148,6 +154,7 @@ impl ShownActor {
                 kind: action.resource_kind.clone(),
                 label: action.resource_label.clone(),
             },
+            group: context.and_then(|context| context.group.clone()),
             sequence: Arc::default(),
         })
     }
@@ -156,12 +163,15 @@ impl ShownActor {
 impl ActivityTarget {
     pub(super) fn new(
         scope: Option<ExecutionScope>,
-        actor: &BrokerActor,
-        caller: Option<&Caller>,
+        (actor, caller, context): (
+            &BrokerActor,
+            Option<&Caller>,
+            Option<&tilo_actions::ActionContext>,
+        ),
         surface: &PublishedSurface,
         action: &PublishedAction,
     ) -> Option<Self> {
-        let shown = ShownActor::of(caller, actor, surface, action);
+        let shown = ShownActor::of(caller, actor, context, surface, action);
         if scope.is_none() && shown.is_none() {
             return None;
         }

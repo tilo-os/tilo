@@ -125,6 +125,8 @@ pub struct Caller {
     execution: Option<ExecutionLease>,
     // The person a non-person principal acts for, as the host admitted it.
     acting_for: Option<String>,
+    // The Shortcut whose run this person's invocation is a step of.
+    shortcut: Option<String>,
 }
 
 impl Caller {
@@ -140,6 +142,7 @@ impl Caller {
             foreign: false,
             execution: None,
             acting_for: None,
+            shortcut: None,
         }
     }
 
@@ -155,6 +158,7 @@ impl Caller {
             foreign: false,
             execution: None,
             acting_for: None,
+            shortcut: None,
         }
     }
 
@@ -169,6 +173,7 @@ impl Caller {
             foreign: false,
             execution: None,
             acting_for: None,
+            shortcut: None,
         }
     }
 
@@ -185,6 +190,7 @@ impl Caller {
             foreign: false,
             execution: None,
             acting_for: None,
+            shortcut: None,
         }
     }
 
@@ -206,6 +212,7 @@ impl Caller {
             foreign: false,
             execution: None,
             acting_for: None,
+            shortcut: None,
         }
     }
 
@@ -267,6 +274,54 @@ impl Caller {
     #[must_use]
     pub fn acting_for_person(&self) -> Option<&str> {
         self.acting_for.as_deref()
+    }
+
+    /// The caller's invocations are the steps of Shortcut `id`'s run: still
+    /// the person's authority (bounded by the Shortcut's own grants, which
+    /// the runner applies), but the Shortcut is who acts, for the person.
+    /// Set only by the host's Shortcut runner.
+    #[must_use]
+    pub fn running_shortcut(mut self, id: impl Into<String>) -> Self {
+        self.shortcut = Some(id.into());
+        self
+    }
+
+    /// The Shortcut whose run this invocation is a step of.
+    #[must_use]
+    pub fn shortcut(&self) -> Option<&str> {
+        self.shortcut.as_deref()
+    }
+
+    /// Who acts, as presence and history name them: the kind of actor, its
+    /// id, and the person it acts for when that is someone else.
+    #[must_use]
+    pub fn actor(&self) -> crate::InteractionActor {
+        match (&self.principal, &self.shortcut) {
+            (CallerPrincipal::Person(person), Some(shortcut)) => crate::InteractionActor::new(
+                format!("shortcut:{shortcut}"),
+                crate::ActorKind::Shortcut,
+            )
+            .acting_for(person.clone()),
+            (CallerPrincipal::Person(person), None) => {
+                crate::InteractionActor::new(person.clone(), crate::ActorKind::Person)
+            }
+            (CallerPrincipal::Agent(agent), _) => {
+                let actor =
+                    crate::InteractionActor::new(format!("agent:{agent}"), crate::ActorKind::Agent);
+                match &self.acting_for {
+                    Some(person) => actor.acting_for(person.clone()),
+                    None => actor,
+                }
+            }
+            (CallerPrincipal::App(app), _) => {
+                let actor =
+                    crate::InteractionActor::new(format!("app:{app}"), crate::ActorKind::App);
+                match &self.acting_for {
+                    Some(person) => actor.acting_for(person.clone()),
+                    None => actor,
+                }
+            }
+        }
     }
 
     /// Confine the caller to one room: the connection was admitted to that

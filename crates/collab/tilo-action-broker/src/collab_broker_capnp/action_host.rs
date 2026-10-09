@@ -2286,7 +2286,7 @@ impl CapnpBrokerState {
             Vec::new()
         };
         let state = Arc::clone(self);
-        let caller = caller.clone();
+        let caller = caller.clone().running_shortcut(shortcut.id.clone());
         let room = room.to_string();
         runtime.spawn(async move {
             let report = tilo_automation::run(
