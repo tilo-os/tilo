@@ -67,6 +67,7 @@ pub mod collab_capnp {
     include!("generated/collab_capnp.rs");
 }
 
+pub mod approved_checks;
 /// The host distinguishes local UI intent from continuation of a published action.
 /// A published id is resolved only against broker-retained original custody.
 #[derive(Clone, Copy, Debug)]

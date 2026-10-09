@@ -1467,3 +1467,14 @@ mod legacy_files_opener_regressions {
         );
     }
 }
+
+/// Install immutable trusted project check configuration before session admission.
+///
+/// # Errors
+/// Refuses malformed, ambiguous, non-private or unsupported host definitions.
+#[cfg(target_os = "linux")]
+pub fn install_approved_checks_from_args(
+    arguments: impl IntoIterator<Item = std::ffi::OsString>,
+) -> Result<(), String> {
+    broker_services::approved_checks::install_from_args(arguments)
+}

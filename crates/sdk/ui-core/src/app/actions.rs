@@ -2176,8 +2176,10 @@ impl App {
         // edit intact; the executor still receives the same committed baseline.
         let before = self.state.doc.get_heads();
         let route = self.primary_document_route();
-        let started =
-            crate::invocation_scope::with_mounted_document(route, &mut self.state.doc, |doc| {
+        let started = crate::invocation_scope::with_mounted_document(
+            route.clone(),
+            &mut self.state.doc,
+            |doc| {
                 crate::bound_dispatch::execute_resource_operation(
                     self.root_widget.as_mut(),
                     doc,
@@ -2185,6 +2187,7 @@ impl App {
                     &self.actions.action_registry,
                     self.actions.action_transport.as_mut(),
                     crate::bound_dispatch::ResourceOperation {
+                        target_route: route.clone(),
                         address,
                         resource,
                         spec,
@@ -2198,7 +2201,8 @@ impl App {
                         scope,
                     },
                 )
-            })?;
+            },
+        )?;
         if before != self.state.doc.get_heads() {
             self.state.record_committed_action_authored(
                 before,
@@ -2874,28 +2878,33 @@ impl App {
             })()
         } else {
             let route = self.primary_document_route();
-            crate::invocation_scope::with_mounted_document(route, &mut self.state.doc, |doc| {
-                crate::bound_dispatch::execute_resource_operation(
-                    self.root_widget.as_mut(),
-                    doc,
-                    &self.state.root,
-                    &self.actions.action_registry,
-                    self.actions.action_transport.as_mut(),
-                    crate::bound_dispatch::ResourceOperation {
-                        address,
-                        resource,
-                        spec: resolved,
-                        encoded,
-                        actor,
-                        local_author: &self.collaboration.local_author.0,
-                        broker_admitted,
-                        invocation: operation_invocation,
-                        source_invocation: broker_admitted.then_some(operation_invocation),
-                        ambient: ambient_context,
-                        scope: None,
-                    },
-                )
-            })
+            crate::invocation_scope::with_mounted_document(
+                route.clone(),
+                &mut self.state.doc,
+                |doc| {
+                    crate::bound_dispatch::execute_resource_operation(
+                        self.root_widget.as_mut(),
+                        doc,
+                        &self.state.root,
+                        &self.actions.action_registry,
+                        self.actions.action_transport.as_mut(),
+                        crate::bound_dispatch::ResourceOperation {
+                            target_route: route.clone(),
+                            address,
+                            resource,
+                            spec: resolved,
+                            encoded,
+                            actor,
+                            local_author: &self.collaboration.local_author.0,
+                            broker_admitted,
+                            invocation: operation_invocation,
+                            source_invocation: broker_admitted.then_some(operation_invocation),
+                            ambient: ambient_context,
+                            scope: None,
+                        },
+                    )
+                },
+            )
         };
         let started = match operation_result {
             Ok(started) => started,
