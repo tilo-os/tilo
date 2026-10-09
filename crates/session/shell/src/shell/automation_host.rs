@@ -142,7 +142,7 @@ pub fn record_shortcut_run(
 ) -> Option<String> {
     let shares = documents
         .iter_mut()
-        .filter_map(|(record, doc)| document_share(finished.report.run, record, &**doc))
+        .filter_map(|(record, doc)| document_share(finished.report.run, record, doc))
         .collect();
     record_run_steps(coordinator, finished, &ordered_steps(shares))
 }
@@ -180,12 +180,12 @@ mod tests {
         untouched.commit();
 
         assert_eq!(
-            document_share(run, "file:untouched", &mut untouched),
+            document_share(run, "file:untouched", &untouched),
             None,
             "a document the run did not change is no step"
         );
         let steps = ordered_steps(
-            document_share(run, "file:notes", &mut notes)
+            document_share(run, "file:notes", &notes)
                 .into_iter()
                 .collect(),
         );

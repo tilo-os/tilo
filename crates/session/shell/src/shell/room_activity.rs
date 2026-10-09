@@ -663,6 +663,7 @@ mod tests {
         assert_eq!(runs[0].steps[0].record, record.to_string());
         assert_eq!(runs[0].steps[0].app, "so.tilo.fixture-drafts");
         let pending_left = pane.shortcut_run_recorder_mut().pending_len();
+        drop(pane);
         assert_eq!(pending_left, 0, "the recorded run is no longer pending");
     }
 
@@ -768,6 +769,9 @@ mod tests {
             .checked_add(SHORTCUT_RUN_LOOK_INTERVAL)
             .expect("the next look");
         assert!(pane.record_finished_shortcut_runs(&mut tree, &records, &local, next));
+        let still_pending = pane.shortcut_runs_pending();
+        drop(pane);
+        assert!(!still_pending, "the recorded run no longer waits");
 
         let runs = ui::read_runs(&tree.doc);
         assert_eq!(runs.len(), 1, "the run is recorded once");
@@ -787,7 +791,6 @@ mod tests {
             ),
             "the step names the exact change the run made"
         );
-        assert!(!pane.shortcut_runs_pending());
     }
 
     /// A run whose changes never reach a document here waits on the wall
@@ -819,7 +822,9 @@ mod tests {
                 .expect("the next look");
         }
         assert!(!pane.record_finished_shortcut_runs(&mut tree, &records, &local, at));
-        assert!(!pane.shortcut_runs_pending(), "given up once settled");
+        let still_pending = pane.shortcut_runs_pending();
+        drop(pane);
+        assert!(!still_pending, "given up once settled");
         assert!(ui::read_runs(&tree.doc).is_empty());
     }
 }
