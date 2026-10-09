@@ -349,10 +349,24 @@ stored = "value"
 title = "Where each remote calendar's last pull ended (its sync token)"
 type = "BTreeMap<String, String>"
 
+[[resources.fields]]
+owner = "calendar"
+path = "uploads"
+stored = "value"
+title = "Events whose version here their server does not hold yet"
+type = "Outbox<Upload>"
+
+[[resources.fields]]
+owner = "calendar"
+path = "deletes"
+stored = "value"
+title = "Copies servers hold of events gone from their calendar here"
+type = "Outbox<Removal>"
+
 [[resources.verbs]]
 description = "New event  Adds an event, on the local calendar unless it names a remote one."
 id = "new-event"
-kind = "undoable"
+kind = "outside"
 label = "New event"
 
 [[resources.verbs.params]]
@@ -490,7 +504,7 @@ type = "string"
 [[resources.verbs]]
 description = "New task  Adds a task."
 id = "new-task"
-kind = "undoable"
+kind = "outside"
 label = "New task"
 
 [[resources.verbs.params]]
@@ -530,7 +544,7 @@ type = "string"
 [[resources.verbs]]
 description = "New task project  Adds a project to file tasks and events under."
 id = "new-project"
-kind = "undoable"
+kind = "outside"
 label = "New task project"
 
 [[resources.verbs.params]]
@@ -544,7 +558,7 @@ type = "string"
 [[resources.verbs]]
 description = "Delete event  Deletes an event and its notes; a server holding it deletes it too."
 id = "delete-event"
-kind = "undoable"
+kind = "outside"
 label = "Delete event"
 
 [[resources.verbs.params]]
@@ -558,7 +572,7 @@ type = "string"
 [[resources.verbs]]
 description = "Reschedule  Moves an event to another start and end."
 id = "reschedule"
-kind = "undoable"
+kind = "outside"
 label = "Reschedule"
 
 [[resources.verbs.params]]
@@ -590,7 +604,7 @@ type = "string"
 [[resources.verbs]]
 description = "Move to calendar  Files an event on another calendar, in that calendar's colour."
 id = "move-to-calendar"
-kind = "undoable"
+kind = "outside"
 label = "Move to calendar"
 
 [[resources.verbs.params]]
@@ -632,7 +646,7 @@ type = "string"
 [[resources.verbs]]
 description = "Invite  Adds someone to an event's attendees, awaiting their answer."
 id = "invite"
-kind = "undoable"
+kind = "outside"
 label = "Invite"
 
 [[resources.verbs.params]]
@@ -662,7 +676,7 @@ type = "string"
 [[resources.verbs]]
 description = "Delete task  Deletes a task with its steps and their notes."
 id = "delete-task"
-kind = "undoable"
+kind = "outside"
 label = "Delete task"
 
 [[resources.verbs.params]]
@@ -677,7 +691,7 @@ type = "string"
 description = "Delete project  Deletes a project; the events and tasks filed under it stay, unfiled."
 destructive = true
 id = "delete-project"
-kind = "undoable"
+kind = "outside"
 label = "Delete project"
 
 [[resources.verbs.params]]
@@ -691,7 +705,7 @@ type = "string"
 [[resources.verbs]]
 description = "Import calendar items  Adds the events and tasks of a calendar file, leaving out what the calendar already holds."
 id = "import-items"
-kind = "undoable"
+kind = "outside"
 label = "Import calendar items"
 
 [[resources.verbs.params]]
@@ -871,7 +885,7 @@ type = "string"
 [[resources.verbs]]
 description = "Adopt a server's event  Writes an event as its server holds it, which therefore needs no upload."
 id = "adopt-remote-event"
-kind = "undoable"
+kind = "outside"
 label = "Adopt a server's event"
 
 [[resources.verbs.params]]
@@ -1037,7 +1051,7 @@ type = "string"
 [[resources.verbs]]
 description = "Adopt a server's task  Writes a task as its server holds it."
 id = "adopt-remote-task"
-kind = "undoable"
+kind = "outside"
 label = "Adopt a server's task"
 
 [[resources.verbs.params]]
@@ -1105,7 +1119,7 @@ type = "string"
 [[resources.verbs]]
 description = "Drop what a server removed  Removes an item its server no longer holds."
 id = "drop-remote-item"
-kind = "undoable"
+kind = "outside"
 label = "Drop what a server removed"
 
 [[resources.verbs.params]]
@@ -1120,7 +1134,7 @@ type = "string"
 [[resources.verbs]]
 description = "Record an upload  Records that a server took the version of an event it was sent."
 id = "server-applied"
-kind = "undoable"
+kind = "outside"
 label = "Record an upload"
 
 [[resources.verbs.params]]
@@ -1171,7 +1185,7 @@ type = "string"
 [[resources.verbs]]
 description = "Record a server delete  Records that a server deleted an item it was told to."
 id = "server-removed"
-kind = "undoable"
+kind = "outside"
 label = "Record a server delete"
 
 [[resources.verbs.params]]
@@ -1186,7 +1200,7 @@ type = "string"
 [[resources.verbs]]
 description = "Record a pull  Remembers where a remote calendar's last pull ended."
 id = "pulled"
-kind = "undoable"
+kind = "outside"
 label = "Record a pull"
 
 [[resources.verbs.params]]
@@ -1203,4 +1217,288 @@ required = true
 
 [resources.verbs.params.schema]
 description = "Its sync token"
+type = "string"
+
+[[resources]]
+kind = "tilo.accounts"
+label = "Accounts"
+version = 1
+
+[[resources.fields]]
+owner = "person-accounts"
+path = "accounts"
+stored = "collection"
+title = "Keyed by the account's id, the id its secret is kept under"
+type = "Collection<PersonAccount>"
+
+[[resources.fields]]
+owner = "person-account"
+path = "accounts.*.type_id"
+stored = "value"
+title = 'The kind of account (`"email"`, `"caldav"`, …)'
+type = "String"
+
+[[resources.fields]]
+owner = "person-account"
+path = "accounts.*.display_name"
+stored = "value"
+title = 'The name shown for it ("Work — Fastmail")'
+type = "String"
+
+[[resources.fields]]
+owner = "person-account"
+path = "accounts.*.config"
+stored = "value"
+title = "Type-specific connection settings. Never a secret"
+type = "Json<serde_json::Value>"
+
+[[resources.fields]]
+owner = "person-account"
+path = "accounts.*.enabled"
+stored = "value"
+title = "Whether the person uses it now"
+type = "bool"
+
+[[resources.fields]]
+owner = "person-account"
+path = "accounts.*.tint"
+stored = "value"
+title = "Tints the account's avatar so several read as distinct"
+type = "u8"
+
+[[resources.fields]]
+owner = "person-accounts"
+path = "active"
+stored = "value"
+title = "The active account id per type; a type without one uses its first"
+type = "BTreeMap<String, String>"
+
+[[resources.verbs]]
+description = "Publish this signed-in identity's public browser connection metadata. This changes the Settings account record only; it creates no credential, certificate, room membership or content key. Republishing preserves a person's disabled choice and chosen account name.  # Errors Refuses malformed public metadata or an occupied identity account id."
+id = "publish-browser-identity"
+kind = "undoable"
+label = "Publish this signed-in identity's public browser connection metadata"
+
+[[resources.verbs.params]]
+name = "root"
+required = true
+
+[resources.verbs.params.schema]
+description = "Root"
+type = "string"
+
+[[resources.verbs.params]]
+name = "origin"
+required = true
+
+[resources.verbs.params.schema]
+description = "Origin"
+type = "string"
+
+[[resources.verbs.params]]
+name = "display_name"
+required = true
+
+[resources.verbs.params.schema]
+description = "Display name"
+type = "string"
+
+[[resources.verbs]]
+description = "Save an account: add it, or replace the one with its id."
+id = "save-account"
+kind = "undoable"
+label = "Save an account: add it, or replace the one with its id"
+
+[[resources.verbs.params]]
+name = "id"
+required = true
+
+[resources.verbs.params.schema]
+description = "The account's id, which its secret is kept under"
+type = "string"
+
+[[resources.verbs.params]]
+name = "type_id"
+required = true
+
+[resources.verbs.params.schema]
+description = "The kind of account, such as email or caldav"
+type = "string"
+
+[[resources.verbs.params]]
+name = "display_name"
+required = true
+
+[resources.verbs.params.schema]
+description = "The name shown for it"
+type = "string"
+
+[[resources.verbs.params]]
+name = "config"
+required = true
+
+[resources.verbs.params.schema]
+description = "Its connection settings, without any secret"
+
+[[resources.verbs.params]]
+name = "enabled"
+required = true
+
+[resources.verbs.params.schema]
+description = "Whether it is in use"
+type = "boolean"
+
+[[resources.verbs.params]]
+name = "tint"
+required = true
+
+[resources.verbs.params.schema]
+description = "Avatar tint"
+maximum = 255
+minimum = 0
+type = "integer"
+
+[[resources.verbs]]
+description = "Publish a reviewed new Signal identity without replacing another account. Names are labels; a configured own ACI requires its existing relinking path. This is public metadata, never a credential or grant. # Errors Refuses malformed identities, duplicate scopes or an occupied account ID."
+id = "publish-signal-account"
+kind = "undoable"
+label = "Publish a reviewed new Signal identity without replacing another"
+
+[[resources.verbs.params]]
+name = "id"
+required = true
+
+[resources.verbs.params.schema]
+description = "Id"
+type = "string"
+
+[[resources.verbs.params]]
+name = "display_name"
+required = true
+
+[resources.verbs.params.schema]
+description = "Display name"
+type = "string"
+
+[[resources.verbs.params]]
+name = "aci"
+required = true
+
+[resources.verbs.params.schema]
+description = "Aci"
+type = "string"
+
+[[resources.verbs.params]]
+name = "generation"
+required = true
+
+[resources.verbs.params.schema]
+description = "Generation"
+minimum = 0
+type = "integer"
+
+[[resources.verbs]]
+description = "Publish a protected native SIM account. The scope is an opaque identity; modem paths, phone numbers and SIM identifiers stay in private custody. # Errors Refuses malformed identities, duplicate accounts or an invalid name/generation."
+id = "publish-sms-account"
+kind = "undoable"
+label = "Publish a protected native SIM account. The scope is an opaque identity;"
+
+[[resources.verbs.params]]
+name = "id"
+required = true
+
+[resources.verbs.params.schema]
+description = "Id"
+type = "string"
+
+[[resources.verbs.params]]
+name = "display_name"
+required = true
+
+[resources.verbs.params.schema]
+description = "Display name"
+type = "string"
+
+[[resources.verbs.params]]
+name = "scope"
+required = true
+
+[resources.verbs.params.schema]
+description = "Scope"
+type = "string"
+
+[[resources.verbs.params]]
+name = "generation"
+required = true
+
+[resources.verbs.params.schema]
+description = "Generation"
+minimum = 0
+type = "integer"
+
+[[resources.verbs]]
+description = "Publish the original personal Tilo sender with an opaque private scope. Neither workspace membership nor a label authorizes this account. # Errors Refuses malformed identities, duplicate accounts or an invalid name/generation."
+id = "publish-tilo-account"
+kind = "undoable"
+label = "Publish the original personal Tilo sender with an opaque private scope"
+
+[[resources.verbs.params]]
+name = "id"
+required = true
+
+[resources.verbs.params.schema]
+description = "Id"
+type = "string"
+
+[[resources.verbs.params]]
+name = "display_name"
+required = true
+
+[resources.verbs.params.schema]
+description = "Display name"
+type = "string"
+
+[[resources.verbs.params]]
+name = "scope"
+required = true
+
+[resources.verbs.params.schema]
+description = "Scope"
+type = "string"
+
+[[resources.verbs.params]]
+name = "generation"
+required = true
+
+[resources.verbs.params.schema]
+description = "Generation"
+minimum = 0
+type = "integer"
+
+[[resources.verbs]]
+description = "Remove account."
+id = "remove-account"
+kind = "undoable"
+label = "Remove account"
+
+[[resources.verbs.params]]
+name = "account"
+required = true
+
+[resources.verbs.params.schema]
+description = "Account"
+type = "string"
+
+[[resources.verbs]]
+description = "Use an account for its type."
+id = "set-active-account"
+kind = "undoable"
+label = "Use an account for its type"
+
+[[resources.verbs.params]]
+name = "account"
+required = true
+
+[resources.verbs.params.schema]
+description = "Account"
 type = "string"

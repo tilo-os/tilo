@@ -11,7 +11,7 @@ use std::collections::BTreeMap;
 
 use chrono::{Datelike, Duration, NaiveDate, NaiveDateTime, NaiveTime};
 use tilo_document::RichText;
-use ui::tilo_resource::{self, Identified, Keyed, Model, Refusal, Set};
+use ui::tilo_resource::{self, Identified, Keyed, Model, Outbox, Refusal, Set};
 use uuid::Uuid;
 use vello::peniko::Color;
 
@@ -765,8 +765,9 @@ impl Task {
 
 /// What a `CalDAV` server last confirmed holding of one event or task: where
 /// it keeps it, its version there and what it holds. An event whose content
-/// differs from what its server holds still has to be uploaded; a copy
-/// whose event is gone still has to be deleted (see [`crate::outbox`]).
+/// differs from what its server holds is queued for upload; a copy whose
+/// event is gone, or on another calendar, is queued for deletion (see
+/// [`crate::outbox`]).
 #[derive(Clone, Debug, Default, PartialEq, Eq, Model)]
 pub struct RemoteCopy {
     /// The remote calendar it is in
@@ -800,6 +801,34 @@ pub struct Calendar {
     /// Where each remote calendar's last pull ended (its sync token)
     #[model(readonly)]
     pub sync_tokens: BTreeMap<String, String>,
+    /// Events whose version here their server does not hold yet
+    pub uploads: Outbox<Upload>,
+    /// Copies servers hold of events gone from their calendar here
+    pub deletes: Outbox<Removal>,
+}
+
+/// An event to upload to the server of its remote calendar: whatever
+/// version it has when the device holding the account sends it.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Model)]
+pub struct Upload {
+    /// The event
+    pub event: Id,
+    /// The remote calendar it is uploaded to
+    pub calendar: String,
+}
+
+/// A copy a server holds of an event no longer on that calendar here, to
+/// delete there.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Model)]
+pub struct Removal {
+    /// The event
+    pub item: Id,
+    /// The remote calendar holding the copy
+    pub calendar: String,
+    /// Where the server keeps it
+    pub href: String,
+    /// The version the server last confirmed (its `ETag`)
+    pub etag: Option<String>,
 }
 
 impl Calendar {

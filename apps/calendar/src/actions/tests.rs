@@ -299,7 +299,7 @@ fn replicated_edits_of_one_event_converge() {
     // A removed attendee stays removed whatever a stale replica answered.
     let mut stale = first.fork();
     first
-        .apply(Invoke::from(fields.attendees.remove(&key(attendee))))
+        .apply_confirmed(Invoke::from(fields.attendees.remove(&key(attendee))))
         .unwrap();
     stale
         .apply(Invoke::from(

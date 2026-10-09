@@ -65,3 +65,5 @@ calendar-calendar-projects = Changed the projects
 calendar-calendar-events = Changed the events
 calendar-calendar-tasks = Changed the tasks
 calendar-calendar-notes = Edited notes
+calendar-calendar-uploads = Recorded how an upload to a calendar server went
+calendar-calendar-deletes = Recorded how a delete on a calendar server went

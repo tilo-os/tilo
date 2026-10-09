@@ -10,10 +10,10 @@
 //! server sent or confirmed.
 //!
 //! A server learns of a change whoever made it — a click, the palette, an
-//! agent, a collaborator, an undo: every device holding the account
-//! compares each remote event with what its server last confirmed
-//! ([`Calendar::remote`]) and uploads or deletes the difference
-//! ([`crate::outbox`]).
+//! agent, a collaborator, an undo: after every change the calendar queues
+//! the upload or delete of what differs from what each server last
+//! confirmed ([`Calendar::remote`]) in its outboxes, which the device
+//! holding the account carries out ([`crate::outbox`]).
 
 use std::rc::Rc;
 
@@ -33,7 +33,9 @@ use uuid::Uuid;
 
 use crate::actions::{EventData, TaskData};
 use crate::app::CalendarApp;
-use crate::model::{Attendee, Calendar, Event, InviteStatus, Palette, Project, RemoteCopy, key};
+use crate::model::{
+    Attendee, Calendar, Event, InviteStatus, Palette, Project, RemoteCopy, Removal, Upload, key,
+};
 
 /// The calendar's Fluent catalogs, source locale first.
 pub const LOCALES: &[(&str, &str)] = &[("en-US", include_str!("../locales/en-US.ftl"))];
@@ -103,6 +105,7 @@ pub(crate) fn fingerprint(event: &Event) -> String {
     search = Calendar::search_entries,
     scopes = Calendar::scopes,
     load = Calendar::load_notes,
+    queue = Calendar::queue,
 )]
 impl Calendar {
     /// New event
@@ -515,7 +518,90 @@ impl Calendar {
     }
 }
 
+/// How many settled uploads and deletes the calendar keeps.
+const SETTLED_KEPT: usize = 64;
+
 impl Calendar {
+    /// After every change, whoever made it: queue the upload of each remote
+    /// event whose server does not hold it as it is now, and the delete of
+    /// each copy a server holds of an event gone from that calendar here;
+    /// forget what no longer needs doing (an event deleted before its
+    /// upload ran, a delete an undo took back).
+    fn queue(&mut self, _before: &Self, cx: &mut ActionCx) {
+        let wanted_uploads: Vec<Upload> = self
+            .events
+            .iter()
+            .filter_map(|event| {
+                let calendar = event.calendar_id.clone()?;
+                match self.remote.get(&event.id.to_string()) {
+                    // Still on the calendar it left: deleted there first.
+                    Some(copy) if copy.calendar != calendar => None,
+                    Some(copy) if copy.holds == fingerprint(event) => None,
+                    _ => Some(Upload {
+                        event: event.id,
+                        calendar,
+                    }),
+                }
+            })
+            .collect();
+        let wanted_deletes: Vec<Removal> = self
+            .remote
+            .iter()
+            .filter(|(_, copy)| !copy.task)
+            .filter_map(|(id, copy)| {
+                let item = id.parse().ok()?;
+                let kept = self.event(item).is_some_and(|event| {
+                    event.calendar_id.as_deref() == Some(copy.calendar.as_str())
+                });
+                (!kept).then(|| Removal {
+                    item,
+                    calendar: copy.calendar.clone(),
+                    href: copy.href.clone(),
+                    etag: copy.etag.clone(),
+                })
+            })
+            .collect();
+
+        let stale: Vec<Id> = self
+            .uploads
+            .pending()
+            .filter(|(_, upload)| !wanted_uploads.contains(upload))
+            .map(|(id, _)| id.clone())
+            .collect();
+        for id in stale {
+            self.uploads.forget(&id);
+        }
+        for upload in wanted_uploads {
+            if !self.uploads.pending().any(|(_, queued)| *queued == upload) {
+                self.uploads.push(cx.id(), upload);
+            }
+        }
+        let stale: Vec<Id> = self
+            .deletes
+            .pending()
+            .filter(|(_, removal)| {
+                !wanted_deletes
+                    .iter()
+                    .any(|wanted| wanted.item == removal.item)
+            })
+            .map(|(id, _)| id.clone())
+            .collect();
+        for id in stale {
+            self.deletes.forget(&id);
+        }
+        for removal in wanted_deletes {
+            if !self
+                .deletes
+                .pending()
+                .any(|(_, queued)| queued.item == removal.item)
+            {
+                self.deletes.push(cx.id(), removal);
+            }
+        }
+        self.uploads.prune(SETTLED_KEPT);
+        self.deletes.prune(SETTLED_KEPT);
+    }
+
     /// Refuse a project the calendar does not hold.
     fn project_exists(&self, project: Option<crate::model::Id>) -> Result<(), Refusal> {
         match project {
