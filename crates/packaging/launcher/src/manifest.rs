@@ -114,6 +114,7 @@ struct RawManifest {
     continuity: ContinuityContract,
 }
 
+pub use tilo_app_package::continuity_schema;
 pub use tilo_app_package::manifest::{
     ContinuityContract, ContinuityFacet, ContinuitySemanticSchema,
 };

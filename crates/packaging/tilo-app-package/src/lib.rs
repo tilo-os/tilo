@@ -50,6 +50,7 @@
 
 pub mod blobs;
 pub mod chunks;
+pub mod continuity_schema;
 pub mod desktop;
 pub mod id;
 pub mod image;
