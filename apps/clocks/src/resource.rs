@@ -83,6 +83,7 @@ impl ResourceApp for ClocksShell {
     const ARGUMENTS: usize = 1;
 
     fn view(cx: &mut ViewCx<Clocks>) -> Element {
+        crate::locales::install();
         let controls = Controls {
             actions: cx.actions(),
             dispatcher: cx.dispatcher(),

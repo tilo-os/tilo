@@ -33,6 +33,7 @@ thin = ["dep:runtime-dylib"]
 workspace = true
 
 [dev-dependencies]
+tilo-history = { path = "../../crates/sdk/tilo-history" }
 tilo-test-env = { path = "../../crates/dev/test-env" }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 

@@ -6,6 +6,7 @@
 //! has already rung) stays in that device's settings ([`OnThisDevice`]).
 
 pub mod app;
+pub mod locales;
 pub mod model;
 mod native_timers;
 pub mod resource;

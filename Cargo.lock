@@ -2135,6 +2135,7 @@ dependencies = [
  "serde_json",
  "taffy",
  "tilo-app",
+ "tilo-history",
  "tilo-test-env",
  "tilo-vello",
  "tilo-winit",
