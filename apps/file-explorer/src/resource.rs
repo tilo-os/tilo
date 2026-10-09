@@ -860,7 +860,7 @@ mod tests {
             "refresh",
             "paste",
             "go-to",
-            "open",
+            "open-folder",
             "list",
             "grid",
             "sort-name",

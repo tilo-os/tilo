@@ -107,7 +107,7 @@ fn agents_edit_the_bytes_through_the_published_actions() {
         ("insert-byte", "Document"),
         ("overwrite-byte", "Document"),
         ("delete-byte", "Document"),
-        ("open", "Effect"),
+        ("open-file", "Effect"),
         ("save", "Effect"),
         ("save-as", "Effect"),
         ("search", "View"),
@@ -175,7 +175,8 @@ fn opening_a_file_replaces_the_buffer_and_the_chooser_answers_the_effect() {
     assert!(app.effect(&HexEffect::Save).is_err(), "nothing to save yet");
 
     let (_directory, path) = file("named.bin", b"HELLO-HEX");
-    app.effect(&HexEffect::Open { path: Some(path) }).unwrap();
+    app.effect(&HexEffect::OpenFile { path: Some(path) })
+        .unwrap();
     app.settle();
     assert_eq!(app.state().name(), Some("named.bin"));
     assert_eq!(app.state().bytes, b"HELLO-HEX");

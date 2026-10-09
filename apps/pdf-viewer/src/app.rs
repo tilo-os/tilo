@@ -6105,7 +6105,7 @@ impl PdfApp {
                 index,
                 page,
             } => self.go_to_search_result(query, *whole_word, *case_sensitive, *index, *page),
-            PdfEffect::Open { .. } | PdfEffect::SaveAs { .. } => return false,
+            PdfEffect::OpenPdf { .. } | PdfEffect::SaveAs { .. } => return false,
         }
         true
     }
@@ -6145,7 +6145,7 @@ impl PdfApp {
                 }),
             );
         }
-        self.answer_effect(&PdfEffect::Open { path: None }, || cx.reply())
+        self.answer_effect(&PdfEffect::OpenPdf { path: None }, || cx.reply())
     }
 
     /// Ask the host to show the PDF at `path` on its own markup record in
@@ -6200,7 +6200,7 @@ impl PdfApp {
         if self.show(effect) {
             return Ok(Effected::done());
         }
-        let opening = matches!(effect, PdfEffect::Open { .. });
+        let opening = matches!(effect, PdfEffect::OpenPdf { .. });
         if opening && (self.portal_action.is_some() || self.pending_open.is_some()) {
             return Err("another PDF open is already in progress".into());
         }
@@ -6217,7 +6217,7 @@ impl PdfApp {
                     return Ok(Effected::done());
                 }
             }
-            PdfEffect::Open { path: None } => {
+            PdfEffect::OpenPdf { path: None } => {
                 self.request_open_via_portal();
                 if self.portal_contents_rx.is_none() {
                     return Err("PDF picker could not be started".into());
@@ -6351,7 +6351,7 @@ mod tests {
 
         eprintln!("phase the_apps_open_shows_the_chosen_document_on_its_own_record");
         {
-            let open = |path: &std::path::Path| PdfEffect::Open {
+            let open = |path: &std::path::Path| PdfEffect::OpenPdf {
                 path: Some(path.display().to_string()),
             };
             let (_dir, a, b) = two_documents();

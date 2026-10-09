@@ -335,7 +335,7 @@ mod tests {
                 "{id} edits the file"
             );
         }
-        for id in ["open", "save"] {
+        for id in ["show-file", "save"] {
             assert!(
                 file.actions
                     .iter()
@@ -357,7 +357,7 @@ mod tests {
             .app
             .call_on(
                 &crate::actions::file_resource_id(&prime),
-                "open",
+                "show-file",
                 serde_json::json!({}),
             )
             .unwrap();
@@ -444,7 +444,7 @@ mod tests {
         let readme = file_id(&state, "ferris-cli/README.md");
         sample
             .app
-            .effect(&CodeEditorEffect::Open {
+            .effect(&CodeEditorEffect::ShowFile {
                 file: readme.clone(),
             })
             .unwrap();

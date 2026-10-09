@@ -168,7 +168,7 @@ pub enum StoreEffect {
     ///
     /// A Tilo app is fetched when it is not on this device yet.
     #[effect(job)]
-    Open {
+    OpenApp {
         #[param("App identity")]
         app: String,
     },
@@ -292,7 +292,7 @@ impl StoreEffect {
     /// The effect that carries out `action` on `app`.
     pub fn package(action: ActionKind, app: String) -> Self {
         match action {
-            ActionKind::Open => Self::Open { app },
+            ActionKind::Open => Self::OpenApp { app },
             ActionKind::Update => Self::Update { app },
             ActionKind::Remove => Self::Remove { app },
             ActionKind::MarkInstalled => Self::Pin { app },
@@ -309,7 +309,7 @@ impl StoreEffect {
     /// one.
     pub fn as_package(&self) -> Option<(&str, ActionKind)> {
         let (app, action) = match self {
-            Self::Open { app } => (app, ActionKind::Open),
+            Self::OpenApp { app } => (app, ActionKind::Open),
             Self::Update { app } => (app, ActionKind::Update),
             Self::Remove { app } => (app, ActionKind::Remove),
             Self::Pin { app } => (app, ActionKind::MarkInstalled),

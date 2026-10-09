@@ -3293,7 +3293,9 @@ impl SlidesApp {
             SlidesEffect::InsertPicture => return Ok(Self::choose_picture(cx)),
             SlidesEffect::OpenPresentation { path } => return Ok(self.open_presentation(path, cx)),
             SlidesEffect::SaveAs { path } => return self.save_presentation(path, cx),
-            SlidesEffect::Read => return Ok(Effected::value(crate::outline::of_deck(&self.deck))),
+            SlidesEffect::ReadDeck => {
+                return Ok(Effected::value(crate::outline::of_deck(&self.deck)));
+            }
         }
         Ok(Effected::done())
     }

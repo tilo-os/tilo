@@ -16,7 +16,7 @@ type = "Vec<u64>"
 
 [[resources.verbs]]
 description = "Open a row."
-id = "open"
+id = "open-row"
 kind = "undoable"
 label = "Open a row"
 

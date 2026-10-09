@@ -810,7 +810,7 @@ impl HexView {
         self.empty.handle_event(event, ctx);
         self.dirty = true;
         if self.empty.take_action() {
-            self.invoke(&HexEffect::Open { path: None });
+            self.invoke(&HexEffect::OpenFile { path: None });
             *ctx.handled = true;
         }
         if let WindowEvent::KeyboardInput { event: key, .. } = event
@@ -1117,7 +1117,7 @@ impl Widget for HexView {
         }
         if matches!(action, ui::a11y::Action::Activate) {
             match target {
-                "hex.open" => self.invoke(&HexEffect::Open { path: None }),
+                "hex.open" => self.invoke(&HexEffect::OpenFile { path: None }),
                 "hex.inspector" if self.has_file => self.toggle_inspector(),
                 _ => return false,
             }
@@ -1196,11 +1196,11 @@ impl ResourceSurface<HexEditor, HexEffect> for HexView {
         }
         match effect {
             HexEffect::Search | HexEffect::GotoOffset => Ok(Effected::done()),
-            HexEffect::Open { path: Some(path) } => {
+            HexEffect::OpenFile { path: Some(path) } => {
                 self.open_path(PathBuf::from(path))?;
                 Ok(Effected::done())
             }
-            HexEffect::Open { path: None } => {
+            HexEffect::OpenFile { path: None } => {
                 self.begin_open(cx.reply());
                 Ok(Effected::Pending)
             }
@@ -1305,7 +1305,7 @@ impl HexView {
             && let Key::Character(c) = key
             && c.eq_ignore_ascii_case("o")
         {
-            self.invoke(&HexEffect::Open { path: None });
+            self.invoke(&HexEffect::OpenFile { path: None });
             *handled = true;
         }
     }
@@ -1329,7 +1329,7 @@ impl HexView {
             return false;
         }
         match c.as_str() {
-            "o" | "O" => self.invoke(&HexEffect::Open { path: None }),
+            "o" | "O" => self.invoke(&HexEffect::OpenFile { path: None }),
             "s" | "S" => self.invoke(&HexEffect::Save),
             "f" | "F" => self.open_panel(HexPanel::Search),
             "g" | "G" => self.open_panel(HexPanel::GotoOffset),

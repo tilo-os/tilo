@@ -8,7 +8,7 @@
 //! (20,000 lines of a build log: 3.1 million operations and 403 versions,
 //! 27 times the emulator's own work). Another device reaches a running
 //! session by re-attaching to it on its relay; agents read the screen
-//! through the view that runs it ([`TerminalEffect::Read`]).
+//! through the view that runs it ([`TerminalEffect::ReadScreen`]).
 
 use automerge::ObjId;
 use ui::framework::{
@@ -482,7 +482,7 @@ pub enum TerminalEffect {
     /// Inspect session
     ///
     /// Read this participant's actual process lifecycle and startup cause.
-    /// What the session shows is read with [`Self::Read`].
+    /// What the session shows is read with [`Self::ReadScreen`].
     #[effect(returns, kind = "read")]
     InspectSession,
     /// Read output
@@ -490,7 +490,7 @@ pub enum TerminalEffect {
     /// Read what the session shows: its output (the newest 64 KiB of the
     /// screen and scrollback), title, cursor and where it runs.
     #[effect(returns, kind = "read")]
-    Read,
+    ReadScreen,
     /// Inspect editable field
     ///
     /// Participant-private native editor metadata; never the surrounding buffer.
@@ -768,7 +768,7 @@ impl ResourceSurface<Terminal, TerminalEffect> for TerminalWidget {
     ) -> EffectAnswer {
         match effect {
             TerminalEffect::InspectSession => Ok(Effected::value(self.inspect_session())),
-            TerminalEffect::Read => Ok(Effected::value(self.read_session())),
+            TerminalEffect::ReadScreen => Ok(Effected::value(self.read_session())),
             TerminalEffect::InspectEditor => Ok(Effected::value(self.inspect_editor())),
             TerminalEffect::ReplaceEditorSelection {
                 session,
@@ -850,7 +850,7 @@ impl ResourceSurface<Terminal, TerminalEffect> for crate::TerminalView {
     ) -> EffectAnswer {
         match effect {
             TerminalEffect::InspectSession => Ok(Effected::value(self.inspect_session())),
-            TerminalEffect::Read => Ok(Effected::value(self.read_session())),
+            TerminalEffect::ReadScreen => Ok(Effected::value(self.read_session())),
             TerminalEffect::InspectEditor => {
                 Ok(Effected::value(self.terminal_mut().inspect_editor()))
             }

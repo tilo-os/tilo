@@ -25,7 +25,7 @@ use crate::model::{Connection, ConnectionId};
 pub enum RemoteEffect {
     /// Show connections.
     #[effect(view, idempotent)]
-    Open,
+    ShowConnections,
     /// New connection.
     #[effect(view)]
     New,

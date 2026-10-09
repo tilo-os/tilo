@@ -158,7 +158,7 @@ fn a_window_edits_one_document_that_open_replaces() {
     );
 
     let (_dir, path) = typ_file("other.typ", "= Other\n");
-    app.effect_confirmed(&crate::actions::TypstEffect::Open {
+    app.effect_confirmed(&crate::actions::TypstEffect::OpenFile {
         path: Some(path.clone()),
     })
     .unwrap();

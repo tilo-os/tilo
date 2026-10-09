@@ -22,7 +22,7 @@ fn read_reports_the_live_screen_and_where_the_session_runs() {
         .expect("recorded target");
     feed(&mut app, b"\x1b]2;build\x07recorded output\r\n");
     let read = app
-        .call("read", serde_json::json!({}))
+        .call("read-screen", serde_json::json!({}))
         .expect("read is published")
         .expect("read answers with what the session shows");
     assert!(read["output"].as_str().unwrap().contains("recorded output"));

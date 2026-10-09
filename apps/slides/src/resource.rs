@@ -319,7 +319,7 @@ mod tests {
             "end-presentation",
             "open-presentation",
             "save-as",
-            "read",
+            "read-deck",
         ] {
             assert!(
                 on("slides.deck", effect),

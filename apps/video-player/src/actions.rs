@@ -30,7 +30,7 @@ pub enum VideoEffect {
     /// Opens a video file or stream on this device and answers once its
     /// first picture has decoded.
     #[effect(job, kind = "read", device_only)]
-    Open {
+    OpenVideo {
         #[param(
             "A video's path or stream URL on this device; omit to choose with the file picker"
         )]

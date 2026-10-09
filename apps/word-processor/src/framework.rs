@@ -258,7 +258,7 @@ mod tests {
             .collect();
         for id in [
             "find",
-            "open",
+            "open-document",
             "save",
             "save-as",
             "zoom-in",

@@ -5297,7 +5297,7 @@ impl VideoEditorApp {
                 self.bin_flap.open();
             }
             VideoEditorEffect::Import { path: None } => self.trigger_import(),
-            VideoEditorEffect::Open { path: None } => self.request_open_project(),
+            VideoEditorEffect::OpenProject { path: None } => self.request_open_project(),
             VideoEditorEffect::Save { path: None } => self.queue_save_project(),
             VideoEditorEffect::SaveAs { path: None } => self.request_save_as(),
             VideoEditorEffect::Export { path: None } => self.request_export(),
@@ -5307,7 +5307,7 @@ impl VideoEditorApp {
             VideoEditorEffect::Export { path: Some(path) } => {
                 self.begin_export_to(PathBuf::from(path));
             }
-            VideoEditorEffect::Open { path: Some(_) }
+            VideoEditorEffect::OpenProject { path: Some(_) }
             | VideoEditorEffect::Save { path: Some(_) }
             | VideoEditorEffect::SaveAs { path: Some(_) } => {
                 return Err("direct project I/O requires lifecycle dispatch".into());
@@ -5348,7 +5348,7 @@ impl VideoEditorApp {
                     }
                 })
             }
-            VideoEditorEffect::Open { .. }
+            VideoEditorEffect::OpenProject { .. }
             | VideoEditorEffect::Save { .. }
             | VideoEditorEffect::SaveAs { .. }
                 if self.project_rx.is_none()
@@ -6282,7 +6282,7 @@ impl Widget for VideoEditorApp {
         if let Some(operation) = self.resource_pending_operation.take() {
             use crate::actions::VideoEditorEffect;
             match &operation {
-                VideoEditorEffect::Open { path: Some(path) } => {
+                VideoEditorEffect::OpenProject { path: Some(path) } => {
                     self.begin_open(PathBuf::from(path));
                 }
                 VideoEditorEffect::Save { path: Some(path) }
@@ -7622,7 +7622,7 @@ impl VideoEditorApp {
                 self.perform_resource_operation(effect)?;
                 return Ok(ui::framework::Effected::done());
             }
-            VideoEditorEffect::Open { path: Some(_) }
+            VideoEditorEffect::OpenProject { path: Some(_) }
             | VideoEditorEffect::Save { path: Some(_) }
             | VideoEditorEffect::SaveAs { path: Some(_) } => {
                 self.resource_pending_operation = Some(effect.clone());

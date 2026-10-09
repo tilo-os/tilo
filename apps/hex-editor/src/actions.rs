@@ -33,7 +33,7 @@ pub fn parse_bytes(text: &str) -> Result<Vec<u8>, String> {
 pub enum HexEffect {
     /// Open a file.
     #[effect(job, cancellable, label = "Open file")]
-    Open {
+    OpenFile {
         #[param("file to open; omit to use the system file picker")]
         path: Option<String>,
     },
@@ -109,7 +109,10 @@ mod tests {
     fn effects_and_views_are_published_with_their_contracts() {
         let specs = HexEffect::specs();
         let ids: Vec<&str> = specs.iter().map(|spec| spec.id.as_str()).collect();
-        assert_eq!(ids, ["open", "save", "save-as", "search", "goto-offset"]);
+        assert_eq!(
+            ids,
+            ["open-file", "save", "save-as", "search", "goto-offset"]
+        );
         for spec in &specs[..3] {
             assert_eq!(spec.kind, OperationKind::Effect);
         }

@@ -922,7 +922,7 @@ impl ResourceSurface<PdfMarkup, PdfEffect> for PdfApp {
 
     fn effect(&mut self, effect: PdfEffect, cx: &mut EffectCx<PdfMarkup, Self>) -> EffectAnswer {
         match effect {
-            PdfEffect::Open { path } => self.open_effect(path, cx),
+            PdfEffect::OpenPdf { path } => self.open_effect(path, cx),
             effect => self.answer_effect(&effect, || cx.reply()),
         }
     }

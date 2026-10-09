@@ -93,5 +93,5 @@ pub enum SlidesEffect {
     /// (# line), body and other elements each ending in its {#id}, then its
     /// speaker notes.
     #[effect(returns, kind = "read")]
-    Read,
+    ReadDeck,
 }

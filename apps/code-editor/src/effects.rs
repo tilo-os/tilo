@@ -15,7 +15,7 @@ use crate::commands::Command;
 pub enum CodeEditorEffect {
     /// Open file.
     #[effect(kind = "read")]
-    Open {
+    ShowFile {
         #[param("The file record's id")]
         file: String,
     },
@@ -127,7 +127,7 @@ impl CodeEditorEffect {
     pub fn command(&self) -> Option<Command> {
         Some(match self {
             Self::ReadText { .. }
-            | Self::Open { .. }
+            | Self::ShowFile { .. }
             | Self::Reveal { .. }
             | Self::OpenFile { path: Some(_) }
             | Self::OpenFolder { path: Some(_) }

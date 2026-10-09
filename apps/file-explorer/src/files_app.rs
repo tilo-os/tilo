@@ -2022,7 +2022,7 @@ impl FileExplorerWidget {
                 self.paste()?;
                 None
             }
-            FilesEffect::GoTo { path } | FilesEffect::Open { path } => {
+            FilesEffect::GoTo { path } | FilesEffect::OpenFolder { path } => {
                 let path = PathBuf::from(path);
                 if !path.is_absolute() {
                     return Err(format!("{} is not an absolute path", path.display()));

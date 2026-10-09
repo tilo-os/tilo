@@ -69,7 +69,7 @@ impl Totp {
                 SearchEntry::new(account.title(), account.label.clone())
                     .invoking(ActionAddress::new(
                         id.clone(),
-                        TotpEffect::Open {
+                        TotpEffect::OpenAccount {
                             account: account.id.to_string(),
                         }
                         .id(),
@@ -136,7 +136,7 @@ pub enum TotpEffect {
     AddAccount,
     /// Open account.
     #[effect(kind = "read")]
-    Open {
+    OpenAccount {
         #[param("Id of the account")]
         account: String,
     },
@@ -362,7 +362,7 @@ impl AuthenticatorApp {
             account_label(account),
         )
         .operation(
-            TotpEffect::Open {
+            TotpEffect::OpenAccount {
                 account: id.clone(),
             }
             .bound(),
@@ -538,7 +538,13 @@ mod tests {
             .iter()
             .map(|action| action.id.as_str())
             .collect();
-        for want in ["move-up", "move-down", "delete", "open", "copy-code"] {
+        for want in [
+            "move-up",
+            "move-down",
+            "delete",
+            "open-account",
+            "copy-code",
+        ] {
             assert!(ids.contains(&want), "account offers {want}: {ids:?}");
         }
         assert!(!ids.contains(&"set-up-local"), "it is set up here");

@@ -81,7 +81,7 @@ pub enum FilesEffect {
     /// Shows the folder at this absolute path, as go-to does; answers with
     /// its resource and entries.
     #[effect(view, returns)]
-    Open {
+    OpenFolder {
         #[param("Absolute path of the folder to show")]
         path: String,
     },

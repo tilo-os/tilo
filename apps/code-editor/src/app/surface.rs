@@ -52,7 +52,7 @@ impl CodeApp {
             return self.answer_command(command, cx);
         }
         match effect {
-            CodeEditorEffect::Open { file } => {
+            CodeEditorEffect::ShowFile { file } => {
                 let node = self.file_node(&file)?;
                 self.open_node(node);
             }
@@ -323,7 +323,7 @@ impl CodeApp {
             crate::actions::FILE_KIND,
             item.name.clone(),
         )
-        .effect(&CodeEditorEffect::Open {
+        .effect(&CodeEditorEffect::ShowFile {
             file: item.resource_id.clone(),
         })
         .operation(

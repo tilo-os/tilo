@@ -1878,7 +1878,7 @@ mod command_path_tests {
             }
         };
 
-        let opened = show("open", &downloads).unwrap();
+        let opened = show("open-folder", &downloads).unwrap();
         assert_eq!(
             opened["resource"],
             <crate::resource::FileExplorer as ui::tilo_resource::Resource>::KIND

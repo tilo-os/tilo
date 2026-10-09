@@ -149,7 +149,7 @@ pub enum PdfEffect {
     ///
     /// Opens a PDF on its own markup record, in this window.
     #[effect(job, cancellable, destructive, device_only)]
-    Open {
+    OpenPdf {
         #[param("Filesystem path; omit to use the system picker")]
         path: Option<String>,
     },

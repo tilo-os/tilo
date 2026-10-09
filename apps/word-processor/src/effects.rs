@@ -26,7 +26,7 @@ pub enum WordProcessorEffect {
     ///
     /// Replaces the document with a file's content; Undo takes it back.
     #[effect(job, destructive, device_only)]
-    Open {
+    OpenDocument {
         #[param("Direct filesystem path; omit to choose one")]
         path: Option<String>,
     },

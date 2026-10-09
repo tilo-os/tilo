@@ -136,7 +136,7 @@ fn build_toolbar(
         )
         .push_button("Open", command(queue, Command::Open))
         .with_optional_action(
-            actions.and_then(|actions| actions.effect(&TypstEffect::Open { path: None })),
+            actions.and_then(|actions| actions.effect(&TypstEffect::OpenFile { path: None })),
         )
         .push_button("Export PDF", command(queue, Command::ExportPdf))
         .with_optional_action(

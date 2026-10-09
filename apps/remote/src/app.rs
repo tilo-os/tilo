@@ -2272,7 +2272,7 @@ impl RemoteApp {
         use crate::actions::RemoteEffect;
         let done = || Ok(ui::framework::Effected::done());
         match effect {
-            RemoteEffect::Open => {
+            RemoteEffect::ShowConnections => {
                 self.apply(Action::Show(Destination::Connections));
                 done()
             }

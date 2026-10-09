@@ -180,7 +180,10 @@ fn open_save_as_and_read_reach_the_files_named() {
         "a .pptx path writes PowerPoint"
     );
 
-    let read = bench.app.effect(&SlidesEffect::Read).expect("read answers");
+    let read = bench
+        .app
+        .effect(&SlidesEffect::ReadDeck)
+        .expect("read answers");
     let outline = read
         .value
         .and_then(|value| value.as_str().map(str::to_owned));

@@ -16,7 +16,7 @@ type = "Vec<u64>"
 
 [[resources.verbs]]
 description = "Open an activity."
-id = "open"
+id = "open-activity"
 kind = "undoable"
 label = "Open an activity"
 

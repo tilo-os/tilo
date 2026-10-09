@@ -9985,7 +9985,7 @@ impl WordProcessorWidget {
         }
         // Ctrl+O opens a document in place of the current one.
         if s.eq_ignore_ascii_case("o") {
-            self.invoke_effect(&WordProcessorEffect::Open { path: None });
+            self.invoke_effect(&WordProcessorEffect::OpenDocument { path: None });
             *handled = true;
             return;
         }
@@ -10125,10 +10125,10 @@ impl WordProcessorWidget {
             return Ok(Effected::done());
         }
         match effect {
-            WordProcessorEffect::Open { path: Some(path) } => {
+            WordProcessorEffect::OpenDocument { path: Some(path) } => {
                 self.open_in_place(cx, std::path::Path::new(&path))?;
             }
-            WordProcessorEffect::Open { path: None } => {
+            WordProcessorEffect::OpenDocument { path: None } => {
                 return Ok(
                     cx.choose_path(open_request(), |editor, path, cx| match path {
                         Some(path) => {

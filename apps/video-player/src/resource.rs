@@ -203,7 +203,7 @@ mod tests {
         );
         let missing = std::env::temp_dir().join("tilo-video-player-missing.mp4");
         let error = app
-            .effect(&VideoEffect::Open {
+            .effect(&VideoEffect::OpenVideo {
                 path: Some(missing.display().to_string()),
             })
             .expect_err("a missing file does not open");
@@ -214,7 +214,7 @@ mod tests {
     fn opening_a_video_answers_once_its_first_picture_decodes() {
         let sample = std::path::Path::new(env!("OUT_DIR")).join("h264-aac.mp4");
         let mut app = TestApp::<VideoPlayerShell>::new().unwrap();
-        app.effect(&VideoEffect::Open {
+        app.effect(&VideoEffect::OpenVideo {
             path: Some(sample.display().to_string()),
         })
         .expect("the video opens");
@@ -259,7 +259,7 @@ mod tests {
     fn everyone_with_the_video_open_watches_it_together() {
         let sample = std::path::Path::new(env!("OUT_DIR")).join("h264-aac.mp4");
         let mut app = TestApp::<VideoPlayerShell>::new().unwrap();
-        app.effect(&VideoEffect::Open {
+        app.effect(&VideoEffect::OpenVideo {
             path: Some(sample.display().to_string()),
         })
         .expect("the video opens");
@@ -307,7 +307,7 @@ mod tests {
     fn an_agent_works_the_shared_library_one_call_each() {
         let sample = std::path::Path::new(env!("OUT_DIR")).join("h264-aac.mp4");
         let mut app = TestApp::<VideoPlayerShell>::new().unwrap();
-        app.effect(&VideoEffect::Open {
+        app.effect(&VideoEffect::OpenVideo {
             path: Some(sample.display().to_string()),
         })
         .expect("the video opens");

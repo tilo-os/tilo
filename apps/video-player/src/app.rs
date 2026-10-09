@@ -1565,7 +1565,7 @@ impl PlayerApp {
     }
 
     fn request_open_action(&self) {
-        self.request(&VideoEffect::Open { path: None });
+        self.request(&VideoEffect::OpenVideo { path: None });
     }
 
     fn request_library_play(&self, item_id: &str) {
@@ -1813,11 +1813,11 @@ impl PlayerApp {
             return Err("open a video before using this playback control".into());
         }
         match effect {
-            VideoEffect::Open { path: None } => {
+            VideoEffect::OpenVideo { path: None } => {
                 self.trigger_open(Some(cx.reply()))?;
                 Ok(Effected::Pending)
             }
-            VideoEffect::Open { path: Some(path) } => {
+            VideoEffect::OpenVideo { path: Some(path) } => {
                 self.open_named(&path)?;
                 self.await_open_frame(cx.reply());
                 Ok(Effected::Pending)
@@ -1905,8 +1905,8 @@ impl PlayerApp {
                 }
                 ui::portal::open_uri_detached("settings://updates");
             }
-            VideoEffect::Open { path: Some(path) } => self.open_named(&path)?,
-            VideoEffect::Open { path: None } => self.trigger_open(None)?,
+            VideoEffect::OpenVideo { path: Some(path) } => self.open_named(&path)?,
+            VideoEffect::OpenVideo { path: None } => self.trigger_open(None)?,
             VideoEffect::PlayQueued { item } => self.open_local_entry(&item)?,
             VideoEffect::RemoveQueued { item } => self.remove_queue_entry(&item)?,
             VideoEffect::ClearRecent => self.clear_recent_history()?,

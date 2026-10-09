@@ -40,7 +40,7 @@ fn the_surface_publishes_find_hits_beside_the_resource_never_a_document_root() {
         "zoom-out",
         "fit-page",
         "find",
-        "open",
+        "open-pdf",
         "save-as",
     ] {
         assert!(
@@ -55,7 +55,7 @@ fn the_surface_publishes_find_hits_beside_the_resource_never_a_document_root() {
             .map(|action| action.kind)
     };
     assert_eq!(kind("find"), Some(OperationKind::View));
-    assert_eq!(kind("open"), Some(OperationKind::Effect));
+    assert_eq!(kind("open-pdf"), Some(OperationKind::Effect));
     assert!(
         !ids.contains(&"go-to") && !ids.contains(&"go-to-match"),
         "navigation to a place is offered only bound to its row: {ids:?}"

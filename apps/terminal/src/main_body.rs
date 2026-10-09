@@ -2288,7 +2288,7 @@ impl TerminalWidget {
             return Err("agents may not send input to the device's own shell".into());
         }
         match effect {
-            E::InspectSession | E::Read => {
+            E::InspectSession | E::ReadScreen => {
                 return Err(
                     "inspecting and reading the session are answered by the resource's read-only handler".into(),
                 );

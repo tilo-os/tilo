@@ -1008,7 +1008,10 @@ fn published_read_follows_actual_pty_output_into_the_shared_session() {
     let mut observed = false;
     while std::time::Instant::now() < deadline {
         app.settle();
-        let read = app.call("read", serde_json::json!({})).unwrap().unwrap();
+        let read = app
+            .call("read-screen", serde_json::json!({}))
+            .unwrap()
+            .unwrap();
         let output = read["output"].as_str().unwrap();
         assert_eq!(read["session"], session);
         let lines: Vec<_> = output.lines().collect();

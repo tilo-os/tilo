@@ -59,7 +59,7 @@ pub enum VideoEditorEffect {
     },
     /// Open project.
     #[effect(job, device_only)]
-    Open {
+    OpenProject {
         #[param("Direct filesystem path; omit to use the system picker")]
         path: Option<String>,
     },

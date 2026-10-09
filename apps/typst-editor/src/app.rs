@@ -704,7 +704,7 @@ impl TypstApp {
         let effect = match command {
             Command::Compile => TypstEffect::Compile,
             Command::Save => TypstEffect::Save { path: None },
-            Command::Open => TypstEffect::Open { path: None },
+            Command::Open => TypstEffect::OpenFile { path: None },
             Command::ExportPdf => TypstEffect::ExportPdf { path: None },
             Command::ZoomOut => TypstEffect::ZoomOut,
             Command::ZoomIn => TypstEffect::ZoomIn,
@@ -731,7 +731,7 @@ impl TypstApp {
             TypstEffect::Save { .. } => {
                 let _ = self.save();
             }
-            TypstEffect::Open { .. } => self.open(),
+            TypstEffect::OpenFile { .. } => self.open(),
             TypstEffect::ExportPdf { .. } => self.export_pdf(),
             TypstEffect::ZoomOut => self.preview.zoom_out(),
             TypstEffect::ZoomIn => self.preview.zoom_in(),
@@ -1453,13 +1453,13 @@ impl TypstApp {
         use crate::actions::TypstEffect;
         let file = matches!(
             effect,
-            TypstEffect::Open { .. } | TypstEffect::Save { .. } | TypstEffect::ExportPdf { .. }
+            TypstEffect::OpenFile { .. } | TypstEffect::Save { .. } | TypstEffect::ExportPdf { .. }
         );
         if file && (self.file_reply.is_some() || self.pending_resource_io.is_some()) {
             return Err("another file operation is already running".into());
         }
         match effect {
-            TypstEffect::Open { path: Some(path) } => {
+            TypstEffect::OpenFile { path: Some(path) } => {
                 self.pending_resource_io = Some(ResourceIo::Open(path.into()));
             }
             TypstEffect::Save { path: Some(path) } => {
@@ -1468,7 +1468,7 @@ impl TypstApp {
             TypstEffect::ExportPdf { path: Some(path) } => {
                 self.pending_resource_io = Some(ResourceIo::ExportPdf(path.into()));
             }
-            TypstEffect::Open { path: None } => self.open(),
+            TypstEffect::OpenFile { path: None } => self.open(),
             TypstEffect::Save { path: None } => {
                 if self.save()? {
                     return Ok(ui::framework::Effected::done());

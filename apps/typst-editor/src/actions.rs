@@ -29,7 +29,7 @@ pub enum TypstEffect {
     },
     /// Open Typst file.
     #[effect(job, cancellable, destructive)]
-    Open {
+    OpenFile {
         #[param("Path of the file; omit to choose one")]
         path: Option<String>,
     },
@@ -169,7 +169,7 @@ mod tests {
     #[test]
     fn file_effects_take_a_path_and_keep_job_confirmation_contracts() {
         let specs = TypstEffect::specs();
-        for id in ["open", "save", "export-pdf"] {
+        for id in ["open-file", "save", "export-pdf"] {
             let spec = specs.iter().find(|spec| spec.id == id).unwrap();
             assert_eq!(spec.params()[0].name, "path");
             assert!(matches!(

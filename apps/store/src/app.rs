@@ -1774,7 +1774,7 @@ impl StoreApp {
                 let item = self.items.iter().find(|item| item.id == report.app_id);
                 return Ok(Admitted::Export(report_envelope(&report, item)));
             }
-            StoreEffect::Open { .. }
+            StoreEffect::OpenApp { .. }
             | StoreEffect::Update { .. }
             | StoreEffect::Remove { .. }
             | StoreEffect::Pin { .. }
@@ -3785,12 +3785,12 @@ mod tests {
         let open = row
             .actions
             .iter()
-            .find(|action| action.id == "open")
+            .find(|action| action.id == "open-app")
             .unwrap();
         assert!(
             matches!(&open.contract.availability, ui::tilo_actions::Availability::Unavailable { code, .. } if code == "device_version_unavailable")
         );
-        assert!(app.admit(StoreEffect::Open { app: id }).is_err());
+        assert!(app.admit(StoreEffect::OpenApp { app: id }).is_err());
     }
 
     #[test]
@@ -4534,7 +4534,10 @@ mod tests {
                     if busy {
                         assert!(invoked.is_none());
                     } else {
-                        assert_eq!(invoked.unwrap().address.action, action_code(action));
+                        assert_eq!(
+                            invoked.unwrap().address.action,
+                            crate::resource::StoreEffect::package(action, String::new()).id()
+                        );
                     }
                 }
             }
@@ -4780,7 +4783,7 @@ mod tests {
         // Case `app_operation_locks_the_target_card_until_it_finishes`.
         {
             let mut app = seeded_app();
-            let open = StoreEffect::Open {
+            let open = StoreEffect::OpenApp {
                 app: "id.notes".into(),
             };
             let job = admitted_job(&mut app, open.clone());

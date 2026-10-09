@@ -789,7 +789,7 @@ impl AuthenticatorApp {
     pub(crate) fn perform_effect(&mut self, effect: TotpEffect) -> Result<(), String> {
         match effect {
             TotpEffect::AddAccount => self.open_add(),
-            TotpEffect::Open { account } => {
+            TotpEffect::OpenAccount { account } => {
                 let id = self.known_account(&account)?;
                 self.reveal(id);
             }

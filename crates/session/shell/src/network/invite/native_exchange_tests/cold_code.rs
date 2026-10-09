@@ -337,7 +337,7 @@ fn open_semantic_resource(app: &mut ui::App) {
     let mut scene = ui::vello::Scene::new();
     app.surface_frame(&LocalSurface, &mut scene);
     app.refresh_semantic_tree();
-    let effect = code_editor::CodeEditorEffect::Open { file: FILE.into() };
+    let effect = code_editor::CodeEditorEffect::ShowFile { file: FILE.into() };
     let action = effect.id();
     let node = app
         .semantic_tree()
