@@ -33,9 +33,35 @@ use neighbour_wire::{Retention, retention};
 static DEDICATED_SURFACE_FRAMES_RECEIVED: std::sync::atomic::AtomicUsize =
     std::sync::atomic::AtomicUsize::new(0);
 
+/// How often the actor retries what is missing (a topic subscription, a
+/// direct peer, a workspace host) and re-reads this device's identity
+/// material and codecs, to announce a change the tick it lands. Local work: a
+/// converged, idle desktop sends nothing on it. Also the cadence of the
+/// heartbeat still sent where an older build listens for one
+/// ([`LEGACY_PEER_WINDOW`]).
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(5);
+/// Peer liveness, kept by the transport rather than by messages. A gossip
+/// neighbour is a member while its link is up: iroh sends a QUIC keep-alive
+/// after 5 s without traffic, and a connection that hears nothing for this
+/// long ends ([`transport_config`]), taking the link down. A peer known only
+/// by its traffic, without a link, stays a member this long after it was
+/// last heard.
 const PEER_TIMEOUT: Duration = Duration::from_secs(15);
-const EVICTION_INTERVAL: Duration = Duration::from_secs(1);
+/// How long a peer whose gossip link went down stays a member, so a
+/// reconnect racing the down edge neither drops nor re-admits it.
+///
+/// The departure bound: a peer that leaves cleanly (quits, leaves the room,
+/// closes its endpoint) is dropped within this grace; one that vanishes
+/// (power, network) within [`PEER_TIMEOUT`] plus this grace, 20 s. Both
+/// hold with no application message sent while idle; before the transport
+/// carried liveness, both were 15 to 16 s after the last 5 s heartbeat.
+const DEPARTURE_GRACE: Duration = Duration::from_secs(5);
+/// How long after an older, heartbeat-keeping build was last heard on a
+/// topic this device keeps sending it heartbeats, identity and codecs every
+/// [`HEARTBEAT_INTERVAL`]: such a build evicts a peer silent for
+/// [`PEER_TIMEOUT`], and beats every 5 s itself, so three missed beats and
+/// one more mean it is gone. A topic of current builds only is silent.
+const LEGACY_PEER_WINDOW: Duration = Duration::from_secs(20);
 const HOST_CHECKPOINT_INTERVAL: Duration = Duration::from_secs(600);
 const MAX_GOSSIP_MESSAGE_BYTES: usize = 64 * 1024 * 1024;
 const MAX_SURFACE_FRAME_BYTES: usize = 64 * 1024 * 1024;
@@ -564,6 +590,22 @@ enum HostEvent {
 struct TopicRuntime {
     sender: GossipSender,
     pump: tokio::task::JoinHandle<()>,
+    /// When a build that keeps liveness by heartbeat was last heard on the
+    /// topic (see [`ActorState::run_heartbeat_tick`]).
+    legacy_heard: Option<Instant>,
+    /// Fingerprint of the identity material last announced on the topic, so
+    /// a renewed certificate or a new revocation goes out the tick it lands
+    /// and an unchanged one never does.
+    identity_sent: Option<[u8; 32]>,
+}
+
+impl TopicRuntime {
+    /// Whether a heartbeat-keeping build was heard here recently enough
+    /// that it may still be listening for this device's heartbeat.
+    fn hears_legacy(&self, now: Instant) -> bool {
+        self.legacy_heard
+            .is_some_and(|heard| now.saturating_duration_since(heard) < LEGACY_PEER_WINDOW)
+    }
 }
 
 struct HostRuntime {
@@ -882,6 +924,12 @@ struct ActorState {
     next_personal_media_generation: u64,
     /// Every application message peers delivered here (see [`WireTally`]).
     tally: Arc<WireTally>,
+    /// Fingerprint of the codec advert last announced, so a change goes out
+    /// and an unchanged advert never does.
+    caps_sent: Option<[u8; 32]>,
+    /// Number of the last heartbeat sent for an older build's sake (see
+    /// [`ActorState::legacy_beat`]).
+    compat_beats: u64,
 }
 
 /// Every application message this device received from its peers, by kind:
@@ -959,8 +1007,46 @@ fn take_personal_media_generation(
 
 #[derive(Clone, Copy)]
 struct PeerMembership {
-    last_seen: Instant,
+    /// When the membership lapses unless the peer is heard from again;
+    /// `None` while its gossip link is up, when the transport is the
+    /// liveness check (see [`DEPARTURE_GRACE`]).
+    expires: Option<Instant>,
     epoch: MembershipEpoch,
+    /// Fingerprints of the last identity and codec adverts taken from the
+    /// peer during this membership: a repeated advert changes nothing, but
+    /// one repeated after the peer was evicted and came back is new again.
+    identity_advert: Option<[u8; 32]>,
+    caps_advert: Option<[u8; 32]>,
+}
+
+impl PeerMembership {
+    fn new(epoch: MembershipEpoch, now: Instant) -> Self {
+        Self {
+            expires: Some(now + PEER_TIMEOUT),
+            epoch,
+            identity_advert: None,
+            caps_advert: None,
+        }
+    }
+
+    /// The peer was heard from. A linked peer needs no deadline; one known
+    /// only by its traffic stays a member for [`PEER_TIMEOUT`] after it.
+    fn heard(&mut self, now: Instant) {
+        if let Some(expires) = &mut self.expires {
+            *expires = (*expires).max(now + PEER_TIMEOUT);
+        }
+    }
+
+    /// Take advert `fingerprint` (identity when `identity`, codecs
+    /// otherwise), answering whether it is news from this peer.
+    fn take_advert(&mut self, identity: bool, fingerprint: [u8; 32]) -> bool {
+        let last = if identity {
+            &mut self.identity_advert
+        } else {
+            &mut self.caps_advert
+        };
+        last.replace(fingerprint) != Some(fingerprint)
+    }
 }
 
 fn bind_personal_fabric_ingress(
@@ -1011,19 +1097,15 @@ impl ActorState {
         ws: WorkspaceId,
         peer: EndpointId,
     ) -> (MembershipEpoch, bool) {
+        let now = Instant::now();
         if let Some(membership) = self.peers_seen.get_mut(&(ws, peer)) {
-            membership.last_seen = Instant::now();
+            membership.heard(now);
             return (membership.epoch, false);
         }
         self.next_membership_epoch = self.next_membership_epoch.saturating_add(1).max(1);
         let epoch = MembershipEpoch(self.next_membership_epoch);
-        self.peers_seen.insert(
-            (ws, peer),
-            PeerMembership {
-                last_seen: Instant::now(),
-                epoch,
-            },
-        );
+        self.peers_seen
+            .insert((ws, peer), PeerMembership::new(epoch, now));
         (epoch, true)
     }
 
@@ -1033,8 +1115,31 @@ impl ActorState {
         peer: EndpointId,
     ) -> Option<MembershipEpoch> {
         let membership = self.peers_seen.get_mut(&(ws, peer))?;
-        membership.last_seen = Instant::now();
+        membership.heard(Instant::now());
         Some(membership.epoch)
+    }
+
+    /// The gossip link to `peer` on `ws` came up (`up`) or went down. While
+    /// it is up the transport vouches for the peer: QUIC keep-alives flow
+    /// under it and its idle timeout ([`PEER_TIMEOUT`]) ends it. Its going
+    /// down does not end the membership at once: gossip names no connection
+    /// incarnation on a down edge, so a reconnect racing it must not lose the
+    /// peer. The membership lapses [`DEPARTURE_GRACE`] later unless the link
+    /// comes back or the peer is heard from.
+    fn set_link(&mut self, ws: WorkspaceId, peer: EndpointId, up: bool) {
+        let now = Instant::now();
+        let Some(membership) = self.peers_seen.get_mut(&(ws, peer)) else {
+            return;
+        };
+        membership.expires = (!up).then_some(now + DEPARTURE_GRACE);
+    }
+
+    /// The soonest a membership lapses, if any can.
+    fn next_eviction(&self) -> Option<Instant> {
+        self.peers_seen
+            .values()
+            .filter_map(|membership| membership.expires)
+            .min()
     }
 
     fn remove_membership_if_epoch(
@@ -2142,7 +2247,12 @@ impl ActorState {
                         }
                         let _ = tx.send(InternalEvent::Closed { ws }).await;
                     });
-                    e.insert(TopicRuntime { sender, pump });
+                    e.insert(TopicRuntime {
+                        sender,
+                        pump,
+                        legacy_heard: None,
+                        identity_sent: None,
+                    });
                 }
                 Err(error) => tracing::warn!(ws, %error, "could not join iroh workspace topic"),
             }
@@ -2512,10 +2622,12 @@ impl ActorState {
     /// to keep that dispatcher short.
     async fn handle_topic_event(&mut self, ws: WorkspaceId, event: GossipEvent) {
         if matches!(event, GossipEvent::NeighborUp(_)) {
-            // Authenticate this device as soon as the link is usable. State
-            // sync can otherwise arrive before the periodic identity
-            // announcement and be rejected by the peer.
+            // Authenticate this device, and say what it can decode, as soon
+            // as the link is usable: once per link, never on a timer. State
+            // sync can otherwise arrive before the identity and be rejected
+            // by the peer.
             self.announce_identity(ws).await;
+            self.announce_media_caps(ws).await;
         }
         let Some(tx) = self.subscribers.get(&ws).cloned() else {
             return;
@@ -2523,6 +2635,7 @@ impl ActorState {
         let event = match event {
             GossipEvent::NeighborUp(peer) => {
                 let (membership_epoch, _) = self.touch_or_mint_membership(ws, peer);
+                self.set_link(ws, peer, true);
                 Some(NetEvent::PeerJoined {
                     ws,
                     peer,
@@ -2532,9 +2645,10 @@ impl ActorState {
             GossipEvent::NeighborDown(peer) => {
                 // Gossip does not attach a connection incarnation to a down
                 // edge. Revoking the current epoch here could let a delayed
-                // Down(N) kill a newer Up(N+1). Keep the exact membership
-                // until its actor-owned heartbeat deadline confirms loss.
-                tracing::debug!(ws, peer = %peer, "gossip neighbour down awaits liveness confirmation");
+                // Down(N) kill a newer Up(N+1): the membership only starts
+                // its departure grace, which a new link cancels.
+                tracing::debug!(ws, peer = %peer, "gossip neighbour down; membership lapses unless it returns");
+                self.set_link(ws, peer, false);
                 None
             }
             GossipEvent::Received(message) => {
@@ -2544,18 +2658,38 @@ impl ActorState {
                 self.tally
                     .note(decoded.as_ref().map_or("Undecodable", NeighbourMsg::kind));
                 let fingerprint = message_fingerprint(&message.content);
-                if !mark_new_message(ws, fingerprint, &mut self.recent, &mut self.recent_order) {
+                // An advert describes its sender rather than reporting an
+                // event: it is news when it differs from the last one this
+                // membership took, so a peer evicted and back is heard again
+                // though it says the same thing.
+                let advert = match &decoded {
+                    Ok(NeighbourMsg::IdentityHello { .. }) => Some(true),
+                    Ok(NeighbourMsg::MediaCapabilities { .. }) => Some(false),
+                    _ => None,
+                };
+                let new = match advert {
+                    Some(identity) => self
+                        .peers_seen
+                        .get_mut(&(ws, peer))
+                        .is_some_and(|membership| membership.take_advert(identity, fingerprint)),
+                    None => {
+                        mark_new_message(ws, fingerprint, &mut self.recent, &mut self.recent_order)
+                    }
+                };
+                if !new {
                     return;
                 }
                 match decoded {
-                    Ok(NeighbourMsg::Heartbeat { .. }) if rediscovered => {
-                        Some(NetEvent::PeerJoined {
+                    Ok(beat @ NeighbourMsg::Heartbeat { .. }) => {
+                        if beat.is_timed_heartbeat() {
+                            self.note_legacy_peer(ws).await;
+                        }
+                        rediscovered.then_some(NetEvent::PeerJoined {
                             ws,
                             peer,
                             membership_epoch,
                         })
                     }
-                    Ok(NeighbourMsg::Heartbeat { .. }) => None,
                     Ok(msg) => Some(NetEvent::Msg {
                         ws,
                         peer,
@@ -2607,7 +2741,17 @@ impl ActorState {
             Ok(session) => {
                 tracing::info!(ws, host = %peer, "workspace host session started");
                 let session = Arc::new(session);
-                self.announce_identity_to_host(ws, &session);
+                if let Some(hello) = self.identity_hello(ws) {
+                    Self::announce_identity_to_host(ws, &hello, &session);
+                    // What the host holds now is what a change is judged by.
+                    if let (Some(topic), Ok(bytes)) =
+                        (self.topics.get_mut(&ws), postcard::to_allocvec(&hello))
+                    {
+                        topic
+                            .identity_sent
+                            .get_or_insert(message_fingerprint(&bytes));
+                    }
+                }
                 for (channel, bytes) in self.governance.get(&ws).into_iter().flatten() {
                     if let Err(error) = session.publish_checkpoint(*channel, bytes.clone()) {
                         tracing::warn!(ws, %error, "could not send channel governance to the workspace host");
@@ -2799,18 +2943,19 @@ impl ActorState {
         }
     }
 
-    /// Drop peers that have gone quiet for longer than [`PEER_TIMEOUT`].
+    /// Drop the peers whose membership lapsed: their gossip link went down
+    /// and stayed down, or they were known only by traffic that stopped.
+    /// Runs at [`Self::next_eviction`], never on a fixed tick.
     async fn run_eviction_tick(&mut self) {
         let now = Instant::now();
         let stale: Vec<_> = self
             .peers_seen
             .iter()
             .filter_map(|(&(ws, peer), membership)| {
-                (now.duration_since(membership.last_seen) > PEER_TIMEOUT).then_some((
-                    ws,
-                    peer,
-                    membership.epoch,
-                ))
+                membership
+                    .expires
+                    .is_some_and(|expires| expires <= now)
+                    .then_some((ws, peer, membership.epoch))
             })
             .collect();
         for (ws, peer, membership_epoch) in stale {
@@ -2871,30 +3016,71 @@ impl ActorState {
                 }
             }
         }
+        // Neighbours heard this device's identity and codecs when their link
+        // came up; from here on they hear them again only when they change
+        // (a renewed certificate, a new revocation, an H.264-only viewer
+        // opening). A converged, idle desktop says nothing.
         let workspaces: Vec<_> = self.topics.keys().copied().collect();
+        for &ws in &workspaces {
+            self.announce_identity_if_changed(ws).await;
+        }
+        self.announce_media_caps_if_changed().await;
+        let now = Instant::now();
         for ws in workspaces {
-            self.announce_identity(ws).await;
+            if self
+                .topics
+                .get(&ws)
+                .is_some_and(|topic| topic.hears_legacy(now))
+            {
+                self.legacy_beat(ws).await;
+            }
         }
-        let msg = NeighbourMsg::Heartbeat {
+    }
+
+    /// What an older build on `ws` needs to keep this device a member and
+    /// know what it is: a heartbeat, its identity and its codecs, every
+    /// [`HEARTBEAT_INTERVAL`], as every build once sent everyone. Neighbour
+    /// scoped, since such a build evicts by the link a message arrives over,
+    /// and numbered so that it neither looks like an older build's own beat
+    /// nor repeats bytes gossip would drop as already seen.
+    async fn legacy_beat(&mut self, ws: WorkspaceId) {
+        self.announce_identity(ws).await;
+        self.announce_media_caps(ws).await;
+        self.compat_beats = self.compat_beats % (NeighbourMsg::COMPAT_HEARTBEAT_TS_LIMIT - 1) + 1;
+        let beat = NeighbourMsg::Heartbeat {
             peer: crate::network::behaviour::peer_liveness_handle(&self.endpoint.id()),
-            ts: tilo_clock::unix_now_ms(),
+            ts: self.compat_beats,
         };
-        if let Ok(bytes) = postcard::to_allocvec(&msg) {
-            for topic in self.topics.values() {
-                let _ = topic.sender.broadcast(Bytes::from(bytes.clone())).await;
-            }
+        if let (Some(topic), Ok(bytes)) = (self.topics.get(&ws), postcard::to_allocvec(&beat)) {
+            let _ = topic.sender.broadcast_neighbors(Bytes::from(bytes)).await;
         }
-        // What this machine can encode and decode rides along with every
-        // heartbeat, so a sharer can pick a codec each viewer takes and
-        // notices when a viewer disappears.
-        let advert = crate::network::media_caps::local_advert(
-            crate::network::behaviour::peer_liveness_handle(&self.endpoint.id()),
-        );
-        if let Ok(bytes) = postcard::to_allocvec(&advert) {
-            for topic in self.topics.values() {
-                let _ = topic.sender.broadcast(Bytes::from(bytes.clone())).await;
-            }
+    }
+
+    /// An older, heartbeat-keeping build beat on `ws`. The first such beat
+    /// in a while answers at once rather than at the next tick: that build
+    /// heard this device last when the link came up, and evicts it after
+    /// [`PEER_TIMEOUT`] of silence.
+    async fn note_legacy_peer(&mut self, ws: WorkspaceId) {
+        let now = Instant::now();
+        let Some(topic) = self.topics.get_mut(&ws) else {
+            return;
+        };
+        let answering = topic.hears_legacy(now);
+        topic.legacy_heard = Some(now);
+        if !answering {
+            tracing::debug!(ws, "an older build beats here; heartbeating for it");
+            self.legacy_beat(ws).await;
         }
+    }
+
+    /// The identity announcement this device makes on `ws`: its certificate
+    /// for the room and the revocations that come with it.
+    fn identity_hello(&self, ws: WorkspaceId) -> Option<NeighbourMsg> {
+        let (cert, revocations) = self.host_identity.as_ref()?.material_for(ws);
+        Some(NeighbourMsg::IdentityHello {
+            cert: Box::new(cert),
+            revocations,
+        })
     }
 
     /// Send this device's certificate to its direct neighbors on `ws`.
@@ -2902,15 +3088,9 @@ impl ActorState {
     /// Identity announcements are deliberately neighbor-only: receivers bind
     /// the certificate to the endpoint that delivered it, so forwarding one
     /// through another gossip peer would make that check fail.
-    async fn announce_identity(&self, ws: WorkspaceId) {
-        let (Some(identity), Some(topic)) = (self.host_identity.as_ref(), self.topics.get(&ws))
-        else {
+    async fn announce_identity(&mut self, ws: WorkspaceId) {
+        let Some(hello) = self.identity_hello(ws) else {
             return;
-        };
-        let (cert, revocations) = identity.material_for(ws);
-        let hello = NeighbourMsg::IdentityHello {
-            cert: Box::new(cert),
-            revocations,
         };
         let bytes = match postcard::to_allocvec(&hello) {
             Ok(bytes) => bytes,
@@ -2919,8 +3099,87 @@ impl ActorState {
                 return;
             }
         };
+        let Some(topic) = self.topics.get_mut(&ws) else {
+            return;
+        };
+        topic.identity_sent = Some(message_fingerprint(&bytes));
         if let Err(error) = topic.sender.broadcast_neighbors(Bytes::from(bytes)).await {
             tracing::warn!(ws, %error, "could not send collaboration identity announcement");
+        }
+    }
+
+    /// Announce this device's identity on `ws` again, to its neighbours and
+    /// its workspace hosts, when it changed since it was last announced
+    /// there: a new revocation reaches the room the tick it is read from
+    /// disk, as when every tick announced it.
+    async fn announce_identity_if_changed(&mut self, ws: WorkspaceId) {
+        let Some(hello) = self.identity_hello(ws) else {
+            return;
+        };
+        let Ok(bytes) = postcard::to_allocvec(&hello) else {
+            return;
+        };
+        let fingerprint = message_fingerprint(&bytes);
+        let Some(topic) = self.topics.get_mut(&ws) else {
+            return;
+        };
+        // Nothing announced here yet: the first link or host session will.
+        let Some(sent) = topic.identity_sent.replace(fingerprint) else {
+            return;
+        };
+        if sent == fingerprint {
+            return;
+        }
+        tracing::info!(ws, "device identity material changed; announcing it again");
+        if let Err(error) = topic.sender.broadcast_neighbors(Bytes::from(bytes)).await {
+            tracing::warn!(ws, %error, "could not send collaboration identity announcement");
+        }
+        for ((session_ws, _), runtime) in &self.host_sessions {
+            if *session_ws == ws {
+                Self::announce_identity_to_host(ws, &hello, &runtime.session);
+            }
+        }
+    }
+
+    /// This machine's codec advert, encoded.
+    fn media_caps_advert(&self) -> Option<Vec<u8>> {
+        let advert = crate::network::media_caps::local_advert(
+            crate::network::behaviour::peer_liveness_handle(&self.endpoint.id()),
+        );
+        postcard::to_allocvec(&advert).ok()
+    }
+
+    /// Tell `ws`'s neighbours what this machine can encode and decode, so a
+    /// sharer picks a codec every viewer takes. Neighbour scoped like the
+    /// identity: receivers take an advert only from the device it describes.
+    async fn announce_media_caps(&mut self, ws: WorkspaceId) {
+        let Some(bytes) = self.media_caps_advert() else {
+            return;
+        };
+        self.caps_sent = Some(message_fingerprint(&bytes));
+        if let Some(topic) = self.topics.get(&ws) {
+            let _ = topic.sender.broadcast_neighbors(Bytes::from(bytes)).await;
+        }
+    }
+
+    /// Announce this machine's codecs again on every topic when they changed
+    /// since they were last announced.
+    async fn announce_media_caps_if_changed(&mut self) {
+        let Some(bytes) = self.media_caps_advert() else {
+            return;
+        };
+        let fingerprint = message_fingerprint(&bytes);
+        let Some(sent) = self.caps_sent.replace(fingerprint) else {
+            return;
+        };
+        if sent == fingerprint {
+            return;
+        }
+        for topic in self.topics.values() {
+            let _ = topic
+                .sender
+                .broadcast_neighbors(Bytes::from(bytes.clone()))
+                .await;
         }
     }
 
@@ -2984,17 +3243,14 @@ impl ActorState {
         }
     }
 
-    fn announce_identity_to_host(&self, ws: WorkspaceId, session: &RelayCoeditSession) {
-        let Some(identity) = self.host_identity.as_ref() else {
-            return;
-        };
-        let (cert, revocations) = identity.material_for(ws);
-        let hello = NeighbourMsg::IdentityHello {
-            cert: Box::new(cert),
-            revocations,
-        };
+    /// Send identity announcement `hello` to the workspace host of `ws`.
+    fn announce_identity_to_host(
+        ws: WorkspaceId,
+        hello: &NeighbourMsg,
+        session: &RelayCoeditSession,
+    ) {
         let (Some((channel, _)), Ok(bytes)) =
-            (retention(&hello, false), postcard::to_allocvec(&hello))
+            (retention(hello, false), postcard::to_allocvec(hello))
         else {
             return;
         };
@@ -3453,18 +3709,20 @@ async fn run(
         active_personal_media: HashMap::new(),
         next_personal_media_generation: 0,
         tally: Arc::default(),
+        caps_sent: None,
+        compat_beats: 0,
     };
     let mut heartbeat = tokio::time::interval(heartbeat_interval);
-    let mut eviction = tokio::time::interval(EVICTION_INTERVAL);
     let mut host_checkpoint = tokio::time::interval(HOST_CHECKPOINT_INTERVAL);
     heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-    eviction.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     host_checkpoint.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     heartbeat.tick().await;
-    eviction.tick().await;
     host_checkpoint.tick().await;
 
     loop {
+        // Evict when the soonest membership lapses, not on a polling tick:
+        // linked peers have no deadline at all.
+        let eviction = state.next_eviction();
         tokio::select! {
             biased;
             input = input_rx.recv() => {
@@ -3482,7 +3740,7 @@ async fn run(
                     break;
                 }
             }
-            _ = eviction.tick() => state.run_eviction_tick().await,
+            () = sleep_until_lapse(eviction) => state.run_eviction_tick().await,
             _ = heartbeat.tick() => state.run_heartbeat_tick().await,
             _ = host_checkpoint.tick() => state.run_host_checkpoint_tick().await,
         }
@@ -3498,6 +3756,27 @@ async fn run(
         task.abort();
     }
     let _ = router.shutdown().await;
+}
+
+/// Sleep until `at`, or forever when nothing can lapse.
+async fn sleep_until_lapse(at: Option<Instant>) {
+    match at {
+        Some(at) => tokio::time::sleep_until(at.into()).await,
+        None => std::future::pending().await,
+    }
+}
+
+/// The QUIC transport collaboration endpoints use: iroh's, with the
+/// connection ending after [`PEER_TIMEOUT`] without a packet from the peer
+/// rather than iroh's 30 s. iroh's keep-alives (one after 5 s of silence)
+/// keep a live peer's connection from ever idling; a peer that vanished
+/// misses three and its links go down. This is the liveness check the
+/// 5 s application heartbeat used to be, without an application message.
+pub fn transport_config() -> iroh::endpoint::QuicTransportConfig {
+    let millis = u32::try_from(PEER_TIMEOUT.as_millis()).unwrap_or(u32::MAX);
+    iroh::endpoint::QuicTransportConfig::builder()
+        .max_idle_timeout(Some(iroh::endpoint::VarInt::from_u32(millis).into()))
+        .build()
 }
 
 /// The window a direct fanout carries: each shared window is fanned out on
@@ -4006,13 +4285,17 @@ fn noted_content_peer_removals() -> &'static Mutex<Vec<EndpointId>> {
     REMOVALS.get_or_init(|| Mutex::new(Vec::new()))
 }
 
-/// How often a workspace host session asks the host for a keep-alive.
-const HOST_PING_INTERVAL: Duration = Duration::from_secs(5);
+/// How long a workspace host session goes without hearing from the host
+/// before it asks the host for a keep-alive. A session that carries traffic
+/// is never pinged; an idle one once per this long, rather than every 5 s.
+const HOST_PING_AFTER: Duration = Duration::from_secs(15);
 /// How long a host may stay silent, keep-alives included, before its
 /// session is dropped and dialled again. A connection whose host session
 /// ended without closing it (or whose host stopped reading) otherwise
-/// looks alive forever.
-const HOST_SILENCE_LIMIT: Duration = Duration::from_secs(20);
+/// looks alive forever. The bound is what it was with a ping every 5 s and a
+/// 20 s limit read at those pings: a host gone quiet is dropped 25 s after
+/// it was last heard.
+const HOST_SILENCE_LIMIT: Duration = Duration::from_secs(25);
 
 fn spawn_host_pump(
     ws: WorkspaceId,
@@ -4024,17 +4307,30 @@ fn spawn_host_pump(
 ) -> tokio::task::JoinHandle<()> {
     use std::sync::atomic::Ordering;
     tokio::spawn(async move {
-        let mut ping = tokio::time::interval(HOST_PING_INTERVAL);
-        ping.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        // Whether this silence was already answered with a ping.
+        let mut pinged = false;
         loop {
+            let silent = session.silent_for();
+            if silent < HOST_PING_AFTER {
+                pinged = false;
+            }
+            let check = if pinged {
+                HOST_SILENCE_LIMIT.saturating_sub(silent)
+            } else {
+                HOST_PING_AFTER.saturating_sub(silent)
+            };
             let inbound = tokio::select! {
                 inbound = session.recv() => inbound,
-                _ = ping.tick() => {
-                    if session.silent_for() > HOST_SILENCE_LIMIT {
+                () = tokio::time::sleep(check) => {
+                    let silent = session.silent_for();
+                    if silent >= HOST_SILENCE_LIMIT {
                         tracing::warn!(ws, host = %host, "workspace host stopped answering; reconnecting");
                         break;
                     }
-                    let _ = session.ping();
+                    if silent >= HOST_PING_AFTER && !pinged {
+                        let _ = session.ping();
+                        pinged = true;
+                    }
                     continue;
                 }
             };
@@ -4605,6 +4901,169 @@ mod tests {
                 .await;
             }
         }
+    }
+
+    /// What this actor's peers delivered to it so far, by kind.
+    async fn tally_of(cmd: &mpsc::Sender<NetCmd>) -> std::collections::BTreeMap<&'static str, u64> {
+        let (reply, answer) = tokio::sync::oneshot::channel();
+        cmd.send(NetCmd::WireTally(reply)).await.unwrap();
+        answer.await.unwrap().snapshot()
+    }
+
+    /// An identified actor that runs its upkeep tick every `tick`, joined
+    /// to workspace 42.
+    async fn idle_test_actor(
+        root: &ed25519_dalek::SigningKey,
+        label: &str,
+        tick: Duration,
+    ) -> (
+        mpsc::Sender<NetCmd>,
+        mpsc::Receiver<NetEvent>,
+        EndpointAddr,
+        tokio::task::JoinHandle<()>,
+    ) {
+        let (key, cert) = enrol(root, DeviceCapabilities::primary(), label);
+        let (endpoint, lookup) = identified_endpoint(&key).await;
+        let addr = endpoint.addr();
+        let identity = HostIdentity {
+            device_cert: cert,
+            device_signing_key: key,
+            workspace_device_certs: HashMap::new(),
+            workspace_revocations: HashMap::new(),
+            identity_paths: None,
+        };
+        let (cmd, task) = Actor::spawn_with_heartbeat(
+            endpoint,
+            lookup,
+            Some(identity),
+            Arc::new(Mutex::new(Vec::new())),
+            tick,
+        );
+        let (events, rx) = mpsc::channel(64);
+        cmd.send(NetCmd::JoinWorkspace {
+            ws: 42,
+            on_event: events,
+        })
+        .await
+        .unwrap();
+        (cmd, rx, addr, task)
+    }
+
+    /// Wait on `rx` until the neighbour has said who it is and what it can
+    /// decode, as it does once when the link comes up.
+    async fn await_identity_and_codecs(rx: &mut mpsc::Receiver<NetEvent>) {
+        let (mut identity, mut codecs) = (false, false);
+        while !(identity && codecs) {
+            match tilo_test_env::within("the neighbour's identity and codecs", rx.recv())
+                .await
+                .unwrap()
+            {
+                NetEvent::Msg {
+                    msg: NeighbourMsg::IdentityHello { .. },
+                    ..
+                } => identity = true,
+                NetEvent::Msg {
+                    msg: NeighbourMsg::MediaCapabilities { .. },
+                    ..
+                } => codecs = true,
+                _ => {}
+            }
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the phases share one linked pair: quiet, an older neighbour, departure"
+    )]
+    async fn linked_actors_keep_liveness_on_the_transport_and_say_nothing_while_idle() {
+        // The upkeep tick runs every 50 ms here, a hundred times its pace in
+        // a session, so a second of idling is a hundred ticks.
+        const TICK: Duration = Duration::from_millis(50);
+        let root = ed25519_dalek::SigningKey::generate(&mut UnwrapErr(SysRng));
+        let (cmd_a, mut rx_a, _, task_a) = idle_test_actor(&root, "a", TICK).await;
+        let (cmd_b, mut rx_b, addr_b, task_b) = idle_test_actor(&root, "b", TICK).await;
+        cmd_a.send(NetCmd::Connect { addr: addr_b }).await.unwrap();
+
+        // Phase `a_new_neighbour_hears_identity_and_codecs_once_per_link`.
+        await_identity_and_codecs(&mut rx_a).await;
+        await_identity_and_codecs(&mut rx_b).await;
+
+        // Phase `a_linked_idle_pair_sends_no_application_message`. Before
+        // the transport carried liveness every tick sent a heartbeat, an
+        // identity hello and a codec advert per topic.
+        tokio::time::sleep(TICK * 4).await;
+        let (before_a, before_b) = (tally_of(&cmd_a).await, tally_of(&cmd_b).await);
+        tokio::time::sleep(TICK * 20).await;
+        assert_eq!(
+            tally_of(&cmd_a).await,
+            before_a,
+            "a heard nothing while idle"
+        );
+        assert_eq!(
+            tally_of(&cmd_b).await,
+            before_b,
+            "b heard nothing while idle"
+        );
+        assert!(
+            std::iter::from_fn(|| rx_a.try_recv().ok())
+                .chain(std::iter::from_fn(|| rx_b.try_recv().ok()))
+                .all(|event| !matches!(event, NetEvent::PeerLeft { .. })),
+            "a silent, linked peer stays a member"
+        );
+
+        // Phase `an_older_neighbour_that_beats_is_beaten_back`. A build that
+        // evicts a peer silent for 15 s announces itself by its timed beat;
+        // its neighbour answers at once and keeps beating for it.
+        let beats = |tally: &std::collections::BTreeMap<&'static str, u64>| {
+            tally.get("Heartbeat").copied().unwrap_or(0)
+        };
+        let answered_before = beats(&tally_of(&cmd_b).await);
+        cmd_b
+            .send(NetCmd::Publish {
+                ws: 42,
+                msg: NeighbourMsg::Heartbeat {
+                    peer: 1,
+                    ts: tilo_clock::unix_now_ms(),
+                },
+            })
+            .await
+            .unwrap();
+        tilo_test_env::within("the older neighbour to be beaten back", async {
+            while beats(&tally_of(&cmd_b).await) < answered_before + 3 {
+                tokio::time::sleep(TICK).await;
+            }
+        })
+        .await;
+        assert_eq!(
+            beats(&tally_of(&cmd_a).await),
+            beats(&before_a) + 1,
+            "the answer is numbered, not timed, so it does not start the other side beating"
+        );
+
+        // Phase `a_departed_peer_is_dropped_within_the_departure_grace`. A
+        // peer that shuts down closes its links; it is dropped that grace
+        // later, not after a heartbeat timeout.
+        drop(cmd_b);
+        task_b.await.unwrap();
+        let gone = Instant::now();
+        let left = tilo_test_env::within("the departed peer to be dropped", async {
+            loop {
+                if let Some(NetEvent::PeerLeft { cause, .. }) = rx_a.recv().await {
+                    return cause;
+                }
+            }
+        })
+        .await;
+        assert_eq!(left, PeerDepartureCause::LivenessTimedOut);
+        let took = gone.elapsed();
+        assert!(
+            took <= DEPARTURE_GRACE + Duration::from_secs(3),
+            "dropped {took:?} after it left"
+        );
+        drop(rx_b);
+        drop(cmd_a);
+        task_a.await.unwrap();
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
