@@ -10802,7 +10802,7 @@ pub fn run() {
                 } else {
                     tracing::info!(target: "tilo::power", "idle threshold reached: requesting suspend");
                     sleep_lock_was_locked = session.is_locked();
-                    power_bridge.request_suspend();
+                    power_bridge.request_idle_suspend();
                 }
             } else {
                 apply_session_transition(
