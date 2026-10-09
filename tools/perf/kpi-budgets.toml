@@ -267,3 +267,28 @@ unit = "count"
 max = 0.0
 min_delta = 1.0
 source = "KPI document: Workspace switch, dropped frames at 144 Hz"
+
+# Render frame time at native 4K (scripts/perf/render_bench.py timing): the
+# toolkit's dashboard harness (redrawing frames of 1,000 events) and the
+# shell's redraw_bench (1,000 clicks through FrameBuilder, the DRM bridge's
+# render, readback and XRGB swizzle). Both drive damage-limited frames, so the
+# ceiling is the KPI document's damage-limited target. This lane renders with
+# lavapipe on the shared `runner` class: the CPU rasterises, so the ceiling is
+# reported, never enforced, and the relative rule catches regressions.
+# Tolerances follow the agent group's until this group has measured its own.
+
+[kpi."render.ui.frame_us.4k"]
+unit = "us"
+p99 = 6900.0
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 1000.0
+source = "KPI document: Frame time p99 at 4K/144 Hz, damage-limited (lavapipe; reported only)"
+
+[kpi."render.shell.redraw_us.4k"]
+unit = "us"
+p99 = 6900.0
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 1000.0
+source = "KPI document: Frame time p99 at 4K/144 Hz, damage-limited (lavapipe; reported only)"
