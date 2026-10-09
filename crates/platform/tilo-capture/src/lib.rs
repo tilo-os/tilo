@@ -47,14 +47,7 @@ pub enum Feature {
     Scanner,
 }
 
-/// Whether a feature works on this target.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Availability {
-    Available,
-    /// Usable once the user allows it (browser permission, macOS TCC).
-    Prompt,
-    Unsupported(&'static str),
-}
+pub use tilo_platform_caps::Availability;
 
 const NO_SCANNER: &str = "document scanners are reached through SANE, on Linux only";
 
@@ -95,14 +88,6 @@ pub const CAPABILITIES: &[(Feature, [Availability; 3])] = &[
     ),
 ];
 
-fn column() -> usize {
-    if cfg!(target_family = "wasm") {
-        2
-    } else {
-        usize::from(cfg!(target_os = "macos"))
-    }
-}
-
 /// Whether `feature` works on the running target, in this build.
 #[must_use]
 pub fn availability(feature: Feature) -> Availability {
@@ -110,16 +95,12 @@ pub fn availability(feature: Feature) -> Availability {
         Feature::Camera => cfg!(any(native_camera, web_page)),
         Feature::Microphone => cfg!(any(native_microphone, web_page)),
         Feature::Screen => cfg!(any(native_screen, web_page)),
-        Feature::Scanner => cfg!(sane_scanner) || column() != 0,
+        Feature::Scanner => cfg!(sane_scanner) || tilo_platform_caps::COLUMN != 0,
     };
     if !built {
         return Availability::Unsupported("this build leaves the capability out");
     }
-    CAPABILITIES
-        .iter()
-        .find(|(f, _)| *f == feature)
-        .and_then(|(_, row)| row.get(column()).copied())
-        .unwrap_or(Availability::Unsupported("unknown feature"))
+    tilo_platform_caps::availability(CAPABILITIES, feature)
 }
 
 /// Why a capture could not start or stopped.
@@ -440,7 +421,8 @@ mod tests {
         for (feature, row) in CAPABILITIES {
             let got = availability(*feature);
             assert!(
-                got == row[column()] || matches!(got, Availability::Unsupported(_)),
+                got == row[tilo_platform_caps::COLUMN]
+                    || matches!(got, Availability::Unsupported(_)),
                 "{feature:?}: {got:?}"
             );
         }
