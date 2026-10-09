@@ -32,6 +32,7 @@ pub fn required_capability(
 ) -> Option<(CapResource, Verb)> {
     if resource.provider == super::providers::permission_prompts::PROVIDER_ID
         || resource.provider == super::providers::terminal_device_shell::PROVIDER_ID
+        || resource.provider == "onboarding"
     {
         return Some((
             CapResource::Action {
@@ -140,6 +141,28 @@ impl<'a> CapabilityVisibility<'a> {
 
 impl ActionVisibility for CapabilityVisibility<'_> {
     fn can_see(&self, resource: &ResourceRef, kind: &ResourceKind) -> bool {
+        // First-use identity belongs to the local owner,
+        // never a foreign administrator or an app/agent capability.
+        if resource.provider == "onboarding" {
+            let owner = self.workspace.owner.as_ref();
+            let is_owner = self.actor.principals.iter().any(|principal| {
+                matches!(principal, crate::shell::state::Principal::Person(user) if Some(user) == owner)
+            });
+            let foreign = self
+                .actor
+                .principals
+                .iter()
+                .any(|principal| match principal {
+                    crate::shell::state::Principal::Person(user) => Some(user) != owner,
+                    crate::shell::state::Principal::App(_)
+                    | crate::shell::state::Principal::Agent(_)
+                    | crate::shell::state::Principal::Token(_) => true,
+                    crate::shell::state::Principal::Room(_) => false,
+                });
+            if !is_owner || foreign {
+                return false;
+            }
+        }
         // Personal portal consent is a human administrator decision, not an
         // app/agent capability, even when that principal has an Admin override.
         if resource.provider == super::providers::permission_prompts::PROVIDER_ID
@@ -156,7 +179,8 @@ impl ActionVisibility for CapabilityVisibility<'_> {
         {
             return false;
         }
-        if resource.provider == super::providers::terminal_device_shell::PROVIDER_ID
+        if (resource.provider == super::providers::terminal_device_shell::PROVIDER_ID
+            || resource.provider == "onboarding")
             && (self.actor.principals.iter().any(|principal| {
                 matches!(
                     principal,
@@ -291,6 +315,61 @@ mod tests {
         actor.principals.push(Principal::Agent("helper".into()));
         assert!(
             !CapabilityVisibility::new(&workspace, actor).can_see(&resource, &ResourceKind::Action)
+        );
+    }
+
+    #[test]
+    fn onboarding_personal_identity_actions_refuse_agent_and_app_admin_overrides() {
+        let owner = "owner".to_string();
+        let mut workspace = Workspace::new(WorkspaceId::new(), "identity setup");
+        workspace.owner = Some(owner.clone());
+        let selected = resource("onboarding", "onboarding.create");
+        assert!(
+            CapabilityVisibility::new(&workspace, workspace.actor_for_person(&owner))
+                .can_see(&selected, &ResourceKind::Action)
+        );
+        for principal in [
+            Principal::Agent("helper".into()),
+            Principal::App("so.tilo.store".into()),
+            Principal::Token("token".into()),
+        ] {
+            let _ = workspace.grant_capability(CapOverride::grant(
+                Subject::Principal(principal.clone()),
+                Scope::Workspace,
+                Verb::Admin,
+            ));
+            let mut mixed = workspace.actor_for_person(&owner);
+            mixed.principals.push(principal.clone());
+            assert!(
+                !CapabilityVisibility::new(&workspace, mixed)
+                    .can_see(&selected, &ResourceKind::Action)
+            );
+            assert!(
+                !CapabilityVisibility::new(
+                    &workspace,
+                    Actor {
+                        principals: vec![principal],
+                        ..Actor::default()
+                    }
+                )
+                .can_see(&selected, &ResourceKind::Action)
+            );
+        }
+        let foreign = Principal::Person("foreign".into());
+        let _ = workspace.grant_capability(CapOverride::grant(
+            Subject::Principal(foreign.clone()),
+            Scope::Workspace,
+            Verb::Admin,
+        ));
+        assert!(
+            !CapabilityVisibility::new(
+                &workspace,
+                Actor {
+                    principals: vec![foreign],
+                    ..Actor::default()
+                }
+            )
+            .can_see(&selected, &ResourceKind::Action)
         );
     }
 

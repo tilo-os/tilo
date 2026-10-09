@@ -2415,14 +2415,21 @@ impl ShellOverlayHost {
     /// and an application-shaped setup window could be imitated by an app.
     #[must_use]
     pub fn with_onboarding(mut self, identity_dir: std::path::PathBuf) -> Self {
-        self.onboarding = Some(crate::onboarding_view::OnboardingView::new(identity_dir));
+        self.enable_onboarding(identity_dir);
         self
+    }
+
+    fn register_onboarding_actions(&mut self) {
+        if let Some(view) = self.onboarding.as_ref() {
+            self.search_registry.register(view.semantic_provider());
+        }
     }
 
     /// Activate first-login chrome on an already constructed compositor
     /// host. Production uses this after resolving the canonical XDG path.
     pub fn enable_onboarding(&mut self, identity_dir: std::path::PathBuf) {
         self.onboarding = Some(crate::onboarding_view::OnboardingView::new(identity_dir));
+        self.register_onboarding_actions();
         self.onboarding_released = false;
         self.onboarding_focus_reset = false;
     }
@@ -2430,6 +2437,7 @@ impl ShellOverlayHost {
     #[cfg(test)]
     pub(crate) fn enable_test_onboarding(&mut self, view: crate::onboarding_view::OnboardingView) {
         self.onboarding = Some(view);
+        self.register_onboarding_actions();
         self.onboarding_released = false;
         self.onboarding_focus_reset = false;
     }
@@ -2441,6 +2449,7 @@ impl ShellOverlayHost {
         self.onboarding = Some(crate::onboarding_view::OnboardingView::new_for_recovery(
             identity_dir,
         ));
+        self.register_onboarding_actions();
         self.onboarding_released = false;
         self.onboarding_focus_reset = false;
     }
@@ -2451,6 +2460,7 @@ impl ShellOverlayHost {
     pub fn enable_host_desktop_onboarding(&mut self, identity_dir: std::path::PathBuf) {
         self.onboarding =
             Some(crate::onboarding_view::OnboardingView::new_for_host_desktop(identity_dir));
+        self.register_onboarding_actions();
         self.onboarding_released = false;
         self.onboarding_focus_reset = false;
     }
@@ -2460,6 +2470,7 @@ impl ShellOverlayHost {
         self.onboarding = Some(
             crate::onboarding_view::OnboardingView::new_for_host_desktop_recovery(identity_dir),
         );
+        self.register_onboarding_actions();
         self.onboarding_released = false;
         self.onboarding_focus_reset = false;
     }
@@ -2484,6 +2495,7 @@ impl ShellOverlayHost {
         })?;
         self.onboarding =
             Some(crate::onboarding_view::OnboardingView::new_for_portable_backup(identity_dir)?);
+        self.register_onboarding_actions();
         self.onboarding_released = false;
         self.onboarding_focus_reset = false;
         Ok(())
@@ -17548,21 +17560,28 @@ impl Widget for ShellOverlayHost {
                 state.bump();
             }
             self.onboarding = Some(crate::onboarding_view::OnboardingView::new_tour());
+            self.register_onboarding_actions();
             self.onboarding_released = false;
             self.onboarding_focus_reset = false;
         }
         if let Some(onboarding) = self.onboarding.as_mut() {
+            let had_identity = onboarding.flow().is_done();
             onboarding.sync(s, p);
+            let acquired_identity = !had_identity && onboarding.flow().is_done();
             let finished = onboarding.finished();
+            // A verified identity becomes the session's principal immediately,
+            // including during Backup/Codecs. Waiting for desktop release leaves
+            // that principal outside the workspaces the Unix account created.
+            if (acquired_identity || finished)
+                && let Some(chrome) = self.chrome.as_ref()
+                && let Some(account) = std::env::var("USER").ok().filter(|a| !a.is_empty())
+            {
+                chrome.borrow_mut().adopt_provisioned_identity(&account);
+            }
             if finished {
                 self.onboarding = None;
                 self.onboarding_released = true;
                 self.onboarding_focus_reset = true;
-                if let Some(chrome) = self.chrome.as_ref()
-                    && let Some(account) = std::env::var("USER").ok().filter(|a| !a.is_empty())
-                {
-                    chrome.borrow_mut().adopt_provisioned_identity(&account);
-                }
             }
             return;
         }

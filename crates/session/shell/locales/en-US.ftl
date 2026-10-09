@@ -2502,3 +2502,7 @@ shell-window-retry = Reopen window
 device-fabric-error-input-operation-unavailable = Input control is busy. Try again.
 device-fabric-error-input-decline-unavailable = Your declined input devices could not be read.
 device-fabric-error-input-decline-save-failed = Input control was revoked, but the decline could not be saved. Automatic input remains disabled.
+
+# Canonical first-use action admission; never includes private identity material.
+onboarding-semantic-unavailable = This setup action is no longer available at this step.
+onboarding-semantic-failed = Setup could not complete this action. The desktop remains protected.
