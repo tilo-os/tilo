@@ -227,7 +227,10 @@ only a frame proven identical to the previous one (empty damage); that
 case is pointer motion or typing over an unchanged desktop, and it costs no
 GPU work, copy or flip (`keeps_shown_image`). A frame dropped because KMS
 reported the flip busy invalidates the output's retained pixels, so the
-next frame renders and KMS never keeps showing an older image.
+next frame renders and KMS never keeps showing an older image. An output
+whose view is the whole scene while a readback renders the same target
+keeps no frame: the readback can bring that target to a revision KMS does
+not show on the direct output (`TargetSharing::Readback`).
 
 Outputs are paced apart. A frame retires when the flips of the outputs at
 the fastest refresh have (`DrmPresenter::retire_direct_flips`), so the loop
