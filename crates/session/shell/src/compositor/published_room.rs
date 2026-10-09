@@ -7,7 +7,10 @@
 //! workspace switch. The file only matters to commands started
 //! afterwards (an app run from a terminal, `tilo-app dev`), so a writer
 //! thread replaces it with the newest room and the frame loop only hands
-//! over a string.
+//! over a string. It is not synced either: it lives in the runtime
+//! directory, which a crash empties, and a sync forces a journal commit that
+//! every other write on the filesystem then waits for, the compositor
+//! thread's own included.
 
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
@@ -82,8 +85,10 @@ fn write_requests(path: &Path, received: &mpsc::Receiver<Option<String>>) {
 /// Replace or remove the file; whether it now names a room.
 fn publish(path: &Path, room: Option<&str>) -> bool {
     let result = match room {
-        Some(room) => tilo_files::native::atomic::write_with_mode(path, room.as_bytes(), 0o600)
-            .map_err(|error| error.to_string()),
+        Some(room) => {
+            tilo_files::native::atomic::write_regenerable_with_mode(path, room.as_bytes(), 0o600)
+                .map_err(|error| error.to_string())
+        }
         None => match std::fs::remove_file(path) {
             Ok(()) => Ok(()),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),

@@ -11,7 +11,6 @@
 //! section; the pane shows what the section holds, whoever changed it.
 
 use std::collections::HashMap;
-use ui::widget::TaffyTreeExt;
 
 use taffy::{NodeId, TaffyTree};
 use ui::LocalState;
@@ -394,16 +393,7 @@ impl Widget for RegionPane {
         let child = self
             .composed
             .build_layout(composition, taffy, theme, node_map);
-        let style = taffy::Style {
-            display: taffy::Display::Flex,
-            flex_direction: taffy::FlexDirection::Column,
-            size: taffy::Size {
-                width: taffy::Dimension::percent(1.0),
-                height: taffy::Dimension::auto(),
-            },
-            ..Default::default()
-        };
-        taffy.widget_node(style, &[child], node_map, self)
+        crate::panes::pane_node(taffy, child, node_map, self)
     }
 
     ui::forward_to_composed!(composed);
