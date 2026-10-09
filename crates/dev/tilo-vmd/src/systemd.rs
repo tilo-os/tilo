@@ -385,10 +385,16 @@ impl Apply for SystemdApply {
         let Ok(identity) = config.join("tilo/identity").canonicalize() else {
             return false;
         };
+        let (Ok(executable), Some(uid)) = (std::env::current_exe(), uid_of(&session.user)) else {
+            return false;
+        };
         identity.starts_with(&home)
-            && tilo_identity_host::provisioning::active_identity_owns_device(
+            && crate::owner_identity::inspect_as_user(
+                &executable,
+                &session.user,
+                uid,
                 &identity,
-                &tilo_user_identity::IdentityPaths::under(Path::new("/var/lib/tilo")),
+                Path::new("/var/lib/tilo"),
             )
             .unwrap_or(false)
     }

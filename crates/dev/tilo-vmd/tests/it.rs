@@ -7,6 +7,8 @@
 pub mod device_account;
 #[path = "jobs.rs"]
 pub mod jobs;
+#[path = "owner_identity.rs"]
+pub mod owner_identity;
 #[path = "peer_route.rs"]
 pub mod peer_route;
 #[path = "rpc.rs"]

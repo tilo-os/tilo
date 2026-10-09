@@ -17,6 +17,16 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Internal read-only owner-chain inspector; executed after credential drop.
+    #[command(name = "__device-owner-inspect", hide = true)]
+    DeviceOwnerInspect {
+        #[arg(long)]
+        uid: u32,
+        #[arg(long)]
+        identity: PathBuf,
+        #[arg(long)]
+        device_root: PathBuf,
+    },
     /// Serve JSON-RPC on stdin/stdout (what `tilo-vm` runs over SSH).
     Rpc {
         #[command(flatten)]
@@ -220,25 +230,49 @@ fn awake_hold(lease: &std::path::Path) -> ExitCode {
     }
 }
 
+fn device_owner_inspect(
+    uid: u32,
+    identity: &std::path::Path,
+    device_root: &std::path::Path,
+) -> ExitCode {
+    match tilo_vmd::owner_identity::inspect_current(uid, identity, device_root) {
+        Ok(inspection) => match serde_json::to_string(&inspection) {
+            Ok(response) => {
+                println!("{response}");
+                ExitCode::SUCCESS
+            }
+            Err(_) => ExitCode::FAILURE,
+        },
+        Err(_) => ExitCode::FAILURE,
+    }
+}
+
+fn serve_rpc(state: &State, expect_domain: String) -> ExitCode {
+    let mut daemon = state.daemon().with_expected_domain(expect_domain);
+    match server::serve(
+        &mut daemon,
+        std::io::stdin().lock(),
+        std::io::stdout().lock(),
+    ) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("tilo-vmd: {error}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
 fn main() -> ExitCode {
     match Cli::parse().command {
+        Command::DeviceOwnerInspect {
+            uid,
+            identity,
+            device_root,
+        } => device_owner_inspect(uid, &identity, &device_root),
         Command::Rpc {
             state,
             expect_domain,
-        } => {
-            let mut daemon = state.daemon().with_expected_domain(expect_domain);
-            match server::serve(
-                &mut daemon,
-                std::io::stdin().lock(),
-                std::io::stdout().lock(),
-            ) {
-                Ok(()) => ExitCode::SUCCESS,
-                Err(error) => {
-                    eprintln!("tilo-vmd: {error}");
-                    ExitCode::FAILURE
-                }
-            }
-        }
+        } => serve_rpc(&state, expect_domain),
         Command::Build { state } => {
             let mut daemon = state.daemon();
             exit(jobs::run_job(
