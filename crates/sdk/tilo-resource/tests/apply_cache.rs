@@ -33,6 +33,13 @@ thread_local! {
 pub struct Probe(pub String);
 
 impl Model for Probe {
+    tilo_resource::leaf_paths!();
+    fn to_json(&self) -> serde_json::Value {
+        self.0.to_json()
+    }
+    fn from_json(value: &serde_json::Value) -> Result<Self, ModelError> {
+        String::from_json(value).map(Self)
+    }
     fn load(doc: &Doc, value: &Value<'_>, id: &ObjId) -> Result<Self, ModelError> {
         LOADS.with(|loads| loads.set(loads.get() + 1));
         String::load(doc, value, id).map(Self)
@@ -157,6 +164,13 @@ impl Checklist {
     }
 }
 
+/// The door publishes from the view state the replica keeps current; it
+/// follows the document here, as an open window does between actions, so
+/// what [`counted`] then sees is the action's own reading and writing.
+fn follow(replica: &mut Replica<Checklist>) {
+    replica.live().unwrap();
+}
+
 /// A checklist of `count` tasks, written straight into a new document.
 fn seeded(count: usize) -> Replica<Checklist> {
     let mut replica = Replica::<Checklist>::new();
@@ -172,6 +186,7 @@ fn seeded(count: usize) -> Replica<Checklist> {
     }
     record.write_fields(replica.doc_mut(), &ROOT).unwrap();
     replica.doc_mut().commit();
+    follow(&mut replica);
     replica
 }
 
@@ -181,17 +196,19 @@ fn apply_reads_only_touched_items() {
     let target = Id::from_raw("task-0500");
 
     // Nothing kept yet: the first action reads every task.
-    let (_, (loads, _)) = counted(|| replica.apply(Checklist::DRAFT.with("h".into())).unwrap());
+    follow(&mut replica);
+    let (_, (loads, _)) = counted(|| replica.apply(Checklist::DRAFT.with("h")).unwrap());
     assert_eq!(loads, 1_000, "the first action reads the record whole");
 
-    let (_, (loads, stores)) =
-        counted(|| replica.apply(Checklist::DRAFT.with("he".into())).unwrap());
+    follow(&mut replica);
+    let (_, (loads, stores)) = counted(|| replica.apply(Checklist::DRAFT.with("he")).unwrap());
     assert_eq!(
         (loads, stores),
         (0, 0),
         "typing into the draft reads and writes no task"
     );
 
+    follow(&mut replica);
     let (_, (loads, stores)) = counted(|| {
         replica
             .apply(Checklist::TOGGLE.with(target.clone()))
@@ -199,6 +216,7 @@ fn apply_reads_only_touched_items() {
     });
     assert_eq!((loads, stores), (0, 0), "a tick touches no title");
 
+    follow(&mut replica);
     let (_, (loads, stores)) = counted(|| {
         replica
             .apply(Checklist::RETITLE.with((target.clone(), "renamed".into())))
@@ -210,8 +228,8 @@ fn apply_reads_only_touched_items() {
         "retitling one task writes one title"
     );
 
-    let (_, (loads, stores)) =
-        counted(|| replica.apply(Checklist::DRAFT.with("hel".into())).unwrap());
+    follow(&mut replica);
+    let (_, (loads, stores)) = counted(|| replica.apply(Checklist::DRAFT.with("hel")).unwrap());
     assert_eq!(
         (loads, stores),
         (1, 0),
@@ -230,15 +248,12 @@ fn apply_reads_only_touched_items() {
 #[test]
 fn a_refused_action_writes_nothing_and_the_next_reads_whole() {
     let mut replica = seeded(10);
-    replica.apply(Checklist::DRAFT.with("kept".into())).unwrap();
+    replica.apply(Checklist::DRAFT.with("kept")).unwrap();
     let heads = replica.heads();
     assert!(replica.apply(Checklist::REFUSE.invoke()).is_err());
     assert_eq!(replica.heads(), heads, "a refusal changes nothing");
-    let (_, (loads, _)) = counted(|| {
-        replica
-            .apply(Checklist::DRAFT.with("kept!".into()))
-            .unwrap()
-    });
+    follow(&mut replica);
+    let (_, (loads, _)) = counted(|| replica.apply(Checklist::DRAFT.with("kept!")).unwrap());
     assert_eq!(loads, 10, "a refusal keeps no record");
     assert_eq!(replica.state().unwrap().draft, "kept!");
 }
@@ -359,6 +374,7 @@ fn cached_apply_is_replay_identical() {
             let Some(invoke) = random_invoke(&live, &mut rng, round * 10 + step) else {
                 continue;
             };
+            follow(&mut live);
             let (_, (loads, _)) = counted(|| live.apply(invoke).unwrap());
             live_loads += loads;
             let envelope = live.log().last().unwrap().clone();

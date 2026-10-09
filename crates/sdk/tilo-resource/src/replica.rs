@@ -181,8 +181,11 @@ impl<R: Resource> Replica<R> {
             return Err(DoorError::InvalidArguments(refusal.to_owned()));
         }
         let Invoke { id, arguments, .. } = invoke;
+        // Published from the state kept current change by change, so an
+        // action costs what it touched, not a whole read of the record.
         let tree = self
-            .published()
+            .live()
+            .map(|state| resource::publish::<R>(R::KIND, R::LABEL, state))
             .map_err(|error| DoorError::Failed(error.to_string()))?;
         let address = ActionAddress::new(tree.id.as_str(), id);
         // Without an author, the replica's own actor: every replica is a
