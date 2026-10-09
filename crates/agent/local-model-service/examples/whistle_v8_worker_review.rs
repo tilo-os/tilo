@@ -4,6 +4,8 @@
 mod bridge;
 #[path = "whistle_v8_worker_review/custody.rs"]
 mod custody;
+#[path = "whistle_v8_worker_review/policy.rs"]
+mod policy;
 use local_model_service::speech::{self, DraftPolicy, SpeechConfig, SpeechError, worker};
 use std::process::ExitCode;
 use zeroize::Zeroizing;
@@ -79,6 +81,9 @@ fn run() -> Result<(), SpeechError> {
         return Err(SpeechError::ModelUnavailable);
     }
     let args: Vec<String> = std::env::args().collect();
+    if matches!(args.as_slice(), [_, flag] if flag == "--policy-probe") {
+        return policy::probe();
+    }
     let [_, module_path, model_path, bridge_path, bridge_sha] = args.as_slice() else {
         return Err(SpeechError::Protocol);
     };

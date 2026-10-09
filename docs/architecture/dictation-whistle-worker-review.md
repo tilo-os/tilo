@@ -93,7 +93,7 @@ Three independent shipping objects remain:
    packaged with its licence notices. Existing CI Node/V8 presence proves neither
    OS inclusion nor compatibility with the production worker policy. The current
    binary needs a runtime implementation compatible with that policy; larger
-   limits, precompiling outside confinement or enabling an unrestricted JIT
+   limits, moving this V8 initialization ahead of confinement or enabling an unrestricted JIT
    profile do not qualify it.
 2. The exact speech module and model provenance: pinned publisher revision,
    format, size, digest, languages, capability and Apache notices. A model needs
