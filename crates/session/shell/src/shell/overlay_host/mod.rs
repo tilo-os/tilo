@@ -2036,6 +2036,27 @@ impl ShellOverlayHost {
         self.app_actions.as_ref()?.next_invocation_change()
     }
 
+    /// Settles on the next change to any app invocation or publication, for
+    /// a control listing waiting to settle. `None` before the broker
+    /// attaches.
+    pub fn next_listing_change(&self) -> Option<tilo_actions::remote::Pending<()>> {
+        self.app_actions.as_ref()?.next_listing_change()
+    }
+
+    /// The attached broker's invocation and publication generations.
+    pub fn app_action_generation(&self) -> Option<(u64, u64)> {
+        self.app_actions
+            .as_ref()
+            .map(|actions| actions.change_generation())
+    }
+
+    /// Whether a listing for `args`, read right after
+    /// [`Self::action_catalog_query`], is final: `false` while an index build
+    /// or an app directory page that would change it is still owed.
+    pub fn action_listing_complete(&self, args: &crate::shell::search::QueryArgs<'_>) -> bool {
+        !self.search_registry.indexes_settling(args)
+    }
+
     pub(crate) fn attach_task_review(
         &mut self,
         review: crate::shell::task_review::NativeTaskReview,

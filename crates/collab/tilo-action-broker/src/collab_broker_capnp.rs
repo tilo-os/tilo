@@ -5192,6 +5192,12 @@ impl CapnpBrokerState {
         self.invocation_generation.subscribe()
     }
 
+    /// A receiver that sees every later published-surface change; what it
+    /// has seen so far counts as seen.
+    pub(crate) fn surface_changes(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.surface_changes.subscribe()
+    }
+
     /// Read one current receipt without surveying or disclosing another
     /// actor's jobs.
     #[must_use]
