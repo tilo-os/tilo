@@ -6904,6 +6904,7 @@ dependencies = [
  "tilo-automerge",
  "tilo-automerge-fork",
  "tilo-files",
+ "tilo-history",
  "tilo-identity-host",
  "tilo-net",
  "tilo-ntfs-protocol",

@@ -1,0 +1,362 @@
+# The app's public surface, written by `tilo-app surface`: its resources' verbs
+# and stored fields. Review changes to it like an API change; `tilo-app check`
+# fails when the code and this file disagree.
+
+[[resources]]
+kind = "imager.sources"
+label = "Image sources"
+version = 1
+
+[[resources.fields]]
+owner = "imager"
+path = "source"
+readonly = true
+stored = "record"
+title = "Image to write. Only reviewing or clearing it changes it"
+type = "Option<Source>"
+
+[[resources.fields]]
+owner = "source"
+path = "source.kind"
+stored = "value"
+title = "Kind"
+type = "SourceKind"
+
+[[resources.fields]]
+owner = "source"
+path = "source.path"
+stored = "value"
+title = "Absolute path to the image file (empty for a not-yet-downloaded"
+type = "String"
+
+[[resources.fields]]
+label = true
+owner = "source"
+path = "source.name"
+stored = "value"
+title = "Display name (file name or release name)"
+type = "String"
+
+[[resources.fields]]
+owner = "source"
+path = "source.size"
+stored = "value"
+title = "Size in bytes (0 when not yet known / not downloaded)"
+type = "u64"
+
+[[resources.fields]]
+owner = "source"
+path = "source.label"
+stored = "value"
+title = 'Volume label or image variant ("Tilo 1.0 Live", "Fedora-Workstation"…)'
+type = "String"
+
+[[resources.fields]]
+owner = "source"
+path = "source.installable"
+stored = "value"
+title = "Whether this source can drive a full Tilo install (vs. raw ISO write"
+type = "bool"
+
+[[resources.fields]]
+owner = "source"
+path = "source.identity"
+stored = "record"
+title = "Stable identity of the file selected and reviewed by the user. The"
+type = "Option<SourceIdentity>"
+
+[[resources.fields]]
+owner = "source-identity"
+path = "source.identity.volume"
+stored = "value"
+title = "Volume"
+type = "u64"
+
+[[resources.fields]]
+owner = "source-identity"
+path = "source.identity.file"
+stored = "value"
+title = "File"
+type = "u64"
+
+[[resources.fields]]
+owner = "source"
+path = "source.expected_sha256"
+stored = "value"
+title = "Digest bound into a signed release catalog. Local arbitrary images do"
+type = "Option<String>"
+
+[[resources.fields]]
+owner = "imager"
+path = "recent"
+readonly = true
+stored = "keyed"
+title = "Images reviewed before, by source id"
+type = "Keyed<RecentSource>"
+
+[[resources.fields]]
+owner = "recent-source"
+path = "recent.*.id"
+stored = "value"
+title = "The source's [`Source::id`]"
+type = "Id"
+
+[[resources.fields]]
+owner = "recent-source"
+path = "recent.*.rank"
+stored = "value"
+title = "Where it sorts: the most recent has the lowest rank; equal ranks"
+type = "i64"
+
+[[resources.fields]]
+owner = "recent-source"
+path = "recent.*.source"
+stored = "record"
+title = "Image"
+type = "Source"
+
+[[resources.fields]]
+owner = "source"
+path = "recent.*.source.kind"
+stored = "value"
+title = "Kind"
+type = "SourceKind"
+
+[[resources.fields]]
+owner = "source"
+path = "recent.*.source.path"
+stored = "value"
+title = "Absolute path to the image file (empty for a not-yet-downloaded"
+type = "String"
+
+[[resources.fields]]
+label = true
+owner = "source"
+path = "recent.*.source.name"
+stored = "value"
+title = "Display name (file name or release name)"
+type = "String"
+
+[[resources.fields]]
+owner = "source"
+path = "recent.*.source.size"
+stored = "value"
+title = "Size in bytes (0 when not yet known / not downloaded)"
+type = "u64"
+
+[[resources.fields]]
+owner = "source"
+path = "recent.*.source.label"
+stored = "value"
+title = 'Volume label or image variant ("Tilo 1.0 Live", "Fedora-Workstation"…)'
+type = "String"
+
+[[resources.fields]]
+owner = "source"
+path = "recent.*.source.installable"
+stored = "value"
+title = "Whether this source can drive a full Tilo install (vs. raw ISO write"
+type = "bool"
+
+[[resources.fields]]
+owner = "source"
+path = "recent.*.source.identity"
+stored = "record"
+title = "Stable identity of the file selected and reviewed by the user. The"
+type = "Option<SourceIdentity>"
+
+[[resources.fields]]
+owner = "source-identity"
+path = "recent.*.source.identity.volume"
+stored = "value"
+title = "Volume"
+type = "u64"
+
+[[resources.fields]]
+owner = "source-identity"
+path = "recent.*.source.identity.file"
+stored = "value"
+title = "File"
+type = "u64"
+
+[[resources.fields]]
+owner = "source"
+path = "recent.*.source.expected_sha256"
+stored = "value"
+title = "Digest bound into a signed release catalog. Local arbitrary images do"
+type = "Option<String>"
+
+[[resources.fields]]
+owner = "imager"
+path = "profile"
+stored = "record"
+title = "Install profile"
+type = "InstallProfile"
+
+[[resources.fields]]
+owner = "install-profile"
+path = "profile.hostname"
+stored = "value"
+title = "Hostname"
+type = "String"
+
+[[resources.fields]]
+owner = "install-profile"
+path = "profile.user"
+stored = "record"
+title = "User"
+type = "UserAccount"
+
+[[resources.fields]]
+owner = "user-account"
+path = "profile.user.full_name"
+stored = "value"
+title = "Full name"
+type = "String"
+
+[[resources.fields]]
+owner = "user-account"
+path = "profile.user.username"
+stored = "value"
+title = "Username"
+type = "String"
+
+[[resources.fields]]
+owner = "install-profile"
+path = "profile.locale"
+stored = "value"
+title = "Locale"
+type = "String"
+
+[[resources.fields]]
+owner = "install-profile"
+path = "profile.keyboard"
+stored = "value"
+title = "Keyboard layout"
+type = "String"
+
+[[resources.fields]]
+owner = "install-profile"
+path = "profile.timezone"
+stored = "value"
+title = "Time zone"
+type = "String"
+
+[[resources.fields]]
+owner = "install-profile"
+path = "profile.filesystem"
+stored = "value"
+title = "Filesystem"
+type = "Filesystem"
+
+[[resources.fields]]
+owner = "install-profile"
+path = "profile.wifi_ssid"
+stored = "value"
+title = "Wi-Fi network the new machine should join. The passphrase stays in the"
+type = "String"
+
+[[resources.fields]]
+owner = "install-profile"
+path = "profile.device_label"
+stored = "value"
+title = "Name of the device identity created for the target"
+type = "String"
+
+[[resources.fields]]
+owner = "install-profile"
+path = "profile.enroll_local_identity"
+stored = "value"
+title = "Enroll as a new device: certify a new device under the setup"
+type = "bool"
+
+[[resources.verbs]]
+description = "Review an image to write.  The image reviewed before it moves to the front of the recent ones."
+id = "select-source"
+kind = "undoable"
+label = "Review an image to write"
+
+[[resources.verbs.params]]
+name = "source"
+required = true
+
+[resources.verbs.params.schema]
+additionalProperties = false
+description = "The reviewed image"
+required = [
+    "kind",
+    "path",
+    "name",
+    "size",
+    "label",
+    "installable",
+]
+type = "object"
+
+[resources.verbs.params.schema.properties.expected_sha256]
+description = "Digest bound into a signed release catalog. Local arbitrary images do not have an external trust anchor, so they rely on identity + exact size."
+type = [
+    "string",
+    "null",
+]
+
+[resources.verbs.params.schema.properties.identity]
+additionalProperties = false
+description = "Stable identity of the file selected and reviewed by the user. The privileged writer rejects a path which now resolves to another file."
+required = [
+    "volume",
+    "file",
+]
+type = [
+    "object",
+    "null",
+]
+
+[resources.verbs.params.schema.properties.identity.properties.file]
+minimum = 0
+type = "integer"
+
+[resources.verbs.params.schema.properties.identity.properties.volume]
+minimum = 0
+type = "integer"
+
+[resources.verbs.params.schema.properties.installable]
+description = "Whether this source can drive a full Tilo install (vs. raw ISO write only)."
+type = "boolean"
+
+[resources.verbs.params.schema.properties.kind]
+description = "Where the bytes to be written come from."
+
+[[resources.verbs.params.schema.properties.kind.oneOf]]
+const = "IsoFile"
+description = "An arbitrary local disk image picked from disk."
+type = "string"
+
+[[resources.verbs.params.schema.properties.kind.oneOf]]
+const = "TiloImage"
+description = "A Tilo installer/live image authenticated by the release catalog."
+type = "string"
+
+[resources.verbs.params.schema.properties.label]
+description = 'Volume label or image variant ("Tilo 1.0 Live", "Fedora-Workstation"…).'
+type = "string"
+
+[resources.verbs.params.schema.properties.name]
+description = "Display name (file name or release name)."
+type = "string"
+
+[resources.verbs.params.schema.properties.path]
+description = "Absolute path to the image file (empty for a not-yet-downloaded known release)."
+type = "string"
+
+[resources.verbs.params.schema.properties.size]
+description = "Size in bytes (0 when not yet known / not downloaded)."
+minimum = 0
+type = "integer"
+
+[[resources.verbs]]
+description = "Clear the reviewed image; the images reviewed before it stay."
+id = "clear-source"
+kind = "undoable"
+label = "Clear the reviewed image; the images reviewed before it stay"
+params = []
