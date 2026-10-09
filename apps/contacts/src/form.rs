@@ -812,7 +812,8 @@ pub(crate) fn rebase_contact(base: &Contact, local: &Contact, canonical: &Contac
             local_fields!(result, old, local, value);
             result
         },
-    );
+    )
+    .into();
     let labeled = |old: &Labeled, local: &Labeled, current: &Labeled| {
         let mut result = current.clone();
         local_fields!(result, old, local, label, value);
@@ -824,14 +825,16 @@ pub(crate) fn rebase_contact(base: &Contact, local: &Contact, canonical: &Contac
         &canonical.phones,
         |row| row.id,
         labeled,
-    );
+    )
+    .into();
     result.emails = rebase_entries(
         &base.emails,
         &local.emails,
         &canonical.emails,
         |row| row.id,
         labeled,
-    );
+    )
+    .into();
     result.addresses = rebase_entries(
         &base.addresses,
         &local.addresses,
@@ -844,7 +847,8 @@ pub(crate) fn rebase_contact(base: &Contact, local: &Contact, canonical: &Contac
             );
             result
         },
-    );
+    )
+    .into();
     result
 }
 

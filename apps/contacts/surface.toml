@@ -1,0 +1,947 @@
+# The app's public surface, written by `tilo-app surface`: its resources' verbs
+# and stored fields. Review changes to it like an API change; `tilo-app check`
+# fails when the code and this file disagree.
+
+[[resources]]
+kind = "contacts.book"
+label = "Contacts"
+version = 1
+
+[[resources.fields]]
+owner = "contacts"
+path = "contacts"
+stored = "keyed"
+title = "Contacts"
+type = "Keyed<Contact>"
+
+[[resources.fields]]
+owner = "contact"
+path = "contacts.*.id"
+readonly = true
+stored = "value"
+title = "The contact's identity, the same on every replica and in its vCard"
+type = "ContactId"
+
+[[resources.fields]]
+label = true
+owner = "contact"
+path = "contacts.*.first"
+stored = "value"
+title = "First name"
+type = "String"
+
+[[resources.fields]]
+owner = "contact"
+path = "contacts.*.last"
+stored = "value"
+title = "Last name"
+type = "String"
+
+[[resources.fields]]
+owner = "contact"
+path = "contacts.*.org"
+stored = "value"
+title = "Organization"
+type = "String"
+
+[[resources.fields]]
+owner = "contact"
+path = "contacts.*.title"
+stored = "value"
+title = "Title"
+type = "String"
+
+[[resources.fields]]
+owner = "contact"
+path = "contacts.*.website"
+stored = "value"
+title = "Website"
+type = "String"
+
+[[resources.fields]]
+owner = "contact"
+path = "contacts.*.birthday"
+stored = "value"
+title = "Birthday"
+type = "Option<Birthday>"
+
+[[resources.fields]]
+owner = "contact"
+path = "contacts.*.notes"
+stored = "value"
+title = "Notes"
+type = "String"
+
+[[resources.fields]]
+owner = "contact"
+path = "contacts.*.phones"
+stored = "collection"
+title = "Phone numbers"
+type = "Ordered<Labeled>"
+
+[[resources.fields]]
+owner = "labeled"
+path = "contacts.*.phones.*.id"
+readonly = true
+stored = "value"
+title = "The row's identity, the same on every replica"
+type = "Uuid"
+
+[[resources.fields]]
+owner = "labeled"
+path = "contacts.*.phones.*.label"
+stored = "value"
+title = "Type"
+type = "String"
+
+[[resources.fields]]
+label = true
+owner = "labeled"
+path = "contacts.*.phones.*.value"
+stored = "value"
+title = "Value"
+type = "String"
+
+[[resources.fields]]
+owner = "contact"
+path = "contacts.*.emails"
+stored = "collection"
+title = "Email addresses"
+type = "Ordered<Labeled>"
+
+[[resources.fields]]
+owner = "labeled"
+path = "contacts.*.emails.*.id"
+readonly = true
+stored = "value"
+title = "The row's identity, the same on every replica"
+type = "Uuid"
+
+[[resources.fields]]
+owner = "labeled"
+path = "contacts.*.emails.*.label"
+stored = "value"
+title = "Type"
+type = "String"
+
+[[resources.fields]]
+label = true
+owner = "labeled"
+path = "contacts.*.emails.*.value"
+stored = "value"
+title = "Value"
+type = "String"
+
+[[resources.fields]]
+owner = "contact"
+path = "contacts.*.addresses"
+stored = "collection"
+title = "Postal addresses"
+type = "Ordered<Address>"
+
+[[resources.fields]]
+owner = "address"
+path = "contacts.*.addresses.*.id"
+readonly = true
+stored = "value"
+title = "The row's identity, the same on every replica"
+type = "Uuid"
+
+[[resources.fields]]
+owner = "address"
+path = "contacts.*.addresses.*.label"
+stored = "value"
+title = "Type"
+type = "String"
+
+[[resources.fields]]
+label = true
+owner = "address"
+path = "contacts.*.addresses.*.street"
+stored = "value"
+title = "Street"
+type = "String"
+
+[[resources.fields]]
+owner = "address"
+path = "contacts.*.addresses.*.city"
+stored = "value"
+title = "City"
+type = "String"
+
+[[resources.fields]]
+owner = "address"
+path = "contacts.*.addresses.*.region"
+stored = "value"
+title = "Region"
+type = "String"
+
+[[resources.fields]]
+owner = "address"
+path = "contacts.*.addresses.*.postal"
+stored = "value"
+title = "Postal code"
+type = "String"
+
+[[resources.fields]]
+owner = "address"
+path = "contacts.*.addresses.*.country"
+stored = "value"
+title = "Country"
+type = "String"
+
+[[resources.fields]]
+owner = "contact"
+path = "contacts.*.groups"
+stored = "collection"
+title = "Groups"
+type = "Ordered<GroupEntry>"
+
+[[resources.fields]]
+owner = "group-entry"
+path = "contacts.*.groups.*.id"
+readonly = true
+stored = "value"
+title = "The row's identity, the same on every replica"
+type = "Uuid"
+
+[[resources.fields]]
+label = true
+owner = "group-entry"
+path = "contacts.*.groups.*.value"
+stored = "value"
+title = "Group"
+type = "String"
+
+[[resources.fields]]
+owner = "contact"
+path = "contacts.*.favorite"
+stored = "value"
+title = "Favorite"
+type = "bool"
+
+[[resources.fields]]
+owner = "contacts"
+path = "removed"
+readonly = true
+stored = "value"
+title = "The contacts deleted from the book. A deleted contact's id never"
+type = "Set<ContactId>"
+
+[[resources.verbs]]
+description = "New contact.  A contact with a typed full name: its first word is the first name, the rest the last name."
+id = "new-contact"
+kind = "undoable"
+label = "New contact"
+
+[[resources.verbs.params]]
+name = "name"
+required = true
+
+[resources.verbs.params.schema]
+description = "Full name"
+type = "string"
+
+[[resources.verbs]]
+description = "Add contacts.  Whole cards, written in the form or imported, added as one change. Each id is new to the book: neither a contact's nor a deleted contact's."
+id = "add-contacts"
+kind = "undoable"
+label = "Add contacts"
+
+[[resources.verbs.params]]
+name = "contacts"
+required = true
+
+[resources.verbs.params.schema]
+description = "The contacts"
+type = "array"
+
+[resources.verbs.params.schema.items]
+additionalProperties = false
+description = "One person or organization."
+required = [
+    "id",
+    "first",
+    "last",
+    "org",
+    "title",
+    "website",
+    "notes",
+    "phones",
+    "emails",
+    "addresses",
+    "groups",
+    "favorite",
+]
+type = "object"
+
+[resources.verbs.params.schema.items.properties.addresses]
+description = "Postal addresses"
+type = "array"
+
+[resources.verbs.params.schema.items.properties.addresses.items]
+additionalProperties = false
+description = "A typed postal address. Components map onto the vCard `ADR` structured value (`PO;EXT;STREET;CITY;REGION;POSTAL;COUNTRY`) — we keep the four fields that matter for a daily address book plus a free type label."
+required = [
+    "id",
+    "label",
+    "street",
+    "city",
+    "region",
+    "postal",
+    "country",
+]
+type = "object"
+
+[resources.verbs.params.schema.items.properties.addresses.items.properties.city]
+description = "City"
+type = "string"
+
+[resources.verbs.params.schema.items.properties.addresses.items.properties.country]
+description = "Country"
+type = "string"
+
+[resources.verbs.params.schema.items.properties.addresses.items.properties.id]
+description = "The row's identity, the same on every replica."
+format = "uuid"
+type = "string"
+
+[resources.verbs.params.schema.items.properties.addresses.items.properties.label]
+description = "Type"
+type = "string"
+
+[resources.verbs.params.schema.items.properties.addresses.items.properties.postal]
+description = "Postal code"
+type = "string"
+
+[resources.verbs.params.schema.items.properties.addresses.items.properties.region]
+description = "Region"
+type = "string"
+
+[resources.verbs.params.schema.items.properties.addresses.items.properties.street]
+description = "Street"
+type = "string"
+
+[resources.verbs.params.schema.items.properties.birthday]
+description = "Birthday A full date or a month and day; Calendar shows it."
+
+[[resources.verbs.params.schema.items.properties.birthday.oneOf]]
+type = "null"
+
+[[resources.verbs.params.schema.items.properties.birthday.oneOf]]
+
+[[resources.verbs.params.schema.items.properties.birthday.oneOf.oneOf]]
+additionalProperties = false
+required = ["Full"]
+type = "object"
+
+[resources.verbs.params.schema.items.properties.birthday.oneOf.oneOf.properties.Full]
+additionalProperties = false
+required = [
+    "year",
+    "month",
+    "day",
+]
+type = "object"
+
+[resources.verbs.params.schema.items.properties.birthday.oneOf.oneOf.properties.Full.properties.day]
+maximum = 4294967295
+minimum = 0
+type = "integer"
+
+[resources.verbs.params.schema.items.properties.birthday.oneOf.oneOf.properties.Full.properties.month]
+maximum = 4294967295
+minimum = 0
+type = "integer"
+
+[resources.verbs.params.schema.items.properties.birthday.oneOf.oneOf.properties.Full.properties.year]
+maximum = 2147483647
+minimum = -2147483648
+type = "integer"
+
+[[resources.verbs.params.schema.items.properties.birthday.oneOf.oneOf]]
+additionalProperties = false
+required = ["MonthDay"]
+type = "object"
+
+[resources.verbs.params.schema.items.properties.birthday.oneOf.oneOf.properties.MonthDay]
+additionalProperties = false
+required = [
+    "month",
+    "day",
+]
+type = "object"
+
+[resources.verbs.params.schema.items.properties.birthday.oneOf.oneOf.properties.MonthDay.properties.day]
+maximum = 4294967295
+minimum = 0
+type = "integer"
+
+[resources.verbs.params.schema.items.properties.birthday.oneOf.oneOf.properties.MonthDay.properties.month]
+maximum = 4294967295
+minimum = 0
+type = "integer"
+
+[resources.verbs.params.schema.items.properties.emails]
+description = "Email addresses"
+type = "array"
+
+[resources.verbs.params.schema.items.properties.emails.items]
+additionalProperties = false
+description = "A typed, repeatable single-value field — a phone number or an email address. `label` is a free-form type tag (home / work / mobile / …); `value` is the actual number or address."
+required = [
+    "id",
+    "label",
+    "value",
+]
+type = "object"
+
+[resources.verbs.params.schema.items.properties.emails.items.properties.id]
+description = "The row's identity, the same on every replica."
+format = "uuid"
+type = "string"
+
+[resources.verbs.params.schema.items.properties.emails.items.properties.label]
+description = "Type"
+type = "string"
+
+[resources.verbs.params.schema.items.properties.emails.items.properties.value]
+description = "Value"
+type = "string"
+
+[resources.verbs.params.schema.items.properties.favorite]
+description = "Favorite"
+type = "boolean"
+
+[resources.verbs.params.schema.items.properties.first]
+description = "First name"
+type = "string"
+
+[resources.verbs.params.schema.items.properties.groups]
+description = "Groups"
+type = "array"
+
+[resources.verbs.params.schema.items.properties.groups.items]
+additionalProperties = false
+description = "One group a contact belongs to."
+required = [
+    "id",
+    "value",
+]
+type = "object"
+
+[resources.verbs.params.schema.items.properties.groups.items.properties.id]
+description = "The row's identity, the same on every replica."
+format = "uuid"
+type = "string"
+
+[resources.verbs.params.schema.items.properties.groups.items.properties.value]
+description = "Group"
+type = "string"
+
+[resources.verbs.params.schema.items.properties.id]
+description = "The contact's identity, the same on every replica and in its vCard."
+format = "uuid"
+type = "string"
+
+[resources.verbs.params.schema.items.properties.last]
+description = "Last name"
+type = "string"
+
+[resources.verbs.params.schema.items.properties.notes]
+description = "Notes"
+type = "string"
+
+[resources.verbs.params.schema.items.properties.org]
+description = "Organization"
+type = "string"
+
+[resources.verbs.params.schema.items.properties.phones]
+description = "Phone numbers"
+type = "array"
+
+[resources.verbs.params.schema.items.properties.phones.items]
+additionalProperties = false
+description = "A typed, repeatable single-value field — a phone number or an email address. `label` is a free-form type tag (home / work / mobile / …); `value` is the actual number or address."
+required = [
+    "id",
+    "label",
+    "value",
+]
+type = "object"
+
+[resources.verbs.params.schema.items.properties.phones.items.properties.id]
+description = "The row's identity, the same on every replica."
+format = "uuid"
+type = "string"
+
+[resources.verbs.params.schema.items.properties.phones.items.properties.label]
+description = "Type"
+type = "string"
+
+[resources.verbs.params.schema.items.properties.phones.items.properties.value]
+description = "Value"
+type = "string"
+
+[resources.verbs.params.schema.items.properties.title]
+description = "Title"
+type = "string"
+
+[resources.verbs.params.schema.items.properties.website]
+description = "Website"
+type = "string"
+
+[[resources.verbs]]
+description = "Delete contact."
+destructive = true
+id = "delete-contact"
+kind = "undoable"
+label = "Delete contact"
+
+[[resources.verbs.params]]
+name = "contact"
+required = true
+
+[resources.verbs.params.schema]
+description = "Contact"
+type = "string"
+
+[[resources.verbs]]
+description = "Merge contacts.  Merges another contact into this one and deletes it. Every phone number, email address, postal address and group of either is kept; a field both fill keeps this contact's value unless it is named to be taken from the other."
+destructive = true
+id = "merge-contacts"
+kind = "undoable"
+label = "Merge contacts"
+
+[[resources.verbs.params]]
+name = "contact"
+required = true
+
+[resources.verbs.params.schema]
+description = "Contact"
+type = "string"
+
+[[resources.verbs.params]]
+name = "source"
+required = true
+
+[resources.verbs.params.schema]
+description = "The contact merged into it and deleted"
+format = "uuid"
+type = "string"
+
+[[resources.verbs.params]]
+name = "take_from_source"
+required = true
+
+[resources.verbs.params.schema]
+description = "The fields to take from the merged contact: First, Last, Organization, Title, Website, Birthday, Notes"
+type = "array"
+
+[resources.verbs.params.schema.items]
+description = "One field on which a duplicate review can deliberately keep the other contact's scalar value.  Repeated fields are always unioned by their normalized value, so no unique phone, email, group, or address is silently thrown away."
+enum = [
+    "First",
+    "Last",
+    "Organization",
+    "Title",
+    "Website",
+    "Birthday",
+    "Notes",
+]
+type = "string"
+
+[[resources]]
+kind = "tilo.contacts.identities"
+label = "Contact identities"
+version = 1
+
+[[resources.fields]]
+owner = "contact-directory"
+path = "people"
+stored = "collection"
+title = "People"
+type = "Collection<Person>"
+
+[[resources.fields]]
+owner = "person"
+path = "people.*.label"
+stored = "value"
+title = "Stable Contacts UUID, also the collection key. Never derived from name"
+type = "String"
+
+[[resources.fields]]
+owner = "person"
+path = "people.*.removed"
+stored = "value"
+title = "Removed"
+type = "bool"
+
+[[resources.fields]]
+owner = "person"
+path = "people.*.phones"
+stored = "value"
+title = "International phone hints: candidate discovery only, never proof"
+type = "Json<Vec<String>>"
+
+[[resources.fields]]
+owner = "person"
+path = "people.*.emails"
+stored = "value"
+title = "Address-book mailboxes, never identity evidence or a sending grant"
+type = "Json<Vec<String>>"
+
+[[resources.fields]]
+owner = "person"
+path = "people.*.endpoints"
+stored = "collection"
+title = "Endpoints"
+type = "Collection<Endpoint>"
+
+[[resources.fields]]
+owner = "endpoint"
+path = "people.*.endpoints.*.service"
+stored = "value"
+title = "Service"
+type = "String"
+
+[[resources.fields]]
+owner = "endpoint"
+path = "people.*.endpoints.*.recipient"
+stored = "value"
+title = "Recipient"
+type = "String"
+
+[[resources.fields]]
+owner = "endpoint"
+path = "people.*.endpoints.*.scope"
+stored = "value"
+title = "Provider namespace; empty only for the compatibility endpoint API"
+type = "String"
+
+[[resources.fields]]
+owner = "endpoint"
+path = "people.*.endpoints.*.revision"
+stored = "value"
+title = "Provider identity-key fingerprint or assignment generation"
+type = "String"
+
+[[resources.fields]]
+owner = "endpoint"
+path = "people.*.endpoints.*.removed"
+stored = "value"
+title = "Retained tombstone; the association id must never be reassigned"
+type = "bool"
+
+[[resources.verbs]]
+description = "Update the label of a Contacts identity, without merging similar names or reviving an identity that was deleted."
+id = "project-contact"
+kind = "undoable"
+label = "Update the label of a Contacts identity, without merging similar names"
+
+[[resources.verbs.params]]
+name = "person"
+required = true
+
+[resources.verbs.params.schema]
+description = "Person"
+type = "string"
+
+[[resources.verbs.params]]
+name = "label"
+required = true
+
+[resources.verbs.params.schema]
+description = "Label"
+type = "string"
+
+[[resources.verbs]]
+description = "Tombstone a removed Contacts identity. Delayed projections cannot recreate it and its endpoints cannot be used for sending."
+id = "remove-contact"
+kind = "undoable"
+label = "Tombstone a removed Contacts identity. Delayed projections cannot"
+
+[[resources.verbs.params]]
+name = "person"
+required = true
+
+[resources.verbs.params.schema]
+description = "Person"
+type = "string"
+
+[[resources.verbs]]
+description = "Explicitly confirm that this service recipient belongs to this person. An uncertain candidate never becomes an association merely by appearing in a contact search or having a matching name/phone number."
+destructive = true
+id = "confirm-endpoint"
+kind = "undoable"
+label = "Explicitly confirm that this service recipient belongs to this person"
+
+[[resources.verbs.params]]
+name = "person"
+required = true
+
+[resources.verbs.params.schema]
+description = "Person"
+type = "string"
+
+[[resources.verbs.params]]
+name = "endpoint"
+required = true
+
+[resources.verbs.params.schema]
+description = "Endpoint"
+type = "string"
+
+[[resources.verbs.params]]
+name = "service"
+required = true
+
+[resources.verbs.params.schema]
+description = "Service"
+type = "string"
+
+[[resources.verbs.params]]
+name = "recipient"
+required = true
+
+[resources.verbs.params.schema]
+description = "Recipient"
+type = "string"
+
+[[resources.verbs]]
+description = "Confirm the exact provider-scoped account and observed identity revision. This is an address-book decision, not cryptographic proof or permission."
+destructive = true
+id = "confirm-account"
+kind = "undoable"
+label = "Confirm the exact provider-scoped account and observed identity revision"
+
+[[resources.verbs.params]]
+name = "person"
+required = true
+
+[resources.verbs.params.schema]
+description = "Person"
+type = "string"
+
+[[resources.verbs.params]]
+name = "endpoint"
+required = true
+
+[resources.verbs.params.schema]
+description = "Endpoint"
+type = "string"
+
+[[resources.verbs.params]]
+name = "service"
+required = true
+
+[resources.verbs.params.schema]
+description = "Service"
+type = "string"
+
+[[resources.verbs.params]]
+name = "scope"
+required = true
+
+[resources.verbs.params.schema]
+description = "Scope"
+type = "string"
+
+[[resources.verbs.params]]
+name = "recipient"
+required = true
+
+[resources.verbs.params.schema]
+description = "Recipient"
+type = "string"
+
+[[resources.verbs.params]]
+name = "revision"
+required = true
+
+[resources.verbs.params.schema]
+description = "Revision"
+type = "string"
+
+[[resources.verbs]]
+description = "Replace an address after review, clearing unavailable identity evidence."
+destructive = true
+id = "replace-endpoint"
+kind = "undoable"
+label = "Replace an address after review, clearing unavailable identity evidence"
+
+[[resources.verbs.params]]
+name = "person"
+required = true
+
+[resources.verbs.params.schema]
+description = "Person"
+type = "string"
+
+[[resources.verbs.params]]
+name = "previous"
+required = true
+
+[resources.verbs.params.schema]
+description = "Previous"
+type = "string"
+
+[[resources.verbs.params]]
+name = "endpoint"
+required = true
+
+[resources.verbs.params.schema]
+description = "Endpoint"
+type = "string"
+
+[[resources.verbs.params]]
+name = "service"
+required = true
+
+[resources.verbs.params.schema]
+description = "Service"
+type = "string"
+
+[[resources.verbs.params]]
+name = "recipient"
+required = true
+
+[resources.verbs.params.schema]
+description = "Recipient"
+type = "string"
+
+[[resources.verbs]]
+description = "Replace a reviewed association atomically, retaining the old tombstone."
+destructive = true
+id = "replace-account"
+kind = "undoable"
+label = "Replace a reviewed association atomically, retaining the old tombstone"
+
+[[resources.verbs.params]]
+name = "person"
+required = true
+
+[resources.verbs.params.schema]
+description = "Person"
+type = "string"
+
+[[resources.verbs.params]]
+name = "previous"
+required = true
+
+[resources.verbs.params.schema]
+description = "Previous"
+type = "string"
+
+[[resources.verbs.params]]
+name = "endpoint"
+required = true
+
+[resources.verbs.params.schema]
+description = "Endpoint"
+type = "string"
+
+[[resources.verbs.params]]
+name = "service"
+required = true
+
+[resources.verbs.params.schema]
+description = "Service"
+type = "string"
+
+[[resources.verbs.params]]
+name = "scope"
+required = true
+
+[resources.verbs.params.schema]
+description = "Scope"
+type = "string"
+
+[[resources.verbs.params]]
+name = "recipient"
+required = true
+
+[resources.verbs.params.schema]
+description = "Recipient"
+type = "string"
+
+[[resources.verbs.params]]
+name = "revision"
+required = true
+
+[resources.verbs.params.schema]
+description = "Revision"
+type = "string"
+
+[[resources.verbs]]
+description = "Project phone hints from Contacts. These can suggest candidates only."
+id = "project-phones"
+kind = "undoable"
+label = "Project phone hints from Contacts. These can suggest candidates only"
+
+[[resources.verbs.params]]
+name = "person"
+required = true
+
+[resources.verbs.params.schema]
+description = "Person"
+type = "string"
+
+[[resources.verbs.params]]
+name = "phones"
+required = true
+
+[resources.verbs.params.schema]
+description = "Phones"
+type = "array"
+
+[resources.verbs.params.schema.items]
+type = "string"
+
+[[resources.verbs]]
+description = "Project mailbox hints without creating any service association."
+id = "project-emails"
+kind = "undoable"
+label = "Project mailbox hints without creating any service association"
+
+[[resources.verbs.params]]
+name = "person"
+required = true
+
+[resources.verbs.params.schema]
+description = "Person"
+type = "string"
+
+[[resources.verbs.params]]
+name = "emails"
+required = true
+
+[resources.verbs.params.schema]
+description = "Emails"
+type = "array"
+
+[resources.verbs.params.schema.items]
+type = "string"
+
+[[resources.verbs]]
+description = "Remove a reviewed association. No implicit transfer to another person."
+destructive = true
+id = "forget-endpoint"
+kind = "undoable"
+label = "Remove a reviewed association. No implicit transfer to another person"
+
+[[resources.verbs.params]]
+name = "person"
+required = true
+
+[resources.verbs.params.schema]
+description = "Person"
+type = "string"
+
+[[resources.verbs.params]]
+name = "endpoint"
+required = true
+
+[resources.verbs.params.schema]
+description = "Endpoint"
+type = "string"

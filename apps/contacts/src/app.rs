@@ -6,16 +6,17 @@
 //! carry the commands: search, more and new above the list; favorite, edit
 //! and delete above the person.
 //!
-//! State lives in the Automerge document via [`crate::doc::ContactsDoc`]; the in-memory
-//! [`ContactStore`] is the working mirror the window reads. Every change to
-//! the book is a [`crate::actions::ContactsAction`] dispatched through one
-//! action sink, the same route Ctrl+K and agents take.
+//! The book is the [`Contacts`] record; the in-memory [`ContactStore`] is
+//! the working mirror the window reads. Every change to the book is one of
+//! its verbs or field edits, submitted through the window's dispatcher: the
+//! same door Ctrl+K and agents take.
 
 use crate::resource::Contacts;
 use std::cell::Cell;
 use std::collections::HashMap;
 use std::rc::Rc;
 use ui::framework::{Dispatcher, Jobs};
+use ui::tilo_resource::Invoke;
 use ui::time::{Duration, Instant};
 use ui::widget::{AppModel, ModelPath};
 
@@ -82,8 +83,8 @@ struct ParsedImport {
 
 /// Private, review-only state for a potential duplicate. It is rebuilt from
 /// the current collaborative contacts whenever opened; no tentative choices
-/// leak into the shared document until the explicit Merge button emits the
-/// typed `ContactsAction::MergeContacts` envelope.
+/// leak into the shared document until the explicit Merge button invokes
+/// the book's merge.
 struct DuplicateReview {
     survivor: Contact,
     source: Contact,
@@ -225,6 +226,8 @@ pub struct ContactsApp {
     pending_conflict_resolution: Option<(String, bool)>,
 
     dispatcher: Option<Dispatcher<Contacts>>,
+    /// The book as it was presented last.
+    pub(crate) presented: Option<Rc<Contacts>>,
     pub(crate) jobs: Option<Jobs<Contacts>>,
     pub(crate) account_editor: Option<crate::account_editor::Editor>,
     account_pane: Option<Element>,
@@ -307,13 +310,24 @@ fn find_mut<'w>(root: &'w mut dyn Widget, id: &str) -> Option<&'w mut dyn Widget
 }
 
 impl ContactsApp {
+    /// Apply `invoke` now, as the person's own: what the window asked
+    /// itself (the delete and merge confirmations) is not asked again. A
+    /// saved form, several edits, is submitted as one change after the
+    /// event; a refusal reaches [`Self::announce_refusal`].
     fn try_perform_action(
         &self,
-        _doc: &mut ui::widget::Edits<'_>,
-        action: &crate::actions::ContactsAction,
+        doc: &mut ui::widget::Edits<'_>,
+        invoke: Invoke<Contacts>,
     ) -> Result<(), ui::tilo_actions::ActionError> {
-        self.submit(action)
-            .map_err(ui::tilo_actions::ActionError::Refused)
+        if invoke.is_group() {
+            return self
+                .submit(invoke)
+                .map_err(ui::tilo_actions::ActionError::Refused);
+        }
+        let dispatcher = self.dispatcher.as_ref().ok_or_else(|| {
+            ui::tilo_actions::ActionError::Refused("the address book is not open".into())
+        })?;
+        dispatcher.submit_now(doc, invoke)
     }
     fn reconcile_refused_action(
         &mut self,
@@ -321,6 +335,11 @@ impl ContactsApp {
         operation: &str,
         error: &ui::tilo_actions::ActionError,
     ) {
+        // Nothing changed: show the book as it stands again, in place of
+        // what the window assumed.
+        if let Some(book) = self.presented.clone() {
+            self.present_book(&book);
+        }
         self.show_toast(format!("Couldn't {operation}: {error}"));
     }
 
@@ -336,11 +355,30 @@ impl ContactsApp {
             .collect()
     }
 
+    /// Show the contact a search hit or an agent's `open` names; a contact
+    /// that is gone is refused.
+    pub(crate) fn opener(
+        &self,
+    ) -> impl FnMut(&ui::tilo_resource::Id) -> Result<(), ui::tilo_resource::Refusal> + 'static
+    {
+        let shared = Rc::clone(&self.shared);
+        move |id| {
+            let contact = id
+                .as_str()
+                .parse::<ContactId>()
+                .ok()
+                .filter(|contact| shared.borrow().known.contains(contact))
+                .ok_or_else(|| ui::tilo_resource::Refusal::new("no such contact"))?;
+            shared.borrow_mut().push(Request::Reveal(contact));
+            Ok(())
+        }
+    }
+
     pub(crate) fn attach_dispatcher(&mut self, dispatcher: Dispatcher<Contacts>) {
         self.dispatcher = Some(dispatcher);
     }
 
-    pub(crate) fn present_book(&mut self, state: &crate::resource::ContactsState) {
+    pub(crate) fn present_book(&mut self, state: &Contacts) {
         // A refused save re-presents the book too; keep its form for the
         // announcement that follows.
         if !self
@@ -351,6 +389,7 @@ impl ContactsApp {
             self.unconfirmed_save = None;
         }
         self.store.contacts.clone_from(&state.contacts);
+        self.shared.borrow_mut().known = state.contacts.iter().map(|contact| contact.id).collect();
         self.duplicate_candidate = crate::actions::duplicate_candidates(&self.store.contacts, 1)
             .into_iter()
             .next();
@@ -416,14 +455,14 @@ impl ContactsApp {
         self.show_toast(format!("Couldn't save contact: {}", refusal.reason));
     }
 
-    fn submit(&self, action: &crate::actions::ContactsAction) -> Result<(), String> {
+    fn submit(&self, invoke: Invoke<Contacts>) -> Result<(), String> {
         let Some(dispatcher) = &self.dispatcher else {
             return Err("the address book is not open".into());
         };
         if dispatcher.read_only() {
             return Err("you can only view this address book".into());
         }
-        dispatcher.apply(action);
+        dispatcher.invoke(invoke);
         Ok(())
     }
 
@@ -521,6 +560,7 @@ impl ContactsApp {
             file_work: Rc::default(),
             opened_cards: None,
             dispatcher: None,
+            presented: None,
             jobs: None,
             account_editor: None,
             account_pane: None,
@@ -744,12 +784,18 @@ impl ContactsApp {
             form.collect();
             let c = form.draft.clone();
             let id = c.id;
-            let action = if form.is_new {
-                crate::actions::create_contact_action(&c)
+            let saved = if form.is_new {
+                self.try_perform_action(doc, Contacts::add(&c))
             } else {
-                crate::actions::patch_contact_action(&form.base, &c)
+                match Contacts::save(&form.base, &c) {
+                    Some(invoke) => self.try_perform_action(doc, invoke),
+                    None if self.store.get(id).is_none() => Err(
+                        ui::tilo_actions::ActionError::Refused("no such contact".into()),
+                    ),
+                    None => Ok(()),
+                }
             };
-            match self.try_perform_action(doc, &action) {
+            match saved {
                 Ok(()) => {
                     self.store.upsert(c);
                     self.selected = Some(id);
@@ -789,8 +835,9 @@ impl ContactsApp {
         let Some(favorite) = self.store.get(id).map(|contact| !contact.favorite) else {
             return false;
         };
-        let action = crate::actions::set_favorite_action(id.to_string(), favorite);
-        match self.try_perform_action(doc, &action) {
+        let edit = Invoke::edit(&Contacts::favorite(id, favorite))
+            .map_err(|error| ui::tilo_actions::ActionError::Refused(error.to_string()));
+        match edit.and_then(|edit| self.try_perform_action(doc, edit)) {
             Ok(()) => {
                 if let Some(contact) = self.store.get_mut(id) {
                     contact.favorite = favorite;
@@ -831,8 +878,7 @@ impl ContactsApp {
         if import_as_new {
             let mut contact = conflict.incoming;
             contact.id = uuid::Uuid::new_v4();
-            let action = crate::actions::create_contact_action(&contact);
-            self.try_perform_action(doc, &action)
+            self.try_perform_action(doc, Contacts::add(&contact))
                 .map_err(|error| error.to_string())?;
             self.store.upsert(contact);
             self.show_toast("Imported as a new contact");
@@ -930,8 +976,7 @@ impl ContactsApp {
     }
 
     fn delete_selected(&mut self, doc: &mut ui::widget::Edits<'_>, id: ContactId) {
-        let action = crate::actions::delete_contact_action(id.to_string());
-        match self.try_perform_action(doc, &action) {
+        match self.try_perform_action(doc, Contacts::delete(id)) {
             Ok(()) => {
                 self.store.delete(id);
                 if self.form.as_ref().is_some_and(|form| form.draft.id == id) {
@@ -1449,6 +1494,11 @@ impl ContactsApp {
     fn apply_request(&mut self, doc: &mut ui::widget::Edits<'_>, request: Request) {
         match request {
             Request::Select(id) => self.request_select(id),
+            Request::Reveal(id) => {
+                if self.store.get(id).is_some() {
+                    self.reveal_contact(id);
+                }
+            }
             Request::Edit(id) => {
                 if let Some(contact) = self.store.get(id).cloned() {
                     self.selected = Some(id);

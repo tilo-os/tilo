@@ -1,10 +1,10 @@
 use super::files::ImportSummary;
 use super::*;
-use crate::doc::ContactsDoc;
 use crate::form::{Slot, TYPE_OPTIONS, TypeTarget};
 use crate::model::normalize_text;
 use crate::model::sample_contacts;
 use crate::model::{Address, Birthday};
+use crate::resource::Contacts;
 use crate::vcard;
 use crate::view::DialogChoice;
 use automerge::AutoCommit;
@@ -12,9 +12,9 @@ use automerge::ROOT;
 use std::collections::HashSet;
 use std::path::PathBuf;
 use taffy::{AvailableSpace, Dimension, Size, Style};
-use tilo_automerge::ApplyIncoming;
 use ui::a11y::{AccessNode, Role};
 use ui::permissions::PermissionContext;
+use ui::tilo_resource::{Invoke, Replica};
 use ui::tokens::colors::ON_FILL_MIN_CONTRAST;
 use vello::kurbo::Point;
 
@@ -144,24 +144,12 @@ fn form_slots(form: &EditForm) -> Vec<Slot> {
 /// from a door, it edits nothing: tests of what an edit writes run the app.
 fn sampled() -> ContactsApp {
     let mut app = ContactsApp::new();
-    app.present_book(&crate::resource::ContactsState {
-        contacts: crate::resource::sample_book(),
-        ..crate::resource::ContactsState::default()
+    app.present_book(&Contacts {
+        contacts: crate::resource::sample_book().into(),
+        ..Contacts::default()
     });
     app.stage_capture(None);
     app
-}
-
-/// The book `app` presents, as the framework publishes it.
-fn published(app: &ContactsApp) -> Vec<tilo_actions::Resource> {
-    vec![ui::tilo_resource::publish::<crate::resource::Contacts>(
-        "contacts.book",
-        "Contacts",
-        &crate::resource::ContactsState {
-            contacts: app.store.contacts.clone(),
-            ..crate::resource::ContactsState::default()
-        },
-    )]
 }
 
 /// The sample book synced into a fresh document.
@@ -404,7 +392,7 @@ fn sidebar_destinations_narrow_the_list() {
         let mut contact = app.store.get(id).cloned().unwrap();
         let before = contact.clone();
         contact.groups.clear();
-        app.invoke(&crate::actions::patch_contact_action(&before, &contact));
+        app.invoke(Contacts::save(&before, &contact).unwrap());
         app.store.upsert(contact);
     }
     app.list_stale = true;
@@ -769,22 +757,20 @@ fn search_and_open_operations_reveal_their_target() {
             .expect("Grace is seeded")
             .id;
         app.selected = None;
-        let entries = <crate::resource::Contacts as ui::tilo_resource::Resource>::search(
-            &crate::resource::ContactsState {
-                contacts: app.book(),
-                ..crate::resource::ContactsState::default()
-            },
-        );
+        let entries = <Contacts as ui::tilo_resource::Resource>::search(&Contacts {
+            contacts: app.book().into(),
+            ..Contacts::default()
+        });
         let hits: Vec<_> = entries
             .iter()
             .filter(|entry| entry.text.to_lowercase().contains("navy"))
             .collect();
         assert_eq!(hits.len(), 1, "the organisation finds one contact");
         assert_eq!(hits[0].title, "Grace Hopper");
-        let address = hits[0].action.clone().expect("the hit invokes an action");
-        assert_eq!(address, crate::actions::open_contact_address(id));
+        let anchor = hits[0].anchor.clone().expect("the hit opens a contact");
+        assert_eq!(anchor, crate::resource::contact_resource_id(id));
         app.app
-            .call_on(&address.resource, &address.action, serde_json::json!({}))
+            .call("open", serde_json::json!({ "anchor": anchor }))
             .expect("the open operation succeeds");
         app.settle();
         assert_eq!(app.selected, Some(id), "the open action selected Grace");
@@ -811,17 +797,11 @@ fn search_and_open_operations_reveal_their_target() {
             "the Friends group filter hides Grace before activation"
         );
 
-        let resources = published(&app);
-        let address = crate::actions::open_contact_address(id);
-        let spec = tilo_actions::door::resolve(&resources, &address)
-            .expect("the search address resolves in the agent-visible tree");
-        let encoded = ui::testing::action_contract::spec_encoding(spec, None);
-        let effect = <crate::actions::ContactsEffect as ui::tilo_resource::Effect>::from_payload(
-            &encoded.payload,
-        )
-        .expect("the address names a contacts effect");
         app.app
-            .effect_on(&address.resource, &effect)
+            .call(
+                "open",
+                serde_json::json!({ "anchor": crate::resource::contact_resource_id(id) }),
+            )
             .expect("the addressed open succeeds");
         app.settle();
 
@@ -848,7 +828,7 @@ fn search_and_open_operations_reveal_their_target() {
             .expect("samples expose Work");
         app.app
             .effect_on(
-                &crate::actions::group_resource_id(&group),
+                &crate::resource::place_resource_id(&crate::resource::group_place(&group)),
                 &crate::actions::ContactsEffect::OpenGroup {
                     name: group.clone(),
                 },
@@ -1082,7 +1062,7 @@ fn saves_persist_and_refusals_never_claim_success() {
         set_title(&app, "Unsaved draft");
         // A collaborator deletes the record while it is being edited.
         app.app
-            .merge_peer_edit(|doc| ContactsDoc::delete_contact(doc, contact.id));
+            .merge_peer_edit(|doc| peer_applies(doc, Contacts::delete(contact.id)));
         app.settle();
         app.save_edit();
         app.settle();
@@ -1122,17 +1102,14 @@ fn saves_persist_and_refusals_never_claim_success() {
             .cloned()
             .unwrap();
         app.app
-            .merge_peer_edit(|doc| ContactsDoc::delete_contact(doc, contact.id));
+            .merge_peer_edit(|doc| peer_applies(doc, Contacts::delete(contact.id)));
         app.settle();
         app.store.upsert(contact.clone());
         app.selected = Some(contact.id);
 
         assert!(
-            app.submit(&crate::actions::set_favorite_action(
-                contact.id.to_string(),
-                !contact.favorite,
-            ))
-            .is_ok(),
+            app.submit(Invoke::edit(&Contacts::favorite(contact.id, !contact.favorite)).unwrap())
+                .is_ok(),
             "the stale control submits the typed favorite action"
         );
         app.settle();
@@ -1162,7 +1139,10 @@ fn saves_persist_and_refusals_never_claim_success() {
             "delete refusal reconciles"
         );
         let delete_error = app.toast.as_ref().unwrap().0.clone();
-        assert!(delete_error.starts_with("Couldn't change the address book:"));
+        assert!(
+            delete_error.starts_with("Couldn't delete contact:"),
+            "{delete_error}"
+        );
         assert_ne!(delete_error, "Contact deleted", "no false success toast");
         assert!(
             live_message(&app.accessibility().unwrap(), &delete_error).is_some(),
@@ -1889,9 +1869,7 @@ fn delete_confirmation_dispatches_the_palette_action() {
         // "Delete contact" spec builds for the same contact.
         let mut h = Harness::new(1280, 800);
         let id = h.row_id(0);
-        let expected = h
-            .app
-            .book_after(&crate::actions::delete_contact_action(id.to_string()));
+        let expected = h.app.book_after(Contacts::delete(id));
         h.app.confirm_delete = Some(id);
         h.relayout();
         let del = current_dialog(&*h.app).primary_rect();
@@ -1965,10 +1943,9 @@ fn favorite_toggles_dispatch_and_reconcile_with_feedback() {
         let row = h.row_center(0);
         let id = h.row_id(0);
         let before = h.app.store.get(id).unwrap().favorite;
-        let expected = h.app.book_after(&crate::actions::set_favorite_action(
-            id.to_string(),
-            !before,
-        ));
+        let expected = h
+            .app
+            .book_after(Invoke::edit(&Contacts::favorite(id, !before)).unwrap());
 
         assert!(h.press_right(row));
         let rows = menu_rows(&h.app);
@@ -1994,16 +1971,12 @@ fn favorite_toggles_dispatch_and_reconcile_with_feedback() {
         h.app
             .app
             .call_on(
-                &crate::actions::contact_resource_id(id),
-                "delete",
+                &crate::resource::contact_resource_id(id),
+                "delete-contact",
                 serde_json::json!({}),
             )
             .expect_err("deleting asks for confirmation");
-        let action = crate::actions::delete_contact_action(id.to_string());
-        h.app
-            .app
-            .invoke_confirmed(ui::tilo_resource::Invoke::apply(&action).unwrap())
-            .unwrap();
+        h.app.app.invoke_confirmed(Contacts::delete(id)).unwrap();
         h.app.settle();
         assert!(
             h.app.store.get(id).is_none(),
@@ -2488,8 +2461,9 @@ fn search_field_focus_and_typing_narrow_the_list() {
     );
     let grace = id_named(&h.app, "Grace Hopper");
     assert_eq!(
-        people[0].action_address(),
-        Some(crate::actions::open_contact_address(grace))
+        people[0].action_id,
+        crate::resource::contact_resource_id(grace),
+        "the hit opens the contact"
     );
     assert!(providers[0].search("definitely no contact").is_empty());
     let request = ui::search::SearchRequest::this_app().with_query("hopper");
@@ -3292,7 +3266,7 @@ fn saved_book_persists_across_restarts_and_imports() {
         let mut app = Live::sample(1280, 800);
         let before = app.store.len();
         let removed = app.store.contacts[0].id;
-        app.invoke(&crate::actions::delete_contact_action(removed.to_string()));
+        app.invoke(Contacts::delete(removed));
         app.settle();
 
         // Relaunch: the deletion stuck.
@@ -3393,9 +3367,9 @@ fn check_import_conflict_decisions() {
         let mut app = Live::empty(w, h);
         let mut summary = ImportSummary::default();
         let mut first_new = None;
-        app.absorb_import_contact(original.clone(), &mut summary, &mut first_new);
+        app.absorb_import_contacts([original.clone()], &mut summary, &mut first_new);
         app.settle();
-        app.absorb_import_contact(incoming.clone(), &mut summary, &mut first_new);
+        app.absorb_import_contacts([incoming.clone()], &mut summary, &mut first_new);
         assert_eq!(summary.conflicts, 1);
         app.recompose();
         (app, original, incoming)
@@ -3504,7 +3478,7 @@ fn check_duplicate_resource_and_compact_header() {
         .expect("a shared email/name identifies a candidate");
     let published = app.app.agent_surface().to_string();
     assert!(
-        published.contains("contacts.duplicate"),
+        published.contains("contacts.book/derived/duplicate:"),
         "the exact duplicate resource is published"
     );
     app.choose_more(MoreAction::ReviewDuplicate);
@@ -3842,7 +3816,7 @@ impl Live {
     /// so far have applied.
     fn book(&mut self) -> Vec<Contact> {
         self.settle();
-        self.app.state().contacts
+        self.app.state().contacts.to_vec()
     }
 
     /// Close the app and launch it again on the same profile, as after a
@@ -3856,10 +3830,8 @@ impl Live {
         self.shared.borrow_mut().push(request);
         self.app.settle();
     }
-    fn invoke(&mut self, action: &crate::actions::ContactsAction) {
-        self.app
-            .invoke(ui::tilo_resource::Invoke::apply(action).unwrap())
-            .unwrap();
+    fn invoke(&mut self, invoke: Invoke<Contacts>) {
+        self.app.invoke_confirmed(invoke).unwrap();
         self.settle();
     }
     fn choose_menu(&mut self, index: usize) {
@@ -3881,10 +3853,11 @@ impl Live {
     }
     /// The address book as it would be after `action`, applied to a copy of
     /// the document as the palette's action of the same name applies it.
-    fn book_after(&self, action: &crate::actions::ContactsAction) -> Vec<Contact> {
-        let mut peer = self.app.peer_document();
-        tilo_actions::Action::apply(action, &mut peer).expect("the palette's action applies");
-        ContactsDoc::list_contacts(&peer)
+    fn book_after(&self, invoke: Invoke<Contacts>) -> Vec<Contact> {
+        let mut peer = Replica::<Contacts>::from_doc(self.app.peer_document());
+        peer.apply_confirmed(invoke)
+            .expect("the palette's action applies");
+        peer.state().unwrap().contacts.to_vec()
     }
 }
 
@@ -3925,7 +3898,7 @@ fn duplicates_are_reviewed_field_by_field_before_merging() {
     let mut copy = ada.clone();
     copy.id = uuid::Uuid::from_u128(ada.id.as_u128() + 0x100);
     copy.org = "Babbage & Co.".into();
-    app.invoke(&crate::actions::create_contact_action(&copy));
+    app.invoke(Contacts::add(&copy));
     app.settle();
     assert!(
         app.duplicate_candidate.is_some(),
@@ -4067,7 +4040,7 @@ fn check_refused_save_reconciles_and_announces_an_error_without_claiming_success
     let mut app = synced();
     let contact = selected_contact(&app);
     app.app
-        .merge_peer_edit(|doc| ContactsDoc::delete_contact(doc, contact.id));
+        .merge_peer_edit(|doc| peer_applies(doc, Contacts::delete(contact.id)));
     app.settle();
     app.begin_edit(contact.clone(), false);
     app.save_edit();
@@ -4090,7 +4063,7 @@ fn check_refused_favorite_and_delete_reconcile_without_false_success() {
     let mut app = synced();
     let contact = selected_contact(&app);
     app.app
-        .merge_peer_edit(|doc| ContactsDoc::delete_contact(doc, contact.id));
+        .merge_peer_edit(|doc| peer_applies(doc, Contacts::delete(contact.id)));
     app.settle();
     // A control can still have the last rendered contact when the peer's
     // tombstone reaches the door. Submit that real stale view request;
@@ -4109,7 +4082,7 @@ fn check_refused_favorite_and_delete_reconcile_without_false_success() {
     assert!(
         toast(&app)
             .unwrap()
-            .starts_with("Couldn't change the address book:")
+            .starts_with("Couldn't update favorite:")
     );
 
     for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
@@ -4413,12 +4386,13 @@ fn check_large_books_virtualize_rows_and_keep_keyboard_selection_in_view() {
         })
         .collect();
     h.app.app.merge_peer_edit(|doc| {
-        for contact in ContactsDoc::list_contacts(doc) {
-            ContactsDoc::delete_contact(doc, contact.id);
-        }
-        for contact in &directory {
-            ContactsDoc::create_contact(doc, contact);
-        }
+        let book = Replica::<Contacts>::from_doc(doc.fork()).state().unwrap();
+        let invokes = book
+            .contacts
+            .iter()
+            .map(|contact| Contacts::delete(contact.id))
+            .chain([Contacts::add_all(directory.clone())]);
+        peer_applies(doc, Invoke::group(invokes));
     });
     h.app.settle();
     h.app.selected = Some(directory[0].id);
@@ -4512,29 +4486,17 @@ fn check_reimporting_the_same_uidless_card_is_idempotent() {
 
 fn check_disconnected_uidless_imports_converge_on_one_contact_and_stable_rows() {
     let card = "BEGIN:VCARD\r\nVERSION:4.0\r\nFN:Grace Hopper\r\nN:Hopper;Grace;;;\r\nTEL;TYPE=work:+1 202 555 0143\r\nEMAIL:grace@example.com\r\nCATEGORIES:Pioneers\r\nEND:VCARD\r\n";
-    let mut ancestor = AutoCommit::new();
-    ancestor.commit();
-    let mut left = ancestor.fork();
-    let mut right = ancestor.fork();
+    let mut left = Replica::<Contacts>::new();
+    let mut right = left.fork();
     let left_contact = vcard::parse_vcards(card).pop().unwrap();
     let right_contact = vcard::parse_vcards(card).pop().unwrap();
     assert_eq!(left_contact, right_contact);
 
-    tilo_actions::Action::apply(
-        &crate::actions::create_contact_action(&left_contact),
-        &mut left,
-    )
-    .unwrap();
-    tilo_actions::Action::apply(
-        &crate::actions::create_contact_action(&right_contact),
-        &mut right,
-    )
-    .unwrap();
-    left.commit();
-    right.commit();
-    left.merge_incoming(&mut right).unwrap();
+    left.apply(Contacts::add(&left_contact)).unwrap();
+    right.apply(Contacts::add(&right_contact)).unwrap();
+    left.sync_with(&mut right).unwrap();
 
-    let merged = ContactsDoc::list_contacts(&left);
+    let merged = left.state().unwrap().contacts.to_vec();
     assert_eq!(
         merged.len(),
         1,
@@ -4634,4 +4596,14 @@ fn narrow_sort_row_has_full_aligned_control_without_extra_gutters() {
         assert!(control.x0 >= 0.0 && control.x1 <= 390.0);
         assert!(app.sort_choice.with(|value| value == "name"));
     }
+}
+
+/// A collaborator's `invoke`, written on their replica of `doc` and merged
+/// back into it.
+fn peer_applies(doc: &mut ui::tilo_resource::Doc, invoke: Invoke<Contacts>) {
+    let mut peer = Replica::<Contacts>::from_doc(doc.fork());
+    peer.apply_confirmed(invoke)
+        .expect("the peer's change applies");
+    tilo_automerge::ApplyIncoming::merge_incoming(doc, peer.doc_mut())
+        .expect("the peer's change merges");
 }

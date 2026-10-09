@@ -8,7 +8,7 @@ use crate::resource::Contacts;
 #[cfg(test)]
 use std::path::PathBuf;
 use std::rc::Rc;
-use ui::framework::{ChosenFile, Dispatcher};
+use ui::framework::ChosenFile;
 
 use ui::portal::{FileFilter, PickRequest};
 
@@ -161,7 +161,7 @@ impl ContactsApp {
         }
         let mut summary = ImportSummary::default();
         let mut first_new = None;
-        let group = self.dispatcher.as_ref().map(Dispatcher::begin_group);
+        let mut cards = Vec::new();
         for path in paths {
             let text = match Self::read_import_file(path) {
                 Ok(t) => t,
@@ -177,11 +177,9 @@ impl ContactsApp {
             let report = vcard::parse_vcards_report(&text);
             summary.errors += report.skipped_cards;
             summary.errors += usize::from(report.limit_reached);
-            for c in report.contacts {
-                self.absorb_import_contact(c, &mut summary, &mut first_new);
-            }
+            cards.extend(report.contacts);
         }
-        drop(group);
+        self.absorb_import_contacts(cards, &mut summary, &mut first_new);
         if let Some(id) = first_new {
             self.selected = Some(id);
         }
@@ -198,44 +196,64 @@ impl ContactsApp {
         }
         summary
     }
-    pub(super) fn absorb_import_contact(
+    /// Add the imported `cards` the book does not hold yet, as one change;
+    /// a card whose id names a contact already is unchanged or waits for
+    /// review, and one whose contact was deleted is not brought back.
+    pub(super) fn absorb_import_contacts(
         &mut self,
-        c: Contact,
+        cards: impl IntoIterator<Item = Contact>,
         summary: &mut ImportSummary,
         first_new: &mut Option<ContactId>,
     ) {
-        if let Some(existing) = self.store.get(c.id) {
-            if same_import_payload(existing, &c) {
-                summary.unchanged += 1;
-            } else {
-                let contact_id = c.id;
-                if self.import_conflicts.len() < MAX_IMPORT_CONFLICTS {
-                    self.import_conflicts.push(ImportConflict {
-                        token: uuid::Uuid::new_v4(),
-                        existing: existing.id,
-                        incoming: c,
-                    });
-                    summary.conflicts += 1;
+        let mut added = Vec::new();
+        for c in cards {
+            if let Some(existing) = self.store.get(c.id) {
+                if same_import_payload(existing, &c) {
+                    summary.unchanged += 1;
                 } else {
-                    // Do not claim this collision is reviewable when the
-                    // bounded review queue deliberately declined it.
-                    summary.errors += 1;
+                    let contact_id = c.id;
+                    if self.import_conflicts.len() < MAX_IMPORT_CONFLICTS {
+                        self.import_conflicts.push(ImportConflict {
+                            token: uuid::Uuid::new_v4(),
+                            existing: existing.id,
+                            incoming: c,
+                        });
+                        summary.conflicts += 1;
+                    } else {
+                        // Do not claim this collision is reviewable when the
+                        // bounded review queue deliberately declined it.
+                        summary.errors += 1;
+                    }
+                    tracing::warn!(%contact_id, "contacts: import UID collision needs review");
                 }
-                tracing::warn!(%contact_id, "contacts: import UID collision needs review");
+                continue;
             }
+            if self
+                .presented
+                .as_ref()
+                .is_some_and(|book| book.removed.contains(&c.id))
+            {
+                summary.errors += 1;
+                tracing::warn!(contact_id = %c.id, "contacts: import of a deleted contact");
+                continue;
+            }
+            self.store.upsert(c.clone());
+            added.push(c);
+        }
+        if added.is_empty() {
             return;
         }
-        let action = crate::actions::create_contact_action(&c);
-        match self.submit(&action) {
+        let count = added.len();
+        let first = added.first().map(|contact| contact.id);
+        match self.submit(crate::resource::Contacts::add_all(added)) {
             Ok(()) => {
                 if first_new.is_none() {
-                    *first_new = Some(c.id);
+                    *first_new = first;
                 }
-                self.store.upsert(c);
-                summary.created += 1;
+                summary.created += count;
             }
             Err(error) => {
-                summary.errors += 1;
+                summary.errors += count;
                 tracing::warn!(error = %error, "contacts: import action refused");
             }
         }
@@ -262,12 +280,7 @@ impl ContactsApp {
             ..ImportSummary::default()
         };
         let mut first_new = None;
-        {
-            let _group = self.dispatcher.as_ref().map(Dispatcher::begin_group);
-            for contact in parsed.contacts {
-                self.absorb_import_contact(contact, &mut summary, &mut first_new);
-            }
-        }
+        self.absorb_import_contacts(parsed.contacts, &mut summary, &mut first_new);
         if let Some(id) = first_new {
             self.selected = Some(id);
         }
@@ -525,10 +538,7 @@ impl ContactsApp {
             .dispatcher
             .as_ref()
             .ok_or("the address book is not open")?;
-        dispatcher.effect_on(
-            &crate::actions::contact_resource_id(id),
-            &crate::actions::ContactsEffect::ExportContact { contact: id },
-        );
+        dispatcher.effect(&crate::actions::ContactsEffect::ExportContact { contact: id });
         Ok(true)
     }
 }
@@ -547,7 +557,10 @@ impl ContactsApp {
             .as_ref()
             .ok_or("the address book is not open")?;
         dispatcher.effect_on(
-            &crate::actions::duplicate_resource_id(candidate.survivor_id, candidate.source_id),
+            &crate::resource::place_resource_id(&crate::resource::duplicate_place(
+                candidate.survivor_id,
+                candidate.source_id,
+            )),
             &crate::actions::ContactsEffect::OpenReview {
                 survivor: candidate.survivor_id,
                 source: candidate.source_id,

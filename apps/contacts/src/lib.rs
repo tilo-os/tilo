@@ -2,9 +2,9 @@
 //! toolkit.
 //!
 //! The app is [`ContactsShell`], a framework app over the [`Contacts`]
-//! resource: every host mounts it through [`definition`]. The data model,
-//! vCard interop, the Automerge document layer and the master/detail widget
-//! live in the modules below so each layer is testable in isolation.
+//! address book: every host mounts it through [`definition`]. The data
+//! model, vCard interop and the master/detail widget live in the modules
+//! below so each layer is testable in isolation.
 
 // Apps run in isolated processes, so app-local arithmetic checks are relaxed.
 // Panic-producing lints remain denied; shared crates retain the full lint set
@@ -31,7 +31,6 @@ pub mod actions;
 pub mod app;
 pub mod date;
 mod detail;
-pub mod doc;
 mod form;
 pub mod model;
 mod priority_contacts;

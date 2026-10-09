@@ -1,106 +1,321 @@
-//! Contacts as a [`tilo_resource::Resource`]: one action vocabulary, one
-//! published tree for the address book.
+//! The address book, its verbs, the places derived from it, and the app.
 //!
-//! Document mutations (new contact, per-contact patch / favourite / delete,
-//! the reviewed merge of a likely duplicate) live on this resource via
-//! [`Resource::declarations`] / [`Resource::children`]; a book larger than the
-//! published page resolves the rest by id ([`Resource::child`]). Import and
-//! export are Effects with no document delta ([`Resource::local_operations`]).
-//! Imported cards waiting for review are live rows of the surface: they are
-//! not in the document until the person decides.
+//! A contact's fields change through the field edits every path offers
+//! (`Contacts::paths().contacts.item(&id).favorite.set(true)`), and a saved
+//! form is exactly the edits between the contact it opened and the contact
+//! it saves ([`Contacts::save`]), so a stale form never overwrites what
+//! someone else changed meanwhile. The methods below are the operations
+//! that are more than setting a field: adding, deleting and merging
+//! contacts. Groups, the favorites and likely duplicates are derived from
+//! the contacts and published as places that reveal them.
 
+use std::collections::HashSet;
 use std::rc::Rc;
 
 use ui::framework::{LiveRow, ResourceApp, ResourceSurface, SurfaceCx, ViewCx};
-use ui::tilo_actions::{ActionParam, PROMPTED_PARAM, ParamType, Resource as PublishedResource};
-use ui::tilo_resource::{ActionDecl, Doc, Invoke, ModelError, Resource, SearchEntry};
+use ui::tilo_actions::ActionAddress;
+use ui::tilo_resource::{
+    self, ActionCx, Derived, Edit, Effect as _, Id, Invoke, Keyed, Model, Refusal, SearchEntry,
+    Set, resource,
+};
 use ui::widget::Element;
 use uuid::Uuid;
 
 use crate::actions::{
-    CONTACTS_ACTION_TYPE, ContactsAction, ContactsEffect, contact_resource_id,
-    create_contact_action, open_contact_address, open_group_address, ordered_groups,
-    publish_children, register, resolve_child, split_name,
+    ContactsEffect, MAX_CONTEXT_DUPLICATE_RESOURCES, MergeField, duplicate_candidate,
+    duplicate_candidates, ordered_groups, reviewed_merge_contact, split_name,
 };
 use crate::app::ContactsApp;
-use crate::doc::ContactsDoc;
-use crate::model::{Birthday, Contact, Labeled, sample_contacts};
+use crate::model::{Birthday, Contact, ContactId, Labeled, normalize_text, sample_contacts};
 
-/// The address book's state: every contact, in document order.
-#[derive(Clone, Debug, Default)]
-pub struct ContactsState {
-    pub contacts: Vec<Contact>,
-    pub removed: Vec<Uuid>,
+/// The address book.
+#[derive(Model, Clone, Debug, Default, PartialEq)]
+pub struct Contacts {
+    /// Contacts
+    pub contacts: Keyed<Contact>,
+    /// The contacts deleted from the book. A deleted contact's id never
+    /// names a contact again, so a late copy of its card cannot bring it
+    /// back.
+    #[model(readonly)]
+    pub removed: Set<ContactId>,
 }
 
-/// The contacts book resource.
-pub struct Contacts;
-
-impl Resource for Contacts {
-    const KIND: &'static str = "contacts.book";
-    const LABEL: &'static str = "Contacts";
-    const ACTION_TYPE: &'static str = CONTACTS_ACTION_TYPE;
-
-    type State = ContactsState;
-    type Action = ContactsAction;
-
-    fn register(registry: &mut ui::tilo_actions::ActionRegistry) {
-        register(registry);
+#[resource(
+    kind = "contacts.book",
+    label = "Contacts",
+    children = Contacts::places,
+    search = Contacts::search
+)]
+impl Contacts {
+    /// New contact.
+    ///
+    /// A contact with a typed full name: its first word is the first name,
+    /// the rest the last name.
+    #[action]
+    pub fn new_contact(
+        &mut self,
+        cx: &mut ActionCx,
+        #[param("Full name")] name: String,
+    ) -> Result<(), Refusal> {
+        let (first, last) = split_name(&name);
+        if first.is_empty() {
+            return Err(Refusal::new("a new contact has a name"));
+        }
+        self.contacts.push(Contact {
+            id: cx.uuid(),
+            first,
+            last,
+            ..Contact::default()
+        });
+        self.contacts.settle();
+        Ok(())
     }
 
-    fn read(doc: &Doc) -> Result<ContactsState, ModelError> {
-        Ok(ContactsState {
-            contacts: ContactsDoc::list_contacts(doc),
-            removed: ContactsDoc::removed_contacts(doc),
+    /// Add contacts.
+    ///
+    /// Whole cards, written in the form or imported, added as one change.
+    /// Each id is new to the book: neither a contact's nor a deleted
+    /// contact's.
+    #[action]
+    pub fn add_contacts(
+        &mut self,
+        #[param("The contacts")] contacts: Vec<Contact>,
+    ) -> Result<(), Refusal> {
+        if contacts.is_empty() {
+            return Err(Refusal::new("no contacts to add"));
+        }
+        for contact in contacts {
+            if self.removed.contains(&contact.id) || self.contact(contact.id).is_some() {
+                return Err(Refusal::new(
+                    "a contact with this id is in the book or was deleted",
+                ));
+            }
+            self.contacts.push(contact);
+        }
+        self.contacts.settle();
+        Ok(())
+    }
+
+    /// Delete contact.
+    #[action(destructive, item = contacts)]
+    pub fn delete_contact(&mut self, contact: &Id) -> Result<(), Refusal> {
+        let removed = self
+            .contacts
+            .take(contact)
+            .ok_or_else(|| Refusal::new("no such contact"))?;
+        self.removed.insert(removed.id);
+        Ok(())
+    }
+
+    /// Merge contacts.
+    ///
+    /// Merges another contact into this one and deletes it. Every phone
+    /// number, email address, postal address and group of either is kept;
+    /// a field both fill keeps this contact's value unless it is named to
+    /// be taken from the other.
+    #[action(destructive, item = contacts)]
+    pub fn merge_contacts(
+        &mut self,
+        contact: &Id,
+        #[param("The contact merged into it and deleted")] source: ContactId,
+        #[param(
+            "The fields to take from the merged contact: First, Last, Organization, Title, \
+             Website, Birthday, Notes"
+        )]
+        take_from_source: Vec<MergeField>,
+    ) -> Result<(), Refusal> {
+        let survivor = self
+            .contacts
+            .find(contact)
+            .ok_or_else(|| Refusal::new("no such contact"))?;
+        if survivor.id == source {
+            return Err(Refusal::new("a contact is not merged into itself"));
+        }
+        let other = self
+            .contact(source)
+            .ok_or_else(|| Refusal::new("no contact to merge"))?;
+        let choices: HashSet<MergeField> = take_from_source.into_iter().collect();
+        let merged = reviewed_merge_contact(survivor, other, &choices);
+        if let Some(survivor) = self.contacts.find_mut(contact) {
+            *survivor = merged;
+        }
+        self.contacts.retain(|candidate| candidate.id != source);
+        self.removed.insert(source);
+        Ok(())
+    }
+}
+
+impl Contacts {
+    /// The contact `id`.
+    pub fn contact(&self, id: ContactId) -> Option<&Contact> {
+        self.contacts.iter().find(|contact| contact.id == id)
+    }
+
+    /// The id the contact `id` is stored under.
+    pub fn key(id: ContactId) -> Id {
+        Id::from_raw(id.to_string())
+    }
+
+    /// Adding `contact`, whole.
+    pub fn add(contact: &Contact) -> Invoke<Self> {
+        Self::add_all(vec![contact.clone()])
+    }
+
+    /// Adding `contacts`, whole, as one change.
+    pub fn add_all(contacts: Vec<Contact>) -> Invoke<Self> {
+        Self::ADD_CONTACTS.with(contacts)
+    }
+
+    /// Deleting the contact `id`.
+    pub fn delete(id: ContactId) -> Invoke<Self> {
+        Self::DELETE_CONTACT.with(Self::key(id))
+    }
+
+    /// Making the contact `id` a favorite, or no longer one.
+    pub fn favorite(id: ContactId, favorite: bool) -> Edit<Self> {
+        Self::paths()
+            .contacts
+            .item(&Self::key(id))
+            .favorite
+            .set(favorite)
+    }
+
+    /// The edits that change `base` into `edited`, field by field and row by
+    /// row: what a form that opened on `base` saves.
+    pub fn edits(base: &Contact, edited: &Contact) -> Vec<Edit<Self>> {
+        Self::paths()
+            .contacts
+            .item_path(&Self::key(base.id))
+            .edits(base, edited)
+    }
+
+    /// Saving a form that opened on `base` as `edited`: its [edits](Self::edits)
+    /// as one change, or nothing when it changed nothing.
+    pub fn save(base: &Contact, edited: &Contact) -> Option<Invoke<Self>> {
+        let edits: Vec<Invoke<Self>> = Self::edits(base, edited)
+            .iter()
+            .filter_map(|edit| Invoke::edit(edit).ok())
+            .collect();
+        (!edits.is_empty()).then(|| Invoke::group(edits))
+    }
+
+    /// Merging `source` into `survivor`, taking the fields `take` from
+    /// `source`.
+    pub fn merge(
+        survivor: ContactId,
+        source: ContactId,
+        take: impl IntoIterator<Item = MergeField>,
+    ) -> Invoke<Self> {
+        Self::MERGE_CONTACTS.with(contacts::MergeContacts {
+            contact: Self::key(survivor),
+            source,
+            take_from_source: take.into_iter().collect(),
         })
     }
 
-    fn declarations() -> Vec<ActionDecl<Self>> {
-        vec![
-            ActionDecl::new(
-                "new-contact",
-                "New contact",
-                vec![ActionParam::required(
-                    PROMPTED_PARAM,
-                    ParamType::Text,
-                    "Name",
-                )],
-                |args, _| {
-                    let name = args.text(PROMPTED_PARAM).unwrap_or_default();
-                    let (first, last) = split_name(name);
-                    let mut contact = Contact::new();
-                    contact.first = first;
-                    contact.last = last;
-                    Ok(create_contact_action(&contact))
-                },
-            )
-            .describe("Create a new contact from a typed full name."),
-        ]
-    }
-
-    fn children(state: &ContactsState) -> Vec<PublishedResource> {
-        publish_children(&state.contacts)
-    }
-
-    fn child(state: &ContactsState, id: &str) -> Option<PublishedResource> {
-        resolve_child(&state.contacts, id)
+    /// The favorites, every group and the likely duplicates (a bounded
+    /// number), as places that reveal them.
+    fn places(&self) -> Vec<Derived<Self>> {
+        let favorites = Derived::new("Favorites")
+            .of_kind("favorites")
+            .identified(FAVORITES_PLACE)
+            .with_effect(&ContactsEffect::OpenFavorites);
+        let groups = ordered_groups(&self.contacts).into_iter().map(|name| {
+            Derived::new(format!("Group: {name}"))
+                .of_kind("group")
+                .identified(group_place(&name))
+                .with_effect(&ContactsEffect::OpenGroup { name })
+        });
+        let duplicates = duplicate_candidates(&self.contacts, MAX_CONTEXT_DUPLICATE_RESOURCES)
+            .into_iter()
+            .filter_map(|candidate| {
+                let survivor = self.contact(candidate.survivor_id)?;
+                let source = self.contact(candidate.source_id)?;
+                Some(
+                    Derived::new(format!(
+                        "Possible duplicate: {} and {}",
+                        survivor.display_name(),
+                        source.display_name()
+                    ))
+                    .of_kind("duplicate")
+                    .identified(duplicate_place(survivor.id, source.id))
+                    .with_effect(&ContactsEffect::OpenReview {
+                        survivor: survivor.id,
+                        source: source.id,
+                    })
+                    .with(
+                        Self::MERGE_CONTACTS
+                            .bind(
+                                contacts::MergeContacts::paths().contact,
+                                Self::key(survivor.id),
+                            )
+                            .and(contacts::MergeContacts::paths().source, source.id),
+                    ),
+                )
+            });
+        std::iter::once(favorites)
+            .chain(groups)
+            .chain(duplicates)
+            .collect()
     }
 
     /// Every contact is found by anything it holds — name, organisation,
     /// numbers, addresses, notes, groups — and opens; every group reveals
     /// its members.
-    fn search(state: &ContactsState) -> Vec<SearchEntry> {
-        let contacts = state.contacts.iter().map(|contact| {
+    fn search(&self) -> Vec<SearchEntry> {
+        let contacts = self.contacts.iter().map(|contact| {
             SearchEntry::new(contact.display_name(), searchable_text(contact))
                 .anchored(contact_resource_id(contact.id))
-                .invoking(open_contact_address(contact.id))
         });
-        let groups = ordered_groups(&state.contacts).into_iter().map(|group| {
+        let groups = ordered_groups(&self.contacts).into_iter().map(|group| {
             SearchEntry::new(format!("Group: {group}"), "Filter contacts in this group")
                 .invoking(open_group_address(&group))
         });
         contacts.chain(groups).collect()
     }
+
+    /// Whether `survivor` and `source` are still a likely duplicate.
+    pub fn duplicate(&self, survivor: ContactId, source: ContactId) -> bool {
+        self.contact(survivor)
+            .zip(self.contact(source))
+            .and_then(|(survivor, source)| duplicate_candidate(survivor, source))
+            .is_some()
+    }
+}
+
+/// The id of the favorites' place.
+pub const FAVORITES_PLACE: &str = "favorites";
+
+/// The id of the place of the group `name`, the same for every spelling
+/// of it.
+pub fn group_place(name: &str) -> String {
+    format!("group:{}", normalize_text(name.trim()))
+}
+
+/// The id of the place of a likely duplicate.
+pub fn duplicate_place(survivor: ContactId, source: ContactId) -> String {
+    format!("duplicate:{survivor}:{source}")
+}
+
+/// The published id of a place of the book.
+pub fn place_resource_id(place: &str) -> String {
+    format!(
+        "{}/derived/{place}",
+        <Contacts as tilo_resource::Resource>::KIND
+    )
+}
+
+/// The published id of the contact `id`.
+pub fn contact_resource_id(id: ContactId) -> String {
+    tilo_resource::items::item_resource_id::<Contacts>("contacts", &Contacts::key(id))
+}
+
+/// Revealing the group `name`, as its place offers it.
+pub fn open_group_address(name: &str) -> ActionAddress {
+    let effect = ContactsEffect::OpenGroup {
+        name: name.trim().to_owned(),
+    };
+    ActionAddress::new(place_resource_id(&group_place(name)), effect.id())
 }
 
 /// What a person may look a contact up by, one field per line so a query
@@ -117,7 +332,7 @@ fn searchable_text(contact: &Contact) -> String {
     if let Some(birthday) = contact.birthday {
         fields.extend([birthday.iso(), birthday.pretty()]);
     }
-    for row in contact.phones.iter().chain(&contact.emails) {
+    for row in contact.phones.iter().chain(contact.emails.iter()) {
         fields.extend([row.label.clone(), row.value.clone()]);
     }
     fields.extend(
@@ -170,13 +385,13 @@ fn review_pair(book: &mut [Contact]) {
     source.website = "https://other.example.test".into();
     source.notes = "A deliberately longer alternate note for the review layout.".into();
     source.birthday = Some(Birthday::MonthDay { month: 12, day: 10 });
-    source.emails = vec![Labeled::new("home", "ada@example.test")];
+    source.emails = vec![Labeled::new("home", "ada@example.test")].into();
     survivor.org = "Primary organization".into();
     survivor.title = "Primary role".into();
     survivor.website = "https://primary.example.test".into();
     survivor.notes = "A deliberately longer primary note for the review layout.".into();
     survivor.birthday = Some(Birthday::MonthDay { month: 1, day: 1 });
-    survivor.emails = vec![Labeled::new("home", "ada@example.test")];
+    survivor.emails = vec![Labeled::new("home", "ada@example.test")].into();
 }
 
 /// Framework app: the contacts widget is the surface over [`Contacts`].
@@ -254,9 +469,7 @@ impl ResourceApp for ContactsShell {
             }
             _ => {}
         }
-        book.iter()
-            .filter_map(|contact| Invoke::apply(&create_contact_action(contact)).ok())
-            .collect()
+        vec![Contacts::add_all(book)]
     }
 }
 
@@ -269,7 +482,8 @@ impl ResourceSurface<Contacts, ContactsEffect> for ContactsApp {
         self.answer_effect(effect, cx)
     }
 
-    fn present(&mut self, state: &Rc<ContactsState>) {
+    fn present(&mut self, state: &Rc<Contacts>) {
+        self.presented = Some(Rc::clone(state));
         self.present_book(state);
         self.project_identities(state);
     }
@@ -309,15 +523,14 @@ impl ContactsApp {
     /// Labels are a projection of this book's stable UUIDs. Service endpoints
     /// are independently confirmed in the shared person-owned directory and
     /// never inferred from matching names, emails or telephone numbers.
-    fn project_identities(&self, state: &ContactsState) {
+    fn project_identities(&self, state: &Contacts) {
         use tilo_contact_directory::ContactDirectory;
-        use ui::tilo_resource::Id;
         let Some(directory) = &self.identity_directory else {
             return;
         };
         let current = directory.get();
         for contact in &state.contacts {
-            let id = Id::from_raw(contact.id.to_string());
+            let id = Contacts::key(contact.id);
             let label = contact.display_name();
             if current
                 .people
@@ -353,8 +566,8 @@ impl ContactsApp {
                 let _ = directory.invoke(&ContactDirectory::PROJECT_EMAILS.with((id, emails)));
             }
         }
-        for removed in &state.removed {
-            let id = Id::from_raw(removed.to_string());
+        for removed in state.removed.iter() {
+            let id = Contacts::key(*removed);
             if current.people.get(&id).is_none_or(|person| !person.removed) {
                 let _ = directory.invoke(&ContactDirectory::REMOVE_CONTACT.with(id));
             }
@@ -363,317 +576,4 @@ impl ContactsApp {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::actions::{
-        FAVORITES_RESOURCE_ID, MAX_CONTEXT_CONTACT_RESOURCES, duplicate_resource_id,
-        group_resource_id,
-    };
-    use ui::framework::testing::TestApp;
-    use ui::tilo_actions::OperationKind;
-
-    #[test]
-    fn stable_contacts_project_without_inferred_endpoints_and_deletions_disable_identity() {
-        use tilo_contact_directory::ContactDirectory;
-        use ui::tilo_resource::Id;
-        let mut app = TestApp::<ContactsShell>::for_person("contacts-fixture-owner").unwrap();
-        let directory = app.shared_person::<ContactDirectory>().unwrap();
-        let mut first = Contact::new();
-        first.first = "Alex".into();
-        first.phones.push(Labeled::new("mobile", "+12025550123"));
-        first.emails.push(Labeled::new("work", "Alex@EXAMPLE.test"));
-        let mut second = Contact::new();
-        second.first = "Alex".into();
-        app.invoke(Invoke::apply(&create_contact_action(&first)).unwrap())
-            .unwrap();
-        app.invoke(Invoke::apply(&create_contact_action(&second)).unwrap())
-            .unwrap();
-        app.settle();
-        let projected = directory.get();
-        assert_eq!(projected.people.len(), 2);
-        for contact in [&first, &second] {
-            let identity = projected
-                .people
-                .get(&Id::from_raw(contact.id.to_string()))
-                .unwrap();
-            assert_eq!(identity.label, "Alex");
-            assert!(
-                identity.endpoints.is_empty(),
-                "telephone fields require confirmation"
-            );
-            assert!(!identity.removed);
-        }
-        assert_eq!(
-            projected.phone_candidates("+12025550123"),
-            vec![Id::from_raw(first.id.to_string())]
-        );
-        assert_eq!(
-            projected.email_candidates("Alex@example.test"),
-            vec![Id::from_raw(first.id.to_string())]
-        );
-        assert!(projected.resolve("email", "Alex@example.test").is_err());
-        assert!(projected.resolve("sms", "+12025550123").is_err());
-        app.invoke_confirmed(
-            Invoke::apply(&ContactsAction::DeleteContact {
-                id: first.id.to_string(),
-            })
-            .unwrap(),
-        )
-        .unwrap();
-        app.settle();
-        let projected = directory.get();
-        assert!(projected.email_candidates("Alex@example.test").is_empty());
-        assert!(
-            projected
-                .people
-                .get(&Id::from_raw(first.id.to_string()))
-                .unwrap()
-                .removed
-        );
-        assert!(
-            !projected
-                .people
-                .get(&Id::from_raw(second.id.to_string()))
-                .unwrap()
-                .removed
-        );
-    }
-
-    fn has_control(app: &mut TestApp<ContactsShell>, label: &str) -> bool {
-        app.harness()
-            .a11y_nodes()
-            .iter()
-            .any(|(_, node)| node.label() == Some(label))
-    }
-
-    fn find<'a>(resource: &'a PublishedResource, id: &str) -> Option<&'a PublishedResource> {
-        resource
-            .children
-            .iter()
-            .find(|child| child.id.as_str() == id)
-    }
-
-    /// A vCard file the app is opened with is imported into the book, as
-    /// an import the person picked: created through the door, undone in one
-    /// step.
-    #[test]
-    fn a_vcard_file_the_app_is_opened_with_is_imported() {
-        let cards = "BEGIN:VCARD\r\nVERSION:4.0\r\nFN:Ada Lovelace\r\nN:Lovelace;Ada;;;\r\nEND:VCARD\r\n\
-                     BEGIN:VCARD\r\nVERSION:4.0\r\nFN:Alan Turing\r\nN:Turing;Alan;;;\r\nEND:VCARD\r\n";
-        let (file, _receipt) =
-            ui::application::OpenFile::new("friends.vcf", "text/vcard", cards.as_bytes().to_vec())
-                .unwrap();
-        let mut app = TestApp::<ContactsShell>::handed(file).unwrap();
-        app.harness().relayout();
-        let mut names: Vec<String> = app
-            .state()
-            .contacts
-            .iter()
-            .map(crate::model::Contact::display_name)
-            .collect();
-        names.sort();
-        assert_eq!(names, ["Ada Lovelace", "Alan Turing"]);
-        assert!(app.undo());
-        assert!(app.state().contacts.is_empty(), "one import, one undo step");
-    }
-
-    /// A new window starts on an empty book; captures stage the sample book
-    /// through actions and their view state through `stage`.
-    #[test]
-    fn captures_stage_the_sample_book_and_a_new_window_is_empty() {
-        let live = TestApp::<ContactsShell>::new().unwrap();
-        assert!(live.state().contacts.is_empty(), "nothing is fabricated");
-
-        let empty = TestApp::<ContactsShell>::capture(Some("empty")).unwrap();
-        assert!(empty.state().contacts.is_empty());
-
-        let mut edit = TestApp::<ContactsShell>::capture(Some("edit")).unwrap();
-        assert_eq!(edit.state().contacts.len(), sample_book().len());
-        assert!(has_control(&mut edit, "Save"), "the edit form is open");
-
-        let mut duplicates = TestApp::<ContactsShell>::capture(Some("duplicates")).unwrap();
-        assert_eq!(duplicates.state().contacts.len(), sample_book().len() + 1);
-        let surface = duplicates.agent_surface().to_string();
-        assert!(
-            surface.contains("contacts.duplicate:"),
-            "the staged duplicate is published for review"
-        );
-
-        let mut groups = TestApp::<ContactsShell>::capture(Some("groups")).unwrap();
-        let options: Vec<_> = groups
-            .harness()
-            .a11y_nodes()
-            .into_iter()
-            .filter(|(_, node)| node.role() == ui::accesskit::Role::TreeItem)
-            .filter_map(|(_, node)| node.label().map(str::to_owned))
-            .collect();
-        assert_eq!(
-            options
-                .iter()
-                .filter(|option| *option == "Favorites")
-                .count(),
-            1,
-            "the shared sidebar lists Favorites once: {options:?}"
-        );
-
-        let mut detail = TestApp::<ContactsShell>::capture(Some("detail")).unwrap();
-        assert_eq!(detail.harness().inspection().viewport, [390, 844]);
-    }
-
-    /// The book publishes its actions, favorites, groups, contacts and
-    /// likely duplicates through the one published tree; children beyond
-    /// the page resolve by id, and a stale id resolves nothing.
-    #[test]
-    fn the_published_tree_pages_children_and_resolves_the_rest() {
-        let mut contacts = sample_book();
-        let mut copy = contacts[0].clone();
-        copy.id = Uuid::from_u128(u128::MAX);
-        contacts.push(copy.clone());
-        for n in 0..MAX_CONTEXT_CONTACT_RESOURCES {
-            let mut extra = Contact::new();
-            extra.id = Uuid::from_u128(1_000 + n as u128);
-            extra.first = format!("Extra {n}");
-            contacts.push(extra);
-        }
-        let mut late = Contact::new();
-        late.id = Uuid::from_u128(9_999);
-        late.first = "Late".into();
-        late.groups = vec![crate::model::GroupEntry::new("Late group")];
-        contacts.push(late.clone());
-        let state = ContactsState {
-            contacts,
-            ..ContactsState::default()
-        };
-
-        let book = ui::tilo_resource::publish::<Contacts>(Contacts::KIND, "Contacts", &state);
-        assert!(
-            book.actions.iter().any(|action| action.id == "new-contact"),
-            "new-contact is on the book"
-        );
-        assert!(find(&book, FAVORITES_RESOURCE_ID).is_some());
-        let ada = find(&book, &contact_resource_id(state.contacts[0].id)).unwrap();
-        for id in [
-            "open",
-            "edit",
-            "add-to-group",
-            "favorite",
-            "export-contact",
-            "delete",
-            "update-fields",
-        ] {
-            assert!(ada.actions.iter().any(|action| action.id == id), "{id}");
-        }
-        let duplicate_id = duplicate_resource_id(state.contacts[0].id, copy.id);
-        let duplicate = find(&book, &duplicate_id).expect("the duplicate is on the page");
-        let merge = duplicate
-            .actions
-            .iter()
-            .find(|action| action.id == "merge")
-            .expect("the duplicate offers its merge");
-        assert_eq!(merge.kind, OperationKind::Document);
-        assert_eq!(
-            merge.contract.risk,
-            ui::tilo_actions::RiskLevel::Destructive
-        );
-        assert!(
-            duplicate
-                .actions
-                .iter()
-                .any(|action| action.id == "open-review")
-        );
-
-        let late_id = contact_resource_id(late.id);
-        assert!(find(&book, &late_id).is_none(), "the page is bounded");
-        let resolved = Contacts::child(&state, &late_id).expect("a late contact resolves");
-        assert_eq!(resolved.kind, "contacts.contact");
-        let group = Contacts::child(&state, &group_resource_id("late group"))
-            .expect("a group resolves by its canonical key");
-        assert_eq!(group.kind, "contacts.group");
-        assert!(Contacts::child(&state, &duplicate_id).is_some());
-        assert!(
-            Contacts::child(&state, &contact_resource_id(Uuid::from_u128(4))).is_none(),
-            "a stale id never redirects to another contact"
-        );
-    }
-
-    /// The merge a duplicate publishes builds the reviewed merge: the source
-    /// is gone, the survivor takes the chosen fields, and one undo restores
-    /// both.
-    #[test]
-    fn a_published_merge_merges_and_one_undo_restores_both() {
-        let mut app = TestApp::<ContactsShell>::new().unwrap();
-        let mut survivor = Contact::new();
-        survivor.id = Uuid::from_u128(1);
-        survivor.first = "Ada".into();
-        survivor.last = "Lovelace".into();
-        survivor.emails = vec![Labeled::new("home", "ada@example.test")];
-        let mut source = survivor.clone();
-        source.id = Uuid::from_u128(2);
-        source.org = "Analytical Engines".into();
-        for contact in [&survivor, &source] {
-            app.invoke(Invoke::apply(&create_contact_action(contact)).unwrap())
-                .unwrap();
-        }
-        let state = app.state();
-        let duplicate = Contacts::child(&state, &duplicate_resource_id(survivor.id, source.id))
-            .expect("a likely duplicate");
-        let merge = duplicate
-            .actions
-            .iter()
-            .find(|action| action.id == "merge")
-            .unwrap();
-        let mut args = serde_json::Map::new();
-        args.insert(
-            "take_from_source".into(),
-            serde_json::json!(["Organization"]),
-        );
-        let encoded = merge.build_json(&args).unwrap();
-        let action: ContactsAction = serde_json::from_slice(&encoded.payload).unwrap();
-        app.invoke_confirmed(Invoke::apply(&action).unwrap())
-            .unwrap();
-
-        let merged = app.state().contacts;
-        assert_eq!(merged.len(), 1, "the source is merged away");
-        assert_eq!(merged[0].id, survivor.id);
-        assert_eq!(merged[0].org, "Analytical Engines");
-        assert!(app.undo(), "the merge is one undo step");
-        assert_eq!(app.state().contacts.len(), 2);
-    }
-
-    /// The window's own controls edit the book through its door: a star
-    /// toggled in the detail pane is the book's action, and one undo takes
-    /// it back.
-    #[test]
-    fn the_window_edits_the_book_through_its_door() {
-        let mut app = TestApp::<ContactsShell>::new().unwrap();
-        for invoke in ContactsShell::scenario(None) {
-            app.invoke(invoke).unwrap();
-        }
-        let id = sample_book()[1].id;
-        let favorite = |app: &TestApp<ContactsShell>| {
-            app.state()
-                .contacts
-                .iter()
-                .find(|contact| contact.id == id)
-                .unwrap()
-                .favorite
-        };
-        let before = favorite(&app);
-        app.effect_on(
-            &crate::actions::contact_resource_id(id),
-            &ContactsEffect::Open { contact: id },
-        )
-        .unwrap();
-        let favorite_control = app
-            .harness()
-            .a11y_node_named("Favorite")
-            .expect("the shared Favorite control is present");
-        app.harness()
-            .perform_a11y_action(favorite_control, &ui::a11y::Action::Activate)
-            .unwrap();
-        app.settle();
-        assert_ne!(favorite(&app), before, "the star reached the document");
-        assert!(app.undo());
-        assert_eq!(favorite(&app), before);
-    }
-}
+mod tests;

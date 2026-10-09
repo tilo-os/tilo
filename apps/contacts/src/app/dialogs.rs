@@ -532,12 +532,12 @@ impl ContactsApp {
         let Some(review) = self.duplicate_review.take() else {
             return;
         };
-        let action = crate::actions::merge_contacts_action(
-            &review.survivor,
-            &review.source,
-            &review.take_from_source(),
+        let merge = crate::resource::Contacts::merge(
+            review.survivor.id,
+            review.source.id,
+            review.take_from_source(),
         );
-        match self.try_perform_action(state, &action) {
+        match self.try_perform_action(state, merge) {
             Ok(()) => {
                 self.selected = Some(review.survivor.id);
                 self.show_toast(format!(

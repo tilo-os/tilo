@@ -52,6 +52,9 @@ pub(crate) struct ListEntry {
 pub(crate) enum Request {
     /// A row was chosen.
     Select(ContactId),
+    /// A search hit or an agent opened a contact: show it, even when the
+    /// chosen group hides it.
+    Reveal(ContactId),
     /// A row was opened (double-click): edit it.
     Edit(ContactId),
     /// Edit the chosen fact through the same retained form.
@@ -103,6 +106,8 @@ pub(crate) struct Bridge {
     pub reveal: Option<ContactId>,
     /// The rows the list painted last, in window coordinates.
     pub painted: Vec<(ContactId, Rect)>,
+    /// Every contact of the book, which a search hit or an agent may open.
+    pub known: std::collections::HashSet<ContactId>,
     requests: Vec<Request>,
 }
 

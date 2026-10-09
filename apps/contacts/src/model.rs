@@ -1,12 +1,12 @@
-//! Pure data model for the Contacts app.
+//! The address book's records: a contact and its repeated rows.
 //!
-//! The in-memory [`ContactStore`] is the working set the UI reads and
-//! mutates; it is mirrored into the Automerge document (see
-//! [`crate::doc`]) so two peers editing the same address book converge.
-//! Nothing here touches the CRDT, the renderer, or the filesystem — it
-//! is plain, unit-testable logic.
+//! [`Contact`] is stored as it is: every text field merges per character,
+//! every phone, email, address and group row is stored under its own id so
+//! two people editing different rows of one contact both keep their edit.
+//! The in-memory [`ContactStore`] is the window's working copy of the book.
 
 use serde::{Deserialize, Serialize};
+use ui::tilo_resource::{self, Id, Identified, JsonSchema, Model, Ordered, Refusal};
 use unicode_normalization::UnicodeNormalization;
 use uuid::Uuid;
 
@@ -32,11 +32,22 @@ pub type ContactId = Uuid;
 /// A typed, repeatable single-value field — a phone number or an email
 /// address. `label` is a free-form type tag (home / work / mobile / …);
 /// `value` is the actual number or address.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Model, Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Labeled {
+    /// The row's identity, the same on every replica.
+    #[model(readonly)]
     pub id: Uuid,
+    /// Type
     pub label: String,
+    /// Value
+    #[model(label)]
     pub value: String,
+}
+
+impl Identified for Labeled {
+    fn id(&self) -> Id {
+        Id::from_raw(self.id.to_string())
+    }
 }
 
 impl Labeled {
@@ -59,21 +70,47 @@ impl Default for Labeled {
 /// A typed postal address. Components map onto the vCard `ADR` structured
 /// value (`PO;EXT;STREET;CITY;REGION;POSTAL;COUNTRY`) — we keep the four
 /// fields that matter for a daily address book plus a free type label.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Model, Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Address {
+    /// The row's identity, the same on every replica.
+    #[model(readonly)]
     pub id: Uuid,
+    /// Type
     pub label: String,
+    /// Street
+    #[model(label)]
     pub street: String,
+    /// City
     pub city: String,
+    /// Region
     pub region: String,
+    /// Postal code
     pub postal: String,
+    /// Country
     pub country: String,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+impl Identified for Address {
+    fn id(&self) -> Id {
+        Id::from_raw(self.id.to_string())
+    }
+}
+
+/// One group a contact belongs to.
+#[derive(Model, Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct GroupEntry {
+    /// The row's identity, the same on every replica.
+    #[model(readonly)]
     pub id: Uuid,
+    /// Group
+    #[model(label)]
     pub value: String,
+}
+
+impl Identified for GroupEntry {
+    fn id(&self) -> Id {
+        Id::from_raw(self.id.to_string())
+    }
 }
 
 impl GroupEntry {
@@ -131,11 +168,19 @@ impl Address {
 /// be surfaced in Calendar and reasoned about by day/month/year. Either a
 /// full date, or a month/day with the year unknown (people often record a
 /// birthday without the year; the vCard spec models this as `--MMDD`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub enum Birthday {
     Full { year: i32, month: u32, day: u32 },
     MonthDay { month: u32, day: u32 },
 }
+
+impl Default for Birthday {
+    fn default() -> Self {
+        Self::MonthDay { month: 1, day: 1 }
+    }
+}
+
+tilo_resource::json_model!(Birthday);
 
 impl Birthday {
     /// The year, or `None` for a year-less birthday.
@@ -157,6 +202,14 @@ impl Birthday {
     pub fn day(&self) -> u32 {
         match self {
             Birthday::Full { day, .. } | Birthday::MonthDay { day, .. } => *day,
+        }
+    }
+
+    /// Whether the date is one the calendar has.
+    pub fn is_valid(&self) -> bool {
+        match *self {
+            Birthday::Full { year, month, day } => Self::full(year, month, day).is_some(),
+            Birthday::MonthDay { month, day } => Self::month_day(month, day).is_some(),
         }
     }
 
@@ -272,30 +325,117 @@ impl Birthday {
     }
 }
 
-/// One person or organization. Text fields are plain strings here; the
-/// CRDT layer stores the collaborative ones as Automerge `Text` objects
-/// so concurrent edits merge.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+/// How much text one field of a contact may hold.
+pub const MAX_CONTACT_FIELD_BYTES: usize = 32 * 1024;
+/// How many rows one repeated field of a contact may hold.
+pub const MAX_CONTACT_ROWS: usize = 256;
+
+/// One person or organization.
+#[derive(Model, Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[model(check = Contact::valid)]
 pub struct Contact {
+    /// The contact's identity, the same on every replica and in its vCard.
+    #[model(readonly)]
     pub id: ContactId,
+    /// First name
+    #[model(label)]
     pub first: String,
+    /// Last name
     pub last: String,
+    /// Organization
     pub org: String,
+    /// Title
     pub title: String,
+    /// Website
     pub website: String,
-    /// Structured birthday with day/month/year accessible (so Calendar can
-    /// surface it). `None` when unset. Round-trips through the vCard `BDAY`
-    /// field; a year-less birthday is kept as [`Birthday::MonthDay`].
+    /// Birthday
+    ///
+    /// A full date or a month and day; Calendar shows it.
     pub birthday: Option<Birthday>,
+    /// Notes
     pub notes: String,
-    pub phones: Vec<Labeled>,
-    pub emails: Vec<Labeled>,
-    pub addresses: Vec<Address>,
-    pub groups: Vec<GroupEntry>,
+    /// Phone numbers
+    pub phones: Ordered<Labeled>,
+    /// Email addresses
+    pub emails: Ordered<Labeled>,
+    /// Postal addresses
+    pub addresses: Ordered<Address>,
+    /// Groups
+    pub groups: Ordered<GroupEntry>,
+    /// Favorite
     pub favorite: bool,
 }
 
+impl Identified for Contact {
+    fn id(&self) -> Id {
+        Id::from_raw(self.id.to_string())
+    }
+}
+
 impl Contact {
+    /// Whether every field is bounded, every row has an id and the birthday
+    /// is a date the calendar has.
+    fn valid(&self) -> Result<(), Refusal> {
+        let address_text = self.addresses.iter().flat_map(|address| {
+            [
+                &address.label,
+                &address.street,
+                &address.city,
+                &address.region,
+                &address.postal,
+                &address.country,
+            ]
+        });
+        let row_text = self
+            .phones
+            .iter()
+            .chain(self.emails.iter())
+            .flat_map(|row| [&row.label, &row.value])
+            .chain(self.groups.iter().map(|group| &group.value))
+            .chain(address_text);
+        if [
+            &self.first,
+            &self.last,
+            &self.org,
+            &self.title,
+            &self.website,
+            &self.notes,
+        ]
+        .into_iter()
+        .chain(row_text)
+        .any(|text| text.len() > MAX_CONTACT_FIELD_BYTES)
+        {
+            return Err(Refusal::new(format!(
+                "a contact's field holds at most {MAX_CONTACT_FIELD_BYTES} bytes"
+            )));
+        }
+        if [
+            self.phones.len(),
+            self.emails.len(),
+            self.addresses.len(),
+            self.groups.len(),
+        ]
+        .into_iter()
+        .any(|rows| rows > MAX_CONTACT_ROWS)
+        {
+            return Err(Refusal::new("a contact has too many repeated fields"));
+        }
+        let row_ids = self
+            .phones
+            .iter()
+            .chain(self.emails.iter())
+            .map(|row| row.id)
+            .chain(self.addresses.iter().map(|address| address.id))
+            .chain(self.groups.iter().map(|group| group.id));
+        if self.id.is_nil() || row_ids.into_iter().any(|id| id.is_nil()) {
+            return Err(Refusal::new("a contact and each of its rows has an id"));
+        }
+        if self.birthday.is_some_and(|birthday| !birthday.is_valid()) {
+            return Err(Refusal::new("a birthday is a date the calendar has"));
+        }
+        Ok(())
+    }
+
     pub fn new() -> Self {
         Self {
             id: Uuid::new_v4(),
@@ -579,7 +719,7 @@ fn make_sample(spec: SampleSpec<'_>) -> Contact {
             .iter()
             .map(|(l, v)| Labeled::new(l, v))
             .collect(),
-        addresses: spec.addresses,
+        addresses: spec.addresses.into(),
         groups: spec
             .groups
             .iter()
@@ -954,7 +1094,8 @@ mod tests {
                 GroupEntry::new("Work"),
                 GroupEntry::new("work"),
                 GroupEntry::new("Family"),
-            ];
+            ]
+            .into();
             store.upsert(a);
             let groups = store.all_groups();
             assert_eq!(groups.len(), 2, "Work/work collapse: {groups:?}");
