@@ -214,7 +214,7 @@ fn a_named_edge_job_commits_one_step_as_its_original_agent() {
 }
 
 #[test]
-fn an_accepted_edge_job_allows_another_agents_published_inspect() {
+fn an_accepted_edge_job_allows_its_participants_published_inspect() {
     let mut app = TestApp::<App>::new().unwrap();
     open_disc(&mut app);
     call(&mut app, "select", json!({"ellipse": [34, 34, 132, 132]}));
@@ -229,13 +229,20 @@ fn an_accepted_edge_job_allows_another_agents_published_inspect() {
             .iter()
             .any(ui::tilo_actions::InvocationUpdate::is_terminal)
     );
+    let another_participant = app.call_by(
+        ui::tilo_actions::ActionInvoker::actor("agent:canvas-reader"),
+        "canvas.artwork",
+        "inspect",
+        json!({}),
+    );
+    assert!(matches!(
+        another_participant,
+        Err(ui::tilo_actions::DoorError::Unavailable { code, .. }) if code == "private_view"
+    ));
     let output = app
-        .call_by(
-            ui::tilo_actions::ActionInvoker::actor("agent:canvas-reader"),
-            "canvas.artwork",
-            "inspect",
-            json!({}),
-        )
+        .effect(&canvas::resource::ViewOp::Inspect(
+            canvas::resource::Inspect::default(),
+        ))
         .unwrap();
     assert!(
         output.value.unwrap()["marks"]
