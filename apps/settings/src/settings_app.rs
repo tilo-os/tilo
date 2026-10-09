@@ -36,6 +36,7 @@ use crate::categories::Category;
 use crate::panes;
 use crate::sidebar;
 use ui::tokens::Metrics;
+use ui::widget::TaffyTreeExt;
 use ui::widget::{AppModel, ModelPath};
 use ui::widget::{Column, Container, NavPane, NavShell, Scrollable, Widget};
 use ui::widget::{NavMode, SearchField};
@@ -861,11 +862,7 @@ impl Widget for SettingsApp {
         // different tree, which never happens here — see
         // `ui::widget::TaffyTreeExt`. Fall back to the child directly rather
         // than panic, on the off chance that ever changes.
-        let node = taffy
-            .new_with_children(style, &[shell_node])
-            .unwrap_or(shell_node);
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        taffy.widget_node(style, &[shell_node], node_map, self)
     }
 
     fn apply_layout(

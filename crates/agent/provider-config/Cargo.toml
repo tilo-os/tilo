@@ -15,6 +15,7 @@ wire-frame = { path = "../../system/wire-frame" }
 settings-store = { path = "../../system/settings-store" }
 serde.workspace = true
 serde_json.workspace = true
+zeroize = { workspace = true, features = ["derive"] }
 uuid.workspace = true
 
 # New profile ids draw entropy from the browser's crypto on the web.

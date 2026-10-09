@@ -3600,9 +3600,7 @@ impl Widget for MailApp {
             },
             ..Default::default()
         };
-        let node = taffy.parent_node(style, &children);
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        taffy.widget_node(style, &children, node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
@@ -5047,59 +5045,19 @@ impl MailApp {
 mod tests {
     use super::*;
     use automerge::ReadDoc;
-    use winit::event::{DeviceId, Modifiers, MouseButton};
 
-    fn synth_device() -> DeviceId {
-        unsafe { std::mem::zeroed() }
-    }
     fn cursor_at(p: Point) -> WindowEvent {
         WindowEvent::CursorMoved {
-            device_id: synth_device(),
+            device_id: winit::event::DeviceId::dummy(),
             position: winit::dpi::PhysicalPosition::new(p.x, p.y),
         }
     }
-    fn left_press() -> WindowEvent {
-        WindowEvent::MouseInput {
-            device_id: synth_device(),
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        }
-    }
+    use ui::synthetic_input::mouse_press;
     fn esc_event() -> WindowEvent {
         named_key(NamedKey::Escape)
     }
-    fn named_key(k: NamedKey) -> WindowEvent {
-        let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-        ev.logical_key = Key::Named(k);
-        ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
-            winit::keyboard::NativeKeyCode::Unidentified,
-        );
-        ev.location = winit::keyboard::KeyLocation::Standard;
-        ev.state = ElementState::Pressed;
-        ev.repeat = false;
-        ev.text = None;
-        WindowEvent::KeyboardInput {
-            device_id: synth_device(),
-            event: ev,
-            is_synthetic: false,
-        }
-    }
-    fn char_key(s: &str) -> WindowEvent {
-        let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-        ev.logical_key = Key::Character(s.into());
-        ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
-            winit::keyboard::NativeKeyCode::Unidentified,
-        );
-        ev.location = winit::keyboard::KeyLocation::Standard;
-        ev.state = ElementState::Pressed;
-        ev.repeat = false;
-        ev.text = Some(s.into());
-        WindowEvent::KeyboardInput {
-            device_id: synth_device(),
-            event: ev,
-            is_synthetic: false,
-        }
-    }
+    use ui::synthetic_input::char_key;
+    use ui::synthetic_input::named_key;
 
     /// Route `ev` to the app through the tree it was last laid out in (a
     /// bare node before any layout).
@@ -5109,34 +5067,18 @@ mod tests {
             let node = taffy.new_leaf(Style::default()).unwrap();
             (taffy, node)
         });
-        let mut handled = false;
-        let mut focus = None;
-        app.handle_event(
-            ev,
-            &mut ui::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &Modifiers::default(),
-                state: ui::widget::Edits::lend(doc),
-                path: &automerge::ROOT,
-                handled: &mut handled,
-                focus_target: &mut focus,
-                node_id: node,
-                taffy: &taffy,
-            },
-        );
+        let handled = ui::testing::Dispatch::new()
+            .doc(doc)
+            .layout(&taffy, node)
+            .send(app, ev)
+            .handled;
         if app.test_layout.is_none() {
             app.test_layout = Some((taffy, node));
         }
         handled
     }
 
-    fn left_release() -> WindowEvent {
-        WindowEvent::MouseInput {
-            device_id: synth_device(),
-            state: ElementState::Released,
-            button: MouseButton::Left,
-        }
-    }
+    use ui::synthetic_input::mouse_release;
 
     fn app() -> (MailApp, AutoCommit) {
         let mut app = MailApp::new_sample();
@@ -5381,8 +5323,8 @@ mod tests {
 
     fn click_at(app: &mut MailApp, doc: &mut AutoCommit, p: Point) -> bool {
         dispatch(app, &cursor_at(p), doc);
-        let pressed = dispatch(app, &left_press(), doc);
-        let released = dispatch(app, &left_release(), doc);
+        let pressed = dispatch(app, &mouse_press(), doc);
+        let released = dispatch(app, &mouse_release(), doc);
         pressed || released
     }
 

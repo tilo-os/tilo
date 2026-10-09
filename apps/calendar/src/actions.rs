@@ -1798,9 +1798,7 @@ mod tests {
     use ui::widget::Widget;
 
     fn registry() -> ActionRegistry {
-        let mut r = ActionRegistry::new();
-        register(&mut r);
-        r
+        ActionRegistry::with(register)
     }
 
     fn find_kind<'a>(resources: &'a [Resource], kind: &str) -> Option<&'a Resource> {

@@ -1325,9 +1325,9 @@ impl Widget for ToastStack {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use automerge::AutoCommit;
+    use crate::testing::dispatch;
     use std::collections::HashMap;
-    use winit::event::{DeviceId, ElementState, MouseButton};
+    use winit::event::{ElementState, MouseButton};
 
     fn lay_out(stack: &mut ToastStack) {
         let mut tree = TaffyTree::<()>::new();
@@ -1343,32 +1343,6 @@ mod tests {
         )
         .unwrap();
         stack.apply_layout(&tree, node, Point::ZERO);
-    }
-
-    fn device() -> DeviceId {
-        unsafe { std::mem::zeroed() }
-    }
-
-    fn feed(s: &mut ToastStack, ev: &WindowEvent) {
-        let mut tree = TaffyTree::<()>::new();
-        let node = tree.leaf_node(Style::default());
-        let mut handled = false;
-        let mut focus = None;
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        s.handle_event(
-            ev,
-            &mut crate::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &winit::event::Modifiers::default(),
-                state: crate::widget::Edits::lend(&mut doc),
-                path: &root,
-                handled: &mut handled,
-                focus_target: &mut focus,
-                node_id: node,
-                taffy: &tree,
-            },
-        );
     }
 
     #[test]
@@ -1690,17 +1664,17 @@ mod tests {
             s.push("second", ToastKind::Error);
             lay_out(&mut s);
             // Card 1 ("second") spans y ∈ [56, 104); centre ≈ (160, 80).
-            feed(
+            dispatch(
                 &mut s,
                 &WindowEvent::CursorMoved {
-                    device_id: device(),
+                    device_id: winit::event::DeviceId::dummy(),
                     position: (160.0, 80.0).into(),
                 },
             );
-            feed(
+            dispatch(
                 &mut s,
                 &WindowEvent::MouseInput {
-                    device_id: device(),
+                    device_id: winit::event::DeviceId::dummy(),
                     state: ElementState::Pressed,
                     button: MouseButton::Left,
                 },
@@ -1740,10 +1714,10 @@ mod tests {
             s.push("stay", ToastKind::Info);
             lay_out(&mut s);
             // Hover over the only card.
-            feed(
+            dispatch(
                 &mut s,
                 &WindowEvent::CursorMoved {
-                    device_id: device(),
+                    device_id: winit::event::DeviceId::dummy(),
                     position: (160.0, 24.0).into(),
                 },
             );
@@ -1752,10 +1726,10 @@ mod tests {
             s.tick(Duration::from_millis(500));
             assert_eq!(s.len(), 1, "hovered toast does not expire");
             // Move away → expiry resumes.
-            feed(
+            dispatch(
                 &mut s,
                 &WindowEvent::CursorMoved {
-                    device_id: device(),
+                    device_id: winit::event::DeviceId::dummy(),
                     position: (900.0, 900.0).into(),
                 },
             );

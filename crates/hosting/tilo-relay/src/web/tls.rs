@@ -19,7 +19,6 @@
 
 use std::path::PathBuf;
 
-use rustls::pki_types::pem::PemObject as _;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 
 /// How the listener obtains its certificate.
@@ -83,15 +82,7 @@ impl Identity {
                 private_key,
                 ..
             } => {
-                let chain = CertificateDer::pem_file_iter(certificate_chain)
-                    .map_err(|error| format!("certificate chain: {error}"))?
-                    .collect::<Result<Vec<_>, _>>()
-                    .map_err(|error| format!("certificate chain: {error}"))?;
-                if chain.is_empty() {
-                    return Err("certificate chain is empty".into());
-                }
-                let key = PrivateKeyDer::from_pem_file(private_key)
-                    .map_err(|error| format!("private key: {error}"))?;
+                let (chain, key) = tilo_moq::tls::load_pem(certificate_chain, private_key)?;
                 Ok(Self {
                     chain,
                     key,
@@ -107,16 +98,7 @@ impl Identity {
 
     /// rustls server configuration for HTTPS over TCP (HTTP/2 and HTTP/1.1).
     pub(crate) fn https_config(&self) -> Result<rustls::ServerConfig, String> {
-        let mut config = rustls::ServerConfig::builder_with_provider(std::sync::Arc::new(
-            rustls::crypto::ring::default_provider(),
-        ))
-        .with_safe_default_protocol_versions()
-        .map_err(|error| error.to_string())?
-        .with_no_client_auth()
-        .with_single_cert(self.chain.clone(), self.key.clone_key())
-        .map_err(|error| error.to_string())?;
-        config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
-        Ok(config)
+        tilo_moq::tls::https_server_config(self.chain.clone(), self.key.clone_key())
     }
 }
 

@@ -11,12 +11,29 @@ Each adapter reads what a benchmark already prints and emits records through
 - `tapp-sizes ENTRIES_JSON`: the public app registry's signed `entries`
   index (`https://apps.tilo.so/entries`). The newest version of every app per
   architecture is one sample of `footprint.tapp.bytes.<arch>`: the bytes a
-  user downloads.
+  user downloads. The apps are those with a budget in
+  `tools/perf/tapp-size-budget/` (the default collection); runtime and
+  provider stubs and withdrawn packages are left out and named in `meta`.
+- `workspace-switch LOG...`: the compositor's `WORKSPACE-SWITCH` session-log
+  lines (`crates/session/shell/src/compositor/switch_latency.rs`), one per
+  switch, become `latency.workspace_switch.first_frame` (chord to the first
+  frame shown), `.settled` (chord to the resting frame shown after the frame
+  run) and `.dropped_frames` (refresh intervals in the run that showed no new
+  frame). `scripts/perf/latency_bench.py` (headless, nightly) and
+  `scripts/perf/device_latency_bench.py` (reference hardware) call it.
+- `idle-wakeups LOG...`: the idle-wakeup gate
+  (`crates/session/shell/tests/idle_wakeups.rs`) prints one
+  `IDLE-WAKEUPS total_per_s=<x> shell_per_s=<y> ...` line per run. Each log is
+  one run; repeated runs become the samples of `wakeups.headless_two_apps`
+  (the compositor's whole process tree), `.shell` (its own process) and
+  `wakeups.frame_loop_ticks.headless_two_apps` (its frame loop's iterations).
 
 Usage:
 
     python3 tools/perf/adapters.py fs-gate --env-json env.json run-*.log >> results.jsonl
     python3 tools/perf/adapters.py tapp-sizes --env-json env.json entries.json >> results.jsonl
+    python3 tools/perf/adapters.py workspace-switch --env-json env.json session.log >> results.jsonl
+    python3 tools/perf/adapters.py idle-wakeups --env-json env.json run-*.log >> results.jsonl
 
 An adapter that finds nothing to record fails: a benchmark whose output format
 drifted must not turn into a silently empty night.
@@ -34,6 +51,7 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import record  # noqa: E402
+import tapp_size_ratchet  # noqa: E402
 
 # Searched, not anchored: with --nocapture, libtest's "test NAME ... " prefix can
 # share the line with the test's first stderr line when both streams are merged.
@@ -65,29 +83,96 @@ def fs_gate(logs: list[str], env: dict[str, Any]) -> list[record.Record]:
             for name, values in sorted(samples.items())]
 
 
-def tapp_sizes(entries: dict[str, Any], env: dict[str, Any]) -> list[record.Record]:
-    """Records for the newest published tapp of every app, per architecture."""
-    newest: dict[tuple[str, str], dict[str, Any]] = {}
-    for entry in entries.get("entries", []):
-        for version in entry.get("versions", []):
-            target = version.get("target", {})
-            if target.get("platform") != "tilo-os":
-                continue
-            key = (entry["package_id"], target["architecture"])
-            if key not in newest or version["released_at_unix"] > newest[key]["released_at_unix"]:
-                newest[key] = version
+def tapp_sizes(entries: dict[str, Any], env: dict[str, Any],
+               population: set[str] | None = None) -> list[record.Record]:
+    """Records for the newest published tapp of every app, per architecture.
+
+    `population` is the package ids that count as apps; every other package is
+    left out and named in the record's meta. None counts every package.
+    """
     by_arch: dict[str, list[float]] = {}
-    for (_, arch), version in newest.items():
-        size = version["tapp_size_bytes"]
-        if not isinstance(size, int) or size <= 0:
-            raise ValueError(f"invalid tapp_size_bytes {size!r}")
+    outside = set()
+    for (package, arch), size in tapp_size_ratchet.newest_tapps(entries).items():
+        if population is not None and package not in population:
+            outside.add(package)
+            continue
         by_arch.setdefault(arch, []).append(float(size))
     if not by_arch:
-        raise ValueError("the registry index lists no tilo-os tapp")
+        raise ValueError("the registry index lists no tapp of a budgeted app")
     meta = {**env.get("meta", {}), "registry_sequence": str(entries.get("sequence", ""))}
+    if population is not None:
+        meta.update(population=tapp_size_ratchet.DIRECTORY, not_counted=",".join(sorted(outside)))
     base = {name: value for name, value in env.items() if name != "meta"}
     return [record.from_samples(f"footprint.tapp.bytes.{arch}", "bytes", sizes, meta=meta, **base)
             for arch, sizes in sorted(by_arch.items())]
+
+
+SWITCH_FIELDS = ("first_queued_us", "first_shown_us", "settled_queued_us", "settled_shown_us",
+                 "frames", "dropped", "interval_us")
+SWITCH_LINE = re.compile(r"(?:^|\s)WORKSPACE-SWITCH ((?:[a-z_]+=[0-9]+ ?)+)$")
+
+
+def switch_samples(text: str) -> list[dict[str, int]]:
+    """Every `WORKSPACE-SWITCH` line of a session log, in order."""
+    samples = []
+    for line in text.splitlines():
+        match = SWITCH_LINE.search(line.rstrip())
+        if match is None:
+            continue
+        fields = dict(pair.split("=", 1) for pair in match.group(1).split())
+        missing = [name for name in SWITCH_FIELDS if name not in fields]
+        if missing:
+            raise ValueError(f"WORKSPACE-SWITCH line lacks {missing}: {line.strip()}")
+        samples.append({name: int(fields[name]) for name in SWITCH_FIELDS})
+    return samples
+
+
+def workspace_switch(samples: list[dict[str, int]], env: dict[str, Any],
+                     kpi: str = "latency.workspace_switch.{}") -> list[record.Record]:
+    """Records for the workspace switches of one run; `kpi` names them from the metric."""
+    if not samples:
+        raise ValueError("no `WORKSPACE-SWITCH` lines: did the compositor switch workspace, and is it "
+                         "new enough to time switches?")
+    intervals = sorted({sample["interval_us"] for sample in samples})
+    meta = {**env.get("meta", {}), "interval_us": ",".join(str(value) for value in intervals),
+            "frames_min": str(min(sample["frames"] for sample in samples))}
+    base = {name: value for name, value in env.items() if name != "meta"}
+    series = {
+        "first_frame": ("ms", [sample["first_shown_us"] / 1000 for sample in samples]),
+        "settled": ("ms", [sample["settled_shown_us"] / 1000 for sample in samples]),
+        "dropped_frames": ("count", [float(sample["dropped"]) for sample in samples]),
+    }
+    return [record.from_samples(kpi.format(name), unit, values, meta=meta, **base)
+            for name, (unit, values) in series.items()]
+
+
+IDLE_WAKEUPS_LINE = re.compile(r"(?:^|\s)IDLE-WAKEUPS ((?:[a-z_]+=[0-9.]+ ?)+)$")
+IDLE_WAKEUPS_KPIS = {"total_per_s": "wakeups.headless_two_apps",
+                     "shell_per_s": "wakeups.headless_two_apps.shell",
+                     "loop_ticks_per_s": "wakeups.frame_loop_ticks.headless_two_apps"}
+
+
+def idle_wakeups(logs: list[str], env: dict[str, Any]) -> list[record.Record]:
+    """Records for one or more runs of the idle-wakeup gate."""
+    samples: dict[str, list[float]] = {kpi: [] for kpi in IDLE_WAKEUPS_KPIS.values()}
+    windows = []
+    for log in logs:
+        lines = [match for line in log.splitlines() if (match := IDLE_WAKEUPS_LINE.search(line.rstrip()))]
+        if len(lines) != 1:
+            raise ValueError(f"expected one `IDLE-WAKEUPS` line per run, found {len(lines)}: "
+                             "did the gate run with --nocapture?")
+        fields = dict(pair.split("=", 1) for pair in lines[0].group(1).split())
+        missing = [name for name in (*IDLE_WAKEUPS_KPIS, "window_ms") if name not in fields]
+        if missing:
+            raise ValueError(f"IDLE-WAKEUPS line lacks {missing}")
+        for field, kpi in IDLE_WAKEUPS_KPIS.items():
+            samples[kpi].append(float(fields[field]))
+        windows.append(fields["window_ms"])
+    if not logs:
+        raise ValueError("no idle-wakeup gate logs")
+    meta = {**env.get("meta", {}), "runs": str(len(logs)), "window_ms": ",".join(sorted(set(windows)))}
+    base = {name: value for name, value in env.items() if name != "meta"}
+    return [record.from_samples(kpi, "per_s", values, meta=meta, **base) for kpi, values in samples.items()]
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -99,13 +184,26 @@ def main(argv: list[str] | None = None) -> int:
     sizes = commands.add_parser("tapp-sizes", help="records from the registry entries index")
     sizes.add_argument("--env-json", required=True, type=Path)
     sizes.add_argument("entries", type=Path)
+    switch = commands.add_parser("workspace-switch", help="records from WORKSPACE-SWITCH session-log lines")
+    switch.add_argument("--env-json", required=True, type=Path)
+    switch.add_argument("logs", nargs="+", type=Path)
+    idle = commands.add_parser("idle-wakeups", help="records from idle-wakeup gate logs")
+    idle.add_argument("--env-json", required=True, type=Path)
+    idle.add_argument("logs", nargs="+", type=Path)
     args = parser.parse_args(argv)
     try:
         env = record.load_env(args.env_json)
         if args.command == "fs-gate":
             records = fs_gate([path.read_text(encoding="utf-8", errors="replace") for path in args.logs], env)
+        elif args.command == "workspace-switch":
+            samples = [sample for path in args.logs
+                       for sample in switch_samples(path.read_text(encoding="utf-8", errors="replace"))]
+            records = workspace_switch(samples, env)
+        elif args.command == "idle-wakeups":
+            records = idle_wakeups([path.read_text(encoding="utf-8", errors="replace") for path in args.logs], env)
         else:
-            records = tapp_sizes(json.loads(args.entries.read_text(encoding="utf-8")), env)
+            records = tapp_sizes(json.loads(args.entries.read_text(encoding="utf-8")), env,
+                                 tapp_size_ratchet.load().apps())
     except (ValueError, KeyError) as error:
         print(f"adapters.py: {error}", file=sys.stderr)
         return 1

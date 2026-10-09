@@ -1,5 +1,6 @@
 use super::{MusicApp, Track};
-#[cfg(all(test, feature = "audio"))]
+#[cfg(test)]
+#[cfg(feature = "audio")]
 use ui::widget::Continuable as _;
 use ui::widget::toast::ToastKind;
 
@@ -371,7 +372,7 @@ mod tests {
                 assert!(app.rect.contains(rect.center()));
                 assert!(rect.y1 <= app.body_rect.y0, "the action sits in the header");
                 assert_eq!(tree.children(node).unwrap().len(), app.children().len());
-                let device_id = unsafe { std::mem::zeroed() };
+                let device_id = winit::event::DeviceId::dummy();
                 let events = [
                     winit::event::WindowEvent::CursorMoved {
                         device_id,
@@ -391,20 +392,11 @@ mod tests {
                         button: winit::event::MouseButton::Left,
                     },
                 ];
+                let mut sending = ui::testing::Dispatch::new()
+                    .doc(&mut doc)
+                    .layout(&tree, node);
                 for event in events {
-                    app.handle_event(
-                        &event,
-                        &mut ui::widget::EventCtx {
-                            scale_factor: 1.0,
-                            modifiers: &winit::event::Modifiers::default(),
-                            state: ui::widget::Edits::lend(&mut doc),
-                            path: &automerge::ROOT,
-                            handled: &mut false,
-                            focus_target: &mut None,
-                            node_id: node,
-                            taffy: &tree,
-                        },
-                    );
+                    sending.send(&mut app, &event);
                 }
                 let intent = ui::widget::controls::take_control_invocation(&mut app)
                     .expect("visible shared button intent");

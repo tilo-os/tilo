@@ -283,9 +283,12 @@ where
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         let child = self.child.build_layout(taffy, theme, node_map);
-        let node = taffy.parent_node(boundary_style(taffy.style(child).ok()), &[child]);
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        taffy.widget_node(
+            boundary_style(taffy.style(child).ok()),
+            &[child],
+            node_map,
+            self,
+        )
     }
 
     /// A child that left the flow (an absent element, bound text with

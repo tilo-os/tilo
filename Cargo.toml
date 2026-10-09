@@ -318,6 +318,7 @@ members = [
     "crates/system/durable-store",
     "crates/system/fs",
     "crates/system/fs-content",
+    "crates/system/fs-protocol",
     "crates/system/fs-native",
     "crates/system/host-fs",
     "crates/system/host-info",

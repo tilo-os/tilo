@@ -6,12 +6,12 @@ use crate::record_publisher::RecordPublisher;
 use crate::record_replication::{
     RecordAction, RecordAuthorizer, RecordEnvelopeV1, RecordOperationV1,
 };
-use collab_types::{
-    CapOverride, ContentHash, ContentRevisionV1, Ed25519PublicKey, Effect, FILE_BINDING_VERSION,
-    FILE_MUTATION_TRANSACTION_VERSION, FileActor, FileBindingV1, FileMetadataV1,
-    FileMutationOperation, FileMutationParticipant, FileMutationParticipantRole,
-    FileMutationTransaction, FileMutationTransactionManifest, FileNodeKind, FileProvenance,
-    FileRecordId, FileVersionId, FileVersionV1, IndexStatus, Scope, Subject, Verb,
+use collab_types::{CapOverride, Ed25519PublicKey, Effect, Scope, Subject, Verb};
+use fs_protocol::{
+    ContentHash, ContentRevisionV1, FILE_BINDING_VERSION, FILE_MUTATION_TRANSACTION_VERSION,
+    FileActor, FileBindingV1, FileMetadataV1, FileMutationOperation, FileMutationParticipant,
+    FileMutationParticipantRole, FileMutationTransaction, FileMutationTransactionManifest,
+    FileNodeKind, FileProvenance, FileRecordId, FileVersionId, FileVersionV1, IndexStatus,
 };
 use std::time::Duration;
 
@@ -964,9 +964,8 @@ async fn revoked_or_foreign_peers_are_denied_and_owned_devices_bootstrap() {
     }
     // Phase `record_session_guards_manifest_chunks_thumbnails_and_get_many_live`.
     {
-        use collab_types::{
-            Ed25519PublicKey, FileInviteSpec, FileInviteSubject, FilePermission, mint_file_invite,
-        };
+        use collab_types::Ed25519PublicKey;
+        use fs_protocol::{FileInviteSpec, FileInviteSubject, FilePermission, mint_file_invite};
         use iroh_blobs::protocol::{ChunkRangesSeq, GetManyRequest};
         use tilo_user_identity::{RevocationEntry, RevocationReason, sign_revocation_entry};
 
@@ -1712,7 +1711,7 @@ async fn structure_content_and_transactions_propagate_between_peers() {
                 assert!(server_namespace.set_content_revision(
                     ino,
                     &ContentRevisionV1 {
-                        schema_version: collab_types::CONTENT_REVISION_VERSION,
+                        schema_version: fs_protocol::CONTENT_REVISION_VERSION,
                         record_id,
                         version_id,
                         content_hash: Some(hash),
@@ -1803,7 +1802,7 @@ async fn structure_content_and_transactions_propagate_between_peers() {
                         observed_at_ms: 2,
                     },
                     proposed_content_revision: Some(ContentRevisionV1 {
-                        schema_version: collab_types::CONTENT_REVISION_VERSION,
+                        schema_version: fs_protocol::CONTENT_REVISION_VERSION,
                         record_id,
                         version_id: version.id,
                         content_hash: version.content_hash,
@@ -2185,7 +2184,7 @@ async fn publish_durable_test_revision(
     publisher
         .publish(
             &FileMetadataV1 {
-                schema_version: collab_types::files::FILE_METADATA_VERSION,
+                schema_version: fs_protocol::files::FILE_METADATA_VERSION,
                 record_id,
                 content_hash: Some(ContentHash(*manifest.as_bytes())),
                 byte_len: bytes.len() as u64,
@@ -3541,13 +3540,22 @@ async fn session_member(
     workspace: uuid::Uuid,
     namespace: Arc<Mutex<Namespace>>,
 ) -> (Router, EndpointAddr, IdentityKey) {
+    session_member_under(workspace, namespace, None).await
+}
+
+/// [`session_member`], deciding who may do what by `policy`.
+async fn session_member_under(
+    workspace: uuid::Uuid,
+    namespace: Arc<Mutex<Namespace>>,
+    policy: PeerPolicy,
+) -> (Router, EndpointAddr, IdentityKey) {
     let (endpoint, _lookup, identity) = bind_certified_endpoint().await;
     let person = identity.user_public_key();
     let (announcements, _) = mpsc::unbounded_channel();
     let protocol = SessionProtocol {
         endpoint: endpoint.clone(),
         identity,
-        policy: None,
+        policy,
         namespace,
         store: Arc::new(ContentStore::memory()),
         records: None,
@@ -3758,6 +3766,171 @@ async fn read_only_member_never_downloads_full_snapshot() {
     }
 }
 
+/// A namespace whose document holds `changes` changes, as months of saves
+/// leave one: a file per hundred changes, rewritten in a change of its own.
+fn namespace_with_history(changes: u64) -> Namespace {
+    let mut namespace = Namespace::new("history").unwrap();
+    let mut file = ROOT_INO;
+    for change in 0..changes {
+        if change.is_multiple_of(100) {
+            file = namespace
+                .create_file(ROOT_INO, format!("file-{change}"), None, 0, change)
+                .unwrap();
+        } else {
+            let content = Hash::new(change.to_le_bytes());
+            assert!(namespace.set_content(file, Some(&content), change, change));
+        }
+        // Reading the heads commits the edit as one change.
+        namespace.heads();
+    }
+    namespace
+}
+
+/// The sync bytes `host` and `device` generated in one session exchange,
+/// through the production client ([`session::sync_namespace`]) and server.
+async fn namespace_session_pass(
+    (sessions, session): (&SessionPool, &session::Session),
+    device: &Arc<Mutex<Namespace>>,
+    host: &Arc<Mutex<Namespace>>,
+    policy: &PeerPolicy,
+) -> Result<usize> {
+    let generated = || {
+        device
+            .lock()
+            .unwrap()
+            .sync_bytes_generated()
+            .saturating_add(host.lock().unwrap().sync_bytes_generated())
+    };
+    let before = generated();
+    session::sync_namespace(sessions, session, device, None, policy).await?;
+    Ok(generated().saturating_sub(before))
+}
+
+/// TIL-584. Two writers in sync, with 5,000 namespace changes behind them.
+/// Every pass used to start both ends from a fresh Automerge sync state,
+/// whose first message carries a Bloom filter over the document's whole
+/// history (10 bits a change): 6 KB here, 62 KB at 50,000 changes, every
+/// 3 s per peer, built under the namespace lock. A pass now resumes where
+/// the last completed one left off, and an idle one sends only heads.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn idle_namespace_pass_sends_no_history_bloom() {
+    let workspace = uuid::Uuid::new_v4();
+    let history = namespace_with_history(5_000).save();
+    let host = Arc::new(Mutex::new(Namespace::from_bytes("host", &history).unwrap()));
+    let (router, addr, _person) = session_member(workspace, Arc::clone(&host)).await;
+    let (endpoint, _lookup, identity) = bind_certified_endpoint().await;
+    let device_key = identity.device_public_key();
+    let device = Arc::new(Mutex::new(
+        Namespace::from_bytes("device", &history).unwrap(),
+    ));
+    let sessions = SessionPool::new(endpoint, identity, workspace);
+    let session = sessions
+        .get(&addr)
+        .await
+        .unwrap()
+        .expect("the host speaks the session protocol");
+    let pass = (&sessions, &*session);
+
+    let first = namespace_session_pass(pass, &device, &host, &None)
+        .await
+        .unwrap();
+    assert!(
+        first > 5_000,
+        "first contact summarises the whole history ({first} B)"
+    );
+    let idle = namespace_session_pass(pass, &device, &host, &None)
+        .await
+        .unwrap();
+    assert!(
+        idle < 512,
+        "an idle pass sent {idle} B; the first sent {first} B"
+    );
+    // The server stores its progress once it has sent its last frame.
+    assert!(
+        wait_until(|| {
+            let mut host = host.lock().unwrap();
+            host.begin_sync_with(&device_key).shared_heads == host.heads()
+        })
+        .await,
+        "serving the exchange left the host resuming from it too"
+    );
+
+    // Resuming loses nothing: changes on either side still cross.
+    host.lock()
+        .unwrap()
+        .create_file(ROOT_INO, "from-host", None, 0, 1)
+        .unwrap();
+    device
+        .lock()
+        .unwrap()
+        .create_file(ROOT_INO, "from-device", None, 0, 1)
+        .unwrap();
+    namespace_session_pass(pass, &device, &host, &None)
+        .await
+        .unwrap();
+    assert!(device.lock().unwrap().entry_at("from-host").is_some());
+    assert!(host.lock().unwrap().entry_at("from-device").is_some());
+    let idle = namespace_session_pass(pass, &device, &host, &None)
+        .await
+        .unwrap();
+    assert!(idle < 512, "idle again after a change: {idle} B");
+    router.shutdown().await.unwrap();
+}
+
+/// A device's remembered sync progress is no authority: once its holder's
+/// write access is revoked, a session that completed exchanges before is
+/// refused like any other, and nothing more reaches it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn revoked_writer_is_cut_off_with_persisted_state() {
+    let workspace = uuid::Uuid::new_v4();
+    let (endpoint, _lookup, identity) = bind_certified_endpoint().await;
+    let writer = identity.user_public_key();
+    let acl = policy_read_write(&[writer], &[]);
+    let host = Arc::new(Mutex::new(Namespace::new("host").unwrap()));
+    let (router, addr, _person) =
+        session_member_under(workspace, Arc::clone(&host), Some(acl.clone())).await;
+    let device = Arc::new(Mutex::new(
+        Namespace::from_bytes("device", &host.lock().unwrap().save()).unwrap(),
+    ));
+    let sessions = SessionPool::new(endpoint, identity, workspace);
+    let session = sessions
+        .get(&addr)
+        .await
+        .unwrap()
+        .expect("the host speaks the session protocol");
+    let pass = (&sessions, &*session);
+    for _ in 0..2 {
+        namespace_session_pass(pass, &device, &host, &None)
+            .await
+            .unwrap();
+    }
+
+    let mut revoked = WorkspaceAcl::new();
+    revoked.grant_read(writer, "/");
+    acl.replace(revoked);
+    host.lock()
+        .unwrap()
+        .create_file(ROOT_INO, "after-revoke", None, 0, 2)
+        .unwrap();
+    device
+        .lock()
+        .unwrap()
+        .create_file(ROOT_INO, "from-revoked-writer", None, 0, 2)
+        .unwrap();
+    let error = namespace_session_pass(pass, &device, &host, &None)
+        .await
+        .expect_err("a revoked writer's exchange is refused");
+    assert!(format!("{error:#}").contains("denied"), "{error:#}");
+    assert!(device.lock().unwrap().entry_at("after-revoke").is_none());
+    assert!(
+        host.lock()
+            .unwrap()
+            .entry_at("from-revoked-writer")
+            .is_none()
+    );
+    router.shutdown().await.unwrap();
+}
+
 #[tokio::test]
 async fn sync_frames_are_little_endian_length_then_raw_message() {
     let mut wire = Vec::new();
@@ -3791,4 +3964,231 @@ async fn sync_frames_over_sixty_four_mebibytes_or_truncated_are_refused() {
             Err(FrameError::Truncated)
         ));
     }
+}
+
+/// A device's publisher over a fresh repository, for the conflict-watch
+/// tests: concurrent heads are published from it directly, as a pull from
+/// another writer would apply them.
+struct ConflictWatchFixture {
+    _dir: tempfile::TempDir,
+    repository: Arc<RecordRepository>,
+    publisher: RecordPublisher,
+    workspace_id: uuid::Uuid,
+    actor: FileActor,
+}
+
+impl ConflictWatchFixture {
+    fn new() -> Self {
+        let dir = tempfile::tempdir().unwrap();
+        let repository = Arc::new(RecordRepository::open(dir.path().join("records")).unwrap());
+        let (device_key, device) = collab_types::generate_keypair();
+        let (_, person) = collab_types::generate_keypair();
+        let actor = FileActor { person, device };
+        let workspace_id = uuid::Uuid::from_u128(608);
+        let publisher =
+            RecordPublisher::new(Arc::clone(&repository), workspace_id, actor, device_key).unwrap();
+        Self {
+            _dir: dir,
+            repository,
+            publisher,
+            workspace_id,
+            actor,
+        }
+    }
+
+    fn version(
+        &self,
+        record_id: FileRecordId,
+        revision: u8,
+        parents: &[FileVersionId],
+    ) -> FileVersionV1 {
+        FileVersionV1 {
+            id: FileVersionId::new(),
+            record_id,
+            parents: parents.to_vec(),
+            actor: self.actor,
+            timestamp_ms: u64::from(revision),
+            content_hash: Some(ContentHash([revision; 32])),
+            metadata_hash: ContentHash([revision.wrapping_add(1); 32]),
+            provenance: FileProvenance::Edit,
+        }
+    }
+
+    /// A record with one version, `base`.
+    fn seed(&self) -> (FileRecordId, FileVersionV1) {
+        let record_id = FileRecordId::new();
+        let base = self.version(record_id, 1, &[]);
+        let metadata = FileMetadataV1 {
+            schema_version: 1,
+            record_id,
+            content_hash: base.content_hash,
+            byte_len: 1,
+            mime: Some("text/plain".into()),
+            previews: Vec::new(),
+            latest_actor: Some(self.actor),
+            observed_at_ms: 1,
+            index_status: IndexStatus::Indexed,
+            properties: None,
+        };
+        self.publisher
+            .publish(&metadata, std::slice::from_ref(&base))
+            .unwrap();
+        (record_id, base)
+    }
+
+    /// The conflict part of one reconciliation pass at `now`, as
+    /// `reconcile_loop` runs it: whether a record conflict was published,
+    /// and the namespace conflicts found.
+    fn pass(
+        &self,
+        watch: &mut conflict_watch::ConflictWatch,
+        namespace: &Namespace,
+        now: Instant,
+    ) -> (bool, Vec<crate::conflict::ContentConflict>) {
+        watch.begin_pass(now);
+        let published =
+            watch.publish_record_conflicts(&self.publisher, &self.repository, self.workspace_id);
+        (published, watch.namespace_conflicts(namespace))
+    }
+}
+
+/// Two namespaces holding one file, `doc`, edited concurrently: the second
+/// one's change not yet merged into the first.
+fn concurrently_edited_namespaces() -> (Namespace, Namespace) {
+    let mut namespace = Namespace::new("A").unwrap();
+    let ino = namespace
+        .create_file(ROOT_INO, "doc", Some(&Hash::from([1; 32])), 1, 1)
+        .unwrap();
+    let mut other = Namespace::from_bytes("B", &namespace.save()).unwrap();
+    let other_ino = other.lookup(ROOT_INO, "doc").unwrap().ino.0;
+    other.prime_baseline();
+    namespace.set_content(ino, Some(&Hash::from([10; 32])), 10, 5);
+    other.set_content(other_ino, Some(&Hash::from([20; 32])), 20, 5);
+    (namespace, other)
+}
+
+#[test]
+fn idle_timer_pass_runs_no_conflict_scan() {
+    let fixture = ConflictWatchFixture::new();
+    for _ in 0..1_000 {
+        fixture.seed();
+    }
+    let mut namespace = Namespace::new("idle-writer").unwrap();
+    let doc = namespace
+        .create_file(ROOT_INO, "doc", Some(&Hash::from([1; 32])), 1, 1)
+        .unwrap();
+    let mut watch = conflict_watch::ConflictWatch::default();
+    let start = Instant::now();
+
+    // The first pass after start looks everywhere.
+    let (published, conflicts) = fixture.pass(&mut watch, &namespace, start);
+    assert!(!published);
+    assert!(conflicts.is_empty());
+    assert_eq!(fixture.repository.concurrent_head_checks(), 1_000);
+    assert_eq!(namespace.conflict_scans(), 1);
+
+    // Timer passes that received nothing look nowhere.
+    for pass in 1..=3 {
+        let (published, conflicts) =
+            fixture.pass(&mut watch, &namespace, start + RECONCILE_INTERVAL * pass);
+        assert!(!published);
+        assert!(conflicts.is_empty());
+    }
+    assert_eq!(fixture.repository.concurrent_head_checks(), 1_000);
+    assert_eq!(namespace.conflict_scans(), 1);
+
+    // This device's own namespace writes cannot conflict with each other.
+    namespace.set_content(doc, Some(&Hash::from([2; 32])), 2, 2);
+    fixture.pass(&mut watch, &namespace, start + RECONCILE_INTERVAL * 4);
+    assert_eq!(namespace.conflict_scans(), 1);
+
+    // The slow sweep still looks everywhere, for a signal missed somehow.
+    fixture.pass(
+        &mut watch,
+        &namespace,
+        start + conflict_watch::CONFLICT_SWEEP_INTERVAL,
+    );
+    assert_eq!(fixture.repository.concurrent_head_checks(), 2_000);
+    assert_eq!(namespace.conflict_scans(), 2);
+}
+
+#[test]
+fn received_change_is_checked_for_conflict() {
+    let fixture = ConflictWatchFixture::new();
+    for _ in 0..50 {
+        fixture.seed();
+    }
+    let (record_id, base) = fixture.seed();
+    let left = fixture.version(record_id, 2, &[base.id]);
+    fixture.publisher.publish_structural_version(&left).unwrap();
+    let (mut namespace, mut other) = concurrently_edited_namespaces();
+
+    let mut watch = conflict_watch::ConflictWatch::default();
+    let start = Instant::now();
+    fixture.pass(&mut watch, &namespace, start);
+    let checks = fixture.repository.concurrent_head_checks();
+    assert_eq!(checks, 51);
+    assert_eq!(namespace.conflict_scans(), 1);
+
+    // What a gossip delta or an exchange delivers: the other writer's
+    // concurrent edit, and a version concurrent with `left`.
+    let delta = other.save_incremental();
+    namespace.apply_remote_and_resolve(&delta).unwrap();
+    let right = fixture.version(record_id, 3, &[base.id]);
+    fixture
+        .publisher
+        .publish_structural_version(&right)
+        .unwrap();
+
+    let (published, conflicts) = fixture.pass(&mut watch, &namespace, start + RECONCILE_INTERVAL);
+    assert!(published, "the concurrent heads become one open conflict");
+    assert_eq!(
+        fixture.repository.concurrent_head_checks(),
+        checks + 1,
+        "only the record that was written is checked"
+    );
+    let snapshot = fixture.publisher.snapshot(record_id).unwrap().unwrap();
+    assert_eq!(snapshot.conflicts.len(), 1);
+    assert_eq!(
+        conflicts.len(),
+        1,
+        "one conflict copy for the concurrent edit"
+    );
+    assert_eq!(namespace.conflict_scans(), 2);
+    assert!(!crate::conflict::materialize(&mut namespace, &conflicts[0], 10, 6).is_empty());
+
+    // Publishing the conflict was itself a write: the next pass checks
+    // that one record again and finds it settled; the one after checks
+    // nothing. Materialising the copy was a local change: no new scan.
+    let (published, conflicts) =
+        fixture.pass(&mut watch, &namespace, start + RECONCILE_INTERVAL * 2);
+    assert!(!published);
+    assert!(conflicts.is_empty());
+    let (published, _) = fixture.pass(&mut watch, &namespace, start + RECONCILE_INTERVAL * 3);
+    assert!(!published);
+    assert_eq!(fixture.repository.concurrent_head_checks(), checks + 2);
+    assert_eq!(namespace.conflict_scans(), 2);
+    let snapshot = fixture.publisher.snapshot(record_id).unwrap().unwrap();
+    assert_eq!(snapshot.conflicts.len(), 1);
+}
+
+#[test]
+fn unmaterialised_namespace_conflict_is_scanned_for_again() {
+    let (mut namespace, mut other) = concurrently_edited_namespaces();
+    namespace.merge_doc(&mut other).unwrap();
+
+    let mut watch = conflict_watch::ConflictWatch::default();
+    let start = Instant::now();
+    watch.begin_pass(start);
+    assert_eq!(watch.namespace_conflicts(&namespace).len(), 1);
+    // Its content was not reachable, so the loop asks again.
+    watch.retry_namespace();
+    watch.begin_pass(start + RECONCILE_INTERVAL);
+    assert_eq!(watch.namespace_conflicts(&namespace).len(), 1);
+    assert_eq!(namespace.conflict_scans(), 2);
+    // Merging what this namespace already holds brings nothing to scan.
+    namespace.merge_doc(&mut other).unwrap();
+    watch.begin_pass(start + RECONCILE_INTERVAL * 2);
+    assert!(watch.namespace_conflicts(&namespace).is_empty());
+    assert_eq!(namespace.conflict_scans(), 2);
 }

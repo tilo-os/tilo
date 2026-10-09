@@ -25,7 +25,7 @@ use winit::event::{ElementState, KeyEvent, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use crate::presence::PresenceCtx;
-use crate::text_render::{FontChoice, TextRenderer, TextStyle, TextWeight};
+use crate::text_render::{TextRenderer, TextWeight};
 use crate::theme::Theme;
 use crate::tokens::TextRole;
 use crate::widget::TaffyTreeExt;
@@ -76,20 +76,6 @@ pub enum LineSignal {
     LinkOpen {
         open_at: usize,
     },
-}
-
-/// Geometry shared by every mark segment `draw` paints in one frame, so
-/// `paint_mark_segment` doesn't need a fistful of separate parameters.
-#[allow(dead_code, reason = "used by feature-gated rich text rendering")]
-struct MarkDrawCtx<'a> {
-    text: &'a str,
-    xs: &'a [f64],
-    rect: Rect,
-    pad: f64,
-    scroll_x: f64,
-    text_y: f64,
-    line_height: f64,
-    text_size: f32,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -1279,193 +1265,6 @@ fn transient_color(theme: &Theme, kind: TokenKind) -> vello::peniko::Color {
     theme.tokens.syntax.color(kind)
 }
 
-#[allow(dead_code, reason = "used by feature-gated rich text rendering")]
-fn paint_transient_color(
-    scene: &mut Scene,
-    transform: Affine,
-    text_renderer: &mut TextRenderer,
-    theme: &Theme,
-    span: &TransientColorSpan,
-    ctx: &MarkDrawCtx<'_>,
-) {
-    let end = span.range.end.min(ctx.text.len());
-    let Some(slice) = ctx.text.get(span.range.start..end) else {
-        return;
-    };
-    if slice.is_empty() {
-        return;
-    }
-    let x_offset = ctx.xs.get(span.range.start).copied().unwrap_or(0.0);
-    let x = ctx.rect.x0 + ctx.pad + x_offset - ctx.scroll_x;
-    let color = transient_color(theme, span.kind);
-    text_renderer.draw_style(
-        scene,
-        slice,
-        color,
-        translated(transform, x, ctx.text_y),
-        None,
-        &TextStyle::new(ctx.text_size).with_family(FontChoice::Monospace),
-    );
-}
-
-/// Paints one mark segment's overpaint (code chip, link/underline/strike
-/// rules, and restyled glyphs) inside the clip layer `draw` already pushed.
-/// A pure function of its inputs — no `self` needed.
-#[allow(dead_code, reason = "used by feature-gated rich text rendering")]
-fn paint_mark_segment(
-    scene: &mut Scene,
-    transform: Affine,
-    text_renderer: &mut TextRenderer,
-    theme: &Theme,
-    seg: &MarkSegment,
-    ctx: &MarkDrawCtx<'_>,
-) {
-    if seg.range.start >= ctx.text.len() {
-        return;
-    }
-    // A mark's byte range might not land on a char boundary after an edit
-    // races the mark-shift logic; skip rather than panic.
-    let Some(slice) = ctx
-        .text
-        .get(seg.range.start..seg.range.end.min(ctx.text.len()))
-    else {
-        return;
-    };
-    if slice.is_empty() {
-        return;
-    }
-
-    let x_offset = ctx.xs.get(seg.range.start).copied().unwrap_or(0.0);
-    let x = ctx.rect.x0 + ctx.pad + x_offset - ctx.scroll_x;
-    let sans_end_x_offset = ctx
-        .xs
-        .get(seg.range.end.min(ctx.xs.len().saturating_sub(1)))
-        .copied()
-        .unwrap_or(x_offset);
-    let sans_end_x = ctx.rect.x0 + ctx.pad + sans_end_x_offset - ctx.scroll_x;
-
-    paint_segment_decorations(scene, transform, theme, seg, ctx, x, sans_end_x);
-
-    let needs_overpaint = seg.bold
-        || seg.italic
-        || seg.code
-        || seg.underline
-        || seg.strikethrough
-        || seg.link.is_some()
-        || seg.external_link;
-    if !needs_overpaint {
-        return;
-    }
-
-    let tokens = &theme.tokens;
-    let color = tokens.colors.text_primary;
-
-    let weight = if seg.bold {
-        TextWeight::Bold
-    } else {
-        TextWeight::Regular
-    };
-    let italic = seg.italic;
-    let mono = false;
-
-    text_renderer.draw_style(
-        scene,
-        slice,
-        color,
-        translated(transform, x, ctx.text_y),
-        None,
-        &TextStyle::new(ctx.text_size)
-            .with_weight(weight)
-            .with_italic(italic)
-            .with_family(if mono {
-                FontChoice::Monospace
-            } else {
-                FontChoice::SansSerif
-            }),
-    );
-}
-
-/// Draws the code-chip background and the link/underline/strikethrough
-/// rules for one segment — the parts of `paint_mark_segment` that don't
-/// depend on the restyled text run itself.
-#[allow(dead_code, reason = "used by feature-gated rich text rendering")]
-fn paint_segment_decorations(
-    scene: &mut Scene,
-    transform: Affine,
-    theme: &Theme,
-    seg: &MarkSegment,
-    ctx: &MarkDrawCtx<'_>,
-    x: f64,
-    sans_end_x: f64,
-) {
-    let tokens = &theme.tokens;
-
-    if seg.code {
-        // Inline code renders in the document font (`mono = false` in
-        // `paint_mark_segment`) so its extent matches the sans layout slot
-        // exactly; a wider monospace measurement would overlap next chars.
-        let bg_rect = Rect::new(
-            x - 2.0,
-            ctx.text_y + 1.0,
-            sans_end_x + 2.0,
-            ctx.text_y + ctx.line_height - 1.0,
-        );
-        let bg = vello::kurbo::RoundedRect::from_rect(bg_rect, 3.0);
-        scene.fill(
-            vello::peniko::Fill::NonZero,
-            transform,
-            tokens.colors.surfaces.raised,
-            None,
-            &bg,
-        );
-    }
-
-    if seg.link.is_some() || seg.external_link {
-        let underline = Rect::new(
-            x,
-            ctx.text_y + ctx.line_height - 3.0,
-            sans_end_x,
-            ctx.text_y + ctx.line_height - 1.0,
-        );
-        scene.fill(
-            vello::peniko::Fill::NonZero,
-            transform,
-            tokens.colors.text_primary,
-            None,
-            &underline,
-        );
-    }
-
-    // In text colour, distinct from the accent-coloured link underline above.
-    if seg.underline {
-        let rule = Rect::new(
-            x,
-            ctx.text_y + ctx.line_height - 2.0,
-            sans_end_x,
-            ctx.text_y + ctx.line_height - 1.0,
-        );
-        scene.fill(
-            vello::peniko::Fill::NonZero,
-            transform,
-            tokens.colors.text_primary,
-            None,
-            &rule,
-        );
-    }
-
-    if seg.strikethrough {
-        let mid = ctx.text_y + ctx.line_height * 0.5;
-        let rule = Rect::new(x, mid - 0.5, sans_end_x, mid + 0.5);
-        scene.fill(
-            vello::peniko::Fill::NonZero,
-            transform,
-            tokens.colors.text_primary,
-            None,
-            &rule,
-        );
-    }
-}
-
 /// Composes `transform` with a translation by `(dx, dy)`. `kurbo::Affine`'s
 /// `Mul` impl trips `arithmetic_side_effects` like any operator overload,
 /// but composing two f64-based affine transforms cannot meaningfully
@@ -1571,69 +1370,13 @@ fn mark_kind(segment: &MarkSegment) -> Option<crate::text_render::TextKind> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testing::{Dispatch, dispatch};
     use crate::widget::marks::Mark;
-    use winit::event::{KeyEvent, Modifiers};
-    use winit::keyboard::{
-        Key, KeyLocation, ModifiersKeyState, ModifiersState, NamedKey, PhysicalKey, SmolStr,
-    };
+    use winit::keyboard::{ModifiersKeyState, ModifiersState, NamedKey};
 
-    /// `KeyEventExtra` is `pub(crate)` in winit 0.30, so this zero-constructs
-    /// rather than using a struct literal.
-    fn key_press(named: NamedKey) -> WindowEvent {
-        let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-        ev.logical_key = Key::Named(named);
-        ev.physical_key = PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
-        ev.location = KeyLocation::Standard;
-        ev.state = ElementState::Pressed;
-        ev.repeat = false;
-        ev.text = None;
-        WindowEvent::KeyboardInput {
-            device_id: unsafe { std::mem::zeroed() },
-            event: ev,
-            is_synthetic: false,
-        }
-    }
+    use crate::synthetic_input::named_key;
 
-    fn char_press(c: &str) -> WindowEvent {
-        let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-        ev.logical_key = Key::Character(SmolStr::new(c));
-        ev.physical_key = PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
-        ev.location = KeyLocation::Standard;
-        ev.state = ElementState::Pressed;
-        ev.repeat = false;
-        ev.text = Some(SmolStr::new(c));
-        WindowEvent::KeyboardInput {
-            device_id: unsafe { std::mem::zeroed() },
-            event: ev,
-            is_synthetic: false,
-        }
-    }
-
-    fn dispatch(line: &mut RichTextLine, event: &WindowEvent) {
-        dispatch_with_mods(line, event, Modifiers::default());
-    }
-
-    fn dispatch_with_mods(line: &mut RichTextLine, event: &WindowEvent, modifiers: Modifiers) {
-        let mut state = automerge::AutoCommit::new();
-        let root = automerge::ROOT.clone();
-        let mut handled = false;
-        let mut focus_target = None;
-        let taffy: TaffyTree<()> = TaffyTree::new();
-        let fake_node = NodeId::new(0);
-        line.handle_event(
-            event,
-            &mut crate::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &modifiers,
-                state: crate::widget::Edits::lend(&mut state),
-                path: &root,
-                handled: &mut handled,
-                focus_target: &mut focus_target,
-                node_id: fake_node,
-                taffy: &taffy,
-            },
-        );
-    }
+    use crate::synthetic_input::char_key;
 
     fn layout_and_draw(line: &mut RichTextLine, theme: &Theme, width: f32) -> Scene {
         let mut taffy = TaffyTree::<()>::new();
@@ -1849,24 +1592,9 @@ mod tests {
             line.set_focus(true);
 
             // Type against OUR doc, not the throwaway one `dispatch` would make.
-            let taffy: TaffyTree<()> = TaffyTree::new();
+            let mut on_doc = Dispatch::new().doc(&mut doc);
             for c in ["h", "i"] {
-                let ev = char_press(c);
-                let mut handled = false;
-                let mut focus_target = None;
-                line.handle_event(
-                    &ev,
-                    &mut crate::widget::EventCtx {
-                        scale_factor: 1.0,
-                        modifiers: &Modifiers::default(),
-                        state: crate::widget::Edits::lend(&mut doc),
-                        path: &ROOT,
-                        handled: &mut handled,
-                        focus_target: &mut focus_target,
-                        node_id: NodeId::new(0),
-                        taffy: &taffy,
-                    },
-                );
+                on_doc.send(&mut line, &char_key(c));
             }
 
             assert_eq!(line.value(), "hi");
@@ -1981,7 +1709,7 @@ mod tests {
             let mut l = RichTextLine::new().with_text("abcdef");
             l.set_focus(true);
             l.set_cursor_pos(3);
-            dispatch(&mut l, &key_press(NamedKey::Enter));
+            dispatch(&mut l, &named_key(NamedKey::Enter));
             match l.take_signal() {
                 Some(LineSignal::Enter { split_at: 3 }) => {}
                 other => panic!("expected Enter@3, got {other:?}"),
@@ -1993,7 +1721,7 @@ mod tests {
         {
             let mut l = RichTextLine::new().with_text("hi");
             l.set_focus(true);
-            dispatch(&mut l, &key_press(NamedKey::Enter));
+            dispatch(&mut l, &named_key(NamedKey::Enter));
             match l.take_signal() {
                 Some(LineSignal::Enter { split_at }) => assert_eq!(split_at, 2),
                 other => panic!("expected Enter@2, got {other:?}"),
@@ -2005,7 +1733,7 @@ mod tests {
             let mut l = RichTextLine::new().with_text("abc");
             l.set_focus(true);
             l.set_cursor_pos(0);
-            dispatch(&mut l, &key_press(NamedKey::Backspace));
+            dispatch(&mut l, &named_key(NamedKey::Backspace));
             assert_eq!(l.take_signal(), Some(LineSignal::BackspaceAtStart));
             assert_eq!(l.value(), "abc");
         }
@@ -2015,7 +1743,7 @@ mod tests {
             let mut l = RichTextLine::new().with_text("abc");
             l.set_focus(true);
             l.set_cursor_pos(3);
-            dispatch(&mut l, &key_press(NamedKey::Backspace));
+            dispatch(&mut l, &named_key(NamedKey::Backspace));
             assert!(l.take_signal().is_none());
             assert_eq!(l.value(), "ab");
             assert!(l.take_dirty().is_some());
@@ -2025,9 +1753,9 @@ mod tests {
         {
             let mut l = RichTextLine::new().with_text("x");
             l.set_focus(true);
-            dispatch(&mut l, &key_press(NamedKey::ArrowUp));
+            dispatch(&mut l, &named_key(NamedKey::ArrowUp));
             assert_eq!(l.take_signal(), Some(LineSignal::ArrowUp));
-            dispatch(&mut l, &key_press(NamedKey::ArrowDown));
+            dispatch(&mut l, &named_key(NamedKey::ArrowDown));
             assert_eq!(l.take_signal(), Some(LineSignal::ArrowDown));
         }
 
@@ -2035,10 +1763,10 @@ mod tests {
         {
             let mut l = RichTextLine::new();
             l.set_focus(true);
-            dispatch(&mut l, &char_press("["));
+            dispatch(&mut l, &char_key("["));
             // First `[` shouldn't emit.
             assert!(l.take_signal().is_none());
-            dispatch(&mut l, &char_press("["));
+            dispatch(&mut l, &char_key("["));
             match l.take_signal() {
                 Some(LineSignal::LinkOpen { open_at: 0 }) => {}
                 other => panic!("expected LinkOpen{{open_at:0}}, got {other:?}"),
@@ -2053,8 +1781,8 @@ mod tests {
         {
             let mut l = RichTextLine::new();
             l.set_focus(true);
-            dispatch(&mut l, &char_press("h"));
-            dispatch(&mut l, &char_press("i"));
+            dispatch(&mut l, &char_key("h"));
+            dispatch(&mut l, &char_key("i"));
             assert_eq!(l.value(), "hi");
             let dirty = l.take_dirty();
             assert_eq!(dirty.as_deref(), Some("hi"));
@@ -2064,9 +1792,9 @@ mod tests {
         // Case `unfocused_line_ignores_keys`.
         {
             let mut l = RichTextLine::new().with_text("abc");
-            dispatch(&mut l, &key_press(NamedKey::Enter));
+            dispatch(&mut l, &named_key(NamedKey::Enter));
             assert!(l.take_signal().is_none(), "unfocused line must not emit");
-            dispatch(&mut l, &char_press("z"));
+            dispatch(&mut l, &char_key("z"));
             assert_eq!(l.value(), "abc");
         }
 
@@ -2144,7 +1872,7 @@ mod tests {
             l.set_focus(true);
             l.toggle_mark(Mark::Bold);
             assert_eq!(l.pending_marks().len(), 1);
-            dispatch(&mut l, &char_press("x"));
+            dispatch(&mut l, &char_key("x"));
             assert_eq!(l.value(), "x");
             // Pending was drained onto the inserted byte.
             assert!(l.pending_marks().is_empty());
@@ -2159,7 +1887,7 @@ mod tests {
             l.set_marks(vec![MarkSpan::new(2..4, Mark::Bold)]);
             l.set_focus(true);
             l.set_cursor_pos(0);
-            dispatch(&mut l, &char_press("X"));
+            dispatch(&mut l, &char_key("X"));
             assert_eq!(l.value(), "Xhello");
             assert_eq!(l.marks()[0].range, 3..5);
         }
@@ -2170,7 +1898,7 @@ mod tests {
             l.set_marks(vec![MarkSpan::new(3..5, Mark::Bold)]);
             l.set_focus(true);
             l.set_cursor_pos(1);
-            dispatch(&mut l, &key_press(NamedKey::Backspace));
+            dispatch(&mut l, &named_key(NamedKey::Backspace));
             assert_eq!(l.value(), "hello");
             assert_eq!(l.marks()[0].range, 2..4);
         }
@@ -2195,14 +1923,18 @@ mod tests {
                     line.set_focus(true);
                     line.inner_mut().set_selection(0, 6);
                     line.set_inline_formatting(false);
-                    dispatch_with_mods(&mut line, &char_press(shortcut), Modifiers::from(modifier));
+                    Dispatch::new()
+                        .modifiers(modifier)
+                        .send(&mut line, &char_key(shortcut));
                     assert_eq!(line.value(), "source");
                     assert!(line.marks().is_empty());
                     assert!(line.pending_marks().is_empty());
                     assert!(line.take_dirty().is_none());
 
                     line.set_inline_formatting(true);
-                    dispatch_with_mods(&mut line, &char_press(shortcut), Modifiers::from(modifier));
+                    Dispatch::new()
+                        .modifiers(modifier)
+                        .send(&mut line, &char_key(shortcut));
                     assert_eq!(line.marks().len(), 1, "prose shortcut {shortcut} restored");
                 }
             }
@@ -2212,20 +1944,18 @@ mod tests {
         {
             let mut line = RichTextLine::new();
             line.set_focus(true);
-            dispatch_with_mods(
-                &mut line,
-                &char_press("b"),
-                Modifiers::from(ModifiersState::CONTROL),
-            );
+            Dispatch::new()
+                .modifiers(ModifiersState::CONTROL)
+                .send(&mut line, &char_key("b"));
             assert_eq!(line.pending_marks(), &[Mark::Bold]);
             line.set_inline_formatting(false);
-            dispatch(&mut line, &char_press("["));
-            dispatch(&mut line, &char_press("["));
+            dispatch(&mut line, &char_key("["));
+            dispatch(&mut line, &char_key("["));
             assert_eq!(line.value(), "[[");
             assert!(line.take_signal().is_none());
             assert!(line.marks().is_empty());
             line.set_inline_formatting(true);
-            dispatch(&mut line, &char_press("["));
+            dispatch(&mut line, &char_key("["));
             assert!(matches!(
                 line.take_signal(),
                 Some(LineSignal::LinkOpen { .. })

@@ -24,7 +24,7 @@ use crate::hypervisor::{CommandLine, Runner};
 /// Cargo cannot start, fails, or returns invalid or incomplete metadata.
 pub fn cargo_metadata(runner: &mut impl Runner) -> Result<Value, CliError> {
     let command = CommandLine::new(
-        "cargo",
+        &cargo_program(),
         &["metadata", "--locked", "--no-deps", "--format-version", "1"],
     );
     let output = runner.output(&command)?;

@@ -8,6 +8,11 @@ on:
         type: choice
         default: '22'
         options: ['22', '36']
+      runner:
+        description: 'Existing ARM pool or the single approved software canary.'
+        type: choice
+        default: 'runner-large-arm64'
+        options: ['runner-large-arm64', 'runner-sdk-envelope-canary']
 
 env:
   CARGO_INCREMENTAL: "0"
@@ -26,15 +31,22 @@ jobs:
     outputs:
       image: ${{ steps.resolve.outputs.image }}
       memory: ${{ steps.envelope.outputs.memory }}
+      runner: ${{ steps.envelope.outputs.runner }}
     steps:
       - name: Validate fixed diagnostic memory limit
         id: envelope
         env:
           REQUESTED_MEMORY: ${{ github.event.inputs.memory_gib }}
+          REQUESTED_RUNNER: ${{ github.event.inputs.runner }}
         run: |
           case "$REQUESTED_MEMORY" in
             22|36) printf 'memory=%s\n' "$REQUESTED_MEMORY" >> "$GITHUB_OUTPUT" ;;
             *) echo 'Unsupported diagnostic memory limit' >&2; exit 2 ;;
+          esac
+          case "${REQUESTED_RUNNER:-runner-large-arm64}" in
+            runner-large-arm64|runner-sdk-envelope-canary)
+              printf 'runner=%s\n' "${REQUESTED_RUNNER:-runner-large-arm64}" >> "$GITHUB_OUTPUT" ;;
+            *) echo 'Unsupported diagnostic runner' >&2; exit 2 ;;
           esac
       - name: Checkout public-trust context fixture
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -55,7 +67,7 @@ jobs:
     # quality lane's 20 GiB disk and reach its 5 GiB memory limit. Each step
     # reports its peak memory.
     # Exact dispatch source, all existing Linux SDK commands; no merge onto a moving main.
-    runs-on: runner-large-arm64
+    runs-on: ${{ needs.builder.outputs.runner }}
     timeout-minutes: 180
     env:
       CARGO_INCREMENTAL: "0"
@@ -132,4 +144,3 @@ jobs:
           python3 tools/ci/qualify_native_envelope.py after
           --memory-gib ${{ needs.builder.outputs.memory }} --cpus 24
           --state "$RUNNER_TEMP/sdk-envelope-before.json"
-

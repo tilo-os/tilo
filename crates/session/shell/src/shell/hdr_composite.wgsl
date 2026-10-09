@@ -1,7 +1,7 @@
 // HDR output composite: the SDR desktop plus HDR layers, in linear light.
 //
 // The GPU mirror of `hdr_surface::composite_hdr_pixel` for a PQ output.
-// Inputs, all at the output's size:
+// Inputs, all at the output's size in scene orientation:
 //
 //   sdr_input    - vello's render with every HDR layer image black
 //   weight_input - the same scene with each layer image in its channel colour
@@ -34,7 +34,8 @@ struct Layer {
 struct Params {
     sdr_white_nits: f32,
     layer_count: u32,
-    _pad0: u32,
+    // `shell::render::orientation::shader_code` of the output's transform.
+    orientation: u32,
     _pad1: u32,
     layers: array<Layer, 4>,
 };
@@ -161,8 +162,12 @@ fn channel_of(v: vec4<f32>, channel: u32) -> f32 {
 
 @fragment
 fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
-    let px = vec2<i32>(in.position.xy);
-    let centre = in.position.xy;
+    // The inputs and the layers are in scene orientation; the target is the
+    // output's scanout, turned by its orientation (`oriented_source_pixel`,
+    // output_orientation.wgsl, concatenated in front of this file).
+    let surface = vec2<i32>(textureDimensions(sdr_input));
+    let px = oriented_source_pixel(vec2<i32>(in.position.xy), surface, params.orientation);
+    let centre = vec2<f32>(px) + vec2<f32>(0.5);
     let first = textureLoad(sdr_input, px, 0);
     let second = textureLoad(weight_input, px, 0);
     var covered = 0.0;

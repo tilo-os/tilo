@@ -11,9 +11,10 @@
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
-use collab_types::{
-    Ed25519PublicKey, FileInviteError, FileInviteSpec, FileInviteSubject, FileInviteV1,
-    FilePermission, FileRecordId, mint_bearer_file_invite, mint_file_invite,
+use collab_types::Ed25519PublicKey;
+use fs_protocol::{
+    FileInviteError, FileInviteSpec, FileInviteSubject, FileInviteV1, FilePermission, FileRecordId,
+    mint_bearer_file_invite, mint_file_invite,
 };
 use getrandom::{SysRng, rand_core::UnwrapErr};
 use iroh_base::EndpointAddr;

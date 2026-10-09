@@ -2,7 +2,7 @@
 //! This is a host-local operation; incoming member documents cannot mint ownership.
 
 use super::{CollaborationError, Rooms, system_time};
-use tilo_agent_participant::{AppCatalogue, Replica, Seed};
+use tilo_agent_participant::{AppCatalogue, ConfinedReplica, Seed};
 use tilo_user_identity::DeviceCert;
 
 impl Rooms {
@@ -132,7 +132,9 @@ impl Rooms {
         if governed.peer().document(app, "").is_some() {
             return Ok(false);
         }
-        let mut source = Replica::open(
+        // The factory is the app's own code: it runs in a confined app
+        // worker, and its genesis is admitted here before it is signed.
+        let source = ConfinedReplica::open(
             catalogue,
             app,
             room,
@@ -146,7 +148,8 @@ impl Rooms {
                 "factory primary route differs from its declaration",
             ));
         }
-        let Some(collab_types::DocumentMutation::Snapshot(genesis)) = source.take_mutation() else {
+        let Ok(Some(collab_types::DocumentMutation::Snapshot(genesis))) = source.take_mutation()
+        else {
             return Err(CollaborationError::new(
                 "factory did not produce a genesis snapshot",
             ));

@@ -13,11 +13,7 @@
 #![cfg_attr(
     test,
     allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
         clippy::string_slice,
-        clippy::panic,
         clippy::unreachable,
         reason = "in a test these are the assertion, not a hazard"
     )
@@ -214,6 +210,18 @@ enum Command {
         #[arg(long)]
         out: PathBuf,
         /// The full .tapp to split.
+        file: PathBuf,
+    },
+    /// Write the compressed twin of a .tapp, `<file>.zst` unless `-o` names
+    /// another path: the form clients download first when it sits beside the
+    /// package at its signed URL. The twin is checked to decompress to the
+    /// exact package before it is written; signatures and the registry entry
+    /// still cover only the package.
+    Compress {
+        /// Output path for the twin; `<file>.zst` by default.
+        #[arg(short = 'o', long)]
+        output: Option<PathBuf>,
+        /// The .tapp to compress.
         file: PathBuf,
     },
     /// Re-sign an existing .tapp with the given identity, writing the result back into the same file.
@@ -477,6 +485,7 @@ fn main() -> Result<()> {
         Command::SealImage(args) => cmd_seal_image(&args),
         Command::Thin { output, file } => cmd_thin(&file, &output),
         Command::Split { out, file } => cmd_split(&file, &out),
+        Command::Compress { output, file } => cmd_compress(&file, output.as_deref()),
         Command::Sign { identity, file } => cmd_sign(&identity, &file),
         Command::Verify { trusted_key, file } => cmd_verify(&trusted_key, &file),
         Command::Inspect { file } => cmd_inspect(&file),
@@ -823,6 +832,39 @@ fn cmd_thin(file: &Path, output: &Path) -> Result<()> {
     let (tapp, _) = read_tapp(file, false)?;
     write_tapp(output, &tapp.meta, None)?;
     eprintln!("wrote thin {} -> {}", tapp.meta.id, output.display());
+    Ok(())
+}
+
+fn cmd_compress(file: &Path, output: Option<&Path>) -> Result<()> {
+    use tilo_app_package::compressed;
+    let bytes = std::fs::read(file).with_context(|| format!("read {}", file.display()))?;
+    tilo_app_package::tapp::read(bytes.as_slice(), &mut tilo_app_package::DiscardBlobs)
+        .with_context(|| format!("{} is not a .tapp", file.display()))?;
+    let twin = compressed::compress(&bytes).context("compress")?;
+    let mut round_trip = Vec::with_capacity(bytes.len());
+    compressed::decompress_bounded(twin.as_slice(), bytes.len() as u64, &mut round_trip)
+        .context("decompress the twin")?;
+    if round_trip != bytes {
+        bail!("the twin of {} does not decompress to it", file.display());
+    }
+    let output = output.map_or_else(
+        || {
+            let mut name = file.as_os_str().to_owned();
+            name.push(compressed::SUFFIX);
+            PathBuf::from(name)
+        },
+        Path::to_path_buf,
+    );
+    let temp = output.with_extension(format!("zst.tmp.{}", std::process::id()));
+    std::fs::write(&temp, &twin).with_context(|| format!("write {}", temp.display()))?;
+    std::fs::rename(&temp, &output).with_context(|| format!("write {}", output.display()))?;
+    eprintln!(
+        "compressed {} -> {}: {} -> {} bytes",
+        file.display(),
+        output.display(),
+        bytes.len(),
+        twin.len()
+    );
     Ok(())
 }
 

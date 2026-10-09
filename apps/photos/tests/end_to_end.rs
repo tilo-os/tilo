@@ -775,8 +775,7 @@ fn resource_surface_acts_on_the_open_photograph_without_a_display() {
         }
 
         // Invoke rotate-right by id, and the pixels must follow.
-        let mut registry = ActionRegistry::new();
-        register(&mut registry);
+        let registry = ActionRegistry::with(register);
         let spec = photo
             .actions
             .iter()
@@ -848,9 +847,7 @@ fn resource_surface_acts_on_the_open_photograph_without_a_display() {
             panic!("crop collects an argument");
         };
 
-        let mut registry = ActionRegistry::new();
-        register(&mut registry);
-        registry
+        ActionRegistry::with(register)
             .decode(&build("0.5,0.5,0.5,0.5"))
             .expect("the envelope decodes")
             .apply(&mut hz.state().doc)

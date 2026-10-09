@@ -7,7 +7,7 @@
 //! Every call is async: the UI spawns it on the app runtime
 //! (`ui::rt::app()`) and receives the outcome through its wake mechanism.
 
-use collab_types::{
+use fs_protocol::{
     RECIPIENT_CONTROL_FRAMING, RECIPIENT_CONTROL_VERSION, RecipientControlOperationV1,
     RecipientControlRequestV1, RecipientControlResponseV1, RecipientControlResultV1,
     RecipientSubscriptionStatusV1,
@@ -84,7 +84,7 @@ pub async fn admit_link(uri: String) -> Result<RecipientSubscriptionStatusV1, St
 /// Returns a localized error when the service is unavailable, refuses the
 /// retry, or returns an invalid response.
 pub async fn retry(
-    key: collab_types::RecipientSubscriptionKeyV1,
+    key: fs_protocol::RecipientSubscriptionKeyV1,
 ) -> Result<RecipientSubscriptionStatusV1, String> {
     transact(RecipientControlOperationV1::Retry { key })
         .await
@@ -116,8 +116,8 @@ async fn exchange<S: AsyncRead + AsyncWrite + Unpin>(
         protocol_version: RECIPIENT_CONTROL_VERSION,
         operation,
     };
-    let bytes =
-        collab_types::canonical_bytes(&request).map_err(|_| t("files-received-encode-failed"))?;
+    let bytes = fs_protocol::canonical::canonical_bytes(&request)
+        .map_err(|_| t("files-received-encode-failed"))?;
     let frame = RECIPIENT_CONTROL_FRAMING
         .encode(&bytes)
         .map_err(|_| t("files-received-request-too-large"))?;
@@ -137,7 +137,7 @@ async fn exchange<S: AsyncRead + AsyncWrite + Unpin>(
         Err(FrameError::Truncated) => return Err(t("files-received-response-truncated")),
         Ok(None) | Err(_) => return Err(t("files-received-no-response")),
     };
-    collab_types::canonical::from_canonical_bytes(&response)
+    fs_protocol::canonical::from_canonical_bytes(&response)
         .map_err(|_| t("files-received-response-invalid"))
 }
 
@@ -153,7 +153,8 @@ fn connected_service_stream() -> Result<local_socket::Stream, String> {
     })
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
+#[cfg(unix)]
 mod tests {
     use super::*;
     use tokio::io::AsyncReadExt;
@@ -169,15 +170,15 @@ mod tests {
         runtime.block_on(async {
             let (mut client, mut service) = tokio::io::duplex(64 * 1024);
             let operation = RecipientControlOperationV1::AdmitV2 { uri: "u".into() };
-            let body = collab_types::canonical_bytes(&RecipientControlRequestV1 {
+            let body = fs_protocol::canonical::canonical_bytes(&RecipientControlRequestV1 {
                 protocol_version: RECIPIENT_CONTROL_VERSION,
                 operation: operation.clone(),
             })
             .unwrap();
-            let response = collab_types::canonical_bytes(&RecipientControlResponseV1 {
+            let response = fs_protocol::canonical::canonical_bytes(&RecipientControlResponseV1 {
                 protocol_version: RECIPIENT_CONTROL_VERSION,
                 result: RecipientControlResultV1::Error {
-                    code: collab_types::RecipientControlErrorCode::NotFound,
+                    code: fs_protocol::RecipientControlErrorCode::NotFound,
                 },
             })
             .unwrap();
@@ -192,7 +193,7 @@ mod tests {
             assert!(matches!(
                 decoded.result,
                 RecipientControlResultV1::Error {
-                    code: collab_types::RecipientControlErrorCode::NotFound
+                    code: fs_protocol::RecipientControlErrorCode::NotFound
                 }
             ));
             let mut sent = vec![0_u8; 4 + body.len()];

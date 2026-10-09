@@ -840,9 +840,7 @@ mod tests {
     use uuid::Uuid;
 
     fn registry() -> ActionRegistry {
-        let mut r = ActionRegistry::new();
-        register(&mut r);
-        r
+        ActionRegistry::with(register)
     }
 
     /// The bundled sample library written into a fresh document, as the

@@ -95,10 +95,7 @@
 #![cfg_attr(
     test,
     allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
         clippy::string_slice,
-        clippy::panic,
         clippy::unreachable,
         clippy::float_cmp,
         reason = "in a test these are the assertion, not a hazard"
@@ -252,6 +249,7 @@ pub mod resources;
 pub mod retained_present;
 pub mod richtext;
 pub mod scale;
+pub mod scene_parts;
 pub mod screen_reader;
 pub mod search;
 pub mod secret_paint;
@@ -281,6 +279,11 @@ pub mod view;
 pub mod virtual_viewport;
 #[cfg(feature = "native")]
 pub use native::warmup;
+/// Private completion receipts shared by native and browser text editors.
+/// These types grant no access to an embedded browser or its engine.
+pub mod text_input {
+    pub use crate::webview::text_input::{Failure, Receipt, Resolver};
+}
 pub mod webview;
 pub mod widget;
 pub mod window_icon;

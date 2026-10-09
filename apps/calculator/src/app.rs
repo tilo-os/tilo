@@ -121,6 +121,9 @@ pub struct CalculatorApp {
     /// `mark_drawn`; without it the default (dirty every frame) repainted the
     /// whole desktop on every pointer move while the Calculator was active.
     dirty: bool,
+    /// The peers' carets last painted into a plot's formula. They follow
+    /// peer pointers, which the window does not damage for its widgets.
+    drawn_remote_carets: Vec<(Point, Color)>,
     /// An effect taken on the next sync, where the document is.
     pending_effect: Option<actions::CalculatorEffect>,
     node: Option<NodeId>,
@@ -181,6 +184,7 @@ impl CalculatorApp {
             last_click_pos: Point::ZERO,
             model_dirty: false,
             dirty: true,
+            drawn_remote_carets: Vec::new(),
             pending_effect: None,
             node: None,
             dispatch: None,
@@ -1415,7 +1419,10 @@ impl Widget for CalculatorApp {
         // Remote collaborators' carets, mapped into the active formula field's
         // 2D glyph layout (peers editing the same graph show up as coloured
         // carets inside the math, not just as a pointer over the window).
-        let remote = remote_carets(presence);
+        let remote = match self.model.mode {
+            Mode::Calc => Vec::new(),
+            Mode::Graph2d | Mode::Graph3d => remote_carets(presence),
+        };
         if !remote.is_empty() {
             match self.model.mode {
                 Mode::Graph2d => {
@@ -1428,6 +1435,12 @@ impl Widget for CalculatorApp {
                 }
                 Mode::Calc => {}
             }
+        }
+        // Moved, arrived or left carets change pixels no edit dirtied: report
+        // them as this frame's damage (collected after drawing).
+        if remote != self.drawn_remote_carets {
+            self.drawn_remote_carets = remote;
+            self.dirty = true;
         }
     }
 
@@ -3061,25 +3074,11 @@ mod tests {
     // fine.
 
     fn send(app: &mut CalculatorApp, st: &mut ui::State, ev: &WindowEvent) -> bool {
-        let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let node = taffy.new_leaf(taffy::Style::default()).unwrap();
-        let mods = winit::event::Modifiers::default();
-        let mut handled = false;
-        let mut focus = None;
-        app.handle_event(
-            ev,
-            &mut ui::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &mods,
-                state: Edits::lend(&mut st.doc),
-                path: &st.root,
-                handled: &mut handled,
-                focus_target: &mut focus,
-                node_id: node,
-                taffy: &taffy,
-            },
-        );
-        handled
+        ui::testing::Dispatch::new()
+            .doc(&mut st.doc)
+            .path(&st.root)
+            .send(app, ev)
+            .handled
     }
 
     fn cursor(p: Point) -> WindowEvent {
@@ -3336,7 +3335,6 @@ mod tests {
 
         // phase narrow_graph2d_toggle_opens_drawer_via_handle_event
         {
-            use taffy::{Style, TaffyTree};
             // Drive the REAL production event path (handle_event → on_press) at a
             // narrow width and assert the collapsed Functions drawer opens.
             let mut app = CalculatorApp::new();
@@ -3350,46 +3348,31 @@ mod tests {
                 .toggle_center()
                 .expect("a collapsed toggle must be present");
 
-            let mut taffy: TaffyTree<()> = TaffyTree::new();
-            let node = taffy.new_leaf(Style::default()).unwrap();
             let mut st = ui::State::new();
-            let mods = winit::event::Modifiers::default();
-            let mut handled = false;
-            let mut focus = None;
             let dev = winit::event::DeviceId::dummy();
-            app.handle_event(
-                &WindowEvent::CursorMoved {
-                    device_id: dev,
-                    position: winit::dpi::PhysicalPosition::new(toggle.x, toggle.y),
-                },
-                &mut ui::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &mods,
-                    state: Edits::lend(&mut st.doc),
-                    path: &st.root,
-                    handled: &mut handled,
-                    focus_target: &mut focus,
-                    node_id: node,
-                    taffy: &taffy,
-                },
-            );
-            app.handle_event(
-                &WindowEvent::MouseInput {
-                    device_id: dev,
-                    state: ElementState::Pressed,
-                    button: MouseButton::Left,
-                },
-                &mut ui::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &mods,
-                    state: Edits::lend(&mut st.doc),
-                    path: &st.root,
-                    handled: &mut handled,
-                    focus_target: &mut focus,
-                    node_id: node,
-                    taffy: &taffy,
-                },
-            );
+            let moved = ui::testing::Dispatch::new()
+                .doc(&mut st.doc)
+                .path(&st.root)
+                .send(
+                    &mut app,
+                    &WindowEvent::CursorMoved {
+                        device_id: dev,
+                        position: winit::dpi::PhysicalPosition::new(toggle.x, toggle.y),
+                    },
+                );
+            ui::testing::Dispatch::new()
+                .doc(&mut st.doc)
+                .path(&st.root)
+                .handled(moved.handled)
+                .focus_target(moved.focus_target)
+                .send(
+                    &mut app,
+                    &WindowEvent::MouseInput {
+                        device_id: dev,
+                        state: ElementState::Pressed,
+                        button: MouseButton::Left,
+                    },
+                );
             assert!(
                 app.g2.panel_open(),
                 "tapping the toggle must open the Functions drawer"

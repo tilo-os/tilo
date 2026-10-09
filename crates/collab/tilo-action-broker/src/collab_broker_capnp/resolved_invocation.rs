@@ -267,7 +267,8 @@ impl CapnpBrokerState {
                 action,
             )
             .await?;
-        let runtime_collab::ActionDirectoryResolution::Found(row) = captured.resolution else {
+        let runtime_collab::ActionDirectoryResolution::Found { row, .. } = captured.resolution
+        else {
             return Err("directory revision or action changed".into());
         };
         let published = published_directory_action(&row).map_err(|error| error.to_string())?;
@@ -382,7 +383,7 @@ pub(super) fn resolve(
             && !revision.is_empty()
             && matches!(
                 &captured.resolution,
-                runtime_collab::ActionDirectoryResolution::Found(_)
+                runtime_collab::ActionDirectoryResolution::Found { .. }
             ) {
             // Missing journal/stream/worker custody permits browsing only.
             captured.binding(state, peer).ok()

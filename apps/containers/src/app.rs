@@ -14,6 +14,7 @@
 
 use std::rc::Rc;
 use std::sync::mpsc::{Receiver, Sender};
+use ui::widget::TaffyTreeExt;
 
 use crate::resource::ContainersEffect;
 #[cfg(test)]
@@ -1611,21 +1612,15 @@ impl Widget for ContainersApp {
             let _ = taffy.set_style(node, style);
             children.push(node);
         }
-        let node = taffy
-            .new_with_children(
-                Style {
-                    display: Display::Flex,
-                    size: Size {
-                        width: percent(1.0_f32),
-                        height: percent(1.0_f32),
-                    },
-                    ..Default::default()
-                },
-                &children,
-            )
-            .unwrap_or(shell);
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        let style = Style {
+            display: Display::Flex,
+            size: Size {
+                width: percent(1.0_f32),
+                height: percent(1.0_f32),
+            },
+            ..Default::default()
+        };
+        taffy.widget_node(style, &children, node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {

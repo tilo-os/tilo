@@ -515,23 +515,10 @@ mod tests {
                     ),
                     is_synthetic: false,
                 };
-                let mut taffy = TaffyTree::new();
-                let node = taffy.new_leaf(Style::default()).unwrap();
-                let mut handled = false;
-                let mut focus = None;
-                bar.handle_event(
-                    &event,
-                    &mut ui::widget::EventCtx {
-                        scale_factor: 1.0,
-                        modifiers: &winit::event::Modifiers::default(),
-                        state: ui::widget::Edits::lend(&mut doc),
-                        path: &automerge::ROOT,
-                        handled: &mut handled,
-                        focus_target: &mut focus,
-                        node_id: node,
-                        taffy: &taffy,
-                    },
-                );
+                let handled = ui::testing::Dispatch::new()
+                    .doc(&mut doc)
+                    .send(&mut bar, &event)
+                    .handled;
                 assert!(handled);
                 assert!(!bar.is_editing());
                 assert_eq!(

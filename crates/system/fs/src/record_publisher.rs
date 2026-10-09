@@ -11,10 +11,11 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
-use collab_types::{
-    CONTENT_REVISION_VERSION, CanonicalError, ConflictStatus, ContentRevisionV1, FileActor,
-    FileBindingV1, FileConflictV1, FileMetadataV1, FileMutationTransaction,
-    FileMutationTransactionManifest, FileRecordError, FileRecordId, FileVersionId, FileVersionV1,
+use collab_types::CanonicalError;
+use fs_protocol::{
+    CONTENT_REVISION_VERSION, ConflictStatus, ContentRevisionV1, FileActor, FileBindingV1,
+    FileConflictV1, FileMetadataV1, FileMutationTransaction, FileMutationTransactionManifest,
+    FileRecordError, FileRecordId, FileVersionId, FileVersionV1,
 };
 use thiserror::Error;
 use uuid::Uuid;
@@ -161,7 +162,7 @@ impl RecordPublisher {
             || manifest.actor != self.actor
             || !matches!(
                 manifest.operation,
-                collab_types::FileMutationOperation::RestoreContent { .. }
+                fs_protocol::FileMutationOperation::RestoreContent { .. }
             )
         {
             return Err(RecordPublisherError::TransactionScopeMismatch);
@@ -333,7 +334,7 @@ impl RecordPublisher {
             if entry.phase == crate::record_transaction::RecordTransactionPhase::BroadcastCommitted
                 && matches!(
                     entry.transaction.manifest.operation,
-                    collab_types::FileMutationOperation::RestoreContent { .. }
+                    fs_protocol::FileMutationOperation::RestoreContent { .. }
                 )
             {
                 if entry.transaction.manifest.workspace_id != self.workspace_id {
@@ -508,6 +509,8 @@ impl RecordPublisher {
     ) -> Result<bool, RecordPublisherError> {
         const DOMAIN: &[u8] = b"tilo.fs.record.concurrent-head-conflict.v1\0";
 
+        #[cfg(test)]
+        self.repository.note_concurrent_head_check();
         let _guard = self
             .publish_lock
             .lock()
@@ -939,7 +942,7 @@ fn operation_is_present(
             Some(current) if current.resolution.as_ref() == Some(resolution) => Ok(true),
             Some(current)
                 if current.resolution.as_ref().is_some_and(|existing| {
-                    !collab_types::prefer_conflict_resolution(resolution, existing)
+                    !fs_protocol::prefer_conflict_resolution(resolution, existing)
                 }) =>
             {
                 Ok(true)
@@ -1063,9 +1066,10 @@ impl RecordPublisherError {
 
 #[cfg(test)]
 mod tests {
-    use collab_types::{
+    use collab_types::generate_keypair;
+    use fs_protocol::{
         ConflictResolution, ConflictStatus, ConflictStrategy, ContentHash, FileConflictV1,
-        FileProvenance, IndexStatus, generate_keypair,
+        FileProvenance, IndexStatus,
     };
 
     use super::*;
@@ -1319,11 +1323,11 @@ mod tests {
             let fixture = Fixture::new();
             let publisher = fixture.publisher();
             let binding = FileBindingV1 {
-                schema_version: collab_types::FILE_BINDING_VERSION,
+                schema_version: fs_protocol::FILE_BINDING_VERSION,
                 record_id: fixture.record_id,
                 parent: Some(FileRecordId::new()),
                 name: "first.txt".into(),
-                kind: collab_types::FileNodeKind::File,
+                kind: fs_protocol::FileNodeKind::File,
                 tombstoned: false,
                 actor: fixture.actor,
                 observed_at_ms: 10,

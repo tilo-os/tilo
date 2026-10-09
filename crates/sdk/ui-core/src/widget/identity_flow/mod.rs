@@ -2459,9 +2459,7 @@ impl Widget for IdentityFlow {
             // edge, half off-screen.
             None => Vec::new(),
         };
-        let node = taffy.parent_node(fill, &screen);
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        taffy.widget_node(fill, &screen, node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
@@ -2578,14 +2576,10 @@ impl Widget for IdentityFlow {
 pub(super) mod test_events {
     use taffy::{NodeId, Style, TaffyTree};
     use vello::kurbo::Point;
-    use winit::event::{DeviceId, ElementState, KeyEvent, MouseButton, WindowEvent};
+    use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
     use winit::keyboard::{Key, KeyLocation, NamedKey, PhysicalKey};
 
     use crate::widget::TaffyTreeExt;
-
-    fn synth_device() -> DeviceId {
-        unsafe { std::mem::zeroed() }
-    }
 
     /// A key press carrying `logical_key` and the OS's printable `text`,
     /// built the way the headless driver builds its own key events.
@@ -2606,7 +2600,7 @@ pub(super) mod test_events {
             logical_key,
         );
         WindowEvent::KeyboardInput {
-            device_id: synth_device(),
+            device_id: winit::event::DeviceId::dummy(),
             event,
             is_synthetic: false,
         }
@@ -2624,14 +2618,14 @@ pub(super) mod test_events {
 
     pub(crate) fn cursor_at(p: Point) -> WindowEvent {
         WindowEvent::CursorMoved {
-            device_id: synth_device(),
+            device_id: winit::event::DeviceId::dummy(),
             position: winit::dpi::PhysicalPosition::new(p.x, p.y),
         }
     }
 
     pub(crate) fn left_press() -> WindowEvent {
         WindowEvent::MouseInput {
-            device_id: synth_device(),
+            device_id: winit::event::DeviceId::dummy(),
             state: ElementState::Pressed,
             button: MouseButton::Left,
         }
