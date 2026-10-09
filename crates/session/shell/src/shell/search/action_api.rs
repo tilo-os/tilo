@@ -308,7 +308,24 @@ impl ActionCatalog {
     /// Enumerate the typed descriptors the caller may see. Render-free —
     /// no scene is built, no widget is touched.
     pub fn enumerate(&self) -> Vec<ExportedAction> {
+        self.enumerate_rows(0..self.visible.len())
+    }
+
+    /// The visible actions' addresses, in [`Self::enumerate`]'s order,
+    /// without describing them.
+    pub fn addresses(&self) -> impl Iterator<Item = (&str, &str)> + '_ {
         self.visible
+            .iter()
+            .filter_map(|&i| self.results.get(i))
+            .map(|r| (r.provider_id.as_str(), r.id.as_str()))
+    }
+
+    /// [`Self::enumerate`]'s rows at `rows`, describing only those — one
+    /// page of a listing costs the page, not the catalogue.
+    pub fn enumerate_rows(&self, rows: std::ops::Range<usize>) -> Vec<ExportedAction> {
+        self.visible
+            .get(rows)
+            .unwrap_or_default()
             .iter()
             .filter_map(|&i| self.results.get(i).map(|result| (i, result)))
             .map(|(i, r)| ExportedAction {
