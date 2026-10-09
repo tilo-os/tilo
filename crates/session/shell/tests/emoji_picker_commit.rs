@@ -547,6 +547,63 @@ fn public_aot_transcripts_reach_foreign_fields_without_committing_hallucinated_d
     }
 }
 
+#[test]
+fn public_image_transcripts_reach_foreign_fields_without_committing_drafts() {
+    for row in super::input_method_wire::public_image_transcripts() {
+        assert_dictation_foreign_commit(&row.drafts(), &row.raw_final);
+    }
+}
+
+#[test]
+fn public_image_transcripts_full_session_reaches_foreign_fields_once() {
+    for row in super::input_method_wire::public_long_image_transcripts() {
+        assert_dictation_foreign_commit(&row.drafts(), &row.raw_final);
+    }
+}
+
+#[test]
+fn public_image_transcripts_cannot_cross_focus_changes_or_canceled_session_boundaries() {
+    for row in super::input_method_wire::public_image_transcripts() {
+        let mut h = Harness::new();
+        let (_osk, _input_method) = h.own_seat_with_on_screen_keyboard();
+        let first = h.field(None);
+        let now = Instant::now();
+        let original = h.state.begin_dictation(now).unwrap();
+        for draft in row.drafts() {
+            h.state.update_dictation(original, draft, now).unwrap();
+        }
+        let second = h.field(None);
+        h.state.set_client_keyboard_focus(Some(first.surface_id));
+        h.pump();
+        assert!(
+            h.state
+                .update_dictation(original, row.raw_final.clone(), now)
+                .is_err()
+        );
+        assert!(h.state.finish_dictation(original, now).is_err());
+        let canceled = h.state.begin_dictation(now).unwrap();
+        h.state
+            .update_dictation(canceled, row.raw_final.clone(), now)
+            .unwrap();
+        assert!(h.state.cancel_dictation(canceled));
+        let current = h.state.begin_dictation(now).unwrap();
+        assert!(
+            h.state
+                .update_dictation(canceled, row.raw_final.clone(), now)
+                .is_err()
+        );
+        assert!(!h.state.cancel_dictation(canceled));
+        h.state
+            .update_dictation(current, row.raw_final.clone(), now)
+            .unwrap();
+        h.state.finish_dictation(current, now).unwrap();
+        h.pump();
+        assert_eq!(h.peer(&first).committed, [Some(row.raw_final)]);
+        assert!(h.peer(&second).committed.is_empty());
+        assert!(h.peer(&first).keys.is_empty() && h.peer(&second).keys.is_empty());
+    }
+}
+
 fn assert_dictation_foreign_commit(drafts: &[String], final_text: &str) {
     let mut h = Harness::new();
     let (_osk, _input_method) = h.own_seat_with_on_screen_keyboard();

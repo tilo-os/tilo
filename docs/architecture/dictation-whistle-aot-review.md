@@ -204,9 +204,10 @@ separate test rather than a concurrent microphone-to-app journey.
 | French, 10.2 s audio | 1.103 | 11.821 | 0/20 |
 | Spanish, 12.84 s audio | 1.447 | 15.571 | 2/29 |
 | French repeated four times, 40.8 s audio | 1.293 | 44.024 | 4/80 |
+| French repeated eleven times plus 7.8 s silence, 120 s input | 1.163 | 122.895 | 16/220 |
 
 All successful runs observed one native thread. Peak virtual memory ranged from
-about 176 to 210 MiB for these recordings. Silence emitted no text; interrupted
+about 176 to 212 MiB for the paced speech recordings. Silence emitted no text; interrupted
 input emitted no final. A forged root-owned AOT artifact, even accompanied by a
 matching caller receipt, was rejected before Ready. All review units were inactive
 after observation. The earlier incorrectly serialized fixture status remains a
@@ -218,6 +219,31 @@ Focused speech tests pass: 17 run, zero failures (27 unrelated tests filtered).
 Strict all-target service Clippy passes both the default build and the opt-in
 production/review features. Remaining checks and publication are recorded with
 the candidate commit.
+
+The subsequent [120-second ledger](dictation-whistle-aot-image-120s.json) exercises
+the worker's exact input cap with eleven concatenated public French recordings
+and a silent tail. Completion takes 122.895 seconds after Ready, with one native
+thread, VmPeak 217092 KiB and no resource guard or cgroup event increase. The
+literal endpoint contains eleven sentences and no separate invented tail phrase,
+but has 16 word errors against 220 reference words. This is a worker-boundary
+test: the production capture actor still caps live recording at 105 seconds within
+its 180-second overall deadline. No capture limit or admission control changed.
+
+New editing regressions replay the production-handler drafts and literal finals
+through native Notes with selection replacement/undo/redo and a foreign Wayland
+field. They also exercise focus away and back, explicit cancellation, late
+callbacks and a successor session in each recorded language. The long transcript
+has separate native and foreign insertion tests. These remain recorded-output
+replays, not concurrent recognition and application journeys.
+
+All five production-output insertion regressions pass (0.665 seconds combined;
+426 unrelated tests filtered). Python Ruff/syntax and changed-file formatting
+pass. The final required `rcargo check --locked -p shell --tests` was attempted
+but could not run: the remote builder reported its volume 95% full, above its
+80% admission watermark. The same integration test target compiled successfully
+for the five-test run (19.52 seconds), but this is not reported as a successful
+execution of the required check command. No local compilation fallback or shared
+build-data deletion was used.
 
 The adjacent [JSON ledger](dictation-whistle-aot-review.json) records source-built
 runtime/compiler/artifact digests, exact Rust/bridge source hashes, raw receipt
@@ -252,7 +278,7 @@ affected-package plan are recorded at publication.
 
 Still unqualified: live microphone/account permission, complete concurrent native/browser/
 terminal journeys **with this engine**, older physical devices, ARM,
-engine-specific language/dictionary revocation, the complete 120-second session,
+engine-specific language/dictionary revocation,
 and live immutable runtime/model installation and activation. Production source
 admission and the isolated synthetic image are now exercised, while the package
 candidate remains uninstalled.
