@@ -349,11 +349,12 @@ impl TestTree {
             resource,
             created_at: now,
             updated_at: now,
-            audit: vec![WorkspaceTaskAuditEvent {
-                at: now,
+            audit: vec![WorkspaceTaskAuditEvent::new(
+                now,
                 actor,
-                summary: format!("Created task · {title}"),
-            }],
+                "create-task",
+                [("title", tilo_actions::Scalar::text(&title))],
+            )],
         };
         self.desktop
             .workspaces
@@ -389,11 +390,12 @@ impl TestTree {
         }
         task.status = status;
         task.updated_at = now;
-        task.audit.push(WorkspaceTaskAuditEvent {
-            at: now,
-            actor: actor.to_string(),
-            summary: format!("Status · {}", task.status.label()),
-        });
+        task.audit.push(WorkspaceTaskAuditEvent::new(
+            now,
+            actor,
+            "set-status",
+            [("status", tilo_actions::Scalar::from(status.key()))],
+        ));
         let task = task.clone();
         if tilo_desktop_model::desktop_doc::upsert_task(&mut self.doc, workspace_id, &task) {
             self.commit_room_change();

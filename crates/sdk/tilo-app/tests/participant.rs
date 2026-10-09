@@ -151,7 +151,10 @@ fn a_run_is_recorded_in_the_coordinating_record_by_the_participant() {
         app: TallyApp::ID.into(),
         record: String::new(),
         run: tilo_app::ChangeRun::single(end),
-        summary: "Counted one more".into(),
+        what: vec![tilo_actions::Described::new(tilo_actions::Did::verb(
+            tilo_actions::ActionKey::new(TallyApp::ID, "document", "bump"),
+            [],
+        ))],
     }];
     assert!(
         participant

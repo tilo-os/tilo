@@ -513,13 +513,14 @@ fn effect_and_task_records_persist_in_the_profile() {
     assert_eq!(workspace.effect_receipts[0].invocation, invocation);
     let task = &workspace.tasks[0];
     assert_eq!(task.status, WorkspaceTaskStatus::Done);
-    let summaries: Vec<_> = task.audit.iter().map(|event| &*event.summary).collect();
+    let events: Vec<_> = task
+        .audit
+        .iter()
+        .map(|event| (event.action(), event.note.as_deref()))
+        .collect();
     assert_eq!(
-        summaries,
-        [
-            format!("Status · {}", WorkspaceTaskStatus::Done.label()).as_str(),
-            "Wrote the outline"
-        ]
+        events,
+        [("set-status", None), ("report", Some("Wrote the outline"))]
     );
 }
 

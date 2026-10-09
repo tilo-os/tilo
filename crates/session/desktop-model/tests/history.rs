@@ -31,10 +31,13 @@ fn task(audit: usize) -> WorkspaceTask {
         created_at: 1,
         updated_at: 2,
         audit: (0..audit)
-            .map(|at| WorkspaceTaskAuditEvent {
-                at: i64::try_from(at).unwrap_or(i64::MAX),
-                actor: "owner".into(),
-                summary: "moved".into(),
+            .map(|at| {
+                WorkspaceTaskAuditEvent::new(
+                    i64::try_from(at).unwrap_or(i64::MAX),
+                    "owner",
+                    "retry",
+                    [],
+                )
             })
             .collect(),
     }

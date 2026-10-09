@@ -3369,11 +3369,12 @@ impl WorkspaceTree {
             resource,
             created_at: now,
             updated_at: now,
-            audit: vec![WorkspaceTaskAuditEvent {
-                at: now,
+            audit: vec![WorkspaceTaskAuditEvent::new(
+                now,
                 actor,
-                summary: format!("Created task · {title}"),
-            }],
+                "create-task",
+                [("title", tilo_actions::Scalar::text(&title))],
+            )],
         };
         self.desktop
             .workspaces
@@ -9298,7 +9299,19 @@ mod workspace_tree_lifecycle_tests {
                 .unwrap();
             assert_eq!(task.status, WorkspaceTaskStatus::Done);
             assert_eq!(task.audit.len(), 3);
-            assert_eq!(task.audit.last().unwrap().summary, "Status · Done");
+            let event = task.audit.last().unwrap();
+            assert_eq!(event.action(), "set-status");
+            assert_eq!(
+                &event.what,
+                &tilo_actions::Did::verb(
+                    tilo_actions::ActionKey::new(
+                        tilo_desktop_model::workspace::WORKSPACE_GOVERNANCE_APP_ID,
+                        tilo_desktop_model::TASK_KIND,
+                        "set-status",
+                    ),
+                    [("status".to_owned(), tilo_actions::Scalar::from("done"))],
+                )
+            );
         }
 
         // Phase `effect_receipt_is_durable_semantic_activity_not_an_app_edit`.

@@ -32,6 +32,12 @@ const fn catalog() -> EmbeddedCatalog {
     catalog
 }
 
+/// Load the desktop's catalogue on this thread, so history entries the
+/// desktop records read in its words.
+pub fn ensure() {
+    CATALOG.ensure();
+}
+
 /// Resolve a desktop string key.
 pub fn t(key: &str) -> String {
     CATALOG.t(key)

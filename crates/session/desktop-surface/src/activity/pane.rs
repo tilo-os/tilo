@@ -3494,7 +3494,7 @@ impl RoomActivityPane {
             y += 18.0;
             tr.draw_style(
                 scene,
-                &step.summary,
+                &step.sentence(),
                 theme.tokens.colors.text_dim,
                 at(transform, x + 10.0, y),
                 Some((width - 10.0).max(0.0)),
@@ -6926,7 +6926,7 @@ impl RoomActivityPane {
                 &[
                     ("app", humanize_app_id(&step.app).into()),
                     ("record", (&step.record).into()),
-                    ("summary", (&step.summary).into()),
+                    ("summary", step.sentence().into()),
                 ],
             ));
         }
@@ -7462,10 +7462,19 @@ fn task_audit_line(
     event_time: SystemTime,
     now: SystemTime,
 ) -> String {
+    crate::i18n::ensure();
+    let what = ui::history_source::sentence::sentence(&event.entry());
+    let what = match &event.note {
+        Some(note) => t_args(
+            "activity-task-audit-noted",
+            &[("what", what.into()), ("note", note.as_str().into())],
+        ),
+        None => what,
+    };
     format!(
         "{} · {} · {}",
         participant_display_label(&event.actor),
-        event.summary,
+        what,
         format_relative_time(event_time, now)
     )
 }
@@ -9145,6 +9154,7 @@ fn receipt_summary(
     context: &tilo_actions::ActionContext,
     status: &tilo_actions::EffectReceiptStatus,
 ) -> String {
+    crate::i18n::ensure();
     let Some(what) = ui::history_source::sentence::step_summary(context) else {
         return receipt_status_label(status);
     };

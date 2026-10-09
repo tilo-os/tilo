@@ -343,6 +343,32 @@ activity-task-mark-done = Als erledigt markieren
 activity-task-cancel = Aufgabe abbrechen
 activity-task-retry-agent = Agent erneut versuchen
 activity-task-audit-trail = PRÜFPROTOKOLL
+activity-task-audit-noted = { $what }: { $note }
+workspace-create-task = { $manual ->
+    [true] Aufgabe „{ $title }“ zum Selbermachen angelegt
+   *[false] Aufgabe „{ $title }“ angelegt
+}
+workspace-attach-resource = { $resource } an die Aufgabe angehängt
+workspace-set-execution-budget = Laufzeit der Aufgabe festgelegt
+workspace-start-run = Lauf { $run } gestartet
+workspace-add-direction = Anweisung { $revision } gegeben
+workspace-apply-direction = Anweisung { $revision } befolgt
+workspace-finish = { $outcome ->
+    [done] Aufgabe erledigt
+    [waiting] Angehalten, um zu warten
+   *[cancelled] Aufgabe abgebrochen
+}
+workspace-abandon = Lauf aufgegeben
+workspace-retry = Aufgabe erneut eingereiht
+workspace-cancel = Aufgabe abgebrochen
+workspace-report = Fortschritt gemeldet
+workspace-set-status = { $status ->
+    [queued] Aufgabe eingereiht
+    [in-progress] Aufgabe begonnen
+    [waiting] Aufgabe auf Warten gesetzt
+    [done] Aufgabe als erledigt markiert
+   *[cancelled] Aufgabe abgebrochen
+}
 activity-task-unassigned-by = Nicht zugewiesen · angelegt von { $creator }
 activity-task-agent-badge = Agent · { $name }
 activity-task-status-queued = In der Warteschlange

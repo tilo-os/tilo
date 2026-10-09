@@ -59,7 +59,7 @@ pub fn document_share(run: RunId, record: &str, doc: &AutoCommit) -> Option<Docu
     let mut first: Option<(i64, String)> = None;
     let mut last = None;
     let mut app = String::new();
-    let mut labels: Vec<String> = Vec::new();
+    let mut what: Vec<tilo_actions::Described> = Vec::new();
     for version in tilo_resource::history::committed_versions(doc) {
         let Some(context) = made_by_run(version.message.as_deref(), run) else {
             continue;
@@ -73,10 +73,10 @@ pub fn document_share(run: RunId, record: &str, doc: &AutoCommit) -> Option<Docu
         {
             app.clone_from(&owner.id);
         }
-        if let Some(label) = ui::history_source::sentence::step_summary(&context)
-            && !labels.contains(&label)
+        if let Some(described) = context.described()
+            && !what.contains(&described)
         {
-            labels.push(label);
+            what.push(described);
         }
     }
     let (at, start) = first?;
@@ -90,7 +90,7 @@ pub fn document_share(run: RunId, record: &str, doc: &AutoCommit) -> Option<Docu
                 ui::history_source::entry_id_from_hash(&start),
                 ui::history_source::entry_id_from_hash(&end),
             ),
-            summary: labels.join(", "),
+            what,
         },
     })
 }
@@ -198,7 +198,7 @@ mod tests {
         assert_eq!(steps.len(), 1);
         assert_eq!(steps[0].app, "so.tilo.notes");
         assert_eq!(steps[0].record, "file:notes");
-        assert_eq!(steps[0].summary, "Rename in Note, Rewrite in Note");
+        assert_eq!(steps[0].sentence(), "Rename, Rewrite");
         assert_ne!(steps[0].run.start, steps[0].run.end);
     }
 }

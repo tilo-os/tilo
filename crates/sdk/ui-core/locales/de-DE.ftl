@@ -377,6 +377,7 @@ relative-ago-years = { $count ->
     }
 
 # Ein Software-Teilnehmer in Verlauf, Präsenz und Aktivität.
+history-run-step-separator = {", "}
 participant-agent = { $name } · Agent
 participant-shortcut = { $name } · Kurzbefehl
 participant-app = { $name } · App
