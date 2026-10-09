@@ -210,6 +210,54 @@ class GuardedTextInput(unittest.TestCase):
         self.assertTrue(self.main_world("document.execCommand('redo')"))
         self.assertEqual(self.main_world('rich.innerHTML'), 'alpha <b>beFirst<br><br>Second</b>amma')
 
+    def test_rich_paragraph_preserves_nested_editor_structure_and_history(self):
+        cases = [
+            ('<code>alpha <b>beta</b> gamma</code>', 'code'),
+            ('<a href="/kept">alpha <b>beta</b> gamma</a>', 'a'),
+            ('<ul><li>alpha <b>beta</b> gamma</li></ul>', 'li'),
+            ('<table><tbody><tr><td>alpha <b>beta</b> gamma</td></tr></tbody></table>', 'td'),
+        ]
+        for markup, container in cases:
+            with self.subTest(container=container):
+                self.main_world("(()=>{rich.innerHTML=" + json.dumps(markup) + ";rich.focus();const r=document.createRange();r.selectNodeContents(rich.querySelector('b'));getSelection().removeAllRanges();getSelection().addRange(r);return true})()")
+                lease = self.prepare()
+                self.assertTrue(self.request_input('start', lease=lease)['ok'])
+                self.assertTrue(self.request_input('commit', lease=lease, text='First\n\nSecond')['ok'])
+                self.assertEqual(self.main_world("rich.querySelector(" + json.dumps(container) + ").innerText"), 'alpha First\n\nSecond gamma')
+                self.assertEqual(self.main_world("rich.querySelector('b').innerHTML"), 'First<br><br>Second')
+                if container == 'a':
+                    self.assertEqual(self.main_world("rich.querySelector('a').getAttribute('href')"), '/kept')
+                edited = self.main_world('rich.innerHTML')
+                self.assertTrue(self.main_world("document.execCommand('undo')"))
+                self.assertEqual(self.main_world('rich.innerHTML'), markup)
+                self.assertTrue(self.main_world("document.execCommand('redo')"))
+                self.assertEqual(self.main_world('rich.innerHTML'), edited)
+                self.assertFalse(self.request_input('commit', lease=lease, text='repeat')['ok'])
+
+    def test_rich_noneditable_islands_cannot_be_replaced_or_crossed(self):
+        for crossing in [False, True]:
+            with self.subTest(crossing=crossing):
+                self.main_world("(()=>{rich.innerHTML='alpha <span contenteditable=false>locked</span> gamma';rich.focus();const r=document.createRange();" + ("r.setStart(rich.firstChild,2);r.setEnd(rich.lastChild,2);" if crossing else "r.selectNodeContents(rich.querySelector('span'));") + "getSelection().removeAllRanges();getSelection().addRange(r);beforeEdits=0;editEvents=[];return true})()")
+                result = self.request_input('prepare')
+                self.assertFalse(result['ok'], result)
+                self.assertEqual(result['code'], 'not_editable')
+                self.assertEqual(self.main_world('rich.innerHTML'), 'alpha <span contenteditable="false">locked</span> gamma')
+                self.assertEqual(self.main_world('beforeEdits'), 0)
+                self.assertEqual(self.main_world('editEvents'), [])
+
+    def test_rich_editable_text_beside_locked_island_still_accepts_dictation(self):
+        self.main_world("(()=>{rich.innerHTML='alpha <span contenteditable=false>locked</span> gamma';rich.focus();const r=document.createRange();r.setStart(rich.lastChild,1);r.setEnd(rich.lastChild,6);getSelection().removeAllRanges();getSelection().addRange(r);return true})()")
+        original = self.main_world('rich.innerHTML')
+        lease = self.prepare()
+        self.assertTrue(self.request_input('start', lease=lease)['ok'])
+        self.assertTrue(self.request_input('commit', lease=lease, text='First\nSecond')['ok'])
+        self.assertEqual(self.main_world('rich.innerText'), 'alpha locked First\nSecond')
+        self.assertEqual(self.main_world("rich.querySelector('span').outerHTML"), '<span contenteditable="false">locked</span>')
+        self.assertTrue(self.main_world("document.execCommand('undo')"))
+        self.assertEqual(self.main_world('rich.innerHTML'), original)
+        self.assertTrue(self.main_world("document.execCommand('redo')"))
+        self.assertEqual(self.main_world('rich.innerText'), 'alpha locked First\nSecond')
+
     def test_paragraph_undo_does_not_absorb_previous_native_typing(self):
         self.main_world("(notes.focus(),notes.setSelectionRange(notes.value.length,notes.value.length),document.execCommand('insertText',false,' typed'))")
         previous = self.main_world('notes.value')
