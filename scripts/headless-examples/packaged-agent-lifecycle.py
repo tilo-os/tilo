@@ -4852,7 +4852,7 @@ def observe_chat_task_frontier(
         raise
 
 
-def start_managed_agent(socket, room, agent, process):
+def start_managed_agent(socket, room, agent, process, *, public_failure_path=None):
     """Start through the public owner action, never a fixture-only fallback."""
     published = wait_for(
         "owner-published managed Agent start",
@@ -4862,7 +4862,8 @@ def start_managed_agent(socket, room, agent, process):
         process,
     )
     receipt = wait_terminal(
-        socket, invoke(socket, published, {"agent": agent}), process
+        socket, invoke(socket, published, {"agent": agent}), process,
+        public_failure_path=public_failure_path,
     )
     value = terminal_value(receipt)
     if value.get("startup_requested") is not True:
@@ -5770,7 +5771,8 @@ def native_agent_membership_revocation(
         socket, room, "desktop:agent:tide", "remove"), process)
     wait_for("fresh Tide Chat route", lambda: offered_agent_action(
         socket, room, record, "tide", "open-agent-conversation"), process)
-    start_managed_agent(socket, room, "tide", process)
+    start_managed_agent(socket, room, "tide", process,
+                        public_failure_path=output / "failed-agent-tide-restart-terminal.json")
 
     def replacement_identity():
         identities = owned_agent_identities(process.pid)

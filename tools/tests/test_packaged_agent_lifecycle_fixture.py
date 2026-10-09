@@ -26,6 +26,27 @@ SPEC.loader.exec_module(PROOF)
 
 
 class PresentedEditorTargetTests(unittest.TestCase):
+    def test_managed_agent_restart_failure_path_reaches_original_terminal_observation(self):
+        offered = {"operation": "start-agent"}
+        failed = {"update": {"invocation": "public-start", "state": "failed",
+                             "error": {"code": "public-launch-refused"}}}
+        acknowledgement = {"receipt": failed}
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(PROOF, "offered_desktop_action", return_value=offered), \
+                patch.object(PROOF, "invoke", return_value=acknowledgement) as invoke, \
+                patch.object(PROOF, "call") as status:
+            path = pathlib.Path(directory) / "failed-agent-tide-restart-terminal.json"
+            with self.assertRaisesRegex(RuntimeError, "ordinary action terminated failed"):
+                PROOF.start_managed_agent("socket", "room", "tide", None,
+                                          public_failure_path=path)
+            self.assertEqual(json.loads(path.read_text()), failed)
+            invoke.assert_called_once_with("socket", offered, {"agent": "tide"})
+            status.assert_not_called()
+            path.unlink()
+            with self.assertRaisesRegex(RuntimeError, "ordinary action terminated failed"):
+                PROOF.start_managed_agent("socket", "room", "tide", None)
+            self.assertFalse(path.exists())
+
     def test_return_control_focus_observes_current_bit_after_known_stale_object(self):
         owner = {"process": 7, "bus": "owned", "agent": "Tide",
                  "detached": True, "control": "/retired"}

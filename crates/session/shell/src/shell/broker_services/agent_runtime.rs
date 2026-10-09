@@ -18,7 +18,19 @@ type AgentKey = (String, String);
 struct Worker {
     stop: mpsc::SyncSender<()>,
     cancellation: Arc<Mutex<Option<NativeAgentCancellation>>>,
-    join: JoinHandle<Result<(), String>>,
+    join: JoinHandle<Result<WorkerOutcome, String>>,
+}
+
+enum WorkerSlot {
+    Active(Worker),
+    Fenced,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum WorkerOutcome {
+    Stopped,
+    FailedBeforeSession,
+    FailedAndRetired,
 }
 
 impl Worker {
@@ -35,7 +47,7 @@ impl Worker {
         Ok(())
     }
 
-    fn finish(self) -> Result<(), String> {
+    fn finish(self) -> Result<WorkerOutcome, String> {
         self.join
             .join()
             .map_err(|_| "native Agent worker panicked")?
@@ -54,7 +66,7 @@ struct StartRequest {
 pub(crate) struct NativeAgentRuntime {
     owner: Arc<NativeOwnerCommitService>,
     broker: OnceLock<WeakAppActionBroker>,
-    workers: Arc<Mutex<HashMap<AgentKey, Worker>>>,
+    workers: Arc<Mutex<HashMap<AgentKey, WorkerSlot>>>,
 }
 
 impl NativeAgentRuntime {
@@ -83,42 +95,25 @@ impl NativeAgentRuntime {
             agent: agent.into(),
             caller: caller.clone(),
         };
-        let key = (request.room.clone(), request.agent.clone());
         let mut workers = self
             .workers
             .lock()
             .map_err(|_| "native Agent workers unavailable")?;
-        if workers
-            .get(&key)
-            .is_some_and(|worker| worker.join.is_finished())
-            && let Some(finished) = workers.remove(&key)
-        {
-            finished.finish()?;
-        }
-        if workers.contains_key(&key) {
-            return Err("Agent is already starting or running".into());
-        }
-        if workers.len() >= launcher::managed::MAX_LIVE_MANAGED_LAUNCHES {
-            return Err("native Agent capacity exhausted".into());
-        }
         let owner = self.owner.clone();
-        let (stop, stopping) = mpsc::sync_channel(1);
-        let cancellation = Arc::new(Mutex::new(None));
-        let control = cancellation.clone();
-        let join = std::thread::Builder::new()
-            .name("tilo-native-agent".into())
-            .spawn(move || run_session(&owner, &broker, &request, &stopping, &control))
-            .map_err(|error| error.to_string())?;
-        workers.insert(
-            key,
-            Worker {
+        start_worker(&mut workers, request, move |request| {
+            let (stop, stopping) = mpsc::sync_channel(1);
+            let cancellation = Arc::new(Mutex::new(None));
+            let control = cancellation.clone();
+            let join = std::thread::Builder::new()
+                .name("tilo-native-agent".into())
+                .spawn(move || run_session(&owner, &broker, &request, &stopping, &control))
+                .map_err(|error| error.to_string())?;
+            Ok(Worker {
                 stop,
                 cancellation,
                 join,
-            },
-        );
-        drop(workers);
-        Ok(())
+            })
+        })
     }
 
     fn shutdown(&self) {
@@ -127,11 +122,15 @@ impl NativeAgentRuntime {
         };
         let workers = std::mem::take(&mut *retained);
         drop(retained);
-        for worker in workers.values() {
-            let _ = worker.request_stop();
+        for slot in workers.values() {
+            if let WorkerSlot::Active(worker) = slot {
+                let _ = worker.request_stop();
+            }
         }
-        for worker in workers.into_values() {
-            let _ = worker.finish();
+        for slot in workers.into_values() {
+            if let WorkerSlot::Active(worker) = slot {
+                let _ = worker.finish();
+            }
         }
     }
 }
@@ -214,12 +213,18 @@ fn run_session(
     request: &StartRequest,
     stopping: &mpsc::Receiver<()>,
     control: &Mutex<Option<NativeAgentCancellation>>,
-) -> Result<(), String> {
+) -> Result<WorkerOutcome, String> {
     if stopping.try_recv().is_ok() {
-        return Ok(());
+        return Ok(WorkerOutcome::Stopped);
     }
-    let services = endpoints()?;
-    let mut session = prepare(owner, request)?;
+    let Ok(services) = endpoints() else {
+        return Ok(WorkerOutcome::FailedBeforeSession);
+    };
+    // `prepare` includes durable session reservation. Without a returned
+    // session there is no handle with which to prove cleanup, so this key
+    // remains fenced rather than treating an error as pre-session failure.
+    let mut session = prepare(owner, request)
+        .map_err(|_| "native Agent session preparation outcome is uncertain".to_string())?;
     let cancellation = session.cancellation_handle();
     match control.lock() {
         Ok(mut slot) => *slot = Some(cancellation),
@@ -250,7 +255,7 @@ fn run_session(
     let mut ready = false;
     loop {
         if stopping.try_recv().is_ok() {
-            return retire_session(&mut session, broker, request);
+            return retire_session(&mut session, broker, request).map(|()| WorkerOutcome::Stopped);
         }
         let facade = match broker.upgrade() {
             Ok(facade) => facade,
@@ -297,7 +302,8 @@ fn run_session(
         };
         match stopping.recv_timeout(delay) {
             Ok(()) | Err(mpsc::RecvTimeoutError::Disconnected) => {
-                return retire_session(&mut session, broker, request);
+                return retire_session(&mut session, broker, request)
+                    .map(|()| WorkerOutcome::Stopped);
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {}
         }
@@ -308,12 +314,50 @@ fn retire_after_error(
     session: &mut NativeManagedSession,
     broker: &WeakAppActionBroker,
     request: &StartRequest,
-    error: String,
-) -> Result<(), String> {
+    _error: String,
+) -> Result<WorkerOutcome, String> {
     match retire_session(session, broker, request) {
-        Ok(()) => Err(error),
-        Err(retirement) => Err(format!("{error}; Agent retirement failed: {retirement}")),
+        Ok(()) => Ok(WorkerOutcome::FailedAndRetired),
+        Err(_) => Err("native Agent retirement outcome is uncertain".into()),
     }
+}
+
+fn start_worker(
+    workers: &mut HashMap<AgentKey, WorkerSlot>,
+    request: StartRequest,
+    spawn: impl FnOnce(StartRequest) -> Result<Worker, String>,
+) -> Result<(), String> {
+    let key = (request.room.clone(), request.agent.clone());
+    match workers.get(&key) {
+        Some(WorkerSlot::Fenced) => {
+            return Err("native Agent retirement outcome is uncertain".into());
+        }
+        Some(WorkerSlot::Active(worker)) if !worker.join.is_finished() => {
+            return Err("Agent is already starting or running".into());
+        }
+        Some(WorkerSlot::Active(_)) | None => {}
+    }
+    if let Some(WorkerSlot::Active(finished)) = workers.remove(&key) {
+        match finished.finish() {
+            Ok(WorkerOutcome::Stopped) => {}
+            Ok(WorkerOutcome::FailedBeforeSession) => {
+                tracing::warn!("native Agent worker ended before session reservation");
+            }
+            Ok(WorkerOutcome::FailedAndRetired) => {
+                tracing::warn!("native Agent worker failure was safely retired");
+            }
+            Err(_) => {
+                workers.insert(key, WorkerSlot::Fenced);
+                return Err("native Agent retirement outcome is uncertain".into());
+            }
+        }
+    }
+    if workers.len() >= launcher::managed::MAX_LIVE_MANAGED_LAUNCHES {
+        return Err("native Agent capacity exhausted".into());
+    }
+    let worker = spawn(request)?;
+    workers.insert(key, WorkerSlot::Active(worker));
+    Ok(())
 }
 
 fn retire_session(
@@ -343,4 +387,133 @@ fn abandon_active_tasks(
         .build()
         .map_err(|error| error.to_string())?;
     runtime.block_on(facade.abandon_managed_agent_tasks(&request.room, &request.agent, launch))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    fn caller(seed: u8) -> DeviceCert {
+        let root = ed25519_dalek::SigningKey::from_bytes(&[seed; 32]);
+        let device = ed25519_dalek::SigningKey::from_bytes(&[seed.saturating_add(1); 32]);
+        tilo_joined_room::testing::certificate(&root, &device, "runtime registry fixture")
+    }
+
+    fn request(caller: DeviceCert) -> StartRequest {
+        StartRequest {
+            room: "room-a".into(),
+            agent: "scribe".into(),
+            caller,
+        }
+    }
+
+    fn worker_with_join(join: JoinHandle<Result<WorkerOutcome, String>>) -> Worker {
+        let (stop, _stopping) = mpsc::sync_channel(1);
+        Worker {
+            stop,
+            cancellation: Arc::new(Mutex::new(None)),
+            join,
+        }
+    }
+
+    fn finished_worker(outcome: Result<WorkerOutcome, String>) -> Worker {
+        let (finished, observed) = mpsc::sync_channel(1);
+        let join = std::thread::spawn(move || {
+            let result = outcome;
+            let _ = finished.send(());
+            result
+        });
+        observed.recv().unwrap();
+        while !join.is_finished() {
+            std::thread::yield_now();
+        }
+        worker_with_join(join)
+    }
+
+    fn remove_active(workers: &mut HashMap<AgentKey, WorkerSlot>, key: &AgentKey) -> Worker {
+        let Some(WorkerSlot::Active(worker)) = workers.remove(key) else {
+            panic!("active worker expected")
+        };
+        worker
+    }
+
+    #[test]
+    fn safely_retired_failure_starts_one_fresh_worker_with_the_new_caller() {
+        let old = caller(11);
+        let fresh = caller(21);
+        let key = ("room-a".to_string(), "scribe".to_string());
+        let mut workers = HashMap::from([(
+            key.clone(),
+            WorkerSlot::Active(finished_worker(Ok(WorkerOutcome::FailedAndRetired))),
+        )]);
+        let spawns = AtomicUsize::new(0);
+
+        start_worker(&mut workers, request(fresh.clone()), |request| {
+            assert_eq!(request.caller, fresh);
+            spawns.fetch_add(1, Ordering::Relaxed);
+            Ok(finished_worker(Ok(WorkerOutcome::Stopped)))
+        })
+        .unwrap();
+
+        assert_eq!(spawns.load(Ordering::Relaxed), 1);
+        assert_eq!(workers.len(), 1);
+        remove_active(&mut workers, &key).finish().unwrap();
+        assert_ne!(old, fresh);
+    }
+
+    #[test]
+    fn uncertain_cleanup_and_panic_fence_every_later_start() {
+        for panicked in [false, true] {
+            let key = ("room-a".to_string(), "scribe".to_string());
+            let old = if panicked {
+                let join = std::thread::spawn(|| -> Result<WorkerOutcome, String> {
+                    panic!("fixture worker panic")
+                });
+                while !join.is_finished() {
+                    std::thread::yield_now();
+                }
+                worker_with_join(join)
+            } else {
+                finished_worker(Err("fixture retirement failure".into()))
+            };
+            let mut workers = HashMap::from([(key.clone(), WorkerSlot::Active(old))]);
+            let spawns = AtomicUsize::new(0);
+            for seed in [31, 41] {
+                assert!(
+                    start_worker(&mut workers, request(caller(seed)), |_| {
+                        spawns.fetch_add(1, Ordering::Relaxed);
+                        Ok(finished_worker(Ok(WorkerOutcome::Stopped)))
+                    })
+                    .is_err()
+                );
+                assert!(matches!(workers.get(&key), Some(WorkerSlot::Fenced)));
+            }
+            assert_eq!(spawns.load(Ordering::Relaxed), 0);
+        }
+    }
+
+    #[test]
+    fn unfinished_worker_refuses_a_parallel_start_without_losing_ownership() {
+        let key = ("room-a".to_string(), "scribe".to_string());
+        let (release, held) = mpsc::sync_channel(1);
+        let old = worker_with_join(std::thread::spawn(move || {
+            held.recv().unwrap();
+            Ok(WorkerOutcome::Stopped)
+        }));
+        let mut workers = HashMap::from([(key.clone(), WorkerSlot::Active(old))]);
+        let spawns = AtomicUsize::new(0);
+
+        assert!(
+            start_worker(&mut workers, request(caller(51)), |_| {
+                spawns.fetch_add(1, Ordering::Relaxed);
+                Ok(finished_worker(Ok(WorkerOutcome::Stopped)))
+            })
+            .is_err()
+        );
+        assert_eq!(spawns.load(Ordering::Relaxed), 0);
+        assert!(matches!(workers.get(&key), Some(WorkerSlot::Active(_))));
+        release.send(()).unwrap();
+        remove_active(&mut workers, &key).finish().unwrap();
+    }
 }
