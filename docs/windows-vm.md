@@ -226,10 +226,14 @@ host-only network remains `forward mode="none"`. The NAT network is defined but
 inactive and non-autostart, and the live-only NIC is removed on close, expiry,
 shutdown or restart. If Tilo or the guest crashes, the lease cannot survive a
 domain restart. Root-owned lease records are written before attachment; a
-systemd path unit starts the reaper as soon as a record exists, and the reaper
-sleeps until the earliest expiry, closes the NIC, and exits once no record is
-left. A controller/UI crash therefore still closes an expired live NIC within
-seconds of its expiry, including one that passed while the host was suspended.
+systemd path unit starts the reaper as soon as a record exists. While one does,
+the reaper wakes every 5 seconds, re-reads the records and closes each NIC at
+its expiry, so a controller/UI crash still closes an expired live NIC within
+5 seconds, including one that expired while the host was suspended. A shut-off
+domain holds no live NIC, so its leases are simply retired. A NIC that cannot
+be detached is retried with backoff for 10 minutes, then logged and set aside;
+the 30-second status pass keeps retrying it, and no new lease opens until it is
+gone. The reaper exits once no lease is left.
 A user can therefore select **Allow temporarily for
 activation/updates**, complete the normal Windows flow inside the managed
 console, and then revoke it immediately; Tilo never implements KMS, activation

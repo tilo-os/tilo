@@ -13,6 +13,7 @@ REAPER="$OS_ROOT/usr/lib/systemd/system/tilo-windows-vm-egress-reaper.service"
 REAPER_TIMER="$OS_ROOT/usr/lib/systemd/system/tilo-windows-vm-egress-reaper.timer"
 REAPER_TIMER_PATH="$OS_ROOT/usr/lib/systemd/system/tilo-windows-vm-egress-reaper.path"
 LEASE_PATH="$OS_ROOT/usr/lib/systemd/system/tilo-windows-vm-egress-lease.path"
+TMPFILES="$OS_ROOT/usr/lib/tmpfiles.d/tilo.conf"
 NETWORK_TOOL="$OS_ROOT/usr/libexec/tilo-windows-vm-network"
 PROVISION="$OS_ROOT/usr/libexec/tilo-windows-provision"
 RECOVERY="$OS_ROOT/usr/libexec/tilo-windows-recovery-console"
@@ -46,7 +47,7 @@ else
     fail 'guest PowerShell structure or fixed-wrapper contract failed'
 fi
 
-for file in "$NET" "$EGRESS_NET" "$UNIT" "$REAPER" "$REAPER_TIMER" "$REAPER_TIMER_PATH" "$LEASE_PATH" "$NETWORK_TOOL" "$PROVISION" "$RECOVERY" "$OWNER" "$VM_CONTROL_SOURCE" "$INSTALL" "$BRIDGE" "$FOCUSED" "$INSTALLER" "$UNINSTALLER" "$PROCESS_JOB" "$PROCESS_JOB_BROKER" "$NETWORK_PROXY" "$REMOTE_APP_WRAPPER" "$COMPAT_DOC" "$COMPAT_PROTOCOL" "$COMPAT_SESSION"; do need "$file"; done
+for file in "$NET" "$EGRESS_NET" "$UNIT" "$REAPER" "$REAPER_TIMER" "$REAPER_TIMER_PATH" "$LEASE_PATH" "$TMPFILES" "$NETWORK_TOOL" "$PROVISION" "$RECOVERY" "$OWNER" "$VM_CONTROL_SOURCE" "$INSTALL" "$BRIDGE" "$FOCUSED" "$INSTALLER" "$UNINSTALLER" "$PROCESS_JOB" "$PROCESS_JOB_BROKER" "$NETWORK_PROXY" "$REMOTE_APP_WRAPPER" "$COMPAT_DOC" "$COMPAT_PROTOCOL" "$COMPAT_SESSION"; do need "$file"; done
 
 has "$NET" '<forward mode="none"/>' 'libvirt bridge has no forwarding'
 has "$NET" '<tilo:windows-hostonly ' 'network has Tilo ownership marker'
@@ -63,8 +64,15 @@ has "$REAPER" 'egress-reap --until-idle' 'reaper keeps running until the last le
 has "$REAPER" 'ReadWritePaths=/run/tilo/windows-egress' 'reaper can take the controller lock and retire records under ProtectSystem=strict'
 has "$LEASE_PATH" 'DirectoryNotEmpty=/run/tilo/windows-egress/leases' 'a lease record arms the reaper before its NIC is attached'
 has "$LEASE_PATH" 'Unit=tilo-windows-vm-egress-reaper.service' 'lease path unit starts the root reaper'
-has "$VM_CONTROL_SOURCE" 'sleep_until_unix' 'reaper sleeps until the earliest lease expiry'
-has "$VM_CONTROL_SOURCE" 'MAX_SLEEP_SECONDS: u64 = 5' 'reaper re-reads the wall clock so an expiry passed during suspend is seen within 5 s'
+has "$VM_CONTROL_SOURCE" 'scan_lease_records(root)' 'reaper re-reads the lease records on every wake'
+has "$VM_CONTROL_SOURCE" 'MAX_SLEEP_SECONDS: u64 = 5' 'reaper wakes within 5 s of any lease expiry, including one passed during suspend'
+has "$VM_CONTROL_SOURCE" 'UNRETIRED_ROOT' 'a lease the reaper cannot retire is set aside instead of pinning it'
+has "$REAPER" 'StartLimitIntervalSec=0' 'a failing reaper can never be start-limited out of enforcing expiry'
+has "$REAPER" 'Restart=on-failure' 'a failed reaper is restarted by its own unit, not the level-triggered path'
+has "$REAPER" 'RestartPreventExitStatus=3' 'an idle reaper whose last pass failed is reported, not retried'
+has "$VM_CONTROL_SOURCE" 'IDLE_AFTER_FAILURE_EXIT: u8 = 3' 'controller exit status matches the unit restart policy'
+has "$TMPFILES" '/run/tilo/windows-egress/unretired 0700' 'set-aside lease records stay root-only'
+has "$PROVISION" 'mv -f "$UUID_FILE.new" "$UUID_FILE"' 'domain identity appears complete for the status path unit'
 has "$REAPER_TIMER" 'OnUnitActiveSec=30s' 'provisioned appliance status is refreshed periodically'
 has "$REAPER_TIMER" 'ConditionPathExists=/var/lib/tilo/windows/domain.uuid' 'status timer is inert without a provisioned appliance'
 lacks "$REAPER_TIMER" '[Install]' 'status timer is not enabled on machines without an appliance'
