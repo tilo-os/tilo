@@ -3819,6 +3819,13 @@ impl WindowHeader for NavShell {
 }
 
 impl crate::widget::controls::ActionControls for NavShell {
+    fn action_control_bindings(&self) -> Vec<crate::widget::ControlBindingMetadata> {
+        let mut bindings = Vec::new();
+        self.for_each_child(&mut |child| {
+            bindings.extend(crate::widget::controls::action_control_bindings(child));
+        });
+        bindings
+    }
     fn install_control_custody(
         &mut self,
         domain: &crate::ControlDomain,
