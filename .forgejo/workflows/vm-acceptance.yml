@@ -157,6 +157,7 @@ jobs:
             exit 1
           }
           behind=$(git rev-list --count "$commit..$target")
+          bridge=$(python3 scripts/vm-acceptance/management.py "$commit" "$target")
 
           # What the base lacks of the ref, built from the ref and swapped in.
           swap=${INPUT_SWAP:-default}
@@ -199,6 +200,7 @@ jobs:
             echo "target=$target"
             echo "commit=$commit"
             echo "behind=$behind"
+            echo "bridge=$bridge"
             echo "disk-url=$disk_url"
             echo "image=$image"
             echo "swap=$swap"
@@ -211,11 +213,26 @@ jobs:
             echo "::warning::the base disk is $behind commits behind ${target:0:12}: only the swapped components ($swap) are the ref's code"
           fi
 
+      - name: Check out the ref under test
+        env:
+          TARGET: ${{ steps.plan.outputs.target }}
+        run: git worktree add --detach "$WORK/src" "$TARGET"
+
       - name: Build tilo-vm
         run: |
           set -euo pipefail
-          cargo build --locked -p tilo-vm
-          install -m 0755 target/debug/tilo-vm /usr/local/bin/tilo-vm
+          (cd "$WORK/src" && cargo build --locked -p tilo-vm)
+          install -m 0755 "$WORK/src/target/debug/tilo-vm" /usr/local/bin/tilo-vm
+
+      - name: Build the fixture-matching management client
+        if: steps.plan.outputs.bridge == 'true'
+        env:
+          COMMIT: ${{ steps.plan.outputs.commit }}
+        run: |
+          set -euo pipefail
+          git worktree add --detach "$WORK/base-cli" "$COMMIT"
+          (cd "$WORK/base-cli" && cargo build --locked -p tilo-vm)
+          install -m 0755 "$WORK/base-cli/target/debug/tilo-vm" /usr/local/bin/tilo-vm-base
 
       # Kata's job container has a static /dev; its guest kernel provides FUSE
       # and loop nodes once devtmpfs is mounted (as in Release / Dev VM disk).
@@ -296,12 +313,6 @@ jobs:
             > "$DISK.provenance.json"
           cat "$DISK.provenance.json"
 
-      - name: Check out the ref under test
-        if: steps.plan.outputs.swap != ''
-        env:
-          TARGET: ${{ steps.plan.outputs.target }}
-        run: git worktree add --detach "$WORK/src" "$TARGET"
-
       # tilo-vm runs VMs in the user's libvirt session, as on a laptop. Root
       # cannot hand passt its socket there, so the run gets its own user, who
       # also builds the swapped components with the builder's toolchain.
@@ -350,10 +361,12 @@ jobs:
           ONLY: ${{ steps.plan.outputs.only }}
           OUTPUTS: ${{ steps.plan.outputs.outputs }}
           GL: ${{ steps.plan.outputs.gl }}
+          BRIDGE: ${{ steps.plan.outputs.bridge }}
         run: |
           set -euo pipefail
           args=(--disk "$DISK" --commit "$COMMIT" --outputs "$OUTPUTS" --out "$WORK/report"
                 --tilo-vm /usr/local/bin/tilo-vm)
+          [[ $BRIDGE != true ]] || args+=(--bootstrap-tilo-vm /usr/local/bin/tilo-vm-base --bootstrap-from "$WORK/src" --swap-ref "$REF")
           [[ -z $SWAP ]] || args+=(--swap "$SWAP" --swap-from "$WORK/src" --swap-ref "$REF")
           [[ -z $ONLY ]] || args+=(--only "$ONLY")
           [[ $GL != on ]] || args+=(--gl)

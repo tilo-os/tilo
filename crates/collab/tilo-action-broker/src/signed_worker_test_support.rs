@@ -91,7 +91,7 @@ impl action_directory::Server for HeldHostDirectory {
         Promise::from_future(async move {
             self.entered.send("query").unwrap();
             self.release.notified().await;
-            write_directory_page(
+            runtime_collab::write_action_directory_page(
                 results.get().init_page(),
                 &runtime_collab::ActionDirectoryPage {
                     revision: "directory-r1".into(),
@@ -112,8 +112,10 @@ impl action_directory::Server for HeldHostDirectory {
         Promise::from_future(async move {
             self.entered.send("resolve").unwrap();
             self.release.notified().await;
-            write_directory_row(results.get().init_resolution().init_found(), &self.row);
-            Ok(())
+            runtime_collab::write_action_directory_row(
+                results.get().init_resolution().init_found(),
+                &self.row,
+            )
         })
     }
 }
@@ -153,12 +155,15 @@ impl action_directory::Server for DurableDirectory {
             ..tilo_actions::ActionContract::default()
         };
         assert!(contract.validate_declaration().is_empty());
-        let encoded = serde_json::to_string(&contract).unwrap();
         let descriptor = row.descriptor.as_mut().unwrap();
-        descriptor.operation_kind = "effect".into();
-        descriptor.contract_json.clone_from(&encoded);
-        row.visibility_contract_json = encoded;
-        write_directory_row(results.get().init_resolution().init_found(), &row);
+        descriptor.operation_kind = tilo_actions::OperationKind::Effect;
+        descriptor.contract.clone_from(&contract);
+        row.visibility.as_mut().unwrap().contract = contract;
+        runtime_collab::write_action_directory_row(
+            results.get().init_resolution().init_found(),
+            &row,
+        )
+        .expect("test directory row encodes");
         Promise::ok(())
     }
 }

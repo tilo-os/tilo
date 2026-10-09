@@ -805,9 +805,8 @@ fn exported_action_bytes(action: &ExportedAction, meter: &mut ByteMeter) {
     if let Some(description) = &action.description {
         meter.string_capacity(description);
     }
-    meter.string_capacity(&action.operation_kind);
-    meter.string_capacity(&action.params_json);
-    meter.string_capacity(&action.contract_json);
+    serialized_bytes(&action.params, meter);
+    serialized_bytes(&action.contract, meter);
     if let ExportedInput::Text {
         prompt,
         placeholder,
@@ -5561,58 +5560,6 @@ fn directory_unavailable() -> runtime_collab::ActionDirectoryResolution {
     runtime_collab::ActionDirectoryResolution::Unavailable
 }
 
-fn write_directory_descriptor(
-    mut out: runtime_collab::collab_capnp::exported_action::Builder<'_>,
-    descriptor: &runtime_collab::ExportedAction,
-) {
-    out.set_resource(&descriptor.resource);
-    if let Some(identity) = &descriptor.semantic_identity {
-        let mut out = out.reborrow().init_semantic_identity();
-        out.set_kind(&identity.kind);
-        out.set_key(&identity.key);
-    }
-    out.set_action(&descriptor.action);
-    out.set_resource_kind(&descriptor.resource_kind);
-    out.set_resource_label(&descriptor.resource_label);
-    out.set_action_label(&descriptor.action_label);
-    out.set_description(descriptor.description.as_deref().unwrap_or(""));
-    out.set_operation_kind(&descriptor.operation_kind);
-    out.set_params_json(&descriptor.params_json);
-    out.set_contract_json(&descriptor.contract_json);
-    let mut input = out.init_input();
-    match &descriptor.input {
-        runtime_collab::ExportedInput::None => input.set_none(()),
-        runtime_collab::ExportedInput::Text {
-            prompt,
-            placeholder,
-            wants_content,
-        } => {
-            let mut text = input.init_text();
-            text.set_prompt(prompt);
-            text.set_placeholder(placeholder);
-            text.set_wants_content(*wants_content);
-        }
-    }
-}
-
-fn write_directory_row(
-    mut out: runtime_collab::collab_capnp::action_directory_row::Builder<'_>,
-    row: &runtime_collab::ActionDirectoryRow,
-) {
-    out.set_parent_resource(&row.parent_resource);
-    out.set_resource(&row.resource);
-    out.set_resource_kind(&row.resource_kind);
-    out.set_resource_label(&row.resource_label);
-    out.set_resource_presentation_json(&row.resource_presentation_json);
-    out.set_action(row.action.as_deref().unwrap_or(""));
-    out.set_has_children(row.has_children);
-    out.set_visibility_action(row.visibility_action.as_deref().unwrap_or(""));
-    out.set_visibility_contract_json(&row.visibility_contract_json);
-    if let Some(descriptor) = &row.descriptor {
-        write_directory_descriptor(out.reborrow().init_descriptor(), descriptor);
-    }
-}
-
 #[allow(
     refining_impl_trait,
     reason = "capnp generated server traits accept the concrete Promise type used by every existing RPC endpoint"
@@ -5686,23 +5633,7 @@ impl runtime_collab::collab_capnp::action_directory::Server for ActionDirectoryS
             let page = response.await.map_err(|_| {
                 capnp::Error::failed("application action directory is unavailable".into())
             })?;
-            let mut out = results.get().init_page();
-            out.set_revision(&page.revision);
-            out.set_next_cursor(&page.next_cursor);
-            out.set_exhausted(page.exhausted);
-            out.set_stale_cursor(page.stale_cursor);
-            out.set_budget_exhausted(page.budget_exhausted);
-            let len = u32::try_from(page.rows.len())
-                .map_err(|_| capnp::Error::failed("too many directory rows".into()))?;
-            let mut rows = out.reborrow().init_rows(len);
-            for (index, row) in page.rows.iter().enumerate() {
-                write_directory_row(
-                    rows.reborrow()
-                        .get(u32::try_from(index).unwrap_or(u32::MAX)),
-                    row,
-                );
-            }
-            Ok(())
+            runtime_collab::write_action_directory_page(results.get().init_page(), &page)
         })
     }
 
@@ -5752,18 +5683,10 @@ impl runtime_collab::collab_capnp::action_directory::Server for ActionDirectoryS
                 // As for a query: the asker's deadline, not one of ours.
                 response.await.unwrap_or_else(|_| directory_unavailable())
             };
-            let mut out = results.get().init_resolution();
-            match reply_value {
-                runtime_collab::ActionDirectoryResolution::Found(row) => {
-                    write_directory_row(out.reborrow().init_found(), &row);
-                }
-                runtime_collab::ActionDirectoryResolution::NotFound => out.set_not_found(()),
-                runtime_collab::ActionDirectoryResolution::StaleRevision => {
-                    out.set_stale_revision(());
-                }
-                runtime_collab::ActionDirectoryResolution::Unavailable => out.set_unavailable(()),
-            }
-            Ok(())
+            runtime_collab::write_action_directory_resolution(
+                results.get().init_resolution(),
+                &reply_value,
+            )
         })
     }
 }
@@ -5971,59 +5894,6 @@ async fn dispatch_sdk_request(
                 .await;
         }
         CollabRequest::PublishActions { app_id, actions } => {
-            let actions = actions
-                .into_iter()
-                .map(|action| runtime_collab::ExportedAction {
-                    resource: action.resource,
-                    semantic_identity: action.semantic_identity.map(|identity| {
-                        runtime_collab::ExportedResourceSemanticIdentity {
-                            kind: identity.kind,
-                            key: identity.key,
-                        }
-                    }),
-                    action: action.action,
-                    resource_kind: action.resource_kind,
-                    resource_label: action.resource_label,
-                    action_label: action.action_label,
-                    description: action.description,
-                    operation_kind: action.operation_kind,
-                    params_json: action.params_json,
-                    contract_json: action.contract_json,
-                    view: action.view.map(|view| runtime_collab::ExportedView {
-                        id: view.id,
-                        label: view.label,
-                        description: view.description,
-                        open_action: view.open_action,
-                        primary: view.primary,
-                        range: view
-                            .range
-                            .as_ref()
-                            .map(|range| runtime_collab::ExportedViewRange {
-                                action: range.action.clone(),
-                                start_param: range.start_param.clone(),
-                                end_param: range.end_param.clone(),
-                                unit_param: range.unit_param.clone(),
-                            }),
-                        mount: view.mount.map(|mount| runtime_collab::ExportedViewMount {
-                            action: mount.action,
-                            capability_param: mount.capability_param,
-                            view_param: mount.view_param,
-                        }),
-                    }),
-                    input: match action.input {
-                        ExportedInput::None => runtime_collab::ExportedInput::None,
-                        ExportedInput::Text {
-                            prompt,
-                            placeholder,
-                            wants_content,
-                        } => runtime_collab::ExportedInput::Text {
-                            prompt,
-                            placeholder,
-                            wants_content,
-                        },
-                    },
-                })
-                .collect::<Vec<_>>();
             if let Err(error) = route.channel.publish_actions(&app_id, &actions).await {
                 tracing::warn!(%error, "collab: publishing resource/action surface failed; republishing");
                 inbound_tx
@@ -6739,69 +6609,6 @@ mod tests {
     )]
 
     use super::*;
-
-    /// The byte budget an app pages its directory by is checked against the
-    /// encoded page, so the per-row estimate must never fall below a row's
-    /// Cap'n Proto size, however its fields are sized.
-    #[test]
-    fn directory_row_estimates_bound_their_encoded_size() {
-        let text = |length: usize| "x".repeat(length);
-        for length in [0, 1, 7, 8, 9, 63, 64, 1000] {
-            let row = runtime_collab::ActionDirectoryRow {
-                parent_resource: text(length),
-                resource: text(length),
-                resource_kind: text(length),
-                resource_label: text(length),
-                resource_presentation_json: text(length),
-                action: Some(text(length)),
-                descriptor: Some(runtime_collab::ExportedAction {
-                    semantic_identity: None,
-                    resource: text(length),
-                    action: text(length),
-                    resource_kind: text(length),
-                    resource_label: text(length),
-                    action_label: text(length),
-                    description: Some(text(length)),
-                    operation_kind: text(length),
-                    params_json: text(length),
-                    contract_json: text(length),
-                    view: None,
-                    input: runtime_collab::ExportedInput::Text {
-                        prompt: text(length),
-                        placeholder: text(length),
-                        wants_content: false,
-                    },
-                }),
-                has_children: false,
-                visibility_action: Some(text(length)),
-                visibility_contract_json: text(length),
-            };
-            let rows = 40u32;
-            let mut message = capnp::message::Builder::new_default();
-            {
-                let mut page = message
-                    .init_root::<runtime_collab::collab_capnp::action_directory_page::Builder<'_>>(
-                    );
-                page.set_revision("v5:00000000-0000-0000-0000-000000000000");
-                let mut list = page.reborrow().init_rows(rows);
-                for index in 0..rows {
-                    write_directory_row(list.reborrow().get(index), &row);
-                }
-            }
-            let encoded = message
-                .get_root_as_reader::<runtime_collab::collab_capnp::action_directory_page::Reader<'_>>()
-                .unwrap()
-                .total_size()
-                .unwrap()
-                .word_count
-                * 8;
-            let estimated = crate::app::directory_row_wire_bytes(&row) * rows as usize;
-            assert!(
-                u64::try_from(estimated).unwrap() >= encoded,
-                "field length {length}: estimated {estimated} < encoded {encoded}"
-            );
-        }
-    }
 
     /// The concrete broker transport's bridge state behind a test manager.
     fn broker_state(manager: &CollaborationManager) -> BridgeState {

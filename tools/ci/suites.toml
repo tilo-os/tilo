@@ -379,7 +379,7 @@ suites = [
 
 [[group]]
 name = "vm-acceptance"
-inputs = ["scripts/vm-acceptance/"]
+inputs = ["scripts/vm-acceptance/", ".forgejo/workflows/vm-acceptance.yml"]
 suites = [
   "scripts/vm-acceptance/test_action_discovery.py",
   "scripts/vm-acceptance/test_apps.py",
@@ -388,6 +388,7 @@ suites = [
   "scripts/vm-acceptance/test_ci_select.py",
   "scripts/vm-acceptance/test_frames.py",
   "scripts/vm-acceptance/test_provenance.py",
+  "scripts/vm-acceptance/test_management.py",
   "scripts/vm-acceptance/test_terminal_cohort.py",
   "scripts/vm-acceptance/test_app_cohort.py",
   "scripts/vm-acceptance/test_store_chooser.py",

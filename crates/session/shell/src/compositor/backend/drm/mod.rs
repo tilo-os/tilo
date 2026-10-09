@@ -1760,11 +1760,10 @@ fn paint_scanouts(
     if target_size.0 == 0 || target_size.1 == 0 {
         return PaintScanoutSample::default();
     }
-    // With several outputs and no readback, every output's pixels are its own, the bridge's
-    // target included: an undamaged one keeps its image, and one whose flip is pending owes
-    // its damage to its next render.
-    let per_output =
-        !readback_expected && scanouts.iter().filter(|entry| !entry.powered_off).count() > 1;
+    let sharing = TargetSharing::of(
+        readback_expected,
+        scanouts.iter().filter(|entry| !entry.powered_off).count(),
+    );
     if let Some(reason) = paint.as_ref().and_then(paint::VelloDrmBridge::device_lost) {
         // Every call on a lost device fails, and the bridge cannot replace its own device.
         tracing::error!(%reason, "DRM backend: the renderer's GPU device was lost; opening a new one");
@@ -1850,7 +1849,7 @@ fn paint_scanouts(
                 &view,
                 &frame,
                 phase_window.as_deref_mut(),
-                per_output,
+                sharing,
             );
             entry.present_by_readback = outcome == DirectOutcome::Readback;
             match outcome {
@@ -2075,30 +2074,63 @@ impl DirectFrame {
     }
 }
 
+/// Who else renders into the bridge's own target this frame.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TargetSharing {
+    /// Several outputs and no readback: every output's pixels are its own, the bridge's target
+    /// included. An undamaged output keeps its image, and one whose flip is pending owes its
+    /// damage to its next render.
+    PerOutput,
+    /// One powered output and no readback: the bridge's target is that output's alone, and
+    /// only the direct path renders into it.
+    Lone,
+    /// A readback renders the bridge's target too. It can bring the target up to a revision
+    /// KMS does not show on a direct output (after that output's busy flip), so the target
+    /// proves nothing about what a direct output shows.
+    Readback,
+}
+
+impl TargetSharing {
+    fn of(readback_expected: bool, powered_outputs: usize) -> Self {
+        if readback_expected {
+            Self::Readback
+        } else if powered_outputs > 1 {
+            Self::PerOutput
+        } else {
+            Self::Lone
+        }
+    }
+
+    /// Whether `view`'s retained pixels are its own: a surface of its own, or the bridge's
+    /// target while no other output or readback shares it.
+    fn owns_pixels(self, bridge: &paint::VelloDrmBridge, view: &paint::OutputView) -> bool {
+        self == Self::PerOutput || !bridge.view_is_whole_scene(view)
+    }
+}
+
 /// Whether a direct output keeps the image KMS shows for `frame`: no render, no copy into a
 /// scanout slot, no flip. Its targets must have been `shown` and its retained pixels must hold
 /// the previous revision with no skipped frame's damage owed (`keep_unchanged_output`), which
 /// it then advances to this revision.
 ///
-/// An output whose pixels are its own (`own_pixels`) keeps any frame whose damage falls
-/// elsewhere. An output sharing the bridge's target with the scene as a whole (the lone
-/// output) keeps only a frame proven identical to the previous one (empty damage): nothing
-/// in the scene moved, so no other reader of that target can be owed pixels either.
+/// An output whose pixels are its own keeps any frame whose damage falls elsewhere. The lone
+/// output, whose view is the scene as a whole, keeps only a frame proven identical to the
+/// previous one (empty damage). An output sharing the bridge's target with a readback keeps
+/// nothing: the readback may have re-rendered that target after this output's flip failed.
 fn keeps_shown_image(
     bridge: &mut paint::VelloDrmBridge,
     view: &paint::OutputView,
     frame: &ScanoutFrame<'_>,
     shown: bool,
-    own_pixels: bool,
+    sharing: TargetSharing,
 ) -> bool {
     let Some(damage) = frame.damage else {
         return false;
     };
     let unchanged = damage.regions.is_some_and(<[_]>::is_empty);
-    (own_pixels || unchanged)
-        && frame.hdr_layers.is_empty()
-        && shown
-        && bridge.keep_unchanged_output(view, damage)
+    let eligible =
+        sharing.owns_pixels(bridge, view) || (sharing == TargetSharing::Lone && unchanged);
+    eligible && frame.hdr_layers.is_empty() && shown && bridge.keep_unchanged_output(view, damage)
 }
 
 /// Render one output straight into its own direct scanout target and hand it to KMS.
@@ -2117,7 +2149,7 @@ fn present_direct(
     view: &paint::OutputView,
     frame: &ScanoutFrame<'_>,
     mut phase_window: Option<&mut PhaseWindow>,
-    per_output: bool,
+    sharing: TargetSharing,
 ) -> DirectOutcome {
     let drm_bus_id = entry.scanout.drm_bus_id();
     let eligibility = DirectEligibility {
@@ -2225,10 +2257,8 @@ fn present_direct(
             DirectOutcome::Readback
         };
     }
-    // The output's retained pixels are its own: a surface of its own, or the bridge's target
-    // while no other output or readback shares it (`per_output`).
-    let own_pixels = per_output || !bridge.view_is_whole_scene(view);
-    if keeps_shown_image(bridge, view, frame, targets.presented(), own_pixels) {
+    let own_pixels = sharing.owns_pixels(bridge, view);
+    if keeps_shown_image(bridge, view, frame, targets.presented(), sharing) {
         return DirectOutcome::Kept;
     }
     // A queued imported-buffer flip retires before a new render target is selected. With
@@ -4254,7 +4284,7 @@ mod lone_output_tests {
     const SIZE: (u32, u32) = (64, 48);
 
     /// One display at the origin: its view is the whole scene, so it renders straight into the
-    /// bridge's own target and shares it with nothing else (`per_output` is false).
+    /// bridge's own target and shares it with nothing else (`TargetSharing::Lone`).
     fn lone_output() -> (paint::VelloDrmBridge, paint::OutputView) {
         let mut bridge = paint::VelloDrmBridge::new(SIZE.0, SIZE.1)
             .expect("renderer gate requires a real wgpu adapter");
@@ -4308,7 +4338,13 @@ mod lone_output_tests {
         scene: &Scene,
         damage: SceneDamage<'_>,
     ) -> bool {
-        keeps_shown_image(bridge, view, &frame(scene, damage), true, false)
+        keeps_shown_image(
+            bridge,
+            view,
+            &frame(scene, damage),
+            true,
+            TargetSharing::Lone,
+        )
     }
 
     /// The production final pass, into an offscreen stand-in for the output's scanout slot.
@@ -4413,7 +4449,7 @@ mod lone_output_tests {
                 &view,
                 &frame(&grey, damage(2, Some(&[]))),
                 false,
-                false
+                TargetSharing::Lone
             ),
             "targets KMS has never shown leave the dumb front up: the frame renders"
         );
@@ -4457,6 +4493,50 @@ mod lone_output_tests {
         assert!(
             kept(&mut bridge, &view, &grey, damage(4, Some(&[]))),
             "once repaired, unchanged frames are kept again"
+        );
+    }
+
+    #[test]
+    fn only_one_powered_output_without_readback_is_lone() {
+        assert_eq!(TargetSharing::of(false, 1), TargetSharing::Lone);
+        assert_eq!(TargetSharing::of(false, 2), TargetSharing::PerOutput);
+        assert_eq!(
+            TargetSharing::of(true, 1),
+            TargetSharing::Readback,
+            "an output returning from the readback shares the target this frame"
+        );
+        assert_eq!(TargetSharing::of(true, 2), TargetSharing::Readback);
+    }
+
+    #[test]
+    fn a_target_shared_with_a_readback_never_keeps_an_unchanged_frame() {
+        // A direct output whose view is the whole scene, beside an output presenting by
+        // readback from the same target (a mirrored or contained display).
+        let (mut bridge, view) = lone_output();
+        let grey = grey_scene();
+        render(&mut bridge, &view, &grey, damage(1, None));
+        let rect = [FineDamageRect {
+            x: 0,
+            y: 0,
+            width: 8,
+            height: 8,
+        }];
+        // Revision 2: the direct output renders, KMS refuses its flip as busy and
+        // `present_direct` invalidates the target; then the readback renders that same
+        // target to revision 2 for its own output. KMS still shows revision 1 on the direct
+        // output, yet the target proves revision 2.
+        render(&mut bridge, &view, &grey, damage(2, Some(&rect)));
+        bridge.invalidate_output_view(&view);
+        render(&mut bridge, &view, &grey, damage(2, Some(&rect)));
+        assert!(
+            !keeps_shown_image(
+                &mut bridge,
+                &view,
+                &frame(&grey, damage(3, Some(&[]))),
+                true,
+                TargetSharing::Readback
+            ),
+            "the direct output must render revision 3, or KMS would keep revision 1"
         );
     }
 }

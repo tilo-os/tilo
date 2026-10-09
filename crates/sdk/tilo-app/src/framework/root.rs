@@ -5,9 +5,9 @@
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::rc::Rc;
 use std::sync::Arc;
-use ui_core::automerge::transaction::Transactable;
 use ui_core::widget::{AppModel, ModelPath};
 
+use crate::runner::with_native_presentations;
 use tilo_resource::{Resource, ScopeDecl, SearchEntry};
 use tilo_search::{Document, FieldWeight, Matching, Page, SearchIndex};
 use ui_core::PresencePayload;
@@ -39,6 +39,11 @@ use super::stage::Stages;
 use super::surface::SurfacePublication;
 use super::view::{Bindings, Updaters, ViewCx};
 
+struct PublicationCache {
+    revision: (u64, u64, String),
+    tree: tilo_actions::Resource,
+}
+
 pub(crate) struct ResourceRoot<R: Resource> {
     title: &'static str,
     icon: IconDescriptor,
@@ -68,127 +73,26 @@ pub(crate) struct ResourceRoot<R: Resource> {
     effects: Effects<R>,
     /// The app's view: the custom surface itself when the view is one.
     pub(crate) content: Element,
-    /// The store the view keeps the bytes its record names in, where
-    /// `render` keeps its picture.
-    #[allow(dead_code, reason = "read only by render, which is native-only")]
-    store: Option<tilo_content::ContentStore>,
     /// View and effect operations of the app's presentation, attached to the
     /// published resource. Document specs are dropped.
     presentation: Vec<tilo_actions::ActionSpec>,
     /// The resource's and its surfaces' search entries, indexed.
     search: std::cell::RefCell<Option<SearchCache>>,
+    /// The document-owned tree at one live and translation revision. Surface bindings, local
+    /// rows and effect availability are decorated afresh for every caller.
+    publication_tree: std::cell::RefCell<Option<PublicationCache>>,
     /// The view operation types of the nested resources at one live revision.
     nested_views: std::cell::RefCell<Option<(u64, Rc<HashSet<String>>)>>,
-    /// The palette the view was last drawn in, which `render` draws it in.
-    drawn_theme: Option<Theme>,
-    /// Shapes text for `render`, which runs outside a frame.
-    /// Kept across renders; unused on wasm where `render` is cfg'd out.
-    #[allow(dead_code, reason = "read only by render, which is native-only")]
-    render_text: Option<TextRenderer>,
-    /// Draws the view over a past version, which `render` answers for a
-    /// `version`. `None` in a view that is itself a past version.
-    /// Used by native-only `render` / past-version draw; unused on wasm.
-    #[allow(
-        dead_code,
-        reason = "used by native-only render / past-version draw; unused on wasm"
-    )]
-    past: Option<super::preview::DrawPast>,
     /// Whether the resource keeps document state History shows.
     history: bool,
-    activation_requested: std::cell::Cell<bool>,
-}
-
-fn with_native_presentations(mut resource: tilo_actions::Resource) -> tilo_actions::Resource {
-    if cfg!(not(target_family = "wasm")) {
-        for spec in [render_spec(), activate_spec()] {
-            if !resource
-                .actions
-                .iter()
-                .any(|existing| existing.id == spec.id)
-            {
-                resource = resource.with_action(spec);
-            }
-        }
-    }
-    resource
-}
-
-fn activate_spec() -> tilo_actions::ActionSpec {
-    let label = ui_core::I18nManager::lookup_plain("app-activate-window");
-    let mut spec = tilo_actions::ActionSpec::typed_operation(
-        tilo_actions::remote::APPLICATION_ACTIVATE_ACTION,
-        label.clone(),
-        label,
-        tilo_actions::OperationKind::View,
-        tilo_actions::remote::APPLICATION_ACTIVATE_TYPE,
-        Vec::new(),
-        |_| tilo_actions::EncodedAction {
-            type_id: tilo_actions::remote::APPLICATION_ACTIVATE_TYPE.into(),
-            payload: b"{}".to_vec(),
-        },
-    )
-    .requiring(tilo_actions::PermissionRequirement::Read)
-    .with_description(ui_core::I18nManager::lookup_plain(
-        "app-activate-window-description",
-    ));
-    spec.contract.result = tilo_actions::ResultSpec::Json {
-        schema: serde_json::json!({"type": "object"}),
-    };
-    spec
+    /// Platform presentation actions; the browser implementation has no state.
+    native_presentation: crate::runner::Presentation,
 }
 
 impl<R: Resource> ui_core::component_lifecycle::WindowActivation for ResourceRoot<R> {
     fn take_window_activation_intent(&self) -> bool {
-        self.activation_requested.replace(false)
+        self.native_presentation.take_window_activation_intent()
     }
-}
-
-/// The operation type of the framework's `render` view.
-pub(crate) const RENDER_TYPE: &str = "tilo.app.render";
-
-/// `render`: the app's whole view as a picture, which every framework app
-/// answers, so an agent can see what a person sees through the same door it
-/// acts through.
-fn render_spec() -> tilo_actions::ActionSpec {
-    let mut spec = tilo_actions::ActionSpec::typed_operation(
-        "render",
-        "See the app",
-        "See the app",
-        tilo_actions::OperationKind::View,
-        RENDER_TYPE,
-        vec![
-            tilo_actions::ActionParam::optional(
-                "scale",
-                tilo_actions::ParamType::Number,
-                "Pixels per point, 0.5 to 2 (default 1)",
-            )
-            .nullable(),
-            tilo_actions::ActionParam::optional(
-                "version",
-                tilo_actions::ParamType::Text,
-                "A past version: change id from history, or checkpoint name",
-            )
-            .nullable(),
-        ],
-        |args| {
-            tilo_actions::EncodedAction::encode_operation(
-                RENDER_TYPE,
-                &serde_json::json!({ "scale": args.number("scale"), "version": args.text("version") }),
-            )
-            .unwrap_or_else(|_| tilo_actions::EncodedAction {
-                type_id: RENDER_TYPE.into(),
-                payload: Vec::new(),
-            })
-        },
-    )
-    .requiring(tilo_actions::PermissionRequirement::Read)
-    .with_description(
-        "See the app's window as a picture: answers with the image and the revision of the document it shows.",
-    );
-    spec.contract.result = tilo_actions::ResultSpec::Json {
-        schema: serde_json::json!({"type": "object"}),
-    };
-    spec
 }
 
 /// The operation type of the framework's `open` view: show the item at an
@@ -289,18 +193,6 @@ fn read<R: Resource>(
     })
 }
 
-/// The revision a picture shows: the document's heads.
-#[allow(dead_code, reason = "called only by render, which is native-only")]
-fn revision(doc: &AutoCommit) -> String {
-    let mut heads: Vec<String> = doc
-        .base_heads()
-        .iter()
-        .map(|head| head.to_string().chars().take(12).collect())
-        .collect();
-    heads.sort();
-    heads.join("+")
-}
-
 impl<R: Resource> ResourceRoot<R> {
     /// A root over `content`, the view built in `cx`, whose handles the root
     /// keeps; `alive` is the scope `cx`'s bindings are tied to.
@@ -312,13 +204,12 @@ impl<R: Resource> ResourceRoot<R> {
         alive: Rc<()>,
         content: Element,
     ) -> Self {
-        let store = cx.content();
+        let native_presentation = crate::runner::Presentation::new(&cx);
         cx.dispatch.name_resource(&label);
         Self {
             title,
             icon,
             label,
-            store,
             live: cx.live,
             updaters: cx.updaters,
             action_bindings: cx.action_bindings,
@@ -337,12 +228,10 @@ impl<R: Resource> ResourceRoot<R> {
             content,
             presentation: Vec::new(),
             search: std::cell::RefCell::new(None),
+            publication_tree: std::cell::RefCell::new(None),
             nested_views: std::cell::RefCell::new(None),
-            drawn_theme: None,
-            render_text: None,
-            past: None,
             history: true,
-            activation_requested: std::cell::Cell::new(false),
+            native_presentation,
         }
     }
 
@@ -353,8 +242,9 @@ impl<R: Resource> ResourceRoot<R> {
         self
     }
 
-    pub(crate) fn drawing_past(mut self, past: super::preview::DrawPast) -> Self {
-        self.past = Some(past);
+    #[cfg(not(target_family = "wasm"))]
+    pub(crate) fn drawing_past(mut self, past: crate::runner::DrawPast) -> Self {
+        self.native_presentation.drawing_past(past);
         self
     }
 
@@ -457,7 +347,37 @@ impl<R: Resource> ResourceRoot<R> {
     /// views and surfaces bound to where the user is, the live rows surfaces
     /// show, and the framework's operations every app answers.
     fn publication(&self) -> tilo_actions::Resource {
-        self.publication_of(&self.live.get())
+        #[cfg(feature = "test-support")]
+        let _profile = super::profiling::Scope::start("framework.publication");
+        let state = self.live.get();
+        let Some(epoch) = R::publication_cache_epoch(&state) else {
+            return self.decorate_publication(&state, self.resource_tree(&state));
+        };
+        let revision = (
+            self.live.revision(),
+            ui_core::i18n::I18nManager::revision(),
+            epoch,
+        );
+        let tree = {
+            let mut cached = self.publication_tree.borrow_mut();
+            if cached
+                .as_ref()
+                .is_some_and(|cached| cached.revision != revision)
+            {
+                *cached = None;
+            }
+            cached
+                .get_or_insert_with(|| {
+                    let state = self.live.get();
+                    PublicationCache {
+                        revision,
+                        tree: self.resource_tree(&state),
+                    }
+                })
+                .tree
+                .clone()
+        };
+        self.decorate_publication(&self.live.get(), tree)
     }
 
     /// [`Self::publication`] of the resource as `doc` holds it now, which a
@@ -483,11 +403,20 @@ impl<R: Resource> ResourceRoot<R> {
     fn publication_of(&self, state: &R::State) -> tilo_actions::Resource {
         #[cfg(feature = "test-support")]
         let _profile = super::profiling::Scope::start("framework.publication");
-        let mut resource = {
-            #[cfg(feature = "test-support")]
-            let _profile = super::profiling::Scope::start("framework.resource_tree");
-            tilo_resource::publish::<R>(self.dispatch.resource_id(), &self.label, state)
-        };
+        self.decorate_publication(state, self.resource_tree(state))
+    }
+
+    fn resource_tree(&self, state: &R::State) -> tilo_actions::Resource {
+        #[cfg(feature = "test-support")]
+        let _profile = super::profiling::Scope::start("framework.resource_tree");
+        tilo_resource::publish::<R>(self.dispatch.resource_id(), &self.label, state)
+    }
+
+    fn decorate_publication(
+        &self,
+        state: &R::State,
+        mut resource: tilo_actions::Resource,
+    ) -> tilo_actions::Resource {
         let mut bound = self.bindings.declarations(state);
         let mut rows = Vec::new();
         let mut availability = Vec::new();
@@ -590,110 +519,6 @@ impl<R: Resource> ResourceRoot<R> {
     /// The dispatcher the root's views submit through, which the host drains.
     pub(crate) fn dispatcher(&self) -> &Dispatcher<R> {
         &self.dispatch
-    }
-
-    /// The view as a stored PNG, at `scale` pixels per point.
-    #[cfg(not(target_family = "wasm"))]
-    fn render(
-        &mut self,
-        payload: &[u8],
-        doc: &AutoCommit,
-    ) -> Result<tilo_actions::ActionOutput, String> {
-        let args: serde_json::Value =
-            serde_json::from_slice(payload).map_err(|error| error.to_string())?;
-        let scale = args
-            .get("scale")
-            .and_then(serde_json::Value::as_f64)
-            .unwrap_or(1.0);
-        if !(0.5..=2.0).contains(&scale) {
-            return Err("scale must be within 0.5..=2".into());
-        }
-        let version = args.get("version").and_then(serde_json::Value::as_str);
-        let rect = self.content.get_rect();
-        let side = |points: f64| {
-            #[allow(
-                clippy::cast_possible_truncation,
-                clippy::cast_sign_loss,
-                reason = "clamped to 1..=8192 pixels before the cast"
-            )]
-            let pixels = (points * scale).round().clamp(1.0, 8192.0) as u32;
-            pixels
-        };
-        let (width, height) = (side(rect.width()), side(rect.height()));
-        let theme = self.drawn_theme.clone().unwrap_or_else(Theme::dark);
-        let text = self.render_text.get_or_insert_with(TextRenderer::new);
-        let mut scene = Scene::new();
-        let shown = if let Some(version) = version {
-            let draw = self
-                .past
-                .ok_or_else(|| "this view cannot show another version".to_owned())?;
-            let heads = ui_core::history_source::steps::resolve(doc, version)?;
-            let past = doc
-                .clone()
-                .fork_at(&heads)
-                .map_err(|error| format!("version {version} is not in this document: {error}"))?;
-            let bounds = ui_core::vello::kurbo::Rect::new(0.0, 0.0, rect.width(), rect.height());
-            let transform = Affine::scale(scale);
-            scene.fill(
-                ui_core::vello::peniko::Fill::NonZero,
-                transform,
-                theme.tokens.colors.surfaces.content,
-                None,
-                &bounds,
-            );
-            draw(past, bounds, &mut scene, transform, &theme)?;
-            super::history::version_name(&heads)
-        } else {
-            let transform = Affine::translate((-rect.x0, -rect.y0)).then_scale(scale);
-            scene.fill(
-                ui_core::vello::peniko::Fill::NonZero,
-                transform,
-                theme.tokens.colors.surfaces.content,
-                None,
-                &rect,
-            );
-            self.content
-                .draw(&mut scene, transform, text, &theme, &PresenceCtx::empty());
-            revision(doc)
-        };
-        let mut offscreen = ui_core::offscreen::OffscreenRenderer::try_new(width, height)
-            .map_err(|error| format!("no renderer for a {width}x{height} picture: {error}"))?;
-        // A new renderer reserves room for a modest scene; a denser view
-        // overflows its first frame, which then comes back blank. Answer
-        // only a frame that kept all of its geometry.
-        let rgba = offscreen.try_render_resilient(&scene, theme.tokens.colors.surfaces.content)?;
-        let png =
-            ui_core::png::encode_rgba8(width, height, &rgba).map_err(|error| error.to_string())?;
-        let hash = self
-            .store
-            .clone()
-            .unwrap_or_else(tilo_content::ContentStore::memory)
-            .put(&png)
-            .map_err(|error| format!("the picture could not be stored: {error}"))?;
-        let address = tilo_actions::content_resource(&hash)
-            .ok_or_else(|| "the picture has no content address".to_owned())?;
-        let mut value = serde_json::json!({
-            "width": width,
-            "height": height,
-            "theme": theme.name,
-            "revision": shown,
-            "content": address,
-        });
-        // Where the live view sits in the app's window, in window pixels: a
-        // point of the picture plus this is where a person (or the computer
-        // tool, aimed at this app) clicks it.
-        if version.is_none()
-            && let Some(fields) = value.as_object_mut()
-        {
-            fields.insert(
-                "window_origin".into(),
-                serde_json::json!([rect.x0.round(), rect.y0.round()]),
-            );
-        }
-        Ok(tilo_actions::ActionOutput {
-            value: Some(value),
-            resources: vec![address],
-        })
     }
 
     /// Follow the document when it moved — a local action, a
@@ -1125,7 +950,7 @@ impl ResourceSearch {
 // Everything else — layout, input, traversal, operation admission — is the
 // view's own, forwarded by the decorator.
 impl<R: Resource> Decorator for ResourceRoot<R> {
-    ui_core::provides!(dyn ui_core::undo::CommittedActions, dyn ui_core::widget::controls::ActionControls, dyn ui_core::resources::PublishesResources, dyn ui_core::search::capability::SearchSource, dyn ui_core::history_mode::capability::DocumentHistory, dyn ui_core::widget::document_effects::DocumentEffects, dyn ui_core::component_lifecycle::WindowActivation; inner = content);
+    ui_core::provides!(dyn ui_core::undo::CommittedActions, dyn ui_core::widget::controls::ActionControls, dyn ui_core::resources::PublishesResources, dyn ui_core::search::capability::SearchSource, dyn ui_core::history_mode::capability::DocumentHistory, dyn ui_core::widget::document_effects::DocumentEffects, #[cfg(not(target_family = "wasm"))] dyn ui_core::component_lifecycle::WindowActivation; inner = content);
 
     type Inner = dyn Widget;
 
@@ -1165,11 +990,7 @@ impl<R: Resource> Decorator for ResourceRoot<R> {
         presence: &PresenceCtx,
     ) {
         let ground = theme.tokens.colors.surfaces.content;
-        if self.drawn_theme.as_ref().is_none_or(|drawn| {
-            drawn.name != theme.name || drawn.tokens.colors.surfaces.content != ground
-        }) {
-            self.drawn_theme = Some(theme.clone());
-        }
+        self.native_presentation.track_theme(theme);
         // The window ground is the framework's: an app never fills it, and
         // one that paints nothing still stands on it.
         scene.fill(
@@ -1200,7 +1021,7 @@ impl<R: Resource> Decorator for ResourceRoot<R> {
     }
 
     fn needs_redraw(&self) -> bool {
-        self.activation_requested.get() || self.content.needs_redraw()
+        self.native_presentation.needs_redraw() || self.content.needs_redraw()
     }
 
     fn name(&self) -> &'static str {
@@ -1233,10 +1054,11 @@ impl<R: Resource> Decorator for ResourceRoot<R> {
     /// withdraws the whole component surface.
     fn resource_operation_handlers(&self) -> HashSet<String> {
         let mut handlers = self.inner().resource_operation_handlers();
-        if cfg!(not(target_family = "wasm")) {
-            handlers.insert(RENDER_TYPE.to_owned());
-            handlers.insert(tilo_actions::remote::APPLICATION_ACTIVATE_TYPE.to_owned());
-        }
+        handlers.extend(
+            crate::runner::operation_types()
+                .iter()
+                .map(|op| (*op).to_owned()),
+        );
         handlers.insert(super::history::VIEW_TYPE.to_owned());
         handlers.insert(super::person::HISTORY_TYPE.to_owned());
         if self.stages.opens() {
@@ -1282,24 +1104,13 @@ impl<R: Resource> Decorator for ResourceRoot<R> {
         doc: &mut ui_core::widget::Edits<'_>,
         path: &ui_core::automerge::ObjId,
     ) -> Result<Option<ui_core::host_operation::ResourceOperationStart>, String> {
-        #[cfg(not(target_family = "wasm"))]
-        if let Some(request) = op.unscoped() {
-            let output = match request.type_id {
-                tilo_actions::remote::APPLICATION_ACTIVATE_TYPE => {
-                    self.activation_requested.set(true);
-                    Some(tilo_actions::ActionOutput {
-                        value: Some(serde_json::json!({"activation_requested": true})),
-                        resources: Vec::new(),
-                    })
-                }
-                RENDER_TYPE => Some(self.render(request.payload, doc)?),
-                _ => None,
-            };
-            if let Some(output) = output {
-                return Ok(Some(
-                    ui_core::host_operation::ResourceOperationStart::Completed(output),
-                ));
-            }
+        if let Some(output) =
+            self.native_presentation
+                .start_operation(op, doc, self.content.as_mut())?
+        {
+            return Ok(Some(
+                ui_core::host_operation::ResourceOperationStart::Completed(output),
+            ));
         }
         if R::READABLE
             && let Some(request) = op.unscoped()

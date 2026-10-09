@@ -260,9 +260,8 @@ pub struct PersonalAppsPane {
     prefs: Followed<DefaultApps>,
     /// The app each kind's chooser shows, by kind.
     shown: HashMap<ResourceKind, LocalState<String>>,
-    composed: Option<Box<dyn Widget>>,
+    composed: ui::widget::Composed,
     composition_revision: u64,
-    rect: Rect,
 }
 
 impl PersonalAppsPane {
@@ -279,9 +278,8 @@ impl PersonalAppsPane {
             candidates,
             prefs,
             shown,
-            composed: None,
+            composed: ui::widget::Composed::default(),
             composition_revision: 0,
-            rect: Rect::ZERO,
         };
         pane.show();
         pane
@@ -444,11 +442,9 @@ impl Widget for PersonalAppsPane {
         if self.prefs.refresh() {
             self.show();
             // Chooser placeholders are copied from the current defaults.
-            self.composed = None;
+            self.composed.clear();
         }
-        if let Some(c) = &mut self.composed {
-            c.sync(state, root);
-        }
+        self.composed.sync(state, root);
     }
 
     fn build_layout(
@@ -458,16 +454,23 @@ impl Widget for PersonalAppsPane {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         let revision = ui::i18n::I18nManager::revision();
-        let mut composed = match self.composed.take() {
-            Some(composed) if self.composition_revision == revision => composed,
-            _ => self.build_composition(),
-        };
+        if self.composed.element().is_none() || self.composition_revision != revision {
+            let composition = self.build_composition();
+            self.composed.replace(composition);
+        }
         // Resolving this pane's catalogue can itself update the revision.
         self.composition_revision = ui::i18n::I18nManager::revision();
         // Shared controls sample the live theme on every layout and draw.
         // Keep their hover/press state across ordinary host relayouts.
-        let child = composed.build_layout(taffy, theme, node_map);
-        self.composed = Some(composed);
+        let child = if let Some(composition) = self.composed.element_mut() {
+            composition.build_layout(taffy, theme, node_map)
+        } else {
+            // A missing retained child needs a real composition and layout,
+            // rather than an empty node or a guessed geometry.
+            let composition = self.build_composition();
+            self.composed
+                .build_layout(composition, taffy, theme, node_map)
+        };
         let node = taffy
             .new_with_children(
                 taffy::Style {
@@ -486,21 +489,7 @@ impl Widget for PersonalAppsPane {
         node
     }
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let Ok(l) = taffy.layout(node) else {
-            return;
-        };
-        self.rect = Rect::new(
-            origin.x + f64::from(l.location.x),
-            origin.y + f64::from(l.location.y),
-            origin.x + f64::from(l.location.x + l.size.width),
-            origin.y + f64::from(l.location.y + l.size.height),
-        );
-        if let Some(c) = &mut self.composed
-            && let Ok(children) = taffy.children(node)
-            && let Some(&cn) = children.first()
-        {
-            c.apply_layout(taffy, cn, Point::new(self.rect.x0, self.rect.y0));
-        }
+        self.composed.apply_layout(taffy, node, origin);
     }
     fn draw(
         &mut self,
@@ -510,37 +499,23 @@ impl Widget for PersonalAppsPane {
         theme: &Theme,
         presence: &ui::presence::PresenceCtx,
     ) {
-        if let Some(c) = &mut self.composed {
-            c.draw(scene, transform, text_renderer, theme, presence);
-        }
+        self.composed
+            .draw(scene, transform, text_renderer, theme, presence);
     }
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
-        if let Some(c) = &mut self.composed
-            && let Ok(children) = ctx.taffy.children(ctx.node_id)
-            && let Some(&cn) = children.first()
-        {
-            c.handle_event(event, &mut ctx.reborrow(ctx.path, cn));
-        }
+        self.composed.handle_event(event, ctx);
     }
     fn children(&self) -> Vec<&dyn Widget> {
-        self.composed
-            .as_ref()
-            .map(|c| c.as_ref() as &dyn Widget)
-            .into_iter()
-            .collect()
+        self.composed.children()
     }
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        self.composed
-            .as_mut()
-            .map(|c| c.as_mut() as &mut (dyn Widget + '_))
-            .into_iter()
-            .collect()
+        self.composed.children_mut()
     }
     fn name(&self) -> &'static str {
         "PersonalAppsPane"
     }
     fn get_rect(&self) -> Rect {
-        self.rect
+        self.composed.rect()
     }
 }
 

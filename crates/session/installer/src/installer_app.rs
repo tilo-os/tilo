@@ -1119,7 +1119,7 @@ pub struct InstallerApp {
     /// step's first field. Drained via [`Widget::take_focus_reset`].
     focus_reset: bool,
     rect: Rect,
-    composed: Option<Box<dyn Widget>>,
+    composed: ui::widget::Composed,
     /// Set once the install worker thread has been spawned, so a stray
     /// extra `begin` can't launch a second install.
     install_launched: bool,
@@ -1305,7 +1305,7 @@ impl InstallerApp {
             dirty_structure: false,
             focus_reset: false,
             rect: Rect::ZERO,
-            composed: None,
+            composed: ui::widget::Composed::default(),
             install_launched: false,
             storage_preflight_request: None,
             storage_preflight_passed: false,
@@ -3750,9 +3750,7 @@ impl Widget for InstallerApp {
         if self.network.ensure_initial_scan(self.event_proxy()) {
             self.dirty_structure = true;
         }
-        if let Some(c) = &mut self.composed {
-            c.sync(state, root);
-        }
+        self.composed.sync(state, root);
     }
 
     fn build_layout(
@@ -3761,9 +3759,10 @@ impl Widget for InstallerApp {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let mut composed = self.build_composition(theme);
-        let card_node = composed.build_layout(taffy, theme, node_map);
-        self.composed = Some(composed);
+        let composition = self.build_composition(theme);
+        let card_node = self
+            .composed
+            .build_layout(composition, taffy, theme, node_map);
 
         // `new_with_children` only errors for a child `NodeId` from a
         // different tree, which never happens here since `card_node` was
@@ -3800,7 +3799,7 @@ impl Widget for InstallerApp {
         #[allow(clippy::unwrap_used, reason = "node always belongs to this tree")]
         let layout = taffy.layout(node).unwrap();
         self.rect = ui::widget::placed(layout, origin);
-        if let Some(c) = &mut self.composed
+        if let Some(c) = self.composed.element_mut()
             && let Ok(children) = taffy.children(node)
             && let Some(&card_node) = children.first()
         {
@@ -3823,7 +3822,7 @@ impl Widget for InstallerApp {
             None,
             &self.rect,
         );
-        if let Some(c) = &mut self.composed {
+        if let Some(c) = self.composed.element_mut() {
             c.draw(scene, transform, text_renderer, theme, presence);
         }
     }
@@ -3835,7 +3834,7 @@ impl Widget for InstallerApp {
         // selects an option (and the Dropdown marks the event handled) —
         // without forwarding first we'd also raise `NEXT` and skip the
         // step out from under the user.
-        if let Some(c) = &mut self.composed
+        if let Some(c) = self.composed.element_mut()
             && let Ok(children) = ctx.taffy.children(ctx.node_id)
             && let Some(&card_node) = children.first()
         {
@@ -3966,35 +3965,24 @@ impl Widget for InstallerApp {
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
-        self.composed
-            .as_ref()
-            .map(|c| c.as_ref() as &dyn Widget)
-            .into_iter()
-            .collect()
+        self.composed.children()
     }
 
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        self.composed
-            .as_mut()
-            .map(|c| c.as_mut() as &mut (dyn Widget + '_))
-            .into_iter()
-            .collect()
+        self.composed.children_mut()
     }
 
     fn take_structure_dirty(&mut self) -> bool {
         let mine = self.dirty_structure;
         self.dirty_structure = false;
-        let child = self
-            .composed
-            .as_mut()
-            .is_some_and(|c| c.take_structure_dirty());
+        let child = self.composed.take_structure_dirty();
         mine || child
     }
 
     fn wants_pointer_capture(&self) -> bool {
         self.composed
-            .as_ref()
-            .is_some_and(|c| c.wants_pointer_capture())
+            .element()
+            .is_some_and(Widget::wants_pointer_capture)
     }
 
     fn name(&self) -> &'static str {
@@ -4031,7 +4019,7 @@ mod tests {
     /// technology does, then let the app sync. Nothing reaches the document.
     fn perform(app: &mut InstallerApp, doc: &mut AutoCommit, id: &str, action: &ui::a11y::Action) {
         let _ = build(app);
-        let composed = app.composed.as_deref_mut().expect("composed step");
+        let composed = app.composed.element_mut().expect("composed step");
         let control = find_test_id_mut(composed, id).unwrap_or_else(|| panic!("no control {id}"));
         assert!(
             control.perform_action(action, &mut ui::widget::Edits::lend(doc), &automerge::ROOT),
@@ -4606,7 +4594,7 @@ mod tests {
     fn the_media_step_is_one_install_button_and_review_repeats_it() {
         let mut app = InstallerApp::for_shot(Step::Media);
         let _ = build(&mut app);
-        let composed = app.composed.as_deref().unwrap();
+        let composed = app.composed.element().unwrap();
         assert!(has_test_id(composed, "codecs_install"));
         assert!(has_test_id(composed, "codecs_skip"));
         assert!(
@@ -4635,14 +4623,14 @@ mod tests {
         let mut options = InstallerApp::for_shot(Step::Options);
         let _ = build(&mut options);
         assert!(
-            find_accessible(options.composed.as_deref().unwrap(), CODECS_TITLE).is_none(),
+            find_accessible(options.composed.element().unwrap(), CODECS_TITLE).is_none(),
             "Options no longer carries the formats"
         );
 
         app.codecs = true;
         app.dirty_structure = true;
         let _ = build(&mut app);
-        let chosen = app.composed.as_deref().unwrap();
+        let chosen = app.composed.element().unwrap();
         assert!(has_test_id(chosen, "codecs_undo"));
         assert!(!has_test_id(chosen, "codecs_install"));
         assert!(find_accessible(chosen, CODECS_CHOSEN).is_some());
@@ -4650,7 +4638,7 @@ mod tests {
         app.step = Step::Review;
         app.dirty_structure = true;
         let _ = build(&mut app);
-        let review = app.composed.as_deref().unwrap();
+        let review = app.composed.element().unwrap();
         assert!(
             find_accessible(review, "Install once the new system is online").is_some(),
             "Review repeats the codecs choice"
@@ -6062,7 +6050,7 @@ mod tests {
             assert_eq!(app.step, Step::Options);
             let _ = build(&mut app);
             assert!(
-                has_test_id(app.composed.as_deref().unwrap(), "fido2_choice"),
+                has_test_id(app.composed.element().unwrap(), "fido2_choice"),
                 "Review Back must keep on-device security choices reachable"
             );
             app.go_back();

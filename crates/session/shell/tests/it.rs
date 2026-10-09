@@ -243,5 +243,8 @@ mod xdg_activation;
 #[path = "vulkan_present_damage.rs"]
 mod vulkan_present_damage;
 
+#[cfg(feature = "test-support")]
+#[path = "network_cost_boundary.rs"]
+mod network_cost_boundary;
 #[path = "wayland_present_progress.rs"]
 mod wayland_present_progress;

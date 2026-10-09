@@ -8225,7 +8225,35 @@ pub fn run() {
         }
     };
 
-    spawn_auto_brightness_worker();
+    // The session's one settings document: read once per change on its own
+    // thread and shared, by generation, with every subsystem that follows a
+    // setting (input devices, switch control, rotation lock, automatic
+    // brightness, input methods, continuity policy). A change wakes an idle
+    // loop through this ping; nothing here reads the file between changes.
+    let live_settings = {
+        let wake = match calloop::ping::make_ping() {
+            Ok((ping, source)) => match event_loop.handle().insert_source(source, |(), (), _| {}) {
+                Ok(_) => Some(ping),
+                Err(error) => {
+                    tracing::warn!(%error, "could not register the settings wake source; an idle desktop applies Settings changes on its next wake");
+                    None
+                }
+            },
+            Err(error) => {
+                tracing::warn!(%error, "could not create the settings wake source; an idle desktop applies Settings changes on its next wake");
+                None
+            }
+        };
+        settings_store::live::LiveSettings::start(move || {
+            if let Some(ping) = &wake {
+                ping.ping();
+            }
+        })
+    };
+    if let Some(reason) = live_settings.degraded() {
+        tracing::warn!(%reason, "settings changes may arrive late");
+    }
+    spawn_auto_brightness_worker(live_settings.clone());
 
     // `--backend drm|winit` selects the native backend implementation.
     let backend_kind = parse_backend_from_args();
@@ -8300,7 +8328,10 @@ pub fn run() {
     // only wakes the loop; the change itself is drained below.
     let device_rotation = match calloop::ping::make_ping() {
         Ok((ping, source)) => match event_loop.handle().insert_source(source, |(), (), _| {}) {
-            Ok(_) => crate::compositor::device_rotation::spawn(move || ping.ping()),
+            Ok(_) => crate::compositor::device_rotation::spawn(
+                move || ping.ping(),
+                live_settings.clone(),
+            ),
             Err(error) => {
                 tracing::warn!(%error, "could not register the device rotation wake source");
                 None
@@ -8420,6 +8451,8 @@ pub fn run() {
         display_handle.clone(),
         tree_handle.clone(),
     );
+    // Advertise the scale the Settings app wrote.
+    state.scale = crate::compositor::state::display_scale_from(&live_settings.snapshot().document);
     // Point `ui`'s clipboard at the compositor's selection mirror — everything
     // hosted here isn't a Wayland client, so without this they'd share no buffer.
     crate::compositor::selection::install_host_services(state.selection_store());
@@ -8737,7 +8770,7 @@ pub fn run() {
     // seat and runs (see `compositor::input_method`).
     let mut input_methods =
         crate::compositor::input_method_service::InputMethodServices::start(&event_loop.handle());
-    input_methods.reload(&mut state);
+    input_methods.reload(&mut state, &live_settings.snapshot());
     // The shell's own fields' stand-in for the input method, connected the
     // first time one takes text.
     let mut shell_text_input: Option<crate::compositor::shell_text_input::ShellTextInput> = None;
@@ -9211,31 +9244,13 @@ pub fn run() {
     let mut outputs_dirty = false;
     let mut published_output_colors = PublishedOutputColors::default();
 
-    // Pointer/keyboard preferences are read once at startup; this notices a
-    // new Settings write so changes take effect this session, not the next.
-    let mut settings_watch = crate::compositor::backend::drm::input_config::SettingsWatch::new();
-    // The poll runs only on a loop tick, and an idle desktop parks with no
-    // deadline, so a write from Settings or a display transaction staged by
-    // another process wakes the loop and is looked at on that tick.
-    let settings_written = Arc::new(AtomicBool::new(false));
-    let settings_committed_watch: Arc<settings_store::Listener> = {
-        let written = Arc::clone(&settings_written);
-        let wake = Arc::clone(&session_wake);
-        Arc::new(move || {
-            written.store(true, Ordering::Release);
-            wake();
-        })
-    };
-    settings_watch.listen(&settings_committed_watch);
-    let _settings_file_watch = {
-        let written = Arc::clone(&settings_committed_watch);
-        settings_store::watch::watch_settings(move || written())
-        .map_err(|error| {
-            tracing::warn!(%error, "settings file watch unavailable; an idle desktop applies Settings changes on its next wake");
-        })
-        .ok()
-    };
-    let mut switch_control = SwitchControlRuntime::new(Instant::now());
+    // Pointer/keyboard preferences are read once at startup; this follows
+    // each new generation of the settings document so changes take effect
+    // this session, not the next, and only for the sections that changed.
+    let mut settings_sections = settings_store::live::SectionFollower::new(&live_settings);
+    let mut switch_control = SwitchControlRuntime::new(Instant::now(), &live_settings);
+    let mut continuity_policy =
+        crate::shell::continuity_policy::ContinuityPolicyCache::new(&live_settings);
     // Local game controllers drive the desktop through the same input
     // funnel; their evdev descriptors wake this loop like hardware input.
     let mut controller_nav = crate::compositor::controller_nav::ControllerNavRuntime::default();
@@ -10192,7 +10207,7 @@ pub fn run() {
                         xwayland.apply_keyboard_settings(&settings);
                     }
                     state.apply_keyboard_settings(*settings);
-                    input_methods.reload_for_scope(&mut state, &scope);
+                    input_methods.reload_for_scope(&mut state, &live_settings.snapshot(), &scope);
                 }
                 BackendEvent::InputStateReset => {
                     // A device/VT/keymap boundary can omit releases. Retire
@@ -10453,20 +10468,18 @@ pub fn run() {
         }
 
         input_steps.step("focus-persist");
-        // A settings write wakes the loop through the file watch above (and
-        // output management's staging), and the watch's own rate-limited
-        // stat catches one that arrived while the watch was unavailable.
-        // Only the work the changed sections need runs: a notification
-        // toggle must not reconfigure input devices or reconcile outputs on
-        // this input path.
+        // A settings write wakes the loop through `live_settings`, which has
+        // already read the new document on its own thread; between changes
+        // this is one atomic load. Only the work the changed sections need
+        // runs: a notification toggle must not reconfigure input devices or
+        // reconcile outputs on this input path.
         if state.output_management.poll_staging() {
-            settings_written.store(true, Ordering::Release);
-        }
-        if settings_written.swap(false, Ordering::AcqRel) {
-            settings_watch.check_now();
+            // The staged transaction was written off this thread; look now
+            // rather than on the next poll.
+            live_settings.refresh();
         }
         let settings_change = crate::compositor::backend::drm::input_config::SettingsChange::from(
-            settings_watch.changed_sections(Instant::now()),
+            settings_sections.changed_sections(&live_settings),
         );
         if !settings_change.is_empty() {
             input_steps.step("settings-poll");
@@ -10486,6 +10499,9 @@ pub fn run() {
             }
             input_steps.step("settings-input-devices");
             if settings_change.displays() {
+                state.scale = crate::compositor::state::display_scale_from(
+                    &live_settings.snapshot().document,
+                );
                 // Re-applies from the last hotplug probe; never force-probes.
                 backend.reload_display_settings();
                 // Preserve Keep/Revert tracking after an Apply receipt was drained.
@@ -10552,7 +10568,7 @@ pub fn run() {
             }
             input_steps.step("settings-power");
             if settings_change.keyboard() {
-                input_methods.reload(&mut state);
+                input_methods.reload(&mut state, &live_settings.snapshot());
             }
             input_steps.step("settings-input-methods");
         }
@@ -11086,8 +11102,9 @@ pub fn run() {
                 }
                 // The saved choice may be an input-method engine (or leave
                 // one): hand typing to its owner now, not on the next
-                // settings poll.
-                input_methods.reload(&mut state);
+                // settings change. The choice was saved on this thread just
+                // now, so read it here rather than wait for the refresh.
+                input_methods.reload(&mut state, &live_settings.refresh_now());
             }
 
             // Protocol callbacks and the frame builder share one tree handle, so
@@ -11406,7 +11423,11 @@ pub fn run() {
             );
             pump_phase!(
                 "physical-gamepads",
-                crate::shell::physical_gamepad::pump_physical_gamepads(net, app_focus.as_ref())
+                crate::shell::physical_gamepad::pump_physical_gamepads(
+                    net,
+                    app_focus.as_ref(),
+                    continuity_policy.current(),
+                )
             );
             if let Some(bridge) = realtime_fabric_bridge.as_ref() {
                 pump_phase!("realtime-app-events", bridge.pump_app_events());
@@ -13258,22 +13279,17 @@ fn output_connector_at(
         .filter(|connector| !connector.is_empty())
 }
 
-fn spawn_auto_brightness_worker() {
+/// Follow the ambient light sensor every two seconds while automatic
+/// brightness is on. Turning it on or off in Settings wakes the worker at
+/// once rather than on its next sample.
+fn spawn_auto_brightness_worker(settings: settings_store::live::LiveSettings) {
     let _ = std::thread::Builder::new()
         .name("tilo-auto-brightness".into())
-        .spawn(|| {
+        .spawn(move || {
             let mut controller = os_actions::AmbientBrightnessController::default();
-            let mut seen = false;
-            let mut cached_stamp = None;
-            let mut enabled = false;
+            let mut snapshot = settings.snapshot();
             loop {
-                let current = settings_store::stamp();
-                if settings_store::document_changed(seen, cached_stamp, current) {
-                    enabled = settings_store::hardware::AUTO_BRIGHTNESS
-                        .from_document(&settings_store::load());
-                    seen = true;
-                    cached_stamp = current;
-                }
+                let enabled = settings_store::hardware::AUTO_BRIGHTNESS.from_document(&snapshot.document);
                 if enabled && !crate::compositor::screen_dim::backlight_held() {
                     if let Some(lux) = os_actions::ambient_lux()
                         && let Some(percent) = controller.update(lux)
@@ -13284,7 +13300,8 @@ fn spawn_auto_brightness_worker() {
                 } else {
                     controller.reset();
                 }
-                std::thread::sleep(std::time::Duration::from_secs(2));
+                snapshot = settings
+                    .wait_for_change(snapshot.generation, std::time::Duration::from_secs(2));
             }
         });
 }
