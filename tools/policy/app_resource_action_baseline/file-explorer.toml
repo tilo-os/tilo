@@ -1,0 +1,21 @@
+[ratchets.hand_resource_impl]
+"apps/file-explorer/src/resource.rs" = 1
+
+[ratchets.action_decl_new]
+"apps/file-explorer/src/files_app.rs" = 7
+"apps/file-explorer/src/resource.rs" = 7
+
+[ratchets.action_address_new]
+"apps/file-explorer/src/files_app.rs" = 1
+"apps/file-explorer/src/files_app/selection_actions.rs" = 1
+"apps/file-explorer/src/files_app/tests.rs" = 9
+"apps/file-explorer/src/resource.rs" = 3
+"apps/file-explorer/src/search_provider.rs" = 3
+"apps/file-explorer/src/shortcut_menu.rs" = 2
+
+[ratchets.untyped_action_args]
+"apps/file-explorer/src/files_app.rs" = 9
+"apps/file-explorer/src/resource.rs" = 8
+
+[ratchets.direct_automerge_write]
+"apps/file-explorer/src/doc.rs" = 8

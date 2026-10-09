@@ -1,0 +1,5 @@
+[ratchets.action_address_new]
+"apps/tube/src/search_type.rs" = 4
+
+[ratchets.direct_automerge_write]
+"apps/tube/src/app.rs" = 1

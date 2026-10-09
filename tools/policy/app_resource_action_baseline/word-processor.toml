@@ -1,0 +1,25 @@
+[ratchets.action_address_new]
+"apps/word-processor/src/actions.rs" = 2
+"apps/word-processor/src/actions/continuation.rs" = 1
+"apps/word-processor/src/semantic_read/action/tests.rs" = 1
+"apps/word-processor/src/widget.rs" = 1
+"apps/word-processor/src/widget/tests.rs" = 4
+
+[ratchets.untyped_action_args]
+"apps/word-processor/src/semantic_read/action.rs" = 3
+
+[ratchets.action_spec]
+"apps/word-processor/src/semantic_read/action.rs" = 1
+
+[ratchets.direct_automerge_write]
+"apps/word-processor/src/actions.rs" = 16
+"apps/word-processor/src/actions/editing.rs" = 1
+"apps/word-processor/src/actions/participant.rs" = 1
+"apps/word-processor/src/model.rs" = 1
+"apps/word-processor/src/semantic_read/action/tests.rs" = 6
+"apps/word-processor/src/semantic_read/changes.rs" = 3
+"apps/word-processor/src/semantic_read/tests.rs" = 13
+"apps/word-processor/src/widget.rs" = 2
+"apps/word-processor/src/widget/participant_tests.rs" = 3
+"apps/word-processor/src/widget/tests.rs" = 18
+"apps/word-processor/src/word_processor.rs" = 6

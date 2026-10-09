@@ -389,3 +389,23 @@ actions that queued an outside consequence undo through their inverse action.
   grants, actors with kinds (`as_agent`, `for_person`), and asserts on
   structured history entries.
 - `tilo-app check` runs the surface, binding, Fluent and lint checks.
+
+## 8. Leaving the old APIs
+
+Apps and examples still hold code written against the APIs this model
+replaced: hand-written `impl Resource for`, `ActionDecl::new`,
+`ActionAddress::new`, untyped argument parsing (`args.text(..)`,
+`args.get(..)`), `ActionSpec::` descriptors and direct Automerge writes
+(`put`, `put_object`, `insert_object`, `splice_text`, `update_text`,
+`increment`). `tools/policy/check_app_resource_action_contract.py` counts each
+per source file, comments and literals excluded, tests included, and holds
+every count at its audited ceiling in
+`tools/policy/app_resource_action_baseline/<app>.toml` (`example-<name>.toml`
+for `examples/apps/<name>`), under `[ratchets.<rule>]`. A file with no entry
+allows none.
+
+A count that rises fails the check, naming the file and the first use past the
+ceiling: write it with the model instead. A count that falls fails too, as a
+stale ceiling: lower the number the message gives in the same commit, delete
+the entry once it reaches zero, and delete the file once it holds no entries.
+Raising a ceiling is an exception that needs review.

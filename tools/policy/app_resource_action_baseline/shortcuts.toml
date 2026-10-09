@@ -1,0 +1,5 @@
+[ratchets.action_address_new]
+"apps/shortcuts/src/samples.rs" = 1
+
+[ratchets.untyped_action_args]
+"apps/shortcuts/src/view.rs" = 1

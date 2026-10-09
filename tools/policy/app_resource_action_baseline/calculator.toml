@@ -1,0 +1,12 @@
+[ratchets.hand_resource_impl]
+"apps/calculator/src/resource.rs" = 1
+
+[ratchets.action_decl_new]
+"apps/calculator/src/resource.rs" = 7
+
+[ratchets.untyped_action_args]
+"apps/calculator/src/resource.rs" = 4
+
+[ratchets.direct_automerge_write]
+"apps/calculator/src/actions.rs" = 7
+"apps/calculator/src/doc.rs" = 1

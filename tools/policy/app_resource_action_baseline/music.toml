@@ -1,0 +1,4 @@
+[ratchets.action_address_new]
+"apps/music/src/actions.rs" = 6
+"apps/music/src/app/local_files.rs" = 1
+"apps/music/src/resource.rs" = 1

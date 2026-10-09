@@ -1,0 +1,21 @@
+[ratchets.hand_resource_impl]
+"apps/notes/src/resource.rs" = 1
+
+[ratchets.action_decl_new]
+"apps/notes/src/actions.rs" = 2
+
+[ratchets.action_address_new]
+"apps/notes/src/actions.rs" = 3
+
+[ratchets.untyped_action_args]
+"apps/notes/src/actions.rs" = 1
+
+[ratchets.action_spec]
+"apps/notes/src/actions.rs" = 12
+
+[ratchets.direct_automerge_write]
+"apps/notes/src/actions.rs" = 1
+"apps/notes/src/app/tests/search_refresh.rs" = 1
+"apps/notes/src/doc.rs" = 6
+"apps/notes/src/notebook.rs" = 14
+"apps/notes/src/resource/refresh_tests.rs" = 2

@@ -191,12 +191,56 @@ WORKSPACE_RATCHETS = {
         "ResourceSurface::effect (or ViewCx::effects) and offer item effects bound on their rows",
     ),
 }
+# The app-facing APIs the model replaced (docs/architecture/resources.md): an
+# app declares its record with `#[derive(Model)]` and `#[resource]`, its
+# operations as `#[action]` verbs with typed params, and changes its document
+# only through field edits and verbs. Counted over every line of the sources of
+# workspace apps and examples, tests included, so a test reaches an app the
+# way an agent does. Each count may only go down; lowering one is described in
+# docs/architecture/resources.md ("Leaving the old APIs").
+LEGACY_API_RATCHETS = {
+    "hand_resource_impl": (
+        re.compile(r"\bimpl\b(?:\s*<[^>{}]*>)?\s+(?:[A-Za-z_][A-Za-z0-9_]*\s*::\s*)*Resource\s+for\b"),
+        "hand-written `impl Resource for`; derive the record with #[derive(Model)] and #[resource]",
+    ),
+    "action_decl_new": (
+        re.compile(r"\bActionDecl\s*::\s*new\s*\("),
+        "hand-built ActionDecl; declare the operation as an #[action] verb",
+    ),
+    "action_address_new": (
+        re.compile(r"\bActionAddress\s*::\s*new\s*\("),
+        "hand-built ActionAddress; invoke a verb or field edit through the dispatcher "
+        "(`R::VERB.with(..)`, `Invoke::edit`) or a test app's typed calls",
+    ),
+    "untyped_action_args": (
+        re.compile(r"\bargs\s*\.\s*(?:text|get|boolean|integer|number|array)\s*\("),
+        "untyped argument parsing; give the verb typed params",
+    ),
+    "action_spec": (
+        re.compile(r"\bActionSpec\s*::"),
+        "hand-built ActionSpec; publish the operation as an #[action] verb or #[effect]",
+    ),
+    "direct_automerge_write": (
+        re.compile(
+            r"\.\s*(?:put|put_object|insert_object|splice_text|update_text|increment)\s*\(",
+        ),
+        "direct Automerge write; change the document with a field edit or a verb",
+    ),
+}
+# A legacy rule here counts only in a file that reaches the named API: a
+# secret store's or a cache's `put` is not a document write.
+LEGACY_API_SCOPES = {
+    "direct_automerge_write": re.compile(
+        r"\bautomerge\b|\bAutoCommit\b|\bObjId\b|\bTransactable\b|\bROOT\b"
+    ),
+}
 # Ratchets that reached zero and stay there: a ceiling for one is refused.
 CLOSED_RATCHETS = {"raw_operation_handler"}
 RATCHET_REASONS = {
     **{rule: reason for rule, (_, reason) in RATCHETS.items()},
     **{rule: reason for rule, (_, reason) in MODEL_RATCHETS.items()},
     **{rule: reason for rule, (_, reason) in WORKSPACE_RATCHETS.items()},
+    **{rule: reason for rule, (_, reason) in LEGACY_API_RATCHETS.items()},
 }
 TEST_MODULE_START = re.compile(r"^\s*#\[cfg\((?:test|all\(test)", re.MULTILINE)
 
@@ -282,7 +326,12 @@ def is_ui_core_dependency(alias: str, specification: object) -> bool:
 def baseline_file(relative: str) -> Path:
     """The per-app baseline file that holds `relative`'s ceilings."""
     parts = relative.split("/")
-    owner = parts[1] if len(parts) > 2 and parts[0] == "apps" else "workspace"
+    if len(parts) > 2 and parts[0] == "apps":
+        owner = parts[1]
+    elif len(parts) > 3 and parts[:2] == ["examples", "apps"]:
+        owner = f"example-{parts[2]}"
+    else:
+        owner = "workspace"
     return BASELINE / f"{owner}.toml"
 
 
@@ -319,14 +368,33 @@ def audit_ratchets(
     sources: list[tuple[Path, str]],
     baseline: dict[str, dict[str, int]],
     violations: list[Violation],
+    *,
+    workspace: bool | None = None,
+    legacy_only: bool = False,
 ) -> None:
+    if workspace is None:
+        workspace = root.resolve() == ROOT.resolve()
     for source, source_text in sources:
         relative = source.relative_to(root).as_posix()
         code = rust_code_only(source_text)
-        rules = [(rule, pattern, reason, code) for rule, (pattern, reason) in RATCHETS.items()]
+        rules = (
+            []
+            if legacy_only
+            else [(rule, pattern, reason, code) for rule, (pattern, reason) in RATCHETS.items()]
+        )
+        if workspace:
+            rules += [
+                (
+                    rule,
+                    pattern,
+                    reason,
+                    code if rule not in LEGACY_API_SCOPES or LEGACY_API_SCOPES[rule].search(code) else "",
+                )
+                for rule, (pattern, reason) in LEGACY_API_RATCHETS.items()
+            ]
         # A Tilo workspace invariant, like the app host check in `audit`; the
         # miniature SDK apps the policy tests build are not held to it.
-        if root.resolve() == ROOT.resolve():
+        if workspace and not legacy_only:
             production = "" if is_test_source(relative) else production_code(source_text)
             rules += [
                 (rule, pattern, reason, production)
@@ -975,6 +1043,15 @@ def audit(root: Path = ROOT) -> tuple[list[Violation], int]:
                     violations.append(
                         Violation(source, line_number(text, match.start()), reason)
                     )
+
+    # The examples teach the app model: they are held to the same ratchets on
+    # the APIs it replaced.
+    for manifest_path in sorted((root / "examples" / "apps").glob("*/Cargo.toml")):
+        sources = [
+            (source, source.read_text(encoding="utf-8"))
+            for source in sorted((manifest_path.parent / "src").rglob("*.rs"))
+        ]
+        audit_ratchets(root, sources, ratchet_baseline, violations, legacy_only=True)
 
     return violations, len(manifests)
 

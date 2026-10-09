@@ -1,0 +1,21 @@
+[ratchets.hand_resource_impl]
+"apps/sheets/src/resource.rs" = 1
+
+[ratchets.action_decl_new]
+"apps/sheets/src/app.rs" = 3
+"apps/sheets/src/resource.rs" = 1
+
+[ratchets.action_address_new]
+"apps/sheets/src/actions.rs" = 2
+
+[ratchets.untyped_action_args]
+"apps/sheets/src/cell_actions.rs" = 10
+"apps/sheets/src/formula.rs" = 40
+"apps/sheets/src/resource.rs" = 1
+
+[ratchets.action_spec]
+"apps/sheets/src/actions.rs" = 8
+"apps/sheets/src/cell_actions.rs" = 5
+
+[ratchets.direct_automerge_write]
+"apps/sheets/src/doc.rs" = 43

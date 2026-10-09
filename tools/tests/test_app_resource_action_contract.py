@@ -691,5 +691,68 @@ class AppResourceActionContractTests(unittest.TestCase):
             self.assertTrue(any("production app launch" in item.reason for item in violations))
 
 
+    def test_old_app_apis_are_ratcheted_per_file_in_apps_and_examples(self):
+        def ratchet(root: Path, relative: str, source: str, baseline: str = ""):
+            path = root / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(source, encoding="utf-8")
+            if baseline:
+                file = root / contract.baseline_file(relative)
+                file.parent.mkdir(parents=True, exist_ok=True)
+                file.write_text(baseline, encoding="utf-8")
+            violations: list = []
+            contract.audit_ratchets(
+                root,
+                [(path, source)],
+                contract.load_ratchet_baseline(root),
+                violations,
+                workspace=True,
+                legacy_only=True,
+            )
+            return [item.reason for item in violations]
+
+        old = (
+            "impl tilo_resource::Resource for Notes { }\n"
+            "fn f(args: &Args, doc: &mut AutoCommit) {\n"
+            " let a = ActionAddress::new(\"notes\", \"rename\");\n"
+            " let d = ActionDecl::new(\"rename\", \"Rename\");\n"
+            " let s = ActionSpec::immediate(\"go\");\n"
+            " let t = args.text(\"title\");\n"
+            " doc.put(automerge::ROOT, \"title\", t);\n"
+            "}\n"
+        )
+        rules = [
+            "hand_resource_impl",
+            "action_address_new",
+            "action_decl_new",
+            "action_spec",
+            "untyped_action_args",
+            "direct_automerge_write",
+        ]
+        with self.subTest(phase="each old API is refused without a ceiling"):
+            root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+            reasons = ratchet(root, "examples/apps/notes/src/lib.rs", old)
+            self.assertEqual(len(reasons), len(rules), reasons)
+            self.assertTrue(all("example-notes.toml" in reason for reason in reasons))
+        with self.subTest(phase="today's counts are the ceiling"):
+            root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+            baseline = "".join(f'[ratchets.{rule}]\n"apps/notes/src/lib.rs" = 1\n' for rule in rules)
+            self.assertEqual(ratchet(root, "apps/notes/src/lib.rs", old, baseline), [])
+            reasons = ratchet(root, "apps/notes/src/lib.rs", old + "fn g() { ActionDecl::new(); }\n")
+            self.assertEqual(len(reasons), 1, reasons)
+            self.assertIn("audited ceiling 1", reasons[0])
+            reasons = ratchet(root, "apps/notes/src/lib.rs", "fn g() {}\n")
+            self.assertEqual(len(reasons), len(rules), reasons)
+            self.assertTrue(all("lower 1 to 0" in reason for reason in reasons))
+        with self.subTest(phase="the model's own APIs and other puts are not counted"):
+            root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+            new = (
+                "#[resource(kind = \"notes\")] impl Notes { #[action] fn rename(&mut self) {} }\n"
+                "impl ResourceSurface<Notes, NotesView> for NotesApp {}\n"
+                "fn f(seeds: &mut Seeds) { seeds.put(id, secret); }\n"
+            )
+            self.assertEqual(ratchet(root, "apps/notes/src/lib.rs", new), [])
+
+
 if __name__ == "__main__":
     unittest.main()

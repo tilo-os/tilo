@@ -1,0 +1,19 @@
+[ratchets.hand_resource_impl]
+"apps/chip-design/src/operator_graph.rs" = 1
+"apps/chip-design/src/resource.rs" = 1
+
+[ratchets.action_decl_new]
+"apps/chip-design/src/operator_graph.rs" = 7
+"apps/chip-design/src/resource.rs" = 4
+
+[ratchets.action_address_new]
+"apps/chip-design/src/evidence_flow_tests.rs" = 1
+
+[ratchets.untyped_action_args]
+"apps/chip-design/src/operator_graph.rs" = 17
+"apps/chip-design/src/resource.rs" = 4
+
+[ratchets.direct_automerge_write]
+"apps/chip-design/src/operator_graph.rs" = 3
+"apps/chip-design/src/resource.rs" = 3
+"apps/chip-design/src/tests.rs" = 2

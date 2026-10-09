@@ -1,0 +1,4 @@
+[ratchets.direct_automerge_write]
+"apps/terminal/src/main_body.rs" = 1
+"apps/terminal/src/resource/tests.rs" = 1
+"apps/terminal/src/tests.rs" = 3
