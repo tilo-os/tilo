@@ -386,6 +386,7 @@ jobs:
           find release -mindepth 1 -type d -empty -delete
       - name: Check release version and create checksums
         env:
+          TILO_RPM_SIGNING_FINGERPRINT: ${{ vars.TILO_RPM_SIGNING_FINGERPRINT }}
           RELEASE_ARCHES: ${{ needs.validate.outputs.release_arches }}
         run: |
           version="${GITHUB_REF_NAME#desktop-v}"
