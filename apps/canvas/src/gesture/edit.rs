@@ -405,12 +405,14 @@ mod tests {
                 texture: 0.0,
                 locked: false,
                 ..Layer::default()
-            }],
+            }]
+            .into(),
             marks: vec![
                 mark("a", 0.0, "pair"),
                 mark("b", 20.0, "pair"),
                 mark("c", 40.0, ""),
-            ],
+            ]
+            .into(),
             ..Artwork::default()
         }
     }

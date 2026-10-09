@@ -6,10 +6,9 @@
 )]
 
 use ui::tilo_actions::ActionError;
-use ui::tilo_resource::{Doc, order};
+use ui::tilo_resource::order;
 use ui::vello::kurbo::{Line, ParamCurveNearest as _, Point};
 
-use crate::doc;
 use crate::model::{Artwork, MAX_POINTS, Mark, Shape, StrokePoint};
 
 fn refuse(message: impl Into<String>) -> ActionError {
@@ -79,7 +78,7 @@ fn with_points(mark: &Mark, points: Vec<StrokePoint>) -> Mark {
 /// # Errors
 /// Refuses anything but one stroke, and a cut at either end.
 pub fn split(
-    doc: &mut Doc,
+    doc: &mut Artwork,
     art: &Artwork,
     ids: &[String],
     cut: [f64; 2],
@@ -147,8 +146,8 @@ pub fn split(
         name: String::new(),
         ..with_points(mark, after)
     };
-    doc::write_mark(doc, &with_points(mark, before))?;
-    doc::write_mark(doc, &far)?;
+    doc.put_mark(with_points(mark, before));
+    doc.put_mark(far);
     Ok(vec![id.clone(), new_id])
 }
 
@@ -160,7 +159,7 @@ pub fn split(
 /// Refuses fewer than two strokes, marks that are not strokes, strokes on
 /// different layers or under different transforms, and a join past the
 /// point limit.
-pub fn merge(doc: &mut Doc, art: &Artwork, ids: &[String]) -> Result<String, ActionError> {
+pub fn merge(doc: &mut Artwork, art: &Artwork, ids: &[String]) -> Result<String, ActionError> {
     let marks = ids
         .iter()
         .map(|id| stroke(art, id))
@@ -196,9 +195,9 @@ pub fn merge(doc: &mut Doc, art: &Artwork, ids: &[String]) -> Result<String, Act
             "the joined stroke would have over {MAX_POINTS} points; simplify them first"
         )));
     }
-    doc::write_mark(doc, &with_points(first, joined))?;
+    doc.put_mark(with_points(first, joined));
     for mark in rest {
-        doc::remove(doc, doc::MARKS, &mark.id)?;
+        doc.remove_mark(&mark.id);
     }
     Ok(first.id.clone())
 }

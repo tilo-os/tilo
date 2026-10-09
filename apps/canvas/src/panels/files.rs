@@ -581,7 +581,7 @@ mod tests {
             title: "labrador".into(),
         });
         ui::tilo_actions::Action::apply(&open, &mut doc).unwrap();
-        let art = crate::doc::read(&doc);
+        let art = Artwork::from_doc(&doc).unwrap();
         assert_eq!(art.title, "labrador");
         let stem = export_stem(&art);
         assert_eq!(stem, "labrador edited");

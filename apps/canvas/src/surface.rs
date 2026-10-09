@@ -2130,14 +2130,14 @@ impl CanvasSurface {
                 .document()
                 .ok_or_else(|| "the artwork is not open here".to_owned())?;
             return Ok((
-                crate::doc::read(&document),
+                Artwork::from_doc(&document).map_err(|error| error.to_string())?,
                 Self::revision(&cx.heads()),
                 None,
             ));
         };
         let past = cx.version(version)?;
         Ok((
-            crate::doc::read(&past.doc),
+            Artwork::from_doc(&past.doc).map_err(|error| error.to_string())?,
             Self::revision(&past.heads),
             Some(past.name),
         ))
@@ -2351,7 +2351,7 @@ impl CanvasSurface {
                 let subject = select.subject == Some(true);
                 let action = crate::author::found(select, area, matte);
                 ui::tilo_actions::Action::apply(&action, &mut document).map_err(|error| error.to_string())?;
-                let mut answer = json!({"selection": crate::answer::selection(&crate::doc::read(&document))});
+                let mut answer = json!({"selection": crate::answer::selection(&Artwork::from_doc(&document).map_err(|error| error.to_string())?)});
                 if subject && let Value::Object(fields) = &mut answer {
                     fields.insert("found_by".into(), json!({"model": found.model, "load_ms": found.load_ms, "infer_ms": found.infer_ms, "refine_ms": found.refine_ms}));
                 }
@@ -3018,8 +3018,8 @@ pub(crate) fn embedded_picture(
         ..mark.clone()
     };
     let solo = Artwork {
-        layers: vec![layer],
-        marks: vec![alone],
+        layers: vec![layer].into(),
+        marks: vec![alone].into(),
         ..art.clone()
     };
     let options = Options {
@@ -3627,7 +3627,7 @@ mod tests {
         for action in crate::sample::landscape() {
             ui::tilo_actions::Action::apply(&action, &mut doc).unwrap();
         }
-        let art = crate::doc::read(&doc);
+        let art = Artwork::from_doc(&doc).unwrap();
         assert!(art.layers.iter().any(|layer| !layer.medium.is_empty()));
         assert!(!art.marks.is_empty());
         let tools = Tools::default();
@@ -3705,7 +3705,7 @@ mod tests {
         for action in crate::sample::shapes() {
             ui::tilo_actions::Action::apply(&action, &mut doc).unwrap();
         }
-        let art = crate::doc::read(&doc);
+        let art = Artwork::from_doc(&doc).unwrap();
         let first = art.marks.first().unwrap().id.clone();
         let mut listed: Vec<String> = GROUPS
             .iter()
@@ -3741,7 +3741,7 @@ mod tests {
                     let mut grouped = doc.clone();
                     let group = edit::group(&art, &edit::everything(&art)).unwrap();
                     ui::tilo_actions::Action::apply(&group, &mut grouped).unwrap();
-                    surface.art = Rc::new(crate::doc::read(&grouped));
+                    surface.art = Rc::new(Artwork::from_doc(&grouped).unwrap());
                 }
                 if keys == "Ctrl+V" {
                     ui::clipboard_copy(&edit::copy(&art, &surface.selection).unwrap());

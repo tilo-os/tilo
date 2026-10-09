@@ -664,11 +664,22 @@ impl Resource for ArtworkResource {
     type Action = CanvasAction;
 
     fn read(doc: &Doc) -> Result<Artwork, ModelError> {
-        let art = crate::doc::read(doc);
+        let art = Artwork::from_doc(doc)?;
         // What the next action authored here finds in the artwork, even
         // before the window has shown it.
         crate::author::read(&art);
         Ok(art)
+    }
+
+    fn refresh(
+        art: &mut Artwork,
+        doc: &Doc,
+        delta: &tilo_resource::Delta,
+    ) -> Result<(), ModelError> {
+        tilo_resource::Fields::refresh_fields(art, doc, &ui::automerge::ROOT, delta)?;
+        art.settle();
+        crate::author::read(art);
+        Ok(())
     }
 
     /// A new artwork is an empty sheet of paper with one plain layer, so the
@@ -684,18 +695,7 @@ impl Resource for ArtworkResource {
         .map_err(|error| ModelError::Invalid {
             path: "layers".into(),
             message: error.to_string(),
-        })?;
-        // Created here, not by the first step that writes into them: a step
-        // that created a shared map cannot be undone once others wrote in it.
-        for key in [crate::doc::MARKS, crate::doc::MEDIA] {
-            crate::doc::ensure(doc, &ui::automerge::ROOT, key).map_err(|error| {
-                ModelError::Invalid {
-                    path: key.into(),
-                    message: error.to_string(),
-                }
-            })?;
-        }
-        Ok(())
+        })
     }
 
     fn declarations() -> Vec<ActionDecl<Self>> {
