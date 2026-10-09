@@ -365,7 +365,7 @@ fn write_pages(
     let start = base + prefix;
     for (index, (was, page)) in old_middle.iter().zip(new_middle).enumerate() {
         if was != page {
-            doc.put(list, start + index, ScalarValue::Bytes(page.clone()))?;
+            Slot::Index(list, start + index).put_scalar(doc, ScalarValue::Bytes(page.clone()))?;
         }
     }
     let common = old_middle.len().min(new_middle.len());
@@ -373,7 +373,7 @@ fn write_pages(
         doc.delete(list, start + common)?;
     }
     for (index, page) in new_middle.iter().enumerate().skip(common) {
-        doc.insert(list, start + index, ScalarValue::Bytes(page.clone()))?;
+        Slot::Insert(list, start + index).put_scalar(doc, ScalarValue::Bytes(page.clone()))?;
     }
     Ok(())
 }
