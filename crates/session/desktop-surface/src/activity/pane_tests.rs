@@ -3529,6 +3529,149 @@ mod tests {
             "materializing and moving a seam must preserve every atomic action"
         );
     }
+
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one room, one labelled kind of change per step, each compared with a fresh pane"
+    )]
+    fn incremental_refresh_matches_full_replay_for_feed_undo_and_attribution() {
+        let mut tree = WorkspaceTree::bootstrap_demo();
+        let home = tree.active;
+        let second = tree.append_empty_workspace("Second");
+        tree.commit_room_change();
+        let mut pane = native_pane();
+        pane.refresh(&mut tree);
+
+        // A collaborator's device on the same room, kept in sync by hand.
+        let mut peer = tree.clone();
+        peer.doc.set_actor(ActorId::from(b"bea-device".as_slice()));
+
+        let mut next_tab = 92_000_u64;
+        for step in 0..24_u32 {
+            let synced = tree.doc.get_heads();
+            let kind = match step % 6 {
+                0 => {
+                    tree.set_active(second);
+                    tree.commit_room_change();
+                    "switch away"
+                }
+                1 => {
+                    next_tab += 1;
+                    assert!(tree.doc_append_tab_to_first_group_of_active_workspace(
+                        next_tab,
+                        format!("Tab {next_tab}"),
+                        b"{}".to_vec(),
+                    ));
+                    tree.commit_room_change();
+                    "open a tab"
+                }
+                2 => {
+                    // The peer acts while this device switches back: two
+                    // concurrent changes, merged in either order.
+                    peer.apply_changes(&tree.export_changes_since(&peer.doc.get_heads()))
+                        .expect("the peer catches up");
+                    assert!(
+                        peer.append_workspace_effect_receipt(
+                            home,
+                            tilo_actions::InvocationId::new(),
+                            "bea",
+                            tilo_actions::ActionContext::for_resource(
+                                "Export",
+                                "document:brief",
+                                "document",
+                                "Release brief",
+                            )
+                            .with_app("org.tilo.Writer", "Writer"),
+                            tilo_actions::EffectReceiptStatus::Succeeded,
+                        )
+                    );
+                    tree.set_active(home);
+                    tree.commit_room_change();
+                    let theirs = peer.export_changes_since(&synced);
+                    tree.apply_changes(&theirs)
+                        .expect("the peer's change merges");
+                    "a peer's receipt, merged"
+                }
+                3 => {
+                    next_tab += 1;
+                    peer.apply_changes(&tree.export_changes_since(&peer.doc.get_heads()))
+                        .expect("the peer catches up");
+                    assert!(peer.doc_append_tab_to_first_group_of_active_workspace(
+                        next_tab,
+                        format!("Bea's tab {next_tab}"),
+                        b"{}".to_vec(),
+                    ));
+                    peer.commit_room_change();
+                    let theirs = peer.export_changes_since(&synced);
+                    tree.apply_changes(&theirs).expect("the peer's tab merges");
+                    "a peer's tab"
+                }
+                4 => {
+                    tree.set_active(second);
+                    tree.commit_room_change();
+                    tree.set_active(home);
+                    tree.commit_room_change();
+                    "two switches between refreshes"
+                }
+                _ => "nothing new",
+            };
+            let appended = tree.doc.get_changes(&synced).len();
+            let read = pane.history_log.changes_read();
+            pane.refresh(&mut tree);
+            assert_eq!(
+                pane.history_log.changes_read() - read,
+                appended,
+                "step {step} ({kind}): the refresh reads only the appended changes"
+            );
+
+            // What a pane that reads the whole log once derives.
+            let mut fresh = native_pane();
+            let mut fresh_tree = tree.clone();
+            fresh.refresh(&mut fresh_tree);
+            assert_eq!(
+                format!("{:?}", pane.derived),
+                format!("{:?}", fresh.derived),
+                "step {step} ({kind}): rows, summaries, authors and workspaces"
+            );
+            assert_eq!(
+                format!("{:?}", pane.timeline.entries()),
+                format!("{:?}", fresh.timeline.entries()),
+                "step {step} ({kind}): the feed"
+            );
+            let frames = |pane: &RoomActivityPane| {
+                pane.replay_frames
+                    .iter()
+                    .map(|frame| {
+                        format!(
+                            "{:?} {} {:?} {:?}",
+                            frame.entry_id, frame.summary, frame.author, frame.workspaces
+                        )
+                    })
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(
+                frames(&pane),
+                frames(&fresh),
+                "step {step} ({kind}): replay"
+            );
+            // Undo and restore address a row by the document's heads at it.
+            for (entry, _) in &pane.derived {
+                assert_eq!(
+                    pane.history_log.heads_for_entry(&entry.id),
+                    ui::heads_for_entry(&mut tree.doc, &entry.id),
+                    "step {step} ({kind}): the heads behind {:?}",
+                    entry.summary
+                );
+            }
+        }
+        assert!(
+            pane.derived
+                .iter()
+                .any(|(entry, _)| entry.author.name.contains("bea")),
+            "the peer's receipt is attributed to the peer"
+        );
+    }
 }
 
 #[cfg(test)]
@@ -3874,148 +4017,5 @@ mod task_review_tests {
         );
         pane.apply_task_action(TaskAction::CancelRun, &mut tree);
         assert!(host.submitted.borrow().is_empty());
-    }
-
-    #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one room, one labelled kind of change per step, each compared with a fresh pane"
-    )]
-    fn incremental_refresh_matches_full_replay_for_feed_undo_and_attribution() {
-        let mut tree = WorkspaceTree::bootstrap_demo();
-        let home = tree.active;
-        let second = tree.append_empty_workspace("Second");
-        tree.commit_room_change();
-        let mut pane = native_pane();
-        pane.refresh(&mut tree);
-
-        // A collaborator's device on the same room, kept in sync by hand.
-        let mut peer = tree.clone();
-        peer.doc.set_actor(ActorId::from(b"bea-device".as_slice()));
-
-        let mut next_tab = 92_000_u64;
-        for step in 0..24_u32 {
-            let synced = tree.doc.get_heads();
-            let kind = match step % 6 {
-                0 => {
-                    tree.set_active(second);
-                    tree.commit_room_change();
-                    "switch away"
-                }
-                1 => {
-                    next_tab += 1;
-                    assert!(tree.doc_append_tab_to_first_group_of_active_workspace(
-                        next_tab,
-                        format!("Tab {next_tab}"),
-                        b"{}".to_vec(),
-                    ));
-                    tree.commit_room_change();
-                    "open a tab"
-                }
-                2 => {
-                    // The peer acts while this device switches back: two
-                    // concurrent changes, merged in either order.
-                    peer.apply_changes(&tree.export_changes_since(&peer.doc.get_heads()))
-                        .expect("the peer catches up");
-                    assert!(
-                        peer.append_workspace_effect_receipt(
-                            home,
-                            tilo_actions::InvocationId::new(),
-                            "bea",
-                            tilo_actions::ActionContext::for_resource(
-                                "Export",
-                                "document:brief",
-                                "document",
-                                "Release brief",
-                            )
-                            .with_app("org.tilo.Writer", "Writer"),
-                            tilo_actions::EffectReceiptStatus::Succeeded,
-                        )
-                    );
-                    tree.set_active(home);
-                    tree.commit_room_change();
-                    let theirs = peer.export_changes_since(&synced);
-                    tree.apply_changes(&theirs)
-                        .expect("the peer's change merges");
-                    "a peer's receipt, merged"
-                }
-                3 => {
-                    next_tab += 1;
-                    peer.apply_changes(&tree.export_changes_since(&peer.doc.get_heads()))
-                        .expect("the peer catches up");
-                    assert!(peer.doc_append_tab_to_first_group_of_active_workspace(
-                        next_tab,
-                        format!("Bea's tab {next_tab}"),
-                        b"{}".to_vec(),
-                    ));
-                    peer.commit_room_change();
-                    let theirs = peer.export_changes_since(&synced);
-                    tree.apply_changes(&theirs).expect("the peer's tab merges");
-                    "a peer's tab"
-                }
-                4 => {
-                    tree.set_active(second);
-                    tree.commit_room_change();
-                    tree.set_active(home);
-                    tree.commit_room_change();
-                    "two switches between refreshes"
-                }
-                _ => "nothing new",
-            };
-            let appended = tree.doc.get_changes(&synced).len();
-            let read = pane.history_log.changes_read();
-            pane.refresh(&mut tree);
-            assert_eq!(
-                pane.history_log.changes_read() - read,
-                appended,
-                "step {step} ({kind}): the refresh reads only the appended changes"
-            );
-
-            // What a pane that reads the whole log once derives.
-            let mut fresh = native_pane();
-            let mut fresh_tree = tree.clone();
-            fresh.refresh(&mut fresh_tree);
-            assert_eq!(
-                format!("{:?}", pane.derived),
-                format!("{:?}", fresh.derived),
-                "step {step} ({kind}): rows, summaries, authors and workspaces"
-            );
-            assert_eq!(
-                format!("{:?}", pane.timeline.entries()),
-                format!("{:?}", fresh.timeline.entries()),
-                "step {step} ({kind}): the feed"
-            );
-            let frames = |pane: &RoomActivityPane| {
-                pane.replay_frames
-                    .iter()
-                    .map(|frame| {
-                        format!(
-                            "{:?} {} {:?} {:?}",
-                            frame.entry_id, frame.summary, frame.author, frame.workspaces
-                        )
-                    })
-                    .collect::<Vec<_>>()
-            };
-            assert_eq!(
-                frames(&pane),
-                frames(&fresh),
-                "step {step} ({kind}): replay"
-            );
-            // Undo and restore address a row by the document's heads at it.
-            for (entry, _) in &pane.derived {
-                assert_eq!(
-                    pane.history_log.heads_for_entry(&entry.id),
-                    ui::heads_for_entry(&mut tree.doc, &entry.id),
-                    "step {step} ({kind}): the heads behind {:?}",
-                    entry.summary
-                );
-            }
-        }
-        assert!(
-            pane.derived
-                .iter()
-                .any(|(entry, _)| entry.author.name.contains("bea")),
-            "the peer's receipt is attributed to the peer"
-        );
     }
 }
