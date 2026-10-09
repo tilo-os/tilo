@@ -303,6 +303,7 @@
 //!   frame `--shots` writes in a test.
 
 mod app;
+mod attached;
 mod controls;
 // In-place reload swaps native code into a running process; a browser build
 // has neither the thin shared library nor the host that loads it.
@@ -341,6 +342,7 @@ pub use app::launch_spec;
 #[cfg(all(feature = "native", not(target_arch = "wasm32")))]
 pub use app::run;
 pub use app::{FileHistory, ResourceApp, SeedCx, definition, run_helper};
+pub use attached::AttachedView;
 pub use controls::{ActionControl, Actions};
 pub use delivery::HostDelivery;
 pub use dispatch::{DispatchGroup, Dispatcher, Refused};

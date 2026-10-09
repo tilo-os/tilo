@@ -7,6 +7,8 @@
 pub mod action_groups;
 #[path = "actors.rs"]
 pub mod actors;
+#[path = "attached_view.rs"]
+pub mod attached_view;
 #[path = "child_resources.rs"]
 pub mod child_resources;
 #[path = "control_custody_raw_holder.rs"]
