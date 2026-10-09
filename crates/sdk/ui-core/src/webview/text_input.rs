@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 use crate::time::{Duration, Instant};
 
 #[derive(Clone, PartialEq, Eq)]
-pub struct Lease(String);
+pub struct Lease(String, bool);
 
 impl Lease {
     pub(crate) fn parse(value: &str) -> Option<Self> {
@@ -13,11 +13,11 @@ impl Lease {
             && value
                 .bytes()
                 .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)))
-        .then(|| Self(value.into()))
+        .then(|| Self(value.into(), false))
     }
 
     pub(crate) fn stamp(&self, key: &[u8; 32]) -> [u8; 32] {
-        crate::ime::edit_fingerprint(&self.0, 0, 0, key)
+        crate::ime::edit_fingerprint(&self.0, usize::from(self.1), 0, key)
     }
 }
 
@@ -205,6 +205,13 @@ impl Transactions {
                 value["data"]["lease"]
                     .as_str()
                     .and_then(Lease::parse)
+                    .and_then(|mut lease| {
+                        lease.1 = match value["data"].get("multiline") {
+                            None => false,
+                            Some(policy) => policy.as_bool()?,
+                        };
+                        Some(lease)
+                    })
                     .map(Some)
                     .ok_or(Failure::Unknown)
             } else {
@@ -574,6 +581,9 @@ impl Guard {
     pub fn stamp(&self, key: &[u8; 32]) -> Option<[u8; 32]> {
         Some(self.lease.as_ref()?.stamp(key))
     }
+    pub fn multiline(&self) -> bool {
+        self.ready() && self.lease.as_ref().is_some_and(|lease| lease.1)
+    }
     pub fn ready(&self) -> bool {
         self.lease.is_some()
             && self
@@ -706,6 +716,56 @@ mod tests {
             Some(receipt)
         }
     }
+    #[test]
+    fn multiline_metadata_is_strict_and_bound_to_the_original_lease() {
+        for policy in [
+            serde_json::json!(true),
+            serde_json::json!(false),
+            serde_json::json!("true"),
+            serde_json::Value::Null,
+        ] {
+            let mut transactions = Transactions::default();
+            let (receipt, command) = transactions.admit(Request::Prepare).unwrap();
+            transactions.reply(&serde_json::json!({"request_id":command["request_id"],
+                "ok":true,"data":{"lease":"0123456789abcdef0123456789abcdef",
+                    "multiline":policy},"history":{"can_undo":false,"can_redo":false}}));
+            if let Some(expected) = policy.as_bool() {
+                let actual = receipt.poll().unwrap().unwrap().unwrap();
+                assert_eq!(actual.1, expected);
+                let mut guard = leased_guard();
+                guard.lease = Some(actual.clone());
+                assert_eq!(guard.multiline(), expected);
+                let engine: SharedEngine = Arc::new(Controlled::default());
+                guard.invalidate(&engine);
+                assert!(!guard.multiline());
+                if expected {
+                    assert!(actual != lease());
+                    assert_ne!(actual.stamp(&[7; 32]), lease().stamp(&[7; 32]));
+                }
+            } else {
+                assert!(matches!(receipt.poll(), Some(Err(Failure::Unknown))));
+            }
+        }
+        let (mut guard, controlled, engine, check) = checked_guard();
+        let mut changed = lease();
+        changed.1 = true;
+        check.complete(Ok(Some(changed)));
+        guard.pump(&engine, true);
+        assert!(
+            guard.lease.is_none(),
+            "policy change retires the original field"
+        );
+        assert!(!guard.multiline());
+        assert!(
+            controlled
+                .requests
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|(request, _)| !matches!(request, Request::Commit { .. }))
+        );
+    }
+
     #[test]
     fn composition_refusal_confirms_no_edit_for_prepare_start_and_final() {
         for request in [

@@ -875,6 +875,13 @@ fn assert_dictation_native_commit(drafts: &[String], final_text: &str) {
 }
 
 #[test]
+fn native_document_paragraphs_have_one_owned_undo_and_redo() {
+    for paragraph in ["First café.\n\nSecond 👋", "\n\n", "First café.\n"] {
+        assert_native_field_selection_and_undo(paragraph);
+    }
+}
+
+#[test]
 fn native_multiline_intent_reaches_dictation_through_the_existing_bridge() {
     use ui::Widget;
     struct ParagraphField(ui::widget::TextInput);
@@ -1042,9 +1049,26 @@ fn assert_native_field_selection_and_undo(transcript: &str) {
         .records
         .read_history(&fixture.checkout.id, |_, history| history.revision())
         .unwrap();
+    let paragraph_commit = if transcript.contains('\n') {
+        let field = fixture
+            .driver
+            .ime_window()
+            .expect("actual Notes editing field");
+        assert!(
+            field.multiline,
+            "the original Notes field declares paragraph intent"
+        );
+        let committed =
+            receive_native_dictation(&["provisional paragraph".into()], transcript, field);
+        assert_eq!(committed, transcript);
+        Some(committed)
+    } else {
+        None
+    };
+    let transcript = paragraph_commit.as_deref().unwrap_or(transcript);
     fixture.driver.commit_text(transcript);
     let expected = format!("before {transcript} after ");
-    fixture.assert_body(page, &expected);
+    fixture.assert_text(page, &expected);
     fixture.driver.set_modifiers(&["ctrl".into()]);
     fixture.driver.key("z");
     fixture.driver.set_modifiers(&[]);
@@ -1054,7 +1078,7 @@ fn assert_native_field_selection_and_undo(transcript: &str) {
         .set_modifiers(&["ctrl".into(), "shift".into()]);
     fixture.driver.key("z");
     fixture.driver.set_modifiers(&[]);
-    fixture.assert_body(page, &expected);
+    fixture.assert_text(page, &expected);
     assert!(
         fixture
             .records
@@ -1140,6 +1164,24 @@ impl NativeNotes {
             _temp: temp,
         }
     }
+    fn assert_text(&self, page: notes::PageId, expected: &str) {
+        if !expected.contains('\n') {
+            self.assert_body(page, expected);
+            return;
+        }
+        self.records
+            .read(&self.checkout.id, |doc| {
+                notes::notebook::validate(doc).unwrap();
+                let blocks = notes::doc::NotesDoc::page_block_snapshots(doc, page);
+                let actual = blocks
+                    .iter()
+                    .map(|(_, body)| body.as_str())
+                    .collect::<Vec<_>>();
+                assert_eq!(actual, expected.split('\n').collect::<Vec<_>>());
+            })
+            .unwrap();
+    }
+
     fn assert_body(&self, page: notes::PageId, expected: &str) {
         self.records
             .read(&self.checkout.id, |doc| {

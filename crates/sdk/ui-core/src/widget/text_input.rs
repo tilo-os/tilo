@@ -6500,7 +6500,11 @@ impl TextInput {
             .char_indices()
             .next_back()
             .filter(|&(_, boundary)| is_autocorrect_boundary(boundary));
-        if t.chars().all(char::is_control) {
+        if self.multiline && t.contains('\n') && t.chars().all(|c| c == '\n' || !c.is_control()) {
+            let edit = self.core.commit(t);
+            self.apply_insert(&edit);
+            *handled = true;
+        } else if t.chars().all(char::is_control) {
             self.core.clear_preedit();
         } else if let Some((boundary_at, boundary)) = trailing_boundary {
             // A committed word plus its boundary autocorrects like typing.

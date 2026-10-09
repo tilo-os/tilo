@@ -451,6 +451,10 @@ impl Widget for WebView {
             .then_some(winit::window::ImePurpose::Normal)
     }
 
+    fn ime_multiline(&self) -> bool {
+        self.ime_purpose().is_some() && self.text_input.multiline()
+    }
+
     fn ime_cursor_rect(&self) -> Option<Rect> {
         self.ime_purpose()?;
         Some(Rect::new(
