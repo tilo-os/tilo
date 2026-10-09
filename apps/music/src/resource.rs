@@ -113,11 +113,7 @@ impl Library {
                 ui::i18n!("music-recommendations-tune"),
                 ui::i18n!("music-recommendations-help"),
             )
-            .anchored(crate::recommendations::PREFERENCES)
-            .invoking(tilo_actions::ActionAddress::new(
-                crate::recommendations::PREFERENCES,
-                "open",
-            )),
+            .anchored(crate::recommendations::PREFERENCES),
         );
         entries
     }
@@ -297,6 +293,9 @@ impl ResourceApp for MusicShell {
             }
             RunMode::Capture | RunMode::Past => MusicApp::offline(),
         };
+        // A search hit, or an agent's `open`, plays the song or shows the
+        // page the row it names does.
+        cx.on_open(app.opener());
         cx.surface(app)
     }
 
@@ -560,6 +559,27 @@ mod tests {
                 .to_string()
                 .contains(&crate::actions::queue_item_resource_id(0, "tk_g1")),
             "the queue row is published once it holds the track"
+        );
+    }
+
+    /// A search hit's or an agent's `open` plays the song or shows the page
+    /// of the row its anchor names; an anchor naming nothing is refused.
+    #[test]
+    fn opening_an_anchor_plays_or_shows_its_row() {
+        let mut app = TestApp::<MusicShell>::capture(Some("sidebar")).unwrap();
+        app.call(
+            "open",
+            serde_json::json!({ "anchor": crate::actions::album_resource_id("al_glasslight") }),
+        )
+        .unwrap();
+        app.settle();
+        assert_eq!(
+            app.surface_mut::<MusicApp>().view_for_test(),
+            crate::app::View::Album("al_glasslight".into())
+        );
+        assert!(
+            app.call("open", serde_json::json!({ "anchor": "music.nothing:x" }))
+                .is_err()
         );
     }
 

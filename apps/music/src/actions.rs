@@ -16,7 +16,7 @@ use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 use ui::tilo_resource::{self, Effect};
 
-use tilo_actions::{ActionAddress, ActionSpec, Resource};
+use tilo_actions::{ActionSpec, Resource};
 /// The maximum decoded size of a portable embedded playlist cover.
 pub const MAX_PORTABLE_COVER_BYTES: usize = 256 * 1024;
 /// Portal normalization never persists an image wider or taller than this.
@@ -63,10 +63,6 @@ pub fn known_view_label(id: &str) -> Option<&'static str> {
 pub fn parse_view_resource_id(id: &str) -> Option<&str> {
     let view = id.strip_prefix("music.view:")?;
     known_view_label(view).map(|_| view)
-}
-
-pub fn open_view_address(id: &str) -> Option<ActionAddress> {
-    known_view_label(id).map(|_| ActionAddress::new(view_resource_id(id), "open"))
 }
 
 pub fn track_resource_id(id: &str) -> String {
@@ -159,26 +155,47 @@ pub fn parse_playlist_track_resource_id(id: &str) -> Option<(String, String)> {
     (!playlist.is_empty() && !track.is_empty()).then_some((playlist, track))
 }
 
-pub fn play_track_address(id: &str) -> ActionAddress {
-    ActionAddress::new(track_resource_id(id), "play")
+/// A playlist the live catalogue found that the library does not hold.
+pub fn catalogue_playlist_resource_id(id: &str) -> String {
+    format!("music.catalogue-playlist:{id}")
 }
 
-pub fn open_album_address(id: &str) -> ActionAddress {
-    ActionAddress::new(album_resource_id(id), "open")
-}
-
-pub fn open_artist_address(id: &str) -> ActionAddress {
-    ActionAddress::new(artist_resource_id(id), "open")
-}
-
-pub fn open_playlist_address(id: &str) -> ActionAddress {
-    ActionAddress::new(playlist_resource_id(id), "open")
-}
-
-/// Open a particular playlist membership in its owning playlist. Unlike
-/// `remove`, this is the safe default action for a membership search result.
-pub fn open_playlist_membership_address(playlist: &str, track: &str) -> ActionAddress {
-    ActionAddress::new(playlist_track_resource_id(playlist, track), "open")
+/// What opening the row `anchor` names does — a search hit's or an agent's
+/// `open`: a song plays, an album, artist, playlist, membership or place is
+/// shown. `None` for an anchor that names no row Music opens.
+pub fn anchor_effect(anchor: &str) -> Option<MusicEffect> {
+    let open = |place| Some(MusicEffect::Open { place });
+    if let Some(view) = parse_view_resource_id(anchor) {
+        return open(Place::View(view.to_owned()));
+    }
+    if anchor == crate::recommendations::PREFERENCES {
+        return open(Place::View("recommendations".to_owned()));
+    }
+    let named = |prefix: &str| {
+        anchor
+            .strip_prefix(prefix)
+            .filter(|id| !id.is_empty())
+            .map(str::to_owned)
+    };
+    if let Some(track) = named("music.track:") {
+        return Some(MusicEffect::Play {
+            track,
+            queued: None,
+        });
+    }
+    if let Some(album) = named("music.album:") {
+        return open(Place::Album(album));
+    }
+    if let Some(artist) = named("music.artist:") {
+        return open(Place::Artist(artist));
+    }
+    if let Some(playlist) = named("music.catalogue-playlist:") {
+        return open(Place::Playlist(playlist));
+    }
+    if let Some((playlist, track)) = parse_playlist_track_resource_id(anchor) {
+        return open(Place::Membership { playlist, track });
+    }
+    parse_playlist_resource_id(anchor).and_then(|playlist| open(Place::Playlist(playlist)))
 }
 
 /// A place in Music a view effect shows.
@@ -1178,27 +1195,20 @@ fn catalog_album_resource(album: &CatalogAlbumResource) -> Resource {
 }
 
 /// An album, artist or playlist the live catalogue found and the library
-/// does not hold, labelled `label`: opening its page at `address` is all it
-/// offers. `None` for any other address.
-pub fn live_catalogue_resource(address: &ActionAddress, label: &str) -> Option<Resource> {
-    if address.action != "open" {
-        return None;
-    }
-    let resource = address.resource.as_str();
-    let (kind, place) = if let Some(id) = resource.strip_prefix("music.album:") {
-        ("music.album", Place::Album(id.to_owned()))
-    } else if let Some(id) = resource.strip_prefix("music.artist:") {
-        ("music.artist", Place::Artist(id.to_owned()))
+/// does not hold, labelled `label`, as the row `id`: opening its page is
+/// all it offers. `None` for any other row.
+pub fn live_catalogue_resource(id: &str, label: &str) -> Option<Resource> {
+    let kind = if id.starts_with("music.album:") {
+        "music.album"
+    } else if id.starts_with("music.artist:") {
+        "music.artist"
+    } else if id.starts_with("music.catalogue-playlist:") {
+        "music.playlist"
     } else {
-        (
-            "music.playlist",
-            Place::Playlist(resource.strip_prefix("music.playlist:")?.to_owned()),
-        )
+        return None;
     };
-    Some(
-        Resource::new(resource, kind, label)
-            .with_action(bound(&MusicEffect::Open { place }, "Open")),
-    )
+    let effect = anchor_effect(id)?;
+    Some(Resource::new(id, kind, label).with_action(bound(&effect, "Open")))
 }
 
 fn catalog_artist_resource(artist: &CatalogArtistResource) -> Resource {
@@ -1660,8 +1670,11 @@ mod tests {
                     }
                 );
                 assert_eq!(
-                    open_view_address(id).expect("known view address").resource,
-                    resource_id
+                    anchor_effect(&resource_id),
+                    Some(MusicEffect::Open {
+                        place: Place::View(id.to_string())
+                    }),
+                    "opening the place's anchor shows it"
                 );
                 assert_eq!(
                     resource_by_id(&ctx, &resource_id).map(|r| r.id.as_str().to_string()),
@@ -1669,7 +1682,7 @@ mod tests {
                 );
             }
             assert!(parse_view_resource_id("music.view:../../etc/passwd").is_none());
-            assert!(open_view_address("../../etc/passwd").is_none());
+            assert!(anchor_effect("music.view:../../etc/passwd").is_none());
         }
 
         // Phase `published_resource_action_surface_validates_with_music_handlers`.
@@ -1963,6 +1976,10 @@ mod tests {
     }
 
     #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
     fn playlist_membership_rows_resolve_lazily_and_edits_converge() {
         // Phase `late_playlist_membership_resolves_lazily_with_canonical_actions`.
         {

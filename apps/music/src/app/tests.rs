@@ -2010,7 +2010,7 @@ fn a_live_catalogue_like_uses_the_admitted_effect_and_one_undo() {
         .iter()
         .find(|hit| hit.title == "One More Time")
         .expect("the real catalogue reply is in platform search");
-    let row = song.action_address().unwrap().resource;
+    let row = song.anchor();
     assert_eq!(
         row.as_str(),
         crate::actions::track_resource_id("yt:vid_one")
@@ -2508,31 +2508,33 @@ fn global_search_and_canonical_views_route_without_mutation() {
         for (query, expected) in [
             (
                 track.title.as_str(),
-                crate::actions::play_track_address(&track.id),
+                crate::actions::track_resource_id(&track.id),
             ),
             (
                 album.title.as_str(),
-                crate::actions::open_album_address(&album.id),
+                crate::actions::album_resource_id(&album.id),
             ),
             (
                 artist_for_resolution.name.as_str(),
-                crate::actions::open_artist_address(&artist_for_resolution.id),
+                crate::actions::artist_resource_id(&artist_for_resolution.id),
             ),
             (
                 playlist.name.as_str(),
-                crate::actions::open_playlist_address(&playlist.id),
+                crate::actions::playlist_resource_id(&playlist.id),
             ),
         ] {
             let hit = provider
                 .search(query)
                 .into_iter()
-                .find(|hit| hit.action_address().as_ref() == Some(&expected))
-                .expect("each searchable Music entity has its canonical hit");
-            let address = hit.action_address().expect("canonical search address");
+                .find(|hit| hit.anchor() == expected)
+                .expect("each searchable Music entity is anchored at its row");
             assert!(
-                tilo_actions::door::resolve(&resources, &address).is_some(),
-                "{address:?} resolves against the live Music resource tree"
+                tilo_actions::flatten(&resources)
+                    .iter()
+                    .any(|flat| flat.resource_id.as_str() == hit.anchor()),
+                "{expected} is a row of the live Music resource tree"
             );
+            assert!(crate::actions::anchor_effect(&hit.anchor()).is_some());
         }
         let mut palette = ui::ActionPalette::new();
         palette.load_open_resources(&resources);
@@ -2546,18 +2548,13 @@ fn global_search_and_canonical_views_route_without_mutation() {
             .expect("song search row is present");
         palette.set_cursor(row);
         palette.activate_selected();
-        let operation = palette.take_operation().expect("play action queued");
-        assert!(palette.take_navigation().is_none());
-        assert_eq!(operation.kind, tilo_actions::OperationKind::Effect);
+        let anchor = palette.take_navigation().expect("the song's row is opened");
         let heads = doc.get_heads();
         let invocation = tilo_actions::InvocationId::new();
         assert!(matches!(
-            app.start_effect(
+            app.begin_effect(
                 invocation,
-                &operation
-                    .encoded()
-                    .expect("test requires prepared encoding")
-                    .payload
+                crate::actions::anchor_effect(&anchor).expect("opening a song plays it")
             )
             .expect("local playback operation starts"),
             ui::framework::Effected::Pending
@@ -2565,12 +2562,12 @@ fn global_search_and_canonical_views_route_without_mutation() {
         assert_eq!(
             app.pb.current.as_deref(),
             Some(track.id.as_str()),
-            "the brokered effect plays the selected track"
+            "opening the hit plays the selected track"
         );
         assert!(app.pb.queue.contains(&track.id));
         assert_eq!(doc.get_heads(), heads, "playback is device-local");
 
-        // Navigation follows the same path but is explicitly a View operation.
+        // Opening an artist hit shows its page and changes no document.
         let heads = doc.get_heads();
         let artist = app.lib.artists.values().next().unwrap().clone();
         let mut palette = ui::ActionPalette::new();
@@ -2585,15 +2582,13 @@ fn global_search_and_canonical_views_route_without_mutation() {
             .expect("artist search row is present");
         palette.set_cursor(row);
         palette.activate_selected();
-        let operation = palette.take_operation().expect("artist view queued");
-        assert_eq!(operation.kind, tilo_actions::OperationKind::View);
+        let anchor = palette
+            .take_navigation()
+            .expect("the artist's row is opened");
         assert!(matches!(
-            app.start_effect(
+            app.begin_effect(
                 ui::tilo_actions::InvocationId::new(),
-                &operation
-                    .encoded()
-                    .expect("test requires prepared encoding")
-                    .payload
+                crate::actions::anchor_effect(&anchor).expect("opening an artist shows it")
             )
             .unwrap(),
             ui::framework::Effected::Done(_)
@@ -2601,7 +2596,7 @@ fn global_search_and_canonical_views_route_without_mutation() {
         assert_eq!(
             app.view,
             View::Artist(artist.id),
-            "brokered view opens the artist page"
+            "opening the hit shows the artist page"
         );
         assert_eq!(doc.get_heads(), heads, "navigation is presentation-only");
     }
@@ -2623,8 +2618,7 @@ fn global_search_and_canonical_views_route_without_mutation() {
                 .search("Refresh proof")
                 .iter()
                 .any(|result| {
-                    result.action_address()
-                        == Some(crate::actions::open_playlist_address("pl_provider_refresh"))
+                    result.anchor() == crate::actions::playlist_resource_id("pl_provider_refresh")
                 })
         );
     }
@@ -4566,22 +4560,14 @@ fn app_with_live_results() -> (MusicApp, AutoCommit) {
 
 /// Invoke the published action search `hit` names, as the palette does: on
 /// the row a search provider resolves, else on the app's published tree.
+/// Open the row `hit` is anchored at, as the window's `open` does.
 fn invoke_hit(app: &mut MusicApp, hit: &ui::search::SearchResult, _doc: &mut AutoCommit) {
-    use ui::tilo_resource::Effect;
-    let address = hit
-        .action_address()
-        .expect("a hit invokes a published action");
-    let row = app
-        .device_row(address.resource.as_str())
-        .map(ui::framework::LiveRow::into_resource)
-        .or_else(|| app.publish_resource(address.resource.as_str()))
-        .expect("the actual authority door resolves the hit's row");
-    let rows = [row];
-    let spec = tilo_actions::door::resolve(&rows, &address)
-        .expect("the hit's published action resolves on its actual row");
-    let encoded = ui::testing::action_contract::spec_encoding(spec, None);
-    let effect = crate::actions::MusicEffect::from_payload(&encoded.payload)
-        .expect("the published row names the typed music effect");
+    let anchor = hit.anchor();
+    assert!(
+        app.device_row(&anchor).is_some() || app.publish_resource(&anchor).is_some(),
+        "the hit's row resolves"
+    );
+    let effect = crate::actions::anchor_effect(&anchor).expect("the hit opens its row");
     app.begin_effect(tilo_actions::InvocationId::new(), effect)
         .expect("the actual effect runs");
 }
@@ -4658,9 +4644,7 @@ fn artist_and_album_pages_navigate_and_play() {
 
         let artist = rows
             .iter()
-            .find(|row| {
-                row.action_address() == Some(crate::actions::open_artist_address("UCdaftpunk"))
-            })
+            .find(|row| row.anchor() == crate::actions::artist_resource_id("UCdaftpunk"))
             .expect("the artist's hit");
         invoke_hit(&mut app, artist, &mut doc);
         assert_eq!(app.view, View::Artist("UCdaftpunk".into()));

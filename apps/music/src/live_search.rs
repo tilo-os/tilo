@@ -8,9 +8,10 @@
 //! next frame, and the palette polls the token until the worker's reply has
 //! been turned into rows.
 //!
-//! A hit invokes a published action ([`LiveHit::address`]): a song plays
-//! through its library row, an album, artist or playlist the library does
-//! not hold opens its page through the row this provider resolves.
+//! A hit is anchored at a row ([`LiveHit::anchor`]): opening it plays a
+//! song through its library row, or opens the page of an album, artist or
+//! playlist the library does not hold through the row this provider
+//! resolves.
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -37,15 +38,15 @@ pub enum LiveHit {
 }
 
 impl LiveHit {
-    /// The published action the hit invokes: a song plays (the catalogue's
-    /// songs join the library as they arrive), an album, artist or playlist
-    /// opens its page.
-    pub fn address(&self) -> ActionAddress {
+    /// The row the hit is anchored at: opening it plays a song (the
+    /// catalogue's songs join the library as they arrive) or opens the page
+    /// of an album, artist or playlist.
+    pub fn anchor(&self) -> String {
         match self {
-            Self::Track(id) => crate::actions::play_track_address(id),
-            Self::Album(id) => crate::actions::open_album_address(id),
-            Self::Artist(id) => crate::actions::open_artist_address(id),
-            Self::Playlist(id) => crate::actions::open_playlist_address(id),
+            Self::Track(id) => crate::actions::track_resource_id(id),
+            Self::Album(id) => crate::actions::album_resource_id(id),
+            Self::Artist(id) => crate::actions::artist_resource_id(id),
+            Self::Playlist(id) => crate::actions::catalogue_playlist_resource_id(id),
         }
     }
 }
@@ -60,27 +61,27 @@ pub fn rows_of(bundle: &SearchBundle) -> Vec<SearchResult> {
             row = row.duration(ui::format::timecode(u64::from(hit.duration_s)));
         }
         rows.push(
-            SearchResult::for_action("Songs", &hit.title, LiveHit::Track(id).address())
+            SearchResult::new("Songs", &hit.title, LiveHit::Track(id).anchor())
                 .with_icon(Icon::Music)
                 .with_row(row),
         );
     }
     for album in &bundle.albums {
         rows.push(
-            SearchResult::for_action(
+            SearchResult::new(
                 "Albums",
                 &album.title,
-                LiveHit::Album(album.id.clone()).address(),
+                LiveHit::Album(album.id.clone()).anchor(),
             )
             .with_icon(Icon::GalleryVerticalEnd)
             .with_subtitle(&album.artist),
         );
     }
     for artist in &bundle.artists {
-        let mut row = SearchResult::for_action(
+        let mut row = SearchResult::new(
             "Artists",
             &artist.name,
-            LiveHit::Artist(artist.id.clone()).address(),
+            LiveHit::Artist(artist.id.clone()).anchor(),
         )
         .with_icon(Icon::Users);
         if artist.subscriber_count > 0 {
@@ -92,10 +93,10 @@ pub fn rows_of(bundle: &SearchBundle) -> Vec<SearchResult> {
         rows.push(row);
     }
     for playlist in &bundle.playlists {
-        let mut row = SearchResult::for_action(
+        let mut row = SearchResult::new(
             "Playlists",
             &playlist.title,
-            LiveHit::Playlist(playlist.id.clone()).address(),
+            LiveHit::Playlist(playlist.id.clone()).anchor(),
         )
         .with_icon(Icon::List);
         if !playlist.subtitle.is_empty() {
@@ -191,14 +192,12 @@ impl LiveSearch {
             exchange.answered.insert(token, rows.to_vec());
         }
         for row in rows {
-            let Some(address) = row.action_address() else {
-                continue;
-            };
-            if crate::actions::live_catalogue_resource(&address, &row.title).is_some() {
+            let anchor = row.anchor();
+            if crate::actions::live_catalogue_resource(&anchor, &row.title).is_some() {
                 if exchange.found.len() >= MAX_FOUND {
                     exchange.found.clear();
                 }
-                exchange.found.insert(address.resource, row.title.clone());
+                exchange.found.insert(anchor, row.title.clone());
             }
         }
     }
@@ -283,7 +282,7 @@ impl ui::search::SearchProvider for LiveCatalogProvider {
     /// with; a song's row is the library's.
     fn resolve_action_resource(&self, address: &ActionAddress) -> Option<Resource> {
         let label = self.lock().found.get(&address.resource)?.clone();
-        crate::actions::live_catalogue_resource(address, &label)
+        crate::actions::live_catalogue_resource(&address.resource, &label)
     }
 }
 
@@ -354,19 +353,20 @@ mod tests {
     }
 
     #[test]
-    fn rows_say_what_each_hit_is_and_invoke_a_published_action() {
+    fn rows_say_what_each_hit_is_and_open_their_row() {
         let rows = rows_of(&bundle());
         let song = rows.first().expect("song row");
         assert_eq!(song.kind, "Songs");
         assert!(matches!(song.row, Some(SearchRow::Media { .. })));
-        assert_eq!(
-            song.action_address(),
-            Some(crate::actions::play_track_address("yt:abc"))
-        );
+        assert_eq!(song.anchor(), crate::actions::track_resource_id("yt:abc"));
+        assert!(matches!(
+            crate::actions::anchor_effect(&song.anchor()),
+            Some(crate::actions::MusicEffect::Play { .. })
+        ));
         let album = rows.get(1).expect("album row");
         assert_eq!(album.subtitle.as_deref(), Some("Aurora Skies"));
-        let address = album.action_address().expect("a published action");
-        assert_eq!(address, crate::actions::open_album_address("MPRE1"));
+        assert_eq!(album.anchor(), crate::actions::album_resource_id("MPRE1"));
+        let address = ActionAddress::new(album.anchor(), "open");
 
         // The provider resolves the album's page once the catalogue
         // answered with it.
@@ -387,13 +387,12 @@ mod tests {
         reply.albums[0].id = "spotify:album:2234567890123456789012".into();
         let rows = rows_of(&reply);
         assert_eq!(
-            rows[0].action_address(),
-            Some(crate::actions::play_track_address(
-                "spotify:track:1234567890123456789012"
-            ))
+            rows[0].anchor(),
+            crate::actions::track_resource_id("spotify:track:1234567890123456789012")
         );
-        let address = crate::actions::open_album_address("spotify:album:2234567890123456789012");
-        assert_eq!(rows[1].action_address(), Some(address.clone()));
+        let anchor = crate::actions::album_resource_id("spotify:album:2234567890123456789012");
+        assert_eq!(rows[1].anchor(), anchor);
+        let address = ActionAddress::new(anchor, "open");
         let live = LiveSearch::default();
         live.answer("glass", &rows);
         assert_eq!(

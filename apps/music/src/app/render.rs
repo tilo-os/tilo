@@ -873,6 +873,7 @@ impl Widget for MusicApp {
 
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         self.pump_live_search();
+        self.open_anchors();
         let (state, _) = ui::doc::document_ref(state, path);
         if self.playback_loaded {
             self.reload_library(state);

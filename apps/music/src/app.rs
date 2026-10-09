@@ -264,6 +264,9 @@ struct PendingMediaHandoff {
 )]
 pub struct MusicApp {
     lib: Library,
+    /// Anchors a search hit or an agent's `open` named, shown on the next
+    /// sync as their rows' own effects.
+    opened: Rc<std::cell::RefCell<Vec<String>>>,
     /// The committed heads and pending operation count that produced `lib`.
     /// Reuse the projection without committing a pending transaction to read it.
     library_heads: Option<(Vec<ChangeHash>, usize)>,
@@ -783,6 +786,7 @@ impl MusicApp {
         Self {
             lib: Library::default(),
             library_heads: None,
+            opened: Rc::default(),
             device_cache,
             media_cache,
             media_cache_root,
@@ -3866,20 +3870,20 @@ impl MusicApp {
         let albums = bundle.albums.iter().take(limit).map(|album| {
             SearchEntry::new(album.title.clone(), String::new())
                 .field(album.artist.clone(), SearchWeight::Subtitle)
-                .invoking(crate::actions::open_album_address(&album.id))
+                .anchored(crate::actions::album_resource_id(&album.id))
                 .grouped("Albums")
                 .subtitled(album.artist.clone())
         });
         let artists = bundle.artists.iter().take(limit).map(|artist| {
             SearchEntry::new(artist.name.clone(), String::new())
-                .invoking(crate::actions::open_artist_address(&artist.id))
+                .anchored(crate::actions::artist_resource_id(&artist.id))
                 .grouped("Artists")
                 .subtitled("Artist")
         });
         let playlists = bundle.playlists.iter().take(limit).map(|playlist| {
             SearchEntry::new(playlist.title.clone(), String::new())
                 .field(playlist.subtitle.clone(), SearchWeight::Subtitle)
-                .invoking(crate::actions::open_playlist_address(&playlist.id))
+                .anchored(crate::actions::catalogue_playlist_resource_id(&playlist.id))
                 .grouped("Playlists")
                 .subtitled(playlist.subtitle.clone())
         });
@@ -3895,21 +3899,21 @@ impl MusicApp {
             .albums
             .iter()
             .take(limit)
-            .map(|a| (crate::actions::open_album_address(&a.id), a.title.as_str()))
+            .map(|a| (crate::actions::album_resource_id(&a.id), a.title.as_str()))
             .chain(
                 bundle
                     .artists
                     .iter()
                     .take(limit)
-                    .map(|a| (crate::actions::open_artist_address(&a.id), a.name.as_str())),
+                    .map(|a| (crate::actions::artist_resource_id(&a.id), a.name.as_str())),
             )
             .chain(bundle.playlists.iter().take(limit).map(|a| {
                 (
-                    crate::actions::open_playlist_address(&a.id),
+                    crate::actions::catalogue_playlist_resource_id(&a.id),
                     a.title.as_str(),
                 )
             }))
-            .filter_map(|(address, label)| crate::actions::live_catalogue_resource(&address, label))
+            .filter_map(|(id, label)| crate::actions::live_catalogue_resource(&id, label))
             .collect()
     }
 
@@ -5364,4 +5368,45 @@ fn live_row(resource: tilo_actions::Resource) -> ui::framework::LiveRow {
         row = row.row(live_row(child));
     }
     row
+}
+
+#[cfg(test)]
+impl MusicApp {
+    /// The page the window shows.
+    pub(crate) fn view_for_test(&self) -> View {
+        self.view.clone()
+    }
+}
+
+impl MusicApp {
+    /// What opens a row's anchor for [`ui::framework::ViewCx::on_open`]: a
+    /// song plays, an album, artist, playlist, membership or place is shown.
+    /// An anchor naming no row Music opens is refused.
+    pub(crate) fn opener(
+        &self,
+    ) -> impl FnMut(&str) -> Result<(), ui::tilo_resource::Refusal> + 'static {
+        let opened = Rc::clone(&self.opened);
+        move |anchor| {
+            if crate::actions::anchor_effect(anchor).is_none() {
+                return Err(ui::tilo_resource::Refusal::new(format!(
+                    "Music opens no `{anchor}`"
+                )));
+            }
+            opened.borrow_mut().push(anchor.to_owned());
+            Ok(())
+        }
+    }
+
+    /// Open the anchors [`Self::opener`] took, as their rows' effects do.
+    pub(crate) fn open_anchors(&mut self) {
+        let anchors = std::mem::take(&mut *self.opened.borrow_mut());
+        for anchor in anchors {
+            let Some(effect) = crate::actions::anchor_effect(&anchor) else {
+                continue;
+            };
+            if let Err(error) = self.begin_effect(tilo_actions::InvocationId::new(), effect) {
+                self.notify(ToastKind::Error, error);
+            }
+        }
+    }
 }
