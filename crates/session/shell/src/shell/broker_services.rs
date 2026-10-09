@@ -1123,8 +1123,38 @@ fn govern_elsewhere(
     use tilo_desktop::workspace_settings::GovernanceOperation as Operation;
     use tilo_desktop_model::commands::{BoundCommand, CommandSource, DesktopCommand};
     let command = match operation {
-        Operation::Grant { .. } | Operation::Revoke { .. } => {
-            return Err("grants in this workspace are given on the device that governs it".into());
+        // A grant is the room's policy, which the governor decides as it
+        // would for a person at its own screen.
+        Operation::Grant {
+            subject,
+            node,
+            kinds,
+            answer,
+            lifetime,
+        } => {
+            let grant = tilo_action_policy::Grant::new(
+                format!("grant:{}", uuid::Uuid::new_v4()),
+                subject,
+                tilo_action_policy::TreePath::room(room.to_string()).join(&node),
+                kinds,
+                answer,
+                tilo_action_policy::Subject::Person(String::new()),
+            )
+            .with_lifetime(lifetime.unwrap_or(tilo_action_policy::Lifetime::UntilRevoked));
+            return govern_membership(
+                network,
+                room,
+                "grant",
+                serde_json::json!({ "grant": grant }),
+            );
+        }
+        Operation::Revoke { grant } => {
+            return govern_membership(
+                network,
+                room,
+                "revoke",
+                serde_json::json!({ "grant": grant }),
+            );
         }
         Operation::SavePreset {
             name,
@@ -1202,6 +1232,31 @@ fn govern_elsewhere(
         Err(_) => Err("the workspace host did not apply the change in time".into()),
     }
 }
+
+/// Have the governor of `room` apply the membership action `action` of the
+/// room itself, with `argument`, as this device's person.
+fn govern_membership(
+    network: &super::network::ShellNetwork,
+    room: super::state::RoomId,
+    action: &str,
+    argument: serde_json::Value,
+) -> Result<(), String> {
+    let answer = network.invoke_governor(
+        room,
+        tilo_desktop_model::commands::APP_ID,
+        WORKSPACE_MEMBERSHIP_RESOURCE,
+        action,
+        Some(argument),
+    );
+    match answer.wait_timeout(GOVERNED_OPEN_TIMEOUT) {
+        Ok(Some(result)) => result.map(drop),
+        Ok(None) => Err("the workspace host stopped before applying the change".into()),
+        Err(_) => Err("the workspace host did not apply the change in time".into()),
+    }
+}
+
+/// The resource the room's own membership actions are published on.
+const WORKSPACE_MEMBERSHIP_RESOURCE: &str = "desktop:workspace";
 
 /// Find `id` in `resource`'s subtree.
 fn find_resource<'a>(

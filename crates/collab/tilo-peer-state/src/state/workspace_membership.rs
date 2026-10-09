@@ -2,7 +2,7 @@ use super::{StatePeer, SystemTime};
 use crate::workspace_membership::WorkspaceMembershipCommand;
 use collab_types::caps::{Access, CapOverride, Principal, Scope};
 use ed25519_dalek::SigningKey;
-use tilo_action_policy::{ActionKind, Grant, GrantId, Lifetime, Subject, TreePath, roles};
+use tilo_action_policy::{ActionKind, Change, Grant, GrantId, Lifetime, Subject, TreePath, roles};
 use tilo_user_identity::DeviceCert;
 
 impl StatePeer {
@@ -57,6 +57,12 @@ impl StatePeer {
         ) {
             return self.apply_task_grant_command(caller, command, key, now);
         }
+        if matches!(
+            command,
+            WorkspaceMembershipCommand::Grant { .. } | WorkspaceMembershipCommand::Revoke { .. }
+        ) {
+            return self.apply_governance_grant_command(caller, command, key, now);
+        }
         self.check_workspace_administration(caller.device_public_key, now)?;
         let member = self.permissions(caller.device_public_key, now)?;
         self.require_governance_writer(key, now)?;
@@ -95,12 +101,53 @@ impl StatePeer {
             WorkspaceMembershipCommand::RemoveAgent { .. } => false,
             WorkspaceMembershipCommand::GrantAppAuthorship { .. }
             | WorkspaceMembershipCommand::GrantForTask { .. }
-            | WorkspaceMembershipCommand::RevokeForTask { .. } => {
+            | WorkspaceMembershipCommand::RevokeForTask { .. }
+            | WorkspaceMembershipCommand::Grant { .. }
+            | WorkspaceMembershipCommand::Revoke { .. } => {
                 return Err("a command entered the agent membership branch".into());
             }
         };
         *self = candidate;
         Ok(removed || added)
+    }
+
+    /// Give or take back a grant in the room, as the caller: the room's
+    /// policy decides, exactly as on a device that governs it here.
+    fn apply_governance_grant_command(
+        &mut self,
+        caller: &DeviceCert,
+        command: &WorkspaceMembershipCommand,
+        key: &SigningKey,
+        now: SystemTime,
+    ) -> Result<bool, String> {
+        let member = self.permissions(caller.device_public_key, now)?;
+        let bound = roles::foreign_device_bound();
+        let authority = member.authority(&bound);
+        let cx = super::policy_context(now);
+        let change = match command {
+            WorkspaceMembershipCommand::Grant { grant } => Change::Grant(grant.clone()),
+            WorkspaceMembershipCommand::Revoke { grant } => Change::Revoke(grant.clone()),
+            _ => return Err("not a governance grant command".into()),
+        };
+        let mut checked = member.policy.clone();
+        checked
+            .apply(&member.person, &authority, change, &cx, false)
+            .map_err(|refusal| refusal.to_string())?;
+        match command {
+            WorkspaceMembershipCommand::Grant { grant } => {
+                let recorded = checked
+                    .grants
+                    .iter()
+                    .find(|held| held.id == grant.id)
+                    .cloned()
+                    .ok_or("the grant was not recorded")?;
+                self.put_governed_grants(&[recorded], key, now)
+            }
+            WorkspaceMembershipCommand::Revoke { grant } => {
+                self.remove_governed_grants(std::slice::from_ref(grant), key, now)
+            }
+            _ => Err("not a governance grant command".into()),
+        }
     }
 
     /// Change an open task's grant set, for a person who may work in the

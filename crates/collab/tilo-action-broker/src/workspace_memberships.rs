@@ -58,6 +58,22 @@ impl CapnpBrokerState {
                 );
                 (format!("desktop:{task}"), "grant", Some(argument))
             }
+            WorkspaceMembershipCommand::Grant { grant } => {
+                let argument = format!(
+                    "{}{}",
+                    tilo_actions::ARGUMENTS_JSON_PREFIX,
+                    serde_json::json!({ "grant": grant })
+                );
+                (WORKSPACE.into(), "grant", Some(argument))
+            }
+            WorkspaceMembershipCommand::Revoke { grant } => {
+                let argument = format!(
+                    "{}{}",
+                    tilo_actions::ARGUMENTS_JSON_PREFIX,
+                    serde_json::json!({ "grant": grant })
+                );
+                (WORKSPACE.into(), "revoke", Some(argument))
+            }
             WorkspaceMembershipCommand::RevokeForTask { task, grant } => {
                 let argument = format!(
                     "{}{}",
@@ -402,6 +418,24 @@ fn membership_command(envelope: &InvocationEnvelope) -> Result<WorkspaceMembersh
         let input: AppAuthorship =
             serde_json::from_str(encoded).map_err(|error| error.to_string())?;
         WorkspaceMembershipCommand::GrantAppAuthorship { app: input.app }
+    } else if envelope.resource == WORKSPACE && envelope.action == "grant" {
+        #[derive(serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Give {
+            grant: tilo_action_policy::Grant,
+        }
+        let encoded = bounded_argument(envelope, "grant")?;
+        let input: Give = serde_json::from_str(encoded).map_err(|error| error.to_string())?;
+        WorkspaceMembershipCommand::Grant { grant: input.grant }
+    } else if envelope.resource == WORKSPACE && envelope.action == "revoke" {
+        #[derive(serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct TakeBack {
+            grant: tilo_action_policy::GrantId,
+        }
+        let encoded = bounded_argument(envelope, "grant")?;
+        let input: TakeBack = serde_json::from_str(encoded).map_err(|error| error.to_string())?;
+        WorkspaceMembershipCommand::Revoke { grant: input.grant }
     } else if let Some(task) = envelope.resource.strip_prefix(TASK_PREFIX)
         && envelope.action == "grant"
     {
@@ -489,6 +523,28 @@ fn membership_actions(workspace: &tilo_desktop_model::Workspace, now: u64) -> Ve
             "app",
             tilo_actions::ParamType::Text,
             "Application id",
+        )],
+    ));
+    actions.push(membership_action(
+        WORKSPACE,
+        "grant",
+        "Workspace",
+        "Give a grant",
+        vec![tilo_actions::ActionParam::required(
+            "grant",
+            tilo_actions::ParamType::Object,
+            "The grant: id, subject, node, kinds, answer, lifetime",
+        )],
+    ));
+    actions.push(membership_action(
+        WORKSPACE,
+        "revoke",
+        "Workspace",
+        "Take back a grant",
+        vec![tilo_actions::ActionParam::required(
+            "grant",
+            tilo_actions::ParamType::Text,
+            "The grant's id",
         )],
     ));
     actions.extend(

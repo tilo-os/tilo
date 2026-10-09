@@ -292,6 +292,62 @@ mod tests {
         );
     }
 
+    /// A grant given on another device reaches the room through its
+    /// governor, which decides it as it would for a person at its own
+    /// screen: only someone holding the grant action gives one.
+    #[test]
+    fn the_governor_records_a_grant_given_elsewhere_by_whoever_may_grant() {
+        use crate::workspace_membership::WorkspaceMembershipCommand;
+        let (mut peer, governor, other, now) = peer();
+        let key = SigningKey::from_bytes(&[2; 32]);
+        let reader = Grant::new(
+            "reader-mail",
+            Subject::agent("reader"),
+            TreePath::room(ROOM).app("so.tilo.mail"),
+            KindSet::READ,
+            Answer::Allow,
+            Subject::person("anyone"),
+        );
+        let give = WorkspaceMembershipCommand::Grant {
+            grant: reader.clone(),
+        };
+        let held = |peer: &StatePeer| {
+            peer.permissions(governor.device_public_key, now)
+                .unwrap()
+                .policy
+                .grants
+                .into_iter()
+                .find(|grant| grant.id == reader.id)
+        };
+        assert!(
+            peer.apply_workspace_membership_command(&other, &give, &key, now)
+                .is_err(),
+            "someone without the grant action gives nothing"
+        );
+        assert!(held(&peer).is_none());
+        assert!(
+            peer.apply_workspace_membership_command(&governor, &give, &key, now)
+                .unwrap()
+        );
+        let recorded = held(&peer).expect("recorded");
+        assert_eq!(recorded.kinds, KindSet::READ);
+        assert_ne!(
+            recorded.granted_by,
+            Subject::person("anyone"),
+            "the governor records who gave it, not what the request claimed"
+        );
+        peer.apply_workspace_membership_command(
+            &governor,
+            &WorkspaceMembershipCommand::Revoke {
+                grant: reader.id.clone(),
+            },
+            &key,
+            now,
+        )
+        .unwrap();
+        assert!(held(&peer).is_none(), "taken back");
+    }
+
     /// A task carries its own grant set, changed as the room's governance
     /// by someone who may work in the room, and ending with the task.
     #[test]

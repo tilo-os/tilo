@@ -1,7 +1,7 @@
 //! Typed native workspace membership commands, not grant or identity blobs.
 use serde::{Deserialize, Serialize};
 use tilo_action_policy::roles::AgentPreset;
-use tilo_action_policy::{Answer, GrantId, KindSet, TreePath};
+use tilo_action_policy::{Answer, Grant, GrantId, KindSet, TreePath};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum WorkspaceMembershipCommand {
@@ -31,6 +31,16 @@ pub enum WorkspaceMembershipCommand {
         task: String,
         grant: GrantId,
     },
+    /// Record `grant` in the room, as the caller gives it: they must hold the
+    /// room's grant action and may give no more than they hold.
+    Grant {
+        grant: Grant,
+    },
+    /// Take back the grant `grant`, as the caller: they must hold the room's
+    /// revoke action.
+    Revoke {
+        grant: GrantId,
+    },
 }
 
 /// The id of the grant task `task`'s grant set holds for `node`.
@@ -46,7 +56,9 @@ impl WorkspaceMembershipCommand {
             Self::AddAgent { agent, .. } | Self::RemoveAgent { agent } => Some(agent),
             Self::GrantAppAuthorship { .. }
             | Self::GrantForTask { .. }
-            | Self::RevokeForTask { .. } => None,
+            | Self::RevokeForTask { .. }
+            | Self::Grant { .. }
+            | Self::Revoke { .. } => None,
         }
     }
 
@@ -73,7 +85,18 @@ impl WorkspaceMembershipCommand {
         {
             return Err("the grant is not in that task's grant set".into());
         }
-        if matches!(self, Self::GrantForTask { .. } | Self::RevokeForTask { .. }) {
+        if let Self::Grant { grant } = self
+            && grant.id.as_str().trim().is_empty()
+        {
+            return Err("a grant needs an id".into());
+        }
+        if matches!(
+            self,
+            Self::GrantForTask { .. }
+                | Self::RevokeForTask { .. }
+                | Self::Grant { .. }
+                | Self::Revoke { .. }
+        ) {
             return Ok(());
         }
         if let Self::GrantAppAuthorship { app } = self {
