@@ -13,7 +13,9 @@
 
 use std::time::{Duration, Instant};
 
-use smithay::reexports::wayland_protocols::wp::text_input::zv3::server::zwp_text_input_v3::ContentPurpose;
+use smithay::reexports::wayland_protocols::wp::text_input::zv3::server::zwp_text_input_v3::{
+    ContentHint, ContentPurpose,
+};
 use smithay::reexports::wayland_server::Resource;
 use smithay::reexports::wayland_server::backend::ObjectId;
 use smithay::wayland::text_input::TextInputSeat;
@@ -125,6 +127,7 @@ struct Target {
     field: ObjectId,
     surface: ObjectId,
     revision: u64,
+    multiline: bool,
     owner: TrustedInputMethod,
     private: Option<super::private_text_input::Identity>,
 }
@@ -428,7 +431,8 @@ impl State {
     ///
     /// # Errors
     /// Rejects late callbacks, changed targets, expired sessions, oversized
-    /// output, and control characters (which could execute a terminal command).
+    /// output, and control characters. LF is allowed only for an original
+    /// explicitly multiline field; it is never a terminal key or paste.
     /// A failure on the current session cancels it.
     pub fn update_dictation(
         &mut self,
@@ -438,9 +442,18 @@ impl State {
     ) -> Result<(), DictationError> {
         let draft = zeroize::Zeroizing::new(draft);
         self.validate_dictation(id, now)?;
+        let multiline = self
+            .text_commit
+            .dictation
+            .session
+            .as_ref()
+            .is_some_and(|session| session.target.multiline);
         let error = if draft.len() > MAX_DRAFT_BYTES {
             Some(DictationError::DraftTooLarge)
-        } else if draft.chars().any(char::is_control) {
+        } else if draft
+            .chars()
+            .any(|character| character.is_control() && !(multiline && character == '\n'))
+        {
             Some(DictationError::ControlCharacter)
         } else {
             None
@@ -881,9 +894,16 @@ impl State {
         if self.text_commit.dictation.recognition.is_some() {
             return Err(DictationError::Busy);
         }
-        let actor = runtime::Runtime::start_with_vocabulary(
+        let multiline = self
+            .text_commit
+            .dictation
+            .session
+            .as_ref()
+            .is_some_and(|session| session.target.multiline);
+        let actor = runtime::Runtime::start_for_field(
             language,
             self.text_commit.dictation.vocabulary.clone(),
+            multiline,
         )
         .map_err(|_| DictationError::RecognizerUnavailable)?;
         self.text_commit.dictation.last_failure = None;
@@ -1144,6 +1164,7 @@ impl State {
                             field: field.id(),
                             surface: surface.id(),
                             revision,
+                            multiline: content.hint & u32::from(ContentHint::Multiline) != 0,
                             owner,
                             private: self.private_text_input.identity(&surface.id()),
                         })
