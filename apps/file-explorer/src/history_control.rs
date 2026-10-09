@@ -70,7 +70,8 @@ pub fn resolve_conflict(
     })
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
+#[cfg(unix)]
 mod tests {
     use super::*;
 

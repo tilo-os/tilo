@@ -475,7 +475,8 @@ pub(super) fn durable_write(path: &Path, bytes: &[u8]) -> Result<(), StoreError>
     if let Some(parent) = path.parent() {
         #[cfg(target_vendor = "apple")]
         sync_dir(parent)?;
-        #[cfg(all(test, not(target_vendor = "apple")))]
+        #[cfg(test)]
+        #[cfg(not(target_vendor = "apple"))]
         super::test_barrier::check(parent, "sync-dir")?;
     }
     Ok(())

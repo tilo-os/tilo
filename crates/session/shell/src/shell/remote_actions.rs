@@ -475,10 +475,12 @@ mod tests {
     }
 }
 
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(test)]
+#[cfg(target_os = "linux")]
 #[path = "shortcuts_door_tests.rs"]
 mod shortcuts_door_tests;
 
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(test)]
+#[cfg(target_os = "linux")]
 #[path = "keyboard_shortcuts_door_tests.rs"]
 mod keyboard_shortcuts_door_tests;

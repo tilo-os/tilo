@@ -9741,7 +9741,8 @@ pub(crate) mod published {
     }
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
+#[cfg(unix)]
 #[path = "framework_history_tests.rs"]
 mod framework_history_tests;
 

@@ -12,16 +12,6 @@
 //! installed, [`installed_in_process_model`] finds the verified object by
 //! capability, reading only the store under [`user_model_root`].
 
-#![cfg_attr(
-    test,
-    allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::panic,
-        reason = "tests assert service boundaries"
-    )
-)]
-
 use std::collections::BTreeMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::Read;

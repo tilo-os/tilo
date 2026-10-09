@@ -2,11 +2,7 @@
 #![cfg_attr(
     test,
     allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
         clippy::string_slice,
-        clippy::panic,
         clippy::unreachable,
         reason = "in a test these are the assertion, not a hazard"
     )
@@ -136,7 +132,8 @@ pub mod workspace_authority;
 mod tests;
 
 // The qdoc conflict merge decodes peer versions in Automerge workers.
-#[cfg(all(test, feature = "filesystem"))]
+#[cfg(test)]
+#[cfg(feature = "filesystem")]
 tilo_automerge_isolate::test_worker!();
 
 #[cfg(feature = "filesystem")]
@@ -285,7 +282,8 @@ pub use transaction_coordinator::{
     RecordTransactionCoordinatorError, complete_replacement_transaction,
 };
 
-#[cfg(all(test, target_os = "macos", feature = "filesystem"))]
+#[cfg(test)]
+#[cfg(all(target_os = "macos", feature = "filesystem"))]
 mod native_mount_selection_tests {
     #[test]
     fn unselected_native_mount_fails_without_mounting() {

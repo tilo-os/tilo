@@ -25,11 +25,7 @@
 #![cfg_attr(
     test,
     allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
         clippy::string_slice,
-        clippy::panic,
         clippy::unreachable,
         reason = "in a test these are the assertion, not a hazard"
     )
@@ -3020,7 +3016,8 @@ mod certified_join_tests {
     }
 }
 
-#[cfg(all(test, feature = "client"))]
+#[cfg(test)]
+#[cfg(feature = "client")]
 mod tests {
     #[cfg(feature = "client")]
     #[test]
@@ -3836,7 +3833,8 @@ impl ChannelHandle {
     }
 }
 
-#[cfg(all(test, feature = "client"))]
+#[cfg(test)]
+#[cfg(feature = "client")]
 mod resolved_invocation_tests {
     use super::*;
 
@@ -4451,7 +4449,8 @@ impl ChannelHandle {
     }
 }
 
-#[cfg(all(test, feature = "client"))]
+#[cfg(test)]
+#[cfg(feature = "client")]
 mod reliable_invocation_tests {
     use super::*;
 
