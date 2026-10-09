@@ -270,6 +270,9 @@ pub(crate) struct Selection {
     old: Basis,
     basis: Basis,
     pair_channels: Vec<[u8; 32]>,
+    // One proof tied to the current basis. Repeated tails on the same route
+    // can reuse its verified snapshot without retaining document history.
+    candidate_cache: Option<(String, VerifiedSnapshot)>,
     phase: Phase,
     outer: Option<fs::ReadDir>,
     child: Option<fs::ReadDir>,
@@ -397,6 +400,7 @@ impl Selection {
             old: Basis::default(),
             basis: Basis::default(),
             pair_channels: Vec::new(),
+            candidate_cache: None,
             phase: Phase::Old,
             outer: None,
             child: None,
@@ -538,6 +542,9 @@ impl Selection {
         }
     }
     fn restart(&mut self, phase: Phase) -> Result<(), StoreError> {
+        if matches!(phase, Phase::Check) {
+            self.candidate_cache = None;
+        }
         self.input = Some(File::open(
             self.inventory.as_ref().invariant("inventory missing")?,
         )?);
@@ -700,20 +707,30 @@ impl Selection {
         }
         Ok(())
     }
-    fn candidate_snapshot(&mut self, key: &str) -> Result<Option<VerifiedSnapshot>, StoreError> {
+    fn candidate_snapshot(&mut self, key: &str) -> Result<Option<&VerifiedSnapshot>, StoreError> {
+        if self
+            .candidate_cache
+            .as_ref()
+            .is_some_and(|(cached, _)| cached == key)
+        {
+            return Ok(self.candidate_cache.as_ref().map(|(_, snapshot)| snapshot));
+        }
+        self.candidate_cache = None;
         let Some(meta) = self.basis.routes.get(key).and_then(|r| r.file.clone()) else {
             return Ok(None);
         };
         let value = self
             .read(&meta)?
             .ok_or_else(|| invalid("selected route vanished"))?;
-        Ok(verify_snapshot(
+        self.candidate_cache = verify_snapshot(
             self.basis.room.as_ref().invariant("room missing")?,
             value.source,
             value.channel,
             &value.body,
         )
-        .ok())
+        .ok()
+        .map(|snapshot| (key.to_owned(), snapshot));
+        Ok(self.candidate_cache.as_ref().map(|(_, snapshot)| snapshot))
     }
     #[expect(
         clippy::too_many_lines,
