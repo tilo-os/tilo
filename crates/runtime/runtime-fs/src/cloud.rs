@@ -1,11 +1,20 @@
 //! Typed control protocol of the per-user cloud account service.
 //!
 //! `fs cloud-service` keeps one mount per enabled cloud storage account at
-//! `~/Remote/<account label>` and serves this protocol on
-//! [`default_socket`] (mode 0600). Settings and Files share these types: a
-//! client lists the mounts with their health, capabilities and whether they
-//! are paused; asks one to sync now, pause or resume; and asks a mount for a
-//! file's provider revisions, to restore one of them or for a share link.
+//! `~/Remote/<account label>` and serves this protocol on two sockets, each
+//! mode 0600 in its own 0700 runtime directory. Settings and Files share
+//! these types: a client lists the mounts with their health, capabilities
+//! and whether they are paused; asks one to sync now, pause or resume; and
+//! asks a mount for a file's provider revisions, to restore one of them or
+//! for a share link.
+//!
+//! The sockets differ in what they serve ([`CloudSocket`]). The account
+//! socket, [`default_socket`], answers the listing and sync now, pause and
+//! resume, and nothing else: it is what Settings' sandbox is granted. The
+//! file socket, [`default_files_socket`], also answers file requests, which
+//! can replace a file's remote content or make it reachable by anyone
+//! holding a link; it lives in a directory of its own, so a grant of the
+//! account socket's directory never reaches it.
 //!
 //! Every message, in both directions, is one frame: a little-endian `u32`
 //! length, then the postcard-encoded [`CloudRequest`] or [`CloudResponse`].
@@ -31,6 +40,11 @@ pub const CLOUD_FRAMING: Framing = Framing::little_endian(1024 * 1024);
 pub const RUNTIME_DIR_NAME: &str = "tilo-fs-cloud";
 /// The socket's file name inside [`RUNTIME_DIR_NAME`].
 pub const SOCKET_NAME: &str = "control.sock";
+/// The file socket's runtime directory below `$XDG_RUNTIME_DIR`: a sibling
+/// of [`RUNTIME_DIR_NAME`], never inside it.
+pub const FILES_RUNTIME_DIR_NAME: &str = "tilo-fs-cloud-files";
+/// The file socket's name inside [`FILES_RUNTIME_DIR_NAME`].
+pub const FILES_SOCKET_NAME: &str = "files.sock";
 
 /// How long a client waits for an answer. Revisions and share links are a
 /// provider round trip; the service answers the rest at once.
@@ -48,6 +62,45 @@ pub fn default_socket() -> Option<PathBuf> {
 #[must_use]
 pub fn socket_in(runtime_dir: &Path) -> PathBuf {
     runtime_dir.join(RUNTIME_DIR_NAME).join(SOCKET_NAME)
+}
+
+/// `$XDG_RUNTIME_DIR/tilo-fs-cloud-files/files.sock`, or `None` without a
+/// runtime directory.
+#[must_use]
+pub fn default_files_socket() -> Option<PathBuf> {
+    let runtime = std::env::var_os("XDG_RUNTIME_DIR").filter(|dir| !dir.is_empty())?;
+    Some(files_socket_in(Path::new(&runtime)))
+}
+
+/// The file socket below the runtime directory `runtime_dir`.
+#[must_use]
+pub fn files_socket_in(runtime_dir: &Path) -> PathBuf {
+    runtime_dir
+        .join(FILES_RUNTIME_DIR_NAME)
+        .join(FILES_SOCKET_NAME)
+}
+
+/// Which of the service's sockets a connection arrived on, and so what it
+/// may ask.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CloudSocket {
+    /// The account socket: the listing, sync now, pause and resume. No
+    /// request on it reads, replaces or shares a file.
+    Accounts,
+    /// The file socket: everything, [`CloudRequest::File`] included.
+    Files,
+}
+
+impl CloudSocket {
+    /// Whether this socket answers `request`; the service refuses any other
+    /// before it reaches a mount.
+    #[must_use]
+    pub fn serves(self, request: &CloudRequest) -> bool {
+        match self {
+            Self::Files => true,
+            Self::Accounts => !matches!(request, CloudRequest::File { .. }),
+        }
+    }
 }
 
 /// A mount's health, as it last reported it.
@@ -283,5 +336,40 @@ mod tests {
             socket_in(Path::new("/run/user/1000")),
             Path::new("/run/user/1000/tilo-fs-cloud/control.sock")
         );
+        let files = files_socket_in(Path::new("/run/user/1000"));
+        assert_eq!(
+            files,
+            Path::new("/run/user/1000/tilo-fs-cloud-files/files.sock")
+        );
+        assert!(
+            !files.starts_with(Path::new("/run/user/1000").join(RUNTIME_DIR_NAME)),
+            "a grant of the account socket's directory must not reach the file socket"
+        );
+    }
+
+    #[test]
+    fn only_the_file_socket_serves_file_requests() {
+        let file = CloudRequest::File {
+            account: "a".into(),
+            request: FileRequest::ShareLink {
+                path: "x.txt".into(),
+            },
+        };
+        assert!(!CloudSocket::Accounts.serves(&file));
+        assert!(CloudSocket::Files.serves(&file));
+        let account = "a".to_owned();
+        for request in [
+            CloudRequest::List,
+            CloudRequest::SyncNow {
+                account: account.clone(),
+            },
+            CloudRequest::Pause {
+                account: account.clone(),
+            },
+            CloudRequest::Resume { account },
+        ] {
+            assert!(CloudSocket::Accounts.serves(&request));
+            assert!(CloudSocket::Files.serves(&request));
+        }
     }
 }

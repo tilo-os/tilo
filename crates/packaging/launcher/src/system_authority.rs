@@ -27,7 +27,8 @@
 //! - the `PipeWire` socket, when the session runs it (printing stays behind
 //!   the Print portal: no sandbox reaches the print spooler's socket);
 //! - the cloud account service's runtime directory with its control socket:
-//!   sync now, pause and resume a mounted account (no credential crosses it);
+//!   sync now, pause and resume a mounted account (no credential crosses it,
+//!   and file requests are served only on a socket outside this grant);
 //! - the compositor's runtime state files (`$XDG_RUNTIME_DIR/tilo`: the
 //!   connected displays, input devices), read-only, with every
 //!   subdirectory (capabilities, identity projections, service sockets)
@@ -156,7 +157,9 @@ fn runtime_state_in(dir: PathBuf) -> Option<RuntimeState> {
 /// its mount control socket (`runtime_fs::cloud::socket_in`; no credential
 /// crosses it). The directory is bound rather than the socket: it lasts the
 /// whole session (user tmpfiles, `RuntimeDirectoryPreserve=`), so a service
-/// restart's new socket shows through.
+/// restart's new socket shows through. That socket only lists, syncs, pauses
+/// and resumes mounts; file requests (revisions, restore, share links) are
+/// served on the file socket in `tilo-fs-cloud-files`, which is not bound.
 fn authority_sockets(uid: u32) -> Vec<PathBuf> {
     vec![
         PathBuf::from(format!("/run/user/{uid}/pipewire-0")),
@@ -342,6 +345,17 @@ mod tests {
             assert!(!grants(other, &declared), "{other}");
             assert!(resolve(other, &declared, 1000).is_none(), "{other}");
         }
+    }
+
+    #[test]
+    fn the_cloud_grant_reaches_account_control_and_never_file_requests() {
+        let sockets = authority_sockets(1000);
+        assert!(sockets.contains(&PathBuf::from("/run/user/1000/tilo-fs-cloud")));
+        let files = std::path::Path::new("/run/user/1000/tilo-fs-cloud-files/files.sock");
+        assert!(
+            !sockets.iter().any(|bound| files.starts_with(bound)),
+            "Settings' grant reaches the cloud file socket: {sockets:?}"
+        );
     }
 
     #[test]
