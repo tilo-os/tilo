@@ -105,12 +105,13 @@ pub(crate) fn may_issue_invitation(
     let room = workspace.room;
     match native_governor {
         Some(governor) if person_id_of(governor).as_ref() == Some(local_user) => InviteRoute::Relay,
-        Some(_) => InviteRoute::ViaGovernor,
         None if tree.requires_native_owner(room) => {
             InviteRoute::Refused(InviteRefusal::AuthorityUnavailable)
         }
         None if tree.governs_room(room) => InviteRoute::ShareOnRelay,
-        None => InviteRoute::ViaGovernor,
+        // Another person's relay governs the room, or another device the
+        // self-governed one.
+        Some(_) | None => InviteRoute::ViaGovernor,
     }
 }
 
@@ -140,16 +141,13 @@ pub(crate) fn active_invite_route(state: &ChromeState) -> Option<InviteRoute> {
     let governor = native_governor(owner, room);
     let local_user = state.local_user_for_room(&room);
     let tree = state.tree();
-    let workspace = tree
+    let route = tree
         .desktop
         .active_workspace()
-        .filter(|workspace| workspace.id == local && workspace.room == room)?;
-    Some(may_issue_invitation(
-        &tree,
-        workspace,
-        &local_user,
-        governor,
-    ))
+        .filter(|workspace| workspace.id == local && workspace.room == room)
+        .map(|workspace| may_issue_invitation(&tree, workspace, &local_user, governor));
+    drop(tree);
+    route
 }
 
 #[cfg(test)]
@@ -175,25 +173,26 @@ mod tests {
         )
         .expect("person id");
         let handle = test_tree_of(&owner);
-        {
-            let mut tree = handle.write();
-            // The device's default person is somebody other than the
-            // identity this workspace selects.
-            tree.local_person = Some([0x35; 32]);
-            let workspace = tree
-                .desktop
-                .workspaces
-                .iter_mut()
-                .find(|workspace| workspace.room == room)
-                .expect("the enrolled room's workspace");
-            for person in [&workspace_identity, &member] {
-                workspace.capabilities.push(CapOverride::grant(
-                    Subject::person(person.clone()),
-                    Scope::Workspace,
-                    Verb::Invite,
-                ));
-            }
-        }
+        let grants = [&workspace_identity, &member].map(|person| {
+            CapOverride::grant(
+                Subject::person(person.clone()),
+                Scope::Workspace,
+                Verb::Invite,
+            )
+        });
+        let mut tree = handle.write();
+        // The device's default person is somebody other than the identity
+        // this workspace selects.
+        tree.local_person = Some([0x35; 32]);
+        tree.desktop
+            .workspaces
+            .iter_mut()
+            .find(|workspace| workspace.room == room)
+            .expect("the enrolled room's workspace")
+            .capabilities
+            .extend(grants);
+        drop(tree);
+
         let tree = handle.read();
         let workspace = tree
             .desktop
@@ -201,16 +200,15 @@ mod tests {
             .iter()
             .find(|workspace| workspace.room == room)
             .expect("the enrolled room's workspace");
+        let routes = [&workspace_identity, &member]
+            .map(|person| may_issue_invitation(&tree, workspace, person, Some(governor)));
+        drop(tree);
 
         assert_eq!(
-            may_issue_invitation(&tree, workspace, &workspace_identity, Some(governor)),
-            InviteRoute::Relay,
-            "the governing workspace identity issues through its relay"
-        );
-        assert_eq!(
-            may_issue_invitation(&tree, workspace, &member, Some(governor)),
-            InviteRoute::ViaGovernor,
-            "a delegated inviter is sent to the governor"
+            routes,
+            [InviteRoute::Relay, InviteRoute::ViaGovernor],
+            "the governing workspace identity issues through its relay; a \
+             delegated inviter is sent to the governor"
         );
     }
 }

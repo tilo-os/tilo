@@ -5927,8 +5927,14 @@ mod tests {
                 );
             }
 
-            let on = chrome_rc();
+            // Invitations go into a room this device governs: a roomless
+            // session has nothing to invite into. Without a broker the agent
+            // row (also an "Invite …") stays out of this ranking, as it does
+            // for a roomless session.
+            let on = chrome_with_room();
             on.borrow_mut().peer_sync_enabled = true;
+            on.borrow_mut()
+                .set_collab_unavailable("this phase ranks the peer rows alone");
             let cs = on.borrow();
             let mut hits = query(&cs, "invite");
             hits.sort_by_key(|r| -r.score);
