@@ -1178,7 +1178,20 @@ fn enforce_bundle_policy(
             }
         })
     } else {
-        runtime_bundle::verify_bundle_with(path, &verify_opts)
+        // A per-user bundle is writable by the user's unconfined processes,
+        // so every byte must be proven, not assumed: files sealed with
+        // fs-verity at install by their publisher-signed digest are proven
+        // by the kernel without being read, the rest are hashed in full.
+        runtime_bundle::verify_bundle_verity_with(path, &verify_opts).map(|(manifest, check)| {
+            tracing::debug!(
+                bundle = %path.display(),
+                by_verity = check.by_verity,
+                hashed = check.hashed,
+                hashed_bytes = check.hashed_bytes,
+                "per-user runtime verified"
+            );
+            manifest
+        })
     };
     match verified {
         Ok(manifest) => {
@@ -1288,10 +1301,12 @@ mod system_bundle_tree_policy_tests {
                 path: path.to_string(),
                 hash: "00".repeat(32),
                 size: 1,
+                verity: None,
             }],
             produced_at: 0,
             publisher_hex: None,
             signature_hex: None,
+            verity_signature_hex: None,
         }
     }
 
@@ -1350,6 +1365,131 @@ mod system_bundle_tree_policy_tests {
                 .uid(),
             0
         );
+    }
+}
+
+/// A per-user runtime is writable by the user's unconfined processes, so a
+/// launch must prove every byte (TIL-594): sealed files by their signed
+/// fs-verity digest without reading them, every other file by its hash.
+#[cfg(test)]
+#[cfg(unix)]
+mod per_user_runtime_verification_tests {
+    use super::*;
+    use std::path::Path;
+
+    const DYLIB: &str = "lib/libruntime_dylib.so";
+
+    /// A signed per-user runtime under `parent` whose toolkit dylib is
+    /// `dylib_size` bytes, and launch options that pin its publisher.
+    fn per_user_runtime(
+        parent: &Path,
+        dylib_size: usize,
+    ) -> (tempfile::TempDir, PathBuf, RunOptions) {
+        let work = tempfile::tempdir_in(parent).unwrap();
+        let host = work.path().join("host");
+        let loader = runtime_bundle::host_minimal_paths_for(std::env::consts::ARCH).unwrap()[0]
+            .trim_start_matches('/');
+        std::fs::create_dir_all(host.join(loader).parent().unwrap()).unwrap();
+        std::fs::write(host.join(loader), b"loader").unwrap();
+        let dylib = work.path().join("libruntime_dylib.so");
+        let bytes: Vec<u8> = (0..=250u8).cycle().take(dylib_size).collect();
+        std::fs::write(&dylib, bytes).unwrap();
+        let identity = runtime_bundle::Identity::generate();
+        let identity_path = work.path().join("identity.json");
+        std::fs::write(&identity_path, identity.to_json_bytes()).unwrap();
+        let bundle = work.path().join("tilo-runtime/2026.10");
+        runtime_bundle::build_bundle_with(
+            &bundle,
+            "2026.10",
+            &runtime_bundle::BuildOptions {
+                from: Some(&host),
+                arch: Some(std::env::consts::ARCH),
+                identity: Some(&identity_path),
+                extra_libs: &[dylib],
+            },
+        )
+        .unwrap();
+        let opts = RunOptions {
+            require_runtime_publisher: Some(identity.public_key_hex()),
+            ..Default::default()
+        };
+        (work, bundle, opts)
+    }
+
+    /// Replace `path` with its bytes but one, as anyone who can write the
+    /// per-user runtime directory can, sealed file or not.
+    fn replace_with_one_byte_changed(path: &Path) {
+        let mut bytes = std::fs::read(path).unwrap();
+        bytes[0] ^= 1;
+        std::fs::remove_file(path).unwrap();
+        std::fs::write(path, bytes).unwrap();
+    }
+
+    #[test]
+    fn a_modified_byte_in_an_unsealed_per_user_runtime_is_refused() {
+        let (_work, bundle, opts) = per_user_runtime(&std::env::temp_dir(), 3 * 4096);
+        enforce_bundle_policy(&bundle, &opts, false).unwrap();
+        replace_with_one_byte_changed(&bundle.join(DYLIB));
+        assert!(matches!(
+            enforce_bundle_policy(&bundle, &opts, false),
+            Err(RunError::RuntimeBundleSignature { .. })
+        ));
+    }
+
+    /// Bytes the calling thread has read: the other tests in this binary run
+    /// on other threads.
+    #[cfg(target_os = "linux")]
+    fn thread_bytes_read() -> u64 {
+        std::fs::read_to_string("/proc/thread-self/io")
+            .unwrap()
+            .lines()
+            .find_map(|line| line.strip_prefix("rchar: "))
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap()
+    }
+
+    /// A temporary directory on a filesystem with fs-verity:
+    /// `TILO_FSVERITY_DIR`, else the system temporary directory.
+    fn verity_dir() -> Result<tempfile::TempDir, String> {
+        let base = std::env::var_os("TILO_FSVERITY_DIR")
+            .filter(|dir| !dir.is_empty())
+            .map_or_else(std::env::temp_dir, PathBuf::from);
+        let dir = tempfile::tempdir_in(&base).map_err(|e| format!("{}: {e}", base.display()))?;
+        let probe = dir.path().join("probe");
+        std::fs::write(&probe, b"probe").map_err(|e| e.to_string())?;
+        runtime_bundle::verity::enable(&probe).map_err(|e| format!("{}: {e}", base.display()))?;
+        Ok(dir)
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn per_user_runtime_launch_does_not_hash_payload() {
+        let dir = tilo_test_env::require_capability!(
+            FsVerity,
+            verity_dir(),
+            "no fs-verity filesystem to install a runtime on"
+        );
+        let (_work, bundle, opts) = per_user_runtime(dir.path(), 64 << 20);
+        let manifest = runtime_bundle::verify_bundle_with(&bundle, &Default::default()).unwrap();
+        runtime_bundle::enable_bundle_verity(&bundle, &manifest).unwrap();
+
+        // phase: the_launch_reads_none_of_the_payload
+        let before = thread_bytes_read();
+        let started = std::time::Instant::now();
+        enforce_bundle_policy(&bundle, &opts, false).unwrap();
+        let elapsed = started.elapsed();
+        let read = thread_bytes_read().saturating_sub(before);
+        eprintln!("per-user 64 MiB runtime verified in {elapsed:?}, {read} bytes read");
+        assert!(read < 1 << 20, "the launch read {read} bytes");
+
+        // phase: a_replaced_file_is_refused_before_the_sandbox_is_built
+        replace_with_one_byte_changed(&bundle.join(DYLIB));
+        assert!(matches!(
+            enforce_bundle_policy(&bundle, &opts, false),
+            Err(RunError::RuntimeBundleSignature { .. })
+        ));
     }
 }
 
