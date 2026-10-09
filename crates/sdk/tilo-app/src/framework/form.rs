@@ -167,7 +167,7 @@ where
         let slots = self.slots;
         actions.deferred_binding(P::ACTION.id, move || {
             let params = read::<P>(&slots)?;
-            let arguments = P::ACTION.try_arguments(&params)?;
+            let arguments = P::ACTION.arguments(&params)?;
             clear(&slots);
             Ok(arguments)
         })
