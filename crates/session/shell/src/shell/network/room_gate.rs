@@ -43,22 +43,22 @@ impl ShellNetwork {
             | NeighbourMsg::ScrollbackRequest { .. }
             | NeighbourMsg::ScrollbackResponse { .. }
             | NeighbourMsg::RecordContentWant { .. }
-            | NeighbourMsg::RecordContentPiece { .. } => Some(Verb::Read),
+            | NeighbourMsg::RecordContentPiece { .. }
             // Ephemeral presence and liveness of a member who can see the
             // room; nothing is written to room state.
-            NeighbourMsg::PresenceMoved { .. }
+            | NeighbourMsg::PresenceMoved { .. }
             | NeighbourMsg::PresenceCleared { .. }
             | NeighbourMsg::Heartbeat { .. }
-            | NeighbourMsg::AppPresenceV2 { .. } => Some(Verb::Read),
+            | NeighbourMsg::AppPresenceV2 { .. }
             // The sender's own device certificate, which only the room
             // governor may promote into governance.
-            NeighbourMsg::IdentityAnnouncementV2 { .. } => Some(Verb::Read),
+            | NeighbourMsg::IdentityAnnouncementV2 { .. }
             // Each remote action is authorized per call against its own
             // declared permission.
-            NeighbourMsg::RemoteAction { .. } => Some(Verb::Read),
+            | NeighbourMsg::RemoteAction { .. }
             // Channel governance is steward-signed and hash-chained; access
             // requests and acks are how a reader obtains and confirms keys.
-            NeighbourMsg::MlsGovernance { .. }
+            | NeighbourMsg::MlsGovernance { .. }
             | NeighbourMsg::MlsAccessRequest { .. }
             | NeighbourMsg::MlsGovernanceAck { .. } => Some(Verb::Read),
             // Settled before the room gate: identity is how a sender becomes
@@ -68,12 +68,11 @@ impl ShellNetwork {
             | NeighbourMsg::MediaCapabilities { .. }
             | NeighbourMsg::PersonalContinuityRequest { .. }
             | NeighbourMsg::PersonalContinuityCheckpoint { .. }
-            | NeighbourMsg::PersonalWorkspaces { .. } => None,
+            | NeighbourMsg::PersonalWorkspaces { .. }
             // Retired generations, refused where they enter
             // (`NeighbourMsg::is_retired`).
-            NeighbourMsg::IdentityAnnouncement { .. } | NeighbourMsg::PermissionRequest { .. } => {
-                None
-            }
+            | NeighbourMsg::IdentityAnnouncement { .. }
+            | NeighbourMsg::PermissionRequest { .. } => None,
         }
     }
 }
