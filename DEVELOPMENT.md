@@ -239,7 +239,10 @@ the current numbers come from there, not from `docs/benchmarks/`. Read them with
 the new baseline start after an intended change (from main only); and
 `synthetic_series` with `synthetic_factor` multiplies a run's values to prove
 the gate. A 1.25 factor passes as pending in the first run of a series and fails
-in the second. Synthetic records never enter a real baseline.
+in the second. Synthetic records never enter a real baseline, and `fetch` leaves
+them out (it says how many on stderr; `--synthetic` prints them too): their
+values are multiplied on purpose and their `regression` verdicts are the gate
+test, not a measurement.
 
 The installed desktop's groups, `boot`, `idle`, `memory`, `app` and `render`, come from
 **Dev / VM acceptance** (`vm-acceptance.yml`) instead: its nightly run already boots the
