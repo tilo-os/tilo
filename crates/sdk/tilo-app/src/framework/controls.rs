@@ -63,6 +63,32 @@ thread_local! {
     /// Whether a control bound to something the resource does not publish
     /// is a failure rather than a disabled control: in tests and checks.
     static STRICT: Cell<bool> = const { Cell::new(false) };
+    /// Such controls, while a surface report collects them.
+    static UNBOUND: std::cell::RefCell<Option<Vec<String>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Collects the controls bound to something the resource does not publish
+/// until [`Self::finish`], instead of failing on the first.
+pub(crate) struct Collecting(());
+
+/// Start collecting unbound controls on this thread.
+pub(crate) fn collect_unbound() -> Collecting {
+    UNBOUND.with(|unbound| *unbound.borrow_mut() = Some(Vec::new()));
+    Collecting(())
+}
+
+impl Collecting {
+    /// What was collected, one sentence per control.
+    pub(crate) fn finish(self) -> Vec<String> {
+        UNBOUND.with(|unbound| unbound.borrow_mut().take().unwrap_or_default())
+    }
+}
+
+impl Drop for Collecting {
+    fn drop(&mut self) {
+        UNBOUND.with(|unbound| *unbound.borrow_mut() = None);
+    }
 }
 
 /// Make a control bound to an action the resource does not publish a panic
@@ -77,6 +103,17 @@ pub(crate) fn strict_bindings() {
 /// # Panics
 /// Panics where bindings are strict ([`strict_bindings`]).
 pub(crate) fn unbound<R: Resource>(what: &str, why: &str) {
+    let collected = UNBOUND.with(|unbound| {
+        unbound.borrow_mut().as_mut().map(|unbound| {
+            unbound.push(format!(
+                "a control of `{}` is bound to {what}: {why}",
+                R::KIND
+            ));
+        })
+    });
+    if collected.is_some() {
+        return;
+    }
     assert!(
         !STRICT.with(Cell::get),
         "a control of `{}` is bound to {what}, which it cannot be: {why}",

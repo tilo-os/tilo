@@ -130,7 +130,7 @@ pub fn check_app(start: &Path) -> Result<ContractReport> {
 }
 
 /// The message ids of `locales/en-US.ftl`, when the app has one.
-fn source_catalog(app_dir: &Path) -> Result<Option<BTreeSet<String>>> {
+pub(crate) fn source_catalog(app_dir: &Path) -> Result<Option<BTreeSet<String>>> {
     let path = app_dir.join("locales/en-US.ftl");
     if !path.is_file() {
         return Ok(None);

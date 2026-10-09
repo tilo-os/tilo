@@ -36,6 +36,7 @@ pub mod portability;
 mod resource_kinds;
 pub mod size;
 pub mod standalone;
+pub mod surface;
 pub mod targets;
 pub mod web;
 
@@ -4669,7 +4670,7 @@ fn char_literal_length(bytes: &[u8], index: usize) -> Option<usize> {
     (bytes.get(index + 1 + width) == Some(&b'\'')).then_some(width + 2)
 }
 
-fn resolve_app_dir(start: &Path) -> Result<PathBuf> {
+pub(crate) fn resolve_app_dir(start: &Path) -> Result<PathBuf> {
     let start = if start.is_file() {
         start.parent().unwrap_or(start)
     } else {
@@ -5489,7 +5490,8 @@ fn shipped_binaries(
     Ok(vec![(bin, path)])
 }
 
-/// Fill `payload` with the app's `payload/` tree and the built binaries.
+/// Fill `payload` with the app's `payload/` tree, its committed surface and
+/// the built binaries.
 fn stage_payload(
     spec: &AppPackageSpec,
     shipped: &[(String, PathBuf)],
@@ -5500,6 +5502,13 @@ fn stage_payload(
     let app_payload = spec.app_dir.join("payload");
     if app_payload.is_dir() {
         copy_payload_tree(&app_payload, payload)?;
+    }
+    // The committed public surface ships at the package root: what the OS
+    // offers of the app while it is not running.
+    let surface = spec.app_dir.join(surface::FILE);
+    if surface.is_file() {
+        std::fs::copy(&surface, payload.join(surface::FILE))
+            .with_context(|| format!("copying {}", surface.display()))?;
     }
     for (cargo_bin, payload_path) in shipped {
         let source = built

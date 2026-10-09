@@ -59,6 +59,8 @@ pub mod render_view;
 pub mod scenarios;
 #[path = "settings.rs"]
 pub mod settings;
+#[path = "surface_report.rs"]
+pub mod surface_report;
 #[path = "surface_semantics.rs"]
 pub mod surface_semantics;
 #[path = "typed_edit_labels.rs"]
