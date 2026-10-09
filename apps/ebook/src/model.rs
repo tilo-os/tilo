@@ -26,6 +26,8 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 use tilo_clock::unix_now_ms;
+use tilo_document::RichText;
+use ui::tilo_resource::{self, Bytes, JsonSchema, Model, Refusal};
 use uuid::Uuid;
 use vello::peniko::Color;
 
@@ -216,12 +218,13 @@ impl Span {
 
 /// What an annotation *is*. All three share one anchor so a unified
 /// sidebar/list can present them together.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Model)]
 #[serde(rename_all = "snake_case")]
 pub enum AnnoKind {
     /// A saved place. Anchors to a location; carries no range.
     Bookmark,
     /// A coloured marking over a passage. Anchors to a range; may carry a note.
+    #[default]
     Highlight,
     /// A free-text comment attached to a passage.
     Note,
@@ -254,9 +257,10 @@ impl AnnoKind {
 /// Highlight palette. Kept as a small enum (rather than raw RGB) so the colour
 /// stays semantic and the OS theme can map it to on-brand swatches. The reader
 /// resolves each to a concrete `Color` at draw time.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Model, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum HiColor {
+    #[default]
     Yellow,
     Green,
     Blue,
@@ -313,6 +317,11 @@ impl HiColor {
     }
 }
 
+/// The id an annotation is stored under in the library.
+pub fn annotation_key(id: Uuid) -> tilo_resource::Id {
+    tilo_resource::Id::from_raw(id.to_string())
+}
+
 /// Stable source coordinates for an annotation, independent of its identity,
 /// kind, payload, and highlight-group membership.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -324,13 +333,127 @@ pub struct AnnotationAnchor {
     pub excerpt: String,
 }
 
-/// One annotation. The reusable anchor contract: `doc_id` (which document),
-/// `chapter` (coarse location: spine index / page / section), `block`
-/// (paragraph index), `start`/`end` (char offsets, both 0 for a
-/// [`AnnoKind::Bookmark`]), and `excerpt` (a text snapshot so the sidebar
-/// renders without re-resolving and a reflow can re-locate the anchor).
-/// Payload is `kind` + `color` + `note`.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// One annotation as the library stores it. The reusable anchor contract:
+/// `doc_id` (which document), `chapter` (coarse location: spine index /
+/// page / section), `block` (paragraph index), `start`/`end` (char offsets,
+/// both 0 for a [`AnnoKind::Bookmark`]), and `excerpt` (a text snapshot so
+/// the sidebar renders without re-resolving and a reflow can re-locate the
+/// anchor). Payload is `kind` + `color` + `text`. What the reader draws and
+/// searches is its [`Annotation`].
+#[derive(Model, Clone, Debug, Default, PartialEq)]
+#[model(check = Mark::valid)]
+pub struct Mark {
+    /// The annotation's id: the key it is stored under.
+    #[model(readonly)]
+    pub id: Uuid,
+    /// The book it is in
+    #[model(readonly)]
+    pub doc_id: String,
+    /// Bookmark, highlight or note
+    #[model(readonly)]
+    pub kind: AnnoKind,
+    /// Chapter
+    pub chapter: usize,
+    /// Paragraph
+    pub block: usize,
+    /// Where in the paragraph it starts
+    pub start: usize,
+    /// Where in the paragraph it ends
+    pub end: usize,
+    /// The passage
+    #[model(label)]
+    pub excerpt: String,
+    /// The note or comment as written.
+    #[model(whole)]
+    pub text: RichText,
+    /// Colour
+    pub color: HiColor,
+    /// When it was made, ms since epoch. Used to sort the sidebar.
+    pub created: u64,
+    /// The logical annotation this row belongs to. A multi-paragraph
+    /// highlight is one [`AnnoKind::Highlight`] row per spanned block,
+    /// sharing one `group` (one click, one delete); comments on it are
+    /// [`AnnoKind::Note`] rows carrying the same `group`. A standalone
+    /// bookmark or note is its own group (`group == id`).
+    #[model(readonly)]
+    pub group: Uuid,
+}
+
+/// The longest passage an annotation keeps as its excerpt, in bytes.
+pub const MAX_EXCERPT_BYTES: usize = 16 * 1024;
+/// The longest note or comment, in bytes.
+pub const MAX_NOTE_BYTES: usize = 64 * 1024;
+
+impl Mark {
+    /// The id the annotation is stored under in the library.
+    pub fn key(&self) -> tilo_resource::Id {
+        annotation_key(self.id)
+    }
+
+    /// A range that ends before it starts, or a passage or note too long
+    /// to keep, is refused however it arrives.
+    fn valid(&self) -> Result<(), Refusal> {
+        if self.start > self.end {
+            return Err(Refusal::new("an annotation ends where it starts or later"));
+        }
+        if self.excerpt.len() > MAX_EXCERPT_BYTES {
+            return Err(Refusal::new("the annotated passage is too long"));
+        }
+        if self.text.text().len() > MAX_NOTE_BYTES {
+            return Err(Refusal::new("the note is too long"));
+        }
+        Ok(())
+    }
+
+    /// What the reader draws and searches of it.
+    pub fn annotation(&self) -> Annotation {
+        let blocks = self.text.state().map_or_else(Vec::new, |state| {
+            state
+                .body()
+                .all()
+                .filter_map(|id| state.block(id))
+                .map(|block| tilo_rich_text::content_of(block))
+                .collect()
+        });
+        Annotation {
+            id: self.id,
+            doc_id: self.doc_id.clone(),
+            kind: self.kind,
+            chapter: self.chapter,
+            block: self.block,
+            start: self.start,
+            end: self.end,
+            excerpt: self.excerpt.clone(),
+            note: self.text.text(),
+            blocks,
+            color: self.color,
+            created: self.created,
+            group: self.group,
+        }
+    }
+
+    /// Stored as `annotation` says, its note written as plain text.
+    pub fn of(annotation: &Annotation) -> Self {
+        Self {
+            id: annotation.id,
+            doc_id: annotation.doc_id.clone(),
+            kind: annotation.kind,
+            chapter: annotation.chapter,
+            block: annotation.block,
+            start: annotation.start,
+            end: annotation.end,
+            excerpt: annotation.excerpt.clone(),
+            text: RichText::from_markdown(annotation.note.clone()),
+            color: annotation.color,
+            created: annotation.created,
+            group: annotation.group,
+        }
+    }
+}
+
+/// One annotation as the reader draws and searches it: a [`Mark`] with its
+/// note read as text and as the editor's blocks.
+#[derive(Clone, Debug, PartialEq)]
 pub struct Annotation {
     pub id: Uuid,
     pub doc_id: String,
@@ -343,19 +466,12 @@ pub struct Annotation {
     /// The note or comment's plain text: what search, labels and the
     /// palette read.
     pub note: String,
-    /// The note or comment as written, as the editor shows it. Read from
-    /// the document, never serialized with the annotation.
-    #[serde(skip)]
+    /// The note or comment as written, as the editor shows it.
     pub blocks: Vec<ui::widget::BlockContent>,
     pub color: HiColor,
     /// Creation time, ms since epoch. Used to sort the sidebar.
     pub created: u64,
-    /// The logical annotation this row belongs to. A multi-paragraph
-    /// highlight is one [`AnnoKind::Highlight`] row per spanned block,
-    /// sharing one `group` (one click, one delete); comments on it are
-    /// [`AnnoKind::Note`] rows carrying the same `group`. A standalone
-    /// bookmark or note is its own group (`group == id`).
-    #[serde(default = "Uuid::new_v4")]
+    /// See [`Mark::group`].
     pub group: Uuid,
 }
 
@@ -377,6 +493,16 @@ impl Annotation {
             created: unix_now_ms(),
             group: id,
         }
+    }
+
+    /// The id the annotation is stored under in the library.
+    pub fn key(&self) -> tilo_resource::Id {
+        annotation_key(self.id)
+    }
+
+    /// Whether this row is a comment on a highlight.
+    pub fn is_comment(&self) -> bool {
+        self.kind == AnnoKind::Note && self.group != self.id
     }
 
     pub fn anchor(&self) -> AnnotationAnchor {
@@ -417,9 +543,10 @@ impl Annotation {
 
 /// One of the three classic e-reader page tints. These tint the *content
 /// surface* (the page), layered on top of the OS theme that drives all chrome.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Model)]
 #[serde(rename_all = "snake_case")]
 pub enum ReadTheme {
+    #[default]
     Light,
     Sepia,
     Dark,
@@ -466,9 +593,10 @@ impl ReadTheme {
 /// slice of the flow is shown. `Paged` turns whole pages; `Continuous`
 /// scrolls by pixels and rolls into the next/previous chapter at the ends;
 /// `TwoUp` shows two facing pages and turns them together.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Model)]
 #[serde(rename_all = "snake_case")]
 pub enum ReadMode {
+    #[default]
     Paged,
     Continuous,
     TwoUp,
@@ -477,7 +605,7 @@ pub enum ReadMode {
 /// Paragraph-composition policy used by the reader. `Book` enables the full
 /// typesetting pipeline; `Ragged` keeps natural spacing and disables automatic
 /// hyphenation/micro-expansion for readers who prefer an uneven right edge.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Model)]
 #[serde(rename_all = "snake_case")]
 pub enum CompositionStyle {
     #[default]
@@ -557,8 +685,9 @@ impl ReadMode {
 /// the other reading faces the system ships, by its name
 /// ([`ui::ReadingFace::name`]); `Named` targets a specific installed family
 /// the reader picked from the system font list.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum FontKind {
+    #[default]
     Default,
     Serif,
     Mono,
@@ -566,8 +695,10 @@ pub enum FontKind {
     Named(String),
 }
 
+tilo_resource::json_model!(FontKind);
+
 impl FontKind {
-    /// Encode as a single scalar string for the CRDT.
+    /// Encode as a single scalar string.
     pub fn as_code(&self) -> String {
         match self {
             FontKind::Default => "default".to_string(),
@@ -601,12 +732,19 @@ impl FontKind {
 /// reads larger or smaller). `shown` controls whether it appears in the quick
 /// display-settings font row. Unlike colour schemes, fonts are **not**
 /// duplicable — a face is a face; there is no per-instance colour to vary.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, Model)]
+#[model(check = FontEntry::valid)]
 pub struct FontEntry {
+    /// The font's id: the key it is stored under.
+    #[model(readonly)]
     pub id: String,
+    /// The face it resolves to
     pub kind: FontKind,
+    /// Name
+    #[model(label)]
     pub name: String,
-    /// Multiplier on top of the global text-size setting. Clamped to bounds.
+    /// Multiplier on top of the global text-size setting, within
+    /// [`Self::MULT_MIN`]..=[`Self::MULT_MAX`].
     pub size_mult: f32,
     /// Whether this font appears in the quick display-settings picker.
     pub shown: bool,
@@ -615,6 +753,20 @@ pub struct FontEntry {
 impl FontEntry {
     pub const MULT_MIN: f32 = 0.7;
     pub const MULT_MAX: f32 = 1.4;
+
+    fn valid(&self) -> Result<(), Refusal> {
+        if !self.size_mult.is_finite()
+            || !(Self::MULT_MIN..=Self::MULT_MAX).contains(&self.size_mult)
+        {
+            return Err(Refusal::new(
+                "a font's size is between 0.7 and 1.4 times the text size",
+            ));
+        }
+        if self.name.trim().is_empty() {
+            return Err(Refusal::new("a font has a name"));
+        }
+        Ok(())
+    }
 
     pub fn new(id: &str, kind: FontKind, name: &str, size_mult: f32, shown: bool) -> Self {
         Self {
@@ -705,20 +857,39 @@ pub type PaletteParts = ([u8; 3], [u8; 3], [u8; 3], [u8; 3], [u8; 3], [u8; 3]);
 /// a dark flag. The rest of the palette (faint edges, dim ink, rules, code
 /// chips) is **derived**, so a scheme stays coherent from just these three
 /// colours — and so a whole scheme can be spun up from one background colour.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, Model)]
+#[model(check = ColorScheme::valid)]
 pub struct ColorScheme {
+    /// The scheme's id: the key it is stored under.
+    #[model(readonly)]
     pub id: String,
+    /// Name
+    #[model(label)]
     pub name: String,
+    /// Page colour
     pub page: [u8; 3],
+    /// Text colour
     pub ink: [u8; 3],
+    /// Accent colour
     pub accent: [u8; 3],
+    /// Whether the page is dark
     pub dark: bool,
+    /// Whether it is offered
     pub enabled: bool,
     /// Built-in presets can be disabled/duplicated but never deleted or edited.
+    #[model(readonly)]
     pub builtin: bool,
 }
 
 impl ColorScheme {
+    fn valid(&self) -> Result<(), Refusal> {
+        if self.name.trim().is_empty() {
+            Err(Refusal::new("a colour scheme has a name"))
+        } else {
+            Ok(())
+        }
+    }
+
     /// The three editable colours, labelled — drives the per-colour editor.
     pub fn slots(&self) -> [(&'static str, [u8; 3]); 3] {
         [
@@ -835,11 +1006,13 @@ pub fn default_schemes() -> Vec<ColorScheme> {
 
 /// Global reading preferences, shared across the library and persisted in the
 /// CRDT so collaborators see a consistent layout when reading together.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Model)]
+#[model(check = Settings::valid)]
 pub struct Settings {
-    /// Body font size multiplier; 1.0 == 19px base. Clamped to [0.8, 2.0].
+    /// Text size: a multiplier of the 19px base, within 0.8 to 2.0.
     pub font_scale: f32,
-    /// Line-height multiplier on top of the font's own 1.25. [0.95, 1.6].
+    /// Line spacing: a multiplier on top of the font's own 1.25, within
+    /// 0.95 to 1.6.
     pub line_spacing: f32,
     /// Id of the selected [`FontEntry`] in the registry. Empty means "use the
     /// registry default".
@@ -879,6 +1052,24 @@ impl Settings {
     pub const SPACING_MIN: f32 = 0.95;
     pub const SPACING_MAX: f32 = 1.6;
 
+    fn valid(&self) -> Result<(), Refusal> {
+        let within =
+            |value: f32, min: f32, max: f32| value.is_finite() && (min..=max).contains(&value);
+        if !within(
+            self.font_scale,
+            Self::READING_SCALE_MIN,
+            Self::READING_SCALE_MAX,
+        ) {
+            return Err(Refusal::new(
+                "the text size is between 0.8 and 2 times the base",
+            ));
+        }
+        if !within(self.line_spacing, Self::SPACING_MIN, Self::SPACING_MAX) {
+            return Err(Refusal::new("the line spacing is between 0.95 and 1.6"));
+        }
+        Ok(())
+    }
+
     /// Base body size in logical px before the scale multiplier.
     pub const BODY_CONTENT_PX: f32 = 19.0;
 
@@ -893,8 +1084,9 @@ impl Settings {
 }
 
 /// Where the reader left off in one book.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize, Model)]
 pub struct Progress {
+    /// Chapter
     pub chapter: usize,
     /// The first block (paragraph, heading, …) on screen, counted from 0 in
     /// the chapter. A block, not a page number, so the reader lands on the
@@ -919,9 +1111,10 @@ impl Progress {
 
 /// How the library shelf orders its books. Persisted so the shelf keeps the
 /// reader's chosen ordering across sessions and collaborators.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Model)]
 #[serde(rename_all = "snake_case")]
 pub enum LibrarySort {
+    #[default]
     Title,
     Author,
     /// Most-recently-opened first.
@@ -964,36 +1157,102 @@ impl LibrarySort {
     }
 }
 
-/// One book the reader has added to their library, persisted in the CRDT.
-/// Keyed by the content-hash [`id`](Book::id): re-adding the same file
-/// updates the same entry, and a workspace-shared book keeps one identity
-/// everywhere. Its device path is deliberately *not* part of this replicated
-/// record: a peer can resolve a shared object from its content id, while local
-/// source locations remain private to the device that granted them.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// One book the reader has added to their library. Stored under the
+/// content-hash [`id`](Book::id): re-adding the same file updates the same
+/// entry, and a workspace-shared book keeps one identity everywhere. Its
+/// device path is deliberately *not* part of the library: a peer can resolve
+/// a shared object from its content id, while local source locations remain
+/// private to the device that granted them.
+#[derive(Model, Clone, Debug, Default, PartialEq)]
+#[model(check = LibraryEntry::valid)]
 pub struct LibraryEntry {
     /// Content-hash id, shared with the book's annotations + progress.
+    #[model(readonly)]
     pub id: String,
     /// Whether a content-addressed copy is available in the collaborative
     /// workspace. Its filename is deterministically derived from [`Self::id`],
     /// so no host-specific path needs replication.
+    #[model(readonly)]
     pub shared: bool,
+    /// Title
+    #[model(label)]
     pub title: String,
+    /// Author
     pub author: String,
+    /// Subject
     pub subject: String,
     /// When the book was first added (ms since epoch), for a "recently added"
     /// reading of the shelf.
+    #[model(readonly)]
     pub added: u64,
-    /// Full BLAKE3 hash of the EPUB when its bytes are in a host content store
-    /// (`tilo_content`), where a device without the file finds them.
-    pub content: Option<String>,
+    /// The EPUB's bytes, by reference to a host content store
+    /// (`tilo_content`) where a device without the file finds them; empty
+    /// when only the devices holding the file read it.
+    #[model(readonly)]
+    pub content: Bytes,
+}
+
+/// The longest title, author or subject a shelf row keeps, in bytes.
+const MAX_LABEL_BYTES: usize = 4 * 1024;
+
+impl LibraryEntry {
+    /// The id the book is stored under in the library.
+    pub fn key(&self) -> tilo_resource::Id {
+        tilo_resource::Id::from_raw(self.id.clone())
+    }
+
+    /// The content-store hash of the book's bytes, when the row names them.
+    pub fn content_hash(&self) -> Option<String> {
+        match &self.content {
+            Bytes::Empty => None,
+            content => Some(
+                blake3::Hash::from_bytes(content.hash())
+                    .to_hex()
+                    .to_string(),
+            ),
+        }
+    }
+
+    /// Bytes the content store keeps as `hash` (its hex form), `len` long.
+    pub fn stored(hash: &str, len: u64) -> Option<Bytes> {
+        blake3::Hash::from_hex(hash).ok().map(|hash| Bytes::Blob {
+            hash: *hash.as_bytes(),
+            len,
+        })
+    }
+
+    /// A row names its book by `book:` and the start of its content hash,
+    /// and the content it names is that book's.
+    fn valid(&self) -> Result<(), Refusal> {
+        let tail = self
+            .id
+            .strip_prefix("book:")
+            .filter(|tail| !tail.is_empty() && !tail.chars().any(char::is_control))
+            .ok_or_else(|| Refusal::new("a book's id is book: and its content hash"))?;
+        if [&self.title, &self.author, &self.subject]
+            .iter()
+            .any(|text| text.len() > MAX_LABEL_BYTES)
+        {
+            return Err(Refusal::new(
+                "a book's title, author or subject is too long",
+            ));
+        }
+        if let Some(hash) = self.content_hash()
+            && hash.get(..32).is_none_or(|prefix| prefix != tail)
+        {
+            return Err(Refusal::new("the content named is not this book's"));
+        }
+        Ok(())
+    }
 }
 
 /// Persisted shelf preferences: the sort order and whether finished books are
 /// hidden.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Model)]
 pub struct LibraryPrefs {
+    /// How the shelf is sorted
     pub sort: LibrarySort,
+    /// Whether finished books are hidden
     pub hide_read: bool,
 }
 

@@ -30,11 +30,9 @@ use crate::reader_theme::ReaderPalette;
 use crate::resource::Ebook;
 
 /// The SDK editor a note or comment is written in, bound to the note's rich
-/// text: each keystroke is an [`EbookAction::EditNoteText`] the library's
+/// text: each keystroke is a field edit of the note's text the library's
 /// dispatcher applies, undone a word at a time. Enter asks to finish,
 /// Shift+Enter breaks the line and Escape cancels.
-///
-/// [`EbookAction::EditNoteText`]: crate::actions::EbookAction::EditNoteText
 pub(crate) struct NoteEditor {
     id: Uuid,
     host: tilo_rich_text::RichTextComposer<RichTextField>,
@@ -44,10 +42,10 @@ pub(crate) struct NoteEditor {
 
 impl NoteEditor {
     pub(crate) fn new(id: Uuid, hint: &str, library: Option<&Dispatcher<Ebook>>) -> Self {
-        let mut field =
-            RichTextField::view_only(move |doc| crate::doc::BooksDoc::annotation_text(doc, id));
+        let text = crate::resource::note_text(id);
+        let mut field = RichTextField::view_only(move |doc| text.object(doc));
         if let Some(library) = library {
-            field.attach(crate::actions::note_text_dispatcher(library, id));
+            field.attach(crate::resource::note_text_dispatcher(library, id));
         }
         let mut surface = RichTextSurface::field(field)
             .with_editor(
@@ -742,12 +740,10 @@ mod tests {
     fn note_composer_edits_through_shared_input_and_keeps_its_card_modal() {
         // --- phase: note_composer_writes_the_note_as_typed_and_enter_finishes ---
         {
-            let mut doc = AutoCommit::new();
             let note = crate::model::Annotation::new("book:x", crate::model::AnnoKind::Note, 0, 0)
                 .with_note("hello");
             let id = note.id;
-            crate::doc::BooksDoc::upsert_annotation(&mut doc, &note);
-            doc.commit();
+            let mut doc = crate::resource::doc_with(&[], std::slice::from_ref(&note));
             let library = crate::resource::library_dispatcher_for_test();
             let mut composer = NoteComposer::default();
             composer.open(id, Some(&library));
@@ -776,7 +772,8 @@ mod tests {
                 ));
             }
             let stored = |doc: &AutoCommit| {
-                crate::doc::BooksDoc::list_annotations(doc)
+                crate::resource::read_doc(doc)
+                    .marks()
                     .into_iter()
                     .find(|annotation| annotation.id == id)
                     .unwrap()

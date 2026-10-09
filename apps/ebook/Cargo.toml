@@ -33,8 +33,7 @@ blake3.workspace = true
 # Where a host that has no files for it (the browser) keeps an opened book's
 # bytes, by content hash; the library row names the hash.
 tilo-content = { path = "../../crates/system/content", default-features = false }
-# The Tilo ACTION model: Books' `actions` module exports its annotation-store
-# operations as replayable actions the host's Ctrl+K palette dispatches.
+# The published tree, effects and live rows the reader adds beside the library.
 tilo-actions = { path = "../../crates/collab/actions" }
 # Notes and comments are rich text, written in the SDK editor.
 tilo-document = { path = "../../crates/doc/tilo-document" }
@@ -58,6 +57,7 @@ tilo-thumbnail = { path = "../../crates/media/thumbnail" }
 unicode-bidi = "0.3.18"
 
 [dev-dependencies]
+tilo-history = { path = "../../crates/sdk/tilo-history" }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 tilo-test-env = { path = "../../crates/dev/test-env" }
 # Encodes cover fixtures.

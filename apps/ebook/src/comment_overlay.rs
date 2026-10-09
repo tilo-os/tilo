@@ -194,10 +194,11 @@ fn gather_content(
 
 /// Text shown for a note row when its shared editor is not active.
 fn comment_display(a: &Annotation) -> String {
-    if a.note.trim().is_empty() {
+    let note = a.note.clone();
+    if note.trim().is_empty() {
         "Empty comment".to_string()
     } else {
-        a.note.clone()
+        note
     }
 }
 
@@ -735,11 +736,9 @@ mod tests {
 
         // --- phase: comment_editor_writes_the_comment_as_typed_and_enter_finishes ---
         {
-            let mut doc = AutoCommit::new();
             let comment = annotation(AnnoKind::Note, Uuid::new_v4(), "");
             let id = comment.id;
-            crate::doc::BooksDoc::upsert_annotation(&mut doc, &comment);
-            doc.commit();
+            let mut doc = crate::resource::doc_with(&[], std::slice::from_ref(&comment));
             let library = crate::resource::library_dispatcher_for_test();
             let mut overlay = CommentOverlay::default();
             overlay.begin_editing(id, Some(&library));
@@ -766,9 +765,11 @@ mod tests {
                     key(Key::Character(ch.into()))
                 ));
             }
-            let stored = crate::doc::BooksDoc::list_annotations(&doc)
-                .into_iter()
-                .find(|annotation| annotation.id == id)
+            let stored = crate::resource::read_doc(&doc)
+                .annotations
+                .values()
+                .find(|mark| mark.id == id)
+                .map(crate::model::Mark::annotation)
                 .unwrap();
             assert_eq!(stored.note, "ok", "written as typed");
             assert!(press(

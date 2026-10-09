@@ -24,7 +24,11 @@
 #![cfg_attr(
     test,
     allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::indexing_slicing,
         clippy::string_slice,
+        clippy::panic,
         clippy::unreachable,
         clippy::float_cmp,
         reason = "in a test these are the assertion, not a hazard"
@@ -36,7 +40,6 @@ pub mod app;
 mod comment_overlay;
 pub mod component;
 pub mod content;
-pub mod doc;
 pub mod epub;
 mod hosted_dropdown;
 mod input_controls;
@@ -58,4 +61,4 @@ pub mod xhtml;
 
 pub use app::BooksApp;
 pub use component::definition;
-pub use resource::{BooksEffect, Ebook, EbookShell, EbookState};
+pub use resource::{BooksEffect, Ebook, EbookShell};

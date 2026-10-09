@@ -1,23 +1,7 @@
-[ratchets.hand_resource_impl]
-"apps/ebook/src/resource.rs" = 1
-
-[ratchets.action_decl_new]
-"apps/ebook/src/actions.rs" = 4
-
 [ratchets.action_address_new]
-"apps/ebook/src/actions.rs" = 3
 "apps/ebook/src/app.rs" = 2
 "apps/ebook/src/component_tests.rs" = 1
 "apps/ebook/src/search_provider.rs" = 5
 
-[ratchets.untyped_action_args]
-"apps/ebook/src/actions.rs" = 1
-
-[ratchets.action_spec]
-"apps/ebook/src/actions.rs" = 6
-"apps/ebook/src/search_provider.rs" = 8
-
 [ratchets.direct_automerge_write]
-"apps/ebook/src/content.rs" = 3
-"apps/ebook/src/doc.rs" = 82
 "apps/ebook/src/resource.rs" = 1

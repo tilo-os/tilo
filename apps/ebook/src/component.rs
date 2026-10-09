@@ -5,9 +5,10 @@ use ui::application::ApplicationDefinition;
 /// What Books opens when a host hands it a file.
 pub const EPUB_MEDIA_TYPE: &str = "application/epub+zip";
 
-/// The resource a book is addressed by in Books' action surface.
+/// The resource a book is addressed by in Books' action surface: its place
+/// in the library.
 pub fn book_resource(book_id: &str) -> String {
-    format!("ebook.book:{book_id}")
+    crate::resource::book_place_resource(book_id)
 }
 
 pub fn definition() -> &'static ApplicationDefinition {
