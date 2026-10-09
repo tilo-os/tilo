@@ -353,19 +353,18 @@ fn protocol_error(code: i32, message: &str) -> Value {
 }
 
 /// A line's reply, or `None` for a notification.
-type Reply<'a> =
-    std::pin::Pin<Box<dyn std::future::Future<Output = io::Result<Option<Value>>> + Send + 'a>>;
+type Reply = io::Result<Option<Value>>;
 
 /// How a line is answered, relative to the lines after it.
 pub(crate) enum Answer<'a> {
     /// Before the next line is read, by the connection's own thread:
     /// `initialize`, whose run id and page detail every later call of the
     /// session reads, and a daemon's own native requests.
-    InOrder(std::pin::Pin<Box<dyn std::future::Future<Output = io::Result<Option<Value>>> + 'a>>),
+    InOrder(std::pin::Pin<Box<dyn std::future::Future<Output = Reply> + 'a>>),
     /// On the runtime, beside the session's other requests: a `tilo_cancel`
     /// or `tilo_status` answers while the `tilo_invoke` it is about waits.
     /// The session bounds how many of these work at once.
-    Overlapping(Reply<'static>),
+    Overlapping(std::pin::Pin<Box<dyn std::future::Future<Output = Reply> + Send>>),
 }
 
 /// `request` answered by `server`, as an MCP request on a line-framed
@@ -379,7 +378,7 @@ where
 {
     let server = std::sync::Arc::clone(server);
     let initialize = request.get("method").and_then(Value::as_str) == Some("initialize");
-    let reply = Box::pin(async move { Ok(server.handle(request).await) });
+    let reply = Box::pin(async move { Ok::<_, io::Error>(server.handle(request).await) });
     if initialize {
         Answer::InOrder(reply)
     } else {
