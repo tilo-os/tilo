@@ -1,23 +1,16 @@
-[ratchets.hand_resource_impl]
-"apps/chat/src/resource.rs" = 1
-
 [ratchets.action_address_new]
 "apps/chat/src/component_tests.rs" = 7
 "apps/chat/src/events.rs" = 1
-"apps/chat/src/feedback.rs" = 1
 "apps/chat/src/feedback/receipt_read/tests.rs" = 6
 "apps/chat/src/feedback/status_read/tests.rs" = 1
-"apps/chat/src/resource.rs" = 3
 "apps/chat/src/semantic_read/action/tests.rs" = 1
 
 [ratchets.untyped_action_args]
 "apps/chat/src/actions.rs" = 11
-"apps/chat/src/feedback.rs" = 2
 "apps/chat/src/semantic_read/action.rs" = 2
 
 [ratchets.action_spec]
 "apps/chat/src/actions.rs" = 10
-"apps/chat/src/feedback.rs" = 2
 "apps/chat/src/feedback/receipt_read.rs" = 1
 "apps/chat/src/feedback/status_read.rs" = 1
 "apps/chat/src/semantic_read/action.rs" = 1
@@ -25,8 +18,7 @@
 [ratchets.direct_automerge_write]
 "apps/chat/src/actions.rs" = 1
 "apps/chat/src/component_tests.rs" = 5
-"apps/chat/src/doc.rs" = 100
 "apps/chat/src/events.rs" = 1
-"apps/chat/src/feedback.rs" = 5
+"apps/chat/src/feedback.rs" = 2
 "apps/chat/src/feedback/receipt_read/tests.rs" = 1
 "apps/chat/src/semantic_read/tests.rs" = 2
