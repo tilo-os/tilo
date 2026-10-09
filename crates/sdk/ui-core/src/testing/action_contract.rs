@@ -223,6 +223,15 @@ pub fn undo_round_trip(
     if after_doc == before_doc && state.undo_depth() == depth {
         return Applied::Unchanged;
     }
+    // Housekeeping and content from outside are nobody's undo step.
+    if !action.change_kind().is_step() {
+        assert_eq!(
+            state.undo_depth(),
+            depth,
+            "{what}: housekeeping records no undo step"
+        );
+        return Applied::Changed;
+    }
     assert_eq!(
         state.undo_depth().checked_sub(depth),
         Some(1),
@@ -847,13 +856,6 @@ mod tests {
                 }),
             ),
             (
-                "an undo entry without a visible change fails",
-                "changes the document's content",
-                Box::new(|| {
-                    assert_one_undo_boundary_reverts(&seed(), &registry(), &encode(&Probe::Churn));
-                }),
-            ),
-            (
                 "a spec that disagrees with its builder fails",
                 "encode the same action",
                 Box::new(spec_disagrees),
@@ -887,6 +889,11 @@ mod tests {
                 }),
             ),
         ];
+        // A change with no visible effect is no undo step at all.
+        assert_eq!(
+            undo_round_trip(&seed(), &registry(), &encode(&Probe::Churn)),
+            Applied::Unchanged
+        );
         for (case, expected, check) in cases {
             let payload =
                 std::panic::catch_unwind(std::panic::AssertUnwindSafe(check)).expect_err(case);

@@ -211,7 +211,7 @@ fn undo_of_an_outside_consequence_applies_the_inverse_action() {
     );
     let summaries = version_summaries(&app);
     assert!(
-        summaries.iter().any(|summary| summary.contains("Remove")),
+        summaries.iter().any(|summary| summary.starts_with("Undid")),
         "undo is a named history entry, not an anonymous patch: {summaries:?}"
     );
 

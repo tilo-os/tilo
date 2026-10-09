@@ -1283,12 +1283,6 @@ impl<R: Resource> Decorator for ResourceRoot<R> {
     // The undo boundary of a surface's immediate actions this event; the
     // host records one step per event and author.
 
-    fn take_action_revert(
-        &mut self,
-    ) -> Option<(tilo_actions::EncodedAction, tilo_actions::EncodedAction)> {
-        self.dispatch.take_action_revert()
-    }
-
     // A surface's step stays open for the actions that continue it (the
     // letters of a word), which report no boundary of their own.
 

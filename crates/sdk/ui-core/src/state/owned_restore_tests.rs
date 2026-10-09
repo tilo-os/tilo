@@ -75,18 +75,8 @@ fn snapshot(state: &State) -> Snapshot {
         bytes: state.doc.clone().save(),
         heads: state.doc.base_heads(),
         pending: state.doc.pending_ops(),
-        undo: state
-            .undo
-            .undo_stack
-            .iter()
-            .map(|e| (e.before.clone(), e.after.clone()))
-            .collect(),
-        redo: state
-            .undo
-            .redo_stack
-            .iter()
-            .map(|e| (e.before.clone(), e.after.clone()))
-            .collect(),
+        undo: state.undo.brackets(&state.doc).0,
+        redo: state.undo.brackets(&state.doc).1,
         baseline: state.undo.last_heads.clone(),
         revision: state.history_revision(),
     }
@@ -125,8 +115,9 @@ fn owned_legacy_restores_are_exact_guarded_and_roll_back_only_owned_writes() {
         assert_eq!(
             change
                 .message()
-                .and_then(|s| tilo_actions::ActionContext::from_change_message(s)),
-            Some(context())
+                .and_then(|s| tilo_actions::ActionContext::from_change_message(s))
+                .map(unstamped),
+            Some(context().with_invoker(tilo_actions::ActionInvoker::actor("ada")))
         );
         assert_eq!(value(&state.doc), "old");
         assert_eq!(state.doc.get_actor(), &actor);
@@ -340,7 +331,11 @@ fn owned_restore_mixed_overlay_and_undo_preserve_live_remote_operational_state()
         assert!(state.doc.get_change_by_hash(&head).is_some());
     }
     assert_eq!(
-        state.undo.redo_stack.last().unwrap().author,
+        state
+            .undo
+            .next_redo_as(&state.doc, Some(&UserId("ada".into())))
+            .unwrap()
+            .author,
         Some(UserId("ada".into()))
     );
 }
@@ -352,18 +347,11 @@ pub(crate) struct HistorySnapshot {
     baseline: Vec<ChangeHash>,
     revision: u64,
 }
-pub(crate) fn history_snapshot(history: &UndoLog) -> HistorySnapshot {
+pub(crate) fn history_snapshot(history: &UndoLog, doc: &AutoCommit) -> HistorySnapshot {
+    let (undo, redo) = history.brackets(doc);
     HistorySnapshot {
-        undo: history
-            .undo_stack
-            .iter()
-            .map(|e| (e.before.clone(), e.after.clone()))
-            .collect(),
-        redo: history
-            .redo_stack
-            .iter()
-            .map(|e| (e.before.clone(), e.after.clone()))
-            .collect(),
+        undo,
+        redo,
         baseline: history.last_heads.clone(),
         revision: history.revision(),
     }
@@ -373,4 +361,12 @@ pub(crate) fn exhaust_history(history: &mut UndoLog) {
 }
 pub(crate) fn refuse_restored_result(refuse: bool) {
     VALIDATION_MODE.set(u8::from(refuse));
+}
+
+/// An entry as its caller gave it: without the undo step the history joined
+/// it to, which it must have.
+pub(crate) fn unstamped(mut context: tilo_actions::ActionContext) -> tilo_actions::ActionContext {
+    assert!(context.gesture.is_some(), "the change joined an undo step");
+    context.gesture = None;
+    context
 }

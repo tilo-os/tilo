@@ -1446,7 +1446,7 @@ fn legacy_restores_use_the_actual_owner_and_preserve_custody() {
                         );
                         assert_eq!(history.revision(), before.1 + 1);
                         assert_eq!(
-                            history.peek_last_undo().unwrap().author,
+                            history.peek_last_undo(doc).unwrap().author,
                             Some(crate::collaboration::local_user_id())
                         );
                         assert!(

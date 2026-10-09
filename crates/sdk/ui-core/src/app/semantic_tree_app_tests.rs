@@ -1051,10 +1051,8 @@ fn broker_and_directed_document_actions_preserve_pending_edits_and_ownership() {
         assert_eq!(context.app, ambient.app);
         assert_eq!(context.source_invocation, Some(admitted_invocation));
         assert_eq!(
-            app.state
-                .peek_last_undo()
-                .and_then(|entry| entry.author.as_ref()),
-            Some(&crate::permissions::UserId("agent:Scribe".into())),
+            app.state.peek_last_undo().and_then(|entry| entry.author),
+            Some(crate::permissions::UserId("agent:Scribe".into())),
             "undo attribution and durable history use the same actor"
         );
     }
@@ -1243,10 +1241,8 @@ fn broker_and_directed_document_actions_preserve_pending_edits_and_ownership() {
         assert!(admitted.is_ok(), "the authoritative broker admitted it");
         assert_eq!(counter(&app), 1);
         assert_eq!(
-            app.state
-                .peek_last_undo()
-                .and_then(|entry| entry.author.as_ref()),
-            Some(&crate::permissions::UserId("agent:Scribe".into()))
+            app.state.peek_last_undo().and_then(|entry| entry.author),
+            Some(crate::permissions::UserId("agent:Scribe".into()))
         );
     }
 
@@ -1922,10 +1918,8 @@ fn an_effects_edit_is_applied_for_its_invoker_before_it_answers() {
     );
     assert_eq!(counter(&app), 1, "the effect's edit was applied");
     assert_eq!(
-        app.state
-            .peek_last_undo()
-            .and_then(|entry| entry.author.as_ref()),
-        Some(&crate::permissions::UserId("agent:Scribe".into())),
+        app.state.peek_last_undo().and_then(|entry| entry.author),
+        Some(crate::permissions::UserId("agent:Scribe".into())),
         "by the effect's invoker, not the person at the device"
     );
     assert!(
@@ -1955,10 +1949,8 @@ fn an_effects_edit_is_applied_for_its_invoker_before_it_answers() {
     .expect("the local person bumps");
     assert_eq!(counter(&app), 2);
     assert_eq!(
-        app.state
-            .peek_last_undo()
-            .and_then(|entry| entry.author.as_ref()),
-        Some(&crate::permissions::UserId(local))
+        app.state.peek_last_undo().and_then(|entry| entry.author),
+        Some(crate::permissions::UserId(local))
     );
 }
 

@@ -153,7 +153,7 @@ fn standalone_history_restores_a_record_as_one_undoable_change() {
                 }))
             ));
             assert_eq!(context.app.unwrap().id, binding.app_id);
-            let entry = history.peek_last_undo().unwrap();
+            let entry = history.peek_last_undo(doc).unwrap();
             assert_eq!(entry.before, reviewed);
             assert_eq!(entry.author, Some(binding.author.clone()));
             assert_eq!(entry.instance_id, Some(binding.instance_id));

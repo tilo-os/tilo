@@ -917,7 +917,7 @@ fn ready_validation_failures_retain_the_last_owner_and_pending_history() {
             })
             .unwrap();
         let snapshot = |doc: &mut automerge::AutoCommit, history: &mut tilo_ui::state::UndoLog| {
-            let last = history.peek_last_undo().unwrap();
+            let last = history.peek_last_undo(doc).unwrap();
             (
                 doc.pending_ops(),
                 doc.base_heads(),
@@ -926,7 +926,7 @@ fn ready_validation_failures_retain_the_last_owner_and_pending_history() {
                 last.before.clone(),
                 last.after.clone(),
                 last.widget_metadata.clone(),
-                last.author.clone(),
+                last.author,
             )
         };
         let before = host.records.with_history(&checkout.id, snapshot).unwrap();

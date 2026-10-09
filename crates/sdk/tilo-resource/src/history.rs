@@ -35,7 +35,8 @@ pub struct Version {
     pub message: Option<String>,
 }
 
-fn version_of(meta: &automerge::ChangeMetadata<'_>) -> Version {
+/// One change as a version on the timeline.
+pub fn version_of(meta: &automerge::ChangeMetadata<'_>) -> Version {
     let message = meta.message.as_deref().map(str::to_owned);
     Version {
         hash: meta.hash,

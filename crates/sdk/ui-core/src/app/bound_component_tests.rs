@@ -1125,8 +1125,8 @@ fn bound_publication_and_cache_keep_contracts_and_id_lifetimes() {
         assert!(
             fixture
                 .records
-                .read_history(&fixture.bindings[0].checkout.id, |_, history| history
-                    .next_undo_in(&fixture.bindings[0].author, 11)
+                .read_history(&fixture.bindings[0].checkout.id, |doc, history| history
+                    .next_undo_in(doc, &fixture.bindings[0].author, 11)
                     .is_none())
                 .unwrap()
         );
@@ -1136,7 +1136,7 @@ fn bound_publication_and_cache_keep_contracts_and_id_lifetimes() {
                 assert!(doc.get(ROOT, "follow-up").unwrap().is_some());
                 assert_eq!(
                     history
-                        .next_undo_in(&fixture.bindings[1].author, 12)
+                        .next_undo_in(doc, &fixture.bindings[1].author, 12)
                         .unwrap()
                         .instance_id,
                     Some(12)
@@ -1505,8 +1505,8 @@ fn compound_bound_effects_preserve_typing_custody_and_redo() {
             }
             let b_entry = fixture
                 .records
-                .read_history(&a.checkout.id, |_, history| {
-                    history.next_undo_in(&b.author, b.instance_id).cloned()
+                .read_history(&a.checkout.id, |doc, history| {
+                    history.next_undo_in(doc, &b.author, b.instance_id)
                 })
                 .unwrap();
             assert_eq!(b_entry.is_some(), mode == 1);
@@ -1514,8 +1514,8 @@ fn compound_bound_effects_preserve_typing_custody_and_redo() {
                 assert!(
                     fixture
                         .records
-                        .read_history(&a.checkout.id, |_, history| history
-                            .next_undo_in(&a.author, a.instance_id)
+                        .read_history(&a.checkout.id, |doc, history| history
+                            .next_undo_in(doc, &a.author, a.instance_id)
                             .is_none())
                         .unwrap()
                 );
@@ -1643,8 +1643,8 @@ fn compound_bound_effects_preserve_typing_custody_and_redo() {
                 assert!(
                     fixture
                         .records
-                        .read_history(&a.checkout.id, |_, history| history
-                            .next_undo_in(&a.author, a.instance_id)
+                        .read_history(&a.checkout.id, |doc, history| history
+                            .next_undo_in(doc, &a.author, a.instance_id)
                             .is_none())
                         .unwrap()
                 );
@@ -2164,8 +2164,8 @@ fn bound_broker_routes_keep_the_chosen_contract_and_refuse_bad_witnesses() {
         assert!(
             fixture
                 .records
-                .read_history(&fixture.bindings[0].checkout.id, |_, history| history
-                    .next_undo_in(&fixture.bindings[0].author, 11)
+                .read_history(&fixture.bindings[0].checkout.id, |doc, history| history
+                    .next_undo_in(doc, &fixture.bindings[0].author, 11)
                     .is_none())
                 .unwrap()
         );
@@ -2248,7 +2248,10 @@ fn bound_broker_routes_keep_the_chosen_contract_and_refuse_bad_witnesses() {
                         assert!(doc.get(ROOT, "before-nested").unwrap().is_some());
                         assert!(doc.get(ROOT, "follow-up").unwrap().is_some());
                         assert_eq!(
-                            history.next_undo_in(&first.author, 12).unwrap().instance_id,
+                            history
+                                .next_undo_in(doc, &first.author, 12)
+                                .unwrap()
+                                .instance_id,
                             Some(12)
                         );
                     })

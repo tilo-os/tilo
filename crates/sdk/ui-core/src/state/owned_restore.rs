@@ -421,11 +421,12 @@ impl UndoLog {
         before: Vec<ChangeHash>,
         attribution: OwnedActionAttribution,
     ) -> OwnedActionReceipt {
-        let committed =
-            tilo_resource::history::commit_stamped_with_message(doc, attribution.message).is_some();
+        let message = self.stamp(attribution.message, attribution.author.as_ref());
+        let committed = tilo_resource::history::commit_stamped_with_message(doc, message).is_some();
         let after = doc.get_heads();
         if committed {
-            self.record_committed_span_owned(
+            self.record_committed_span(
+                doc,
                 before.clone(),
                 after.clone(),
                 attribution.focused_node_idx,

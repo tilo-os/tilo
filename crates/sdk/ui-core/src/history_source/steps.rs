@@ -74,7 +74,8 @@ impl Scope {
         )
     }
 
-    fn owns(&self, version: &Version) -> bool {
+    /// Whether a change is one of this scope's steps.
+    pub fn owns(&self, version: &Version) -> bool {
         let context = version.context.as_ref();
         let run = context
             .and_then(|context| context.group.as_ref())
@@ -187,7 +188,8 @@ fn nothing_to_undo(doc: &mut AutoCommit, scope: &Scope) -> String {
 }
 
 /// What one change was to the steps of its scope.
-enum Kind {
+#[derive(Clone, Debug)]
+pub(crate) enum Kind {
     /// An undo: the changes it took back.
     Undo(Vec<String>),
     /// A redo: the changes whose undo it reverted.
@@ -215,7 +217,11 @@ pub fn is_bookkeeping(patch: &Patch) -> bool {
     root_key(patch).is_some_and(|key| key.starts_with(BOOKKEEPING_PREFIX))
 }
 
-fn kind_of(doc: &mut AutoCommit, version: &Version) -> Kind {
+fn kind_of(doc: &AutoCommit, version: &Version) -> Kind {
+    kind_in(doc.committed_document(), version)
+}
+
+fn kind_in(doc: &automerge::Automerge, version: &Version) -> Kind {
     if tilo_doc::model::is_schema_genesis(version)
         || version
             .context
@@ -326,74 +332,234 @@ pub fn settle_compensation(doc: &mut AutoCommit, hash: ChangeHash) -> Result<(),
 /// that are in effect, at most `limit` of them. The changes of one gesture
 /// (the keystrokes of a word) are one step.
 fn undo_targets(doc: &mut AutoCommit, scope: &Scope, limit: usize) -> Vec<Version> {
-    let versions = tilo_resource::history::versions(doc);
-    let undone = undone(doc);
-    let mut superseded: HashSet<String> = HashSet::new();
-    let mut targets = Vec::new();
-    let mut steps = 0usize;
-    let mut gesture = None;
-    for version in versions.iter().rev().filter(|version| scope.owns(version)) {
-        let hash = version.hash.to_string();
-        match kind_of(doc, version) {
-            Kind::Undo(_) | Kind::Bookkeeping => continue,
-            // A redo stands for the steps it brought back: undoing it again
-            // takes them back, so they are not steps of their own any more.
-            Kind::Redo(brought_back) => superseded.extend(brought_back),
-            Kind::Edit if superseded.contains(&hash) => continue,
-            Kind::Edit => {}
+    doc.get_heads();
+    steps_in_effect(doc, &|version| scope.owns(version), limit)
+        .into_iter()
+        .flatten()
+        .collect()
+}
+
+/// A document's history read once and kept up to date: its changes in
+/// causal order and what each one was to the steps of its author. A
+/// change's kind never changes, so it is read once; new changes are read
+/// as they arrive.
+#[derive(Default)]
+pub struct StepIndex {
+    versions: Vec<Version>,
+    positions: std::collections::HashMap<ChangeHash, usize>,
+    kinds: std::collections::HashMap<ChangeHash, Kind>,
+    heads: Vec<ChangeHash>,
+}
+
+impl StepIndex {
+    /// Bring the index up to `doc`'s committed heads.
+    pub fn refresh(&mut self, doc: &AutoCommit) {
+        let heads = doc.base_heads();
+        if heads == self.heads {
+            return;
         }
-        if undone.contains(&hash) {
-            gesture = None;
-            continue;
+        let document = doc.committed_document();
+        let fresh = document.get_changes_meta(&self.heads);
+        for meta in &fresh {
+            if self.positions.contains_key(&meta.hash) {
+                continue;
+            }
+            let version = tilo_resource::history::version_of(meta);
+            self.positions.insert(version.hash, self.versions.len());
+            self.versions.push(version);
         }
-        let of = version.context.as_ref().and_then(|context| context.gesture);
-        if of.is_some() && of == gesture {
-            targets.push(version.clone());
-            continue;
-        }
-        if steps >= limit {
-            break;
-        }
-        steps += 1;
-        gesture = of;
-        targets.push(version.clone());
+        self.heads = heads;
     }
-    targets
+
+    /// Every change, oldest first.
+    pub fn versions(&self) -> &[Version] {
+        &self.versions
+    }
+
+    /// Where a change sits in causal order.
+    pub fn position(&self, hash: &ChangeHash) -> Option<usize> {
+        self.positions.get(hash).copied()
+    }
+
+    fn kind(&mut self, doc: &AutoCommit, index: usize) -> Kind {
+        let Some(version) = self.versions.get(index) else {
+            return Kind::Bookkeeping;
+        };
+        if let Some(kind) = self.kinds.get(&version.hash) {
+            return kind.clone();
+        }
+        let kind = kind_in(doc.committed_document(), version);
+        self.kinds.insert(version.hash, kind.clone());
+        kind
+    }
+
+    /// The steps in effect that `owns` claims, newest first, at most
+    /// `limit`: each step the consecutive changes `step_of` puts together
+    /// (one gesture), newest first. A step undone, or superseded by a redo
+    /// that stands for it, is not in effect. What one engine undoes,
+    /// whoever asks (Ctrl+Z, an agent's or a script's `undo`).
+    pub fn steps(
+        &mut self,
+        doc: &AutoCommit,
+        owns: &dyn Fn(&Version) -> bool,
+        step_of: &dyn Fn(&Version) -> Option<String>,
+        limit: usize,
+    ) -> Vec<Vec<Version>> {
+        self.refresh(doc);
+        let undone = undone(doc);
+        let mut superseded: HashSet<String> = HashSet::new();
+        let mut steps: Vec<Vec<Version>> = Vec::new();
+        let mut gesture = None;
+        for index in (0..self.versions.len()).rev() {
+            let Some(version) = self.versions.get(index) else {
+                continue;
+            };
+            if !owns(version) {
+                continue;
+            }
+            let hash = version.hash.to_string();
+            match self.kind(doc, index) {
+                Kind::Undo(_) | Kind::Bookkeeping => continue,
+                // Taken back again once what it brought back is undone.
+                Kind::Redo(brought_back)
+                    if brought_back.iter().all(|change| undone.contains(change)) =>
+                {
+                    continue;
+                }
+                // A redo stands for the steps it brought back: undoing it
+                // again takes them back, so they are not steps of their own.
+                Kind::Redo(brought_back) => superseded.extend(brought_back),
+                Kind::Edit if superseded.contains(&hash) => continue,
+                Kind::Edit => {}
+            }
+            let Some(version) = self.versions.get(index) else {
+                continue;
+            };
+            if undone.contains(&hash) {
+                gesture = None;
+                continue;
+            }
+            let of = step_of(version);
+            if of.is_some()
+                && of == gesture
+                && let Some(step) = steps.last_mut()
+            {
+                step.push(version.clone());
+                continue;
+            }
+            if steps.len() >= limit {
+                break;
+            }
+            gesture = of;
+            steps.push(vec![version.clone()]);
+        }
+        steps
+    }
+
+    /// The undos in effect that `owns` claims, newest first, at most
+    /// `limit`: what `redo` brings back. A newer step of the same owner ends
+    /// them.
+    pub fn undos(
+        &mut self,
+        doc: &AutoCommit,
+        owns: &dyn Fn(&Version) -> bool,
+        limit: usize,
+    ) -> Vec<Version> {
+        self.refresh(doc);
+        let undone = undone(doc);
+        let mut superseded: HashSet<String> = HashSet::new();
+        let mut targets = Vec::new();
+        for index in (0..self.versions.len()).rev() {
+            if targets.len() >= limit {
+                break;
+            }
+            let Some(version) = self.versions.get(index) else {
+                continue;
+            };
+            if !owns(version) {
+                continue;
+            }
+            let hash = version.hash.to_string();
+            match self.kind(doc, index) {
+                Kind::Undo(took_back) => {
+                    if took_back.iter().any(|change| undone.contains(change))
+                        && let Some(version) = self.versions.get(index)
+                    {
+                        targets.push(version.clone());
+                    }
+                }
+                Kind::Redo(brought_back) => superseded.extend(brought_back),
+                Kind::Bookkeeping => {}
+                Kind::Edit if undone.contains(&hash) || superseded.contains(&hash) => {}
+                Kind::Edit => break,
+            }
+        }
+        targets
+    }
+}
+
+/// The steps in effect that `owns` claims, newest first, at most `limit`,
+/// one gesture each (see [`StepIndex::steps`]).
+pub fn steps_in_effect(
+    doc: &AutoCommit,
+    owns: &dyn Fn(&Version) -> bool,
+    limit: usize,
+) -> Vec<Vec<Version>> {
+    StepIndex::default().steps(doc, owns, &gesture_of, limit)
+}
+
+/// The step a change recorded it belongs to.
+pub fn gesture_of(version: &Version) -> Option<String> {
+    version
+        .context
+        .as_ref()
+        .and_then(|context| context.gesture)
+        .map(|gesture| gesture.0.to_string())
 }
 
 /// What `undo` would take back for `scope` now: its last `limit` steps in
-/// effect, newest first, read from a copy so `doc` stays as it is.
+/// effect, newest first.
 pub fn undo_preview(doc: &AutoCommit, scope: &Scope, limit: usize) -> Vec<Version> {
-    let mut copy = doc.clone();
-    undo_targets(&mut copy, scope, limit)
+    steps_in_effect(doc, &|version| scope.owns(version), limit)
+        .into_iter()
+        .flatten()
+        .collect()
 }
 
 /// The undo changes `redo` would revert for `scope`, newest first. A step
 /// of the scope's own made after its undos ends them: redo never brings
 /// back work over newer work.
 fn redo_targets(doc: &mut AutoCommit, scope: &Scope, limit: usize) -> Vec<Version> {
-    let versions = tilo_resource::history::versions(doc);
-    let undone = undone(doc);
-    let mut superseded: HashSet<String> = HashSet::new();
-    let mut targets = Vec::new();
-    for version in versions.iter().rev().filter(|version| scope.owns(version)) {
-        if targets.len() >= limit {
-            break;
-        }
-        let hash = version.hash.to_string();
-        match kind_of(doc, version) {
-            Kind::Undo(took_back) => {
-                if took_back.iter().any(|change| undone.contains(change)) {
-                    targets.push(version.clone());
-                }
-            }
-            Kind::Redo(brought_back) => superseded.extend(brought_back),
-            Kind::Bookkeeping => {}
-            Kind::Edit if undone.contains(&hash) || superseded.contains(&hash) => {}
-            Kind::Edit => break,
-        }
+    doc.get_heads();
+    undos_in_effect(doc, &|version| scope.owns(version), limit)
+}
+
+/// The undos in effect that `owns` claims, newest first, at most `limit`
+/// (see [`StepIndex::undos`]).
+pub fn undos_in_effect(
+    doc: &AutoCommit,
+    owns: &dyn Fn(&Version) -> bool,
+    limit: usize,
+) -> Vec<Version> {
+    StepIndex::default().undos(doc, owns, limit)
+}
+
+/// What one undo change took back, by full hash; empty for any other
+/// change.
+pub fn took_back(doc: &AutoCommit, version: &Version) -> Vec<String> {
+    match kind_in(doc.committed_document(), version) {
+        Kind::Undo(hashes) => hashes,
+        _ => Vec::new(),
     }
-    targets
+}
+
+/// What one redo change brought back, by full hash; empty for any other
+/// change.
+pub fn brought_back(doc: &AutoCommit, version: &Version) -> Vec<String> {
+    match kind_in(doc.committed_document(), version) {
+        Kind::Redo(hashes) => hashes,
+        _ => Vec::new(),
+    }
 }
 
 /// A one-line name of a step for a sentence.

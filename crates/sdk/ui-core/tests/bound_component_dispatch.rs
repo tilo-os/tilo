@@ -2434,10 +2434,10 @@ fn driver_controls_resolve_bound_targets_to_their_record_owner() {
         assert!(observed[0].borrow().is_empty());
         assert_eq!(*observed[1].borrow(), vec!["View"]);
         host.records
-            .read_history(&checkout.id, |_, history| {
+            .read_history(&checkout.id, |doc, history| {
                 assert!(
                     history
-                        .next_undo_in(&crate::support::application::author(), 12)
+                        .next_undo_in(doc, &crate::support::application::author(), 12)
                         .is_none()
                 );
             })
@@ -2449,12 +2449,16 @@ fn driver_controls_resolve_bound_targets_to_their_record_owner() {
             .with_history(&checkout.id, |doc, history| {
                 let author = crate::support::application::author();
                 assert_eq!(
-                    history.next_undo_in(&author, 11).unwrap().author.as_ref(),
+                    history
+                        .next_undo_in(doc, &author, 11)
+                        .unwrap()
+                        .author
+                        .as_ref(),
                     Some(&author)
                 );
-                assert!(history.next_undo_in(&author, 12).is_none());
+                assert!(history.next_undo_in(doc, &author, 12).is_none());
                 history.undo_in(doc, &author, 11, None, None).unwrap();
-                assert!(history.next_undo_in(&author, 11).is_none());
+                assert!(history.next_undo_in(doc, &author, 11).is_none());
                 assert_eq!(
                     doc.get(automerge::ROOT, "body")
                         .unwrap()
@@ -2562,6 +2566,7 @@ fn driver_controls_resolve_bound_targets_to_their_record_owner() {
                         assert_eq!(
                             history
                                 .next_undo_in(
+                                    doc,
                                     &author(),
                                     11_u64.saturating_add(u64::try_from(index).unwrap())
                                 )

@@ -1977,12 +1977,6 @@ pub(crate) fn execute_resource_operation(
         }
         // Before apply, so a delete can still read the row it removes. Undo
         // of this span applies the compensating action instead of patches.
-        let undo_via = tilo_actions::executor::inverse_encoded_by(
-            doc,
-            action.as_ref(),
-            &document_writer(actor, doc),
-        );
-        note_compensating_action(doc, undo_via, encoded.clone());
         note_native_text_policy(widget, doc, &encoded);
         let applied = match execute_document(
             doc,
@@ -2538,7 +2532,6 @@ pub(crate) struct PendingRecordAction {
     metadata: Option<String>,
     context: tilo_actions::ActionContext,
     native_text: Option<NativeTextSpan>,
-    inverse: crate::state::CommittedSpanInverse,
 }
 
 struct NativeTextSpan {
@@ -2592,7 +2585,7 @@ impl RecordActionState {
         if let Some(pending) = &self.pending {
             tilo_resource::history::commit_stamped_with_message(
                 doc,
-                pending.context.change_message(),
+                pending.context.clone().in_step().change_message(),
             );
         } else if doc.pending_ops() != 0 {
             // Legacy widget input is not wrapped in a bound action frame.
@@ -2611,16 +2604,17 @@ impl RecordActionState {
         if let Some(pending) = self.pending.take() {
             tilo_resource::history::commit_stamped_with_message(
                 doc,
-                pending.context.change_message(),
+                pending.context.clone().in_step().change_message(),
             );
-            history.record_committed_span_with_inverse(
+            let after = doc.get_heads();
+            history.record_committed_span(
+                doc,
                 pending.before,
-                doc.get_heads(),
+                after,
                 None,
                 pending.metadata,
                 Some(pending.author),
                 Some(pending.instance_id),
-                pending.inverse,
             );
         }
         self.statuses.clear();
@@ -2654,10 +2648,6 @@ struct OperationSpan {
     cursor: Option<Vec<ChangeHash>>,
     effect: bool,
     violation: bool,
-    /// Compensating document action captured before `apply`, for undo.
-    undo_via: Option<tilo_actions::EncodedAction>,
-    /// The forward action, so redo runs through `apply` as well.
-    redo_via: Option<tilo_actions::EncodedAction>,
     native_text: Option<NativeTextPolicy>,
 }
 
@@ -2757,33 +2747,6 @@ pub(crate) fn authorize_current_resource_action(
         Ok(())
     } else {
         Err("resource action is unavailable under current permissions".into())
-    }
-}
-
-/// Stash the compensating action on the open span. `report_typed_action`
-/// records it with the undo entry. No span (a standalone widget) leaves the
-/// `ActionHost` path to record its own pair.
-fn note_compensating_action(
-    doc: &AutoCommit,
-    undo_via: Option<tilo_actions::EncodedAction>,
-    redo_via: tilo_actions::EncodedAction,
-) {
-    if undo_via.is_none() {
-        return;
-    }
-    let Some(handle) = operation_frame(doc) else {
-        return;
-    };
-    let mut owned = handle.borrow_mut();
-    let Some(frame) = owned.as_mut() else {
-        return;
-    };
-    let Some(operation) = frame.operations.last_mut() else {
-        return;
-    };
-    if operation.undo_via.is_none() {
-        operation.undo_via = undo_via;
-        operation.redo_via = Some(redo_via);
     }
 }
 
@@ -2906,9 +2869,6 @@ pub(crate) fn report_typed_action(
                     .native_text
                     .as_ref()
                     .is_some_and(|span| span.frontier == before)
-                && frame.operations.last().is_some_and(|operation| {
-                    pending.inverse.undo_via.is_some() == operation.undo_via.is_some()
-                })
         });
     if !continues {
         frame.finish_pending_at(boundary, doc);
@@ -2921,20 +2881,9 @@ pub(crate) fn report_typed_action(
                 .is_some_and(|cursor| cursor != &before);
         operation.cursor = Some(after.clone());
     }
-    let (undo_via, redo_via) = frame
-        .operations
-        .last_mut()
-        .map(|operation| (operation.undo_via.take(), operation.redo_via.take()))
-        .unwrap_or((None, None));
     if let Some(native) = native.filter(|policy| policy.continuable) {
         if !continues {
-            let mut pending = PendingRecordAction::new(&binding, before);
-            pending.inverse = crate::state::CommittedSpanInverse { undo_via, redo_via };
-            frame.state.pending = Some(pending);
-        } else if let Some(pending) = frame.state.pending.as_mut() {
-            // The original compensation reverses the whole burst; redo uses
-            // the latest full-value action. Never substitute a later inverse.
-            pending.inverse.redo_via = redo_via;
+            frame.state.pending = Some(PendingRecordAction::new(&binding, before));
         }
         if let Some(pending) = frame.state.pending.as_mut() {
             pending.native_text = Some(NativeTextSpan {
@@ -2957,14 +2906,14 @@ pub(crate) fn report_typed_action(
     if continues {
         frame.finish_pending_at(before.clone(), doc);
     }
-    frame.history.record_committed_span_with_inverse(
+    frame.history.record_committed_span(
+        doc,
         before,
         after.clone(),
         None,
         None,
         Some(binding.author.clone()),
         Some(binding.instance_id),
-        crate::state::CommittedSpanInverse { undo_via, redo_via },
     );
     frame.reset_operation_baseline(&binding, after);
     frame.state.generation = frame
@@ -3007,8 +2956,6 @@ impl<'a> BoundOperation<'a> {
                 cursor,
                 effect,
                 violation: false,
-                undo_via: None,
-                redo_via: None,
                 native_text: None,
             });
             depth
@@ -3091,9 +3038,12 @@ impl PendingRecordAction {
             before,
             author: binding.author.clone(),
             metadata: None,
-            context: binding.operation_context.clone(),
+            // A typing burst is one step of its own, whoever else commits
+            // meanwhile.
+            context: binding
+                .authored_context()
+                .in_gesture(Some(tilo_actions::ActionId::new())),
             native_text: None,
-            inverse: crate::state::CommittedSpanInverse::default(),
         }
     }
 }
@@ -3145,12 +3095,12 @@ impl ActionFrame {
     ) -> crate::undo::UndoStatus {
         let undo = self
             .history
-            .next_undo_in(author, instance)
-            .map(|entry| (entry.before.clone(), entry.after.clone()));
+            .next_undo_in(doc, author, instance)
+            .map(|entry| (entry.before, entry.after));
         let redo = self
             .history
-            .next_redo_in(author, instance)
-            .map(|entry| (entry.after.clone(), entry.before.clone()));
+            .next_redo_in(doc, author, instance)
+            .map(|entry| (entry.after, entry.before));
         let key = (author.clone(), instance);
         let mut status = self.state.statuses.get(&key).cloned().unwrap_or_default();
         let pending_undo = self.state.pending.as_ref().is_some_and(|pending| {
@@ -3168,8 +3118,8 @@ impl ActionFrame {
         // at committed boundaries; inspecting status preserves pending typing.
         if doc.pending_ops() == 0 {
             self.state.statuses.retain(|(author, instance), _| {
-                self.history.next_undo_in(author, *instance).is_some()
-                    || self.history.next_redo_in(author, *instance).is_some()
+                self.history.next_undo_in(doc, author, *instance).is_some()
+                    || self.history.next_redo_in(doc, author, *instance).is_some()
             });
             status.undo_summary = undo
                 .map(|(before, after)| crate::history_source::change_summary(doc, &before, &after));
@@ -3198,21 +3148,21 @@ impl ActionFrame {
             .last()
             .filter(|scope| scope.cursor.is_some())
         {
-            Some(&operation.binding.operation_context)
+            Some(operation.binding.authored_context())
         } else {
             match (&self.mutation, &self.state.pending) {
                 (Some(active), Some(pending))
                     if Rc::ptr_eq(&active.binding.closing, &pending.owner) =>
                 {
-                    Some(&pending.context)
+                    Some(pending.context.clone())
                 }
-                (Some(active), _) => Some(&active.binding.operation_context),
-                (None, pending) => pending.as_ref().map(|pending| &pending.context),
+                (Some(active), _) => Some(active.binding.authored_context()),
+                (None, pending) => pending.as_ref().map(|pending| pending.context.clone()),
             }
         };
         tilo_resource::history::commit_stamped_with_message(
             doc,
-            context.and_then(tilo_actions::ActionContext::change_message),
+            context.and_then(|context| context.in_step().change_message()),
         );
         doc.get_heads()
     }
@@ -3240,14 +3190,14 @@ impl ActionFrame {
         if let Some(pending) = self.state.pending.take() {
             let author = pending.author.clone();
             let instance = pending.instance_id;
-            self.history.record_committed_span_with_inverse(
+            self.history.record_committed_span(
+                doc,
                 pending.before,
                 after,
                 None,
                 pending.metadata,
                 Some(pending.author),
                 Some(pending.instance_id),
-                pending.inverse,
             );
             self.status(doc, &author, instance);
         }
@@ -3402,6 +3352,18 @@ pub(crate) fn with_owned_record_action<R>(
         let value = callback(document, root);
         binding.finish_action_boundary(document).map(|()| value)
     })?
+}
+
+impl CallbackBinding {
+    /// The entry of edits this binding makes: its operation context, by its
+    /// author unless the context names someone.
+    pub(crate) fn authored_context(&self) -> tilo_actions::ActionContext {
+        let mut context = self.operation_context.clone();
+        if context.invoker.is_none() {
+            context.invoker = Some(tilo_actions::ActionInvoker::actor(self.author.0.clone()));
+        }
+        context
+    }
 }
 
 impl CallbackBinding {

@@ -784,8 +784,8 @@ fn prepared_runners_share_factory_view_action_and_palette_behaviour() {
             runner.invoke("edit").unwrap();
             assert_eq!(body(&host.records, &checkout), "edited");
             host.records
-                .read_history(&checkout.id, |_, history| {
-                    assert!(history.next_undo_in(&author(), 11).is_some());
+                .read_history(&checkout.id, |doc, history| {
+                    assert!(history.next_undo_in(doc, &author(), 11).is_some());
                 })
                 .unwrap();
             *permissions.borrow_mut() =
@@ -820,7 +820,7 @@ fn prepared_runners_share_factory_view_action_and_palette_behaviour() {
             host.records
                 .with_history(&checkout.id, |doc, history| {
                     assert!(history.undo_in(doc, &author(), 11, None, None).is_some());
-                    assert!(history.next_undo_in(&author(), 11).is_none());
+                    assert!(history.next_undo_in(doc, &author(), 11).is_none());
                 })
                 .unwrap();
             assert_eq!(body(&host.records, &checkout), "initialized");
@@ -916,9 +916,13 @@ fn prepared_runners_share_factory_view_action_and_palette_behaviour() {
         palette_frame(&mut app);
         assert!(app.text_renderer.cache_stats().1 > before.1);
         host.records
-            .read_history(&checkout.id, |_, history| {
+            .read_history(&checkout.id, |doc, history| {
                 assert_eq!(
-                    history.next_undo_in(&author(), 11).unwrap().author.as_ref(),
+                    history
+                        .next_undo_in(doc, &author(), 11)
+                        .unwrap()
+                        .author
+                        .as_ref(),
                     Some(&author())
                 );
             })

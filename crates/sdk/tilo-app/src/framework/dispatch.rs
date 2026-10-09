@@ -178,8 +178,8 @@ pub struct Dispatcher<R: Resource> {
     /// The last immediate action may be continued by a later one
     /// ([`Resource::continuable`]).
     continuable: Rc<Cell<bool>>,
-    /// The gesture the open step's changes record, so the step stays one
-    /// undo step in the document's history.
+    /// The step the open undo step's changes record, decided before each
+    /// change commits, so a coalesced step stays one step after a restart.
     gesture: Rc<Cell<Option<tilo_actions::ActionId>>>,
     marker: std::marker::PhantomData<fn(R)>,
 }
@@ -889,14 +889,12 @@ impl<R: Resource> Dispatcher<R> {
                 .borrow()
                 .as_ref()
                 .is_some_and(|(at, previous)| *at == serial && R::coalesces(previous, action));
-        // A change another may continue records its gesture, so the step it
-        // opens or continues stays one undo step after a restart too.
-        if step && R::continuable(action) {
+        // An action that continues the open step joins it; any other opens
+        // its own.
+        if step {
             let gesture = self.gesture.get().filter(|_| continues).unwrap_or_default();
             self.gesture.set(Some(gesture));
             context = context.in_gesture(Some(gesture));
-        } else if step {
-            context = context.in_gesture(continues.then(|| self.gesture.get()).flatten());
         }
         (self.submit_now)(&mut self.host.borrow_mut(), edits, action, context)?;
         if !step {
@@ -1044,13 +1042,6 @@ impl<R: Resource> Dispatcher<R> {
             .set(bracket.is_some() && !continuing && self.continuable.get());
         self.applied.set(false);
         if continuing { None } else { bracket }
-    }
-
-    /// Compensating document actions for [`Self::take_committed`]'s bracket.
-    pub(crate) fn take_action_revert(
-        &self,
-    ) -> Option<(tilo_actions::EncodedAction, tilo_actions::EncodedAction)> {
-        self.host.borrow_mut().take_action_revert()
     }
 
     /// The step the last boundary opened stays open for the actions that
