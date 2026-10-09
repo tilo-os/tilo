@@ -922,16 +922,21 @@ RUN --mount=type=bind,source=os/scripts/verify-runtime-bundle-closure.sh,target=
       && /out/tilo-runtime-bundle verify \
         "/usr/lib/tilo-runtime/$(cat /out/runtime-version)" \
         --require-publisher "$(cat /out/runtime-bundle-publisher.hex)" \
+      && python3 /build/tools/font-catalog.py verify \
+        "/usr/lib/tilo-runtime/$(cat /out/runtime-version)/lib/fonts" --scope product \
       && bash /usr/local/libexec/tilo-verify-runtime-bundle-closure.sh \
         "/usr/lib/tilo-runtime/$(cat /out/runtime-version)"; \
     else \
-      /out/tilo-runtime-bundle key generate --out /out/runtime-bundle-identity.json \
+      python3 /build/tools/font-catalog.py prepare \
+        /build/crates/sdk/ui-core/assets/fonts /out/fonts --scope product \
+      && /out/tilo-runtime-bundle key generate --out /out/runtime-bundle-identity.json \
       && RUST_LIBSTD="$(find /out -maxdepth 1 -name 'libstd-*.so' -print -quit)" \
       && [ -n "${RUST_LIBSTD}" ] \
       && /bin/bash -eu -o pipefail -c ' \
         args=(/out/tilo-runtime-bundle build \
           --release "${RUNTIME_RELEASE}" --arch "$(uname -m)" --from / \
           --include /out/libruntime_dylib.so \
+          --include /out/fonts \
           --include "$1" \
           --identity /out/runtime-bundle-identity.json \
           --out-root /usr/lib/tilo-runtime \
@@ -952,7 +957,11 @@ RUN --mount=type=bind,source=os/scripts/verify-runtime-bundle-closure.sh,target=
       && bash /usr/local/libexec/tilo-verify-runtime-bundle-closure.sh \
         "/usr/lib/tilo-runtime/$(cat /out/runtime-version)" /out/thin-apps/* \
       && rm -f /out/runtime-bundle-identity.json; \
-    fi
+    fi \
+    && fonts="/usr/lib/tilo-runtime/$(cat /out/runtime-version)/lib/fonts" \
+    && catalog="$(sha256sum "$fonts/manifest.toml" | cut -d ' ' -f1)" \
+    && python3 /build/tools/font-catalog.py stage "$fonts" \
+        "/usr/share/tilo/font-catalogs/$catalog" --scope product
 
 # ---- The browser engine runtime ---------------------------------------------
 # The Chromium engine is its own signed runtime bundle, apart from the Browser
@@ -1036,6 +1045,7 @@ RUN --mount=type=bind,from=env-runtime,source=/,target=/tilo-env-runtime,ro \
 FROM scratch AS native-builder-payload
 COPY --from=builder /out/ /out/
 COPY --from=builder /usr/lib/tilo-runtime/ /usr/lib/tilo-runtime/
+COPY --from=builder /usr/share/tilo/font-catalogs/ /usr/share/tilo/font-catalogs/
 COPY --from=builder /usr/share/tilo-apps/ /usr/share/tilo-apps/
 
 # The browser engine runtime as the registry package that offers it
@@ -2945,6 +2955,7 @@ COPY --from=native-builder-payload \
 # deliberately absent from it — a preinstalled package is self-signed by the
 # image build, and claims nothing more.
 COPY --from=native-builder-payload /usr/share/tilo-apps/ /usr/share/tilo-apps/
+COPY --from=native-builder-payload /usr/share/tilo/font-catalogs/ /usr/share/tilo/font-catalogs/
 COPY --from=native-builder-payload /out/app-publisher.hex /usr/share/tilo/app-publisher.hex
 # The shell and the browser engine must resolve every library they load from
 # this rootfs: a gap is a loader error at the first launch, on a device.
