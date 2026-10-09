@@ -11923,6 +11923,7 @@ dependencies = [
  "registry-types",
  "runtime-dylib",
  "tilo-app",
+ "tilo-history",
  "tilo-test-env",
  "workspace-hack",
 ]

@@ -25,6 +25,7 @@ hex.workspace = true
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
+tilo-history = { path = "../../crates/sdk/tilo-history" }
 tilo-test-env = { path = "../../crates/dev/test-env" }
 
 [lints]
