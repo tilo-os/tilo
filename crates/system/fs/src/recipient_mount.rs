@@ -424,7 +424,7 @@ pub enum RecipientMountError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use collab_types::{
+    use fs_protocol::{
         FileInviteSpec, FileInviteSubject, FilePermission, FileRecordId, mint_bearer_file_invite,
     };
     use rand::{SeedableRng, rngs::StdRng};

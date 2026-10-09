@@ -221,7 +221,8 @@ impl ManagedSender {
         };
         Ok(ObservationRead { current, range })
     }
-    #[cfg(all(test, target_os = "macos"))]
+    #[cfg(test)]
+    #[cfg(target_os = "macos")]
     pub(super) fn recover_pending(
         &self,
         caller: CallerView<'_>,
@@ -561,8 +562,10 @@ impl ManagedSender {
     }
 }
 
-#[cfg(all(test, target_os = "macos"))]
+#[cfg(test)]
+#[cfg(target_os = "macos")]
 mod tests;
 
-#[cfg(all(test, target_os = "macos"))]
+#[cfg(test)]
+#[cfg(target_os = "macos")]
 pub(crate) mod transport_fixture;

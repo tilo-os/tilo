@@ -68,7 +68,7 @@ def private_ancestors(path, outputs):
     return argv
 
 
-def namespace_command(repo, stage, tools, profile, *, packaging=False, app=None):
+def namespace_command(repo, stage, tools, profile, *, packaging=False, app=None, compiler=None):
     """Final-path binds preserve registry paths, with only owned outputs writable."""
     tree = stage / 'tree'
     runtime = tree / 'usr/lib/tilo-runtime'
@@ -112,6 +112,9 @@ def namespace_command(repo, stage, tools, profile, *, packaging=False, app=None)
              '--profile', profile, '--stage', str(stage)]
     if app is not None:
         argv += ['--app', app]
+    if compiler is not None:
+        argv += ['--compiler-interface-out', str(stage / 'work/compiler-bundles'),
+                 '--compiler-capture', str(compiler)]
     if packaging:
         argv += ['--packaging']
     return argv
@@ -184,6 +187,19 @@ def assemble_inside(args):
             raise ValueError('runtime publisher is malformed')
         (stage / 'tree/usr/share/tilo/runtime-bundle-publisher.hex').write_text(publisher + '\n')
         (stage / 'work/trusted-publishers.txt').write_text(publisher + '\n')
+        if args.compiler_interface_out is not None:
+            # Seal the runtime first; only then bind a separate developer bundle.
+            # It is outside the component tree and never reaches end users.
+            runtime = Path('/usr/lib/tilo-runtime') / version_file.read_text().strip()
+            manifest = tomllib.loads((runtime / 'bundle.toml').read_text())
+            output = run([str(target / 'release/tilo-app'), '--json', 'sdk', 'export',
+                          '--capture', str(args.compiler_capture),
+                          '--sdk-bundle', str(runtime), '--sdk-root', manifest['root_hash'],
+                          '--sdk-publisher', publisher, '--identity', str(identity),
+                          '--bundle-tool', str(bundle), '--output', str(args.compiler_interface_out)],
+                         capture=True).stdout
+            (stage / 'work/compiler-receipt.json').write_text(output)
+
     finally:
         identity.unlink(missing_ok=True)
     version = version_file.read_text().strip()
@@ -216,17 +232,16 @@ def package_inside(args):
 
 
 
-def assemble(args):
+def prepare(args):
     repo, target = args.repo.resolve(), args.target_dir.resolve()
-    rows = applications(repo)
-    if args.dest is not None and args.dest.exists() and any(args.dest.iterdir()):
-        raise ValueError('component destination must be empty')
     cargo = os.environ.get('CARGO', 'cargo')
     tools_env = dict(os.environ, CARGO_PROFILE_RELEASE_LTO='off',
                      CARGO_PROFILE_RELEASE_CODEGEN_UNITS='16')
-    run([cargo, 'build', '--locked', '--release', '-p', 'runtime-bundle',
-         '-p', 'tilo-app-package-cli', '-p', 'install', '-p', 'cli-shim'],
-        env=tools_env)
+    tools = [cargo, 'build', '--locked', '--release', '-p', 'runtime-bundle',
+             '-p', 'tilo-app-package-cli', '-p', 'install', '-p', 'cli-shim']
+    if args.compiler_interface_out is not None:
+        tools += ['-p', 'tilo-app-cli']
+    run(tools, env=tools_env)
     env = dict(os.environ, REPO=str(repo), TARGET_DIR=str(target),
                PROFILE=args.profile, APP_FEATURES=args.features)
     for variable in ('EXCLUDE_PACKAGES', 'INCLUDE_PACKAGES', 'BUILD_PACKAGES', 'EXTRA_CARGO_ARGS'):
@@ -234,13 +249,31 @@ def assemble(args):
     # The SDK is shared by the complete collection, including native libraries
     # linked only by an app. Warm unchanged targets are reused by Cargo; a
     # selected update packages only that app but derives the same complete SDK.
+    if args.compiler_interface_out is not None:
+        env['SDK_COMPILER_UNITS'] = str(args.compiler_capture.parent / 'compiler-units.jsonl')
     run(['bash', str(repo / 'os/scripts/build-thin-apps.sh')], env=env)
+    if args.compiler_interface_out is not None:
+        run([str(target / 'release/tilo-app'), 'sdk', 'capture',
+             '--units', str(args.compiler_capture.parent / 'compiler-units.jsonl'),
+             '--output', str(args.compiler_capture)])
+
     for _, binary, _ in selected_applications(repo, args.app):
         if not (target / profile_directory(args.profile) / binary).is_file():
             raise ValueError('full cohort build did not produce all applications')
+
+
+def assemble(args):
+    repo, target = args.repo.resolve(), args.target_dir.resolve()
+    if args.dest is not None and args.dest.exists() and any(args.dest.iterdir()):
+        raise ValueError('component destination must be empty')
+    target.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix='app-runtime-', dir=target) as directory:
         stage = Path(directory)
-        run(namespace_command(repo, stage, target, args.profile, app=args.app))
+        args.compiler_capture = (stage / 'compiler-capture'
+                                 if args.compiler_interface_out is not None else None)
+        prepare(args)
+        run(namespace_command(repo, stage, target, args.profile, app=args.app,
+                              compiler=args.compiler_capture))
         run(namespace_command(repo, stage, target, args.profile, packaging=True, app=args.app))
         if args.app is not None:
             shutil.copyfile(stage / 'work/selected.tapp', args.tapp_out)
@@ -250,6 +283,12 @@ def assemble(args):
                 path.chmod(0o755)
         # The ephemeral keys/home/work are outside tree and never exported.
         shutil.copytree(stage / 'tree', args.dest, dirs_exist_ok=True)
+        if args.compiler_interface_out is not None:
+            shutil.copytree(stage / 'work/compiler-bundles', args.compiler_interface_out)
+            receipt = json.loads((stage / 'work/compiler-receipt.json').read_text())
+            receipt['result']['bundle'] = str(args.compiler_interface_out / Path(receipt['result']['bundle']).name)
+            (args.compiler_interface_out / 'receipt.json').write_text(json.dumps(receipt, sort_keys=True) + '\n')
+
 
 
 def main():
@@ -261,6 +300,8 @@ def main():
     parser.add_argument('--app')
     parser.add_argument('--tapp-out', type=Path)
     parser.add_argument('--dest', type=Path)
+    parser.add_argument('--compiler-interface-out', type=Path, help='separate signed developer SDK; never part of the userspace layer')
+    parser.add_argument('--compiler-capture', type=Path, help=argparse.SUPPRESS)
     parser.add_argument('--inside', action='store_true', help=argparse.SUPPRESS)
     parser.add_argument('--stage', type=Path, help=argparse.SUPPRESS)
     parser.add_argument('--packaging', action='store_true', help=argparse.SUPPRESS)
@@ -275,6 +316,12 @@ def main():
         args.features = ','.join(cohort.get('features', []))
     if args.app is not None:
         selected_applications(args.repo, args.app)
+    if args.compiler_interface_out is not None and not args.inside:
+        args.compiler_interface_out = args.compiler_interface_out.resolve()
+        if args.app is not None or args.compiler_interface_out.exists():
+            parser.error('compiler interface requires full SDK assembly and a new output directory')
+        if args.dest is not None and args.compiler_interface_out.is_relative_to(args.dest.resolve()):
+            parser.error('developer compiler interface must stay outside the userspace layer')
     if args.inside:
         if args.stage is None:
             parser.error('private assembly needs its owned stage')

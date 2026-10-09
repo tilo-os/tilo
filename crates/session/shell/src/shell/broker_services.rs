@@ -4,10 +4,13 @@ use super::state::WorkspaceAuthority as _;
 use super::state::WorkspaceTreeHandle;
 #[cfg(target_os = "linux")]
 mod airdrop_transfer;
+#[cfg(target_os = "linux")]
+pub mod approved_checks;
 mod committed_document;
 #[cfg(target_os = "linux")]
 mod file_clipboard;
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(test)]
+#[cfg(target_os = "linux")]
 pub(crate) use file_clipboard::test_support::TestTransferPause;
 #[cfg(test)]
 #[path = "broker_services/native_effect_tests.rs"]
@@ -265,8 +268,14 @@ async fn record_receipt_elsewhere(
 
 pub struct NativeWorkspaceAuthority(pub WorkspaceTreeHandle);
 impl WorkspaceAuthority for NativeWorkspaceAuthority {
-    fn snapshot(&self) -> Result<tilo_desktop_model::DesktopTree, String> {
-        Ok(self.0.read().desktop.clone())
+    /// Borrows the committed tree under the compositor's read lock for one
+    /// short policy read; nothing is copied.
+    fn with_tree(
+        &self,
+        read: &mut dyn FnMut(&tilo_desktop_model::DesktopTree),
+    ) -> Result<(), String> {
+        read(&self.0.read().desktop);
+        Ok(())
     }
     fn legacy_journal_root(&self) -> Option<std::path::PathBuf> {
         self.0.read().persist_path.as_ref().map(|path| {
@@ -1527,6 +1536,10 @@ pub fn native_services(
         Arc::new(NativeAppActionGrants(tree.clone()))
             as Arc<dyn tilo_action_broker::services::AppActionGrants>
     });
+    #[cfg(target_os = "linux")]
+    let approved_checks = membership
+        .as_ref()
+        .map(|tree| approved_checks::service(tree.clone(), network.clone()));
     let launcher = Arc::new(NativeLauncher(membership.clone(), network.clone()));
     let display_control = membership
         .as_ref()
@@ -1543,6 +1556,8 @@ pub fn native_services(
         }) as Arc<dyn tilo_action_broker::services::LocalPersonServices>
     });
     HostServices {
+        #[cfg(target_os = "linux")]
+        approved_checks,
         #[cfg(target_os = "linux")]
         file_clipboard: membership.as_ref().map(|tree| {
             Arc::new(file_clipboard::NativeFileClipboard::new(tree.clone()))

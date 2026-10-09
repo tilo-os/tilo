@@ -37,6 +37,7 @@ use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
 use ui::time::Instant;
+use ui::widget::TaffyTreeExt;
 use ui::widget::{AppModel, ModelPath};
 
 #[cfg(test)]
@@ -1102,24 +1103,14 @@ impl Widget for TypstApp {
             .collect();
         // `new_with_children` only fails when a child belongs to a different
         // tree; every entry in `child_nodes` was just built in this one above.
-        #[allow(
-            clippy::unwrap_used,
-            reason = "every child node was just created in this same tree"
-        )]
-        let node = taffy
-            .new_with_children(
-                Style {
-                    size: Size {
-                        width: Dimension::percent(1.0),
-                        height: Dimension::percent(1.0),
-                    },
-                    ..Default::default()
-                },
-                &child_nodes,
-            )
-            .unwrap();
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        let style = Style {
+            size: Size {
+                width: Dimension::percent(1.0),
+                height: Dimension::percent(1.0),
+            },
+            ..Default::default()
+        };
+        taffy.widget_node(style, &child_nodes, node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
@@ -1805,7 +1796,7 @@ fn save_file(path: &std::path::Path, bytes: &[u8]) -> Result<(), tilo_files::FsE
 mod tests {
     use super::*;
     use winit::dpi::PhysicalPosition;
-    use winit::event::{DeviceId, ElementState, Modifiers, MouseButton};
+    use winit::event::Modifiers;
 
     use automerge::{ROOT, ReadDoc as _};
     use ui::tilo_actions::Action as _;
@@ -1959,25 +1950,14 @@ mod tests {
         }
     }
 
-    fn device_id() -> DeviceId {
-        // winit exposes no public DeviceId constructor; tests only need a value.
-        unsafe { std::mem::zeroed() }
-    }
-
     fn cursor(p: Point) -> WindowEvent {
         WindowEvent::CursorMoved {
-            device_id: device_id(),
+            device_id: winit::event::DeviceId::dummy(),
             position: PhysicalPosition::new(p.x, p.y),
         }
     }
 
-    fn press() -> WindowEvent {
-        WindowEvent::MouseInput {
-            device_id: device_id(),
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        }
-    }
+    use ui::synthetic_input::mouse_press;
 
     /// Pump one event through the production `Widget::handle_event`, returning
     /// whether it was consumed.
@@ -1985,22 +1965,11 @@ mod tests {
         let mut taffy = TaffyTree::<()>::new();
         let mut nodes = HashMap::new();
         let node = app.build_layout(&mut taffy, &Theme::dark(), &mut nodes);
-        let mut handled = false;
-        let mut focus = None;
-        app.handle_event(
-            ev,
-            &mut ui::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &Modifiers::default(),
-                state: ui::widget::Edits::lend(doc),
-                path: &ROOT,
-                handled: &mut handled,
-                focus_target: &mut focus,
-                node_id: node,
-                taffy: &taffy,
-            },
-        );
-        handled
+        ui::testing::Dispatch::new()
+            .doc(doc)
+            .layout(&taffy, node)
+            .send(app, ev)
+            .handled
     }
 
     /// Run one real draw pass so retained control geometry is measured,
@@ -2036,7 +2005,7 @@ mod tests {
                 let mut handled = false;
                 app.handle_keyboard_shortcut(
                     &Key::Character(key.into()),
-                    &char_press(key),
+                    &char_key(key),
                     Modifiers::from(ModifiersState::CONTROL),
                     &mut ui::widget::Edits::lend(&mut doc),
                     &mut handled,
@@ -2060,7 +2029,7 @@ mod tests {
 
             let (mut app, mut doc) = fresh();
             let before = shown_source(&app, &doc);
-            assert!(send(&mut app, &mut doc, &char_press("x")));
+            assert!(send(&mut app, &mut doc, &char_key("x")));
             assert!(app.perform_semantic_action(
                 "typst.source",
                 &ui::a11y::Action::SetValue("= Accessible edit".into()),
@@ -2153,31 +2122,15 @@ mod tests {
 
     use crate::compile::DiagKind;
     use winit::event::TouchPhase;
-    use winit::keyboard::{KeyLocation, ModifiersState, NativeKeyCode, PhysicalKey};
+    use winit::keyboard::ModifiersState;
 
-    /// A character keypress through the real event path. winit's per-platform
-    /// `KeyEventExtra` is `pub(crate)`, so the struct is zeroed and only its
-    /// public fields set — the same trick the toolkit's own widget tests use.
-    fn char_press(c: &str) -> WindowEvent {
-        let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-        ev.logical_key = Key::Character(c.into());
-        ev.physical_key = PhysicalKey::Unidentified(NativeKeyCode::Unidentified);
-        ev.location = KeyLocation::Standard;
-        ev.state = ElementState::Pressed;
-        ev.repeat = false;
-        ev.text = Some(c.into());
-        WindowEvent::KeyboardInput {
-            device_id: device_id(),
-            event: ev,
-            is_synthetic: false,
-        }
-    }
+    use ui::synthetic_input::char_key;
 
     /// A vertical wheel notch (`+` = up/away). A tilt component can be supplied
     /// via `x` for the horizontal-pan path.
     fn wheel(x: f32, y: f32) -> WindowEvent {
         WindowEvent::MouseWheel {
-            device_id: device_id(),
+            device_id: winit::event::DeviceId::dummy(),
             delta: MouseScrollDelta::LineDelta(x, y),
             phase: TouchPhase::Moved,
         }
@@ -2193,22 +2146,12 @@ mod tests {
         let mut taffy = TaffyTree::<()>::new();
         let mut nodes = HashMap::new();
         let node = app.build_layout(&mut taffy, &Theme::dark(), &mut nodes);
-        let mut handled = false;
-        let mut focus = None;
-        app.handle_event(
-            ev,
-            &mut ui::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &mods,
-                state: ui::widget::Edits::lend(doc),
-                path: &ROOT,
-                handled: &mut handled,
-                focus_target: &mut focus,
-                node_id: node,
-                taffy: &taffy,
-            },
-        );
-        handled
+        ui::testing::Dispatch::new()
+            .modifiers(mods)
+            .doc(doc)
+            .layout(&taffy, node)
+            .send(app, ev)
+            .handled
     }
 
     fn unique_dir(tag: &str) -> PathBuf {
@@ -2235,7 +2178,7 @@ mod tests {
 
             let base = app.preview.zoom();
             assert!(
-                send_mods(&mut app, &mut doc, &char_press("="), ctrl),
+                send_mods(&mut app, &mut doc, &char_key("="), ctrl),
                 "Ctrl+= consumed"
             );
             let zoomed_in = app.preview.zoom();
@@ -2245,7 +2188,7 @@ mod tests {
             );
 
             assert!(
-                send_mods(&mut app, &mut doc, &char_press("-"), ctrl),
+                send_mods(&mut app, &mut doc, &char_key("-"), ctrl),
                 "Ctrl+- consumed"
             );
             assert!(
@@ -2309,7 +2252,7 @@ mod tests {
                 let p = app.diagnostics.row_rect(i).center();
                 send(&mut app, &mut doc, &cursor(p));
                 assert!(
-                    send(&mut app, &mut doc, &press()),
+                    send(&mut app, &mut doc, &mouse_press()),
                     "diagnostic row click consumed"
                 );
                 assert_eq!(

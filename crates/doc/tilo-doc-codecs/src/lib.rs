@@ -25,11 +25,7 @@
 #![cfg_attr(
     test,
     allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
         clippy::string_slice,
-        clippy::panic,
         clippy::unreachable,
         reason = "in a test these are the assertion, not a hazard"
     )
@@ -67,7 +63,8 @@ pub mod sheet_common;
 #[cfg(feature = "xlsx")]
 pub mod xlsx;
 
-#[cfg(all(test, feature = "all"))]
+#[cfg(test)]
+#[cfg(feature = "all")]
 mod bulk_equivalence;
 
 #[cfg(feature = "docx")]
@@ -201,7 +198,8 @@ pub fn is_supported_ext(ext: &str) -> bool {
         .any(|e| e.eq_ignore_ascii_case(ext))
 }
 
-#[cfg(all(test, feature = "all"))]
+#[cfg(test)]
+#[cfg(feature = "all")]
 mod tests {
     use super::*;
     use crate::FormatProvider;

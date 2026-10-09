@@ -122,6 +122,7 @@ POST /entries             → EntryChangeRequest body    (202/404/409/403)
 GET  /thin/<root>.tapp    → thin form of a reviewed package, by package root
 GET  /blobs/<blake3>      → one payload blob of a reviewed package
 GET  /artifacts/<blake3>.tapp → a full .tapp stored with `import-artifact`
+GET  /blobs/<blake3>.zst, /artifacts/<blake3>.tapp.zst → their compressed twins
 ```
 
 `/entries` carries `Cache-Control: no-cache` and `ETag: "<snapshot hash>"`
@@ -137,6 +138,41 @@ so browsers can compile it while it streams; everything else is
 Approving a submission (`review approve`) stores the thin form and payload
 blobs of every reviewed version, so a client that already has some blobs of
 an earlier release downloads only the new ones.
+
+### Compressed twins
+
+Packages and payload objects travel compressed. Beside each content-addressed
+object the registry keeps a **twin**, the same bytes as one zstd frame at
+level 19 (`tilo_app_package::compressed`): `/blobs/<blake3>.zst` for every
+blob and chunk, `/artifacts/<blake3>.tapp.zst` for every imported package.
+The release pipeline uploads `<file>.tapp.zst` beside every tapp it
+publishes (`tilo-app-package compress`). Measured on real packages, twins are
+34–42 % of an app tapp and 32 % of the runtime's payload (TIL-600).
+
+A twin is transport only. Signatures, `tapp_blake3_hex`, `tapp_size_bytes`,
+blob names and chunk lists all describe the uncompressed bytes, and nothing
+signs the twin. A client asks for `<url>.zst` first, decompresses it while it
+streams with a hard bound — the signed `tapp_size_bytes` for a package, the
+listed length for a chunk, the 64 MiB object ceiling for a whole blob — so a
+small twin cannot expand into more than the object it stands for, and then
+verifies the decompressed bytes exactly as it verifies a raw download. A host
+without a twin answers 404 and the client fetches the raw object, so packages
+published before twins and registries that keep none keep working; clients
+that predate twins never ask for them and get raw bytes as before. A twin is
+labelled `application/zstd` and never sent with `Content-Encoding`, so no
+proxy or HTTP client decodes it on the way.
+
+The registry writes a twin when it stores the object, from bytes it has
+already checked, and re-checks the twin against the object's hash before
+serving it. Pruning removes a twin with its object. For objects stored before
+twins existed, run once after upgrading:
+
+```
+tilo-registry-server compress-payloads
+```
+
+It prints how many twins it wrote and their size, and is safe to rerun while
+`serve` runs.
 
 **Browsers.** `serve --cors-origin <origin>` (repeatable) lets pages on an
 exact serialized origin such as `https://tilo.so` or `http://localhost:4321`
@@ -889,6 +925,36 @@ server {
     }
 }
 ```
+
+### Edge cache for apps.tilo.so
+
+Every content-addressed route above, and the generic-package files under
+`/artifacts/<owner>/generic/...` the release pipeline publishes, is immutable
+by construction: its URL names its bytes. The Tilo deployment puts Cloudflare
+in front of Caddy, whose configuration lives with the deployment, not in this
+repository. For the edge to keep these objects:
+
+- **One `Cache-Control`.** Forgejo's package route adds
+  `Cache-Control: private, max-age=300` to every file; the proxied response must
+  carry only `public, max-age=31536000, immutable`. In Caddy, inside the
+  `reverse_proxy` of the `/artifacts/*` route that proxies to Forgejo,
+  `header_down Cache-Control "public, max-age=31536000, immutable"` (setting
+  replaces Forgejo's value), and no site-level `header Cache-Control` on that
+  route: one applied before the proxy is added to, not replaced by, the
+  upstream header, which is how two arrive today.
+  The registry server already sends exactly that header for `/blobs/*`,
+  `/thin/*`, `/indexes/*` and its own `/artifacts/<blake3>.tapp[.zst]`.
+- **Eligible for cache.** `/blobs/<blake3>` has no file extension and `.tapp`
+  is not in Cloudflare's default cached set, so a Cache Rule must make
+  `/artifacts/*`, `/blobs/*`, `/thin/*` and `/indexes/*` "Eligible for cache"
+  with "Use cache-control header if present". Leave `/entries*`, `/registry`
+  and every non-GET out of it: the snapshot revalidates by ETag.
+- **No transformation.** Twins are `application/zstd`; Cloudflare's own
+  compression must not touch them (it does not by default).
+
+Check it with `tools/ci/probe-registry-edge-cache.sh <tapp-url> <blob-url>`:
+it fetches each URL twice and fails unless the second answer is a
+`cf-cache-status: HIT` with exactly one `Cache-Control`.
 
 ### Caddy example
 

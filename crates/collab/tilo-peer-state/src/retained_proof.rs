@@ -699,6 +699,18 @@ impl VerifiedSnapshot {
 }
 
 impl OrderedTailReadiness {
+    /// [`VerifiedSnapshot::classify_tail`] against this cursor's immutable
+    /// snapshot, so a holder of the cursor alone keeps the same floor rules.
+    pub fn classify_tail(&self, source: [u8; 32], channel: [u8; 32], body: &[u8]) -> TailDecision {
+        classify_tail(
+            &self.authority,
+            &self.coverage,
+            &self.snapshot,
+            source,
+            channel,
+            body,
+        )
+    }
     /// Append one signed route increment only when it is floor-safe against the
     /// original snapshot and dependency-complete against the accepted prefix.
     pub fn append(&mut self, source: [u8; 32], channel: [u8; 32], body: &[u8]) -> bool {

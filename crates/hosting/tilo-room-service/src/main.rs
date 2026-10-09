@@ -9,7 +9,7 @@ use config::Config;
 use http_body_util::{BodyExt, Full, Limited, StreamBody, combinators::BoxBody};
 use hyper::body::Frame;
 use hyper::{Method, Request, Response, StatusCode, header};
-use room::{Event, Room};
+use room::{Event, Member, Room};
 use std::collections::BTreeMap;
 use std::convert::Infallible;
 use std::sync::{Arc, Mutex};
@@ -41,6 +41,22 @@ fn encode(text: &str) -> String {
             }
         })
         .collect()
+}
+
+/// The body of `POST /rooms/<id>/admit`.
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AdmitRequest {
+    ticket: String,
+    pairing_code: String,
+}
+
+/// One `member` server-sent event.
+fn member_event(member: &Member) -> String {
+    format!(
+        "event: member\ndata: {}\n\n",
+        serde_json::to_string(member).unwrap_or_default()
+    )
 }
 
 fn content_type(path: &str) -> Option<&'static str> {
@@ -82,8 +98,8 @@ impl Service {
         response
     }
 
-    fn json(status: StatusCode, value: &serde_json::Value) -> Response<Body> {
-        let mut response = Response::new(full(value.to_string()));
+    fn json(status: StatusCode, value: &impl serde::Serialize) -> Response<Body> {
+        let mut response = Response::new(full(serde_json::to_string(value).unwrap_or_default()));
         *response.status_mut() = status;
         let headers = response.headers_mut();
         headers.insert(
@@ -174,12 +190,14 @@ impl Service {
             .insert(id.clone(), Arc::clone(&room));
         let (registry, expiring, ttl) = (Arc::clone(self), Arc::clone(&room), self.config.ttl);
         tokio::spawn(async move {
-            let exited = tokio::select! {
-                () = tokio::time::sleep(ttl) => false,
-                _ = child.wait() => true,
-            };
-            if exited {
-                eprintln!("tilo-room-service: room {} relay exited", expiring.id);
+            tokio::select! {
+                () = tokio::time::sleep(ttl) => {}
+                _ = child.wait() => {
+                    eprintln!("tilo-room-service: room {} relay exited", expiring.id);
+                }
+                () = expiring.broken() => {
+                    eprintln!("tilo-room-service: room {} relay broke the operator protocol", expiring.id);
+                }
             }
             if let Ok(mut rooms) = registry.rooms.lock() {
                 rooms.remove(&expiring.id);
@@ -210,11 +228,7 @@ impl Service {
         let (history, receiver) = room.subscribe();
         let mut backlog: std::collections::VecDeque<String> =
             std::iter::once(": connected\n\n".to_owned())
-                .chain(
-                    history
-                        .iter()
-                        .map(|member| format!("event: member\ndata: {member}\n\n")),
-                )
+                .chain(history.iter().map(member_event))
                 .collect();
         let stream = futures::stream::unfold((receiver, false), move |(mut receiver, done)| {
             let next = backlog.pop_front();
@@ -229,7 +243,7 @@ impl Service {
                     .await
                 {
                     Err(_) => ": keep-alive\n\n".to_owned(),
-                    Ok(Ok(Event::Member(member))) => format!("event: member\ndata: {member}\n\n"),
+                    Ok(Ok(Event::Member(member))) => member_event(&member),
                     Ok(
                         Ok(Event::Expired) | Err(tokio::sync::broadcast::error::RecvError::Closed),
                     ) => {
@@ -303,17 +317,17 @@ impl Service {
         else {
             return Self::error(StatusCode::BAD_REQUEST, "invalid request");
         };
-        let Ok(request) = serde_json::from_slice::<serde_json::Value>(&body) else {
-            return Self::error(StatusCode::BAD_REQUEST, "invalid request");
+        let request = match serde_json::from_slice::<AdmitRequest>(&body) {
+            Ok(request) => request,
+            Err(error) if error.is_data() => {
+                return Self::error(
+                    StatusCode::BAD_REQUEST,
+                    "ticket and pairingCode are required",
+                );
+            }
+            Err(_) => return Self::error(StatusCode::BAD_REQUEST, "invalid request"),
         };
-        let text = |name: &str| request.get(name).and_then(serde_json::Value::as_str);
-        let (Some(ticket), Some(code)) = (text("ticket"), text("pairingCode")) else {
-            return Self::error(
-                StatusCode::BAD_REQUEST,
-                "ticket and pairingCode are required",
-            );
-        };
-        match room.admit(ticket, code).await {
+        match room.admit(&request.ticket, &request.pairing_code).await {
             Ok(member) => Self::json(StatusCode::OK, &member),
             Err(error) => Self::error(StatusCode::FORBIDDEN, &format!("{error:#}")),
         }

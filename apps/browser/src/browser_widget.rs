@@ -21,6 +21,7 @@ use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 #[cfg(test)]
 use ui::widget::Edits;
+use ui::widget::TaffyTreeExt;
 use ui::widget::{AppModel, ModelPath};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -3596,13 +3597,7 @@ impl Widget for BrowserWidget {
             children.push(panel_node);
             self.anchored_panel = Some(panel);
         }
-        #[allow(
-            clippy::unwrap_used,
-            reason = "all child nodes were just created in this tree"
-        )]
-        let node = taffy.new_with_children(style, &children).unwrap();
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        taffy.widget_node(style, &children, node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
@@ -4877,44 +4872,21 @@ mod architecture_tests {
     }
 
     fn dispatch_back_event(widget: &mut BrowserWidget, event: &WindowEvent) -> bool {
-        let mut tree = TaffyTree::new();
-        let node = tree.new_leaf(Style::default()).unwrap();
-        let mut doc = AutoCommit::new();
-        let mut handled = false;
-        widget.handle_event(
-            event,
-            &mut ui::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &winit::event::Modifiers::default(),
-                state: Edits::lend(&mut doc),
-                path: &automerge::ROOT,
-                handled: &mut handled,
-                focus_target: &mut None,
-                node_id: node,
-                taffy: &tree,
-            },
-        );
-        handled
+        ui::testing::dispatch(widget, event)
     }
 
     fn mouse(button: MouseButton, state: ElementState) -> WindowEvent {
         WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             button,
             state,
         }
     }
 
     fn key(named: WNamedKey) -> WindowEvent {
-        let mut event: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
-        event.logical_key = WKey::Named(named);
-        event.physical_key = winit::keyboard::PhysicalKey::Unidentified(
-            winit::keyboard::NativeKeyCode::Unidentified,
-        );
-        event.location = winit::keyboard::KeyLocation::Standard;
-        event.state = ElementState::Pressed;
+        let event = ui::synthetic_input::key_event(WKey::Named(named), None, ElementState::Pressed);
         WindowEvent::KeyboardInput {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             event,
             is_synthetic: false,
         }
@@ -4950,21 +4922,9 @@ mod architecture_tests {
         {
             let engine = TestEngine::new();
             let mut widget = BrowserWidget::with_engine(engine.clone(), true);
-            let mut tree = TaffyTree::new();
-            let node = tree.new_leaf(Style::default()).unwrap();
-            widget.handle_event(
-                &WindowEvent::Focused(true),
-                &mut ui::widget::EventCtx {
-                    scale_factor: 2.0,
-                    modifiers: &winit::event::Modifiers::default(),
-                    state: Edits::lend(&mut AutoCommit::new()),
-                    path: &automerge::ROOT,
-                    handled: &mut false,
-                    focus_target: &mut None,
-                    node_id: node,
-                    taffy: &tree,
-                },
-            );
+            ui::testing::Dispatch::new()
+                .scale_factor(2.0)
+                .send(&mut widget, &WindowEvent::Focused(true));
             super::tests::layout_at(&mut widget, 800.0, 600.0);
             widget
                 .daily
@@ -5022,19 +4982,12 @@ mod architecture_tests {
                     event.logical_key = WKey::Character(letter.into());
                     event.text = Some(letter.into());
                 }
-                widget.handle_event(
-                    &event,
-                    &mut ui::widget::EventCtx {
-                        scale_factor: 1.0,
-                        modifiers: &winit::event::Modifiers::default(),
-                        state: Edits::lend(&mut doc),
-                        path: &automerge::ROOT,
-                        handled: &mut false,
-                        focus_target: &mut target,
-                        node_id: node,
-                        taffy: &tree,
-                    },
-                );
+                target = ui::testing::Dispatch::new()
+                    .doc(&mut doc)
+                    .layout(&tree, node)
+                    .focus_target(target)
+                    .send(&mut widget, &event)
+                    .focus_target;
                 widget.daily.sync(&widget.engine);
             }
             widget.daily.sync(&widget.engine);
@@ -5934,7 +5887,7 @@ mod architecture_tests {
             dispatch_back_event(
                 &mut widget,
                 &WindowEvent::CursorMoved {
-                    device_id: unsafe { std::mem::zeroed() },
+                    device_id: winit::event::DeviceId::dummy(),
                     position: winit::dpi::PhysicalPosition::new(850.0, 650.0),
                 },
             );
@@ -6600,7 +6553,9 @@ mod tests {
         point: Point,
     ) -> bool {
         let mut state = AutoCommit::new();
-        let root = automerge::ROOT;
+        let mut at = ui::testing::Dispatch::new()
+            .doc(&mut state)
+            .layout(tree, node);
         let mut release_handled = false;
         for event in [
             WindowEvent::CursorMoved {
@@ -6618,22 +6573,7 @@ mod tests {
                 button: MouseButton::Left,
             },
         ] {
-            let mut handled = false;
-            let mut focus = None;
-            widget.handle_event(
-                &event,
-                &mut ui::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &winit::event::Modifiers::default(),
-                    state: ui::widget::Edits::lend(&mut state),
-                    path: &root,
-                    handled: &mut handled,
-                    focus_target: &mut focus,
-                    node_id: node,
-                    taffy: tree,
-                },
-            );
-            release_handled = handled;
+            release_handled = at.send(widget, &event).handled;
         }
         release_handled
     }

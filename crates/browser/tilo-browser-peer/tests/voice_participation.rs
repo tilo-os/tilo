@@ -19,15 +19,12 @@ mod support;
 // This binary re-execs as the automerge worker (support is shared with crates that lack the dep).
 tilo_automerge_isolate::test_worker!();
 
-use std::sync::Arc;
-
 use tilo_browser_peer::{Host, PeerEvent, PeerHandle, VoiceEvent};
-use tilo_moq::client::{Client, ClientAuthority, Connection, ConnectionScope, Status};
-use tilo_moq::relay::Direction;
+use tilo_moq::client::Status;
 use tilo_relay_protocol::Envelope;
 use tilo_relay_protocol::voice::{CallOperation, VoiceGrant};
 
-use call::{CHANNEL, GovernedCall, native, operate};
+use call::{CHANNEL, GovernedCall, carrier, native, operate, until};
 use support::{ready, start_peer, wait_for};
 
 /// The next call event of `peer` that `pick` accepts.
@@ -60,39 +57,6 @@ fn granted(event: &VoiceEvent) -> Option<VoiceGrant> {
         VoiceEvent::Granted { grant, .. } => Some((**grant).clone()),
         _ => None,
     }
-}
-
-struct Granted;
-impl ClientAuthority for Granted {
-    fn current(&self, _: &ConnectionScope, _: Direction, _: &str) -> bool {
-        true
-    }
-}
-
-fn carrier(grant: &VoiceGrant) -> Client {
-    Client::start(
-        Connection {
-            scope: ConnectionScope {
-                endpoint: grant.endpoint.clone(),
-                fingerprints: grant.fingerprints.clone(),
-                owner_epoch: grant.participation,
-                carrier_generation: 1,
-                publication: grant.publication.clone(),
-                subscriptions: grant.subscriptions.clone(),
-            },
-            authorization: grant.token.clone(),
-        },
-        Arc::new(Granted),
-    )
-    .unwrap()
-}
-
-async fn settles(what: &str, client: &Client, done: fn(Status) -> bool) {
-    wait_for(what, || {
-        let reached = done(client.status());
-        async move { reached.then_some(()) }
-    })
-    .await;
 }
 
 #[expect(
@@ -167,8 +131,8 @@ async fn a_browser_session_lists_joins_keeps_and_leaves_a_governed_call() {
     assert_eq!(listed[0].participants.len(), 2);
 
     // Bob's grant admits his carrier.
-    let bob_carrier = carrier(&bob);
-    settles("Bob's carrier", &bob_carrier, |status| {
+    let bob_carrier = carrier(&bob, 1);
+    until("Bob's carrier", &bob_carrier, |status| {
         status == Status::Live
     })
     .await;
@@ -189,8 +153,8 @@ async fn a_browser_session_lists_joins_keeps_and_leaves_a_governed_call() {
     })
     .await;
     assert!(alone_again.subscriptions.is_empty());
-    let stale = carrier(&resumed);
-    settles("Bob's stale carrier", &stale, |status| {
+    let stale = carrier(&resumed, 1);
+    until("Bob's stale carrier", &stale, |status| {
         matches!(status, Status::Failed | Status::Denied | Status::Closed)
     })
     .await;

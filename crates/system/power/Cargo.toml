@@ -49,7 +49,11 @@ tokio = { version = "1.52.3", features = ["rt", "macros", "time", "sync"], optio
 futures-util = { version = "0.3", optional = true }
 
 [dev-dependencies]
-tokio = { version = "1.52.3", features = ["full"] }
+# `test-util`: the service's wakeup tests run on paused time.
+tokio = { version = "1.52.3", features = ["full", "test-util"] }
+# A fake logind + UPower served over a socket pair: the production service
+# against a real D-Bus wire, no bus daemon.
+zbus = { workspace = true, features = ["tokio", "p2p"] }
 # Fixture power-supply trees for the sysfs battery reader, so its parsing
 # is tested against representative directory layouts.
 tempfile = { workspace = true }

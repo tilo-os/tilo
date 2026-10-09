@@ -25,9 +25,6 @@ use ui::framework::{EffectAnswer, EffectCx, Effected};
 use ui::theme::Theme;
 use ui::tilo_resource::{self, ActionRef};
 use ui::widget::{AppModel, Dropdown, ModelPath, ProgressBar, Sparkline, Toggle, Widget};
-use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
-use winit::event::WindowEvent;
 
 use crate::effects::effect;
 use crate::host::{Followed, PaneCx};
@@ -1085,58 +1082,17 @@ impl Widget for PowerPane {
         let child = self
             .composed
             .build_layout(composition, taffy, theme, node_map);
-        let style = taffy::Style {
-            display: taffy::Display::Flex,
-            flex_direction: taffy::FlexDirection::Column,
-            size: taffy::Size {
-                width: taffy::Dimension::percent(1.0),
-                height: taffy::Dimension::auto(),
-            },
-            ..Default::default()
-        };
         // `child` was just created in this same `taffy` tree, so wrapping it
         // cannot fail in practice; falling back to the child node itself
         // (skipping the wrapper style) is a real degraded behaviour rather
         // than a panic if that invariant is ever broken.
-        let node = taffy.new_with_children(style, &[child]).unwrap_or(child);
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        crate::panes::pane_node(taffy, child, node_map, self)
     }
 
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.composed.apply_layout(taffy, node, origin);
-    }
-
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut ui::text_render::TextRenderer,
-        theme: &Theme,
-        presence: &ui::presence::PresenceCtx,
-    ) {
-        self.composed
-            .draw(scene, transform, text_renderer, theme, presence);
-    }
-
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
-        self.composed.handle_event(event, ctx);
-    }
-
-    fn children(&self) -> Vec<&dyn Widget> {
-        self.composed.children()
-    }
-
-    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        self.composed.children_mut()
-    }
+    ui::forward_to_composed!(composed);
 
     fn name(&self) -> &'static str {
         "PowerPane"
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.composed.rect()
     }
 }
 

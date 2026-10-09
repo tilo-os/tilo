@@ -246,16 +246,13 @@ async fn live_observation_preserves_grants_issued_after_its_snapshot() {
         .unwrap();
     let grants = live::LiveGrants::new();
     let authority = live::Authority(grants.clone());
-    let issue = |id| {
-        grants.issue(
-            &sessions,
-            session.token,
-            cert.device_public_key,
-            cert.user_public_key,
-            id,
-            None,
-        )
+    let peer = crate::auth::AuthenticatedPeer {
+        user_public_key: cert.user_public_key,
+        device_public_key: cert.device_public_key,
+        cert: cert.clone(),
+        role: crate::auth::PeerRole::Device,
     };
+    let issue = |id| grants.issue(&sessions, session.token, &peer, id, None);
     assert!(issue(73).await.is_none());
     let first = issue(71).await.unwrap();
     let first_live = authority.try_admit(&first.token).unwrap();
@@ -390,17 +387,16 @@ async fn live_grants_follow_announced_changes() {
     let grants = live::LiveGrants::new();
     let authority = live::Authority(grants.clone());
     let observer = tokio::spawn(grants.clone().follow(sessions.clone()));
+    let peer = crate::auth::AuthenticatedPeer {
+        user_public_key: cert.user_public_key,
+        device_public_key: cert.device_public_key,
+        cert: cert.clone(),
+        role: crate::auth::PeerRole::Device,
+    };
     let mut held = Vec::new();
     for id in [81, 82] {
         let grant = grants
-            .issue(
-                &sessions,
-                session.token,
-                cert.device_public_key,
-                cert.user_public_key,
-                id,
-                None,
-            )
+            .issue(&sessions, session.token, &peer, id, None)
             .await
             .unwrap();
         held.push(authority.try_admit(&grant.token).unwrap());
@@ -427,6 +423,67 @@ async fn live_grants_follow_announced_changes() {
     );
 
     observer.abort();
+    drop(sessions);
+    crate::daemon::Relay::shutdown(relay).await;
+}
+
+#[tokio::test]
+async fn expired_cert_gets_no_live_grant() {
+    let root = SigningKey::from_bytes(&[91; 32]);
+    let (host_key, host) = device(&root, 92, DeviceCapabilities::host());
+    let (_, cert) = device(&root, 93, DeviceCapabilities::member());
+    let state = tempfile::tempdir().unwrap();
+    let (relay, sessions) = {
+        let relay = Relay::start_with_relay_mode(
+            RelayConfig {
+                state_root: state.path().into(),
+                ..Default::default()
+            },
+            crate::daemon::RelayIdentity {
+                user_public_key: host.user_public_key,
+                device_signing_key: host_key,
+                device_cert: host,
+                revocations: RevocationList::new(),
+            },
+            iroh::RelayMode::Disabled,
+        )
+        .await
+        .unwrap();
+        relay
+            .set_workspace_membership(91, true, vec![cert.device_public_key], state.path().into())
+            .await
+            .unwrap();
+        let sessions = Sessions::new(relay.web_context().clone());
+        (relay, sessions)
+    };
+    let grants = live::LiveGrants::new();
+    let peer = |expires_at_ns| crate::auth::AuthenticatedPeer {
+        user_public_key: cert.user_public_key,
+        device_public_key: cert.device_public_key,
+        cert: DeviceCert {
+            expires_at_ns,
+            ..cert.clone()
+        },
+        role: crate::auth::PeerRole::Device,
+    };
+    let current = peer(Some(tilo_clock::unix_now_ns() + 600_000_000_000));
+    assert!(
+        grants
+            .issue(&sessions, [94; 32], &current, 91, None)
+            .await
+            .is_some(),
+        "a current member device gets a live grant"
+    );
+    // Not revoked, still listed: only the certificate's expiry has passed.
+    let expired = peer(Some(1));
+    assert!(
+        grants
+            .issue(&sessions, [95; 32], &expired, 91, None)
+            .await
+            .is_none(),
+        "an expired certificate got a live grant"
+    );
+    assert!(!live::admitted(&sessions, &expired, 91).await);
     drop(sessions);
     crate::daemon::Relay::shutdown(relay).await;
 }

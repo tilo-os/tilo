@@ -1,4 +1,5 @@
 use super::*;
+use crate::testing::Dispatch;
 use automerge::ROOT;
 
 #[test]
@@ -117,34 +118,25 @@ fn code_fence_chrome_copy_feedback_and_header_layout() {
 }
 
 fn send(editor: &mut BlockEditor, doc: &mut AutoCommit, key: Key) {
-    let mut event: KeyEvent = unsafe { std::mem::zeroed() };
-    event.text = match &key {
-        Key::Character(text) => Some(text.clone()),
-        _ => None,
-    };
-    event.logical_key = key;
-    event.physical_key =
-        winit::keyboard::PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
-    event.location = winit::keyboard::KeyLocation::Standard;
-    event.state = ElementState::Pressed;
-    let mut handled = false;
-    editor.handle_event(
-        &WindowEvent::KeyboardInput {
-            device_id: unsafe { std::mem::zeroed() },
-            event,
-            is_synthetic: false,
+    let event = crate::synthetic_input::key_event(
+        key.clone(),
+        match &key {
+            Key::Character(text) => Some(text.clone()),
+            _ => None,
         },
-        &mut crate::widget::EventCtx {
-            scale_factor: 1.0,
-            modifiers: &Modifiers::default(),
-            state: crate::widget::Edits::lend(doc),
-            path: &ROOT,
-            handled: &mut handled,
-            focus_target: &mut None,
-            node_id: NodeId::new(0),
-            taffy: &TaffyTree::new(),
-        },
+        ElementState::Pressed,
     );
+    let handled = Dispatch::new()
+        .doc(doc)
+        .send(
+            editor,
+            &WindowEvent::KeyboardInput {
+                device_id: winit::event::DeviceId::dummy(),
+                event,
+                is_synthetic: false,
+            },
+        )
+        .handled;
     assert!(handled);
     editor.sync(doc, &ROOT);
 }

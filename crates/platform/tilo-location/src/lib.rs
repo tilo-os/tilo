@@ -2,9 +2,6 @@
     test,
     allow(
         clippy::disallowed_methods,
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::panic,
         reason = "in a test these are the assertion, not a hazard"
     )
 )]

@@ -4532,34 +4532,12 @@ fn inspector_grade_and_geometry_controls_write_the_document() {
 // exercise the exact production path (regions → hit-test → drag/mutation →
 // CRDT) a live click takes — not shortcut helpers.
 
-/// Winit `DeviceId` isn't publicly constructible; zero-init it (the app
-/// never inspects it), matching the terminal/date-picker test pattern.
-fn fake_device_id() -> winit::event::DeviceId {
-    unsafe { std::mem::zeroed() }
-}
-
 #[expect(
     clippy::needless_pass_by_value,
     reason = "call sites build the event inline; the helper only borrows it"
 )]
 fn dispatch(app: &mut VideoEditorApp, doc: &mut AutoCommit, ev: WindowEvent) {
-    let mut handled = false;
-    let mut focus = None;
-    let taffy = TaffyTree::<()>::new();
-    let node = NodeId::new(0);
-    app.handle_event(
-        &ev,
-        &mut ui::widget::EventCtx {
-            scale_factor: 1.0,
-            modifiers: &winit::event::Modifiers::default(),
-            state: ui::widget::Edits::lend(doc),
-            path: &automerge::ROOT,
-            handled: &mut handled,
-            focus_target: &mut focus,
-            node_id: node,
-            taffy: &taffy,
-        },
-    );
+    ui::testing::Dispatch::new().doc(doc).send(app, &ev);
     settle(app, doc);
 }
 
@@ -4568,7 +4546,7 @@ fn move_to(app: &mut VideoEditorApp, doc: &mut AutoCommit, x: f64, y: f64) {
         app,
         doc,
         WindowEvent::CursorMoved {
-            device_id: fake_device_id(),
+            device_id: winit::event::DeviceId::dummy(),
             position: winit::dpi::PhysicalPosition::new(x, y),
         },
     );
@@ -4578,7 +4556,7 @@ fn press(app: &mut VideoEditorApp, doc: &mut AutoCommit) {
         app,
         doc,
         WindowEvent::MouseInput {
-            device_id: fake_device_id(),
+            device_id: winit::event::DeviceId::dummy(),
             state: ElementState::Pressed,
             button: MouseButton::Left,
         },
@@ -4589,7 +4567,7 @@ fn release(app: &mut VideoEditorApp, doc: &mut AutoCommit) {
         app,
         doc,
         WindowEvent::MouseInput {
-            device_id: fake_device_id(),
+            device_id: winit::event::DeviceId::dummy(),
             state: ElementState::Released,
             button: MouseButton::Left,
         },
@@ -4606,41 +4584,25 @@ fn right_press(app: &mut VideoEditorApp, doc: &mut AutoCommit) {
         app,
         doc,
         WindowEvent::MouseInput {
-            device_id: fake_device_id(),
+            device_id: winit::event::DeviceId::dummy(),
             state: ElementState::Pressed,
             button: MouseButton::Right,
         },
     );
 }
 fn char_ev(s: &str) -> WindowEvent {
-    let mut ev: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
-    ev.logical_key = WKey::Character(s.into());
-    ev.physical_key =
-        winit::keyboard::PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
-    ev.location = winit::keyboard::KeyLocation::Standard;
-    ev.state = ElementState::Pressed;
-    ev.repeat = false;
-    ev.text = Some(s.into());
-    WindowEvent::KeyboardInput {
-        device_id: fake_device_id(),
-        event: ev,
-        is_synthetic: false,
-    }
+    ui::synthetic_input::keyboard_input(ui::synthetic_input::key_event(
+        WKey::Character(s.into()),
+        Some(s.into()),
+        ElementState::Pressed,
+    ))
 }
 fn named_ev(k: NamedKey) -> WindowEvent {
-    let mut ev: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
-    ev.logical_key = WKey::Named(k);
-    ev.physical_key =
-        winit::keyboard::PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
-    ev.location = winit::keyboard::KeyLocation::Standard;
-    ev.state = ElementState::Pressed;
-    ev.repeat = false;
-    ev.text = None;
-    WindowEvent::KeyboardInput {
-        device_id: fake_device_id(),
-        event: ev,
-        is_synthetic: false,
-    }
+    ui::synthetic_input::keyboard_input(ui::synthetic_input::key_event(
+        WKey::Named(k),
+        None,
+        ElementState::Pressed,
+    ))
 }
 
 /// Click the open context-menu row whose label is `label`, through the
@@ -4685,23 +4647,10 @@ fn dispatch_mods(
     ev: WindowEvent,
     mods: ModifiersState,
 ) {
-    let mut handled = false;
-    let mut focus = None;
-    let taffy = TaffyTree::<()>::new();
-    let node = NodeId::new(0);
-    app.handle_event(
-        &ev,
-        &mut ui::widget::EventCtx {
-            scale_factor: 1.0,
-            modifiers: &winit::event::Modifiers::from(mods),
-            state: ui::widget::Edits::lend(doc),
-            path: &automerge::ROOT,
-            handled: &mut handled,
-            focus_target: &mut focus,
-            node_id: node,
-            taffy: &taffy,
-        },
-    );
+    ui::testing::Dispatch::new()
+        .modifiers(mods)
+        .doc(doc)
+        .send(app, &ev);
     settle(app, doc);
 }
 
@@ -4711,7 +4660,7 @@ fn shift_press(app: &mut VideoEditorApp, doc: &mut AutoCommit) {
         app,
         doc,
         WindowEvent::MouseInput {
-            device_id: fake_device_id(),
+            device_id: winit::event::DeviceId::dummy(),
             state: ElementState::Pressed,
             button: MouseButton::Left,
         },
@@ -4730,7 +4679,7 @@ fn wheel(app: &mut VideoEditorApp, doc: &mut AutoCommit, dx: f32, dy: f32, mods:
         app,
         doc,
         WindowEvent::MouseWheel {
-            device_id: fake_device_id(),
+            device_id: winit::event::DeviceId::dummy(),
             delta: MouseScrollDelta::LineDelta(dx, dy),
             phase: winit::event::TouchPhase::Moved,
         },
@@ -7624,20 +7573,11 @@ fn titles_are_added_written_and_styled() {
         // Built with the suite's own synthetic-key helper so the shapes match
         // what the live loop delivers.
         let released = |k: NamedKey| -> WindowEvent {
-            let mut ev: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
-            ev.logical_key = WKey::Named(k);
-            ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
-                winit::keyboard::NativeKeyCode::Unidentified,
-            );
-            ev.location = winit::keyboard::KeyLocation::Standard;
-            ev.state = ElementState::Released;
-            ev.repeat = false;
-            ev.text = None;
-            WindowEvent::KeyboardInput {
-                device_id: fake_device_id(),
-                event: ev,
-                is_synthetic: false,
-            }
+            ui::synthetic_input::keyboard_input(ui::synthetic_input::key_event(
+                WKey::Named(k),
+                None,
+                ElementState::Released,
+            ))
         };
         let plain = winit::event::Modifiers::default();
         let ctrl = winit::event::Modifiers::from(ModifiersState::CONTROL);

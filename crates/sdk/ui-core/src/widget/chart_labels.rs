@@ -320,3 +320,56 @@ mod tests {
         assert!(placer.place(Rect::new(10.0, 30.0, 40.0, 40.0)));
     }
 }
+
+/// A chart's hover card: `lines.0` over `lines.1`, beside `pointer` and
+/// flipped to stay inside `bounds`, at least `min_width` wide.
+pub(crate) fn draw_tooltip(
+    scene: &mut Scene,
+    transform: Affine,
+    tr: &mut TextRenderer,
+    theme: &Theme,
+    pointer: Point,
+    bounds: Rect,
+    min_width: f64,
+    lines: (&str, &str),
+) {
+    let (title, detail) = lines;
+    let caption = theme.text(TextRole::Caption);
+    let (tw, _) = tr.measure_style(title, None, &caption);
+    let (dw, _) = tr.measure_style(detail, None, &caption);
+    let width = f64::from(tw.max(dw)).max(min_width) + 28.0;
+    let mut x = pointer.x + 16.0;
+    let mut y = pointer.y + 16.0;
+    if x + width > bounds.x1 {
+        x = pointer.x - width - 16.0;
+    }
+    if y + 66.0 > bounds.y1 {
+        y = pointer.y - 76.0;
+    }
+    let tooltip = Rect::new(x, y, x + width, y + 64.0);
+    scene.fill(
+        vello::peniko::Fill::NonZero,
+        transform,
+        theme.tokens.colors.surfaces.overlay,
+        None,
+        &vello::kurbo::RoundedRect::from_rect(tooltip, f64::from(theme.tokens.radii.control)),
+    );
+    tr.draw_style(
+        scene,
+        title,
+        theme.tokens.colors.text_primary,
+        transform * Affine::translate((x + 14.0, y + 11.0)),
+        None,
+        &theme
+            .text(TextRole::Label)
+            .with_weight(crate::text_render::TextWeight::Semibold),
+    );
+    tr.draw_style(
+        scene,
+        detail,
+        theme.tokens.colors.text_dim,
+        transform * Affine::translate((x + 14.0, y + 37.0)),
+        None,
+        &caption,
+    );
+}

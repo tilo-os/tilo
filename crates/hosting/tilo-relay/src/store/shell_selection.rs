@@ -25,6 +25,7 @@ use tilo_peer_state::{
 };
 
 mod selected;
+pub(crate) mod tail_cache;
 use selected::SelectedGc;
 pub(crate) use selected::SelectedRead;
 #[cfg(test)]
@@ -289,6 +290,15 @@ pub(crate) struct Selection {
     extras_ordinal: u64,
     last_tail: Option<Meta>,
     tail_readiness: Option<(String, OrderedTailReadiness)>,
+    // (author, sequence) of the last tail `tail_readiness` accepted.
+    tail_last: Option<([u8; 32], u64)>,
+    // Routes whose cursors a clean commit hands to `tail_cache`, most recent
+    // first; the cursors Pair and ValidateExtras computed for them; and the
+    // cache epoch this selection's own invalidation left, which no other
+    // retained write may have moved before the cursors are installed.
+    wanted: Vec<String>,
+    seeded: BTreeMap<String, tail_cache::RouteTail>,
+    cache_epoch: u64,
     room_list: File,
     extras: File,
     retire: File,
@@ -378,6 +388,7 @@ impl Selection {
         {
             count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         }
+        let (cache_epoch, wanted) = store.tail_cache.invalidate();
         let incoming_dispositions = vec![None; incoming.len()];
         let incoming_verified = vec![false; incoming.len()];
         fs::create_dir_all(&scratch)?;
@@ -415,6 +426,10 @@ impl Selection {
             extras_ordinal: 0,
             last_tail: None,
             tail_readiness: None,
+            tail_last: None,
+            wanted,
+            seeded: BTreeMap::new(),
+            cache_epoch,
             room_list: File::create(scratch.join("room.manifest"))?,
             extras: File::create(scratch.join("extras.manifest"))?,
             retire: File::create(scratch.join("retire.manifest"))?,
@@ -469,6 +484,25 @@ impl Selection {
     }
     pub(crate) fn stats(&self) -> &WorkStats {
         &self.sorter.stats
+    }
+    /// Seed `key`'s tail cursor too if this selection commits cleanly: the
+    /// route the incoming tail wrote is the one most likely to be written next.
+    pub(crate) fn want_route(&mut self, key: String) {
+        self.wanted.retain(|wanted| wanted != &key);
+        self.wanted.insert(0, key);
+        self.wanted.truncate(tail_cache::ROUTES);
+    }
+    /// `ValidateExtras` finished one route's ordered tails.
+    fn finish_route_tails(&mut self) {
+        let last = self.tail_last.take();
+        if let Some((route, readiness)) = self.tail_readiness.take()
+            && !self.batch
+            && !self.fallback
+            && self.wanted.contains(&route)
+        {
+            self.seeded
+                .insert(route, tail_cache::RouteTail::new(readiness, last));
+        }
     }
     fn recovery_required(&self) -> bool {
         !self.batch
@@ -926,6 +960,15 @@ impl Selection {
                                 if route.file.is_none() {
                                     route.file = Some(meta);
                                     route.verified_input = Some(identity);
+                                    // A wanted route's cursor starts at this
+                                    // pair; ValidateExtras advances it by its tails.
+                                    if !self.batch && self.wanted.contains(&key) {
+                                        let readiness = proof.ordered_tail_readiness();
+                                        self.seeded.insert(
+                                            key,
+                                            tail_cache::RouteTail::new(readiness, None),
+                                        );
+                                    }
                                 }
                                 for (incoming, verified) in
                                     self.incoming.iter().zip(&mut self.incoming_verified)
@@ -943,6 +986,7 @@ impl Selection {
                         self.basis = self.old.clone();
                         self.fallback = true;
                         self.staging_incomplete_pair = !self.batch;
+                        self.seeded.clear();
                         self.incoming_dispositions.fill(None);
                         self.incoming_staged = false;
                     }
@@ -1200,7 +1244,7 @@ impl Selection {
             Phase::ValidateExtras => {
                 let Some(meta) = read_meta(self.input.as_mut().invariant("input missing")?)? else {
                     self.last_tail = None;
-                    self.tail_readiness = None;
+                    self.finish_route_tails();
                     self.input = if self.fallback {
                         retained::current(&self.store.root.join(DIRECTORY))?
                             .map(|p| File::open(p.join("basis.manifest")))
@@ -1230,7 +1274,7 @@ impl Selection {
                     }
                 }
                 self.last_tail = Some(meta);
-                let (key, _) = value
+                let (key, seq) = value
                     .route()
                     .ok_or_else(|| invalid("invalid sorted tail route"))?;
                 if self
@@ -1238,6 +1282,7 @@ impl Selection {
                     .as_ref()
                     .is_none_or(|(route, _)| route != &key)
                 {
+                    self.finish_route_tails();
                     let snapshot = self
                         .candidate_snapshot(&key)?
                         .ok_or_else(|| invalid("missing sorted tail snapshot"))?;
@@ -1246,7 +1291,9 @@ impl Selection {
                 let ready = self.tail_readiness.as_mut().is_some_and(|(_, cursor)| {
                     cursor.append(value.source, value.channel, &value.body)
                 });
-                if !ready {
+                if ready {
+                    self.tail_last = Some((value.source, seq));
+                } else {
                     if self.fallback || self.old.room.is_none() {
                         return Ok(Step::Done(SelectionOutcome::UnresolvedTailDependencies));
                     }
@@ -1263,6 +1310,8 @@ impl Selection {
                     self.retire.rewind()?;
                     self.last_tail = None;
                     self.tail_readiness = None;
+                    self.tail_last = None;
+                    self.seeded.clear();
                     self.restart(Phase::Check)?;
                 }
             }
@@ -1371,6 +1420,17 @@ impl Selection {
                     .invariant("collect missing")?
                     .step(limit)?
                 {
+                    // CURRENT is this basis now. Only a cut that never fell
+                    // back leaves cursors for plain tails; a wanted route
+                    // without tails keeps the cursor Pair started at its pair.
+                    if !self.batch && !self.fallback {
+                        self.store.tail_cache.install(
+                            self.cache_epoch,
+                            self.staged.clone(),
+                            &self.wanted,
+                            std::mem::take(&mut self.seeded),
+                        );
+                    }
                     self.phase = Phase::Done;
                 }
             }

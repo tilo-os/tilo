@@ -4,6 +4,9 @@
 
 pub mod voice;
 
+#[cfg(feature = "tls")]
+pub mod tls;
+
 #[cfg(feature = "relay")]
 pub mod carrier;
 

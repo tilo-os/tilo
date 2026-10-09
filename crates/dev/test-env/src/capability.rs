@@ -1,8 +1,9 @@
 //! Host capabilities a test may need, and lanes that must provide them.
 //!
 //! Some tests need something only certain machines have: a Vulkan adapter,
-//! an audio endpoint, media codecs, `/dev/fuse`, fanotify permission. On a
-//! developer machine without it, the test should say so and pass. On a CI
+//! an audio endpoint, media codecs, `/dev/fuse`, fanotify permission, a
+//! filesystem with fs-verity. On a developer machine without it, the test
+//! should say so and pass. On a CI
 //! lane that is set up to provide it, a missing capability is a broken lane,
 //! and a skipped test must not look like a passing one.
 //!
@@ -26,6 +27,10 @@ pub enum Capability {
     Fuse,
     /// Permission to create a fanotify group.
     Fanotify,
+    /// A writable directory on a filesystem with fs-verity (btrfs, or ext4
+    /// with the `verity` feature): `TILO_FSVERITY_DIR`, else the test's
+    /// temporary directory.
+    FsVerity,
 }
 
 impl Capability {
@@ -38,6 +43,7 @@ impl Capability {
             Self::Media => "TILO_REQUIRE_MEDIA",
             Self::Fuse => "TILO_REQUIRE_FUSE",
             Self::Fanotify => "TILO_REQUIRE_FANOTIFY",
+            Self::FsVerity => "TILO_REQUIRE_FSVERITY",
         }
     }
 
@@ -57,6 +63,7 @@ impl fmt::Display for Capability {
             Self::Media => "media codecs",
             Self::Fuse => "FUSE",
             Self::Fanotify => "fanotify",
+            Self::FsVerity => "fs-verity",
         })
     }
 }

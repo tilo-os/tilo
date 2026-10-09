@@ -58,6 +58,8 @@ pub struct EmbeddedApp {
     /// Painted into the host's scene at the region's origin, and painted
     /// again as it is until the app has something new to show.
     painted: RefCell<Scene>,
+    /// The damage parts ([`crate::scene_parts`]) recorded with `painted`.
+    painted_parts: RefCell<Option<crate::scene_parts::SectionParts>>,
     /// The app's background work woke it since its last frame.
     woken: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
@@ -96,6 +98,7 @@ impl EmbeddedApp {
             entering_backwards: false,
             wants_frame: Cell::new(true),
             painted: RefCell::new(Scene::new()),
+            painted_parts: RefCell::new(None),
             woken,
         })
     }
@@ -226,6 +229,7 @@ impl Widget for EmbeddedApp {
         _presence: &PresenceCtx,
     ) {
         let mut painted = self.painted.borrow_mut();
+        let mut painted_parts = self.painted_parts.borrow_mut();
         let due = self
             .app
             .root_widget
@@ -237,8 +241,14 @@ impl Widget for EmbeddedApp {
             // at once, so what the host paints is the app at rest.
             let mut again = true;
             for _ in 0..SETTLE_FRAMES {
-                painted.reset();
-                again = self.app.surface_frame(&self.region, &mut painted);
+                // The app's own damage parts travel with its scene, so a
+                // host that tracks parts repaints a caret, not the tile.
+                let (settling, parts) = crate::scene_parts::record(&mut painted, |painted| {
+                    painted.reset();
+                    self.app.surface_frame(&self.region, painted)
+                });
+                again = settling;
+                *painted_parts = parts;
                 if !again || !self.app.unsettled() {
                     break;
                 }
@@ -248,8 +258,10 @@ impl Widget for EmbeddedApp {
             self.wants_frame
                 .set(again || self.region.redraw.replace(false));
         }
-        scene.append(
+        crate::scene_parts::append(
+            scene,
             &painted,
+            painted_parts.as_ref(),
             Some(transform * Affine::translate((self.rect.x0, self.rect.y0))),
         );
     }
@@ -365,6 +377,41 @@ impl Widget for EmbeddedApp {
 
     fn ime_purpose(&self) -> Option<winit::window::ImePurpose> {
         self.app.ime_window_state().map(|field| field.purpose)
+    }
+
+    fn ime_multiline(&self) -> bool {
+        self.app
+            .ime_window_state()
+            .is_some_and(|field| field.multiline)
+    }
+
+    fn ime_requires_deferred_ack(&self) -> bool {
+        self.app
+            .focused_node
+            .and_then(|node| {
+                self.app
+                    .inspect_node(node, |widget| widget.ime_requires_deferred_ack())
+                    .ok()
+            })
+            .unwrap_or(false)
+    }
+
+    fn start_deferred_text(&mut self) -> Option<crate::webview::text_input::Receipt> {
+        self.app
+            .mutate_node(self.app.focused_node?, |widget| {
+                widget.start_deferred_text()
+            })
+            .ok()
+            .flatten()
+    }
+
+    fn commit_deferred_text(&mut self, text: &str) -> Option<crate::webview::text_input::Receipt> {
+        self.app
+            .mutate_node(self.app.focused_node?, |widget| {
+                widget.commit_deferred_text(text)
+            })
+            .ok()
+            .flatten()
     }
 
     fn ime_edit_fingerprint(&self, key: &[u8; 32]) -> Option<[u8; 32]> {

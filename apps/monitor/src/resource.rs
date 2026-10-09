@@ -718,9 +718,7 @@ mod tests {
     ui::action_contract_tests! {
         seed: ui::automerge::AutoCommit::new(),
         registry: {
-            let mut registry = ActionRegistry::new();
-            Monitor::register(&mut registry);
-            registry
+            ActionRegistry::with(Monitor::register)
         },
         resources: |_| TestApp::<MonitorShell>::new().unwrap().harness().resources(),
         palette: ["Refresh processes", "Show process details", "Copy PID", "Stop process"],

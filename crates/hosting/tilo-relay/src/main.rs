@@ -22,11 +22,7 @@
 #![cfg_attr(
     test,
     allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
         clippy::string_slice,
-        clippy::panic,
         clippy::unreachable,
         reason = "in a test these are the assertion, not a hazard"
     )
@@ -111,6 +107,11 @@ fn load_or_default(path: &std::path::Path) -> anyhow::Result<RelayConfig> {
 fn main() -> anyhow::Result<std::process::ExitCode> {
     // Automerge isolation workers re-enter this binary; serve them first.
     if let Some(code) = tilo_automerge_isolate::dispatch_early() {
+        return Ok(std::process::ExitCode::from(code));
+    }
+    // So do the confined workers agents and room actions run apps in.
+    #[cfg(feature = "agents")]
+    if let Some(code) = tilo_agent_participant::worker::dispatch_early() {
         return Ok(std::process::ExitCode::from(code));
     }
     run().map(|()| std::process::ExitCode::SUCCESS)
@@ -216,6 +217,10 @@ fn cmd_status(path: &Path) -> anyhow::Result<()> {
             metrics.deltas_received, metrics.deltas_fanned_out
         );
         println!("bytes queued: {}", metrics.bytes_queued);
+        println!(
+            "bytes sent: {} ({} live fan-out)",
+            metrics.bytes_sent, metrics.bytes_sent_live
+        );
     }
     Ok(())
 }

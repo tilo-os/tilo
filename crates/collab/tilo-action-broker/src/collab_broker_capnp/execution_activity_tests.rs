@@ -73,6 +73,7 @@ fn request() -> InvokeRequest {
         context: None,
         confirmation: None,
         revision: None,
+        wait_ms: None,
     }
 }
 

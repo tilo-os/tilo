@@ -12,18 +12,18 @@ use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Line, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::{Color, Fill};
-use winit::event::{ElementState, MouseButton, WindowEvent};
+use winit::event::WindowEvent;
 
 use crate::a11y::{AccessNode, AccessState, Role};
 use crate::color_compat::ColorCompat;
 use crate::presence::PresenceCtx;
-use crate::text_render::{TextRenderer, TextWeight};
+use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::TextRole;
 use crate::widget::chart_labels::format_compact;
 use crate::widget::chart_legend;
 use crate::widget::chart_navigation::{
-    ChartNavAction, ChartTouchAction, ChartTouchTracker, chart_nav_action, moved_index,
+    ChartNavAction, ChartTouchTracker, InteractiveChart, handle_chart_event, moved_index,
 };
 use crate::widget::{TaffyTreeExt, Widget};
 
@@ -535,15 +535,6 @@ impl CategoryChart {
         }
         bars
     }
-
-    fn update_hover(&mut self) {
-        self.hovered = self
-            .bars()
-            .into_iter()
-            .rev()
-            .find(|bar| bar.rect.inflate(2.0, 2.0).contains(self.pointer))
-            .map(|bar| (bar.category, bar.series));
-    }
 }
 
 fn safe_range(min: f64, max: f64) -> (f64, f64) {
@@ -578,6 +569,73 @@ mod range_tests {
 
         positive_bars_keep_a_zero_baseline();
         negative_bars_keep_a_zero_ceiling();
+    }
+}
+
+impl InteractiveChart for CategoryChart {
+    fn interaction(&mut self) -> (&mut Point, &mut bool, &mut ChartTouchTracker) {
+        (
+            &mut self.pointer,
+            &mut self.keyboard_inspection,
+            &mut self.touch,
+        )
+    }
+    fn update_hover(&mut self) {
+        self.hovered = self
+            .bars()
+            .into_iter()
+            .rev()
+            .find(|bar| bar.rect.inflate(2.0, 2.0).contains(self.pointer))
+            .map(|bar| (bar.category, bar.series));
+    }
+    fn clear_hover(&mut self) {
+        self.hovered = None;
+    }
+    fn activate_hovered(&mut self) -> bool {
+        let Some((category, series)) = self.hovered else {
+            return false;
+        };
+        let (Some(category), Some(series)) =
+            (self.categories.get(category), self.series.get(series))
+        else {
+            return false;
+        };
+        self.activated = Some((series.id.clone(), category.id.clone()));
+        true
+    }
+    fn move_keyboard_inspection(&mut self, action: ChartNavAction) -> bool {
+        let bars = self.bars();
+        let current = self.hovered.and_then(|selected| {
+            bars.iter()
+                .position(|bar| (bar.category, bar.series) == selected)
+        });
+        self.hovered = moved_index(current, bars.len(), action)
+            .and_then(|index| bars.get(index))
+            .map(|bar| (bar.category, bar.series));
+        if let Some((category, series)) = self.hovered
+            && let Some(bar) = bars
+                .iter()
+                .find(|bar| bar.category == category && bar.series == series)
+        {
+            self.pointer = bar.rect.center();
+        }
+        self.hovered.is_some()
+    }
+    fn toggle_legend_at(&mut self, point: Point) -> bool {
+        if !self.style.interactive_legend {
+            return false;
+        }
+        let Some(id) = self
+            .legend_hits
+            .iter()
+            .find(|(_, rect)| rect.contains(point))
+            .map(|(id, _)| id.clone())
+        else {
+            return false;
+        };
+        // A legend entry claims the click even when its series is already gone.
+        let _ = self.toggle_series(&id);
+        true
     }
 }
 
@@ -791,147 +849,20 @@ impl Widget for CategoryChart {
             } else {
                 value.detail.clone()
             };
-            let (tw, _) = tr.measure_style(&title, None, &theme.text(TextRole::Caption));
-            let (dw, _) = tr.measure_style(&detail, None, &theme.text(TextRole::Caption));
-            let width = f64::from(tw.max(dw)).max(130.0) + 28.0;
-            let mut x = self.pointer.x + 16.0;
-            let mut y = self.pointer.y + 16.0;
-            if x + width > self.rect.x1 {
-                x = self.pointer.x - width - 16.0;
-            }
-            if y + 66.0 > self.rect.y1 {
-                y = self.pointer.y - 76.0;
-            }
-            let tooltip = Rect::new(x, y, x + width, y + 64.0);
-            scene.fill(
-                Fill::NonZero,
+            crate::widget::chart_labels::draw_tooltip(
+                scene,
                 transform,
-                theme.tokens.colors.surfaces.overlay,
-                None,
-                &RoundedRect::from_rect(tooltip, f64::from(theme.tokens.radii.control)),
-            );
-            tr.draw_style(
-                scene,
-                &title,
-                theme.tokens.colors.text_primary,
-                transform * Affine::translate((x + 14.0, y + 11.0)),
-                None,
-                &theme
-                    .text(TextRole::Label)
-                    .with_weight(TextWeight::Semibold),
-            );
-            tr.draw_style(
-                scene,
-                &detail,
-                theme.tokens.colors.text_dim,
-                transform * Affine::translate((x + 14.0, y + 37.0)),
-                None,
-                &theme.text(TextRole::Caption),
+                tr,
+                theme,
+                self.pointer,
+                self.rect,
+                130.0,
+                (&title, &detail),
             );
         }
     }
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
-        if let Some(action) = self.touch.handle(event, ctx.scale_factor) {
-            match action {
-                ChartTouchAction::Inspect(point) => {
-                    self.pointer = point;
-                    self.update_hover();
-                    self.keyboard_inspection = false;
-                }
-                ChartTouchAction::Activate(point) => {
-                    self.pointer = point;
-                    self.update_hover();
-                    if self.style.interactive_legend
-                        && let Some(id) = self
-                            .legend_hits
-                            .iter()
-                            .find(|(_, rect)| rect.contains(point))
-                            .map(|(id, _)| id.clone())
-                    {
-                        let _ = self.toggle_series(&id);
-                        *ctx.handled = true;
-                        *ctx.focus_target = Some(ctx.node_id);
-                    } else if let Some((category, series)) = self.hovered
-                        && let (Some(category), Some(series)) =
-                            (self.categories.get(category), self.series.get(series))
-                    {
-                        self.activated = Some((series.id.clone(), category.id.clone()));
-                        *ctx.handled = true;
-                        *ctx.focus_target = Some(ctx.node_id);
-                    }
-                }
-                ChartTouchAction::Clear => self.hovered = None,
-            }
-            return;
-        }
-        match event {
-            WindowEvent::CursorMoved { position, .. } => {
-                self.pointer =
-                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
-                self.update_hover();
-                self.keyboard_inspection = false;
-            }
-            WindowEvent::CursorLeft { .. } if !self.keyboard_inspection => self.hovered = None,
-            WindowEvent::MouseInput {
-                state: ElementState::Released,
-                button: MouseButton::Left,
-                ..
-            } => {
-                if self.style.interactive_legend
-                    && let Some(id) = self
-                        .legend_hits
-                        .iter()
-                        .find(|(_, rect)| rect.contains(self.pointer))
-                        .map(|(id, _)| id.clone())
-                {
-                    let _ = self.toggle_series(&id);
-                    *ctx.handled = true;
-                    *ctx.focus_target = Some(ctx.node_id);
-                    return;
-                }
-                if let Some((category, series)) = self.hovered
-                    && let (Some(category), Some(series)) =
-                        (self.categories.get(category), self.series.get(series))
-                {
-                    self.activated = Some((series.id.clone(), category.id.clone()));
-                    *ctx.handled = true;
-                    *ctx.focus_target = Some(ctx.node_id);
-                }
-            }
-            _ if chart_nav_action(event).is_some() => {
-                let Some(action) = chart_nav_action(event) else {
-                    return;
-                };
-                if action == ChartNavAction::Activate {
-                    if let Some((category, series)) = self.hovered
-                        && let (Some(category), Some(series)) =
-                            (self.categories.get(category), self.series.get(series))
-                    {
-                        self.activated = Some((series.id.clone(), category.id.clone()));
-                    }
-                } else {
-                    let bars = self.bars();
-                    let current = self.hovered.and_then(|selected| {
-                        bars.iter()
-                            .position(|bar| (bar.category, bar.series) == selected)
-                    });
-                    self.hovered = moved_index(current, bars.len(), action)
-                        .and_then(|index| bars.get(index))
-                        .map(|bar| (bar.category, bar.series));
-                    self.keyboard_inspection = self.hovered.is_some();
-                    if let Some((category, series)) = self.hovered
-                        && let Some(bar) = bars
-                            .iter()
-                            .find(|bar| bar.category == category && bar.series == series)
-                    {
-                        self.pointer = bar.rect.center();
-                    }
-                }
-                *ctx.handled = true;
-                *ctx.focus_target = Some(ctx.node_id);
-            }
-            _ => {}
-        }
+        handle_chart_event(self, event, ctx);
     }
     fn accessibility(&self) -> Option<AccessNode> {
         let children =

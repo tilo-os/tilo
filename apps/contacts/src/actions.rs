@@ -1539,9 +1539,7 @@ mod tests {
     use ui::tilo_resource::Resource as _;
 
     fn registry() -> ActionRegistry {
-        let mut r = ActionRegistry::new();
-        register(&mut r);
-        r
+        ActionRegistry::with(register)
     }
 
     fn prompted_encode(spec: &ActionSpec, arg: &str) -> EncodedAction {

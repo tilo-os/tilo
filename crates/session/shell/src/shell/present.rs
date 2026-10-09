@@ -162,6 +162,9 @@ enum PresentMsg {
         enqueued_at: Instant,
         input_age_at_enqueue: Option<Duration>,
         inflight_at_enqueue: usize,
+        /// The client frames `frame` draws, held until it was presented: their
+        /// buffers do not go back to their clients while it can be rendered.
+        pins: crate::shell::gpu_frames::FramePins,
     },
     Resize((u32, u32)),
     Dpms(bool),
@@ -341,10 +344,13 @@ impl PresentPipe {
                             enqueued_at,
                             input_age_at_enqueue,
                             inflight_at_enqueue,
+                            pins,
                         } => {
                             let render_started = Instant::now();
                             let queue_wait = render_started.saturating_duration_since(enqueued_at);
                             let physical = presenter.present_frame_observed(&frame, output);
+                            // Rendered: its client buffers may go back.
+                            drop(pins);
                             board.push_physical((serial, physical));
                             let phases = presenter.frame_phase_timing();
                             let display = presenter.display_timing();
@@ -535,6 +541,7 @@ impl PresentPipe {
             .fetch_add(1, Ordering::AcqRel)
             .saturating_add(1);
         let enqueued_at = Instant::now();
+        let pins = frame.client_frame_pins();
         if self
             .tx
             .send(PresentMsg::Frame {
@@ -544,6 +551,7 @@ impl PresentPipe {
                 enqueued_at,
                 input_age_at_enqueue,
                 inflight_at_enqueue,
+                pins,
             })
             .is_err()
         {
@@ -659,6 +667,64 @@ mod tests {
     /// `PresentPipe::spawn` with a retire signal that does nothing — what most of these tests want, since they assert on the counters rather than the wakeup.
     fn spawn_with_retire(p: Box<dyn Presenter>) -> PresentPipe {
         PresentPipe::spawn(p, Box::new(|| {}))
+    }
+
+    /// A client buffer drawn by a queued frame stays with the compositor until
+    /// that frame was presented, even after the store let go of its frame: the
+    /// presenter would otherwise draw a buffer its client is writing again.
+    #[test]
+    fn a_queued_frame_pins_the_client_frames_it_draws() {
+        let mut context = ui::gpu::RenderContext::new();
+        let Some(id) = pollster::block_on(context.device(None)) else {
+            eprintln!("no wgpu adapter; skipping");
+            return;
+        };
+        let handle = &context.devices[id];
+        let frame = crate::shell::gpu_frames::frame_for_test(
+            &handle.device,
+            &handle.queue,
+            u64::MAX,
+            (4, 4),
+            [1, 2, 3, 255],
+            31_337,
+        );
+        let (on_release, given_back) = std::sync::mpsc::channel::<()>();
+        frame.hold(crate::shell::gpu_frames::BufferLease::new(move || {
+            let _ = on_release.send(());
+        }));
+        let mut scene = Scene::new();
+        scene.fill(
+            vello::peniko::Fill::NonZero,
+            vello::kurbo::Affine::IDENTITY,
+            &vello::peniko::ImageBrush::new(frame.image((0, 0, 4, 4))),
+            None,
+            &vello::kurbo::Rect::new(0.0, 0.0, 4.0, 4.0),
+        );
+        let gate = Arc::new(Mutex::new(()));
+        let rendering = gate
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut pipe = spawn_with_retire(Box::new(Blocking {
+            gate: gate.clone(),
+            seen: Arc::new(AtomicU64::new(0)),
+            resizes: Arc::new(Mutex::new(Vec::new())),
+            dpms: Arc::new(Mutex::new(Vec::new())),
+        }));
+        assert!(pipe.submit(scene, OutputId(0)));
+        // The store replaced the frame while the queued one is still rendering.
+        frame.note_superseded();
+        drop(frame);
+        assert!(
+            given_back.recv_timeout(Duration::from_millis(200)).is_err(),
+            "the buffer stays held while the queued frame can still draw it"
+        );
+        drop(rendering);
+        tilo_test_env::wait_until("the frame to be presented", || pipe.presented() == 1);
+        assert!(
+            given_back.recv_timeout(Duration::from_secs(2)).is_ok(),
+            "presenting the frame gives the buffer back"
+        );
+        pipe.shutdown();
     }
 
     #[test]

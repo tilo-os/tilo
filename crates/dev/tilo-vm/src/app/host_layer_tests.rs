@@ -243,3 +243,81 @@ fn host_app_build_and_reconnect_failures_never_upload() {
         assert!(!app.receipt.summary().contains("install"));
     }
 }
+
+#[test]
+fn metadata_failure_refuses_host_and_remote_builds_before_admission_or_apply() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("Cargo.toml"),
+        "this is not a Cargo manifest",
+    )
+    .unwrap();
+    let log = dir.path().join("metadata-calls");
+    let line = CommandLine::new("python3", &["-c", PEER])
+        .arg("unused")
+        .arg("shell")
+        .arg("unused")
+        .arg(log.display().to_string())
+        .arg(tilo_vm_protocol::PROTOCOL_VERSION.to_string());
+    let (mut remote, _) = Remote::over_peer("test", &line).unwrap();
+    let worktree = Worktree {
+        root: dir.path().into(),
+        branch: None,
+    };
+    let mut app = App {
+        json: true,
+        target: None,
+        worktree: Some(worktree),
+        registry_path: dir.path().join("vms.toml"),
+        runner: SystemRunner { cwd: None },
+        receipt: Receipt::new(dir.path(), vec![]),
+        warnings: Vec::new(),
+        peer: None,
+    };
+    let vm = Resolved {
+        name: "test".into(),
+        entry: VmEntry::default(),
+        source: Source::Argument,
+    };
+    let component = Manifest::parse("[[component]]\nname='shell'\npackages=['shell']\n")
+        .unwrap()
+        .components
+        .remove("shell")
+        .unwrap();
+    for (attempt, remote_builder) in [false, true].into_iter().enumerate() {
+        let result = if remote_builder {
+            app.build_layer_remote(
+                &mut remote,
+                &vm,
+                &component,
+                &["must-not-start-builder".into()],
+            )
+        } else {
+            app.build_layer(&mut remote, &vm, &component)
+        };
+        let CliError::CommandFailed {
+            command, stderr, ..
+        } = result.unwrap_err()
+        else {
+            panic!("the original Cargo metadata failure must remain observable");
+        };
+        assert_eq!(
+            command,
+            "cargo metadata --locked --no-deps --format-version 1"
+        );
+        assert!(stderr.contains("Cargo.toml"), "{stderr}");
+        assert_eq!(std::fs::read_to_string(&log).unwrap(), "hello\n");
+        let phases = app.receipt.summary();
+        assert_eq!(phases.split(", ").count(), attempt + 1);
+        assert!(
+            phases
+                .split(", ")
+                .all(|phase| phase.starts_with("metadata ")),
+            "{phases}"
+        );
+        assert!(
+            !dir.path().join("target").exists(),
+            "no build or staging may begin"
+        );
+    }
+}

@@ -7,7 +7,7 @@
 //! `projected` / `downloading` — rides the existing mount, no Tilo-specific
 //! client needed, and is sandbox-safe: any process that can `stat` the file can read it, nothing more.
 
-use collab_types::{FileRecordId, FileVersionId};
+use fs_protocol::{FileRecordId, FileVersionId};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -42,7 +42,7 @@ pub const MAX_METADATA_XATTR_BYTES: usize = 2_048;
 pub struct MetadataProjectionV1 {
     pub schema_version: u16,
     pub record_id: FileRecordId,
-    pub properties: collab_types::FilePropertiesV1,
+    pub properties: fs_protocol::FilePropertiesV1,
 }
 
 impl MetadataProjectionV1 {
@@ -579,8 +579,8 @@ mod tests {
             let projection = MetadataProjectionV1 {
                 schema_version: METADATA_PROJECTION_VERSION,
                 record_id: FileRecordId::new(),
-                properties: collab_types::FilePropertiesV1 {
-                    schema_version: collab_types::files::FILE_PROPERTIES_VERSION,
+                properties: fs_protocol::FilePropertiesV1 {
+                    schema_version: fs_protocol::files::FILE_PROPERTIES_VERSION,
                     image_width: None,
                     image_height: None,
                     duration_ms: None,

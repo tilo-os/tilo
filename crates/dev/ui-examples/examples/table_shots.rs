@@ -28,8 +28,7 @@ use automerge::{AutoCommit, ObjId, ObjType, ROOT, transaction::Transactable};
 use taffy::{AvailableSpace, NodeId, Size, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point};
-use winit::dpi::PhysicalPosition;
-use winit::event::{ElementState, Modifiers, MouseButton, WindowEvent};
+use winit::event::{Modifiers, WindowEvent};
 
 use tilo_ui::offscreen::OffscreenRenderer;
 use tilo_ui::presence::PresenceCtx;
@@ -140,19 +139,8 @@ fn dispatch(
     );
 }
 
-fn cursor(x: f64, y: f64) -> WindowEvent {
-    WindowEvent::CursorMoved {
-        device_id: unsafe { std::mem::zeroed() },
-        position: PhysicalPosition::new(x, y),
-    }
-}
-fn press() -> WindowEvent {
-    WindowEvent::MouseInput {
-        device_id: unsafe { std::mem::zeroed() },
-        state: ElementState::Pressed,
-        button: MouseButton::Left,
-    }
-}
+use tilo_ui::synthetic_input::cursor_moved;
+use tilo_ui::synthetic_input::mouse_press;
 
 fn shoot(table: &mut Table, size: (f64, f64), out: &Path) {
     let theme = shot_theme();
@@ -198,7 +186,14 @@ pub fn run(_args: &[String]) {
     let by = MARGIN + TOP_GUTTER / 2.0;
 
     // 2. hover the middle column-insert pill
-    dispatch(&mut table, &taffy, node, &mut doc, &t, &cursor(bx, by));
+    dispatch(
+        &mut table,
+        &taffy,
+        node,
+        &mut doc,
+        &t,
+        &cursor_moved(bx, by),
+    );
     shoot(&mut table, size, &dir.join("table-insert-col.png"));
 
     // 3. hover a row's delete handle (row 2, a data row)
@@ -209,14 +204,21 @@ pub fn run(_args: &[String]) {
         node,
         &mut doc,
         &t,
-        &cursor(MARGIN + LEFT_GUTTER / 2.0, dy),
+        &cursor_moved(MARGIN + LEFT_GUTTER / 2.0, dy),
     );
     shoot(&mut table, size, &dir.join("table-delete-row.png"));
 
     // 4. click the middle boundary → insert a column, then relayout + shoot.
     let cols_before = table::dims(&doc, &t).1;
-    dispatch(&mut table, &taffy, node, &mut doc, &t, &cursor(bx, by));
-    dispatch(&mut table, &taffy, node, &mut doc, &t, &press());
+    dispatch(
+        &mut table,
+        &taffy,
+        node,
+        &mut doc,
+        &t,
+        &cursor_moved(bx, by),
+    );
+    dispatch(&mut table, &taffy, node, &mut doc, &t, &mouse_press());
     // The owner applies what the table hands it.
     for edit in table.take_edits() {
         table::apply(&mut doc, &t, &edit);

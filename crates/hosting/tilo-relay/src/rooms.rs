@@ -655,13 +655,19 @@ impl Rooms {
             host.access.state_root().to_path_buf(),
             workspace_id,
             true,
-            false,
+            crate::room_access::AdmissionMode::Governed,
             crate::peer::MAX_AUTOBOUND_WORKSPACES,
         )
         .await
         .map_err(|error| error.to_string())?;
         let mut runtime = workspace.lock().await;
-        if std::mem::replace(&mut runtime.admit_authenticated, false) {
+        // This relay's room authority governs the room: never auto-enrol,
+        // even if the room was autobound before the authority took it.
+        if std::mem::replace(
+            &mut runtime.admission,
+            crate::room_access::AdmissionMode::Governed,
+        ) != crate::room_access::AdmissionMode::Governed
+        {
             crate::authority_epoch::bump();
         }
         runtime.room_authority = Some(RoomAuthority {
@@ -746,10 +752,7 @@ impl Rooms {
         }
         let now = SystemTime::now();
         let (role, ..) = room.peer().permissions(author, now)?;
-        if !matches!(
-            role,
-            collab_types::role::Role::Owner | collab_types::role::Role::Editor
-        ) {
+        if !crate::room_access::role_grants(role, collab_types::caps::Verb::Write) {
             return Err(format!(
                 "{app_id} record written by a device that may not edit"
             ));
