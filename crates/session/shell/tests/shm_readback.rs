@@ -18,7 +18,7 @@ use wayland_client::protocol::{
     wl_surface,
 };
 use wayland_client::{Connection, Dispatch, Proxy, QueueHandle, delegate_noop};
-use wayland_protocols::xdg::shell::client::{xdg_surface, xdg_toplevel, xdg_wm_base};
+use wayland_protocols::xdg::shell::client::{xdg_toplevel, xdg_wm_base};
 
 #[derive(Default)]
 struct Peer {
@@ -71,35 +71,7 @@ delegate_noop!(Peer: ignore wl_compositor::WlCompositor);
 delegate_noop!(Peer: ignore wl_surface::WlSurface);
 delegate_noop!(Peer: ignore xdg_toplevel::XdgToplevel);
 
-impl Dispatch<xdg_wm_base::XdgWmBase, ()> for Peer {
-    fn event(
-        _: &mut Self,
-        base: &xdg_wm_base::XdgWmBase,
-        event: xdg_wm_base::Event,
-        (): &(),
-        _: &Connection,
-        _: &QueueHandle<Self>,
-    ) {
-        if let xdg_wm_base::Event::Ping { serial } = event {
-            base.pong(serial);
-        }
-    }
-}
-
-impl Dispatch<xdg_surface::XdgSurface, ()> for Peer {
-    fn event(
-        _: &mut Self,
-        surface: &xdg_surface::XdgSurface,
-        event: xdg_surface::Event,
-        (): &(),
-        _: &Connection,
-        _: &QueueHandle<Self>,
-    ) {
-        if let xdg_surface::Event::Configure { serial } = event {
-            surface.ack_configure(serial);
-        }
-    }
-}
+crate::support::wayland::test_client!(Peer: ping, configure);
 
 struct Harness {
     display: Display<State>,

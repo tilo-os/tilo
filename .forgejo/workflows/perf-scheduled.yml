@@ -1,0 +1,249 @@
+name: Perf / scheduled
+
+# The scheduled performance lane (TIL-580): every KPI benchmark writes its
+# results as records (tools/perf/record.py), compare.py checks them against
+# the store's rolling baseline and tools/perf/kpi-budgets.toml, and the
+# annotated records are appended to the store, the public generic package
+# tilo-perf-results (tools/perf/store.py). DEVELOPMENT.md "Performance
+# results" says how a benchmark joins.
+#
+# It is not a required check and never runs per push: wall-clock numbers
+# from a pull request's shared runner would only be noise. Benchmarks consume
+# artifacts that already exist (published tapps, images, release examples
+# built once per night); the tilo-fs gate's debug test build is served by the
+# compiler cache main's check runs fill.
+#
+# One job per benchmark group, each uploading its records as the artifact
+# perf-<group>; a group must produce records whenever it is selected, or the
+# comparison fails it as missing.
+on:
+  schedule:
+    - cron: "15 1 * * *"
+  workflow_dispatch:
+    inputs:
+      kpis:
+        description: "Comma-separated KPI groups to run (fs, footprint); empty runs all."
+        required: false
+        default: ""
+      accept:
+        description: "Comma-separated KPI ids (or all) whose values this run records as the new baseline start, for an intended change. Main only."
+        required: false
+        default: ""
+      synthetic_series:
+        description: "Gate test: tag this run's records as this synthetic series and multiply them by synthetic_factor. Synthetic records never enter a real baseline."
+        required: false
+        default: ""
+      synthetic_factor:
+        description: "Gate test: the factor applied to every percentile (1.25 is a 25 % regression)."
+        required: false
+        default: "1.0"
+
+concurrency:
+  # compare.py reads the store's state and then appends to it; two runs at
+  # once could both miss the other's pending regression.
+  group: perf-scheduled
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    runs-on: runner-quality
+    timeout-minutes: 5
+    container:
+      image: registry.tilo.so/tilo/ci-fast@sha256:ecfe2c2abf7a48d9d00d71083aba6b7b9dfc11bc9de63b87e3144522daf6d97c
+    outputs:
+      groups: ${{ steps.select.outputs.groups }}
+      fs: ${{ steps.select.outputs.fs }}
+      footprint: ${{ steps.select.outputs.footprint }}
+    steps:
+      - name: Select KPI groups
+        id: select
+        env:
+          KPIS: ${{ github.event.inputs.kpis }}
+        run: |
+          set -euo pipefail
+          known=(fs footprint)
+          IFS=, read -r -a selected <<< "${KPIS:-$(IFS=,; echo "${known[*]}")}"
+          for group in "${selected[@]}"; do
+            [[ " ${known[*]} " == *" $group "* ]] || { echo "::error::unknown KPI group '$group' (known: ${known[*]})"; exit 1; }
+          done
+          echo "groups=$(IFS=,; echo "${selected[*]}")" >> "$GITHUB_OUTPUT"
+          for group in "${known[@]}"; do
+            if [[ " ${selected[*]} " == *" $group "* ]]; then value=true; else value=false; fi
+            echo "$group=$value" >> "$GITHUB_OUTPUT"
+          done
+
+  builder:
+    uses: ./.forgejo/workflows/resolve-builder.yml
+    secrets: inherit
+
+  # The tilo-fs performance gate (crates/system/fs/tests/performance_gate.rs),
+  # five times on the shared `runner` class, through adapters.py fs-gate.
+  fs:
+    needs: [plan, builder]
+    if: needs.plan.outputs.fs == 'true'
+    runs-on: runner
+    timeout-minutes: 60
+    container:
+      image: ${{ needs.builder.outputs.image }}
+    env:
+      # ci-filesystem.yml's Cargo environment, so the build reuses the
+      # compiler outputs main's check runs store.
+      CARGO_BUILD_JOBS: "8"
+      CARGO_INCREMENTAL: "0"
+      CARGO_PROFILE_DEV_DEBUG: "0"
+      CARGO_PROFILE_TEST_DEBUG: "0"
+      CARGO_TERM_COLOR: never
+      CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-D warnings"
+      CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-D warnings"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Build the tilo-fs performance gate
+        run: >-
+          bash scripts/ci-run.sh "tilo-fs performance gate build" --
+          cargo test --locked -p tilo-fs --test performance_gate --no-run
+
+      - name: Run the gate five times and record it
+        env:
+          TILO_FS_PERF_GATE: "1"
+        run: |
+          set -uo pipefail
+          mkdir -p perf
+          status=0
+          for run in 1 2 3 4 5; do
+            cargo test --locked -p tilo-fs --test performance_gate -- --nocapture --test-threads=1 \
+              2> "perf/fs-gate-$run.log" || status=$?
+            grep '^PERF\| PERF ' "perf/fs-gate-$run.log" || true
+          done
+          # The Kata runners are KVM guests; the gate draws nothing.
+          python3 tools/perf/record.py env --profile dev --renderer none \
+            --virtualization kvm --runner runner > perf/env.json || status=1
+          python3 tools/perf/adapters.py fs-gate --env-json perf/env.json perf/fs-gate-*.log \
+            > perf/fs.jsonl || status=1
+          cat perf/fs.jsonl
+          exit "$status"
+
+      - uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
+        if: always()
+        with:
+          name: perf-fs
+          path: perf/
+          if-no-files-found: warn
+
+  # App package size: the newest signed tapp of every app in the public
+  # registry index, per architecture. A runner-independent byte count.
+  footprint:
+    needs: plan
+    if: needs.plan.outputs.footprint == 'true'
+    runs-on: runner-quality
+    timeout-minutes: 10
+    container:
+      image: registry.tilo.so/tilo/ci-fast@sha256:ecfe2c2abf7a48d9d00d71083aba6b7b9dfc11bc9de63b87e3144522daf6d97c
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+          sparse-checkout: tools/perf
+          sparse-checkout-cone-mode: false
+
+      - name: Record the published tapp sizes
+        run: |
+          set -euo pipefail
+          mkdir -p perf
+          curl --fail --silent --show-error --retry 3 --retry-all-errors --proto '=https' \
+            --output perf/entries.json https://apps.tilo.so/entries
+          python3 tools/perf/record.py env --profile release --renderer none \
+            --virtualization none --runner none --hardware "apps.tilo.so registry index" > perf/env.json
+          python3 tools/perf/adapters.py tapp-sizes --env-json perf/env.json perf/entries.json > perf/footprint.jsonl
+          rm perf/entries.json
+          cat perf/footprint.jsonl
+
+      - uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
+        if: always()
+        with:
+          name: perf-footprint
+          path: perf/
+          if-no-files-found: warn
+
+  compare:
+    needs: [plan, fs, footprint]
+    if: ${{ always() && needs.plan.result == 'success' }}
+    runs-on: runner-quality
+    timeout-minutes: 15
+    container:
+      image: registry.tilo.so/tilo/ci-fast@sha256:ecfe2c2abf7a48d9d00d71083aba6b7b9dfc11bc9de63b87e3144522daf6d97c
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+          sparse-checkout: |
+            tools/perf
+            tools/upload_immutable_packages.sh
+          sparse-checkout-cone-mode: false
+
+      - uses: actions/download-artifact@d8d0a99033603453ad2255e58720b460a0555e1e # v4
+        with:
+          path: results
+
+      - name: Compare with the store and publish
+        env:
+          GROUPS: ${{ needs.plan.outputs.groups }}
+          ACCEPT: ${{ github.event.inputs.accept }}
+          SERIES: ${{ github.event.inputs.synthetic_series }}
+          FACTOR: ${{ github.event.inputs.synthetic_factor }}
+          FS_RESULT: ${{ needs.fs.result }}
+          FOOTPRINT_RESULT: ${{ needs.footprint.result }}
+          TILO_PACKAGE_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
+        run: |
+          set -uo pipefail
+          shopt -s nullglob
+          owner=${GITHUB_REPOSITORY%%/*}
+          status=0
+          for job in "fs:$FS_RESULT" "footprint:$FOOTPRINT_RESULT"; do
+            case ${job#*:} in
+              success|skipped) ;;
+              *) echo "::error::benchmark job ${job%%:*} ended ${job#*:}"; status=1 ;;
+            esac
+          done
+          on_main=false
+          [[ $GITHUB_REF == refs/heads/main ]] && on_main=true
+          if [[ -n ${ACCEPT:-} && $on_main != true ]]; then
+            echo "::error::accept only applies to main, where the store is written"
+            exit 1
+          fi
+          args=(--store "$GITHUB_SERVER_URL" --owner "$owner" --groups "$GROUPS"
+                --publish-dir publish --run "$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" --summary summary.md)
+          [[ -n ${ACCEPT:-} ]] && args+=(--accept "$ACCEPT")
+          [[ -n ${SERIES:-} ]] && args+=(--synthetic "$SERIES" --synthetic-factor "${FACTOR:-1.0}")
+          results=(results/*/*.jsonl)
+          if (( ${#results[@]} == 0 )); then
+            echo "::error::no benchmark produced records"
+            exit 1
+          fi
+          python3 tools/perf/compare.py --results "${results[@]}" "${args[@]}" || status=1
+          # Real records are written from main only; a synthetic series may be
+          # written from any ref because it never enters a real baseline.
+          if [[ $on_main == true || -n ${SERIES:-} ]]; then
+            manifest=$(mktemp)
+            for file in publish/*/*.jsonl; do
+              month=$(basename "$(dirname "$file")")
+              printf '%s\t%s\n' "$file" \
+                "$GITHUB_SERVER_URL/api/packages/$owner/generic/tilo-perf-results/$month/$(basename "$file")"
+            done > "$manifest"
+            bash tools/upload_immutable_packages.sh "$manifest" || status=1
+          else
+            echo "Not main and not synthetic: compared only, nothing written to the store."
+          fi
+          [[ -f summary.md ]] && cat summary.md >> "$GITHUB_STEP_SUMMARY"
+          exit "$status"
+
+      - uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
+        if: always()
+        with:
+          name: perf-summary
+          path: |
+            summary.md
+            publish/
+          if-no-files-found: warn

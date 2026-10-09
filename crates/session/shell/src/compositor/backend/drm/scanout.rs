@@ -3146,6 +3146,16 @@ impl DrmScanout {
             )
     }
 
+    /// The driver stamps page-flip events with `CLOCK_MONOTONIC`, the clock
+    /// [`Instant`] reads, so [`instant_from_monotonic`] can place them.
+    pub fn monotonic_flip_timestamps(&self) -> bool {
+        matches!(
+            self.card
+                .get_driver_capability(drm_re::DriverCapability::MonotonicTimestamp),
+            Ok(1)
+        )
+    }
+
     pub fn invalidate_physical_feedback(&mut self) {
         self.physical_identity.uncertain_completion();
     }
@@ -3723,6 +3733,19 @@ impl Drop for CpuMapping {
     }
 }
 
+/// The [`Instant`] of a `CLOCK_MONOTONIC` page-flip timestamp.
+pub fn instant_from_monotonic(timestamp: Duration) -> Instant {
+    instant_at(timestamp, Instant::now(), monotonic_now())
+}
+
+/// `timestamp` placed on the `Instant` timeline through one paired reading
+/// (`now`, `now_monotonic`) of both clocks. A timestamp from the future is
+/// clamped to `now`.
+fn instant_at(timestamp: Duration, now: Instant, now_monotonic: Duration) -> Instant {
+    now.checked_sub(now_monotonic.saturating_sub(timestamp))
+        .unwrap_or(now)
+}
+
 /// `CLOCK_MONOTONIC` now, comparable with page-flip event timestamps.
 fn monotonic_now() -> Duration {
     let mut now = libc::timespec {
@@ -3868,6 +3891,23 @@ mod tests {
     }
     use super::*;
     use ui::ColorCompat as _;
+
+    #[test]
+    fn a_flip_timestamp_lands_on_the_instant_timeline_at_its_age() {
+        let now = Instant::now();
+        let clock = Duration::from_secs(5_000);
+        let vblank = clock.checked_sub(Duration::from_micros(2_500)).unwrap();
+        assert_eq!(
+            instant_at(vblank, now, clock),
+            now.checked_sub(Duration::from_micros(2_500)).unwrap(),
+            "a vblank 2.5 ms before the paired reading is 2.5 ms before `now`"
+        );
+        assert_eq!(
+            instant_at(clock + Duration::from_millis(1), now, clock),
+            now,
+            "a stamp from the future is clamped rather than scheduling ahead of it"
+        );
+    }
 
     #[test]
     fn only_connected_real_display_connectors_with_modes_are_scanout_eligible() {

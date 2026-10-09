@@ -22,12 +22,13 @@ use tilo_user_identity::{
     DeviceCert, RevocationList, verify_device_cert_at, verify_revocation_entry,
 };
 
-use crate::auth::{self, Hello, HelloAck2, PeerRole};
+use crate::auth::PeerRole;
 use crate::client::RelayClient;
 use crate::compute_session::ComputeProtocol;
 use crate::compute_transport::COMPUTE_ALPN;
 use crate::compute_worker::{ProductionComputeWorkerConfig, run_production_compute_worker};
 use crate::config::{PeerRelayConfig, RelayConfig, WorkspaceBinding};
+use crate::handshake::{EndpointTrust, HandshakeError, ServerAuth};
 use crate::metrics::Metrics;
 use crate::peer::{
     PeerContext, WorkspaceAutobind, WorkspaceRegistry, get_or_autobind_workspace, run_peer_version,
@@ -2124,6 +2125,16 @@ pub(crate) struct RelayProtocol {
 }
 
 impl RelayProtocol {
+    /// The relay's identity and live revocations, for a handshake.
+    pub(crate) fn server_auth(&self) -> ServerAuth<'_> {
+        ServerAuth {
+            own_user: &self.own_user_pk,
+            cert: &self.own_cert,
+            key: &self.own_sk,
+            revocations: &self.revocations,
+        }
+    }
+
     /// The peer context a session of this relay runs with.
     pub(crate) fn peer_context(&self) -> PeerContext {
         PeerContext {
@@ -2190,6 +2201,17 @@ struct ManagementProtocol {
     workspaces: WorkspaceRegistry,
 }
 
+impl ManagementProtocol {
+    fn server_auth(&self) -> ServerAuth<'_> {
+        ServerAuth {
+            own_user: &self.own_user_pk,
+            cert: &self.own_cert,
+            key: &self.own_sk,
+            revocations: &self.revocations,
+        }
+    }
+}
+
 impl std::fmt::Debug for ManagementProtocol {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("ManagementProtocol")
@@ -2208,42 +2230,20 @@ impl ProtocolHandler for ManagementProtocol {
             )));
         }
         let (mut send, mut recv) = connection.accept_bi().await?;
-        let hello: Hello = postcard::from_bytes(&read_frame(&mut recv, MAX_FRAME_BYTES).await?)
+        // Only the owner's devices manage the home peer, whatever the live
+        // policy admits.
+        let peer = self
+            .server_auth()
+            .authenticate(
+                EndpointTrust::Fixed(crate::auth::HandshakeTrust::OwnerDevicesOnly),
+                &mut recv,
+                &mut send,
+                MAX_FRAME_BYTES,
+            )
+            .await
             .map_err(|error| AcceptError::from_err(std::io::Error::other(error.to_string())))?;
-        let revocations = self
-            .revocations
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone();
-        let peer = auth::accept_hello(
-            &hello,
-            &self.own_user_pk,
-            &TrustPolicy::AllowMatchingUser,
-            &revocations,
-            unix_now_ns(),
-        )
-        .map_err(|error| AcceptError::from_err(std::io::Error::other(error.to_string())))?;
-        let mut nonce = [0; 32];
-        rand::Rng::fill_bytes(&mut rand::rng(), &mut nonce);
-        let ack = auth::build_hello_ack(
-            self.own_cert.clone(),
-            &self.own_sk,
-            nonce,
-            &hello.client_nonce,
-        );
         let mut services = self.mesh_profile.services.clone();
         services.compute &= self.compute_ready.load(Ordering::Acquire);
-        write_frame(
-            &mut send,
-            &postcard::to_allocvec(&ack)
-                .map_err(|error| AcceptError::from_err(std::io::Error::other(error.to_string())))?,
-        )
-        .await
-        .map_err(AcceptError::from_err)?;
-        let ack2: HelloAck2 = postcard::from_bytes(&read_frame(&mut recv, MAX_FRAME_BYTES).await?)
-            .map_err(|error| AcceptError::from_err(std::io::Error::other(error.to_string())))?;
-        auth::verify_hello_ack2(&ack2, &peer.device_public_key, &nonce)
-            .map_err(|error| AcceptError::from_err(std::io::Error::other(error.to_string())))?;
         let request: HomePeerManagementRequest =
             postcard::from_bytes(&read_frame(&mut recv, MAX_FRAME_BYTES).await?)
                 .map_err(|error| AcceptError::from_err(std::io::Error::other(error.to_string())))?;
@@ -2350,6 +2350,17 @@ impl ProtocolHandler for ManagementProtocol {
     }
 }
 
+impl DiscoveryProtocol {
+    fn server_auth(&self) -> ServerAuth<'_> {
+        ServerAuth {
+            own_user: &self.own_user_pk,
+            cert: &self.own_cert,
+            key: &self.own_sk,
+            revocations: &self.revocations,
+        }
+    }
+}
+
 impl std::fmt::Debug for DiscoveryProtocol {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("DiscoveryProtocol")
@@ -2376,45 +2387,17 @@ impl ProtocolHandler for DiscoveryProtocol {
             )));
         }
         let (mut send, mut recv) = connection.accept_bi().await?;
-        let hello: Hello = postcard::from_bytes(&read_frame(&mut recv, MAX_FRAME_BYTES).await?)
-            .map_err(|error| AcceptError::from_err(std::io::Error::other(error.to_string())))?;
-        let revocations = self
-            .revocations
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone();
-        let peer = auth::accept_hello(
-            &hello,
-            &self.own_user_pk,
-            &self
-                .trust_policy
-                .read()
-                .unwrap_or_else(std::sync::PoisonError::into_inner),
-            &revocations,
-            unix_now_ns(),
-        )
-        .map_err(|error| AcceptError::from_err(std::io::Error::other(error.to_string())))?;
-        let mut nonce = [0; 32];
-        {
-            use rand::Rng;
-            rand::rng().fill_bytes(&mut nonce);
-        }
-        let ack = auth::build_hello_ack(
-            self.own_cert.clone(),
-            &self.own_sk,
-            nonce,
-            &hello.client_nonce,
-        );
-        write_frame(
-            &mut send,
-            &postcard::to_allocvec(&ack)
-                .map_err(|error| AcceptError::from_err(std::io::Error::other(error.to_string())))?,
-        )
-        .await
-        .map_err(AcceptError::from_err)?;
-        let ack2: HelloAck2 = postcard::from_bytes(&read_frame(&mut recv, MAX_FRAME_BYTES).await?)
-            .map_err(|error| AcceptError::from_err(std::io::Error::other(error.to_string())))?;
-        auth::verify_hello_ack2(&ack2, &peer.device_public_key, &nonce)
+        // Any device the live policy admits may ask; the request is then
+        // scoped to a room it belongs to.
+        let peer = self
+            .server_auth()
+            .authenticate(
+                EndpointTrust::Live(&self.trust_policy),
+                &mut recv,
+                &mut send,
+                MAX_FRAME_BYTES,
+            )
+            .await
             .map_err(|error| AcceptError::from_err(std::io::Error::other(error.to_string())))?;
         let request: ContentEndpointRequest =
             postcard::from_bytes(&read_frame(&mut recv, MAX_FRAME_BYTES).await?)
@@ -2538,63 +2521,30 @@ async fn handle_conn(
     mut recv: RecvStream,
 ) -> Result<(), RelayError> {
     ctx.metrics.inc_conns_accepted();
-    // 1. Read the client Hello.
-    let hello_bytes = read_frame(&mut recv, MAX_FRAME_BYTES)
+    // 1. The handshake, under the live policy: the owner and every user the
+    // relay currently admits.
+    let client_peer = match ctx
+        .server_auth()
+        .authenticate(
+            EndpointTrust::Live(&ctx.trust_policy),
+            &mut recv,
+            &mut send,
+            MAX_FRAME_BYTES,
+        )
         .await
-        .map_err(|e| RelayError::Iroh(format!("read hello: {e}")))?;
-    let hello: Hello = postcard::from_bytes(&hello_bytes)
-        .map_err(|e| RelayError::Iroh(format!("decode hello: {e}")))?;
-    let now_ns = unix_now_ns();
-    let revs = ctx
-        .revocations
-        .read()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .clone();
-    let accepted_peer = {
-        let trust_policy = ctx
-            .trust_policy
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        auth::accept_hello(&hello, &ctx.own_user_pk, &trust_policy, &revs, now_ns)
-    };
-    let client_peer = match accepted_peer {
-        Ok(p) => p,
-        Err(e) => {
-            ctx.metrics.inc_auth_rejected();
-            return Err(RelayError::Iroh(format!("auth reject: {e}")));
+    {
+        Ok(peer) => peer,
+        Err(error) => {
+            if matches!(error, HandshakeError::Auth(_)) {
+                ctx.metrics.inc_auth_rejected();
+            }
+            return Err(RelayError::Iroh(error.to_string()));
         }
     };
-    // 2. Reply with HelloAck.
-    let mut server_nonce = [0u8; 32];
-    {
-        use rand::Rng;
-        rand::rng().fill_bytes(&mut server_nonce);
-    }
-    let ack = auth::build_hello_ack(
-        ctx.own_cert.clone(),
-        &ctx.own_sk,
-        server_nonce,
-        &hello.client_nonce,
-    );
-    let ack_bytes =
-        postcard::to_allocvec(&ack).map_err(|e| RelayError::Iroh(format!("encode ack: {e}")))?;
-    write_frame(&mut send, &ack_bytes)
-        .await
-        .map_err(|e| RelayError::Iroh(format!("write ack: {e}")))?;
-    // 3. Read HelloAck2.
-    let client_ack2_bytes = read_frame(&mut recv, MAX_FRAME_BYTES)
-        .await
-        .map_err(|e| RelayError::Iroh(format!("read ack2: {e}")))?;
-    let ack2: HelloAck2 = postcard::from_bytes(&client_ack2_bytes)
-        .map_err(|e| RelayError::Iroh(format!("decode ack2: {e}")))?;
-    if let Err(e) = auth::verify_hello_ack2(&ack2, &client_peer.device_public_key, &server_nonce) {
-        ctx.metrics.inc_auth_rejected();
-        return Err(RelayError::Iroh(format!("auth ack2 reject: {e}")));
-    }
 
     ctx.metrics.inc_conns_authed();
 
-    // 4. Hand off to the peer loop.
+    // 2. Hand off to the peer loop.
     let peer_result = Box::pin(run_peer_version(
         client_peer,
         connection.clone(),

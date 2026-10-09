@@ -764,8 +764,10 @@ mod durable_local_matrix {
                     self.entered.send(()).unwrap();
                     self.release.notified().await;
                 }
-                write_directory_row(results.get().init_resolution().init_found(), &self.row);
-                Ok(())
+                runtime_collab::write_action_directory_row(
+                    results.get().init_resolution().init_found(),
+                    &self.row,
+                )
             })
         }
     }

@@ -58,6 +58,24 @@ intervals from the previous deadline, so a late frame doesn't drag the
 grid, and a frame that overruns several intervals skips them rather than
 queueing a burst.
 
+**Vblank-locked scheduling.** While every powered output renders straight
+into its own scanout target, the DRM presenter waits for each frame's page
+flip and reports the vblank it retired on (`Presenter::display_timing`: the
+kernel's `CLOCK_MONOTONIC` flip stamp, the earliest among the outputs that
+pace the loop). The native loop's `pacing::VblankScheduler` then re-anchors
+the grid on that vblank every frame (`FrameClock::note_retirement`) and makes
+the next frame due one *lead* before the following vblank. The lead is the
+worst deadline-to-queued-flip cost of the last 64 frames plus 2 ms
+(`FrameLead`), clamped to one interval; with no cost known yet the frame is
+due at the vblank itself. A frame built at its deadline therefore reaches the
+very next vblank: input that arrives just before a build is on the panel one
+lead later, and input just after it one interval plus a lead later. A grid
+that is locked advances at handoff (`FrameClock::note_submitted`) so a wakeup
+between the handoff and the flip is not a due frame; an unchanged frame that
+queues no flip leaves it in place. Readback, the CPU renderer, a blank and a
+VT switch report no vblank pacing and drop the lock, back to the
+retirement-paced grid above. Adaptive sync keeps its content-driven rule.
+
 **`compositor::present`** — presentation off the input thread. Backends
 that can be split hand a `Presenter` (their render state) to a
 `PresentPipe`, which owns a `tilo-present` thread. The seam is the
@@ -74,9 +92,18 @@ document in `handle_event`" model is untouched.
   reads its rendered bytes back immediately after the submit, and an
   asynchronous present would make every headless harness racy.
 
-The pipe admits one frame beyond the one being presented. When it is full
-the paint gate declines to build — capping input-to-photon at two frame
-intervals — rather than growing a queue the display can never drain.
+The pipe admits `Presenter::queue_depth` frames beyond the one being
+presented: one by default, none while the DRM presenter is vblank-paced. A
+frame queued behind one still waiting for its flip would start rendering at
+that vblank and be shown an interval later, so on the direct path at most one
+frame is in flight. When a frame no longer fits one interval (worst cost plus
+margin above it), the loop raises the floor to one queued frame
+(`PresentPipe::set_min_queue_depth`) so building overlaps presenting, as
+before; `TILO_PRESENT_PIPELINED=1` keeps one queued frame for A/B
+measurement. When the pipe is full the paint gate declines to build rather
+than grow a queue the display can never drain. A transition's clock is held
+only while a *due* frame is refused (`present_hold_credit`); the normal wait
+for a vblank-paced flip is animation time.
 Resize and DPMS travel the same channel as frames, so a blank cannot
 overtake a frame already queued.
 
@@ -141,8 +168,15 @@ per frame, is the follow-up — and the frame trace already measures it.
 
 **What is verified, and what isn't.** The loop demonstrably holds the
 cadence it is configured for — including non-60 rates, via the
-`TILO_REFRESH_HZ` override. `FrameClock::note_presented` is still called at
-submit: cadence remains anchored on frame production.
+`TILO_REFRESH_HZ` override. Synchronous presenters still call
+`FrameClock::note_presented` at submit; a vblank-paced DRM presenter anchors
+the cadence on its flip events instead. `TILO_PROFILE_PRESENTATION=1` adds a
+`FRAME-PACING` line every two seconds (lead, queue depth, missed vblanks,
+deadline-to-flip cost and deadline-to-vblank p50/p99), and `FRAME-LIFECYCLE`
+records carry `vblank_paced` and `flip_to_vblank_us`; `KEY-LATENCY` dates a
+frame that queued its own flip at that flip's vblank. Whether this reaches
+one interval of compositor input-to-photon on real panels is still to be
+measured on hardware.
 
 Standard `wp_presentation` feedback separately binds a client's committed
 buffer generation to the pixels drawn by the foreign-surface widget and
@@ -227,7 +261,10 @@ only a frame proven identical to the previous one (empty damage); that
 case is pointer motion or typing over an unchanged desktop, and it costs no
 GPU work, copy or flip (`keeps_shown_image`). A frame dropped because KMS
 reported the flip busy invalidates the output's retained pixels, so the
-next frame renders and KMS never keeps showing an older image.
+next frame renders and KMS never keeps showing an older image. An output
+whose view is the whole scene while a readback renders the same target
+keeps no frame: the readback can bring that target to a revision KMS does
+not show on the direct output (`TargetSharing::Readback`).
 
 Outputs are paced apart. A frame retires when the flips of the outputs at
 the fastest refresh have (`DrmPresenter::retire_direct_flips`), so the loop

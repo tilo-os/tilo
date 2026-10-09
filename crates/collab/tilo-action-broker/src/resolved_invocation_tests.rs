@@ -208,10 +208,7 @@ async fn resolved_invocation_rpc_retains_actual_original_and_exact_worker() {
         // The eager path on the second worker binds its lease to the exact
         // original request as well.
         let mut descriptor = directory_state.borrow().row().descriptor.unwrap();
-        let mut contract: tilo_actions::ActionContract =
-            serde_json::from_str(&descriptor.contract_json).unwrap();
-        contract.permission = tilo_actions::PermissionRequirement::Write;
-        descriptor.contract_json = serde_json::to_string(&contract).unwrap();
+        descriptor.contract.permission = tilo_actions::PermissionRequirement::Write;
         second
             .handle
             .publish_actions(&route.app_id, &[descriptor])
@@ -360,8 +357,10 @@ async fn resolved_invocation_capacity_is_bounded_and_cancellation_releases_it() 
             Promise::from_future(async move {
                 self.entered.send(()).unwrap();
                 self.release.notified().await;
-                write_directory_row(results.get().init_resolution().init_found(), &self.row);
-                Ok(())
+                runtime_collab::write_action_directory_row(
+                    results.get().init_resolution().init_found(),
+                    &self.row,
+                )
             })
         }
     }
@@ -444,6 +443,100 @@ async fn resolved_invocation_capacity_is_bounded_and_cancellation_releases_it() 
             assert_eq!(fixture.directories.resolved_permits.available_permits(), 63);
             drop(valid);
             assert_eq!(fixture.directories.resolved_permits.available_permits(), 64);
+        })
+        .await;
+}
+
+/// An invoke naming no revision asks the directory's owner to resolve the
+/// action as the directory is now (an empty revision), in the same turn the
+/// broker admits it, so the caller need not read the revision first. A
+/// revision named empty is still refused.
+#[tokio::test(flavor = "current_thread")]
+async fn a_directory_invoke_naming_no_revision_resolves_the_directory_as_it_is_now() {
+    use tilo_actions::remote::{
+        ActionHostError, Caller, InvokeArgument, InvokeRequest, PendingPoll, RemoteActionTarget,
+    };
+    struct Recording {
+        revisions: Rc<RefCell<Vec<String>>>,
+        row: runtime_collab::ActionDirectoryRow,
+    }
+    impl action_directory::Server for Recording {
+        fn resolve(
+            self: Rc<Self>,
+            params: action_directory::ResolveParams,
+            mut results: action_directory::ResolveResults,
+        ) -> Promise<(), capnp::Error> {
+            let revision = params.get().and_then(|request| {
+                request
+                    .get_revision()?
+                    .to_str()
+                    .map(str::to_owned)
+                    .map_err(|error| capnp::Error::failed(error.to_string()))
+            });
+            match revision {
+                Ok(revision) => self.revisions.borrow_mut().push(revision),
+                Err(error) => return Promise::err(error),
+            }
+            write_directory_row(results.get().init_resolution().init_found(), &self.row);
+            Promise::ok(())
+        }
+    }
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let mut fixture = local_directory_fixture();
+            let revisions = Rc::new(RefCell::new(Vec::new()));
+            let recording = capnp_rpc::new_client(Recording {
+                revisions: Rc::clone(&revisions),
+                row: fixture.directory_state.borrow().row(),
+            });
+            fixture
+                .directories
+                .directories
+                .borrow_mut()
+                .get_mut(&fixture.peer_id)
+                .unwrap()
+                .directory = recording;
+            let caller = Caller::local_person("fixture-owner")
+                .in_room(fixture.cluster_id.clone())
+                .in_new_execution();
+            let mut request = InvokeRequest {
+                invocation: tilo_actions::InvocationId::new(),
+                target: RemoteActionTarget {
+                    provider: fixture.peer_id.to_string(),
+                    address: tilo_actions::ActionAddress::new("workspace:atlas", "open"),
+                },
+                argument: InvokeArgument::None,
+                context: None,
+                confirmation: None,
+                revision: Some(String::new()),
+                on_behalf_of: None,
+            };
+            assert!(matches!(
+                fixture
+                    .state
+                    .action_invoke(&caller, None, None, &request)
+                    .poll_ready(),
+                PendingPoll::Ready(Err(ActionHostError::InvalidRequest { .. }))
+            ));
+            request.revision = None;
+            let mut pending = fixture.state.action_invoke(&caller, None, None, &request);
+            let admitted = tokio::time::timeout(Duration::from_secs(2), async {
+                loop {
+                    drain_directory_bridge(&fixture).await;
+                    if let PendingPoll::Ready(result) = pending.poll_ready() {
+                        break result;
+                    }
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .expect("bounded directory admission");
+            admitted.expect("admitted against the directory as it is now");
+            assert_eq!(*revisions.borrow(), [String::new()]);
+            let (_, delivered) = fixture
+                .take_invocation_identity()
+                .expect("the owner receives the invocation");
+            assert_eq!(delivered, request.invocation);
         })
         .await;
 }

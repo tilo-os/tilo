@@ -20,7 +20,7 @@
 //! - [`web`] — the browser carriers: HTTPS routes and the live grant;
 //! - [`rooms`] — governed rooms over HTTPS: administration and joining;
 //! - [`mesh`] — device roles, service capabilities, replication intents and
-//!   the deterministic placement / remote-control routing over them;
+//!   the server advertisements compute admission checks;
 //! - [`config`] and [`policy`] — the on-disk `relay.toml` schema;
 //! - [`home_peer`] — the registry record written after enrolling an
 //!   always-on peer;
@@ -74,9 +74,8 @@ pub use home_peer::{
     home_peer_registry_path, valid_home_peer_label,
 };
 pub use mesh::{
-    ComputeAccelerator, DeviceKey, DeviceMeshProfile, DeviceRole, Placement, PlacementRequest,
-    PowerAvailability, RemoteControlRoute, ReplicationIntent, ReplicationResource,
-    ServerAdvertisement, ServiceCapabilities, Workload, place, route_remote_control,
+    ComputeAccelerator, DeviceKey, DeviceMeshProfile, DeviceRole, PowerAvailability,
+    ReplicationIntent, ReplicationResource, ServerAdvertisement, ServiceCapabilities,
 };
 pub use metrics::MetricsSnapshot;
 pub use policy::TrustPolicy;
