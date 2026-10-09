@@ -633,20 +633,32 @@ impl Calendar {
         Ok(calendar)
     }
 
-    /// Whether the item resource `id` (an event, one of its occurrences, a
-    /// task or a project) is in the calendar.
-    fn holds(&self, id: &str) -> bool {
-        let Some((field, item)) = tilo_resource::items::item_of_resource::<Self>(id) else {
-            return false;
+    /// The published id of the item `item` names — an event, one of its
+    /// occurrences (`<event>/occurrences/<date>`), a task or a project — when
+    /// the calendar holds it.
+    fn item_resource(&self, item: &Id) -> Option<String> {
+        let (id, occurrence) = match item.as_str().split_once("/occurrences/") {
+            Some((id, date)) => (id, Some(date)),
+            None => (item.as_str(), None),
         };
-        let event = item.as_str().split('/').next().unwrap_or_default();
-        let found = |id: &str| id.parse::<crate::model::Id>().ok();
-        match field {
-            "events" => found(event).is_some_and(|id| self.event(id).is_some()),
-            "tasks" => found(item.as_str()).is_some_and(|id| self.task(id).is_some()),
-            "projects" => found(item.as_str()).is_some_and(|id| self.project(id).is_some()),
-            _ => false,
+        let id: crate::model::Id = id.parse().ok()?;
+        if self.event(id).is_some() {
+            return Some(match occurrence {
+                Some(date) => crate::actions::occurrence_resource_id(
+                    id,
+                    chrono::NaiveDate::parse_from_str(date, crate::actions::DATE_FMT).ok()?,
+                ),
+                None => crate::actions::event_resource_id(id),
+            });
         }
+        if occurrence.is_some() {
+            return None;
+        }
+        if self.task(id).is_some() {
+            return Some(crate::actions::task_resource_id(id));
+        }
+        self.project(id)
+            .map(|_| crate::actions::project_resource_id(id))
     }
 
     /// Search narrows to the events, to the tasks, or to one project's
@@ -984,13 +996,13 @@ impl ResourceApp for CalendarShell {
         let app = CalendarApp::new();
         let opens = app.opens();
         let live = cx.live().clone();
-        cx.on_open(move |anchor: &str| -> Result<(), Refusal> {
-            if !live.get().holds(anchor) {
-                return Err(Refusal::new(format!(
-                    "`{anchor}` is no event, task or project of this calendar"
-                )));
-            }
-            opens.borrow_mut().push(anchor.to_owned());
+        cx.on_open_item(move |item| {
+            let resource = live.get().item_resource(item).ok_or_else(|| {
+                Refusal::new(format!(
+                    "`{item}` is no event, task or project of this calendar"
+                ))
+            })?;
+            opens.borrow_mut().push(resource);
             Ok(())
         });
         cx.surface(app)
