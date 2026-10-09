@@ -70,3 +70,10 @@ store-package-review-busy = Too many package reviews are waiting. Finish the cur
 store-package-local-trust = Verified by an existing trusted attestor
 store-package-local-description = Signed local application. Installation requires its payload and exact runtime to be available.
 store-package-local-source = Local package
+
+## Verlauf: was jede Änderung an den Meldungen getan hat
+
+store-draft-report = Meldung zu { $app_id } begonnen
+store-record-moderation-case = Die Registry hat Fall { $case_id } eröffnet: { $status }
+store-report-note = Das Anliegen einer Meldung beschrieben
+store-reports-reports = Eine Meldung bearbeitet

@@ -11,7 +11,7 @@
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, RwLock};
 
-use tilo_actions::ActionAddress;
+use ui::tilo_actions::ActionAddress;
 use ui::tilo_resource::SearchEntry;
 
 use crate::StoreItem;
@@ -165,7 +165,7 @@ mod tests {
 
     /// The app's search source over the directory, as the framework builds it.
     fn source(directory: &StoreDirectory) -> impl SearchProvider + use<> {
-        ui::framework::testing::search_source::<crate::resource::Store>(directory.entries())
+        ui::framework::testing::search_source::<crate::reports::Reports>(directory.entries())
     }
 
     fn item(index: usize) -> StoreItem {

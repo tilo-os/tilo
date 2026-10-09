@@ -40,9 +40,9 @@ use ui::{Theme, permissions::PermissionContext, presence::PresenceCtx, text_rend
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 
-use crate::doc_actions::StoreDocumentAction;
 use crate::model::{ActionKind, SourceFilter, StoreItem, StoreSource};
-use crate::resource::{ReportProjection, Store, StoreEffect};
+use crate::reports::{Reports as Store, reports as verbs};
+use crate::resource::{ReportProjection, StoreEffect};
 use crate::sources::distinct_categories;
 use crate::worker::{Outcome, Request, StoreWorker};
 mod view;
@@ -1353,7 +1353,7 @@ impl StoreApp {
     pub(crate) fn inspect_catalogue(&self, app: Option<&str>) -> Result<serde_json::Value, String> {
         let detail = app
             .map(|id| {
-                if !crate::doc_actions::valid_app_id(id) {
+                if !crate::reports::valid_app_id(id) {
                     return Err("invalid app identity".to_string());
                 }
                 self.items
@@ -1569,7 +1569,7 @@ impl StoreApp {
                 self.set_active_category(None);
             }
             StoreEffect::ShowDetails { app } => {
-                if !crate::doc_actions::valid_app_id(&app) {
+                if !crate::reports::valid_app_id(&app) {
                     return Err("invalid app identity".into());
                 }
                 self.status_line = self.items.iter().find(|item| item.id == app).map_or_else(
@@ -1720,7 +1720,7 @@ impl StoreApp {
                     return Err("this report was already submitted".into());
                 }
                 let note = report.note.trim().chars().count();
-                if !(8..=crate::doc_actions::MAX_REPORT_NOTE_CHARS).contains(&note) {
+                if !(8..=crate::reports::MAX_REPORT_NOTE_CHARS).contains(&note) {
                     return Err("Add a concern of 8–4096 characters before submitting".into());
                 }
                 let (item, registry_name) = self.reported_app(&report)?;
@@ -1830,7 +1830,7 @@ impl StoreApp {
     /// The report about `app`, once the registry has a case for it.
     fn case(&self, app: &str) -> Result<ReportProjection, String> {
         let report = self.report(app)?;
-        if !report.is_case() || !crate::doc_actions::valid_case_id(&report.id) {
+        if !report.is_case() || !crate::reports::valid_case_id(&report.id) {
             return Err("this report has no moderation case yet".into());
         }
         Ok(report)
@@ -1884,7 +1884,7 @@ impl StoreApp {
         &mut self,
         finish: &Finish,
         outcome: Outcome,
-        parent: Option<tilo_actions::InvocationId>,
+        parent: Option<ui::tilo_actions::InvocationId>,
         cx: &mut EffectCx<Store, Self>,
     ) -> EffectAnswer {
         if let Ok(finished) = &outcome
@@ -1930,7 +1930,7 @@ impl StoreApp {
     fn start_application_launch(
         &mut self,
         launch: crate::actions::ApplicationLaunch,
-        parent: Option<tilo_actions::InvocationId>,
+        parent: Option<ui::tilo_actions::InvocationId>,
         cx: &mut EffectCx<Store, Self>,
     ) -> EffectAnswer {
         let Some(request_id) = self.next_launch_request.take() else {
@@ -1996,7 +1996,7 @@ impl StoreApp {
     ) -> Result<(), String> {
         match case_record(app_id, package_id, case_id, status) {
             Ok(record) => {
-                cx.apply(&record);
+                cx.invoke(Store::RECORD_MODERATION_CASE.with(record));
                 self.status_line = format!("Moderation case {case_id} is {status}.");
                 Ok(())
             }
@@ -2286,14 +2286,14 @@ fn case_record(
     package_id: &str,
     case_id: &str,
     status: &str,
-) -> Result<StoreDocumentAction, &'static str> {
+) -> Result<verbs::RecordModerationCase, &'static str> {
     if package_id != app_id
         || !case_id.starts_with("case-")
-        || !crate::doc_actions::valid_case_id(case_id)
+        || !crate::reports::valid_case_id(case_id)
     {
         return Err("Registry returned an invalid moderation case identifier.");
     }
-    Ok(StoreDocumentAction::RecordModerationCase {
+    Ok(verbs::RecordModerationCase {
         app_id: app_id.to_owned(),
         case_id: case_id.to_owned(),
         status: status.to_owned(),
@@ -3042,7 +3042,7 @@ mod tests {
         // Admin effects are removed from a viewer's public door; unlike a
         // retained read effect submitting a forbidden edit, lookup itself refuses.
         assert!(
-            matches!(&refused, tilo_actions::DoorError::Unknown(_)),
+            matches!(&refused, ui::tilo_actions::DoorError::Unknown(_)),
             "{refused:?}"
         );
         assert!(!app.harness().controls().iter().any(|control| matches!(
@@ -3491,7 +3491,7 @@ mod tests {
                 .unwrap();
             assert_eq!(
                 action.contract.permission,
-                tilo_actions::PermissionRequirement::Admin
+                ui::tilo_actions::PermissionRequirement::Admin
             );
             let job = admitted_job(&mut app, remote_enabled_effect(&remote));
             assert!(
@@ -3632,7 +3632,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             enable.contract.permission,
-            tilo_actions::PermissionRequirement::Admin
+            ui::tilo_actions::PermissionRequirement::Admin
         );
         assert!(matches!(
             admitted_job(&mut app, remote_enabled_effect(&account)).request,
@@ -4729,7 +4729,7 @@ mod tests {
         app.present_reports(&[ReportProjection {
             id: "report:id.notes".into(),
             app_id: "id.notes".into(),
-            status: crate::doc_actions::DRAFT_STATUS.into(),
+            status: crate::reports::DRAFT_STATUS.into(),
             note: note.into(),
         }]);
     }
@@ -5120,13 +5120,14 @@ mod tests {
 
         // Case `only_a_well_formed_case_about_the_reported_app_is_recorded`.
         {
+            let record = case_record("id.notes", "id.notes", "case-authoritative", "Open").unwrap();
             assert_eq!(
-                case_record("id.notes", "id.notes", "case-authoritative", "Open"),
-                Ok(StoreDocumentAction::RecordModerationCase {
-                    app_id: "id.notes".into(),
-                    case_id: "case-authoritative".into(),
-                    status: "Open".into(),
-                })
+                (
+                    record.app_id.as_str(),
+                    record.case_id.as_str(),
+                    record.status.as_str()
+                ),
+                ("id.notes", "case-authoritative", "Open")
             );
             assert!(case_record("id.notes", "id.notes", "case-../../outside", "Open").is_err());
             assert!(case_record("id.notes", "id.other", "case-authoritative", "Open").is_err());

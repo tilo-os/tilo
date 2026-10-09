@@ -111,7 +111,7 @@ fn a_remote_rows_action_invokes_the_remotes_own_remove_action() {
     );
     let invocation = ui::widget::controls::take_control_invocation(&mut *app)
         .expect("the row action queued an invocation");
-    assert_eq!(invocation.address.resource, store::Store::KIND);
+    assert_eq!(invocation.address.resource, store::Reports::KIND);
     assert_eq!(invocation.address.action, "remove-remote");
     assert_eq!(invocation.arguments["name"], "flathub");
 }
@@ -124,7 +124,7 @@ fn a_remote_rows_persistent_toggle_invokes_its_own_disable_action() {
     click(&mut app, toggle.center());
     let invocation = ui::widget::controls::take_control_invocation(&mut *app)
         .expect("the persistent toggle queued an invocation");
-    assert_eq!(invocation.address.resource, store::Store::KIND);
+    assert_eq!(invocation.address.resource, store::Reports::KIND);
     assert_eq!(invocation.address.action, "disable-remote");
     assert_eq!(invocation.arguments["remote"], "remote:flathub");
 }
@@ -137,7 +137,7 @@ fn a_narrowed_catalogue_offers_to_clear_its_filters() {
     click(&mut app, clear.center());
     let invocation = ui::widget::controls::take_control_invocation(&mut *app)
         .expect("clearing filters is an exported action");
-    assert_eq!(invocation.address.resource, store::Store::KIND);
+    assert_eq!(invocation.address.resource, store::Reports::KIND);
     assert_eq!(invocation.address.action, "clear-filters");
 
     let plain = lay_out(store::fixture::seeded_app());

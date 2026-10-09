@@ -1,0 +1,59 @@
+# The app's public surface, written by `tilo-app surface`: its resources' verbs
+# and stored fields. Review changes to it like an API change; `tilo-app check`
+# fails when the code and this file disagree.
+
+[[resources]]
+kind = "store.catalog"
+label = "App Store"
+version = 1
+
+[[resources.fields]]
+owner = "reports"
+path = "reports"
+stored = "value"
+title = "Reports"
+type = "BTreeMap<String, Report>"
+
+[[resources.verbs]]
+description = "Create report draft.  Start a collaborative report about an app, with a note to describe it. A report the app already has keeps its note."
+id = "draft-report"
+kind = "undoable"
+label = "Create report draft"
+
+[[resources.verbs.params]]
+name = "app_id"
+required = true
+
+[resources.verbs.params.schema]
+description = "App identity (for example so.tilo.notes)"
+type = "string"
+
+[[resources.verbs]]
+description = "Record a moderation case.  The case the app's registry opened for its report, and its status."
+id = "record-moderation-case"
+kind = "undoable"
+label = "Record a moderation case"
+
+[[resources.verbs.params]]
+name = "app_id"
+required = true
+
+[resources.verbs.params.schema]
+description = "App identity"
+type = "string"
+
+[[resources.verbs.params]]
+name = "case_id"
+required = true
+
+[resources.verbs.params.schema]
+description = "The registry's case id"
+type = "string"
+
+[[resources.verbs.params]]
+name = "status"
+required = true
+
+[resources.verbs.params.schema]
+description = "The case's status"
+type = "string"
