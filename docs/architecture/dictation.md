@@ -2457,3 +2457,60 @@ inner journey under two CPUs, 3 GiB RAM, no swap and 256 tasks. Sampled memory h
 the cap with debug-runtime staging; this is not production footprint evidence.
 The control is Whisper Base, not Whistle-specific runtime/accuracy or physical
 microphone acceptance. The PR and real-OS deployment remain held.
+
+## Recorded Whistle compositor qualification (9 October)
+
+The already-reviewed Whistle weights and default-off Wasmtime AOT x86-64-v3
+runtime now pass the assembled hardware-disabled French, English and Spanish
+compositor journeys. German passes the same editor behavior but its unchanged
+accuracy assertions fail. Exact outputs, source/binary/model/runtime hashes,
+resource controls and failed setup/accuracy traces are in
+`dictation-whistle-compositor-evidence.json`; exact historical drivers are in
+`tools/release/fixtures/whistle_compositor_20261009/`.
+
+| Public fixture | First visible preview after playback | Insertion after Finish | Sampled total peak | Raw development-fixture WER |
+| --- | ---: | ---: | ---: | ---: |
+| French | 3.801 s | 2.438 s | 2.226 GiB | 0.0% |
+| English | 3.928 s | 1.630 s | 2.256 GiB | 5.3% |
+| Spanish | 3.853 s | 3.138 s | 2.243 GiB | 10.3% |
+| German — accuracy failed | 3.834 s | 3.743 s | 2.362 GiB | 27.8% |
+
+Every case verifies original-field insertion, unchanged fields before final,
+actual native Undo/Redo, cancellation during playback, observed live worker
+identity and exit before restart, and permanent focus-away/back retirement.
+The private preview's existing widget ID now publishes only its laid-out
+rectangle through the existing `tilo-control` target registry. No transcript
+text is added to control status or persisted by production code. Its layout,
+accessibility, theme/scale and retirement regression passes, as does the required
+remote shell all-test-target compile. The fixture witness accepts only the exact
+reviewed Whistle digest and records its actual format, revision and Apache-2.0
+licence; it never masquerades as Whisper GGML.
+
+German produced “Franconk”/“Korlum” for “Hongkong”/“Kowloon” and misrecognized
+part of the adjacent phrase. The preserved direct-audio worker control has
+similar errors, suggesting a recognition limitation rather than evidence unique
+to compositor capture. The failing assertions remain; their later placement lets
+editor behavior and latency finish without counting the overall German case as
+passing. WER uses the existing punctuation/space NFKC/casefold scorer without
+reference-aware substitutions. English's `years` versus the reference's `year`
+is still counted. These previously consumed public development recordings do
+not establish general language accuracy or a holdout result.
+
+All runs retain two CPUs, 3 GiB, zero swap, 256 tasks and a 240-second limit,
+with no hardware nodes, host devices or network. Peak tasks are 156–159.
+Memory includes debug/runtime staging, software rendering, compositor/browser,
+preflight and file cache; these are not production or older-device footprints.
+Preview timing observes appearance of a nonempty rendered draft, not correct
+first words; audio-relative timing includes the recording's silence. Whistle's
+root-owned-runtime loader correctly rejected the original one-ID fixture
+namespace. The corrected disposable mapped image preserves that check and drops
+the launcher to capability-free UID/GID 65534 before running any application.
+No additional outer-container capability or persistent access was granted.
+
+The earlier Whisper Base executable-link worker-exit helper skipped unreadable
+processes. Preserve that result as the speech/insertion/history control, but not
+strict worker-exit proof. These Whistle runs require an observed exact worker
+command line before verifying its absence, and unreadable command lines fail.
+No Whisper control was repeated or rewritten. Publication, persistent model or
+runtime installation, real microphone consent and deployment remain held;
+older devices, ARM and arbitrary complex editors remain unqualified.

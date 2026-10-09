@@ -20188,6 +20188,14 @@ impl Widget for ShellOverlayHost {
         self.onboarding.is_none() && self.palette_visible && child_index == 1
     }
 
+    fn test_rects(&self) -> Vec<(String, Rect)> {
+        self.layers
+            .dictation
+            .preview_target()
+            .map(|rect| vec![("dictation.live-preview".into(), rect)])
+            .unwrap_or_default()
+    }
+
     fn children(&self) -> Vec<&dyn Widget> {
         if let Some(onboarding) = self.onboarding.as_ref() {
             return vec![onboarding, &self.capture_studio];

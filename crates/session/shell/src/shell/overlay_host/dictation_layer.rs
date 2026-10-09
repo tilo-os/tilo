@@ -154,6 +154,10 @@ impl DictationSurface {
         );
         self.changed = true;
     }
+    pub(crate) fn preview_target(&self) -> Option<Rect> {
+        let rect = self.preview.as_ref()?.get_rect();
+        (rect.area() > 0.0).then_some(rect)
+    }
     fn preview_rect(&self, geometry: LayerGeometry<'_>) -> Rect {
         let prompt = self.surface_rect(geometry);
         let spacing = ui::tokens::Spacing::BASE;
@@ -586,6 +590,7 @@ mod tests {
         let finish = surface.affirmative_target();
         let draft = "Private public fixture 👋 日本語 ".repeat(200);
         surface.preview(Some(&draft));
+        assert!(surface.preview_target().is_none());
         assert_eq!(surface.preview_text.chars().count(), 160);
         let geometry = LayerGeometry {
             viewport: Rect::new(0.0, 0.0, 1280.0, 800.0),
@@ -649,6 +654,7 @@ mod tests {
                 assert!(child.get_rect().x1 <= panel.x1);
                 assert!(child.get_rect().y1 <= panel.y1);
             });
+            assert_eq!(surface.preview_target(), Some(panel));
         }
         assert!(matches!(
             surface.semantic_intent(&finish),
@@ -660,6 +666,7 @@ mod tests {
             copy_failed: false,
         });
         assert!(surface.preview.is_none() && surface.preview_text.is_empty());
+        assert!(surface.preview_target().is_none());
         surface.status(DictationStatus::Idle);
         surface.preview(Some(&draft));
         assert!(surface.preview.is_none() && surface.accessibility(geometry).is_none());
