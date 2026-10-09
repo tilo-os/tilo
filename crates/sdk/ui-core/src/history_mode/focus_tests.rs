@@ -37,6 +37,7 @@ impl FrameworkHistoryTopology for FocusHistoryRoot {
     ) {
         self.visits.set(self.visits.get() + 1);
         visitor(&self.history, &self.live);
+        super::capability::visit_framework_history(&self.live, visitor);
     }
 
     fn visit_framework_history_mut(
@@ -44,6 +45,7 @@ impl FrameworkHistoryTopology for FocusHistoryRoot {
         visitor: &mut dyn FnMut(&mut FrameworkHistorySurface, &mut dyn Widget),
     ) {
         visitor(&mut self.history, &mut self.live);
+        super::capability::visit_framework_history_mut(&mut self.live, visitor);
     }
 }
 
@@ -140,4 +142,62 @@ fn saved_and_captured_history_deny_only_live_composition_nodes() {
     );
     assert!(allows(&root, owned));
     assert!(allows(&root, outside));
+}
+
+#[test]
+fn nested_history_ownership_does_not_escape_outer_focus_denial() {
+    let state = crate::State::new();
+    let (inner, _) = FocusHistoryRoot::new(1, &state);
+    let (mut outer, _) = FocusHistoryRoot::new(0, &state);
+    outer.live = Column::new().push(Box::new(inner));
+    let (sibling, _) = FocusHistoryRoot::new(1, &state);
+    let mut root = Column::new()
+        .push(Box::new(outer))
+        .push(Box::new(sibling))
+        .push(Box::new(Button::new("outside", "Outside")));
+    let mut tree = TaffyTree::new();
+    let mut nodes = HashMap::new();
+    let root_node = root.build_layout(&mut tree, &crate::Theme::dark(), &mut nodes);
+    let outside = *tree.children(root_node).unwrap().last().unwrap();
+    let mut owned_and_live = Vec::new();
+    super::capability::visit_framework_history(&root, &mut |history, _| {
+        owned_and_live.push((
+            nodes
+                .keys()
+                .copied()
+                .find(|&node| history.owns_node(node, &tree))
+                .unwrap(),
+            tree.children(history.live_layout_node().unwrap()).unwrap()[0],
+        ));
+    });
+    assert_eq!(owned_and_live.len(), 3, "outer, inner, independent sibling");
+    let mut index = 0;
+    super::capability::visit_framework_history(&root, &mut |history, _| {
+        if index < 2 {
+            assert!(history.request_open());
+        }
+        index += 1;
+    });
+    let allows = |node| super::embedded::allows_focus(&root, node, &tree);
+    assert!(
+        allows(owned_and_live[0].0),
+        "outer retains its own controls"
+    );
+    assert!(
+        !allows(owned_and_live[1].0),
+        "inner ownership cannot override outer capture"
+    );
+    assert!(
+        !allows(owned_and_live[1].1),
+        "nested live control is denied"
+    );
+    assert!(
+        allows(owned_and_live[2].0),
+        "independent History controls remain allowed"
+    );
+    assert!(
+        allows(owned_and_live[2].1),
+        "independent live controls remain allowed"
+    );
+    assert!(allows(outside));
 }
