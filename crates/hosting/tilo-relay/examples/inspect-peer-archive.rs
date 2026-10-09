@@ -223,10 +223,7 @@ fn canonical(room_id: &str, app: &str, record: &str, doc: &AutoCommit) -> Result
     Ok(())
 }
 fn inspect(auth: &PublicEnrollment, sources: &[Source]) -> Result<Recovered> {
-    use collab_types::{
-        ArtifactKind, Ed25519PublicKey,
-        caps::{Actor, CapDecision, Principal, ResourceRef, decide_capability, verb_for_opclass},
-    };
+    use collab_types::{Ed25519PublicKey, caps::Principal};
     use tilo_peer_state::transport::Retention;
     let b = &auth.bootstrap;
     let room_id = uuid::Uuid::parse_str(&b.room)?;
@@ -331,7 +328,7 @@ fn inspect(auth: &PublicEnrollment, sources: &[Source]) -> Result<Recovered> {
     let room_doc = room_doc.ok_or_else(|| anyhow::anyhow!("missing governed room checkpoint"))?;
     let coverages = coverage::entries(&room_doc).map_err(anyhow::Error::msg)?;
     let identities = room::governance_of(Some(&room_doc)).identities;
-    let (_, owner, caps) = room::extract_governed_fields(&room_doc);
+    let (_, policy) = room::extract_governed_fields(&room_doc);
     let mut docs = BTreeMap::new();
     let mut checks = vec![];
     let mut pending = vec![];
@@ -394,27 +391,32 @@ fn inspect(auth: &PublicEnrollment, sources: &[Source]) -> Result<Recovered> {
             &revocations(&auth.root_public_key, &entries)?,
             at,
         )?;
-        let person = Principal::person_from_key(Ed25519PublicKey::from_bytes(cert.user_public_key));
-        let role = room::role_of(owner.as_deref(), &caps, person.id(), at / 1_000_000_000)
+        let person = Principal::person_from_key(Ed25519PublicKey::from_bytes(cert.user_public_key))
+            .id()
+            .to_owned();
+        policy
+            .role_of(&person)
             .ok_or_else(|| anyhow::anyhow!("missing room membership"))?;
-        let actor = Actor::person(Some(role), person.id())
-            .with_principal(Principal::App(app_id.clone()))
-            .in_room(b.room.clone());
-        let resource = ResourceRef::Artifact {
-            app: Some(app_id.clone()),
-            kind: ArtifactKind::Note,
-            instance: envelope.artifact,
+        let author = tilo_action_policy::Standing::person(policy.clone(), person);
+        let author = if cert.capabilities.foreign {
+            author.on_foreign_device()
+        } else {
+            author
         };
+        // The change the op makes, decided against the room's policy when it
+        // was made, exactly as a receiver decides it live.
         ensure!(
-            collab_types::role_permits(role, ArtifactKind::Note, envelope.op_class)
-                && decide_capability(
-                    &actor,
-                    &resource,
-                    verb_for_opclass(envelope.op_class),
-                    &caps,
-                    Some(at / 1_000_000_000)
-                ) == CapDecision::Allow,
-            "historical document capability forbidden"
+            author.answer(
+                &collab_types::validator::op_node(
+                    &b.room,
+                    Some(app_id.as_str()),
+                    record_id,
+                    envelope.op_class
+                ),
+                collab_types::validator::op_kind(envelope.op_class),
+                &tilo_action_policy::Context::at(at / 1_000_000),
+            ) == tilo_action_policy::Answer::Allow,
+            "historical document change forbidden"
         );
         let collab_types::RoutedDocumentPayload::Cleartext(mutation) =
             collab_types::validate_document_payload_route(app_id, cluster_id, record_id, envelope)?

@@ -137,6 +137,18 @@ pub trait ResourceSurface<R: Resource, E: Effect = NoEffect>: Widget {
         let _ = cx;
     }
 
+    /// A participant's action — an agent's verb, a collaborator's edit
+    /// taken through the door — left them at `place`, as the resource says
+    /// it lands ([`Resource::lands`](tilo_resource::Resource::lands)).
+    /// Called after [`present`](Self::present) showed the state holding it.
+    /// Presence draws them there already; a surface that acts at a
+    /// participant's place (typing at an agent's caret) reads it here, or
+    /// any time through [`Live::place_of`](super::Live::place_of), instead
+    /// of keeping its own copy.
+    fn landed(&mut self, participant: &tilo_actions::ParticipantId, place: &tilo_resource::Place) {
+        let _ = (participant, place);
+    }
+
     /// The participant's permission to edit changed while the app runs: a
     /// role granted or taken away. Present accordingly. The dispatcher already
     /// refuses or accepts edits under the new permissions.
@@ -712,6 +724,8 @@ pub(crate) struct SurfaceHost<R: Resource, S, E> {
     search_queries: SearchQueries,
     live: Live<R>,
     presented: u64,
+    /// The number of the next landing to tell the surface of.
+    landings: u64,
     dispatch: Dispatcher<R>,
     read_only: bool,
     /// A scenario to stage on the next sync.
@@ -748,6 +762,7 @@ impl<R: Resource, S: ResourceSurface<R, E> + 'static, E: Effect> SurfaceHost<R, 
         }
         Self {
             presented: live.revision(),
+            landings: live.landings_since(u64::MAX).1,
             live,
             read_only: dispatch.read_only(),
             dispatch,
@@ -806,6 +821,11 @@ impl<R: Resource, S: ResourceSurface<R, E> + 'static, E: Effect> Decorator
         if self.live.revision() != self.presented {
             self.presented = self.live.revision();
             self.surface.present(&self.live.get());
+        }
+        let (landed, next) = self.live.landings_since(self.landings);
+        self.landings = next;
+        for (participant, place) in &landed {
+            self.surface.landed(participant, place);
         }
         let staged = self.staging.borrow_mut().take();
         if let Some(scenario) = staged {

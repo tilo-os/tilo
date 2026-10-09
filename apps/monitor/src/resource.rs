@@ -53,40 +53,40 @@ impl Monitor {}
 #[effect(operation = "monitor.effect", device_only)]
 pub enum MonitorEffect {
     /// Refresh processes.
-    #[effect(permission = "read")]
+    #[effect(kind = "read")]
     Refresh,
     /// Show tab.
-    #[effect(permission = "read")]
+    #[effect(kind = "read")]
     ShowTab {
         #[param("processes | resources")]
         tab: String,
     },
     /// Filter processes.
-    #[effect(permission = "read")]
+    #[effect(kind = "read")]
     Filter {
         #[param("Process filter text, or omit to clear")]
         query: Option<String>,
     },
     /// Show process details.
-    #[effect(permission = "read")]
+    #[effect(kind = "read")]
     Inspect {
         #[param("The process row's id")]
         process: String,
     },
     /// Copy PID.
-    #[effect(permission = "read")]
+    #[effect(kind = "read")]
     CopyPid {
         #[param("The process row's id")]
         process: String,
     },
     /// Stop process.
-    #[effect(destructive, permission = "admin")]
+    #[effect(destructive)]
     Stop {
         #[param("The process row's id")]
         process: String,
     },
     /// Force kill.
-    #[effect(destructive, permission = "admin")]
+    #[effect(destructive)]
     Kill {
         #[param("The process row's id")]
         process: String,

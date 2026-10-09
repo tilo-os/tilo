@@ -20,7 +20,6 @@ const CHAT: &str = "so.tilo.chat";
 const WP: &str = "so.tilo.word-processor";
 
 fn config(path: std::path::PathBuf) -> Config {
-    use ui::permissions::{Actor, CapOverride, PermissionContext, Scope, Subject, Verb};
     Config {
         endpoint: Some(path),
         endpoint_identity: Some(typed_peer::endpoint_identity("Scribe")),
@@ -35,24 +34,13 @@ fn config(path: std::path::PathBuf) -> Config {
         model_timeout: Duration::from_millis(10),
         await_document: Duration::ZERO,
         settle: Duration::ZERO,
-        permissions: PermissionContext::from_capabilities(
-            Actor::agent("scribe"),
-            vec![
-                CapOverride::grant(
-                    Subject::agent("scribe"),
-                    Scope::App("so.tilo.word-processor".into()),
-                    Verb::Write,
-                )
-                .with_id("reviewed"),
-                // Invited to the conversation, as the launcher grants it: the
-                // agent's replies and work state are its own Chat edits.
-                CapOverride::grant(
-                    Subject::agent("scribe"),
-                    Scope::App(CHAT.into()),
-                    Verb::Write,
-                )
-                .with_id("invited"),
+        permissions: ui::permissions::PermissionContext::agent_granted_at(
+            "scribe",
+            &[
+                ui::permissions::TreePath::root().app("so.tilo.word-processor"),
+                ui::permissions::TreePath::root().app(CHAT),
             ],
+            ui::permissions::KindSet::READ_UNDOABLE,
         ),
         content: tilo_content::ContentStore::memory(),
     }

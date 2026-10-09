@@ -65,7 +65,7 @@ pub enum StoreEffect {
     ///
     /// Read this window's current filtered page, repository scopes and worker state.
     /// An app identity requests its details without changing the selected app.
-    #[effect(returns, permission = "read")]
+    #[effect(returns, kind = "read")]
     InspectCatalogue {
         #[param("Optional app identity whose catalogue details to inspect")]
         app: Option<String>,
@@ -81,40 +81,40 @@ pub enum StoreEffect {
     #[effect(job)]
     UpdateAll,
     /// Search apps.
-    #[effect(permission = "read")]
+    #[effect(kind = "read")]
     SetSearch {
         #[param("App name, publisher, category, or description")]
         query: String,
     },
     /// Browse apps from a configured Flatpak repository.
-    #[effect(job, permission = "read")]
+    #[effect(job, kind = "read")]
     BrowseRemote {
         #[param("Configured repository resource identity, including its account or device scope")]
         remote: String,
     },
     /// Filter apps by source.
-    #[effect(permission = "read")]
+    #[effect(kind = "read")]
     SetSource {
         #[param("All, Tilo, Flatpak, On device, or Updates")]
         source: String,
     },
     /// Filter apps by category.
-    #[effect(permission = "read")]
+    #[effect(kind = "read")]
     SetCategory {
         #[param("App category, or All")]
         category: String,
     },
     /// Clear catalogue filters.
-    #[effect(permission = "read")]
+    #[effect(kind = "read")]
     ClearFilters,
     /// Show app details.
-    #[effect(permission = "read")]
+    #[effect(kind = "read")]
     ShowDetails {
         #[param("App identity (for example so.tilo.notes)")]
         app: String,
     },
     /// Show or hide technical package details.
-    #[effect(permission = "read")]
+    #[effect(kind = "read")]
     SetTechnicalDetails {
         #[param("Whether to show package identity, digest and publisher key")]
         expanded: bool,
@@ -142,7 +142,7 @@ pub enum StoreEffect {
     /// Open a Flatpak reference.
     ///
     /// Its app is shown ready to install; installing stays a separate step.
-    #[effect(permission = "read")]
+    #[effect(kind = "read")]
     OpenReference {
         #[param("Path of a .flatpakref file")]
         path: Option<String>,
@@ -150,19 +150,19 @@ pub enum StoreEffect {
         contents: Option<String>,
     },
     /// Back to apps.
-    #[effect(permission = "read")]
+    #[effect(kind = "read")]
     ShowCatalogue,
     /// Previous catalogue page.
-    #[effect(permission = "read")]
+    #[effect(kind = "read")]
     PreviousPage,
     /// Next catalogue page.
-    #[effect(permission = "read")]
+    #[effect(kind = "read")]
     NextPage,
     /// Show Flatpak remotes.
-    #[effect(permission = "read")]
+    #[effect(kind = "read")]
     ShowRemotes,
     /// Show trust and moderation.
-    #[effect(permission = "read")]
+    #[effect(kind = "read")]
     ShowTrust,
     /// Open.
     ///
@@ -230,7 +230,7 @@ pub enum StoreEffect {
     #[effect(job)]
     RefreshRemotes,
     /// Add Flatpak remote.
-    #[effect(job, permission = "admin")]
+    #[effect(job)]
     AddRemote {
         #[param("Unique remote name")]
         name: String,
@@ -238,19 +238,19 @@ pub enum StoreEffect {
         url: String,
     },
     /// Enable source.
-    #[effect(job, permission = "admin")]
+    #[effect(job)]
     EnableRemote {
         #[param("Account repository identity")]
         remote: String,
     },
     /// Disable source.
-    #[effect(job, permission = "admin")]
+    #[effect(job)]
     DisableRemote {
         #[param("Account repository identity")]
         remote: String,
     },
     /// Remove remote.
-    #[effect(job, destructive, permission = "admin")]
+    #[effect(job, destructive)]
     RemoveRemote {
         #[param("Remote name")]
         name: String,

@@ -523,7 +523,7 @@ impl FrameHarness {
                             && binding.permissions.borrow().check(
                                 &crate::permissions::PermissionScope::app(
                                     &binding.app_id,
-                                    crate::permissions::Verb::Read,
+                                    crate::permissions::ActionKind::Read,
                                 ),
                             );
                     };

@@ -26,6 +26,21 @@ use crate::registry::ActionRegistry;
 
 thread_local! {
     static INVOKING: std::cell::RefCell<Option<ActionContext>> = const { std::cell::RefCell::new(None) };
+    static OPEN_STEP: std::cell::Cell<Option<ActionId>> = const { std::cell::Cell::new(None) };
+}
+
+/// Open the undo step the changes committed on this thread join until the
+/// next one opens: every action applied meanwhile records it as its
+/// [`gesture`](ActionContext::gesture), so the document's history takes them
+/// back as one step. The host's history opens one at every step boundary;
+/// `None` closes it.
+pub fn open_step(step: Option<ActionId>) {
+    OPEN_STEP.with(|open| open.set(step));
+}
+
+/// The undo step open on this thread, if any (see [`open_step`]).
+pub fn current_step() -> Option<ActionId> {
+    OPEN_STEP.with(std::cell::Cell::get)
 }
 
 /// The context of the action whose [`Action::apply`] is running on this
@@ -76,6 +91,9 @@ fn envelope_for(
         context.change = change;
     }
     context.kind = Some(action.action_kind());
+    if context.gesture.is_none() {
+        context.gesture = current_step();
+    }
     // What history records the step did: described by the value itself from
     // the document before it applies, else as the published action the door
     // resolved, else as the verb its encoded form names.
@@ -129,20 +147,6 @@ fn envelope_for(
         actor,
         context,
     })
-}
-
-/// The action's [`inverse_encoded`](Action::inverse_encoded) at `doc`, as
-/// the change written by `actor` (the one [`apply_local_by`] is given)
-/// records it: what the action mints depends on its writer.
-pub fn inverse_encoded_by(
-    doc: &mut Doc,
-    action: &dyn Action,
-    actor: &[u8],
-) -> Option<EncodedAction> {
-    if actor.is_empty() {
-        return action.inverse_encoded(doc);
-    }
-    inverse_as(doc, action, ActorId::from(actor.to_vec()))
 }
 
 /// The action's [`inverse_encoded`](Action::inverse_encoded) at `doc`, as

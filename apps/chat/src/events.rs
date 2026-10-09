@@ -5004,7 +5004,7 @@ mod tests {
 
     #[test]
     fn unsupported_capture_controls_are_absent_and_leave_remains_available_after_downgrade() {
-        use ui::permissions::{Actor, PermissionContext, Role};
+        use ui::permissions::{PermissionContext, Role};
         let (mut app, mut doc) = app_with_doc();
         app.on_hit(
             Hit::Channel("c_huddle".into()),
@@ -5013,12 +5013,10 @@ mod tests {
         app.land(&mut doc);
         app.reload(&doc);
         app.on_hit(Hit::CallExpand, &mut ui::widget::Edits::lend(&mut doc));
-        app.perms = crate::permissions::ChatPermissions::from_context(
-            PermissionContext::from_capabilities(
-                Actor::person(Some(Role::Viewer), model::ME),
-                vec![],
-            ),
-        );
+        app.perms = crate::permissions::ChatPermissions::from_context(PermissionContext::member(
+            model::ME,
+            Role::Viewer,
+        ));
         let (_, controls) = app.overlay_controls_layout();
         assert!(
             controls
@@ -5329,14 +5327,11 @@ mod tests {
 
     #[test]
     fn a_view_only_peer_cannot_post_react_or_hydrate_embeds() {
-        use ui::permissions::{Actor, PermissionContext, Role};
+        use ui::permissions::{PermissionContext, Role};
         let (mut app, mut doc) = app_with_doc();
         // Restrict this peer to a read-only member with no file capabilities —
         // exactly what an invite without write/file access produces.
-        let ctx = PermissionContext::from_capabilities(
-            Actor::person(Some(Role::Viewer), model::ME),
-            vec![],
-        );
+        let ctx = PermissionContext::member(model::ME, Role::Viewer);
         app.perms = crate::permissions::ChatPermissions::from_context(ctx);
 
         assert!(

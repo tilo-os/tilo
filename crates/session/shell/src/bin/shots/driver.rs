@@ -775,20 +775,16 @@ impl ShellDriver {
     /// rather than by hearsay), and two resources handed to named
     /// people.
     fn seed_shared_room(&mut self) {
-        use shell::shell::state::{CapOverride, Scope, Subject, Verb};
+        use shell::shell::state::{Access, CapOverride, Scope, Subject};
+        use tilo_action_policy::Role;
         let handle = self.chrome_handle();
         let owner = handle.borrow().local_user_id.clone();
         {
             let st = handle.borrow();
             let mut tree = st.tree_mut();
             let ws_id = tree.desktop.active;
-            let room = ws_id.raw().to_string();
-            for (member, verb) in [("ada", Verb::Write), ("bo", Verb::Read)] {
-                tree.grant_in_workspace(
-                    ws_id,
-                    &owner,
-                    CapOverride::membership(Subject::person(member), room.clone(), verb),
-                );
+            for (member, role) in [("ada", Role::Editor), ("bo", Role::Viewer)] {
+                let _ = tree.admit_in_workspace(ws_id, &owner, member, role);
             }
             // Both members at their desks: a room only carries a display
             // name while a session of theirs is present.
@@ -799,10 +795,10 @@ impl ShellDriver {
                     .push(shell::shell::state::Collaborator::new("bo", "Bo"));
             }
             for (path, who, verb) in [
-                ("/var/workspace/design", "ada", Verb::Write),
-                ("/var/workspace/brief.pdf", "bo", Verb::Read),
+                ("/var/workspace/design", "ada", Access::Write),
+                ("/var/workspace/brief.pdf", "bo", Access::Read),
             ] {
-                tree.grant_in_workspace(
+                tree.grant_sandbox_in_workspace(
                     ws_id,
                     &owner,
                     CapOverride::grant(Subject::person(who), Scope::FsPath(path.to_string()), verb),
@@ -816,15 +812,11 @@ impl ShellDriver {
                 .workspaces
                 .iter()
                 .filter(|w| w.name == "Research")
-                .map(|w| (w.id, w.id.raw().to_string()))
+                .map(|w| w.id)
                 .collect();
-            for (id, room) in research {
-                for (member, verb) in [("alice", Verb::Write), ("bob", Verb::Read)] {
-                    tree.grant_in_workspace(
-                        id,
-                        &owner,
-                        CapOverride::membership(Subject::person(member), room.clone(), verb),
-                    );
+            for id in research {
+                for (member, role) in [("alice", Role::Editor), ("bob", Role::Viewer)] {
+                    let _ = tree.admit_in_workspace(id, &owner, member, role);
                 }
             }
         }
@@ -961,7 +953,8 @@ impl ShellDriver {
     /// An authenticated agent fixture shared by roster, settings and exposure
     /// scenes. Sample membership stays entirely within the shots renderer.
     fn seed_agent_member_for_shots(&self) {
-        use shell::shell::state::{CapOverride, Collaborator, Subject, Verb};
+        use shell::shell::state::Collaborator;
+        use tilo_action_policy::roles::AgentPreset;
 
         let handle = self.chrome_handle();
         let owner = handle.borrow().local_user_id.clone();
@@ -970,12 +963,19 @@ impl ShellDriver {
             let mut tree = st.tree_mut();
             tree.adopt_ownerless_workspaces(&owner);
             let workspace_id = tree.desktop.active;
-            let room = workspace_id.raw().to_string();
-            tree.grant_in_workspace(
-                workspace_id,
-                &owner,
-                CapOverride::membership(Subject::agent("scribe"), room, Verb::Write),
-            );
+            let changes = AgentPreset::Operator
+                .grants(
+                    &tree
+                        .room_of(workspace_id)
+                        .map(|room| room.to_string())
+                        .unwrap_or_default(),
+                    "scribe",
+                    &tilo_action_policy::Subject::person(owner.clone()),
+                )
+                .into_iter()
+                .map(tilo_action_policy::Change::Grant)
+                .collect();
+            let _ = tree.govern_in_workspace(workspace_id, &owner, changes);
             if let Some(workspace) = tree.desktop.active_workspace_mut() {
                 workspace.collaborators.retain(|row| row.id != "scribe");
                 workspace.collaborators.insert(
@@ -1040,7 +1040,8 @@ impl ShellDriver {
     /// proof exercise meaningful location lines instead of screenshot-only
     /// placeholder text.
     pub fn seed_crowded_workspace_for_shots(&mut self) {
-        use shell::shell::state::{CapOverride, Collaborator, Subject, Verb};
+        use shell::shell::state::Collaborator;
+        use tilo_action_policy::Role;
 
         let handle = self.chrome_handle();
         let owner = handle.borrow().local_user_id.clone();
@@ -1049,7 +1050,6 @@ impl ShellDriver {
             let mut tree = st.tree_mut();
             tree.adopt_ownerless_workspaces(&owner);
             let workspace = tree.desktop.active;
-            let room = workspace.raw().to_string();
             let tab_ids = tree
                 .desktop
                 .active_workspace()
@@ -1072,18 +1072,15 @@ impl ShellDriver {
             .into_iter()
             .enumerate()
             {
-                tree.grant_in_workspace(
+                let _ = tree.admit_in_workspace(
                     workspace,
                     &owner,
-                    CapOverride::membership(
-                        Subject::person(id),
-                        room.clone(),
-                        if index % 3 == 2 {
-                            Verb::Read
-                        } else {
-                            Verb::Write
-                        },
-                    ),
+                    id,
+                    if index % 3 == 2 {
+                        Role::Viewer
+                    } else {
+                        Role::Editor
+                    },
                 );
                 if let Some(active) = tree.desktop.active_workspace_mut()
                     && !active.collaborators.iter().any(|person| person.id == id)
@@ -1108,7 +1105,8 @@ impl ShellDriver {
     /// authority-checked path as workspace settings; the `invited` presence
     /// row is intentionally non-followable until a session arrives.
     pub fn seed_invite_pending_for_shots(&mut self) {
-        use shell::shell::state::{CapOverride, Collaborator, Subject, Verb};
+        use shell::shell::state::Collaborator;
+        use tilo_action_policy::Role;
 
         let handle = self.chrome_handle();
         let owner = handle.borrow().local_user_id.clone();
@@ -1117,15 +1115,7 @@ impl ShellDriver {
             let mut tree = st.tree_mut();
             tree.adopt_ownerless_workspaces(&owner);
             let workspace = tree.desktop.active;
-            tree.grant_in_workspace(
-                workspace,
-                &owner,
-                CapOverride::membership(
-                    Subject::person("ada"),
-                    workspace.raw().to_string(),
-                    Verb::Write,
-                ),
-            );
+            let _ = tree.admit_in_workspace(workspace, &owner, "ada", Role::Editor);
             if let Some(ws) = tree.desktop.active_workspace_mut()
                 && !ws.collaborators.iter().any(|person| person.id == "ada")
             {
@@ -1377,7 +1367,8 @@ impl ShellDriver {
     /// path the settings panel and portal use, so this is a state the
     /// compositor can actually be in.
     fn seed_workspace_permissions(&mut self) {
-        use shell::shell::state::{CapOverride, Expiry, Scope, Subject, Verb};
+        use shell::shell::state::{Access, CapOverride, Expiry, Scope, Subject};
+        use tilo_action_policy::Role;
         let handle = self.chrome_handle();
         let owner = handle.borrow().local_user_id.clone();
         {
@@ -1385,47 +1376,42 @@ impl ShellDriver {
             let mut tree = st.tree_mut();
             tree.adopt_ownerless_workspaces(&owner);
             let ws_id = tree.desktop.active;
-            let room = ws_id.raw().to_string();
-            for (member, verb) in [("ada", Verb::Write), ("bo", Verb::Read)] {
-                tree.grant_in_workspace(
-                    ws_id,
-                    &owner,
-                    CapOverride::membership(Subject::person(member), room.clone(), verb),
-                );
+            for (member, role) in [("ada", Role::Editor), ("bo", Role::Viewer)] {
+                let _ = tree.admit_in_workspace(ws_id, &owner, member, role);
             }
             for (app, scope, verb, expiry) in [
                 (
                     "Files",
                     Scope::FsPath("/var/workspace".to_string()),
-                    Verb::Write,
+                    Access::Write,
                     Expiry::Never,
                 ),
                 (
                     "Terminal",
                     Scope::Device("camera".to_string()),
-                    Verb::Read,
+                    Access::Read,
                     Expiry::EndOfSession,
                 ),
                 (
                     "Browser",
                     Scope::NetHost("*".to_string()),
-                    Verb::Read,
+                    Access::Read,
                     Expiry::AfterUse,
                 ),
             ] {
-                tree.grant_in_workspace(
+                tree.grant_sandbox_in_workspace(
                     ws_id,
                     &owner,
                     CapOverride::grant(Subject::app(app), scope, verb).expiring(expiry),
                 );
             }
-            tree.grant_in_workspace(
+            tree.grant_sandbox_in_workspace(
                 ws_id,
                 &owner,
                 CapOverride::grant(
                     Subject::person("ada"),
                     Scope::FsPath("/var/workspace/design".to_string()),
-                    Verb::Write,
+                    Access::Write,
                 ),
             );
         }
@@ -1773,11 +1759,10 @@ impl ShellDriver {
                     )
                     .as_invited(),
                 );
-                workspace.grant_capability(shell::shell::state::CapOverride::membership(
-                    shell::shell::state::Subject::person(hex::encode(recipient_public.as_bytes())),
-                    workspace.room.to_string(),
-                    shell::shell::state::Verb::Admin,
-                ));
+                workspace.admit(
+                    hex::encode(recipient_public.as_bytes()),
+                    tilo_action_policy::Role::Editor,
+                );
                 workspace.pending_ownership_transfer =
                     collab_types::OwnershipTransferProposalV1::new(
                         workspace.room.to_string(),
@@ -1966,7 +1951,7 @@ impl ShellDriver {
     /// `HistoryEntry` — these are the same calls the portal, permission
     /// prompt, drop handler and settings modal make.
     fn scene_room_activity(&mut self) {
-        use shell::shell::state::{CapOverride, Scope, Subject, Verb};
+        use shell::shell::state::{Access, CapOverride, Scope, Subject};
         let handle = self.chrome_handle();
         let owner = {
             let st = handle.borrow();
@@ -1977,22 +1962,22 @@ impl ShellDriver {
             let mut tree = st.tree_mut();
             tree.adopt_ownerless_workspaces(&owner);
             let ws_id = tree.desktop.active;
-            tree.grant_in_workspace(
+            tree.grant_sandbox_in_workspace(
                 ws_id,
                 &owner,
                 CapOverride::grant(
                     Subject::app("Files"),
                     Scope::FsPath("/var/workspace/design".to_string()),
-                    Verb::Write,
+                    Access::Write,
                 ),
             );
-            let temp = tree.grant_in_workspace(
+            let temp = tree.grant_sandbox_in_workspace(
                 ws_id,
                 &owner,
                 CapOverride::grant(
                     Subject::app("Terminal"),
                     Scope::Device("camera".to_string()),
-                    Verb::Read,
+                    Access::Read,
                 ),
             );
             tree.doc_append_tab_to_first_group_of_active_workspace(
@@ -2002,7 +1987,7 @@ impl ShellDriver {
             );
             tree.commit_room_change();
             if let Some(cap_id) = temp {
-                tree.revoke_in_workspace(ws_id, &owner, &cap_id);
+                tree.revoke_sandbox_in_workspace(ws_id, &owner, &cap_id);
             }
             if let Some(ws) = tree.desktop.active_workspace_mut() {
                 ws.name = "Design review".to_string();

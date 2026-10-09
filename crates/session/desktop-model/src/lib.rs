@@ -1,7 +1,7 @@
 //! The canonical desktop model shared by every host.
 //!
-//! `Workspace → Strip → WindowGroup → Tab`, plus the collaborators,
-//! capabilities and tasks a workspace carries. Everything here is plain data
+//! `Workspace → Strip → WindowGroup → Tab`, plus the collaborators, grants,
+//! sandbox and tasks a workspace carries. Everything here is plain data
 //! and pure functions over it: no windowing, rendering, transport, async
 //! runtime or host filesystem. Hosts own id minting (see [`IdMinter`]),
 //! persistence and admission of peer changes.
@@ -56,8 +56,8 @@ pub use topology::{DropTarget, GroupShape, RemovedTab, TabMove};
 pub use tree::{DesktopTree, STATE_SCHEMA_VERSION};
 pub use width::WindowWidth;
 pub use workspace::{
-    APP_ACTION_GRANT_ACTION_ID, APP_ACTION_REVOKE_ACTION_ID, PROFILE_ASSIGN_ACTION_ID,
-    PROFILE_SAVE_ACTION_ID, PermissionProfileMutationError, UserId, WORKSPACE_GOVERNANCE_APP_ID,
-    Workspace, WorkspaceDefaultError, governance_resource_id, permission_profile_resource_id,
-    role_from_id, role_id,
+    APP_ACTION_GRANT_ACTION_ID, APP_ACTION_REVOKE_ACTION_ID, GRANT_ACTION_ID,
+    PRESET_ASSIGN_ACTION_ID, PRESET_SAVE_ACTION_ID, PresetMutationError, REVOKE_ACTION_ID, UserId,
+    WORKSPACE_GOVERNANCE_APP_ID, Workspace, WorkspaceDefaultError, context_at, governance_of,
+    governance_resource_id, preset_assign_node, role_from_id, role_id, session_id,
 };

@@ -318,10 +318,8 @@ fn seeded_members_and_app_grants_are_the_workspaces_capabilities() {
 
 fn mount(seed_json: serde_json::Value, storage: &PortableStorage) -> (DesktopRoot, DesktopHandle) {
     let local = LocalDesktop::new(ROOM, "author", &seed(seed_json)).unwrap();
-    let permissions = ui::permissions::PermissionContext::from_capabilities(
-        ui::permissions::Actor::person(Some(ui::permissions::Role::Owner), "author"),
-        vec![],
-    );
+    let permissions =
+        ui::permissions::PermissionContext::member("author", ui::permissions::Role::Owner);
     let (root, handle) = DesktopRoot::new(
         DesktopSources {
             admission: local.admission().unwrap(),

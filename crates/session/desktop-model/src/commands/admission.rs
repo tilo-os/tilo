@@ -103,8 +103,8 @@ pub fn check_owned(command: &DesktopCommand, owned: impl Fn(u64) -> bool) -> Res
         | DesktopCommand::SaveShortcut { .. }
         | DesktopCommand::DeleteShortcut { .. }
         | DesktopCommand::ClaimNamespace { .. }
-        | DesktopCommand::SavePermissionProfile { .. }
-        | DesktopCommand::AssignPermissionProfile { .. }
+        | DesktopCommand::SavePreset { .. }
+        | DesktopCommand::AssignPreset { .. }
         | DesktopCommand::RecordEffectReceipt { .. }
         | DesktopCommand::GrantAppAction { .. }
         | DesktopCommand::RevokeAppAction { .. } => Ok(()),

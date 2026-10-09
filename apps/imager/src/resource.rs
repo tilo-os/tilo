@@ -130,7 +130,7 @@ impl Imager {
 #[effect(operation = "imager.write-plan")]
 pub enum ImagerEffect {
     /// Erase drive and write image.
-    #[effect(job, cancellable, permission = "admin")]
+    #[effect(job, cancellable)]
     Write {
         #[param("Device path of the reviewed target drive, e.g. /dev/sdb")]
         device: String,
@@ -138,10 +138,10 @@ pub enum ImagerEffect {
         confirmation: String,
     },
     /// Show image-write status.
-    #[effect(returns, permission = "read")]
+    #[effect(returns, kind = "read")]
     Status,
     /// Export headless configuration.
-    #[effect(returns, permission = "read")]
+    #[effect(returns, kind = "read")]
     ExportConfig,
     /// Set Wi-Fi password.
     SetWifiPsk {
@@ -152,13 +152,12 @@ pub enum ImagerEffect {
         value: String,
     },
     /// Set the owner SSH public key for the next write on this machine.
-    #[effect(permission = "admin")]
     SetSshKey {
         #[param("OpenSSH public keys, one per line, without authorized_keys options")]
         value: String,
     },
     /// Customize a regular raw image file through the installed-root path.
-    #[effect(job, returns, permission = "admin")]
+    #[effect(job, returns)]
     CustomizeImage {
         #[param("Path to the regular raw disk image; devices and symlinks are refused")]
         image: String,
@@ -179,10 +178,10 @@ pub enum ImagerEffect {
     /// Cancel the installer download; what was verified is kept for resume.
     CancelDownload,
     /// Rescan drives.
-    #[effect(permission = "read")]
+    #[effect(kind = "read")]
     Rescan,
     /// Choose target drive.
-    #[effect(permission = "read")]
+    #[effect(kind = "read")]
     ChooseDrive {
         #[param("Kernel name of a removable drive, e.g. sdb")]
         drive: String,

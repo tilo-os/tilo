@@ -51,14 +51,8 @@ fn fixture() -> Fixture {
         .unwrap();
     let roster = vec![authority.clone(), other_cert, editor_cert.clone()];
     let mut room = room::candidate(None, &seed_room(ROOM, &authority, &roster).unwrap()).unwrap();
-    let caps = room.get(ROOT, "capabilities").unwrap().unwrap().1;
-    put_member_capability(
-        &mut room,
-        &caps,
-        editor_cert.user_public_key,
-        crate::join::MemberRole::Editor,
-    )
-    .unwrap();
+    let caps = room.get(ROOT, "members").unwrap().unwrap().1;
+    put_member(&mut room, &caps, editor_cert.user_public_key, Role::Editor).unwrap();
     let room_changes = room
         .get_changes(&[])
         .iter()

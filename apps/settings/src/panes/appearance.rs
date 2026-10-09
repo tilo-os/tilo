@@ -247,7 +247,7 @@ pub enum AppearanceEffect {
         view,
         returns,
         device_only,
-        permission = "read",
+        kind = "read",
         label = "Inspect appearance preferences"
     )]
     InspectAppearance,

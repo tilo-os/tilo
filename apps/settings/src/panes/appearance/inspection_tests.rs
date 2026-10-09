@@ -79,10 +79,7 @@ fn appearance_inspection_is_read_only_and_refuses_foreign_device_invocation() {
         .into_iter()
         .find(|action| action.address.action == "inspect-appearance")
         .unwrap();
-    assert_eq!(
-        action.contract.permission,
-        ui::tilo_actions::PermissionRequirement::Read
-    );
+    assert_eq!(action.contract.kind, ui::tilo_actions::ActionKind::Read);
     assert!(
         action
             .contract

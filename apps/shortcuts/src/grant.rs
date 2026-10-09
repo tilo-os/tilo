@@ -2,15 +2,14 @@
 //!
 //! A shortcut acts with the intersection of its grant and the authority of
 //! whoever runs it. The grant the editor proposes names exactly the actions
-//! the steps invoke, each at the weakest verb its contract requires, so the
+//! the steps invoke, each for the kind of action its contract is, so the
 //! person reviewing it sees everything the shortcut may do and nothing more.
 
-use collab_types::{PermissionProfileRule, Scope, Verb};
+use tilo_action_policy::{ActionKind, Answer, KindSet, Level, Rule, TreePath};
 use tilo_automation::{
     AGENT_TRANSFORM_KIND, ActionCatalog, Binding, ResourceTarget, Selector, Step, StepKind,
-    required_verb,
 };
-use ui::tilo_actions::{ActionKey, PermissionRequirement};
+use ui::tilo_actions::ActionKey;
 
 /// The resources a permission reaches.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -28,32 +27,34 @@ pub struct Permission {
     pub app_id: String,
     pub reach: Reach,
     pub action: String,
-    pub verb: Verb,
+    /// The kind of action it is: reading, an undoable change, or one that
+    /// reaches outside.
+    pub kind: ActionKind,
     /// How the catalogue names it: "List notes in Inbox".
     pub label: String,
 }
 
 impl Permission {
+    /// The rule allowing it in any room: this action, on the one resource
+    /// or on every resource of the kind, for its kind of action and the
+    /// weaker ones.
     #[must_use]
-    pub fn rule(&self) -> PermissionProfileRule {
-        let scope = match &self.reach {
-            Reach::Resource(resource) => Scope::Action {
-                app: self.app_id.clone(),
-                resource: resource.clone(),
-                action: self.action.clone(),
-            },
-            Reach::Kind(kind) => Scope::ActionOnKind {
-                app: self.app_id.clone(),
-                kind: kind.clone(),
-                action: self.action.clone(),
-            },
+    pub fn rule(&self) -> Rule {
+        let app = TreePath::root().any(Level::Room).app(self.app_id.clone());
+        let node = match &self.reach {
+            Reach::Resource(resource) => app.any(Level::Kind).resource(resource.clone()),
+            Reach::Kind(kind) => app.kind(kind.clone()).any(Level::Resource),
         };
-        PermissionProfileRule::grant(scope, self.verb)
+        let kinds = ActionKind::ALL
+            .into_iter()
+            .filter(|kind| *kind <= self.kind)
+            .fold(KindSet::NONE, KindSet::with);
+        Rule::new(node.action(self.action.clone()), kinds, Answer::Allow)
     }
 }
 
-/// Every permission `steps` use, in step order, each once at the strongest
-/// verb any step needs it at.
+/// Every permission `steps` use, in step order, each once as the strongest
+/// kind any step takes it as.
 #[must_use]
 pub fn least_privilege(steps: &[Step], catalog: &ActionCatalog) -> Vec<Permission> {
     let mut out = Vec::new();
@@ -63,7 +64,7 @@ pub fn least_privilege(steps: &[Step], catalog: &ActionCatalog) -> Vec<Permissio
 
 /// The grant rules for `permissions`.
 #[must_use]
-pub fn rules(permissions: &[Permission]) -> Vec<PermissionProfileRule> {
+pub fn rules(permissions: &[Permission]) -> Vec<Rule> {
     permissions.iter().map(Permission::rule).collect()
 }
 
@@ -126,12 +127,7 @@ fn add(
             None => return,
         },
     };
-    let requirement = row
-        .and_then(|row| row.action.as_ref())
-        .map_or(PermissionRequirement::Write, |descriptor| {
-            descriptor.contract.permission
-        });
-    let verb = required_verb(requirement);
+    let kind = descriptor.map_or(ActionKind::Undoable, |descriptor| descriptor.contract.kind);
     let label = match (&reach, descriptor) {
         (Reach::Resource(_), Some(descriptor)) => format!(
             "{} in {}",
@@ -147,16 +143,14 @@ fn add(
     if let Some(existing) = out.iter_mut().find(|existing| {
         existing.app_id == app_id && existing.reach == reach && existing.action == action
     }) {
-        if verb.implies(existing.verb) {
-            existing.verb = verb;
-        }
+        existing.kind = existing.kind.max(kind);
         return;
     }
     out.push(Permission {
         app_id: app_id.to_owned(),
         reach,
         action: action.to_owned(),
-        verb,
+        kind,
         label,
     });
 }

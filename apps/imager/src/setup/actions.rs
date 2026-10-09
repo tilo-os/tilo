@@ -25,10 +25,10 @@ pub const SETUP_ROW_ID: &str = "imager.setup";
 #[effect(operation = "imager.setup", device_only)]
 pub enum SetupEffect {
     /// Read setup status.
-    #[effect(returns, permission = "read")]
+    #[effect(returns, kind = "read")]
     ReadSetupStatus,
     /// Read this computer's Desktop readiness and current installation phase.
-    #[effect(returns, permission = "read")]
+    #[effect(returns, kind = "read")]
     ReadDesktopStatus,
     /// Install the exact reviewed Desktop release after a fresh host probe.
     #[effect(returns)]
@@ -37,19 +37,19 @@ pub enum SetupEffect {
     #[effect(returns)]
     CancelDesktopDownload,
     /// Recheck Desktop availability without installing anything.
-    #[effect(returns, permission = "read")]
+    #[effect(returns, kind = "read")]
     RecheckDesktop,
     /// Open the existing USB image writer; writing remains a separate review.
-    #[effect(view, returns, permission = "read")]
+    #[effect(view, returns, kind = "read")]
     OpenUsbWizard,
     /// Choose setup experience.
-    #[effect(returns, permission = "read")]
+    #[effect(returns, kind = "read")]
     ChooseExperience {
         #[param("Available setup experience: desktop or full_os")]
         experience: String,
     },
     /// Set common folder mode.
-    #[effect(returns, permission = "read")]
+    #[effect(returns, kind = "read")]
     SetCommonMode {
         #[param(
             "Folder behavior applied to folders without an override: copy, connected or later"
@@ -57,7 +57,7 @@ pub enum SetupEffect {
         mode: String,
     },
     /// Set folder mode.
-    #[effect(returns, permission = "read")]
+    #[effect(returns, kind = "read")]
     SetFolderMode {
         #[param("Identity of a selected folder")]
         folder: String,
@@ -65,37 +65,37 @@ pub enum SetupEffect {
         mode: String,
     },
     /// Use the common folder mode.
-    #[effect(returns, permission = "read")]
+    #[effect(returns, kind = "read")]
     UseCommonMode {
         #[param("Identity of a selected folder")]
         folder: String,
     },
     /// Remove folder from setup.
-    #[effect(returns, permission = "read")]
+    #[effect(returns, kind = "read")]
     RemoveFolder {
         #[param("Identity of a selected folder")]
         folder: String,
     },
     /// Add suggested folder.
-    #[effect(returns, permission = "read")]
+    #[effect(returns, kind = "read")]
     AddSuggestedFolder {
         #[param("Identity of a suggested folder, e.g. documents")]
         suggestion: String,
     },
     /// Choose a folder.
-    #[effect(returns, permission = "read")]
+    #[effect(returns, kind = "read")]
     ChooseFolder,
     /// Show or hide folder help.
-    #[effect(returns, permission = "read")]
+    #[effect(returns, kind = "read")]
     ToggleHelp,
     /// Continue setup.
-    #[effect(returns, permission = "read")]
+    #[effect(returns, kind = "read")]
     ContinueSetup,
     /// Go back in setup.
-    #[effect(returns, permission = "read")]
+    #[effect(returns, kind = "read")]
     GoBackInSetup,
     /// Open folder imports.
-    #[effect(returns, permission = "read")]
+    #[effect(returns, kind = "read")]
     OpenImports,
     /// Download Tilo.
     #[effect(returns)]
@@ -154,7 +154,7 @@ pub enum SetupEffect {
     #[effect(returns)]
     InternalDisableFastStartup,
     /// Check this computer again.
-    #[effect(returns, permission = "read")]
+    #[effect(returns, kind = "read")]
     RecheckInternal,
 }
 

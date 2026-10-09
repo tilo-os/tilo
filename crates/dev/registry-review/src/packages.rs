@@ -14,16 +14,16 @@ use super::{Draft, PAGE_SIZE, Pane, open_existing, read_field, verbatim};
 #[effect(operation = "so.tilo.registry-review.packages", device_only)]
 pub enum PackageReview {
     /// List addressable pending package summaries without downloading packages.
-    #[effect(job, returns, permission = "admin")]
+    #[effect(job, returns)]
     RefreshPackages,
     /// Verify the submitted packages and inspect their signed sandbox requests.
-    #[effect(job, returns, permission = "admin")]
+    #[effect(job, returns)]
     InspectPackage {
         #[param("Package id")]
         package: String,
     },
     /// Reverify the bytes and approve exactly the inspected request.
-    #[effect(job, privileged, permission = "admin")]
+    #[effect(job, privileged)]
     ApprovePackage {
         #[param("Package id")]
         package: String,
@@ -35,7 +35,7 @@ pub enum PackageReview {
         reason: String,
     },
     /// Reject exactly the inspected request, including one with invalid bytes.
-    #[effect(job, privileged, permission = "admin")]
+    #[effect(job, privileged)]
     RejectPackage {
         #[param("Package id")]
         package: String,
@@ -47,7 +47,7 @@ pub enum PackageReview {
         reason: String,
     },
     /// List another bounded page of package summaries.
-    #[effect(returns, permission = "admin")]
+    #[effect(returns)]
     PackagePage {
         #[param("Zero-based page number")]
         page: usize,

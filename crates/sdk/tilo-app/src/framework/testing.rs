@@ -21,7 +21,7 @@ use ui_core::application::{
 use ui_core::bound_dispatch::BoundActionAddress;
 use ui_core::headless::FrameHarness;
 use ui_core::launch::LaunchError;
-use ui_core::permissions::{Actor, PermissionContext, Role, UserId};
+use ui_core::permissions::{PermissionContext, Role, UserId};
 
 const AUTHOR: &str = "test-author";
 use ui_core::record::{RecordCheckout, RecordId, RecordStore};
@@ -556,9 +556,15 @@ impl<A: ResourceApp> HeadlessApp<A> {
     /// owner changing their access does. Takes effect on the next frame,
     /// which this runs.
     pub fn set_role(&mut self, role: Role) {
-        *self.permissions.borrow_mut() =
-            PermissionContext::from_capabilities(Actor::person(Some(role), &self.author), vec![]);
+        *self.permissions.borrow_mut() = PermissionContext::member(self.author.as_str(), role);
         self.role = role;
+        self.harness().relayout();
+    }
+
+    /// Take the participant out of the room while the app runs: no role and
+    /// no grant left, as when the owner removes them.
+    pub fn leave_room(&mut self) {
+        *self.permissions.borrow_mut() = PermissionContext::stranger(self.author.as_str());
         self.harness().relayout();
     }
 

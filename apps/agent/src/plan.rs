@@ -647,17 +647,10 @@ mod tests {
     }
 
     fn permitting(app: &str) -> ui::permissions::PermissionContext {
-        use ui::permissions::{Actor, CapOverride, PermissionContext, Scope, Subject, Verb};
-        PermissionContext::from_capabilities(
-            Actor::agent("Scribe"),
-            vec![
-                CapOverride::grant(
-                    Subject::agent("Scribe"),
-                    Scope::App(app.to_string()),
-                    Verb::Write,
-                )
-                .with_id("test"),
-            ],
+        ui::permissions::PermissionContext::agent_granted_at(
+            "Scribe",
+            &[ui::permissions::TreePath::root().app(app.to_string())],
+            ui::permissions::KindSet::READ_UNDOABLE,
         )
     }
 

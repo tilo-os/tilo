@@ -3412,9 +3412,10 @@ mod tests {
                     model_timeout: Duration::ZERO,
                     await_document: Duration::ZERO,
                     settle: Duration::ZERO,
-                    permissions: PermissionContext::from_capabilities(
-                        ui::permissions::Actor::agent("agent-1"),
-                        vec![],
+                    permissions: ui::permissions::PermissionContext::agent_granted_at(
+                        "agent-1",
+                        &[],
+                        ui::permissions::KindSet::READ_UNDOABLE,
                     ),
                     content: tilo_content::ContentStore::memory(),
                 },
@@ -3627,9 +3628,10 @@ mod tests {
                         model_timeout: Duration::ZERO,
                         await_document: Duration::ZERO,
                         settle: Duration::ZERO,
-                        permissions: PermissionContext::from_capabilities(
-                            ui::permissions::Actor::agent("agent-1"),
-                            vec![],
+                        permissions: ui::permissions::PermissionContext::agent_granted_at(
+                            "agent-1",
+                            &[],
+                            ui::permissions::KindSet::READ_UNDOABLE,
                         ),
                         content: tilo_content::ContentStore::memory(),
                     },
@@ -3882,9 +3884,10 @@ mod tests {
                     model_timeout: Duration::ZERO,
                     await_document: Duration::ZERO,
                     settle: Duration::ZERO,
-                    permissions: PermissionContext::from_capabilities(
-                        ui::permissions::Actor::agent("agent-1"),
-                        vec![],
+                    permissions: ui::permissions::PermissionContext::agent_granted_at(
+                        "agent-1",
+                        &[],
+                        ui::permissions::KindSet::READ_UNDOABLE,
                     ),
                     content: tilo_content::ContentStore::memory(),
                 },
@@ -4674,18 +4677,10 @@ mod tests {
                     }
                 }));
             }
-            let permissions = PermissionContext::from_capabilities(
-                ui::permissions::Actor::agent("Scribe"),
-                [PHOTOS, WRITER]
-                    .into_iter()
-                    .map(|app| {
-                        ui::permissions::CapOverride::grant(
-                            ui::permissions::Subject::agent("Scribe"),
-                            ui::permissions::Scope::App(app.into()),
-                            ui::permissions::Verb::Write,
-                        )
-                    })
-                    .collect(),
+            let permissions = PermissionContext::agent_granted_at(
+                "Scribe",
+                &[PHOTOS, WRITER].map(|app| ui::permissions::TreePath::root().app(app)),
+                ui::permissions::KindSet::READ_UNDOABLE,
             );
             let mut session = Session::connect(Config {
                 endpoint: Some(socket),

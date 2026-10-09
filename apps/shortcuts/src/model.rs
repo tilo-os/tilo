@@ -11,7 +11,6 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use tilo_automation::{
     AiTransform, Binding, Condition, Selector, Shortcut, Step, StepKind, TriggerSpec,
-    UnattendedConsent,
 };
 use ui::prelude::*;
 use ui::tilo_actions::{ActionKey, ActionParam, ParamType};
@@ -30,8 +29,6 @@ pub struct Program {
     /// keeps when it runs on its own and what it may do then.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub triggers: Vec<TriggerSpec>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub consents: Vec<UnattendedConsent>,
 }
 
 /// One shortcut being written.
@@ -58,7 +55,6 @@ pub struct Draft {
     /// Carried unchanged from the saved shortcut, so editing its steps
     /// keeps when it runs on its own and what it may do then.
     pub triggers: Json<Vec<TriggerSpec>>,
-    pub consents: Json<Vec<UnattendedConsent>>,
     /// Whether saving replaces a saved shortcut rather than creating one.
     pub replaces_saved: bool,
 }
@@ -236,7 +232,6 @@ impl Draft {
             steps: self.block("", ""),
             output: self.output.0.clone(),
             triggers: self.triggers.0.clone(),
-            consents: self.consents.0.clone(),
         }
     }
 
@@ -294,9 +289,6 @@ impl Draft {
         if self.triggers.0 != program.triggers {
             self.triggers = Json(program.triggers.clone());
         }
-        if self.consents.0 != program.consents {
-            self.consents = Json(program.consents.clone());
-        }
     }
 
     /// Store the steps of block `branch` of the step with item id `parent`,
@@ -352,7 +344,7 @@ impl Draft {
 
     /// The shortcut this draft saves as, with `grant`.
     #[must_use]
-    pub fn shortcut(&self, grant: Vec<collab_types::PermissionProfileRule>) -> Shortcut {
+    pub fn shortcut(&self, grant: Vec<tilo_action_policy::Rule>) -> Shortcut {
         let program = self.program();
         Shortcut {
             id: self.shortcut_id.clone(),
@@ -362,7 +354,6 @@ impl Draft {
             output: program.output,
             grant,
             triggers: program.triggers,
-            consents: program.consents,
             saved_by: None,
         }
     }
@@ -433,7 +424,6 @@ impl Workbench {
             steps: shortcut.steps,
             output: shortcut.output,
             triggers: shortcut.triggers,
-            consents: shortcut.consents,
         };
         let draft = Draft::new(shortcut.name, shortcut.id, &program, true, &mut || cx.id());
         self.drafts.push(id, draft);

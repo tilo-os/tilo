@@ -1568,21 +1568,20 @@ mod tests {
     #[test]
     fn a_folder_is_watched_only_while_its_capability_lets_the_saver_read_it() {
         use crate::shell::state::{Workspace, WorkspaceAuthority as _, WorkspaceId};
-        use collab_types::{CapOverride, Scope, Subject, Verb};
+        use collab_types::{Access, CapOverride, Scope, Subject};
 
         let owner = "person:owner".to_string();
         let mut workspace = Workspace::new(WorkspaceId(1), "Scans");
-        workspace.room = personal_room();
+        workspace.set_room(personal_room());
         workspace.set_owner(owner.clone());
         workspace
-            .grant_as(
+            .govern_as_at(
                 &owner,
-                CapOverride::membership(
-                    Subject::person("person:me"),
-                    workspace.room.to_string(),
-                    Verb::Read,
-                )
-                .with_id("me-membership"),
+                tilo_action_policy::Change::AddMember {
+                    person: "person:me".into(),
+                    role: tilo_action_policy::Role::Viewer,
+                },
+                tilo_clock::unix_now(),
             )
             .expect("the owner admits the saver");
         workspace
@@ -1591,7 +1590,7 @@ mod tests {
                 CapOverride::grant(
                     Subject::person("person:me"),
                     Scope::FsPath("/var/workspace/inbox".into()),
-                    Verb::Read,
+                    Access::Read,
                 )
                 .with_id("inbox-read"),
             )

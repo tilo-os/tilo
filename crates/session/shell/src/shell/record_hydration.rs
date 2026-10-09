@@ -14,7 +14,7 @@
 //! - **Answering** is the holder's desktop, from what the app last made
 //!   durable in its profile on disk, so the app need not be running. It
 //!   answers only a person the room lets read that app
-//!   ([`crate::shell::state::Verb::Read`] on the app), and never with a
+//!   (reading the app, under the room's policy), and never with a
 //!   record that left the room.
 //! - **Keeping** trusts the bytes only as far as they prove to be that live
 //!   record of that room ([`ui::record::transfer::adopt_fetched`]); a record
@@ -37,7 +37,7 @@ use ui::record::transfer;
 use ui::record::{RecordCheckout, RecordId};
 
 use crate::shell::state::WorkspaceAuthority as _;
-use crate::shell::state::{ResourceRef, RoomId, Verb, Workspace};
+use crate::shell::state::{RoomId, Workspace};
 
 /// Where the launcher keeps `app_id`'s profile in `room`: the directory the
 /// app sees as `XDG_DATA_HOME`.
@@ -81,11 +81,11 @@ pub fn serve(
     let CallerPrincipal::Person(person) = caller.principal() else {
         return Err(ActionHostError::NotPermitted);
     };
-    if workspace.owner.is_none()
-        || !workspace.allows(
-            &workspace.actor_for_person(person),
-            &ResourceRef::App(query.app.clone()),
-            Verb::Read,
+    if workspace.owner().is_none()
+        || !workspace.person_allowed(
+            person,
+            &tilo_action_policy::TreePath::root().app(query.app.clone()),
+            tilo_action_policy::ActionKind::Read,
         )
     {
         return Err(ActionHostError::NotPermitted);
@@ -530,7 +530,7 @@ mod tests {
     fn a_record_is_brought_piece_by_piece_from_a_device_that_keeps_it() {
         let caller = Caller::authenticated([7; 32], [8; 32]);
         let mut workspace = Workspace::new(crate::shell::state::WorkspaceId(1), "Shared");
-        workspace.owner = Some(hex(&[7; 32]));
+        workspace.set_owner(hex(&[7; 32]));
         let (holder_home, checkout, body) = holder(&workspace);
         let empty_home = tempfile::tempdir().unwrap();
         let mut devices = HashMap::new();
@@ -608,7 +608,7 @@ mod tests {
     #[test]
     fn a_record_is_given_only_to_someone_the_room_lets_read_the_app() {
         let mut workspace = Workspace::new(crate::shell::state::WorkspaceId(1), "Shared");
-        workspace.owner = Some(hex(&[7; 32]));
+        workspace.set_owner(hex(&[7; 32]));
         let (home, checkout, _) = holder(&workspace);
         let query = RecordQuery {
             room: workspace.room.to_string(),
@@ -624,7 +624,7 @@ mod tests {
             Err(ActionHostError::NotPermitted)
         );
         let mut unowned = workspace.clone();
-        unowned.owner = None;
+        unowned.policy.owner = None;
         assert_eq!(
             serve(Some(&unowned), Some(home.path()), &member, &query),
             Err(ActionHostError::NotPermitted),

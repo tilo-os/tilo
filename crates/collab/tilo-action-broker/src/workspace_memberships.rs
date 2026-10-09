@@ -5,9 +5,10 @@ use super::{
     Arc, CapnpBrokerState, CrdtRoute, InvocationEnvelope, PublishedAction, PublishedInput,
     PublishedSurface,
 };
+use tilo_action_policy::roles::AgentPreset;
 use tilo_peer_state::{
     owner_commit::{CommitOperation, OwnerCommitRequest},
-    workspace_membership::{AgentMembershipPreset, WorkspaceMembershipCommand},
+    workspace_membership::WorkspaceMembershipCommand,
 };
 
 const APP: &str = "so.tilo.desktop";
@@ -367,8 +368,7 @@ fn membership_command(envelope: &InvocationEnvelope) -> Result<WorkspaceMembersh
         let input: AddAgent = serde_json::from_str(encoded).map_err(|error| error.to_string())?;
         WorkspaceMembershipCommand::AddAgent {
             agent: input.agent.trim().to_lowercase(),
-            preset: AgentMembershipPreset::parse(&input.preset)
-                .ok_or("unknown agent membership preset")?,
+            preset: AgentPreset::parse(&input.preset).ok_or("unknown agent membership preset")?,
         }
     } else if envelope.resource == WORKSPACE && envelope.action == "grant-app-authorship" {
         #[derive(serde::Deserialize)]
@@ -472,7 +472,7 @@ fn membership_action(
         operation_kind: tilo_actions::OperationKind::Effect,
         params,
         contract: tilo_actions::ActionContract {
-            permission: tilo_actions::PermissionRequirement::Admin,
+            kind: tilo_actions::ActionKind::Outside,
             result: tilo_actions::ResultSpec::Json {
                 schema: serde_json::json!({"type": "object"}),
             },
@@ -603,17 +603,15 @@ mod tests {
                     1,
                     "unchanged polling is not a source mutation"
                 );
-                tree.write()
-                    .desktop
-                    .workspaces
-                    .first_mut()
-                    .unwrap()
-                    .capabilities
-                    .push(collab_types::CapOverride::membership(
-                        collab_types::Subject::agent("scribe"),
-                        room.clone(),
-                        collab_types::Verb::Read,
-                    ));
+                {
+                    use crate::test_support::{Grants as _, KindSet};
+                    tree.write()
+                        .desktop
+                        .workspaces
+                        .first_mut()
+                        .unwrap()
+                        .admit_agent("scribe", KindSet::READ);
+                }
                 state.refresh_workspace_membership_services().unwrap();
                 assert_eq!(state.published_surfaces_generation(), 2);
                 assert_eq!(membership_surface_counts(&state, &room), (1, 5));
@@ -675,7 +673,7 @@ mod tests {
             membership_command(&add).unwrap(),
             WorkspaceMembershipCommand::AddAgent {
                 agent: "scribe".into(),
-                preset: AgentMembershipPreset::Custom,
+                preset: AgentPreset::Custom,
             }
         );
         for field in ["caller", "certificate", "room", "capability", "signing_key"] {
@@ -698,7 +696,7 @@ mod tests {
             tilo_desktop_model::Workspace::new(tilo_desktop_model::WorkspaceId(1), "Membership");
         let actions = membership_actions(&workspace, 0);
         assert!(actions.iter().all(|action| {
-            action.contract.permission == tilo_actions::PermissionRequirement::Admin
+            action.contract.kind == tilo_actions::ActionKind::Outside
                 && action.operation_kind == tilo_actions::OperationKind::Effect
         }));
         assert!(actions.iter().any(|action| {

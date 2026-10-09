@@ -157,7 +157,7 @@ mod tests {
     /// clipboard asks for confirmation from the palette, an agent or a script.
     #[test]
     fn effects_that_reach_the_process_or_clipboard_ask_for_confirmation() {
-        use ui::tilo_actions::{ConfirmationPolicy, OperationKind, PermissionRequirement};
+        use ui::tilo_actions::{ActionKind, ConfirmationPolicy, OperationKind};
         let specs = TerminalEffect::specs();
         assert!(specs.iter().all(|spec| spec.kind == OperationKind::Effect));
         for spec in &specs {
@@ -183,7 +183,7 @@ mod tests {
                     | "open-link"
             );
             assert_eq!(
-                spec.contract.permission == PermissionRequirement::Read,
+                spec.contract.kind == ActionKind::Read,
                 views,
                 "`{}` permission",
                 spec.id

@@ -15,10 +15,10 @@
 //! - [`space`] — `Space`, the social-formation container grouping channels.
 //! - [`channel`] — `Channel`, `MemberRef`, `ChannelRef`, `ArtifactRef`,
 //!   `Artifact`: the working-area primitive mapping members to roles.
-//! - [`role`] — `Role`, `OpClass`, `ArtifactKind` plus the static
-//!   permission table ([`role::role_permits`]) — the coarse base layer.
-//! - [`caps`] — the richer `(subject × scope × verb)` capability model
-//!   stacked on the role table; wired into the validator's step 5a.
+//! - [`role`] — `Role`, `OpClass`, `ArtifactKind` of the op envelope; who may
+//!   make which change is decided by `tilo-action-policy` grants (step 5).
+//! - [`caps`] — the app sandbox: `(subject × scope × access)` capabilities
+//!   over paths, file records, devices and network hosts.
 //! - [`invite`] — attenuable capability invite tokens
 //!   ([`invite::InviteToken`]): a signed, delegable grant that can only narrow.
 //! - [`event`] — `ChannelEvent`, the append-only governance log.
@@ -58,6 +58,7 @@
     )
 )]
 
+pub mod action_authority;
 pub mod canonical;
 pub mod caps;
 pub mod channel;
@@ -67,7 +68,6 @@ pub mod crypto;
 pub mod document_import;
 pub mod document_transfer;
 pub mod event;
-pub mod foreign_device;
 pub mod history;
 pub mod identity;
 pub mod invite;
@@ -75,7 +75,6 @@ pub mod mls_governance;
 pub mod op;
 pub mod ownership_transfer;
 pub mod peer;
-pub mod permission_profile;
 pub mod person_room;
 pub mod receipt;
 pub mod redaction;
@@ -95,9 +94,8 @@ pub const RECORD_URI_SCHEME: &str = "tilo-record";
 // without reaching into individual modules.
 pub use canonical::{CanonicalError, canonical_bytes};
 pub use caps::{
-    Actor, CapDecision, CapOverride, Effect, Expiry, Principal, ResourceRef, ResourceScope, Scope,
-    Subject, Verb, decide, decide_actor, decide_capability, host_covers, path_covers,
-    role_base_applies, role_caps, verb_for_opclass,
+    Access, Actor, CapDecision, CapOverride, Effect, Expiry, Principal, ResourceRef, Scope,
+    Subject, decide_capability, host_covers, path_covers,
 };
 pub use channel::{
     Artifact, ArtifactId, ArtifactRef, Channel, ChannelId, ChannelRef, ChannelSettingsDelta,
@@ -140,16 +138,15 @@ pub use ownership_transfer::{
     OwnershipTransferCancellationV1, OwnershipTransferError, OwnershipTransferProposalV1,
 };
 pub use peer::{PeerPresence, PeerPresencePayload};
-pub use permission_profile::{PermissionProfile, PermissionProfileError, PermissionProfileRule};
 pub use person_room::{is_person_room, person_room, person_room_of};
 pub use receipt::{Receipt, ReceiptRefusal, ReceiptSurface, Record, check_claims, claim_node};
 pub use redaction::{
     MAX_REDACTION_REASON_BYTES, OpId, RedactRequest, RedactedMarker, RedactionError,
     encode_redact_payload, hash_target_op, parse_redact_payload,
 };
-pub use role::{ArtifactKind, OpClass, Role, role_permits};
+pub use role::{ArtifactKind, OpClass, Role};
 pub use space::{Space, SpaceId};
 pub use validator::{
-    ChannelState, ValidationError, validate_admitted_inbound_op, validate_inbound_op,
-    validate_replayed_inbound_op,
+    ChannelState, DEFAULT_ROOM, ValidationError, document_node, op_node,
+    validate_admitted_inbound_op, validate_inbound_op, validate_replayed_inbound_op,
 };

@@ -86,26 +86,26 @@ pub enum Command {
     },
     /// The open windows, one row per tab: `workspace`, `strip`, `group`, `tab`, `kind`, `app_id`, `title`, and `active` for the tab in front of the active workspace's active group. Read straight off the live tree, so it costs the windows, not a state dump.
     Windows,
-    /// Grant a capability on the active workspace on behalf of the user at this session, through `Workspace::grant_as` — the production authority check, so a grantor without ownership or `Admin` is refused, not worked around.
+    /// Grant a sandbox capability on the active workspace on behalf of the user at this session, through the tree's governance entry point — the production authority check, so a grantor who may not grant in the room is refused, not worked around.
     ///
-    /// `subject` is `person:<id>` / `app:<id>` / `agent:<id>`; `scope` is `workspace`, `room`, `app:<id>` or `action:<app>/<action>`; `verb` is read / comment / write / invite / admin.
+    /// `subject` is `person:<id>` / `app:<id>` / `agent:<id>`; `scope` is `workspace`, `room`, `fs:<path>` or `device:<id>`; `access` is read / write.
     Grant {
         subject: String,
         scope: String,
-        verb: String,
+        access: String,
         /// Stable capability id so a later `revoke` can name it; minted when omitted.
         #[serde(default)]
         id: Option<String>,
     },
-    /// Revoke capability `id` on the active workspace, through `Workspace::revoke_as` — same authority check as `grant`.
+    /// Revoke sandbox capability `id` on the active workspace — same authority check as `grant`.
     Revoke { id: String },
-    /// Ask `shell::actions::check_action` whether `actor` may invoke `action` on `app`'s `resource`, against the live workspace.
+    /// Ask the room's policy what `actor` gets for `action` on `app`'s `resource`, an action of `kind` (read / undoable / outside), against the live workspace.
     CheckAction {
         actor: String,
         app: String,
         resource: String,
         action: String,
-        verb: String,
+        kind: String,
         #[serde(default)]
         destructive: bool,
     },
@@ -592,16 +592,16 @@ pub trait ControlState {
         serde_json::Value::Array(Vec::new())
     }
 
-    /// Grant a capability on the active workspace via `Workspace::grant_as`. Default impl refuses: a `ControlState` with no live tree has nothing to administer, and answering anything else would let a harness believe it proved something about authority.
+    /// Grant a sandbox capability on the active workspace. Default impl refuses: a `ControlState` with no live tree has nothing to administer, and answering anything else would let a harness believe it proved something about authority.
     ///
     /// # Errors
     ///
-    /// Returns a human-readable refusal reason whenever the grant is not recorded — no live workspace, an unauthorised grantor, or an invalid subject/scope/verb.
+    /// Returns a human-readable refusal reason whenever the grant is not recorded — no live workspace, an unauthorised grantor, or an invalid subject/scope/access.
     fn grant_capability(
         &self,
         _subject: &str,
         _scope: &str,
-        _verb: &str,
+        _access: &str,
         _id: Option<&str>,
     ) -> Result<serde_json::Value, String> {
         Err("no live workspace on this control state".to_string())
@@ -616,7 +616,7 @@ pub trait ControlState {
         Err("no live workspace on this control state".to_string())
     }
 
-    /// Run `shell::actions::check_action` against the active workspace.
+    /// Answer [`Command::CheckAction`] against the active workspace.
     ///
     /// # Errors
     ///
@@ -627,7 +627,7 @@ pub trait ControlState {
         _app: &str,
         _resource: &str,
         _action: &str,
-        _verb: &str,
+        _kind: &str,
         _destructive: bool,
     ) -> Result<serde_json::Value, String> {
         Err("no live workspace on this control state".to_string())
@@ -979,9 +979,9 @@ pub fn dispatch_command<S: ControlState>(
         Command::Grant {
             subject,
             scope,
-            verb,
+            access,
             id,
-        } => grant(state, subject, scope, verb, id.as_deref()),
+        } => grant(state, subject, scope, access, id.as_deref()),
         Command::Revoke { id } => (
             answer_or_err(state.revoke_capability(id), "revoke_refused"),
             Vec::new(),
@@ -991,9 +991,9 @@ pub fn dispatch_command<S: ControlState>(
             app,
             resource,
             action,
-            verb,
+            kind,
             destructive,
-        } => check_action(state, actor, app, resource, action, verb, *destructive),
+        } => check_action(state, actor, app, resource, action, kind, *destructive),
         Command::PlaceNextWindow { app_id } => {
             crate::shell::launcher::set_pending_placement(
                 app_id,
@@ -1548,12 +1548,12 @@ fn grant<S: ControlState>(
     state: &S,
     subject: &str,
     scope: &str,
-    verb: &str,
+    access: &str,
     id: Option<&str>,
 ) -> (Response, Vec<PlannedAction>) {
     (
         answer_or_err(
-            state.grant_capability(subject, scope, verb, id),
+            state.grant_capability(subject, scope, access, id),
             "grant_refused",
         ),
         Vec::new(),
@@ -1567,12 +1567,12 @@ fn check_action<S: ControlState>(
     app: &str,
     resource: &str,
     action: &str,
-    verb: &str,
+    kind: &str,
     destructive: bool,
 ) -> (Response, Vec<PlannedAction>) {
     (
         answer_or_err(
-            state.check_action(actor, app, resource, action, verb, destructive),
+            state.check_action(actor, app, resource, action, kind, destructive),
             "check_failed",
         ),
         Vec::new(),
@@ -1761,11 +1761,11 @@ pub fn parse_subject(s: &str) -> Result<crate::shell::state::Subject, String> {
     }
 }
 
-/// Parse a scope string against the room `room_key` names. `room_key` is the workspace's own id, the same key `Workspace::set_owner`/`role_of` use for `Scope::Room`, so a scope written here matches what the compositor writes.
+/// Parse a sandbox scope string against the room `room_key` names.
 ///
 /// # Errors
 ///
-/// Returns a human-readable message when `s` matches none of `workspace`, `room`, `app:<id>`, `fs:<path>`, `device:<id>` or `action:<app>/<action>`.
+/// Returns a human-readable message when `s` matches none of `workspace`, `room`, `fs:<path>` or `device:<id>`.
 pub fn parse_scope(s: &str, room_key: &str) -> Result<crate::shell::state::Scope, String> {
     use crate::shell::state::Scope;
     match s {
@@ -1774,45 +1774,40 @@ pub fn parse_scope(s: &str, room_key: &str) -> Result<crate::shell::state::Scope
         _ => {}
     }
     match s.split_once(':') {
-        Some(("app", id)) => Ok(Scope::App(id.to_string())),
         Some(("fs", path)) => Ok(Scope::FsPath(path.to_string())),
         Some(("device", d)) => Ok(Scope::Device(d.to_string())),
-        Some(("action", rest)) => match rest
-            .split_once('@')
-            .and_then(|(named, resource)| Some((named.split_once('/')?, resource)))
-        {
-            Some(((app, action), resource)) if !resource.is_empty() => Ok(Scope::Action {
-                app: app.to_string(),
-                resource: resource.to_string(),
-                action: action.to_string(),
-            }),
-            _ => Err(format!(
-                "action scope must be action:<app>/<action>@<resource>, got `{s}`"
-            )),
-        },
         _ => Err(format!(
-            "scope must be workspace, room, app:<id>, fs:<path>, device:<id> \
-             or action:<app>/<action>@<resource>, got `{s}`"
+            "scope must be workspace, room, fs:<path> or device:<id>, got `{s}`"
         )),
     }
 }
 
-/// Parse a verb name.
+/// Parse a sandbox access name.
 ///
 /// # Errors
 ///
-/// Returns a human-readable message when `s` is not one of read / comment / write / invite / admin.
-pub fn parse_verb(s: &str) -> Result<crate::shell::state::Verb, String> {
-    use crate::shell::state::Verb;
+/// Returns a human-readable message when `s` is not read / write.
+pub fn parse_access(s: &str) -> Result<crate::shell::state::Access, String> {
+    use crate::shell::state::Access;
     match s {
-        "read" => Ok(Verb::Read),
-        "comment" => Ok(Verb::Comment),
-        "write" => Ok(Verb::Write),
-        "invite" => Ok(Verb::Invite),
-        "admin" => Ok(Verb::Admin),
-        _ => Err(format!(
-            "verb must be read / comment / write / invite / admin, got `{s}`"
-        )),
+        "read" => Ok(Access::Read),
+        "write" => Ok(Access::Write),
+        _ => Err(format!("access must be read / write, got `{s}`")),
+    }
+}
+
+/// Parse an action kind name.
+///
+/// # Errors
+///
+/// Returns a human-readable message when `s` is not read / undoable / outside.
+pub fn parse_kind(s: &str) -> Result<tilo_action_policy::ActionKind, String> {
+    use tilo_action_policy::ActionKind;
+    match s {
+        "read" => Ok(ActionKind::Read),
+        "undoable" => Ok(ActionKind::Undoable),
+        "outside" => Ok(ActionKind::Outside),
+        _ => Err(format!("kind must be read / undoable / outside, got `{s}`")),
     }
 }
 

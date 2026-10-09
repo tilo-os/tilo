@@ -21,8 +21,8 @@ use ui_core::automerge::transaction::Transactable;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tilo_actions::{
-    ActionArgs, ActionError, ActionOutput, ActionParam, ActionSpec, ChangeKind, EncodedAction,
-    ExecutionLocus, OperationKind, ParamType, PermissionRequirement, ResultSpec,
+    ActionArgs, ActionError, ActionKind, ActionOutput, ActionParam, ActionSpec, ChangeKind,
+    EncodedAction, ExecutionLocus, OperationKind, ParamType, ResultSpec,
 };
 use tilo_resource::history::Version;
 use ui_core::automerge::{AutoCommit, ChangeHash, Patch, PatchAction, Prop};
@@ -337,7 +337,6 @@ fn edit(
             Err(reason) => invalid(&reason),
         },
     )
-    .requiring(PermissionRequirement::Write)
     .reversible()
     .with_description(description);
     spec.contract.result = ResultSpec::Json {
@@ -369,7 +368,7 @@ fn view(
             })
         },
     )
-    .requiring(PermissionRequirement::Read)
+    .of_kind(ActionKind::Read)
     .with_description(description);
     spec.contract.result = ResultSpec::Json {
         schema: json!({"type": "object"}),

@@ -687,7 +687,7 @@ mod tests {
         governor: &ed25519_dalek::SigningKey,
         collaborator: crate::IdentityKey,
     ) {
-        use collab_types::{CapOverride, Effect, Scope, Subject, Verb};
+        use collab_types::{Access, CapOverride, Effect, Scope, Subject};
         authority
             .apply(
                 crate::workspace_authority::WorkspaceAuthorityEnvelope::sign(
@@ -697,7 +697,7 @@ mod tests {
                         Subject::User(collab_types::Ed25519PublicKey(collaborator)),
                         Scope::FsPath("/".into()),
                         Effect::Grant,
-                        Verb::Read,
+                        Access::Read,
                     )],
                     false,
                     governor,

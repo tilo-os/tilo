@@ -20,6 +20,7 @@ name = "tilo-runtime"
 path = "src/bin/tilo-runtime.rs"
 
 [dependencies]
+tilo-action-policy = { path = "../../collab/action-policy" }
 tilo-paths.workspace = true
 tilo-clock = { path = "../../platform/tilo-clock" }
 tilo-advisory-lock = { path = "../../system/advisory-lock" }

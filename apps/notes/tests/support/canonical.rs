@@ -7,7 +7,7 @@ use notes::{
 };
 use std::{cell::RefCell, collections::HashMap, path::PathBuf, rc::Rc};
 use ui::{
-    permissions::{Actor, PermissionContext, Role, UserId},
+    permissions::{PermissionContext, Role, UserId},
     record::{RecordCheckout, RecordId, RecordKind, RecordOwners, RecordStore},
 };
 use uuid::Uuid;
@@ -84,11 +84,7 @@ impl NotebookFixture {
             tag,
             author: UserId("notes-fixture-author".into()),
             authority: Rc::new(RefCell::new(
-                PermissionContext::from_capabilities(
-                    Actor::person(Some(Role::Owner), "notes-fixture-author"),
-                    vec![],
-                )
-                .at_unix_time(100),
+                PermissionContext::member("notes-fixture-author", Role::Owner).at_unix_time(100),
             )),
             workspace,
             bodies: RefCell::new(bodies),

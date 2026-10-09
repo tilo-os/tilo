@@ -1835,8 +1835,12 @@ fn deep_owned_state_restore_stamps_once_undoes_and_refuses_without_action_inner(
     assert_eq!(
         change
             .message()
-            .and_then(|message| tilo_actions::ActionContext::from_change_message(message)),
-        Some(crate::state::owned_restore_tests::context())
+            .and_then(|message| tilo_actions::ActionContext::from_change_message(message))
+            .map(crate::state::owned_restore_tests::unstamped),
+        Some(
+            crate::state::owned_restore_tests::context()
+                .with_invoker(tilo_actions::ActionInvoker::actor("ada"))
+        )
     );
     assert_eq!(state.doc.get_actor(), &actor);
     let mut retained = profile.clone();

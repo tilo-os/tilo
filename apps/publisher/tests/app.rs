@@ -10,9 +10,7 @@ use ui::tilo_resource::Path;
 fn edit(field: &Path<Publisher, String>, text: &str) -> Invoke<Publisher> {
     Invoke::edit(&field.replace(text)).expect("an edit")
 }
-use ui::tilo_actions::{
-    Availability, ConfirmationPolicy, DoorError, PermissionRequirement, RiskLevel,
-};
+use ui::tilo_actions::{ActionKind, Availability, ConfirmationPolicy, DoorError, RiskLevel};
 
 /// A machine of its own: a home with no key the developer's environment
 /// names, and secrets kept in this test's memory.
@@ -160,7 +158,7 @@ fn the_key_operations_are_published_on_the_profile_as_the_key_stands() {
     };
     for id in ["create-key", "copy-secret"] {
         let contract = &action(id).contract;
-        assert_eq!(contract.permission, PermissionRequirement::Admin, "{id}");
+        assert_eq!(contract.kind, ActionKind::Outside, "{id}");
         assert_eq!(contract.risk, RiskLevel::Privileged, "{id}");
         assert_eq!(contract.confirmation, ConfirmationPolicy::Confirm, "{id}");
     }

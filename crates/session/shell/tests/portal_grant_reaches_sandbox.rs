@@ -66,7 +66,7 @@ fn plan_for(store: &GrantStoreHandle, ws: WorkspaceId, app: &str) -> CapabilityP
             .iter()
             .find(|w| w.id == ws)
             .expect("workspace")
-            .capabilities
+            .sandbox
             .clone()
     };
     shell_launcher::set_workspace_capabilities(caps);

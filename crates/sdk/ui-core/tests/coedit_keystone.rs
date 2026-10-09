@@ -501,7 +501,7 @@ fn peers_co_edit_converge_share_carets_and_gate_signed_edits() {
         );
 
         match validate_inbound_op(&viewer_op, &mut state) {
-            Err(ValidationError::RoleForbidsOpClass) => {}
+            Err(ValidationError::NotGranted(_)) => {}
             other => panic!("viewer without write cap must be rejected, got {other:?}"),
         }
         // ...so the peer doc and its render are untouched.

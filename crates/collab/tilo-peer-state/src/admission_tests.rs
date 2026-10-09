@@ -36,12 +36,12 @@ fn unchanged_permission_queries_share_policy_data_across_peer_clones() {
             .clone()
             .permissions(cert.device_public_key, now)
             .unwrap();
-        assert_eq!(actual.0, expected.0);
+        assert_eq!(actual.role, expected.role);
         assert_eq!(
-            serde_json::to_vec(&actual.1).unwrap(),
-            serde_json::to_vec(&expected.1).unwrap()
+            serde_json::to_vec(&actual.policy).unwrap(),
+            serde_json::to_vec(&expected.policy).unwrap()
         );
-        assert_eq!(actual.2, expected.2);
+        assert_eq!(actual.person, expected.person);
     }
     assert!(
         crate::room::POLICY_READS.with(std::cell::Cell::get) <= 1,
@@ -58,12 +58,12 @@ fn admitted_immutable_certificate_does_not_repeat_signature_checks_per_permissio
             .clone()
             .permissions(cert.device_public_key, now)
             .unwrap();
-        assert_eq!(actual.0, expected.0);
+        assert_eq!(actual.role, expected.role);
         assert_eq!(
-            serde_json::to_vec(&actual.1).unwrap(),
-            serde_json::to_vec(&expected.1).unwrap()
+            serde_json::to_vec(&actual.policy).unwrap(),
+            serde_json::to_vec(&expected.policy).unwrap()
         );
-        assert_eq!(actual.2, expected.2);
+        assert_eq!(actual.person, expected.person);
     }
     assert_eq!(
         crate::state::CERTIFICATE_VERIFICATIONS.with(std::cell::Cell::get),
@@ -99,9 +99,13 @@ fn exported_certificate_mutation_cannot_change_verified_roster_or_replace_it_via
     assert!(peer.certificates().contains(&cert));
 }
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one cached policy followed through expiry, removal and replacement"
+)]
 fn cached_policy_rechecks_membership_expiry_and_governance_replacement() {
     use automerge::ReadDoc;
-    use collab_types::caps::{CapOverride, Principal, Scope, Subject, Verb};
+    use tilo_action_policy::{ActionKind, Answer, Grant, KindSet, Lifetime, Subject, TreePath};
     let (key, cert, _, other, now) = fixtures();
     let room_id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
     let mut doc = crate::room::candidate(
@@ -110,16 +114,29 @@ fn cached_policy_rechecks_membership_expiry_and_governance_replacement() {
     )
     .unwrap();
     doc.put(ROOT, "owner", "another-person").unwrap();
-    let caps = doc.get(ROOT, "capabilities").unwrap().unwrap().1;
-    let person = Principal::person_from_key(collab_types::Ed25519PublicKey::from_bytes(
-        cert.user_public_key,
-    ));
-    let grant = CapOverride::grant(Subject::Principal(person), Scope::Workspace, Verb::Write)
-        .with_expiry(2001);
+    let members = doc.get(ROOT, "members").unwrap().unwrap().1;
+    let person = hex::encode(cert.user_public_key);
     doc.put(
-        &caps,
-        "membership",
-        automerge::ScalarValue::Bytes(serde_json::to_vec(&grant).unwrap()),
+        &members,
+        person.as_str(),
+        automerge::ScalarValue::Bytes(serde_json::to_vec(&collab_types::Role::Editor).unwrap()),
+    )
+    .unwrap();
+    // A time-limited hold on undoable changes, rechecked at every decision.
+    let grants = doc.get(ROOT, "grants").unwrap().unwrap().1;
+    let hold = Grant::new(
+        "hold",
+        Subject::Person(person.clone()),
+        TreePath::room(room_id),
+        KindSet::UNDOABLE,
+        Answer::Deny,
+        Subject::person("another-person"),
+    )
+    .with_lifetime(Lifetime::Until(2_001_000));
+    doc.put(
+        &grants,
+        "hold",
+        automerge::ScalarValue::Bytes(serde_json::to_vec(&hold).unwrap()),
     )
     .unwrap();
     let changes = doc
@@ -145,16 +162,27 @@ fn cached_policy_rechecks_membership_expiry_and_governance_replacement() {
     )
     .unwrap();
     assert_eq!(
-        peer.permissions(cert.device_public_key, now).unwrap().0,
+        peer.permissions(cert.device_public_key, now).unwrap().role,
         collab_types::Role::Editor
+    );
+    let room_node = TreePath::room(room_id);
+    assert!(
+        !peer
+            .permissions(cert.device_public_key, now)
+            .unwrap()
+            .allows(&room_node, ActionKind::Undoable, now)
     );
     assert!(
         peer.permissions(cert.device_public_key, now + Duration::from_secs(2))
-            .unwrap_err()
-            .contains("membership")
+            .unwrap()
+            .allows(
+                &room_node,
+                ActionKind::Undoable,
+                now + Duration::from_secs(2)
+            )
     );
     let old = peer.clone();
-    doc.delete(&caps, "membership").unwrap();
+    doc.delete(&members, person.as_str()).unwrap();
     let changes = doc
         .get_changes(&[])
         .into_iter()
@@ -175,7 +203,7 @@ fn cached_policy_rechecks_membership_expiry_and_governance_replacement() {
             .contains("membership")
     );
     assert_eq!(
-        old.permissions(cert.device_public_key, now).unwrap().0,
+        old.permissions(cert.device_public_key, now).unwrap().role,
         collab_types::Role::Editor
     );
 }
@@ -345,7 +373,6 @@ fn independent_invite_redemption_is_durable_single_use_and_removal_closes_access
         verify_join_proof,
     };
     use automerge::ReadDoc;
-    use collab_types::caps::{CapOverride, Scope, Subject, Verb};
 
     let (mut peer, authority_key, other_owner_device, _, now) = seeded();
     let now_ns: u64 = now
@@ -421,7 +448,7 @@ fn independent_invite_redemption_is_durable_single_use_and_removal_closes_access
     assert_eq!(
         peer.permissions(guest_cert.device_public_key, now)
             .unwrap()
-            .0,
+            .role,
         collab_types::Role::Editor
     );
     let access = peer.governed_access(now).unwrap();
@@ -555,24 +582,18 @@ fn independent_invite_redemption_is_durable_single_use_and_removal_closes_access
         panic!("unexpected fixture shape")
     };
     let mut room_doc = crate::room::candidate(None, &changes).unwrap();
-    let capabilities = room_doc.get(ROOT, "capabilities").unwrap().unwrap().1;
+    let members = room_doc.get(ROOT, "members").unwrap().unwrap().1;
     let before = room_doc.get_heads();
     room_doc.set_actor(automerge::ActorId::from(
         authority_key.verifying_key().to_bytes().to_vec(),
     ));
-    let shadowing = CapOverride::grant(
-        Subject::User(collab_types::Ed25519PublicKey::from_bytes(
-            guest_cert.user_public_key,
-        )),
-        Scope::Workspace,
-        Verb::Admin,
-    )
-    .with_id("legacy-strong-membership");
     room_doc
         .put(
-            &capabilities,
-            "legacy-strong-membership",
-            automerge::ScalarValue::Bytes(serde_json::to_vec(&shadowing).unwrap()),
+            &members,
+            hex::encode(guest_cert.user_public_key),
+            automerge::ScalarValue::Bytes(
+                serde_json::to_vec(&collab_types::Role::Commenter).unwrap(),
+            ),
         )
         .unwrap();
     room_doc.commit();
@@ -594,8 +615,8 @@ fn independent_invite_redemption_is_durable_single_use_and_removal_closes_access
         restored
             .permissions(guest_cert.device_public_key, now)
             .unwrap()
-            .0,
-        collab_types::Role::Owner
+            .role,
+        collab_types::Role::Commenter
     );
     assert!(
         restored
@@ -611,7 +632,7 @@ fn independent_invite_redemption_is_durable_single_use_and_removal_closes_access
         restored
             .permissions(guest_cert.device_public_key, now)
             .unwrap()
-            .0,
+            .role,
         collab_types::Role::Viewer
     );
     restored
@@ -763,7 +784,7 @@ fn host_without_device_enrollment_power_needs_explicit_room_delegation() {
             .unwrap()
     );
     assert_eq!(
-        peer.permissions(guest.device_public_key, now).unwrap().0,
+        peer.permissions(guest.device_public_key, now).unwrap().role,
         collab_types::Role::Commenter
     );
 }

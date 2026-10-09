@@ -222,10 +222,7 @@ fn history_restore_honours_one_boundary_and_keeps_pending_edits() {
             let mut d = managed_driver(doc, selected);
             d.click_named("history-restore").unwrap();
             if revoked {
-                d.set_permission_ctx(ui::permissions::PermissionContext::from_capabilities(
-                    ui::permissions::Actor::person(None, "revoked"),
-                    vec![],
-                ));
+                d.set_permission_ctx(PermissionContext::stranger("revoked"));
             } else {
                 d.state_mut()
                     .doc

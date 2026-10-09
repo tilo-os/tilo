@@ -5949,7 +5949,7 @@ impl FrameHarness {
         let delivered = invoker.map(|invoker| {
             let context = tilo_actions::ActionContext::default().with_invoker(invoker.clone());
             crate::invocation_scope::Continuation {
-                admitted: self.admitted_requirement(address, arguments),
+                admitted: self.admitted_kind(address, arguments),
                 invoker,
                 context: Some(context),
                 refused: None,
@@ -5996,11 +5996,11 @@ impl FrameHarness {
 
     /// What an invoker of `address` with `arguments` is admitted for: the
     /// operation's own requirement. Nothing when it does not resolve.
-    fn admitted_requirement(
+    fn admitted_kind(
         &self,
         address: &crate::bound_dispatch::BoundActionAddress,
         arguments: &serde_json::Map<String, serde_json::Value>,
-    ) -> tilo_actions::PermissionRequirement {
+    ) -> tilo_actions::ActionKind {
         let address = match self.bound_publication.target(&address.address) {
             Ok(Some(target)) => target.address,
             _ => address.clone(),
@@ -6017,10 +6017,10 @@ impl FrameHarness {
                 .filter(|snapshot| snapshot.binding.instance_id == address.instance_id)
                 .find_map(|snapshot| {
                     tilo_actions::door::resolve(&snapshot.resources, &address.address)
-                        .map(|spec| spec.permission_for_json(arguments))
+                        .map(|spec| spec.need_for(Some(arguments), None).kind)
                 })
         })
-        .unwrap_or(tilo_actions::PermissionRequirement::None)
+        .unwrap_or(tilo_actions::ActionKind::Read)
     }
 
     /// Every update the job `invocation` reported so far, oldest first.
@@ -6889,7 +6889,7 @@ impl FrameHarness {
                     )?;
                 if !self.permissions.permits_invocation(
                     &app_id,
-                    &address.resource,
+                    resource,
                     spec,
                     arguments.as_ref(),
                     argument,
@@ -6898,10 +6898,7 @@ impl FrameHarness {
                 }
                 crate::invocation_scope::check_continuation(
                     spec,
-                    match arguments.as_ref() {
-                        Some(arguments) => spec.permission_for_json(arguments),
-                        None => spec.permission_for_argument(argument),
-                    },
+                    spec.need_for(arguments.as_ref(), argument).kind,
                 )?;
                 let encoded = crate::bound_dispatch::encode_resource_action(
                     &resources,
@@ -7032,10 +7029,10 @@ impl FrameHarness {
                         Some(&intent.arguments),
                         false,
                     )?;
-                if !crate::bound_dispatch::permits_local_value(
+                if !crate::bound_dispatch::permits_local_action(
                     &self.permissions,
                     &crate::collaboration::local_app_id(),
-                    &intent.address.resource,
+                    resource,
                     spec,
                     arguments.as_ref(),
                     None,
@@ -7044,7 +7041,7 @@ impl FrameHarness {
                 }
                 crate::invocation_scope::check_continuation(
                     spec,
-                    spec.permission_for_json(&intent.arguments),
+                    spec.need_for(arguments.as_ref(), None).kind,
                 )?;
                 let encoded = crate::bound_dispatch::encode_resource_action(
                     &resources,
@@ -7143,10 +7140,10 @@ impl FrameHarness {
             Some(supplied),
             confirmed,
         )?;
-        if !crate::bound_dispatch::permits_local_value(
+        if !crate::bound_dispatch::permits_local_action(
             &self.permissions,
             &crate::collaboration::local_app_id(),
-            &address.resource,
+            resource,
             spec,
             arguments.as_ref(),
             None,
@@ -11396,12 +11393,9 @@ mod tests {
                 };
                 assert_eq!(*observed.results.borrow(), vec![Ok(expected)]);
                 observed.enqueue("run");
-                *binding.permissions.borrow_mut() = PermissionContext::from_capabilities(
-                    collab_types::caps::Actor::person(
-                        Some(collab_types::role::Role::Viewer),
-                        "reader",
-                    ),
-                    Vec::new(),
+                *binding.permissions.borrow_mut() = crate::permissions::PermissionContext::member(
+                    "reader",
+                    collab_types::role::Role::Viewer,
                 );
                 let before = owner
                     .records
@@ -11489,9 +11483,9 @@ mod tests {
                 crate::permissions::UserId("reader".into()),
             );
             observed.enqueue("run");
-            let readonly = PermissionContext::from_capabilities(
-                collab_types::caps::Actor::person(Some(collab_types::role::Role::Viewer), "reader"),
-                Vec::new(),
+            let readonly = crate::permissions::PermissionContext::member(
+                "reader",
+                collab_types::role::Role::Viewer,
             );
             host.set_permission_ctx(readonly);
             let before = host.state.doc.base_heads();

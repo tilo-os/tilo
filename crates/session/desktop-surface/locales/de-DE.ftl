@@ -435,32 +435,45 @@ activity-titles-more = { $first }, { $second } und { $count } weitere
 activity-capability = { $effect ->
         [restrict] eingeschränktes { $verb ->
             [read] Lesen
-            [comment] Kommentieren
-            [write] Schreiben
-            [invite] Einladen
-           *[admin] Verwalten
+           *[write] Schreiben
         }
        *[grant] { $verb ->
             [read] Lesen
-            [comment] Kommentieren
-            [write] Schreiben
-            [invite] Einladen
-           *[admin] Verwalten
+           *[write] Schreiben
         }
     } für { $scope } an { $subject }
 activity-capability-unknown = eine Berechtigung
 activity-capability-this-workspace = diesen Arbeitsbereich
-activity-capability-every-type = jede Ressource vom Typ { $kind }
-activity-capability-action-on-kind = { $app }:{ $action } auf jeder Ressource vom Typ { $kind }
-activity-capability-one-artifact = ein Artefakt
 activity-capability-one-shared-file = eine geteilte Datei
 activity-capability-network = Netzwerk { $host }
 activity-capability-role = { $role ->
         [owner] Eigentümer
         [editor] Bearbeitende
         [commenter] Kommentierende
-        [viewer] Betrachtende
-       *[denied] gesperrte Mitglieder
+       *[viewer] Betrachtende
+    }
+activity-grant = { $kinds ->
+        [read] Lesen
+        [undoable] Änderungen
+        [outside] Wirkungen nach außen
+        [read-undoable] Lesen und Änderungen
+        [read-outside] Lesen und Wirkungen nach außen
+        [undoable-outside] Änderungen und Wirkungen nach außen
+        [none] nichts
+       *[all] alles
+    } { $answer ->
+        [deny] verweigert
+        [ask] nach Rückfrage
+       *[allow] erlaubt
+    } für { $node } an { $subject }
+activity-grant-task = Aufgabe { $task }
+activity-grant-shortcut = Kurzbefehl { $shortcut }
+activity-grant-foreign-device = Geräte, die nicht die eigenen sind
+activity-member = { $person } als { $role ->
+        [owner] Eigentümer
+        [editor] Bearbeitende
+        [commenter] Kommentierende
+       *[viewer] Betrachtende
     }
 activity-capability-a-person = eine Person
 activity-capability-agent = Agent { $agent }
@@ -657,6 +670,17 @@ workspace-settings-allows-edit = { $what } bearbeiten
 workspace-settings-allows-comment = { $what } kommentieren
 workspace-settings-allows-invite = Andere einladen: { $what }
 workspace-settings-allows-view = { $what } ansehen
+workspace-settings-grant-allows = Erlaubt: { $kinds } in { $where }
+workspace-settings-grant-asks = Fragt zuerst: { $kinds } in { $where }
+workspace-settings-grant-denies = Verweigert: { $kinds } in { $where }
+workspace-settings-kind-read = Lesen
+workspace-settings-kind-undoable = Änderungen
+workspace-settings-kind-outside = Wirkungen nach außen
+workspace-settings-subject-foreign-device = Geräte, die nicht die eigenen sind
+workspace-settings-grant-placeholder = Wer, wo und was
+workspace-settings-grant-description = Jemandem, einem Agenten oder einer App eine Antwort für Arten von Aktionen in einem Teil dieses Arbeitsbereichs geben.
+workspace-settings-revoke-placeholder = Welche Berechtigung
+workspace-settings-revoke-description = Eine Berechtigung anhand ihrer Kennung zurücknehmen.
 workspace-settings-expiry-once = Einmal
 workspace-settings-expiry-session = Sitzung
 workspace-settings-expiry-until = Bis

@@ -307,7 +307,7 @@ fn history_operation(record: String, label: &str, undo: bool) -> tilo_actions::A
             })
         },
     )
-    .requiring(tilo_actions::PermissionRequirement::Read)
+    .of_kind(tilo_actions::ActionKind::Read)
     .with_description(if undo {
         format!(
             "Take back your last change to your {label}: it is yours alone, on all of your devices."

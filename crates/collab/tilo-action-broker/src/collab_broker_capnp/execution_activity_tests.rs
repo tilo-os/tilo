@@ -532,35 +532,22 @@ fn continuation_fixture() -> (
     Caller,
     mpsc::UnboundedReceiver<InvocationEnvelope>,
 ) {
-    use collab_types::{CapOverride, Effect, Scope, Subject, Verb};
+    use crate::test_support::{Grants as _, KindSet, Role, Subject, TreePath};
     let mut workspace = Workspace::new(WorkspaceId(53), "Effect continuation");
     workspace.set_owner("a1".repeat(32));
     let room = workspace.room.to_string();
-    workspace.grant_capability(CapOverride::membership(
+    workspace.admit_agent("scribe", KindSet::READ);
+    workspace.allow_app(Subject::agent("scribe"), "so.tilo.test", KindSet::ALL);
+    workspace.admit("b2".repeat(32), Role::Editor);
+    workspace.deny(
         Subject::agent("scribe"),
-        room.clone(),
-        Verb::Write,
-    ));
-    workspace.grant_capability(CapOverride::grant(
-        Subject::agent("scribe"),
-        Scope::App("so.tilo.test".into()),
-        Verb::Write,
-    ));
-    workspace.grant_capability(CapOverride::membership(
-        Subject::person("b2".repeat(32)),
-        room.clone(),
-        Verb::Write,
-    ));
-    workspace.grant_capability(CapOverride::new(
-        Subject::agent("scribe"),
-        Scope::Action {
-            app: "so.tilo.test".into(),
-            resource: "test:block-a".into(),
-            action: "erase".into(),
-        },
-        Effect::Restrict,
-        Verb::Read,
-    ));
+        &TreePath::root()
+            .app("so.tilo.test")
+            .any(tilo_action_policy::Level::Kind)
+            .resource("test:block-a")
+            .action("erase"),
+        KindSet::ALL,
+    );
     let mut tree = WorkspaceTree::default();
     tree.desktop.workspaces.push(workspace);
     let membership = tree.shared();
@@ -933,12 +920,14 @@ async fn shortcut_step_observes_once_per_change() {
             },
         )],
         output: None,
-        grant: vec![collab_types::PermissionProfileRule::grant(
-            collab_types::Scope::App("so.tilo.test".into()),
-            collab_types::Verb::Write,
+        grant: vec![tilo_action_policy::Rule::new(
+            tilo_action_policy::TreePath::root()
+                .any(tilo_action_policy::Level::Room)
+                .app("so.tilo.test"),
+            tilo_action_policy::KindSet::ALL,
+            tilo_action_policy::Answer::Allow,
         )],
         triggers: Vec::new(),
-        consents: Vec::new(),
         saved_by: None,
     };
     let hooks = NoPolling(crate::automation::DoorHooks::new(
@@ -963,7 +952,6 @@ async fn shortcut_step_observes_once_per_change() {
                     mode: tilo_automation::RunMode::Unattended,
                     trigger: tilo_automation::RunTrigger::Manual,
                     inputs: serde_json::Map::new(),
-                    consents: Vec::new(),
                 },
             )
             .await

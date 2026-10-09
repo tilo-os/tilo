@@ -18,7 +18,7 @@ use std::rc::Rc;
 
 use serde::{Deserialize, Serialize};
 use tilo_actions::{
-    Action as _, ActionError, ActionInvoker, EncodedAction, OperationKind, PermissionRequirement,
+    Action as _, ActionError, ActionInvoker, ActionKind, ActionNeed, EncodedAction, OperationKind,
 };
 use tilo_resource::{Doc, Fields, Reader, Resource};
 use ui_core::storage::{ChangeOrigin, Settings, SettingsSchema};
@@ -158,8 +158,8 @@ fn route(
             })
             // The room's roles do not reach a record of the person's own:
             // the host lets only its person change it.
-            .requiring(PermissionRequirement::Read)
-            .with_permission_of(|_| PermissionRequirement::Read)
+            .of_kind(ActionKind::Read)
+            .with_need_of(|_| ActionNeed::of(ActionKind::Read))
         })
         .collect();
     resource.children = std::mem::take(&mut resource.children)

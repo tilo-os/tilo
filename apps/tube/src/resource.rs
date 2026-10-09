@@ -734,8 +734,8 @@ mod tests {
             );
         }
         assert_eq!(
-            spec("open-video").contract.permission,
-            ui::tilo_actions::PermissionRequirement::Read
+            spec("open-video").contract.kind,
+            ui::tilo_actions::ActionKind::Read
         );
     }
 }

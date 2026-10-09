@@ -1,23 +1,36 @@
 use super::{NativeAppOpenAccess, native_app_open_access, native_launch_capabilities};
 use crate::shell::native_workspace_owner::{NativeWorkspaceOwner, test_enrolled_owner};
 use crate::shell::state::RoomId;
-use collab_types::caps::{CapOverride, Effect, Scope, Subject, Verb};
+use collab_types::caps::{Access, CapOverride, Scope, Subject};
 use ed25519_dalek::SigningKey;
 use std::time::SystemTime;
 use tilo_peer_state::TransportOrigin;
+
+/// What one signed governance change writes.
+enum Governed {
+    Sandbox(CapOverride),
+    Grant(tilo_action_policy::Grant),
+}
 
 fn signed_governance(
     owner: &NativeWorkspaceOwner,
     room: RoomId,
     now: SystemTime,
-    cap: CapOverride,
+    change: &Governed,
 ) {
     let key = SigningKey::from_bytes(&[61; 32]);
     let messages = owner
         .with_current(room, |view| {
             let before = view.peer().clone();
             let mut candidate = before.clone();
-            candidate.put_governed_capabilities(&[cap], &key, now)?;
+            match change {
+                Governed::Sandbox(cap) => {
+                    candidate.put_governed_sandbox(std::slice::from_ref(cap), &key, now)?;
+                }
+                Governed::Grant(grant) => {
+                    candidate.put_governed_grants(std::slice::from_ref(grant), &key, now)?;
+                }
+            }
             candidate.durable_mutation_messages(
                 &before,
                 &key,
@@ -70,20 +83,26 @@ fn native_viewer_only_reopens_real_record_without_mutation() {
 #[test]
 fn native_existing_writer_preserves_delegation_but_person_restriction_wins() {
     let (_directory, owner, room, now, _key) = test_enrolled_owner();
-    let (certificate, person) = owner
+    let (certificate, person, room_node) = owner
         .with_current(room, |view| {
-            let (_, _, person) = view
+            let member = view
                 .peer()
                 .permissions(view.device().device_public_key, now)?;
-            Ok((view.device().clone(), person))
+            Ok((view.device().clone(), member.person, member.policy.node()))
         })
         .unwrap();
     signed_governance(
         &owner,
         room,
         now,
-        CapOverride::grant(Subject::app("so.tilo.chat"), Scope::Workspace, Verb::Write)
+        &Governed::Sandbox(
+            CapOverride::grant(
+                Subject::app("so.tilo.chat"),
+                Scope::Workspace,
+                Access::Write,
+            )
             .with_id("native-open-chat-author"),
+        ),
     );
     assert!(matches!(
         native_app_open_access(&owner, room, &certificate, "so.tilo.chat").unwrap(),
@@ -93,13 +112,14 @@ fn native_existing_writer_preserves_delegation_but_person_restriction_wins() {
         &owner,
         room,
         now,
-        CapOverride::new(
-            Subject::person(person),
-            Scope::Workspace,
-            Effect::Restrict,
-            Verb::Read,
-        )
-        .with_id("native-open-person-viewer"),
+        &Governed::Grant(tilo_action_policy::Grant::new(
+            "native-open-person-viewer",
+            tilo_action_policy::Subject::person(person.clone()),
+            room_node,
+            tilo_action_policy::KindSet::UNDOABLE,
+            tilo_action_policy::Answer::Deny,
+            tilo_action_policy::Subject::person(person),
+        )),
     );
     assert!(matches!(
         native_app_open_access(&owner, room, &certificate, "so.tilo.chat").unwrap(),
@@ -114,8 +134,14 @@ fn a_distinct_admitted_read_only_device_never_borrows_the_governors_app_write() 
         &owner,
         room,
         now,
-        CapOverride::grant(Subject::app("so.tilo.chat"), Scope::Workspace, Verb::Write)
+        &Governed::Sandbox(
+            CapOverride::grant(
+                Subject::app("so.tilo.chat"),
+                Scope::Workspace,
+                Access::Write,
+            )
             .with_id("native-open-governor-chat-writer"),
+        ),
     );
     let signing_identity = SigningKey::from_bytes(&[72; 32]);
     let viewer_key = SigningKey::from_bytes(&[71; 32]);
@@ -154,27 +180,22 @@ fn a_distinct_admitted_read_only_device_never_borrows_the_governors_app_write() 
     ));
     assert!(native_app_open_access(&owner, room, &viewer, "so.tilo.missing").is_err());
     let capabilities = owner
-        .with_current(room, |view| {
-            let (_, caps, _) = view
-                .peer()
-                .permissions(view.governor().device_public_key, now)?;
-            Ok(caps)
-        })
+        .with_current(room, |view| view.peer().governed_sandbox())
         .unwrap();
     let mut workspace = tilo_desktop_model::Workspace::new(
         tilo_desktop_model::WorkspaceId(71),
         "Admitted viewer launch",
     );
-    workspace.room = room;
-    workspace.capabilities = capabilities;
+    workspace.set_room(room);
+    workspace.sandbox = capabilities;
     let constrained =
         native_launch_capabilities(workspace, "so.tilo.chat", NativeAppOpenAccess::Viewer);
     assert_eq!(
         collab_types::caps::decide_capability(
             &collab_types::caps::Actor::app("so.tilo.chat").in_room(room.to_string()),
             &collab_types::caps::ResourceRef::Workspace,
-            Verb::Write,
-            &constrained.capabilities,
+            Access::Write,
+            &constrained.sandbox,
             Some(
                 now.duration_since(SystemTime::UNIX_EPOCH)
                     .unwrap()

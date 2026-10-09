@@ -70,7 +70,7 @@ fn native_member_terminal_audit_uses_installed_governor_and_original_retry_recei
 
 #[test]
 fn native_published_authorship_requires_admin_and_durably_enables_the_actual_app() {
-    use collab_types::caps::{Actor, CapDecision, ResourceRef, Verb, decide_capability};
+    use collab_types::caps::{Access, Actor, CapDecision, ResourceRef, decide_capability};
     let fixture = fixture();
     let actions = fixture.broker.app_action_broker().unwrap();
     wait_for_membership_surface(&actions, fixture.room);
@@ -81,15 +81,13 @@ fn native_published_authorship_requires_admin_and_durably_enables_the_actual_app
                 let now = std::time::SystemTime::now();
                 view.peer()
                     .check_workspace_administration(fixture.certificate.device_public_key, now)?;
-                let (_, caps, _) = view
-                    .peer()
-                    .permissions(fixture.certificate.device_public_key, now)?;
+                let caps = view.peer().governed_sandbox()?;
                 let seconds = now.duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
                 assert_eq!(
                     decide_capability(
                         &Actor::app("so.tilo.chat").in_room(fixture.room.to_string()),
                         &ResourceRef::Workspace,
-                        Verb::Write,
+                        Access::Write,
                         &caps,
                         Some(seconds)
                     ),
@@ -103,7 +101,7 @@ fn native_published_authorship_requires_admin_and_durably_enables_the_actual_app
             })
             .unwrap();
     };
-    check(CapDecision::DeniedByRole);
+    check(CapDecision::NotGranted);
     let job = actions
         .change_workspace_membership(
             &fixture.room.to_string(),
@@ -130,14 +128,12 @@ fn native_published_authorship_requires_admin_and_durably_enables_the_actual_app
     reopened
         .with_current(fixture.room, |view| {
             let now = std::time::SystemTime::now();
-            let (_, caps, _) = view
-                .peer()
-                .permissions(fixture.certificate.device_public_key, now)?;
+            let caps = view.peer().governed_sandbox()?;
             assert_eq!(
                 decide_capability(
                     &Actor::app("so.tilo.chat").in_room(fixture.room.to_string()),
                     &ResourceRef::Workspace,
-                    Verb::Write,
+                    Access::Write,
                     &caps,
                     Some(now.duration_since(std::time::UNIX_EPOCH).unwrap().as_secs())
                 ),
@@ -605,7 +601,7 @@ fn failed_effect(
 #[test]
 fn native_files_home_consent_refuses_unattested_identity_without_leaving_a_grant() {
     use crate::portal::{GrantStoreHandle, PortalCaller};
-    use crate::shell::state::{ResourceRef, Scope, Verb};
+    use crate::shell::state::{Access, ResourceRef, Scope};
     const FILES: &str = crate::shell::search::providers::applications::SYSTEM_FILE_MANAGER;
     let fixture = fixture();
     let tree = native_workspace_owner::test_tree_of(&fixture.owner);
@@ -630,15 +626,15 @@ fn native_files_home_consent_refuses_unattested_identity_without_leaving_a_grant
             .desktop
             .active_workspace()
             .unwrap()
-            .capabilities
+            .sandbox
             .iter()
             .any(|cap| cap.scope == Scope::FsPath(home.clone()))
     );
     let grants = GrantStoreHandle::new(tree);
     let caller = PortalCaller::new(workspace, FILES);
     let resource = ResourceRef::FsPath(format!("{home}/source/report.txt"));
-    assert!(!grants.permits(&caller, &resource, Verb::Read));
-    assert!(!grants.permits(&caller, &resource, Verb::Write));
+    assert!(!grants.permits(&caller, &resource, Access::Read));
+    assert!(!grants.permits(&caller, &resource, Access::Write));
     // Keep the isolated identity/profile active through the final refusal.
     drop(fixture);
 }
@@ -646,7 +642,7 @@ fn native_files_home_consent_refuses_unattested_identity_without_leaving_a_grant
 #[test]
 fn native_files_home_consent_survives_authorship_and_revocation_does_not_resurrect() {
     use crate::portal::{GrantStoreHandle, PortalCaller};
-    use crate::shell::state::{ResourceRef, Scope, Verb};
+    use crate::shell::state::{Access, ResourceRef, Scope};
     const FILES: &str = crate::shell::search::providers::applications::SYSTEM_FILE_MANAGER;
     let fixture = fixture();
     let tree = native_workspace_owner::test_tree_of(&fixture.owner);
@@ -666,7 +662,7 @@ fn native_files_home_consent_survives_authorship_and_revocation_does_not_resurre
         .desktop
         .active_workspace()
         .unwrap()
-        .capabilities
+        .sandbox
         .iter()
         .find(|cap| cap.scope == Scope::FsPath(home.clone()))
         .unwrap()
@@ -695,22 +691,22 @@ fn native_files_home_consent_survives_authorship_and_revocation_does_not_resurre
             .desktop
             .active_workspace()
             .unwrap()
-            .capabilities
+            .sandbox
             .contains(&saved)
     );
-    assert!(grants.permits(&caller, &resource, Verb::Read));
-    assert!(grants.permits(&caller, &resource, Verb::Write));
+    assert!(grants.permits(&caller, &resource, Access::Read));
+    assert!(grants.permits(&caller, &resource, Access::Write));
     assert!(!grants.permits(
         &PortalCaller::new(workspace, "so.tilo.chat"),
         &resource,
-        Verb::Read
+        Access::Read
     ));
     let person = crate::shell::state::local_user_id_for_room(&fixture.room);
     assert!(
         tree.write()
-            .revoke_in_workspace(workspace, &person, &saved.id)
+            .revoke_sandbox_in_workspace(workspace, &person, &saved.id)
     );
-    assert!(!grants.permits(&caller, &resource, Verb::Read));
+    assert!(!grants.permits(&caller, &resource, Access::Read));
     publish("so.tilo.chat");
     assert!(
         !tree
@@ -718,11 +714,11 @@ fn native_files_home_consent_survives_authorship_and_revocation_does_not_resurre
             .desktop
             .active_workspace()
             .unwrap()
-            .capabilities
+            .sandbox
             .contains(&saved)
     );
-    assert!(!grants.permits(&caller, &resource, Verb::Read));
-    assert!(!grants.permits(&caller, &resource, Verb::Write));
+    assert!(!grants.permits(&caller, &resource, Access::Read));
+    assert!(!grants.permits(&caller, &resource, Access::Write));
     // Keep the isolated identity/profile active through the final refusal.
     drop(fixture);
 }
@@ -730,7 +726,7 @@ fn native_files_home_consent_survives_authorship_and_revocation_does_not_resurre
 #[test]
 fn native_files_home_consent_is_not_reconstructed_when_session_reopens() {
     use crate::portal::{GrantStoreHandle, PortalCaller};
-    use crate::shell::state::{ResourceRef, Verb};
+    use crate::shell::state::{Access, ResourceRef};
     const FILES: &str = crate::shell::search::providers::applications::SYSTEM_FILE_MANAGER;
     let fixture = fixture();
     let tree = native_workspace_owner::test_tree_of(&fixture.owner);
@@ -755,7 +751,7 @@ fn native_files_home_consent_is_not_reconstructed_when_session_reopens() {
     assert!(completed.code.is_empty(), "{}", completed.message);
     let resource = ResourceRef::FsPath(fixture.home.home().to_string_lossy().into_owned());
     let caller = PortalCaller::new(workspace, FILES);
-    assert!(GrantStoreHandle::new(tree.clone()).permits(&caller, &resource, Verb::Read));
+    assert!(GrantStoreHandle::new(tree.clone()).permits(&caller, &resource, Access::Read));
     drop(actions);
     drop(tree);
     drop(fixture.broker);
@@ -769,14 +765,12 @@ fn native_files_home_consent_is_not_reconstructed_when_session_reopens() {
         .with_current(fixture.room, |view| {
             use collab_types::caps::{Actor, CapDecision, decide_capability};
             let now = std::time::SystemTime::now();
-            let (_, caps, _) = view
-                .peer()
-                .permissions(fixture.certificate.device_public_key, now)?;
+            let caps = view.peer().governed_sandbox()?;
             assert_eq!(
                 decide_capability(
                     &Actor::app(FILES).in_room(fixture.room.to_string()),
                     &ResourceRef::Workspace,
-                    Verb::Write,
+                    Access::Write,
                     &caps,
                     Some(now.duration_since(std::time::UNIX_EPOCH).unwrap().as_secs())
                 ),
@@ -786,8 +780,8 @@ fn native_files_home_consent_is_not_reconstructed_when_session_reopens() {
         })
         .unwrap();
     let grants = GrantStoreHandle::new(tree);
-    assert!(!grants.permits(&caller, &resource, Verb::Read));
-    assert!(!grants.permits(&caller, &resource, Verb::Write));
+    assert!(!grants.permits(&caller, &resource, Access::Read));
+    assert!(!grants.permits(&caller, &resource, Access::Write));
     // Keep the isolated identity/profile active through the final refusal.
     drop(fixture.home);
 }

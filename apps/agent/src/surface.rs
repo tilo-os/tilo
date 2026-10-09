@@ -32,8 +32,8 @@ use std::fmt::Write as _;
 
 use automerge::AutoCommit;
 use tilo_actions::door::{ActionAddress, ActionDescriptor};
-use tilo_actions::{ActionContract, ActionRegistry, PermissionRequirement, Resource};
-use ui::permissions::{PermissionContext, PermissionScope, ResourceRef, Verb};
+use tilo_actions::{ActionContract, ActionKind, ActionRegistry, Resource};
+use ui::permissions::{Answer, PermissionContext, PermissionScope, TreePath};
 use ui::tilo_resource::ResourceKind;
 
 /// Separator between a resource id and an action id in an address.
@@ -426,37 +426,29 @@ fn catalogue_page_offers(catalogue: &tilo_actions::remote::CataloguePage) -> Vec
         .collect()
 }
 
-/// The permission question performing `address` has to pass.
+/// Where `address` sits in the room, as the grants deciding it name it.
 ///
 /// Phrased about the app the resource id names (by its app id, as every
 /// grant names an app), not about the agent's own namespace: a room grants
-/// edit rights per app, so folding every app's
-/// operations under one name would make a grant in one of them a grant in
-/// all.
+/// per app, so folding every app's operations under one name would make a
+/// grant in one of them a grant in all.
 ///
-/// * `Scope::Action { app, resource, action }` authorises one operation on
-///   one resource inside an app
-///   that is *already running*, and confers no ability to start one.
-/// * `Scope::App(app)` authorises this application: both its operations and
-///   opening it.
-/// * `Scope::Workspace` authorises any of them.
-///
-/// The verb stays `Write` throughout: a window appearing in the room is a
-/// change to the room.
+/// * An operation sits at its app, resource and action: a grant there
+///   authorises that one operation in an app that is *already running*, and
+///   confers no ability to start one.
+/// * Opening an application is an undoable change of the app itself (a
+///   window appearing in the room): a grant on the app authorises both its
+///   operations and opening it, a grant on the room any of them.
 pub fn scope_for(address: &ActionAddress) -> PermissionScope {
     if let Some(app) = opens(address) {
-        return PermissionScope {
-            resource: ResourceRef::App(app_id_of(app).to_string()),
-            op: Verb::Write,
-        };
+        return PermissionScope::app(app_id_of(app), ActionKind::Undoable);
     }
-    PermissionScope {
-        resource: ResourceRef::Action {
-            app: app_id_of(app_of(&address.resource)).to_string(),
-            resource: address.resource.clone(),
-            action: address.action.clone(),
-        },
-        op: Verb::Write,
+    PermissionScope::Action {
+        node: TreePath::root()
+            .app(app_id_of(app_of(&address.resource)))
+            .resource(address.resource.clone())
+            .action(address.action.clone()),
+        kind: ActionKind::Undoable,
     }
 }
 
@@ -466,41 +458,48 @@ fn app_id_of(app: &str) -> &str {
     for_namespace(app).map_or(app, |contract| contract.app_id())
 }
 
-/// Whether the agent may perform `address`. Fail-closed: anything not
-/// affirmatively allowed is denied.
+/// Whether the agent may perform what `scope` names, without asking first.
+/// Fail-closed: anything not affirmatively allowed is refused; an agent
+/// never gets past a grant that asks first on its own.
+fn allowed(perms: &PermissionContext, scope: &PermissionScope) -> bool {
+    match scope {
+        PermissionScope::Action { node, kind } => perms.answer(node, *kind) == Answer::Allow,
+        PermissionScope::Sandbox { .. } => perms.check(scope),
+    }
+}
+
+/// Whether the agent may perform `address`.
 pub fn permitted(perms: &PermissionContext, address: &ActionAddress) -> bool {
-    perms.check(&scope_for(address))
+    allowed(perms, &scope_for(address))
 }
 
 /// Whether the agent may perform `descriptor`, published by the app
-/// `app_id`, with the authority the operation itself declares: a read-only
-/// view must not silently be upgraded to Write, and an administrative action
-/// must not be downgraded. The scope names the app that published it, as the
-/// app's own host does, so an invitation to one app is never leave to act in
-/// another.
+/// `app_id`, as the kind of action it declares: a read-only view is never
+/// upgraded, an outside effect never downgraded. The node names the app that
+/// published it, as the app's own host does, so an invitation to one app is
+/// never leave to act in another.
 pub(crate) fn permitted_descriptor(
     perms: &PermissionContext,
     app_id: &str,
     descriptor: &ActionDescriptor,
 ) -> bool {
-    let mut scope = if opens(&descriptor.address).is_some() {
-        scope_for(&descriptor.address)
-    } else {
-        PermissionScope::action(
-            app_id,
-            descriptor.address.resource.clone(),
-            descriptor.address.action.clone(),
-            Verb::Write,
-        )
-    };
-    scope.op = match descriptor.contract.permission {
-        PermissionRequirement::None | PermissionRequirement::Read => Verb::Read,
-        PermissionRequirement::Comment => Verb::Comment,
-        PermissionRequirement::Write => Verb::Write,
-        PermissionRequirement::Invite => Verb::Invite,
-        PermissionRequirement::Admin => Verb::Admin,
-    };
-    perms.check(&scope)
+    if opens(&descriptor.address).is_some() {
+        return permitted(perms, &descriptor.address);
+    }
+    allowed(
+        perms,
+        &PermissionScope::Action {
+            node: tilo_actions::action_node(
+                &TreePath::root(),
+                app_id,
+                &descriptor.resource_kind,
+                &descriptor.address.resource,
+                descriptor.contract.field.as_deref(),
+                &descriptor.address.action,
+            ),
+            kind: descriptor.contract.kind,
+        },
+    )
 }
 
 /// The tree `contract` publishes for `doc` as it stands: the one its kind
@@ -1172,30 +1171,32 @@ mod tests {
             let post = ActionAddress::new("chat.channel:c1", "post");
 
             assert_eq!(
-                scope_for(&open).resource,
-                ResourceRef::App("so.tilo.chat".to_string()),
+                scope_for(&open),
+                PermissionScope::app("so.tilo.chat", ActionKind::Undoable),
                 "opening is asked about as the application itself"
             );
             assert_eq!(
-                scope_for(&post).resource,
-                ResourceRef::Action {
-                    app: "so.tilo.chat".to_string(),
-                    resource: "chat.channel:c1".to_string(),
-                    action: "post".to_string(),
+                scope_for(&post),
+                PermissionScope::Action {
+                    node: TreePath::root()
+                        .app("so.tilo.chat")
+                        .resource("chat.channel:c1")
+                        .action("post"),
+                    kind: ActionKind::Undoable,
                 },
                 "and an operation is still asked about as an operation"
             );
 
-            let none = granting(Vec::new());
+            let none = granting(&[]);
             assert!(!permitted(&none, &open));
 
             // "May do one thing inside an application that is already
             // running." Not leave to start it.
-            let one_action = granting(vec![grant(Scope::Action {
-                app: "so.tilo.chat".to_string(),
-                resource: "chat.channel:c1".to_string(),
-                action: "post".to_string(),
-            })]);
+            let one_action = granting(&[TreePath::root()
+                .app("so.tilo.chat")
+                .rest()
+                .resource("chat.channel:c1")
+                .action("post")]);
             assert!(permitted(&one_action, &post));
             assert!(
                 !permitted(&one_action, &ActionAddress::new("chat.channel:c2", "post")),
@@ -1208,7 +1209,7 @@ mod tests {
             );
 
             // "May open *this* application."
-            let this_app = granting(vec![grant(Scope::App("so.tilo.chat".to_string()))]);
+            let this_app = granting(&[TreePath::root().app("so.tilo.chat")]);
             assert!(permitted(&this_app, &open));
             assert!(
                 !permitted(&this_app, &open_address("word-processor")),
@@ -1216,14 +1217,14 @@ mod tests {
             );
 
             // "May open applications."
-            let any = granting(vec![grant(Scope::Workspace)]);
+            let any = granting(&[TreePath::root()]);
             assert!(permitted(&any, &open));
             assert!(permitted(&any, &open_address("word-processor")));
         }
 
         // Case `an_open_takes_content_only_when_an_operation_produces_some`.
         {
-            let perms = granting(vec![grant(Scope::Workspace)]);
+            let perms = granting(&[TreePath::root()]);
             let mut producer = openable(&[], false, &perms)
                 .into_iter()
                 .next()
@@ -1249,7 +1250,7 @@ mod tests {
 
         // Case `only_the_apps_this_room_is_missing_are_offered_as_openable`.
         {
-            let perms = granting(vec![grant(Scope::Workspace)]);
+            let perms = granting(&[TreePath::root()]);
 
             let empty = openable(&[], false, &perms);
             let missing: Vec<&str> = empty.iter().map(|o| o.app.as_str()).collect();
@@ -1345,7 +1346,7 @@ mod tests {
                 "now it publishes its own operations, which is what the open \
                  was for"
             );
-            let perms = granting(vec![grant(Scope::Workspace)]);
+            let perms = granting(&[TreePath::root()]);
             assert!(
                 offers(&held, &[], &perms)
                     .iter()
@@ -1550,14 +1551,26 @@ mod tests {
 
     // -- opening an application ------------------------------------------
 
-    use ui::permissions::{Actor, CapOverride, Scope, Subject};
-
-    fn granting(caps: Vec<CapOverride>) -> PermissionContext {
-        PermissionContext::from_capabilities(Actor::agent("Claude"), caps)
-    }
-
-    fn grant(scope: Scope) -> CapOverride {
-        CapOverride::grant(Subject::agent("Claude"), scope, Verb::Write).with_id("t")
+    /// The person at this device acting through the agent "Claude", which
+    /// is granted everything at each of `nodes` (paths below the room).
+    fn granting(nodes: &[TreePath]) -> PermissionContext {
+        use ui::permissions::{LOCAL_ROOM, LOCAL_USER, Role, policy};
+        let agent = policy::Subject::agent("Claude");
+        let grants = nodes
+            .iter()
+            .enumerate()
+            .map(|(index, node)| {
+                policy::Grant::new(
+                    format!("claude-{index}"),
+                    agent.clone(),
+                    TreePath::room(LOCAL_ROOM).join(node),
+                    policy::KindSet::ALL,
+                    Answer::Allow,
+                    policy::Subject::person(LOCAL_USER),
+                )
+            })
+            .collect();
+        PermissionContext::member(LOCAL_USER, Role::Owner).acting_as(agent, grants)
     }
 
     /// A seeded chat document with no workspace in it — the state the

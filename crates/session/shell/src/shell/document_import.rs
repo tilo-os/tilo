@@ -189,10 +189,10 @@ impl HostedRooms for NativeHostedRooms {
         let owner = self.0.native_owner().ok()?;
         owner
             .with_current(room, |view| {
-                let (role, _, _) = view
+                let member = view
                     .peer()
                     .permissions(view.device().device_public_key, SystemTime::now())?;
-                if role != collab_types::Role::Owner {
+                if member.role != collab_types::Role::Owner {
                     return Ok(None);
                 }
                 let doc = view.peer().admitted_room().ok_or("no room")?;

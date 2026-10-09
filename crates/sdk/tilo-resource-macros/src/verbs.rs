@@ -135,7 +135,7 @@ pub(crate) fn resource_options(attr: proc_macro::TokenStream) -> syn::Result<Res
 struct ActionOptions {
     id: Option<String>,
     label: Option<String>,
-    permission: Option<String>,
+    field: Option<String>,
     destructive: bool,
     housekeeping: bool,
     external: bool,
@@ -151,7 +151,7 @@ fn action_options(attr: &Attribute) -> syn::Result<ActionOptions> {
     let mut options = ActionOptions {
         id: None,
         label: None,
-        permission: None,
+        field: None,
         destructive: false,
         housekeeping: false,
         external: false,
@@ -168,8 +168,8 @@ fn action_options(attr: &Attribute) -> syn::Result<ActionOptions> {
             options.id = Some(meta.value()?.parse::<syn::LitStr>()?.value());
         } else if meta.path.is_ident("label") {
             options.label = Some(meta.value()?.parse::<syn::LitStr>()?.value());
-        } else if meta.path.is_ident("permission") {
-            options.permission = Some(meta.value()?.parse::<syn::LitStr>()?.value());
+        } else if meta.path.is_ident("field") {
+            options.field = Some(meta.value()?.parse::<syn::LitStr>()?.value());
         } else if meta.path.is_ident("destructive") {
             options.destructive = true;
         } else if meta.path.is_ident("housekeeping") {
@@ -186,7 +186,7 @@ fn action_options(attr: &Attribute) -> syn::Result<ActionOptions> {
             options.writes.push(meta.value()?.parse::<syn::Ident>()?);
         } else {
             return Err(meta.error(
-                "expected `id = \"...\"`, `label`, `permission`, `destructive`, `housekeeping`, `external`, `answers`, `writes = field`, `item = field` or `undo = path`",
+                "expected `id = \"...\"`, `label`, `field`, `destructive`, `housekeeping`, `external`, `answers`, `writes = field`, `item = field` or `undo = path`",
             ));
         }
         if options.housekeeping && options.external {
@@ -662,8 +662,7 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
     let mut arms = Vec::new();
     let mut risks = Vec::new();
     let mut kinds = Vec::new();
-    let mut permissions = Vec::new();
-    let mut least: Option<(u8, Tokens)> = None;
+    let mut fields_of = Vec::new();
     let mut change_kinds = Vec::new();
     let mut compensations = Vec::new();
     let mut compensating = Vec::new();
@@ -891,20 +890,6 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
                     ))]
             }
         });
-        let permission = match verb.options.permission.as_deref() {
-            None | Some("write") => quote!(Write),
-            Some("none") => quote!(None),
-            Some("read") => quote!(Read),
-            Some("comment") => quote!(Comment),
-            Some("invite") => quote!(Invite),
-            Some("admin") => quote!(Admin),
-            Some(other) => {
-                return Err(syn::Error::new(
-                    method.span(),
-                    format!("unknown permission `{other}`"),
-                ));
-            }
-        };
         let destructive = verb.options.destructive.then(|| quote!(.destructive()));
         let answering = verb.options.answers.then(|| quote!(.answering()));
         let (collects, prompted) = match verb.params.iter().find(|param| param.content) {
@@ -928,19 +913,11 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
             let description = &verb.description;
             quote!(.describe(#description))
         });
-        let rank = match verb.options.permission.as_deref() {
-            Some("none") => 0,
-            Some("read") => 1,
-            Some("comment") => 2,
-            None | Some("write") => 3,
-            Some("invite") => 4,
-            _ => 5,
-        };
-        if least.as_ref().is_none_or(|(least, _)| rank < *least) {
-            least = Some((rank, permission.clone()));
-        }
-        permissions.push(quote! {
-            #action_enum::#variant(..) => #krate::__private::PermissionRequirement::#permission,
+        let field = verb.options.field.as_deref().map(|field| {
+            fields_of.push(quote! {
+                #action_enum::#variant(..) => ::core::option::Option::Some(#field),
+            });
+            quote!(.below_field(#field))
         });
         decls.push(quote! {
             #krate::ActionDecl::new(
@@ -967,8 +944,8 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
                 },
             )
             #describe
-            .requiring(#krate::__private::PermissionRequirement::#permission)
             .of_kind(#krate::ActionKind::#action_kind)
+            #field
             #destructive
             #answering
             #collects
@@ -1267,29 +1244,19 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
             }
         }
     };
-    // An action declared at another level than writing is applied at that
-    // level too, whichever door it comes through.
-    let least_fn = match least {
-        Some((rank, least)) if rank != 3 => quote! {
-            fn least_permission() -> #krate::__private::PermissionRequirement {
-                #krate::__private::PermissionRequirement::#least
-            }
-        },
-        _ => quote!(),
-    };
-    let permission_fn = if permissions.is_empty() {
+    // An action declared below one field is placed there whichever door it
+    // comes through, the generic `apply` included.
+    let field_fn = if fields_of.is_empty() {
         quote!()
     } else {
         quote! {
-            fn permission(action: &Self::Action) -> #krate::__private::PermissionRequirement {
-                #[allow(unreachable_patterns, reason = "edits and the seed need writing")]
+            fn field_of(action: &Self::Action) -> ::core::option::Option<&'static str> {
+                #[allow(unreachable_patterns, reason = "every other operation writes more than one field")]
                 match &action.operation {
-                    #(#permissions)*
-                    _ => #krate::__private::PermissionRequirement::Write,
+                    #(#fields_of)*
+                    _ => ::core::option::Option::None,
                 }
             }
-
-            #least_fn
         }
     };
     let (record_binding, cx_binding) = if arms.is_empty() && options.seed.is_none() {
@@ -1481,7 +1448,7 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
             #availability
             #read_content
             #views
-            #permission_fn
+            #field_fn
 
             fn children(state: &Self) -> ::std::vec::Vec<#krate::__private::Resource> {
                 let _ = state;

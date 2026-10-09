@@ -4904,8 +4904,8 @@ mod tests {
                     .iter_mut()
                     .find(|workspace| workspace.id == source_id)
                     .expect("source workspace");
-                source.owner = None;
-                source.capabilities.clear();
+                source.policy.owner = None;
+                source.sandbox.clear();
                 tree.desktop.active = destination_id;
             }
             consume_record_requests(&chrome, &index);
@@ -5105,7 +5105,7 @@ mod tests {
         /// its rebuild on. Drives the ingest and per-frame pump.
         fn a_peers_changes_landing_make_the_frame_rebuild() {
             use crate::shell::state::PeerOrigin;
-            use collab_types::caps::{CapOverride, Scope, Subject, Verb};
+            use collab_types::caps::{Access, CapOverride, Scope, Subject};
 
             // A room owned by somebody else, with something in it.
             let owner = "quinten".to_string();
@@ -5115,13 +5115,13 @@ mod tests {
             let room = host
                 .room_of(host_ws)
                 .expect("the host's workspace has a room");
-            host.grant_in_workspace(
+            host.grant_sandbox_in_workspace(
                 host_ws,
                 &owner,
                 CapOverride::grant(
                     Subject::app("files"),
                     Scope::FsPath("/shared".to_string()),
-                    Verb::Read,
+                    Access::Read,
                 ),
             )
             .expect("the owner may grant in their own room");

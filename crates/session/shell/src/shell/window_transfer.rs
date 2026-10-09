@@ -603,13 +603,12 @@ fn plan(
     }
     // The person carrying the window must be allowed to open this app in
     // the destination; the destination's own authority governs it there.
-    if destination_ws.owner.is_some() {
+    if destination_ws.owner().is_some() {
         let me = crate::shell::state::local_user_id_for_room(&destination_ws.room);
-        let actor = destination_ws.actor_for_person(&me);
-        if !destination_ws.allows(
-            &actor,
-            &crate::shell::state::ResourceRef::App(app_id.clone()),
-            crate::shell::state::Verb::Write,
+        if !destination_ws.person_allowed(
+            &me,
+            &tilo_action_policy::TreePath::root().app(app_id.clone()),
+            tilo_action_policy::ActionKind::Undoable,
         ) {
             return Err(MoveTabError::NotPermitted);
         }

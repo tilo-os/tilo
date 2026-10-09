@@ -58,7 +58,7 @@ pub enum NetworkEffect {
         view,
         returns,
         device_only,
-        permission = "read",
+        kind = "read",
         label = "Inspect network state"
     )]
     InspectNetworkState,

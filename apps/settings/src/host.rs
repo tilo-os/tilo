@@ -159,7 +159,7 @@ impl PaneCx {
             .actions
             .iter()
             .find(|spec| spec.id == effect.action_id())?;
-        if !door.dispatcher.may(spec.contract.permission) {
+        if !door.dispatcher.may(&spec.contract.need()) {
             return None;
         }
         let asked: Vec<String> = spec
@@ -208,7 +208,10 @@ impl PaneCx {
         SettingsEffect::declarations()
             .into_iter()
             .find(|declaration| declaration.id == id)
-            .is_some_and(|declaration| door.dispatcher.may(declaration.permission))
+            .is_some_and(|declaration| {
+                door.dispatcher
+                    .may(&ui::tilo_actions::ActionNeed::of(declaration.action_kind))
+            })
     }
 
     /// The binding of one fully specified effect, for a shared navigation row.

@@ -1488,10 +1488,7 @@ mod tests {
                 .unwrap();
             driver.resize((640, 700)).unwrap();
             let close = session_address(&mut driver, "close");
-            driver.set_permission_ctx(PermissionContext::from_capabilities(
-                crate::permissions::Actor::agent("denied"),
-                vec![],
-            ));
+            driver.set_permission_ctx(PermissionContext::stranger("denied"));
             assert!(
                 driver.try_presentation_inspection().is_err(),
                 "immutable inspection rechecks current authority"

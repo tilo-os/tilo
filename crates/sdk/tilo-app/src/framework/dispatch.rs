@@ -7,15 +7,22 @@ use std::collections::VecDeque;
 use std::rc::Rc;
 
 use tilo_actions::{
-    ActionAddress, ActionBinding, ActionContext, ActionError, ActionInvoker, ControlInvocation,
-    PermissionRequirement,
+    ActionAddress, ActionBinding, ActionContext, ActionError, ActionInvoker, ActionNeed,
+    ControlInvocation,
 };
 
 use super::controls::Actions;
 use tilo_resource::{Edit, Effect, Invoke, Resource};
 use ui_core::LocalState;
 use ui_core::automerge::ChangeHash;
-use ui_core::permissions::{LivePermissions, PermissionScope, Verb};
+use ui_core::permissions::{ActionKind, LivePermissions, PermissionScope, TreePath, policy};
+
+/// What a view asks whether its participant may do.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Asked {
+    Need(ActionNeed),
+    Govern,
+}
 use ui_core::widget::Edits;
 use ui_core::widget::controls::AttributedControlInvocation;
 
@@ -171,17 +178,17 @@ pub struct Dispatcher<R: Resource> {
     /// The last immediate action may be continued by a later one
     /// ([`Resource::continuable`]).
     continuable: Rc<Cell<bool>>,
-    /// The gesture the open step's changes record, so the step stays one
-    /// undo step in the document's history.
+    /// The step the open undo step's changes record, decided before each
+    /// change commits, so a coalesced step stays one step after a restart.
     gesture: Rc<Cell<Option<tilo_actions::ActionId>>>,
     marker: std::marker::PhantomData<fn(R)>,
 }
 
 /// What applying one action needs.
-type PermissionOf<R> = Rc<dyn Fn(&<R as Resource>::Action) -> PermissionRequirement>;
+type PermissionOf<R> = Rc<dyn Fn(&<R as Resource>::Action) -> ActionNeed>;
 
 /// One observable per requested permission, shared by this resource's views.
-type PermissionStates = Rc<RefCell<Vec<(PermissionRequirement, LocalState<bool>)>>>;
+type PermissionStates = Rc<RefCell<Vec<(Asked, LocalState<bool>)>>>;
 
 /// An immediate action and the serial it was applied at.
 type Serialed<R> = (u64, <R as Resource>::Action);
@@ -326,7 +333,7 @@ impl<R: Resource> Dispatcher<R> {
             read_only: LocalState::new(read_only),
             permissions: Rc::default(),
             permission_states: Rc::default(),
-            permission_of: Rc::new(R::permission),
+            permission_of: Rc::new(tilo_resource::need_of::<R>),
             refused: LocalState::new(None),
             landed: LocalState::new(None),
             waits: Rc::default(),
@@ -411,26 +418,43 @@ impl<R: Resource> Dispatcher<R> {
         self.refresh_permission_states();
     }
 
-    /// Whether the host currently grants `requirement`, as observable view
+    /// Whether the host currently allows what `need` is, as observable view
     /// state. It follows changes even when writing remains allowed and the
     /// resource document does not change. Bind it to a conditional pane or
     /// label; action invocation still checks the host's current authority.
-    pub fn permission_state(&self, requirement: PermissionRequirement) -> LocalState<bool> {
+    pub fn permission_state(&self, need: ActionNeed) -> LocalState<bool> {
+        self.asked_state(Asked::Need(need))
+    }
+
+    /// Whether the participant may govern the room (invite, grant, change
+    /// its settings), as observable view state: for an owner's pane.
+    pub fn govern_state(&self) -> LocalState<bool> {
+        self.asked_state(Asked::Govern)
+    }
+
+    fn asked_state(&self, asked: Asked) -> LocalState<bool> {
         let mut states = self.permission_states.borrow_mut();
-        if let Some((_, state)) = states.iter().find(|(needed, _)| *needed == requirement) {
+        if let Some((_, state)) = states.iter().find(|(held, _)| *held == asked) {
             return state.clone();
         }
-        let state = LocalState::new(self.may(requirement));
-        states.push((requirement, state.clone()));
+        let state = LocalState::new(self.may_asked(&asked));
+        states.push((asked, state.clone()));
         state
     }
 
     pub(crate) fn refresh_permission_states(&self) {
-        for (requirement, state) in self.permission_states.borrow().iter() {
-            let allowed = self.may(*requirement);
+        for (asked, state) in self.permission_states.borrow().iter() {
+            let allowed = self.may_asked(asked);
             if state.get() != allowed {
                 state.set(allowed);
             }
+        }
+    }
+
+    fn may_asked(&self, asked: &Asked) -> bool {
+        match asked {
+            Asked::Need(need) => self.may(need),
+            Asked::Govern => self.may_govern(),
         }
     }
 
@@ -444,20 +468,29 @@ impl<R: Resource> Dispatcher<R> {
         self
     }
 
-    /// Whether the participant may, as of now, do what needs `requirement`:
-    /// writing for most edits, commenting for a reply, administering for a
-    /// change of who may do what.
-    pub fn may(&self, requirement: PermissionRequirement) -> bool {
-        let verb = match requirement {
-            PermissionRequirement::None => return true,
-            PermissionRequirement::Read => Verb::Read,
-            PermissionRequirement::Comment => Verb::Comment,
-            PermissionRequirement::Write => Verb::Write,
-            PermissionRequirement::Invite => Verb::Invite,
-            PermissionRequirement::Admin => Verb::Admin,
-        };
+    /// Whether the participant may, as of now, do what `need` is: an
+    /// undoable change for most edits, one of the comments for a reply.
+    pub fn may(&self, need: &ActionNeed) -> bool {
+        let mut node = TreePath::root().app(self.app_id);
+        if let Some(field) = &need.field {
+            node = node.field(field);
+        }
+        self.may_scope(&PermissionScope::Action {
+            node,
+            kind: need.kind,
+        })
+    }
+
+    /// Whether the participant may, as of now, change the room's settings.
+    pub fn may_govern(&self) -> bool {
+        self.may_scope(&PermissionScope::governance(
+            policy::roles::governance::SETTINGS,
+        ))
+    }
+
+    fn may_scope(&self, scope: &PermissionScope) -> bool {
         match self.permissions.borrow().as_ref() {
-            Some(permissions) => permissions.check(&PermissionScope::app(self.app_id, verb)),
+            Some(permissions) => permissions.check(scope),
             // A detached dispatcher may what writing allows; a past version
             // nothing.
             None => !self.read_only.get(),
@@ -465,19 +498,18 @@ impl<R: Resource> Dispatcher<R> {
     }
 
     /// Whether the participant may apply `action`
-    /// ([`Resource::permission`]).
+    /// ([`tilo_resource::need_of`]).
     pub fn may_apply(&self, action: &R::Action) -> bool {
-        self.may((self.permission_of)(action))
+        self.may(&(self.permission_of)(action))
     }
 
     /// Re-read whether the participant may write. Returns whether it
     /// changed.
     #[cfg(any(test, feature = "test-support"))]
     fn refresh_read_only(&self) -> bool {
-        let writes =
-            self.permissions.borrow().as_ref().map(|permissions| {
-                permissions.check(&PermissionScope::app(self.app_id, Verb::Write))
-            });
+        let writes = self.permissions.borrow().as_ref().map(|permissions| {
+            permissions.check(&PermissionScope::app(self.app_id, ActionKind::Undoable))
+        });
         match writes {
             Some(writes) => self.set_read_only(!writes),
             None => false,
@@ -516,13 +548,13 @@ impl<R: Resource> Dispatcher<R> {
         format!("this {} is open to view only", R::LABEL.to_lowercase())
     }
 
-    /// Why an edit needing `requirement` was refused.
-    fn not_allowed(requirement: PermissionRequirement) -> String {
-        match requirement {
-            PermissionRequirement::Write => Self::view_only(),
-            PermissionRequirement::Comment => {
+    /// Why an edit that is `need` was refused.
+    fn not_allowed(need: &ActionNeed) -> String {
+        match (&need.field, need.kind) {
+            (Some(field), _) if field == policy::roles::COMMENTS_FIELD => {
                 format!("you may not comment on this {}", R::LABEL.to_lowercase())
             }
+            (None, ActionKind::Undoable) => Self::view_only(),
             _ => format!("you may not do this to this {}", R::LABEL.to_lowercase()),
         }
     }
@@ -550,7 +582,7 @@ impl<R: Resource> Dispatcher<R> {
     /// through the same door as a button bound to it: permission, the
     /// effect's availability and a destructive effect's confirmation are
     /// checked, then its handler runs. A participant who may only view still
-    /// invokes the effects declared `permission = "read"`.
+    /// invokes the effects declared `kind = "read"`.
     pub fn effect<E: Effect>(&self, effect: &E) {
         self.queue_invocation(
             ActionAddress::new(self.resource_id.as_ref(), effect.id()),
@@ -637,9 +669,12 @@ impl<R: Resource> Dispatcher<R> {
             };
         }
         match R::declarations().iter().find(|decl| decl.id == invoke.id) {
-            Some(decl) => self.may(decl.permission),
+            Some(decl) => self.may(&ActionNeed {
+                kind: decl.kind,
+                field: decl.field.map(str::to_owned),
+            }),
             None if invoke.is_group() => !self.read_only(),
-            None => self.may(PermissionRequirement::Read),
+            None => self.may(&ActionNeed::of(ActionKind::Read)),
         }
     }
 
@@ -765,7 +800,7 @@ impl<R: Resource> Dispatcher<R> {
         )
         .map_err(ActionError::Refused)?;
         if let Some(refused) = group.actions.iter().find(|action| !self.may_apply(action)) {
-            return Err(ActionError::Refused(Self::not_allowed((self
+            return Err(ActionError::Refused(Self::not_allowed(&(self
                 .permission_of)(
                 refused
             ))));
@@ -826,7 +861,7 @@ impl<R: Resource> Dispatcher<R> {
             return Err(ActionError::Refused(reason));
         }
         if !self.may_apply(action) {
-            return Err(ActionError::Refused(Self::not_allowed((self
+            return Err(ActionError::Refused(Self::not_allowed(&(self
                 .permission_of)(
                 action
             ))));
@@ -854,14 +889,12 @@ impl<R: Resource> Dispatcher<R> {
                 .borrow()
                 .as_ref()
                 .is_some_and(|(at, previous)| *at == serial && R::coalesces(previous, action));
-        // A change another may continue records its gesture, so the step it
-        // opens or continues stays one undo step after a restart too.
-        if step && R::continuable(action) {
+        // An action that continues the open step joins it; any other opens
+        // its own.
+        if step {
             let gesture = self.gesture.get().filter(|_| continues).unwrap_or_default();
             self.gesture.set(Some(gesture));
             context = context.in_gesture(Some(gesture));
-        } else if step {
-            context = context.in_gesture(continues.then(|| self.gesture.get()).flatten());
         }
         (self.submit_now)(&mut self.host.borrow_mut(), edits, action, context)?;
         if !step {
@@ -901,7 +934,7 @@ impl<R: Resource> Dispatcher<R> {
             read_only: LocalState::new(read_only || self.past),
             permissions: Rc::default(),
             permission_states: Rc::default(),
-            permission_of: Rc::new(|_: &C::Action| PermissionRequirement::Read),
+            permission_of: Rc::new(|_: &C::Action| ActionNeed::of(tilo_actions::ActionKind::Read)),
             refused: self.refused.clone(),
             landed: self.landed.clone(),
             waits: Rc::clone(&self.waits),
@@ -1009,13 +1042,6 @@ impl<R: Resource> Dispatcher<R> {
             .set(bracket.is_some() && !continuing && self.continuable.get());
         self.applied.set(false);
         if continuing { None } else { bracket }
-    }
-
-    /// Compensating document actions for [`Self::take_committed`]'s bracket.
-    pub(crate) fn take_action_revert(
-        &self,
-    ) -> Option<(tilo_actions::EncodedAction, tilo_actions::EncodedAction)> {
-        self.host.borrow_mut().take_action_revert()
     }
 
     /// The step the last boundary opened stays open for the actions that

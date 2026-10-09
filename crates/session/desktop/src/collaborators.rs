@@ -2450,7 +2450,7 @@ pub fn collaborator_roster_rows(desktop: &DesktopTree, local_user: &str) -> Vec<
                     agent.eq_ignore_ascii_case(&participant.id)
                         || agent.eq_ignore_ascii_case(&participant.name)
                 })
-                .map(|(_, role)| *role);
+                .map(|(_, kinds)| *kinds);
             let is_agent = agent_role.is_some();
             let (red, green, blue) = colors
                 .get(&participant.id)
@@ -2464,7 +2464,7 @@ pub fn collaborator_roster_rows(desktop: &DesktopTree, local_user: &str) -> Vec<
                 color: Color::from_rgb8(red, green, blue),
                 is_agent,
                 role: agent_role
-                    .map(crate::workspace_settings::role_label)
+                    .map(crate::workspace_settings::agent_kinds_label)
                     .or_else(|| participant.role_id.as_deref().map(display_role_id)),
                 invited: participant.invited,
                 activity: participant
@@ -2555,7 +2555,6 @@ fn active_tab_title(desktop: &DesktopTree, tab_id: u64) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::authority::WorkspaceAuthority as _;
 
     #[test]
     #[allow(
@@ -2694,21 +2693,20 @@ mod tests {
     )]
     fn collaborators_accessibility_and_roster_separate_identity_action_and_intent() {
         fn agent_classification_uses_stable_identity_not_display_label() {
-            use collab_types::caps::{CapOverride, Subject, Verb};
             use tilo_desktop_model::{Workspace, WorkspaceId};
 
             let mut workspace = Workspace::new(WorkspaceId(71), "Shared");
-            workspace.owner = Some("owner".into());
-            workspace
-                .grant_as(
+            workspace.set_owner("owner");
+            assert!(
+                !crate::workspace_settings::admit_agent(
+                    &mut workspace,
                     &"owner".to_string(),
-                    CapOverride::membership(
-                        Subject::agent("scribe"),
-                        workspace.id.raw().to_string(),
-                        Verb::Write,
-                    ),
+                    "scribe",
+                    crate::workspace_settings::AgentPreset::Operator,
                 )
-                .expect("owner admits agent");
+                .is_empty(),
+                "owner admits agent"
+            );
             workspace
                 .collaborators
                 .push(Collaborator::new("scribe", "Release Notes Agent"));

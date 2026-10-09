@@ -94,22 +94,21 @@ pub struct RoomMember {
 pub struct ViewReadPolicy {
     /// Governed room whose current policy authorized the exact source record.
     pub room: String,
-    /// Current role of the certified caller, supplied by the host.
-    pub role: collab_types::Role,
-    /// Current capability overrides, including device restrictions.
-    pub caps: Vec<collab_types::caps::CapOverride>,
-    /// Root identity authenticated on the connection.
-    pub person: String,
+    /// The certified caller's current standing in the room, including the
+    /// bound of a device that is not theirs.
+    pub standing: ui::permissions::Standing,
+    /// The room's current sandbox capabilities.
+    pub sandbox: Vec<collab_types::caps::CapOverride>,
     /// Host time used to evaluate capability expiry.
     pub unix_time: u64,
 }
 
 impl ViewReadPolicy {
     pub(crate) fn permissions(&self) -> ui::permissions::PermissionContext {
-        ui::permissions::PermissionContext::from_capabilities(
-            ui::permissions::Actor::person(Some(self.role), self.person.clone())
-                .in_room(self.room.clone()),
-            self.caps.clone(),
+        ui::permissions::PermissionContext::new(
+            ui::permissions::Actor::person(self.standing.person.clone()).in_room(self.room.clone()),
+            self.sandbox.clone(),
+            self.standing.clone(),
         )
         .at_unix_time(self.unix_time)
     }
@@ -892,9 +891,8 @@ impl Worker {
             .view_read_policy(workspace, caller, &route.app_id, &route.record)
             .ok_or_else(refuse)?;
         if fresh.room != first.room
-            || fresh.role != first.role
-            || fresh.caps != first.caps
-            || fresh.person != first.person
+            || fresh.standing != first.standing
+            || fresh.sandbox != first.sandbox
         {
             return Err(refuse());
         }

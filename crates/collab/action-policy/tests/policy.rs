@@ -252,6 +252,25 @@ fn any_depth_matches_zero_or_more_segments() {
 }
 
 #[test]
+fn overlapping_nodes_share_a_descendant() {
+    let app = mail();
+    let comments = TreePath::room("r").rest().push(Level::Field, "comments");
+    assert!(comments.overlaps(&app));
+    assert!(app.overlaps(&comments));
+    assert!(app.overlaps(&TreePath::room("r")));
+    assert!(TreePath::room("r").overlaps(&app));
+    assert!(app.overlaps(&send()));
+    assert!(TreePath::root().overlaps(&app));
+    assert!(!app.overlaps(&TreePath::room("r").app("notes")));
+    assert!(!app.overlaps(&TreePath::room("s")));
+    assert!(!app.overlaps(&roles::room_resource("r")));
+    let any_send = TreePath::room("r").any(Level::App).rest().action("send");
+    assert!(any_send.overlaps(&app));
+    assert!(any_send.overlaps(&send()));
+    assert!(!any_send.overlaps(&roles::room_resource("r")));
+}
+
+#[test]
 fn open_levels_only_match_their_level() {
     let pattern = TreePath::room("r").any(Level::App);
     assert!(pattern.covers(&mail()));
@@ -561,7 +580,7 @@ fn role_presets_grant_what_the_table_says() {
             at(&content, Undoable),
             at(&content, Outside),
             at(&comment, Undoable),
-            at(&governance, Undoable),
+            at(&governance, Outside),
             at(&room_settings, Read),
         ];
         assert_eq!(got, expected, "{role}");
@@ -624,7 +643,7 @@ fn only_governors_change_membership() {
             format!("bob-{action}"),
             Subject::person(BOB),
             roles::governance_action("r", action),
-            KindSet::UNDOABLE,
+            KindSet::OUTSIDE,
             Answer::Allow,
             Subject::person(ALICE),
         );
@@ -661,7 +680,7 @@ fn only_governors_change_membership() {
         "carol-invite",
         Subject::person(CAROL),
         roles::governance_action("r", governance::INVITE),
-        KindSet::UNDOABLE,
+        KindSet::OUTSIDE,
         Answer::Allow,
         Subject::person(ALICE),
     ));
@@ -684,7 +703,7 @@ fn ask_needs_a_witnessed_approval() {
         "bob-invite",
         Subject::person(BOB),
         roles::governance_action("r", governance::INVITE),
-        KindSet::UNDOABLE,
+        KindSet::OUTSIDE,
         Answer::Ask,
         Subject::person(ALICE),
     ));
@@ -705,7 +724,7 @@ fn nobody_grants_more_than_they_hold() {
         "bob-grant",
         Subject::person(BOB),
         roles::governance_action("r", governance::GRANT),
-        KindSet::UNDOABLE,
+        KindSet::OUTSIDE,
         Answer::Allow,
         Subject::person(ALICE),
     ));
@@ -793,7 +812,7 @@ fn grant_and_revoke_are_actions() {
         mail(),
         KindSet::UNDOABLE,
         Answer::Allow,
-        alice(),
+        Subject::person(CAROL),
     );
     let mut next = room.clone();
     next.apply(ALICE, &owner, Change::Grant(edit), &cx(), false)
@@ -838,6 +857,104 @@ fn grant_and_revoke_are_actions() {
         false,
     );
     assert!(matches!(refused, Err(Refusal::NotPermitted(_))));
+}
+
+#[test]
+fn a_policy_moves_to_another_room_id() {
+    let mut room = room_with(&[(BOB, Role::Editor)]);
+    room.grants.push(Grant::new(
+        "elsewhere",
+        alice(),
+        TreePath::room("s"),
+        KindSet::ALL,
+        Answer::Allow,
+        alice(),
+    ));
+    room.rehome("q");
+    assert_eq!(room.room, "q");
+    let bob = Authority::person(room.party(BOB));
+    let moved = TreePath::room("q").app("mail").action("archive");
+    assert_eq!(
+        bob.decide(&moved, ActionKind::Undoable, &cx()).answer,
+        Answer::Allow
+    );
+    assert_eq!(
+        bob.decide(&archive(), ActionKind::Undoable, &cx()).answer,
+        Answer::Deny
+    );
+    assert!(
+        room.grants
+            .iter()
+            .any(|grant| grant.node == TreePath::room("s"))
+    );
+    let unowned = RoomPolicy::unowned("u", &alice());
+    assert_eq!(unowned.owner, None);
+    assert_eq!(
+        unowned.grants.len(),
+        roles::room_role_grants("u", &alice()).len()
+    );
+}
+
+#[test]
+fn a_blocked_member_holds_nothing_but_stays_on_record() {
+    let mut room = room_with(&[(BOB, Role::Editor)]);
+    assert_eq!(room.active_role(BOB), Some(Role::Editor));
+    let block = room.block(BOB, alice());
+    room.grants.push(block);
+    assert!(room.is_blocked(BOB));
+    assert_eq!(room.role_of(BOB), Some(Role::Editor));
+    assert_eq!(room.active_role(BOB), None);
+    let bob = Authority::person(room.party(BOB));
+    for kind in ActionKind::ALL {
+        assert_eq!(bob.decide(&send(), kind, &cx()).answer, Answer::Deny);
+    }
+    let owner_block = room.block(ALICE, alice());
+    room.grants.push(owner_block);
+    assert!(!room.is_blocked(ALICE), "the owner is never blocked");
+}
+
+#[test]
+fn a_standing_carries_the_person_and_every_bound() {
+    use tilo_action_policy::Standing;
+    let room = room_with(&[(BOB, Role::Editor)]);
+    let relative = TreePath::root().app("mail").action("send");
+    let bob = Standing::person(room.clone(), BOB);
+    assert_eq!(bob.node(&relative), mail().action("send"));
+    assert_eq!(
+        bob.answer(&bob.node(&relative), ActionKind::Outside, &cx()),
+        Answer::Ask
+    );
+    let agent = Standing::person(room.clone(), BOB).bounded_by(
+        Subject::agent("ag"),
+        roles::agent_default(&[mail()]).assign(
+            "ag",
+            &Subject::agent("ag"),
+            &alice(),
+            &Lifetime::UntilRevoked,
+        ),
+    );
+    assert!(agent.is_bounded_by(&Subject::agent("ag")));
+    assert_eq!(
+        agent.answer(&archive(), ActionKind::Undoable, &cx()),
+        Answer::Allow
+    );
+    let notes = TreePath::room("r").app("notes").action("append");
+    assert_eq!(
+        agent.answer(&notes, ActionKind::Undoable, &cx()),
+        Answer::Deny
+    );
+    let owner = Standing::person(room, ALICE).on_foreign_device();
+    let invite = roles::governance_action("r", governance::INVITE);
+    assert_eq!(
+        owner.answer(&invite, roles::GOVERNANCE_KIND, &cx()),
+        Answer::Deny
+    );
+    assert_eq!(
+        owner.answer(&send(), ActionKind::Outside, &cx()),
+        Answer::Ask
+    );
+    let json = serde_json::to_string(&owner).unwrap();
+    assert_eq!(serde_json::from_str::<Standing>(&json).unwrap(), owner);
 }
 
 #[test]
@@ -919,12 +1036,18 @@ fn a_foreign_device_never_governs() {
         .bounded_by(Party::new(vec![Subject::ForeignDevice], &bound));
     assert_eq!(
         authority.decide(&send(), ActionKind::Outside, &cx()).answer,
+        Answer::Ask
+    );
+    assert_eq!(
+        authority
+            .decide(&send(), ActionKind::Undoable, &cx())
+            .answer,
         Answer::Allow
     );
     let invite = roles::governance_action("r", governance::INVITE);
     assert_eq!(
         authority
-            .decide(&invite, ActionKind::Undoable, &cx())
+            .decide(&invite, roles::GOVERNANCE_KIND, &cx())
             .answer,
         Answer::Deny
     );

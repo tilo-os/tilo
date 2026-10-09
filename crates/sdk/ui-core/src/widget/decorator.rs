@@ -358,12 +358,6 @@ pub trait Decorator {
         self.inner_mut().take_search_request()
     }
 
-    fn take_action_revert(
-        &mut self,
-    ) -> Option<(tilo_actions::EncodedAction, tilo_actions::EncodedAction)> {
-        self.inner_mut().take_action_revert()
-    }
-
     fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
         self.inner_mut().take_committed_action()
     }
@@ -984,12 +978,6 @@ impl<T: Decorator + 'static> Widget for T {
 
     fn take_search_request(&mut self) -> bool {
         Decorator::take_search_request(self)
-    }
-
-    fn take_action_revert(
-        &mut self,
-    ) -> Option<(tilo_actions::EncodedAction, tilo_actions::EncodedAction)> {
-        Decorator::take_action_revert(self)
     }
 
     fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {

@@ -112,7 +112,7 @@ struct VariantOptions {
     untrusted: bool,
     participant: bool,
     edit: bool,
-    permission: Option<String>,
+    kind: Option<String>,
     /// The collection field whose items the effect is offered on, its first
     /// field bound to the item's id.
     item: Option<String>,
@@ -124,8 +124,8 @@ fn variant_options(attrs: &[syn::Attribute]) -> syn::Result<VariantOptions> {
         attr.parse_nested_meta(|meta| {
             if meta.path.is_ident("label") {
                 options.label = Some(meta.value()?.parse::<syn::LitStr>()?.value());
-            } else if meta.path.is_ident("permission") {
-                options.permission = Some(meta.value()?.parse::<syn::LitStr>()?.value());
+            } else if meta.path.is_ident("kind") {
+                options.kind = Some(meta.value()?.parse::<syn::LitStr>()?.value());
             } else if meta.path.is_ident("view") {
                 options.view = true;
             } else if meta.path.is_ident("row") {
@@ -169,7 +169,7 @@ fn variant_options(attrs: &[syn::Attribute]) -> syn::Result<VariantOptions> {
                     "expected `label`, `view`, `row`, `job`, `cancellable`, `returns`, `content`, \
                      `destructive`, `privileged`, `sensitive`, `idempotent`, `device_only`, \
                      `risk`, `programmatic`, `untrusted`, `participant`, `edit`, `item = field` \
-                     or `permission`",
+                     or `kind`",
                 ));
             }
             Ok(())
@@ -247,18 +247,15 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
                  asks no confirmation (drop `job`, `cancellable`, `destructive`, `privileged` and `sensitive`)",
             ));
         }
-        let permission = match options.permission.as_deref() {
+        let action_kind = match options.kind.as_deref() {
             None if options.view => quote!(Read),
-            None | Some("write") => quote!(Write),
-            Some("none") => quote!(None),
+            None | Some("outside") => quote!(Outside),
             Some("read") => quote!(Read),
-            Some("comment") => quote!(Comment),
-            Some("invite") => quote!(Invite),
-            Some("admin") => quote!(Admin),
+            Some("undoable") => quote!(Undoable),
             Some(other) => {
                 return Err(syn::Error::new(
                     variant.span(),
-                    format!("unknown permission `{other}`"),
+                    format!("unknown kind `{other}`: `read`, `undoable` or `outside`"),
                 ));
             }
         };
@@ -389,7 +386,7 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
                 answers: #answers,
                 risk: #krate::__private::RiskLevel::#risk,
                 idempotent: #idempotent,
-                permission: #krate::__private::PermissionRequirement::#permission,
+                action_kind: #krate::__private::ActionKind::#action_kind,
                 device_only: #device_only,
                 risk_of: #risk_of,
                 programmatic: #programmatic,

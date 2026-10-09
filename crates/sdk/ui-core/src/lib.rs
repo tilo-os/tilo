@@ -499,8 +499,8 @@ pub use wake::{WakeBindError, WakeEvent, WakeHandle, WakeScope, WakeScopeGuard};
 // `permissions/mod.rs`.
 pub use collaboration::PresencePayload;
 pub use permissions::{
-    Actor, CapDecision, CapOverride, PermissionContext, PermissionScope, ResourceRef, Role,
-    Scope as CapScope, Subject, UserId, Verb,
+    Access, ActionKind, Actor, CapDecision, CapOverride, PermissionContext, PermissionScope,
+    ResourceRef, Role, Scope as CapScope, Subject, UserId,
 };
 pub use widget::ParticipantPresence;
 

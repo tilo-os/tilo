@@ -163,20 +163,18 @@ pub enum DesktopCommand {
     ClaimNamespace {
         salt: u16,
     },
-    /// Save a workspace permission profile, replacing the one with the same
-    /// name. The profile travels as its JSON. Only a native owner applies it,
-    /// with the caller's authority over workspace governance. Appended last:
-    /// existing encodings are unchanged.
-    SavePermissionProfile {
-        profile_json: String,
+    /// Save a named grant set, replacing the one with the same name. The set
+    /// travels as its JSON. Only a native owner applies it, with the caller's
+    /// authority over the room's settings.
+    SavePreset {
+        preset_json: String,
     },
-    /// Assign the saved permission profile `profile` to a `person`, `app` or
-    /// `agent` `subject` until `expires_unix` (`0` never expires), as the
-    /// capabilities it expands to. Only a native owner applies it, as for
-    /// [`Self::SavePermissionProfile`]. Appended last: existing encodings are
-    /// unchanged.
-    AssignPermissionProfile {
-        profile: String,
+    /// Assign the saved grant set `preset` to a `person`, `app` or `agent`
+    /// `subject` until `expires_unix` (`0` never expires), as the grants it
+    /// expands to. Only a native owner applies it, with the caller's
+    /// authority to grant.
+    AssignPreset {
+        preset: String,
         subject_kind: String,
         subject: String,
         expires_unix: u64,
@@ -230,8 +228,8 @@ impl DesktopCommand {
             self,
             Self::OpenApp { .. }
                 | Self::ClaimNamespace { .. }
-                | Self::SavePermissionProfile { .. }
-                | Self::AssignPermissionProfile { .. }
+                | Self::SavePreset { .. }
+                | Self::AssignPreset { .. }
                 | Self::RecordEffectReceipt { .. }
                 | Self::GrantAppAction { .. }
                 | Self::RevokeAppAction { .. }
@@ -239,38 +237,40 @@ impl DesktopCommand {
     }
 }
 
-/// The profile a [`DesktopCommand::SavePermissionProfile`] carries.
+/// The grant set a [`DesktopCommand::SavePreset`] carries.
 ///
 /// # Errors
 ///
-/// Why the JSON is not a valid permission profile.
-pub fn decode_permission_profile(json: &str) -> Result<collab_types::PermissionProfile, String> {
-    let profile: collab_types::PermissionProfile =
-        serde_json::from_str(json).map_err(|error| format!("not a permission profile: {error}"))?;
-    profile.validate().map_err(|error| error.to_string())?;
-    Ok(profile)
+/// Why the JSON is not a valid grant set.
+pub fn decode_preset(json: &str) -> Result<tilo_action_policy::Preset, String> {
+    let preset: tilo_action_policy::Preset =
+        serde_json::from_str(json).map_err(|error| format!("not a grant set: {error}"))?;
+    preset.validate().map_err(|error| error.to_string())?;
+    Ok(preset)
 }
 
-/// The subject and expiry a [`DesktopCommand::AssignPermissionProfile`] names.
+/// The subject and lifetime a [`DesktopCommand::AssignPreset`] names.
 ///
 /// # Errors
 ///
 /// When `kind` is not `person`, `app` or `agent`.
-pub fn permission_assignment(
+pub fn preset_assignment(
     kind: &str,
     subject: &str,
     expires_unix: u64,
-) -> Result<(collab_types::Subject, collab_types::Expiry), String> {
+) -> Result<(tilo_action_policy::Subject, tilo_action_policy::Lifetime), String> {
     let subject = match kind.trim().to_ascii_lowercase().as_str() {
-        "person" => collab_types::Subject::person(subject.trim()),
-        "app" => collab_types::Subject::app(subject.trim()),
-        "agent" => collab_types::Subject::agent(subject.trim()),
+        "person" => tilo_action_policy::Subject::person(subject.trim()),
+        "app" => tilo_action_policy::Subject::app(subject.trim()),
+        "agent" => tilo_action_policy::Subject::agent(subject.trim()),
         _ => return Err("subject_kind must be person, app, or agent".into()),
     };
-    let expiry = (expires_unix > 0)
+    let lifetime = (expires_unix > 0)
         .then_some(expires_unix)
-        .map_or(collab_types::Expiry::Never, collab_types::Expiry::AtUnix);
-    Ok((subject, expiry))
+        .map_or(tilo_action_policy::Lifetime::UntilRevoked, |at| {
+            tilo_action_policy::Lifetime::Until(at.saturating_mul(1000))
+        });
+    Ok((subject, lifetime))
 }
 
 /// The shortcut a [`DesktopCommand::SaveShortcut`] carries.
@@ -899,8 +899,8 @@ pub fn apply_command(
         DesktopCommand::SaveShortcut { .. } | DesktopCommand::DeleteShortcut { .. } => {
             apply_shortcut_command(workspace, command)?;
         }
-        DesktopCommand::SavePermissionProfile { .. }
-        | DesktopCommand::AssignPermissionProfile { .. }
+        DesktopCommand::SavePreset { .. }
+        | DesktopCommand::AssignPreset { .. }
         | DesktopCommand::RecordEffectReceipt { .. }
         | DesktopCommand::GrantAppAction { .. }
         | DesktopCommand::RevokeAppAction { .. } => {

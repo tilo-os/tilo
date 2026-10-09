@@ -735,7 +735,7 @@ impl ApplicationsProvider {
                         );
                         tree.desktop
                             .active_workspace()
-                            .map(|ws| (ws.room, ws.capabilities.clone()))
+                            .map(|ws| (ws.room, ws.sandbox.clone()))
                     };
                     let Some((room, capabilities)) = context else {
                         // No active workspace is no room to launch into —
@@ -847,14 +847,14 @@ fn grant_user_home_to_file_manager(chrome: &Chrome, package_id: &str) {
 /// Every member mints their own rather than receiving a copy, since the path
 /// names *this* machine's home and is meaningless on anybody else's. Doesn't
 /// mirror into the room document the way `GrantStoreHandle::insert` does,
-/// but the workspace projection writes `ws.capabilities` wholesale
+/// but the workspace projection writes `ws.sandbox` wholesale
 /// (`state.rs`), so the grant still reaches every peer on the next persist.
 pub(crate) fn grant_file_manager_home(
     tree: &mut crate::shell::state::WorkspaceTree,
     workspace: crate::shell::state::WorkspaceId,
     package_id: &str,
 ) -> bool {
-    use crate::shell::state::{Capability, FsMode, GRANT_SESSION, ResourceRef, Verb};
+    use crate::shell::state::{Access, Capability, FsMode, GRANT_SESSION, ResourceRef};
 
     if package_id != SYSTEM_FILE_MANAGER {
         return false;
@@ -875,7 +875,7 @@ pub(crate) fn grant_file_manager_home(
     if ws.allows(
         &actor,
         &ResourceRef::FsPath(home.to_string_lossy().into_owned()),
-        Verb::Read,
+        Access::Read,
     ) {
         return false;
     }
@@ -891,7 +891,7 @@ pub(crate) fn grant_file_manager_home(
     if !remembered && tree.native_authority.requires(ws.room) {
         // Native session consent must have exact live local provenance. A
         // missing identity or full ledger must not leave an unbound home row.
-        ws.capabilities
+        ws.sandbox
             .retain(|capability| !ids.contains(&capability.id));
         return false;
     }

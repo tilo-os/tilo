@@ -134,7 +134,7 @@ pub fn open_in_workspace(uri: &str, chrome: &Chrome) -> Result<UriOpened, UriOpe
             .desktop
             .active_workspace()
             .ok_or(UriOpenError::NoWorkspace)?;
-        (workspace.room, workspace.capabilities.clone())
+        (workspace.room, workspace.sandbox.clone())
     };
     launcher::launch_uri_in_room(&app.package_id, room, capabilities, uri)
         .map(UriOpened::Package)

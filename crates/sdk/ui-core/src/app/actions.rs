@@ -1743,7 +1743,7 @@ impl App {
         if let Some(participant) = &participant {
             self.join_participant(participant);
         }
-        let admitted = self.admitted_requirement(&address, argument);
+        let admitted = self.admitted_kind(&address, argument);
         self.actions.acting_for.insert(
             invocation,
             crate::invocation_scope::Continuation {
@@ -1854,13 +1854,13 @@ impl App {
     }
 
     /// What the invoker of `address` was admitted for: the action's own
-    /// requirement for its `argument`, which the admitting host checked
-    /// they hold. Nothing when it no longer resolves.
-    fn admitted_requirement(
+    /// kind, which the admitting host checked they may perform. Only reading
+    /// when it no longer resolves.
+    fn admitted_kind(
         &self,
         address: &tilo_actions::ActionAddress,
         argument: Option<&str>,
-    ) -> tilo_actions::PermissionRequirement {
+    ) -> tilo_actions::ActionKind {
         let key = self.ensure_resource_cache();
         let mut resources = self
             .actions
@@ -1891,13 +1891,13 @@ impl App {
                 .find_map(|snapshot| {
                     tilo_actions::door::resolve(&snapshot.resources, &target.address.address)
                 })
-                .map_or(tilo_actions::PermissionRequirement::None, |spec| {
-                    spec.permission_for_argument(argument)
+                .map_or(tilo_actions::ActionKind::Read, |spec| {
+                    spec.need_for(None, argument).kind
                 });
         }
         tilo_actions::door::resolve(&resources, address)
-            .map_or(tilo_actions::PermissionRequirement::None, |spec| {
-                spec.permission_for_argument(argument)
+            .map_or(tilo_actions::ActionKind::Read, |spec| {
+                spec.need_for(None, argument).kind
             })
     }
 
@@ -2580,18 +2580,15 @@ impl App {
         }
         crate::invocation_scope::check_continuation(
             resolved,
-            match typed_arguments.as_ref() {
-                Some(arguments) => resolved.permission_for_json(arguments),
-                None => resolved.permission_for_argument(argument),
-            },
+            resolved.need_for(typed_arguments.as_ref(), argument).kind,
         )?;
         // The local participant's tree offers an action under the least it
         // needs; this invocation needs what its value asks.
         if actor == self.collaboration.local_author.0
-            && !crate::bound_dispatch::permits_local_value(
+            && !crate::bound_dispatch::permits_local_action(
                 &self.permission_ctx,
                 &crate::collaboration::local_app_id(),
-                &address.resource,
+                resource,
                 resolved,
                 typed_arguments.as_ref(),
                 argument,
@@ -4237,23 +4234,10 @@ impl App {
 
     fn filter_resource_for_local_actor(
         &self,
-        mut resource: tilo_actions::Resource,
+        resource: tilo_actions::Resource,
     ) -> Option<tilo_actions::Resource> {
-        let resource_id = resource.id.as_str().to_owned();
-        resource.actions.retain(|action| {
-            crate::bound_dispatch::permits_local_action(
-                &self.permission_ctx,
-                &crate::collaboration::local_app_id(),
-                &resource_id,
-                action,
-            )
-        });
-        resource.children = resource
-            .children
-            .into_iter()
-            .filter_map(|child| self.filter_resource_for_local_actor(child))
-            .collect();
-        (!resource.actions.is_empty() || !resource.children.is_empty()).then_some(resource)
+        self.permission_ctx
+            .permitted_resource(&crate::collaboration::local_app_id(), resource)
     }
 
     pub fn close_action_palette(&mut self) {

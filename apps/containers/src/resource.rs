@@ -49,25 +49,25 @@ impl Containers {
 #[effect(operation = "containers.view")]
 pub enum ContainersEffect {
     /// Show section.
-    #[effect(view, permission = "read")]
+    #[effect(view, kind = "read")]
     SetSection {
         #[param("containers | images | volumes | distrobox")]
         section: String,
     },
     /// Select container.
-    #[effect(view, permission = "read")]
+    #[effect(view, kind = "read")]
     SelectContainer {
         #[param("Container id, or omit to clear the selection")]
         id: Option<String>,
     },
     /// Set detail tab.
-    #[effect(view, permission = "read")]
+    #[effect(view, kind = "read")]
     SetTab {
         #[param("logs | stats | inspect | terminal")]
         tab: String,
     },
     /// Create container.
-    #[effect(permission = "read")]
+    #[effect(kind = "read")]
     Create,
     /// Open logs.
     #[effect(view, row)]
@@ -76,43 +76,43 @@ pub enum ContainersEffect {
         container: String,
     },
     /// Start.
-    #[effect(row, idempotent, privileged, permission = "admin")]
+    #[effect(row, idempotent, privileged)]
     Start {
         #[param("Container id")]
         container: String,
     },
     /// Stop.
-    #[effect(row, idempotent, privileged, permission = "admin")]
+    #[effect(row, idempotent, privileged)]
     Stop {
         #[param("Container id")]
         container: String,
     },
     /// Restart.
-    #[effect(row, privileged, permission = "admin")]
+    #[effect(row, privileged)]
     Restart {
         #[param("Container id")]
         container: String,
     },
     /// Pause.
-    #[effect(row, idempotent, privileged, permission = "admin")]
+    #[effect(row, idempotent, privileged)]
     Pause {
         #[param("Container id")]
         container: String,
     },
     /// Resume.
-    #[effect(row, idempotent, privileged, permission = "admin")]
+    #[effect(row, idempotent, privileged)]
     Unpause {
         #[param("Container id")]
         container: String,
     },
     /// Remove.
-    #[effect(row, destructive, permission = "admin")]
+    #[effect(row, destructive)]
     RemoveContainer {
         #[param("Container id")]
         container: String,
     },
     /// Open shell.
-    #[effect(row, privileged, permission = "admin")]
+    #[effect(row, privileged)]
     Shell {
         #[param("Container id")]
         container: String,
@@ -124,7 +124,7 @@ pub enum ContainersEffect {
         image: String,
     },
     /// Remove image.
-    #[effect(row, destructive, permission = "admin")]
+    #[effect(row, destructive)]
     RemoveImage {
         #[param("Image reference")]
         image: String,
@@ -136,7 +136,7 @@ pub enum ContainersEffect {
         volume: String,
     },
     /// Remove volume.
-    #[effect(row, destructive, permission = "admin")]
+    #[effect(row, destructive)]
     RemoveVolume {
         #[param("Volume name")]
         volume: String,
@@ -148,7 +148,7 @@ pub enum ContainersEffect {
         distrobox: String,
     },
     /// Enter distrobox.
-    #[effect(row, privileged, permission = "admin")]
+    #[effect(row, privileged)]
     EnterDistrobox {
         #[param("Distrobox name")]
         distrobox: String,

@@ -104,13 +104,11 @@ fn can_restore(app: &mut App) -> bool {
 }
 
 fn read_only_record_authority() -> crate::permissions::PermissionContext {
-    crate::permissions::PermissionContext::from_capabilities(
-        crate::permissions::Actor::person(None, "fixture-user"),
-        vec![crate::permissions::CapOverride::grant(
-            crate::permissions::Subject::person("fixture-user"),
-            crate::permissions::Scope::App("so.tilo.binding-probe".into()),
-            crate::permissions::Verb::Read,
-        )],
+    crate::permissions::PermissionContext::granted(
+        "fixture-user",
+        &crate::permissions::TreePath::root().app("so.tilo.binding-probe"),
+        crate::permissions::policy::KindSet::READ,
+        None,
     )
     .at_unix_time(100)
 }
@@ -155,7 +153,7 @@ fn standalone_history_restores_a_record_as_one_undoable_change() {
                 }))
             ));
             assert_eq!(context.app.unwrap().id, binding.app_id);
-            let entry = history.peek_last_undo().unwrap();
+            let entry = history.peek_last_undo(doc).unwrap();
             assert_eq!(entry.before, reviewed);
             assert_eq!(entry.author, Some(binding.author.clone()));
             assert_eq!(entry.instance_id, Some(binding.instance_id));

@@ -43,28 +43,28 @@ pub enum TubeEffect {
     #[effect(view)]
     ToggleSidebar,
     /// Open video.
-    #[effect(permission = "read")]
+    #[effect(kind = "read")]
     OpenVideo {
         #[param("The video's id")]
         video: String,
     },
     /// Open creator.
-    #[effect(permission = "read")]
+    #[effect(kind = "read")]
     OpenCreator {
         #[param("The creator's channel id")]
         creator: String,
     },
     /// Open playlist.
-    #[effect(permission = "read")]
+    #[effect(kind = "read")]
     OpenPlaylist {
         #[param("The playlist's id")]
         playlist: String,
     },
     /// Play or pause.
-    #[effect(permission = "read")]
+    #[effect(kind = "read")]
     TogglePlayback,
     /// Copy share link.
-    #[effect(permission = "read")]
+    #[effect(kind = "read")]
     Share {
         #[param("The video's id")]
         video: String,
@@ -79,19 +79,19 @@ pub enum TubeEffect {
     ///
     /// Adds the video to your own watch history, which follows you to your
     /// other devices and never reaches collaborators.
-    #[effect(permission = "read")]
+    #[effect(kind = "read")]
     MarkWatched {
         #[param("The video's id")]
         video: String,
     },
     /// Remove from history.
-    #[effect(permission = "read")]
+    #[effect(kind = "read")]
     ForgetWatched {
         #[param("The video's id")]
         video: String,
     },
     /// Clear watch history.
-    #[effect(destructive, permission = "read")]
+    #[effect(destructive, kind = "read")]
     ClearHistory,
     /// Pair using invite.
     ///
@@ -124,7 +124,7 @@ pub enum TubeEffect {
     ///
     /// Your own choice, which follows you to your other devices and never
     /// reaches collaborators.
-    #[effect(permission = "read")]
+    #[effect(kind = "read")]
     SetPreference {
         #[param(
             "The preference",
@@ -145,7 +145,7 @@ pub enum TubeEffect {
     /// Set preferred quality.
     ///
     /// Your own choice, which follows you to your other devices.
-    #[effect(permission = "read")]
+    #[effect(kind = "read")]
     SetPreferredQuality {
         #[param("The quality", choices = ["1080p", "720p", "480p", "auto"])]
         quality: String,
@@ -155,7 +155,7 @@ pub enum TubeEffect {
     /// How playback treats one category of marked segments: skip it, show it
     /// with a skip button, or ignore it. Your own choice, which follows you to
     /// your other devices.
-    #[effect(permission = "read")]
+    #[effect(kind = "read")]
     SetSegmentHandling {
         #[param(
             "The SponsorBlock category",

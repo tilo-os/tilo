@@ -4,14 +4,13 @@
 use super::*;
 use crate::collab_capnp;
 use tilo_actions::{
-    ActionContract, ActionParam, ConfirmationPolicy, ExecutionMode, OperationKind, ParamType,
-    PermissionRequirement, ResourcePresentation, ResourceViewDescriptor, ResourceViewRangeSpec,
-    RiskLevel,
+    ActionContract, ActionKind, ActionParam, ConfirmationPolicy, ExecutionMode, OperationKind,
+    ParamType, ResourcePresentation, ResourceViewDescriptor, ResourceViewRangeSpec, RiskLevel,
 };
 
 fn contract() -> ActionContract {
     ActionContract {
-        permission: PermissionRequirement::Admin,
+        kind: ActionKind::Outside,
         risk: RiskLevel::Destructive,
         confirmation: ConfirmationPolicy::Phrase {
             phrase: "erase everything".into(),

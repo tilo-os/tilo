@@ -426,17 +426,36 @@ activity-capability = { $effect ->
     } on { $scope } to { $subject }
 activity-capability-unknown = a capability
 activity-capability-this-workspace = this workspace
-activity-capability-every-type = every { $kind }
-activity-capability-action-on-kind = { $app }:{ $action } on every { $kind }
-activity-capability-one-artifact = one artifact
 activity-capability-one-shared-file = one shared file
 activity-capability-network = network { $host }
 activity-capability-role = { $role ->
         [owner] owners
         [editor] editors
         [commenter] commenters
-        [viewer] viewers
-       *[denied] blocked members
+       *[viewer] viewers
+    }
+activity-grant = { $answer ->
+        [deny] denied
+        [ask] ask first for
+       *[allow] allowed
+    } { $kinds ->
+        [read] reading
+        [undoable] changes
+        [outside] outside effects
+        [read-undoable] reading and changes
+        [read-outside] reading and outside effects
+        [undoable-outside] changes and outside effects
+        [none] nothing
+       *[all] everything
+    } on { $node } to { $subject }
+activity-grant-task = task { $task }
+activity-grant-shortcut = Shortcut { $shortcut }
+activity-grant-foreign-device = devices that are not their own
+activity-member = { $person } as { $role ->
+        [owner] owner
+        [editor] editor
+        [commenter] commenter
+       *[viewer] viewer
     }
 activity-capability-a-person = a person
 activity-capability-agent = agent { $agent }
@@ -633,6 +652,17 @@ workspace-settings-allows-edit = Edit { $what }
 workspace-settings-allows-comment = Comment on { $what }
 workspace-settings-allows-invite = Invite others to { $what }
 workspace-settings-allows-view = View { $what }
+workspace-settings-grant-allows = Allowed: { $kinds } in { $where }
+workspace-settings-grant-asks = Asks first: { $kinds } in { $where }
+workspace-settings-grant-denies = Refused: { $kinds } in { $where }
+workspace-settings-kind-read = reading
+workspace-settings-kind-undoable = changes
+workspace-settings-kind-outside = outside effects
+workspace-settings-subject-foreign-device = devices that are not their own
+workspace-settings-grant-placeholder = Who, where and what
+workspace-settings-grant-description = Give someone, an agent or an app an answer for kinds of action in part of this workspace.
+workspace-settings-revoke-placeholder = Which grant
+workspace-settings-revoke-description = Take back one grant by its id.
 workspace-settings-expiry-once = Once
 workspace-settings-expiry-session = Session
 workspace-settings-expiry-until = Until

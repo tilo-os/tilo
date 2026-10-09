@@ -661,7 +661,7 @@ mod files_clipboard_tests {
             let tree = fixture.session.workspace_tree();
             let mut tree = tree.write();
             for grant in &fixture.source_grants {
-                assert!(tree.workspaces[0].revoke_capability(grant));
+                assert!(tree.workspaces[0].revoke_sandbox(grant));
             }
             drop(tree);
         }
@@ -959,7 +959,7 @@ mod files_clipboard_tests {
             let tree = fixture.session.workspace_tree();
             let mut tree = tree.write();
             for grant in &fixture.source_grants {
-                assert!(tree.workspaces[0].revoke_capability(grant));
+                assert!(tree.workspaces[0].revoke_sandbox(grant));
             }
             drop(tree);
         }
@@ -1328,7 +1328,7 @@ mod files_clipboard_tests {
             let tree = fixture.session.workspace_tree();
             let mut tree = tree.write();
             for grant in &fixture.source_grants {
-                assert!(tree.workspaces[0].revoke_capability(grant));
+                assert!(tree.workspaces[0].revoke_sandbox(grant));
             }
             drop(tree);
         }
@@ -1738,9 +1738,7 @@ mod files_clipboard_tests {
         assert_eq!(std::fs::read(&info).unwrap(), metadata);
         std::fs::remove_file(&destination).unwrap();
         for grant in grants {
-            assert!(
-                fixture.session.workspace_tree().write().workspaces[0].revoke_capability(&grant)
-            );
+            assert!(fixture.session.workspace_tree().write().workspaces[0].revoke_sandbox(&grant));
         }
         assert!(matches!(
             restore_native_entry(&mut fixture, &trash),
@@ -1791,7 +1789,7 @@ mod files_clipboard_tests {
                 for grant in grants {
                     assert!(
                         fixture.session.workspace_tree().write().workspaces[0]
-                            .revoke_capability(&grant)
+                            .revoke_sandbox(&grant)
                     );
                 }
             }
@@ -1995,15 +1993,20 @@ mod files_clipboard_tests {
         {
             let tree = fixture.session.workspace_tree();
             let mut tree = tree.write();
-            tree.workspaces[0].grant_capability(crate::shell::state::CapOverride::membership(
-                crate::shell::state::Subject::agent("clipboard-helper"),
-                fixture.session.room.clone(),
-                crate::shell::state::Verb::Write,
-            ));
-            tree.workspaces[0].grant_capability(crate::shell::state::CapOverride::grant(
-                crate::shell::state::Subject::agent("clipboard-helper"),
-                crate::shell::state::Scope::App(APP.into()),
-                crate::shell::state::Verb::Write,
+            let owner = tilo_action_policy::Subject::Role(tilo_action_policy::Role::Owner);
+            tree.workspaces[0].admit_agent_preset(
+                "clipboard-helper",
+                tilo_action_policy::roles::AgentPreset::Operator,
+                &owner,
+            );
+            let app = tree.workspaces[0].node().app(APP);
+            tree.workspaces[0].grant(tilo_action_policy::Grant::new(
+                "clipboard-helper-files",
+                tilo_action_policy::Subject::agent("clipboard-helper"),
+                app,
+                tilo_action_policy::KindSet::ALL,
+                tilo_action_policy::Answer::Allow,
+                owner,
             ));
             drop(tree);
         }
@@ -2063,7 +2066,7 @@ mod files_clipboard_tests {
             let tree = fixture.session.workspace_tree();
             let mut tree = tree.write();
             for grant in &fixture.source_grants {
-                assert!(tree.workspaces[0].revoke_capability(grant));
+                assert!(tree.workspaces[0].revoke_sandbox(grant));
             }
             drop(tree);
         }

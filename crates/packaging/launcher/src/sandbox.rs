@@ -2325,7 +2325,7 @@ mod tests {
     // Capability enforcement: assert on the production argv itself — a path
     // missing from it is a path the app cannot reach, whatever the UI says.
 
-    use collab_types::caps::{CapOverride, Expiry, Scope, Subject, Verb};
+    use collab_types::caps::{Access, CapOverride, Expiry, Scope, Subject};
 
     /// Deterministic stand-in for the host's device nodes, so a camera
     /// assertion doesn't depend on the test machine owning one.
@@ -2364,7 +2364,7 @@ mod tests {
             .collect()
     }
 
-    fn fs_grant(app: &str, path: &str, verb: Verb) -> CapOverride {
+    fn fs_grant(app: &str, path: &str, verb: Access) -> CapOverride {
         CapOverride::grant(Subject::app(app), Scope::FsPath(path.to_string()), verb)
     }
 
@@ -2430,7 +2430,7 @@ mod tests {
             let caps = vec![fs_grant(
                 "so.tilo.books",
                 "/var/workspace/books",
-                Verb::Read,
+                Access::Read,
             )];
             let argv = argv_with_caps("so.tilo.books", &caps, 1_000);
             assert!(
@@ -2459,7 +2459,7 @@ mod tests {
             let caps = vec![fs_grant(
                 "so.tilo.books",
                 "/var/workspace/books",
-                Verb::Write,
+                Access::Write,
             )];
             let argv = argv_with_caps("so.tilo.books", &caps, 1_000);
             assert!(
@@ -2490,7 +2490,7 @@ mod tests {
             let caps = vec![CapOverride::grant(
                 Subject::app("so.tilo.meet"),
                 Scope::Device("camera".to_string()),
-                Verb::Read,
+                Access::Read,
             )];
             let with = argv_with_caps("so.tilo.meet", &caps, 1_000);
             assert!(
@@ -2503,16 +2503,16 @@ mod tests {
         // Phase `a_capability_for_another_app_never_reaches_this_apps_argv`.
         {
             let caps = vec![
-                fs_grant("so.tilo.other", "/var/workspace/secrets", Verb::Write),
+                fs_grant("so.tilo.other", "/var/workspace/secrets", Access::Write),
                 CapOverride::grant(
                     Subject::app("so.tilo.other"),
                     Scope::Device("camera".to_string()),
-                    Verb::Read,
+                    Access::Read,
                 ),
                 CapOverride::grant(
                     Subject::app("so.tilo.other"),
                     Scope::NetHost("*".to_string()),
-                    Verb::Write,
+                    Access::Write,
                 ),
             ];
             let argv = argv_with_caps("so.tilo.books", &caps, 1_000);
@@ -2539,7 +2539,7 @@ mod tests {
             // The argv builder reads the session environment.
             let _env = tilo_test_env::lock();
             let caps = vec![
-                fs_grant("so.tilo.books", "/var/workspace/books", Verb::Write)
+                fs_grant("so.tilo.books", "/var/workspace/books", Access::Write)
                     .expiring(Expiry::AtUnix(500)),
             ];
             let expired = argv_with_caps("so.tilo.books", &caps, 1_000);
@@ -2579,7 +2579,7 @@ mod tests {
             let caps = vec![CapOverride::grant(
                 Subject::app("so.tilo.mail"),
                 Scope::NetHost("*".to_string()),
-                Verb::Write,
+                Access::Write,
             )];
             let granted = argv_with_caps("so.tilo.mail", &caps, 1_000);
             assert!(
@@ -2596,7 +2596,7 @@ mod tests {
             let caps = vec![CapOverride::grant(
                 Subject::app("so.tilo.mail"),
                 Scope::NetHost("github.com".to_string()),
-                Verb::Write,
+                Access::Write,
             )];
             let argv = argv_with_caps("so.tilo.mail", &caps, 1_000);
 

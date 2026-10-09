@@ -157,7 +157,7 @@ pub use resource::{
     APPLY, APPLY_PARAM, ActionDecl, BuildAction, EDIT_PARAM, FIELD_EDIT, NoAction, Place, Resource,
     ScopeDecl, SearchBody, SearchEntry, SearchPiece, SearchRow, SearchRowShape, SearchText,
     SearchWeight, SharedRecord, bind_declaration, build_action, declaration_spec, default_search,
-    encode, origin_now_ms, publish, reset_type_schemas, scope_contains, spec_kind,
+    encode, need_of, origin_now_ms, publish, reset_type_schemas, scope_contains, spec_kind,
     with_origin_clock,
 };
 pub use schema::JsonSchema;
@@ -165,7 +165,7 @@ pub use shape::{FieldShape, Shape};
 pub use storage::{Bytes, Counter, Grid, Outbox, OutboxEntry, Set, Settled};
 pub use surface::Surface;
 pub use text::{PlainText, TextEdit};
-pub use tilo_actions::{Availability, PermissionRequirement};
+pub use tilo_actions::Availability;
 pub use tilo_resource_macros::{Effect, JsonSchema, Model, resource};
 
 /// Items the generated code refers to. Not part of the public API.
@@ -175,8 +175,8 @@ pub mod __private {
     pub use serde;
     pub use serde_json;
     pub use tilo_actions::{
-        ActionArgs, ActionParam, ActionSpec, ChangeKind, OperationKind, PROMPTED_PARAM, ParamType,
-        PermissionRequirement, Resource, ResourceViewSpec, RiskLevel,
+        ActionArgs, ActionKind, ActionParam, ActionSpec, ChangeKind, OperationKind, PROMPTED_PARAM,
+        ParamType, Resource, ResourceViewSpec, RiskLevel,
     };
 
     /// A parameter's schema: its type's, described, with an example.

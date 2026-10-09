@@ -41,7 +41,7 @@ fn owner_of(tree: &WorkspaceTree, ws: WorkspaceId) -> Option<String> {
         .workspaces
         .iter()
         .find(|workspace| workspace.id == ws)
-        .and_then(|workspace| workspace.owner.clone())
+        .and_then(|workspace| workspace.owner().cloned())
 }
 
 fn holds_changes(tree: &mut WorkspaceTree, room: RoomId, heads: &[ChangeHash]) -> bool {
@@ -95,14 +95,10 @@ fn viewer_cannot_rewrite_room_contents() {
     let (mut host, ws, room) = hosted_room();
     let viewer = [0x33; 32];
     let editor = [0x44; 32];
-    for (root, verb) in [(viewer, Verb::Read), (editor, Verb::Write)] {
+    for (root, role) in [(viewer, CapRole::Viewer), (editor, CapRole::Editor)] {
         let person = person_id_of(root).expect("a root names a person");
-        host.grant_in_workspace(
-            ws,
-            &OWNER.to_string(),
-            CapOverride::membership(Subject::person(person), room.to_string(), verb),
-        )
-        .expect("the owner admits a member");
+        host.admit_in_workspace(ws, &OWNER.to_string(), &person, role)
+            .expect("the owner admits a member");
     }
     host.sync_room_doc(room);
 

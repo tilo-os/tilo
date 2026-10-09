@@ -305,21 +305,9 @@ fn members() -> (
         &seed_room(ROOM, &original.core.authority, &roster).unwrap(),
     )
     .unwrap();
-    let caps = room.get(ROOT, "capabilities").unwrap().unwrap().1;
-    put_member_capability(
-        &mut room,
-        &caps,
-        members[0].1.user_public_key,
-        crate::join::MemberRole::Editor,
-    )
-    .unwrap();
-    put_member_capability(
-        &mut room,
-        &caps,
-        members[1].1.user_public_key,
-        crate::join::MemberRole::Viewer,
-    )
-    .unwrap();
+    let caps = room.get(ROOT, "members").unwrap().unwrap().1;
+    put_member(&mut room, &caps, members[0].1.user_public_key, Role::Editor).unwrap();
+    put_member(&mut room, &caps, members[1].1.user_public_key, Role::Viewer).unwrap();
     let mut peer = StatePeer::new(
         ROOM,
         original.core.authority.clone(),
@@ -595,8 +583,8 @@ fn room_media_security_basis_excludes_labels_and_normalizes_identity_json() {
     )
     .unwrap();
     assert_eq!(initial, media::security_basis(&room, &[]).unwrap());
-    let caps = room.get(ROOT, "capabilities").unwrap().unwrap().1;
-    put_member_capability(&mut room, &caps, [44; 32], crate::join::MemberRole::Viewer).unwrap();
+    let caps = room.get(ROOT, "members").unwrap().unwrap().1;
+    put_member(&mut room, &caps, [44; 32], Role::Viewer).unwrap();
     assert_ne!(initial, media::security_basis(&room, &[]).unwrap());
 }
 #[test]
@@ -882,12 +870,12 @@ fn room_media_governed_security_change_without_revision_rejected_and_exhaustion_
     );
     assert_eq!(before, peer.durable().unwrap());
     let mut document = peer.admitted_room().unwrap().clone();
-    let caps = document.get(ROOT, "capabilities").unwrap().unwrap().1;
-    put_member_capability(
+    let caps = document.get(ROOT, "members").unwrap().unwrap().1;
+    put_member(
         &mut document,
         &caps,
         members[0].1.user_public_key,
-        crate::join::MemberRole::Viewer,
+        Role::Viewer,
     )
     .unwrap();
     assert!(
@@ -941,30 +929,12 @@ fn room_media_reader_uses_current_room_read_without_room_write() {
     let (mut peer, key, members, now) = members();
     let value = policy(&peer);
     install_policy(&mut peer, &key, now, &value).unwrap();
-    let (role, caps, person) = peer
+    let member = peer
         .permissions(members[1].1.device_public_key, now)
         .unwrap();
-    let actor = Actor::person(Some(role), &person).in_room(ROOM.to_string());
-    assert_eq!(
-        decide_capability(
-            &actor,
-            &ResourceRef::Room(ROOM.into()),
-            Verb::Read,
-            &caps,
-            Some(now_secs(now))
-        ),
-        CapDecision::Allow
-    );
-    assert_ne!(
-        decide_capability(
-            &actor,
-            &ResourceRef::Room(ROOM.into()),
-            Verb::Write,
-            &caps,
-            Some(now_secs(now))
-        ),
-        CapDecision::Allow
-    );
+    let room_node = TreePath::room(ROOM);
+    assert!(member.allows(&room_node, ActionKind::Read, now));
+    assert!(!member.allows(&room_node, ActionKind::Undoable, now));
     peer.remove_member(members[1].1.user_public_key, &key, now)
         .unwrap();
     assert!(

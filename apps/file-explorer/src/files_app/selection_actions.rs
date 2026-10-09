@@ -56,7 +56,7 @@ impl FileExplorerWidget {
 mod tests {
     use super::*;
     use crate::effects::FilesEffect;
-    use ui::tilo_actions::{ActionAddress, PermissionRequirement, door};
+    use ui::tilo_actions::{ActionAddress, ActionKind, door};
     use ui::tilo_resource::{Effect as _, Resource as _};
 
     fn invoke(
@@ -172,12 +172,12 @@ mod tests {
                 .find(|spec| spec.id == id)
                 .unwrap()
                 .contract
-                .permission
+                .kind
         };
-        assert_eq!(permission("copy-selection"), PermissionRequirement::Read);
-        assert_eq!(permission("cut-selection"), PermissionRequirement::Write);
+        assert_eq!(permission("copy-selection"), ActionKind::Read);
+        assert_eq!(permission("cut-selection"), ActionKind::Outside);
         for id in ["select-entries", "select-all", "clear-selection"] {
-            assert_eq!(permission(id), PermissionRequirement::Read);
+            assert_eq!(permission(id), ActionKind::Read);
             assert_eq!(
                 specs.iter().find(|spec| spec.id == id).unwrap().kind,
                 ui::tilo_actions::OperationKind::View

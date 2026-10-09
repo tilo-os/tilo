@@ -5,19 +5,20 @@
 //! holds only what the workspace grants it. Without a grant the request
 //! would simply be refused; here the person who admitted the connection is
 //! asked first, when they are present and may grant it. The answer is an
-//! ordinary capability in the workspace's records, granted by that person
-//! through the host's [`AppActionGrants`](crate::services::AppActionGrants).
-//! "Allow once" lives only for the call it was given for.
+//! ordinary grant to the application in the workspace's records, given by
+//! that person through the host's
+//! [`AppActionGrants`](crate::services::AppActionGrants). "Allow once" lives
+//! only for the call it was given for.
 
 use std::sync::Arc;
 
 use capnp::capability::Promise;
-use collab_types::caps::{CapOverride, Expiry, Scope, Subject};
 use runtime_collab::raw::channel_handle;
+use tilo_action_policy::{Answer, Grant, KindSet, Lifetime, Subject, TreePath};
 use tilo_actions::remote::{Caller, CallerPrincipal, InvokeRequest, RemoteActionMessage};
 
 use super::action_host::{ConnectionActionHost, RowScope};
-use super::{Actor, CapnpBrokerState, Verb, permission_verb};
+use super::{BrokerActor, CapnpBrokerState};
 use crate::app_actions::{AppActionConsent, AppActionConsentPrompter, AppActionConsentRequest};
 
 /// What happens to an application's invocation before it is served.
@@ -34,8 +35,9 @@ pub(crate) enum ConsentStep {
 /// A grant question on screen.
 pub(crate) struct PendingConsent {
     request: AppActionConsentRequest,
-    /// The verb the action asks of its caller, which a grant must carry.
-    verb: Verb,
+    /// Where the action sits in the tree (its resource kind) and what it
+    /// is, which the grant must cover.
+    target: (String, tilo_actions::ActionNeed),
     answer: tokio::sync::oneshot::Receiver<AppActionConsent>,
 }
 
@@ -67,7 +69,7 @@ impl CapnpBrokerState {
         app_id: &str,
         request: &InvokeRequest,
     ) -> ConsentStep {
-        let Some((consent, verb)) = self.consent_question(person, app_id, request) else {
+        let Some((consent, target)) = self.consent_question(person, app_id, request) else {
             return ConsentStep::Serve;
         };
         let key = (consent.room.clone(), consent.app_id.clone());
@@ -88,7 +90,7 @@ impl CapnpBrokerState {
         pending.insert(key);
         ConsentStep::Ask(Box::new(PendingConsent {
             request: consent,
-            verb,
+            target,
             answer,
         }))
     }
@@ -98,7 +100,7 @@ impl CapnpBrokerState {
         person: &Caller,
         app_id: &str,
         request: &InvokeRequest,
-    ) -> Option<(AppActionConsentRequest, Verb)> {
+    ) -> Option<(AppActionConsentRequest, (String, tilo_actions::ActionNeed))> {
         let CallerPrincipal::Person(person_id) = person.principal() else {
             return None;
         };
@@ -122,7 +124,7 @@ impl CapnpBrokerState {
             .workspace_governance
             .as_ref()
             .is_some_and(|governance| governance.app_id() == row.app_id);
-        if descriptor.contract.permission == tilo_actions::PermissionRequirement::Admin
+        if descriptor.contract.kind == tilo_actions::ActionKind::Outside
             || governance
             || row.app_id == tilo_desktop_model::WORKSPACE_GOVERNANCE_APP_ID
         {
@@ -132,7 +134,7 @@ impl CapnpBrokerState {
             return None;
         }
         let now = self.policy_now_ns().ok()? / 1_000_000_000;
-        let as_app = Actor::app(app_id).in_room(room.to_string());
+        let as_app = BrokerActor::agent(format!("app:{app_id}"));
         // Standing grants only: a one-use grant is not consent to keep
         // acting. The question needs this one room's workspace without
         // those grants, so only it is copied, never the whole tree.
@@ -142,16 +144,20 @@ impl CapnpBrokerState {
             .decide_in_room(room, |workspace| {
                 let mut standing = workspace?.clone();
                 standing
-                    .capabilities
-                    .retain(|capability| capability.expiry != Expiry::AfterUse);
+                    .policy
+                    .grants
+                    .retain(|grant| grant.lifetime != Lifetime::Once);
                 Some(Self::allowed(
                     &standing,
                     &as_app,
                     now,
                     &row.app_id,
-                    &descriptor.address.resource,
-                    &descriptor.address.action,
-                    descriptor.contract.permission,
+                    (
+                        &descriptor.resource_kind,
+                        &descriptor.address.resource,
+                        &descriptor.address.action,
+                    ),
+                    &descriptor.contract,
                 ))
             })
             .ok()??;
@@ -174,10 +180,7 @@ impl CapnpBrokerState {
                 != tilo_actions::ConfirmationPolicy::None
                 || contract.risk.requires_confirmation(),
         };
-        Some((
-            consent,
-            permission_verb(contract.permission).unwrap_or(Verb::Read),
-        ))
+        Some((consent, (descriptor.resource_kind.clone(), contract.need())))
     }
 
     /// The question `consent` asked is off the screen.
@@ -195,31 +198,38 @@ impl CapnpBrokerState {
         consent: &PendingConsent,
         answer: AppActionConsent,
     ) -> Option<RecordedGrant> {
-        let expiry = answer.expiry()?;
+        let lifetime = answer.grant_lifetime()?;
         let request = &consent.request;
         let grants = self.services.app_action_grants.as_ref()?;
         if !grants.may_grant(&request.room, &request.person) {
             return None;
         }
-        let mut capability = CapOverride::grant(
-            Subject::app(request.app_id.clone()),
-            Scope::Action {
-                app: request.target_app.clone(),
-                resource: request.resource.clone(),
-                action: request.action.clone(),
-            },
-            consent.verb,
+        let (resource_kind, need) = &consent.target;
+        let once = lifetime == Lifetime::Once;
+        let grant = Grant::new(
+            format!("app-action:{}", uuid::Uuid::new_v4()),
+            Subject::App(request.app_id.clone()),
+            tilo_actions::action_node(
+                &TreePath::room(request.room.clone()),
+                &request.target_app,
+                resource_kind,
+                &request.resource,
+                need.field.as_deref(),
+                &request.action,
+            ),
+            tilo_action_policy::ActionKind::ALL
+                .into_iter()
+                .filter(|kind| *kind <= need.kind)
+                .fold(KindSet::NONE, KindSet::with),
+            Answer::Allow,
+            Subject::Person(request.person.clone()),
         )
-        .expiring(expiry);
-        if expiry == Expiry::AfterUse {
-            // Its own id, so using it removes exactly this grant.
-            capability = capability.with_id(format!("app-action-once:{}", uuid::Uuid::new_v4()));
-        }
-        let id = grants.record(request, capability, answer)?;
+        .with_lifetime(lifetime);
+        let id = grants.record(request, grant, answer)?;
         Some(RecordedGrant {
             room: request.room.clone(),
             capability: id,
-            consumed_on_use: expiry == Expiry::AfterUse,
+            consumed_on_use: once,
         })
     }
 

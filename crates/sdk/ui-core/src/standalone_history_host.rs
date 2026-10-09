@@ -1348,7 +1348,7 @@ fn review_restore_operation(session: uuid::Uuid) -> ActionSpec {
             .expect("validated history review serializes")
         },
     )
-    .requiring(tilo_actions::PermissionRequirement::Write)
+    .of_kind(tilo_actions::ActionKind::Undoable)
 }
 
 #[expect(
@@ -1364,7 +1364,7 @@ fn restore_operation(session: uuid::Uuid) -> ActionSpec {
         &HistoryCommand::Restore { session },
     )
     .expect("history restore serializes")
-    .requiring(tilo_actions::PermissionRequirement::Write)
+    .of_kind(tilo_actions::ActionKind::Undoable)
     .destructive()
     .reversible()
 }
@@ -1976,10 +1976,7 @@ mod tests {
             .find(|action| action.id == "review_restore")
             .unwrap();
         assert_eq!(review.kind, OperationKind::View);
-        assert_eq!(
-            review.contract.permission,
-            tilo_actions::PermissionRequirement::Write
-        );
+        assert_eq!(review.contract.kind, tilo_actions::ActionKind::Undoable);
         assert!(review.contract.availability.is_available());
         let restore = session
             .actions
@@ -1987,10 +1984,7 @@ mod tests {
             .find(|action| action.id == "restore")
             .unwrap();
         assert_eq!(restore.kind, OperationKind::Effect);
-        assert_eq!(
-            restore.contract.permission,
-            tilo_actions::PermissionRequirement::Write
-        );
+        assert_eq!(restore.contract.kind, tilo_actions::ActionKind::Undoable);
         assert_eq!(
             restore.contract.confirmation,
             tilo_actions::ConfirmationPolicy::Confirm

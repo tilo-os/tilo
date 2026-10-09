@@ -114,7 +114,8 @@ impl fmt::Debug for KindSet {
 
 impl Serialize for KindSet {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.collect_seq(self.iter())
+        // A sequence of known length: compact formats need it up front.
+        self.iter().collect::<Vec<_>>().serialize(serializer)
     }
 }
 

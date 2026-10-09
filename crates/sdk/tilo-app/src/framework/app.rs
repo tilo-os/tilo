@@ -13,7 +13,7 @@ use ui_core::application::{
 use ui_core::history_mode::checked_files::FileHistorySource;
 use ui_core::i18n::EmbeddedCatalog;
 use ui_core::launch::LaunchError;
-use ui_core::permissions::{LivePermissions, PermissionScope, Verb};
+use ui_core::permissions::{ActionKind, LivePermissions, PermissionScope};
 use ui_core::record::{RecordId, RecordKind};
 use ui_core::storage::AppStorage;
 use ui_core::widget::{Element, IconDescriptor};
@@ -28,7 +28,7 @@ use {
     },
     ui_core::headless::FrameHarness,
     ui_core::launch::{LaunchArgs, LaunchSpec},
-    ui_core::permissions::{Actor, PermissionContext, Role, UserId},
+    ui_core::permissions::{PermissionContext, Role, UserId},
     ui_core::record::RecordCheckout,
 };
 
@@ -403,7 +403,7 @@ pub(crate) enum Editing {
 
 /// The permission that makes an app's resource editable.
 fn write_scope<A: ResourceApp>() -> PermissionScope {
-    PermissionScope::app(A::ID, Verb::Write)
+    PermissionScope::app(A::ID, ActionKind::Undoable)
 }
 
 /// Build the framework root for a resource state: the live handle, the
@@ -785,10 +785,7 @@ pub(crate) fn data_dir_host(
 /// The permissions of `author` holding `role`, shared with the host so a
 /// later role change reaches the running app.
 pub(crate) fn role_permissions(author: &str, role: Role) -> Rc<RefCell<PermissionContext>> {
-    Rc::new(RefCell::new(PermissionContext::from_capabilities(
-        Actor::person(Some(role), author),
-        vec![],
-    )))
+    Rc::new(RefCell::new(PermissionContext::member(author, role)))
 }
 
 #[cfg(not(target_arch = "wasm32"))]

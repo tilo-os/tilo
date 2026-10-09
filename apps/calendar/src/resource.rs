@@ -658,7 +658,7 @@ pub enum CalendarEffect {
     ///
     /// Answers with the arguments of Mail's invitation draft for one attendee;
     /// nothing is sent.
-    #[effect(returns, permission = "invite")]
+    #[effect(returns)]
     PrepareInMail {
         #[param("Event id")]
         event_id: String,

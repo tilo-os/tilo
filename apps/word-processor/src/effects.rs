@@ -20,7 +20,7 @@ pub enum WordProcessorEffect {
     ///
     /// The picture at the caret, else the document's only picture, as
     /// content another app's operation takes (a photo editor opening it).
-    #[effect(content, permission = "read")]
+    #[effect(content, kind = "read")]
     ShareImage,
     /// Open document.
     ///

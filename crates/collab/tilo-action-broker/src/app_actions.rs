@@ -16,7 +16,7 @@
 
 use std::sync::Arc;
 
-use collab_types::caps::Expiry;
+use tilo_action_policy::Lifetime;
 use tokio::sync::oneshot;
 
 /// What an application declared it may do on the door under its own
@@ -85,11 +85,13 @@ impl AppActionConsent {
     /// How long the grant this answer records lives; `None` records
     /// nothing.
     #[must_use]
-    pub const fn expiry(self) -> Option<Expiry> {
+    pub fn grant_lifetime(self) -> Option<Lifetime> {
         match self {
-            Self::Once => Some(Expiry::AfterUse),
-            Self::Session => Some(Expiry::EndOfSession),
-            Self::Always => Some(Expiry::Never),
+            Self::Once => Some(Lifetime::Once),
+            Self::Session => Some(Lifetime::Session(
+                tilo_desktop_model::session_id().to_owned(),
+            )),
+            Self::Always => Some(Lifetime::UntilRevoked),
             Self::Deny => None,
         }
     }
@@ -119,13 +121,21 @@ mod tests {
 
     #[test]
     fn each_answer_records_the_matching_lifetime() {
-        assert_eq!(AppActionConsent::Once.expiry(), Some(Expiry::AfterUse));
         assert_eq!(
-            AppActionConsent::Session.expiry(),
-            Some(Expiry::EndOfSession)
+            AppActionConsent::Once.grant_lifetime(),
+            Some(Lifetime::Once)
         );
-        assert_eq!(AppActionConsent::Always.expiry(), Some(Expiry::Never));
-        assert_eq!(AppActionConsent::Deny.expiry(), None);
+        assert_eq!(
+            AppActionConsent::Session.grant_lifetime(),
+            Some(Lifetime::Session(
+                tilo_desktop_model::session_id().to_owned()
+            ))
+        );
+        assert_eq!(
+            AppActionConsent::Always.grant_lifetime(),
+            Some(Lifetime::UntilRevoked)
+        );
+        assert_eq!(AppActionConsent::Deny.grant_lifetime(), None);
         assert_eq!(AppActionConsent::ALLOWING[0], AppActionConsent::Once);
     }
 }

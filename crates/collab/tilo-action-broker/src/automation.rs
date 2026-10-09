@@ -28,7 +28,7 @@ use std::time::Duration;
 use serde_json::{Map, Value};
 use settings_store::hardware::{ActionChord, ActionChordTarget, KeyChord, ShortcutConfig};
 use tilo_actions::context::ActionContext;
-use tilo_actions::contract::{ActionContract, PermissionRequirement, ResultSpec, RiskLevel};
+use tilo_actions::contract::{ActionContract, ActionKind, ResultSpec, RiskLevel};
 use tilo_actions::door::{ActionAddress, ActionDescriptor, InputSpec};
 use tilo_actions::outcome::{ActionFailure, ActionOutput, InvocationId, InvocationUpdate};
 use tilo_actions::params::{ARGUMENTS_JSON_PREFIX, ActionArgs, ActionParam, ParamType};
@@ -100,14 +100,14 @@ pub fn library_descriptor(action: &str) -> Option<ActionDescriptor> {
             "New shortcut",
             "Save a shortcut after checking every step against the actions you are offered",
             vec![shortcut_param()],
-            PermissionRequirement::Write,
+            ActionKind::Undoable,
             saved,
         ),
         UPDATE_ACTION => (
             "Change shortcut",
             "Replace a saved shortcut after checking it again",
             vec![shortcut_param()],
-            PermissionRequirement::Write,
+            ActionKind::Undoable,
             saved,
         ),
         DELETE_ACTION => (
@@ -118,14 +118,14 @@ pub fn library_descriptor(action: &str) -> Option<ActionDescriptor> {
                 ParamType::Text,
                 "Id of the shortcut to delete",
             )],
-            PermissionRequirement::Write,
+            ActionKind::Undoable,
             ResultSpec::None,
         ),
         LIST_ACTION => (
             "List shortcuts",
             "Every shortcut saved in this workspace, as JSON",
             Vec::new(),
-            PermissionRequirement::Read,
+            ActionKind::Read,
             ResultSpec::Json {
                 schema: serde_json::json!({"type": "array", "items": {"type": "object"}}),
             },
@@ -142,7 +142,7 @@ pub fn library_descriptor(action: &str) -> Option<ActionDescriptor> {
         locus: ExecutionLocus::default(),
         kind: OperationKind::Effect,
         contract: ActionContract {
-            permission,
+            kind: permission,
             result,
             risk: if action == DELETE_ACTION {
                 RiskLevel::Destructive
@@ -171,7 +171,7 @@ pub fn run_descriptor(shortcut: &Shortcut) -> ActionDescriptor {
         locus: ExecutionLocus::default(),
         kind: OperationKind::Effect,
         contract: ActionContract {
-            permission: PermissionRequirement::None,
+            kind: ActionKind::Read,
             result: if shortcut.output.is_some() {
                 ResultSpec::Json {
                     schema: serde_json::json!({}),
@@ -201,15 +201,6 @@ pub fn run_description(shortcut: &Shortcut) -> String {
     if !triggers.is_empty() {
         description.push_str(". Runs by itself ");
         description.push_str(&triggers.join(" and "));
-    }
-    if !shortcut.consents.is_empty() {
-        let consents: Vec<String> = shortcut
-            .consents
-            .iter()
-            .map(|consent| format!("`{}` on {}", consent.action, consent.resource))
-            .collect();
-        description.push_str(". Confirmed in advance: ");
-        description.push_str(&consents.join(", "));
     }
     description
 }
@@ -867,25 +858,25 @@ pub fn readable_folder(
     capability: &str,
     saver: &str,
 ) -> Result<std::path::PathBuf, String> {
-    use crate::policy::WorkspacePolicy as _;
-
     let granted = workspace
-        .capabilities
+        .sandbox
         .iter()
         .find(|granted| granted.id == capability)
         .ok_or_else(|| format!("the workspace has no capability `{capability}`"))?;
     let collab_types::Scope::FsPath(path) = &granted.scope else {
         return Err(format!("capability `{capability}` does not share a folder"));
     };
-    let role = workspace
-        .role_of(&saver.to_string())
-        .ok_or("the saver is not a member of the workspace")?;
-    let actor = collab_types::Actor::person(Some(role), saver).in_room(workspace.room.to_string());
-    if !workspace.allows(
+    if workspace.role_of(saver).is_none() || workspace.is_blocked(saver) {
+        return Err("the saver is not a member of the workspace".into());
+    }
+    let actor = collab_types::Actor::person(saver).in_room(workspace.room.to_string());
+    if workspace.sandbox_decide_at(
         &actor,
         &collab_types::ResourceRef::FsPath(path.clone()),
-        collab_types::Verb::Read,
-    ) {
+        collab_types::caps::Access::Read,
+        tilo_clock::unix_now(),
+    ) != collab_types::CapDecision::Allow
+    {
         return Err(format!(
             "the saver may not read the folder capability `{capability}` shares"
         ));

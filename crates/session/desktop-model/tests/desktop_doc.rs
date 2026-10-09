@@ -10,7 +10,7 @@
 
 use automerge::transaction::Transactable as _;
 use automerge::{AutoCommit, ObjId, PatchAction, Prop, ROOT, ReadDoc as _};
-use collab_types::caps::{CapOverride, Scope, Subject, Verb};
+use collab_types::caps::{Access, CapOverride, Scope, Subject};
 use tilo_automerge::ApplyIncoming as _;
 use tilo_desktop_model::commands::{DesktopCommand, TabLocation, apply_command};
 use tilo_desktop_model::desktop_doc;
@@ -45,7 +45,7 @@ fn group(id: u64, tabs: &[u64]) -> WindowGroup {
 /// holds group 20 [200].
 fn tree() -> DesktopTree {
     let mut ws = Workspace::new(WorkspaceId(1), "Desk");
-    ws.room = RoomId::parse("00000000-0000-4000-8000-000000000042").unwrap();
+    ws.set_room(RoomId::parse("00000000-0000-4000-8000-000000000042").unwrap());
     ws.set_owner("ada");
     let mut a = Strip::new(StripId(1), "A");
     a.window_groups = vec![group(10, &[100, 101]), group(11, &[110])];
@@ -102,8 +102,14 @@ fn desktop_document_round_trips_the_desktop_and_governance() {
         assert_eq!(layout(&back), layout(&tree));
         let ws = &back.workspaces[0];
         assert_eq!(ws.room, tree.workspaces[0].room);
-        assert_eq!(ws.owner.as_deref(), Some("ada"));
-        assert_eq!(ws.capabilities, tree.workspaces[0].capabilities);
+        assert_eq!(ws.owner().map(String::as_str), Some("ada"));
+        assert_eq!(ws.sandbox, tree.workspaces[0].sandbox);
+        let sorted = |policy: &tilo_action_policy::RoomPolicy| {
+            let mut policy = policy.clone();
+            policy.grants.sort_by(|a, b| a.id.cmp(&b.id));
+            policy
+        };
+        assert_eq!(sorted(&ws.policy), sorted(&tree.workspaces[0].policy));
         // Presentation state is this device's and is not in the document.
         assert!(!ws.strips[0].window_groups[0].maximized);
         assert_eq!(ws.strips[0].window_groups[0].width, WindowWidth::Normal);
@@ -120,27 +126,23 @@ fn desktop_document_round_trips_the_desktop_and_governance() {
         let cap = CapOverride::grant(
             Subject::app("org.example.App"),
             Scope::FsPath("/srv".into()),
-            Verb::Read,
+            Access::Read,
         )
         .with_id("cap-x");
-        assert!(desktop_doc::insert_capability(
-            &mut doc,
-            WorkspaceId(1),
-            &cap
-        ));
+        assert!(desktop_doc::insert_sandbox(&mut doc, WorkspaceId(1), &cap));
         assert!(desktop_doc::set_owner(&mut doc, WorkspaceId(1), "bob"));
         let ws = &read_back(&doc).workspaces[0];
-        assert!(ws.capabilities.iter().any(|c| c.id == "cap-x"));
-        assert_eq!(ws.owner.as_deref(), Some("bob"));
+        assert!(ws.sandbox.iter().any(|c| c.id == "cap-x"));
+        assert_eq!(ws.owner().map(String::as_str), Some("bob"));
 
-        assert!(desktop_doc::revoke_capability(
+        assert!(desktop_doc::revoke_sandbox(
             &mut doc,
             WorkspaceId(1),
             "cap-x"
         ));
         assert!(
             !read_back(&doc).workspaces[0]
-                .capabilities
+                .sandbox
                 .iter()
                 .any(|c| c.id == "cap-x")
         );
@@ -347,7 +349,7 @@ fn shortcuts_are_seeded_saved_replaced_and_deleted() {
 fn two_workspaces() -> DesktopTree {
     let mut desktop = tree();
     let mut lab = Workspace::new(WorkspaceId(2), "Lab");
-    lab.room = RoomId::parse("00000000-0000-4000-8000-000000000043").unwrap();
+    lab.set_room(RoomId::parse("00000000-0000-4000-8000-000000000043").unwrap());
     let mut strip = Strip::new(StripId(3), "C");
     strip.window_groups = vec![group(30, &[300])];
     lab.strips = vec![strip];
@@ -570,27 +572,27 @@ fn seed_deletes_fields_and_map_keys_the_tree_dropped() {
     let keep = CapOverride::grant(
         Subject::app("org.example.App"),
         Scope::FsPath("/srv".into()),
-        Verb::Read,
+        Access::Read,
     )
     .with_id("cap-keep");
     let drop = CapOverride::grant(
         Subject::app("org.example.App"),
         Scope::FsPath("/tmp".into()),
-        Verb::Read,
+        Access::Read,
     )
     .with_id("cap-drop");
-    desktop.workspaces[0].capabilities = vec![keep.clone(), drop];
+    desktop.workspaces[0].sandbox = vec![keep.clone(), drop];
     let mut doc = committed_seed(&desktop);
     let entry = workspace_entries(&doc)[0].clone();
-    let caps = child(&doc, &entry, "capabilities");
+    let caps = child(&doc, &entry, "sandbox");
 
-    desktop.workspaces[0].capabilities = vec![keep.clone()];
-    desktop.workspaces[0].owner = None;
+    desktop.workspaces[0].sandbox = vec![keep.clone()];
+    desktop.workspaces[0].policy.owner = None;
     desktop_doc::seed(&mut doc, &desktop);
     doc.commit();
 
     assert_eq!(
-        child(&doc, &entry, "capabilities"),
+        child(&doc, &entry, "sandbox"),
         caps,
         "the map is edited, not replaced"
     );
@@ -600,8 +602,8 @@ fn seed_deletes_fields_and_map_keys_the_tree_dropped() {
     );
     assert!(doc.get(&entry, "owner").unwrap().is_none());
     let back = read_back(&doc);
-    assert_eq!(back.workspaces[0].capabilities, vec![keep]);
-    assert_eq!(back.workspaces[0].owner, None);
+    assert_eq!(back.workspaces[0].sandbox, vec![keep]);
+    assert_eq!(back.workspaces[0].owner(), None);
 }
 
 /// The reason seeding is a splice: a whole-list rewrite deletes the entry a

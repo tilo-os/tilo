@@ -37,17 +37,10 @@ static TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// The capability an inviter issues an agent for the app it was invited to.
 fn granted(name: &str, app: &str) -> ui::permissions::PermissionContext {
-    use ui::permissions::{Actor, CapOverride, PermissionContext, Scope, Subject, Verb};
-    PermissionContext::from_capabilities(
-        Actor::agent(name),
-        vec![
-            CapOverride::grant(
-                Subject::agent(name),
-                Scope::App(app.to_string()),
-                Verb::Write,
-            )
-            .with_id("invited"),
-        ],
+    ui::permissions::PermissionContext::agent_granted_at(
+        name,
+        &[ui::permissions::TreePath::root().app(app.to_string())],
+        ui::permissions::KindSet::READ_UNDOABLE,
     )
 }
 
@@ -55,22 +48,18 @@ fn granted(name: &str, app: &str) -> ui::permissions::PermissionContext {
 /// its reply (one typed edit, or several as one) and enumerate and perform
 /// none of the app's own operations.
 fn only_answering(name: &str) -> ui::permissions::PermissionContext {
-    use ui::permissions::{Actor, CapOverride, PermissionContext, Scope, Subject, Verb};
+    // A participant addresses the document it holds by its kind.
     let answer = |action: &str| {
-        CapOverride::grant(
-            Subject::agent(name),
-            // A participant addresses the document it holds by its kind.
-            Scope::Action {
-                app: APP.to_string(),
-                resource: "tilo.rich-text".to_string(),
-                action: action.to_string(),
-            },
-            Verb::Write,
-        )
+        ui::permissions::TreePath::root()
+            .app(APP)
+            .kind("tilo.rich-text")
+            .rest()
+            .action(action)
     };
-    PermissionContext::from_capabilities(
-        Actor::agent(name),
-        vec![answer(tilo_resource::APPLY), answer(tilo_resource::GROUP)],
+    ui::permissions::PermissionContext::agent_granted_at(
+        name,
+        &[answer(tilo_resource::APPLY), answer(tilo_resource::GROUP)],
+        ui::permissions::KindSet::READ_UNDOABLE,
     )
 }
 
@@ -740,23 +729,13 @@ fn fixture_photo_resource() -> String {
 
 /// The capability the agent needs to touch both applications in this room.
 fn word_processor_and_photos_permissions() -> ui::permissions::PermissionContext {
-    use ui::permissions::{Actor, CapOverride, PermissionContext, Scope, Subject, Verb};
-    PermissionContext::from_capabilities(
-        Actor::agent("Scribe"),
-        vec![
-            CapOverride::grant(
-                Subject::agent("Scribe"),
-                Scope::App("so.tilo.word-processor".to_string()),
-                Verb::Write,
-            )
-            .with_id("wp"),
-            CapOverride::grant(
-                Subject::agent("Scribe"),
-                Scope::App("so.tilo.photos".to_string()),
-                Verb::Write,
-            )
-            .with_id("photos"),
+    ui::permissions::PermissionContext::agent_granted_at(
+        "Scribe",
+        &[
+            ui::permissions::TreePath::root().app("so.tilo.word-processor".to_string()),
+            ui::permissions::TreePath::root().app("so.tilo.photos".to_string()),
         ],
+        ui::permissions::KindSet::READ_UNDOABLE,
     )
 }
 

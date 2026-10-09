@@ -1204,7 +1204,7 @@ impl ActionPalette {
                 .borrow()
                 .check(&crate::permissions::PermissionScope::app(
                     &binding.app_id,
-                    collab_types::caps::Verb::Read,
+                    crate::permissions::ActionKind::Read,
                 ));
         };
         // Provider resolution runs through its captured owner. Eager resources

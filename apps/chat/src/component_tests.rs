@@ -79,10 +79,7 @@ fn browser_media_reply_enables_voice_without_native_attachment_access() {
     );
     assert!(!app.begin_attachment_import(std::path::Path::new("/fixture/private-file")));
     app.perms = crate::permissions::ChatPermissions::from_context(
-        ui::permissions::PermissionContext::from_capabilities(
-            ui::permissions::Actor::person(Some(ui::permissions::Role::Viewer), "reader"),
-            vec![],
-        ),
+        ui::permissions::PermissionContext::member("reader", ui::permissions::Role::Viewer),
     );
     assert!(app.call_allows(crate::call::CallAction::Join));
     assert!(
@@ -335,12 +332,10 @@ fn component_mount_in_room(
         .open(definition.app_id, room)
         .unwrap();
     let views = Rc::new(ui::application_view::InstanceViewStore::portable(cache, room).unwrap());
-    let permissions = Rc::new(RefCell::new(
-        ui::permissions::PermissionContext::from_capabilities(
-            ui::permissions::Actor::person(Some(ui::permissions::Role::Owner), author),
-            vec![],
-        ),
-    ));
+    let permissions = Rc::new(RefCell::new(ui::permissions::PermissionContext::member(
+        author,
+        ui::permissions::Role::Owner,
+    )));
     let primary = ui::record::RecordCheckout::package_primary(definition.record_kind.clone());
     let target = if records.try_open_record(&primary).is_ok() {
         LaunchTarget::Record {
@@ -568,12 +563,10 @@ fn two_real_components_open_the_existing_recordless_chat_without_mutation() {
         .open(definition.app_id, room)
         .unwrap();
     let views = Rc::new(ui::application_view::InstanceViewStore::portable(cache, room).unwrap());
-    let permissions = Rc::new(RefCell::new(
-        ui::permissions::PermissionContext::from_capabilities(
-            ui::permissions::Actor::person(Some(ui::permissions::Role::Owner), "author"),
-            vec![],
-        ),
-    ));
+    let permissions = Rc::new(RefCell::new(ui::permissions::PermissionContext::member(
+        "author",
+        ui::permissions::Role::Owner,
+    )));
     let mut components = Vec::new();
     for instance in [1, 2] {
         let target = LaunchTarget::Record {

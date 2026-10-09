@@ -118,13 +118,13 @@ fn the_proposed_grant_is_the_least_each_step_needs() {
         list(),
     ];
     let permissions = grant::least_privilege(&steps, &catalog);
-    let named: Vec<(String, String, collab_types::Verb)> = permissions
+    let named: Vec<(String, String, tilo_action_policy::ActionKind)> = permissions
         .iter()
         .map(|permission| {
             (
                 permission.app_id.clone(),
                 permission.action.clone(),
-                permission.verb,
+                permission.kind,
             )
         })
         .collect();
@@ -134,17 +134,17 @@ fn the_proposed_grant_is_the_least_each_step_needs() {
             (
                 "so.tilo.notes".into(),
                 "list".into(),
-                collab_types::Verb::Read
+                tilo_action_policy::ActionKind::Read
             ),
             (
                 "so.tilo.notes".into(),
                 "create".into(),
-                collab_types::Verb::Write
+                tilo_action_policy::ActionKind::Undoable
             ),
             (
                 tilo_automation::AGENT_APP_ID.into(),
                 "summarise".into(),
-                collab_types::Verb::Read
+                tilo_action_policy::ActionKind::Read
             ),
         ]
     );

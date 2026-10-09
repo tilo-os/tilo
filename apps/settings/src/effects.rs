@@ -347,8 +347,8 @@ mod tests {
             };
             assert_eq!(survey(direct.clone()), survey(reference.clone()));
             assert_eq!(
-                direct.permission_for_json(&args),
-                reference.permission_for_json(&args)
+                direct.need_for(Some(&args), None),
+                reference.need_for(Some(&args), None)
             );
             assert_eq!(
                 direct.confirmation_for_json(&args),
@@ -432,8 +432,8 @@ mod tests {
                     "all published metadata including role/risk/result and confirmation is preserved"
                 );
                 assert_eq!(
-                    direct.permission_for_json(&serde_json::Map::new()),
-                    flattened.permission_for_json(&serde_json::Map::new()),
+                    direct.need_for(Some(&serde_json::Map::new()), None),
+                    flattened.need_for(Some(&serde_json::Map::new()), None),
                     "invocation permission classification is unchanged",
                 );
                 assert_eq!(

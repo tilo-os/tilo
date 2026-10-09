@@ -36,7 +36,7 @@ pub enum BackupsEffect {
     #[effect(job, label = "Set up backups")]
     Setup,
     /// Read every file in this stored snapshot and verify its checksum.
-    #[effect(job, permission = "read", label = "Verify snapshot")]
+    #[effect(job, kind = "read", label = "Verify snapshot")]
     Verify {
         #[param("Id of the stored snapshot")]
         snapshot_id: String,
@@ -350,10 +350,7 @@ mod tests {
         assert_eq!(action("open").kind, OperationKind::View);
         let verify = action("verify");
         assert_eq!(verify.kind, OperationKind::Effect);
-        assert_eq!(
-            verify.contract.permission,
-            tilo_actions::PermissionRequirement::Read
-        );
+        assert_eq!(verify.contract.kind, tilo_actions::ActionKind::Read);
         // Invoking the row's action hands the handler this snapshot.
         let encoded = verify.build_json(&serde_json::Map::new()).unwrap();
         assert_eq!(encoded.type_id, BACKUPS_OPERATION_TYPE);
@@ -364,10 +361,7 @@ mod tests {
             }
         );
         let restore = action("restore");
-        assert_eq!(
-            restore.contract.permission,
-            tilo_actions::PermissionRequirement::Write
-        );
+        assert_eq!(restore.contract.kind, tilo_actions::ActionKind::Undoable);
         assert!(
             restore.contract.validate_declaration().is_empty(),
             "the empty-target restore contract has no misleading confirmation"

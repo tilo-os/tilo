@@ -3,9 +3,7 @@
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use ui::tilo_actions::{
-    ActionParam, ActionSpec, OperationKind, ParamType, PermissionRequirement, ResultSpec,
-};
+use ui::tilo_actions::{ActionKind, ActionParam, ActionSpec, OperationKind, ParamType, ResultSpec};
 use ui::tilo_resource::{
     self, ActionDecl, ActionRef, Doc, JsonSchema, ModelError, Resource, SearchEntry,
 };
@@ -1004,10 +1002,10 @@ impl ui::tilo_resource::Effect for ViewOp {
                     ui::tilo_actions::RiskLevel::Low
                 },
                 idempotent: declared.view,
-                permission: if declared.id == "find-area" {
-                    PermissionRequirement::Write
+                action_kind: if declared.id == "find-area" {
+                    ActionKind::Undoable
                 } else {
-                    PermissionRequirement::Read
+                    ActionKind::Read
                 },
                 device_only: false,
                 risk_of: None,

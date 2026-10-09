@@ -23,12 +23,12 @@ pub enum WeatherEffect {
     /// Refresh forecasts.
     ///
     /// Fetch the forecast and air quality of every saved place.
-    #[effect(job, permission = "read")]
+    #[effect(job, kind = "read")]
     Refresh,
     /// Refresh this forecast.
     ///
     /// Fetch the forecast and air quality of one saved place.
-    #[effect(job, permission = "read")]
+    #[effect(job, kind = "read")]
     RefreshLocation {
         #[param("Id of the saved place")]
         location: String,
@@ -36,7 +36,7 @@ pub enum WeatherEffect {
     /// Open forecast.
     ///
     /// Show one saved place's forecast.
-    #[effect(permission = "read")]
+    #[effect(kind = "read")]
     OpenLocation {
         #[param("Id of the saved place")]
         location: String,

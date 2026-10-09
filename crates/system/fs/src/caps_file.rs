@@ -207,7 +207,7 @@ pub enum CapsError {
 mod tests {
     use super::*;
     use crate::acl::Access;
-    use collab_types::{Ed25519PublicKey, Effect, Scope, Subject, Verb};
+    use collab_types::{Access as CapAccess, Ed25519PublicKey, Effect, Scope, Subject};
 
     const ALICE: IdentityKey = [0xA1; 32];
 
@@ -216,7 +216,7 @@ mod tests {
             Subject::User(Ed25519PublicKey(ALICE)),
             Scope::FsPath(path.into()),
             Effect::Grant,
-            Verb::Read,
+            CapAccess::Read,
         )
     }
 

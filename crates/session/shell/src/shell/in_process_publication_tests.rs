@@ -20,7 +20,7 @@ fn authorized_person_session(
         .workspaces
         .first_mut()
         .unwrap()
-        .room = crate::shell::state::RoomId::parse(&room).unwrap();
+        .set_room(crate::shell::state::RoomId::parse(&room).unwrap());
     session.room = room.clone();
     let socket = session.broker.capnp_socket().to_path_buf();
     let identity = session.identity_socket().to_path_buf();

@@ -296,6 +296,16 @@ impl ActionContext {
         self
     }
 
+    /// Join the undo step open on this thread
+    /// ([`crate::executor::open_step`]) unless the entry names one.
+    #[must_use]
+    pub fn in_step(mut self) -> Self {
+        if self.gesture.is_none() {
+            self.gesture = crate::executor::current_step();
+        }
+        self
+    }
+
     /// Continue the gesture `gesture` (see [`Self::gesture`]).
     #[must_use]
     pub fn in_gesture(mut self, gesture: Option<crate::ActionId>) -> Self {

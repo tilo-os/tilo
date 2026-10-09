@@ -41,8 +41,8 @@ impl State {
             operations: changes
                 .iter()
                 .fold(0usize, |total, change| total.saturating_add(change.len())),
-            undo_depth: self.undo.undo_stack.len(),
-            redo_depth: self.undo.redo_stack.len(),
+            undo_depth: self.undo.undo_depth(&self.doc),
+            redo_depth: self.undo.redo_depth(&self.doc),
             history_revision: self.undo.revision(),
         }
     }

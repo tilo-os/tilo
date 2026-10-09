@@ -910,8 +910,7 @@ pub struct FileClipboardContext {
     pub(crate) workspace: String,
     pub(crate) owner: String,
     pub(crate) history_compensation: bool,
-    pub(crate) check:
-        Arc<dyn Fn(tilo_actions::PermissionRequirement) -> Result<(), String> + Send + Sync>,
+    pub(crate) check: Arc<dyn Fn(tilo_actions::ActionKind) -> Result<(), String> + Send + Sync>,
 }
 impl FileClipboardContext {
     pub fn window(&self) -> &str {
@@ -922,9 +921,9 @@ impl FileClipboardContext {
     /// # Errors
     /// Refuses retired authority or unavailable peer descriptors.
     pub fn duplicate_selected(&self, descriptor: u32) -> Result<std::fs::File, String> {
-        self.authorize(tilo_actions::PermissionRequirement::Read)?;
+        self.authorize(tilo_actions::ActionKind::Read)?;
         let file = (self.duplicate)(descriptor)?;
-        self.authorize(tilo_actions::PermissionRequirement::Read)?;
+        self.authorize(tilo_actions::ActionKind::Read)?;
         Ok(file)
     }
     pub fn peer(&self) -> u64 {
@@ -945,7 +944,7 @@ impl FileClipboardContext {
     ///
     /// # Errors
     /// Refuses retired, revoked, expired or insufficient authority.
-    pub fn authorize(&self, permission: tilo_actions::PermissionRequirement) -> Result<(), String> {
+    pub fn authorize(&self, permission: tilo_actions::ActionKind) -> Result<(), String> {
         (self.check)(permission)
     }
 }
@@ -965,22 +964,21 @@ pub trait FileClipboardServices: Send + Sync {
 /// recorded. The broker decides whether to ask and builds the grant; the
 /// host owns the workspace records it lands in.
 pub trait AppActionGrants: Send + Sync {
-    /// Whether this machine governs `room` and `person` may administer it,
+    /// Whether this machine governs `room` and `person` may grant in it,
     /// so a grant they give can be recorded here.
     fn may_grant(&self, room: &str, person: &str) -> bool;
-    /// Record `capability` in `request.room` as granted by
-    /// `request.person`, and note `answer` in the workspace's history.
-    /// The recorded capability's id, or `None` when it could not be
-    /// recorded.
+    /// Record `grant` in `request.room` as given by `request.person`, and
+    /// note `answer` in the workspace's history. The recorded grant's id, or
+    /// `None` when it could not be recorded.
     fn record(
         &self,
         request: &crate::app_actions::AppActionConsentRequest,
-        capability: collab_types::caps::CapOverride,
+        grant: tilo_action_policy::Grant,
         answer: crate::app_actions::AppActionConsent,
     ) -> Option<String>;
-    /// Remove the grant `capability` from `room`: a grant given once, now
-    /// that its call was decided.
-    fn revoke(&self, room: &str, capability: &str);
+    /// Remove the grant `grant` from `room`: a grant given once, now that
+    /// its call was decided.
+    fn revoke(&self, room: &str, grant: &str);
 }
 /// Identity of an exact private Settings worker, derived by the broker.
 #[derive(Clone, Debug)]

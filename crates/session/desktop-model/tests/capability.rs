@@ -7,7 +7,7 @@ use std::path::PathBuf;
 /// The clock these fixtures run at, Unix seconds.
 const NOW: u64 = 1_800_000_000;
 
-use collab_types::caps::{ResourceRef, Verb};
+use collab_types::caps::{Access, Actor, CapDecision, ResourceRef};
 use tilo_desktop_model::*;
 
 #[test]
@@ -25,20 +25,25 @@ fn capability_grants_start_empty_and_round_trip() {
             Workspace::default(),
             Workspace::new(WorkspaceId::from(1), "Demo"),
         ] {
-            assert!(ws.capabilities.is_empty());
+            assert!(ws.sandbox.is_empty());
             assert!(ws.app_grants_snapshot_at(NOW).is_empty());
             assert!(!ws.has_app_grants_at(NOW));
             assert!(
-                !ws.may_administer_at(&"anyone".to_string(), NOW),
-                "a room with no owner has no administrators"
-            );
-            assert!(
-                !ws.allows_at(
-                    &ws.actor_for_app("org.gnome.gedit"),
-                    &ResourceRef::FsPath("/home/u/work".into()),
-                    Verb::Read,
+                !ws.may_govern_at(
+                    "anyone",
+                    tilo_action_policy::roles::governance::SETTINGS,
                     NOW
                 ),
+                "a room with no owner has no administrators"
+            );
+            assert_ne!(
+                ws.sandbox_decide_at(
+                    &Actor::app("org.gnome.gedit"),
+                    &ResourceRef::FsPath("/home/u/work".into()),
+                    Access::Read,
+                    NOW
+                ),
+                CapDecision::Allow,
                 "an app with no capability is denied"
             );
         }
@@ -81,35 +86,43 @@ fn capability_grants_start_empty_and_round_trip() {
         }));
 
         // And the decision function agrees after the round-trip.
-        let app = round.actor_for_app("org.gnome.gedit");
-        assert!(round.allows_at(
-            &app,
-            &ResourceRef::FsPath("/home/u/work/notes.txt".into()),
-            Verb::Write,
-            NOW
-        ));
-        assert!(
-            !round.allows_at(
+        let app = Actor::app("org.gnome.gedit");
+        assert_eq!(
+            round.sandbox_decide_at(
+                &app,
+                &ResourceRef::FsPath("/home/u/work/notes.txt".into()),
+                Access::Write,
+                NOW
+            ),
+            CapDecision::Allow
+        );
+        assert_ne!(
+            round.sandbox_decide_at(
                 &app,
                 &ResourceRef::FsPath("/home/u/secrets".into()),
-                Verb::Read,
+                Access::Read,
                 NOW
             ),
+            CapDecision::Allow,
             "a path outside the grant stays denied across serialisation"
         );
-        assert!(round.allows_at(
-            &app,
-            &ResourceRef::NetHost("github.com".into()),
-            Verb::Write,
-            NOW
-        ));
-        assert!(
-            !round.allows_at(
+        assert_eq!(
+            round.sandbox_decide_at(
                 &app,
-                &ResourceRef::NetHost("evil.example".into()),
-                Verb::Write,
+                &ResourceRef::NetHost("github.com".into()),
+                Access::Write,
                 NOW
             ),
+            CapDecision::Allow
+        );
+        assert_ne!(
+            round.sandbox_decide_at(
+                &app,
+                &ResourceRef::NetHost("evil.example".into()),
+                Access::Write,
+                NOW
+            ),
+            CapDecision::Allow,
             "and a host outside the allowlist stays denied"
         );
     }

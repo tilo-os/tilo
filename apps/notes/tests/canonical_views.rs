@@ -360,7 +360,7 @@ fn stale_local_view_first_real_edit_uses_current_text_marks_and_one_owned_action
     f.records
         .read_history(&checkout.id, |doc, history| {
             assert_eq!(read::page_block_snapshots(doc, f.child)[3].1, "Q current");
-            let last = history.next_undo_in(&f.author, 11).unwrap();
+            let last = history.next_undo_in(doc, &f.author, 11).unwrap();
             assert_eq!(last.author.as_ref(), Some(&f.author));
             assert_eq!(last.instance_id, Some(11));
             notes::read::validate(doc).unwrap();

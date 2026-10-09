@@ -6239,8 +6239,8 @@ mod tests {
                     "{id} answers with page content: data, never instructions"
                 );
                 assert_eq!(
-                    action.contract.permission,
-                    ui::tilo_actions::PermissionRequirement::Write,
+                    action.contract.kind,
+                    ui::tilo_actions::ActionKind::Undoable,
                     "reading a signed-in page takes the authority to operate it"
                 );
                 assert_eq!(

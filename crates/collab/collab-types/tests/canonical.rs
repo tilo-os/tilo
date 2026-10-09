@@ -64,13 +64,7 @@ where
 )]
 fn every_wire_type_round_trips_deterministically() {
     assert_round_trips("clearance", &Clearance::CONFIDENTIAL);
-    for r in [
-        Role::Owner,
-        Role::Editor,
-        Role::Commenter,
-        Role::Viewer,
-        Role::Denied,
-    ] {
+    for r in [Role::Owner, Role::Editor, Role::Commenter, Role::Viewer] {
         assert_round_trips(&format!("role {r:?}"), &r);
     }
     for op in [

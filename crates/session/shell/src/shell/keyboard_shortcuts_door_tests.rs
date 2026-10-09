@@ -11,7 +11,6 @@
 
 use std::path::Path;
 
-use crate::shell::state::WorkspaceAuthority as _;
 use serde_json::{Value, json};
 use tilo_actions::remote::{
     ActionHost, ActionHostError, Caller, CatalogueQuery, InvokeArgument, InvokeRequest,
@@ -48,18 +47,13 @@ impl Door {
         .expect("owner-only socket directory");
         let mut workspace =
             crate::shell::state::Workspace::new(crate::shell::state::WorkspaceId(1), "Desk");
-        workspace.room = crate::shell::state::RoomId::parse(&ROOM.to_string()).expect("room id");
+        workspace.set_room(crate::shell::state::RoomId::parse(&ROOM.to_string()).expect("room id"));
         workspace.set_owner(OWNER.to_string());
-        workspace
-            .grant_as(
-                &OWNER.to_string(),
-                ui::permissions::CapOverride::membership(
-                    ui::permissions::Subject::agent(AGENT),
-                    workspace.room.to_string(),
-                    ui::permissions::Verb::Write,
-                ),
-            )
-            .expect("the owner admits a helper that holds no Settings grant");
+        workspace.admit_agent_preset(
+            AGENT,
+            tilo_action_policy::roles::AgentPreset::Operator,
+            &tilo_action_policy::Subject::person(OWNER.to_string()),
+        );
         let mut tree = crate::shell::state::WorkspaceTree::default();
         tree.desktop.workspaces.push(workspace);
         let membership = tree.shared();

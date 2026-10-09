@@ -462,7 +462,7 @@ impl EmailService for ShellEmailService {
                     .find(|workspace| workspace.id == request.workspace_id)?;
                 Some((
                     workspace.room,
-                    workspace.capabilities.clone(),
+                    workspace.sandbox.clone(),
                     workspace.default_apps.clone(),
                     crate::shell::state::local_user_id_for_room(&workspace.room),
                 ))
@@ -510,12 +510,12 @@ fn add_mail_attachment_grants(
     handler_app_id: &str,
     attachment_paths: &[PathBuf],
 ) {
-    use crate::shell::state::{CapOverride, Expiry, Scope, Subject, Verb};
+    use crate::shell::state::{Access, CapOverride, Expiry, Scope, Subject};
     capabilities.extend(attachment_paths.iter().map(|path| {
         CapOverride::grant(
             Subject::app(handler_app_id),
             Scope::FsPath(path.to_string_lossy().into_owned()),
-            Verb::Read,
+            Access::Read,
         )
         .with_id(format!("portal-email:{}", uuid::Uuid::new_v4()))
         .expiring(Expiry::AfterUse)
@@ -1292,7 +1292,7 @@ impl DesktopPortalServices {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::shell::state::{Expiry, Scope, Subject, Verb};
+    use crate::shell::state::{Access, Expiry, Scope, Subject};
     use std::os::unix::fs::PermissionsExt;
 
     #[test]
@@ -1337,7 +1337,7 @@ mod tests {
                 grant.scope,
                 Scope::FsPath("/run/user/1000/doc/abc/report.pdf".into())
             );
-            assert_eq!(grant.verb, Verb::Read);
+            assert_eq!(grant.access, Access::Read);
             assert_eq!(grant.expiry, Expiry::AfterUse);
             assert!(grant.id.starts_with("portal-email:"));
         }

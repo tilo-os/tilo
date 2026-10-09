@@ -193,8 +193,7 @@ fn an_agent_edit_is_its_own_attributed_undo_boundary() {
         let entry = app
             .state_mut_for_test()
             .peek_last_undo()
-            .expect("the agent's action is on the undo stack at all")
-            .clone();
+            .expect("the agent's action is on the undo stack at all");
         assert_eq!(
             entry.author,
             Some(UserId(AGENT.into())),

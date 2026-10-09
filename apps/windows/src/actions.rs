@@ -25,49 +25,49 @@ pub enum WindowsEffect {
         app: String,
     },
     /// Install Windows application.
-    #[effect(job, privileged, permission = "admin")]
+    #[effect(job, privileged, kind = "outside")]
     Install {
         #[param("Path of the installer; omit to choose one")]
         path: Option<String>,
     },
     /// Import Windows ISO.
-    #[effect(job, privileged, permission = "admin")]
+    #[effect(job, privileged, kind = "outside")]
     ImportIso {
         #[param("Path of the ISO; omit to choose one")]
         path: Option<String>,
     },
     /// Open recovery desktop.
-    #[effect(row, job, privileged, permission = "admin")]
+    #[effect(row, job, privileged, kind = "outside")]
     Recovery,
     /// Start Windows.
-    #[effect(row, job, privileged, permission = "admin")]
+    #[effect(row, job, privileged, kind = "outside")]
     Start,
     /// Restart Windows.
-    #[effect(row, job, privileged, permission = "admin")]
+    #[effect(row, job, privileged, kind = "outside")]
     Restart,
     /// Suspend Windows.
-    #[effect(row, job, privileged, permission = "admin")]
+    #[effect(row, job, privileged, kind = "outside")]
     Suspend,
     /// Resume Windows.
-    #[effect(row, job, privileged, permission = "admin")]
+    #[effect(row, job, privileged, kind = "outside")]
     Resume,
     /// Shut down Windows.
-    #[effect(row, job, privileged, permission = "admin")]
+    #[effect(row, job, privileged, kind = "outside")]
     Shutdown,
     /// Connect temporarily for activation.
-    #[effect(row, job, privileged, permission = "admin")]
+    #[effect(row, job, privileged, kind = "outside")]
     TemporaryNetwork,
     /// Connect temporarily for Windows Update.
-    #[effect(row, job, privileged, permission = "admin")]
+    #[effect(row, job, privileged, kind = "outside")]
     UpdateNetwork,
     /// Disconnect temporary network access.
-    #[effect(row, job, privileged, permission = "admin")]
+    #[effect(row, job, privileged, kind = "outside")]
     RevokeNetwork,
     /// Install in a private capsule.
-    #[effect(row, job, privileged, permission = "admin")]
+    #[effect(row, job, privileged, kind = "outside")]
     InstallPrivateCapsule,
     /// Install in the Windows appliance.
-    #[effect(row, job, privileged, permission = "admin")]
+    #[effect(row, job, privileged, kind = "outside")]
     InstallWindowsAppliance,
     /// Launch.
     #[effect(row, job)]
@@ -76,13 +76,13 @@ pub enum WindowsEffect {
         app: String,
     },
     /// Open in Windows appliance.
-    #[effect(row, job, privileged, permission = "admin")]
+    #[effect(row, job, privileged, kind = "outside")]
     LaunchVmFallback {
         #[param("The application's id")]
         app: String,
     },
     /// Open file in Windows.
-    #[effect(job, permission = "read")]
+    #[effect(job, kind = "read")]
     OpenFile {
         #[param("The application's id")]
         app: String,
@@ -90,37 +90,37 @@ pub enum WindowsEffect {
         path: Option<String>,
     },
     /// Publish launcher.
-    #[effect(row, job, permission = "admin")]
+    #[effect(row, job, kind = "outside")]
     Publish {
         #[param("The application's id")]
         app: String,
     },
     /// Retry installation.
-    #[effect(row, job, privileged, permission = "admin")]
+    #[effect(row, job, privileged, kind = "outside")]
     RetryInstall {
         #[param("The application's private capsule")]
         capsule: String,
     },
     /// Install in Windows appliance.
-    #[effect(row, job, privileged, permission = "admin")]
+    #[effect(row, job, privileged, kind = "outside")]
     EscalateInstall {
         #[param("The application's private capsule")]
         capsule: String,
     },
     /// Remove launcher.
-    #[effect(row, job, destructive, permission = "admin")]
+    #[effect(row, job, destructive, kind = "outside")]
     RemoveLauncher {
         #[param("The application's id")]
         app: String,
     },
     /// Uninstall.
-    #[effect(row, job, destructive, permission = "admin")]
+    #[effect(row, job, destructive, kind = "outside")]
     Uninstall {
         #[param("The application's id")]
         app: String,
     },
     /// Delete application data.
-    #[effect(row, job, destructive, permission = "admin")]
+    #[effect(row, job, destructive, kind = "outside")]
     DeleteData {
         #[param("The application's private capsule")]
         capsule: String,
@@ -412,9 +412,7 @@ fn appliance_row(catalogue: &Catalogue) -> LiveRow {
 mod tests {
     use super::*;
     use crate::provider::CompatibilityProvider;
-    use tilo_actions::{
-        ExecutionMode, OperationKind, PermissionRequirement, Resource, ResultSpec, RiskLevel,
-    };
+    use tilo_actions::{ActionKind, ExecutionMode, OperationKind, Resource, ResultSpec, RiskLevel};
 
     /// The rows the sample catalogue publishes beneath the manager.
     fn sample_rows() -> Vec<Resource> {
@@ -531,7 +529,7 @@ mod tests {
                 open_file.contract.availability,
                 Availability::Unavailable { .. }
             ));
-            assert_eq!(open_file.contract.permission, PermissionRequirement::Read);
+            assert_eq!(open_file.contract.kind, ActionKind::Read);
         }
     }
 }

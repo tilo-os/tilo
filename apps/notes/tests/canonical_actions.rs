@@ -554,7 +554,7 @@ fn bound_undo_is_per_instance_and_retypes_once() {
         f.records
             .with_history(&checkout.id, |doc, history| {
                 for instance in [11, 12] {
-                    let last = history.next_undo_in(&f.author, instance).unwrap();
+                    let last = history.next_undo_in(doc, &f.author, instance).unwrap();
                     assert_eq!(last.author.as_ref(), Some(&f.author));
                     assert_eq!(last.instance_id, Some(instance));
                 }
@@ -692,7 +692,7 @@ fn bound_undo_is_per_instance_and_retypes_once() {
                 assert_eq!(history.revision(), 1);
                 history.undo_in(doc, &f.author, 11, None, None).unwrap();
                 assert_eq!(content(doc), before);
-                assert!(history.next_undo_in(&f.author, 11).is_none());
+                assert!(history.next_undo_in(doc, &f.author, 11).is_none());
             })
             .unwrap();
         close_driver(&mut a);
@@ -735,11 +735,9 @@ fn registry_authority_and_stale_page_views_keep_other_instances_live() {
         );
         assert_eq!(revision(&f, &checkout), 2);
         let stale = id;
-        *f.authority.borrow_mut() = ui::permissions::PermissionContext::from_capabilities(
-            ui::permissions::Actor::person(Some(ui::permissions::Role::Viewer), &f.author.0),
-            vec![],
-        )
-        .at_unix_time(100);
+        *f.authority.borrow_mut() =
+            ui::permissions::PermissionContext::member(&f.author.0, ui::permissions::Role::Viewer)
+                .at_unix_time(100);
         let before = f
             .records
             .read(&checkout.id, |doc| (doc.base_heads(), doc.pending_ops()))
@@ -967,7 +965,7 @@ fn peer_mounts_and_rejected_deltas_keep_owners_and_the_empty_cta() {
         );
         f.records
             .with_history(&checkout.id, |doc, history| {
-                let pending = history.next_undo_in(&f.author, 11).unwrap();
+                let pending = history.next_undo_in(doc, &f.author, 11).unwrap();
                 assert_eq!(pending.instance_id, Some(11));
                 assert_eq!(pending.author.as_ref(), Some(&f.author));
                 assert_eq!(pending.before, before.0);
@@ -1349,15 +1347,13 @@ fn page_tree_bound_action_preserves_rich_bodies_owned_undo_and_revocation() {
         .with_history(&checkout.id, |doc, history| {
             history.undo_in(doc, &f.author, 11, None, None).unwrap();
             assert_eq!(content(doc), before);
-            assert!(history.next_undo_in(&f.author, 11).is_none());
+            assert!(history.next_undo_in(doc, &f.author, 11).is_none());
         })
         .unwrap();
     a.relayout();
-    *f.authority.borrow_mut() = ui::permissions::PermissionContext::from_capabilities(
-        ui::permissions::Actor::person(Some(ui::permissions::Role::Viewer), &f.author.0),
-        vec![],
-    )
-    .at_unix_time(100);
+    *f.authority.borrow_mut() =
+        ui::permissions::PermissionContext::member(&f.author.0, ui::permissions::Role::Viewer)
+            .at_unix_time(100);
     assert!(
         a.invoke_bound_action(
             &ui::bound_dispatch::BoundActionAddress {

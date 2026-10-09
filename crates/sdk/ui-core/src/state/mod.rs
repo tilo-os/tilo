@@ -8,8 +8,9 @@ use tilo_automerge::ApplyIncoming;
 mod built_on;
 pub(crate) mod owned_restore;
 mod sequence_replay;
-mod shared_history;
+mod undo_log;
 use sequence_replay::SequenceReplay;
+pub use undo_log::{UndoEntry, UndoLog};
 #[cfg(test)]
 pub(crate) mod owned_restore_tests;
 
@@ -163,999 +164,6 @@ impl DocumentReplica {
     }
 }
 
-/// Optional action-based undo/redo payloads for outside-consequence spans.
-#[derive(Clone, Debug, Default)]
-pub(crate) struct CommittedSpanInverse {
-    pub undo_via: Option<tilo_actions::EncodedAction>,
-    pub redo_via: Option<tilo_actions::EncodedAction>,
-}
-
-/// One reversible action on the undo/redo stacks.
-///
-/// **Collab-safe, change-based undo.** Rather than snapshotting the whole
-/// document — which on undo would replace the live `AutoCommit` and silently
-/// drop any concurrently-merged remote ops — an entry records only the heads
-/// that bracket the local action (`before`/`after`); undo recomputes the
-/// inverse and writes it as a new forward change, so concurrent remote edits
-/// survive.
-#[derive(Clone)]
-pub struct UndoEntry {
-    pub before: Vec<ChangeHash>,
-    pub after: Vec<ChangeHash>,
-    pub focused_node_idx: Option<usize>,
-    pub widget_metadata: Option<String>,
-    pub author: Option<UserId>,
-    /// Runtime instance attribution, independent of authenticated author/CRDT actor.
-    pub instance_id: Option<InstanceId>,
-    /// When the forward action's [`tilo_actions::Action::inverse_before`]
-    /// returned a compensating document action (an outbox / del_outbox /
-    /// filesystem queue writer), reverting this entry applies `undo_via`
-    /// through the registry instead of Automerge inverse patches — so the
-    /// compensating queue entry is recorded the same way peers replay it.
-    /// `redo_via` is the forward action, for the opposite stack after undo.
-    /// Both are `None` for pure CRDT actions.
-    pub undo_via: Option<tilo_actions::EncodedAction>,
-    pub redo_via: Option<tilo_actions::EncodedAction>,
-    /// What the step this entry takes back or brings back did, carried
-    /// across undo and redo so history names "Undo Rename" and "Redo Rename"
-    /// after the step itself, never after the undo that last moved it.
-    /// `None` until an undo or redo first moves the entry: the context is
-    /// then read from the step's own change.
-    pub step: Option<tilo_actions::ActionContext>,
-}
-
-/// Per-document undo and redo depth. Entries retain two Automerge head sets
-/// plus optional widget metadata, so an unbounded editing session otherwise
-/// retains memory forever. Five hundred and twelve actions is deep enough for
-/// interactive use while giving the framework a strict upper bound.
-const UNDO_HISTORY_LIMIT: usize = 512;
-
-fn push_history(stack: &mut Vec<UndoEntry>, entry: UndoEntry) {
-    if stack.len() >= UNDO_HISTORY_LIMIT {
-        stack.remove(0);
-    }
-    stack.push(entry);
-}
-
-/// Separated from [`State`] because a history belongs to a *document*, not a
-/// process — a stack shared between two documents would revert against the
-/// wrong one, as a second tab sharing the first tab's undo stack would.
-#[derive(Default)]
-pub struct UndoLog {
-    undo_stack: Vec<UndoEntry>,
-    redo_stack: Vec<UndoEntry>,
-    /// Heads as of the last commit boundary — the `before` for the next action.
-    last_heads: Vec<ChangeHash>,
-    /// Bumped every time a stack changes. Lets a host tell "the history moved"
-    /// from "same as last frame" without reading the document — which matters
-    /// because describing an entry reads `AutoCommit::diff`, and that closes
-    /// the open transaction. See [`Self::revision`].
-    revision: u64,
-}
-
-/// History entry for a compensating action, from its encoded payload.
-fn history_message_for_encoded_action(encoded: &tilo_actions::EncodedAction) -> Option<String> {
-    let described = tilo_actions::Described::from_encoded(encoded, None)?;
-    tilo_actions::ActionContext::default()
-        .with_described(described)
-        .change_message()
-}
-
-/// Which way an undo-stack entry is moved: what history names its change.
-#[derive(Clone, Copy)]
-enum Direction {
-    Undo,
-    Redo,
-}
-
-/// The context of the step `entry` takes back (undo) or brings back (redo):
-/// carried on the entry once an undo moved it, else read from the step's own
-/// change, which is the side of the bracket the move leaves.
-fn step_context(
-    doc: &mut AutoCommit,
-    entry: &UndoEntry,
-    direction: Direction,
-) -> Option<tilo_actions::ActionContext> {
-    if let Some(step) = &entry.step {
-        return Some(step.clone());
-    }
-    let (step, other) = match direction {
-        Direction::Undo => (&entry.after, &entry.before),
-        Direction::Redo => (&entry.before, &entry.after),
-    };
-    step.iter()
-        .filter(|head| !other.contains(head))
-        .find_map(|head| {
-            doc.get_change_meta_by_hash(head)
-                .and_then(|meta| meta.message.as_deref().map(str::to_owned))
-                .as_deref()
-                .and_then(tilo_actions::ActionContext::from_change_message)
-        })
-        .filter(|context| context.what.is_some())
-}
-
-/// The entry of an undo or redo of `step`: what it took back or brought
-/// back, by whoever made the step, for the app and resource it was made in.
-/// The undo is the author's own step, so it stays theirs.
-fn inverse_message(
-    step: Option<&tilo_actions::ActionContext>,
-    direction: Direction,
-) -> Option<String> {
-    let op = match direction {
-        Direction::Undo => tilo_actions::HistoryOp::Undo,
-        Direction::Redo => tilo_actions::HistoryOp::Redo,
-    };
-    let context = tilo_actions::ActionContext {
-        what: Some(tilo_actions::Did::history(
-            op,
-            1,
-            step.and_then(tilo_actions::ActionContext::described),
-        )),
-        app: step.and_then(|step| step.app.clone()),
-        resource: step.and_then(|step| step.resource.clone()),
-        group: step.and_then(|step| step.group.clone()),
-        invoker: step.and_then(|step| step.invoker.clone()),
-        ..tilo_actions::ActionContext::default()
-    };
-    context.change_message()
-}
-
-impl UndoLog {
-    /// An empty history over `doc` as it stands. The current heads become
-    /// the baseline the next action brackets against, so content already
-    /// in the document is not attributed to an action nobody performed.
-    pub fn new(doc: &mut AutoCommit) -> Self {
-        Self {
-            undo_stack: Vec::new(),
-            redo_stack: Vec::new(),
-            last_heads: doc.get_heads(),
-            revision: 0,
-        }
-    }
-
-    /// A counter that changes whenever the undo or redo stack does, and never
-    /// otherwise.
-    ///
-    /// The cheap "has anything to undo changed?" test. A caller that renders
-    /// the history — an Undo button's enabled state, a description of the next
-    /// undo — recomputes only when this moves, instead of interrogating the
-    /// document every frame.
-    pub fn revision(&self) -> u64 {
-        self.revision
-    }
-
-    /// Whether another distinct stack revision can be issued.
-    fn can_bump(&self) -> bool {
-        self.revision != u64::MAX
-    }
-
-    /// Record that a stack changed. Called from every mutation below; if a new
-    /// one forgets, a control renders stale. Callers must reserve capacity with
-    /// [`Self::can_bump`] before changing a stack, so revision exhaustion never
-    /// wraps or leaves a half-applied undo transition behind.
-    fn bump(&mut self) {
-        if let Some(next) = self.revision.checked_add(1) {
-            self.revision = next;
-        }
-    }
-
-    /// Re-baseline against the document's current heads, without touching
-    /// the stacks. What a merge of remote changes needs: existing entries
-    /// keep naming their own changes (still valid addresses in an
-    /// append-only graph) while the *next* local action brackets against
-    /// the merged picture.
-    pub fn rebase(&mut self, doc: &mut AutoCommit) {
-        self.last_heads = doc.get_heads();
-    }
-
-    pub fn peek_last_undo(&self) -> Option<&UndoEntry> {
-        self.undo_stack.last()
-    }
-
-    /// How many entries undo can pop, whoever authored them.
-    pub fn undo_depth(&self) -> usize {
-        self.undo_stack.len()
-    }
-
-    /// How many entries redo can pop, whoever authored them.
-    pub fn redo_depth(&self) -> usize {
-        self.redo_stack.len()
-    }
-
-    /// Index of the entry [`undo_as`](Self::undo_as) would pop for `author`.
-    ///
-    /// The *one* place the author-scoping rule lives. Both the query half
-    /// ([`next_undo_as`](Self::next_undo_as), which decides whether an Undo
-    /// control paints enabled) and the acting half
-    /// ([`undo_for_author`](Self::undo_for_author)) read it, so a control can
-    /// never offer an undo the shortcut would decline.
-    fn undo_index_for(&self, author: Option<&UserId>) -> Option<usize> {
-        match author {
-            Some(a) => self
-                .undo_stack
-                .iter()
-                .rposition(|e| Self::claimable_by(e, a)),
-            None => self.undo_stack.len().checked_sub(1),
-        }
-    }
-
-    /// Index of the entry [`redo_as`](Self::redo_as) would pop for `author`.
-    /// The redo mirror of [`undo_index_for`](Self::undo_index_for).
-    fn redo_index_for(&self, author: Option<&UserId>) -> Option<usize> {
-        match author {
-            Some(a) => self
-                .redo_stack
-                .iter()
-                .rposition(|e| Self::claimable_by(e, a)),
-            None => self.redo_stack.len().checked_sub(1),
-        }
-    }
-
-    /// The entry a Ctrl+Z by `author` would revert, without reverting it.
-    ///
-    /// Author-scoped for the same reason [`undo_as`](Self::undo_as) is: with an
-    /// identity, undo skips past other people's actions, so a plain
-    /// "is the stack non-empty?" would light up an Undo button in a session
-    /// where every entry belongs to a collaborator and Ctrl+Z would do nothing.
-    pub fn next_undo_as(&self, author: Option<&UserId>) -> Option<&UndoEntry> {
-        self.undo_index_for(author)
-            .and_then(|i| self.undo_stack.get(i))
-    }
-
-    /// The entry a Ctrl+Shift+Z by `author` would re-apply. See
-    /// [`next_undo_as`](Self::next_undo_as).
-    pub fn next_redo_as(&self, author: Option<&UserId>) -> Option<&UndoEntry> {
-        self.redo_index_for(author)
-            .and_then(|i| self.redo_stack.get(i))
-    }
-
-    /// Whether `author` has anything to undo — true exactly when
-    /// [`undo_as`](Self::undo_as) would return `Some`.
-    pub fn can_undo_as(&self, author: Option<&UserId>) -> bool {
-        self.undo_index_for(author).is_some()
-    }
-
-    /// Whether `author` has anything to redo — true exactly when
-    /// [`redo_as`](Self::redo_as) would return `Some`.
-    pub fn can_redo_as(&self, author: Option<&UserId>) -> bool {
-        self.redo_index_for(author).is_some()
-    }
-
-    /// Commit `doc`'s open transaction and push an entry bracketing it.
-    /// Returns `true` iff this committed a change (there were pending
-    /// ops). `false` means the transaction was empty — the caller can then skip
-    /// any persistence / broadcast work, since the document is byte-identical to
-    /// before. This is what lets an ephemeral, non-document interaction (a text
-    /// selection drag, a focus move) avoid a full `doc.save()` on every event.
-    pub fn commit_action_authored(
-        &mut self,
-        doc: &mut AutoCommit,
-        focused_node_idx: Option<usize>,
-        metadata: Option<String>,
-        author: Option<UserId>,
-    ) -> bool {
-        self.commit_action_authored_with_message(doc, focused_node_idx, metadata, author, None)
-    }
-
-    /// As [`Self::commit_action_authored`], stamping semantic provenance onto
-    /// native CRDT edits that deliberately do not travel through an action
-    /// envelope (for example, co-edited flowing text).
-    pub fn commit_action_authored_with_message(
-        &mut self,
-        doc: &mut AutoCommit,
-        focused_node_idx: Option<usize>,
-        metadata: Option<String>,
-        author: Option<UserId>,
-        message: Option<String>,
-    ) -> bool {
-        // Do this before committing the open Automerge transaction. At the
-        // limit we must leave both the document's commit boundary and the
-        // history stacks untouched rather than make a change widgets cannot
-        // distinguish from an earlier one.
-        if !self.can_bump() {
-            return false;
-        }
-        self.commit_owned_pending(
-            doc,
-            self.last_heads.clone(),
-            owned_restore::OwnedActionAttribution {
-                author,
-                instance_id: None,
-                focused_node_idx,
-                widget_metadata: metadata,
-                message,
-            },
-        )
-        .changed
-    }
-
-    /// Record an action already committed into `doc` out-of-band, bracketed
-    /// by the caller-supplied `before` heads. See
-    /// [`State::record_committed_action`].
-    ///
-    /// The entry lands unattributed, which an author-scoped Ctrl+Z *claims*
-    /// rather than skips — see `claimable_by`. A caller
-    /// that knows the change came from someone else must name them through
-    /// [`record_committed_action_authored`](Self::record_committed_action_authored),
-    /// or the local user's undo will reach an edit that was never theirs.
-    pub fn record_committed_action(
-        &mut self,
-        doc: &mut AutoCommit,
-        before: Vec<ChangeHash>,
-        focused_node_idx: Option<usize>,
-        metadata: Option<String>,
-    ) -> bool {
-        self.record_committed_action_authored(doc, before, focused_node_idx, metadata, None)
-    }
-
-    /// Observe the recorded committed frontier without closing pending work.
-    pub(crate) fn matches_recorded_frontier(&self, doc: &AutoCommit) -> bool {
-        owned_restore::same_frontier(&self.last_heads, &doc.base_heads())
-    }
-
-    /// As [`Self::record_committed_action`], naming who performed it — for a
-    /// change that reached this document from *outside* the window (an agent,
-    /// or a collaborator's own published operation), applied under the
-    /// caller's own actor with no local commit boundary. Without recording it
-    /// here, the action is unreachable and `last_heads` stays behind it, so
-    /// the next local edit's bracket contains someone else's work and one
-    /// Ctrl+Z reverts both. The name is what keeps them apart afterwards.
-    pub fn record_committed_action_authored(
-        &mut self,
-        doc: &mut AutoCommit,
-        before: Vec<ChangeHash>,
-        focused_node_idx: Option<usize>,
-        metadata: Option<String>,
-        author: Option<UserId>,
-    ) -> bool {
-        self.record_committed_action_owned(doc, before, focused_node_idx, metadata, author, None)
-    }
-
-    /// Record a bound action without clearing another instance's redo history.
-    pub fn record_committed_action_in(
-        &mut self,
-        doc: &mut AutoCommit,
-        before: Vec<ChangeHash>,
-        focused_node_idx: Option<usize>,
-        metadata: Option<String>,
-        author: UserId,
-        instance: InstanceId,
-    ) -> bool {
-        self.record_committed_action_owned(
-            doc,
-            before,
-            focused_node_idx,
-            metadata,
-            Some(author),
-            Some(instance),
-        )
-    }
-
-    fn record_committed_action_owned(
-        &mut self,
-        doc: &mut AutoCommit,
-        before: Vec<ChangeHash>,
-        focused_node_idx: Option<usize>,
-        metadata: Option<String>,
-        author: Option<UserId>,
-        instance_id: Option<InstanceId>,
-    ) -> bool {
-        let after = doc.get_heads();
-        self.record_committed_span_owned(
-            before,
-            after,
-            focused_node_idx,
-            metadata,
-            author,
-            instance_id,
-        )
-    }
-
-    fn record_committed_span_owned(
-        &mut self,
-        before: Vec<ChangeHash>,
-        after: Vec<ChangeHash>,
-        focused_node_idx: Option<usize>,
-        metadata: Option<String>,
-        author: Option<UserId>,
-        instance_id: Option<InstanceId>,
-    ) -> bool {
-        self.record_committed_span_with_inverse(
-            before,
-            after,
-            focused_node_idx,
-            metadata,
-            author,
-            instance_id,
-            CommittedSpanInverse::default(),
-        )
-    }
-
-    /// As [`Self::record_committed_span_owned`], carrying optional
-    /// action-based undo/redo for outside-consequence actions.
-    pub(crate) fn record_committed_span_with_inverse(
-        &mut self,
-        before: Vec<ChangeHash>,
-        after: Vec<ChangeHash>,
-        focused_node_idx: Option<usize>,
-        metadata: Option<String>,
-        author: Option<UserId>,
-        instance_id: Option<InstanceId>,
-        inverse: CommittedSpanInverse,
-    ) -> bool {
-        if after == before {
-            // Nothing to undo, but the baseline moves up all the same — same
-            // reason as the empty-transaction path in `commit_action_authored`.
-            self.last_heads = after;
-            return false;
-        }
-        if !self.can_bump() {
-            return false;
-        }
-        push_history(
-            &mut self.undo_stack,
-            UndoEntry {
-                before,
-                after: after.clone(),
-                focused_node_idx,
-                widget_metadata: metadata,
-                author,
-                instance_id,
-                undo_via: inverse.undo_via,
-                redo_via: inverse.redo_via,
-                step: None,
-            },
-        );
-        if let Some(instance) = instance_id {
-            self.redo_stack
-                .retain(|entry| entry.instance_id != Some(instance));
-        } else {
-            self.redo_stack.clear();
-        }
-        self.last_heads = after;
-        self.bump();
-        true
-    }
-
-    /// Apply the inverse of `[entry.before, entry.after]` as a NEW forward
-    /// change merged into `doc`, returning the `[before, after]` heads of
-    /// that inverse so the opposite stack can later invert *it* (redo, or
-    /// re-undo). Concurrent remote ops merged in since `entry.after` are
-    /// untouched — only what the local action itself changed is rewritten.
-    ///
-    /// When `entry.undo_via` is set and `registry` can decode it, that
-    /// document action is applied instead of Automerge inverse patches, so an
-    /// outside consequence (outbox / del_outbox) is recorded through `apply`.
-    fn apply_inverse(
-        &mut self,
-        doc: &mut AutoCommit,
-        entry: &UndoEntry,
-        message: Option<String>,
-        named: Option<String>,
-        registry: Option<&tilo_actions::ActionRegistry>,
-        undone: &[ChangeHash],
-    ) -> (Vec<ChangeHash>, Vec<ChangeHash>) {
-        let inverse_before = doc.get_heads();
-        let via_action = entry
-            .undo_via
-            .as_ref()
-            .zip(registry)
-            .and_then(|(encoded, registry)| registry.decode(encoded).ok());
-        // The compensating action is a document change of its own, named in
-        // history the way the forward action was. A later move of this
-        // record into another room carries that change with the rest of the
-        // graph; a collaborator syncing the record sees the same queue write.
-        let history_message = if let Some(action) = via_action {
-            if action.apply(doc).is_err() {
-                write_revert_patches(doc, &entry.after, &entry.before);
-                message.or(named)
-            } else {
-                message
-                    .or_else(|| {
-                        entry
-                            .undo_via
-                            .as_ref()
-                            .and_then(history_message_for_encoded_action)
-                    })
-                    .or(named)
-            }
-        } else {
-            write_revert_patches(doc, &entry.after, &entry.before);
-            message.or(named)
-        };
-        // The document records what the undo took back, as the published
-        // `undo` does, so every way in sees the same history.
-        shared_history::mark_undone(doc, undone);
-        let _ = tilo_resource::history::commit_stamped_with_message(doc, history_message);
-        let inverse_after = doc.get_heads();
-        self.last_heads.clone_from(&inverse_after);
-        (inverse_before, inverse_after)
-    }
-
-    pub fn undo(
-        &mut self,
-        doc: &mut AutoCommit,
-        current_focused_idx: Option<usize>,
-        current_metadata: Option<String>,
-    ) -> Option<UndoEntry> {
-        self.undo_with_registry(doc, current_focused_idx, current_metadata, None)
-    }
-
-    /// [`Self::undo`] with a registry so action-based outside-consequence
-    /// undo can decode `undo_via`.
-    pub fn undo_with_registry(
-        &mut self,
-        doc: &mut AutoCommit,
-        current_focused_idx: Option<usize>,
-        current_metadata: Option<String>,
-        registry: Option<&tilo_actions::ActionRegistry>,
-    ) -> Option<UndoEntry> {
-        let index = self.undo_index_for(None)?;
-        self.undo_at(doc, index, current_focused_idx, current_metadata, registry)
-    }
-
-    fn undo_at(
-        &mut self,
-        doc: &mut AutoCommit,
-        index: usize,
-        focus: Option<usize>,
-        metadata: Option<String>,
-        registry: Option<&tilo_actions::ActionRegistry>,
-    ) -> Option<UndoEntry> {
-        if !self.can_bump() {
-            return None;
-        }
-        let entry = self.undo_stack.remove(index);
-        let step = step_context(doc, &entry, Direction::Undo);
-        let named = inverse_message(step.as_ref(), Direction::Undo);
-        let undone = shared_history::steps_of(
-            doc,
-            &shared_history::span_changes(doc, &entry.before, &entry.after),
-        );
-        let (before, after) = self.apply_inverse(doc, &entry, None, named, registry, &undone);
-        // Opposite stack: applying `redo_via` re-does the forward action;
-        // applying `undo_via` again undoes that redo.
-        push_history(
-            &mut self.redo_stack,
-            UndoEntry {
-                before,
-                after,
-                focused_node_idx: focus,
-                widget_metadata: metadata,
-                author: entry.author.clone(),
-                instance_id: entry.instance_id,
-                undo_via: entry.redo_via.clone(),
-                redo_via: entry.undo_via.clone(),
-                step,
-            },
-        );
-        self.bump();
-        Some(entry)
-    }
-
-    /// Whether `author` may revert `entry`: their own work, and anything
-    /// **unattributed**.
-    ///
-    /// The second half is what lets an author-scoped undo reach entries the
-    /// toolkit records for an app's own affordances —
-    /// [`CommittedActions::take_committed_action`](crate::undo::CommittedActions::take_committed_action)
-    /// (toolbar buttons, context-menu items, palette dispatch) has no author
-    /// to give, so those entries land with `author: None`.
-    ///
-    /// Sound rather than merely expedient: an entry only reaches these stacks
-    /// via a *local* commit boundary — a peer's ops arrive through
-    /// `State::load_incremental`, which re-baselines without pushing anything.
-    /// An entry naming a different person still belongs to them and is still
-    /// walked past.
-    fn claimable_by(entry: &UndoEntry, author: &UserId) -> bool {
-        entry.author.as_ref().is_none_or(|a| a == author)
-    }
-
-    pub fn undo_for_author(
-        &mut self,
-        doc: &mut AutoCommit,
-        author: &UserId,
-        current_focused_idx: Option<usize>,
-        current_metadata: Option<String>,
-    ) -> Option<UndoEntry> {
-        self.undo_for_author_with_registry(doc, author, current_focused_idx, current_metadata, None)
-    }
-
-    pub fn undo_for_author_with_registry(
-        &mut self,
-        doc: &mut AutoCommit,
-        author: &UserId,
-        current_focused_idx: Option<usize>,
-        current_metadata: Option<String>,
-        registry: Option<&tilo_actions::ActionRegistry>,
-    ) -> Option<UndoEntry> {
-        self.undo_claimed(
-            doc,
-            author,
-            |log| log.undo_index_for(Some(author)),
-            current_focused_idx,
-            current_metadata,
-            registry,
-        )
-    }
-
-    /// Undo the entry `index_of` picks for `author`, skipping what another
-    /// way in already took back; with nothing of this session's, the
-    /// person's own last step from the document's history.
-    fn undo_claimed(
-        &mut self,
-        doc: &mut AutoCommit,
-        author: &UserId,
-        index_of: impl Fn(&Self) -> Option<usize>,
-        current_focused_idx: Option<usize>,
-        current_metadata: Option<String>,
-        registry: Option<&tilo_actions::ActionRegistry>,
-    ) -> Option<UndoEntry> {
-        // A step another way in (an agent's or a script's `undo`) already
-        // took back is no step of this stack any more, and neither is an
-        // undo or redo made that way: Ctrl+Z goes on to the steps before.
-        while let Some(index) = index_of(self) {
-            let entry = self.undo_stack.get(index)?;
-            let span = shared_history::span_changes(doc, &entry.before, &entry.after);
-            let steps = shared_history::steps_of(doc, &span);
-            if !shared_history::published_moves_only(doc, &span)
-                && !shared_history::already_undone(doc, &steps)
-            {
-                return self.undo_at(doc, index, current_focused_idx, current_metadata, registry);
-            }
-            if !self.can_bump() {
-                return None;
-            }
-            self.undo_stack.remove(index);
-            self.bump();
-        }
-        // Nothing of this session's: the person's own steps from before (a
-        // restart, another window), as the document records them.
-        if !self.can_bump() {
-            return None;
-        }
-        let (before, after, step) = shared_history::undo_from_document(doc, author, registry)?;
-        self.last_heads.clone_from(&after);
-        push_history(
-            &mut self.redo_stack,
-            UndoEntry {
-                before: before.clone(),
-                after: after.clone(),
-                focused_node_idx: current_focused_idx,
-                widget_metadata: current_metadata,
-                author: Some(author.clone()),
-                instance_id: None,
-                undo_via: None,
-                redo_via: None,
-                step,
-            },
-        );
-        self.bump();
-        Some(UndoEntry {
-            before: after,
-            after: before,
-            focused_node_idx: None,
-            widget_metadata: None,
-            author: Some(author.clone()),
-            instance_id: None,
-            undo_via: None,
-            redo_via: None,
-            step: None,
-        })
-    }
-
-    pub fn undo_as(
-        &mut self,
-        doc: &mut AutoCommit,
-        author: Option<&UserId>,
-        current_focused_idx: Option<usize>,
-        current_metadata: Option<String>,
-    ) -> Option<UndoEntry> {
-        self.undo_as_with_registry(doc, author, current_focused_idx, current_metadata, None)
-    }
-
-    pub fn undo_as_with_registry(
-        &mut self,
-        doc: &mut AutoCommit,
-        author: Option<&UserId>,
-        current_focused_idx: Option<usize>,
-        current_metadata: Option<String>,
-        registry: Option<&tilo_actions::ActionRegistry>,
-    ) -> Option<UndoEntry> {
-        match author {
-            Some(a) => self.undo_for_author_with_registry(
-                doc,
-                a,
-                current_focused_idx,
-                current_metadata,
-                registry,
-            ),
-            None => self.undo_with_registry(doc, current_focused_idx, current_metadata, registry),
-        }
-    }
-
-    pub fn redo(
-        &mut self,
-        doc: &mut AutoCommit,
-        current_focused_idx: Option<usize>,
-        current_metadata: Option<String>,
-    ) -> Option<UndoEntry> {
-        self.redo_as_with_registry(doc, None, current_focused_idx, current_metadata, None)
-    }
-
-    pub fn redo_as(
-        &mut self,
-        doc: &mut AutoCommit,
-        author: Option<&UserId>,
-        current_focused_idx: Option<usize>,
-        current_metadata: Option<String>,
-    ) -> Option<UndoEntry> {
-        self.redo_as_with_registry(doc, author, current_focused_idx, current_metadata, None)
-    }
-
-    pub fn redo_as_with_registry(
-        &mut self,
-        doc: &mut AutoCommit,
-        author: Option<&UserId>,
-        current_focused_idx: Option<usize>,
-        current_metadata: Option<String>,
-        registry: Option<&tilo_actions::ActionRegistry>,
-    ) -> Option<UndoEntry> {
-        if let Some(index) = self.redo_index_for(author) {
-            return self.redo_at(doc, index, current_focused_idx, current_metadata, registry);
-        }
-        self.redo_from_document(doc, author?)
-    }
-
-    /// Bring back an undo from before this session (or made another way
-    /// in), as the document records it.
-    fn redo_from_document(&mut self, doc: &mut AutoCommit, author: &UserId) -> Option<UndoEntry> {
-        if !self.can_bump() {
-            return None;
-        }
-        let (before, after) = shared_history::redo_from_document(doc, author)?;
-        self.last_heads.clone_from(&after);
-        self.bump();
-        Some(UndoEntry {
-            before: after,
-            after: before,
-            focused_node_idx: None,
-            widget_metadata: None,
-            author: Some(author.clone()),
-            instance_id: None,
-            undo_via: None,
-            redo_via: None,
-            step: None,
-        })
-    }
-
-    fn redo_at(
-        &mut self,
-        doc: &mut AutoCommit,
-        index: usize,
-        focus: Option<usize>,
-        metadata: Option<String>,
-        registry: Option<&tilo_actions::ActionRegistry>,
-    ) -> Option<UndoEntry> {
-        if !self.can_bump() {
-            return None;
-        }
-        let entry = self.redo_stack.remove(index);
-        let step = step_context(doc, &entry, Direction::Redo);
-        let named = inverse_message(step.as_ref(), Direction::Redo);
-        let (before, after) = self.apply_inverse(doc, &entry, None, named, registry, &[]);
-        push_history(
-            &mut self.undo_stack,
-            UndoEntry {
-                before,
-                after,
-                focused_node_idx: focus,
-                widget_metadata: metadata,
-                author: entry.author.clone(),
-                instance_id: entry.instance_id,
-                undo_via: entry.redo_via.clone(),
-                redo_via: entry.undo_via.clone(),
-                step,
-            },
-        );
-        self.bump();
-        Some(entry)
-    }
-
-    fn instance_index(stack: &[UndoEntry], author: &UserId, instance: InstanceId) -> Option<usize> {
-        stack.iter().rposition(|entry| {
-            entry.instance_id == Some(instance) && entry.author.as_ref() == Some(author)
-        })
-    }
-
-    pub fn next_undo_in(&self, author: &UserId, instance: InstanceId) -> Option<&UndoEntry> {
-        Self::instance_index(&self.undo_stack, author, instance)
-            .and_then(|index| self.undo_stack.get(index))
-    }
-
-    pub fn next_redo_in(&self, author: &UserId, instance: InstanceId) -> Option<&UndoEntry> {
-        Self::instance_index(&self.redo_stack, author, instance)
-            .and_then(|index| self.redo_stack.get(index))
-    }
-
-    pub fn undo_in(
-        &mut self,
-        doc: &mut AutoCommit,
-        author: &UserId,
-        instance: InstanceId,
-        focus: Option<usize>,
-        metadata: Option<String>,
-    ) -> Option<UndoEntry> {
-        self.undo_in_with_registry(doc, author, instance, focus, metadata, None)
-    }
-
-    pub fn undo_in_with_registry(
-        &mut self,
-        doc: &mut AutoCommit,
-        author: &UserId,
-        instance: InstanceId,
-        focus: Option<usize>,
-        metadata: Option<String>,
-        registry: Option<&tilo_actions::ActionRegistry>,
-    ) -> Option<UndoEntry> {
-        self.undo_claimed(
-            doc,
-            author,
-            |log| Self::instance_index(&log.undo_stack, author, instance),
-            focus,
-            metadata,
-            registry,
-        )
-    }
-
-    pub fn redo_in(
-        &mut self,
-        doc: &mut AutoCommit,
-        author: &UserId,
-        instance: InstanceId,
-        focus: Option<usize>,
-        metadata: Option<String>,
-    ) -> Option<UndoEntry> {
-        self.redo_in_with_registry(doc, author, instance, focus, metadata, None)
-    }
-
-    pub fn redo_in_with_registry(
-        &mut self,
-        doc: &mut AutoCommit,
-        author: &UserId,
-        instance: InstanceId,
-        focus: Option<usize>,
-        metadata: Option<String>,
-        registry: Option<&tilo_actions::ActionRegistry>,
-    ) -> Option<UndoEntry> {
-        match Self::instance_index(&self.redo_stack, author, instance) {
-            Some(index) => self.redo_at(doc, index, focus, metadata, registry),
-            None => self.redo_from_document(doc, author),
-        }
-    }
-
-    /// See [`State::restore_to_heads`].
-    pub fn restore_to_heads(
-        &mut self,
-        doc: &mut AutoCommit,
-        target_heads: &[ChangeHash],
-        focused_node_idx: Option<usize>,
-        metadata: Option<String>,
-        author: Option<UserId>,
-    ) -> bool {
-        self.restore_to_heads_owned(
-            doc,
-            target_heads,
-            focused_node_idx,
-            metadata,
-            author,
-            None,
-            None,
-        )
-    }
-
-    /// See [`State::restore_to_heads_with_context`].
-    pub fn restore_to_heads_with_message(
-        &mut self,
-        doc: &mut AutoCommit,
-        target_heads: &[ChangeHash],
-        focused_node_idx: Option<usize>,
-        metadata: Option<String>,
-        author: Option<UserId>,
-        message: Option<String>,
-    ) -> bool {
-        self.restore_to_heads_owned(
-            doc,
-            target_heads,
-            focused_node_idx,
-            metadata,
-            author,
-            None,
-            message,
-        )
-    }
-
-    pub fn restore_to_heads_in(
-        &mut self,
-        doc: &mut AutoCommit,
-        target_heads: &[ChangeHash],
-        focused_node_idx: Option<usize>,
-        metadata: Option<String>,
-        author: UserId,
-        instance: InstanceId,
-    ) -> bool {
-        self.restore_to_heads_owned(
-            doc,
-            target_heads,
-            focused_node_idx,
-            metadata,
-            Some(author),
-            Some(instance),
-            None,
-        )
-    }
-
-    fn restore_to_heads_owned(
-        &mut self,
-        doc: &mut AutoCommit,
-        target_heads: &[ChangeHash],
-        focused_node_idx: Option<usize>,
-        metadata: Option<String>,
-        author: Option<UserId>,
-        instance_id: Option<InstanceId>,
-        message: Option<String>,
-    ) -> bool {
-        let current = doc.get_heads();
-        if current == target_heads {
-            return false;
-        }
-        if !self.can_bump() {
-            return false;
-        }
-        // `apply_inverse` writes the delta that leads from `after` back to
-        // `before`; naming the live state as `after` and the historical state
-        // as `before` is what turns "undo one action" into "travel to this
-        // version".
-        let entry = UndoEntry {
-            before: target_heads.to_vec(),
-            after: current,
-            focused_node_idx,
-            widget_metadata: metadata.clone(),
-            author: author.clone(),
-            instance_id,
-            undo_via: None,
-            redo_via: None,
-            step: None,
-        };
-        let (inv_before, inv_after) = self.apply_inverse(doc, &entry, message, None, None, &[]);
-        if inv_before == inv_after {
-            return false;
-        }
-        push_history(
-            &mut self.undo_stack,
-            UndoEntry {
-                before: inv_before,
-                after: inv_after,
-                focused_node_idx,
-                widget_metadata: metadata,
-                author,
-                instance_id,
-                undo_via: None,
-                redo_via: None,
-                step: None,
-            },
-        );
-        if let Some(instance) = instance_id {
-            self.redo_stack
-                .retain(|entry| entry.instance_id != Some(instance));
-        } else {
-            self.redo_stack.clear();
-        }
-        self.bump();
-        true
-    }
-}
-
 /// The unified state object that holds our CRDT document.
 pub struct State {
     /// Compatibility cursor surface; modern collaboration uses `PresenceCtx`.
@@ -1301,31 +309,32 @@ impl State {
         )
     }
 
-    /// Inspect the most recently pushed undo entry without popping it.
-    pub fn peek_last_undo(&self) -> Option<&UndoEntry> {
-        self.undo.peek_last_undo()
+    /// The newest step of this session still in effect, without taking it
+    /// back.
+    pub fn peek_last_undo(&self) -> Option<UndoEntry> {
+        self.undo.peek_last_undo(&self.doc)
     }
 
-    /// How many entries this document's undo stack holds. See
+    /// How many steps of this session are in effect. See
     /// [`UndoLog::undo_depth`].
     pub fn undo_depth(&self) -> usize {
-        self.undo.undo_depth()
+        self.undo.undo_depth(&self.doc)
     }
 
-    /// How many entries this document's redo stack holds. See
+    /// How many undos of this session redo can bring back. See
     /// [`UndoLog::redo_depth`].
     pub fn redo_depth(&self) -> usize {
-        self.undo.redo_depth()
+        self.undo.redo_depth(&self.doc)
     }
 
     /// Whether `author` has anything to undo / redo. See
     /// [`UndoLog::can_undo_as`].
     pub fn can_undo_as(&self, author: Option<&UserId>) -> bool {
-        self.undo.can_undo_as(author)
+        self.undo.can_undo_as(&self.doc, author)
     }
 
     pub fn can_redo_as(&self, author: Option<&UserId>) -> bool {
-        self.undo.can_redo_as(author)
+        self.undo.can_redo_as(&self.doc, author)
     }
 
     /// What the history can do for `author` right now, ready to hand to a
@@ -1340,12 +349,12 @@ impl State {
     pub fn undo_status(&mut self, author: Option<&UserId>) -> crate::undo::UndoStatus {
         let undo_span = self
             .undo
-            .next_undo_as(author)
-            .map(|e| (e.before.clone(), e.after.clone()));
+            .next_undo_as(&self.doc, author)
+            .map(|e| (e.before, e.after));
         let redo_span = self
             .undo
-            .next_redo_as(author)
-            .map(|e| (e.after.clone(), e.before.clone()));
+            .next_redo_as(&self.doc, author)
+            .map(|e| (e.after, e.before));
         crate::undo::UndoStatus {
             can_undo: undo_span.is_some(),
             can_redo: redo_span.is_some(),
@@ -1381,36 +390,12 @@ impl State {
         metadata: Option<String>,
         author: Option<UserId>,
     ) -> bool {
-        self.record_committed_action_authored_with_revert(
+        self.undo.record_committed_action_authored(
+            &mut self.doc,
             before,
             focused_node_idx,
             metadata,
             author,
-            None,
-            None,
-        )
-    }
-
-    /// As [`Self::record_committed_action_authored`], carrying optional
-    /// action-based undo/redo for outside-consequence document actions.
-    pub fn record_committed_action_authored_with_revert(
-        &mut self,
-        before: Vec<ChangeHash>,
-        focused_node_idx: Option<usize>,
-        metadata: Option<String>,
-        author: Option<UserId>,
-        undo_via: Option<tilo_actions::EncodedAction>,
-        redo_via: Option<tilo_actions::EncodedAction>,
-    ) -> bool {
-        let after = self.doc.get_heads();
-        self.undo.record_committed_span_with_inverse(
-            before,
-            after,
-            focused_node_idx,
-            metadata,
-            author,
-            None,
-            CommittedSpanInverse { undo_via, redo_via },
         )
     }
 
@@ -2388,37 +1373,36 @@ mod tests {
         clippy::too_many_lines,
         reason = "one scenario, one labelled phase per merged case"
     )]
-    fn the_history_stack_is_a_bounded_lifo_carrying_focus_and_context() {
-        // phase: history_stack_keeps_only_the_newest_bounded_window
+    fn the_history_is_a_lifo_carrying_focus_and_context() {
+        // phase: history_keeps_every_step_in_the_document
+        // The history is the document's: no window evicts old steps, and the
+        // newest stays undoable whatever came before it.
         {
-            let mut stack = Vec::new();
-            let extra = 7usize;
-            for index in 0..UNDO_HISTORY_LIMIT.saturating_add(extra) {
-                push_history(
-                    &mut stack,
-                    UndoEntry {
-                        before: Vec::new(),
-                        after: Vec::new(),
-                        focused_node_idx: Some(index),
-                        widget_metadata: None,
-                        author: None,
-                        instance_id: None,
-                        undo_via: None,
-                        redo_via: None,
-                        step: None,
-                    },
-                );
+            let mut state = State::new();
+            let steps = 600usize;
+            for index in 0..steps {
+                state
+                    .doc
+                    .put(
+                        &automerge::ROOT,
+                        "k",
+                        ScalarValue::Int(i64::try_from(index).unwrap()),
+                    )
+                    .unwrap();
+                state.commit_action(Some(index), None);
             }
-            assert_eq!(stack.len(), UNDO_HISTORY_LIMIT);
+            assert_eq!(state.undo_depth(), steps);
+            let undone = state.undo(None, None).expect("the newest step is undoable");
+            assert_eq!(undone.focused_node_idx, steps.checked_sub(1));
             assert_eq!(
-                stack.first().and_then(|entry| entry.focused_node_idx),
-                Some(extra),
-                "the oldest entries should be evicted first"
-            );
-            assert_eq!(
-                stack.last().and_then(|entry| entry.focused_node_idx),
-                UNDO_HISTORY_LIMIT.saturating_add(extra).checked_sub(1),
-                "the newest action must remain undoable"
+                state
+                    .doc
+                    .get(&automerge::ROOT, "k")
+                    .unwrap()
+                    .unwrap()
+                    .0
+                    .as_i64(),
+                i64::try_from(steps).unwrap().checked_sub(2)
             );
         }
         // phase: redo_entry_carries_current_focus_and_metadata
@@ -2481,8 +1465,12 @@ mod tests {
             let change = changes.last().expect("native change");
             let decoded = change
                 .message()
-                .and_then(|message| tilo_actions::ActionContext::from_change_message(message));
-            assert_eq!(decoded.as_ref(), Some(&context));
+                .and_then(|message| tilo_actions::ActionContext::from_change_message(message))
+                .map(owned_restore_tests::unstamped);
+            assert_eq!(
+                decoded,
+                Some(context.with_invoker(tilo_actions::ActionInvoker::actor("ada")))
+            );
             assert!(state.peek_last_undo().is_some());
         }
         // phase: single_user_undo_redo_roundtrip
@@ -3002,7 +1990,10 @@ mod tests {
             assert!(!history.restore_to_heads_in(&mut doc, &before, None, None, alice(), 11));
             assert_eq!(doc.get_heads(), heads);
             assert_eq!(
-                history.next_redo_in(&alice(), 11).unwrap().instance_id,
+                history
+                    .next_redo_in(&doc, &alice(), 11)
+                    .unwrap()
+                    .instance_id,
                 Some(11)
             );
         }

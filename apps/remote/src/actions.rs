@@ -36,7 +36,7 @@ pub enum RemoteEffect {
         connection: ConnectionId,
     },
     /// Connect.
-    #[effect(row, job, privileged, permission = "read")]
+    #[effect(row, job, privileged, kind = "read")]
     Connect {
         #[param("The saved connection's id")]
         connection: ConnectionId,
@@ -172,7 +172,7 @@ mod tests {
     use super::*;
     use crate::model::{AuthMethod, ConnectionKind};
     use tilo_actions::{
-        ConfirmationPolicy, ParamType, PermissionRequirement, ResultSpec, RetryPolicy, RiskLevel,
+        ActionKind, ConfirmationPolicy, ParamType, ResultSpec, RetryPolicy, RiskLevel,
     };
     use ui::tilo_resource::Atom;
     use uuid::Uuid;
@@ -267,7 +267,7 @@ mod tests {
             connection.auth = AuthMethod::DeviceIdentity;
             connection.host = Atom(iroh_base::SecretKey::generate().public().to_string());
             let connect = connect_spec(&connection);
-            assert_eq!(connect.contract.permission, PermissionRequirement::Read);
+            assert_eq!(connect.contract.kind, ActionKind::Read);
             assert_eq!(connect.contract.risk, RiskLevel::Privileged);
             assert_eq!(connect.contract.confirmation, ConfirmationPolicy::Confirm);
             assert_eq!(connect.contract.retry, RetryPolicy::AtMostOnce);
@@ -277,7 +277,7 @@ mod tests {
                 .into_iter()
                 .find(|action| action.id == "send-text")
                 .expect("typed input action");
-            assert_eq!(input.contract.permission, PermissionRequirement::Write);
+            assert_eq!(input.contract.kind, ActionKind::Undoable);
             assert_eq!(input.contract.risk, RiskLevel::Privileged);
             assert_eq!(input.contract.confirmation, ConfirmationPolicy::Confirm);
             assert_eq!(input.contract.retry, RetryPolicy::AtMostOnce);

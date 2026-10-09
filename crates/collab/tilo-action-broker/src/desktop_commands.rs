@@ -277,7 +277,7 @@ pub(crate) fn open_app_resource(resource: &str) -> Option<&str> {
 /// names its command id and the windows it opened.
 fn desktop_contract() -> tilo_actions::ActionContract {
     tilo_actions::ActionContract {
-        permission: tilo_actions::PermissionRequirement::Write,
+        kind: tilo_actions::ActionKind::Undoable,
         result: tilo_actions::ResultSpec::Json {
             schema: DesktopCommandReceipt::schema(),
         },

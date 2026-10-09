@@ -727,14 +727,14 @@ impl Rooms {
                 continue;
             }
             let role = match room.peer().permissions(device, system_time(now)) {
-                Ok((collab_types::role::Role::Owner | collab_types::role::Role::Editor, _, _)) => {
-                    RoomRole::Editor
-                }
-                Ok((collab_types::role::Role::Commenter, _, _)) => RoomRole::Commenter,
-                Ok((collab_types::role::Role::Viewer, _, _)) => RoomRole::Viewer,
-                Ok((collab_types::role::Role::Denied, _, _)) | Err(_) => {
-                    return Ok(JoinReply::Declined);
-                }
+                Ok(member) => match member.role {
+                    collab_types::role::Role::Owner | collab_types::role::Role::Editor => {
+                        RoomRole::Editor
+                    }
+                    collab_types::role::Role::Commenter => RoomRole::Commenter,
+                    collab_types::role::Role::Viewer => RoomRole::Viewer,
+                },
+                Err(_) => return Ok(JoinReply::Declined),
             };
             return Ok(JoinReply::Admitted {
                 room: room.room().to_owned(),

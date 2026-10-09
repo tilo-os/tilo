@@ -561,7 +561,7 @@ impl DrainQueues {
                 app_id: entry.app_id,
                 cluster_id: entry.cluster_id,
                 record_id: entry.record_id,
-                role: entry.role,
+                author: entry.author,
                 replayed: entry.replayed,
                 envelope: *entry.envelope,
             };

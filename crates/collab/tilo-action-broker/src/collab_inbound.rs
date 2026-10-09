@@ -5,22 +5,25 @@ use crate::collab_broker::FanoutState;
 use crate::collab_core::{AuditEntry, BrokerChannels, apply_redaction_from_envelope};
 use crate::route::CrdtRoute;
 use collab_types::{
-    ArtifactKind, ChannelState, OpClass, RedactedMarker, Role, SignedOp, ValidationError,
+    ArtifactKind, ChannelState, OpClass, RedactedMarker, SignedOp, ValidationError,
     validate_admitted_inbound_op, validate_replayed_inbound_op,
 };
 use std::{
     sync::{Arc, Mutex},
     time::Duration,
 };
+use tilo_action_policy::Standing;
 use ui::collaboration::CollabEvent;
 
 /// A document op as the transport delivered it: the route its publishing
-/// host stamped, and the author's role in the room.
+/// host stamped, and the author's standing in the room.
 pub struct RemoteDocument {
     pub app_id: String,
     pub cluster_id: String,
     pub record_id: String,
-    pub role: collab_types::Role,
+    /// The author, the room's policy and any bound on them (a device not
+    /// theirs), as the host established them for the authenticated peer.
+    pub author: Standing,
     /// A workspace host replayed it from its retained, host-ordered history
     /// (before answering the subscription): old by nature.
     pub replayed: bool,
@@ -39,15 +42,16 @@ const MAX_CLOCK_SKEW: Duration = Duration::from_secs(300);
 /// replayed history.
 pub fn validate_document(
     envelope: &SignedOp,
-    role: Role,
+    author: &Standing,
     replayed: bool,
     state: &mut ChannelState,
     now: std::time::SystemTime,
 ) -> Result<(), ValidationError> {
+    let author = author.authority();
     if replayed {
-        validate_replayed_inbound_op(envelope, role, state, now, MAX_CLOCK_SKEW)
+        validate_replayed_inbound_op(envelope, &author, state, now, MAX_CLOCK_SKEW)
     } else {
-        validate_admitted_inbound_op(envelope, role, state, now, MAX_CLOCK_SKEW)
+        validate_admitted_inbound_op(envelope, &author, state, now, MAX_CLOCK_SKEW)
     }
 }
 
@@ -66,7 +70,7 @@ pub fn deliver(
         app_id,
         cluster_id,
         record_id,
-        role,
+        author,
         replayed,
         envelope,
     } = document;
@@ -92,11 +96,13 @@ pub fn deliver(
             };
             if allowed {
                 let state = ch.state_for(artifact);
+                state.room.clone_from(&cluster_id);
                 state.artifacts.insert(artifact, ArtifactKind::Note);
                 state.artifact_apps.insert(artifact, app_id);
+                state.artifact_records.insert(artifact, record_id);
                 validate_document(
                     &envelope,
-                    role,
+                    &author,
                     replayed,
                     state,
                     std::time::SystemTime::now(),
@@ -249,6 +255,15 @@ mod tests {
     use super::*;
     use collab_types::{DocumentMutation, document_artifact_id, document_attestation_id};
 
+    /// An editor of the room the ops are written in.
+    fn editor() -> Standing {
+        let mut policy = tilo_action_policy::RoomPolicy::new("room", "owner");
+        policy
+            .members
+            .insert("editor".into(), tilo_action_policy::Role::Editor);
+        Standing::person(policy, "editor")
+    }
+
     #[test]
     fn a_host_replay_of_old_history_is_admitted_where_a_live_op_that_old_is_not() {
         let key = ed25519_dalek::SigningKey::from_bytes(&[3; 32]);
@@ -267,21 +282,24 @@ mod tests {
         collab_types::sign_op(&mut op, &key).unwrap();
         let now = std::time::SystemTime::now();
         let channel = || {
-            let mut state = ChannelState::default();
+            let mut state = ChannelState {
+                room: "room".into(),
+                ..ChannelState::default()
+            };
             state.artifacts.insert(op.artifact, ArtifactKind::Note);
             state
         };
         assert_eq!(
-            validate_document(&op, Role::Editor, false, &mut channel(), now),
+            validate_document(&op, &editor(), false, &mut channel(), now),
             Err(ValidationError::OutsideValidityWindow),
         );
         let mut state = channel();
         assert_eq!(
-            validate_document(&op, Role::Editor, true, &mut state, now),
+            validate_document(&op, &editor(), true, &mut state, now),
             Ok(())
         );
         assert!(matches!(
-            validate_document(&op, Role::Editor, true, &mut state, now),
+            validate_document(&op, &editor(), true, &mut state, now),
             Err(ValidationError::ReplaySeq { .. })
         ));
     }
@@ -309,7 +327,7 @@ mod tests {
             app_id: "notes".into(),
             cluster_id: "room".into(),
             record_id: "record".into(),
-            role: Role::Editor,
+            author: editor(),
             replayed,
             envelope,
         };

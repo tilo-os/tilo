@@ -134,7 +134,7 @@ fn open_spec() -> tilo_actions::ActionSpec {
             })
         },
     )
-    .requiring(tilo_actions::PermissionRequirement::Read)
+    .of_kind(tilo_actions::ActionKind::Read)
     .with_description("Open the app at one item: the anchor of a search hit.")
 }
 
@@ -157,7 +157,7 @@ fn item_open_spec(anchor: &str) -> tilo_actions::ActionSpec {
         Vec::new(),
         move |_| encoded.clone(),
     )
-    .requiring(tilo_actions::PermissionRequirement::Read)
+    .of_kind(tilo_actions::ActionKind::Read)
     .with_description("Show this item.")
 }
 
@@ -211,7 +211,7 @@ fn read_spec() -> tilo_actions::ActionSpec {
             })
         },
     )
-    .requiring(tilo_actions::PermissionRequirement::Read)
+    .of_kind(tilo_actions::ActionKind::Read)
     .with_description(
         "What this holds as typed data: with no item, the resource and the ids of what it contains; with an item id, that item's content.",
     );
@@ -685,12 +685,29 @@ impl<R: Resource> ResourceRoot<R> {
             };
             self.updaters.run(&self.live.get(), &change);
         }
+        self.live.place_landings();
         self.feeds.refresh(doc);
         self.live
             .with(|state| self.effects.drain_projections(state, revision));
         self.effects.poll_jobs();
         head
     }
+}
+
+/// The resource's own actions `encoded` applies: itself, or each member of
+/// a group of them, last landing last.
+fn own_actions<R: Resource>(encoded: &tilo_actions::EncodedAction) -> Vec<R::Action> {
+    if encoded.type_id == R::ACTION_TYPE {
+        return serde_json::from_slice(&encoded.payload)
+            .map(|action| vec![action])
+            .unwrap_or_default();
+    }
+    if encoded.type_id == tilo_resource::group::group_type::<R>() {
+        return serde_json::from_slice::<tilo_resource::ActionGroup<R::Action>>(&encoded.payload)
+            .map(|group| group.actions)
+            .unwrap_or_default();
+    }
+    Vec::new()
 }
 
 /// How much of a publication [`ResourceRoot::decorate_publication`] adds.
@@ -1266,12 +1283,6 @@ impl<R: Resource> Decorator for ResourceRoot<R> {
     // The undo boundary of a surface's immediate actions this event; the
     // host records one step per event and author.
 
-    fn take_action_revert(
-        &mut self,
-    ) -> Option<(tilo_actions::EncodedAction, tilo_actions::EncodedAction)> {
-        self.dispatch.take_action_revert()
-    }
-
     // A surface's step stays open for the actions that continue it (the
     // letters of a word), which report no boundary of their own.
 
@@ -1813,6 +1824,13 @@ impl<R: Resource> ui_core::history_mode::capability::DocumentHistory for Resourc
         doc: &ui_core::automerge::AutoCommit,
         path: &ui_core::automerge::ObjId,
     ) {
+        // An action a participant took (an agent's verb) leaves them where
+        // the resource says it lands, once the state follows it.
+        if let Some(participant) = ui_core::invocation_scope::current_participant() {
+            for applied in own_actions::<R>(action) {
+                self.live.note_applied(participant.clone(), applied);
+            }
+        }
         if let Some(content) = ui_core::widget::capability::capability_mut::<
             dyn ui_core::history_mode::capability::DocumentHistory,
         >(self.content.as_mut())

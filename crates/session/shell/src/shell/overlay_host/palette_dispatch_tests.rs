@@ -552,9 +552,7 @@ fn palette_confirmations_cannot_forge_identity_or_admin_and_wait_for_the_overlay
                 .find(|result| result.id == "identity.select")
                 .expect("identity action")
         };
-        let before = chrome.borrow().tree().desktop.workspaces[0]
-            .capabilities
-            .clone();
+        let before = chrome.borrow().tree().desktop.workspaces[0].sandbox.clone();
         host.pending_palette_action = Some(action);
         host.palette
             .set_query(r#"{"id":"does-not-exist","confirm":false}"#);
@@ -568,7 +566,7 @@ fn palette_confirmations_cannot_forge_identity_or_admin_and_wait_for_the_overlay
             "refused palette action remains editable"
         );
         assert_eq!(
-            chrome.borrow().tree().desktop.workspaces[0].capabilities,
+            chrome.borrow().tree().desktop.workspaces[0].sandbox,
             before,
             "false confirmation cannot create an Admin grant"
         );

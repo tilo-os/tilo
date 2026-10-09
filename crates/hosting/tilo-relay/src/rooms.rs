@@ -591,18 +591,24 @@ impl Rooms {
         room: &str,
         device: [u8; 32],
     ) -> Option<collab_types::role::Role> {
-        use collab_types::caps::{Actor, CapDecision, ResourceRef, Verb, decide_capability};
         let governed = self.room(room).await.ok()?;
         let governed = governed.lock().await;
         let now = SystemTime::now();
-        let (role, caps, person) = governed.peer().permissions(device, now).ok()?;
+        let member = governed.peer().permissions(device, now).ok()?;
         drop(governed);
-        let actor = Actor::person(Some(role), person).in_room(room.to_owned());
-        let resource = ResourceRef::Room(room.to_owned());
-        let seconds = now.duration_since(SystemTime::UNIX_EPOCH).ok()?.as_secs();
-        (decide_capability(&actor, &resource, Verb::Write, &caps, Some(seconds))
-            == CapDecision::Allow)
-            .then_some(role)
+        let millis =
+            u64::try_from(now.duration_since(SystemTime::UNIX_EPOCH).ok()?.as_millis()).ok()?;
+        let foreign_bound = tilo_action_policy::roles::foreign_device_bound();
+        (member
+            .authority(&foreign_bound)
+            .decide(
+                &member.policy.node(),
+                tilo_action_policy::ActionKind::Undoable,
+                &tilo_action_policy::Context::at(millis),
+            )
+            .answer
+            == tilo_action_policy::Answer::Allow)
+            .then_some(member.role)
     }
 
     async fn room(&self, room: &str) -> Result<Arc<AsyncMutex<GovernedRoom>>, CollaborationError> {
@@ -745,11 +751,24 @@ impl Rooms {
             return Ok(());
         }
         let now = SystemTime::now();
-        let (role, ..) = room.peer().permissions(author, now)?;
-        if !matches!(
-            role,
-            collab_types::role::Role::Owner | collab_types::role::Role::Editor
-        ) {
+        let member = room.peer().permissions(author, now)?;
+        let foreign_bound = tilo_action_policy::roles::foreign_device_bound();
+        let millis = now
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .ok()
+            .and_then(|elapsed| u64::try_from(elapsed.as_millis()).ok())
+            .ok_or("relay clock is before the Unix epoch")?;
+        let node = collab_types::validator::document_node(&member.policy.room, &app_id, &record_id);
+        if member
+            .authority(&foreign_bound)
+            .decide(
+                &node,
+                tilo_action_policy::ActionKind::Undoable,
+                &tilo_action_policy::Context::at(millis),
+            )
+            .answer
+            != tilo_action_policy::Answer::Allow
+        {
             return Err(format!(
                 "{app_id} record written by a device that may not edit"
             ));

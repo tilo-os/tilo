@@ -229,7 +229,6 @@ pub fn record_dispatched_action<S: std::hash::BuildHasher>(
     author: &crate::permissions::UserId,
 ) -> bool {
     let mut brackets: Vec<Vec<automerge::ChangeHash>> = Vec::new();
-    let mut revert = None;
     let mut visited = std::collections::HashSet::new();
     for w_ptr in std::iter::once(root).chain(node_map.values().copied()) {
         // SAFETY: see the function's safety note; the pointer is live.
@@ -241,9 +240,6 @@ pub fn record_dispatched_action<S: std::hash::BuildHasher>(
         let w = unsafe { &mut *w_ptr };
         if let Some(before) = crate::undo::take_committed_action(w) {
             brackets.push(before);
-            if revert.is_none() {
-                revert = w.take_action_revert();
-            }
         }
     }
     let Some(before) = earliest_bracket(state, brackets) else {
@@ -252,18 +248,7 @@ pub fn record_dispatched_action<S: std::hash::BuildHasher>(
     if state.doc.get_heads() == before {
         return false;
     }
-    let (undo_via, redo_via) = match revert {
-        Some((undo, redo)) => (Some(undo), Some(redo)),
-        None => (None, None),
-    };
-    state.record_committed_action_authored_with_revert(
-        before,
-        None,
-        None,
-        Some(author.clone()),
-        undo_via,
-        redo_via,
-    );
+    state.record_committed_action_authored(before, None, None, Some(author.clone()));
     true
 }
 
@@ -669,8 +654,8 @@ pub(crate) fn status_snapshot(
     history: &crate::state::UndoLog,
     author: Option<&crate::permissions::UserId>,
 ) -> UndoStatus {
-    let undo = history.next_undo_as(author);
-    let redo = history.next_redo_as(author);
+    let undo = history.next_undo_as(doc, author);
+    let redo = history.next_redo_as(doc, author);
     let mut snapshot = doc.clone();
     // An entry an undo or redo already moved names the step it carries, not
     // the undo change that moved it last.
@@ -684,7 +669,7 @@ pub(crate) fn status_snapshot(
     UndoStatus {
         can_undo: undo.is_some(),
         can_redo: redo.is_some(),
-        undo_summary: undo.map(|entry| summary(entry, &entry.before, &entry.after)),
-        redo_summary: redo.map(|entry| summary(entry, &entry.after, &entry.before)),
+        undo_summary: undo.map(|entry| summary(&entry, &entry.before, &entry.after)),
+        redo_summary: redo.map(|entry| summary(&entry, &entry.after, &entry.before)),
     }
 }

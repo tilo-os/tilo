@@ -116,7 +116,7 @@ impl PrintDefaults {
 #[effect(operation = "print-centre.effects", device_only)]
 pub enum PrintCentreEffect {
     /// Refresh printers and documents.
-    #[effect(permission = "read")]
+    #[effect(kind = "read")]
     Refresh,
     /// Find network printers.
     #[effect(job)]

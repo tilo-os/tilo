@@ -21,6 +21,8 @@ path = "src/lib.rs"
 # no compositor dependency. See `src/lib.rs` for the wire contract.
 
 [dependencies]
+tilo-action-policy = { version = "0.1.0", path = "../action-policy" }
+tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
 getrandom.workspace = true
 web-time = { version = "1", features = ["serde"] }
 ed25519-dalek = { workspace = true, features = ["serde", "rand_core"] }
@@ -40,7 +42,6 @@ uuid.workspace = true
 # The action a change claims, named as the executor names it.
 tilo-actions = { version = "0.1.0", path = "../actions" }
 automerge.workspace = true
-tilo-action-policy = { version = "0.1.0", path = "../action-policy" }
 
 [dev-dependencies]
 serde_json.workspace = true

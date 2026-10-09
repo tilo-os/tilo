@@ -210,9 +210,12 @@ fn native_text_keeps_first_compensation_latest_redo_and_different_field_boundari
     assert_eq!(value(&records, &checkout, "second"), "");
     assert_eq!(value(&records, &checkout, "first"), "abc");
     let entry = restore(&binding, &mut outer, crate::undo::UndoRequest::Undo);
-    let inverse: TextEdit = serde_json::from_slice(&entry.undo_via.unwrap().payload).unwrap();
-    let redo: TextEdit = serde_json::from_slice(&entry.redo_via.unwrap().payload).unwrap();
-    assert_eq!(inverse.value, "");
+    // The burst's newest change records how to take it back and bring it
+    // back; undo takes the whole burst back.
+    let compensation = entry.step.unwrap().compensation.unwrap();
+    let inverse: TextEdit = serde_json::from_slice(&compensation.undo.payload).unwrap();
+    let redo: TextEdit = serde_json::from_slice(&compensation.redo.payload).unwrap();
+    assert_eq!(inverse.value, "ab");
     assert_eq!(redo.value, "abc");
     assert_eq!(value(&records, &checkout, "first"), "");
     restore(&binding, &mut outer, crate::undo::UndoRequest::Redo);

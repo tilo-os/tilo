@@ -1,8 +1,9 @@
 //! Bounded replaceable recovery material; immutable obligations remain elsewhere.
 use super::{
     ArtifactKind, BTreeMap, ChannelState, DocumentMutation, Duration, Ed25519PublicKey,
-    LocalDocument, MAX_PUBLICATION_BYTES, MAX_PUBLICATIONS, NeighbourMsg, OpClass, ReadDoc, Role,
-    Route, SignedOp, SigningKey, StatePeer, SystemTime, err, peer_handle, publication_size, room,
+    LocalDocument, MAX_PUBLICATION_BYTES, MAX_PUBLICATIONS, MemberAuthority, NeighbourMsg, OpClass,
+    ReadDoc, Route, SignedOp, SigningKey, StatePeer, SystemTime, err, peer_handle,
+    publication_size, room,
 };
 
 /// A historical byte/count estimate, never signing or document authority.
@@ -299,13 +300,18 @@ impl StatePeer {
         route: &Route,
         envelope: &SignedOp,
         now: SystemTime,
-    ) -> Result<Role, String> {
+    ) -> Result<MemberAuthority, String> {
         let policy = self.validate_present_media_policy()?;
         if !self.fresh_local_recovery_checkpoint(route, now)? {
             return Err("recovery projection needs fresh genuine governor checkpoint".into());
         }
-        let role =
-            self.authorize_document(envelope.author.as_bytes(), &route.app, envelope, now)?;
+        let role = self.authorize_document(
+            envelope.author.as_bytes(),
+            &route.app,
+            &route.record,
+            envelope,
+            now,
+        )?;
         let document = self
             .core
             .documents
@@ -327,7 +333,7 @@ impl StatePeer {
         &self,
         route: &Route,
         envelope: &SignedOp,
-        role: Role,
+        member: &MemberAuthority,
         now: SystemTime,
         reserved: bool,
     ) -> Result<ChannelState, String> {
@@ -344,15 +350,21 @@ impl StatePeer {
         channel
             .artifact_apps
             .insert(envelope.artifact, route.app.clone());
+        channel
+            .artifact_records
+            .insert(envelope.artifact, route.record.clone());
+        channel.room.clone_from(&self.core.room);
+        channel.grants.clone_from(&member.policy.grants);
         if reserved {
             // Historical proof already checked the real persisted floor. This
             // isolated validation copy must still run role/clearance/redaction
             // checks after replay validation; it is never committed.
             channel.last_seq_per_author.remove(&envelope.author);
         }
+        let bound = tilo_action_policy::roles::foreign_device_bound();
         collab_types::validate_admitted_inbound_op(
             envelope,
-            role,
+            &member.authority(&bound),
             &mut channel,
             now,
             Duration::from_secs(300),
@@ -385,7 +397,7 @@ impl StatePeer {
                 return Err("recovery projection is not an app document".into());
             };
             let role = self.recovery_current_role(&local.route, envelope, now)?;
-            self.recovery_validated_channel(&local.route, envelope, role, now, true)?;
+            self.recovery_validated_channel(&local.route, envelope, &role, now, true)?;
         }
         Ok(())
     }
@@ -437,7 +449,7 @@ impl StatePeer {
                         return Err("recovery projection is not an app document".into());
                     };
                     let role = candidate.recovery_current_role(route, envelope, now)?;
-                    candidate.recovery_validated_channel(route, envelope, role, now, true)?;
+                    candidate.recovery_validated_channel(route, envelope, &role, now, true)?;
                     reusable = Some(message.clone());
                     break;
                 }
@@ -480,7 +492,7 @@ impl StatePeer {
                 let role = candidate.recovery_current_role(route, &envelope, now)?;
                 collab_types::sign_op(&mut envelope, key).map_err(err)?;
                 let channel =
-                    candidate.recovery_validated_channel(route, &envelope, role, now, false)?;
+                    candidate.recovery_validated_channel(route, &envelope, &role, now, false)?;
                 // This transmission introduces no new data or exact admission.
                 // The existing durable watermark reserves its sequence for every
                 // later original/projection and prevents local echo re-admission.

@@ -1852,7 +1852,7 @@ fn grant_body(_ui: &Ui, input: &EditorInput) -> Element {
             body = body.push(Box::new(Text::new(&format!(
                 "{} ({})",
                 permission.label,
-                verb_label(permission.verb)
+                permission.kind.phrase()
             ))));
         }
     }
@@ -1864,16 +1864,6 @@ fn grant_body(_ui: &Ui, input: &EditorInput) -> Element {
         ));
     }
     Box::new(body)
-}
-
-const fn verb_label(verb: collab_types::Verb) -> &'static str {
-    match verb {
-        collab_types::Verb::Read => "read",
-        collab_types::Verb::Comment => "comment",
-        collab_types::Verb::Write => "change",
-        collab_types::Verb::Invite => "invite",
-        collab_types::Verb::Admin => "administer",
-    }
 }
 
 /// A step's own actions: move it up or down its block, or remove it.

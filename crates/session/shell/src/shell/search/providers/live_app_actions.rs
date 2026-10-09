@@ -36,6 +36,17 @@ pub const PROVIDER_ID: &str = "app-actions";
 /// error; this only bounds a host that never answers.
 const LOCAL_ADMISSION_TIMEOUT: Duration = Duration::from_secs(40);
 const ID_SEPARATOR: char = '\u{1f}';
+
+/// The parts of one live action result id.
+struct ResultParts<'a> {
+    app: &'a str,
+    kind: &'a str,
+    resource_kind: &'a str,
+    cluster: &'a str,
+    record: &'a str,
+    resource: &'a str,
+    action: &'a str,
+}
 const MAX_DIRECTORY_ROOTS_PER_QUERY: usize = 16;
 /// Jobs are an immediate, useful palette hint rather than a second unbounded
 /// search corpus.  They are deliberately a small first stage before remote
@@ -1683,34 +1694,49 @@ impl LiveAppActionsProvider {
         (page, next)
     }
 
-    fn result_parts(id: &str) -> Option<(&str, &str, &str, &str, &str, &str)> {
+    fn result_parts(id: &str) -> Option<ResultParts<'_>> {
         let mut parts = id.split(ID_SEPARATOR);
         let app = parts.next()?;
-        let permission = parts.next()?;
+        let kind = parts.next()?;
+        let resource_kind = parts.next()?;
         let cluster = parts.next()?;
         let record = parts.next()?;
         let resource = parts.next()?;
         let action = parts.next()?;
-        parts
-            .next()
-            .is_none()
-            .then_some((app, permission, cluster, record, resource, action))
+        parts.next().is_none().then_some(ResultParts {
+            app,
+            kind,
+            resource_kind,
+            cluster,
+            record,
+            resource,
+            action,
+        })
     }
 
-    pub fn capability_target(
+    /// The action one result id names, as a node below the room and the
+    /// kind of action it is.
+    pub fn action_target(
         id: &str,
-    ) -> Option<(&str, tilo_actions::PermissionRequirement, &str, &str)> {
-        let (app, permission, _cluster, _record, resource, action) = Self::result_parts(id)?;
-        let permission = match permission {
-            "none" => tilo_actions::PermissionRequirement::None,
-            "read" => tilo_actions::PermissionRequirement::Read,
-            "comment" => tilo_actions::PermissionRequirement::Comment,
-            "write" => tilo_actions::PermissionRequirement::Write,
-            "invite" => tilo_actions::PermissionRequirement::Invite,
-            "admin" => tilo_actions::PermissionRequirement::Admin,
+    ) -> Option<(tilo_action_policy::TreePath, tilo_actions::ActionKind)> {
+        let parts = Self::result_parts(id)?;
+        let kind = match parts.kind {
+            "read" => tilo_actions::ActionKind::Read,
+            "undoable" => tilo_actions::ActionKind::Undoable,
+            "outside" => tilo_actions::ActionKind::Outside,
             _ => return None,
         };
-        Some((app, permission, resource, action))
+        Some((
+            tilo_actions::action_node(
+                &tilo_action_policy::TreePath::root(),
+                parts.app,
+                parts.resource_kind,
+                parts.resource,
+                None,
+                parts.action,
+            ),
+            kind,
+        ))
     }
 
     /// The application, room, record, resource, and operation represented by
@@ -1722,23 +1748,28 @@ impl LiveAppActionsProvider {
     /// context. Keep the decoding beside `Self::result_id`, where the wire
     /// address is minted, rather than making those integrations duplicate it.
     pub fn hierarchy(id: &str) -> Option<(&str, &str, &str, &str, &str)> {
-        let (app, _permission, cluster, record, resource, action) = Self::result_parts(id)?;
-        Some((app, cluster, record, resource, action))
+        let parts = Self::result_parts(id)?;
+        Some((
+            parts.app,
+            parts.cluster,
+            parts.record,
+            parts.resource,
+            parts.action,
+        ))
     }
 
     fn result_id(surface: &PublishedSurface, action: &PublishedAction) -> String {
         format!(
-            "{}{}{}{}{}{}{}{}{}{}{}",
+            "{}{}{}{}{}{}{}{}{}{}{}{}{}",
             surface.app_id,
             ID_SEPARATOR,
-            match action.contract.permission {
-                tilo_actions::PermissionRequirement::None => "none",
-                tilo_actions::PermissionRequirement::Read => "read",
-                tilo_actions::PermissionRequirement::Comment => "comment",
-                tilo_actions::PermissionRequirement::Write => "write",
-                tilo_actions::PermissionRequirement::Invite => "invite",
-                tilo_actions::PermissionRequirement::Admin => "admin",
+            match action.contract.kind {
+                tilo_actions::ActionKind::Read => "read",
+                tilo_actions::ActionKind::Undoable => "undoable",
+                tilo_actions::ActionKind::Outside => "outside",
             },
+            ID_SEPARATOR,
+            action.resource_kind,
             ID_SEPARATOR,
             surface.route.cluster_id,
             ID_SEPARATOR,
@@ -2378,7 +2409,7 @@ impl SearchProvider for LiveAppActionsProvider {
             if ctx.chrome.search_resource_scope.is_some() {
                 return None;
             }
-            let (app, _, cluster, record, resource, action) = Self::result_parts(id)?;
+            let (app, cluster, record, resource, action) = Self::hierarchy(id)?;
             let scope = Self::build_scope(&ctx);
             let in_scope = match scope.scope {
                 crate::shell::chrome_state::SearchScope::All => true,
@@ -4112,7 +4143,7 @@ mod tests {
             "another app's publication must not invalidate an unchanged disclosed address"
         );
         let mut changed = surface.clone();
-        changed.actions[0].contract.permission = tilo_actions::PermissionRequirement::Admin;
+        changed.actions[0].contract.kind = tilo_actions::ActionKind::Outside;
         broker.replace_published_surfaces_for_test(vec![changed]);
         assert!(!exact_catalogue_contains(
             &registry, &resource, &chrome, &doc
@@ -4160,7 +4191,7 @@ mod tests {
         );
 
         let mut changed = surface.clone();
-        changed.actions[0].contract.permission = tilo_actions::PermissionRequirement::Admin;
+        changed.actions[0].contract.kind = tilo_actions::ActionKind::Outside;
         broker.replace_published_surfaces_for_test(vec![changed]);
         assert!(
             provider

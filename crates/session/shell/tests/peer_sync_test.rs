@@ -272,7 +272,7 @@ fn room_push_tree(room: RoomId, salt: u16) -> WorkspaceTree {
     let mut a = WorkspaceTree::default();
     a.set_salt_override(salt);
     let mut workspace = Workspace::new(WorkspaceId(id(1)), "Live");
-    workspace.room = room;
+    workspace.set_room(room);
     workspace.strips.push(Strip {
         id: StripId(id(2)),
         name: "Main".into(),

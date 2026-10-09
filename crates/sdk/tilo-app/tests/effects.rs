@@ -206,7 +206,7 @@ impl Mailbox {
 #[effect(operation = "test.mailbox.effects")]
 pub enum MailEffect {
     /// Count the delivered messages.
-    #[effect(returns, permission = "read")]
+    #[effect(returns, kind = "read")]
     Count,
     /// Fetch new mail.
     #[effect(job)]
@@ -220,10 +220,10 @@ pub enum MailEffect {
     #[effect(job)]
     Receipt,
     /// A read receipt cannot authorize a document edit.
-    #[effect(job, permission = "read")]
+    #[effect(job, kind = "read")]
     ReadReceipt,
     /// Note what was read, as an edit.
-    #[effect(permission = "read")]
+    #[effect(kind = "read")]
     Note { text: String },
     /// Show the sent folder.
     #[effect(view)]

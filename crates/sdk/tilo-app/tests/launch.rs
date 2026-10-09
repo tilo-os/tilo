@@ -465,7 +465,7 @@ fn the_view_reads_the_media_a_launch_names_and_the_playback_it_continues() {
 #[effect(operation = "test.gallery.effects")]
 pub enum GalleryEffect {
     /// Show a picture.
-    #[effect(permission = "read")]
+    #[effect(kind = "read")]
     Show { picture: String },
 }
 

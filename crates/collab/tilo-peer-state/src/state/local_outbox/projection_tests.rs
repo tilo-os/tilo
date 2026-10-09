@@ -385,15 +385,29 @@ fn local_projection_current_document_restriction_blocks_sign_and_send_but_preser
     room_doc.set_actor(automerge::ActorId::from(
         governor_key.verifying_key().to_bytes().to_vec(),
     ));
-    let caps = room_doc.get(ROOT, "capabilities").unwrap().unwrap().1;
-    let role = member
+    let caps = room_doc.get(ROOT, "grants").unwrap().unwrap().1;
+    let person = member
         .permissions(key.verifying_key().to_bytes(), later)
         .unwrap()
-        .0;
-    let restriction = collab_types::caps::CapOverride::restrict_role_in_app(
-        role,
-        "test.app",
-        collab_types::caps::Verb::Read,
+        .person;
+    // The structural owner cannot be restricted: hand the room to someone
+    // else and keep this person as an editor, then restrict them.
+    room_doc.put(ROOT, "owner", "another-person").unwrap();
+    let members = room_doc.get(ROOT, "members").unwrap().unwrap().1;
+    room_doc
+        .put(
+            &members,
+            person.as_str(),
+            automerge::ScalarValue::Bytes(serde_json::to_vec(&collab_types::Role::Editor).unwrap()),
+        )
+        .unwrap();
+    let restriction = tilo_action_policy::Grant::new(
+        "projection-write-denial",
+        tilo_action_policy::Subject::Person(person.clone()),
+        tilo_action_policy::TreePath::room(member.room()).app("test.app"),
+        tilo_action_policy::KindSet::UNDOABLE.union(tilo_action_policy::KindSet::OUTSIDE),
+        tilo_action_policy::Answer::Deny,
+        tilo_action_policy::Subject::Role(collab_types::Role::Owner),
     );
     room_doc
         .put(

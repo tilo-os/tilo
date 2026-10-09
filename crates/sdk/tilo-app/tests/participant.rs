@@ -5,32 +5,29 @@
 //! attribution, history and one step per gesture.
 
 use tilo_app::framework::{Participant, resource_kind};
-use tilo_app::permissions::{Actor, CapOverride, PermissionContext, Scope, Subject, Verb};
+use tilo_app::permissions::{KindSet, PermissionContext, TreePath, policy::Level};
 use tilo_app::prelude::*;
 
 use crate::kinds::{Tally, TallyApp};
 
 const AGENT: &str = "scribe";
 
-fn granted(verb: Verb) -> PermissionContext {
-    PermissionContext::from_capabilities(
-        Actor::agent(AGENT),
-        vec![CapOverride::grant(
-            Subject::agent(AGENT),
-            Scope::App(TallyApp::ID.to_owned()),
-            verb,
-        )],
-    )
+fn granted(kinds: KindSet) -> PermissionContext {
+    PermissionContext::agent_granted(AGENT, &TreePath::root().app(TallyApp::ID), kinds)
 }
 
 /// The running app and a participant joined from its record.
-fn joined(verb: Verb) -> (TestApp<TallyApp>, Participant) {
+fn joined(kinds: KindSet) -> (TestApp<TallyApp>, Participant) {
     let mut app = TestApp::<TallyApp>::new().unwrap();
     app.invoke(Tally::RENAME.with("visitors")).unwrap();
     let snapshot = app.read_document(|doc| doc.clone().save());
-    let participant =
-        Participant::from_snapshot(resource_kind::<TallyApp>(), &snapshot, AGENT, granted(verb))
-            .unwrap();
+    let participant = Participant::from_snapshot(
+        resource_kind::<TallyApp>(),
+        &snapshot,
+        AGENT,
+        granted(kinds),
+    )
+    .unwrap();
     (app, participant)
 }
 
@@ -41,7 +38,7 @@ fn merge(app: &mut TestApp<TallyApp>, participant: &Participant) {
 
 #[test]
 fn a_participant_edits_through_the_door_and_history_names_it() {
-    let (mut app, mut participant) = joined(Verb::Write);
+    let (mut app, mut participant) = joined(KindSet::READ_UNDOABLE);
     assert!(
         participant
             .operations()
@@ -81,7 +78,7 @@ fn a_participant_edits_through_the_door_and_history_names_it() {
 
 #[test]
 fn typed_edits_apply_as_one_step() {
-    let (mut app, mut participant) = joined(Verb::Write);
+    let (mut app, mut participant) = joined(KindSet::READ_UNDOABLE);
     let before = app.versions().len();
     let rename = |name: &str| {
         let mut arguments = serde_json::Map::new();
@@ -99,7 +96,7 @@ fn typed_edits_apply_as_one_step() {
 
 #[test]
 fn a_participant_reaches_nothing_it_is_not_granted() {
-    let (_app, mut participant) = joined(Verb::Read);
+    let (_app, mut participant) = joined(KindSet::READ);
     assert!(participant.operations().is_empty());
     let refused = participant.invoke(
         &tilo_actions::ActionAddress::new("test.tally", "bump"),
@@ -115,7 +112,7 @@ fn a_participant_reaches_nothing_it_is_not_granted() {
 #[test]
 fn changes_of_another_record_are_left_alone() {
     use tilo_app::automerge::transaction::Transactable as _;
-    let (mut app, mut participant) = joined(Verb::Write);
+    let (mut app, mut participant) = joined(KindSet::READ_UNDOABLE);
     let mut other = tilo_resource::Doc::new();
     other
         .put(tilo_app::automerge::ROOT, "name", "elsewhere")
@@ -138,7 +135,7 @@ fn changes_of_another_record_are_left_alone() {
 
 #[test]
 fn a_run_is_recorded_in_the_coordinating_record_by_the_participant() {
-    let (mut app, mut participant) = joined(Verb::Write);
+    let (mut app, mut participant) = joined(KindSet::READ_UNDOABLE);
     participant
         .invoke(
             &tilo_actions::ActionAddress::new("test.tally", "bump"),
@@ -173,17 +170,14 @@ fn a_run_is_recorded_in_the_coordinating_record_by_the_participant() {
 fn a_grant_of_one_action_reaches_that_action_only() {
     let app = TestApp::<TallyApp>::new().unwrap();
     let snapshot = app.read_document(|doc| doc.clone().save());
-    let only_bump = PermissionContext::from_capabilities(
-        Actor::agent(AGENT),
-        vec![CapOverride::grant(
-            Subject::agent(AGENT),
-            Scope::Action {
-                app: TallyApp::ID.to_owned(),
-                resource: "test.tally".to_owned(),
-                action: "bump".to_owned(),
-            },
-            Verb::Write,
-        )],
+    let only_bump = PermissionContext::agent_granted(
+        AGENT,
+        &TreePath::root()
+            .app(TallyApp::ID)
+            .any(Level::Kind)
+            .resource("test.tally")
+            .action("bump"),
+        KindSet::READ_UNDOABLE,
     );
     let mut participant =
         Participant::from_snapshot(resource_kind::<TallyApp>(), &snapshot, AGENT, only_bump)

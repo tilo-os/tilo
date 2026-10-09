@@ -731,7 +731,7 @@ impl InputSections {
 #[effect(operation = "settings.effect")]
 pub enum InputEffect {
     /// Read configured input sources and the mounted Add language selector.
-    #[effect(returns, idempotent, device_only, permission = "read")]
+    #[effect(returns, idempotent, device_only, kind = "read")]
     InspectInputSources {
         query: Option<String>,
         page: Option<u32>,
@@ -830,10 +830,10 @@ pub enum InputEffect {
         source: String,
     },
     /// Inspect this device's mounted keyboard map and current physical feedback.
-    #[effect(returns, idempotent, device_only, permission = "read")]
+    #[effect(returns, idempotent, device_only, kind = "read")]
     InspectKeyboardMap,
     /// Read discovered keyboard scopes and their ordered configured sources.
-    #[effect(returns, idempotent, device_only, permission = "read")]
+    #[effect(returns, idempotent, device_only, kind = "read")]
     InspectKeyboardSources,
     /// Choose the discovered keyboard assignment to inspect and edit.
     #[effect(idempotent)]
@@ -3444,10 +3444,7 @@ mod tests {
             .iter()
             .find(|action| action.address.action == effect.id())
             .unwrap();
-        assert_eq!(
-            action.contract.permission,
-            ui::tilo_actions::PermissionRequirement::Read
-        );
+        assert_eq!(action.contract.kind, ui::tilo_actions::ActionKind::Read);
         assert!(
             action
                 .contract
@@ -3821,10 +3818,7 @@ mod input_inspection_tests {
         let action = app.actions().unwrap().into_iter()
             .find(|action| action.address.action.ends_with("inspect-input-sources"))
             .expect("the installed catalogue and active source must be readable through Settings' normal door");
-        assert_eq!(
-            action.contract.permission,
-            ui::tilo_actions::PermissionRequirement::Read
-        );
+        assert_eq!(action.contract.kind, ui::tilo_actions::ActionKind::Read);
         assert!(
             action
                 .contract

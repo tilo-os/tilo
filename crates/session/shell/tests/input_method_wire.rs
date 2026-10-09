@@ -811,7 +811,7 @@ impl NativeNotes {
     fn new() -> Self {
         use std::{cell::RefCell, rc::Rc};
         use ui::application::{HostContext, HostContextInputs, LaunchTarget, RestoreInput};
-        use ui::permissions::{Actor, PermissionContext, Role, UserId};
+        use ui::permissions::{PermissionContext, Role, UserId};
         let temp = tempfile::tempdir().unwrap();
         let state_root = temp.path().join("state");
         let mut owners = ui::record::RecordOwners::new(state_root.clone());
@@ -831,9 +831,9 @@ impl NativeNotes {
                 ),
                 device_id: "fixture-device".into(),
                 instance_id: 11,
-                permissions: Rc::new(RefCell::new(PermissionContext::from_capabilities(
-                    Actor::person(Some(Role::Owner), "dictation-wire-author"),
-                    vec![],
+                permissions: Rc::new(RefCell::new(PermissionContext::member(
+                    "dictation-wire-author",
+                    Role::Owner,
                 ))),
                 author: UserId("dictation-wire-author".into()),
                 action_context: tilo_actions::ActionContext::default(),

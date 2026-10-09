@@ -628,20 +628,12 @@ mod tests {
     /// holds that, so neither loses their place.
     #[test]
     fn a_launched_view_opens_where_its_actor_is() {
-        use collab_types::{CapOverride, Scope, Subject, Verb};
+        use crate::test_support::{Grants as _, KindSet, Subject};
         const NOTES: &str = "so.tilo.notes";
         let mut workspace = workspace();
-        workspace.grant_capability(CapOverride::membership(
-            Subject::agent("scribe"),
-            workspace.room.to_string(),
-            Verb::Write,
-        ));
+        workspace.admit_agent("scribe", KindSet::READ);
         for app in [APP, NOTES] {
-            workspace.grant_capability(CapOverride::grant(
-                Subject::agent("scribe"),
-                Scope::App(app.into()),
-                Verb::Write,
-            ));
+            workspace.allow_app(Subject::agent("scribe"), app, KindSet::ALL);
         }
         let (state, room) = broker(&workspace);
         state.launchable.retain(&surface(7, &room));
@@ -714,18 +706,10 @@ mod tests {
     /// put a second marker on what their view already shows.
     #[test]
     fn an_agents_action_is_present_in_the_view_it_runs_in() {
-        use collab_types::{CapOverride, Scope, Subject, Verb};
+        use crate::test_support::{Grants as _, KindSet, Subject};
         let mut workspace = workspace();
-        workspace.grant_capability(CapOverride::membership(
-            Subject::agent("scribe"),
-            workspace.room.to_string(),
-            Verb::Write,
-        ));
-        workspace.grant_capability(CapOverride::grant(
-            Subject::agent("scribe"),
-            Scope::App(APP.into()),
-            Verb::Write,
-        ));
+        workspace.admit_agent("scribe", KindSet::UNDOABLE);
+        workspace.allow_app(Subject::agent("scribe"), APP, KindSet::UNDOABLE);
         let (state, room, fanout) = broker_with_fanout(&workspace);
         state
             .surfaces

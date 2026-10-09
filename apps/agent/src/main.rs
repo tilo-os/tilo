@@ -130,17 +130,10 @@ fn main() -> anyhow::Result<()> {
     // decision, not something a headless participant grants itself.
     let agent_id = cli.agent_id.clone().unwrap_or_else(|| cli.name.clone());
     let permissions = {
-        use ui::permissions::{Actor, CapOverride, PermissionContext, Scope, Subject, Verb};
-        PermissionContext::from_capabilities(
-            Actor::agent(&agent_id),
-            vec![
-                CapOverride::grant(
-                    Subject::agent(&agent_id),
-                    Scope::App(cli.app.clone()),
-                    Verb::Write,
-                )
-                .with_id("invited"),
-            ],
+        ui::permissions::PermissionContext::agent_granted_at(
+            &agent_id,
+            &[ui::permissions::TreePath::root().app(cli.app.clone())],
+            ui::permissions::KindSet::READ_UNDOABLE,
         )
     };
     let cfg = Config {

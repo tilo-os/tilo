@@ -28,11 +28,9 @@ use std::rc::Rc;
 use std::sync::{Arc, OnceLock};
 use thumbnail::{ThumbKey, ThumbnailService};
 use ui::paint::PaintCtx;
-use ui::tilo_actions::{Availability, Resource};
 #[cfg(test)]
-use ui::tilo_actions::{
-    ConfirmationPolicy, ExecutionMode, OperationKind, PermissionRequirement, ResultSpec,
-};
+use ui::tilo_actions::{ActionKind, ConfirmationPolicy, ExecutionMode, OperationKind, ResultSpec};
+use ui::tilo_actions::{Availability, Resource};
 use ui::time::{Duration, Instant, UNIX_EPOCH};
 use ui::widget::context_menu::{ContextMenu, MenuItem};
 use ui::widget::{AppModel, ModelPath};

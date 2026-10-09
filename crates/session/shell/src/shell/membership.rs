@@ -4,17 +4,15 @@
 //! The `member.role.set` / `member.remove` shell actions and the Members tab
 //! of workspace settings both call these functions, so a person clicking, a
 //! script, an agent and a screen reader pass the same authority check and
-//! produce the same capability-document writes. Two checks run, and neither
-//! replaces the other: the shell action's capability gate
-//! ([`Workspace::allows`](crate::shell::state::Workspace) on the action, via
-//! `current_shell_action_authorized`) and the domain function's own
-//! administrator and owner rules in [`tilo_desktop::workspace_settings`].
+//! produce the same policy-document writes. Two checks run, and neither
+//! replaces the other: the shell action's gate (the room's policy at the
+//! action's node, via `current_shell_action_authorized`) and the domain
+//! function's own governance and owner rules in
+//! [`tilo_desktop::workspace_settings`].
 
 use crate::shell::chrome_state::ChromeState;
 use crate::shell::search::action_api::ActionError;
-use crate::shell::state::WorkspaceAuthority as _;
-use crate::shell::state::{CapOverride, CapRole, UserId, Workspace};
-use tilo_desktop::workspace_settings::CapEdit;
+use crate::shell::state::{CapRole, PolicyEdit, UserId, Workspace};
 
 pub(crate) use tilo_action_broker::collaboration_admin::{REMOVE_ACTION, SET_ROLE_ACTION};
 
@@ -80,7 +78,7 @@ fn active_role_of(st: &ChromeState, member: &UserId) -> Result<CapRole, Membersh
 
 /// Change `member`'s role in the active workspace. Setting the role a member
 /// already holds is a successful no-op, so a retried invocation does not
-/// rewrite their capabilities. Only an existing member's role can be set;
+/// rewrite their membership. Only an existing member's role can be set;
 /// admitting someone new is an invitation.
 ///
 /// # Errors
@@ -95,13 +93,13 @@ pub(crate) fn set_member_role(
     if active_role_of(st, member)? == role {
         return Ok(());
     }
-    edit_active_workspace_caps(st, |ws, actor| {
+    edit_active_workspace_policy(st, |ws, actor| {
         tilo_desktop::workspace_settings::set_member_role(ws, actor, member, role)
     })
     .map(drop)
 }
 
-/// Remove `member` from the active workspace, revoking every capability
+/// Remove `member` from the active workspace, revoking every grant
 /// they hold there.
 ///
 /// # Errors
@@ -110,7 +108,7 @@ pub(crate) fn set_member_role(
 pub(crate) fn remove_member(st: &mut ChromeState, member: &UserId) -> Result<(), MembershipError> {
     authorize(st, REMOVE_ACTION)?;
     active_role_of(st, member)?;
-    edit_active_workspace_caps(st, |ws, actor| {
+    edit_active_workspace_policy(st, |ws, actor| {
         tilo_desktop::workspace_settings::remove_member(ws, actor, member)
     })
     .map(drop)
@@ -120,18 +118,18 @@ pub(crate) fn remove_member(st: &mut ChromeState, member: &UserId) -> Result<(),
 /// replicated doc and flush. Without the mirror an edit would change only
 /// the in-memory cache and the next boot would read the old answer back off
 /// disk. `edit` runs with the local user as actor and does its own authority
-/// check; an empty [`CapEdit`] is reported as [`MembershipError::Refused`].
+/// check; an empty [`PolicyEdit`] is reported as [`MembershipError::Refused`].
 ///
 /// # Errors
 ///
 /// [`MembershipError::NoWorkspace`], [`MembershipError::NotGoverned`] or
 /// [`MembershipError::Refused`].
-pub(crate) fn edit_active_workspace_caps<F>(
+pub(crate) fn edit_active_workspace_policy<F>(
     st: &mut ChromeState,
     edit: F,
-) -> Result<CapEdit, MembershipError>
+) -> Result<PolicyEdit, MembershipError>
 where
-    F: FnOnce(&mut Workspace, &UserId) -> CapEdit,
+    F: FnOnce(&mut Workspace, &UserId) -> PolicyEdit,
 {
     let actor = st.active_local_user();
     let mut tree = st.tree_mut();
@@ -153,18 +151,7 @@ where
     if changed.is_empty() {
         return Err(MembershipError::Refused);
     }
-    let written: Vec<CapOverride> = ws
-        .capabilities
-        .iter()
-        .filter(|cap| changed.granted.contains(&cap.id))
-        .cloned()
-        .collect();
-    for cap in &written {
-        tree.doc_insert_capability(ws_id, cap);
-    }
-    for id in &changed.revoked {
-        tree.doc_revoke_capability(ws_id, id);
-    }
+    tree.doc_write_policy(ws_id, &changed);
     tree.queue_save();
     drop(tree);
     st.bump();

@@ -102,8 +102,7 @@ impl crate::search::SearchProvider for PagedProbe {
         (address.action == "apply").then(|| {
             tilo_actions::Resource::new(&address.resource, "probe", "Paged").with_action(
                 tilo_actions::ActionSpec::immediate("apply", "Apply", "bound.apply", &FollowUp)
-                    .unwrap()
-                    .requiring(tilo_actions::PermissionRequirement::Write),
+                    .unwrap(),
             )
         })
     }
@@ -193,8 +192,7 @@ impl crate::search::SearchProvider for LazyProbe {
             return Some(
                 tilo_actions::Resource::new("bound:sealed", "probe", "Sealed").with_action(
                     tilo_actions::ActionSpec::immediate("apply", "Apply", "bound.apply", &FollowUp)
-                        .unwrap()
-                        .requiring(tilo_actions::PermissionRequirement::Write),
+                        .unwrap(),
                 ),
             );
         }
@@ -814,11 +812,7 @@ fn bound_components_keep_child_binding_and_focused_document_history() {
         );
         assert_eq!(fixture.app.state.doc.pending_ops(), pending);
         *fixture.permissions.borrow_mut() =
-            crate::permissions::PermissionContext::from_capabilities(
-                crate::permissions::Actor::person(None, "fixture-user"),
-                vec![],
-            )
-            .at_unix_time(100);
+            crate::permissions::PermissionContext::stranger("fixture-user").at_unix_time(100);
         assert!(fixture.app.document_history_snapshot().is_err());
         assert!(!fixture.app.document_history.is_open());
     }
@@ -883,16 +877,11 @@ impl ActionFixture {
             .unwrap(),
         );
         let permissions = Rc::new(RefCell::new(
-            crate::permissions::PermissionContext::from_capabilities(
-                crate::permissions::Actor::person(None, "fixture-user"),
-                vec![
-                    crate::permissions::CapOverride::grant(
-                        crate::permissions::Subject::person("fixture-user"),
-                        crate::permissions::Scope::Workspace,
-                        crate::permissions::Verb::Admin,
-                    )
-                    .with_expiry(110),
-                ],
+            crate::permissions::PermissionContext::granted(
+                "fixture-user",
+                &crate::permissions::TreePath::root(),
+                crate::permissions::policy::KindSet::ALL,
+                Some(110),
             )
             .at_unix_time(100),
         ));
@@ -1136,8 +1125,8 @@ fn bound_publication_and_cache_keep_contracts_and_id_lifetimes() {
         assert!(
             fixture
                 .records
-                .read_history(&fixture.bindings[0].checkout.id, |_, history| history
-                    .next_undo_in(&fixture.bindings[0].author, 11)
+                .read_history(&fixture.bindings[0].checkout.id, |doc, history| history
+                    .next_undo_in(doc, &fixture.bindings[0].author, 11)
                     .is_none())
                 .unwrap()
         );
@@ -1147,7 +1136,7 @@ fn bound_publication_and_cache_keep_contracts_and_id_lifetimes() {
                 assert!(doc.get(ROOT, "follow-up").unwrap().is_some());
                 assert_eq!(
                     history
-                        .next_undo_in(&fixture.bindings[1].author, 12)
+                        .next_undo_in(doc, &fixture.bindings[1].author, 12)
                         .unwrap()
                         .instance_id,
                     Some(12)
@@ -1314,11 +1303,7 @@ fn bound_publication_and_cache_keep_contracts_and_id_lifetimes() {
         let alias = second.rows[0].resource.clone();
         let previous_permissions = fixture.permissions.borrow().clone();
         *fixture.permissions.borrow_mut() =
-            crate::permissions::PermissionContext::from_capabilities(
-                crate::permissions::Actor::person(None, "fixture-user"),
-                vec![],
-            )
-            .at_unix_time(100);
+            crate::permissions::PermissionContext::stranger("fixture-user").at_unix_time(100);
         let stale = fixture
             .app
             .action_directory_page(runtime_collab::ActionDirectoryQuery {
@@ -1466,11 +1451,7 @@ fn bound_publication_and_cache_keep_contracts_and_id_lifetimes() {
             vec![(false, true), (true, true)]
         );
         *fixture.permissions.borrow_mut() =
-            crate::permissions::PermissionContext::from_capabilities(
-                crate::permissions::Actor::person(None, "fixture-user"),
-                vec![],
-            )
-            .at_unix_time(100);
+            crate::permissions::PermissionContext::stranger("fixture-user").at_unix_time(100);
         CONTROL_AUTHORITY.with_borrow_mut(Vec::clear);
         fixture.app.refresh_control_action_availability();
         assert_eq!(
@@ -1524,8 +1505,8 @@ fn compound_bound_effects_preserve_typing_custody_and_redo() {
             }
             let b_entry = fixture
                 .records
-                .read_history(&a.checkout.id, |_, history| {
-                    history.next_undo_in(&b.author, b.instance_id).cloned()
+                .read_history(&a.checkout.id, |doc, history| {
+                    history.next_undo_in(doc, &b.author, b.instance_id)
                 })
                 .unwrap();
             assert_eq!(b_entry.is_some(), mode == 1);
@@ -1533,8 +1514,8 @@ fn compound_bound_effects_preserve_typing_custody_and_redo() {
                 assert!(
                     fixture
                         .records
-                        .read_history(&a.checkout.id, |_, history| history
-                            .next_undo_in(&a.author, a.instance_id)
+                        .read_history(&a.checkout.id, |doc, history| history
+                            .next_undo_in(doc, &a.author, a.instance_id)
                             .is_none())
                         .unwrap()
                 );
@@ -1662,8 +1643,8 @@ fn compound_bound_effects_preserve_typing_custody_and_redo() {
                 assert!(
                     fixture
                         .records
-                        .read_history(&a.checkout.id, |_, history| history
-                            .next_undo_in(&a.author, a.instance_id)
+                        .read_history(&a.checkout.id, |doc, history| history
+                            .next_undo_in(doc, &a.author, a.instance_id)
                             .is_none())
                         .unwrap()
                 );
@@ -1800,11 +1781,8 @@ fn bound_search_and_palette_disclose_only_authorized_provider_rows() {
     {
         for initially_allowed in [false, true] {
             let mut fixture = ActionFixture::with_authority(false, true);
-            let denied = crate::permissions::PermissionContext::from_capabilities(
-                crate::permissions::Actor::person(None, "fixture-user"),
-                vec![],
-            )
-            .at_unix_time(100);
+            let denied =
+                crate::permissions::PermissionContext::stranger("fixture-user").at_unix_time(100);
             if !initially_allowed {
                 *fixture.permissions.borrow_mut() = denied.clone();
             }
@@ -1961,11 +1939,7 @@ fn bound_search_and_palette_disclose_only_authorized_provider_rows() {
             assert!(ticks < 5, "the first owner must participate in this pass");
         }
         *fixture.permissions.borrow_mut() =
-            crate::permissions::PermissionContext::from_capabilities(
-                crate::permissions::Actor::person(None, "fixture-user"),
-                vec![],
-            )
-            .at_unix_time(100);
+            crate::permissions::PermissionContext::stranger("fixture-user").at_unix_time(100);
         ticks = 0;
         loop {
             progress = step(palette);
@@ -2190,8 +2164,8 @@ fn bound_broker_routes_keep_the_chosen_contract_and_refuse_bad_witnesses() {
         assert!(
             fixture
                 .records
-                .read_history(&fixture.bindings[0].checkout.id, |_, history| history
-                    .next_undo_in(&fixture.bindings[0].author, 11)
+                .read_history(&fixture.bindings[0].checkout.id, |doc, history| history
+                    .next_undo_in(doc, &fixture.bindings[0].author, 11)
                     .is_none())
                 .unwrap()
         );
@@ -2274,7 +2248,10 @@ fn bound_broker_routes_keep_the_chosen_contract_and_refuse_bad_witnesses() {
                         assert!(doc.get(ROOT, "before-nested").unwrap().is_some());
                         assert!(doc.get(ROOT, "follow-up").unwrap().is_some());
                         assert_eq!(
-                            history.next_undo_in(&first.author, 12).unwrap().instance_id,
+                            history
+                                .next_undo_in(doc, &first.author, 12)
+                                .unwrap()
+                                .instance_id,
                             Some(12)
                         );
                     })
@@ -2806,11 +2783,8 @@ fn owner_takeover_follows_accepted_bound_actions_and_preserves_denials() {
             schema_version: 1,
             bytes: b"pending-peer-view".to_vec(),
         });
-    *fixture.permissions.borrow_mut() = crate::permissions::PermissionContext::from_capabilities(
-        crate::permissions::Actor::person(None, "fixture-user"),
-        vec![],
-    )
-    .at_unix_time(100);
+    *fixture.permissions.borrow_mut() =
+        crate::permissions::PermissionContext::stranger("fixture-user").at_unix_time(100);
     let heads = fixture.app.state.doc.get_heads();
     let mut actual_before = fixture
         .records

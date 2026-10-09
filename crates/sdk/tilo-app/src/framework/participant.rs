@@ -267,13 +267,12 @@ impl Participant {
         confirmed: bool,
     ) -> Result<Option<Vec<u8>>, DoorError> {
         let resources = self.resources();
-        // The tree offers an action under the least it needs; this
-        // invocation needs what its value asks (a reply commenting, a
-        // deletion writing).
-        if let Some(spec) = door::resolve(&resources, address)
+        // The tree offers only what the participant may do; the address may
+        // have come from elsewhere.
+        if let Some((resource, spec)) = door::locate(&resources, address)
             && !self.permissions.permits_invocation(
                 self.app_id(),
-                &address.resource,
+                resource,
                 spec,
                 Some(arguments),
                 None,

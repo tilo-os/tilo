@@ -417,7 +417,10 @@ fn a_new_profile_bootstraps_one_owned_workspace_and_keeps_it() {
     assert_eq!(reopened.room(), room);
     let tree = reopened.snapshot().unwrap();
     assert_eq!(tree.workspaces.len(), 1);
-    assert_eq!(tree.workspaces[0].owner.as_deref(), Some("person-1"));
+    assert_eq!(
+        tree.workspaces[0].owner().map(String::as_str),
+        Some("person-1")
+    );
     assert_eq!(tree.workspaces[0].strips.len(), 1);
     // An owner is kept, not replaced by the next actor.
     reopened.adopt("person-2").unwrap();
@@ -425,7 +428,10 @@ fn a_new_profile_bootstraps_one_owned_workspace_and_keeps_it() {
         .unwrap()
         .snapshot()
         .unwrap();
-    assert_eq!(tree.workspaces[0].owner.as_deref(), Some("person-1"));
+    assert_eq!(
+        tree.workspaces[0].owner().map(String::as_str),
+        Some("person-1")
+    );
     let mut seen = None;
     reopened.with_workspace(&tree.workspaces[0].room, &mut |workspace| {
         seen = Some(workspace.name.clone());
@@ -580,12 +586,14 @@ fn the_desktop_sessions_workspace_is_served_read_only() {
     assert_eq!(std::fs::read(&desktop).unwrap(), bytes, "never rewritten");
     assert!(!temp.path().join(STANDALONE_WORKSPACE).exists());
     assert_eq!(
-        workspace.snapshot().unwrap().workspaces[0].owner.as_deref(),
+        workspace.snapshot().unwrap().workspaces[0]
+            .owner()
+            .map(String::as_str),
         Some("desktop-owner")
     );
 
     // Without an owner there is nobody this host could act as.
-    value["workspaces"][0]["owner"] = serde_json::Value::Null;
+    value["workspaces"][0]["policy"]["owner"] = serde_json::Value::Null;
     std::fs::write(&desktop, serde_json::to_vec(&value).unwrap()).unwrap();
     assert!(
         ProfileWorkspace::open(temp.path())
@@ -617,16 +625,18 @@ fn consent(room: &str, person: &str) -> tilo_action_broker::app_actions::AppActi
     }
 }
 
-fn app_grant() -> collab_types::caps::CapOverride {
-    use collab_types::caps::{CapOverride, Scope, Subject, Verb};
-    CapOverride::grant(
-        Subject::app("so.tilo.caller"),
-        Scope::Action {
-            app: "so.tilo.target-app".into(),
-            resource: "target.document".into(),
-            action: "open".into(),
-        },
-        Verb::Write,
+fn app_grant(room: &str) -> tilo_action_policy::Grant {
+    tilo_action_policy::Grant::new(
+        "caller-opens-target",
+        tilo_action_policy::Subject::App("so.tilo.caller".into()),
+        tilo_action_policy::TreePath::room(room)
+            .app("so.tilo.target-app")
+            .any(tilo_action_policy::Level::Kind)
+            .resource("target.document")
+            .action("open"),
+        tilo_action_policy::KindSet::ALL,
+        tilo_action_policy::Answer::Allow,
+        tilo_action_policy::Subject::person("owner"),
     )
 }
 
@@ -653,7 +663,7 @@ fn grants_in_the_runtimes_own_workspace_are_recorded_by_its_administrator_and_sa
         grants
             .record(
                 &consent(&room, "stranger"),
-                app_grant(),
+                app_grant(&room),
                 AppActionConsent::Always
             )
             .is_none()
@@ -662,13 +672,19 @@ fn grants_in_the_runtimes_own_workspace_are_recorded_by_its_administrator_and_sa
     let id = grants
         .record(
             &consent(&room, "owner"),
-            app_grant(),
+            app_grant(&room),
             AppActionConsent::Always,
         )
         .unwrap();
     let saved = read_tree(&temp.path().join(STANDALONE_WORKSPACE)).unwrap();
     let workspace = &saved.workspaces[0];
-    assert!(workspace.capabilities.iter().any(|cap| cap.id == id));
+    assert!(
+        workspace
+            .policy
+            .grants
+            .iter()
+            .any(|grant| grant.id.as_str() == id)
+    );
     let receipt = workspace.effect_receipts.last().unwrap();
     assert_eq!(receipt.actor, "owner");
     let Some(tilo_actions::Did::Verb(verb)) = &receipt.context.what else {
@@ -682,9 +698,10 @@ fn grants_in_the_runtimes_own_workspace_are_recorded_by_its_administrator_and_sa
     let saved = read_tree(&temp.path().join(STANDALONE_WORKSPACE)).unwrap();
     assert!(
         saved.workspaces[0]
-            .capabilities
+            .policy
+            .grants
             .iter()
-            .all(|cap| cap.id != id)
+            .all(|grant| grant.id.as_str() != id)
     );
 }
 
@@ -705,7 +722,7 @@ fn the_desktop_sessions_workspace_takes_no_grants_here() {
         grants
             .record(
                 &consent(&room, "owner"),
-                app_grant(),
+                app_grant(&room),
                 AppActionConsent::Always
             )
             .is_none()
@@ -713,12 +730,13 @@ fn the_desktop_sessions_workspace_takes_no_grants_here() {
     grants.revoke(&room, "owner-1");
     assert_eq!(std::fs::read(&desktop).unwrap(), bytes, "never rewritten");
     assert!(!temp.path().join(STANDALONE_WORKSPACE).exists());
-    assert_eq!(
+    assert!(
         grants.workspace.snapshot().unwrap().workspaces[0]
-            .capabilities
-            .len(),
-        1,
-        "only the owner's membership"
+            .policy
+            .grants
+            .iter()
+            .all(|grant| grant.subject != tilo_action_policy::Subject::App("so.tilo.caller".into())),
+        "nothing granted to the app"
     );
 }
 

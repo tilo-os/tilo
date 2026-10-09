@@ -12,15 +12,12 @@ use std::time::Duration;
 
 #[cfg(test)]
 use collab_types::DocumentMutation;
-use collab_types::caps::{
-    Actor, CapDecision, Principal, ResourceRef, Verb, decide_capability, verb_for_opclass,
-};
-use collab_types::{
-    ArtifactKind, Ed25519PublicKey, SignedOp, document_artifact_id, document_attestation_id,
-    role_permits,
-};
+use collab_types::caps::Principal;
+use collab_types::validator::{op_kind, op_node};
+use collab_types::{Ed25519PublicKey, SignedOp, document_artifact_id, document_attestation_id};
 use ed25519_dalek::Signer;
 use runtime_identity::wire::{FRAMING, HANDSHAKE_FRAMING, Handshake, Request, Response};
+use tilo_action_policy::{ActionKind, Answer, Party, Subject, TreePath};
 use tilo_clock::unix_now;
 use wire_frame::FrameError;
 
@@ -309,19 +306,18 @@ fn sign(
     message: &[u8],
 ) -> Response {
     let Some(allowed) = read_workspace(tree, room, |workspace| {
-        let actor = Actor::app(app_id);
-        let resource = ResourceRef::Action {
-            app: app_id.to_string(),
-            resource: DEVICE_SIGNATURE_RESOURCE.to_string(),
-            action: action.to_string(),
-        };
-        decide_capability(
-            &actor,
-            &resource,
-            Verb::Write,
-            &workspace.capabilities,
-            Some(unix_now()),
-        ) == CapDecision::Allow
+        let node = device_signature_node(&workspace.node(), app_id, action);
+        Party::new(
+            vec![Subject::App(app_id.to_owned())],
+            &workspace.policy.grants,
+        )
+        .decide(
+            &node,
+            ActionKind::Outside,
+            &tilo_desktop_model::context_at(unix_now()),
+        )
+        .answer
+            == Answer::Allow
     }) else {
         return Response::Denied("workspace is not available".into());
     };
@@ -339,6 +335,16 @@ fn sign(
         Ok((device, _)) => Response::Signature(device.sign(message).to_bytes().to_vec()),
         Err(error) => Response::Denied(error.to_string()),
     }
+}
+
+/// The node of `app`'s request that the device sign for its `action`: a
+/// grant to the app on this node (or above it) lets it ask.
+#[must_use]
+pub fn device_signature_node(room: &TreePath, app: &str, action: &str) -> TreePath {
+    room.clone()
+        .app(app)
+        .resource(DEVICE_SIGNATURE_RESOURCE)
+        .action(action)
 }
 
 fn sign_collaboration_join(bound_room: &RoomId, workspace_id: &str) -> Response {
@@ -425,25 +431,12 @@ fn sign_collaboration_op(
             .id()
             .to_string();
     let decided = read_workspace(tree, bound_room, |workspace| {
-        let role = workspace.role_of_at(&principal_id, unix_now())?;
-        let actor = Actor::person(Some(role), &principal_id)
-            .with_principal(Principal::App(app_id.to_string()))
-            .in_room(workspace_id.to_string());
-        let resource = ResourceRef::Artifact {
-            app: Some(app_id.to_string()),
-            kind: ArtifactKind::Note,
-            instance: expected_artifact,
-        };
-        let required = verb_for_opclass(op.op_class);
-        let decision = decide_capability(
-            &actor,
-            &resource,
-            required,
-            &workspace.capabilities,
-            Some(unix_now()),
-        );
-        let role_allows = role_permits(role, ArtifactKind::Note, op.op_class);
-        Some(decision == CapDecision::Allow && role_allows)
+        workspace.role_of(&principal_id)?;
+        let node = op_node(&workspace.policy.room, Some(app_id), record_id, op.op_class);
+        Some(
+            workspace.answer_at(&principal_id, &node, op_kind(op.op_class), unix_now())
+                == Answer::Allow,
+        )
     });
     let allowed = match decided {
         None => return Response::Denied("workspace is not available".into()),
@@ -496,9 +489,12 @@ fn channel_keys(
             .id()
             .to_string();
     let reads = read_workspace(tree, route.bound_room, |workspace| {
-        workspace
-            .role_of_at(&principal_id, unix_now())
-            .is_some_and(|role| role != collab_types::role::Role::Denied)
+        let node = collab_types::validator::document_node(
+            &workspace.policy.room,
+            route.app_id,
+            route.record_id,
+        );
+        workspace.answer_at(&principal_id, &node, ActionKind::Read, unix_now()) != Answer::Deny
     })
     .unwrap_or(false);
     if !reads {
@@ -643,7 +639,24 @@ fn write_action_frame<T: serde::Serialize>(stream: &mut UnixStream, value: &T) -
 #[cfg(test)]
 mod tests {
     use super::*;
-    use collab_types::caps::{CapOverride, Scope, Subject};
+    use tilo_action_policy::{Grant, KindSet, Role};
+
+    /// The owner's grant letting Notes ask for a signature of its
+    /// `document.save`.
+    fn signing_grant(workspace: &Workspace) -> Grant {
+        Grant::new(
+            "notes-sign-save",
+            Subject::App("so.tilo.notes".into()),
+            device_signature_node(&workspace.node(), "so.tilo.notes", "document.save"),
+            KindSet::ALL,
+            Answer::Allow,
+            Subject::Person(
+                workspace
+                    .owner()
+                    .map_or_else(String::new, ToString::to_string),
+            ),
+        )
+    }
     use ed25519_dalek::{Signature, Verifier, VerifyingKey};
     use std::io::Read as _;
     use std::os::fd::IntoRawFd;
@@ -734,7 +747,7 @@ mod tests {
 
             let room = RoomId::new();
             let mut workspace = Workspace::new(WorkspaceId(1), "Room");
-            workspace.room = room;
+            workspace.set_room(room);
             let mut tree = WorkspaceTree::default();
             tree.desktop.workspaces.push(workspace);
             let tree = tree.shared();
@@ -743,17 +756,8 @@ mod tests {
                 sign(&tree, &room, "so.tilo.notes", "document.save", b"payload"),
                 Response::Denied(_)
             ));
-            tree.write().desktop.workspaces[0]
-                .capabilities
-                .push(CapOverride::grant(
-                    Subject::app("so.tilo.notes"),
-                    Scope::Action {
-                        app: "so.tilo.notes".into(),
-                        resource: DEVICE_SIGNATURE_RESOURCE.into(),
-                        action: "document.save".into(),
-                    },
-                    Verb::Write,
-                ));
+            let grant = signing_grant(&tree.read().desktop.workspaces[0]);
+            tree.write().desktop.workspaces[0].grant(grant);
             let Response::Signature(signature) =
                 sign(&tree, &room, "so.tilo.notes", "document.save", b"payload")
             else {
@@ -828,7 +832,7 @@ mod tests {
         let author = Ed25519PublicKey::from_bytes(device.verifying_key().to_bytes());
 
         let mut workspace = Workspace::new(WorkspaceId(1), "Room");
-        workspace.room = room;
+        workspace.set_room(room);
         workspace.set_owner(profile.principal_id());
         let mut tree = WorkspaceTree::default();
         tree.desktop.workspaces.push(workspace);
@@ -938,13 +942,8 @@ mod tests {
 
         let mut tree_guard = tree.write();
         let workspace = &mut tree_guard.desktop.workspaces[0];
-        workspace.owner = None;
-        workspace.capabilities.clear();
-        workspace.capabilities.push(CapOverride::membership(
-            Subject::person(profile.principal_id()),
-            workspace_id.clone(),
-            Verb::Comment,
-        ));
+        workspace.set_owner("someone-else");
+        workspace.admit(profile.principal_id(), Role::Commenter);
         drop(tree_guard);
         op.payload = DocumentMutation::Incremental(b"comment".to_vec())
             .encode()
@@ -977,12 +976,7 @@ mod tests {
         ));
         let mut tree_guard = tree.write();
         let workspace = &mut tree_guard.desktop.workspaces[0];
-        workspace.capabilities.clear();
-        workspace.capabilities.push(CapOverride::membership(
-            Subject::person(profile.principal_id()),
-            workspace_id.clone(),
-            Verb::Read,
-        ));
+        workspace.admit(profile.principal_id(), Role::Viewer);
         drop(tree_guard);
         assert!(matches!(
             sign_collaboration_op(
@@ -1022,17 +1016,10 @@ mod tests {
             .expect("registry")
             .expect("profile");
         let mut workspace = Workspace::new(WorkspaceId(1), "Room");
-        workspace.room = room;
+        workspace.set_room(room);
         workspace.set_owner(profile.principal_id());
-        workspace.capabilities.push(CapOverride::grant(
-            Subject::app("so.tilo.notes"),
-            Scope::Action {
-                app: "so.tilo.notes".into(),
-                resource: DEVICE_SIGNATURE_RESOURCE.into(),
-                action: "document.save".into(),
-            },
-            Verb::Write,
-        ));
+        let grant = signing_grant(&workspace);
+        workspace.grant(grant);
         let mut tree = WorkspaceTree::default();
         tree.desktop.workspaces.push(workspace);
         let socket = temp.path().join("identity.sock");

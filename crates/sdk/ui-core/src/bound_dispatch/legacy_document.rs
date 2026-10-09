@@ -302,17 +302,10 @@ fn operation_allowed(
     app: &str,
     spec: &tilo_actions::ActionSpec,
 ) -> bool {
-    use crate::permissions::{CapDecision, ResourceRef, Verb};
-    use tilo_actions::PermissionRequirement as P;
-    let verb = match spec.contract.permission {
-        P::None => return true,
-        P::Read => Verb::Read,
-        P::Comment => Verb::Comment,
-        P::Write => Verb::Write,
-        P::Invite => Verb::Invite,
-        P::Admin => Verb::Admin,
-    };
-    authority.decide(&ResourceRef::App(app.into()), verb) == CapDecision::Allow
+    authority.check(&crate::permissions::PermissionScope::app(
+        app,
+        spec.contract.kind,
+    ))
 }
 fn filter_legacy_resource(
     mut resource: Resource,

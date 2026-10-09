@@ -19,7 +19,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use tilo_actions::{
     Action as QAction, ActionError, ActionSpec, Doc, EncodedAction, ExecutionLocus, OperationKind,
-    PermissionRequirement, Resource,
+    Resource,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -178,9 +178,7 @@ fn counter_resource(destructive: bool) -> Resource {
 }
 
 fn counter_resource_with_reset(destructive: bool, reset_visible: bool) -> Resource {
-    let bump = ActionSpec::immediate("bump", "Bump", COUNTER_TYPE, &CounterAction::Bump)
-        .unwrap()
-        .requiring(PermissionRequirement::Write);
+    let bump = ActionSpec::immediate("bump", "Bump", COUNTER_TYPE, &CounterAction::Bump).unwrap();
     let bump = if destructive {
         bump.destructive()
     } else {
@@ -195,8 +193,7 @@ fn counter_resource_with_reset(destructive: bool, reset_visible: bool) -> Resour
                 COUNTER_TYPE,
                 &CounterAction::HostBump,
             )
-            .unwrap()
-            .requiring(PermissionRequirement::Write),
+            .unwrap(),
         )
         .with_action(
             ActionSpec::operation(
@@ -233,9 +230,7 @@ fn counter_resource_with_reset(destructive: bool, reset_visible: bool) -> Resour
         ));
     if reset_visible {
         resource.with_action(
-            ActionSpec::immediate("reset", "Reset", COUNTER_TYPE, &CounterAction::Reset)
-                .unwrap()
-                .requiring(PermissionRequirement::Write),
+            ActionSpec::immediate("reset", "Reset", COUNTER_TYPE, &CounterAction::Reset).unwrap(),
         )
     } else {
         resource
@@ -325,7 +320,7 @@ impl CounterCard {
                 )
                 .unwrap()
                 .with_contract(tilo_actions::ActionContract {
-                    permission: PermissionRequirement::Read,
+                    kind: tilo_actions::ActionKind::Read,
                     ..tilo_actions::ActionContract::default()
                 }),
             );
@@ -666,9 +661,7 @@ fn published_delivery_on_disabled_transport_refuses_before_document_handler() {
 
 fn lazy_resource(id: &str) -> Resource {
     Resource::new(id, id, "Lazy counter").with_action(
-        ActionSpec::immediate("bump", "Bump", COUNTER_TYPE, &CounterAction::Bump)
-            .unwrap()
-            .requiring(PermissionRequirement::Write),
+        ActionSpec::immediate("bump", "Bump", COUNTER_TYPE, &CounterAction::Bump).unwrap(),
     )
 }
 
@@ -797,9 +790,8 @@ fn lazy_resources_populate_the_tree_with_stable_identity_and_permissions() {
     // Case `lazy_resource_fallback_respects_local_permissions`.
     {
         let mut app = lazy_app(lazy_resource("test.lazy"));
-        app.set_permission_ctx(PermissionContext::from_capabilities(
-            collab_types::caps::Actor::person(None, "restricted"),
-            Vec::new(),
+        app.set_permission_ctx(crate::permissions::PermissionContext::stranger(
+            "restricted",
         ));
 
         let address = tilo_actions::ActionAddress::new("test.lazy", "bump");
@@ -924,9 +916,8 @@ fn action_bound_controls_use_the_fresh_door_and_never_auto_confirm() {
         let pointer = app.layout.node_map[&node];
         assert!(unsafe { (*pointer).is_enabled() });
 
-        app.set_permission_ctx(PermissionContext::from_capabilities(
-            collab_types::caps::Actor::person(None, "restricted"),
-            Vec::new(),
+        app.set_permission_ctx(crate::permissions::PermissionContext::stranger(
+            "restricted",
         ));
         assert!(!unsafe { (*pointer).is_enabled() });
         assert!(!unsafe {
@@ -1060,10 +1051,8 @@ fn broker_and_directed_document_actions_preserve_pending_edits_and_ownership() {
         assert_eq!(context.app, ambient.app);
         assert_eq!(context.source_invocation, Some(admitted_invocation));
         assert_eq!(
-            app.state
-                .peek_last_undo()
-                .and_then(|entry| entry.author.as_ref()),
-            Some(&crate::permissions::UserId("agent:Scribe".into())),
+            app.state.peek_last_undo().and_then(|entry| entry.author),
+            Some(crate::permissions::UserId("agent:Scribe".into())),
             "undo attribution and durable history use the same actor"
         );
     }
@@ -1252,10 +1241,8 @@ fn broker_and_directed_document_actions_preserve_pending_edits_and_ownership() {
         assert!(admitted.is_ok(), "the authoritative broker admitted it");
         assert_eq!(counter(&app), 1);
         assert_eq!(
-            app.state
-                .peek_last_undo()
-                .and_then(|entry| entry.author.as_ref()),
-            Some(&crate::permissions::UserId("agent:Scribe".into()))
+            app.state.peek_last_undo().and_then(|entry| entry.author),
+            Some(crate::permissions::UserId("agent:Scribe".into()))
         );
     }
 
@@ -1440,9 +1427,9 @@ fn local_control_results_stay_local_and_report_refusal_or_success() {
             };
             assert_eq!(*observed.results.borrow(), vec![Ok(expected)]);
             observed.enqueue("run");
-            *binding.permissions.borrow_mut() = PermissionContext::from_capabilities(
-                collab_types::caps::Actor::person(Some(collab_types::role::Role::Viewer), "reader"),
-                Vec::new(),
+            *binding.permissions.borrow_mut() = crate::permissions::PermissionContext::member(
+                "reader",
+                collab_types::role::Role::Viewer,
             );
             let before = owner
                 .records
@@ -1515,9 +1502,9 @@ fn local_control_results_stay_local_and_report_refusal_or_success() {
         let (probe, observed) = Probe::new(false);
         let mut host = App::new_with_controlled_inputs(State::new(), Box::new(probe));
         observed.enqueue("run");
-        let readonly = PermissionContext::from_capabilities(
-            collab_types::caps::Actor::person(Some(collab_types::role::Role::Viewer), "reader"),
-            Vec::new(),
+        let readonly = crate::permissions::PermissionContext::member(
+            "reader",
+            collab_types::role::Role::Viewer,
         );
         host.set_permission_ctx(readonly);
         let before = host.state.doc.base_heads();
@@ -1931,10 +1918,8 @@ fn an_effects_edit_is_applied_for_its_invoker_before_it_answers() {
     );
     assert_eq!(counter(&app), 1, "the effect's edit was applied");
     assert_eq!(
-        app.state
-            .peek_last_undo()
-            .and_then(|entry| entry.author.as_ref()),
-        Some(&crate::permissions::UserId("agent:Scribe".into())),
+        app.state.peek_last_undo().and_then(|entry| entry.author),
+        Some(crate::permissions::UserId("agent:Scribe".into())),
         "by the effect's invoker, not the person at the device"
     );
     assert!(
@@ -1964,10 +1949,8 @@ fn an_effects_edit_is_applied_for_its_invoker_before_it_answers() {
     .expect("the local person bumps");
     assert_eq!(counter(&app), 2);
     assert_eq!(
-        app.state
-            .peek_last_undo()
-            .and_then(|entry| entry.author.as_ref()),
-        Some(&crate::permissions::UserId(local))
+        app.state.peek_last_undo().and_then(|entry| entry.author),
+        Some(crate::permissions::UserId(local))
     );
 }
 

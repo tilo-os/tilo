@@ -44,8 +44,14 @@ pub const ROOM_TASKS_KEY: &str = "tasks_v1";
 pub const ROOM_EFFECT_RECEIPTS_KEY: &str = "effect_receipts_v1";
 /// Key a room document stores its saved shortcuts under.
 pub const ROOM_AUTOMATIONS_KEY: &str = "automations_v1";
-/// Key a room document stores its permission profiles under, by lowercase name.
-pub const ROOM_PERMISSION_PROFILES_KEY: &str = "permission_profiles_v1";
+/// Key a room document stores its named grant sets under, by lowercase name.
+pub const ROOM_PRESETS_KEY: &str = "presets_v1";
+/// Key of the map from member person id to the role preset they hold.
+pub const ROOM_MEMBERS_KEY: &str = "members";
+/// Key of the map from grant id to the grant (JSON bytes).
+pub const ROOM_GRANTS_KEY: &str = "grants";
+/// Key of the map from sandbox capability id to the capability (JSON bytes).
+pub const ROOM_SANDBOX_KEY: &str = "sandbox";
 /// Key a room document stores its schedule claims under.
 pub const ROOM_SCHEDULE_CLAIMS_KEY: &str = "schedule_claims_v1";
 
@@ -351,37 +357,29 @@ pub fn project_workspace_shortcuts(
     Ok(())
 }
 
-/// Project a workspace's permission profiles as one map value per lowercase
-/// profile name. The capabilities an assignment expands to are governance and
-/// travel separately; a profile itself grants nothing.
-///
-/// # Errors
-///
-/// The document's error when the profiles map cannot be created.
-pub fn project_workspace_permission_profiles(
+/// Make the map at `key` hold exactly `entries` (key → JSON bytes), writing
+/// only what changed. A missing map is created only when there is something
+/// to write.
+fn project_blob_map(
     doc: &mut AutoCommit,
-    profiles: &[collab_types::PermissionProfile],
+    key: &str,
+    entries: Vec<(String, Vec<u8>)>,
 ) -> Result<(), automerge::AutomergeError> {
     use automerge::{ObjType, ROOT, ReadDoc, ScalarValue, Value, transaction::Transactable};
 
-    let map = match doc.get(&ROOT, ROOM_PERMISSION_PROFILES_KEY).ok().flatten() {
+    let map = match doc.get(&ROOT, key).ok().flatten() {
         Some((_, id)) => id,
-        None if profiles.is_empty() => return Ok(()),
-        None => doc.put_object(&ROOT, ROOM_PERMISSION_PROFILES_KEY, ObjType::Map)?,
+        None if entries.is_empty() => return Ok(()),
+        None => doc.put_object(&ROOT, key, ObjType::Map)?,
     };
-    let key = |profile: &collab_types::PermissionProfile| profile.name.trim().to_lowercase();
     let stale: Vec<String> = doc
         .keys(&map)
-        .filter(|name| !profiles.iter().any(|profile| key(profile) == *name))
+        .filter(|held| !entries.iter().any(|(name, _)| name == held))
         .collect();
     for name in stale {
         doc.delete(&map, name.as_str())?;
     }
-    for profile in profiles {
-        let Ok(blob) = serde_json::to_vec(profile) else {
-            continue;
-        };
-        let name = key(profile);
+    for (name, blob) in entries {
         let unchanged = matches!(
             doc.get(&map, name.as_str()).ok().flatten(),
             Some((Value::Scalar(value), _))
@@ -394,26 +392,154 @@ pub fn project_workspace_permission_profiles(
     Ok(())
 }
 
-/// The permission profiles a room document carries, by name. A value that
-/// does not decode is skipped.
-pub fn workspace_permission_profiles_of(doc: &AutoCommit) -> Vec<collab_types::PermissionProfile> {
+/// The values of the map at `key` that decode, with their keys.
+fn blob_map_of<T: serde::de::DeserializeOwned>(doc: &AutoCommit, key: &str) -> Vec<(String, T)> {
     use automerge::{ROOT, ReadDoc, ScalarValue, Value};
 
-    let Some((_, map)) = doc.get(&ROOT, ROOM_PERMISSION_PROFILES_KEY).ok().flatten() else {
+    let Some((_, map)) = doc.get(&ROOT, key).ok().flatten() else {
         return Vec::new();
     };
-    let mut profiles: Vec<collab_types::PermissionProfile> = doc
-        .keys(&map)
-        .filter_map(|key| match doc.get(&map, key.as_str()).ok().flatten() {
+    doc.keys(&map)
+        .filter_map(|name| match doc.get(&map, name.as_str()).ok().flatten() {
             Some((Value::Scalar(value), _)) => match value.as_ref() {
-                ScalarValue::Bytes(blob) => serde_json::from_slice(blob).ok(),
+                ScalarValue::Bytes(blob) => {
+                    serde_json::from_slice(blob).ok().map(|value| (name, value))
+                }
                 _ => None,
             },
             _ => None,
         })
+        .collect()
+}
+
+/// Project a workspace's named grant sets as one map value per lowercase
+/// name. A set itself grants nothing; the grants an assignment expands to
+/// travel with the room's policy.
+///
+/// # Errors
+///
+/// The document's error when the map cannot be written.
+pub fn project_workspace_presets(
+    doc: &mut AutoCommit,
+    presets: &[tilo_action_policy::Preset],
+) -> Result<(), automerge::AutomergeError> {
+    let entries = presets
+        .iter()
+        .filter_map(|preset| {
+            Some((
+                preset.name.trim().to_lowercase(),
+                serde_json::to_vec(preset).ok()?,
+            ))
+        })
         .collect();
-    profiles.sort_by_key(|profile| profile.name.to_lowercase());
-    profiles
+    project_blob_map(doc, ROOM_PRESETS_KEY, entries)
+}
+
+/// The named grant sets a room document carries, by name. A value that does
+/// not decode or validate is skipped.
+pub fn workspace_presets_of(doc: &AutoCommit) -> Vec<tilo_action_policy::Preset> {
+    let mut presets: Vec<tilo_action_policy::Preset> = blob_map_of(doc, ROOM_PRESETS_KEY)
+        .into_iter()
+        .map(|(_, preset)| preset)
+        .filter(|preset: &tilo_action_policy::Preset| preset.validate().is_ok())
+        .collect();
+    presets.sort_by_key(|preset| preset.name.to_lowercase());
+    presets
+}
+
+/// Project a room's authority: its owner, each member's role and every grant.
+///
+/// # Errors
+///
+/// The document's error when a value cannot be written.
+pub fn project_room_policy(
+    doc: &mut AutoCommit,
+    policy: &tilo_action_policy::RoomPolicy,
+) -> Result<(), automerge::AutomergeError> {
+    use automerge::{ROOT, ReadDoc, transaction::Transactable};
+
+    match &policy.owner {
+        Some(owner) => {
+            let current = doc
+                .get(&ROOT, ROOM_OWNER_KEY)
+                .ok()
+                .flatten()
+                .and_then(|(value, _)| value.into_string().ok());
+            if current.as_deref() != Some(owner.as_str()) {
+                doc.put(&ROOT, ROOM_OWNER_KEY, owner.as_str())?;
+            }
+        }
+        None => {
+            if doc.get(&ROOT, ROOM_OWNER_KEY).ok().flatten().is_some() {
+                doc.delete(&ROOT, ROOM_OWNER_KEY)?;
+            }
+        }
+    }
+    let members = policy
+        .members
+        .iter()
+        .filter_map(|(person, role)| Some((person.clone(), serde_json::to_vec(role).ok()?)))
+        .collect();
+    project_blob_map(doc, ROOM_MEMBERS_KEY, members)?;
+    let grants = policy
+        .grants
+        .iter()
+        .filter_map(|grant| {
+            Some((
+                grant.id.as_str().to_owned(),
+                serde_json::to_vec(grant).ok()?,
+            ))
+        })
+        .collect();
+    project_blob_map(doc, ROOM_GRANTS_KEY, grants)
+}
+
+/// The authority a room document records for `room`. Values that do not
+/// decode are skipped; grants on another room's nodes are dropped.
+pub fn room_policy_of(doc: &AutoCommit, room: &str) -> tilo_action_policy::RoomPolicy {
+    use automerge::{ROOT, ReadDoc};
+
+    let owner = doc
+        .get(&ROOT, ROOM_OWNER_KEY)
+        .ok()
+        .flatten()
+        .and_then(|(value, _)| value.into_string().ok());
+    let members = blob_map_of(doc, ROOM_MEMBERS_KEY).into_iter().collect();
+    let grants = blob_map_of(doc, ROOM_GRANTS_KEY)
+        .into_iter()
+        .map(|(_, grant): (String, tilo_action_policy::Grant)| grant)
+        .filter(|grant| grant.node.room_id() == Some(room))
+        .collect();
+    tilo_action_policy::RoomPolicy {
+        room: room.to_owned(),
+        owner,
+        members,
+        grants,
+    }
+}
+
+/// Project a room's sandbox capabilities, by id.
+///
+/// # Errors
+///
+/// The document's error when the map cannot be written.
+pub fn project_room_sandbox(
+    doc: &mut AutoCommit,
+    sandbox: &[collab_types::caps::CapOverride],
+) -> Result<(), automerge::AutomergeError> {
+    let entries = sandbox
+        .iter()
+        .filter_map(|cap| Some((cap.id.clone(), serde_json::to_vec(cap).ok()?)))
+        .collect();
+    project_blob_map(doc, ROOM_SANDBOX_KEY, entries)
+}
+
+/// The sandbox capabilities a room document carries.
+pub fn room_sandbox_of(doc: &AutoCommit) -> Vec<collab_types::caps::CapOverride> {
+    blob_map_of(doc, ROOM_SANDBOX_KEY)
+        .into_iter()
+        .map(|(_, cap)| cap)
+        .collect()
 }
 
 /// The shortcuts a room document carries, by id. A value that does not
@@ -1431,7 +1557,7 @@ pub fn apply_admitted_room(
             raw = raw.checked_add(1).ok_or("workspace identities exhausted")?;
         }
         let mut workspace = Workspace::new(WorkspaceId(raw), &name);
-        workspace.room = room;
+        workspace.set_room(room);
         if tree.workspaces.is_empty() {
             tree.active = workspace.id;
         }
@@ -1445,13 +1571,13 @@ pub fn apply_admitted_room(
         .ok_or("workspace missing")?;
     let renamed = workspace.name != name;
     workspace.name = name;
-    workspace.owner = owner;
+    workspace.policy.owner = owner;
     let shortcuts = workspace_shortcuts_of(doc);
     let reshortcut = workspace.shortcuts != shortcuts;
     workspace.shortcuts = shortcuts;
-    let profiles = workspace_permission_profiles_of(doc);
-    let reprofiled = workspace.permission_profiles != profiles;
-    workspace.permission_profiles = profiles;
+    let presets = workspace_presets_of(doc);
+    let reprofiled = workspace.presets != presets;
+    workspace.presets = presets;
     let changed = merge_room_contents(tree, room, contents_of(doc), Reader::Viewer);
     Ok(changed || renamed || reshortcut || reprofiled)
 }

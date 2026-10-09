@@ -1812,17 +1812,6 @@ pub trait Widget {
         None
     }
 
-    /// Rising-edge compensating document actions for the bracket
-    /// [`Self::take_committed_action`] just opened: `(undo_via, redo_via)`.
-    /// Set when the forward action's
-    /// [`tilo_actions::Action::inverse_before`] recorded an outside
-    /// consequence. Default: none (pure CRDT undo via inverse patches).
-    fn take_action_revert(
-        &mut self,
-    ) -> Option<(tilo_actions::EncodedAction, tilo_actions::EncodedAction)> {
-        None
-    }
-
     /// Whether the undo step this widget's last reported boundary opened
     /// stays open for the actions that continue it — the rest of a word
     /// typed a keystroke at a time. A hosted component then closes the step

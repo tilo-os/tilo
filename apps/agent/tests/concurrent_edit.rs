@@ -110,17 +110,10 @@ fn type_one(doc: &mut AutoCommit, block: &str, ch: &str) -> Vec<u8> {
 /// The agent holds no role, so this grant is the whole of what it may do: with
 /// none of these it enumerates nothing and performs nothing.
 fn granted(name: &str) -> ui::permissions::PermissionContext {
-    use ui::permissions::{Actor, CapOverride, PermissionContext, Scope, Subject, Verb};
-    PermissionContext::from_capabilities(
-        Actor::agent(name),
-        vec![
-            CapOverride::grant(
-                Subject::agent(name),
-                Scope::App("so.tilo.word-processor".to_string()),
-                Verb::Write,
-            )
-            .with_id("invited"),
-        ],
+    ui::permissions::PermissionContext::agent_granted_at(
+        name,
+        &[ui::permissions::TreePath::root().app("so.tilo.word-processor".to_string())],
+        ui::permissions::KindSet::READ_UNDOABLE,
     )
 }
 
