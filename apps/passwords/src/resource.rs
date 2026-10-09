@@ -273,29 +273,6 @@ mod tests {
             filter: "favorites".into(),
         })
         .unwrap();
-        app.call("open", serde_json::json!({ "anchor": row_id }))
-            .unwrap();
-        assert!(
-            app.call(
-                "open",
-                serde_json::json!({ "anchor": item_resource_id("not-in-the-vault") })
-            )
-            .is_err(),
-            "an item the vault does not hold is not opened"
-        );
-        app.settle();
-        assert_eq!(
-            app.surface_mut::<PasswordsSurface>()
-                .core()
-                .selected
-                .as_ref(),
-            Some(&id),
-            "opening its anchor shows the item, as a search hit does"
-        );
-        app.effect(&PasswordsEffect::Filter {
-            filter: "favorites".into(),
-        })
-        .unwrap();
         assert!(
             app.effect(&PasswordsEffect::Filter {
                 filter: "everything".into()
@@ -315,6 +292,44 @@ mod tests {
             .unwrap();
         assert!(crate::PasswordsModel::open().items().is_empty());
         assert!(published(&mut app, &row_id).is_none(), "its row is gone");
+    }
+
+    /// Opening an item's anchor, as a search hit or an agent does, shows
+    /// it even where a filter hid it; an item the vault lacks is refused.
+    #[test]
+    fn opening_an_anchor_shows_its_item_and_refuses_one_the_vault_lacks() {
+        let _profile = profile();
+        let mut model = crate::PasswordsModel::open();
+        let mut item = SecretItem::login("Private bank", "ada@private.example", "not-public-7A");
+        let id = model.save_item(&mut item).unwrap();
+        drop(model);
+        let mut app = TestApp::<PasswordsShell>::new().unwrap();
+        app.effect(&PasswordsEffect::Filter {
+            filter: "favorites".into(),
+        })
+        .unwrap();
+        app.call(
+            "open",
+            serde_json::json!({ "anchor": item_resource_id(&id.0) }),
+        )
+        .unwrap();
+        assert!(
+            app.call(
+                "open",
+                serde_json::json!({ "anchor": item_resource_id("not-in-the-vault") })
+            )
+            .is_err(),
+            "an item the vault does not hold is not opened"
+        );
+        app.settle();
+        assert_eq!(
+            app.surface_mut::<PasswordsSurface>()
+                .core()
+                .selected
+                .as_ref(),
+            Some(&id),
+            "opening its anchor shows the item, as a search hit does"
+        );
     }
 
     #[test]
