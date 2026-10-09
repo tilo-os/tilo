@@ -687,6 +687,33 @@ fn looks_like_rfc3339(value: &str) -> bool {
     chrono::DateTime::parse_from_rfc3339(value).is_ok()
 }
 
+/// Distinct schema patterns kept compiled. A directory publishes a handful;
+/// past this the cache starts again rather than growing with whatever a
+/// caller's schemas name.
+const COMPILED_PATTERNS: usize = 64;
+
+/// `pattern` compiled, from the cache when an earlier argument or schema
+/// already compiled it: every validated value used to compile its schema's
+/// pattern again.
+fn schema_pattern(pattern: &str) -> Result<regex::Regex, regex::Error> {
+    static COMPILED: std::sync::LazyLock<
+        std::sync::Mutex<std::collections::HashMap<String, regex::Regex>>,
+    > = std::sync::LazyLock::new(std::sync::Mutex::default);
+    let mut compiled = COMPILED
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(expression) = compiled.get(pattern) {
+        return Ok(expression.clone());
+    }
+    let expression = regex::Regex::new(pattern)?;
+    if compiled.len() >= COMPILED_PATTERNS {
+        compiled.clear();
+    }
+    compiled.insert(pattern.to_owned(), expression.clone());
+    drop(compiled);
+    Ok(expression)
+}
+
 fn validate_string_schema(
     text: &str,
     schema: &serde_json::Map<String, serde_json::Value>,
@@ -706,7 +733,7 @@ fn validate_string_schema(
         let pattern = pattern
             .as_str()
             .ok_or_else(|| "has a non-string schema pattern".to_string())?;
-        let expression = regex::Regex::new(pattern)
+        let expression = schema_pattern(pattern)
             .map_err(|error| format!("has an invalid schema pattern: {error}"))?;
         if !expression.is_match(text) {
             return Err(format!("must match pattern `{pattern}`"));
@@ -1128,7 +1155,7 @@ fn validate_schema_definition_strings(
         let pattern = pattern
             .as_str()
             .ok_or_else(|| "schema `pattern` must be a string".to_string())?;
-        regex::Regex::new(pattern)
+        schema_pattern(pattern)
             .map_err(|error| format!("schema has an invalid pattern: {error}"))?;
     }
     if let Some(format) = object.get("format") {

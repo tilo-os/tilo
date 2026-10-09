@@ -259,10 +259,15 @@ the rows that have the most of them and says `"partial_match": true`, so a
 needle naming several actions ("open paragraph style heading") still finds
 `set-paragraph-style`; version 1 rows keep the every-word match. `revision` is
 optional on `tilo_resolve` and `tilo_invoke`: omitted, the target resolves
-against the directory as it is now; named, a target that changed since is
-refused. `tilo_invoke` waits up to `wait_ms` (default 5 s) for the terminal
-update and answers with it; an invocation still running then says so in
-`pending` and is followed with `tilo_status`. One call is `resource`,
+against the directory as it is now (an invoke passes no revision on, and the
+app resolves it in the same turn the broker admits it, so nothing reads the
+revision first); named, a target that changed since is refused.
+`tilo_invoke` waits up to `wait_ms` (default 5 s) for the terminal update and
+answers with it, woken by the broker when the invocation changes rather than
+on a timer; an invocation still running then says so in `pending` and is
+followed with `tilo_status`. A session's requests may overlap: its
+`tilo_status` and `tilo_cancel` answer while one of its `tilo_invoke` calls
+waits, and calls naming the same `invocation_id` run one after the other. One call is `resource`,
 `action` and `arguments`. Several that share a peer go in `calls`,
 `[{resource, action, arguments}, …]` (at most 32), and run in order: the
 first keeps the named revision, each later one reads the directory as it
