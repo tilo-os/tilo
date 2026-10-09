@@ -637,6 +637,18 @@ globalThis.__tiloPage ||= (() => {
     if (!selection || selection.rangeCount !== 1 || !element.contains(selection.anchorNode) ||
         !element.contains(selection.focusNode))
       throw failure('not_editable', 'The focused editor has no local editable selection');
+    const range = selection.getRangeAt(0);
+    const editableEndpoint = node => {
+      const owner = node.nodeType === Node.ELEMENT_NODE ? node : node.parentElement;
+      return owner?.isContentEditable && !composedReadOnly(owner);
+    };
+    // An editable root can contain locked chips, widgets or readonly islands.
+    // Native replacement must not delete those merely because both endpoints
+    // belong to the surrounding editor. Check the complete original range too.
+    if (!editableEndpoint(selection.anchorNode) || !editableEndpoint(selection.focusNode) ||
+        [...element.querySelectorAll('[contenteditable="false" i], [aria-readonly="true" i], [readonly], :disabled')]
+          .some(island => range.intersectsNode(island)))
+      throw failure('not_editable', 'The original selection includes noneditable content');
     return {field: false, multiline: true, whitespace: getComputedStyle(element).whiteSpace, value: element.innerHTML, anchor: selection.anchorNode,
       focus: selection.focusNode, start: selection.anchorOffset, end: selection.focusOffset};
   }

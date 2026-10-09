@@ -2387,3 +2387,52 @@ supervisor behavior or sandbox flag was changed to hide that cleanup failure.
 The package-kind/browser-runtime contract passes on the new runtime reference
 (1 test, 0.008 seconds), as do 3 package preparation and 4 scope-contract tests.
 The final required remote shell all-test check passes (1.12 seconds cached).
+
+### Nested rich fields and current-main conflicts (2026-10-09)
+
+Further real CEF journeys qualify paragraphs inside code, links, list items and
+table cells: literal breaks, inherited bold, unchanged link target/structure,
+original-selection replacement and one native undo/redo. An original admission
+regression found that the surrounding editable root admitted selection endpoints
+inside, or a range crossing, a `contenteditable=false` island. Preparation now
+checks effective endpoint editability and protected descendants intersecting the
+complete range. It rejects locked content before handlers or editing; editable
+text alongside the island still accepts paragraphs and owned undo normally.
+The pinned host build passed in 11.951 seconds and all 15 focused tests passed
+in 15.836 seconds. The original failure and corrected source/host hashes are
+retained separately in `dictation-browser-rich-islands.json`.
+
+Current-head CI for 5680a08243 was inspected once: check run 86055, lint 86058 and
+app-SDK 86054 stopped during merge against main 8f6bfc2b00, before compiling the
+candidate. Main a9d9b6c766 is integrated with both sets of localized keys retained.
+The rootfs contract is the exact union of both 301-row parents: 302 rows, retaining
+the cooperative Bash editor and adding the first-login Flatpak unit. Its SHA-256
+is `7ae5fa508eee4062dda7e997189cd678c0d213eeed43990e3b9863245704fded`;
+the unchanged 156-instruction budget passes. Cargo.lock is unchanged by this merge.
+The required remote shell test-target compile passed (1m48s), 17 selected foreign
+compositor dictation tests passed (0.624s), and the separate Notes integration
+Unicode/selection/persistent undo case passed (0.280s). An initial Notes command
+used an obsolete individual target name and ran no test; the corrected consolidated
+`it` invocation produced that passing result.
+
+Current-head OS run 86059 confirms the missing signed RPM snapshot
+`set-4cee6ac4651b25573a4c65e1dba081d96f0ecc825daa76e7cfa53c0eed58a63c` and
+absent main producer run; its image job did not execute. This non-transient
+prerequisite is not rerun. No image or live microphone result is inferred.
+
+`dictation-recorded-compositor-plan.md` prepares the bounded hardware-disabled
+assembled audio journey and identifies exact model/runtime and one-session
+microphone consent boundaries. Ordinary first-party installation is distinguished
+from a security grant; this session's explicit deployment/activation hold still
+applies to the real OS. The plan is prepared, not a current-head assembled pass.
+
+After integration, the actual Notes three-case paragraph bridge regression also
+passes (one selected test containing Unicode paragraphs, pure LF and trailing LF,
+0.536 seconds). The full recorded-audio plan's preflight identifies missing old
+Tiny/audio-tool fixture inputs explicitly; existing binary files are not claimed
+to be compiled from the current source. No runtime activation is implied.
+
+The complete guarded CEF suite passes all 56 tests on this final rich-selection
+revision (247.630 seconds), including the real-clock fixed expiry case. This
+result is retained in the rich-island receipt and is distinct from the previous
+49-test boundary checkpoint.
