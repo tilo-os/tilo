@@ -18,6 +18,9 @@ use vello::peniko::Color;
 
 use super::{Backend, BackendEvent, Output, OutputId, combined_geometry, layout};
 
+// Match the existing host-window fallback for blank scenes in both render paths.
+const FALLBACK_BG: Color = Color::from_rgb8(0x1A, 0x1B, 0x26);
+
 /// Env-var that overrides the synthetic output's dimensions. Format is
 /// `WxH` (e.g. `1280x720`). Anything malformed or absent falls back to
 /// the `shots --mode offscreen` default. Mirrors the env-var-driven
@@ -468,8 +471,7 @@ impl Backend for HeadlessBackend {
             self.last_frame = Vec::new();
             return;
         }
-        let bg = Color::from_rgb8(0x1A, 0x1B, 0x26);
-        self.last_frame = self.renderer.render(scene, bg);
+        self.last_frame = self.renderer.render(scene, FALLBACK_BG);
         #[cfg(target_os = "linux")]
         crate::shader_seed::after_frame();
     }
@@ -493,8 +495,7 @@ impl Backend for HeadlessBackend {
                 // A first ordinary readback may have overflowed or warmed an
                 // atlas. Never freeze it: establish two clean submissions with
                 // the existing bounded screenshot validator before reusing it.
-                let bg = Color::from_rgb8(0x1A, 0x1B, 0x26);
-                self.last_frame = self.renderer.render_resilient(&frame.scene, bg);
+                self.last_frame = self.renderer.render_resilient(&frame.scene, FALLBACK_BG);
                 #[cfg(target_os = "linux")]
                 crate::shader_seed::after_frame();
             }
