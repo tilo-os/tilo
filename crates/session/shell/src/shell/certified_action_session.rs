@@ -72,6 +72,13 @@ impl ActionSessionSource {
     /// no session. `None` while that can't be known (a file can't be
     /// examined, or was written too recently to trust its stamp): the caller
     /// must assume it changed.
+    #[cfg_attr(
+        not(test),
+        expect(
+            clippy::unused_self,
+            reason = "a test fixture source answers without identity files"
+        )
+    )]
     pub(crate) fn identity_revision(&self, room: &str) -> Option<u64> {
         use std::hash::{Hash as _, Hasher as _};
         #[cfg(test)]
