@@ -120,6 +120,9 @@ pub struct GpuFrame {
     leases: Mutex<Vec<BufferLease>>,
     /// When a newer frame of the surface replaced it.
     superseded: OnceLock<Instant>,
+    /// The client's buffer itself, for a display that can scan it out.
+    #[cfg(target_os = "linux")]
+    dmabuf: Option<smithay::backend::allocator::dmabuf::Dmabuf>,
 }
 
 impl std::fmt::Debug for GpuFrame {
@@ -175,6 +178,8 @@ impl GpuFrame {
             image: Mutex::new(None),
             leases: Mutex::new(Vec::new()),
             superseded: OnceLock::new(),
+            #[cfg(target_os = "linux")]
+            dmabuf: None,
         }
     }
 
@@ -184,6 +189,19 @@ impl GpuFrame {
 
     pub fn height(&self) -> u32 {
         self.height
+    }
+
+    /// The buffer's alpha channel is padding: drawn, it covers what is below.
+    pub fn opaque(&self) -> bool {
+        self.opaque
+    }
+
+    /// The client's buffer, when the frame was imported from one. A display
+    /// scanning it out holds this frame — and so the buffer — until the page
+    /// flip that replaces it retires.
+    #[cfg(target_os = "linux")]
+    pub fn dmabuf(&self) -> Option<&smithay::backend::allocator::dmabuf::Dmabuf> {
+        self.dmabuf.as_ref()
     }
 
     /// Give the client's buffer back through `lease` once this frame is gone
@@ -435,6 +453,18 @@ impl Registry {
             .get(&id)
             .and_then(|entry| Some((entry.frame.upgrade()?, entry.crop)))
     }
+}
+
+/// The client frame `image` draws, when it draws one whole: the image a
+/// [`crate::shell::scanout_candidate::ScanoutCandidate`] names. Alive as long
+/// as the store or a queued frame holds it.
+pub fn client_frame(image: &ImageData) -> Option<Arc<GpuFrame>> {
+    // Client frames carry no CPU pixels; every other image does.
+    if !image.data.is_empty() {
+        return None;
+    }
+    let (frame, crop) = registry().frame(image.data.id())?;
+    (crop == (0, 0, frame.width, frame.height)).then_some(frame)
 }
 
 /// Stop drawing `surface`'s GPU frames once it is gone, and drop the imports
@@ -913,9 +943,9 @@ fn import_dmabuf_on(
                 .next()
                 .ok_or_else(|| "the import returned no plane".to_owned())
         })?;
-    Ok(Arc::new(GpuFrame::borrowing(
-        present, source, opaque, surface,
-    )))
+    let mut frame = GpuFrame::borrowing(present, source, opaque, surface);
+    frame.dmabuf = Some(dmabuf.clone());
+    Ok(Arc::new(frame))
 }
 
 /// Block until a dma-buf's pending writes (its implicit fence) are done, at

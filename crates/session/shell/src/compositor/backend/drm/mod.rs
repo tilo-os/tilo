@@ -11,6 +11,7 @@
 //! inner calloop loop · [`scanout`] modeset/flip/cursor/card handle · [`paint`] CPU-fallback vello → RGBA bridge.
 
 pub mod access_keys;
+mod client_scanout;
 pub mod cpu_present;
 pub mod devices;
 mod direct_retry;
@@ -477,6 +478,15 @@ fn direct_failures(scanouts: &[ScanoutEntry]) -> u32 {
         .unwrap_or(0)
 }
 
+/// Whether any output renders direct, as the phase summary reports it.
+fn direct_status(scanouts: &[ScanoutEntry]) -> &'static str {
+    if scanouts.iter().any(|entry| entry.direct_targets.is_some()) {
+        "enabled"
+    } else {
+        "unavailable"
+    }
+}
+
 /// Why an output is not on direct scanout, if one is not.
 fn direct_reason(scanouts: &[ScanoutEntry]) -> &str {
     scanouts
@@ -546,6 +556,9 @@ struct PhaseWindow {
     max_direct_us: u128,
     /// Direct frames the renderer repaired sparsely rather than in full.
     direct_sparse_frames: u64,
+    /// Frames an output showed by flipping a fullscreen client's own buffer,
+    /// rendering nothing.
+    client_scanout_frames: u64,
     readback_bytes: u64,
     output_bytes: u64,
     /// Passes the readback presenter made over an output's pixels on the CPU (rotate and
@@ -586,6 +599,7 @@ impl Default for PhaseWindow {
             direct_us: 0,
             max_direct_us: 0,
             direct_sparse_frames: 0,
+            client_scanout_frames: 0,
             unprofiled_frames: 0,
         }
     }
@@ -654,6 +668,12 @@ impl PhaseWindow {
         if sparse {
             self.direct_sparse_frames = self.direct_sparse_frames.saturating_add(1);
         }
+    }
+
+    /// One frame an output scanned a client's buffer out instead of rendering.
+    fn record_client_scanout(&mut self) {
+        self.frames = self.frames.saturating_add(1);
+        self.client_scanout_frames = self.client_scanout_frames.saturating_add(1);
     }
 
     fn record_direct_drop(&mut self) {
@@ -1237,7 +1257,7 @@ impl DrmPresenter {
                  avg_backdrop_us={} readback_bytes={} output_bytes={} cpu_pixel_passes={} \
                  bridge_us={} scanout_us={} \
                  avg_direct_us={} max_direct_us={} direct_sparse_frames={} \
-                 direct_failures={} \
+                 client_scanout_frames={} direct_failures={} \
                  direct_scanout_status={} direct_scanout_reason={:?} \
                  DRM render phase summary",
                 summary.frames,
@@ -1277,16 +1297,9 @@ impl DrmPresenter {
                     .unwrap_or(0),
                 self.phase_window.max_direct_us,
                 self.phase_window.direct_sparse_frames,
+                self.phase_window.client_scanout_frames,
                 direct_failures(&self.scanouts),
-                if self
-                    .scanouts
-                    .iter()
-                    .any(|entry| entry.direct_targets.is_some())
-                {
-                    "enabled"
-                } else {
-                    "unavailable"
-                },
+                direct_status(&self.scanouts),
                 direct_reason(&self.scanouts),
             );
             self.phase_window.reset(now);
@@ -1469,6 +1482,9 @@ struct ScanoutFrame<'a> {
     hdr_layers: &'a [HdrLayer],
     /// What the scene's floating surfaces are drawn over.
     backdrop: Option<&'a std::sync::Arc<ui::backdrop::BackdropFrame>>,
+    /// The client buffer on top of everything on one output, which that
+    /// output may scan out instead of rendering `scene`.
+    scanout: Option<&'a crate::shell::scanout_candidate::ScanoutCandidate>,
 }
 
 // These two constructors are the only places a frame is translated for the scanouts, so a field
@@ -1481,6 +1497,7 @@ impl<'a> ScanoutFrame<'a> {
             damage: None,
             hdr_layers: &[],
             backdrop: None,
+            scanout: None,
         }
     }
 }
@@ -1498,6 +1515,7 @@ impl<'a> From<&'a FramePaint> for ScanoutFrame<'a> {
             }),
             hdr_layers: &frame.hdr_layers,
             backdrop: frame.backdrop.as_ref(),
+            scanout: frame.scanout_candidate(),
         }
     }
 }
@@ -1768,6 +1786,10 @@ fn paint_scanouts(
                     render_totals.add(render_us, sparse);
                     entry.readback_current = false;
                 }
+                DirectOutcome::ScannedOut => {
+                    direct.direct_queued = true;
+                    entry.readback_current = false;
+                }
                 // The output keeps its current image.
                 DirectOutcome::Dropped | DirectOutcome::Kept | DirectOutcome::Deferred => {
                     entry.readback_current = false;
@@ -1955,6 +1977,9 @@ enum DirectOutcome {
     /// Nothing new reaches this output (no damage falls on it, or the frame is a
     /// clip that only the readback replays): it keeps its current image.
     Kept,
+    /// A flip onto the frame's fullscreen client buffer is queued: nothing was
+    /// rendered for this output.
+    ScannedOut,
     /// The output is not eligible, or its direct frame failed: the readback presents it.
     Readback,
 }
@@ -2148,11 +2173,26 @@ fn present_direct(
     }
     // No targets: the failure that took them is cooling down, and was logged when it
     // happened.
+    if entry.direct_targets.is_none() {
+        return DirectOutcome::Readback;
+    }
+    let own_pixels = sharing.owns_pixels(bridge, view);
+    if let Some(outcome) = present_client(
+        entry,
+        bridge,
+        view,
+        frame,
+        own_pixels,
+        phase_window.as_deref_mut(),
+    ) {
+        return outcome;
+    }
     let Some(targets) = entry.direct_targets.as_mut() else {
         return DirectOutcome::Readback;
     };
-    let own_pixels = sharing.owns_pixels(bridge, view);
-    if keeps_shown_image(bridge, view, frame, targets.presented(), sharing) {
+    // A client buffer on the CRTC means the targets' pixels are not what is shown.
+    let shown = targets.presented() && !targets.shows_client();
+    if keeps_shown_image(bridge, view, frame, shown, sharing) {
         return DirectOutcome::Kept;
     }
     // A queued imported-buffer flip retires before a new render target is selected. With
@@ -2246,6 +2286,115 @@ fn present_direct(
             entry.direct_targets = None;
             entry.fail_hdr(reason, &detail);
             DirectOutcome::Readback
+        }
+    }
+}
+
+/// Show the frame's fullscreen client buffer on this output by a page flip of
+/// the buffer itself, when the frame proved it on top of everything here and
+/// the output and its primary plane take it. `None` composites the frame
+/// instead, on this same frame: the candidate was refused, or there is none.
+///
+/// The output renders nothing while it scans out, so the frame's damage on it
+/// is owed to its next render (or that render is full). The buffer is held
+/// until the flip that replaces it retires ([`client_scanout::ClientHold`]).
+fn present_client(
+    entry: &mut ScanoutEntry,
+    bridge: &mut paint::VelloDrmBridge,
+    view: &paint::OutputView,
+    frame: &ScanoutFrame<'_>,
+    own_pixels: bool,
+    phase_window: Option<&mut PhaseWindow>,
+) -> Option<DirectOutcome> {
+    let output = entry.id;
+    let Some(candidate) = frame.scanout else {
+        entry
+            .scanout
+            .note_client_scanout(output, client_scanout::ClientStatus::Idle);
+        return None;
+    };
+    let client = crate::shell::gpu_frames::client_frame(&candidate.image);
+    let dmabuf = client.as_ref().and_then(|frame| frame.dmabuf().cloned());
+    let targets = entry.direct_targets.as_ref()?;
+    let eligibility = client_scanout::ClientEligibility {
+        enabled: client_scanout::client_scanout_enabled(),
+        upright: view.orientation == settings_store::hardware::OutputTransform::Normal,
+        covers_output: candidate.covers(entry.position, view.size),
+        client_buffer: dmabuf.is_some(),
+        opaque: client.as_ref().is_some_and(|frame| frame.opaque()),
+        sdr: !targets.format().is_hdr() && !entry.hdr_wanted(),
+        no_hdr_layers: frame.hdr_layers.is_empty(),
+        same_format: dmabuf.as_ref().is_some_and(|dmabuf| {
+            use smithay::backend::allocator::Buffer as _;
+            dmabuf.format().code == targets.format().fourcc()
+        }),
+    };
+    let refused = client_scanout::client_scanout_rejection(eligibility);
+    let (Some(client), Some(dmabuf), None) = (client, dmabuf, refused) else {
+        let reason = refused.unwrap_or("no client buffer");
+        entry.scanout.note_client_scanout(
+            output,
+            client_scanout::ClientStatus::Refused(reason.to_owned()),
+        );
+        return None;
+    };
+    let owe = |bridge: &mut paint::VelloDrmBridge| match frame.damage {
+        Some(damage) if own_pixels => {
+            bridge.defer_output(view, damage);
+        }
+        _ => bridge.invalidate_output_view(view),
+    };
+    // The same buffer is on screen, or on its way: nothing new reaches the
+    // output, whatever changed below the client.
+    if targets.shows_client_frame(&client) {
+        owe(bridge);
+        return Some(DirectOutcome::Kept);
+    }
+    // KMS owns the CRTC until the queued flip retires; this output is slower
+    // than the loop and shows this client's next buffer at its own vblank.
+    if targets.flip_pending() {
+        owe(bridge);
+        return Some(DirectOutcome::Deferred);
+    }
+    let framebuffer = match entry.scanout.client_framebuffer(&dmabuf) {
+        Ok(framebuffer) => framebuffer,
+        Err(reason) => {
+            entry
+                .scanout
+                .note_client_scanout(output, client_scanout::ClientStatus::Refused(reason));
+            return None;
+        }
+    };
+    let targets = entry.direct_targets.as_mut()?;
+    let submitted = entry.scanout.submit_client_framebuffer(
+        targets,
+        client_scanout::ClientScanout::new(client, framebuffer),
+    );
+    match submitted {
+        scanout::DirectSubmit::Queued | scanout::DirectSubmit::Presented => {
+            owe(bridge);
+            if let Some(window) = phase_window {
+                window.record_client_scanout();
+            }
+            entry
+                .scanout
+                .note_client_scanout(output, client_scanout::ClientStatus::Active);
+            Some(DirectOutcome::ScannedOut)
+        }
+        scanout::DirectSubmit::Busy => {
+            owe(bridge);
+            if let Some(window) = phase_window {
+                window.record_direct_drop();
+            }
+            Some(DirectOutcome::Dropped)
+        }
+        scanout::DirectSubmit::Failed(reason) | scanout::DirectSubmit::HdrFailed(_, reason) => {
+            // Composite this frame, and this buffer from now on.
+            entry.scanout.refuse_client_buffer(&dmabuf, &reason);
+            entry
+                .scanout
+                .note_client_scanout(output, client_scanout::ClientStatus::Refused(reason));
+            None
         }
     }
 }
@@ -2449,6 +2598,7 @@ fn render_combined_readback(
         damage,
         hdr_layers,
         backdrop: _,
+        scanout: _,
     } = frame;
     let Some(bridge) = paint.as_mut() else {
         return PaintScanoutSample::default();
