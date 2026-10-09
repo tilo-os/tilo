@@ -1641,8 +1641,6 @@ mod event_tests {
     struct Rig {
         app: PdfApp,
         st: ui::State,
-        taffy: TaffyTree<()>,
-        node: NodeId,
     }
 
     impl Rig {
@@ -1652,34 +1650,17 @@ mod event_tests {
         }
 
         fn with(app: PdfApp, st: ui::State) -> Self {
-            let mut taffy = TaffyTree::new();
-            let node = taffy.new_leaf(Style::default()).unwrap();
-            Self {
-                app,
-                st,
-                taffy,
-                node,
-            }
+            Self { app, st }
         }
 
         /// Feed one real event; returns whether it was handled.
         fn feed(&mut self, mods: Modifiers, ev: &WindowEvent) -> bool {
-            let mut handled = false;
-            let mut focus = None;
-            self.app.handle_event(
-                ev,
-                &mut ui::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &mods,
-                    state: Edits::lend(&mut self.st.doc),
-                    path: &self.st.root,
-                    handled: &mut handled,
-                    focus_target: &mut focus,
-                    node_id: self.node,
-                    taffy: &self.taffy,
-                },
-            );
-            handled
+            ui::testing::Dispatch::new()
+                .modifiers(mods)
+                .doc(&mut self.st.doc)
+                .path(&self.st.root)
+                .send(&mut self.app, ev)
+                .handled
         }
 
         fn move_to(&mut self, p: (f64, f64)) {
@@ -1948,25 +1929,10 @@ mod event_tests {
         app.toolbar.open_overflow();
         assert!(app.toolbar.shown_menu().is_some());
         // The open menu owns input; Escape closes it.
-        let mut handled = false;
-        let mut focus = None;
-        let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let node = taffy.new_leaf(Style::default()).unwrap();
-        let mods = Modifiers::default();
-        ui::widget::Widget::handle_event(
-            &mut app,
-            &key_event(Key::Named(NamedKey::Escape)),
-            &mut ui::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &mods,
-                state: ui::widget::Edits::lend(&mut st.doc),
-                path: &automerge::ROOT,
-                handled: &mut handled,
-                focus_target: &mut focus,
-                node_id: node,
-                taffy: &taffy,
-            },
-        );
+        let handled = ui::testing::Dispatch::new()
+            .doc(&mut st.doc)
+            .send(&mut app, &key_event(Key::Named(NamedKey::Escape)))
+            .handled;
         assert!(handled, "the menu took the key");
         assert!(app.toolbar.shown_menu().is_none(), "Escape closes it");
     }

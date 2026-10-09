@@ -4,7 +4,6 @@
 pub mod action_contract;
 #[cfg(test)]
 mod clicks;
-#[cfg(test)]
 mod dispatch;
 #[cfg(test)]
 mod owned_text;
@@ -12,8 +11,7 @@ mod owned_text;
 mod widgets;
 #[cfg(test)]
 pub(crate) use clicks::{clicks, record_click};
-#[cfg(test)]
-pub(crate) use dispatch::{Dispatch, dispatch};
+pub use dispatch::{Dispatch, Dispatched, dispatch};
 #[cfg(test)]
 pub(crate) use owned_text::OwnedText;
 #[cfg(test)]
