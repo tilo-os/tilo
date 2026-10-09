@@ -16,8 +16,10 @@
 pub mod colorimetry;
 pub mod contribution;
 pub mod hdr_metadata;
+pub mod presence_slot;
 pub mod retention;
 
+pub use presence_slot::PresenceSlot;
 pub use retention::{Retention, app_document_channel, retention};
 
 use serde::{Deserialize, Serialize};

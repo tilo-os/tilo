@@ -258,6 +258,9 @@ struct SessionCtx<'a> {
     resumes: &'a std::sync::Mutex<HashMap<u64, ResumeLog>>,
     /// Rooms whose live deliveries this connection could not take.
     lag: &'a Arc<Lag>,
+    /// Where this connection's rooms post the presence they fan out to it
+    /// (TIL-710); `None` takes each presence on the frame queue.
+    presence: Option<&'a Arc<crate::presence_mailbox::PresenceMailbox>>,
 }
 
 impl SessionCtx<'_> {
@@ -427,6 +430,12 @@ impl SessionProtocol {
         framing: tilo_delivery_protocol::transport_v2::StateFraming::Compact,
         signed_actions: true,
     };
+    /// `ALPN_PRESENCE_BATCH_V1`: [`Self::COMPACT_STATE`] whose presence may
+    /// arrive slotted and is written batched and slot-coded.
+    pub(crate) const PRESENCE_BATCH: Self = Self {
+        framing: tilo_delivery_protocol::transport_v2::StateFraming::Presence,
+        signed_actions: true,
+    };
 }
 
 /// [`run_peer`] over a carrier other than an iroh connection (a browser's
@@ -526,6 +535,9 @@ where
     let mut access_audit = AccessAudit::new();
 
     let connection_live = ConnectionLease(Arc::new(std::sync::atomic::AtomicBool::new(true)));
+    // Every protocol gets its presence coalesced and paced; only a
+    // `tilo-relay/6` session gets it batched and slot-coded.
+    let presence = Arc::new(crate::presence_mailbox::PresenceMailbox::default());
     let session = SessionCtx {
         workspaces: &workspaces,
         autobind: autobind.as_ref(),
@@ -549,6 +561,7 @@ where
         compactor: compactor.as_ref(),
         resumes: &resumes,
         lag: &lag,
+        presence: Some(&presence),
     };
 
     // A clean EOF is only one of the ways this ends: a write to a
@@ -627,6 +640,25 @@ where
                     // closes, so this cannot spin on an error.
                     _ = authority.changed() => { access_audit.changed(); continue; }
                 }
+            };
+            let frame = match frame {
+                // Only a `tilo-relay/6` reader returns one.
+                EnvelopeV2::SlottedPresence {
+                    workspace_id,
+                    slot,
+                    motion,
+                    payload,
+                } => {
+                    drop(inbound_budget);
+                    let slot = tilo_peer_state::PresenceSlot { id: slot, motion };
+                    let presence = Envelope::Presence {
+                        workspace_id,
+                        payload,
+                    };
+                    handle_presence(&peer, &session, &subscribed, presence, Some(slot)).await?;
+                    continue;
+                }
+                frame => frame,
             };
             match frame {
                 EnvelopeV2::State(env) => {
@@ -798,6 +830,9 @@ where
         let mut deferred_state = None;
         let mut deferred_frame = None;
         let mut raw_turn = false;
+        // This connection's half of its presence slot coding: it sees every
+        // batch this writer writes, in order.
+        let mut presence_slots = tilo_delivery_protocol::transport_v2::PresenceEncoder::default();
         loop {
             if active.is_none() {
                 active = reply_rx.try_recv().ok();
@@ -853,6 +888,16 @@ where
                     raw_turn = true;
                     continue;
                 }
+                // Presence goes once no delta is waiting: it never delays one.
+                if presence
+                    .next_due()
+                    .is_some_and(|due| due <= tokio::time::Instant::now())
+                {
+                    write_presence(&presence, &mut presence_slots, &peer, &session, &mut write)
+                        .await?;
+                    private_burst = 0;
+                    continue;
+                }
             }
             // None of the queues was ready. Await readiness without starting
             // a write in a cancellable select branch.
@@ -868,6 +913,7 @@ where
                 frame = rx.recv(), if live => {
                     deferred_frame = frame;
                 }
+                () = presence.ready(), if live => {}
             }
         }
         #[allow(
@@ -981,7 +1027,8 @@ pub(crate) use tilo_relay_session::trace_native_publication;
 fn inbound_bytes(frame: &EnvelopeV2) -> usize {
     match frame {
         EnvelopeV2::State(Envelope::Delta { delta, .. }) => delta.len().saturating_add(256),
-        EnvelopeV2::State(Envelope::Presence { payload, .. }) => payload.len().saturating_add(256),
+        EnvelopeV2::State(Envelope::Presence { payload, .. })
+        | EnvelopeV2::SlottedPresence { payload, .. } => payload.len().saturating_add(256),
         EnvelopeV2::State(Envelope::SyncResponse { delta_since, .. }) => {
             delta_since.len().saturating_add(256)
         }
@@ -1211,10 +1258,6 @@ async fn write_private<W: tokio::io::AsyncWrite + Unpin>(
     }
     Ok(())
 }
-#[expect(
-    clippy::significant_drop_tightening,
-    reason = "the membership guard spans the whole authorization so it observes one roster generation"
-)]
 async fn authorize_state_frame(
     frame: &Envelope,
     peer: &AuthenticatedPeer,
@@ -1227,6 +1270,22 @@ async fn authorize_state_frame(
         Envelope::SyncResponse { workspace_id, .. } => (*workspace_id, false),
         _ => return Ok(()),
     };
+    authorize_state_recipient(id, subscribed, peer, session).await
+}
+
+/// [`authorize_state_frame`] for a frame to room `id`; `subscribed` frames
+/// (deltas, presence, `Ready`) also need this connection to be the room's
+/// current subscriber.
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "the membership guard spans the whole authorization so it observes one roster generation"
+)]
+async fn authorize_state_recipient(
+    id: u64,
+    subscribed: bool,
+    peer: &AuthenticatedPeer,
+    session: &SessionCtx<'_>,
+) -> Result<(), PeerError> {
     let ws = session
         .workspaces
         .lock()
@@ -1802,7 +1861,9 @@ async fn handle_envelope(
             handle_unsubscribe(peer, session, subscribed, workspace_id).await
         }
         env @ Envelope::Delta { .. } => handle_delta(peer, session, subscribed, env).await,
-        env @ Envelope::Presence { .. } => handle_presence(peer, session, subscribed, env).await,
+        env @ Envelope::Presence { .. } => {
+            handle_presence(peer, session, subscribed, env, None).await
+        }
         Envelope::PeerRelayHello { hosted_workspaces } => {
             handle_peer_relay_hello(peer, session, hosted_workspaces).await
         }
@@ -2055,6 +2116,7 @@ async fn handle_subscribe(
     let catchup = Arc::new(ReplayCatchup::new());
     let session_catchup = catchup.clone();
     let session_lag = session.lag.clone();
+    let presence = session.presence.cloned();
 
     let rx = owner
         .submit_replay_resumable_wait(
@@ -2120,6 +2182,9 @@ async fn handle_subscribe(
                     tx: source.tx,
                     disconnect: source.disconnect,
                 });
+                if let Some(mailbox) = presence {
+                    wr.route_presence(source.peer.device_public_key, mailbox);
+                }
                 wr.state_sessions.insert(
                     source.peer.device_public_key,
                     StateSession {
@@ -5080,6 +5145,56 @@ fn encode_charged(
     Ok(frame)
 }
 
+/// Presence items one `PresenceBatch` frame carries at most.
+const PRESENCE_BATCH_ITEMS: usize = 64;
+
+/// Write the presence due for this connection in one write, each room's
+/// authorised once: on `tilo-relay/6` as slot-coded `PresenceBatch` frames,
+/// on older protocols as one `Presence` frame per payload. Charged to each
+/// room's live egress.
+async fn write_presence<W: tokio::io::AsyncWrite + Unpin>(
+    mailbox: &crate::presence_mailbox::PresenceMailbox,
+    slots: &mut tilo_delivery_protocol::transport_v2::PresenceEncoder,
+    peer: &AuthenticatedPeer,
+    session: &SessionCtx<'_>,
+    write: &mut W,
+) -> Result<(), PeerError> {
+    let due = mailbox.take_due(tokio::time::Instant::now());
+    let mut out = Vec::new();
+    for run in due.chunk_by(|a, b| a.workspace_id == b.workspace_id) {
+        let Some(room) = run.first().map(|presence| presence.workspace_id) else {
+            continue;
+        };
+        authorize_state_recipient(room, true, peer, session).await?;
+        let before = out.len();
+        if session.framing.batches_presence() {
+            for chunk in run.chunks(PRESENCE_BATCH_ITEMS) {
+                let items: Vec<_> = chunk
+                    .iter()
+                    .map(|presence| slots.item(presence.key, &presence.payload))
+                    .collect();
+                out.extend(tilo_delivery_protocol::transport_v2::encode_presence_batch(
+                    room, &items,
+                )?);
+            }
+        } else {
+            for presence in run {
+                let frame = Envelope::Presence {
+                    workspace_id: room,
+                    payload: presence.payload.to_vec(),
+                };
+                out.extend(encode_for_session(&frame, session)?);
+            }
+        }
+        let bytes = u64::try_from(out.len().saturating_sub(before)).unwrap_or(u64::MAX);
+        session.metrics.add_room_egress(room, bytes, true);
+    }
+    if !out.is_empty() {
+        write.write_all(&out).await?;
+    }
+    Ok(())
+}
+
 #[expect(
     clippy::significant_drop_tightening,
     reason = "the flagged value is a shared workspace handle (an Arc clone); dropping it earlier releases no lock"
@@ -5767,6 +5882,7 @@ async fn handle_presence(
     session: &SessionCtx<'_>,
     subscribed: &[u64],
     mut env: Envelope,
+    slot: Option<tilo_peer_state::PresenceSlot>,
 ) -> Result<Option<Envelope>, PeerError> {
     let Envelope::Presence { workspace_id, .. } = &env else {
         return Err(PeerError::Protocol(
@@ -5827,7 +5943,7 @@ async fn handle_presence(
         if peer.role == crate::auth::PeerRole::Device {
             wr.request_checkpoint(&peer.device_public_key);
         }
-        wr.fanout_presence(&peer.device_public_key, peer.role, &env);
+        wr.fanout_presence(&peer.device_public_key, peer.role, &env, slot);
     }
     if legacy_writer
         && let (Some(bridge), crate::auth::PeerRole::Device, Envelope::Presence { payload, .. }) =
@@ -9807,6 +9923,7 @@ mod private_transport_tests {
             trust_policy: &trust,
             disconnect: &disconnect,
             framing: tilo_delivery_protocol::transport_v2::StateFraming::V1,
+            presence: None,
             signed_actions: false,
             private_tx: &private,
             revocations: &revocations,
@@ -10028,6 +10145,7 @@ mod private_transport_tests {
             trust_policy: &trust,
             disconnect: &disconnect,
             framing: tilo_delivery_protocol::transport_v2::StateFraming::V2,
+            presence: None,
             signed_actions: false,
             private_tx: &ap,
             revocations: &revocations,
@@ -10154,6 +10272,7 @@ mod private_transport_tests {
             trust_policy: &trust,
             disconnect: &disconnect,
             framing: tilo_delivery_protocol::transport_v2::StateFraming::V2,
+            presence: None,
             signed_actions: false,
             private_tx: &ap,
             revocations: &revocations,
@@ -10305,6 +10424,7 @@ mod private_transport_tests {
             trust_policy: &trust,
             disconnect: &disconnect,
             framing: tilo_delivery_protocol::transport_v2::StateFraming::V1,
+            presence: None,
             signed_actions: false,
             private_tx: &ap,
             revocations: &revocations,
@@ -10434,6 +10554,7 @@ mod private_transport_tests {
             trust_policy: &trust,
             disconnect: &disconnect,
             framing: tilo_delivery_protocol::transport_v2::StateFraming::V2,
+            presence: None,
             signed_actions: false,
             private_tx: &ap,
             revocations: &revocations,
@@ -10544,6 +10665,7 @@ mod private_transport_tests {
             trust_policy: &trust,
             disconnect: &source_disconnect,
             framing: tilo_delivery_protocol::transport_v2::StateFraming::V2,
+            presence: None,
             signed_actions: false,
             private_tx: &source_private,
             revocations: &revocations,
@@ -10758,6 +10880,7 @@ mod private_transport_tests {
             trust_policy: &trust,
             disconnect: &disconnect,
             framing: tilo_delivery_protocol::transport_v2::StateFraming::V2,
+            presence: None,
             signed_actions: false,
             private_tx: &ap,
             revocations: &revocations,
@@ -11131,6 +11254,7 @@ mod private_transport_tests {
             trust_policy: &trust,
             disconnect: &bdis,
             framing: tilo_delivery_protocol::transport_v2::StateFraming::V1,
+            presence: None,
             signed_actions: false,
             private_tx: &ptx,
             revocations: &revocations,
@@ -11150,6 +11274,7 @@ mod private_transport_tests {
                 workspace_id: id,
                 payload: vec![9, 9],
             },
+            None,
         )
         .await
         .unwrap();
@@ -11194,6 +11319,7 @@ mod private_transport_tests {
                 workspace_id: id,
                 payload: forged.encode().unwrap(),
             },
+            None,
         )
         .await
         .unwrap();
