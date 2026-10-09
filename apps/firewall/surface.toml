@@ -46,6 +46,7 @@ params = []
 
 [[resources.verbs]]
 description = "Stop firewall."
+destructive = true
 id = "stop"
 kind = "undoable"
 label = "Stop firewall"
@@ -53,6 +54,7 @@ params = []
 
 [[resources.verbs]]
 description = "Enter panic mode: drop all traffic in and out."
+destructive = true
 id = "enter-panic-mode"
 kind = "undoable"
 label = "Enter panic mode: drop all traffic in and out"
@@ -76,7 +78,18 @@ name = "zone"
 required = true
 
 [resources.verbs.params.schema]
-description = "The zone's name, such as public"
+description = "The zone"
+enum = [
+    "drop",
+    "block",
+    "public",
+    "external",
+    "dmz",
+    "work",
+    "home",
+    "internal",
+    "trusted",
+]
 type = "string"
 
 [[resources.verbs.params]]

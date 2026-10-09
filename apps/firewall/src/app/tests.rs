@@ -316,12 +316,28 @@ fn switches_round_trip_through_the_document() {
         "ssh is on in the sample and the switch turned it off"
     );
 
+    // Panic mode and stopping the firewall cut traffic: each waits for the
+    // person to confirm what the host asks.
     assert!(!app.state().config().panic_mode);
     press(&mut app, "firewall-panic");
+    assert!(
+        !app.state().config().panic_mode,
+        "panic mode waits for consent"
+    );
+    confirm(&mut app);
     assert!(app.state().config().panic_mode);
 
     press(&mut app, "firewall-enabled");
+    assert!(app.state().config().enabled, "stopping waits for consent");
+    confirm(&mut app);
     assert!(!app.state().config().enabled);
+}
+
+/// Confirm what the host asks, as a person types it.
+fn confirm(app: &mut TestApp<FirewallShell>) {
+    app.harness().type_text("CONFIRM");
+    app.harness().key("Enter");
+    app.settle();
 }
 
 /// Making a zone active changes the document's default zone.

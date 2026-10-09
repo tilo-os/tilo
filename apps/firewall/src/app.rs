@@ -644,9 +644,7 @@ impl FirewallApp {
     }
 
     fn delete_rule(&mut self, id: RuleId) {
-        self.dispatch(
-            Firewall::DELETE_RULE.with((self.selected_zone.name().to_owned(), Firewall::rule(id))),
-        );
+        self.dispatch(Firewall::DELETE_RULE.with((self.selected_zone, Firewall::rule(id))));
         if self.selected_rule == Some(id) {
             self.selected_rule = None;
         }

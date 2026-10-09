@@ -43,13 +43,13 @@ impl Firewall {
     }
 
     /// Stop firewall.
-    #[action]
+    #[action(destructive)]
     pub fn stop(&mut self) {
         self.enabled = false;
     }
 
     /// Enter panic mode: drop all traffic in and out.
-    #[action]
+    #[action(destructive)]
     pub fn enter_panic_mode(&mut self) {
         self.panic_mode = true;
     }
@@ -64,10 +64,13 @@ impl Firewall {
     #[action]
     pub fn delete_rule(
         &mut self,
-        #[param("The zone's name, such as public")] zone: String,
+        #[param("The zone")] zone: ZoneKind,
         #[param("The rule's id")] rule: Id,
     ) -> Result<(), Refusal> {
-        let stored = self.zones.get_mut(&zone).ok_or("there is no such zone")?;
+        let stored = self
+            .zones
+            .get_mut(zone.name())
+            .ok_or("there is no such zone")?;
         stored.rules.remove(&rule).ok_or("there is no such rule")?;
         stored.deleted_rules.insert(rule.as_str().to_owned());
         Ok(())
@@ -135,10 +138,7 @@ impl Firewall {
                 Derived::new(zone.kind.title())
                     .of_kind("zone")
                     .identified(zone.kind.name())
-                    .with(Self::DELETE_RULE.bind(
-                        firewall::DeleteRule::paths().zone,
-                        zone.kind.name().to_owned(),
-                    ))
+                    .with(Self::DELETE_RULE.bind(firewall::DeleteRule::paths().zone, zone.kind))
             })
             .collect()
     }
@@ -642,7 +642,7 @@ mod tests {
 
         let mut a = imported(&config);
         let mut b = a.fork();
-        a.apply(Firewall::DELETE_RULE.with((z.name().to_owned(), Firewall::rule(ids[0]))))
+        a.apply(Firewall::DELETE_RULE.with((z, Firewall::rule(ids[0]))))
             .unwrap();
         edit(&mut b, &rule(ids[0]).source.replace("192.168.1.0/24")).unwrap();
         a.sync_with(&mut b).unwrap();
@@ -689,6 +689,44 @@ mod tests {
         assert_eq!(
             sentences.last().map(String::as_str),
             Some("Made home the active zone")
+        );
+    }
+
+    /// An agent deletes a rule naming its zone as the zone's JSON name.
+    #[test]
+    fn an_agent_deletes_a_rule_naming_its_zone() {
+        let config = sample_config();
+        let mut app = TestApp::<FirewallShell>::new().unwrap();
+        app.invoke(Firewall::import_of(&config)).unwrap();
+        let rule = config.zone(ZoneKind::Public).unwrap().rules[0].id;
+        assert!(
+            app.call(
+                "delete-rule",
+                serde_json::json!({ "zone": "dmz", "rule": Firewall::rule(rule) }),
+            )
+            .is_err(),
+            "the rule is not in that zone"
+        );
+        app.call(
+            "delete-rule",
+            serde_json::json!({ "zone": "public", "rule": Firewall::rule(rule) }),
+        )
+        .unwrap();
+        let public = app.state().config();
+        let public = public.zone(ZoneKind::Public).unwrap();
+        assert!(public.rules.iter().all(|stored| stored.id != rule));
+        let catalogue =
+            tilo_history::Catalogue::new("en-US", &[include_str!("../locales/en-US.ftl")]);
+        let reader = tilo_history::Reader::new("en-US").with_app(&catalogue);
+        let last = app
+            .versions()
+            .into_iter()
+            .filter_map(|version| version.context)
+            .next_back()
+            .map(|entry| reader.sentence(&entry));
+        assert_eq!(
+            last.as_deref(),
+            Some("Deleted a rule from the “public” zone")
         );
     }
 }

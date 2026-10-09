@@ -16,14 +16,17 @@
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
-use ui::tilo_resource::{self, Collection, Id, Json, Model, Refusal, Set};
+use ui::tilo_resource::{self, Collection, Id, Json, JsonSchema, Model, Refusal, Set};
 use uuid::Uuid;
 
 /// Stable identifier for a single rule. Backs selection + edit/delete.
 pub type RuleId = Uuid;
 
 /// The nine stock firewalld zones. `Public` is the conventional default.
-#[derive(Model, Default, Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(
+    Model, JsonSchema, Default, Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize,
+)]
+#[serde(rename_all = "snake_case")]
 pub enum ZoneKind {
     Drop,
     Block,
