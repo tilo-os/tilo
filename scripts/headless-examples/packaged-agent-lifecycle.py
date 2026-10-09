@@ -5495,6 +5495,21 @@ def wait_for_physical_message_admission(socket, room, record, draft, process, id
     return wait_for("physical Message's original saved owner projection", observe, process)
 
 
+def wait_for_current_message_phase_accessibility(owner, label, process):
+    """Observe current public phase on the same owned, attached Chat route."""
+    def observe():
+        current = agent_conversation_accessibility(owner["agent"])
+        if current is None:
+            return None
+        if any(current.get(field) != owner.get(field)
+               for field in ("process", "bus", "agent", "detached")) \
+                or current.get("detached") is not False:
+            raise RuntimeError("physical Message phase changed the owned Chat route")
+        return current if task_phase_accessibility(current, label) else None
+
+    return wait_for("mounted original Message's current public phase", observe, process)
+
+
 def physical_send_after_stop(socket, room, record, provider, output, size, process, identity):
     """Supplement, never replace, the semantic lifecycle and physical editor journey."""
     if provider.request_count() != 3 or not provider.original_third_held() \
@@ -5560,8 +5575,7 @@ def physical_send_after_stop(socket, room, record, provider, output, size, proce
              lambda: private_editor_value_matches(access, ""), process)
     waiting = wait_for("mounted Chat's original WaitingForReply",
                        lambda: chat_public_message_progress(sample(), original, "waiting_for_reply"), process)
-    if not task_phase_accessibility(access, "Waiting for reply"):
-        raise RuntimeError("the mounted original Message has no actual Waiting for reply label")
+    access = wait_for_current_message_phase_accessibility(access, "Waiting for reply", process)
     require_ok(call(socket, {"op": "snapshot", "path": str(output / f"physical-send-waiting-{size}.png")}))
     provider.release_exact(4)
     reply = wait_for("same Agent's canonical physical Send reply", lambda: agent_reply_observation(

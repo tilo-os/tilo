@@ -26,6 +26,46 @@ SPEC.loader.exec_module(PROOF)
 
 
 class PresentedEditorTargetTests(unittest.TestCase):
+    def test_current_message_phase_refreshes_retired_accessibility_snapshot(self):
+        owner = {"process": 7, "bus": "owned", "agent": "Tide",
+                 "detached": False, "window": "retired"}
+        current = {**owner, "window": "current"}
+        with patch.object(PROOF, "agent_conversation_accessibility",
+                          side_effect=[owner, current]) as discover, \
+                patch.object(PROOF, "task_phase_accessibility",
+                             side_effect=[False, True]) as phase, \
+                patch.object(PROOF.time, "sleep"):
+            self.assertEqual(PROOF.wait_for_current_message_phase_accessibility(
+                owner, "Waiting for reply", None), current)
+            self.assertEqual(discover.call_args_list, [call("Tide"), call("Tide")])
+            self.assertEqual(phase.call_args_list,
+                             [call(owner, "Waiting for reply"),
+                              call(current, "Waiting for reply")])
+
+    def test_current_message_phase_missing_label_expires_without_skipping(self):
+        owner = {"process": 7, "bus": "owned", "agent": "Tide", "detached": False}
+        with patch.object(PROOF, "agent_conversation_accessibility", return_value=owner), \
+                patch.object(PROOF, "task_phase_accessibility", return_value=False) as phase, \
+                patch.object(PROOF.time, "sleep"), \
+                patch.object(PROOF.time, "monotonic", side_effect=[0, 0, 10, 20, 30]):
+            with self.assertRaises(PROOF.ProofTimeout):
+                PROOF.wait_for_current_message_phase_accessibility(
+                    owner, "Waiting for reply", None)
+            self.assertEqual(phase.call_count, 3)
+
+    def test_current_message_phase_refuses_foreign_route_before_label_read(self):
+        owner = {"process": 7, "bus": "owned", "agent": "Tide", "detached": False}
+        for changed in ({"process": 8}, {"bus": "foreign"},
+                        {"agent": "Other"}, {"detached": True}):
+            with self.subTest(changed=changed), \
+                    patch.object(PROOF, "agent_conversation_accessibility",
+                                 return_value={**owner, **changed}), \
+                    patch.object(PROOF, "task_phase_accessibility") as phase:
+                with self.assertRaisesRegex(RuntimeError, "changed the owned Chat route"):
+                    PROOF.wait_for_current_message_phase_accessibility(
+                        owner, "Waiting for reply", None)
+                phase.assert_not_called()
+
     def test_physical_message_admission_observes_lagging_canonical_projection(self):
         process = type("ManagedProcess", (), {"pid": 123, "poll": lambda self: None})()
         identity = {"private_identity": "PRIVATE-CANARY"}
