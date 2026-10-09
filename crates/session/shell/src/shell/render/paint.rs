@@ -2004,17 +2004,6 @@ pub struct VelloDrmBridge {
     /// compositor's normal cadence would otherwise queue one more llvmpipe frame every tick.
     recovery_not_before: Option<Instant>,
     recovery_backoff: Duration,
-    /// Desktop pixels from before the current overview fade. Composite the
-    /// panel over this instead of rendering both outputs again.
-    overview_base: Vec<u8>,
-    overview_generation: u64,
-    /// Workspace whose pixels are on the scanouts, and up to two retained
-    /// images so switching back does not render both outputs again.
-    shown_workspace: Option<u64>,
-    workspace_snapshots: Vec<(u64, Vec<u8>)>,
-    /// Fixed-size renderer for the overview panel. Created once so a fade
-    /// does not compile pipelines on the first animated frame.
-    panel_renderer: Option<ui::offscreen::OffscreenRenderer>,
     /// One retained surface per output that is not the whole scene, for
     /// [`Self::paint_output_until`]. They share `target`'s renderer and device.
     output_surfaces: Vec<(super::OutputId, OutputSurface)>,
@@ -2103,11 +2092,6 @@ impl VelloDrmBridge {
             xrgb_history_epoch: Some(1),
             recovery_not_before: None,
             recovery_backoff: RECOVERY_BACKOFF_INITIAL,
-            overview_base: Vec::new(),
-            overview_generation: 0,
-            shown_workspace: None,
-            workspace_snapshots: Vec::new(),
-            panel_renderer: None,
             output_surfaces: Vec::new(),
             #[cfg(test)]
             fail_next_tracked_swizzle: false,
@@ -2137,46 +2121,71 @@ impl VelloDrmBridge {
             .then_some(self.readback.as_slice())
     }
 
-    /// Render `scene` and copy only `clip` into the encoded desktop.
-    ///
-    /// The combined framebuffer is not mapped. Callers publish `clip` onto
-    /// the virtual head it meets.
+    /// Bring the encoded desktop up to `scene` inside `regions`: one render
+    /// of the scene repairing only those regions (sparse when the target
+    /// retains the previous one), then a readback of each region alone into
+    /// the tight image. The combined framebuffer is not mapped; pixels
+    /// outside `regions` stay as the previous frame encoded them.
     ///
     /// # Errors
-    /// The desktop image is missing, `clip` leaves it, or the clip copy fails.
-    pub(crate) fn refresh_encoded_clip(
+    /// The desktop image is missing, `regions` is empty or one leaves it, or a
+    /// render or region copy fails. The tight image is then partly stale:
+    /// the caller must present a full frame instead.
+    pub(crate) fn refresh_encoded_regions(
         &mut self,
         scene: &Scene,
-        clip: vello::FineDamageRect,
+        regions: &[vello::FineDamageRect],
     ) -> Result<(), BridgeError> {
-        // A stale full-frame profile must not be reported for this clip.
+        // A stale full-frame profile must not be reported for these regions.
         self.last_phase_timing = None;
-        self.render_encoded_clip(scene, clip)?;
-        let tight = self.read_encoded_clip(clip)?;
-        self.patch_encoded_clip(clip, &tight)
+        let started = Instant::now();
+        self.render_encoded_regions(scene, regions)?;
+        let rendered = Instant::now();
+        let mut bytes = 0_u64;
+        let mut patch_us = 0_u128;
+        for &clip in regions {
+            let tight = self.read_encoded_clip(clip)?;
+            let patch_started = Instant::now();
+            self.patch_encoded_clip(clip, &tight)?;
+            patch_us = patch_us.saturating_add(patch_started.elapsed().as_micros());
+            bytes = bytes.saturating_add(u64::try_from(tight.len()).unwrap_or(u64::MAX));
+        }
+        if self.phase_timing_enabled {
+            self.last_phase_timing = Some(BridgePhaseTiming {
+                submit_us: rendered.saturating_duration_since(started).as_micros(),
+                completed_readback_map_us: rendered.elapsed().as_micros().saturating_sub(patch_us),
+                cpu_copy_swizzle_us: patch_us,
+                readback_bytes: bytes,
+                cpu_output_bytes: bytes,
+                ..BridgePhaseTiming::default()
+            });
+        }
+        Ok(())
     }
 
-    fn render_encoded_clip(
+    fn render_encoded_regions(
         &mut self,
         scene: &Scene,
-        clip: vello::FineDamageRect,
+        regions: &[vello::FineDamageRect],
     ) -> Result<(), BridgeError> {
         if !self.has_complete_readback() {
             return Err(BridgeError::InvalidSize(
-                "no encoded desktop for the clip".to_owned(),
+                "no encoded desktop for the regions".to_owned(),
             ));
         }
         let (width, height) = self.target.size;
-        let inside = clip.width > 0
-            && clip.height > 0
-            && clip.x.checked_add(clip.width).is_some_and(|x1| x1 <= width)
-            && clip
-                .y
-                .checked_add(clip.height)
-                .is_some_and(|y1| y1 <= height);
-        if !inside {
+        let inside = |clip: &vello::FineDamageRect| {
+            clip.width > 0
+                && clip.height > 0
+                && clip.x.checked_add(clip.width).is_some_and(|x1| x1 <= width)
+                && clip
+                    .y
+                    .checked_add(clip.height)
+                    .is_some_and(|y1| y1 <= height)
+        };
+        if regions.is_empty() || !regions.iter().all(inside) {
             return Err(BridgeError::InvalidSize(
-                "clip is outside the encoded desktop".to_owned(),
+                "a region is outside the encoded desktop".to_owned(),
             ));
         }
         let revision = self
@@ -2184,11 +2193,10 @@ impl VelloDrmBridge {
             .last_successful_revision
             .map_or(1, |revision| revision.saturating_add(1));
         let previous = self.target.last_successful_revision;
-        let regions = [clip];
         let damage = SceneDamage {
             revision,
             previous_revision: previous,
-            regions: Some(&regions),
+            regions: Some(regions),
         };
         let deadline = Instant::now()
             .checked_add(Duration::from_secs(1))
@@ -2292,178 +2300,6 @@ impl VelloDrmBridge {
             dest.copy_from_slice(src);
         }
         Ok(())
-    }
-
-    /// Fast overview clips stay under this edge. A 1080p panel plus its
-    /// shadow outset is taller than 1024, and rejecting that clip made the
-    /// fade GPU-read both outputs.
-    pub(crate) const OVERVIEW_PANEL_EDGE: u32 = 2048;
-
-    /// Whether `width`×`height` can be composited without a combined readback.
-    pub(crate) fn overview_clip_fits_fast_target(width: u32, height: u32) -> bool {
-        width > 0
-            && height > 0
-            && width <= Self::OVERVIEW_PANEL_EDGE
-            && height <= Self::OVERVIEW_PANEL_EDGE
-    }
-
-    /// Panel-sized overview frame over the desktop image captured before this fade.
-    ///
-    /// # Errors
-    /// The panel is larger than the fixed fast target, or no desktop image exists yet.
-    /// A missing desktop image may seed one full readback. A clip that merely
-    /// exceeds an old 1024px cap must not: a 1080p panel plus its shadow is
-    /// taller than that, and falling through read both outputs back.
-    pub(crate) fn composite_overview_frame(
-        &mut self,
-        patch: &crate::shell::overlay_host::OverviewFastPatch,
-    ) -> Result<Vec<u8>, BridgeError> {
-        if !Self::overview_clip_fits_fast_target(patch.panel.width, patch.panel.height) {
-            return Err(BridgeError::InvalidSize(format!(
-                "overview panel {}x{} exceeds the fast target",
-                patch.panel.width, patch.panel.height
-            )));
-        }
-        let generation_matches = self.overview_generation == patch.generation;
-        let base_matches = self.overview_base.len() == self.readback.len();
-        let base_ready = generation_matches && base_matches && self.has_complete_readback();
-        if !base_ready {
-            if !self.has_complete_readback() {
-                return Err(BridgeError::InvalidSize(
-                    "no desktop image to composite the overview over".to_owned(),
-                ));
-            }
-            self.overview_base.clone_from(&self.readback);
-            self.overview_generation = patch.generation;
-        }
-        let mut frame = self.overview_base.clone();
-        let stride = self.target.size.0;
-        blend_scrim_rect(&mut frame, stride, patch.panel, patch.scrim);
-        if patch.draw_panel {
-            let panel = self.render_overview_panel(&patch.panel_scene, patch.panel_size)?;
-            blit_straight(&mut frame, stride, patch.panel, &panel, patch.panel_size);
-        }
-        Ok(frame)
-    }
-
-    pub(crate) fn shown_workspace(&self) -> Option<u64> {
-        self.shown_workspace
-    }
-
-    pub(crate) fn has_workspace_snapshot(&self, id: u64) -> bool {
-        self.snapshot_index(id).is_some()
-    }
-
-    /// Keep the image of the workspace currently on screen, before a render
-    /// replaces it.
-    pub(crate) fn retain_shown_workspace(&mut self) {
-        if let Some(prev) = self.shown_workspace {
-            self.store_workspace_snapshot(prev);
-        }
-    }
-
-    /// Remember `id` as what the scanouts show. The image is kept once, when
-    /// this workspace first lands or replaces another — not on every repaint.
-    pub(crate) fn note_shown_workspace(&mut self, id: u64) {
-        let changed = self.shown_workspace != Some(id);
-        self.shown_workspace = Some(id);
-        if changed || !self.has_workspace_snapshot(id) {
-            self.store_workspace_snapshot(id);
-        }
-    }
-
-    /// Leave the workspace on screen and return a retained image of `id`,
-    /// when switching back to one this bridge already rendered.
-    pub(crate) fn replay_workspace(&mut self, id: u64) -> Option<Vec<u8>> {
-        if self.shown_workspace == Some(id) {
-            return None;
-        }
-        self.retain_shown_workspace();
-        let index = self.snapshot_index(id)?;
-        let bytes = self.workspace_snapshots.get(index)?.1.clone();
-        self.readback.clone_from(&bytes);
-        self.shown_workspace = Some(id);
-        Some(bytes)
-    }
-
-    fn store_workspace_snapshot(&mut self, id: u64) {
-        if !self.has_complete_readback() {
-            return;
-        }
-        if let Some(pos) = self
-            .workspace_snapshots
-            .iter()
-            .position(|(stored, _)| *stored == id)
-        {
-            {
-                let Some(entry) = self.workspace_snapshots.get_mut(pos) else {
-                    return;
-                };
-                entry.1.clone_from(&self.readback);
-            }
-            // Most recently kept, so the next eviction drops the other one.
-            let entry = self.workspace_snapshots.remove(pos);
-            self.workspace_snapshots.push(entry);
-            return;
-        }
-        if self.workspace_snapshots.len() >= 2 {
-            self.workspace_snapshots.remove(0);
-        }
-        self.workspace_snapshots.push((id, self.readback.clone()));
-    }
-
-    fn expected_readback_len(&self) -> usize {
-        let (width, height) = self.target.size;
-        usize::try_from(width)
-            .unwrap_or(0)
-            .saturating_mul(usize::try_from(height).unwrap_or(0))
-            .saturating_mul(4)
-    }
-
-    fn snapshot_index(&self, id: u64) -> Option<usize> {
-        let needed = self.expected_readback_len();
-        self.workspace_snapshots
-            .iter()
-            .position(|(stored, image)| *stored == id && needed > 0 && image.len() == needed)
-    }
-
-    fn render_overview_panel(
-        &mut self,
-        scene: &Scene,
-        size: (u32, u32),
-    ) -> Result<Vec<u8>, BridgeError> {
-        if self.panel_renderer.is_none() {
-            self.panel_renderer = Some(
-                ui::offscreen::OffscreenRenderer::try_new(
-                    Self::OVERVIEW_PANEL_EDGE,
-                    Self::OVERVIEW_PANEL_EDGE,
-                )
-                .map_err(|error| {
-                    BridgeError::Render(format!("overview panel renderer: {error}"))
-                })?,
-            );
-        }
-        let Some(renderer) = self.panel_renderer.as_mut() else {
-            return Err(BridgeError::Render(
-                "overview panel renderer missing".to_owned(),
-            ));
-        };
-        let panel_pixels = renderer.render_rgba_resilient(scene);
-        let stride = usize::try_from(renderer.width).unwrap_or(0);
-        let width = usize::try_from(size.0).unwrap_or(0);
-        let height = usize::try_from(size.1).unwrap_or(0);
-        if stride < width || panel_pixels.len() < stride.saturating_mul(height).saturating_mul(4) {
-            return Err(BridgeError::InvalidSize(
-                "overview panel render is smaller than the clip".to_owned(),
-            ));
-        }
-        let mut cropped = Vec::with_capacity(width.saturating_mul(height).saturating_mul(4));
-        for row in 0..height {
-            let start = row.saturating_mul(stride).saturating_mul(4);
-            let end = start.saturating_add(width.saturating_mul(4));
-            cropped.extend_from_slice(panel_pixels.get(start..end).unwrap_or_default());
-        }
-        Ok(cropped)
     }
 
     /// Override the per-frame clear color; matches the winit backend API so callers can swap themes uniformly.
@@ -3027,15 +2863,6 @@ impl VelloDrmBridge {
 
         if self.readback.len() == needed {
             self.mark_retained_complete(None);
-        }
-        // Compile the panel renderer on a full frame, not on the first
-        // overview sample. A fade must not pay pipeline creation.
-        if self.panel_renderer.is_none() {
-            self.panel_renderer = ui::offscreen::OffscreenRenderer::try_new(
-                Self::OVERVIEW_PANEL_EDGE,
-                Self::OVERVIEW_PANEL_EDGE,
-            )
-            .ok();
         }
 
         Ok(&self.readback)
@@ -4648,14 +4475,6 @@ impl VelloDrmBridge {
             Self::allocate_staging(&self.target.device, width, height);
         // Reset the tight buffer for the next `paint`; the new size may be larger, so clearing is cleaner than keeping capacity.
         self.readback.clear();
-        // Stale images no longer match the framebuffer. The next settled
-        // paint records the workspace again; replaying the old bytes would
-        // upload the wrong size, and rejecting them made the close render
-        // both outputs.
-        self.workspace_snapshots.clear();
-        self.shown_workspace = None;
-        self.overview_base.clear();
-        self.overview_generation = 0;
         Ok(())
     }
 
@@ -6134,6 +5953,85 @@ mod tests {
         let rect = vello::kurbo::Rect::new(0.0, 0.0, f64::from(w), f64::from(h));
         scene.fill(Fill::NonZero, Affine::IDENTITY, color, None, &rect);
         scene
+    }
+
+    /// A sparse frame on the combined readback (an overview fade, a hover)
+    /// renders the scene once inside its damage and reads back only the
+    /// damage, never the combined desktop. The encoded desktop it leaves is
+    /// the one a full render of the same scene gives.
+    #[test]
+    fn encoded_regions_read_back_only_the_damage() {
+        let (w, h) = (256_u32, 128_u32);
+        let backdrop = Color::from_rgb8(0x20, 0x40, 0x60);
+        let frame = |shade: u8| {
+            let mut scene = rect_scene(w, h, backdrop);
+            let panel = vello::kurbo::Rect::new(40.0, 20.0, 88.0, 44.0);
+            let color = Color::from_rgba8(0xf0, shade, 0x10, 0xa0);
+            scene.fill(Fill::NonZero, Affine::IDENTITY, color, None, &panel);
+            scene
+        };
+        let damage = [
+            vello::FineDamageRect {
+                x: 32,
+                y: 16,
+                width: 64,
+                height: 32,
+            },
+            vello::FineDamageRect {
+                x: 192,
+                y: 96,
+                width: 16,
+                height: 16,
+            },
+        ];
+        let damage_bytes = (64 * 32 + 16 * 16) * 4;
+        let mut bridge = required_bridge(w, h);
+        bridge.set_phase_timing_enabled(true);
+        bridge.paint(&frame(0x10)).expect("full frame");
+        let full = bridge.last_phase_timing().expect("full frame timing");
+        assert_eq!(full.cpu_output_bytes, u64::from(w * h * 4));
+
+        for shade in [0x60, 0xb0] {
+            let scene = frame(shade);
+            bridge
+                .refresh_encoded_regions(&scene, &damage)
+                .expect("sparse frame");
+            let timing = bridge.last_phase_timing().expect("sparse frame timing");
+            assert_eq!(
+                timing.readback_bytes, damage_bytes,
+                "only the damage is read"
+            );
+            assert_eq!(
+                timing.cpu_output_bytes, damage_bytes,
+                "only the damage is copied"
+            );
+            let encoded = bridge.encoded_rgba().expect("encoded desktop").to_vec();
+            let mut reference = required_bridge(w, h);
+            let dense = reference.paint(&scene).expect("reference frame").to_vec();
+            assert!(encoded == dense, "the repaired desktop is the full render");
+        }
+        assert_eq!(
+            (
+                bridge.last_sparse_render_attempts(),
+                bridge.last_full_render_attempts()
+            ),
+            (1, 0),
+            "a frame after a repaired one renders only its damage on the GPU"
+        );
+        assert!(
+            bridge
+                .refresh_encoded_regions(
+                    &frame(0),
+                    &[vello::FineDamageRect {
+                        x: 200,
+                        y: 0,
+                        width: 64,
+                        height: 8,
+                    }],
+                )
+                .is_err(),
+            "a region leaving the desktop is not repaired"
+        );
     }
 
     /// Scratch pooled for a full frame or an old size is released once the
@@ -9953,154 +9851,5 @@ mod tests {
             adapter.max_storage_buffer_binding_size
         );
         assert_eq!(device.max_buffer_size, adapter.max_buffer_size);
-    }
-}
-
-fn src_over(src: [u8; 4], dst: [u8; 4]) -> [u8; 4] {
-    let [sr, sg, sb, sa_byte] = src;
-    let [dr, dg, db, _] = dst;
-    let sa = u32::from(sa_byte);
-    let inv = 255u32.saturating_sub(sa);
-    let mix = |source: u8, behind: u8| -> u8 {
-        let mixed = u32::from(source)
-            .saturating_mul(sa)
-            .saturating_add(u32::from(behind).saturating_mul(inv));
-        u8::try_from(mixed.saturating_div(255)).unwrap_or(255)
-    };
-    [mix(sr, dr), mix(sg, dg), mix(sb, db), 255]
-}
-
-/// The toolkit's scrim (`ui::chrome::fill_scrim`) composited over a cached
-/// frame: `scrim` is the theme's scrim hue with the strength as its alpha
-/// byte, and each channel takes the same tone and level stages the shader
-/// does, so the fast overview frame matches the full one.
-fn blend_scrim_rect(
-    pixels: &mut [u8],
-    stride_px: u32,
-    rect: vello::FineDamageRect,
-    scrim: [u8; 4],
-) {
-    let stride = usize::try_from(stride_px).unwrap_or(0).saturating_mul(4);
-    let x = usize::try_from(rect.x).unwrap_or(0);
-    let y = usize::try_from(rect.y).unwrap_or(0);
-    let width = usize::try_from(rect.width).unwrap_or(0);
-    let height = usize::try_from(rect.height).unwrap_or(0);
-    let [sr, sg, sb, sa_byte] = scrim;
-    let sa = u32::from(sa_byte);
-    if sa == 0 || stride == 0 {
-        return;
-    }
-    for row in y..y.saturating_add(height) {
-        for col in x..x.saturating_add(width) {
-            let at = row
-                .saturating_mul(stride)
-                .saturating_add(col.saturating_mul(4));
-            let Some(pixel) = pixels.get(at..at.saturating_add(4)) else {
-                continue;
-            };
-            let Ok(existing) = <[u8; 4]>::try_from(pixel) else {
-                continue;
-            };
-            let strength = f32::from(sa_byte) / 255.0;
-            let [er, eg, eb, ea] = existing;
-            let mixed = [
-                ui::chrome::scrim_channel(er, strength, sr),
-                ui::chrome::scrim_channel(eg, strength, sg),
-                ui::chrome::scrim_channel(eb, strength, sb),
-                ea,
-            ];
-            if let Some(slot) = pixels.get_mut(at..at.saturating_add(4)) {
-                slot.copy_from_slice(&mixed);
-            }
-        }
-    }
-}
-
-fn blit_straight(
-    destination: &mut [u8],
-    stride_px: u32,
-    rect: vello::FineDamageRect,
-    source: &[u8],
-    source_size: (u32, u32),
-) {
-    let stride = usize::try_from(stride_px).unwrap_or(0).saturating_mul(4);
-    let src_stride = usize::try_from(source_size.0)
-        .unwrap_or(0)
-        .saturating_mul(4);
-    let x = usize::try_from(rect.x).unwrap_or(0);
-    let y = usize::try_from(rect.y).unwrap_or(0);
-    let width = usize::try_from(source_size.0.min(rect.width)).unwrap_or(0);
-    let height = usize::try_from(source_size.1.min(rect.height)).unwrap_or(0);
-    for row in 0..height {
-        for col in 0..width {
-            let src_at = row
-                .saturating_mul(src_stride)
-                .saturating_add(col.saturating_mul(4));
-            let dst_at = (y.saturating_add(row))
-                .saturating_mul(stride)
-                .saturating_add((x.saturating_add(col)).saturating_mul(4));
-            let Some(src) = source.get(src_at..src_at.saturating_add(4)) else {
-                continue;
-            };
-            let Some(dst) = destination.get_mut(dst_at..dst_at.saturating_add(4)) else {
-                continue;
-            };
-            let Ok(src_px) = <[u8; 4]>::try_from(src) else {
-                continue;
-            };
-            let Ok(dst_px) = <[u8; 4]>::try_from(&dst[..]) else {
-                continue;
-            };
-            let mixed = src_over(src_px, dst_px);
-            dst.copy_from_slice(&mixed);
-        }
-    }
-}
-
-#[cfg(test)]
-mod overview_composite {
-    use super::{blend_scrim_rect, blit_straight};
-
-    #[test]
-    fn scrim_and_panel_stay_inside_the_clip() {
-        let mut pixels = vec![0u8; 8 * 4 * 4];
-        for pixel in pixels.chunks_exact_mut(4) {
-            pixel.copy_from_slice(&[10, 20, 30, 255]);
-        }
-        blend_scrim_rect(
-            &mut pixels,
-            8,
-            vello::FineDamageRect {
-                x: 1,
-                y: 1,
-                width: 2,
-                height: 1,
-            },
-            [0, 0, 0, 255],
-        );
-        assert_eq!(&pixels[0..4], &[10, 20, 30, 255]);
-        let scrimmed = [
-            ui::chrome::scrim_channel(10, 1.0, 0),
-            ui::chrome::scrim_channel(20, 1.0, 0),
-            ui::chrome::scrim_channel(30, 1.0, 0),
-            255,
-        ];
-        assert_eq!(&pixels[(8 + 1) * 4..(8 + 1) * 4 + 4], &scrimmed);
-        assert!(scrimmed[2] < 30, "the scrim darkens what it covers");
-        let panel = [255u8, 0, 0, 255];
-        blit_straight(
-            &mut pixels,
-            8,
-            vello::FineDamageRect {
-                x: 1,
-                y: 1,
-                width: 1,
-                height: 1,
-            },
-            &panel,
-            (1, 1),
-        );
-        assert_eq!(&pixels[(8 + 1) * 4..(8 + 1) * 4 + 4], &[255, 0, 0, 255]);
-        assert_eq!(&pixels[(8 + 2) * 4..(8 + 2) * 4 + 4], &scrimmed);
     }
 }
