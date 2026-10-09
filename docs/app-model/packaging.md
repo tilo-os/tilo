@@ -462,3 +462,42 @@ default, so identity re-use with a fresh key each pack changes the ID).
 
 Next: [`sandbox.md`](./sandbox.md) explains what each `[sandbox.*]` block
 enables at launch.
+
+## Packaging against a verified native SDK
+
+For a thin app in an SDK checkout, select the SDK bundle using the publisher
+and payload root from its independently authenticated build/delivery receipt:
+
+```sh
+tilo-app package --sdk-bundle /path/to/verified/sdk \
+  --sdk-publisher <expected-public-key> --sdk-root <expected-payload-root>
+```
+
+Use `tilo-app new --id <your-app-id>` inside that checkout to create the app.
+Keep the new workspace package's lockfile entry alongside its Cargo manifest;
+packaging uses `--locked` and does not resolve a replacement dependency graph.
+The native SDK path resolves all checkout app features with the existing thin
+compiler wrapper, while building only the selected app's binary targets.
+
+The tool verifies the complete signed SDK payload, checks the actual Cargo
+toolkit artifact and compiler standard library against it, and inspects the
+staged executable's architecture, dependency closure and versioned dynamic
+imports without executing the app. It writes the verified SDK's native
+content fingerprint into the signed package. The selected publisher/root
+must come from the receipt; reading them out of an untrusted bundle does not
+authenticate that bundle.
+
+An incompatible graph is refused with a paired SDK build/update requirement.
+Changing the authored runtime tag cannot make a different compiled SDK match.
+Standalone and static builds retain their existing behavior; this native SDK
+selection currently requires a checkout workspace app. Packaging does not
+install the SDK or grant publisher trust.
+
+The real authored-app qualification is opt-in because it compiles the native
+SDK, builds a canonical signed bundle from its actual closure, packages a
+new app, and then executes its shared headless semantic assertions:
+
+```sh
+cargo test --locked -p tilo-app-cli --features native-sdk-qualification \
+  --test native-sdk generated_app_packages_only_with_its_actual_signed_native_sdk -- --exact
+```
