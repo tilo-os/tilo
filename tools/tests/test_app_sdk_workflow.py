@@ -61,7 +61,7 @@ class AppSdkWorkflow(unittest.TestCase):
         body = job("linux")
         self.assertIn("runs-on: ${{ github.event_name == 'push' && 'runner' || 'runner-native-portable' }}", body)
         self.assertIn("EXPECTED_ARCH: ${{ github.event_name == 'push' && 'x86_64' || runner.arch }}", body)
-        self.assertIn('run: bash os/dev/assert-native-arch.sh "$EXPECTED_ARCH"', body)
+        self.assertIn('run: bash tools/ci/assert-native-runner.sh "$EXPECTED_ARCH"', body)
         for name in ("web", "web-size"):
             self.assertIn("    runs-on: runner\n", job(name))
 

@@ -183,7 +183,7 @@ jobs:
       - name: Verify native Linux SDK runner architecture
         env:
           EXPECTED_ARCH: ${{ github.event_name == 'push' && 'x86_64' || runner.arch }}
-        run: bash os/dev/assert-native-arch.sh "$EXPECTED_ARCH"
+        run: bash tools/ci/assert-native-runner.sh "$EXPECTED_ARCH"
       - name: tilo-caps and the tilo-app target commands
         run: |
           bash tools/ci/measure.sh "tilo-caps tests" -- cargo test --locked -p tilo-caps

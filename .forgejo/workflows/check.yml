@@ -732,7 +732,7 @@ jobs:
       - name: Verify native wasm-check runner architecture
         env:
           EXPECTED_ARCH: ${{ github.event_name == 'push' && 'x86_64' || runner.arch }}
-        run: bash os/dev/assert-native-arch.sh "$EXPECTED_ARCH"
+        run: bash tools/ci/assert-native-runner.sh "$EXPECTED_ARCH"
 
       - name: Prepare Rust build caches
         uses: ./.forgejo/actions/prepare-rust-build

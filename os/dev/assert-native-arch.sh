@@ -6,15 +6,15 @@ set -euo pipefail
 
 expected="${1:-}"
 case "$expected" in
-  x86_64|amd64|X64) expected=x86_64 ;;
-  aarch64|arm64|ARM64) expected=aarch64 ;;
+  x86_64|amd64) expected=x86_64 ;;
+  aarch64|arm64) expected=aarch64 ;;
   *) printf 'unsupported expected architecture: %s\n' "$expected" >&2; exit 2 ;;
 esac
 
 actual="$(uname -m)"
 case "$actual" in
-  x86_64|amd64|X64) actual=x86_64 ;;
-  aarch64|arm64|ARM64) actual=aarch64 ;;
+  x86_64|amd64) actual=x86_64 ;;
+  aarch64|arm64) actual=aarch64 ;;
   *) printf 'unsupported runner architecture: %s\n' "$actual" >&2; exit 1 ;;
 esac
 

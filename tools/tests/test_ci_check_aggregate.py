@@ -117,7 +117,7 @@ class CheckAggregateTests(unittest.TestCase):
         job = section(self.workflow, "wasm", 2)
         self.assertIn("runs-on: ${{ github.event_name == 'push' && 'runner' || 'runner-native-portable' }}", job)
         self.assertIn("EXPECTED_ARCH: ${{ github.event_name == 'push' && 'x86_64' || runner.arch }}", job)
-        self.assertIn('run: bash os/dev/assert-native-arch.sh "$EXPECTED_ARCH"', job)
+        self.assertIn('run: bash tools/ci/assert-native-runner.sh "$EXPECTED_ARCH"', job)
         self.assertIn('CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUSTFLAGS: -D warnings', job)
         self.assertIn('cargo check --locked $PACKAGES --target wasm32-unknown-unknown', job)
         self.assertIn('run: bash tools/ci/check-wasm.sh', job)
