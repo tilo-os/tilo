@@ -28,15 +28,16 @@ min_delta = 0.0
 
 # tilo-fs performance gate (crates/system/fs/tests/performance_gate.rs), a
 # debug build on the shared `runner` class. The ceilings are the gate's own
-# SLO constants (tools/perf/test_adapters.py keeps them equal; TIL-595
-# tightens both). Tolerances are wider than the default because single runs
+# SLO constants (tools/perf/test_adapters.py keeps them equal): twice the p99
+# of 56 CI runs (TIL-595), derived beside the constants; change both together.
+# Tolerances are wider than the default because single runs
 # of this gate on the shared runner have spread up to 1.8x between nights
 # (KPI document inventory: run 85201 against the maximum of eight runs); five
 # repetitions per night and a two-run rule absorb the rest.
 
 [kpi."fs.metadata-cold-open-and-1000-list"]
 unit = "ms"
-max = 2000.0
+max = 360.0
 enforce = true
 p50_tolerance = 1.5
 p99_tolerance = 2.0
@@ -45,7 +46,7 @@ source = "COLD_METADATA_SLO"
 
 [kpi."fs.metadata-warm-8x-1000-list"]
 unit = "ms"
-max = 4000.0
+max = 470.0
 enforce = true
 p50_tolerance = 1.5
 p99_tolerance = 2.0
@@ -54,7 +55,7 @@ source = "WARM_DIRECTORY_SLO"
 
 [kpi."fs.local-chunked-64x256k-ranged-read"]
 unit = "ms"
-max = 4000.0
+max = 400.0
 enforce = true
 p50_tolerance = 1.5
 p99_tolerance = 2.0
@@ -63,16 +64,16 @@ source = "RANGED_READ_SLO"
 
 [kpi."fs.mount-64x256k-ranged-read-under-remote-apply"]
 unit = "ms"
-max = 4000.0
+max = 680.0
 enforce = true
 p50_tolerance = 1.5
 p99_tolerance = 2.0
 min_delta = 1.0
-source = "RANGED_READ_SLO"
+source = "REMOTE_APPLY_RANGED_READ_SLO"
 
 [kpi."fs.thumbnail-cold-decode-scale-encode-cache"]
 unit = "ms"
-max = 3000.0
+max = 550.0
 enforce = true
 p50_tolerance = 1.5
 p99_tolerance = 2.0
@@ -81,7 +82,7 @@ source = "COLD_THUMBNAIL_SLO"
 
 [kpi."fs.thumbnail-warm-1000-cache-lookups"]
 unit = "ms"
-max = 500.0
+max = 12.0
 enforce = true
 p50_tolerance = 1.5
 p99_tolerance = 2.0
@@ -292,3 +293,80 @@ p50_tolerance = 1.5
 p99_tolerance = 2.0
 min_delta = 1000.0
 source = "KPI document: Frame time p99 at 4K/144 Hz, damage-limited (lavapipe; reported only)"
+
+# The installed desktop (TIL-589): Dev / VM acceptance's nightly run on the newest
+# published dev disk, a KVM guest on `runner-disk-100g` rendering with lavapipe
+# (scripts/vm-acceptance, acceptance/records.py). Those runs compare and publish
+# these groups (boot, idle, memory, app, render) themselves, not Perf / scheduled.
+# The ceilings are the KPI document's targets, which are hardware figures: a
+# software-rendered guest reports against them and is never quoted as one. The
+# checks that fail the acceptance run hold run.py's own budgets. Most of these are
+# one sample per night, so min_delta is the change below which run-to-run noise in a
+# shared runner's guest is not called a regression.
+
+[kpi."boot.to_greeter_s"]
+unit = "s"
+max = 20.0
+min_delta = 1.0
+source = "os/tests/boot_performance_gate.sh budget under KVM (KPI document target: 10 s on the reference laptop)"
+
+[kpi."idle.shell_cpu_pct"]
+unit = "percent"
+max = 1.0
+min_delta = 0.5
+source = "KPI document: Idle wakeups and idle power; run.py idle_shell_cpu_pct"
+
+[kpi."idle.frames"]
+unit = "count"
+max = 2.0
+min_delta = 2.0
+source = "KPI document: 0 frames while still (the clock repaints once a minute); run.py idle_frames"
+
+[kpi."idle.wakeups_per_s.shell"]
+unit = "per_s"
+max = 1.0
+min_delta = 5.0
+source = "KPI document: compositor at most 1 wakeup/s while still (context switches of its loop thread)"
+
+[kpi."idle.ram_mib"]
+unit = "MiB"
+max = 1024.0
+min_delta = 64.0
+source = "KPI document: RAM at the idle desktop, at most 1.0 GiB system (guest MemTotal - MemAvailable)"
+
+[kpi."memory.shell_anon_mib"]
+unit = "MiB"
+max = 250.0
+min_delta = 32.0
+source = "KPI document: shell anon at most 250 MiB (run.py shell_anon_mb holds 500)"
+
+[kpi."memory.session_mib"]
+unit = "MiB"
+max = 2500.0
+min_delta = 64.0
+source = "run.py session_memory_mb: the compositor's and four open apps' cgroups"
+
+[kpi."app.open.warm_ms.file-explorer"]
+unit = "ms"
+p95 = 300.0
+min_delta = 100.0
+source = "KPI document: App open, warm (request to first frame, sandbox included)"
+
+[kpi."app.open.warm_ms.notes"]
+unit = "ms"
+p95 = 300.0
+min_delta = 100.0
+source = "KPI document: App open, warm (request to first frame, sandbox included)"
+
+[kpi."app.open.warm_ms.settings"]
+unit = "ms"
+p95 = 300.0
+min_delta = 100.0
+source = "KPI document: App open, warm (request to first frame, sandbox included)"
+
+[kpi."render.frame_cpu_ms"]
+unit = "ms"
+p95 = 16.7
+p99 = 33.4
+min_delta = 2.0
+source = "run.py work_ms_p95 / work_ms_p99: compositor CPU per painted frame during interactions"

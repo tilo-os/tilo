@@ -32,6 +32,7 @@
 
 pub mod actions;
 mod graphics;
+mod native_editor;
 pub mod resource;
 mod scenarios;
 pub mod screen;

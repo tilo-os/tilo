@@ -54,6 +54,9 @@ policies! {
         "tilo.accessibility.cursor_size",
         "tilo.accessibility.screen_reader",
         "tilo.accessibility.on_screen_keyboard",
+        // Recognition language describes the person, not a microphone or grant.
+        "tilo.accessibility.dictation_language",
+        "tilo.accessibility.dictation_literal",
         "tilo.accessibility.sticky_keys",
         "tilo.accessibility.slow_keys",
         "tilo.accessibility.bounce_keys",

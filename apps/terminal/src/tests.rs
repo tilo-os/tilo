@@ -322,11 +322,13 @@ fn hosted_service_sockets_are_probed_and_never_fall_back() {
                 request.contains("\"target\":{\"kind\":\"environment\"}"),
                 "{request}"
             );
-            let (master, _peer) = std::os::unix::net::UnixStream::pair().unwrap();
+            let pair = portable_pty::native_pty_system()
+                .openpty(portable_pty::PtySize::default())
+                .unwrap();
             runtime_portal::fd_transport::send_with_fd(
                 stream.as_raw_fd(),
-                b"{\"result\":\"session\",\"session\":\"test\",\"environment\":\"default\"}\n",
-                master.as_raw_fd(),
+                b"{\"result\":\"session\",\"session\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"environment\":\"default\"}\n",
+                pair.master.as_raw_fd().unwrap(),
             )
             .unwrap();
         });

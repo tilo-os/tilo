@@ -12,7 +12,11 @@ description = "The current process and, later, child processes: one API on Linux
 [lints]
 workspace = true
 
+[features]
+native-editor = ["dep:runtime-portal"]
+
 [dependencies]
+runtime-portal = { version = "0.1.0", path = "../../runtime/runtime-portal", default-features = false, optional = true }
 tilo-platform-caps = { version = "0.1.0", path = "../tilo-platform-caps" }
 
 [target.'cfg(unix)'.dependencies]

@@ -27,21 +27,37 @@ const REMOTE_APPLY_DELTAS: usize = 512;
 const WARM_DIRECTORY_PASSES: usize = 8;
 const WARM_THUMB_LOOKUPS: usize = 1_000;
 
-// These are release ceilings, not claims about typical latency. They are
-// deliberately generous enough for the shared, unpinned Forgejo runner while
-// still catching order-of-magnitude regressions and accidentally blocking UI
-// paths. Keep fixture sizes stable when revising a ceiling.
-const COLD_METADATA_SLO: Duration = Duration::from_secs(2);
-const WARM_DIRECTORY_SLO: Duration = Duration::from_secs(4);
-const RANGED_READ_SLO: Duration = Duration::from_secs(4);
-const COLD_THUMBNAIL_SLO: Duration = Duration::from_secs(3);
-const WARM_THUMBNAIL_SLO: Duration = Duration::from_millis(500);
+// Release ceilings, not claims about typical latency. Each is twice the
+// nearest-rank p99 of the `real-fuse` job of ci-filesystem.yml (debug test
+// profile, shared `runner` class), rounded up to 10 ms (1 ms below 10 ms).
+// Measured 2026-10-09 over 56 runs, main pushes and pull requests between
+// 3bc23c4b40 and b0aee36a66 plus the eight TIL-595 cites; at that N the p99
+// is the slowest run, so every ceiling is 2x the worst run seen. The trailing
+// comment is that p99 and the median. Revise by the same rule, and keep
+// fixture sizes stable when you do; tools/perf/kpi-budgets.toml mirrors them.
+//
+// The local ranged read has a heavy tail (two of 56 runs at 4x and 7x its
+// median), so its ceiling stops a regression in the worst case, not a 10x one
+// in the typical case; the nightly relative comparison (tools/perf/compare.py)
+// covers that.
+const COLD_METADATA_SLO: Duration = Duration::from_millis(360); // p99 179.5, p50 92.8
+const WARM_DIRECTORY_SLO: Duration = Duration::from_millis(470); // p99 233.6, p50 122.9
+const RANGED_READ_SLO: Duration = Duration::from_millis(400); // p99 197.7, p50 27.2
+/// The same reads through the mount while a peer's changes are applied.
+const REMOTE_APPLY_RANGED_READ_SLO: Duration = Duration::from_millis(680); // p99 337.2, p50 231.1
+const COLD_THUMBNAIL_SLO: Duration = Duration::from_millis(550); // p99 271.3, p50 171.0
+const WARM_THUMBNAIL_SLO: Duration = Duration::from_millis(12); // p99 5.76, p50 2.85
 
 /// Namespace changes behind the two writers of the idle anti-entropy pass.
 const IDLE_SYNC_HISTORY: u64 = 50_000;
 /// One idle pass between two writers in sync, both directions together.
 /// Independent of history: a pass resumes where the last one left off.
-const IDLE_SYNC_BYTES: usize = 1_024;
+/// Twice the 148 B every one of 41 CI runs sent: the byte count does not
+/// depend on the runner, so this is the idle pass's tight gate.
+const IDLE_SYNC_BYTES: usize = 296;
+/// The pass takes 0.015 ms (p99 0.052 ms over 41 runs). A ceiling under one
+/// scheduler time slice would fail whenever the runner preempts the pass, so
+/// time only bounds a stall here; `IDLE_SYNC_BYTES` catches a regression.
 const IDLE_SYNC_SLO: Duration = Duration::from_millis(5);
 /// The device keys the two writers know each other by.
 const IDLE_SYNC_HOST: [u8; 32] = [1; 32];
@@ -286,7 +302,7 @@ async fn mount_ranged_read_under_remote_apply_performance_gate() {
     report(
         "mount-64x256k-ranged-read-under-remote-apply",
         under_apply,
-        RANGED_READ_SLO,
+        REMOTE_APPLY_RANGED_READ_SLO,
     );
     drop(mount);
     router.shutdown().await.expect("stop local endpoint");

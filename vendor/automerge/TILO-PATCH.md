@@ -42,3 +42,15 @@ runs such an exchange with every peer every few seconds. `remove_ancestors`
 now returns at once for an empty set and stops walking once it has removed
 everything; the set it leaves is unchanged. Pinned by
 `crates/doc/tilo-automerge/tests/idle_sync.rs`.
+
+# Tilo patch: list the change log's hashes without rebuilding any change
+
+A history reader that keeps what it read of a document (the shell's activity
+pane, refreshed on every desktop change) has to know which changes are new
+and that the ones it read are still the start of the log. `get_changes(&[])`
+answers both by rebuilding every change from the op set, and
+`get_changes_meta(&[])` by building every change's metadata: either is
+O(history) per refresh. `Automerge::change_hashes` borrows the change graph's
+own hash list, which is in the order `get_changes(&[])` lists the changes and
+to which adding a change only appends. Pinned by
+`crates/doc/tilo-automerge/tests/change_hashes.rs`.

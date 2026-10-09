@@ -56,6 +56,7 @@ pub mod appearance;
 pub mod continuity;
 pub mod day_schedule;
 pub mod device_displays;
+pub mod dictation;
 pub mod display_control;
 pub mod display_identify;
 pub mod display_mode;

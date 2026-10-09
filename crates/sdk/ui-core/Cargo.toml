@@ -353,6 +353,11 @@ path = "examples/action_presence.rs"
 required-features = ["native"]
 
 [[example]]
+name = "browser-text-input-qualification"
+path = "examples/browser_text_input_qualification.rs"
+required-features = ["native"]
+
+[[example]]
 name = "startup-frame-probe"
 path = "examples/startup_frame_probe.rs"
 required-features = ["native"]
