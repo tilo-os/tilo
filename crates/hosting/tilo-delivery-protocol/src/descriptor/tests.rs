@@ -1,5 +1,5 @@
 use super::*;
-use crate::delivery_v3::auth;
+use crate::auth;
 use ed25519_dalek::SigningKey;
 use tilo_peer_state::join::TransportHint;
 use tilo_peer_state::{SeedState, StatePeer, join, seed_room};
@@ -666,7 +666,7 @@ fn signed_known_media_bit_is_separate_from_delivery_and_unknown_bits_fail() {
     let verified = verify_transport_hint(&signed, &f.current()).unwrap();
     assert_eq!(verified.media_capabilities(), MEDIA_VOICE_V1);
     assert!(issue_transport_hint_with_media(&f.settings(), &f.current(), &f.host_key, 4).is_err());
-    let live = super::super::live_wire::MEDIA_LIVE_V1;
+    let live = MEDIA_LIVE_V1;
     assert!(
         issue_transport_hint_with_media(
             &f.settings(),
@@ -730,4 +730,10 @@ fn pinned_hint_scope_preserves_exact_signed_routing_without_current_authority() 
     assert_ne!(other.origin, scope.origin);
     assert_ne!(other.workspace, scope.workspace);
     assert!(verify_transport_hint(&f.resign(&payload), &f.current()).is_err());
+}
+
+#[test]
+fn descriptors_may_advertise_live_beside_voice_but_nothing_else() {
+    assert_eq!(MEDIA_CAPABILITIES, MEDIA_VOICE_V1 | MEDIA_LIVE_V1);
+    assert_eq!(MEDIA_VOICE_V1 & MEDIA_LIVE_V1, 0);
 }

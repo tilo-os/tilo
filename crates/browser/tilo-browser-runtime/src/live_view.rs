@@ -22,7 +22,7 @@ use ui::permissions::UserId;
 use ui::presence::{PresenceCtx, PresenceKey, SelectionRange};
 use vello::kurbo::{Point, Rect};
 
-/// Frozen wire bound for one anchor (`live_wire::MAX_OBJECT_ID_BYTES`).
+/// Frozen wire bound for one anchor (`tilo_relay_protocol::live::MAX_OBJECT_ID_BYTES`).
 pub(crate) const ANCHOR_MAX_BYTES: usize = 64;
 const TAG_SCOPED: u8 = 1;
 const TAG_SAME_SCOPE: u8 = 2;

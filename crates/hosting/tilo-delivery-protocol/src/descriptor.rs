@@ -4,7 +4,7 @@
 //! A signed endpoint cannot appoint its own governor, host, generation floor or
 //! TLS trust. This module does not install or advertise any live ingress.
 
-use super::{auth, framing::VERSION};
+use crate::auth::{self, VERSION};
 use ed25519_dalek::SigningKey;
 use serde::{Deserialize, Serialize};
 use tilo_peer_state::{StatePeer, join::TransportHint};
@@ -19,8 +19,10 @@ pub const WEBTRANSPORT_PATH: &str = "/peer/v3/connect";
 pub const HTTPS_BASE_PATH: &str = "/peer/v3";
 /// Signed voice service advertisement; installation must be established by its owner.
 pub const MEDIA_VOICE_V1: u64 = 1;
+/// Signed live presence/ops service advertisement (`tilo_relay_protocol::live`).
+pub const MEDIA_LIVE_V1: u64 = 2;
 /// Every media-capability bit a descriptor may advertise (voice, live).
-pub const MEDIA_CAPABILITIES: u64 = MEDIA_VOICE_V1 | super::live_wire::MEDIA_LIVE_V1;
+pub const MEDIA_CAPABILITIES: u64 = MEDIA_VOICE_V1 | MEDIA_LIVE_V1;
 /// Maximum canonical descriptor payload bytes.
 pub const MAX_PAYLOAD_BYTES: usize = 8 * 1024;
 /// Maximum canonical complete signed transport hint bytes.

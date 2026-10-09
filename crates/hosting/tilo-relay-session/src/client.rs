@@ -2260,5 +2260,3 @@ mod session_carrier_tests {
         send_sync::<RelayClient>();
     }
 }
-
-mod http_actions;
