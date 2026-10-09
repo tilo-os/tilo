@@ -12,7 +12,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::rc::Rc;
 
-use terminal::resource::{SessionState, Terminal};
+use terminal::resource::Terminal;
 
 use ui::framework::{
     EffectAnswer, EffectCx, EffectStatus, Fixture, LaunchInput, LiveRow, ResourceApp,
@@ -56,7 +56,7 @@ pub struct ProjectState {
     /// potentially large seed to a buffer that already exists.
     pub opened_buffers: HashSet<String>,
     /// The embedded terminal's session, once the project has one.
-    pub terminal: Option<SessionState>,
+    pub terminal: Option<Terminal>,
     /// Private bounded projections; only `buffers` exposes demanded text.
     buffer_cache: BufferDemandCache,
 }
@@ -104,7 +104,8 @@ impl Resource for CodeEditor {
             files,
             buffers: HashMap::new(),
             opened_buffers,
-            terminal: EditorDoc::terminal_panel(doc).map(|panel| Terminal::read_under(doc, &panel)),
+            terminal: EditorDoc::terminal_panel(doc)
+                .and_then(|panel| Terminal::read_under(doc, &panel).ok()),
             buffer_cache: BufferDemandCache::default(),
         })
     }
@@ -179,7 +180,7 @@ impl Resource for CodeEditor {
                 TERMINAL_RESOURCE_ID,
                 "Terminal",
                 Some(session),
-                CodeEditorAction::Terminal,
+                CodeEditorAction::terminal,
             ));
         }
         children

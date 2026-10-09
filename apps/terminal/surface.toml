@@ -1,0 +1,77 @@
+# The app's public surface, written by `tilo-app surface`: its resources' verbs
+# and stored fields. Review changes to it like an API change; `tilo-app check`
+# fails when the code and this file disagree.
+
+[[resources]]
+kind = "terminal.session"
+label = "Terminal"
+version = 1
+
+[[resources.fields]]
+owner = "terminal"
+path = "target"
+readonly = true
+stored = "value"
+title = "Where the session runs"
+type = "Option<Atom>"
+
+[[resources.fields]]
+owner = "terminal"
+path = "relay_session"
+readonly = true
+stored = "value"
+title = "Relay session"
+type = "Option<Atom>"
+
+[[resources.fields]]
+owner = "terminal"
+path = "pane"
+readonly = true
+stored = "value"
+title = "Pane"
+type = "Option<Atom>"
+
+[[resources.verbs]]
+description = "Record where the session runs."
+id = "record-target"
+kind = "undoable"
+label = "Record where the session runs"
+
+[[resources.verbs.params]]
+name = "target"
+required = true
+
+[resources.verbs.params.schema]
+description = "An encoded session target"
+type = "string"
+
+[[resources.verbs]]
+description = "Record the relay session this session re-attaches to, or forget it."
+id = "record-relay-session"
+kind = "undoable"
+label = "Record the relay session this session re-attaches to, or forget it"
+
+[[resources.verbs.params]]
+name = "session"
+required = false
+
+[resources.verbs.params.schema]
+description = "The relay session's id; none to forget it"
+type = [
+    "string",
+    "null",
+]
+
+[[resources.verbs]]
+description = "Scope presence to a new process's pane."
+id = "claim-pane"
+kind = "undoable"
+label = "Scope presence to a new process's pane"
+
+[[resources.verbs.params]]
+name = "pane"
+required = true
+
+[resources.verbs.params.schema]
+description = "The pane's id"
+type = "string"

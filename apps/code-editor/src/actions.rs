@@ -146,6 +146,28 @@ pub struct TextEdit {
     pub after_context: String,
 }
 
+/// One of the embedded terminal session's actions.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct TerminalSessionAction(
+    pub <terminal::resource::Terminal as ui::tilo_resource::Resource>::Action,
+);
+
+impl PartialEq for TerminalSessionAction {
+    fn eq(&self, other: &Self) -> bool {
+        serde_json::to_value(&self.0).ok() == serde_json::to_value(&other.0).ok()
+    }
+}
+
+impl CodeEditorAction {
+    /// The project's action carrying the terminal session's `action`.
+    pub fn terminal(
+        action: <terminal::resource::Terminal as ui::tilo_resource::Resource>::Action,
+    ) -> Self {
+        Self::Terminal(TerminalSessionAction(action))
+    }
+}
+
 /// Every collaborative operation Code exports on the shared document.
 ///
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -198,7 +220,7 @@ pub enum CodeEditorAction {
     },
     /// A change to the embedded terminal's session, which the project keeps
     /// under its terminal panel.
-    Terminal(terminal::resource::TerminalAction),
+    Terminal(TerminalSessionAction),
     /// Record a file or folder of the project's folder on disk, the first
     /// time the editor reads it. A file's text is read when it is opened
     /// ([`Self::EnsureBuffer`]). An entry that is already recorded, or whose
@@ -291,7 +313,7 @@ impl Action for CodeEditorAction {
                         doc.put_object(automerge::ROOT, "terminal_panel", automerge::ObjType::Map)?
                     }
                 };
-                action.apply_under(doc, &panel)
+                terminal::resource::Terminal::apply_under(&action.0, doc, &panel)
             }
             Self::ReplaceText { id, text } => apply_replace_text(doc, id, text),
             Self::ImportEntry {
@@ -311,7 +333,7 @@ impl Action for CodeEditorAction {
 
     fn change_kind(&self) -> tilo_actions::ChangeKind {
         match self {
-            Self::Terminal(action) => action.change_kind(),
+            Self::Terminal(action) => tilo_actions::Action::change_kind(&action.0),
             // What is on disk is content from outside: it syncs, but nobody
             // takes it back with an undo.
             Self::ImportEntry { .. } | Self::EnsureBuffer { .. } => {
@@ -1214,28 +1236,31 @@ mod tests {
 
     #[test]
     fn the_terminal_session_lives_in_one_panel_of_the_project() {
-        use terminal::resource::{Terminal, TerminalAction};
+        use terminal::resource::Terminal;
         let mut doc = AutoCommit::new();
         assert!(EditorDoc::terminal_panel(&doc).is_none());
-        CodeEditorAction::Terminal(TerminalAction::SetTitle {
-            title: "build".into(),
-        })
-        .apply(&mut doc)
-        .unwrap();
+        let target = terminal::target::SessionTarget::default_environment().encode();
+        CodeEditorAction::terminal(Terminal::RECORD_TARGET.with(target).build(0).unwrap())
+            .apply(&mut doc)
+            .unwrap();
         let panel = EditorDoc::terminal_panel(&doc).expect("terminal map");
-        CodeEditorAction::Terminal(TerminalAction::ClaimPane {
-            pane_id: "0b5c6a3e-2d4f-4c4b-9a7e-6f1d2c3b4a59".into(),
-        })
+        CodeEditorAction::terminal(
+            Terminal::CLAIM_PANE
+                .with("0b5c6a3e-2d4f-4c4b-9a7e-6f1d2c3b4a59".to_owned())
+                .build(0)
+                .unwrap(),
+        )
         .apply(&mut doc)
         .unwrap();
         assert_eq!(EditorDoc::terminal_panel(&doc), Some(panel.clone()));
-        let session = Terminal::read_under(&doc, &panel);
-        assert_eq!(session.title, "build");
-        assert_eq!(session.pane_id, "0b5c6a3e-2d4f-4c4b-9a7e-6f1d2c3b4a59");
+        let session = Terminal::read_under(&doc, &panel).unwrap();
+        assert_eq!(
+            session.session_target(),
+            Some(terminal::target::SessionTarget::default_environment())
+        );
+        assert_eq!(session.pane_id(), "0b5c6a3e-2d4f-4c4b-9a7e-6f1d2c3b4a59");
         assert!(
-            doc.get(automerge::ROOT, "terminal_title")
-                .unwrap()
-                .is_none(),
+            doc.get(automerge::ROOT, "pane").unwrap().is_none(),
             "nothing of the session is written beside the project's files"
         );
     }

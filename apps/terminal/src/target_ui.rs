@@ -202,9 +202,7 @@ impl TerminalWidget {
 
     fn record_target(&mut self, target: &SessionTarget) {
         self.recorded_target = Some(target.clone());
-        self.submit(crate::resource::TerminalAction::SetTarget {
-            target: target.encode(),
-        });
+        self.submit(crate::resource::Terminal::RECORD_TARGET.with(target.encode()));
     }
 
     /// Keep (or forget) the relay session this session re-attaches to.
@@ -213,7 +211,7 @@ impl TerminalWidget {
             return;
         }
         self.recorded_relay_session.clone_from(&session);
-        self.submit(crate::resource::TerminalAction::SetRelaySession { session });
+        self.submit(crate::resource::Terminal::RECORD_RELAY_SESSION.with(session));
     }
 
     /// Open the tab's session if it has none yet: on the record's target or,

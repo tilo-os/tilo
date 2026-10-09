@@ -676,22 +676,18 @@ mod tests {
             );
         }
         let target = terminal::target::SessionTarget::Legacy { vm: "build".into() };
-        let retarget = serde_json::json!({
-            tilo_resource::APPLY_PARAM: serde_json::to_value(
-                terminal::resource::TerminalAction::SetTarget { target: target.encode() }
-            )
-            .unwrap()
-        });
         harness
             .invoke_bound_action(
                 &ui::bound_dispatch::BoundActionAddress {
                     instance_id: TAB,
                     address: tilo_actions::ActionAddress::new(
                         terminal::Terminal::KIND,
-                        tilo_resource::APPLY,
+                        "record-target",
                     ),
                 },
-                retarget.as_object().unwrap(),
+                serde_json::json!({ "target": target.encode() })
+                    .as_object()
+                    .unwrap(),
             )
             .unwrap();
         harness.relayout();
@@ -707,7 +703,7 @@ mod tests {
             .unwrap();
         let kept = records
             .with(&RecordId::for_tab(TAB), |doc| {
-                terminal::Terminal::read(doc).map(|state| state.target)
+                terminal::Terminal::read(doc).map(|state| state.session_target())
             })
             .expect("the tab's record is open")
             .unwrap();

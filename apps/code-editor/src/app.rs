@@ -2055,7 +2055,7 @@ impl CodeApp {
                 if let Some(dispatch) = &self.dispatch {
                     w.bind(dispatch.child(
                         crate::resource::TERMINAL_RESOURCE_ID,
-                        actions::CodeEditorAction::Terminal,
+                        actions::CodeEditorAction::terminal,
                     ));
                 }
                 if let Some(session) = self
@@ -2080,7 +2080,7 @@ impl CodeApp {
     /// Show the embedded terminal's session as the project records it: a
     /// collaborator's, a past version's, or this one's own before its shell
     /// draws.
-    pub(crate) fn present_terminal(&mut self, session: Option<&terminal::resource::SessionState>) {
+    pub(crate) fn present_terminal(&mut self, session: Option<&terminal::resource::Terminal>) {
         if let (Some(terminal), Some(session)) = (self.terminal.as_mut(), session) {
             ui::framework::ResourceSurface::present(
                 terminal.widget_mut(),

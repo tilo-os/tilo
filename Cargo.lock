@@ -15689,6 +15689,7 @@ dependencies = [
  "tilo-automerge-fork",
  "tilo-content",
  "tilo-environment",
+ "tilo-history",
  "tilo-paths",
  "tilo-test-env",
  "tilo-vello",

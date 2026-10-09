@@ -143,7 +143,7 @@ fn host_tab(
 
 /// Where the session record says the session runs.
 fn recorded(app: &App) -> Option<SessionTarget> {
-    app.state().target
+    app.state().session_target()
 }
 
 /// Drive the hosted terminal.
@@ -569,7 +569,7 @@ fn a_relay_session_is_kept_and_re_attached_on_reopen_and_replaced_when_gone() {
         tab.switch_target(&on_relay("work"), Requester::Person)
     })
     .unwrap();
-    assert_eq!(app.state().relay_session.as_deref(), Some(session));
+    assert_eq!(app.state().relay(), Some(session));
 
     // Reopened, it re-attaches.
     let mut app = app.reopen().unwrap();
@@ -578,13 +578,8 @@ fn a_relay_session_is_kept_and_re_attached_on_reopen_and_replaced_when_gone() {
 
     // A session the relay no longer has is replaced by a new one.
     let gone = "ffffffffffffffffffffffffffffffff";
-    app.invoke(
-        ui::tilo_resource::Invoke::apply(&crate::resource::TerminalAction::SetRelaySession {
-            session: Some(gone.into()),
-        })
-        .unwrap(),
-    )
-    .unwrap();
+    app.invoke(crate::resource::Terminal::RECORD_RELAY_SESSION.with(Some(gone.to_owned())))
+        .unwrap();
     let mut app = app.reopen().unwrap();
     let before = attaches.borrow().len();
     attach_with(&mut app, &attaches, move |target, attach| {
@@ -598,14 +593,14 @@ fn a_relay_session_is_kept_and_re_attached_on_reopen_and_replaced_when_gone() {
         on_tab(&mut app, |tab| tab.session_state().clone()),
         OpenState::Open
     );
-    assert_eq!(app.state().relay_session.as_deref(), Some(session));
+    assert_eq!(app.state().relay(), Some(session));
 
     // Back on this device, nothing is left to re-attach to.
     on_tab(&mut app, |tab| {
         tab.switch_target(&SessionTarget::environment("work"), Requester::Person)
     })
     .unwrap();
-    assert_eq!(app.state().relay_session, None);
+    assert_eq!(app.state().relay(), None);
 }
 
 #[test]

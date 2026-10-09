@@ -1,26 +1,16 @@
 //! The terminal's actions and effects.
 //!
 //! A terminal session is a record ([`Terminal`](crate::resource::Terminal)):
-//! what its process shows, the title the program set, where the session runs
-//! and the pane collaborators' presence is scoped to. The emulator parses the
-//! process's output onto its own screen, and after each batch the difference
-//! reaches the record as one [`Output`](crate::resource::TerminalAction::Output)
-//! action, so every collaborator and every past version sees the same screen.
-//! None of these actions is an undo step: they record what a process did,
-//! which no undo takes back.
+//! where the session runs, the relay session it re-attaches to and the pane
+//! collaborators' presence is scoped to. What the process prints stays on
+//! the device that runs it: the emulator's own screen, never the record's.
 //!
 //! Keystrokes are not actions: they travel straight to the process's stdin
 //! and change no document. Driving the process from the palette, an agent
 //! or a script — send text, run a command, interrupt it, paste — is an
-//! effect on the live session. Presentation (the scrollback offset, the
-//! selection, the find bar, the context menu) is view state of the widget.
-
-use ui::tilo_actions::ActionRegistry;
-
-/// Install the terminal session action decoder on the live launch path.
-pub fn register(registry: &mut ActionRegistry) {
-    <crate::resource::Terminal as ui::tilo_resource::Resource>::register(registry);
-}
+//! effect on the live session, and so is reading what it shows. Presentation
+//! (the scrollback offset, the selection, the find bar, the context menu) is
+//! view state of the widget.
 
 #[cfg(test)]
 mod tests {
@@ -173,7 +163,7 @@ mod tests {
         for spec in &specs {
             let reads = matches!(
                 spec.id.as_str(),
-                "history-top" | "history-live" | "inspect-session"
+                "history-top" | "history-live" | "inspect-session" | "read"
             );
             assert_eq!(
                 spec.contract.confirmation == ConfirmationPolicy::Confirm,
@@ -185,6 +175,7 @@ mod tests {
                 spec.id.as_str(),
                 "history-top"
                     | "inspect-session"
+                    | "read"
                     | "history-live"
                     | "copy-visible"
                     | "copy-selection"

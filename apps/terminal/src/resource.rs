@@ -1,219 +1,165 @@
-//! Terminal as a [`tilo_resource::Resource`]: a session record holds what the
-//! session shows — its title, where it runs, and the screen of its process —
-//! so every collaborator and every past version reads it. The process itself
-//! is the surface's; its output reaches the record as one action per batch.
+//! Terminal as a record: where a session runs, the relay session it
+//! re-attaches to and the pane collaborators' presence is scoped to.
+//!
+//! What the process prints (its screen, scrollback and title) is live
+//! output of a process on one device, like the pixels of a legacy window,
+//! and stays out of the document: recording it cost one Automerge
+//! operation per character and one version per output batch, kept forever
+//! (20,000 lines of a build log: 3.1 million operations and 403 versions,
+//! 27 times the emulator's own work). Another device reaches a running
+//! session by re-attaching to it on its relay; agents read the screen
+//! through the view that runs it ([`TerminalEffect::Read`]).
 
-use automerge::transaction::Transactable;
-use automerge::{ObjId, ROOT, ReadDoc, ScalarValue, Value};
-use serde::{Deserialize, Serialize};
+use automerge::ObjId;
 use ui::framework::{
     EffectAnswer, EffectCx, EffectStatus, Effected, LiveRow, ResourceApp, ResourceSurface,
     SurfaceCx, ViewCx,
 };
-use ui::tilo_actions::{Action, ActionError, ActionRegistry, ChangeKind};
-use ui::tilo_resource::{self, Delta, Doc, Effect, ModelError, Resource};
+use ui::i18n::EmbeddedCatalog;
+use ui::tilo_actions::ActionError;
+use ui::tilo_resource::{
+    self, ActionCx, Atom, Doc, Effect, Fields, Model, ModelError, Refusal, Resource, resource,
+};
 use ui::widget::Element;
 
 use crate::TerminalWidget;
-use crate::screen::{Screen, ScreenEdit, ScreenObjects};
+use crate::screen::Screen;
+use crate::target::SessionTarget;
 
-const TERMINAL_ACTION_TYPE: &str = "terminal.action";
+/// The terminal's Fluent catalogs, source locale first.
+pub const LOCALES: &[(&str, &str)] = &[
+    ("en-US", include_str!("../locales/en-US.ftl")),
+    ("de-DE", include_str!("../locales/de-DE.ftl")),
+];
 
-const TITLE: &str = "terminal_title";
-const PANE: &str = "terminal_pane_id";
-const LOCAL_SESSION: &str = "terminal_local_session";
+static CATALOG: EmbeddedCatalog =
+    EmbeddedCatalog::new("en-US", LOCALES, "terminal-record-target").with_system_locale();
 
-/// What a terminal session shows, as its record holds it.
-#[derive(Clone, Debug, Default)]
-pub struct SessionState {
-    pub title: String,
-    /// The pane collaborators' presence is scoped to; empty until the
-    /// first process claims one.
-    pub pane_id: String,
-    /// Where this session runs. `None` until the first open records one.
-    pub target: Option<crate::target::SessionTarget>,
-    /// The process whose screen this is.
-    pub local_session: Option<String>,
-    /// The session on a relay this session re-attaches to.
-    pub relay_session: Option<String>,
-    pub screen: Screen,
-    pub(crate) objects: ScreenObjects,
-}
-
-/// Changes to a session record. None is anyone's undo step: each records
-/// what a process did or where it runs, which no undo can take back.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub enum TerminalAction {
-    /// The title the running program set (OSC 0/2).
-    SetTitle { title: String },
-    /// A new process takes this session: the previous one's screen, title
-    /// and pane are dropped.
-    BindLocalSession { session_id: String },
-    /// Scope presence to `pane_id`, unless a peer already claimed a pane.
-    ClaimPane { pane_id: String },
-    /// Record where this session runs (an encoded
-    /// [`SessionTarget`](crate::target::SessionTarget)). The target outlives
-    /// every process that runs in it, so reopening goes back to it.
-    SetTarget { target: String },
-    /// Record (or, with `None`, forget) the relay session this session
-    /// re-attaches to.
-    SetRelaySession { session: Option<String> },
-    /// What one batch of the process's output did to its screen.
-    Output { edits: Vec<ScreenEdit> },
-}
-
-impl TerminalAction {
-    /// Apply this action to a session stored under `obj` of another
-    /// resource's document: a terminal nested in an editor's panel.
+/// A terminal session, as its record holds it. Only the terminal running
+/// the session records these, as facts about the world outside the
+/// document that no undo takes back.
+#[derive(Model, Clone, Debug, Default, PartialEq)]
+pub struct Terminal {
+    /// Where the session runs
     ///
-    /// # Errors
-    /// Refuses an invalid id, title or target, and output naming lines the
-    /// screen does not have.
-    pub fn apply_under(&self, doc: &mut Doc, obj: &ObjId) -> Result<(), ActionError> {
-        match self {
-            Self::SetTitle { title } => {
-                if crate::inner::safe_osc_text(title.as_bytes(), 256).as_deref() != Some(title) {
-                    return Err(ActionError::Refused("title is invalid".into()));
-                }
-                doc.put(obj, TITLE, title.as_str())?;
-            }
-            Self::BindLocalSession { session_id } => {
-                if session_id.is_empty() || session_id.len() > 128 {
-                    return Err(ActionError::Refused("local session id is invalid".into()));
-                }
-                crate::screen::clear(doc, obj)?;
-                for key in [TITLE, PANE] {
-                    if doc.get(obj, key)?.is_some() {
-                        doc.delete(obj, key)?;
-                    }
-                }
-                doc.put(obj, LOCAL_SESSION, session_id.as_str())?;
-            }
-            Self::ClaimPane { pane_id } => {
-                if pane_id.is_empty() || pane_id.len() > 128 {
-                    return Err(ActionError::Refused("pane id is invalid".into()));
-                }
-                if doc.get(obj, PANE)?.is_none() {
-                    doc.put(obj, PANE, pane_id.as_str())?;
-                }
-            }
-            Self::SetTarget { target } => {
-                if crate::target::SessionTarget::decode(target).is_none() {
-                    return Err(ActionError::Refused("session target is invalid".into()));
-                }
-                doc.put(obj, crate::target::TARGET_KEY, target.as_str())?;
-            }
-            Self::SetRelaySession { session } => match session {
-                Some(session)
-                    if session.len() == 32 && session.bytes().all(|b| b.is_ascii_hexdigit()) =>
-                {
-                    doc.put(obj, crate::target::RELAY_SESSION_KEY, session.as_str())?;
-                }
-                Some(_) => {
-                    return Err(ActionError::Refused("relay session id is invalid".into()));
-                }
-                None => {
-                    if doc.get(obj, crate::target::RELAY_SESSION_KEY)?.is_some() {
-                        doc.delete(obj, crate::target::RELAY_SESSION_KEY)?;
-                    }
-                }
-            },
-            Self::Output { edits } => crate::screen::apply(doc, obj, edits)?,
-        }
-        Ok(())
-    }
+    /// An encoded [`SessionTarget`]. It outlives every process that runs
+    /// in it, so reopening goes back to it.
+    #[model(readonly)]
+    pub target: Option<Atom>,
+    /// Relay session
+    ///
+    /// The session on a relay this session re-attaches to.
+    #[model(readonly)]
+    pub relay_session: Option<Atom>,
+    /// Pane
+    ///
+    /// The pane collaborators' presence is scoped to; claimed by each
+    /// process that takes the session.
+    #[model(readonly)]
+    pub pane: Option<Atom>,
 }
-
-impl Action for TerminalAction {
-    fn apply(&self, doc: &mut Doc) -> Result<(), ActionError> {
-        self.apply_under(doc, &ROOT)
-    }
-
-    fn change_kind(&self) -> ChangeKind {
-        ChangeKind::External
-    }
-}
-
-/// The terminal session resource.
-pub struct Terminal;
 
 impl Terminal {
-    /// The session stored under `obj` of another resource's document.
-    pub fn read_under(doc: &Doc, obj: &ObjId) -> SessionState {
-        let (screen, objects) = crate::screen::read(doc, obj);
-        SessionState {
-            screen,
-            objects,
-            ..session_fields(doc, obj)
+    /// Where the session runs, once a session recorded it.
+    pub fn session_target(&self) -> Option<SessionTarget> {
+        self.target
+            .as_ref()
+            .and_then(|target| SessionTarget::decode(&target.0))
+    }
+
+    /// The relay session to re-attach to.
+    pub fn relay(&self) -> Option<&str> {
+        self.relay_session
+            .as_ref()
+            .map(|session| session.0.as_str())
+    }
+
+    /// The pane presence is scoped to; empty until a process claims one.
+    pub fn pane_id(&self) -> &str {
+        self.pane.as_ref().map_or("", |pane| pane.0.as_str())
+    }
+
+    /// The session stored under `obj` of another record's document: a
+    /// terminal nested in an editor's panel.
+    ///
+    /// # Errors
+    /// Returns [`ModelError`] when the object does not hold a session.
+    pub fn read_under(doc: &Doc, obj: &ObjId) -> Result<Self, ModelError> {
+        <Self as Fields>::read_fields(doc, obj)
+    }
+
+    /// Apply one of the session's actions to a session stored under `obj`
+    /// of another record's document.
+    ///
+    /// # Errors
+    /// The action's refusal; nothing is written then.
+    pub fn apply_under(
+        action: &<Self as Resource>::Action,
+        doc: &mut Doc,
+        obj: &ObjId,
+    ) -> Result<(), ActionError> {
+        let refused = |error: ModelError| ActionError::Refused(error.to_string());
+        let payload = serde_json::to_vec(action).map_err(ActionError::Encode)?;
+        let mut cx = ActionCx::for_apply(doc, &payload, action.now_ms);
+        if let Some(edit) = tilo_resource::Operation::edit(&action.operation) {
+            return <Self as Fields>::edit_fields(doc, obj, edit.path(), edit.op(), &mut cx)
+                .map_err(refused);
         }
+        let mut record = Self::read_under(doc, obj).map_err(refused)?;
+        tilo_resource::Operation::perform(&action.operation, &mut record, &mut cx)
+            .map_err(|refusal| ActionError::Refused(refusal.0))?;
+        record.write_fields(doc, obj).map_err(refused)
     }
 }
 
-impl Resource for Terminal {
-    const KIND: &'static str = "terminal.session";
-    const LABEL: &'static str = "Terminal";
-    const ACTION_TYPE: &'static str = TERMINAL_ACTION_TYPE;
-
-    type State = SessionState;
-    type Action = TerminalAction;
-
-    fn register(registry: &mut ActionRegistry) {
-        registry.register::<TerminalAction>(Self::ACTION_TYPE);
-    }
-
-    fn read(doc: &Doc) -> Result<SessionState, ModelError> {
-        Ok(Self::read_under(doc, &ROOT))
-    }
-
-    /// Output re-reads only the lines it touched; anything else reads the
-    /// session's few other fields again.
-    fn refresh(state: &mut SessionState, doc: &Doc, delta: &Delta) -> Result<(), ModelError> {
-        if delta.is_empty() {
-            return Ok(());
+#[resource(kind = "terminal.session", label = "Terminal")]
+impl Terminal {
+    /// Record where the session runs.
+    #[action(external)]
+    pub fn record_target(
+        &mut self,
+        #[param("An encoded session target")] target: String,
+    ) -> Result<(), Refusal> {
+        if SessionTarget::decode(&target).is_none() {
+            return Err(Refusal::new("session target is invalid"));
         }
-        let mut screen = std::mem::take(&mut state.screen);
-        let mut objects = std::mem::take(&mut state.objects);
-        crate::screen::refresh(&mut screen, &mut objects, doc, delta);
-        *state = SessionState {
-            screen,
-            objects,
-            ..session_fields(doc, &ROOT)
+        self.target = Some(Atom(target));
+        Ok(())
+    }
+
+    /// Record the relay session this session re-attaches to, or forget it.
+    #[action(external)]
+    pub fn record_relay_session(
+        &mut self,
+        #[param("The relay session's id; none to forget it")] session: Option<String>,
+    ) -> Result<(), Refusal> {
+        self.relay_session = match session {
+            Some(session)
+                if session.len() == 32 && session.bytes().all(|b| b.is_ascii_hexdigit()) =>
+            {
+                Some(Atom(session))
+            }
+            Some(_) => return Err(Refusal::new("relay session id is invalid")),
+            None => None,
         };
         Ok(())
     }
 
-    const READABLE: bool = true;
-
-    /// Read the shared screen, not this participant's local process lifecycle.
-    fn read_content(
-        state: &SessionState,
-        _doc: &Doc,
-        item: Option<&str>,
-    ) -> Result<serde_json::Value, String> {
-        if item.is_some() {
-            return Err("Terminal has no nested readable resource".into());
+    /// Scope presence to a new process's pane.
+    #[action(external)]
+    pub fn claim_pane(&mut self, #[param("The pane's id")] pane: String) -> Result<(), Refusal> {
+        if uuid::Uuid::parse_str(&pane).is_err() {
+            return Err(Refusal::new("pane id is invalid"));
         }
-        let (output, truncated) = readable_output(&state.screen);
-        Ok(serde_json::json!({
-            "kind": Self::KIND,
-            "title": state.title,
-            "target": state.target,
-            "session": state.local_session,
-            "relay_session": state.relay_session,
-            "pane": state.pane_id,
-            "alternate": state.screen.alternate,
-            "cursor": { "column": state.screen.cursor.0, "row": state.screen.cursor.1 },
-            "output": output,
-            "output_truncated": truncated,
-            "retained_lines": state.screen.active().len(),
-        }))
+        self.pane = Some(Atom(pane));
+        Ok(())
     }
 }
 
 /// Keep explicit reads bounded even when retained output contains very long
 /// rows. The suffix ends at a Unicode scalar boundary; no terminal content is
-/// logged or copied until the caller requests the canonical Read action.
-fn readable_output(screen: &Screen) -> (String, bool) {
+/// logged or copied until the caller asks for it.
+pub(crate) fn readable_output(screen: &Screen) -> (String, bool) {
     const LIMIT: usize = 64 * 1024;
     let mut reversed = String::new();
     let mut rows = screen.active().iter().rev().peekable();
@@ -246,9 +192,15 @@ pub enum TerminalEffect {
     /// Inspect session
     ///
     /// Read this participant's actual process lifecycle and startup cause.
-    /// The shared screen is read separately through the resource's Read action.
+    /// What the session shows is read with [`Self::Read`].
     #[effect(returns, permission = "read")]
     InspectSession,
+    /// Read output
+    ///
+    /// Read what the session shows: its output (the newest 64 KiB of the
+    /// screen and scrollback), title, cursor and where it runs.
+    #[effect(returns, permission = "read")]
+    Read,
     /// Send text
     ///
     /// Writes reviewed text without pressing Enter.
@@ -363,12 +315,12 @@ impl ResourceApp for TerminalShell {
     const TITLE: &'static str = "Terminal";
     const ICON: Option<&'static str> = Some("terminal");
 
-    fn label(state: &SessionState) -> String {
-        if state.title == "Terminal" {
-            "Terminal session".to_owned()
-        } else {
-            format!("Terminal — {}", state.title)
-        }
+    fn label(_state: &Terminal) -> String {
+        "Terminal session".to_owned()
+    }
+
+    fn catalog() -> Option<&'static EmbeddedCatalog> {
+        Some(&CATALOG)
     }
 
     fn shot_viewport(_scenario: Option<&str>) -> (u32, u32) {
@@ -416,50 +368,6 @@ impl ResourceApp for TerminalShell {
     }
 }
 
-fn read_string(doc: &Doc, obj: &ObjId, key: &str) -> Option<String> {
-    match doc.get(obj, key).ok().flatten() {
-        Some((Value::Scalar(value), _)) => match value.as_ref() {
-            ScalarValue::Str(text) => Some(text.to_string()),
-            _ => None,
-        },
-        _ => None,
-    }
-}
-
-/// The pane every replica scopes presence to. Two peers claiming a pane at
-/// once leave both claims in the document; every replica picks the same one
-/// (the first valid id in order) rather than whichever `get` exposes.
-fn shared_pane_id(doc: &Doc, obj: &ObjId) -> Option<String> {
-    let mut candidates = doc
-        .get_all(obj, PANE)
-        .ok()?
-        .into_iter()
-        .filter_map(|(value, _)| match value {
-            Value::Scalar(value) => value.as_str().map(str::to_owned),
-            Value::Object(_) => None,
-        })
-        .filter(|value| uuid::Uuid::parse_str(value).is_ok())
-        .collect::<Vec<_>>();
-    candidates.sort_unstable();
-    candidates.into_iter().next()
-}
-
-/// The session's fields beside its screen.
-fn session_fields(doc: &Doc, obj: &ObjId) -> SessionState {
-    SessionState {
-        title: read_string(doc, obj, TITLE)
-            .and_then(|title| crate::inner::safe_osc_text(title.as_bytes(), 256))
-            .unwrap_or_else(|| "Terminal".into()),
-        pane_id: shared_pane_id(doc, obj).unwrap_or_default(),
-        target: read_string(doc, obj, crate::target::TARGET_KEY)
-            .as_deref()
-            .and_then(crate::target::SessionTarget::decode),
-        local_session: read_string(doc, obj, LOCAL_SESSION),
-        relay_session: read_string(doc, obj, crate::target::RELAY_SESSION_KEY),
-        ..SessionState::default()
-    }
-}
-
 impl ResourceSurface<Terminal, TerminalEffect> for TerminalWidget {
     fn supports_device_shell(&self) -> bool {
         true
@@ -479,7 +387,7 @@ impl ResourceSurface<Terminal, TerminalEffect> for TerminalWidget {
         self.take_session_intent()
     }
 
-    fn present(&mut self, state: &std::rc::Rc<SessionState>) {
+    fn present(&mut self, state: &std::rc::Rc<Terminal>) {
         self.present_session(state);
     }
 
@@ -499,10 +407,11 @@ impl ResourceSurface<Terminal, TerminalEffect> for TerminalWidget {
         effect: TerminalEffect,
         _cx: &mut EffectCx<Terminal, Self>,
     ) -> EffectAnswer {
-        if effect == TerminalEffect::InspectSession {
-            return Ok(Effected::value(self.inspect_session()));
+        match effect {
+            TerminalEffect::InspectSession => Ok(Effected::value(self.inspect_session())),
+            TerminalEffect::Read => Ok(Effected::value(self.read_session())),
+            effect => self.perform(effect).map(|()| Effected::done()),
         }
-        self.perform(effect).map(|()| Effected::done())
     }
 
     fn effects(&self) -> Vec<EffectStatus> {
@@ -537,7 +446,7 @@ impl ResourceSurface<Terminal, TerminalEffect> for crate::TerminalView {
     fn take_host_intent(&mut self) -> Option<ui::widget::AppHostIntent> {
         self.take_session_intent()
     }
-    fn present(&mut self, state: &std::rc::Rc<SessionState>) {
+    fn present(&mut self, state: &std::rc::Rc<Terminal>) {
         self.present_session(state);
     }
     fn attach(&mut self, cx: SurfaceCx<Terminal>) {
@@ -557,10 +466,11 @@ impl ResourceSurface<Terminal, TerminalEffect> for crate::TerminalView {
         effect: TerminalEffect,
         _cx: &mut EffectCx<Terminal, Self>,
     ) -> EffectAnswer {
-        if effect == TerminalEffect::InspectSession {
-            return Ok(Effected::value(self.inspect_session()));
+        match effect {
+            TerminalEffect::InspectSession => Ok(Effected::value(self.inspect_session())),
+            TerminalEffect::Read => Ok(Effected::value(self.read_session())),
+            effect => self.perform(effect).map(|()| Effected::done()),
         }
-        self.perform(effect).map(|()| Effected::done())
     }
     fn effects(&self) -> Vec<EffectStatus> {
         self.effect_statuses()
@@ -574,298 +484,4 @@ impl ResourceSurface<Terminal, TerminalEffect> for crate::TerminalView {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn canonical_read_reports_recorded_screen_target_and_unicode_bound_without_local_claims() {
-        let mut app = ui::framework::testing::TestApp::<TerminalShell>::new().expect("terminal");
-        app.invoke(
-            ui::tilo_resource::Invoke::apply(&TerminalAction::SetTarget {
-                target: crate::target::SessionTarget::default_environment().encode(),
-            })
-            .expect("encode target action"),
-        )
-        .expect("recorded target");
-        app.with_surface(|terminal: &mut TerminalWidget| terminal.feed(b"recorded output\r\n"))
-            .expect("surface");
-        app.settle();
-        let state = app.state();
-        let read = app
-            .call("read", serde_json::json!({}))
-            .expect("published canonical read")
-            .expect("read answers with shared content");
-        assert!(read["output"].as_str().unwrap().contains("recorded output"));
-        assert_eq!(
-            read["target"],
-            serde_json::to_value(crate::target::SessionTarget::default_environment()).unwrap()
-        );
-        assert_eq!(read["cursor"]["row"], state.screen.cursor.1);
-        assert!(
-            read.get("lifecycle").is_none(),
-            "a shared screen cannot assert local process liveness"
-        );
-        assert!(
-            app.call("read", serde_json::json!({"item": "unknown"}))
-                .is_err()
-        );
-        let screen = Screen {
-            main: vec![std::rc::Rc::new(crate::screen::Line {
-                text: "é".repeat(40_000),
-                attrs: Vec::new(),
-            })],
-            ..Screen::default()
-        };
-        let (output, truncated) = readable_output(&screen);
-        assert!(truncated);
-        assert_eq!(output.len(), 64 * 1024);
-        assert!(output.chars().all(|character| character == 'é'));
-    }
-
-    #[test]
-    fn the_session_publishes_its_effects_and_the_links_on_screen() {
-        let mut app = ui::framework::testing::TestApp::<TerminalShell>::new().expect("terminal");
-        let mut output = Vec::new();
-        for line in 0..100 {
-            output.extend_from_slice(format!("line {line:03}\r\n").as_bytes());
-        }
-        output.extend_from_slice(
-            b"see \x1b]8;;https://example.test/docs\x1b\\docs\x1b]8;;\x1b\\ \
-              \x1b]8;;file:///home/me/.ssh/id_ed25519\x1b\\key\x1b]8;;\x1b\\\r\n",
-        );
-        app.with_surface(|terminal: &mut crate::TerminalView| terminal.feed(&output))
-            .expect("the terminal surface is hosted");
-        app.settle();
-
-        let published = app.agent_surface().to_string();
-        for effect in TerminalEffect::declarations() {
-            assert!(
-                published.contains(&format!("\"{}\"", effect.id)),
-                "`{}` is published: {published}",
-                effect.id
-            );
-        }
-        assert_eq!(
-            published
-                .matches("\"resource_kind\":\"terminal.link\"")
-                .count(),
-            1,
-            "the public link is a row, the local file link is not: {published}"
-        );
-
-        // Scrolling to the oldest output through the door moves the view.
-        app.effect(&TerminalEffect::HistoryTop)
-            .expect("history-top is offered while older output is retained");
-        let scrolled = app
-            .with_surface(|terminal: &mut crate::TerminalView| terminal.scroll_offset())
-            .expect("the terminal surface is hosted");
-        assert!(scrolled > 0, "the view scrolled back");
-
-        // A reviewed command may not smuggle control characters.
-        assert!(
-            app.effect_confirmed(&TerminalEffect::Run {
-                command: "printf first\nprintf second".into(),
-            })
-            .is_err()
-        );
-
-        // An emulating terminal keeps its own screen when the record is presented.
-        let mut widget = TerminalWidget::spawn_headless().expect("headless terminal");
-        widget.feed(b"hello");
-        ResourceSurface::<Terminal, TerminalEffect>::present(
-            &mut widget,
-            &std::rc::Rc::new(SessionState::default()),
-        );
-        assert!(
-            widget.grid_text().contains("hello"),
-            "the record must not replace the screen of a terminal running its own output"
-        );
-    }
-
-    /// A scenario's output on screen through `--shots`' own path, with the
-    /// view state staged over it.
-    fn captured<T>(scenario: &str, read: impl FnOnce(&mut crate::TerminalView) -> T) -> T {
-        let mut app = ui::framework::testing::TestApp::<TerminalShell>::capture(Some(scenario))
-            .unwrap_or_else(|error| panic!("{scenario} stages: {error}"));
-        app.with_surface(read)
-            .expect("the terminal surface is hosted")
-    }
-
-    #[test]
-    fn scenarios_stage_their_output_and_view_state() {
-        let (open, counter) = captured("find", |terminal| {
-            (terminal.find_is_open(), terminal.find_counter())
-        });
-        assert!(open, "the find scenario opens the find bar");
-        assert_eq!(
-            counter,
-            Some(("build step 042".into(), Some((1, 1)))),
-            "one line matches `build step 042`"
-        );
-
-        let selected = captured("shell-select", |terminal| terminal.test_selected_text());
-        assert_eq!(
-            selected.as_deref(),
-            Some("primes below 20: 2 3 5 7 11 13 17 19"),
-            "the printed line is selected, not the command that echoed it"
-        );
-
-        let (scrolled, oldest) = captured("scrollback", |terminal| {
-            (
-                terminal.scroll_offset(),
-                terminal.visible_lines().join("\n"),
-            )
-        });
-        assert_eq!(scrolled, 20);
-        assert!(oldest.contains("log entry 040"), "{oldest}");
-
-        assert!(captured("tui", |terminal| terminal.is_alt_screen()));
-        assert!(captured("ended", |terminal| terminal.is_disconnected()));
-        assert!(captured("empty-menu", |terminal| terminal.context_menu_is_open()));
-        let target = captured("host", |terminal| terminal.session_target().cloned());
-        assert_eq!(target, Some(crate::target::SessionTarget::Host));
-    }
-
-    fn texts(state: &SessionState) -> String {
-        state
-            .screen
-            .main
-            .iter()
-            .map(|line| line.text.trim_end())
-            .collect::<Vec<_>>()
-            .join("\n")
-    }
-
-    #[test]
-    fn output_reaches_the_session_record_but_is_nobodys_undo_step() {
-        let mut app = ui::framework::testing::TestApp::<TerminalShell>::new().expect("terminal");
-        app.with_surface(|terminal: &mut crate::TerminalView| {
-            terminal.feed(b"\x1b]2;build\x07first line\r\nsecond \x1b[1;31mred\x1b[0m\r\n");
-        })
-        .expect("the terminal surface is hosted");
-        app.settle();
-        let state = app.state();
-        assert!(texts(&state).contains("first line"), "{}", texts(&state));
-        assert!(texts(&state).contains("second red"), "{}", texts(&state));
-        assert_eq!(state.title, "build");
-        assert_eq!(state.screen.cursor, (0, 2));
-        assert!(!app.undo(), "a process's output is not an undo step");
-        assert!(texts(&app.state()).contains("first line"));
-
-        // More output records only what changed.
-        app.with_surface(|terminal: &mut crate::TerminalView| terminal.feed(b"third\r\n"))
-            .expect("the terminal surface is hosted");
-        app.settle();
-        let state = app.state();
-        assert!(
-            texts(&state).contains("first line\nsecond red\nthird"),
-            "{}",
-            texts(&state)
-        );
-    }
-
-    #[test]
-    fn a_terminal_without_a_process_shows_the_session_record() {
-        let mut doc = Doc::new();
-        let screen = crate::screen::Screen {
-            main: vec![std::rc::Rc::new(crate::screen::Line {
-                text: "recorded elsewhere".into(),
-                attrs: Vec::new(),
-            })],
-            cursor: (3, 0),
-            ..crate::screen::Screen::default()
-        };
-        TerminalAction::Output {
-            edits: crate::screen::edits(None, &screen),
-        }
-        .apply(&mut doc)
-        .unwrap();
-        TerminalAction::SetTitle {
-            title: "vim".into(),
-        }
-        .apply(&mut doc)
-        .unwrap();
-        let state = Terminal::read(&doc).unwrap();
-        let mut viewer = TerminalWidget::spawn_headless().expect("headless terminal");
-        ResourceSurface::<Terminal, TerminalEffect>::present(&mut viewer, &std::rc::Rc::new(state));
-        assert!(viewer.grid_text().contains("recorded elsewhere"));
-        assert_eq!(viewer.title(), "vim");
-    }
-
-    #[test]
-    fn bind_local_session_drops_the_previous_process_record() {
-        let mut doc = Doc::new();
-        let screen = crate::screen::Screen {
-            main: vec![std::rc::Rc::new(crate::screen::Line {
-                text: "old prompt".into(),
-                attrs: Vec::new(),
-            })],
-            ..crate::screen::Screen::default()
-        };
-        for action in [
-            TerminalAction::SetTitle {
-                title: "old session".into(),
-            },
-            TerminalAction::ClaimPane {
-                pane_id: uuid::Uuid::new_v4().to_string(),
-            },
-            TerminalAction::Output {
-                edits: crate::screen::edits(None, &screen),
-            },
-            TerminalAction::BindLocalSession {
-                session_id: "process-2".into(),
-            },
-        ] {
-            action.apply(&mut doc).unwrap();
-        }
-        let state = Terminal::read(&doc).unwrap();
-        assert_eq!(state.title, "Terminal");
-        assert!(state.pane_id.is_empty());
-        assert!(state.screen.main.is_empty());
-        assert_eq!(state.local_session.as_deref(), Some("process-2"));
-    }
-
-    #[test]
-    fn the_first_pane_claim_wins() {
-        let mut doc = Doc::new();
-        let first = uuid::Uuid::new_v4().to_string();
-        for pane_id in [first.clone(), uuid::Uuid::new_v4().to_string()] {
-            TerminalAction::ClaimPane { pane_id }
-                .apply(&mut doc)
-                .unwrap();
-        }
-        assert_eq!(Terminal::read(&doc).unwrap().pane_id, first);
-    }
-
-    #[test]
-    fn a_session_nested_in_another_resource_stays_under_its_object() {
-        let mut doc = Doc::new();
-        let panel = doc
-            .put_object(ROOT, "terminal_panel", automerge::ObjType::Map)
-            .unwrap();
-        let screen = crate::screen::Screen {
-            main: vec![std::rc::Rc::new(crate::screen::Line {
-                text: "nested".into(),
-                attrs: Vec::new(),
-            })],
-            ..crate::screen::Screen::default()
-        };
-        for action in [
-            TerminalAction::BindLocalSession {
-                session_id: "process-1".into(),
-            },
-            TerminalAction::Output {
-                edits: crate::screen::edits(None, &screen),
-            },
-        ] {
-            action.apply_under(&mut doc, &panel).unwrap();
-        }
-        assert!(
-            Terminal::read(&doc).unwrap().screen.main.is_empty(),
-            "nothing lands at the document root"
-        );
-        let nested = Terminal::read_under(&doc, &panel);
-        assert_eq!(nested.screen.main[0].text, "nested");
-        assert_eq!(nested.local_session.as_deref(), Some("process-1"));
-    }
-}
+mod tests;

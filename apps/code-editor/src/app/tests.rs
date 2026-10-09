@@ -319,23 +319,26 @@ fn the_embedded_terminal_is_the_projects_terminal_child() {
     crate::test_support::editor(&mut app, |app| {
         app.shots_terminal_input("printf 'CHILD_TERM_OK\\n'\n");
     });
-    let shown = |app: &ui::framework::testing::TestApp<crate::CodeEditorShell>| {
-        app.state().terminal.as_ref().is_some_and(|session| {
-            session
-                .screen
-                .active()
-                .iter()
-                .any(|line| line.text.contains("CHILD_TERM_OK"))
-        })
+    // The shell's output stays in the terminal; the project records the
+    // session the process took.
+    let shown = |app: &mut ui::framework::testing::TestApp<crate::CodeEditorShell>| {
+        let recorded = app
+            .state()
+            .terminal
+            .as_ref()
+            .is_some_and(|session| !session.pane_id().is_empty());
+        recorded
+            && crate::test_support::editor(app, |app| app.shots_terminal_grid_text())
+                .is_some_and(|text| text.contains("CHILD_TERM_OK"))
     };
     let deadline = ui::time::now() + HANG_BOUND;
-    while !shown(&app) && ui::time::now() < deadline {
+    while !shown(&mut app) && ui::time::now() < deadline {
         app.settle();
         std::thread::sleep(std::time::Duration::from_millis(20));
     }
     assert!(
-        shown(&app),
-        "the shell's output is the session the project records"
+        shown(&mut app),
+        "the shell's output shows, and the session is the one the project records"
     );
     let published =
         <crate::resource::CodeEditor as ui::tilo_resource::Resource>::children(&app.state());

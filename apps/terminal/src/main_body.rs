@@ -552,24 +552,18 @@ pub struct TerminalWidget {
     /// default-background cell is the surface the framework already painted.
     palette: ui::tokens::TerminalPalette,
 
-    /// What the terminal shows. A widget running a process keeps the
-    /// emulator's screen here; one without (a past version, a collaborator's
-    /// view, a screenshot before its output) shows the session record's,
-    /// presented to it.
+    /// What the terminal shows: the emulator's screen of the process it
+    /// runs. It is live output and never part of the session record.
     screen: crate::screen::Screen,
     /// The lines `grid`/`grid_attrs` were last built from, so a rebuild
     /// converts only lines that changed.
     mirrored: Vec<std::rc::Rc<crate::screen::Line>>,
     /// Whether this widget's own emulator draws `screen`: set by the first
-    /// output it parses. Until then the screen is the record's.
+    /// output it parses.
     emulating: bool,
-    /// The screen the session record holds, as this widget last wrote it;
-    /// `None` while the record's is unknown (a new process, a refused
-    /// write), so the next write replaces it whole.
-    synced: Option<crate::screen::Screen>,
     /// Session changes waiting for the next sync, where the record is at
-    /// hand: they apply in order, before the output parsed since.
-    pending_actions: Vec<crate::resource::TerminalAction>,
+    /// hand: they apply in order.
+    pending_actions: Vec<ui::tilo_resource::Invoke<crate::resource::Terminal>>,
     /// Where the session record says this session runs.
     recorded_target: Option<crate::target::SessionTarget>,
     /// Identity of the process attached here, distinct from a replica's record.
@@ -800,7 +794,6 @@ impl TerminalWidget {
             screen: crate::screen::Screen::default(),
             mirrored: Vec::new(),
             emulating: false,
-            synced: None,
             pending_actions: Vec::new(),
             recorded_target: None,
             local_session: None,
@@ -867,20 +860,14 @@ impl TerminalWidget {
         }
     }
 
-    /// A new process takes this terminal. Its screen starts blank, and the
-    /// session record drops the previous process's screen, title and pane
-    /// before this one's output reaches it: a tab is durable, its process is
-    /// not, and a shell started after a logout must not inherit the grid of
-    /// the one before it.
+    /// A new process takes this terminal. Its screen starts blank and it
+    /// claims the session's pane: a tab is durable, its process is not, and
+    /// a shell started after a logout must not inherit the grid of the one
+    /// before it.
     fn begin_local_session(&mut self) {
-        let session_id = uuid::Uuid::new_v4().to_string();
-        self.local_session = Some(session_id.clone());
+        self.local_session = Some(uuid::Uuid::new_v4().to_string());
         self.pane_id = uuid::Uuid::new_v4().to_string();
-        self.submit(crate::resource::TerminalAction::BindLocalSession { session_id });
-        self.submit(crate::resource::TerminalAction::ClaimPane {
-            pane_id: self.pane_id.clone(),
-        });
-        self.synced = None;
+        self.submit(crate::resource::Terminal::CLAIM_PANE.with(self.pane_id.clone()));
         self.emulating = true;
         self.screen = crate::screen::Screen::default();
         self.cursor_x = 0;
@@ -1089,6 +1076,26 @@ impl TerminalWidget {
             "session_disconnected",
             "The terminal process has ended or its PTY failed; input cannot be sent.",
         ))
+    }
+
+    /// What the session shows, for an agent or a script: its output (the
+    /// newest part of the screen and scrollback), title, cursor and where it
+    /// runs.
+    pub(crate) fn read_session(&self) -> serde_json::Value {
+        let (output, truncated) = crate::resource::readable_output(&self.screen);
+        serde_json::json!({
+            "kind": <crate::resource::Terminal as ui::tilo_resource::Resource>::KIND,
+            "title": self.title,
+            "target": self.sessions.target.as_ref().or(self.recorded_target.as_ref()),
+            "session": self.local_session,
+            "relay_session": self.recorded_relay_session,
+            "pane": self.pane_id,
+            "alternate": self.screen.alternate,
+            "cursor": { "column": self.screen.cursor.0, "row": self.screen.cursor.1 },
+            "output": output,
+            "output_truncated": truncated,
+            "retained_lines": self.screen.active().len(),
+        })
     }
 
     pub(crate) fn inspect_session(&self) -> serde_json::Value {
@@ -1764,12 +1771,6 @@ impl TerminalWidget {
         activity
     }
 
-    /// The screen this terminal shows. Test accessor.
-    #[cfg(test)]
-    pub(crate) fn screen(&self) -> &crate::screen::Screen {
-        &self.screen
-    }
-
     #[cfg(test)]
     pub(crate) fn has_received_pty_output(&self) -> bool {
         self.ever_nonblank
@@ -1859,12 +1860,8 @@ impl TerminalWidget {
             self.write_input(&responses);
         }
 
-        // Record an OSC 0/2 title change so a collaborator sees it, and
-        // reflect it locally for `app_title`.
-        if let Some(t) = title_out
-            && t != self.title
-        {
-            self.submit(crate::resource::TerminalAction::SetTitle { title: t.clone() });
+        // An OSC 0/2 title change shows as the window's title.
+        if let Some(t) = title_out {
             self.title = t;
         }
         self.show_screen();
@@ -2070,9 +2067,9 @@ impl TerminalWidget {
             return Err("agents may not send input to the device's own shell".into());
         }
         match effect {
-            E::InspectSession => {
+            E::InspectSession | E::Read => {
                 return Err(
-                    "Inspect session is answered by the resource's read-only handler".into(),
+                    "inspecting and reading the session are answered by the resource's read-only handler".into(),
                 );
             }
             E::Send { text } => {
@@ -2260,8 +2257,7 @@ impl TerminalWidget {
     }
 
     /// Bring the session record up to date with this terminal: the session
-    /// changes waiting since the last sync, in order, then what the output
-    /// parsed since did to the screen, as one action. Nothing is recorded
+    /// changes waiting since the last sync, in order. Nothing is recorded
     /// for a terminal that has no record.
     fn record(&mut self, edits: &mut ui::widget::Edits<'_>) {
         let Some(dispatch) = self.dispatch.clone() else {
@@ -2269,50 +2265,27 @@ impl TerminalWidget {
             return;
         };
         for action in std::mem::take(&mut self.pending_actions) {
-            if dispatch.apply_now(edits, &action).is_err() {
-                self.synced = None;
+            if let Err(error) = dispatch.submit_now(edits, action) {
+                tracing::warn!(%error, "terminal session record refused a change");
             }
         }
-        if !self.emulating {
-            return;
-        }
-        let screen_edits = crate::screen::edits(self.synced.as_ref(), &self.screen);
-        if screen_edits.is_empty() {
-            return;
-        }
-        let output = crate::resource::TerminalAction::Output {
-            edits: screen_edits,
-        };
-        // A refused write leaves the record's screen unknown: the next one
-        // replaces it whole.
-        self.synced = dispatch
-            .apply_now(edits, &output)
-            .is_ok()
-            .then(|| self.screen.clone());
     }
 
     /// Queue a session change for the next sync.
-    fn submit(&mut self, action: crate::resource::TerminalAction) {
+    fn submit(&mut self, action: ui::tilo_resource::Invoke<crate::resource::Terminal>) {
         if self.dispatch.is_some() {
             self.pending_actions.push(action);
         }
     }
 
-    /// Show the session as its record holds it, unless this terminal's own
-    /// emulator draws the screen: a past version, a collaborator's view of
-    /// a session running elsewhere, a screenshot before its output.
-    pub(crate) fn present_session(&mut self, state: &crate::resource::SessionState) {
-        self.recorded_target.clone_from(&state.target);
-        self.recorded_relay_session.clone_from(&state.relay_session);
-        if !state.pane_id.is_empty() {
-            self.pane_id.clone_from(&state.pane_id);
+    /// Follow the session as its record holds it: where it runs, the relay
+    /// session it re-attaches to and the pane presence is scoped to.
+    pub(crate) fn present_session(&mut self, state: &crate::resource::Terminal) {
+        self.recorded_target = state.session_target();
+        self.recorded_relay_session = state.relay().map(str::to_owned);
+        if !state.pane_id().is_empty() {
+            state.pane_id().clone_into(&mut self.pane_id);
         }
-        if self.emulating {
-            return;
-        }
-        self.title.clone_from(&state.title);
-        self.screen = state.screen.clone();
-        self.show_screen();
     }
 
     /// Rebuild what is drawn from `screen`: the rows of the active buffer,
@@ -3049,18 +3022,15 @@ impl TerminalWidget {
     /// Record this terminal's session through `dispatcher`: the session
     /// record's own when the framework hosts the terminal, or a parent's
     /// child dispatcher when the terminal is nested in another resource (an
-    /// editor's terminal panel), whose action carries each
-    /// [`TerminalAction`](crate::resource::TerminalAction) and applies it
-    /// with [`apply_under`](crate::resource::TerminalAction::apply_under).
+    /// editor's terminal panel), whose action carries each of the session's
+    /// actions and applies it with
+    /// [`Terminal::apply_under`](crate::resource::Terminal::apply_under).
     /// The parent then presents the nested session with
     /// [`ResourceSurface::present`](ui::framework::ResourceSurface::present)
     /// as it changes, read with
     /// [`Terminal::read_under`](crate::resource::Terminal::read_under).
-    /// Everything the session is already running is recorded from the next
-    /// sync on, in full.
     pub fn bind(&mut self, dispatcher: ui::framework::Dispatcher<crate::resource::Terminal>) {
         self.dispatch = Some(dispatcher);
-        self.synced = None;
     }
 }
 
