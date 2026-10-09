@@ -67,9 +67,11 @@ pub struct AudioPrefs {
     pub system_sounds: settings_store::system_sounds::SystemSoundPrefs,
     /// Label of the last chosen default sink (output device), if any.
     #[serde(default)]
+    #[model(readonly)]
     pub output_device: Option<String>,
     /// Label of the last chosen default source (input device), if any.
     #[serde(default)]
+    #[model(readonly)]
     pub input_device: Option<String>,
     /// Persistent left/right balance in UI space (`0` left, `0.5` centre,
     /// `1` right). The compositor session, not this pane, owns actuation.
@@ -78,10 +80,12 @@ pub struct AudioPrefs {
     /// Persistent accessibility mono transform. A compositor-session owner
     /// keeps the bounded virtual sink alive across Settings navigation.
     #[serde(default)]
+    #[model(readonly)]
     pub mono_output: bool,
     /// Give calls an echo-cancelled microphone. The compositor session owns
     /// the `PipeWire` client that provides it.
     #[serde(default = "default_true")]
+    #[model(readonly)]
     pub echo_cancellation: bool,
 }
 
@@ -106,6 +110,7 @@ impl Default for AudioPrefs {
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize, ui::tilo_resource::Model)]
 #[model(check = DisplayPrefs::valid)]
 pub struct DisplayPrefs {
+    #[model(readonly)]
     pub auto_brightness: bool,
     pub night_light: bool,
     /// Target correlated colour temperature used by the compositor's
@@ -175,6 +180,7 @@ pub struct InputPrefs {
     #[model(readonly)]
     pub key_repeat_rate_hz: Option<u32>,
     /// xkb layout code, e.g. `"us"`, `"de"`.
+    #[model(readonly)]
     pub keyboard_layout: String,
     pub tap_drag: bool,
     /// Keep a tap-and-drag going after the finger lifts, until the next tap.
@@ -198,16 +204,21 @@ pub struct InputPrefs {
     /// Scroll-distance multiplier for wheels and touchpads.
     pub scroll_speed: f64,
     /// XKB compose option (`ralt`, `menu`, …), or none.
+    #[model(readonly)]
     pub compose_key: Option<String>,
     /// What Caps Lock does (`ctrl`, `escape`, `backspace`), or none for
     /// Caps Lock itself.
+    #[model(readonly)]
     pub caps_lock: Option<String>,
     /// Ordered XKB layouts. `keyboard_layout` remains the active first item
     /// for backward compatibility with old sessions.
+    #[model(readonly)]
     pub keyboard_layouts: Vec<String>,
     /// Explicit physical model; no hardware detection is implied.
+    #[model(readonly)]
     pub keyboard_model: String,
     #[serde(deserialize_with = "settings_store::keyboard_sources::lenient_profiles")]
+    #[model(readonly)]
     pub keyboard_assignments:
         std::collections::BTreeMap<String, settings_store::keyboard_sources::KeyboardProfile>,
     /// Layout being inspected without changing the active input source.
@@ -224,6 +235,7 @@ pub struct InputPrefs {
     pub keyboard_inspected_key: String,
     /// Per-tablet mapping, pressure and buttons, keyed by device identity.
     #[serde(deserialize_with = "settings_store::hardware::lenient_tablets")]
+    #[model(readonly)]
     pub tablets: std::collections::BTreeMap<String, settings_store::hardware::TabletConfig>,
 }
 
@@ -987,6 +999,7 @@ pub struct NotificationPrefs {
     /// Rules keyed by the launcher's verified package id. The compositor
     /// deliberately never indexes this map with an app-supplied display name.
     #[serde(default)]
+    #[model(readonly)]
     pub per_app: std::collections::BTreeMap<
         String,
         settings_store::notification_policy::AppNotificationRule,
@@ -1044,6 +1057,7 @@ pub struct AccessibilityPrefs {
     pub cursor_size: u32,
     /// Run the AT-SPI screen reader.
     #[serde(default)]
+    #[model(readonly)]
     pub screen_reader: bool,
     /// When the on-screen keyboard runs: automatically on touch-only use,
     /// always, or never.
@@ -1097,9 +1111,11 @@ pub struct AccessibilityPrefs {
     pub switch_scan_ms: u16,
     /// Normalised screen-reader speech rate, where 100 is engine default.
     #[serde(default = "default_screen_reader_rate")]
+    #[model(readonly)]
     pub screen_reader_rate: u16,
     /// Backend-neutral voice/language preset.
     #[serde(default)]
+    #[model(readonly)]
     pub screen_reader_voice: ScreenReaderVoice,
     /// Personal recognition language; selecting it never grants microphone access.
     #[serde(default)]

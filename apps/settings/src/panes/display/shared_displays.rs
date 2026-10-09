@@ -12,6 +12,7 @@ use ui::tilo_resource::{self, Effect};
 )]
 #[serde(default)]
 pub struct SharedDisplayPrefs {
+    #[model(readonly)]
     pub arrangement: Arrangement,
 }
 

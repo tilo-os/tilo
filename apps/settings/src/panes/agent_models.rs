@@ -40,6 +40,7 @@ use crate::widgets::{
 )]
 #[serde(from = "StoredProviders", into = "StoredProviders")]
 pub struct AgentProviders {
+    #[model(readonly)]
     pub config: ProviderConfig,
 }
 

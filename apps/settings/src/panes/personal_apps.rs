@@ -38,6 +38,7 @@ pub struct DefaultApps {
     /// The app each kind of file or link opens with, by the kind's id
     /// (`ext:pdf`, `mime:text/html`, `scheme:https`).
     #[serde(default)]
+    #[model(readonly)]
     pub handlers: BTreeMap<String, String>,
 }
 

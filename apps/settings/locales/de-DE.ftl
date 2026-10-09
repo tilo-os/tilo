@@ -2143,10 +2143,6 @@ settings-accessibility-prefs-large-cursor = { $new ->
     [true] Großen Mauszeiger eingeschaltet
    *[false] Großen Mauszeiger ausgeschaltet
 }
-settings-accessibility-prefs-screen-reader = { $new ->
-    [true] Bildschirmleser eingeschaltet
-   *[false] Bildschirmleser ausgeschaltet
-}
 settings-accessibility-prefs-sticky-keys = { $new ->
     [true] Einrastfunktion eingeschaltet
    *[false] Einrastfunktion ausgeschaltet
@@ -2299,18 +2295,6 @@ settings-system-sound-events-error = { $new ->
     [true] Fehlerton eingeschaltet
    *[false] Fehlerton ausgeschaltet
 }
-settings-audio-prefs-mono-output = { $new ->
-    [true] Mono-Audio eingeschaltet
-   *[false] Mono-Audio ausgeschaltet
-}
-settings-audio-prefs-echo-cancellation = { $new ->
-    [true] Echounterdrückung eingeschaltet
-   *[false] Echounterdrückung ausgeschaltet
-}
-settings-display-prefs-auto-brightness = { $new ->
-    [true] Automatische Helligkeit eingeschaltet
-   *[false] Automatische Helligkeit ausgeschaltet
-}
 settings-display-prefs-night-light = { $new ->
     [true] Nachtlicht eingeschaltet
    *[false] Nachtlicht ausgeschaltet
@@ -2344,25 +2328,16 @@ settings-accessibility-prefs-magnifier-zoom = Lupe auf { $new }× gestellt
 settings-accessibility-prefs-magnifier-view = Darstellung der Lupe geändert
 settings-accessibility-prefs-switch-key-pair = Tasten der Schaltersteuerung geändert
 settings-accessibility-prefs-switch-scan-ms = Abtastung der Schaltersteuerung geändert
-settings-accessibility-prefs-screen-reader-rate = Sprechgeschwindigkeit des Bildschirmlesers geändert
-settings-accessibility-prefs-screen-reader-voice = Stimme des Bildschirmlesers geändert
 settings-input-prefs-touchpad-natural-scroll = Scrollrichtung des Touchpads geändert
 settings-input-prefs-mouse-natural-scroll = Scrollrichtung der Maus geändert
 settings-input-prefs-pointer-speed = Zeigergeschwindigkeit geändert
 settings-input-prefs-touchpad-pointer-speed = Touchpad-Geschwindigkeit geändert
 settings-input-prefs-mouse-pointer-speed = Mausgeschwindigkeit geändert
 settings-input-prefs-key-repeat = Tastenwiederholung geändert
-settings-input-prefs-keyboard-layout = Tastaturbelegung auf { $new } umgeschaltet
 settings-input-prefs-accel-profile = Zeigerbeschleunigung geändert
 settings-input-prefs-touchpad-click-method = Klickverhalten des Touchpads geändert
 settings-input-prefs-touchpad-scroll-method = Scrollverhalten des Touchpads geändert
 settings-input-prefs-scroll-speed = Scrollgeschwindigkeit geändert
-settings-input-prefs-compose-key = Compose-Taste geändert
-settings-input-prefs-caps-lock = Funktion der Feststelltaste geändert
-settings-input-prefs-keyboard-layouts = Tastaturbelegungen geändert
-settings-input-prefs-keyboard-model = Tastaturmodell geändert
-settings-input-prefs-keyboard-assignments = Zuordnung der Tastaturbelegungen geändert
-settings-input-prefs-tablets = Grafiktablett geändert
 settings-text-assistance-prefs-spelling-language = Sprache der Rechtschreibprüfung geändert
 settings-power-prefs-suspend-minutes = Geändert, wann der Rechner in den Ruhezustand geht
 settings-power-prefs-saver-suspend-minutes = Ruhezustand im Energiesparmodus geändert
@@ -2375,14 +2350,11 @@ settings-power-prefs-power-key-action = Verhalten der Ein-/Aus-Taste geändert
 settings-power-prefs-low-battery-percent = Warnung bei schwachem Akku auf { $new } % gestellt
 settings-power-prefs-critical-battery-percent = Kritischen Akkustand auf { $new } % gestellt
 settings-power-prefs-critical-action = Verhalten bei kritischem Akkustand geändert
-settings-notification-prefs-per-app = Mitteilungen einer App geändert
 settings-focus-schedule-start-minute = Beginn der Fokuszeit geändert
 settings-focus-schedule-end-minute = Ende der Fokuszeit geändert
 settings-focus-schedule-weekdays = Fokustage geändert
 settings-system-sound-prefs-volume = Lautstärke der Systemtöne geändert
 settings-system-sound-prefs-theme = Klangschema geändert
-settings-audio-prefs-output-device = Standard-Lautsprecher geändert
-settings-audio-prefs-input-device = Standard-Mikrofon geändert
 settings-audio-prefs-balance = Balance zwischen links und rechts geändert
 settings-display-prefs-night-light-temperature = Wärme des Nachtlichts geändert
 settings-display-prefs-scale = Bildschirmskalierung geändert
@@ -2392,11 +2364,5 @@ settings-locale-time-format = Zeitformat geändert
 settings-locale-measurement = Maßsystem geändert
 settings-locale-number-style = Zahlenformat geändert
 settings-locale-first-day-of-week = Ersten Wochentag geändert
-settings-provider-config-profiles = Modellanbieter geändert
-settings-provider-config-default-profile = Standard-Modellanbieter geändert
-settings-default-apps-handlers = Eine Standard-App geändert
-settings-shared-display-prefs-arrangement = Bildschirmanordnung geändert
-settings-osk-source-settings-layout = Belegung der Bildschirmtastatur geändert
-settings-osk-source-settings-layouts = Belegungen der Bildschirmtastatur geändert
 settings-choose-theme = Design { $theme } gewählt
 settings-set-key-repeat = Tastenwiederholung geändert

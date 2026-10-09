@@ -2143,10 +2143,6 @@ settings-accessibility-prefs-large-cursor = { $new ->
     [true] Turned on the large cursor
    *[false] Turned off the large cursor
 }
-settings-accessibility-prefs-screen-reader = { $new ->
-    [true] Turned on the screen reader
-   *[false] Turned off the screen reader
-}
 settings-accessibility-prefs-sticky-keys = { $new ->
     [true] Turned on sticky keys
    *[false] Turned off sticky keys
@@ -2299,18 +2295,6 @@ settings-system-sound-events-error = { $new ->
     [true] Turned on the error sound
    *[false] Turned off the error sound
 }
-settings-audio-prefs-mono-output = { $new ->
-    [true] Turned on mono audio
-   *[false] Turned off mono audio
-}
-settings-audio-prefs-echo-cancellation = { $new ->
-    [true] Turned on echo cancellation
-   *[false] Turned off echo cancellation
-}
-settings-display-prefs-auto-brightness = { $new ->
-    [true] Turned on automatic brightness
-   *[false] Turned off automatic brightness
-}
 settings-display-prefs-night-light = { $new ->
     [true] Turned on night light
    *[false] Turned off night light
@@ -2344,25 +2328,16 @@ settings-accessibility-prefs-magnifier-zoom = Set the magnifier to { $new }×
 settings-accessibility-prefs-magnifier-view = Changed how the magnifier shows the screen
 settings-accessibility-prefs-switch-key-pair = Changed the switch control keys
 settings-accessibility-prefs-switch-scan-ms = Changed the switch control scan
-settings-accessibility-prefs-screen-reader-rate = Changed how fast the screen reader speaks
-settings-accessibility-prefs-screen-reader-voice = Changed the screen reader voice
 settings-input-prefs-touchpad-natural-scroll = Changed the touchpad scroll direction
 settings-input-prefs-mouse-natural-scroll = Changed the mouse scroll direction
 settings-input-prefs-pointer-speed = Changed the pointer speed
 settings-input-prefs-touchpad-pointer-speed = Changed the touchpad speed
 settings-input-prefs-mouse-pointer-speed = Changed the mouse speed
 settings-input-prefs-key-repeat = Changed the key repeat
-settings-input-prefs-keyboard-layout = Switched the keyboard layout to { $new }
 settings-input-prefs-accel-profile = Changed the pointer acceleration
 settings-input-prefs-touchpad-click-method = Changed how the touchpad clicks
 settings-input-prefs-touchpad-scroll-method = Changed how the touchpad scrolls
 settings-input-prefs-scroll-speed = Changed the scroll speed
-settings-input-prefs-compose-key = Changed the compose key
-settings-input-prefs-caps-lock = Changed what Caps Lock does
-settings-input-prefs-keyboard-layouts = Changed the keyboard layouts
-settings-input-prefs-keyboard-model = Changed the keyboard model
-settings-input-prefs-keyboard-assignments = Changed which keyboard uses which layouts
-settings-input-prefs-tablets = Changed a graphics tablet
 settings-text-assistance-prefs-spelling-language = Changed the spelling language
 settings-power-prefs-suspend-minutes = Changed when the computer suspends
 settings-power-prefs-saver-suspend-minutes = Changed when the computer suspends in power saver
@@ -2375,14 +2350,11 @@ settings-power-prefs-power-key-action = Changed what the power key does
 settings-power-prefs-low-battery-percent = Set the low battery warning to { $new } %
 settings-power-prefs-critical-battery-percent = Set the critical battery level to { $new } %
 settings-power-prefs-critical-action = Changed what happens at critical battery
-settings-notification-prefs-per-app = Changed how an app notifies
 settings-focus-schedule-start-minute = Changed when focus begins
 settings-focus-schedule-end-minute = Changed when focus ends
 settings-focus-schedule-weekdays = Changed the focus days
 settings-system-sound-prefs-volume = Changed the system sound volume
 settings-system-sound-prefs-theme = Changed the sound theme
-settings-audio-prefs-output-device = Changed the default speaker
-settings-audio-prefs-input-device = Changed the default microphone
 settings-audio-prefs-balance = Changed the left and right balance
 settings-display-prefs-night-light-temperature = Changed how warm night light is
 settings-display-prefs-scale = Changed the display scale
@@ -2392,11 +2364,5 @@ settings-locale-time-format = Changed the time format
 settings-locale-measurement = Changed the measurement system
 settings-locale-number-style = Changed the number format
 settings-locale-first-day-of-week = Changed the first day of the week
-settings-provider-config-profiles = Changed the model providers
-settings-provider-config-default-profile = Changed the default model provider
-settings-default-apps-handlers = Changed a default app
-settings-shared-display-prefs-arrangement = Changed the display arrangement
-settings-osk-source-settings-layout = Changed the on-screen keyboard layout
-settings-osk-source-settings-layouts = Changed the on-screen keyboard layouts
 settings-choose-theme = Chose the theme { $theme }
 settings-set-key-repeat = Changed the key repeat

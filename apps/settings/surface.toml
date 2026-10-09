@@ -186,6 +186,7 @@ type = "u32"
 [[resources.fields]]
 owner = "accessibility-prefs"
 path = "screen_reader"
+readonly = true
 stored = "value"
 title = "Run the AT-SPI screen reader"
 type = "bool"
@@ -305,6 +306,7 @@ type = "u16"
 [[resources.fields]]
 owner = "accessibility-prefs"
 path = "screen_reader_rate"
+readonly = true
 stored = "value"
 title = "Normalised screen-reader speech rate, where 100 is engine default"
 type = "u16"
@@ -312,9 +314,24 @@ type = "u16"
 [[resources.fields]]
 owner = "accessibility-prefs"
 path = "screen_reader_voice"
+readonly = true
 stored = "value"
 title = "Backend-neutral voice/language preset"
 type = "ScreenReaderVoice"
+
+[[resources.fields]]
+owner = "accessibility-prefs"
+path = "dictation_language"
+stored = "value"
+title = "Personal recognition language; selecting it never grants microphone access"
+type = "settings_store::dictation::DictationLanguage"
+
+[[resources.fields]]
+owner = "accessibility-prefs"
+path = "dictation_literal"
+stored = "value"
+title = "Preserve recognised speech without removing explicit self-repairs"
+type = "bool"
 
 [[resources]]
 kind = "settings.input"
@@ -397,6 +414,7 @@ type = "Option<u32>"
 [[resources.fields]]
 owner = "input-prefs"
 path = "keyboard_layout"
+readonly = true
 stored = "value"
 title = 'xkb layout code, e.g. `"us"`, `"de"`'
 type = "String"
@@ -488,6 +506,7 @@ type = "f64"
 [[resources.fields]]
 owner = "input-prefs"
 path = "compose_key"
+readonly = true
 stored = "value"
 title = "XKB compose option (`ralt`, `menu`, …), or none"
 type = "Option<String>"
@@ -495,6 +514,7 @@ type = "Option<String>"
 [[resources.fields]]
 owner = "input-prefs"
 path = "caps_lock"
+readonly = true
 stored = "value"
 title = "What Caps Lock does (`ctrl`, `escape`, `backspace`), or none for"
 type = "Option<String>"
@@ -502,6 +522,7 @@ type = "Option<String>"
 [[resources.fields]]
 owner = "input-prefs"
 path = "keyboard_layouts"
+readonly = true
 stored = "value"
 title = "Ordered XKB layouts. `keyboard_layout` remains the active first item"
 type = "Vec<String>"
@@ -509,6 +530,7 @@ type = "Vec<String>"
 [[resources.fields]]
 owner = "input-prefs"
 path = "keyboard_model"
+readonly = true
 stored = "value"
 title = "Explicit physical model; no hardware detection is implied"
 type = "String"
@@ -516,6 +538,7 @@ type = "String"
 [[resources.fields]]
 owner = "input-prefs"
 path = "keyboard_assignments"
+readonly = true
 stored = "value"
 title = "Keyboard assignments"
 type = """
@@ -557,6 +580,7 @@ type = "String"
 [[resources.fields]]
 owner = "input-prefs"
 path = "tablets"
+readonly = true
 stored = "value"
 title = "Per-tablet mapping, pressure and buttons, keyed by device identity"
 type = """
@@ -817,6 +841,7 @@ type = "bool"
 [[resources.fields]]
 owner = "notification-prefs"
 path = "per_app"
+readonly = true
 stored = "value"
 title = "Rules keyed by the launcher's verified package id. The compositor"
 type = """
@@ -923,6 +948,7 @@ type = "bool"
 [[resources.fields]]
 owner = "audio-prefs"
 path = "output_device"
+readonly = true
 stored = "value"
 title = "Label of the last chosen default sink (output device), if any"
 type = "Option<String>"
@@ -930,6 +956,7 @@ type = "Option<String>"
 [[resources.fields]]
 owner = "audio-prefs"
 path = "input_device"
+readonly = true
 stored = "value"
 title = "Label of the last chosen default source (input device), if any"
 type = "Option<String>"
@@ -944,6 +971,7 @@ type = "f32"
 [[resources.fields]]
 owner = "audio-prefs"
 path = "mono_output"
+readonly = true
 stored = "value"
 title = "Persistent accessibility mono transform. A compositor-session owner"
 type = "bool"
@@ -951,6 +979,7 @@ type = "bool"
 [[resources.fields]]
 owner = "audio-prefs"
 path = "echo_cancellation"
+readonly = true
 stored = "value"
 title = "Give calls an echo-cancelled microphone. The compositor session owns"
 type = "bool"
@@ -964,6 +993,7 @@ version = 1
 [[resources.fields]]
 owner = "display-prefs"
 path = "auto_brightness"
+readonly = true
 stored = "value"
 title = "Auto brightness"
 type = "bool"
@@ -1160,6 +1190,7 @@ version = 1
 [[resources.fields]]
 owner = "agent-providers"
 path = "config"
+readonly = true
 stored = "record"
 title = "Config"
 type = "ProviderConfig"
@@ -1187,6 +1218,7 @@ version = 1
 [[resources.fields]]
 owner = "default-apps"
 path = "handlers"
+readonly = true
 stored = "value"
 title = "The app each kind of file or link opens with, by the kind's id"
 type = "BTreeMap<String, String>"
@@ -1200,6 +1232,7 @@ version = 1
 [[resources.fields]]
 owner = "shared-display-prefs"
 path = "arrangement"
+readonly = true
 stored = "value"
 title = "Arrangement"
 type = "Arrangement"
@@ -1227,6 +1260,7 @@ version = 1
 [[resources.fields]]
 owner = "osk-source-settings"
 path = "layout"
+readonly = true
 stored = "value"
 title = "Layout"
 type = "String"
@@ -1234,6 +1268,7 @@ type = "String"
 [[resources.fields]]
 owner = "osk-source-settings"
 path = "layouts"
+readonly = true
 stored = "value"
 title = "Layouts"
 type = "Vec<String>"

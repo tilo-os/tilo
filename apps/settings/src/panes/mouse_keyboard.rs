@@ -893,15 +893,6 @@ pub enum InputEffect {
     },
     /// Reset this person's local dictionary. Other accounts are unchanged.
     ResetDictionary { revision: u64 },
-    /// Check spelling in one language, or the session's.
-    #[effect(idempotent)]
-    SetSpellingLanguage {
-        #[param(
-            "A language (`de_DE`), or empty for the session's language",
-            choices = SPELLING_LANGUAGES.iter().map(|(id, _)| *id)
-        )]
-        language: String,
-    },
     /// Map a drawing tablet onto one display, or the whole desktop.
     #[effect(idempotent)]
     SetTabletOutput {
@@ -1226,7 +1217,6 @@ fn apply(
         }
         E::InspectInputSources { .. }
         | E::InspectKeyboardMap
-        | E::SetSpellingLanguage { .. }
         | E::AddDictionaryWord { .. }
         | E::EditDictionaryWord { .. }
         | E::RemoveDictionaryWord { .. }
@@ -1320,14 +1310,6 @@ pub(crate) fn answer(
             return ui::personal_dictionary::edit(revision, ui::personal_dictionary::Edit::Reset)
                 .map(|()| Effected::done())
                 .map_err(|error| error.to_string());
-        }
-        InputEffect::SetSpellingLanguage { language } => {
-            if !SPELLING_LANGUAGES.iter().any(|(id, _)| *id == language) {
-                return Err(format!(
-                    "`{language}` is not a spelling language Settings offers"
-                ));
-            }
-            return host.update(|text: &mut TextAssistancePrefs| text.spelling_language = language);
         }
         _ => {}
     }
@@ -2298,7 +2280,19 @@ impl MouseKeyboardPane {
                             "text.spelling_language",
                             &t("input-spell-language"),
                         )
-                        .bound(&self.cx, effect(InputEffect::SET_SPELLING_LANGUAGE)),
+                        .bound_field_with(
+                            &self.cx,
+                            TextAssistancePrefs::paths().spelling_language,
+                            |language: String| {
+                                if SPELLING_LANGUAGES.iter().any(|(id, _)| *id == language) {
+                                    Ok(language)
+                                } else {
+                                    Err(format!(
+                                        "`{language}` is not a spelling language Settings offers"
+                                    ))
+                                }
+                            },
+                        ),
                     ),
                 ),
                 caption(&t("input-spell-caption")),
@@ -3617,30 +3611,14 @@ mod tests {
         assert_eq!(active.caps_lock.as_deref(), Some("ctrl"));
         assert_eq!(input.touchpad_click_method, TouchpadClickMethod::Areas);
         assert!(!app.settings::<TextAssistancePrefs>().get().check_spelling);
-        assert!(set(
-            &mut app,
-            InputEffect::SetSpellingLanguage {
-                language: "de_DE".into()
-            }
-        ));
+        edit_field(&mut app, TEXT_ASSISTANCE, "spelling_language", "de_DE").unwrap();
         assert_eq!(
             app.settings::<TextAssistancePrefs>()
                 .get()
                 .spelling_language,
             "de_DE"
         );
-        assert!(!set(
-            &mut app,
-            InputEffect::SetSpellingLanguage {
-                language: "xx_YY".into()
-            }
-        ));
-        assert!(set(
-            &mut app,
-            InputEffect::SetSpellingLanguage {
-                language: String::new()
-            }
-        ));
+        edit_field(&mut app, TEXT_ASSISTANCE, "spelling_language", "").unwrap();
         assert_eq!(
             app.settings::<TextAssistancePrefs>()
                 .get()
