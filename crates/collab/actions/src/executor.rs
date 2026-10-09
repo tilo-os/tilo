@@ -120,15 +120,11 @@ fn envelope_for(
     let committing = actor
         .clone()
         .map_or_else(|| ActorId::from(id.actor_bytes().to_vec()), ActorId::from);
-    let compensation =
-        inverse_as(doc, action, committing).map(|undo| crate::context::ActionCompensation {
-            undo,
-            redo: encoded.clone(),
-        });
-    // The redo is the action itself, which the envelope carries anyway:
-    // only what undo adds counts against the budget.
+    let compensation = inverse_as(doc, action, committing);
+    // Only what undo adds is bounded hard: the action itself is recorded
+    // when it fits the budget, and travels in the envelope anyway.
     if let Some(compensation) = &compensation
-        && serde_json::to_vec(&compensation.undo)
+        && serde_json::to_vec(compensation)
             .map_err(ActionError::Encode)?
             .len()
             > 128 * 1024
@@ -137,6 +133,8 @@ fn envelope_for(
             "document compensation exceeds the history budget".into(),
         ));
     }
+    let within = recorded_size(&encoded)? <= crate::context::HISTORY_BUDGET;
+    context.action = within.then(|| encoded.clone());
     context.compensation = compensation;
     context.executed_action = Some(id);
     let context = Some(context);
@@ -149,6 +147,17 @@ fn envelope_for(
         actor,
         context,
     })
+}
+
+/// The action's [`inverse_encoded`](Action::inverse_encoded) at `doc`, as
+/// the change written by `actor` records it: what the action mints depends
+/// on its writer.
+pub fn inverse_encoded_by(
+    doc: &mut Doc,
+    action: &dyn Action,
+    actor: &[u8],
+) -> Option<EncodedAction> {
+    inverse_as(doc, action, ActorId::from(actor.to_vec()))
 }
 
 /// The action's [`inverse_encoded`](Action::inverse_encoded) at `doc`, as
@@ -373,10 +382,14 @@ pub enum Verified {
 
 /// The action a change records, encoded as the executor dispatched it.
 fn recorded_action(context: &ActionContext) -> Option<&EncodedAction> {
-    context
-        .compensation
-        .as_ref()
-        .map(|compensation| &compensation.redo)
+    context.action.as_ref()
+}
+
+/// What an entry's action takes, encoded.
+fn recorded_size(action: &EncodedAction) -> Result<usize, ActionError> {
+    Ok(serde_json::to_vec(action)
+        .map_err(ActionError::Encode)?
+        .len())
 }
 
 /// Replay the action the change `hash` records on the document it was
@@ -447,8 +460,7 @@ pub fn verified_compensation(
         .message
         .as_deref()
         .and_then(ActionContext::from_change_message)
-        .and_then(|context| context.compensation)
-        .map(|compensation| compensation.undo);
+        .and_then(|context| context.compensation);
     let Some(inverse) = inverse else {
         return Ok(None);
     };
@@ -465,19 +477,15 @@ fn validate_compensation(
     action: &dyn Action,
     env: &ActionEnvelope,
 ) -> Result<(), ActionError> {
-    let Some(compensation) = env
-        .context
-        .as_ref()
-        .and_then(|context| context.compensation.as_ref())
-    else {
+    let Some(context) = env.context.as_ref() else {
         return Ok(());
     };
-    if compensation.redo != env.action
-        || inverse_as(doc, action, env.actor()).as_ref() != Some(&compensation.undo)
-        || serde_json::to_vec(compensation)
-            .map_err(ActionError::Encode)?
-            .len()
-            > 128 * 1024
+    let Some(recorded) = context.action.as_ref() else {
+        return Ok(());
+    };
+    if recorded != &env.action
+        || inverse_as(doc, action, env.actor()) != context.compensation
+        || recorded_size(recorded)? > crate::context::HISTORY_BUDGET
     {
         return Err(ActionError::Refused(
             "recorded compensation differs from the action's canonical before state".into(),

@@ -57,10 +57,20 @@ pub struct ActionContext {
     /// this field from their retained admission before applying an action.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source_invocation: Option<InvocationId>,
-    /// Replayable document compensation computed by the canonical action
-    /// executor. This describes a change; it carries no caller authority.
+    /// The action this change ran, encoded as the executor dispatched it:
+    /// what a device that receives the change replays to verify it, and
+    /// what redo runs again. The executor records it on every change it
+    /// commits whose action fits [`HISTORY_BUDGET`]; a larger one (content
+    /// carried inline instead of as a blob) commits without it. It
+    /// describes the change; it carries no caller authority.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub compensation: Option<ActionCompensation>,
+    pub action: Option<crate::EncodedAction>,
+    /// The inverse of [`action`](Self::action) at its before state, as the
+    /// canonical executor computed it, for an action whose undo is an action
+    /// (it queued an outside consequence). Absent for one undone by
+    /// reverting the change. Carries no caller authority.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub compensation: Option<crate::EncodedAction>,
     /// The gesture this change belongs to: an id every change of one
     /// actor's gesture shares (the keystrokes of a word, the values one drag
     /// of a slider passes through), which undo takes back as one step.
@@ -80,11 +90,8 @@ pub struct ActionContext {
     pub change: ChangeKind,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ActionCompensation {
-    pub undo: crate::EncodedAction,
-    pub redo: crate::EncodedAction,
-}
+/// The most an entry's [`action`](ActionContext::action) may take, encoded.
+pub const HISTORY_BUDGET: usize = 1024 * 1024;
 
 /// What a change is to the people sharing a document. Every kind is durable,
 /// shared and kept in the document's own history; they differ in whether a

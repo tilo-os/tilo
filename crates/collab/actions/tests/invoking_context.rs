@@ -65,10 +65,8 @@ fn caller_context_cannot_install_executable_history_compensation() {
     let mut doc = AutoCommit::new();
     let encoded = EncodedAction::encode(TYPE, &StampGroup).unwrap();
     let context = ActionContext {
-        compensation: Some(tilo_actions::context::ActionCompensation {
-            undo: encoded.clone(),
-            redo: encoded.clone(),
-        }),
+        action: Some(encoded.clone()),
+        compensation: Some(encoded.clone()),
         ..ActionContext::for_resource("r", "k", "l")
     };
     let mut transport = LocalTransport::new();
@@ -128,18 +126,13 @@ fn canonical_executor_persists_the_actual_before_state_compensation_on_replay() 
         ActionContext::for_resource("r", "k", "l"),
     )
     .unwrap();
-    let compensation = transport.replicated[0]
-        .context
-        .as_ref()
-        .unwrap()
-        .compensation
-        .as_ref()
-        .unwrap();
+    let recorded = transport.replicated[0].context.as_ref().unwrap();
+    let compensation = recorded.compensation.as_ref().unwrap();
     assert_eq!(
-        compensation.undo,
-        EncodedAction::encode("test.counter", &SetCounter(7)).unwrap()
+        compensation,
+        &EncodedAction::encode("test.counter", &SetCounter(7)).unwrap()
     );
-    assert_eq!(compensation.redo, encoded);
+    assert_eq!(recorded.action.as_ref(), Some(&encoded));
     let mut registry = ActionRegistry::new();
     registry.register::<SetCounter>("test.counter");
     replay(&mut peer, &transport.replicated[0], &registry).unwrap();
@@ -226,10 +219,7 @@ fn replay_refuses_a_forged_inverse_before_mutating_the_replica() {
         .context
         .as_mut()
         .unwrap()
-        .compensation
-        .as_mut()
-        .unwrap()
-        .undo = EncodedAction::encode("test.counter", &SetCounter(99)).unwrap();
+        .compensation = Some(EncodedAction::encode("test.counter", &SetCounter(99)).unwrap());
     let mut registry = ActionRegistry::new();
     registry.register::<SetCounter>("test.counter");
     assert!(replay(&mut peer, &transport.replicated[0], &registry).is_err());
@@ -247,10 +237,8 @@ fn raw_change_metadata_cannot_install_an_unrelated_compensation() {
     doc.commit();
     let encoded = EncodedAction::encode("test.counter", &SetCounter(11)).unwrap();
     let context = ActionContext {
-        compensation: Some(tilo_actions::context::ActionCompensation {
-            undo: EncodedAction::encode("test.counter", &SetCounter(7)).unwrap(),
-            redo: encoded,
-        }),
+        action: Some(encoded),
+        compensation: Some(EncodedAction::encode("test.counter", &SetCounter(7)).unwrap()),
         ..ActionContext::for_resource("r", "k", "l")
     };
     // A well-shaped inverse, but the actual mutation differs from its claim.

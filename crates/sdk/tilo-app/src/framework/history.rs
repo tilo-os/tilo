@@ -204,10 +204,10 @@ impl<R: tilo_resource::Resource> tilo_actions::Action for ResourceHistoryEdit<R>
                 let recorded = version
                     .context
                     .as_ref()
-                    .and_then(|context| context.compensation.as_ref())
-                    .ok_or("verified redo compensation absent")?;
+                    .and_then(|context| context.action.as_ref())
+                    .ok_or("verified redo action absent")?;
                 let action = registry
-                    .decode(&recorded.redo)
+                    .decode(recorded)
                     .map_err(|error| error.to_string())?;
                 let restoration = action
                     .redo_encoded(&original)
@@ -263,8 +263,8 @@ impl<R: tilo_resource::Resource> tilo_actions::Action for ResourceHistoryEdit<R>
             let requires_settlement = version
                 .context
                 .as_ref()
-                .and_then(|context| context.compensation.as_ref())
-                .map(|compensation| registry.decode(&compensation.redo))
+                .and_then(|context| context.action.as_ref())
+                .map(|original| registry.decode(original))
                 .transpose()
                 .map_err(|error| error.to_string())?
                 .is_some_and(|original| original.inverse_requires_settlement());

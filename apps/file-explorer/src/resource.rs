@@ -243,14 +243,16 @@ fn clipboard_history_step(
                 .as_deref()
                 .and_then(ui::tilo_actions::ActionContext::from_change_message)
         });
-        let Some(compensation) = context.and_then(|context| context.compensation) else {
+        let Some(recorded) = context
+            .filter(|context| context.compensation.is_some())
+            .and_then(|context| context.action)
+        else {
             continue;
         };
-        if compensation.redo.type_id != FileExplorer::ACTION_TYPE {
+        if recorded.type_id != FileExplorer::ACTION_TYPE {
             continue;
         }
-        let Ok(action) = serde_json::from_slice::<FilesDocAction>(&compensation.redo.payload)
-        else {
+        let Ok(action) = serde_json::from_slice::<FilesDocAction>(&recorded.payload) else {
             continue;
         };
         if matches!(action, FilesDocAction::RecordClipboardTransfer { receipt, .. } if receipt.operation == operation)

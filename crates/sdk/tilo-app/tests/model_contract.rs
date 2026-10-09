@@ -224,6 +224,34 @@ fn undo_of_an_outside_consequence_applies_the_inverse_action() {
 }
 
 #[test]
+fn undoing_a_redo_of_an_outside_consequence_applies_the_inverse_again() {
+    let mut app = TestApp::<JobApp>::new().unwrap();
+    app.invoke(create("evt")).unwrap();
+    assert!(app.undo());
+    assert!(app.redo());
+    assert_eq!(app.state(), ["evt"]);
+
+    assert!(app.undo(), "the redo is the step Ctrl+Z takes back");
+    assert!(app.state().is_empty());
+    assert_eq!(
+        app.read_document(|doc| list(doc, DEL_OUTBOX)),
+        ["evt".to_string(), "evt".to_string()],
+        "undoing the redo queues the outside delete again"
+    );
+    let summaries = version_summaries(&app);
+    assert!(
+        !summaries
+            .iter()
+            .any(|summary| summary.contains("Redid") && summary.starts_with("Undid")),
+        "the undo names the step, not the redo: {summaries:?}"
+    );
+
+    assert!(app.redo());
+    assert_eq!(app.state(), ["evt"]);
+    assert_eq!(app.read_document(|doc| list(doc, OUTBOX)).len(), 3);
+}
+
+#[test]
 fn publish_is_the_only_door_for_views_and_document_actions() {
     let published = tilo_resource::publish::<Job>("job", "Job", &Vec::new());
     let ids: Vec<_> = published

@@ -70,10 +70,7 @@ fn a_received_change_its_action_produces_is_reproduced() {
 fn a_change_that_writes_other_than_its_action_is_caught() {
     let mut doc = base();
     let context = ActionContext {
-        compensation: Some(tilo_actions::context::ActionCompensation {
-            undo: EncodedAction::encode("test.counter", &SetCounter(7)).unwrap(),
-            redo: EncodedAction::encode("test.counter", &SetCounter(11)).unwrap(),
-        }),
+        action: Some(EncodedAction::encode("test.counter", &SetCounter(11)).unwrap()),
         ..ActionContext::for_resource("r", "k", "l")
     };
     // Claims to set the counter to 11, writes 12 and another key.

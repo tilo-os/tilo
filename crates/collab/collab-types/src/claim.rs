@@ -93,7 +93,7 @@ impl ClaimedAction {
         let item = context.item.as_ref().map(|item| item.id.clone());
         match &context.what {
             Some(what) => Self::of_did(what, &kind, item),
-            None if !context.change.is_step() && context.compensation.is_none() => {
+            None if !context.change.is_step() && context.action.is_none() => {
                 Ok(Self::Framework(FrameworkChange::Genesis))
             }
             None => Err(ClaimError::Unnamed),

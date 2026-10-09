@@ -167,8 +167,7 @@ fn undoing_a_queueing_verb_queues_its_compensation_for_the_entry_it_minted() {
         .as_ref()
         .and_then(|context| context.compensation.clone())
         .expect("a verb with a declared undo records its compensation");
-    let undo: <Desk as Resource>::Action =
-        serde_json::from_slice(&compensation.undo.payload).unwrap();
+    let undo: <Desk as Resource>::Action = serde_json::from_slice(&compensation.payload).unwrap();
     let revert = Desk::REVERT.with(id.clone()).build(0).unwrap();
     assert_eq!(
         serde_json::to_value(&undo.operation).unwrap(),
@@ -207,8 +206,7 @@ fn undoing_before_the_owner_ran_it_cancels_the_entry() {
     let mut desk = Replica::<Desk>::new();
     let (id, envelope) = trashed(&mut desk, "a.txt");
     let compensation = envelope.context.unwrap().compensation.unwrap();
-    let undo: <Desk as Resource>::Action =
-        serde_json::from_slice(&compensation.undo.payload).unwrap();
+    let undo: <Desk as Resource>::Action = serde_json::from_slice(&compensation.payload).unwrap();
     desk.apply_action(&undo).unwrap();
     assert!(desk.state().unwrap().ops.get(&id).is_none());
 }
@@ -368,7 +366,7 @@ fn every_change_of_a_record_that_queues_reaches_outside_and_undoes_through_apply
     assert_eq!(uploads(&planner), ["Standup", "Daily standup"]);
 
     // Undo is the edit back, through apply, so the server gets it too.
-    let undo = renamed.context.unwrap().compensation.unwrap().undo;
+    let undo = renamed.context.unwrap().compensation.unwrap();
     let undo: <Planner as Resource>::Action = serde_json::from_slice(&undo.payload).unwrap();
     planner.apply_action(&undo).unwrap();
     let state = planner.state().unwrap();
