@@ -1,4 +1,4 @@
-"""Test production Cargo routing using stubs, without executing Rust or rcargo."""
+"""Test production Cargo routing using stubs, without executing Rust or a build service."""
 import os
 from pathlib import Path
 import subprocess
@@ -23,9 +23,8 @@ class AgentRemoteRouting(unittest.TestCase):
             'printf "LOCAL %s\\n" "$*"\n',
         )
         self.write_stub(
-            self.bin / "rcargo",
-            'printf "REMOTE %s fallback=%s shim=%s\\n" "$*" '
-            '"${RCARGO_FALLBACK-unset}" "${RCARGO_VIA_SHIM-unset}"\n'
+            self.bin / "remote-cargo",
+            'printf "REMOTE %s active=%s\\n" "$*" "${QCARGO_REMOTE_ACTIVE-unset}"\n'
             'exit "${FAKE_REMOTE_EXIT:-0}"\n',
         )
         self.write_stub(
@@ -34,12 +33,13 @@ class AgentRemoteRouting(unittest.TestCase):
         )
         self.env = dict(os.environ)
         for key in tuple(self.env):
-            if key.startswith(("CODEX_", "CLAUDE", "RCARGO", "QCARGO", "SCCACHE")):
+            if key.startswith(("CODEX_", "CLAUDE", "QCARGO", "SCCACHE")):
                 del self.env[key]
         for key in ("CONTAINER_ID", "RUSTC_WRAPPER", "RUSTC_WORKSPACE_WRAPPER"):
             self.env.pop(key, None)
         self.env.update(CARGO_HOME=str(self.cargo_home),
-                        PATH=f"{self.bin}:/usr/bin:/bin", RUSTC_WRAPPER="")
+                        PATH=f"{self.bin}:/usr/bin:/bin", RUSTC_WRAPPER="",
+                        QCARGO_REMOTE_CARGO=str(self.bin / "remote-cargo"))
 
     def write_stub(self, path, body):
         path.write_text("#!/bin/bash\n" + body)
@@ -56,16 +56,15 @@ class AgentRemoteRouting(unittest.TestCase):
     def assert_remote(self, result, args, code=0):
         self.assertEqual(result.returncode, code, result.stderr)
         self.assertEqual(result.stdout,
-                         f"REMOTE --no-fallback {args} fallback=0 shim=unset\n")
+                         f"REMOTE {args} active=1\n")
         self.assertNotIn("LOCAL", result.stdout)
         self.assertNotIn("CONTAINER", result.stdout)
 
     def test_agent_bypasses_cannot_start_local_compilation(self):
         for identity in ("CODEX_THREAD_ID", "CODEX_SESSION_ID", "CLAUDECODE"):
-            for key in ("RCARGO", "QCARGO_BYPASS", "RCARGO_FALLBACK",
-                        "CONTAINER_ID", "RCARGO_VIA_SHIM"):
+            for key in ("QCARGO_REMOTE_ONLY", "QCARGO_BYPASS", "CONTAINER_ID"):
                 with self.subTest(identity=identity, bypass=key):
-                    env = {identity: "fixture", key: "0" if key == "RCARGO" else "1"}
+                    env = {identity: "fixture", key: "0" if key == "QCARGO_REMOTE_ONLY" else "1"}
                     self.assert_remote(self.invoke(["check", "--locked"], env),
                                        "check --locked")
 
@@ -79,7 +78,7 @@ class AgentRemoteRouting(unittest.TestCase):
 
     def test_returned_local_compilation_is_rejected(self):
         result = self.invoke(["check"],
-                             {"CODEX_THREAD_ID": "fixture", "RCARGO_ACTIVE": "1"})
+                             {"CODEX_THREAD_ID": "fixture", "QCARGO_REMOTE_ACTIVE": "1"})
         self.assertEqual(result.returncode, 2)
         self.assertIn("refusing a local compilation", result.stderr)
         self.assertEqual(result.stdout, "")
@@ -91,40 +90,66 @@ class AgentRemoteRouting(unittest.TestCase):
         self.assertEqual(result.stdout, "")
 
     def test_missing_client_is_rejected(self):
-        (self.bin / "rcargo").unlink()
+        (self.bin / "remote-cargo").unlink()
         result = self.invoke(["check"], {"CODEX_THREAD_ID": "fixture"})
         self.assertEqual(result.returncode, 127)
-        self.assertIn("rcargo is unavailable", result.stderr)
+        self.assertIn("QCARGO_REMOTE_CARGO must name", result.stderr)
         self.assertEqual(result.stdout, "")
 
     def test_metadata_recursion_does_not_compile(self):
         result = self.invoke(["+stable", "metadata", "--no-deps"],
-                             {"CODEX_THREAD_ID": "fixture", "RCARGO_ACTIVE": "1",
+                             {"CODEX_THREAD_ID": "fixture", "QCARGO_REMOTE_ACTIVE": "1",
                               "QCARGO_BYPASS": "1"})
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout, "LOCAL +stable metadata --no-deps\n")
 
     def test_builder_recursion_without_agent_identity_remains_local(self):
-        result = self.invoke(["check"], {"RCARGO_ACTIVE": "1", "CONTAINER_ID": "builder"})
+        result = self.invoke(["check"], {"QCARGO_REMOTE_ACTIVE": "1", "CONTAINER_ID": "builder"})
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout, "LOCAL check\n")
 
     def test_human_local_controls_remain_available(self):
-        yoga = self.root / "yoga-user"
-        yoga.mkdir()
-        for env in ({"QCARGO_BYPASS": "1"}, {"RCARGO": "0"}):
+        project = self.root / "human-project"
+        project.mkdir()
+        for env in ({"QCARGO_BYPASS": "1"}, {}):
             with self.subTest(environment=env):
-                result = self.invoke(["check"], env, yoga)
+                result = self.invoke(["check"], env, project)
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertEqual(result.stdout, "LOCAL check\n")
 
-    def test_unattended_retry_worktrees_route_without_agent_identity(self):
-        for name in ("codex-onboarding-semantic-first-use",
-                     "codex-prepared-userspace-delivery"):
-            with self.subTest(worktree=name):
-                cwd = self.root / ".claude/worktrees" / name / "nested"
-                cwd.mkdir(parents=True)
-                self.assert_remote(self.invoke(["check"], {"RCARGO": "0"}, cwd), "check")
+    def test_unattended_policy_does_not_depend_on_worktree_names(self):
+        cwd = self.root / "arbitrary-worktree" / "nested"
+        cwd.mkdir(parents=True)
+        self.assert_remote(self.invoke(["check"], {"QCARGO_REMOTE_ONLY": "1"}, cwd),
+                           "check")
+
+    def test_unconfigured_agent_is_rejected(self):
+        result = self.invoke(["check"], {"CODEX_THREAD_ID": "fixture",
+                                         "QCARGO_REMOTE_CARGO": ""})
+        self.assertEqual(result.returncode, 127)
+        self.assertEqual(result.stdout, "")
+        self.assertIn("QCARGO_REMOTE_CARGO must name", result.stderr)
+
+    def test_executor_path_with_spaces_is_one_executable(self):
+        executor = self.bin / "remote executor"
+        (self.bin / "remote-cargo").rename(executor)
+        self.assert_remote(self.invoke(["check"], {"CODEX_THREAD_ID": "fixture",
+                                                  "QCARGO_REMOTE_CARGO": str(executor)}),
+                           "check")
+
+    def test_executor_command_strings_are_not_evaluated(self):
+        result = self.invoke(["check"], {"CODEX_THREAD_ID": "fixture",
+                                         "QCARGO_REMOTE_CARGO": "remote-cargo --option"})
+        self.assertEqual(result.returncode, 127)
+        self.assertEqual(result.stdout, "")
+        self.assertIn("QCARGO_REMOTE_CARGO must name", result.stderr)
+
+    def test_executor_reentry_is_rejected_before_local_compilation(self):
+        self.write_stub(self.bin / "remote-cargo", f'exec /bin/bash "{SHIM}" "$@"\n')
+        result = self.invoke(["check"], {"CODEX_THREAD_ID": "fixture"})
+        self.assertEqual(result.returncode, 2)
+        self.assertEqual(result.stdout, "")
+        self.assertIn("refusing a local compilation", result.stderr)
 
     def test_compile_arguments_after_separator_are_not_shim_options(self):
         result = self.invoke(["test", "--", "--fallback"], {"CODEX_THREAD_ID": "fixture"})
