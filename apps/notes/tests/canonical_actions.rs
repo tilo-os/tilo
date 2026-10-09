@@ -441,6 +441,8 @@ fn bound_edits_are_one_owned_history_entry_each() {
             })
             .unwrap();
         context_menu_select(&mut a, copied_root, "Delete");
+        // Deleting a page asks first; the person confirms.
+        assert!(a.confirm_asked().is_some(), "the host asks first");
         assert_eq!(revision(&f, &checkout), 4);
         f.records
             .read(&checkout.id, |doc| {

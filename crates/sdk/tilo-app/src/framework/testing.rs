@@ -1122,6 +1122,28 @@ impl<A: ResourceApp> HeadlessApp<A> {
         self.call_at(None, resource, id, arguments, false)
     }
 
+    /// What the host is asking the person to confirm right now — a
+    /// destructive verb or a removal that a button, a menu, the palette or
+    /// an immediate application submitted — and the text that confirms it.
+    /// `None` while nothing is asked.
+    pub fn asking(&mut self) -> Option<(tilo_actions::ActionAddress, String)> {
+        self.settle();
+        self.harness().asking()
+    }
+
+    /// Confirm what the host asks, through its real dialog, as the person
+    /// does (type the confirming text, press Enter), and settle: the
+    /// action applies. Answers the action confirmed; `None`, changing
+    /// nothing, when nothing was asked. A test of a delete from a menu
+    /// clicks the menu item, then calls this.
+    pub fn confirm_asked(&mut self) -> Option<tilo_actions::ActionAddress> {
+        // What the last event submitted reaches the host first.
+        self.settle();
+        let confirmed = self.harness().confirm_asked();
+        self.settle();
+        confirmed
+    }
+
     /// [`Self::call`] after the caller explicitly confirmed this invocation.
     /// Argument validation and current permissions are still enforced.
     ///
@@ -1505,7 +1527,8 @@ pub fn resolve<R: Resource>(
         };
         let mut refused = None;
         for action in &actions {
-            if let Err(error) = dispatcher.apply_now(&mut ui_core::widget::Edits::lend(doc), action)
+            if let Err(error) =
+                dispatcher.apply_confirmed(&mut ui_core::widget::Edits::lend(doc), action)
             {
                 refused = Some(error.to_string());
                 break;

@@ -2690,6 +2690,29 @@ the resource does not publish, and a public surface that differs from the
 committed `surface.toml` (write it with `tilo-app surface`; a stored field
 read differently needs a new `#[resource(version = N)]`) all fail it.
 
+### Confirming destructive actions in tests
+
+A destructive verb or a removal never applies before the person agrees, from
+whatever path it comes: a button, a menu, the palette, an agent, or an editor
+applying its own edit now (`Dispatcher::submit_now` / `apply_now` hand it to
+the host, which asks). Do not give the app a dialog of its own for this; the
+host asks. A test confirms what the host asks with one call, through the real
+dialog:
+
+```rust
+app.harness().click_named("delete-sheet")?;
+assert_eq!(app.state().sheets.len(), 2, "nothing is removed before confirming");
+app.confirm_asked().expect("the host asks first");
+assert_eq!(app.state().sheets.len(), 1);
+```
+
+`TestApp::asking()` names what is being asked (and the text that confirms
+it), `TestApp::confirm_asked()` confirms it and settles. A test on the live
+`ui::App` has the same `asking()` / `confirm_asked()`. A unit test of a
+surface with a detached dispatcher (no host) takes what it asked with
+`Dispatcher::take_asked()` and applies those actions itself, as the host
+would once confirmed.
+
 The toolkit's debug and capture switches are `TILO_UI_*` environment
 variables (`TILO_UI_DEBUG`, `TILO_UI_PRESENT`, `TILO_UI_VELLO_CPU`, …); the
 rendering ones are listed in [`performance-flags.md`](performance-flags.md).

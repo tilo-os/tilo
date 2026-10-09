@@ -21,7 +21,9 @@ contains this project's longer workflow. Use `tilo-app --help` or a command's
    tests or explicit demos. Tilo OS owns window chrome.
 4. Extend `tests/app.rs`. `Replica` tests actions without a window; `TestApp`
    drives the production resource and view. Check the visible result, undo,
-   reopening, and refusal of edits by a viewer where relevant.
+   reopening, and refusal of edits by a viewer where relevant. A destructive
+   action asks the host first: confirm it with `app.confirm_asked()` (never
+   a dialog of the app's own).
 
 Storage, history, per-author undo/redo, permissions and collaboration belong
 in the resource runtime. Keep edits on that path so they can be attributed,

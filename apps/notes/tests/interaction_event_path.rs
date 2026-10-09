@@ -1206,6 +1206,8 @@ fn page_tree_keyboard_and_pointer_commands_are_gated_on_tree_focus() {
         let handled = dispatch(&mut app, no_mods, &named_key(NamedKey::Delete));
 
         assert!(handled, "Delete must be consumed by the focused tree");
+        // Deleting a page asks first; the person confirms.
+        assert!(app.confirm_asked().is_some(), "the host asks first");
         let pages = n(&mut app).workspace_pages_for_test();
         assert_eq!(pages.len(), 1, "Delete must remove the page");
         assert_eq!(pages[0].id, welcome);

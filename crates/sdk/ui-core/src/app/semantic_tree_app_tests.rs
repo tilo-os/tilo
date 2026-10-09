@@ -968,6 +968,14 @@ fn action_bound_controls_use_the_fresh_door_and_never_auto_confirm() {
         assert_eq!(counter(&app), 0);
         assert!(app.state.peek_last_undo().is_none());
         assert!(app.action_palette().is_some(), "confirmation UI is open");
+        // The person confirms in the host's own dialog: the action applies.
+        assert_eq!(
+            app.asking().map(|(_, text)| text).as_deref(),
+            Some("CONFIRM")
+        );
+        assert!(app.confirm_asked().is_some());
+        assert!(app.asking().is_none(), "answered once");
+        assert_eq!(counter(&app), 1, "the confirmed destructive action applied");
     }
 
     // Case `confirmed_control_preserves_captured_arguments_through_palette_dispatch`.

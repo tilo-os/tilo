@@ -238,8 +238,10 @@ fn asks_before_applying_now(now: Now) {
         2,
         "{now:?}: nothing is removed before the person confirms"
     );
-    app.harness().type_text("CONFIRM");
-    app.harness().key("Enter");
+    let asked = app.asking().expect("the host asks").0;
+    assert_eq!(asked.resource, "test.notes", "{now:?}");
+    assert!(app.confirm_asked().is_some());
+    assert_eq!(app.asking(), None, "{now:?}: answered once");
     assert_eq!(
         app.state().notes.len(),
         if now == Now::Group { 2 } else { 1 },

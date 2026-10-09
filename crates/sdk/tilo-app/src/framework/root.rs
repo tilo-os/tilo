@@ -1718,21 +1718,28 @@ impl<R: Resource> ui_core::resources::PublishesResources for ResourceRoot<R> {
             if super::history::is_edit(&address.action) {
                 return super::history::result(&address.action, doc, changes);
             }
-            // What the action minted rides beside its own answer.
+            // What the action minted rides beside its own answer, the
+            // resource's or else its surface's. An answer that is not an
+            // object (an editor's summary naming the blocks it made) already
+            // says what it made and is kept as it is.
             let minted = tilo_resource::take_minted();
-            let answer = R::answer(doc, &address.action, changes);
-            if !minted.is_empty() {
-                let mut answer = match answer {
-                    Some(serde_json::Value::Object(fields)) => fields,
-                    Some(other) => serde_json::Map::from_iter([("answer".to_owned(), other)]),
-                    None => serde_json::Map::new(),
-                };
-                answer.insert("minted".into(), minted.into());
-                return Some(serde_json::Value::Object(answer));
-            }
-            if let Some(answer) = answer {
-                return Some(answer);
-            }
+            let answer = R::answer(doc, &address.action, changes).or_else(|| {
+                ui_core::resources::document_action_result(
+                    self.content.as_ref(),
+                    doc,
+                    address,
+                    changes,
+                )
+            });
+            return match answer {
+                _ if minted.is_empty() => answer,
+                Some(serde_json::Value::Object(mut fields)) => {
+                    fields.insert("minted".into(), minted.into());
+                    Some(serde_json::Value::Object(fields))
+                }
+                Some(other) => Some(other),
+                None => Some(serde_json::json!({ "minted": minted })),
+            };
         }
         ui_core::resources::document_action_result(self.content.as_ref(), doc, address, changes)
     }

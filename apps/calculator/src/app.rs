@@ -3472,6 +3472,8 @@ mod tests {
                 f64::midpoint(delete.y0, delete.y1),
             );
             app.settle();
+            // Removing a formula asks first; the person confirms.
+            assert!(app.confirm_asked().is_some(), "the host asks first");
             let after = app.state().funcs;
             assert_eq!(after.len(), before.len() - 1, "one row removed");
             assert!(

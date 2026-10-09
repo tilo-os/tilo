@@ -904,6 +904,32 @@ impl<R: Resource> Dispatcher<R> {
         action: &R::Action,
         context: ActionContext,
     ) -> Result<(), ActionError> {
+        self.apply_now_as(edits, action, context, false)
+    }
+
+    /// [`Self::apply_now`] of an action the person already confirmed, as
+    /// the host applies it once they agreed: what a test resolving the
+    /// queue as confirmed applies.
+    pub(crate) fn apply_confirmed(
+        &self,
+        edits: &mut Edits<'_>,
+        action: &R::Action,
+    ) -> Result<(), ActionError> {
+        let context = ActionContext::for_resource(
+            self.resource_id.as_ref(),
+            R::KIND,
+            self.resource_label.get(),
+        );
+        self.apply_now_as(edits, action, context, true)
+    }
+
+    fn apply_now_as(
+        &self,
+        edits: &mut Edits<'_>,
+        action: &R::Action,
+        context: ActionContext,
+        confirmed: bool,
+    ) -> Result<(), ActionError> {
         if self.custody.is_some() {
             return Err(ActionError::Refused(
                 "caller-scoped effects submit document changes through queued actions".into(),
@@ -920,7 +946,7 @@ impl<R: Resource> Dispatcher<R> {
         }
         // Applying now never skips the person's consent: an action that
         // needs confirming goes to the door, which asks first.
-        if asks(action) {
+        if asks(action) && !confirmed {
             self.apply(action);
             return Ok(());
         }

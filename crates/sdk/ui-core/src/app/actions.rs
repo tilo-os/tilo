@@ -4276,6 +4276,49 @@ impl App {
         self.actions.action_palette.as_ref()
     }
 
+    /// The action the host's confirmation is asking about, and the text
+    /// that confirms it, while it asks.
+    #[must_use]
+    pub fn asking(&self) -> Option<(tilo_actions::ActionAddress, String)> {
+        self.actions
+            .action_palette
+            .as_ref()
+            .and_then(crate::action_palette::ActionPalette::asking)
+            .map(|(address, expected)| (address.clone(), expected.to_owned()))
+    }
+
+    /// Confirm what the host asks through its own dialog, as the person
+    /// does: the confirming text, then Enter; what it confirmed is applied.
+    /// Answers the action confirmed; `None`, changing nothing, when nothing
+    /// is asked.
+    #[cfg(feature = "native")]
+    pub fn confirm_asked(&mut self) -> Option<tilo_actions::ActionAddress> {
+        use winit::keyboard::{Key, KeyLocation, NamedKey, PhysicalKey};
+        let (address, expected) = self.asking()?;
+        self.actions.action_palette.as_mut()?.set_query(&expected);
+        let event = winit::event::KeyEvent::synthetic(
+            winit::event::RawKeyEvent {
+                physical_key: PhysicalKey::Unidentified(
+                    winit::keyboard::NativeKeyCode::Unidentified,
+                ),
+                state: winit::event::ElementState::Pressed,
+            },
+            Key::Named(NamedKey::Enter),
+            None,
+            KeyLocation::Standard,
+            false,
+            None,
+            Key::Named(NamedKey::Enter),
+        );
+        self.action_palette_handle_key(&winit::event::WindowEvent::KeyboardInput {
+            device_id: winit::event::DeviceId::dummy(),
+            event,
+            is_synthetic: false,
+        });
+        self.dispatch_control_invocations();
+        Some(address)
+    }
+
     #[cfg(feature = "native")]
     fn refresh_action_palette_resources(&mut self) {
         // A palette can stay open while document state or the local actor's

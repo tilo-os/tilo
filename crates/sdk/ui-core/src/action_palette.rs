@@ -382,6 +382,15 @@ impl Default for ActionPalette {
 }
 
 impl ActionPalette {
+    /// The action the palette is asking the person to confirm, and the text
+    /// that confirms it, while it asks.
+    #[must_use]
+    pub fn asking(&self) -> Option<(&tilo_actions::ActionAddress, &str)> {
+        self.confirm
+            .as_ref()
+            .map(|confirm| (&confirm.pending.address, confirm.expected.as_str()))
+    }
+
     /// A closed palette. Load resources / providers, then `open`.
     pub fn new() -> Self {
         Self::with_inputs(TextRenderer::new(), SearchField::new)
