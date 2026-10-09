@@ -458,6 +458,32 @@ changed sessions, missing acknowledgement and unavailable PTYs fail visibly.
 The matched Shell, SDK runtime and Terminal versions are required for this
 owner lifecycle operation; unsupported workers do not report success.
 
+### Workspace membership and invitations
+
+The `actions` provider publishes workspace membership under the canonical ids
+and parameter names of `tilo_action_broker::collaboration_admin`, acting on the
+active workspace:
+
+| Action | Parameters | Output |
+| --- | --- | --- |
+| `member.role.set` | `participant_id`, `role` (`viewer`, `commenter` or `editor`) | none |
+| `member.remove` | `participant_id` | none |
+| `invitation.issue` | `role`, `expires_in_seconds` (1 to 30 days), optional `invitee_name`, optional `recipient` | `{"invite": token}` |
+| `invitation.list` | none | `{"invitations": [{invite_id, name, role, expires_at}]}` |
+| `invitation.resend` | `invite_id` | `{"invite": token}` |
+| `invitation.cancel` | `invite_id` | `{"canceled": true}` |
+
+Each also takes `confirm: true`; the contracts are privileged, sensitive or
+destructive and require `Admin` on the workspace. `participant_id` is the
+member's person id as the roster reports it. Setting a role only changes an
+existing member's role; admitting someone new is an invitation. `recipient` is
+the invitee's 64-hex person key (or a `tilo-identity:` card); with it, only
+that person's devices can redeem the token, which is otherwise a bearer
+credential. The invitation actions need peer sync and complete on a later
+frame, so callers poll the pending invocation. The Members tab in workspace
+settings calls the same functions as `member.role.set` and `member.remove`, so
+a click and an invocation pass the same authority check.
+
 ### Reviewing a Tilo package in Store
 
 Store accepts `.tapp` files through the normal file-open handoff, its shared
