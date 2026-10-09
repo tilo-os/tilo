@@ -600,7 +600,7 @@ impl Widget for KeyboardMap {
         _theme: &Theme,
         nodes: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let node = taffy.leaf_node(Style {
+        let style = Style {
             size: Size {
                 width: Dimension::percent(1.0),
                 height: Dimension::auto(),
@@ -609,9 +609,8 @@ impl Widget for KeyboardMap {
                 self.model_size.width / self.model_size.height.max(1.0),
             )),
             ..Style::default()
-        });
-        nodes.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        };
+        taffy.widget_leaf(style, nodes, self)
     }
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         self.rect = crate::widget::layout_rect(taffy, node, origin);

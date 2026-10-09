@@ -578,15 +578,14 @@ impl Widget for CodeEditor {
         self.inner.capture_layout_text_scale(theme.text_scale);
         // Registers *this* widget (not the inner input) so the host
         // drives CodeEditor's own passes.
-        let node = taffy.leaf_node(Style {
+        let style = Style {
             size: Size {
                 width: Dimension::percent(1.0),
                 height: Dimension::auto(),
             },
             ..Default::default()
-        });
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
 
     fn measure(

@@ -601,7 +601,7 @@ impl Widget for InputHint {
             })
             .sum::<f64>()
             + CAP_GAP * crate::num::f64_of_usize(self.tokens().len().saturating_sub(1));
-        let node = taffy.leaf_node(Style {
+        let style = Style {
             size: Size {
                 width: Dimension::length(crate::num::f32_of_f64(approximate)),
                 height: Dimension::length(crate::num::f32_of_f64(
@@ -611,9 +611,8 @@ impl Widget for InputHint {
             // Fixed target: never the item that gives in an overflowing row.
             flex_shrink: 0.0,
             ..Default::default()
-        });
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
 
     fn measure(
