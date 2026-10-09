@@ -10,6 +10,8 @@
 //! layered.
 
 use serde::{Deserialize, Serialize};
+// `#[derive(Model)]` names the crate as `tilo_resource`.
+use ui::tilo_resource::{self, Model};
 
 use crate::model::{Currency, DateStyle, TimeStyle};
 
@@ -48,12 +50,15 @@ impl Default for Locale {
 }
 
 /// Per-document locale overrides. `None` on a field means "inherit the
-/// global default". Stored in the workbook's CRDT so collaborators share
-/// the document's conventions.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+/// global default". Stored in the workbook so collaborators share the
+/// document's conventions.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Model)]
 pub struct DocSettings {
+    /// Currency
     pub currency: Option<Currency>,
+    /// Date format
     pub date_format: Option<DateStyle>,
+    /// Time format
     pub time_format: Option<TimeStyle>,
 }
 

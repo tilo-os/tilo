@@ -1,70 +1,58 @@
 //! The sample workbook screenshots show: a monthly budget with SUM /
 //! AVERAGE / IF formulas, and a quarterly sales sheet with growth %, written
-//! as the actions a person importing it would take.
+//! as the edits and verbs a person building it would make.
 //!
 //! Every identity is fixed, so a capture stages the same workbook on every
 //! run.
 
-use crate::actions::{CellWrite, ImportedSheet, SheetsAction};
-use crate::doc::ChartKind;
+use ui::tilo_resource::{Atom, Id, Invoke};
+
 use crate::model::{CellFormat, Currency, DateStyle, a1_to_addr};
+use crate::resource::verbs;
+use crate::workbook::{Cell, ChartKind, Comment, FIRST_SHEET_ID, Sheet, Workbook};
 
 /// The budget sheet's identity.
 pub const BUDGET_SHEET_ID: &str = "5d1c1a52-6a1e-4c7e-9d0b-0b5a6c2e0001";
 /// The sales sheet's identity.
 pub const SALES_SHEET_ID: &str = "5d1c1a52-6a1e-4c7e-9d0b-0b5a6c2e0002";
-const COLUMN_CHART_ID: &str = "5d1c1a52-6a1e-4c7e-9d0b-0b5a6c2e0101";
-const LINE_CHART_ID: &str = "5d1c1a52-6a1e-4c7e-9d0b-0b5a6c2e0102";
-const COMMENT_ID: &str = "5d1c1a52-6a1e-4c7e-9d0b-0b5a6c2e0201";
-const REPLY_ID: &str = "5d1c1a52-6a1e-4c7e-9d0b-0b5a6c2e0202";
 
 /// Cells of one sample sheet, in the order they were entered.
-#[derive(Default)]
-struct Cells(Vec<CellWrite>);
+struct Cells(Sheet);
 
 impl Cells {
+    fn named(name: &str) -> Self {
+        Self(Sheet::named(name))
+    }
+
     fn set(&mut self, a1: &str, raw: &str) {
-        let Some((col, row)) = a1_to_addr(a1) else {
-            return;
-        };
-        match self.0.iter_mut().find(|w| (w.col, w.row) == (col, row)) {
-            Some(write) => raw.clone_into(&mut write.raw),
-            None => self.0.push(CellWrite {
-                col,
-                row,
-                raw: raw.to_owned(),
-                fmt: None,
-            }),
+        if let Some(addr) = a1_to_addr(a1) {
+            self.0.update(addr, |cell| cell.raw = Atom(raw.to_owned()));
         }
     }
 
     fn format(&mut self, a1: &str, fmt: CellFormat) {
-        let Some((col, row)) = a1_to_addr(a1) else {
-            return;
-        };
-        match self.0.iter_mut().find(|w| (w.col, w.row) == (col, row)) {
-            Some(write) => write.fmt = Some(fmt.as_str()),
-            None => self.0.push(CellWrite {
-                col,
-                row,
-                raw: String::new(),
-                fmt: Some(fmt.as_str()),
-            }),
+        if let Some(addr) = a1_to_addr(a1) {
+            self.0.update(addr, |cell| cell.format = fmt);
         }
     }
 }
 
-/// The sample workbook, replacing a new workbook's blank first sheet.
-pub fn workbook() -> SheetsAction {
-    SheetsAction::ImportSheets {
-        sheets: vec![budget(), sales()],
-        replace_blank: true,
-        source: None,
-    }
+/// The sample workbook, in place of a new workbook's blank first sheet:
+/// the edits that write it, in order.
+pub fn workbook() -> Vec<Invoke<Workbook>> {
+    let sheets = Workbook::paths().sheets;
+    [
+        sheets.insert_as(&Id::from_raw(BUDGET_SHEET_ID), 0, &budget()),
+        sheets.insert_as(&Id::from_raw(SALES_SHEET_ID), 1, &sales()),
+        sheets.remove(&Id::from_raw(FIRST_SHEET_ID)),
+    ]
+    .iter()
+    .filter_map(|edit| Invoke::edit(edit).ok())
+    .collect()
 }
 
-fn budget() -> ImportedSheet {
-    let mut cells = Cells::default();
+fn budget() -> Sheet {
+    let mut cells = Cells::named("Budget");
     for (a1, raw) in [
         ("A1", "Category"),
         ("B1", "Jan"),
@@ -121,15 +109,11 @@ fn budget() -> ImportedSheet {
     cells.format("B9", CellFormat::Currency(Currency::USD));
     cells.format("B11", CellFormat::Currency(Currency::USD));
     cells.format("G2", CellFormat::Date(DateStyle::Iso));
-    ImportedSheet {
-        name: "Budget".into(),
-        sheet_id: BUDGET_SHEET_ID.into(),
-        cells: cells.0,
-    }
+    cells.0
 }
 
-fn sales() -> ImportedSheet {
-    let mut cells = Cells::default();
+fn sales() -> Sheet {
+    let mut cells = Cells::named("Sales");
     for (a1, raw) in [
         ("A1", "Region"),
         ("B1", "Q1"),
@@ -173,77 +157,73 @@ fn sales() -> ImportedSheet {
         }
         cells.format(&format!("G{r}"), CellFormat::Percent);
     }
-    ImportedSheet {
-        name: "Sales".into(),
-        sheet_id: SALES_SHEET_ID.into(),
-        cells: cells.0,
-    }
+    cells.0
 }
 
-/// Two charts over the budget and a resolved comment thread on its rent row.
-pub fn charts() -> Vec<SheetsAction> {
-    let chart = |chart_id: &str, title: &str, kind: ChartKind, c1: u32| SheetsAction::PutChart {
-        sheet: 0,
-        sheet_id: BUDGET_SHEET_ID.into(),
-        chart_id: chart_id.into(),
-        title: title.into(),
-        kind: kind.code().into(),
-        c0: 1,
-        r0: 1,
-        c1,
-        r1: 6,
+fn budget_id() -> Id {
+    Id::from_raw(BUDGET_SHEET_ID)
+}
+
+/// Two charts over the budget.
+pub fn charts() -> Vec<Invoke<Workbook>> {
+    let chart = |title: &str, kind: ChartKind, range: &str| {
+        Workbook::ADD_CHART.with(verbs::AddChart {
+            sheet: budget_id(),
+            range: range.to_owned(),
+            kind,
+            title: title.to_owned(),
+        })
     };
     vec![
-        chart(COLUMN_CHART_ID, "Quarterly spend", ChartKind::Column, 4),
-        chart(LINE_CHART_ID, "Monthly trend", ChartKind::Line, 3),
+        chart("Quarterly spend", ChartKind::Column, "B2:E7"),
+        chart("Monthly trend", ChartKind::Line, "B2:D7"),
     ]
 }
 
-/// A comment thread on the budget, each edit by the person who wrote it:
-/// Alex asks, Sam replies.
-pub fn comments() -> Vec<(&'static str, SheetsAction)> {
-    vec![
-        (
-            "Alex",
-            SheetsAction::PutComment {
-                sheet: 0,
-                sheet_id: BUDGET_SHEET_ID.into(),
-                comment_id: COMMENT_ID.into(),
-                c0: 1,
-                r0: 1,
-                c1: 4,
-                r1: 1,
-                body: "Check the rent increase before sending this budget.".into(),
-            },
-        ),
-        (
-            "Sam",
-            SheetsAction::ReplyComment {
-                sheet: 0,
-                sheet_id: BUDGET_SHEET_ID.into(),
-                comment_id: COMMENT_ID.into(),
-                reply_id: REPLY_ID.into(),
-                body: "I will verify the change.".into(),
-            },
-        ),
-    ]
+/// The sample comment thread's identity.
+const COMMENT_ID: &str = "5d1c1a52-6a1e-4c7e-9d0b-0b5a6c2e0201";
+
+/// A comment thread on the budget, each by the person who wrote it: Alex
+/// asks, Sam replies.
+pub fn comments() -> Vec<(&'static str, Invoke<Workbook>)> {
+    let mut budget = budget();
+    let comment = budget.area((1, 1), (4, 1)).map(|area| Comment {
+        area,
+        author: Atom("Alex".into()),
+        body: "Check the rent increase before sending this budget.".into(),
+        resolved: false,
+        replies: ui::tilo_resource::Collection::new(),
+    });
+    let ask = comment.and_then(|comment| {
+        let path = Workbook::paths().sheets.item(&budget_id()).comments;
+        Invoke::edit(&path.insert_as(&Id::from_raw(COMMENT_ID), 0, &comment)).ok()
+    });
+    let reply = Workbook::REPLY.with(verbs::Reply {
+        sheet: budget_id(),
+        comment: Id::from_raw(COMMENT_ID),
+        text: "I will verify the change.".into(),
+    });
+    ask.map(|ask| ("Alex", ask))
+        .into_iter()
+        .chain([("Sam", reply)])
+        .collect()
 }
 
 /// Resolve the sample comment thread.
-pub fn resolve_comment() -> SheetsAction {
-    SheetsAction::SetCommentResolved {
-        sheet: 0,
-        sheet_id: BUDGET_SHEET_ID.into(),
-        comment_id: COMMENT_ID.into(),
-        resolved: true,
-    }
+pub fn resolve_comment() -> Option<Invoke<Workbook>> {
+    let path = Workbook::paths()
+        .sheets
+        .item(&budget_id())
+        .comments
+        .item(&Id::from_raw(COMMENT_ID))
+        .resolved;
+    Invoke::edit(&path.set(true)).ok()
 }
 
 /// The seeds of the fill-series scenario: three patterns under the budget,
 /// which the fill handle then extends.
-pub fn fill_seeds() -> SheetsAction {
-    let mut cells = Cells::default();
-    for (a1, raw) in [
+pub fn fill_seeds() -> Vec<Invoke<Workbook>> {
+    let cells = [
         ("A15", "Fill demo"),
         ("B15", "Count"),
         ("C15", "Weekday"),
@@ -252,22 +232,29 @@ pub fn fill_seeds() -> SheetsAction {
         ("B17", "2"),
         ("C16", "Mon"),
         ("D16", "Task 1"),
-    ] {
-        cells.set(a1, raw);
-    }
-    SheetsAction::SetCells {
-        sheet: 0,
-        sheet_id: BUDGET_SHEET_ID.into(),
-        cells: cells.0,
-    }
+    ]
+    .iter()
+    .filter_map(|(a1, raw)| Some((a1_to_addr(a1)?, Cell::of(*raw))))
+    .collect::<Vec<_>>();
+    let state = {
+        let mut replica = ui::tilo_resource::Replica::<Workbook>::new();
+        for invoke in workbook() {
+            let _ = replica.apply(invoke);
+        }
+        replica.state().unwrap_or_default()
+    };
+    crate::workbook::cell_edits(&state, &budget_id(), &cells)
+        .iter()
+        .filter_map(|edit| Invoke::edit(edit).ok())
+        .collect()
 }
 
-/// Write a new workbook holding the sample, as a capture's record does.
+/// The sample workbook, as a replica holds it.
 #[cfg(test)]
-pub(crate) fn write(doc: &mut automerge::AutoCommit) {
-    use tilo_actions::Action as _;
-    use ui::tilo_resource::Resource as _;
-
-    crate::resource::SheetsWorkbook::initialize(doc).unwrap();
-    workbook().apply(doc).unwrap();
+pub(crate) fn replica() -> ui::tilo_resource::Replica<Workbook> {
+    let mut replica = ui::tilo_resource::Replica::<Workbook>::new();
+    for invoke in workbook() {
+        replica.apply(invoke).unwrap();
+    }
+    replica
 }

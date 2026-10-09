@@ -7,7 +7,9 @@
 //! `(col, row)`; `A1` is `(0, 0)`. The `col_to_letters` / `a1_to_addr`
 //! helpers translate to and from the user-facing A1 strings.
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
+// `#[derive(Model)]` names the crate as `tilo_resource`.
+use ui::tilo_resource::{self, Model};
 
 /// Zero-based column index. `0` is column `A`.
 pub type Col = u32;
@@ -250,8 +252,9 @@ impl CellValue {
 /// A specific world currency. Each carries its own symbol, placement, and
 /// conventional number of decimals — `$1,234.50` vs `1.234,50 €` vs
 /// `¥1,235` (yen has no minor unit).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Model)]
 pub enum Currency {
+    #[default]
     USD,
     EUR,
     GBP,
@@ -351,27 +354,33 @@ impl Currency {
 
 /// How dates render. The serde names match the codes used in the shared
 /// settings file (`ISO`/`US`/`EU`/`Long`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Model)]
 pub enum DateStyle {
     /// `2023-03-15`
+    #[default]
     #[serde(rename = "ISO")]
+    #[model(rename = "ISO")]
     Iso,
     /// `03/15/2023`
     #[serde(rename = "US")]
+    #[model(rename = "US")]
     Us,
     /// `15/03/2023`
     #[serde(rename = "EU")]
+    #[model(rename = "EU")]
     Eu,
     /// `15 Mar 2023`
     #[serde(rename = "Long")]
+    #[model(rename = "Long")]
     Long,
 }
 
 /// How times render. The serde names match the shared-settings codes
 /// (`H24`/`H12`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Model)]
 pub enum TimeStyle {
     /// `14:05`
+    #[default]
     H24,
     /// `2:05 PM`
     H12,
@@ -781,6 +790,77 @@ fn civil_from_days(z: i64) -> (i64, u32, u32) {
 /// date any document can mean, so it is bounded first.
 fn days_from_civil(y: i64, m: u32, d: u32) -> i64 {
     ui::date::days_from_civil(y.clamp(-10_000_000, 10_000_000), m, d)
+}
+
+/// A format is stored as its stable code (`currency:EUR`), written whole.
+impl ui::tilo_resource::Settable for CellFormat {}
+impl ui::tilo_resource::Model for CellFormat {
+    ui::tilo_resource::leaf_paths!();
+    fn to_json(&self) -> serde_json::Value {
+        serde_json::Value::String(self.as_str())
+    }
+    fn from_json(value: &serde_json::Value) -> Result<Self, ui::tilo_resource::ModelError> {
+        match value {
+            serde_json::Value::String(code) => Self::parse_code(code).ok_or_else(|| {
+                ui::tilo_resource::ModelError::invalid(format!("no format `{code}`"))
+            }),
+            serde_json::Value::Null => Ok(Self::General),
+            _ => Err(ui::tilo_resource::ModelError::shape("a format code")),
+        }
+    }
+    fn load(
+        doc: &ui::tilo_resource::Doc,
+        value: &automerge::Value<'_>,
+        id: &automerge::ObjId,
+    ) -> Result<Self, ui::tilo_resource::ModelError> {
+        let code = <ui::tilo_resource::Atom as ui::tilo_resource::Model>::load(doc, value, id)?;
+        Ok(Self::from_str(&code.0))
+    }
+    fn missing() -> Result<Self, ui::tilo_resource::ModelError> {
+        Ok(Self::General)
+    }
+    fn store(
+        &self,
+        doc: &mut ui::tilo_resource::Doc,
+        slot: ui::tilo_resource::Slot<'_>,
+    ) -> Result<(), ui::tilo_resource::ModelError> {
+        slot.put_scalar(doc, automerge::ScalarValue::Str(self.as_str().into()))
+    }
+}
+
+impl Serialize for CellFormat {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for CellFormat {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let code = String::deserialize(deserializer)?;
+        Self::parse_code(&code)
+            .ok_or_else(|| serde::de::Error::custom(format!("no format `{code}`")))
+    }
+}
+
+impl ui::tilo_resource::JsonSchema for CellFormat {
+    fn json_schema() -> serde_json::Value {
+        serde_json::json!({
+            "type": "string",
+            "description": "general, number, currency, percent, date, time, boolean or text; \
+                            currency:EUR, date:US, time:H12 name a style",
+        })
+    }
+}
+
+impl CellFormat {
+    /// The format a code names: a category alone takes its default style.
+    /// `None` for anything that is not a format.
+    #[must_use]
+    pub fn parse_code(code: &str) -> Option<Self> {
+        let parsed = Self::from_str(code);
+        let head = code.split(':').next().unwrap_or_default();
+        (parsed != Self::General || head == "general").then_some(parsed)
+    }
 }
 
 #[cfg(test)]
