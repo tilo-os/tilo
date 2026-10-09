@@ -76,7 +76,8 @@ pub fn has_units(shape: Shape) -> bool {
             .iter()
             .any(|field| field.unit || has_units(field.shape)),
         Shape::Collection(item) | Shape::Keyed(item) => has_units(*item),
-        Shape::Value => false,
+        // A map's entries are written with it.
+        Shape::Value | Shape::Map(_) => false,
     }
 }
 
@@ -176,7 +177,7 @@ pub fn patterns(shape: Shape) -> Vec<String> {
             }
             Shape::Collection(item) => walk(*item, &format!("{prefix}*/{VALUE}/"), out),
             Shape::Keyed(item) => walk(*item, &format!("{prefix}*/"), out),
-            Shape::Value => {}
+            Shape::Value | Shape::Map(_) => {}
         }
     }
     let mut out = Vec::new();

@@ -166,7 +166,7 @@ fn restore_node(shape: Shape) -> HistoryRestoreNode {
                 .collect(),
             None,
         ),
-        Shape::Record(_) | Shape::Value => whole,
+        Shape::Record(_) | Shape::Value | Shape::Map(_) => whole,
         Shape::Keyed(item) => overlay(
             Vec::new(),
             Some(Box::leak(Box::new(HistoryMapEntries {

@@ -101,7 +101,9 @@ pub fn learn_field_titles(shape: &tilo_resource::Shape) {
                     walk(&field.shape, titles, depth.saturating_add(1));
                 }
             }
-            tilo_resource::Shape::Collection(item) | tilo_resource::Shape::Keyed(item) => {
+            tilo_resource::Shape::Collection(item)
+            | tilo_resource::Shape::Keyed(item)
+            | tilo_resource::Shape::Map(item) => {
                 walk(item, titles, depth.saturating_add(1));
             }
             tilo_resource::Shape::Value => {}

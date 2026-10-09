@@ -108,6 +108,16 @@ fn locate(doc: &Doc, root: Shape, path: &[Segment]) -> Located {
                 located.value = value;
                 shape = *item;
             }
+            (Shape::Map(value), Segment::Key(key)) => {
+                let entry = get(doc, &obj, key);
+                let label = match &entry {
+                    Some((Value::Object(ObjType::Map), map)) => label_of(doc, *value, map),
+                    _ => None,
+                };
+                located.item = Some((key.clone(), label));
+                located.value = entry;
+                shape = *value;
+            }
             (_, Segment::Key(key)) => {
                 located.value = get(doc, &obj, key);
                 shape = Shape::Value;
@@ -247,6 +257,16 @@ pub(crate) fn edit<R: crate::Model>(doc: &Doc, shape: Shape, edit: &Edit<R>) -> 
             };
             let label = stored.and_then(|map| label_of(doc, *item, &map));
             Some((id.as_str().to_owned(), label))
+        }
+        // An entry removed from a map is the entry the entry is about.
+        (EditOp::RemoveKey { key }, Shape::Map(value)) => {
+            let label = match &located.value {
+                Some((Value::Object(ObjType::Map), map)) => {
+                    map_at(doc, map, key).and_then(|entry| label_of(doc, *value, &entry))
+                }
+                _ => None,
+            };
+            Some((key.clone(), label))
         }
         _ => located.item.clone(),
     };

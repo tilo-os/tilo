@@ -288,3 +288,31 @@ word-processor-document-body = { $op ->
         "Made 3 words bold in Report"
     );
 }
+
+#[test]
+fn an_element_a_set_gained_or_lost_is_named() {
+    let tag = |op, tag: &str| {
+        entry(Did::Edit(FieldEdit {
+            ty: "snippet".into(),
+            field: "tags".into(),
+            path: vec![
+                PathStep::Field("snippets".into()),
+                PathStep::Item("s1".into()),
+                PathStep::Field("tags".into()),
+            ],
+            op,
+            old: None,
+            new: Some(tag.into()),
+            args: std::collections::BTreeMap::new(),
+        }))
+    };
+    let english = Reader::new("en-US");
+    assert_eq!(
+        english.sentence(&tag(EditOp::Insert, "ops")),
+        "Added ops to Tags of Deploy script"
+    );
+    assert_eq!(
+        english.sentence(&tag(EditOp::Remove, "ops")),
+        "Removed ops from Tags of Deploy script"
+    );
+}

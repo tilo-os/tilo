@@ -599,3 +599,97 @@ fn an_item_label_is_made_of_several_fields() {
     let entry = book.apply_action(&edit).unwrap().context.clone().unwrap();
     assert_eq!(entry.item.unwrap().label, "Ada Lovelace");
 }
+
+/// A report, kept under the id of the app it is about.
+#[derive(tilo_resource::Model, Default, Debug, Clone, PartialEq)]
+pub struct Report {
+    #[model(label)]
+    pub title: String,
+    pub note: String,
+}
+
+#[derive(tilo_resource::Model, Default, Debug, Clone, PartialEq)]
+pub struct Reports {
+    pub reports: std::collections::BTreeMap<String, Report>,
+    pub tags: tilo_resource::Set<String>,
+}
+
+#[resource(kind = "test.reports", label = "Reports", params = reports)]
+impl Reports {
+    /// File a report.
+    #[action]
+    pub fn file(&mut self, app: String, title: String) {
+        self.reports.insert(
+            app,
+            Report {
+                title,
+                note: String::new(),
+            },
+        );
+    }
+}
+
+fn described(
+    replica: &mut Replica<Reports>,
+    edit: tilo_resource::Edit<Reports>,
+) -> tilo_actions::Described {
+    let action = Reports::edit_action(edit).unwrap();
+    replica
+        .apply_action(&action)
+        .unwrap()
+        .context
+        .clone()
+        .unwrap()
+        .described()
+        .unwrap()
+}
+
+#[test]
+fn an_edit_under_a_map_key_is_about_that_entry_and_a_set_names_its_element() {
+    let mut reports = Replica::<Reports>::new();
+    reports
+        .apply(Reports::FILE.with(("so.tilo.notes".to_owned(), "Notes crash".to_owned())))
+        .unwrap();
+    let note = described(
+        &mut reports,
+        Reports::paths()
+            .reports
+            .key("so.tilo.notes")
+            .note
+            .replace("on save"),
+    );
+    let tilo_actions::Did::Edit(field) = &note.what else {
+        panic!("a field edit");
+    };
+    assert_eq!(
+        (field.ty.as_str(), field.field.as_str()),
+        ("report", "note")
+    );
+    let item = note.item.unwrap();
+    assert_eq!(
+        (item.id.as_str(), item.label.as_str()),
+        ("so.tilo.notes", "Notes crash")
+    );
+
+    let removed = described(
+        &mut reports,
+        Reports::paths().reports.remove("so.tilo.notes"),
+    );
+    let item = removed.item.unwrap();
+    assert_eq!(
+        (item.id.as_str(), item.label.as_str()),
+        ("so.tilo.notes", "Notes crash")
+    );
+
+    let tagged = described(
+        &mut reports,
+        Reports::paths().tags.insert(&"urgent".to_owned()),
+    );
+    let tilo_actions::Did::Edit(field) = &tagged.what else {
+        panic!("a field edit");
+    };
+    assert_eq!(
+        field.new.as_ref().and_then(|new| new.as_str()),
+        Some("urgent")
+    );
+}

@@ -1253,6 +1253,7 @@ impl<T: Model, const N: usize> Model for [T; N] {
 /// A map reconciled key by key.
 impl<T: Model> Settable for BTreeMap<String, T> {}
 impl<T: Model> Model for BTreeMap<String, T> {
+    const SHAPE: crate::Shape = crate::Shape::Map(&T::SHAPE);
     const CHECKS: bool = T::CHECKS;
     leaf_paths!();
     fn op_coalesces(

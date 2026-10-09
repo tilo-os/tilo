@@ -385,6 +385,19 @@ impl<'a> Reader<'a> {
                 }
                 None => "history-edit",
             },
+            // The element a set gained or lost, when the entry names it.
+            EditOp::Insert if new.is_some() => {
+                if let Some(value) = new {
+                    args.set("new", self.shown(value));
+                }
+                "history-edit-insert-element"
+            }
+            EditOp::Remove if new.is_some() => {
+                if let Some(value) = new {
+                    args.set("new", self.shown(value));
+                }
+                "history-edit-remove-element"
+            }
             EditOp::Insert | EditOp::InsertRow | EditOp::InsertColumn => "history-edit-insert",
             EditOp::Remove | EditOp::RemoveRow | EditOp::RemoveColumn => "history-edit-remove",
             EditOp::MoveTo => "history-edit-move",

@@ -112,7 +112,8 @@ impl VerbSurface {
 
 fn stored(shape: Shape) -> &'static str {
     match shape {
-        Shape::Value => "value",
+        // A map is published as the value it is written as.
+        Shape::Value | Shape::Map(_) => "value",
         Shape::Record(_) => "record",
         Shape::Collection(_) => "collection",
         Shape::Keyed(_) => "keyed",
@@ -126,7 +127,7 @@ fn fields_of(shape: Shape, prefix: &str, out: &mut Vec<FieldSurface>) {
             fields_of(*item, &format!("{prefix}*."), out);
             return;
         }
-        Shape::Value => return,
+        Shape::Value | Shape::Map(_) => return,
     };
     let _ = item;
     for field in fields {

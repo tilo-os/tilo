@@ -25,6 +25,10 @@ pub enum Shape {
     /// Items of one shape stored under the ids they carry
     /// ([`Keyed`](crate::Keyed)): each item's value directly under its id.
     Keyed(&'static Shape),
+    /// A map (`BTreeMap<String, T>`) of values of one shape, each under its
+    /// key: an edit inside an entry is about that entry, named by its key or
+    /// its value's label.
+    Map(&'static Shape),
 }
 
 /// One named field of a [`Shape::Record`].
@@ -73,7 +77,7 @@ impl Shape {
     pub const fn fields(&self) -> &'static [FieldShape] {
         match self {
             Self::Record(fields) => fields,
-            Self::Value | Self::Collection(_) | Self::Keyed(_) => &[],
+            Self::Value | Self::Collection(_) | Self::Keyed(_) | Self::Map(_) => &[],
         }
     }
 
