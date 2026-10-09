@@ -1,4 +1,4 @@
-use super::super::{Key, NamedKey, State, key_event};
+use super::super::{Key, NamedKey, State, key_input};
 use super::*;
 use crate::search::system::SearchScope;
 
@@ -91,7 +91,7 @@ fn press(f: &mut FrameHarness, button: MouseButton) {
     });
 }
 fn enter(f: &mut FrameHarness) {
-    f.send_host_event(&key_event(
+    f.send_host_event(&key_input(
         &Key::Named(NamedKey::Enter),
         ElementState::Pressed,
     ));
@@ -123,7 +123,7 @@ fn global_search_owns_ime_and_restores_document_focus() {
     f.send_host_event(&WindowEvent::Ime(winit::event::Ime::Commit("Trip".into())));
     assert_eq!(f.global_search_query(), Some("Trip"));
     assert!(!f.inspection_json().unwrap().contains("Insert table"));
-    f.send_host_event(&key_event(
+    f.send_host_event(&key_input(
         &Key::Named(NamedKey::Escape),
         ElementState::Pressed,
     ));

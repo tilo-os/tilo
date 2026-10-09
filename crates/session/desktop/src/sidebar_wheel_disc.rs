@@ -2373,14 +2373,14 @@ mod tests {
 
     fn cursor_event(x: f64, y: f64) -> WindowEvent {
         WindowEvent::CursorMoved {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             position: PhysicalPosition::new(x, y),
         }
     }
 
     fn press_event() -> WindowEvent {
         WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             state: ElementState::Pressed,
             button: MouseButton::Left,
         }
@@ -2389,7 +2389,7 @@ mod tests {
     /// `lines` is in `LineDelta` units; the widget scales by 16 px.
     fn wheel_event(lines: f32) -> WindowEvent {
         WindowEvent::MouseWheel {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             delta: winit::event::MouseScrollDelta::LineDelta(0.0, lines),
             phase: winit::event::TouchPhase::Moved,
         }
@@ -2397,7 +2397,7 @@ mod tests {
 
     fn release_event() -> WindowEvent {
         WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             state: ElementState::Released,
             button: MouseButton::Left,
         }

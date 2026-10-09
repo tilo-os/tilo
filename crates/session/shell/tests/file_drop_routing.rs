@@ -188,7 +188,7 @@ fn hover_and_drop(host: &mut ShellOverlayHost, layout: &Layout, p: Point, path: 
         host,
         layout,
         &WindowEvent::CursorMoved {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             position: PhysicalPosition::new(p.x, p.y),
         },
     );

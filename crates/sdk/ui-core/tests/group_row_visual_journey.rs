@@ -343,7 +343,7 @@ fn group_row_maximize_and_reorder_paint_visibly() {
                 &mut row,
                 &taffy,
                 WindowEvent::CursorMoved {
-                    device_id: unsafe { std::mem::zeroed() },
+                    device_id: winit::event::DeviceId::dummy(),
                     position: PhysicalPosition::new(grab.x, grab.y),
                 },
             );
@@ -351,7 +351,7 @@ fn group_row_maximize_and_reorder_paint_visibly() {
                 &mut row,
                 &taffy,
                 WindowEvent::MouseInput {
-                    device_id: unsafe { std::mem::zeroed() },
+                    device_id: winit::event::DeviceId::dummy(),
                     state: ElementState::Pressed,
                     button: MouseButton::Left,
                 },
@@ -360,7 +360,7 @@ fn group_row_maximize_and_reorder_paint_visibly() {
                 &mut row,
                 &taffy,
                 WindowEvent::CursorMoved {
-                    device_id: unsafe { std::mem::zeroed() },
+                    device_id: winit::event::DeviceId::dummy(),
                     position: PhysicalPosition::new(past_x, grab.y),
                 },
             );

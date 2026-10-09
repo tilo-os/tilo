@@ -141,7 +141,7 @@ mod tests {
             let mut driver = driver(Box::new(TextInput::from_state(&text).with_id("query")));
             driver.click_named("query").unwrap();
             let key = || {
-                crate::synthetic_input::key_event(
+                crate::synthetic_input::key_input(
                     &winit::keyboard::Key::Character("x".into()),
                     ElementState::Pressed,
                 )

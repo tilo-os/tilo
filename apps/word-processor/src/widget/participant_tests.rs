@@ -376,9 +376,11 @@ fn press(wp: &mut WordProcessorWidget, state: &mut ui::State, input: &Input) {
     let taffy: TaffyTree<()> = TaffyTree::new();
     let mut handled = false;
     let mut focus: Option<NodeId> = None;
-    // SAFETY: as in `widget::tests::type_char` — every public field tolerates
-    // the zero bit pattern and the ones `handle_event` reads are overwritten.
-    let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
+    let mut ev = ui::synthetic_input::key_event(
+        winit::keyboard::Key::Unidentified(winit::keyboard::NativeKey::Unidentified),
+        None,
+        winit::event::ElementState::Pressed,
+    );
     ev.physical_key = PhysicalKey::Unidentified(NativeKeyCode::Unidentified);
     let mut mods = Modifiers::default();
     match input {
@@ -401,7 +403,7 @@ fn press(wp: &mut WordProcessorWidget, state: &mut ui::State, input: &Input) {
     ev.repeat = false;
     wp.handle_event(
         &WindowEvent::KeyboardInput {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             event: ev,
             is_synthetic: false,
         },

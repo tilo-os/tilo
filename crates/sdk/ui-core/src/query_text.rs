@@ -540,17 +540,13 @@ mod tests {
     use vello::kurbo::Affine;
 
     fn key(logical_key: Key, text: Option<&str>) -> WindowEvent {
-        let mut event: KeyEvent = unsafe { std::mem::zeroed() };
-        event.physical_key = winit::keyboard::PhysicalKey::Unidentified(
-            winit::keyboard::NativeKeyCode::Unidentified,
+        let event = crate::synthetic_input::key_event(
+            logical_key,
+            text.map(Into::into),
+            ElementState::Pressed,
         );
-        event.logical_key = logical_key;
-        event.text = text.map(Into::into);
-        event.location = winit::keyboard::KeyLocation::Standard;
-        event.state = ElementState::Pressed;
-        event.repeat = false;
         WindowEvent::KeyboardInput {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             event,
             is_synthetic: false,
         }

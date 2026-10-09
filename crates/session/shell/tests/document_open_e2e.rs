@@ -29,8 +29,8 @@ use std::path::{Path, PathBuf};
 
 use taffy::{AvailableSpace, Dimension, NodeId, Size, Style, TaffyTree};
 use vello::kurbo::Point;
-use winit::event::{ElementState, KeyEvent, Modifiers, WindowEvent};
-use winit::keyboard::{Key, KeyLocation, ModifiersState, NamedKey, PhysicalKey};
+use winit::event::{ElementState, Modifiers, WindowEvent};
+use winit::keyboard::{Key, ModifiersState, NamedKey};
 
 use shell::shell::build_tilo_overlay_host_with_chrome;
 use shell::shell::launcher;
@@ -152,29 +152,17 @@ impl Session {
     }
 }
 
-/// winit 0.30 exposes no `KeyEvent` constructor (`platform_specific` is
-/// `pub(crate)`), so zero-init and overwrite the fields the shell reads —
 /// as `e2e_shell_flows.rs::escape_event` does.
 fn key_press_event(key: &Key) -> WindowEvent {
-    // SAFETY: every public field of `KeyEvent` has a valid all-zero bit
-    // pattern (`Option` → `None`, the enums' first variants, `bool` →
-    // `false`) and the fields the shell reads are overwritten below.
-    let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-    ev.logical_key = key.clone();
-    ev.physical_key = PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
-    ev.location = KeyLocation::Standard;
-    ev.state = ElementState::Pressed;
-    ev.repeat = false;
-    ev.text = if let Key::Character(s) = key {
-        Some(s.clone())
-    } else {
-        None
-    };
-    WindowEvent::KeyboardInput {
-        device_id: unsafe { std::mem::zeroed() },
-        event: ev,
-        is_synthetic: false,
-    }
+    ui::synthetic_input::keyboard_input(ui::synthetic_input::key_event(
+        key.clone(),
+        if let Key::Character(s) = key {
+            Some(s.clone())
+        } else {
+            None
+        },
+        ElementState::Pressed,
+    ))
 }
 
 /// Write a registry + manifest pair so `launcher::installed_apps()`
@@ -447,7 +435,7 @@ fn documents_opened_from_the_palette_or_a_drop_open_in_their_own_app() {
             &layout,
             ModifiersState::empty(),
             &WindowEvent::CursorMoved {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 position: winit::dpi::PhysicalPosition::new(over.x, over.y),
             },
         );

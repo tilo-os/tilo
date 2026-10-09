@@ -197,7 +197,7 @@ fn shell_tick_persists_maximize_only_when_a_click_fired() {
         // The drain runs inside `WindowGroup::handle_event`, so the widget tree
         // needs an event to drive it.
         let moved = WindowEvent::CursorMoved {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             position: PhysicalPosition::new(9000.0, 9000.0),
         };
         pump_no_op_event(&mut host, strip_id, &moved);

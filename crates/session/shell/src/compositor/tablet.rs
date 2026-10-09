@@ -203,14 +203,11 @@ pub fn tablet_pointer_events(input: &TabletInput) -> Vec<WindowEvent> {
 /// a mouse button, or to a shortcut that runs on its own.
 pub fn tool_pointer_events(input: &TabletInput, tip: Option<u32>) -> Vec<WindowEvent> {
     let moved = WindowEvent::CursorMoved {
-        // SAFETY: winit's device id is an opaque token with no invariants;
-        // the input adapters use the same inert zero value.
-        device_id: unsafe { std::mem::zeroed() },
+        device_id: winit::event::DeviceId::dummy(),
         position: winit::dpi::PhysicalPosition::new(input.position.0, input.position.1),
     };
     let button = |button: MouseButton, pressed: bool| WindowEvent::MouseInput {
-        // SAFETY: as above.
-        device_id: unsafe { std::mem::zeroed() },
+        device_id: winit::event::DeviceId::dummy(),
         state: if pressed {
             ElementState::Pressed
         } else {

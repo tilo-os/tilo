@@ -487,7 +487,7 @@ mod tests {
         let mut taffy: TaffyTree<()> = TaffyTree::new();
         let node = taffy.new_leaf(Style::default()).unwrap();
         let mods = winit::event::Modifiers::default();
-        let device: winit::event::DeviceId = unsafe { std::mem::zeroed() };
+        let device = winit::event::DeviceId::dummy();
         let centre = b.rect.center();
         for ev in [
             WindowEvent::CursorMoved {

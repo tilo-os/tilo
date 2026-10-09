@@ -655,7 +655,7 @@ mod tests {
     use crate::webview::test_engine::TestEngine;
     use automerge::AutoCommit;
     use std::sync::Arc;
-    use winit::event::{DeviceId, ElementState, WindowEvent};
+    use winit::event::{ElementState, WindowEvent};
 
     #[test]
     fn keyboard_focus_is_forwarded_to_the_page() {
@@ -1242,7 +1242,7 @@ mod tests {
         {
             let engine = TestEngine::new();
             let (mut w, tree, node) = laid_out(engine.clone());
-            let device: DeviceId = unsafe { std::mem::zeroed() };
+            let device = winit::event::DeviceId::dummy();
             dispatch(
                 &mut w,
                 &tree,
@@ -1276,7 +1276,7 @@ mod tests {
         {
             let engine = TestEngine::new();
             let (mut w, tree, node) = laid_out(engine.clone());
-            let device: DeviceId = unsafe { std::mem::zeroed() };
+            let device = winit::event::DeviceId::dummy();
             dispatch(
                 &mut w,
                 &tree,
@@ -1309,7 +1309,7 @@ mod tests {
         {
             let engine = TestEngine::new();
             let (mut w, tree, node) = laid_out(engine.clone());
-            let device: DeviceId = unsafe { std::mem::zeroed() };
+            let device = winit::event::DeviceId::dummy();
             dispatch(
                 &mut w,
                 &tree,
@@ -1336,7 +1336,7 @@ mod tests {
         {
             let engine = TestEngine::new();
             let (mut w, tree, node) = laid_out(engine.clone());
-            let device: DeviceId = unsafe { std::mem::zeroed() };
+            let device = winit::event::DeviceId::dummy();
             dispatch(
                 &mut w,
                 &tree,

@@ -433,7 +433,7 @@ impl Widget for Link {
 mod tests {
     use super::*;
     use automerge::AutoCommit;
-    use winit::event::{DeviceId, ElementState, MouseButton};
+    use winit::event::{ElementState, MouseButton};
 
     #[test]
     fn link_opens_its_url_by_pointer_and_keyboard() {
@@ -451,7 +451,7 @@ mod tests {
             let mut link = Link::new("https://example.com/page");
             let (tree, node) = laid_out(&mut link);
 
-            let device: DeviceId = unsafe { std::mem::zeroed() };
+            let device = winit::event::DeviceId::dummy();
             let mut doc = AutoCommit::new();
             let root = automerge::ROOT;
             let mods = winit::event::Modifiers::default();

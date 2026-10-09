@@ -28,7 +28,7 @@ use winit::event::{MouseScrollDelta, TouchPhase, WindowEvent};
 
 fn wheel(lines: f32) -> WindowEvent {
     WindowEvent::MouseWheel {
-        device_id: unsafe { std::mem::zeroed() },
+        device_id: winit::event::DeviceId::dummy(),
         delta: MouseScrollDelta::LineDelta(0.0, lines),
         phase: TouchPhase::Moved,
     }
@@ -273,16 +273,10 @@ fn note_scrolling_clamps_reveals_and_drags_through_the_real_scrollbar() {
         ));
         assert!(semantic(&mut app, "notes.scroll-position", &Action::Focus));
         let key = |key| {
-            let mut event: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
-            event.logical_key = winit::keyboard::Key::Named(key);
-            event.physical_key = winit::keyboard::PhysicalKey::Unidentified(
-                winit::keyboard::NativeKeyCode::Unidentified,
-            );
-            event.location = winit::keyboard::KeyLocation::Standard;
-            event.state = Pressed;
-            event.text = None;
+            let event =
+                ui::synthetic_input::key_event(winit::keyboard::Key::Named(key), None, Pressed);
             WindowEvent::KeyboardInput {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 event,
                 is_synthetic: false,
             }
@@ -370,16 +364,13 @@ fn note_scrolling_clamps_reveals_and_drags_through_the_real_scrollbar() {
             "revealing the first block must return to the top"
         );
 
-        let mut event: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
-        event.logical_key = winit::keyboard::Key::Named(winit::keyboard::NamedKey::ArrowDown);
-        event.physical_key = winit::keyboard::PhysicalKey::Unidentified(
-            winit::keyboard::NativeKeyCode::Unidentified,
+        let event = ui::synthetic_input::key_event(
+            winit::keyboard::Key::Named(winit::keyboard::NamedKey::ArrowDown),
+            None,
+            winit::event::ElementState::Pressed,
         );
-        event.location = winit::keyboard::KeyLocation::Standard;
-        event.state = winit::event::ElementState::Pressed;
-        event.text = None;
         let arrow_down = WindowEvent::KeyboardInput {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             event,
             is_synthetic: false,
         };
@@ -417,14 +408,14 @@ fn scroll_control(app: &mut TestApp<NotesShell>) -> ui::a11y::AccessNode {
 
 fn pointer(point: Point) -> WindowEvent {
     WindowEvent::CursorMoved {
-        device_id: unsafe { std::mem::zeroed() },
+        device_id: winit::event::DeviceId::dummy(),
         position: winit::dpi::PhysicalPosition::new(point.x, point.y),
     }
 }
 
 fn mouse(state: winit::event::ElementState) -> WindowEvent {
     WindowEvent::MouseInput {
-        device_id: unsafe { std::mem::zeroed() },
+        device_id: winit::event::DeviceId::dummy(),
         state,
         button: winit::event::MouseButton::Left,
     }

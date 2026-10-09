@@ -20,10 +20,8 @@ use ui::theme::Theme;
 use ui::widget::Widget;
 use vello::kurbo::{Point, Rect};
 use winit::dpi::PhysicalPosition;
-use winit::event::{
-    ElementState, KeyEvent, Modifiers, MouseButton, Touch, TouchPhase, WindowEvent,
-};
-use winit::keyboard::{Key, KeyLocation, ModifiersState, NamedKey, PhysicalKey};
+use winit::event::{ElementState, Modifiers, MouseButton, Touch, TouchPhase, WindowEvent};
+use winit::keyboard::{Key, ModifiersState, NamedKey};
 
 /// The client window: an app process the sandbox of "Home" launched.
 const CLIENT_TAB: u64 = 4;
@@ -150,19 +148,9 @@ impl Harness {
     }
 
     fn key(&mut self, key: Key) -> bool {
-        // SAFETY: `KeyEvent` has a platform-private field and no public
-        // constructor; every field a handler reads is set below.
-        let mut key_event: KeyEvent = unsafe { std::mem::zeroed() };
-        key_event.logical_key = key;
-        key_event.physical_key =
-            PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
-        key_event.location = KeyLocation::Standard;
-        key_event.state = ElementState::Pressed;
-        key_event.repeat = false;
-        key_event.text = None;
+        let key_event = ui::synthetic_input::key_event(key, None, ElementState::Pressed);
         self.event(&WindowEvent::KeyboardInput {
-            // SAFETY: an opaque id no handler inspects.
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             event: key_event,
             is_synthetic: false,
         })
@@ -170,16 +158,14 @@ impl Harness {
 
     fn cursor_to(&mut self, at: Point) {
         self.event(&WindowEvent::CursorMoved {
-            // SAFETY: an opaque id no handler inspects.
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             position: PhysicalPosition::new(at.x, at.y),
         });
     }
 
     fn button(&mut self, button: MouseButton, state: ElementState) -> bool {
         self.event(&WindowEvent::MouseInput {
-            // SAFETY: an opaque id no handler inspects.
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             state,
             button,
         })
@@ -187,8 +173,7 @@ impl Harness {
 
     fn touch(&mut self, id: u64, phase: TouchPhase, at: Point) -> bool {
         self.event(&WindowEvent::Touch(Touch {
-            // SAFETY: an opaque id no handler inspects.
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             phase,
             location: PhysicalPosition::new(at.x, at.y),
             force: None,

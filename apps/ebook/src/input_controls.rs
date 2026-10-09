@@ -721,22 +721,15 @@ impl NoteComposer {
 mod tests {
     use super::*;
     use taffy::TaffyTree;
-    use winit::event::{ElementState, KeyEvent};
-    use winit::keyboard::{Key, NamedKey, PhysicalKey};
+    use winit::event::ElementState;
+    use winit::keyboard::{Key, NamedKey};
 
     fn key(logical_key: Key) -> WindowEvent {
         let text = match &logical_key {
             Key::Character(text) => Some(text.clone()),
             _ => None,
         };
-        let mut event: KeyEvent = unsafe { std::mem::zeroed() };
-        event.physical_key =
-            PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
-        event.logical_key = logical_key;
-        event.location = winit::keyboard::KeyLocation::Standard;
-        event.state = ElementState::Pressed;
-        event.repeat = false;
-        event.text = text;
+        let event = ui::synthetic_input::key_event(logical_key, text, ElementState::Pressed);
         WindowEvent::KeyboardInput {
             device_id: winit::event::DeviceId::dummy(),
             event,

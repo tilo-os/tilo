@@ -1324,7 +1324,7 @@ fn maximized_chrome_hides_when_cursor_below_y_80() {
 
     // y=200 is well below the y<=80 reveal band; chrome should still hide.
     let cursor_event = WindowEvent::CursorMoved {
-        device_id: unsafe { std::mem::zeroed() },
+        device_id: winit::event::DeviceId::dummy(),
         position: PhysicalPosition::new(480.0, 200.0),
     };
     let mut handled = false;
@@ -2042,7 +2042,7 @@ mod overview_add_workspace {
 
             h.host.handle_event(
                 &WindowEvent::CursorMoved {
-                    device_id: unsafe { std::mem::zeroed() },
+                    device_id: winit::event::DeviceId::dummy(),
                     position: PhysicalPosition::new(centre.x, centre.y),
                 },
                 &mut ui::widget::EventCtx {
@@ -2058,7 +2058,7 @@ mod overview_add_workspace {
             );
             h.host.handle_event(
                 &WindowEvent::MouseInput {
-                    device_id: unsafe { std::mem::zeroed() },
+                    device_id: winit::event::DeviceId::dummy(),
                     state: ElementState::Pressed,
                     button: MouseButton::Left,
                 },

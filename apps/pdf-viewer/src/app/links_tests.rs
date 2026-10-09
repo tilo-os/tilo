@@ -54,9 +54,7 @@ fn click(app: &mut PdfApp, state: &mut ui::State, p: Point) {
     let mut taffy: TaffyTree<()> = TaffyTree::new();
     let node = taffy.new_leaf(Style::default()).unwrap();
     let mods = winit::event::Modifiers::default();
-    // SAFETY: DeviceId wraps a platform integer; zero is the "no device"
-    // sentinel and carries no validity requirements.
-    let device_id: winit::event::DeviceId = unsafe { std::mem::zeroed() };
+    let device_id = winit::event::DeviceId::dummy();
     for ev in [
         WindowEvent::CursorMoved {
             device_id,

@@ -22,8 +22,8 @@ use vello::kurbo::Rect;
 use wayland_client::protocol::{wl_compositor, wl_keyboard, wl_registry, wl_seat, wl_surface};
 use wayland_client::{Connection, Dispatch, Proxy, QueueHandle, WEnum, delegate_noop};
 use wayland_protocols::xdg::shell::client::{xdg_surface, xdg_toplevel, xdg_wm_base};
-use winit::event::{ElementState, KeyEvent, Modifiers, WindowEvent};
-use winit::keyboard::{Key, KeyLocation, PhysicalKey};
+use winit::event::{ElementState, Modifiers, WindowEvent};
+use winit::keyboard::{Key, PhysicalKey};
 
 const SHIFT: u32 = 42;
 const ROWS: [(&str, &str, u32); 4] = [
@@ -268,19 +268,18 @@ fn key(keysym: u32, pressed: bool) -> InputEvent {
 
 /// A key of the machine's own keyboard, as the backend hands it over.
 fn local_key(code: winit::keyboard::KeyCode, pressed: bool) -> WindowEvent {
-    // `KeyEvent` keeps platform data private; zero it and set what the
-    // compositor reads.
-    let mut event: KeyEvent = unsafe { std::mem::zeroed() };
-    event.logical_key = Key::Character("a".into());
+    let mut event = ui::synthetic_input::key_event(
+        Key::Character("a".into()),
+        None,
+        if pressed {
+            ElementState::Pressed
+        } else {
+            ElementState::Released
+        },
+    );
     event.physical_key = PhysicalKey::Code(code);
-    event.location = KeyLocation::Standard;
-    event.state = if pressed {
-        ElementState::Pressed
-    } else {
-        ElementState::Released
-    };
     WindowEvent::KeyboardInput {
-        device_id: unsafe { std::mem::zeroed() },
+        device_id: winit::event::DeviceId::dummy(),
         event,
         is_synthetic: false,
     }

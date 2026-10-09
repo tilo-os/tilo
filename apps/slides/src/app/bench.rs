@@ -178,16 +178,8 @@ pub(super) fn release_ev() -> WindowEvent {
 /// A key event as the window delivers it: `logical` pressed or released,
 /// typing `text`.
 pub(super) fn key_event(logical: Key, text: Option<&str>, state: ElementState) -> WindowEvent {
-    // SAFETY: every field of the event is a plain value, and each one a key
-    // event carries is set below; the zeroed platform part is never read.
-    let mut event: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
-    event.logical_key = logical;
-    event.physical_key =
-        winit::keyboard::PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
-    event.location = winit::keyboard::KeyLocation::Standard;
-    event.state = state;
-    event.repeat = false;
-    event.text = text.map(winit::keyboard::SmolStr::new);
+    let event =
+        ui::synthetic_input::key_event(logical, text.map(winit::keyboard::SmolStr::new), state);
     WindowEvent::KeyboardInput {
         device_id: winit::event::DeviceId::dummy(),
         event,

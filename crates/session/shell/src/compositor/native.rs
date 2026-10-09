@@ -3725,7 +3725,7 @@ fn test_touch_input_event(
     phase: winit::event::TouchPhase,
 ) -> WindowEvent {
     WindowEvent::Touch(winit::event::Touch {
-        device_id: unsafe { std::mem::zeroed() },
+        device_id: winit::event::DeviceId::dummy(),
         phase,
         location: PhysicalPosition::new(x, y),
         force: None,
@@ -3970,7 +3970,7 @@ fn execute_planned_action(
         PlannedAction::CursorMoved { x, y } => {
             ctx.cursor = PhysicalPosition::new(*x, *y);
             let event = WindowEvent::CursorMoved {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 position: ctx.cursor,
             };
             dispatch_synth_event(&event, fb, ctx, &mut state);
@@ -3988,7 +3988,7 @@ fn execute_planned_action(
         }
         PlannedAction::MouseLeftButton { pressed } => {
             let event = WindowEvent::MouseInput {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 state: if *pressed {
                     ElementState::Pressed
                 } else {
@@ -4000,7 +4000,7 @@ fn execute_planned_action(
         }
         PlannedAction::MousePointerButton { pressed, button } => {
             let event = WindowEvent::MouseInput {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 state: if *pressed {
                     ElementState::Pressed
                 } else {
@@ -4059,7 +4059,7 @@ fn execute_planned_action(
         }
         PlannedAction::MouseWheel { dx, dy } => {
             let event = WindowEvent::MouseWheel {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 delta: winit::event::MouseScrollDelta::LineDelta(*dx, *dy),
                 phase: winit::event::TouchPhase::Moved,
             };
@@ -17464,22 +17464,15 @@ fn input_capture_zones(
 mod vt_chord_tests {
     use super::{PriorityRoute, priority_route, vt_switch_chord};
     use crate::shell::media_keys::MediaKey;
-    use winit::event::{ElementState, KeyEvent, Modifiers, WindowEvent};
-    use winit::keyboard::{Key, ModifiersState, NamedKey, NativeKeyCode, PhysicalKey};
+    use winit::event::{ElementState, Modifiers, WindowEvent};
+    use winit::keyboard::{Key, ModifiersState, NamedKey};
 
     fn key(named: NamedKey, state: ElementState) -> WindowEvent {
-        // Same zero-init workaround the other `KeyEvent` builders use: `platform_specific` is pub(crate) and tolerates all-zero.
-        let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-        ev.logical_key = Key::Named(named);
-        ev.physical_key = PhysicalKey::Unidentified(NativeKeyCode::Unidentified);
-        ev.state = state;
-        ev.repeat = false;
-        ev.text = None;
-        WindowEvent::KeyboardInput {
-            device_id: unsafe { std::mem::zeroed() },
-            event: ev,
-            is_synthetic: false,
-        }
+        ui::synthetic_input::keyboard_input(ui::synthetic_input::key_event(
+            Key::Named(named),
+            None,
+            state,
+        ))
     }
 
     fn mods(state: ModifiersState) -> Modifiers {

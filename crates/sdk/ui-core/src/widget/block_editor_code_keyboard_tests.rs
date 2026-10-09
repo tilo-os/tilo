@@ -19,16 +19,11 @@ fn dispatch_key(
     key: &Key,
     modifiers: ModifiersState,
 ) -> bool {
-    let mut event: KeyEvent = unsafe { std::mem::zeroed() };
-    event.logical_key = key.clone();
-    event.physical_key =
-        winit::keyboard::PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
-    event.location = winit::keyboard::KeyLocation::Standard;
-    event.state = ElementState::Pressed;
+    let event = crate::synthetic_input::key_event(key.clone(), None, ElementState::Pressed);
     let mut handled = false;
     editor.handle_event(
         &WindowEvent::KeyboardInput {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             event,
             is_synthetic: false,
         },
