@@ -20853,6 +20853,7 @@ dependencies = [
  "tilo-automerge",
  "tilo-automerge-fork",
  "tilo-clock",
+ "tilo-history",
  "tilo-net",
  "tilo-test-env",
  "tilo-vello",

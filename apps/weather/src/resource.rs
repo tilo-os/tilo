@@ -1,90 +1,127 @@
-//! Weather as a [`tilo_resource::Resource`]: the saved places, their order
-//! and the default place, with one action vocabulary and one publication.
+//! Weather as a resource: the saved places, their order and the default
+//! place ([`Weather`]). Reordering is the collection's move at its path;
+//! saving, making a place the default, moving it to the top and removing it
+//! are verbs, the last three offered on each place.
 
 use std::rc::Rc;
 
+use serde::{Deserialize, Serialize};
 use ui::prelude::*;
-use ui::tilo_actions::{ActionParam, ParamType};
-use ui::tilo_resource::{Doc, ModelError, SearchEntry};
+use ui::tilo_resource::{Atom, JsonSchema, Refusal, SearchEntry};
 
-use crate::actions::{WEATHER_ACTION_TYPE, WeatherAction, WeatherEffect, document_children};
+use crate::actions::WeatherEffect;
 use crate::app::WeatherApp;
-use crate::doc::WeatherDoc;
-use crate::model::{SavedLocation, WeatherModel};
+pub use crate::model::Weather;
+use crate::model::{Place, SavedLocation, WeatherModel};
 
-/// The weather locations resource.
-pub struct Weather;
+/// A place to save, as found by the search or named by an agent.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct PlaceDetails {
+    /// City or place name
+    pub name: String,
+    /// Country name
+    pub country: String,
+    /// Latitude from -90 to 90
+    pub latitude: f64,
+    /// Longitude from -180 to 180
+    pub longitude: f64,
+    /// Administrative region
+    #[serde(default)]
+    pub region: Option<String>,
+    /// ISO country code
+    #[serde(default)]
+    pub country_code: Option<String>,
+    /// IANA timezone; defaults to auto
+    #[serde(default)]
+    pub timezone: Option<String>,
+}
 
-impl Resource for Weather {
-    const KIND: &'static str = "weather.locations";
-    const LABEL: &'static str = "Weather";
-    const ACTION_TYPE: &'static str = WEATHER_ACTION_TYPE;
-
-    type State = WeatherModel;
-    type Action = WeatherAction;
-
-    fn read(doc: &Doc) -> Result<WeatherModel, ModelError> {
-        Ok(WeatherDoc::read_model(doc))
+#[resource(kind = "weather.locations", label = "Weather", search = Weather::search)]
+impl Weather {
+    /// Save a place to follow.
+    ///
+    /// A place already saved near the same coordinates is kept, not saved
+    /// twice.
+    #[action]
+    pub fn save_location(
+        &mut self,
+        cx: &mut ActionCx,
+        #[param("The place")] place: PlaceDetails,
+        #[param("Show it first from now on")] make_default: Option<bool>,
+    ) {
+        let existing = self
+            .places
+            .iter()
+            .find(|(_, saved)| saved.near(place.latitude, place.longitude))
+            .map(|(id, _)| id.clone());
+        let id = existing.unwrap_or_else(|| {
+            // Places are keyed by uuid, the form the window and its fetches
+            // name them by; this one is minted from the action like any id.
+            let minted = u128::from_str_radix(cx.id().as_str(), 16).unwrap_or_default();
+            let id = Weather::item(uuid::Uuid::from_u128(minted));
+            self.places.push(
+                id.clone(),
+                Place {
+                    name: place.name.trim().to_owned(),
+                    region: place.region.unwrap_or_default().trim().to_owned(),
+                    country: place.country.trim().to_owned(),
+                    country_code: Atom(place.country_code.unwrap_or_default().trim().to_owned()),
+                    latitude: place.latitude,
+                    longitude: place.longitude,
+                    timezone: Atom(
+                        place
+                            .timezone
+                            .map_or_else(|| "auto".to_owned(), |zone| zone.trim().to_owned()),
+                    ),
+                },
+            );
+            id
+        });
+        if make_default.unwrap_or(false) {
+            self.default_place = Atom(id.as_str().to_owned());
+        }
     }
 
-    fn declarations() -> Vec<ActionDecl<Self>> {
-        vec![ActionDecl::new(
-            "add-saved-location",
-            "Save location",
-            vec![
-                ActionParam::required("name", ParamType::Text, "City or place name"),
-                ActionParam::required("country", ParamType::Text, "Country name"),
-                ActionParam::required("latitude", ParamType::Number, "Latitude from -90 to 90"),
-                ActionParam::required("longitude", ParamType::Number, "Longitude from -180 to 180"),
-                ActionParam::optional("region", ParamType::Text, "Administrative region"),
-                ActionParam::optional("country_code", ParamType::Text, "ISO country code"),
-                ActionParam::optional(
-                    "timezone",
-                    ParamType::Text,
-                    "IANA timezone; defaults to auto",
-                ),
-            ],
-            |args, _| {
-                let name = args
-                    .text("name")
-                    .map(str::trim)
-                    .filter(|value| !value.is_empty());
-                let country = args
-                    .text("country")
-                    .map(str::trim)
-                    .filter(|value| !value.is_empty());
-                let latitude = args
-                    .number("latitude")
-                    .filter(|value| (-90.0..=90.0).contains(value));
-                let longitude = args
-                    .number("longitude")
-                    .filter(|value| (-180.0..=180.0).contains(value));
-                match (name, country, latitude, longitude) {
-                    (Some(name), Some(country), Some(latitude), Some(longitude)) => {
-                        Ok(WeatherAction::AddLocation {
-                            location: SavedLocation::new(
-                                name,
-                                args.text("region").unwrap_or_default().trim(),
-                                country,
-                                args.text("country_code").unwrap_or_default().trim(),
-                                latitude,
-                                longitude,
-                                args.text("timezone").unwrap_or("auto").trim(),
-                            ),
-                        })
-                    }
-                    _ => Err("name, country, and valid latitude/longitude are required".into()),
-                }
-            },
-        )]
+    /// Use as default location.
+    #[action(item = places)]
+    pub fn use_as_default(&mut self, place: &Id) -> Result<(), Refusal> {
+        if !self.places.contains(place) {
+            return Err(Refusal::new("there is no such place"));
+        }
+        self.default_place = Atom(place.as_str().to_owned());
+        Ok(())
     }
 
-    fn children(state: &WeatherModel) -> Vec<tilo_actions::Resource> {
-        document_children(state)
+    /// Move to top.
+    #[action(item = places)]
+    pub fn move_to_top(&mut self, place: &Id) -> Result<(), Refusal> {
+        match self.places.position(place) {
+            None => Err(Refusal::new("there is no such place")),
+            Some(0) => Err(Refusal::new("this place is already first")),
+            Some(_) => {
+                self.places.move_to(place, 0);
+                Ok(())
+            }
+        }
     }
 
-    fn search(state: &WeatherModel) -> Vec<SearchEntry> {
-        state
+    /// Remove location.
+    #[action(item = places, destructive)]
+    pub fn remove(&mut self, place: &Id) -> Result<(), Refusal> {
+        self.places
+            .remove(place)
+            .ok_or_else(|| Refusal::new("there is no such place"))?;
+        if self.default_place.0 == place.as_str() {
+            self.default_place = Atom::default();
+        }
+        Ok(())
+    }
+}
+
+impl Weather {
+    /// Each saved place, found by its name, region and country.
+    fn search(&self) -> Vec<SearchEntry> {
+        self.model()
             .locations
             .iter()
             .map(|location| SearchEntry {
@@ -99,6 +136,22 @@ impl Resource for Weather {
                 ..Default::default()
             })
             .collect()
+    }
+
+    /// Saving `location` as the default place, as the search does.
+    pub fn save(location: &SavedLocation) -> Invoke<Self> {
+        Self::SAVE_LOCATION.with(weather::SaveLocation {
+            place: PlaceDetails {
+                name: location.name.clone(),
+                country: location.country.clone(),
+                latitude: location.latitude,
+                longitude: location.longitude,
+                region: Some(location.region.clone()),
+                country_code: Some(location.country_code.clone()),
+                timezone: Some(location.timezone.clone()),
+            },
+            make_default: Some(true),
+        })
     }
 }
 
@@ -116,6 +169,7 @@ impl ResourceApp for WeatherShell {
     const ICON: Option<&'static str> = Some("weather");
 
     fn view(cx: &mut ViewCx<Weather>) -> Element {
+        crate::locales::install();
         cx.surface(WeatherApp::new())
     }
 
@@ -153,25 +207,34 @@ impl ResourceApp for WeatherShell {
             return Vec::new();
         }
         let sample = crate::sample::sample_model();
+        let places = Weather::paths().places;
         sample
             .locations
             .iter()
-            .map(|location| WeatherAction::AddLocation {
-                location: location.clone(),
+            .enumerate()
+            .filter_map(|(at, location)| {
+                Invoke::edit(&places.insert_as(
+                    &Weather::item(location.id),
+                    at,
+                    &Place::of(location),
+                ))
+                .ok()
             })
-            .chain(
-                sample
-                    .selected_location()
-                    .map(|location| crate::actions::select_location_action(location.id)),
-            )
-            .filter_map(|action| Invoke::apply(&action).ok())
+            .chain(sample.selected_location().and_then(|location| {
+                Invoke::edit(
+                    &Weather::paths()
+                        .default_place
+                        .set(Atom(location.id.to_string())),
+                )
+                .ok()
+            }))
             .collect()
     }
 }
 
 impl ResourceSurface<Weather, WeatherEffect> for WeatherApp {
-    fn present(&mut self, state: &Rc<WeatherModel>) {
-        self.adopt_resource_state(state);
+    fn present(&mut self, state: &Rc<Weather>) {
+        self.adopt_resource_state(&state.model());
     }
 
     fn attach(&mut self, cx: SurfaceCx<Weather>) {

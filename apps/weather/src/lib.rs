@@ -12,8 +12,6 @@
 //!   the display units are derived (Settings owns the toggle, not this app).
 //! - [`api`] — Open-Meteo URL construction + JSON parsing (pure/testable).
 //! - [`net`] — the live background fetches (`tilo_net` on the app runtime).
-//! - [`doc`] — the Automerge CRDT projection (saved places only; provider
-//!   cache data is device-local), written only by [`actions::WeatherAction`].
 //! - [`resource`] — the [`Weather`] resource and the [`WeatherShell`] app.
 //! - [`sample`] — bundled, fully-populated offline data.
 //! - [`icon`] / [`chart`] — content drawing (weather glyphs, the hourly
@@ -69,9 +67,9 @@ pub mod api;
 pub mod app;
 pub mod chart;
 pub mod core;
-pub mod doc;
 pub mod icon;
 pub mod interaction;
+pub mod locales;
 pub mod model;
 pub mod net;
 pub mod panes;
