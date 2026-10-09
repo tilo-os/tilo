@@ -87,6 +87,7 @@ workspace-members = [
     # tilo-desktop-model and its member dependencies
     "collab-types",
     "desktop-policy",
+    "tilo-action-policy",
     "tilo-actions",
     "tilo-automation",
     "tilo-automerge",

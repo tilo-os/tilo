@@ -1,0 +1,283 @@
+//! Presets: named grant sets. Roles are the built-in presets on a room; an
+//! agent's default delegation and the foreign-device bound are presets too.
+
+use serde::{Deserialize, Serialize};
+
+use crate::{Answer, Grant, GrantId, KindSet, Level, Lifetime, Role, Subject, TreePath};
+
+/// The kind id of the room's own resource. Its actions are the room's
+/// governance: membership, roles, grants and settings.
+pub const ROOM_KIND: &str = "tilo.room";
+
+/// The field holding comments, wherever a model keeps them. The Commenter
+/// preset covers it at any depth, so field edits and verbs published on it are
+/// what a commenter may do.
+pub const COMMENTS_FIELD: &str = "comments";
+
+/// The room's governance actions.
+pub mod governance {
+    /// Invite someone, carrying at most the inviter's role.
+    pub const INVITE: &str = "invite";
+    /// Admit a member directly.
+    pub const ADD_MEMBER: &str = "add-member";
+    /// Remove a member. The owner cannot be removed.
+    pub const REMOVE_MEMBER: &str = "remove-member";
+    /// Change a member's role.
+    pub const SET_ROLE: &str = "set-role";
+    /// Add a grant.
+    pub const GRANT: &str = "grant";
+    /// Revoke a grant.
+    pub const REVOKE: &str = "revoke";
+    /// Change the room's settings.
+    pub const SETTINGS: &str = "settings";
+
+    pub const ALL: [&str; 7] = [
+        INVITE,
+        ADD_MEMBER,
+        REMOVE_MEMBER,
+        SET_ROLE,
+        GRANT,
+        REVOKE,
+        SETTINGS,
+    ];
+}
+
+/// The room's own resource: `room:<id>/kind:tilo.room`.
+#[must_use]
+pub fn room_resource(room: &str) -> TreePath {
+    TreePath::room(room).kind(ROOM_KIND)
+}
+
+/// The node of one governance action.
+#[must_use]
+pub fn governance_action(room: &str, action: &str) -> TreePath {
+    room_resource(room).action(action)
+}
+
+/// Where comments live in a room, at any depth.
+#[must_use]
+pub fn comments(room: &str) -> TreePath {
+    TreePath::room(room)
+        .rest()
+        .push(Level::Field, COMMENTS_FIELD)
+}
+
+/// One rule of a preset: a grant without its subject.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct Rule {
+    pub node: TreePath,
+    pub kinds: KindSet,
+    pub answer: Answer,
+}
+
+impl Rule {
+    #[must_use]
+    pub const fn new(node: TreePath, kinds: KindSet, answer: Answer) -> Self {
+        Self {
+            node,
+            kinds,
+            answer,
+        }
+    }
+}
+
+/// A named grant set people pick instead of writing grants one by one.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Preset {
+    pub name: String,
+    pub description: String,
+    pub rules: Vec<Rule>,
+}
+
+/// A preset that cannot be assigned.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PresetError {
+    Unnamed,
+    Empty,
+    /// A rule names no kind.
+    NoKinds(usize),
+    /// Two rules on the same node share a kind with different answers.
+    Contradicts(usize, usize),
+}
+
+impl std::fmt::Display for PresetError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Unnamed => f.write_str("a preset needs a name"),
+            Self::Empty => f.write_str("a preset needs at least one rule"),
+            Self::NoKinds(index) => write!(f, "rule {index} covers no kind of action"),
+            Self::Contradicts(first, second) => {
+                write!(
+                    f,
+                    "rules {first} and {second} give one node different answers"
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for PresetError {}
+
+impl Preset {
+    #[must_use]
+    pub fn new(name: impl Into<String>, description: impl Into<String>, rules: Vec<Rule>) -> Self {
+        Self {
+            name: name.into(),
+            description: description.into(),
+            rules,
+        }
+    }
+
+    /// # Errors
+    /// When the preset is unnamed, empty, has a rule covering no kind, or two
+    /// rules contradict on one node.
+    pub fn validate(&self) -> Result<(), PresetError> {
+        if self.name.trim().is_empty() {
+            return Err(PresetError::Unnamed);
+        }
+        if self.rules.is_empty() {
+            return Err(PresetError::Empty);
+        }
+        for (index, rule) in self.rules.iter().enumerate() {
+            if rule.kinds.is_empty() {
+                return Err(PresetError::NoKinds(index));
+            }
+            for (other_index, other) in self.rules.iter().enumerate().skip(index.saturating_add(1))
+            {
+                let shared = rule.kinds.iter().any(|kind| other.kinds.contains(kind));
+                if rule.node == other.node && shared && rule.answer != other.answer {
+                    return Err(PresetError::Contradicts(index, other_index));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// The preset's grants for `subject`. Ids are `<prefix>:<index>`.
+    #[must_use]
+    pub fn assign(
+        &self,
+        prefix: &str,
+        subject: &Subject,
+        granted_by: &Subject,
+        lifetime: &Lifetime,
+    ) -> Vec<Grant> {
+        self.rules
+            .iter()
+            .enumerate()
+            .map(|(index, rule)| Grant {
+                id: GrantId(format!("{prefix}:{index}")),
+                subject: subject.clone(),
+                node: rule.node.clone(),
+                kinds: rule.kinds,
+                answer: rule.answer,
+                lifetime: lifetime.clone(),
+                granted_by: granted_by.clone(),
+            })
+            .collect()
+    }
+}
+
+/// The rules a role carries in `room`.
+///
+/// | Role | Grants on the room |
+/// |---|---|
+/// | Viewer | Read: Allow |
+/// | Commenter | Read: Allow; comments: Allow (Undoable) |
+/// | Editor | Read, Undoable: Allow; Outside: Ask; governance: Deny |
+/// | Owner | everything: Allow |
+#[must_use]
+pub fn role_rules(role: Role, room: &str) -> Vec<Rule> {
+    let room_node = TreePath::room(room);
+    match role {
+        Role::Viewer => vec![Rule::new(room_node, KindSet::READ, Answer::Allow)],
+        Role::Commenter => vec![
+            Rule::new(room_node, KindSet::READ, Answer::Allow),
+            Rule::new(comments(room), KindSet::UNDOABLE, Answer::Allow),
+        ],
+        Role::Editor => vec![
+            Rule::new(room_node.clone(), KindSet::READ_UNDOABLE, Answer::Allow),
+            Rule::new(room_node, KindSet::OUTSIDE, Answer::Ask),
+            Rule::new(
+                room_resource(room),
+                KindSet::UNDOABLE.union(KindSet::OUTSIDE),
+                Answer::Deny,
+            ),
+        ],
+        Role::Owner => vec![Rule::new(room_node, KindSet::ALL, Answer::Allow)],
+    }
+}
+
+/// The preset a role stands for in `room`.
+#[must_use]
+pub fn role_preset(role: Role, room: &str) -> Preset {
+    let description = match role {
+        Role::Viewer => "Can read everything in the room.",
+        Role::Commenter => "Can read everything and comment.",
+        Role::Editor => {
+            "Can read and make undoable changes; outside effects ask first; cannot govern the room."
+        }
+        Role::Owner => "Can do everything, including governing the room.",
+    };
+    Preset::new(role.name(), description, role_rules(role, room))
+}
+
+/// Every role's grants for a new room, given by its owner. Ids are
+/// `role:<role>:<index>`.
+#[must_use]
+pub fn room_role_grants(room: &str, granted_by: &Subject) -> Vec<Grant> {
+    Role::ALL
+        .into_iter()
+        .flat_map(|role| {
+            role_preset(role, room).assign(
+                &format!("role:{}", role.name().to_ascii_lowercase()),
+                &Subject::Role(role),
+                granted_by,
+                &Lifetime::UntilRevoked,
+            )
+        })
+        .collect()
+}
+
+/// An agent's default delegation within the scope a person gives it: Read and
+/// Undoable allowed, Outside asks.
+#[must_use]
+pub fn agent_default(scope: &[TreePath]) -> Preset {
+    Preset::new(
+        "Agent default",
+        "Can read and make undoable changes; outside effects ask first.",
+        scope
+            .iter()
+            .flat_map(|node| {
+                [
+                    Rule::new(node.clone(), KindSet::READ_UNDOABLE, Answer::Allow),
+                    Rule::new(node.clone(), KindSet::OUTSIDE, Answer::Ask),
+                ]
+            })
+            .collect(),
+    )
+}
+
+/// What a person may do from a device that is not theirs, in any room: all
+/// content, no governance.
+#[must_use]
+pub fn foreign_device_bound() -> Vec<Grant> {
+    let issuer = Subject::ForeignDevice;
+    let mut grants = vec![Grant::new(
+        "foreign-device:content",
+        Subject::ForeignDevice,
+        TreePath::root(),
+        KindSet::ALL,
+        Answer::Allow,
+        issuer.clone(),
+    )];
+    grants.push(Grant::new(
+        "foreign-device:governance",
+        Subject::ForeignDevice,
+        TreePath::root().any(Level::Room).kind(ROOM_KIND),
+        KindSet::UNDOABLE.union(KindSet::OUTSIDE),
+        Answer::Deny,
+        issuer,
+    ));
+    grants
+}

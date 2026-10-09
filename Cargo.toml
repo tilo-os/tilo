@@ -142,6 +142,7 @@ members = [
     "crates/sdk/search",
 
     # Collab
+    "crates/collab/action-policy",
     "crates/collab/actions",
     "crates/collab/automation",
     "crates/collab/channel-crypto",
