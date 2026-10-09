@@ -30,6 +30,8 @@ native = ["dep:tilo-runner-native"]
 # `broker-transport`. Native only.
 broker-transport = ["tilo-runner-native?/broker-transport"]
 test-support = ["ui-core/test-support", "tilo-resource/test-support"]
+# `chrono`'s dates and times as model values (`tilo_resource`'s `chrono`).
+chrono = ["tilo-resource/chrono"]
 # Backend features of the native runner; on wasm32 they have no effect.
 # `portal` and `notifications` select nothing any more: the platform crates
 # choose each target's file choosers and notifications, and the native runner
