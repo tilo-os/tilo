@@ -240,7 +240,8 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--shell-bin", default=str(REPO / "target/debug/shell"))
     parser.add_argument("--out", type=Path, default=REPO / "target/latency-bench")
-    parser.add_argument("--switches", type=int, default=40, help="workspace switches to time")
+    parser.add_argument("--switches", type=int, default=100,
+                        help="workspace switches to time; at 100 the p99 is not the single slowest")
     parser.add_argument("--switch-pause", type=float, default=0.3,
                         help="seconds between a switch's report and the next chord")
     parser.add_argument("--pointer-count", type=int, default=600, help="pointer moves to time")
