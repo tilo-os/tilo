@@ -419,6 +419,61 @@ def owned_shell_accessibility_windows():
     return windows
 
 
+def agent_profile_task_availability(agent, *, windows=None):
+    """Read only the fixed availability class of this exact shell profile."""
+    states = {
+        "Available for tasks": "available",
+        "Not currently available for tasks": "unavailable",
+        "Task availability unknown": "unknown",
+    }
+    matches = []
+    for owned in owned_shell_accessibility_windows() if windows is None else windows:
+        client = atspi.AtspiClient(owned["address"], owned["bus"])
+        tree = accessible_subtree(client, owned["root"], atspi.APP_TREE_NODE_LIMIT)
+        for path in client.named(tree, agent):
+            description = atspi.property_text(client.property(path, "Description"))
+            if description is None:
+                raise RuntimeError("the exact Agent profile description is unobservable")
+            observed = [state for label, state in states.items() if label in description]
+            if len(observed) != 1:
+                raise RuntimeError("the exact Agent profile availability is unobservable or ambiguous")
+            matches.append(observed[0])
+    if len(matches) > 1:
+        raise RuntimeError("the compositor published duplicate exact Agent profiles")
+    return matches[0] if matches else None
+
+
+def prove_managed_agent_profile_availability(socket, agent, expected, output, process, case):
+    """Exercise the public profile door and real external AT observation."""
+    if expected not in {"available", "unavailable"} or case not in {
+            "before-start", "admitted", "retired-before-replacement"}:
+        raise RuntimeError("the native profile proof case is not a fixed expected boundary")
+    invoke(socket, require_action(socket, "settings.participant.open"), {
+        "kind": "agent", "id": agent,
+    })
+
+    def observed():
+        # A fresh owned scene also drives the ordinary AT publication. No
+        # host helper or retained process fields stand in for the real query.
+        require_ok(call(socket, {"op": "snapshot", "path": str(
+            output / f"managed-profile-{case}.png"
+        )}))
+        state = agent_profile_task_availability(agent)
+        return True if state == expected else None
+
+    wait_for("actual managed Agent profile task availability", observed, process)
+    (output / f"managed-profile-{case}.json").write_text(json.dumps({
+        "public_profile_action_invoked": True,
+        "external_accessibility_observed": True,
+        "task_availability": expected,
+        "private_fixture_content_recorded": False,
+    }, indent=2) + "\n")
+    require_ok(call(socket, {"op": "key", "key": "Escape"}))
+    wait_for("the exact Agent profile to close", lambda: (
+        True if agent_profile_task_availability(agent) is None else None
+    ), process)
+
+
 def agent_marker_accessibility(agent, *, windows=None, observation=None):
     """Read live marker children directly, decoding their actual wire Names."""
     pattern = re.compile(rf"^Agent action: {re.escape(agent)}(?: · Agent)?$", re.IGNORECASE)
@@ -6225,6 +6280,8 @@ def native_agent_membership_revocation(
         socket, room, "desktop:agent:tide", "remove"), process)
     wait_for("fresh Tide Chat route", lambda: offered_agent_action(
         socket, room, record, "tide", "open-agent-conversation"), process)
+    prove_managed_agent_profile_availability(
+        socket, "tide", "unavailable", output, process, "retired-before-replacement")
     start_managed_agent(socket, room, "tide", process,
                         public_failure_path=output / "failed-agent-tide-restart-terminal.json")
 
@@ -7040,6 +7097,8 @@ def managed_task_and_message_lifecycle(
     provider.require_owner_admission(owner_phase_at_model_admission)
     if not task_only:
         configure_lifecycle_task_budget(socket, room, task_id, process, output)
+        prove_managed_agent_profile_availability(
+            socket, agent, "unavailable", output, process, "before-start")
     startup = start_managed_agent(socket, room, agent, process)
 
     # Start acknowledges only the authenticated launch request. Keep it
@@ -7136,6 +7195,9 @@ def managed_task_and_message_lifecycle(
     after = active.get("after_revision")
     if type(epoch) is not int or epoch <= 0 or type(after) is not int:
         raise RuntimeError("active task has no exact owner frontier")
+    if not task_only:
+        prove_managed_agent_profile_availability(
+            socket, agent, "available", output, process, "admitted")
     planning_sequence = active["execution"]["sequence"]
     require_ok(call(socket, {"op": "snapshot", "path": str(
         output / "managed-task-owner-planning.png"

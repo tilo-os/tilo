@@ -26,6 +26,53 @@ SPEC.loader.exec_module(PROOF)
 
 
 class PresentedEditorTargetTests(unittest.TestCase):
+    def test_managed_profile_availability_observes_only_exact_fixed_public_state(self):
+        windows = [{"address": "owned", "bus": ":1.1", "root": "/workspace"}]
+
+        class Client:
+            def __init__(self, description):
+                self.description = description
+
+            def named(self, tree, name):
+                return [path for path, value in tree.items()
+                        if PROOF.atspi.property_text(value) == name]
+
+            def property(self, _path, name):
+                if name != "Description":
+                    raise AssertionError("unexpected profile property")
+                return self.description
+
+        for label, expected in [
+                ("Available for tasks", "available"),
+                ("Not currently available for tasks", "unavailable"),
+                ("Task availability unknown", "unknown")]:
+            with self.subTest(state=expected), patch.object(
+                    PROOF.atspi, "AtspiClient", return_value=Client(f"(<'{label}'>,)")), \
+                    patch.object(PROOF, "accessible_subtree", return_value={
+                        "/other": "(<'reed'>,)", "/exact": "(<'tide'>,)"}):
+                self.assertEqual(PROOF.agent_profile_task_availability(
+                    "tide", windows=windows), expected)
+        with patch.object(PROOF.atspi, "AtspiClient", return_value=Client(
+                "(<'Available for tasks'>,)")), patch.object(
+                PROOF, "accessible_subtree", return_value={"/other": "(<'reed'>,)"}):
+            self.assertIsNone(PROOF.agent_profile_task_availability("tide", windows=windows))
+
+    def test_managed_profile_availability_refuses_ambiguity_without_recording_description(self):
+        windows = [{"address": "owned", "bus": ":1.1", "root": "/workspace"}]
+
+        class Client:
+            def named(self, _tree, _name):
+                return ["/exact"]
+
+            def property(self, _path, _name):
+                return "(<'PRIVATE-DESCRIPTION Available for tasks. Task availability unknown'>,)"
+
+        with patch.object(PROOF.atspi, "AtspiClient", return_value=Client()), \
+                patch.object(PROOF, "accessible_subtree", return_value={}), \
+                self.assertRaises(RuntimeError) as failed:
+            PROOF.agent_profile_task_availability("tide", windows=windows)
+        self.assertNotIn("PRIVATE-DESCRIPTION", str(failed.exception))
+
     def test_detached_restoration_requires_both_current_controls_without_repair(self):
         owner = {"process": 7, "bus": "owned", "agent": "Tide", "detached": True, "window": "/window"}
         baseline = {"draft_matches": True, "caret": 3, "selection": [3, 7]}
