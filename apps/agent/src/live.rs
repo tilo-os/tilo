@@ -506,10 +506,15 @@ impl PlanStream {
 /// left (an added paragraph lands the agent's caret at its end).
 #[must_use]
 pub fn continuation(descriptor: &tilo_actions::ActionDescriptor) -> Option<(String, String)> {
+    writing(&descriptor.resource_kind, &descriptor.address.action)
+}
+
+/// [`continuation`] for the operation `action` on a resource of `kind`.
+fn writing(kind: &str, action: &str) -> Option<(String, String)> {
     use ui::tilo_resource::{Effect as _, Resource as _};
     use word_processor::effects::WordProcessorEffect;
     use word_processor::framework::Document;
-    if descriptor.resource_kind != Document::KIND {
+    if kind != Document::KIND {
         return None;
     }
     let typing = WordProcessorEffect::TypeText {
@@ -518,8 +523,7 @@ pub fn continuation(descriptor: &tilo_actions::ActionDescriptor) -> Option<(Stri
     let param = typing.arguments().keys().next()?.clone();
     // Whether the operation takes that parameter is the descriptor's to
     // say; the caller checks it on both ends.
-    let writes = descriptor.address.action == typing.id()
-        || descriptor.address.action == Document::APPEND_PARAGRAPH.id;
+    let writes = action == typing.id() || action == Document::APPEND_PARAGRAPH.id;
     writes.then(|| (param, typing.id().to_owned()))
 }
 
@@ -730,37 +734,20 @@ mod tests {
         use ui::tilo_resource::{Effect as _, Resource as _};
         use word_processor::effects::WordProcessorEffect;
         use word_processor::framework::Document;
-        let descriptor = |kind: &str, action: &str| tilo_actions::ActionDescriptor {
-            semantic_identity: None,
-            address: tilo_actions::ActionAddress::new(kind, action),
-            resource_kind: kind.into(),
-            resource_label: "Brief".into(),
-            action_label: action.into(),
-            description: None,
-            locus: tilo_actions::ExecutionLocus::ClientLocal,
-            kind: tilo_actions::OperationKind::Document,
-            contract: tilo_actions::ActionContract::default(),
-            input: tilo_actions::InputSpec::None,
-            params: Vec::new(),
-            view: None,
-        };
         let typing = WordProcessorEffect::TypeText {
             text: String::new(),
         }
         .id();
         let expected = Some(("text".to_owned(), typing.to_owned()));
         assert_eq!(
-            continuation(&descriptor(Document::KIND, Document::APPEND_PARAGRAPH.id)),
+            writing(Document::KIND, Document::APPEND_PARAGRAPH.id),
             expected,
             "a paragraph is added, then typed on"
         );
-        assert_eq!(continuation(&descriptor(Document::KIND, typing)), expected);
+        assert_eq!(writing(Document::KIND, typing), expected);
+        assert_eq!(writing(Document::KIND, Document::INSERT_TABLE.id), None);
         assert_eq!(
-            continuation(&descriptor(Document::KIND, Document::INSERT_TABLE.id)),
-            None
-        );
-        assert_eq!(
-            continuation(&descriptor("notes.note", Document::APPEND_PARAGRAPH.id)),
+            writing("notes.note", Document::APPEND_PARAGRAPH.id),
             None,
             "only the word processor's own writing"
         );

@@ -13,7 +13,6 @@ use std::collections::HashSet;
 use std::rc::Rc;
 
 use ui::framework::{LiveRow, ResourceApp, ResourceSurface, SurfaceCx, ViewCx};
-use ui::tilo_actions::ActionAddress;
 use ui::tilo_resource::{
     self, ActionCx, Derived, Edit, Effect as _, Id, Invoke, Keyed, Model, Refusal, SearchEntry,
     Set, resource,
@@ -268,8 +267,9 @@ impl Contacts {
                 .anchored(contact_resource_id(contact.id))
         });
         let groups = ordered_groups(&self.contacts).into_iter().map(|group| {
+            let place = place_resource_id(&group_place(&group));
             SearchEntry::new(format!("Group: {group}"), "Filter contacts in this group")
-                .invoking(open_group_address(&group))
+                .opening(place, &ContactsEffect::OpenGroup { name: group })
         });
         contacts.chain(groups).collect()
     }
@@ -308,14 +308,6 @@ pub fn place_resource_id(place: &str) -> String {
 /// The published id of the contact `id`.
 pub fn contact_resource_id(id: ContactId) -> String {
     tilo_resource::items::item_resource_id::<Contacts>("contacts", &Contacts::key(id))
-}
-
-/// Revealing the group `name`, as its place offers it.
-pub fn open_group_address(name: &str) -> ActionAddress {
-    let effect = ContactsEffect::OpenGroup {
-        name: name.trim().to_owned(),
-    };
-    ActionAddress::new(place_resource_id(&group_place(name)), effect.id())
 }
 
 /// What a person may look a contact up by, one field per line so a query

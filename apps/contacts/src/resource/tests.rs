@@ -317,7 +317,17 @@ fn the_book_publishes_places_items_and_search() {
         .iter()
         .find(|entry| entry.title == "Group: Work")
         .expect("groups are found too");
-    assert_eq!(work.action, Some(open_group_address("Work")));
+    let place = place_resource_id(&group_place("Work"));
+    assert_eq!(work.anchor.as_deref(), Some(place.as_str()));
+    let opens = work.action.as_ref().expect("a group hit opens its place");
+    assert_eq!(opens.resource, place);
+    assert_eq!(
+        opens.action,
+        ContactsEffect::OpenGroup {
+            name: "Work".into()
+        }
+        .id()
+    );
 }
 
 /// A merge through the duplicate's place merges, and one undo restores
