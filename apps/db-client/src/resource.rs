@@ -3,7 +3,8 @@
 //! text. Renaming a connection or a query and typing SQL are the built-in
 //! field edits of their paths (`Workspace::paths().sql.splice(..)`);
 //! adding and removing them are verbs. Connecting, running SQL and
-//! everything else done on a database server are [`DbEffect`]s.
+//! everything else done on a database server are [`DbEffect`]s; connecting
+//! and running a saved query are offered on the saved connection or query.
 
 use std::rc::Rc;
 
@@ -29,7 +30,12 @@ pub const LOCALES: &[(&str, &str)] = &[("en-US", include_str!("../locales/en-US.
 static CATALOG: EmbeddedCatalog =
     EmbeddedCatalog::new("en-US", LOCALES, "db-client-add-connection").with_system_locale();
 
-#[resource(kind = "db-client.workspace", label = "Database", search = Workspace::search)]
+#[resource(
+    kind = "db-client.workspace",
+    label = "Database",
+    search = Workspace::search,
+    effects = DbEffect
+)]
 impl Workspace {
     /// Add connection
     ///
@@ -154,11 +160,17 @@ pub enum DbEffect {
     ///
     /// Opens the saved connection on this device, with this device's
     /// password.
-    #[effect(job, idempotent)]
-    Connect { connection: Uuid },
+    #[effect(row, job, idempotent, item = connections)]
+    Connect {
+        #[param("The saved connection")]
+        connection: String,
+    },
     /// Run saved query
-    #[effect(job, destructive)]
-    Run { query: Uuid },
+    #[effect(row, job, destructive, item = saved_queries)]
+    Run {
+        #[param("The saved query")]
+        query: String,
+    },
     /// Show database
     #[effect(view, row)]
     FocusDatabase { connection: Uuid },

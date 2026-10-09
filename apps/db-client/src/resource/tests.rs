@@ -239,17 +239,28 @@ fn records_offer_their_verbs_and_search_names_them() {
         &item_resource_id::<Workspace>("connections", &connection),
     );
     assert_eq!(item.label, "Analytics");
-    assert!(
-        item.actions
+    for id in ["remove-connection", "connect"] {
+        let spec = item
+            .actions
             .iter()
-            .any(|spec| spec.id == "remove-connection")
-    );
+            .find(|spec| spec.id == id)
+            .unwrap_or_else(|| panic!("a connection offers {id}"));
+        assert!(
+            spec.params().iter().all(|param| param.name != "connection"),
+            "{id} is bound to the connection"
+        );
+    }
     let (query, _) = state.saved_queries.iter().next().unwrap();
     let query = child(
         &tree,
         &item_resource_id::<Workspace>("saved_queries", query),
     );
-    assert!(query.actions.iter().any(|spec| spec.id == "remove-query"));
+    for id in ["remove-query", "run"] {
+        assert!(
+            query.actions.iter().any(|spec| spec.id == id),
+            "a saved query offers {id}"
+        );
+    }
 
     let entries = Workspace::search(&state);
     assert!(

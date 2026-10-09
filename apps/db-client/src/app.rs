@@ -297,7 +297,9 @@ impl DbClientApp {
             Intent::Connect(id) => {
                 // Use the shared effect implementation for both selecting and
                 // retrying an already-active disconnected profile.
-                let _ = self.execute_effect(DbEffect::Connect { connection: id });
+                let _ = self.execute_effect(DbEffect::Connect {
+                    connection: id_of(id).as_str().to_owned(),
+                });
             }
             Intent::OpenItem(id) => self.open_item(id),
             Intent::RemoveConnection(id) => {
@@ -1139,7 +1141,7 @@ impl DbClientApp {
             DbEffect::Run { query } => {
                 let sql = self
                     .record
-                    .saved_query(query)
+                    .saved_query(uuid_of(&ui::tilo_resource::Id::from_raw(query)))
                     .map(|saved| saved.sql.clone())
                     .ok_or_else(|| "the saved query is no longer available".to_string())?;
                 self.run_on_open(&sql)?;
@@ -1148,6 +1150,7 @@ impl DbClientApp {
             DbEffect::Commit { connection } => self.run_on(connection, "COMMIT")?,
             DbEffect::Rollback { connection } => self.run_on(connection, "ROLLBACK")?,
             DbEffect::Connect { connection } => {
+                let connection = uuid_of(&ui::tilo_resource::Id::from_raw(connection));
                 let idx = self
                     .session
                     .connections
@@ -1741,7 +1744,11 @@ mod tests {
         );
         let connection = state.profiles()[0].id;
 
-        app.call("connect", serde_json::json!({ "connection": connection }))
+        let item = ui::tilo_resource::items::item_resource_id::<Record>(
+            "connections",
+            &crate::record::id_of(connection),
+        );
+        app.call_on(&item, "connect", serde_json::json!({}))
             .unwrap();
         tilo_test_env::wait_until("the connection to open its catalog", || {
             app.settle();
@@ -1792,7 +1799,11 @@ mod tests {
             let mut profile = ConnectionProfile::new("Query worker", Engine::Sqlite);
             profile.file_path = database.to_string_lossy().into_owned();
             app.invoke(adding(&profile, 0)).unwrap();
-            app.call("connect", serde_json::json!({ "connection": profile.id }))
+            let item = ui::tilo_resource::items::item_resource_id::<Record>(
+                "connections",
+                &crate::record::id_of(profile.id),
+            );
+            app.call_on(&item, "connect", serde_json::json!({}))
                 .unwrap();
             tilo_test_env::wait_until("the query fixture connection to open", || {
                 fn has_schema(rows: &[Resource]) -> bool {
