@@ -128,17 +128,17 @@ pub(crate) struct ShellSelectionFixture {
     reason = "one scenario: the governor's publications and the foreign change stay together"
 )]
 pub(crate) fn generate() -> ShellSelectionFixture {
-    let root = SigningKey::from_bytes(&[0x61; 32]);
+    let person = SigningKey::from_bytes(&[0x61; 32]);
     let key = SigningKey::from_bytes(&[0x62; 32]);
     let foreign_key = SigningKey::from_bytes(&[0x63; 32]);
     let authority = certificate(
-        &root,
+        &person,
         &key,
         "Governing device",
         DeviceCapabilities::primary(),
     );
     let foreign = certificate(
-        &root,
+        &person,
         &foreign_key,
         "foreign fixture author",
         DeviceCapabilities::member(),

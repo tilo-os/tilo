@@ -5,8 +5,8 @@
 //! action a change claims is granted to its author and that the change
 //! writes only the storage units that action may write; a device that has
 //! the app replays the action and checks that it produces exactly the change.
-//! The claim is what both read, one per change, derived from the change
-//! itself on the author's device: the
+//! The claim is what both read. It is signed with the op, one per change,
+//! and it is derived from the change itself on the author's device: the
 //! history entry the executor writes into every change names the action
 //! ([`tilo_actions::Did`]), and the units are listed from the record.
 //!
@@ -40,7 +40,6 @@ pub enum ClaimedAction {
     /// One of the resource's verbs, on the item it names, if any.
     Verb {
         action: ActionKey,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
         item: Option<String>,
     },
     /// A built-in field edit of the resource kind `kind` at `path`.
@@ -195,6 +194,29 @@ pub fn claims_of(
         .collect()
 }
 
+/// The units a change writes in a record that keeps no unit index: the
+/// record's own unit.
+#[must_use]
+pub fn record_unit(_change: &automerge::Change) -> Vec<UnitPath> {
+    vec![Vec::new()]
+}
+
+/// The claims of `mutation`'s changes, each writing the units `units` lists
+/// for it. A snapshot carries none: it is a checkpoint, which only the
+/// room's pinned governor may publish.
+///
+/// # Errors
+/// The first change that cannot be claimed, or bytes that do not parse.
+pub fn mutation_claims(
+    mutation: &crate::op::DocumentMutation,
+    units: impl FnMut(&automerge::Change) -> Vec<UnitPath>,
+) -> Result<Vec<ChangeClaim>, ClaimError> {
+    match mutation {
+        crate::op::DocumentMutation::Snapshot(_) => Ok(Vec::new()),
+        crate::op::DocumentMutation::Incremental(bytes) => claims_of(&parse_changes(bytes)?, units),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -273,6 +295,56 @@ mod tests {
             ClaimedAction::of(&context(truncated)),
             Err(ClaimError::GroupTooLarge { .. })
         ));
+    }
+
+    #[test]
+    fn a_mutation_claims_each_change_and_a_snapshot_none() {
+        use automerge::transaction::{CommitOptions, Transactable};
+        let mut doc = automerge::AutoCommit::new();
+        let before = doc.get_heads();
+        for field in ["favorite", "title"] {
+            doc.put(automerge::ROOT, field, true).unwrap();
+            doc.commit_with(
+                CommitOptions::default()
+                    .with_message(context(edit(field)).change_message().unwrap()),
+            );
+        }
+        let mutation = crate::op::DocumentMutation::Incremental(doc.save_after(&before));
+        let claims = mutation_claims(&mutation, record_unit).unwrap();
+        assert_eq!(claims.len(), 2);
+        let made: Vec<[u8; 32]> = doc
+            .get_changes(&before)
+            .iter()
+            .map(|change| change.hash().0)
+            .collect();
+        assert_eq!(
+            claims.iter().map(|claim| claim.change).collect::<Vec<_>>(),
+            made,
+            "one claim per change, in order"
+        );
+        assert!(claims.iter().all(|claim| claim.units == [Vec::new()]));
+        assert!(
+            mutation_claims(
+                &crate::op::DocumentMutation::Snapshot(doc.save()),
+                record_unit
+            )
+            .unwrap()
+            .is_empty()
+        );
+    }
+
+    #[test]
+    fn changes_parse_without_their_dependencies() {
+        use automerge::transaction::Transactable;
+        let mut doc = automerge::AutoCommit::new();
+        doc.put(automerge::ROOT, "title", "a").unwrap();
+        doc.commit();
+        let before = doc.get_heads();
+        doc.put(automerge::ROOT, "title", "b").unwrap();
+        doc.commit();
+        let changes = parse_changes(&doc.save_after(&before)).unwrap();
+        assert_eq!(changes.len(), 1);
+        assert_eq!(changes[0].deps(), before.as_slice());
     }
 
     #[test]
