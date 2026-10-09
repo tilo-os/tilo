@@ -216,3 +216,20 @@ fn an_exclusive_holder_records_its_pid_for_diagnostics() {
     guard.record_owner().unwrap();
     assert_eq!(owner_pid(&path), Some(std::process::id()));
 }
+
+#[test]
+fn inherited_file_transfer_preserves_parent_ownership_without_leaking_descriptor() {
+    let (_directory, path) = fresh_lock_path();
+    let parent = FileLock::exclusive(open_lock_file(&path).unwrap()).unwrap();
+    let inherited = FileLock::try_exclusive(parent.file().try_clone().unwrap()).unwrap();
+    let file = inherited.into_file_preserving_lock();
+    assert!(busy(FileLock::try_exclusive(
+        open_lock_file(&path).unwrap()
+    )));
+    drop(file);
+    assert!(busy(FileLock::try_exclusive(
+        open_lock_file(&path).unwrap()
+    )));
+    drop(parent);
+    assert!(FileLock::try_exclusive(open_lock_file(&path).unwrap()).is_ok());
+}
