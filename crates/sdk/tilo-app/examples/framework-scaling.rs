@@ -57,12 +57,6 @@ pub struct Checklist {
 
 #[resource(kind = "example.framework-scaling", label = "Checklist")]
 impl Checklist {
-    /// Set the next task's title.
-    #[action]
-    pub fn draft(&mut self, title: String) {
-        self.draft = title;
-    }
-
     /// Add `count` tasks at once.
     #[action]
     pub fn seed(&mut self, cx: &mut ActionCx, count: u32) {
@@ -75,16 +69,6 @@ impl Checklist {
                 },
             );
         }
-    }
-
-    /// Mark a task completed or open.
-    ///
-    /// # Errors
-    /// Refuses a task that no longer exists.
-    #[action]
-    pub fn set_done(&mut self, task: &Id, done: bool) -> Result<(), &'static str> {
-        self.tasks.get_mut(task).ok_or("gone")?.done = done;
-        Ok(())
     }
 }
 
@@ -107,22 +91,17 @@ impl ResourceApp for Scaling {
     }
 
     fn view(cx: &mut ViewCx<Checklist>) -> Element {
-        let draft = cx
-            .input_with(|list| list.draft.clone(), Checklist::DRAFT)
-            .with_id("draft");
+        let draft = cx.input(Checklist::paths().draft).with_id("draft");
         let rows = cx.each(
             |list| &list.tasks,
             |row| {
-                let Some(id) = row.item().cloned() else {
+                if row.item().is_none() {
                     return Box::new(Column::new()) as Element;
-                };
+                }
+                let done = row.paths().done;
                 Box::new(tilo_app::row![
                     row.text(|task| task.title.clone()),
-                    row.checkbox_with(
-                        "scaling-done",
-                        |task| task.done,
-                        Checklist::SET_DONE.map(move |done| (id.clone(), done))
-                    ),
+                    row.checkbox("scaling-done", done),
                 ]) as Element
             },
         );

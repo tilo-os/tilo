@@ -281,7 +281,7 @@ fn start(
                     Ok(versions) => ui::serde_json::json!({"review_id": review_id, "submission": snapshot.pending, "verified_packages": versions}),
                     Err(error) => ui::serde_json::json!({"review_id": review_id, "submission": snapshot.pending, "inspection_error": error}),
                 };
-                if state.package_selected.as_ref() != Some(&snapshot) { cx.invoke(Draft::SET_FEEDBACK.with(String::new())); }
+                if state.package_selected.as_ref() != Some(&snapshot) { cx.invoke(Draft::paths().feedback.replace("").into()); }
                 state.package_selected = Some(snapshot); state.selected = None; navigation.set(NavPane::Content); result
             }
             Err(error) => { state.error = Some(error.clone()); pane.set(state); return Err(error); }
@@ -418,13 +418,11 @@ pub(super) fn detail(cx: &ViewCx<Draft>, snapshot: &Snapshot) -> Element {
     body = body
         .push(Box::new(labeled_field(
             "review-reviewer",
-            cx.input_with(|draft| draft.reviewer.clone(), Draft::SET_REVIEWER)
-                .with_id("reviewer-input"),
+            cx.input(Draft::paths().reviewer).with_id("reviewer-input"),
         )))
         .push(Box::new(labeled_field(
             "package-review-reason",
-            cx.input_with(|draft| draft.feedback.clone(), Draft::SET_FEEDBACK)
-                .with_id("feedback-input"),
+            cx.input(Draft::paths().feedback).with_id("feedback-input"),
         )));
     let snapshot = snapshot.clone();
     let draft = cx.value(Clone::clone);

@@ -2859,16 +2859,6 @@ pub fn set_image_placement_action(
     }
 }
 
-/// Set alignment (`left`/`center`/`right`/`justify`) on `blocks`.
-pub fn set_align_action(blocks: Vec<String>, align: &str) -> RichTextAction {
-    set_block_attr_action(
-        RegionKind::Body,
-        blocks,
-        "align",
-        AttrVal::Str(align.to_string()),
-    )
-}
-
 /// Apply a named paragraph style (and, for a built-in, its structural kind) to
 /// `blocks` in one action.
 pub fn apply_named_style_action(
@@ -3053,15 +3043,6 @@ pub fn insert_image_action(block: &str, at: usize, image: ImageInput) -> RichTex
     }
 }
 
-/// Remove `blocks` (an image, or a table's cells).
-/// Insert a paragraph carrying `text` after block `after`.
-pub fn insert_paragraph_action(after: &str, text: &str) -> RichTextAction {
-    RichTextAction::InsertParagraph {
-        after: after.to_string(),
-        text: text.to_string(),
-    }
-}
-
 /// Append `text` as a new paragraph at the end of the body (resolved at apply).
 pub fn append_paragraph_action(text: &str) -> RichTextAction {
     RichTextAction::AppendParagraph {
@@ -3078,11 +3059,6 @@ pub fn continue_paragraph_action(text: &str) -> RichTextAction {
 
 pub fn remove_blocks_action(blocks: Vec<String>) -> RichTextAction {
     RichTextAction::RemoveBlocks { blocks }
-}
-
-/// Move `blocks` to directly after `after` (the start of the body for `None`).
-pub fn move_blocks_action(blocks: Vec<String>, after: Option<String>) -> RichTextAction {
-    RichTextAction::MoveBlocks { blocks, after }
 }
 
 /// Replace the whole document body with `markdown`.
@@ -3144,22 +3120,6 @@ pub fn add_comment_action(
         author: author.to_string(),
         date: date.to_string(),
         text: text.to_string(),
-    }
-}
-
-/// Append one durable reply to the stable parent comment resource.
-pub fn reply_to_comment_action(
-    comment: &str,
-    author: &str,
-    date: &str,
-    text: &str,
-) -> RichTextAction {
-    RichTextAction::ReplyToComment {
-        comment: comment.to_string(),
-        author: author.to_string(),
-        date: date.to_string(),
-        text: text.to_string(),
-        body: Vec::new(),
     }
 }
 

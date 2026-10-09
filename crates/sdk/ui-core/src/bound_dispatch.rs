@@ -2809,60 +2809,6 @@ fn mutation_frame(doc: &AutoCommit) -> Option<FrameHandle> {
     })
 }
 
-/// Check a direct affordance against the same live permission-filtered spec
-/// as named actions. Only a genuinely unbound call keeps legacy compatibility;
-/// an active record with missing/mismatched/revoked custody always refuses.
-pub(crate) fn authorize_current_resource_action(
-    doc: &AutoCommit,
-    resource: &tilo_actions::Resource,
-    action_id: &str,
-) -> Result<(), String> {
-    let active =
-        ACTIVE.with_borrow(|active| active.as_ref().map(|entry| (entry.2, entry.3.clone())));
-    let Some((witness, frame)) = active else {
-        return Ok(());
-    };
-    if !std::ptr::eq(witness, doc) {
-        return Err("resource action document does not match its owned frame".into());
-    }
-    let frame = frame.ok_or("resource action has no owned frame")?;
-    let binding = {
-        let owned = frame.borrow();
-        let frame = owned.as_ref().ok_or("resource action frame has ended")?;
-        frame
-            .mutation
-            .as_ref()
-            .map(|mutation| mutation.binding.clone())
-            .or_else(|| {
-                frame
-                    .operations
-                    .last()
-                    .map(|operation| operation.binding.clone())
-            })
-            .ok_or("resource action has no current owner")?
-    };
-    if binding.registry_owner.upgrade().is_none() {
-        return Err("resource action registry owner has ended".into());
-    }
-    let _entry = binding
-        .enter()
-        .map_err(|error| format!("resource action owner refused: {error:?}"))?;
-    if !binding
-        .check_record()
-        .map_err(|error| format!("resource action record refused: {error:?}"))?
-        .is_some_and(|current| std::ptr::eq(current, doc))
-    {
-        return Err("resource action record does not match its owner".into());
-    }
-    if filter_resource(&binding, resource.clone())
-        .is_some_and(|resource| resource.actions.iter().any(|action| action.id == action_id))
-    {
-        Ok(())
-    } else {
-        Err("resource action is unavailable under current permissions".into())
-    }
-}
-
 fn note_native_text_policy(
     widget: &dyn Widget,
     doc: &AutoCommit,
@@ -3430,41 +3376,6 @@ impl Drop for ActiveEntry {
     fn drop(&mut self) {
         ACTIVE.with_borrow_mut(|active| *active = None);
     }
-}
-
-pub(crate) fn with_owned_record_action<R>(
-    records: &RecordStore,
-    checkout: &RecordCheckout,
-    instance_id: crate::application::InstanceId,
-    app_id: &str,
-    author: UserId,
-    context: tilo_actions::ActionContext,
-    callback: impl FnOnce(&mut AutoCommit, &ObjId) -> R,
-) -> Result<R, BoundDispatchError> {
-    let scope = crate::wake::WakeScope::new();
-    let owner = Rc::new(());
-    let binding = CallbackBinding {
-        lifetime: scope.handle(),
-        closing: Rc::new(Cell::new(false)),
-        registry_owner: Rc::downgrade(&owner),
-        lifetime_id: uuid::Uuid::new_v4(),
-        control_domain: crate::control_custody::WeakControlDomain::default(),
-        queued_controls: Rc::new(RefCell::new(std::collections::VecDeque::new())),
-        search_requests: Rc::default(),
-        instance_id,
-        app_id: app_id.to_string(),
-        records: records.clone(),
-        checkout: checkout.clone(),
-        permissions: Rc::new(RefCell::new(PermissionContext::permissive())),
-        author,
-        operation_context: context,
-        writes_as_author: false,
-    };
-    let mut outer_witness = AutoCommit::new();
-    binding.with_document(&mut outer_witness, |document, root| {
-        let value = callback(document, root);
-        binding.finish_action_boundary(document).map(|()| value)
-    })?
 }
 
 impl CallbackBinding {
@@ -4478,6 +4389,7 @@ mod owned_restore_tests;
 
 /// Remote delivery is not a local action. A physical or logical edit must be
 /// finished by its existing owner; the network queue never commits it.
+#[cfg(all(feature = "native", any(test, feature = "test-support")))]
 pub(crate) fn can_merge_remote_owned_document(
     store: &RecordStore,
     checkout: &RecordCheckout,
@@ -4809,10 +4721,6 @@ mod document_action_ack_tests;
 #[cfg(test)]
 #[path = "bound_dispatch/legacy_document_tests.rs"]
 pub(crate) mod legacy_document_tests;
-
-#[cfg(test)]
-#[path = "bound_dispatch/semantic_authority_tests.rs"]
-mod semantic_authority_tests;
 
 #[cfg(test)]
 #[path = "bound_dispatch/author_writer_tests.rs"]

@@ -3674,25 +3674,6 @@ impl RecordStore {
             .map(|document| crate::invocation_scope::with_record_loan(self, id, document, f))
     }
 
-    /// Read a record's document.
-    /// Merge an already admitted remote mutation into the one record owner.
-    /// Preserves unfinished local work and rebases shared undo only after merge.
-    pub fn can_merge_admitted(&self, checkout: &RecordCheckout) -> Result<bool, String> {
-        crate::bound_dispatch::can_merge_remote_owned_document(self, checkout)
-            .map_err(|error| error.to_string())
-    }
-    pub fn merge_admitted(
-        &self,
-        checkout: &RecordCheckout,
-        mutation: &collab_types::DocumentMutation,
-    ) -> Result<Option<bool>, String> {
-        let changed = crate::bound_dispatch::merge_remote_owned_document(self, checkout, mutation)
-            .map_err(|e| e.to_string())?;
-        if changed == Some(true) {
-            let _ = self.try_flush();
-        }
-        Ok(changed)
-    }
     pub fn read<R>(&self, id: &RecordId, f: impl FnOnce(&AutoCommit) -> R) -> Option<R> {
         self.read_checked(id, f).ok()
     }
@@ -3707,53 +3688,6 @@ impl RecordStore {
         let mut set = self.0.borrow_mut();
         let (doc, history) = set.document_and_history_mut(id)?;
         Some(f(doc, history))
-    }
-
-    /// Execute one externally addressed document action through the record's
-    /// same owned frame as its mounted application. The frame preserves the
-    /// action generation, author, application instance, semantic context, and
-    /// one undo boundary.
-    ///
-    /// # Errors
-    /// Refuses a record that is absent, busy, or no longer owned by this store.
-    pub fn with_owned_action<R>(
-        &self,
-        id: &RecordId,
-        instance_id: crate::application::InstanceId,
-        app_id: &str,
-        author: crate::permissions::UserId,
-        context: tilo_actions::ActionContext,
-        callback: impl FnOnce(&mut AutoCommit, &ObjId) -> R,
-    ) -> Result<R, RecordOpenError> {
-        let checkout = self
-            .open_records()
-            .into_iter()
-            .find(|checkout| checkout.id == *id)
-            .ok_or(RecordOpenError::MissingRecord)?;
-        crate::bound_dispatch::with_owned_record_action(
-            self,
-            &checkout,
-            instance_id,
-            app_id,
-            author,
-            context,
-            callback,
-        )
-        .map_err(|error| match error {
-            crate::bound_dispatch::BoundDispatchError::Record(error) => error,
-            crate::bound_dispatch::BoundDispatchError::Persistence(message) => {
-                durable_store::StoreError::Failed {
-                    context: "owner model persistence offer".to_owned(),
-                    message,
-                }
-                .into()
-            }
-            crate::bound_dispatch::BoundDispatchError::MissingNode
-            | crate::bound_dispatch::BoundDispatchError::ClosedLifetime
-            | crate::bound_dispatch::BoundDispatchError::CrossRecordReentry => {
-                RecordOpenError::Busy
-            }
-        })
     }
 
     /// Inspect committed history without turning a pending burst into a boundary.

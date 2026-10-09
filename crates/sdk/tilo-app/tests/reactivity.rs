@@ -61,8 +61,13 @@ struct VerbShelfApp;
 
 fn verb_row(row: &mut ViewCx<Shelf, Book>) -> Element {
     let id = row.item().cloned().unwrap();
-    let read = row.checkbox_with(
-        "read",
+    let control = format!("mark-{id}");
+    let read = row.control_with(
+        |shown| {
+            Checkbox::from_state(shown)
+                .with_id(&control)
+                .with_label("read")
+        },
         |book: &Book| book.read,
         Shelf::MARK.map(move |read| (id.clone(), read)),
     );

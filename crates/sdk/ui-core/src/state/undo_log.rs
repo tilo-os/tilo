@@ -1070,24 +1070,6 @@ impl UndoLog {
         self.undo_step(doc, None, None, current_focused_idx, current_metadata, None)
     }
 
-    /// [`Self::undo`] with a registry for steps with outside consequences.
-    pub fn undo_with_registry(
-        &mut self,
-        doc: &mut AutoCommit,
-        current_focused_idx: Option<usize>,
-        current_metadata: Option<String>,
-        registry: Option<&tilo_actions::ActionRegistry>,
-    ) -> Option<UndoEntry> {
-        self.undo_step(
-            doc,
-            None,
-            None,
-            current_focused_idx,
-            current_metadata,
-            registry,
-        )
-    }
-
     pub fn undo_for_author(
         &mut self,
         doc: &mut AutoCommit,
@@ -1102,24 +1084,6 @@ impl UndoLog {
             current_focused_idx,
             current_metadata,
             None,
-        )
-    }
-
-    pub fn undo_for_author_with_registry(
-        &mut self,
-        doc: &mut AutoCommit,
-        author: &UserId,
-        current_focused_idx: Option<usize>,
-        current_metadata: Option<String>,
-        registry: Option<&tilo_actions::ActionRegistry>,
-    ) -> Option<UndoEntry> {
-        self.undo_step(
-            doc,
-            Some(author),
-            None,
-            current_focused_idx,
-            current_metadata,
-            registry,
         )
     }
 

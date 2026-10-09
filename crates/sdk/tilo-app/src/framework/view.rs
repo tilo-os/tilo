@@ -5,7 +5,6 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::{Rc, Weak};
 
-use tilo_actions::ActionBinding;
 use tilo_resource::{
     ActionDecl, Binds, Collection, Edit, Effect, Id, Model, Params, Path, Resource, Segment,
     Settable,
@@ -270,10 +269,6 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
         }
     }
 
-    fn binding<I: 'static>(&self, binds: impl Binds<R, I>) -> Option<ActionBinding<I>> {
-        self.actions().control_binding(binds)
-    }
-
     /// Keep `sink` in step with a value derived from the resource, read
     /// again after every change.
     fn follow<V: PartialEq + Default + Clone + 'static>(
@@ -313,48 +308,6 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
         let live = self.live.clone();
         let read = self.reader(read);
         Text::dynamic(move || live.with(&read))
-    }
-
-    /// A text field showing `read` of the resource; each committed edit
-    /// invokes `action` with the field's new text. A field of the record is
-    /// bound by its path instead ([`Self::input`]).
-    pub fn input_with(
-        &self,
-        read: impl Fn(&T) -> String + 'static,
-        action: impl Binds<R, String>,
-    ) -> TextInput {
-        let id = self.control_id(action.action_id());
-        let state = LocalState::new(String::new());
-        let sink = state.clone();
-        let initial = self.follow(read, move |value| sink.set(value));
-        state.set(initial);
-        let input = TextInput::from_state(&state).with_id(&id);
-        match self.binding(action) {
-            Some(binding) => input.on_action(binding),
-            None => input.disabled(true),
-        }
-    }
-
-    /// A checkbox showing `read` of the resource; toggling invokes `action`
-    /// with the new value. A field of the record is bound by its path
-    /// instead ([`Self::checkbox`]).
-    pub fn checkbox_with(
-        &self,
-        label: impl Into<LabelKey>,
-        read: impl Fn(&T) -> bool + 'static,
-        action: impl Binds<R, bool>,
-    ) -> Checkbox {
-        let id = self.control_id(action.action_id());
-        let state = LocalState::new(false);
-        let sink = state.clone();
-        let initial = self.follow(read, move |value| sink.set(value));
-        state.set(initial);
-        let label: LabelKey = label.into();
-        let checkbox = Checkbox::from_state(&state).with_id(&id).with_label(label);
-        match self.binding(action) {
-            Some(binding) => checkbox.on_action(binding),
-            None => checkbox.with_enabled(false),
-        }
     }
 
     /// A button that submits one fully specified action: a verb with its
@@ -477,11 +430,13 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
         state
     }
 
-    /// Any action-bound toolkit control, showing `read` of the resource and
-    /// invoking `action` with each committed value:
-    /// `cx.control_with(Slider::from_state, |p| p.volume, Profile::SET_VOLUME)`.
+    /// A toolkit control bound to a verb: it shows `read` of the resource and
+    /// invokes `action` with each committed value, for a value that is a
+    /// verb's argument rather than a field
+    /// (`cx.control_with(TextInput::from_state, |p| p.shape(&node), Project::SET_SHAPE.map(..))`).
     /// The control is disabled when the action is not published. A field of
-    /// the record is bound by its path instead ([`Self::control`]).
+    /// the record is bound by its path instead ([`Self::input`],
+    /// [`Self::checkbox`], [`Self::control`]).
     pub fn control_with<V, C>(
         &self,
         make: impl FnOnce(&LocalState<V>) -> C,

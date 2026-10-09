@@ -26,19 +26,7 @@ pub struct Draft {
 }
 
 #[resource(kind = "so.tilo.registry-review", label = "Registry review")]
-impl Draft {
-    /// Set the name attributed to a decision.
-    #[action]
-    pub fn set_reviewer(&mut self, #[param("Reviewer name")] reviewer: String) {
-        self.reviewer = reviewer;
-    }
-
-    /// Write feedback to return with a rejected application.
-    #[action]
-    pub fn set_feedback(&mut self, #[param("Feedback")] feedback: String) {
-        self.feedback = feedback;
-    }
-}
+impl Draft {}
 
 /// The same local operator door for controls, accessibility and agents.
 #[derive(Clone, Debug, PartialEq, Effect)]
@@ -215,7 +203,7 @@ fn install(
                 state.package_selected = None;
                 state.error = None;
                 if changed {
-                    cx.invoke(Draft::SET_FEEDBACK.with(String::new()));
+                    cx.invoke(Draft::paths().feedback.replace("").into());
                 }
                 pane.set(state);
                 navigation.set(NavPane::Content);
@@ -336,12 +324,8 @@ fn detail(cx: &ViewCx<Draft>, application: &StoredApplication) -> Element {
                 .with_arg("checked", proof.checked_at_unix.to_string()),
         ));
     }
-    let reviewer = cx
-        .input_with(|draft| draft.reviewer.clone(), Draft::SET_REVIEWER)
-        .with_id("reviewer-input");
-    let feedback = cx
-        .input_with(|draft| draft.feedback.clone(), Draft::SET_FEEDBACK)
-        .with_id("feedback-input");
+    let reviewer = cx.input(Draft::paths().reviewer).with_id("reviewer-input");
+    let feedback = cx.input(Draft::paths().feedback).with_id("feedback-input");
     let application = application.clone();
     let draft = cx.value(Clone::clone);
     column = column

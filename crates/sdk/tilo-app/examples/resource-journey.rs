@@ -30,12 +30,6 @@ pub struct Checklist {
 
 #[resource(kind = "example.resource-journey", label = "Checklist")]
 impl Checklist {
-    /// Set the next task's title.
-    #[action]
-    pub fn draft(&mut self, title: String) {
-        self.draft = title;
-    }
-
     /// Add the drafted task.
     ///
     /// # Errors
@@ -59,19 +53,6 @@ impl Checklist {
             },
         );
         self.draft.clear();
-        Ok(())
-    }
-
-    /// Mark a task completed or open.
-    ///
-    /// # Errors
-    /// Refuses a task that no longer exists.
-    #[action]
-    pub fn set_done(&mut self, task: &Id, done: bool) -> Result<(), &'static str> {
-        self.tasks
-            .get_mut(task)
-            .ok_or("This task no longer exists")?
-            .done = done;
         Ok(())
     }
 
@@ -120,7 +101,7 @@ impl ResourceApp for ChecklistApp {
 
     fn view(cx: &mut ViewCx<Checklist>) -> Element {
         let draft = cx
-            .input_with(|list| list.draft.clone(), Checklist::DRAFT)
+            .input(Checklist::paths().draft)
             .with_id("draft")
             .with_placeholder("journey-draft");
         // Progressive disclosure: start with the shorthand, then use the
@@ -151,14 +132,9 @@ impl ResourceApp for ChecklistApp {
                 let Some(id) = row.item().cloned() else {
                     return Box::new(Column::new()) as Element;
                 };
-                let done_id = id.clone();
                 Box::new(tilo_app::row![
                     row.text(|task| task.title.clone()),
-                    row.checkbox_with(
-                        "journey-done",
-                        |task| task.done,
-                        Checklist::SET_DONE.map(move |done| (done_id.clone(), done))
-                    ),
+                    row.checkbox("journey-done", row.paths().done),
                     row.button("journey-remove", Checklist::REMOVE.with(id)),
                 ]) as Element
             },
@@ -213,30 +189,25 @@ mod tests {
             )
             .expect("the bound input edits the draft");
         app.call("add", json!({})).expect("add");
-        let done = task_action(&mut app, "set-done");
-        assert_eq!(done.params.len(), 1, "the item identity is already bound");
-        assert_eq!(done.params.first().expect("done parameter").name, "done");
         assert_eq!(
             app.state().tasks.values().next().expect("task").author,
             "ada"
         );
 
-        let before = app.state();
-        assert!(matches!(
-            app.call_on(
-                &done.address.resource,
-                &done.address.action,
-                json!({"done": "yes"})
-            ),
-            Err(DoorError::InvalidArguments(_))
-        ));
-        assert_eq!(app.state(), before);
-        app.call_on(
-            &done.address.resource,
-            &done.address.action,
-            json!({"done": true}),
+        // A task's flag is a field edit at its path.
+        let id = app.state().tasks.ids().next().cloned().expect("task id");
+        let done = Checklist::paths().tasks.item(&id).done;
+        let wrong: serde_json::Value = serde_json::from_str(
+            &serde_json::to_string(&done.set(true))
+                .expect("an edit")
+                .replace("true", "\"yes\""),
         )
-        .expect("complete the discovered task");
+        .expect("an edit");
+        let before = app.state();
+        assert!(app.call("field-edit", json!({ "edit": wrong })).is_err());
+        assert_eq!(app.state(), before);
+        app.call("field-edit", json!({ "edit": done.set(true) }))
+            .expect("complete the task");
         assert!(app.state().tasks.values().all(|task| task.done));
         let remove = task_action(&mut app, "remove");
         assert_eq!(
@@ -316,7 +287,11 @@ mod tests {
                         .enabled(true),
                 )
                 .expect("every presentation announces its action with the correct name");
-            app.call("draft", json!({"title": id})).expect("draft");
+            app.call(
+                "field-edit",
+                json!({ "edit": Checklist::paths().draft.replace(id) }),
+            )
+            .expect("draft");
             app.harness()
                 .perform_named(id, &Action::Focus)
                 .expect("focus the shared control");
@@ -336,8 +311,11 @@ mod tests {
         assert_eq!(app.state().tasks.len(), controls.len());
         assert!(app.undo(), "the last button activation is an undo step");
         assert_eq!(app.state().tasks.len(), controls.len().saturating_sub(1));
-        app.call("draft", json!({"title": "Viewer cannot add"}))
-            .expect("draft");
+        app.call(
+            "field-edit",
+            json!({ "edit": Checklist::paths().draft.replace("Viewer cannot add") }),
+        )
+        .expect("draft");
         let before = app.state();
         app.set_role(Role::Viewer);
         for (id, name) in controls {
@@ -372,8 +350,11 @@ mod tests {
     #[test]
     fn confirmation_does_not_override_revoked_permissions_or_argument_validation() {
         let mut app = TestApp::<ChecklistApp>::new().expect("open");
-        app.call("draft", json!({"title": "Pack lunch"}))
-            .expect("draft");
+        app.call(
+            "field-edit",
+            json!({ "edit": Checklist::paths().draft.replace("Pack lunch") }),
+        )
+        .expect("draft");
         app.call("add", json!({})).expect("add");
         let remove = task_action(&mut app, "remove");
         let before = app.state();

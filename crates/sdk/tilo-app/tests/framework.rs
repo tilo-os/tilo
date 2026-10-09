@@ -56,10 +56,11 @@ impl ResourceApp for ChecklistApp {
     fn view(cx: &mut ViewCx<Checklist>) -> Element {
         Box::new(
             Column::new()
-                .push(Box::new(
-                    cx.input_with(|list| list.title.clone(), Checklist::RENAME)
-                        .with_id("title"),
-                ))
+                .push(Box::new(cx.control_with(
+                    |shown| TextInput::from_state(shown).with_id("title"),
+                    |list| list.title.clone(),
+                    Checklist::RENAME,
+                )))
                 .push(Box::new(cx.text(|list| {
                     let open = list.items.values().filter(|item| !item.done).count();
                     format!("{open} open")
@@ -68,8 +69,15 @@ impl ResourceApp for ChecklistApp {
                     |list| &list.items,
                     |row| {
                         let id = row.item().cloned().unwrap_or_else(|| Id::from_raw(""));
-                        Box::new(row.checkbox_with(
-                            row.read(|item| item.map(|item| item.text.clone()).unwrap_or_default()),
+                        let label =
+                            row.read(|item| item.map(|item| item.text.clone()).unwrap_or_default());
+                        let control = format!("set-done-{id}");
+                        Box::new(row.control_with(
+                            |shown| {
+                                Checkbox::from_state(shown)
+                                    .with_id(&control)
+                                    .with_label(label)
+                            },
                             |item| item.done,
                             Checklist::SET_DONE.map(move |done| (id.clone(), done)),
                         ))

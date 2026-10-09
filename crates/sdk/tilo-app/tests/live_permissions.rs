@@ -85,10 +85,11 @@ impl ResourceApp for MemoApp {
         Box::new(
             Column::new()
                 .push(owner_panel)
-                .push(Box::new(
-                    cx.input_with(|memo| memo.title.clone(), Memo::RETITLE)
-                        .with_id("title"),
-                ))
+                .push(Box::new(cx.control_with(
+                    |shown| TextInput::from_state(shown).with_id("title"),
+                    |memo| memo.title.clone(),
+                    Memo::RETITLE,
+                )))
                 .push(Box::new(
                     Text::from_state(&cx.read_only_state(), |read_only| {
                         if *read_only { "View only" } else { "Editing" }.to_owned()

@@ -77,19 +77,24 @@ impl ResourceApp for Keystrokes {
     }
 
     fn view(cx: &mut ViewCx<Checklist>) -> Element {
-        let draft = cx
-            .input_with(|list| list.draft.clone(), Checklist::DRAFT)
-            .with_id("draft");
+        let draft = cx.control_with(
+            |shown| TextInput::from_state(shown).with_id("draft"),
+            |list| list.draft.clone(),
+            Checklist::DRAFT,
+        );
         let rows = cx.each(
             |list| &list.tasks,
             |row| {
                 let Some(id) = row.item().cloned() else {
                     return Box::new(Column::new()) as Element;
                 };
+                let control = format!("set-done-{id}");
                 Box::new(tilo_app::row![
                     row.text(|task| task.title.clone()),
-                    row.checkbox_with(
-                        "keystroke-done",
+                    row.control_with(
+                        |shown| Checkbox::from_state(shown)
+                            .with_id(&control)
+                            .with_label("keystroke-done"),
                         |task| task.done,
                         Checklist::SET_DONE.map(move |done| (id.clone(), done))
                     ),

@@ -310,7 +310,8 @@ fn shape_field(cx: &ViewCx<ChipProject>, node: &OperatorNode) -> Element {
     let read_node = node.id.clone();
     let edit_node = node.id.clone();
     let input = cx
-        .input_with(
+        .control_with(
+            TextInput::from_state,
             move |state| {
                 state
                     .node(&read_node)

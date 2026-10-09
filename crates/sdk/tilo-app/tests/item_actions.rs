@@ -50,8 +50,14 @@ impl ResourceApp for TodosApp {
             |todos| &todos.items,
             |row| {
                 let id = row.item().cloned().unwrap_or_else(|| Id::from_raw(""));
-                Box::new(row.checkbox_with(
-                    row.read(|todo| todo.map(|todo| todo.text.clone()).unwrap_or_default()),
+                let label = row.read(|todo| todo.map(|todo| todo.text.clone()).unwrap_or_default());
+                let control = format!("set-done-{id}");
+                Box::new(row.control_with(
+                    |shown| {
+                        Checkbox::from_state(shown)
+                            .with_id(&control)
+                            .with_label(label)
+                    },
                     |todo| todo.done,
                     Todos::SET_DONE.map(move |done| (id.clone(), done)),
                 ))

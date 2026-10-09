@@ -298,8 +298,13 @@ fn revoked_owner_cannot_read_package_details_or_replay_confirmed_decisions() -> 
 fn package_details_pass_native_audits_in_three_themes_and_two_sizes() -> Result<()> {
     let (_directory, _storage, mut app, pending) = setup()?;
     inspect(&mut app, &pending.submission_id)?;
-    app.invoke(Draft::SET_REVIEWER.with("Owner"))?;
-    app.invoke(Draft::SET_FEEDBACK.with("Signed sandbox and journeys reviewed"))?;
+    app.invoke(Draft::paths().reviewer.replace("Owner").into())?;
+    app.invoke(
+        Draft::paths()
+            .feedback
+            .replace("Signed sandbox and journeys reviewed")
+            .into(),
+    )?;
     for preset in [
         ui::theme::Preset::Light,
         ui::theme::Preset::Dark,
