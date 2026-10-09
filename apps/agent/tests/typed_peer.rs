@@ -28,7 +28,6 @@ use tilo_actions::{ActionAddress, ActionRegistry, LocalTransport, Resource};
 use tilo_agent::wire::Link;
 use ui::collaboration::{
     CertifiedEndpointIdentity, CollabEvent, CollabRequest, DocumentMutation, ExportedAction,
-    ExportedInput,
 };
 
 const TEST_ROOM: uuid::Uuid = uuid::Uuid::from_u128(0x6f2a_5fce_f612_46ac_9228_f6a3_ace4_9a11);
@@ -182,41 +181,12 @@ pub fn document_mutation(event: &CollabEvent) -> Option<DocumentMutation> {
     event.document_mutation()?.ok()
 }
 
-/// Serialize the same resource descriptors the toolkit publishes for a
-/// windowed application.
-///
-/// # Panics
-///
-/// Panics if a production action descriptor cannot be serialized for the
-/// broker wire, which is an invalid test fixture.
+/// The same resource descriptors the toolkit publishes for a windowed
+/// application.
 pub fn exported_actions(resources: &[Resource]) -> Vec<ExportedAction> {
     tilo_actions::door::survey(resources)
         .into_iter()
-        .map(|descriptor| ExportedAction {
-            semantic_identity: descriptor.semantic_identity.clone(),
-            resource: descriptor.address.resource,
-            action: descriptor.address.action,
-            resource_kind: descriptor.resource_kind,
-            resource_label: descriptor.resource_label,
-            action_label: descriptor.action_label,
-            description: descriptor.description,
-            operation_kind: descriptor.kind.as_str().to_string(),
-            params_json: serde_json::to_string(&descriptor.params).unwrap(),
-            contract_json: serde_json::to_string(&descriptor.contract).unwrap(),
-            view: descriptor.view,
-            input: match descriptor.input {
-                tilo_actions::InputSpec::None => ExportedInput::None,
-                tilo_actions::InputSpec::Text {
-                    prompt,
-                    placeholder,
-                    collects,
-                } => ExportedInput::Text {
-                    prompt,
-                    placeholder,
-                    wants_content: collects == tilo_actions::Collects::Content,
-                },
-            },
-        })
+        .map(|descriptor| ExportedAction::from(&descriptor))
         .collect()
 }
 
