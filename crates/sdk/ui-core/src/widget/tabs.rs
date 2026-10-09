@@ -3155,32 +3155,42 @@ impl TabBar {
                 compose(transform, Affine::translate((0.0, fade_y)))
             };
             let pill_alpha_active = combined_alpha < 1.0;
-            if pill_alpha_active {
-                // Wider than the pill so hover-reveal action icons fade in cleanly.
-                let close_w = self.close_rects.get(i).map_or(0.0, Rect::width);
-                let clip = Rect::new(r.x0 - 2.0, r.y0 - 4.0, r.x1 + close_w + 60.0, r.y1 + 4.0);
-                scene.push_layer(
-                    vello::peniko::Fill::NonZero,
-                    vello::peniko::BlendMode::default(),
-                    combined_alpha,
-                    transform,
-                    &clip,
+            // Wider than the pill so hover-reveal action icons fade in cleanly.
+            let close_w = self.close_rects.get(i).map_or(0.0, Rect::width);
+            let clip = Rect::new(r.x0 - 2.0, r.y0 - 4.0, r.x1 + close_w + 60.0, r.y1 + 4.0);
+            // Each pill is a damage part: hovering one repaints that pill.
+            // It paints inside the clip a fading pill is held to, at its
+            // fade offset; a press only shrinks it.
+            let bounds = vec![
+                transform.transform_rect_bbox(clip),
+                pill_transform.transform_rect_bbox(clip),
+            ];
+            let key = crate::scene_parts::PartKey::new("ui.tab-pill", t.id);
+            crate::scene_parts::part(scene, key, bounds, |scene| {
+                if pill_alpha_active {
+                    scene.push_layer(
+                        vello::peniko::Fill::NonZero,
+                        vello::peniko::BlendMode::default(),
+                        combined_alpha,
+                        transform,
+                        &clip,
+                    );
+                }
+                // Uses `pill_transform` so the fade's y-offset composes with any
+                // layout-spring dx/dy.
+                self.draw_pill_inner(
+                    &mut PaintCtx::new(scene, pill_transform, tr, theme),
+                    presence,
+                    i,
+                    r,
+                    false,
                 );
-            }
-            // Uses `pill_transform` so the fade's y-offset composes with any
-            // layout-spring dx/dy.
-            self.draw_pill_inner(
-                &mut PaintCtx::new(scene, pill_transform, tr, theme),
-                presence,
-                i,
-                r,
-                false,
-            );
 
-            // Must mirror the push above exactly — `pill_alpha_active` tracks that.
-            if pill_alpha_active {
-                scene.pop_layer();
-            }
+                // Must mirror the push above exactly — `pill_alpha_active` tracks that.
+                if pill_alpha_active {
+                    scene.pop_layer();
+                }
+            });
         }
     }
 

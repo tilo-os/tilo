@@ -78,13 +78,18 @@ fn assert_xrgb_pixels_eq(actual: &[u8], expected: &[u8], label: &str) {
 /// A settled fixture, and the guard pinning the bar's clock while it lives: two paints
 /// compared pixel for pixel must not straddle a minute.
 fn settled_builder() -> (PopulatedShellFixture, tilo_test_env::ScopedEnv) {
+    settled_builder_in(Theme::dark())
+}
+
+/// [`settled_builder`] dressed in `theme`.
+fn settled_builder_in(theme: Theme) -> (PopulatedShellFixture, tilo_test_env::ScopedEnv) {
     let mut clock = tilo_test_env::ScopedEnv::new();
     clock.set("TILO_CLOCK", "09:41");
     // The test needs state transitions, not a time-dependent animation sample. The explicit
     // fixture receives reduced motion before its initial layout; benchmark inputs stay normal.
     let mut frame = PopulatedShellFixture::new(
         (NATIVE_WIDTH, NATIVE_HEIGHT),
-        Theme::dark().with_reduce_motion(true),
+        theme.with_reduce_motion(true),
     );
     frame.relayout();
     let _ = frame.paint();
@@ -604,14 +609,24 @@ fn retained_damage_policy_bounds_changes_and_keeps_semantic_inventory() {
 
     fn damage_policy_allows_only_a_bounded_quick_settings_change() {
         let mut frame = PopulatedShellFixture::new((1_600, 900), Theme::dark());
-        frame.last_produced_sections = Some(previous_sections(false, Scene::new(), Scene::new()));
+        frame.last_produced_sections = Some(previous_sections(
+            frame.tint(),
+            false,
+            Scene::new(),
+            Scene::new(),
+        ));
         let candidate = sections(rect_scene(), Scene::new());
         assert!(
             frame.damage_from_sections(&candidate, false).is_some(),
             "matching opaque sections and bounded Quick Settings change must establish a sparse baseline"
         );
 
-        frame.last_produced_sections = Some(previous_sections(true, Scene::new(), Scene::new()));
+        frame.last_produced_sections = Some(previous_sections(
+            frame.tint(),
+            true,
+            Scene::new(),
+            Scene::new(),
+        ));
         let candidate = sections(rect_scene(), Scene::new());
         assert!(
             frame.damage_from_sections(&candidate, false).is_none(),
@@ -621,7 +636,12 @@ fn retained_damage_policy_bounds_changes_and_keeps_semantic_inventory() {
 
     fn damage_policy_rejects_an_opaque_section_change_after_a_proven_baseline() {
         let mut frame = PopulatedShellFixture::new((1_600, 900), Theme::dark());
-        frame.last_produced_sections = Some(previous_sections(false, Scene::new(), Scene::new()));
+        frame.last_produced_sections = Some(previous_sections(
+            frame.tint(),
+            false,
+            Scene::new(),
+            Scene::new(),
+        ));
         assert!(
             frame
                 .damage_from_sections(&sections(rect_scene(), Scene::new()), false)
@@ -629,7 +649,12 @@ fn retained_damage_policy_bounds_changes_and_keeps_semantic_inventory() {
             "the baseline must prove the Quick Settings candidate itself is otherwise eligible"
         );
 
-        frame.last_produced_sections = Some(previous_sections(false, Scene::new(), Scene::new()));
+        frame.last_produced_sections = Some(previous_sections(
+            frame.tint(),
+            false,
+            Scene::new(),
+            Scene::new(),
+        ));
         assert!(
             frame
                 .damage_from_sections(&sections(rect_scene(), rect_scene()), false)
@@ -675,11 +700,14 @@ fn sections(
 }
 
 fn previous_sections(
+    tint: Tint,
     global_filter: bool,
     quick_settings: Scene,
     workspace: Scene,
 ) -> ProducedSections {
     ProducedSections {
+        parts: OpaqueParts::default(),
+        tint,
         foreign_images: Vec::new(),
         backdrop: Scene::new(),
         topbar: Scene::new(),
@@ -1525,4 +1553,163 @@ fn a_presenter_compositing_layers_gets_strips_in_canvas_coordinates_and_the_same
         frame.paint_with_damage().cache.is_none(),
         "oversized outputs retain the dense path"
     );
+}
+
+/// Prove `damage` repaints some, but under 1%, of the 4K output, and log
+/// the pixels it rasterises: the area of its rects, overlap counted twice,
+/// which only overstates the cost. A dense frame rasterises every pixel.
+fn assert_repaints_under_one_percent(damage: &[FineDamageRect], label: &str) {
+    let output = u64::from(NATIVE_WIDTH) * u64::from(NATIVE_HEIGHT);
+    let pixels: u64 = damage
+        .iter()
+        .map(|rect| u64::from(rect.width) * u64::from(rect.height))
+        .sum();
+    let share = |value: u64| f64::from(u32::try_from(value).unwrap_or(u32::MAX));
+    eprintln!(
+        "TIL-579 raster pixels ({label}): {pixels} of {output} ({:.3}%); a dense frame is {output}",
+        share(pixels) * 100.0 / share(output)
+    );
+    assert!(
+        pixels > 0 && pixels * 100 < output,
+        "{label}: must repaint under 1% of a 4K output, not {pixels} px: {damage:?}"
+    );
+}
+
+/// Publish one peer, Ada, pointing at `at` in the active workspace, where
+/// the shell paints workspace peers from.
+fn point_peer_at(frame: &mut FrameBuilder, at: (f64, f64)) {
+    let room = {
+        let chrome = frame.chrome();
+        let tree = chrome.tree();
+        tree.desktop
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.id == tree.desktop.active)
+            .map(|workspace| workspace.room.to_string())
+            .expect("the fixture has an active workspace")
+    };
+    frame.presence.pointers.insert(
+        ui::presence::PresenceKey::Workspace { id: room },
+        vec![(
+            ui::permissions::UserId("ada".into()),
+            (at.0 as f32, at.1 as f32),
+        )],
+    );
+}
+
+/// The pointer's dot in native pixels.
+fn peer_dot(frame: &FrameBuilder, at: (f64, f64)) -> Rect {
+    frame
+        .layout_rect_to_scene(Rect::from_center_size(at, (24.0, 24.0)))
+        .expect("the pointer is on the output")
+}
+
+/// Show a peer, move their pointer 50 px, and prove the move a sparse frame
+/// of under 1% of the 4K output that covers the pointer where it was and
+/// where it is, with retained pixels equal to a dense render.
+fn assert_peer_move_is_sparse(frame: &mut FrameBuilder, label: &str) {
+    let (from, to) = ((1_200.0, 700.0), (1_250.0, 700.0));
+    let mut retained = bridge();
+    let mut dense = bridge();
+    point_peer_at(frame, from);
+    let shown = frame.paint_with_damage();
+    paint_retained_and_compare(&mut retained, &mut dense, &shown, label);
+    let previous = frame.last_produced_sections.clone();
+    point_peer_at(frame, to);
+    let moved = frame.paint_with_damage();
+    let details = sparse_refusal_details(previous.as_ref(), frame);
+    let damage = moved
+        .damage_regions
+        .as_deref()
+        .unwrap_or_else(|| panic!("{label}: a peer pointer move must be sparse: {details}"));
+    assert_repaints_under_one_percent(damage, label);
+    assert_damage_covers(
+        peer_dot(frame, from),
+        damage,
+        &format!("{label}: old pointer"),
+    );
+    assert_damage_covers(
+        peer_dot(frame, to),
+        damage,
+        &format!("{label}: new pointer"),
+    );
+    paint_retained_and_compare(&mut retained, &mut dense, &moved, label);
+    assert!(
+        retained.last_sparse_render_attempts() >= 1,
+        "{label}: the move must exercise the production sparse render path"
+    );
+}
+
+#[test]
+fn a_peer_pointer_move_repaints_under_one_percent_of_a_4k_output_in_every_theme() {
+    for (name, theme) in [
+        ("dark", Theme::dark()),
+        ("light", Theme::light()),
+        ("high contrast", Theme::high_contrast()),
+    ] {
+        let (mut frame, _clock) = settled_builder_in(theme);
+        assert_peer_move_is_sparse(&mut frame, &format!("peer pointer move, {name}"));
+    }
+}
+
+#[test]
+fn night_light_keeps_a_peer_pointer_move_sparse_and_exact() {
+    let (mut frame, mut clock) = settled_builder();
+    let _settings = foreign_filter_settings(&frame);
+    clock.set("TILO_SHOTS_THEME", "dark");
+    frame.night_light = true;
+    frame.watch_configured_theme = true;
+    // What `enable_configured_theme` reads from that variable once, when
+    // watching starts; the settings file stays unwatched.
+    frame.shots_theme_pinned = true;
+    assert!(
+        frame.paint_with_damage().damage_regions.is_none(),
+        "turning night light on changes every pixel"
+    );
+    assert_peer_move_is_sparse(&mut frame, "peer pointer move under night light");
+    frame.night_light_temperature = frame.night_light_temperature.saturating_add(500);
+    assert!(
+        frame.paint_with_damage().damage_regions.is_none(),
+        "a new night light temperature changes every pixel"
+    );
+}
+
+#[test]
+fn hovering_a_tab_repaints_that_tab_not_the_output() {
+    let (mut frame, _clock) = settled_builder();
+    let pill = frame
+        .widget_registry()
+        .into_iter()
+        .find(|(name, _)| name.ends_with("tab:Files"))
+        .map(|(_, rect)| rect)
+        .expect("the Files tab is a named target");
+    let mut retained = bridge();
+    let mut dense = bridge();
+    let settled = frame.paint_with_damage();
+    paint_retained_and_compare(&mut retained, &mut dense, &settled, "before the hover");
+    let previous = frame.last_produced_sections.clone();
+    let mut document = automerge::AutoCommit::new();
+    let mut focus = None;
+    let _ = frame.dispatch_event(
+        &winit::event::WindowEvent::CursorMoved {
+            device_id: winit::event::DeviceId::dummy(),
+            position: winit::dpi::PhysicalPosition::new(pill.center().x, pill.center().y),
+        },
+        &winit::event::Modifiers::default(),
+        &mut ui::widget::Edits::lend(&mut document),
+        &automerge::ROOT,
+        &mut focus,
+    );
+    let hovered = frame.paint_with_damage();
+    let details = sparse_refusal_details(previous.as_ref(), &frame);
+    let damage = hovered
+        .damage_regions
+        .as_deref()
+        .unwrap_or_else(|| panic!("hovering a tab must be sparse: {details}"));
+    assert_repaints_under_one_percent(damage, "tab hover");
+    let pill = frame
+        .layout_rect_to_scene(pill)
+        .expect("the tab is on the output");
+    assert_damage_covers(pill, damage, "hovered tab");
+    paint_retained_and_compare(&mut retained, &mut dense, &hovered, "tab hovered");
 }
