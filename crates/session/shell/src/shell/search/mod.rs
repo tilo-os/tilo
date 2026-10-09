@@ -761,6 +761,7 @@ impl ProviderQuery<'_> {
         target: &mut Vec<ProviderIncomplete>,
     ) {
         let ctx = SearchContext {
+            action_scope: args.action_scope,
             query_scope: Some(args.scope),
             include_programmatic,
             needle: args.needle,
@@ -912,6 +913,7 @@ impl SearchRegistry {
             return None;
         }
         let ctx = SearchContext {
+            action_scope: args.action_scope,
             query_scope: Some(args.scope),
             action_scope: None,
             include_programmatic: false,
@@ -1761,6 +1763,7 @@ mod tests {
         let chrome = mk_chrome();
         let (doc, root) = mk_doc();
         let args = QueryArgs {
+            action_scope: None,
             needle: "",
             scope: SearchScope::All,
             active_provider_id: None,

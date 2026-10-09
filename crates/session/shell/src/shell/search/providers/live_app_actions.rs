@@ -3310,6 +3310,7 @@ mod tests {
         let mut registry = SearchRegistry::new();
         registry.register(provider.clone());
         let args = QueryArgs {
+            action_scope: None,
             needle: "",
             scope: SearchScope::All,
             active_provider_id: None,
@@ -3352,6 +3353,89 @@ mod tests {
     }
 
     #[test]
+    fn catalogue_completion_matches_the_exact_requested_discovery_scope() {
+        use crate::shell::chrome_state::SearchScope;
+        use crate::shell::search::{
+            ActionDiscoveryScope, QueryArgs, QueryIncompleteReason, SearchRegistry,
+        };
+        let chrome = chrome();
+        let state = chrome.borrow();
+        let doc = AutoCommit::new();
+        let broker = crate::shell::collab_broker_capnp::CapnpBrokerState::test_broker_with_idle_directory_queue();
+        let provider = Rc::new(LiveAppActionsProvider::new_with_fixture_identity(
+            broker.clone(),
+        ));
+        let mut registry = SearchRegistry::new();
+        registry.register(provider.clone());
+        let room = state
+            .tree()
+            .desktop
+            .active_workspace()
+            .unwrap()
+            .room
+            .to_string();
+        let mut scope = ActionDiscoveryScope {
+            application: "so.tilo.notes".into(),
+            room,
+            record: "notes-fixture".into(),
+            semantic_family: "notes.notebook".into(),
+        };
+        let observe = |scope: &ActionDiscoveryScope| {
+            registry
+                .query_catalogue(
+                    &QueryArgs {
+                        action_scope: Some(scope),
+                        needle: "",
+                        scope: SearchScope::All,
+                        active_provider_id: None,
+                        wanted_kinds: &[],
+                        chrome: &state,
+                        doc: &doc,
+                        doc_root: &automerge::ROOT,
+                    },
+                    true,
+                )
+                .1
+        };
+        let ctx = SearchContext {
+            action_scope: Some(&scope),
+            query_scope: Some(SearchScope::All),
+            ..context("", &state, &doc)
+        };
+        *provider.surface_snapshot.borrow_mut() =
+            Some(LiveAppActionsProvider::build_local_snapshot(
+                &broker,
+                &LiveAppActionsProvider::build_scope(&ctx),
+                &provider.build_probe,
+            ));
+        assert!(
+            observe(&scope).complete,
+            "the actual requested empty snapshot is complete"
+        );
+        for component in ["application", "room", "record", "family"] {
+            let original = scope.clone();
+            match component {
+                "application" => scope.application = "so.tilo.store".into(),
+                "room" => scope.room = "00000000-0000-0000-0000-000000000001".into(),
+                "record" => scope.record = "other-record".into(),
+                _ => scope.semantic_family = "notes.page".into(),
+            }
+            let result = observe(&scope);
+            assert!(
+                !result.complete,
+                "a different {component} snapshot cannot certify completion"
+            );
+            assert!(
+                result
+                    .incomplete
+                    .iter()
+                    .any(|provider| provider.reason == QueryIncompleteReason::Unavailable)
+            );
+            scope = original;
+        }
+    }
+
+    #[test]
     fn catalogue_failed_directory_retries_without_false_exhaustion() {
         use crate::shell::chrome_state::SearchScope;
         use crate::shell::search::action_api::{ActionCatalog, AllVisible};
@@ -3390,6 +3474,7 @@ mod tests {
         let mut registry = SearchRegistry::new();
         registry.register(provider.clone());
         let args = QueryArgs {
+            action_scope: None,
             needle: "",
             scope: SearchScope::All,
             active_provider_id: None,
@@ -3458,7 +3543,13 @@ mod tests {
         let provider = LiveAppActionsProvider::new_with_fixture_identity(broker);
         let (sender, receiver) = pending();
         provider.directory_pending.borrow_mut().insert(
-            (9, "actor".into(), String::new(), Vec::new()),
+            (
+                9,
+                "actor".into(),
+                String::new(),
+                Vec::new(),
+                LiveAppActionsProvider::surface_scope(&ctx),
+            ),
             PendingDirectoryPage {
                 receiver,
                 deadline: Instant::now() + Duration::from_secs(1),
