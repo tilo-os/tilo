@@ -230,6 +230,28 @@ The frame builder (`crates/session/shell/src/compositor/frame.rs`) produces one 
    supports one, inline otherwise. It either presents into a winit window
    (winit backend) or schedules a page flip on the DRM output (drm backend).
 
+### Frame damage
+
+`FrameBuilder::paint_with_damage` records the shell in ordered sections and
+proves which pixels changed since the previous frame; `None` means "redraw
+everything". The top bar and Quick Settings are bounded sections. The
+workspace, its overlays and everything above Quick Settings are split into
+keyed **damage parts** (`ui::scene_parts`): a draw site marks a stretch of
+commands with a key and the bounds those commands can paint, and every
+boundary splits the section's encoded streams into pieces that are compared
+with the previous frame's piece by piece. A changed piece of a part damages
+that part's old and new bounds; a changed piece outside every part, or a
+different set of parts, leaves the frame dense. Parts today: each tile's
+clipped content, each tab pill, the peers' pointers and follow tethers, the
+follow chip and the notification stack. A retained scene carries its parts
+with it (`scene_parts::record` / `scene_parts::append`), so an in-process
+app's own parts (the terminal's rows and cursor) reach the compositor:
+typing or a peer's pointer moving repaints well under 1 % of a 4K output.
+Foreign buffer swaps keep their client-reported damage. Night light and the
+colour filters are per-pixel tints drawn into the same scene, so frames under
+them stay sparse while the tint is unchanged; the magnifier and the
+crosshair, which follow the pointer, keep every frame dense.
+
 ### Composited frames: GBM render targets, dumb-buffer fallback
 
 Eligibility is decided per output. An output with a normal transform, no
