@@ -111,6 +111,7 @@ impl Fixture {
                 crate::policy::TrustPolicy::AllowMatchingUser,
             )),
             own_user: user.public_key,
+            agents: AgentRegistry::default(),
             federation: None,
             session_live: None,
         };

@@ -32,6 +32,7 @@ use crate::frame::{read_frame, write_frame};
 use crate::handshake::{EndpointTrust, HandshakeError, ServerAuth};
 use crate::peer::WorkspaceRegistry;
 use crate::policy::TrustPolicy;
+use crate::room_access::{self, Decision, DenyReason, RelayTrust, RoomOperation};
 use crate::workspace::SharedWorkspace;
 
 const COMPUTE_OUTBOUND_CAPACITY: usize = 32;
@@ -82,7 +83,15 @@ pub(crate) struct ComputeProtocol {
     own_signing_key: ed25519_dalek::SigningKey,
     revocations: Arc<std::sync::RwLock<RevocationList>>,
     trust_policy: Arc<std::sync::RwLock<TrustPolicy>>,
+    agents: crate::peer::AgentRegistry,
     metering: Arc<dyn crate::environment_host::Metering>,
+}
+
+/// The relay-wide trust the compute ALPN admits by.
+pub(crate) struct ComputeTrust {
+    pub(crate) revocations: Arc<std::sync::RwLock<RevocationList>>,
+    pub(crate) trust_policy: Arc<std::sync::RwLock<TrustPolicy>>,
+    pub(crate) agents: crate::peer::AgentRegistry,
 }
 
 /// The relay's own identity on the compute ALPN.
@@ -96,8 +105,7 @@ impl ComputeProtocol {
     pub(crate) fn new(
         workspaces: WorkspaceRegistry,
         identity: ComputeIdentity,
-        revocations: Arc<std::sync::RwLock<RevocationList>>,
-        trust_policy: Arc<std::sync::RwLock<TrustPolicy>>,
+        trust: ComputeTrust,
         metering: Arc<dyn crate::environment_host::Metering>,
     ) -> Self {
         Self {
@@ -105,9 +113,19 @@ impl ComputeProtocol {
             own_user_public_key: identity.user_public_key,
             own_cert: identity.cert,
             own_signing_key: identity.signing_key,
-            revocations,
-            trust_policy,
+            revocations: trust.revocations,
+            trust_policy: trust.trust_policy,
+            agents: trust.agents,
             metering,
+        }
+    }
+
+    fn trust(&self) -> RelayTrust<'_> {
+        RelayTrust {
+            revocations: &self.revocations,
+            policy: &self.trust_policy,
+            own_user: &self.own_user_public_key,
+            agents: &self.agents,
         }
     }
 
@@ -117,6 +135,7 @@ impl ComputeProtocol {
             own_user_public_key: self.own_user_public_key,
             trust_policy: Arc::clone(&self.trust_policy),
             revocations: Arc::clone(&self.revocations),
+            agents: Arc::clone(&self.agents),
             metering: Arc::clone(&self.metering),
         }
     }
@@ -187,11 +206,10 @@ async fn run_server_session(
                     }
                     if let ComputeEnvelope::Attach { workspace_id } = incoming {
                         let admitted = attach_workspace(
-                            &protocol.workspaces,
+                            &protocol,
                             &peer,
                             workspace_id,
-                            &outbound,
-                            &disconnect,
+                            (&outbound, &disconnect),
                             &mut send,
                             &connection,
                         ).await?;
@@ -289,35 +307,54 @@ async fn authenticate_server(
         .await?)
 }
 
-/// Refresh membership, admit `device` if the workspace allows it, and load
-/// its durable compute backlog. `None` when the device is not admitted.
-/// Blocking I/O: run it on the blocking pool with the workspace lock held.
-/// Membership comes from the same reload as every routing read, so a pending
-/// or failed replacement's ceiling bounds it too.
-pub(crate) fn admit_compute_peer(
-    workspace: &mut crate::workspace::WorkspaceRuntime,
-    device: [u8; 32],
-) -> Result<Option<Vec<crate::store::PendingEntry>>, crate::store::StoreError> {
-    crate::workspace_io::current_membership_blocking(workspace)?;
-    if !workspace.membership.contains(&device) {
-        if !workspace.admit_authenticated {
-            return Ok(None);
+/// Admit `peer` to `workspace`'s compute plane, enrolling a same-owner
+/// device first. Membership comes from the same reload as every routing read,
+/// so a pending or failed replacement's ceiling bounds it too; the enrolment
+/// is the serialized async admission, never filesystem work under the
+/// routing lock.
+///
+/// # Errors
+///
+/// The store's error when membership cannot be read or the enrolment cannot
+/// be persisted; `Ok(Err(reason))` when the device is refused.
+pub(crate) async fn admit_compute_peer(
+    workspace: &SharedWorkspace,
+    trust: &RelayTrust<'_>,
+    peer: &AuthenticatedPeer,
+) -> Result<Result<(), DenyReason>, crate::store::StoreError> {
+    let (decision, revision) = {
+        let runtime = crate::workspace_io::fresh_membership(workspace).await?;
+        (
+            room_access::decide(&runtime, trust, peer, RoomOperation::Compute),
+            runtime.membership_revision,
+        )
+    };
+    match decision {
+        Decision::Admit => Ok(Ok(())),
+        Decision::Deny(reason) => Ok(Err(reason)),
+        Decision::AdmitAndEnrol => {
+            crate::workspace_io::admit_member(workspace, peer.device_public_key, revision).await?;
+            let runtime = crate::workspace_io::fresh_membership(workspace).await?;
+            Ok(
+                match room_access::decide(&runtime, trust, peer, RoomOperation::Compute) {
+                    Decision::Admit => Ok(()),
+                    Decision::AdmitAndEnrol => Err(DenyReason::NotAMember),
+                    Decision::Deny(reason) => Err(reason),
+                },
+            )
         }
-        workspace.admit_device(device)?;
     }
-    workspace.store.load_compute_pending(&device).map(Some)
 }
 
 async fn attach_workspace(
-    workspaces: &WorkspaceRegistry,
+    protocol: &ComputeProtocol,
     peer: &AuthenticatedPeer,
     workspace_id: u64,
-    outbound: &mpsc::Sender<ComputeEnvelope>,
-    disconnect: &mpsc::Sender<()>,
+    (outbound, disconnect): (&mpsc::Sender<ComputeEnvelope>, &mpsc::Sender<()>),
     send: &mut SendStream,
     connection: &Connection,
 ) -> Result<bool, ComputeSessionError> {
-    let Some(workspace) = find_workspace(workspaces, workspace_id).await else {
+    let Some(workspace) = find_workspace(&protocol.workspaces, workspace_id).await else {
         write_compute(
             send,
             &ComputeEnvelope::NotAuthorised {
@@ -328,45 +365,54 @@ async fn attach_workspace(
         .await?;
         return Ok(false);
     };
-    let (pending, admitted) = {
-        // Admission may persist membership and the backlog is a directory
-        // scan: blocking I/O, so it runs on the blocking pool. The workspace
-        // lock moves with it, so nothing is queued between the scan and the
-        // attach below.
-        let device = peer.device_public_key;
-        let workspace = workspace.lock_owned().await;
-        let (mut workspace, admission) = tokio::task::spawn_blocking(move || {
-            let mut workspace = workspace;
-            let admission = admit_compute_peer(&mut workspace, device);
-            (workspace, admission)
-        })
-        .await
-        .map_err(|_| std::io::Error::other("compute backlog scan panicked"))?;
-        match admission? {
-            Some(pending) => {
-                workspace.compute.attach(
-                    device,
-                    outbound.clone(),
-                    disconnect.clone(),
-                    Some(connection.clone()),
-                );
-                drop(workspace);
-                (pending, true)
+    let trust = protocol.trust();
+    let admission = admit_compute_peer(&workspace, &trust, peer).await?;
+    let pending = match admission {
+        Ok(()) => {
+            // The backlog is a directory scan: blocking I/O, so it runs on
+            // the blocking pool. The workspace lock moves with it, so nothing
+            // is queued between the scan and the attach below.
+            let device = peer.device_public_key;
+            let workspace = workspace.lock_owned().await;
+            let (mut workspace, pending) = tokio::task::spawn_blocking(move || {
+                let pending = workspace.store.load_compute_pending(&device);
+                (workspace, pending)
+            })
+            .await
+            .map_err(|_| std::io::Error::other("compute backlog scan panicked"))?;
+            let pending = pending?;
+            // Admission may have changed while the lane and the scan ran.
+            match room_access::decide(&workspace, &trust, peer, RoomOperation::Compute) {
+                Decision::Admit => {
+                    workspace.compute.attach(
+                        device,
+                        outbound.clone(),
+                        disconnect.clone(),
+                        Some(connection.clone()),
+                    );
+                    drop(workspace);
+                    Ok(pending)
+                }
+                Decision::AdmitAndEnrol => Err(DenyReason::NotAMember),
+                Decision::Deny(reason) => Err(reason),
             }
-            None => (Vec::new(), false),
+        }
+        Err(reason) => Err(reason),
+    };
+    let pending = match pending {
+        Ok(pending) => pending,
+        Err(reason) => {
+            write_compute(
+                send,
+                &ComputeEnvelope::NotAuthorised {
+                    workspace_id,
+                    reason: reason.reason().into(),
+                },
+            )
+            .await?;
+            return Ok(false);
         }
     };
-    if !admitted {
-        write_compute(
-            send,
-            &ComputeEnvelope::NotAuthorised {
-                workspace_id,
-                reason: "device not in workspace membership".into(),
-            },
-        )
-        .await?;
-        return Ok(false);
-    }
     let pending_count = u32::try_from(pending.len()).unwrap_or(u32::MAX);
     for entry in pending {
         if entry.bytes.len() > MAX_COMPUTE_FRAME_BYTES {
