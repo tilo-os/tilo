@@ -486,7 +486,9 @@ fn input_event_step(event: &BackendEvent) -> &'static str {
     match event {
         BackendEvent::Input(WindowEvent::KeyboardInput { .. })
         | BackendEvent::PhysicalKey { .. } => "key-event",
-        BackendEvent::Input(_) | BackendEvent::PhysicalPointerMotion { .. } => "pointer-event",
+        BackendEvent::Input(_)
+        | BackendEvent::PhysicalPointerMotion { .. }
+        | BackendEvent::PhysicalPointerButton { .. } => "pointer-event",
         _ => "backend-event",
     }
 }
@@ -3220,6 +3222,7 @@ fn palette_json(fb: &FrameBuilder) -> serde_json::Value {
     let (visible, query, selected, _) = fb.host().palette_snapshot();
     serde_json::json!({
         "visible": visible,
+        "inspection": fb.host().palette_inspection(),
         "query": query,
         "selected_id": selected,
         "selected_action": fb.host().palette_selected_action().map(|(provider, id)| {
@@ -9184,6 +9187,7 @@ pub fn run() {
 
     // Reused per-iteration scratch so backend events process *after*
     // `poll_events` returns — the input arm needs `&mut backend` (for `set_dpms`), unborrowable inside the poll closure.
+    let mut palette_trace = crate::shell::search::palette_trace::PaletteTrace::default();
     let mut pending_events: std::collections::VecDeque<BackendEvent> =
         std::collections::VecDeque::new();
     // The pad whose map is held open, with its saved settings.
@@ -9683,12 +9687,55 @@ pub fn run() {
         // events that must run next, before anything the backend queued later.
         let mut event_step = "accessibility";
         while let Some(event) = pending_events.pop_front() {
+            let palette_observation = !session.is_locked()
+                && crate::shell::launcher::LaunchSession::current().presentation_observer_enabled();
+            frame_builder
+                .host_mut()
+                .observe_palette_draws(palette_observation);
+            if !palette_observation {
+                palette_trace.reset();
+            }
+            let palette_origin = match &event {
+                BackendEvent::PhysicalKey {
+                    event: WindowEvent::KeyboardInput { event, .. },
+                    input_time_ns,
+                } if event.state == winit::event::ElementState::Pressed && !event.repeat => {
+                    Some(("physical_key", *input_time_ns))
+                }
+                BackendEvent::PhysicalPointerMotion { input_time_ns, .. } => {
+                    Some(("physical_pointer_motion", *input_time_ns))
+                }
+                BackendEvent::PhysicalPointerButton {
+                    event:
+                        WindowEvent::MouseInput {
+                            state: winit::event::ElementState::Pressed,
+                            ..
+                        },
+                    input_time_ns,
+                } => Some(("physical_pointer_button", *input_time_ns)),
+                _ => None,
+            };
+            let palette_input = if palette_observation {
+                palette_origin.and_then(|(kind, origin)| {
+                    client_input::monotonic_time_ns().and_then(|dispatch| {
+                        palette_trace.begin(
+                            kind,
+                            origin,
+                            frame_builder.host().palette_inspection(),
+                            dispatch,
+                        )
+                    })
+                })
+            } else {
+                None
+            };
             state.physical_key_input_time_ns = match &event {
                 BackendEvent::PhysicalKey { input_time_ns, .. } => Some(*input_time_ns),
                 _ => None,
             };
             state.physical_pointer_input_time_ns = match &event {
-                BackendEvent::PhysicalPointerMotion { input_time_ns, .. } => Some(*input_time_ns),
+                BackendEvent::PhysicalPointerMotion { input_time_ns, .. }
+                | BackendEvent::PhysicalPointerButton { input_time_ns, .. } => Some(*input_time_ns),
                 _ => None,
             };
             input_steps.step(event_step);
@@ -9736,7 +9783,8 @@ pub fn run() {
                 }
                 BackendEvent::Input(wev)
                 | BackendEvent::PhysicalKey { event: wev, .. }
-                | BackendEvent::PhysicalPointerMotion { event: wev, .. } => {
+                | BackendEvent::PhysicalPointerMotion { event: wev, .. }
+                | BackendEvent::PhysicalPointerButton { event: wev, .. } => {
                     // A physical switch still enters through the same trusted
                     // libinput/winit funnel. Only the configured pair is
                     // translated, and disabled mode returns `None`, preserving
@@ -10074,10 +10122,19 @@ pub fn run() {
                                 wev,
                             );
                             // Dispatch real input through the same wire the headless `execute_planned_action` path uses.
-                            let _input_trace =
+                            let _input_trace = if let Some(input) = palette_input.as_ref() {
+                                crate::shell::search::activation_trace::Scope::palette(
+                                    input.identity,
+                                )
+                            } else if matches!(wev, WindowEvent::MouseInput { .. }) {
+                                crate::shell::search::activation_trace::Scope::pointer_button(
+                                    state.physical_pointer_input_time_ns,
+                                )
+                            } else {
                                 crate::shell::search::activation_trace::Scope::native(
                                     state.physical_key_input_time_ns,
-                                );
+                                )
+                            };
                             chrome_handled = frame_builder.dispatch_event(
                                 wev,
                                 &test_control_ctx.modifiers,
@@ -10339,6 +10396,13 @@ pub fn run() {
                     // Pen and pad events were expanded into client or
                     // ordinary input before the batch.
                 }
+            }
+            if let Some(input) = palette_input
+                && let Some(end) = client_input::monotonic_time_ns()
+                && let Some(row) =
+                    palette_trace.finish(input, frame_builder.host().palette_inspection(), end)
+            {
+                eprintln!("tilo-palette-input {row}");
             }
         }
         state.physical_key_input_time_ns = None;
@@ -12310,6 +12374,14 @@ pub fn run() {
                 }
                 frame_paint
             };
+            let palette_draw = (!session.is_locked()
+                && crate::shell::launcher::LaunchSession::current()
+                    .presentation_observer_enabled())
+            .then(|| {
+                let state = frame_builder.host().palette_inspection()["rendered"].clone();
+                client_input::monotonic_time_ns().map(|time| (state, time))
+            })
+            .flatten();
             metrics.mark_scene(t_scene_start.elapsed());
             metrics.mark_cpu(crate::compositor::metrics::CpuPhase::Scene, scene_cpu);
             // The selector queued semantic work and closed before this clean
@@ -12561,6 +12633,7 @@ pub fn run() {
             let submit_cpu = metrics.cpu_snapshot();
             let mut render_thread_lost = false;
             let mut submitted_serial = None;
+            let palette_scene_revision = frame_paint.revision;
             let async_present = if let Some(pipe) = present_pipe.as_mut() {
                 submitted_serial = pipe.submit_frame_with_input_age(
                     frame_paint,
@@ -12588,6 +12661,14 @@ pub fn run() {
                 feedback.complete(None);
                 false
             };
+            if let Some(serial) = submitted_serial
+                && let Some((drawn, draw_ns)) = palette_draw
+                && let Some(submit_ns) = client_input::monotonic_time_ns()
+                && let Some(row) =
+                    palette_trace.frame(serial, palette_scene_revision, drawn, draw_ns, submit_ns)
+            {
+                eprintln!("tilo-palette-frame {row}");
+            }
             if render_thread_lost {
                 // Presentation is dead but the session isn't — clients stay served and
                 // protocol state is kept, a far better failure mode than tearing the seat down.

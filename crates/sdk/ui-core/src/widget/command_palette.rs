@@ -437,6 +437,7 @@ pub struct CommandPalette {
     entries_generation: u64,
     /// Render cache: records only a completed invocation of the real draw pass.
     drawn_inspection: Option<serde_json::Value>,
+    observe_draw: bool,
     /// Labels and descriptions of `entries`, indexed while they stay the
     /// same.
     entry_index: ListIndex,
@@ -513,6 +514,7 @@ impl CommandPalette {
             entries: Vec::new(),
             entries_generation: 0,
             drawn_inspection: None,
+            observe_draw: false,
             entry_index: ListIndex::default(),
             query: String::new(),
             query_placeholder: crate::i18n!("palette-placeholder"),
@@ -1036,7 +1038,17 @@ impl CommandPalette {
         self.entries_generation
     }
 
+    pub fn set_draw_observation(&mut self, enabled: bool) {
+        self.observe_draw = enabled;
+        if !enabled {
+            self.drawn_inspection = None;
+        }
+    }
+
     fn record_drawn_inspection(&mut self) {
+        if !self.observe_draw {
+            return;
+        }
         let entries = self.visible_entries();
         let hover = self.row_at(self.last_cursor);
         let rows: Vec<_> = entries
@@ -4101,8 +4113,25 @@ mod drawn_inspection_tests {
     }
 
     #[test]
+    fn normal_palette_draw_does_not_allocate_diagnostic_snapshot() {
+        let mut palette = CommandPalette::new();
+        palette.set_entries(vec![CommandEntry::new("a", "Alpha")]);
+        palette.set_rect(Rect::new(0.0, 0.0, 600.0, 400.0));
+        draw(&mut palette);
+        assert!(palette.drawn_inspection().is_none());
+        palette.set_draw_observation(true);
+        draw(&mut palette);
+        assert!(palette.drawn_inspection().is_some());
+        palette.set_draw_observation(false);
+        assert!(palette.drawn_inspection().is_none());
+        draw(&mut palette);
+        assert!(palette.drawn_inspection().is_none());
+    }
+
+    #[test]
     fn drawn_inspection_tracks_real_pointer_selection_only_after_drawing() {
         let mut palette = CommandPalette::new();
+        palette.set_draw_observation(true);
         palette.set_entries(vec![
             CommandEntry::new("a", "Alpha"),
             CommandEntry::new("b", "Bravo"),

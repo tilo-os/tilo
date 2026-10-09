@@ -121,6 +121,7 @@ fn inspection_generation_changes_only_when_real_results_are_refreshed() {
 }
 
 fn draw_palette(host: &mut ShellOverlayHost) {
+    host.observe_palette_draws(true);
     host.palette.draw(
         &mut vello::Scene::new(),
         Affine::IDENTITY,

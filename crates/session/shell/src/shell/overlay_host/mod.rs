@@ -8090,6 +8090,10 @@ impl ShellOverlayHost {
     /// invoking a result. Labels and query text are deliberately absent:
     /// identities come from the same result table used by activation, and
     /// geometry comes from the shared widget's painted-row calculation.
+    pub(crate) fn observe_palette_draws(&mut self, enabled: bool) {
+        self.palette.set_draw_observation(enabled);
+    }
+
     pub fn palette_inspection(&self) -> serde_json::Value {
         let rect = self.palette.get_rect();
         let mounted = self.palette_visible && rect.width() > 0.0 && rect.height() > 0.0;
@@ -8164,6 +8168,16 @@ impl ShellOverlayHost {
             row["action_id"] = serde_json::json!(result.id);
         }
         drawn["results_generation"] = serde_json::json!(self.palette_results_generation);
+        drawn["visible"] = serde_json::json!(true);
+        drawn["mounted"] = serde_json::json!(true);
+        drawn["query_current"] = serde_json::json!(
+            drawn["query_hash"].as_str()
+                == Some(
+                    blake3::hash(self.last_search_query.as_bytes())
+                        .to_hex()
+                        .as_str()
+                )
+        );
         drawn["published_revision_hash"] = serde_json::json!(
             blake3::hash(self.last_search_revision.as_bytes())
                 .to_hex()
@@ -8882,6 +8896,10 @@ impl ShellOverlayHost {
     )]
     fn activate_selected_result(&mut self, doc: &mut ui::widget::Edits<'_>, root: &ObjId) {
         if let Some(result) = self.pending_palette_action.take() {
+            let _target = crate::shell::search::activation_trace::TargetScope::enter(
+                &result.provider_id,
+                &result.id,
+            );
             let parsed = serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(
                 self.palette.query(),
             );
@@ -8970,6 +8988,10 @@ impl ShellOverlayHost {
                     .notifications()
                     .last()
                     .map(|notice| notice.id);
+                let _target = crate::shell::search::activation_trace::TargetScope::enter(
+                    &result.provider_id,
+                    &result.id,
+                );
                 let outcome = if let Some(begin) = &result.on_begin_invoke {
                     begin(doc, root, &chrome, &args).map(|disposition| match disposition {
                         crate::shell::search::InvocationDisposition::Accepted(_) => (),

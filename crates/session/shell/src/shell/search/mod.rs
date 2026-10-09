@@ -13,6 +13,7 @@ pub mod action_api;
 pub(crate) mod activation_trace;
 pub mod files_index;
 pub mod invocation_wake;
+pub(crate) mod palette_trace;
 pub mod providers;
 pub mod visibility;
 
