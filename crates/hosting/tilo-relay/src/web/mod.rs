@@ -247,19 +247,7 @@ impl Relay {
                 None => tokio::spawn(live.serve(endpoint)),
             },
         );
-        tasks.push(tokio::spawn({
-            async move {
-                let mut observe = tokio::time::interval(live::OBSERVATION);
-                observe.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-                let mut sweep = tokio::time::interval(Duration::from_secs(5));
-                loop {
-                    tokio::select! {
-                        _ = observe.tick() => grants.observe(&sessions).await,
-                        _ = sweep.tick() => sessions.sweep(),
-                    }
-                }
-            }
-        }));
+        tasks.push(tokio::spawn(grants.follow(sessions)));
         let mut plain_origin = None;
         if let Some(plain) = config.plain_listen {
             let plain = tokio::net::TcpListener::bind(plain)
