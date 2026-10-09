@@ -34,7 +34,8 @@ class NativeEnvelope(unittest.TestCase):
     def fixture(self, directory: Path) -> dict:
         for name, value in {"memory.max": str(22 * 1024**3), "memory.current": "4096",
                             "memory.peak": "8192", "memory.events": "max 0\noom 0\noom_kill 0\n",
-                            "cpu.max": "2400000 100000", "memory.swap.max": "0"}.items():
+                            "cpu.max": "2400000 100000", "memory.swap.max": "0",
+                            "memory.swap.current": "0"}.items():
             (directory / name).write_text(value + "\n")
         return {**os.environ, "TILO_CGROUP_MEMORY_PATH": str(directory)}
 
@@ -55,6 +56,7 @@ class NativeEnvelope(unittest.TestCase):
     def test_absent_or_different_subject_cannot_pass(self):
         cases = {"memory.max": [None, "max", str(36 * 1024**3)],
                  "memory.swap.max": [None, "max", "1"],
+                 "memory.swap.current": [None, "1"],
                  "cpu.max": [None, "max 100000", "600000 100000", "0 0"],
                  "memory.peak": [None, "unavailable"],
                  "memory.events": [None, "oom 0\noom_kill 0"]}
@@ -98,6 +100,31 @@ class NativeEnvelope(unittest.TestCase):
             result = self.invoke("after", directory, replacement)
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("cgroup changed", result.stderr)
+
+    def test_prepare_only_lowers_own_swap_without_resetting_other_resources(self):
+        with tempfile.TemporaryDirectory() as value:
+            directory = Path(value)
+            env = self.fixture(directory)
+            (directory / "memory.swap.max").write_text("max\n")
+            previous = {p.name: p.read_bytes() for p in directory.iterdir()}
+            result = self.invoke("prepare", directory, env)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual((directory / "memory.swap.max").read_text(), "0\n")
+            for name, data in previous.items():
+                if name != "memory.swap.max":
+                    self.assertEqual((directory / name).read_bytes(), data, name)
+            self.assertEqual(self.invoke("before", directory, env).returncode, 0)
+
+    def test_prepare_refuses_wrong_job_caps_or_existing_swap_without_writing(self):
+        for name, value in [("memory.max", str(36 * 1024**3)), ("cpu.max", "600000 100000"),
+                            ("memory.swap.current", "1")]:
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as temporary:
+                directory = Path(temporary)
+                env = self.fixture(directory)
+                (directory / "memory.swap.max").write_text("max\n")
+                (directory / name).write_text(value + "\n")
+                self.assertNotEqual(self.invoke("prepare", directory, env).returncode, 0)
+                self.assertEqual((directory / "memory.swap.max").read_text(), "max\n")
 
     def test_diagnostic_executes_every_production_sdk_step_on_fixed_source(self):
         production = (ROOT / ".forgejo/workflows/app-sdk.yml").read_text()
