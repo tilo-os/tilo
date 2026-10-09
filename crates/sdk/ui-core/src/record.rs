@@ -3737,41 +3737,6 @@ impl RecordStore {
     }
 }
 
-#[allow(dead_code, reason = "used by feature-gated collaboration paths")]
-fn validate_replica_identity(
-    doc: &AutoCommit,
-    checkout: &RecordCheckout,
-    workspace: &str,
-    origin: &str,
-) -> Result<(), String> {
-    validate_identity(doc, checkout, workspace).map_err(|error| error.to_string())?;
-    // A losing CRDT value must not conceal a foreign identity. Independent
-    // equal stamps are harmless; every concurrent value must name this record.
-    for (value, object) in doc.get_all(ROOT, META).map_err(|error| error.to_string())? {
-        if value != Value::Object(ObjType::Map) {
-            return Err("conflicting record identity".into());
-        }
-        for (field, expected) in [
-            ("id", checkout.id.as_str()),
-            ("kind", checkout.kind.as_str()),
-            (ROOM, workspace),
-            ("home", origin),
-        ] {
-            let values = doc
-                .get_all(&object, field)
-                .map_err(|error| error.to_string())?;
-            if values.is_empty()
-                || values
-                    .iter()
-                    .any(|(value, _)| value.as_str() != Some(expected))
-            {
-                return Err("conflicting record identity".into());
-            }
-        }
-    }
-    Ok(())
-}
-
 /// Whether the document carries its record metadata map.
 fn record_metadata_present(doc: &AutoCommit) -> Result<bool, String> {
     match object_at(doc, &ROOT, META, ObjType::Map) {

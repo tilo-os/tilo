@@ -531,7 +531,6 @@ pub struct FrameHarness {
     history_chrome_enabled: bool,
     history_layout: Option<crate::standalone_history_host::HostHistoryLayout>,
     history_focus_pending: bool,
-    #[allow(dead_code, reason = "used by feature-gated history input paths")]
     history_pointer_owned: bool,
     text: TextRenderer,
     theme: Theme,
