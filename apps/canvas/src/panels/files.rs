@@ -332,11 +332,7 @@ impl FileDesk {
     }
 
     fn remember(&self, path: &Path, file: &ArtworkFile) {
-        let at_ms = ui::time::wall()
-            .duration_since(ui::time::SystemTime::UNIX_EPOCH)
-            .map_or(0, |since| {
-                u64::try_from(since.as_millis()).unwrap_or(u64::MAX)
-            });
+        let at_ms = ui::time::unix_now_ms();
         let recent = Recent {
             path: path.display().to_string(),
             title: file.title.clone(),
