@@ -2896,6 +2896,144 @@ mod tests {
     }
 
     #[test]
+    fn held_turn_services_message_queued_by_catalogue_and_refusal_polling() {
+        let mut fixture = fixture("queued message", World::default(), Vec::new());
+        let launch = Uuid::from_u128(40).to_string();
+        fixture.session.managed_messages =
+            Some(crate::session::managed_messages::ManagedMessages::new(
+                &fixture.session.cfg.cluster.to_string(),
+                &fixture.session.cfg.agent_id,
+                &launch,
+                Chooser::new(false, Duration::from_secs(1)),
+            ));
+        fixture.session.link = crate::wire::test_link(Broker {
+            world: fixture.world.clone(),
+            sent: fixture.sent.clone(),
+            events: vec![
+                CollabEvent::RemoteCursorMoved {
+                    user_id: "older".into(),
+                    x: 1.0,
+                    y: 0.0,
+                },
+                CollabEvent::AgentMessage(message_input(41, &launch)),
+                CollabEvent::RemoteCursorMoved {
+                    user_id: "newer".into(),
+                    x: 2.0,
+                    y: 0.0,
+                },
+            ],
+            held: Vec::new(),
+            late: None,
+        });
+        // Fill this tick's quota after the Message so its actual broker
+        // acceptance reply remains inbound until refusal polling queues it.
+        fixture
+            .session
+            .link
+            .test_fresh((0..127).map(|_| CollabEvent::AgentMessageDisconnected {
+                detail: "bounded diagnostic".into(),
+            }));
+        let (_held_tx, held_rx) = std::sync::mpsc::channel();
+        fixture.session.turn = Some(ActiveTurn::new(
+            held_rx,
+            crate::live::PlanStream::new(BTreeMap::new()),
+        ));
+        // Real Broker.poll -> Link.take_queued leaves the non-catalogue
+        // Message in pending. The old fresh-only pump never sees it.
+        fixture.session.absorb_catalogue_updates();
+        fixture.session.pump_managed_link().unwrap();
+        assert_eq!(
+            fixture
+                .sent
+                .borrow()
+                .iter()
+                .filter(|request| matches!(request, CollabRequest::AcceptAgentMessage { .. }))
+                .count(),
+            1
+        );
+        assert!(fixture.session.turn.as_ref().unwrap().finished.is_none());
+        assert!(
+            fixture
+                .session
+                .managed_messages
+                .as_ref()
+                .and_then(super::super::managed_messages::ManagedMessages::next_deadline)
+                .is_some()
+        );
+        // Queue an actual correlated acceptance acknowledgement through the
+        // other polling path, then prove no duplicate acceptance is emitted.
+        fixture.session.absorb_refusals();
+        fixture.session.pump_managed_link().unwrap();
+        assert!(
+            fixture
+                .session
+                .managed_messages
+                .as_ref()
+                .and_then(super::super::managed_messages::ManagedMessages::next_deadline)
+                .is_none()
+        );
+        assert_eq!(
+            fixture
+                .sent
+                .borrow()
+                .iter()
+                .filter(|request| matches!(request, CollabRequest::AcceptAgentMessage { .. }))
+                .count(),
+            1
+        );
+        for expected in ["older", "newer"] {
+            assert!(
+                matches!(fixture.session.recv_with_managed(Duration::ZERO).unwrap(),
+                Some(CollabEvent::RemoteCursorMoved { user_id, .. }) if user_id == expected)
+            );
+        }
+    }
+
+    #[test]
+    fn managed_pump_shares_handler_quota_between_pending_and_fresh() {
+        let mut fixture = fixture("mixed queues", World::default(), Vec::new());
+        fixture.session.link = crate::wire::test_link(Broker {
+            world: fixture.world.clone(),
+            sent: fixture.sent.clone(),
+            events: (0..130)
+                .map(|_| CollabEvent::AgentMessageDisconnected {
+                    detail: "bounded diagnostic".into(),
+                })
+                .collect(),
+            held: Vec::new(),
+            late: None,
+        });
+        fixture.session.absorb_catalogue_updates();
+        fixture
+            .session
+            .link
+            .test_fresh((0..3).map(|_| CollabEvent::AgentMessageDisconnected {
+                detail: "bounded diagnostic".into(),
+            }));
+        fixture.session.pump_managed_link().unwrap();
+        assert_eq!(fixture.session.link.test_fresh_len(), 3);
+        let remaining = fixture
+            .session
+            .link
+            .take_queued(|event| matches!(event, CollabEvent::AgentMessageDisconnected { .. }));
+        assert_eq!(
+            remaining.len(),
+            2,
+            "queued overflow is retained, not discarded"
+        );
+        fixture.session.link.defer(remaining);
+        fixture.session.pump_managed_link().unwrap();
+        assert_eq!(fixture.session.link.test_fresh_len(), 0);
+        assert!(
+            fixture
+                .session
+                .link
+                .take_queued(|event| matches!(event, CollabEvent::AgentMessageDisconnected { .. }))
+                .is_empty()
+        );
+    }
+
+    #[test]
     fn held_model_turn_pumps_message_without_reordering_unrelated_events() {
         let mut fixture = fixture("held turn", World::default(), Vec::new());
         let launch = Uuid::from_u128(3).to_string();

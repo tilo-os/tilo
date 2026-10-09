@@ -823,8 +823,30 @@ impl Session {
     /// model turn. Unrelated events are restored in their original order.
     pub(super) fn pump_managed_link(&mut self) -> Result<()> {
         self.pump_managed_messages();
+        // Catalogue/refusal polling can already have moved Message events
+        // into Link's pending queue. Service those before fresh events without
+        // consuming unrelated deferred work or exceeding this tick's quota.
+        let remaining = std::cell::Cell::new(128_usize);
+        let queued = self.link.take_queued(|event| {
+            let managed = matches!(
+                event,
+                CollabEvent::AgentMessage(_)
+                    | CollabEvent::AgentMessageReply { .. }
+                    | CollabEvent::AgentMessageObservation { .. }
+                    | CollabEvent::AgentMessageDisconnected { .. }
+            );
+            if managed && remaining.get() > 0 {
+                remaining.set(remaining.get().saturating_sub(1));
+                true
+            } else {
+                false
+            }
+        });
+        for event in queued {
+            self.handle_managed_event(event)?;
+        }
         let mut deferred = Vec::new();
-        for _ in 0..128 {
+        for _ in 0..remaining.get() {
             let Some(event) = self.link.recv_fresh() else {
                 break;
             };
