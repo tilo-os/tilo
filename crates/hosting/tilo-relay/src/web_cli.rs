@@ -1189,11 +1189,18 @@ mod tests {
         );
     }
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn the_room_certifies_exactly_the_admitted_browser_and_refuses_an_unmatched_code() {
-        let tmp = tempfile::tempdir().unwrap();
+    /// A room's relay under a fresh root kept in `state`, with the room
+    /// approver's session open on it: the relay, the root, the approver and
+    /// the approver's endpoint.
+    async fn room_relay(
+        state: &Path,
+    ) -> (
+        Relay,
+        SigningKey,
+        tilo_relay_client::Approver,
+        iroh::endpoint::Endpoint,
+    ) {
         let [root, host, approver_key] = [key(), key(), key()];
-        let user = root.verifying_key().to_bytes();
         let host_cert = enrol(&root, &host, "room host", DeviceCapabilities::host()).unwrap();
         let approver_cert = enrol(
             &root,
@@ -1204,12 +1211,12 @@ mod tests {
         .unwrap();
         let relay = Relay::start(
             tilo_relay::RelayConfig {
-                state_root: tmp.path().join("relay"),
-                identity_root: tmp.path().join("identity"),
+                state_root: state.join("relay"),
+                identity_root: state.join("identity"),
                 ..Default::default()
             },
             RelayIdentity {
-                user_public_key: user,
+                user_public_key: root.verifying_key().to_bytes(),
                 device_signing_key: host,
                 device_cert: host_cert,
                 revocations: RevocationList::new(),
@@ -1227,6 +1234,18 @@ mod tests {
         )
         .await
         .unwrap();
+        (relay, root, approver, approver_endpoint)
+    }
+
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "the relay serves the whole scenario and `shutdown` consumes it at the end"
+    )]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_room_certifies_exactly_the_admitted_browser_and_refuses_an_unmatched_code() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (relay, root, approver, approver_endpoint) = room_relay(tmp.path()).await;
+        let user = root.verifying_key().to_bytes();
         let (operator, commands) = tokio::sync::mpsc::channel(16);
         let (reports, mut reported) = tokio::sync::mpsc::unbounded_channel();
         let approving = tokio::spawn(async move {
