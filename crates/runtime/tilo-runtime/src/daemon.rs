@@ -29,6 +29,10 @@ const PROBE_TIMEOUT: Duration = Duration::from_millis(300);
 #[derive(Debug, PartialEq, Eq)]
 pub enum Mode {
     Daemon,
+    /// An isolated native-admission profile of an existing device owner.
+    AdmissionDaemon {
+        owner_uid: u32,
+    },
     Connect,
     RunApp {
         app_id: String,
@@ -104,6 +108,15 @@ pub fn parse_args(arguments: impl IntoIterator<Item = OsString>) -> io::Result<A
                 ));
             }
             Some("--daemon") if mode.is_none() => mode = Some(Mode::Daemon),
+            Some("--admission-daemon") if mode.is_none() => {
+                let owner_uid = arguments
+                    .next()
+                    .and_then(|arg| arg.into_string().ok())
+                    .and_then(|arg| arg.parse::<u32>().ok())
+                    .filter(|uid| *uid != 0)
+                    .ok_or_else(|| invalid("--admission-daemon requires a non-root owner UID"))?;
+                mode = Some(Mode::AdmissionDaemon { owner_uid });
+            }
             Some("--connect") if mode.is_none() => mode = Some(Mode::Connect),
             Some("--join") if mode.is_none() => {
                 let invitation = arguments
@@ -157,6 +170,7 @@ pub fn parse_args(arguments: impl IntoIterator<Item = OsString>) -> io::Result<A
             }
         }
     }
+    let explicit_profile = profile.is_some();
     let profile = match profile {
         Some(path) => path,
         None => default_profile()?,
@@ -165,6 +179,11 @@ pub fn parse_args(arguments: impl IntoIterator<Item = OsString>) -> io::Result<A
         return Err(invalid("runtime profile must be absolute"));
     }
     let mode = mode.ok_or_else(|| invalid("choose --daemon, --connect, --join INVITATION, --run-app APP_ID [--room ROOM] -- EXECUTABLE, or --profile PATH --apps MANIFEST"))?;
+    if matches!(mode, Mode::AdmissionDaemon { .. }) && !explicit_profile {
+        return Err(invalid(
+            "native admission requires an explicit isolated profile",
+        ));
+    }
     if dev && mode != Mode::Daemon {
         return Err(invalid("--dev starts a daemon: use it with --daemon"));
     }
@@ -657,18 +676,45 @@ fn ensure_running(profile: &Path) -> io::Result<Status> {
 /// before entering this function; reusable serving code never mutates it.
 /// # Errors
 /// Returns profile ownership, service startup, socket or worker-spawn errors.
+pub fn serve<S: RuntimeServices>(profile: &Path, dev: bool) -> io::Result<()> {
+    serve_profile::<S>(
+        profile,
+        if dev {
+            StartupPolicy::Development
+        } else {
+            StartupPolicy::Normal
+        },
+    )
+}
+
+/// Start the existing native endpoint under an existing-owner admission policy.
+/// # Errors
+/// Refuses invalid owner/identity, profile, services or endpoint custody.
+pub fn serve_admission<S: RuntimeServices>(profile: &Path, owner_uid: u32) -> io::Result<()> {
+    serve_profile::<S>(profile, StartupPolicy::Admission { owner_uid })
+}
+
+#[derive(Clone, Copy)]
+enum StartupPolicy {
+    Normal,
+    Development,
+    Admission { owner_uid: u32 },
+}
+
 #[allow(
     clippy::significant_drop_tightening,
     reason = "the broker is resolved before the endpoint is touched so a missing broker fails first"
 )]
-pub fn serve<S: RuntimeServices>(profile: &Path, dev: bool) -> io::Result<()> {
+fn serve_profile<S: RuntimeServices>(profile: &Path, policy: StartupPolicy) -> io::Result<()> {
     validate_profile(profile)?;
     let mut stages = StartupStages::open(profile)?;
     let mut stage = |stage: &str| stages.enter(stage);
-    let session = if dev {
-        S::start_in_dev_mode(profile, &mut stage)?
-    } else {
-        S::start_reporting(profile, &mut stage)?
+    let session = match policy {
+        StartupPolicy::Development => S::start_in_dev_mode(profile, &mut stage)?,
+        StartupPolicy::Normal => S::start_reporting(profile, &mut stage)?,
+        StartupPolicy::Admission { owner_uid } => {
+            S::start_admission_reporting(profile, owner_uid, &mut stage)?
+        }
     };
     let host = session.action_host()?;
     let mcp = crate::mcp_http::Config::from_env()?

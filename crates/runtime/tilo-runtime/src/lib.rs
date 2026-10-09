@@ -87,6 +87,23 @@ pub trait RuntimeServices: Sized {
     /// Rejects a profile in use, invalid persisted state or failed provisioning.
     fn start_reporting(root: &Path, stage: &mut dyn FnMut(&str)) -> io::Result<Self>;
 
+    /// Start an isolated admission session with the already enrolled device
+    /// owner's identity. This must only verify that identity: no provisioning,
+    /// certificate renewal or identity/fleet persistence is permitted.
+    /// # Errors
+    /// Refuses unsupported hosts, foreign accounts, absent or invalid identity.
+    fn start_admission_reporting(
+        root: &Path,
+        owner_uid: u32,
+        stage: &mut dyn FnMut(&str),
+    ) -> io::Result<Self> {
+        let _ = (root, owner_uid, stage);
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "this host has no native admission profile",
+        ))
+    }
+
     /// [`Self::start_reporting`] for app development: builds under
     /// development, which are not installed, are served too. A host without
     /// such a mode refuses it.

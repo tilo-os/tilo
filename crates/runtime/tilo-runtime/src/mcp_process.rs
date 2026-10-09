@@ -164,15 +164,50 @@ pub(crate) fn prepare_profile_environment(
         ));
     }
     crate::unix::private_directory(profile)?;
-    let paths = [
+    let paths = profile_environment(profile);
+    for (_, path) in &paths {
+        crate::unix::private_directory(path)?;
+    }
+    Ok(paths)
+}
+
+fn profile_environment(profile: &Path) -> [(&'static str, PathBuf); 5] {
+    [
         ("XDG_CONFIG_HOME", profile.join("config")),
         ("XDG_DATA_HOME", profile.join("data")),
         ("XDG_CACHE_HOME", profile.join("cache")),
         ("XDG_STATE_HOME", profile.join("state")),
         ("TILO_IDENTITY_ROOT", profile.join("identity")),
-    ];
-    for (_, path) in &paths {
-        crate::unix::private_directory(path)?;
+    ]
+}
+
+/// An admission profile is prepared by its canonical owner unit. Verify its
+/// existing private directories without chmod or provisioning; some contain
+/// read-only projections of the authoritative identity and selections.
+pub(crate) fn prepare_admission_profile_environment(
+    profile: &Path,
+) -> io::Result<[(&'static str, PathBuf); 5]> {
+    use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+    if !profile.is_absolute() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "admission profile must be absolute",
+        ));
+    }
+    let paths = profile_environment(profile);
+    // SAFETY: geteuid has no arguments or memory preconditions.
+    let uid = unsafe { libc::geteuid() };
+    for path in std::iter::once(profile).chain(paths.iter().map(|(_, path)| path.as_path())) {
+        let metadata = std::fs::symlink_metadata(path)?;
+        if !metadata.is_dir()
+            || metadata.uid() != uid
+            || metadata.permissions().mode() & 0o777 != 0o700
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "admission profile must already have private account-owned directories",
+            ));
+        }
     }
     Ok(paths)
 }

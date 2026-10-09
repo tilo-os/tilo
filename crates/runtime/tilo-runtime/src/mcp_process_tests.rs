@@ -5,6 +5,71 @@ use super::{
 use serde_json::json;
 use std::{ffi::OsString, io::BufReader, path::PathBuf};
 
+#[cfg(target_os = "linux")]
+#[test]
+fn admission_profile_uses_readonly_existing_directories_without_repair_or_provisioning() {
+    use std::{
+        os::unix::fs::{PermissionsExt as _, symlink},
+        path::Path,
+        process::Command,
+    };
+    const CHILD_PROFILE: &str = "TILO_ADMISSION_PROFILE_TEST_CHILD";
+    if let Some(profile) = std::env::var_os(CHILD_PROFILE) {
+        let profile = PathBuf::from(profile);
+        let environment = super::prepare_admission_profile_environment(&profile).unwrap();
+        assert_eq!(environment.len(), 5);
+        assert_eq!(environment[4].1, profile.join("identity"));
+        assert!(
+            std::fs::write(profile.join("identity/probe"), b"write").is_err(),
+            "the test must actually observe a readonly mount"
+        );
+        return;
+    }
+    let root = tempfile::tempdir().unwrap();
+    let profile = root.path().join("profile");
+    super::prepare_profile_environment(&profile).unwrap();
+    let output = Command::new("bwrap")
+        .args(["--die-with-parent", "--unshare-user", "--unshare-pid", "--unshare-net",
+            "--ro-bind", "/", "/", "--proc", "/proc", "--dev", "/dev", "--setenv", CHILD_PROFILE])
+        .arg(&profile)
+        .arg("--")
+        .arg(std::env::current_exe().unwrap())
+        .args(["--exact", "mcp_process::tests::admission_profile_uses_readonly_existing_directories_without_repair_or_provisioning", "--nocapture"])
+        .output().expect("the native admission integration test requires working bubblewrap");
+    assert!(
+        output.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(!profile.join("identity/probe").exists());
+    let absent = root.path().join("absent");
+    assert!(super::prepare_admission_profile_environment(&absent).is_err());
+    assert!(
+        !absent.exists(),
+        "admission never creates a missing profile"
+    );
+    std::fs::set_permissions(
+        profile.join("identity"),
+        std::fs::Permissions::from_mode(0o755),
+    )
+    .unwrap();
+    assert!(super::prepare_admission_profile_environment(&profile).is_err());
+    assert_eq!(
+        std::fs::metadata(profile.join("identity"))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777,
+        0o755,
+        "admission must refuse, not repair exposed identity directories"
+    );
+    std::fs::remove_dir(profile.join("identity")).unwrap();
+    symlink(profile.join("data"), profile.join("identity")).unwrap();
+    assert!(super::prepare_admission_profile_environment(&profile).is_err());
+    assert!(super::prepare_admission_profile_environment(Path::new("relative")).is_err());
+}
+
 #[test]
 #[expect(
     clippy::naive_bytecount,

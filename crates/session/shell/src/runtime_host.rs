@@ -27,6 +27,10 @@ use std::{
 use tilo_runtime::RuntimeServices;
 use tilo_runtime::{BLOB_SOCKET, COLLAB_SOCKET, IDENTITY_SOCKET, unix};
 
+#[cfg(all(test, target_os = "linux"))]
+#[path = "runtime_host/admission_tests.rs"]
+mod admission_tests;
+
 /// A single-user service session. Drop applications before dropping the session.
 /// Identity discovery uses the same environment as Tilo; configure it before
 /// starting any threads when using an isolated profile.
@@ -59,14 +63,47 @@ impl Session {
     /// # Errors
     /// Rejects a locked profile, invalid persisted state, or failed provisioning.
     pub fn start_reporting(root: &Path, stage: &mut dyn FnMut(&str)) -> io::Result<Self> {
+        Self::start_with_identity(root, stage, None)
+    }
+
+    fn start_with_identity(
+        root: &Path,
+        stage: &mut dyn FnMut(&str),
+        admission_owner: Option<u32>,
+    ) -> io::Result<Self> {
+        if let Some(owner_uid) = admission_owner {
+            // SAFETY: geteuid has no arguments or memory preconditions.
+            if owner_uid == 0 || unsafe { libc::geteuid() } != owner_uid {
+                return Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "native admission must run as the existing non-root device owner",
+                ));
+            }
+        }
         stage("locking the profile");
         let lock = tilo_runtime::profile::lock(root)?;
         stage("provisioning the collaboration identity");
         let identity_dir = runtime_identity::identity_dir_from_env()?;
-        crate::firstboot::ensure_collaboration_identity(
-            &identity_dir,
-            &crate::firstboot::collaboration_identity_paths(),
-        )?;
+        let identity_paths = crate::firstboot::collaboration_identity_paths();
+        if admission_owner.is_some() {
+            stage("verifying the existing collaboration identity");
+            crate::firstboot::verify_collaboration_identity(
+                &identity_dir,
+                &identity_paths,
+                tilo_clock::unix_now_ns(),
+            )?;
+            if !tilo_identity_host::provisioning::active_identity_owns_device(
+                &identity_dir,
+                &identity_paths,
+            )? {
+                return Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "native admission identity does not own this device",
+                ));
+            }
+        } else {
+            crate::firstboot::ensure_collaboration_identity(&identity_dir, &identity_paths)?;
+        }
         stage("loading the workspace");
         let path = root.join("workspace.json");
         let mut tree = match persist::load_tree_from(&path) {
@@ -171,6 +208,14 @@ impl RuntimeServices for Session {
 
     fn start_reporting(root: &Path, stage: &mut dyn FnMut(&str)) -> io::Result<Self> {
         Self::start_reporting(root, stage)
+    }
+
+    fn start_admission_reporting(
+        root: &Path,
+        owner_uid: u32,
+        stage: &mut dyn FnMut(&str),
+    ) -> io::Result<Self> {
+        Self::start_with_identity(root, stage, Some(owner_uid))
     }
 
     fn room(&self) -> &str {
