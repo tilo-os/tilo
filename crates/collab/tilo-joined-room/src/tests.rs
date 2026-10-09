@@ -742,7 +742,7 @@ fn unordered_sequence_survives_an_intervening_recovery_projection() {
         .commit_document(request.clone(), joined.now)
         .unwrap();
     let CommitOperation::Document { envelope, .. } = &request.operation else {
-        unreachable!()
+        panic!("the unordered edit is a document write")
     };
     joined
         .owner
