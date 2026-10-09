@@ -4,7 +4,6 @@
 //! another workspace moves the window there, and the arrow keys and Enter
 //! do the same without a pointer.
 
-use std::collections::HashMap;
 use std::sync::Arc;
 
 use shell::shell::build_tilo_overlay_host_with_chrome;
@@ -14,14 +13,16 @@ use shell::shell::state::{
     AppKind, FreshId as _, GroupId, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth,
     Workspace, WorkspaceId, WorkspaceTree,
 };
-use taffy::{AvailableSpace, Dimension, NodeId, Size, Style, TaffyTree};
+use taffy::{NodeId, TaffyTree};
 use ui::a11y::{AccessNode, Role};
-use ui::theme::Theme;
+use ui::synthetic_input::{cursor_moved, key_event, keyboard_input, mouse_input};
 use ui::widget::Widget;
 use vello::kurbo::{Point, Rect};
 use winit::dpi::PhysicalPosition;
 use winit::event::{ElementState, Modifiers, MouseButton, Touch, TouchPhase, WindowEvent};
-use winit::keyboard::{Key, ModifiersState, NamedKey};
+use winit::keyboard::{Key, NamedKey};
+
+use crate::support::host::{dispatch, layout_host};
 
 /// The client window: an app process the sandbox of "Home" launched.
 const CLIENT_TAB: u64 = 4;
@@ -99,7 +100,7 @@ impl Harness {
         let home = tilo_test_env::TestHome::new().expect("isolated home");
         let (tree, strip, elsewhere) = desktop();
         let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
-        let (taffy, node) = lay_out(&mut host);
+        let (taffy, node) = layout_host(&mut host);
         let mut h = Self {
             host,
             chrome,
@@ -128,47 +129,20 @@ impl Harness {
     }
 
     fn event(&mut self, event: &WindowEvent) -> bool {
-        let mut doc = automerge::AutoCommit::new();
-        let mut handled = false;
-        let mut focus = None;
-        self.host.handle_event(
-            event,
-            &mut ui::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &Modifiers::from(ModifiersState::empty()),
-                state: ui::widget::Edits::lend(&mut doc),
-                path: &automerge::ROOT,
-                handled: &mut handled,
-                focus_target: &mut focus,
-                node_id: self.node,
-                taffy: &self.taffy,
-            },
-        );
-        handled
+        let modifiers = Modifiers::default();
+        dispatch(&mut self.host, &self.taffy, self.node, modifiers, event)
     }
 
     fn key(&mut self, key: Key) -> bool {
-        let key_event = ui::synthetic_input::key_event(key, None, ElementState::Pressed);
-        self.event(&WindowEvent::KeyboardInput {
-            device_id: winit::event::DeviceId::dummy(),
-            event: key_event,
-            is_synthetic: false,
-        })
+        self.event(&keyboard_input(key_event(key, None, ElementState::Pressed)))
     }
 
     fn cursor_to(&mut self, at: Point) {
-        self.event(&WindowEvent::CursorMoved {
-            device_id: winit::event::DeviceId::dummy(),
-            position: PhysicalPosition::new(at.x, at.y),
-        });
+        self.event(&cursor_moved(at.x, at.y));
     }
 
     fn button(&mut self, button: MouseButton, state: ElementState) -> bool {
-        self.event(&WindowEvent::MouseInput {
-            device_id: winit::event::DeviceId::dummy(),
-            state,
-            button,
-        })
+        self.event(&mouse_input(state, button))
     }
 
     fn touch(&mut self, id: u64, phase: TouchPhase, at: Point) -> bool {
@@ -291,43 +265,6 @@ impl Harness {
                 |bounds| bounds.center(),
             )
     }
-}
-
-fn lay_out(host: &mut ShellOverlayHost) -> (TaffyTree<()>, NodeId) {
-    let theme = Theme::dark();
-    let mut taffy: TaffyTree<()> = TaffyTree::new();
-    let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-    let node = host.build_layout(&mut taffy, &theme, &mut node_map);
-    let root = taffy
-        .new_with_children(
-            Style {
-                size: Size {
-                    width: Dimension::length(1600.0),
-                    height: Dimension::length(900.0),
-                },
-                ..Default::default()
-            },
-            &[node],
-        )
-        .unwrap();
-    let mut text = ui::text_render::TextRenderer::new();
-    taffy
-        .compute_layout_with_measure(
-            root,
-            Size {
-                width: AvailableSpace::Definite(1600.0),
-                height: AvailableSpace::Definite(900.0),
-            },
-            |known, available, id, _, _| match node_map.get(&id) {
-                // SAFETY: the map holds live widgets owned by `host` for the
-                // duration of this layout pass.
-                Some(&widget) => unsafe { (*widget).measure(known, available, &mut text) },
-                None => Size::ZERO,
-            },
-        )
-        .expect("layout computes");
-    host.apply_layout(&taffy, node, Point::ZERO);
-    (taffy, node)
 }
 
 #[test]

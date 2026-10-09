@@ -1957,6 +1957,7 @@ mod a11y_tests {
 mod tests {
     use super::*;
     use crate::synthetic_input::mouse_press;
+    use crate::synthetic_input::named_key;
     use automerge::AutoCommit;
     use std::sync::Arc;
 
@@ -2155,13 +2156,6 @@ mod tests {
             phase: TouchPhase::Moved,
         }
     }
-    fn key(named: NamedKey) -> WindowEvent {
-        crate::synthetic_input::keyboard_input(crate::synthetic_input::key_event(
-            Key::Named(named),
-            None,
-            ElementState::Pressed,
-        ))
-    }
     fn dispatch(m: &mut ContextMenu, event: &WindowEvent) -> bool {
         let mut taffy = TaffyTree::<()>::new();
         let node = taffy.leaf_node(Style::default());
@@ -2223,7 +2217,7 @@ mod tests {
 
         fn esc_dismisses() {
             let (mut m, _f) = open_menu();
-            let handled = dispatch(&mut m, &key(NamedKey::Escape));
+            let handled = dispatch(&mut m, &named_key(NamedKey::Escape));
             assert!(handled);
             assert!(!m.is_open(), "Esc closes the menu");
         }
@@ -2277,13 +2271,13 @@ mod tests {
         fn keyboard_nav_skips_separator_and_enter_selects() {
             let (mut m, fired) = open_menu();
             // Down → first action (idx 0).
-            dispatch(&mut m, &key(NamedKey::ArrowDown));
+            dispatch(&mut m, &named_key(NamedKey::ArrowDown));
             assert_eq!(m.hovered(), Some(0));
             // Down again → must skip the separator (idx 1) and land on idx 2.
-            dispatch(&mut m, &key(NamedKey::ArrowDown));
+            dispatch(&mut m, &named_key(NamedKey::ArrowDown));
             assert_eq!(m.hovered(), Some(2), "ArrowDown skips the separator");
             // Enter selects the hovered row.
-            dispatch(&mut m, &key(NamedKey::Enter));
+            dispatch(&mut m, &named_key(NamedKey::Enter));
             assert_eq!(
                 fired.load(Ordering::SeqCst),
                 100,
@@ -2310,9 +2304,9 @@ mod tests {
             let (mut menu, fired) = open_menu();
             menu.set_item_enabled(0, false);
 
-            dispatch(&mut menu, &key(NamedKey::ArrowDown));
+            dispatch(&mut menu, &named_key(NamedKey::ArrowDown));
             assert_eq!(menu.hovered(), Some(2));
-            dispatch(&mut menu, &key(NamedKey::Enter));
+            dispatch(&mut menu, &named_key(NamedKey::Enter));
 
             assert_eq!(fired.load(Ordering::SeqCst), 100);
             assert_eq!(menu.take_selection(), Some(2));
@@ -2412,11 +2406,11 @@ mod tests {
             menu.open_anchored(Rect::ZERO, Rect::new(0.0, 0.0, 180.0, 100.0));
             menu.focus_first_action();
             for _ in 0..19 {
-                dispatch(&mut menu, &key(NamedKey::ArrowDown));
+                dispatch(&mut menu, &named_key(NamedKey::ArrowDown));
             }
             assert_eq!(menu.hovered(), Some(19));
             assert!(menu.item_rect(19).is_some());
-            dispatch(&mut menu, &key(NamedKey::Enter));
+            dispatch(&mut menu, &named_key(NamedKey::Enter));
             assert_eq!(menu.take_selection(), Some(19));
             menu.open_anchored(Rect::ZERO, Rect::new(0.0, 0.0, 180.0, 100.0));
             dispatch(&mut menu, &wheel(100.0));
@@ -2684,13 +2678,7 @@ mod nested_and_anchored_tests {
         }
     }
     use crate::synthetic_input::mouse_press;
-    fn key(named: NamedKey) -> WindowEvent {
-        crate::synthetic_input::keyboard_input(crate::synthetic_input::key_event(
-            Key::Named(named),
-            None,
-            ElementState::Pressed,
-        ))
-    }
+    use crate::synthetic_input::named_key;
     fn dispatch(m: &mut ContextMenu, event: &WindowEvent) -> bool {
         let mut taffy = TaffyTree::<()>::new();
         let node = taffy.leaf_node(Style::default());
@@ -2778,13 +2766,13 @@ mod nested_and_anchored_tests {
         m.open_anchored(Rect::new(100.0, 40.0, 140.0, 72.0), WINDOW);
         paint(&mut m);
         m.focus_item(1);
-        dispatch(&mut m, &key(NamedKey::ArrowRight));
+        dispatch(&mut m, &named_key(NamedKey::ArrowRight));
         assert!(m.is_submenu_open());
         assert_eq!(
             m.submenu.as_ref().and_then(|(_, menu)| menu.hovered()),
             Some(0)
         );
-        dispatch(&mut m, &key(NamedKey::ArrowLeft));
+        dispatch(&mut m, &named_key(NamedKey::ArrowLeft));
         assert!(!m.is_submenu_open());
         assert!(m.is_open(), "Left closes only the nested menu");
         let node = Widget::accessibility(&m).unwrap();

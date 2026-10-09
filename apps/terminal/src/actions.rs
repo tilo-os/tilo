@@ -31,8 +31,7 @@ mod tests {
     use portable_pty::{MasterPty, PtySize};
     use std::sync::mpsc::Receiver;
     use taffy::{NodeId, TaffyTree};
-    use winit::event::{ElementState, Modifiers, WindowEvent};
-    use winit::keyboard::{Key, SmolStr};
+    use winit::event::{Modifiers, WindowEvent};
 
     use ui::widget::Widget;
 
@@ -108,15 +107,7 @@ mod tests {
         out
     }
 
-    /// Real winit delivers the committed `text` alongside a character key, which the terminal
-    /// encodes into the PTY bytes.
-    fn char_event(c: &str) -> WindowEvent {
-        ui::synthetic_input::keyboard_input(ui::synthetic_input::key_event(
-            Key::Character(SmolStr::new(c)),
-            Some(SmolStr::new(c)),
-            ElementState::Pressed,
-        ))
-    }
+    use ui::synthetic_input::char_key;
 
     /// Pump one event through the production `Widget::handle_event`.
     fn send(widget: &mut TerminalWidget, doc: &mut AutoCommit, ev: &WindowEvent) {
@@ -156,7 +147,7 @@ mod tests {
             let _ = drain_writes(&write_rx); // ignore anything queued during seeding
 
             // Press 'a' through the production keyboard path.
-            send(&mut widget, &mut doc, &char_event("a"));
+            send(&mut widget, &mut doc, &char_key("a"));
             doc.commit();
 
             assert_eq!(

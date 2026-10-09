@@ -881,9 +881,12 @@ presence keep-alive is due, never on an interval; a pump runs a plan's local
 steps back to back for up to 5 ms and at most one model call. Records the
 agent has not opened are held as their documents, history kept and each
 change once, so opening one seeds its replica with exactly what its changes
-made: the shared desktop live, merged as it changes, its tabs read only when
-it changed; every other record saved, with the changes since merged in one
-load once they outweigh it (or 64 KiB). Grants
+made: the shared desktop live, its changes merged once per pump, its tabs
+read only when it changed; every other record saved, with the changes since
+merged in one load once they outweigh it (or 64 KiB). Those changes come
+from room members, so every merge goes through `tilo-automerge-isolate`
+first and none decodes in the host process; a change the isolate refuses is
+dropped, and with no isolate the record does not open. Grants
 (agent key, certificate, delegation) and agents (status, room, task log,
 conversation) are kept in `<state>/agents/agents.json` (owner-only). A
 ticker settles expired grants: the agent stops and the relay refuses its

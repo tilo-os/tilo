@@ -569,6 +569,32 @@ def _judge(name, st, b, hardware) -> tuple[list[str], list[str]]:
     return problems, unseen
 
 
+def judge_switch_lines(switches: list[dict], expected: int, b: dict, hardware: bool) -> list[str]:
+    """Problems in the compositor's own `WORKSPACE-SWITCH` timing of `expected` switches.
+
+    Everywhere: one line per switch, and a frame run rather than a jump. On real display
+    hardware also the first frame shown and the intervals without a new frame. A virtual
+    display presents on its own timer and holds frames back, so there its times are only
+    recorded; the trace-based judgement above takes the display's waits out instead."""
+    if len(switches) != expected:
+        return [f"{expected} workspace switches, {len(switches)} WORKSPACE-SWITCH lines in the session log"]
+    problems = []
+    for index, switch in enumerate(switches, 1):
+        name = f"switch {index}"
+        if switch["frames"] < b["animation_min_frames"]:
+            problems.append(f"{name}: {switch['frames']} frames in the switch's frame run "
+                            f"(want >= {b['animation_min_frames']})")
+        if not hardware:
+            continue
+        first = switch["first_shown_us"] / 1000
+        if first > b["input_first_frame_ms"]:
+            problems.append(f"{name}: first frame shown {first:.1f} ms after the chord "
+                            f"> {b['input_first_frame_ms']} ms")
+        if switch["dropped"]:
+            problems.append(f"{name}: {switch['dropped']} refresh intervals without a new frame")
+    return problems
+
+
 @check("W16", AREA, "Animations are paced: overview and workspace transitions paint many frames "
                     "with no stalls", needs=("workspaces",))
 def animations(ctx, res):
@@ -591,16 +617,20 @@ def animations(ctx, res):
     there, back = ("super+pagedown", "super+pageup")
     if ids.index(first) == len(ids) - 1:
         there, back = back, there
+    log_mark = core.session_log_mark(ctx)
     _transition(ctx, res, "workspace_switch", lambda: ctx.vm.key(there),
                 lambda s: s["workspace_tree"]["active"] != first)
     _transition(ctx, res, "workspace_back", lambda: ctx.vm.key(back),
                 lambda s: s["workspace_tree"]["active"] == first)
+    switches = core.switch_lines_after(ctx, log_mark)
+    res.metrics["workspace_switch_lines"] = switches
     b = ctx.config["budgets"]
     problems, unseen = [], []
     for name in ("overview_open", "overview_close", "workspace_switch", "workspace_back"):
         p, u = _judge(name, res.metrics[name], b, hardware)
         problems += p
         unseen += u
+    problems += judge_switch_lines(switches, 2, b, hardware)
     where = f" [renderer: {ctx.facts.get('renderer')}]"
     expect(not problems, "; ".join(problems + unseen) + where)
     if unseen:

@@ -3,38 +3,21 @@
 //! a retained row reaches the sending app as a D-Bus `ActionInvoked`, and
 //! the history is restored from its private file after a restart.
 
-use std::collections::HashMap;
-
 use shell::notifications::NotificationBridge;
 use shell::shell::build_tilo_overlay_host_with_chrome;
 use shell::shell::chrome_state::{Chrome, ChromeState};
 use shell::shell::notification_history::NotificationHistoryStore;
 use shell::shell::overlay_host::ShellOverlayHost;
 use shell::shell::quick_settings::QsLevel;
-use shell::shell::state::{FreshId as _, WorkspaceId, WorkspaceTree};
-use taffy::prelude::TaffyMaxContent;
-use taffy::{AvailableSpace, NodeId, Size, TaffyTree};
+use taffy::{NodeId, TaffyTree};
 use tilo_desktop::notifications::Notification;
 use ui::a11y::AccessNode;
-use ui::theme::Theme;
-use ui::widget::Widget;
 use vello::kurbo::Point;
-use winit::dpi::PhysicalPosition;
-use winit::event::{ElementState, Modifiers, MouseButton, WindowEvent};
-use winit::keyboard::{Key, NamedKey};
+use winit::keyboard::{Key, ModifiersState, NamedKey};
 
-fn tree() -> WorkspaceTree {
-    let ws = shell::shell::state::Workspace::new(WorkspaceId::new(), "W");
-    let active = ws.id;
-    WorkspaceTree {
-        desktop: shell::shell::state::DesktopTree {
-            workspaces: vec![ws],
-            active,
-            ..Default::default()
-        },
-        ..Default::default()
-    }
-}
+use ui::widget::Widget as _;
+
+use crate::support::host::{click, layout_host, one_workspace_tree, press_key};
 
 fn from_app(app_id: &str, label: &str, title: &str) -> Notification {
     let mut notification = Notification::new(title, format!("{title} body"));
@@ -54,47 +37,6 @@ fn retain(chrome: &Chrome, notifications: impl IntoIterator<Item = Notification>
     state.set_dnd(false);
 }
 
-fn layout_host(host: &mut ShellOverlayHost) -> (TaffyTree<()>, NodeId) {
-    use taffy::{Dimension, Style};
-    let theme = Theme::dark();
-    let mut taffy: TaffyTree<()> = TaffyTree::new();
-    let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-    let host_node = host.build_layout(&mut taffy, &theme, &mut node_map);
-    let root = taffy
-        .new_with_children(
-            Style {
-                size: Size {
-                    width: Dimension::length(1600.0),
-                    height: Dimension::length(900.0),
-                },
-                ..Default::default()
-            },
-            &[host_node],
-        )
-        .unwrap();
-    let map_for_measure = node_map.clone();
-    let mut tr = ui::text_render::TextRenderer::new();
-    taffy
-        .compute_layout_with_measure(
-            root,
-            Size {
-                width: AvailableSpace::Definite(1600.0),
-                height: AvailableSpace::Definite(900.0),
-            },
-            |known, available, node_id, _, _| {
-                if let Some(&ptr) = map_for_measure.get(&node_id) {
-                    unsafe { (*ptr).measure(known, available, &mut tr) }
-                } else {
-                    taffy::Size::ZERO
-                }
-            },
-        )
-        .or_else(|_| taffy.compute_layout(root, taffy::Size::MAX_CONTENT))
-        .expect("layout must compute");
-    host.apply_layout(&taffy, host_node, Point::ZERO);
-    (taffy, host_node)
-}
-
 fn open_notification_centre(
     host: &mut ShellOverlayHost,
     chrome: &Chrome,
@@ -109,61 +51,8 @@ fn open_notification_centre(
     layout_host(host)
 }
 
-fn deliver(host: &mut ShellOverlayHost, taffy: &TaffyTree<()>, node: NodeId, event: &WindowEvent) {
-    let mut state = automerge::AutoCommit::new();
-    let mut handled = false;
-    let mut focus_target = None;
-    host.handle_event(
-        event,
-        &mut ui::widget::EventCtx {
-            scale_factor: 1.0,
-            modifiers: &Modifiers::default(),
-            state: ui::widget::Edits::lend(&mut state),
-            path: &automerge::ROOT,
-            handled: &mut handled,
-            focus_target: &mut focus_target,
-            node_id: node,
-            taffy,
-        },
-    );
-}
-
 fn press(host: &mut ShellOverlayHost, taffy: &TaffyTree<()>, node: NodeId, key: NamedKey) {
-    let key_event = ui::synthetic_input::key_event(Key::Named(key), None, ElementState::Pressed);
-    deliver(
-        host,
-        taffy,
-        node,
-        &WindowEvent::KeyboardInput {
-            device_id: winit::event::DeviceId::dummy(),
-            event: key_event,
-            is_synthetic: false,
-        },
-    );
-}
-
-fn click(host: &mut ShellOverlayHost, taffy: &TaffyTree<()>, node: NodeId, at: Point) {
-    deliver(
-        host,
-        taffy,
-        node,
-        &WindowEvent::CursorMoved {
-            device_id: winit::event::DeviceId::dummy(),
-            position: PhysicalPosition::new(at.x, at.y),
-        },
-    );
-    for state in [ElementState::Pressed, ElementState::Released] {
-        deliver(
-            host,
-            taffy,
-            node,
-            &WindowEvent::MouseInput {
-                device_id: winit::event::DeviceId::dummy(),
-                state,
-                button: MouseButton::Left,
-            },
-        );
-    }
+    press_key(host, taffy, node, Key::Named(key), ModifiersState::empty());
 }
 
 /// The rows of the notification centre's list, as a screen reader sees them.
@@ -197,7 +86,7 @@ fn group_rows(rows: &[AccessNode]) -> Vec<(String, bool)> {
 
 #[test]
 fn notifications_group_by_verified_app_in_the_accessibility_tree() {
-    let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree());
+    let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&one_workspace_tree());
     retain(
         &chrome,
         [
@@ -270,7 +159,7 @@ fn notifications_group_by_verified_app_in_the_accessibility_tree() {
 
 #[test]
 fn clicking_a_retained_notification_invokes_its_default_action_over_dbus() {
-    let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree());
+    let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&one_workspace_tree());
     let bridge = NotificationBridge::new();
     chrome.borrow_mut().set_notification_bridge(bridge.clone());
     let mut notification = from_app("org.mail", "Mail", "Invoice");
@@ -311,7 +200,7 @@ fn clicking_a_retained_notification_invokes_its_default_action_over_dbus() {
 
 #[test]
 fn delete_on_the_selected_row_dismisses_only_that_notification() {
-    let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree());
+    let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&one_workspace_tree());
     retain(
         &chrome,
         [
@@ -345,7 +234,7 @@ fn retained_history_is_restored_after_a_restart() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("tilo/notification-history.json");
 
-    let first = ChromeState::new(tree());
+    let first = ChromeState::new(one_workspace_tree());
     first
         .borrow_mut()
         .attach_notification_history_store(NotificationHistoryStore::at(&path));
@@ -370,7 +259,7 @@ fn retained_history_is_restored_after_a_restart() {
         );
     }
 
-    let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree());
+    let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&one_workspace_tree());
     chrome
         .borrow_mut()
         .attach_notification_history_store(NotificationHistoryStore::at(&path));

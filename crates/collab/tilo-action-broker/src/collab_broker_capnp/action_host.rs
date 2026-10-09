@@ -83,6 +83,7 @@ impl BrokerActor {
 /// The broker as the [`ActionHost`](tilo_actions::remote::ActionHost) an
 /// admitted application or agent connection reaches over its channel's
 /// `remoteAction` door. [`OWN_PROVIDER`] names that connection itself.
+#[derive(Clone)]
 pub(super) struct ConnectionActionHost {
     pub(super) state: Arc<CapnpBrokerState>,
     pub(super) own_peer: u64,
@@ -410,7 +411,7 @@ impl CapnpBrokerState {
                     access.invoke.then_some(as_app)
                 }
             }
-            RemoteActionMessage::Observe { invocation }
+            RemoteActionMessage::Observe { invocation, .. }
             | RemoteActionMessage::Cancel { invocation } => {
                 Some(if self.remote_job(&as_app, invocation).is_some() {
                     as_app
