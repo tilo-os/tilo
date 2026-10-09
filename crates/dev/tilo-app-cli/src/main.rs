@@ -871,6 +871,18 @@ struct PackageArgs {
     #[arg(long)]
     identity: Option<PathBuf>,
 
+    /// Signed native SDK directory. Its publisher and root must be selected independently.
+    #[arg(long, requires_all = ["sdk_publisher", "sdk_root"])]
+    sdk_bundle: Option<PathBuf>,
+
+    /// Expected SDK publisher public key, from the authenticated SDK receipt.
+    #[arg(long, requires = "sdk_bundle")]
+    sdk_publisher: Option<String>,
+
+    /// Expected signed SDK payload root, from the authenticated SDK receipt.
+    #[arg(long, requires = "sdk_bundle")]
+    sdk_root: Option<String>,
+
     /// Cargo profile used to build the declared entrypoints. Defaults to
     /// `thin-app`, or `release` with `--static`.
     #[arg(long)]
@@ -1716,6 +1728,11 @@ fn run_package(args: PackageArgs) -> Result<Value> {
         _ => None,
     };
     if let Some(target) = sdk_target {
+        if args.sdk_bundle.is_some() {
+            anyhow::bail!(
+                "--sdk-bundle requires --platform tilo and a Rust target triple, not an SDK target alias"
+            );
+        }
         let mut build = tilo_app_cli::targets::TargetRequest::new(target);
         build.allow_planned = args.allow_planned;
         build.features = args.features;
@@ -1746,7 +1763,19 @@ fn run_package(args: PackageArgs) -> Result<Value> {
     {
         anyhow::bail!("--keystore and --no-bundle are for --platform android");
     }
+    let sdk = match (args.sdk_bundle, args.sdk_publisher, args.sdk_root) {
+        (Some(bundle), Some(publisher), Some(root)) => {
+            Some(tilo_app_cli::native_sdk::SdkSelection {
+                bundle,
+                publisher,
+                root,
+            })
+        }
+        (None, None, None) => None,
+        _ => anyhow::bail!("native SDK selection requires bundle, publisher and root"),
+    };
     let request = tilo_app_cli::PackageRequest {
+        sdk,
         output: args.output,
         identity: args.identity,
         profile: args.profile,
@@ -2020,6 +2049,7 @@ fn build_native(
     let build = tilo_app_cli::build_native(
         path,
         &tilo_app_cli::PackageRequest {
+            sdk: None,
             output: None,
             identity: None,
             profile: args.profile.clone(),
@@ -4051,5 +4081,53 @@ mod tests {
             [PackagePlatform::Android]
         );
         assert!(check_platforms(&[CheckPlatformArg::All]).contains(&PackagePlatform::Android));
+    }
+    #[test]
+    fn native_sdk_selection_requires_independent_publisher_and_root() {
+        assert!(Cli::try_parse_from(["tilo-app", "package", "--sdk-bundle", "sdk"]).is_err());
+        assert!(
+            Cli::try_parse_from(["tilo-app", "package", "--sdk-publisher", "publisher"]).is_err()
+        );
+        let parsed = Cli::try_parse_from([
+            "tilo-app",
+            "package",
+            "--sdk-bundle",
+            "sdk",
+            "--sdk-publisher",
+            "publisher",
+            "--sdk-root",
+            "root",
+        ])
+        .expect("complete SDK selection");
+        let Command::Package(args) = parsed.command else {
+            panic!("package command");
+        };
+        assert_eq!(args.sdk_bundle, Some(PathBuf::from("sdk")));
+        assert_eq!(args.sdk_publisher.as_deref(), Some("publisher"));
+        assert_eq!(args.sdk_root.as_deref(), Some("root"));
+        for alias in ["linux", "macos", "web"] {
+            let parsed = Cli::try_parse_from([
+                "tilo-app",
+                "package",
+                "--sdk-bundle",
+                "sdk",
+                "--sdk-publisher",
+                "publisher",
+                "--sdk-root",
+                "root",
+                "--target",
+                alias,
+            ])
+            .expect("SDK target alias is parsed before production admission");
+            let Command::Package(args) = parsed.command else {
+                panic!("package command");
+            };
+            assert!(
+                run_package(args)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("not an SDK target alias")
+            );
+        }
     }
 }
