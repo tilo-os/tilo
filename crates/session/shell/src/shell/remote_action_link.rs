@@ -197,7 +197,7 @@ struct Following {
     seen: Mutex<HashMap<InvocationId, UpdateMark>>,
     /// The state a long-poll brought back, for the observe that follows its
     /// wake, so one change costs one round trip, not two.
-    fresh: Mutex<HashMap<InvocationId, Option<InvocationState>>>,
+    fresh: Mutex<HashMap<InvocationId, InvocationState>>,
     /// Set once the peer answered a long-poll at once with nothing new: it
     /// predates waits, so its callers keep their own schedule.
     unheld: std::sync::atomic::AtomicBool,
@@ -229,8 +229,10 @@ impl Following {
         self.seen.lock().ok()?.get(id).copied()
     }
 
+    /// Keep what a long-poll brought back. A `None` is not kept: the observe
+    /// that follows asks again, and hears the same refusal.
     fn keep_fresh(&self, id: InvocationId, state: Option<InvocationState>) {
-        if let Ok(mut fresh) = self.fresh.lock() {
+        if let (Some(state), Ok(mut fresh)) = (state, self.fresh.lock()) {
             if fresh.len() >= MAX_FOLLOWED && !fresh.contains_key(&id) {
                 fresh.clear();
             }
@@ -238,7 +240,7 @@ impl Following {
         }
     }
 
-    fn take_fresh(&self, id: &InvocationId) -> Option<Option<InvocationState>> {
+    fn take_fresh(&self, id: &InvocationId) -> Option<InvocationState> {
         self.fresh.lock().ok()?.remove(id)
     }
 }
@@ -338,7 +340,7 @@ impl<L: RemoteActionLink> ActionHost for PeerActionHost<L> {
     /// synchronous shape requires; call it off any thread that delivers
     /// peer frames.
     fn observe(&self, _caller: &Caller, id: &InvocationId) -> Option<InvocationState> {
-        let state = self.follow.take_fresh(id).unwrap_or_else(|| {
+        let state = self.follow.take_fresh(id).or_else(|| {
             self.ask_now(RemoteActionMessage::observe(*id), |answer| match answer {
                 RemoteActionMessage::Update { state, .. } => Ok(state),
                 _ => Err(unexpected()),

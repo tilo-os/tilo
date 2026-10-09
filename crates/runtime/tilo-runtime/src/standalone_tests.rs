@@ -12,6 +12,7 @@ use std::{
 use tilo_action_broker::services::{
     AppActionGrants, LegacyWorkspaceProjection, WorkspaceAuthority,
 };
+use tilo_actions::remote::{InvokeArgument, PendingPoll, RemoteActionTarget};
 use tilo_desktop_model::{RoomId, WorkspaceTaskStatus};
 use tilo_identity_host::broker::WorkspaceMembership;
 
@@ -35,7 +36,6 @@ async fn runtime_invocation_ownership_survives_device_normalization() {
         },
         test_support::{Workspace, WorkspaceId, WorkspaceTree},
     };
-    use tilo_actions::remote::{InvokeArgument, PendingPoll, RemoteActionTarget};
 
     let mut workspace = Workspace::new(WorkspaceId(41), "Execution isolation");
     workspace.set_owner("a1".repeat(32));
