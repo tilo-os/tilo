@@ -1468,6 +1468,11 @@ impl AudioBackend {
         {
             use gstreamer::prelude::*;
             self.current_uri.is_some()
+                && self
+                    .inner
+                    .controls
+                    .as_ref()
+                    .is_none_or(pipeline_controls::Controls::ready)
                 && !self.reached_eos()
                 && !self
                     .inner
@@ -2488,6 +2493,7 @@ mod tests {
                     backend.position_ms(),
                     backend.duration_ms(),
                     backend.try_seek_ms(1000),
+                    backend.is_playing_confirmed(),
                 ))
                 .unwrap();
         });
@@ -2543,7 +2549,7 @@ mod tests {
             pipeline.current_state() == gstreamer::State::Null
         });
         assert!(
-            matches!(observed, Ok((_, _, Some(Ok(()))))),
+            matches!(observed, Ok((_, _, Some(Ok(())), false))),
             "pause, observations and seek submission must return promptly while PCM delivery is blocked: {observed:?}"
         );
     }
