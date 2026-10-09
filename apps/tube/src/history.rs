@@ -106,9 +106,7 @@ mod tests {
             "imports never reorder"
         );
 
-        history
-            .apply(WatchHistory::FORGET.with("b".into()))
-            .unwrap();
+        history.apply(WatchHistory::FORGET.with("b")).unwrap();
         assert_eq!(history.state().unwrap().videos(), ["a", "c"]);
         history.apply(WatchHistory::CLEAR.invoke()).unwrap();
         assert!(history.state().unwrap().videos().is_empty());

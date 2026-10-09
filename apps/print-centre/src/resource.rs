@@ -416,11 +416,11 @@ mod tests {
         assert_eq!(app.state(), PrintDefaults::default());
         app.invoke(PrintDefaults::SET_SCAN_RESOLUTION.with(600))
             .unwrap();
-        app.invoke(PrintDefaults::SET_SCAN_COLOR.with("grayscale".into()))
+        app.invoke(PrintDefaults::SET_SCAN_COLOR.with("grayscale"))
             .unwrap();
-        app.invoke(PrintDefaults::SET_SCAN_SOURCE.with("feeder".into()))
+        app.invoke(PrintDefaults::SET_SCAN_SOURCE.with("feeder"))
             .unwrap();
-        app.invoke(PrintDefaults::SET_OCR_LANGUAGE.with("fra".into()))
+        app.invoke(PrintDefaults::SET_OCR_LANGUAGE.with("fra"))
             .unwrap();
         app.invoke(PrintDefaults::SET_TWO_SIDED.with(true)).unwrap();
         let state = app.state();
@@ -436,7 +436,7 @@ mod tests {
         );
         // A resolution or language that is not offered changes nothing.
         let _ = app.invoke(PrintDefaults::SET_SCAN_RESOLUTION.with(1200));
-        let _ = app.invoke(PrintDefaults::SET_OCR_LANGUAGE.with("klingon".into()));
+        let _ = app.invoke(PrintDefaults::SET_OCR_LANGUAGE.with("klingon"));
         assert_eq!(app.state(), state);
     }
 }

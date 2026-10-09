@@ -348,6 +348,19 @@ pub trait Resource: Sized + 'static {
         let _ = (action, now_ms);
     }
 
+    /// Whether the declared action `action` can be taken in `state`, and why
+    /// not when it cannot. `#[resource(available = path)]` answers it.
+    fn availability(state: &Self::State, action: &str) -> tilo_actions::Availability {
+        let _ = (state, action);
+        tilo_actions::Availability::Available
+    }
+
+    /// The first content of a new record, written by its creator once it is
+    /// created: nobody's undo step. `#[resource(seed = path)]` provides it.
+    fn seed() -> Option<Self::Action> {
+        None
+    }
+
     /// What kind of action `action` is: whether it only reads, changes only
     /// the document, or reaches outside it. Derived by `#[resource]` from
     /// what each verb is able to do, never declared.
@@ -694,6 +707,8 @@ pub struct ActionDecl<R: Resource> {
     pub description: Option<String>,
     pub params: Vec<ActionParam>,
     pub permission: PermissionRequirement,
+    /// What the action can do; decides whether the host's undo reverts it.
+    pub kind: ActionKind,
     pub destructive: bool,
     /// What the action answers its caller with, beside the change: the state
     /// it left, as the declaring resource's surface reports it.
@@ -722,6 +737,7 @@ impl<R: Resource> Clone for ActionDecl<R> {
             description: self.description.clone(),
             params: self.params.clone(),
             permission: self.permission,
+            kind: self.kind,
             destructive: self.destructive,
             result: self.result.clone(),
             tags: self.tags.clone(),
@@ -745,6 +761,7 @@ impl<R: Resource> ActionDecl<R> {
             description: None,
             params,
             permission: PermissionRequirement::Write,
+            kind: ActionKind::Undoable,
             destructive: false,
             result: None,
             tags: Vec::new(),
@@ -804,6 +821,13 @@ impl<R: Resource> ActionDecl<R> {
     #[must_use]
     pub fn destructive(mut self) -> Self {
         self.destructive = true;
+        self
+    }
+
+    /// What the action can do (derived by `#[resource]`).
+    #[must_use]
+    pub fn of_kind(mut self, kind: ActionKind) -> Self {
+        self.kind = kind;
         self
     }
 
@@ -988,10 +1012,12 @@ pub fn declaration_spec<R: Resource>(decl: &ActionDecl<R>) -> ActionSpec {
             encoded,
         )
     };
-    let mut spec = spec
-        .requiring(decl.permission)
-        // Every document action is undone by the host's undo.
-        .reversible();
+    let mut spec = spec.requiring(decl.permission);
+    // A document action is undone by the host's undo; one that reached
+    // outside the document is not.
+    if decl.kind == ActionKind::Undoable {
+        spec = spec.reversible();
+    }
     if let Some(description) = &decl.description {
         spec = spec.with_description(description.clone());
     }
@@ -1313,7 +1339,10 @@ pub(crate) fn publish_parts<R: Resource>(
     for decl in R::declarations() {
         #[cfg(all(feature = "test-support", not(target_arch = "wasm32")))]
         let _phase = crate::profiling::Phase::start("resource.declaration_spec");
-        let spec = declaration_spec(&decl);
+        let mut spec = declaration_spec(&decl);
+        if let Some(state) = state {
+            spec.contract.availability = R::availability(state, decl.id);
+        }
         // Offered on the items it acts on, with some of its arguments bound
         // ([`items::bound`](crate::items::bound)), it stays published here
         // for scripts that name the item, out of the palette's way.

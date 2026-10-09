@@ -42,7 +42,7 @@ fn counts_use_each_languages_plural_forms() {
 fn arguments_follow_the_language() {
     let mut app = open("en-US");
     says(&mut app, "greeting", "Welcome!");
-    app.invoke(Shelf::SET_READER.with("Ada".into()))
+    app.invoke(Shelf::SET_READER.with("Ada"))
         .expect("name the reader");
     says(&mut app, "greeting", "Welcome, Ada!");
     I18nManager::set_locale("de-DE");

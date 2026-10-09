@@ -639,6 +639,50 @@ impl<R> Edit<R> {
         self.apply(doc, &mut cx)
     }
 
+    /// Apply to a value held as JSON, field by field: a form's local
+    /// parameter struct. Only `set`, `replace` and `splice` apply.
+    ///
+    /// # Errors
+    /// Returns why the path or operation does not fit.
+    pub fn apply_json(&self, value: &mut serde_json::Value) -> Result<(), crate::ModelError> {
+        let mut target = value;
+        for segment in &self.path {
+            let (Segment::Field(key) | Segment::Key(key)) = segment else {
+                return Err(crate::ModelError::invalid("a form holds fields only"));
+            };
+            if !target.is_object() {
+                *target = serde_json::Value::Object(serde_json::Map::new());
+            }
+            let serde_json::Value::Object(fields) = target else {
+                return Err(crate::ModelError::shape("an object"));
+            };
+            target = fields.entry(key.clone()).or_insert(serde_json::Value::Null);
+        }
+        match &self.op {
+            EditOp::Set { value } => *target = value.clone(),
+            EditOp::Replace { text } => *target = serde_json::Value::String(text.clone()),
+            EditOp::Splice { at, delete, insert } => {
+                let current: Vec<char> = target.as_str().unwrap_or_default().chars().collect();
+                if *at > current.len() || *delete > current.len().saturating_sub(*at) {
+                    return Err(crate::ModelError::invalid(
+                        "the splice reaches past the text",
+                    ));
+                }
+                let end = at.saturating_add(*delete);
+                let text: String = current
+                    .get(..*at)
+                    .unwrap_or_default()
+                    .iter()
+                    .chain(insert.chars().collect::<Vec<_>>().iter())
+                    .chain(current.get(end..).unwrap_or_default())
+                    .collect();
+                *target = serde_json::Value::String(text);
+            }
+            other => return Err(crate::ModelError::unsupported(other)),
+        }
+        Ok(())
+    }
+
     /// Apply at its path in `doc`, then run the invariants of every value
     /// the edit touched.
     ///

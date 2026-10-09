@@ -73,7 +73,7 @@ impl ResourceApp for App {
 
     fn scenario(name: Option<&str>) -> Vec<Invoke<Code>> {
         match name {
-            Some("encoded") => vec![Code::SET_PAYLOAD.with("https://tilo.dev".into())],
+            Some("encoded") => vec![Code::SET_PAYLOAD.with("https://tilo.dev")],
             _ => Vec::new(),
         }
     }

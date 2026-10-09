@@ -48,7 +48,7 @@ fn the_registry_must_be_https_or_this_machine() {
     ] {
         assert!(registry_client::RegistryClient::validate_url(address).is_ok());
         profile
-            .apply(Publisher::SET_REGISTRY.with(address.into()))
+            .apply(Publisher::SET_REGISTRY.with(address))
             .expect("HTTPS or an actual loopback host");
         assert_eq!(profile.state().expect("profile").registry, address);
     }
@@ -65,7 +65,7 @@ fn the_registry_must_be_https_or_this_machine() {
         assert!(registry_client::RegistryClient::validate_url(address).is_err());
         assert!(
             profile
-                .apply(Publisher::SET_REGISTRY.with(address.into()))
+                .apply(Publisher::SET_REGISTRY.with(address))
                 .is_err(),
             "reject an invalid address at the action door: {address}"
         );
@@ -202,7 +202,7 @@ fn applying_reports_what_the_registry_answered() {
     let mut app = TestApp::<App>::new().expect("the app opens");
     app.effect_confirmed(&KeyEffect::CreateKey)
         .expect("create the key");
-    app.invoke(Publisher::SET_REGISTRY.with("http://127.0.0.1:9".into()))
+    app.invoke(Publisher::SET_REGISTRY.with("http://127.0.0.1:9"))
         .expect("an unreachable registry");
     let nothing = app.effect(&KeyEffect::ApplyForNamespaces);
     assert!(
@@ -217,7 +217,7 @@ fn applying_reports_what_the_registry_answered() {
         "the application explains why it failed: {detail}"
     );
 
-    app.invoke(Publisher::SET_DOMAIN.with("example.com".into()))
+    app.invoke(Publisher::SET_DOMAIN.with("example.com"))
         .expect("domain");
     assert!(
         app.effect(&KeyEffect::ApplyForNamespaces).is_err(),
@@ -236,9 +236,9 @@ fn applying_reports_what_the_registry_answered() {
 fn the_claims_are_durable() {
     let _home = home();
     let mut app = TestApp::<App>::new().expect("the app opens");
-    app.invoke(Publisher::SET_DOMAIN.with("example.com".into()))
+    app.invoke(Publisher::SET_DOMAIN.with("example.com"))
         .expect("domain");
-    app.invoke(Publisher::SET_FORGE_ACCOUNT.with("codeberg:ada".into()))
+    app.invoke(Publisher::SET_FORGE_ACCOUNT.with("codeberg:ada"))
         .expect("forge");
     let app = app.reopen().expect("the app reopens");
     assert_eq!(app.state().domain, "example.com");

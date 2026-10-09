@@ -26,7 +26,7 @@ fn granted(verb: Verb) -> PermissionContext {
 /// The running app and a participant joined from its record.
 fn joined(verb: Verb) -> (TestApp<TallyApp>, Participant) {
     let mut app = TestApp::<TallyApp>::new().unwrap();
-    app.invoke(Tally::RENAME.with("visitors".into())).unwrap();
+    app.invoke(Tally::RENAME.with("visitors")).unwrap();
     let snapshot = app.read_document(|doc| doc.clone().save());
     let participant =
         Participant::from_snapshot(resource_kind::<TallyApp>(), &snapshot, AGENT, granted(verb))

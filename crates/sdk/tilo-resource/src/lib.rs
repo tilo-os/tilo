@@ -40,11 +40,13 @@
 //!
 //! // Tests are replay: apply actions the way a control, the palette, an agent
 //! // or a script would, and assert on state.
-//! let mut replica = tilo_resource::Replica::<Todo>::new();
-//! replica.apply(Todo::ADD.with("Buy milk".into())).unwrap();
-//! let id = replica.state().unwrap().items.ids().next().unwrap().clone();
-//! replica.apply(Todo::SET_DONE.with((id, true))).unwrap();
-//! assert!(replica.state().unwrap().items.values().all(|item| item.done));
+//! fn main() {
+//!     let mut replica = tilo_resource::Replica::<Todo>::new();
+//!     replica.apply(Todo::ADD.with("Buy milk")).unwrap();
+//!     let id = replica.state().unwrap().items.ids().next().unwrap().clone();
+//!     replica.apply(Todo::SET_DONE.with((id, true))).unwrap();
+//!     assert!(replica.state().unwrap().items.values().all(|item| item.done));
+//! }
 //! ```
 //!
 //! That is the whole app-side state layer. From it the app gets, without
@@ -112,6 +114,7 @@ pub mod child;
 pub mod collection;
 pub mod content;
 pub mod delta;
+pub mod derived;
 pub mod diff;
 pub mod effect;
 pub mod group;
@@ -131,12 +134,13 @@ pub mod storage;
 pub mod text;
 
 pub use action::{
-    ActionCx, ActionKey, ActionKind, ActionRef, Binds, Invoke, Mapped, Operation, Outcome, Refusal,
-    Stamped,
+    ActionCx, ActionKey, ActionKind, ActionRef, Binds, Invoke, Mapped, NoParams, Operation,
+    Outcome, Params, Refusal, Stamped,
 };
 pub use child::{child_resource_id, publish_child};
 pub use collection::{Collection, Id};
 pub use delta::{Delta, ObjPath, Touch, Touched, Tracker};
+pub use derived::{Bound, Derived};
 pub use effect::{Answers, Effect, EffectDecl, NoEffect};
 pub use group::{ActionGroup, GROUP, GROUP_PARAM};
 pub use kind::{Kinds, ResourceKind};
@@ -157,7 +161,7 @@ pub use schema::JsonSchema;
 pub use shape::{FieldShape, Shape};
 pub use storage::{Bytes, Counter, Grid, Outbox, OutboxEntry, Set, Settled};
 pub use text::{PlainText, TextEdit};
-pub use tilo_actions::PermissionRequirement;
+pub use tilo_actions::{Availability, PermissionRequirement};
 pub use tilo_resource_macros::{Effect, JsonSchema, Model, resource};
 
 /// Items the generated code refers to. Not part of the public API.
@@ -168,8 +172,22 @@ pub mod __private {
     pub use serde_json;
     pub use tilo_actions::{
         ActionArgs, ActionParam, ChangeKind, OperationKind, ParamType, PermissionRequirement,
-        Resource, RiskLevel,
+        Resource, ResourceViewSpec, RiskLevel,
     };
+
+    /// A parameter's schema: its type's, described, with an example.
+    #[must_use]
+    pub fn param_schema(
+        schema: serde_json::Value,
+        description: &str,
+        example: Option<serde_json::Value>,
+    ) -> serde_json::Value {
+        let mut schema = crate::schema::describe(schema, description);
+        if let (Some(example), serde_json::Value::Object(fields)) = (example, &mut schema) {
+            fields.insert("examples".into(), serde_json::Value::Array(vec![example]));
+        }
+        schema
+    }
 
     /// The default search entry of a record: all of its text, in one entry.
     pub fn default_search<T: crate::Model>(label: &str, record: &T) -> Vec<crate::SearchEntry> {
@@ -186,8 +204,12 @@ pub mod __private {
         }]
     }
 
-    /// The label an item is offered under: its first text, else its id.
+    /// The label an item is offered under: its `#[model(label)]`, else its
+    /// first text, else its id.
     pub fn item_label<T: crate::Model>(id: &crate::Id, item: &T) -> String {
+        if let Some(label) = item.label().filter(|label| !label.is_empty()) {
+            return label;
+        }
         let mut text = Vec::new();
         item.collect_text(&mut text);
         text.into_iter()
@@ -202,18 +224,6 @@ pub mod __private {
     /// Returns the check's refusal.
     pub fn check_outcome<O: crate::Outcome>(outcome: O) -> Result<(), crate::Refusal> {
         outcome.into_result()
-    }
-
-    /// Decode a declared operation from bound arguments.
-    ///
-    /// # Errors
-    /// Returns the decode error as text.
-    pub fn decode_operation<O: serde::de::DeserializeOwned>(
-        id: &str,
-        args: &tilo_actions::ActionArgs,
-    ) -> Result<O, String> {
-        serde_json::from_value(serde_json::json!({ "action": id, "args": args.to_json() }))
-            .map_err(|error| error.to_string())
     }
 }
 

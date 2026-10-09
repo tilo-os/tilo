@@ -9,7 +9,7 @@ use ui::prelude::{Replica, TestApp};
 fn greeting_actions_edit_the_name() {
     let mut greeting = Replica::<Greeting>::new();
     greeting
-        .apply(Greeting::SET_NAME.with("Ada".into()))
+        .apply(Greeting::SET_NAME.with("Ada"))
         .expect("rename");
     assert_eq!(greeting.state().expect("greeting").name, "Ada");
     greeting.apply(Greeting::CLEAR.invoke()).expect("clear");
@@ -42,7 +42,7 @@ fn the_name_field_edits_the_greeting() {
 #[test]
 fn a_viewer_cannot_edit() {
     let mut app = TestApp::<App>::with_role(ui::Role::Viewer).expect("the app opens");
-    assert!(app.invoke(Greeting::SET_NAME.with("Eve".into())).is_err());
+    assert!(app.invoke(Greeting::SET_NAME.with("Eve")).is_err());
     assert_eq!(app.state().name, "");
 }
 
@@ -50,7 +50,7 @@ fn a_viewer_cannot_edit() {
 #[test]
 fn the_name_survives_a_relaunch() {
     let mut app = TestApp::<App>::new().expect("the app opens");
-    app.invoke(Greeting::SET_NAME.with("Grace".into()))
+    app.invoke(Greeting::SET_NAME.with("Grace"))
         .expect("rename");
     let app = app.reopen().expect("the app reopens");
     assert_eq!(app.state().name, "Grace");
@@ -61,14 +61,14 @@ fn the_name_survives_a_relaunch() {
 #[test]
 fn collaboration_updates_the_view_and_undo_preserves_peer_edits() {
     let mut app = TestApp::<App>::for_person("ada").expect("the app opens");
-    app.invoke(Greeting::SET_NAME.with("Ada".into()))
+    app.invoke(Greeting::SET_NAME.with("Ada"))
         .expect("initial name");
     let mut peer = Replica::<Greeting>::from_doc(app.peer_document()).as_author("grace");
 
-    app.invoke(Greeting::SET_NAME.with("Countess Ada".into()))
+    app.invoke(Greeting::SET_NAME.with("Countess Ada"))
         .expect("local prefix");
     let envelope = peer
-        .apply(Greeting::SET_NAME.with("Ada Byron".into()))
+        .apply(Greeting::SET_NAME.with("Ada Byron"))
         .expect("peer suffix");
     assert_eq!(envelope.actor.as_deref(), Some(b"grace".as_slice()));
     let remote_actor = envelope.actor().to_hex_string();

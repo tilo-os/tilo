@@ -10,9 +10,80 @@
 //! still typed. The action stays published on the record too, with its id
 //! parameter, for scripts that address items by id.
 //!
-//! Which collection an action acts on is inferred from its parameter name
-//! (`item` → `items`, `card` → `cards`, or the record's only collection) and
-//! can be named explicitly with `#[action(item = "field")]`.
+//! The collection an action acts on is the field its item parameter is
+//! named after, or the record's only collection; `#[action(item = field)]`
+//! names it otherwise. `#[resource]` refuses to compile an item action whose
+//! collection is neither.
+//!
+//! ```
+//! use tilo_resource::{Collection, Id, Model, resource};
+//!
+//! #[derive(Model, Default)]
+//! pub struct Shelf { pub books: Collection<String>, pub loans: Collection<String> }
+//!
+//! #[resource(kind = "doc.shelf")]
+//! impl Shelf {
+//!     /// Lend a book.
+//!     #[action(item = books)]
+//!     pub fn lend(&mut self, book: &Id) { self.books.remove(book); }
+//!
+//!     /// Return a loan: the parameter names its collection.
+//!     #[action]
+//!     pub fn loans(&mut self, loans: &Id) { self.loans.remove(loans); }
+//! }
+//! # fn main() {}
+//! ```
+//!
+//! With two collections and neither named, it does not compile:
+//!
+//! ```compile_fail
+//! use tilo_resource::{Collection, Id, Model, resource};
+//!
+//! #[derive(Model, Default)]
+//! pub struct Shelf { pub books: Collection<String>, pub loans: Collection<String> }
+//!
+//! #[resource(kind = "doc.shelf")]
+//! impl Shelf {
+//!     /// Lend a book.
+//!     #[action]
+//!     pub fn lend(&mut self, book: &Id) { self.books.remove(book); }
+//! }
+//! # fn main() {}
+//! ```
+//!
+//! nor does naming a collection the record does not have:
+//!
+//! ```compile_fail
+//! use tilo_resource::{Collection, Id, Model, resource};
+//!
+//! #[derive(Model, Default)]
+//! pub struct Shelf { pub books: Collection<String> }
+//!
+//! #[resource(kind = "doc.shelf")]
+//! impl Shelf {
+//!     /// Lend a book.
+//!     #[action(item = loans)]
+//!     pub fn lend(&mut self, book: &Id) { self.books.remove(book); }
+//! }
+//! # fn main() {}
+//! ```
+//!
+//! or naming one for an action that takes no item:
+//!
+//! ```compile_fail
+//! use tilo_resource::{Collection, Model, resource};
+//!
+//! #[derive(Model, Default)]
+//! pub struct Shelf { pub books: Collection<String> }
+//!
+//! #[resource(kind = "doc.shelf")]
+//! impl Shelf {
+//!     /// Clear the shelf.
+//!     #[action(item = books)]
+//!     pub fn clear(&mut self, everything: bool) { if everything { self.books = Collection::new(); } }
+//! }
+//! # fn main() {}
+//! ```
 
 use std::sync::Arc;
 
@@ -58,20 +129,61 @@ fn targets(action: &ItemAction, collections: &[ItemCollection], field: &str) -> 
     if let Some(named) = action.collection {
         return named == field;
     }
-    let param = action.param;
-    let named_after = |candidate: &str| {
-        candidate == param
-            || candidate.strip_suffix('s') == Some(param)
-            || candidate.strip_suffix("es") == Some(param)
-    };
     if collections
         .iter()
-        .any(|collection| named_after(collection.field))
+        .any(|collection| collection.field == action.param)
     {
-        named_after(field)
+        action.param == field
     } else {
         collections.len() == 1
     }
+}
+
+/// Whether an item action with item parameter `param` (and the collection
+/// `named` by `#[action(item = field)]`, or `""`) acts on one of
+/// `collections`: the check `#[resource]` runs when it compiles.
+#[doc(hidden)]
+#[must_use]
+pub const fn item_target(collections: &[&str], param: &str, named: &str) -> bool {
+    if !named.is_empty() {
+        return contains(collections, named);
+    }
+    contains(collections, param) || collections.len() == 1
+}
+
+#[allow(
+    clippy::indexing_slicing,
+    clippy::arithmetic_side_effects,
+    reason = "a const fn walks the slices by index, bounded by their lengths"
+)]
+const fn contains(names: &[&str], name: &str) -> bool {
+    let mut index = 0;
+    while index < names.len() {
+        if same(names[index].as_bytes(), name.as_bytes()) {
+            return true;
+        }
+        index += 1;
+    }
+    false
+}
+
+#[allow(
+    clippy::indexing_slicing,
+    clippy::arithmetic_side_effects,
+    reason = "a const fn walks the slices by index, bounded by their lengths"
+)]
+const fn same(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut index = 0;
+    while index < a.len() {
+        if a[index] != b[index] {
+            return false;
+        }
+        index += 1;
+    }
+    true
 }
 
 /// The item resources of a record: one per item of each collection, carrying
@@ -116,7 +228,10 @@ pub fn item_children<R: Resource>(
 fn item_spec<R: Resource>(decl: &ActionDecl<R>, param: &'static str, item: &Id) -> ActionSpec {
     bound(
         decl,
-        &[(param, serde_json::Value::String(item.as_str().to_owned()))],
+        &[(
+            param.to_owned(),
+            serde_json::Value::String(item.as_str().to_owned()),
+        )],
     )
 }
 
@@ -126,10 +241,14 @@ fn item_spec<R: Resource>(decl: &ActionDecl<R>, param: &'static str, item: &Id) 
 /// built, checked and undone exactly as the declaration is. Published on a
 /// child, the declaration stays on the resource for scripts that name the
 /// item, out of the palette's way.
-pub fn bound<R: Resource>(
+pub fn bound<R: Resource, N: AsRef<str>>(
     decl: &ActionDecl<R>,
-    values: &[(&'static str, serde_json::Value)],
+    values: &[(N, serde_json::Value)],
 ) -> ActionSpec {
+    let values: Vec<(String, serde_json::Value)> = values
+        .iter()
+        .map(|(name, value)| (name.as_ref().to_owned(), value.clone()))
+        .collect();
     let params: Vec<ActionParam> = decl
         .params
         .iter()
@@ -138,7 +257,6 @@ pub fn bound<R: Resource>(
         .collect();
     let all = decl.params.clone();
     let build = Arc::clone(&decl.build);
-    let values: Vec<(&'static str, serde_json::Value)> = values.to_vec();
     let mut spec = ActionSpec::typed(
         decl.id,
         decl.label.clone(),
@@ -148,7 +266,7 @@ pub fn bound<R: Resource>(
         move |args| {
             let mut arguments = args.to_json();
             for (name, value) in &values {
-                arguments.insert((*name).to_owned(), value.clone());
+                arguments.insert(name.clone(), value.clone());
             }
             let action = ActionArgs::bind_json(&all, &arguments)
                 .map_err(|error| error.to_string())
@@ -156,8 +274,10 @@ pub fn bound<R: Resource>(
             crate::resource::encode_built::<R>(action)
         },
     )
-    .requiring(decl.permission)
-    .reversible();
+    .requiring(decl.permission);
+    if decl.kind == crate::ActionKind::Undoable {
+        spec = spec.reversible();
+    }
     if let Some(description) = &decl.description {
         spec = spec.with_description(description.clone());
     }

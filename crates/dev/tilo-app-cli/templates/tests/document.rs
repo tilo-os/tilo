@@ -7,13 +7,13 @@ use ui::prelude::{Replica, ResourceApp as _, TestApp};
 #[test]
 fn concurrent_edits_converge() {
     let mut left = Replica::<Document>::new();
-    left.apply(Document::SET_BODY.with("hello world".into()))
+    left.apply(Document::SET_BODY.with("hello world"))
         .expect("seed");
     let mut right = left.fork();
-    left.apply(Document::SET_BODY.with("hello brave world".into()))
+    left.apply(Document::SET_BODY.with("hello brave world"))
         .expect("left edit");
     right
-        .apply(Document::SET_BODY.with("hello world!".into()))
+        .apply(Document::SET_BODY.with("hello world!"))
         .expect("right edit");
     left.sync_with(&mut right).expect("sync");
     assert_eq!(left.state().expect("document").body, "hello brave world!");

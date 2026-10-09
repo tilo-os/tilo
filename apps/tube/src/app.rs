@@ -437,7 +437,7 @@ impl TubeApp {
             let replica = self.local_history.get_or_insert_with(|| {
                 let mut replica = ui::tilo_resource::Replica::<WatchHistory>::new();
                 let count = shown.len();
-                let watched = shown
+                let watched: Vec<(String, u64)> = shown
                     .iter()
                     .enumerate()
                     .map(|(at, video)| (video.clone(), u64::try_from(count - at).unwrap_or(0)))

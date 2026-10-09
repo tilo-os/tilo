@@ -197,7 +197,7 @@ mod tests {
     fn rich_text_is_a_field_edited_at_its_path() {
         let mut note = Replica::<Note>::new();
         assert!(note.state().unwrap().body.state().is_some());
-        note.apply(Note::WRITE.with("hello".into())).unwrap();
+        note.apply(Note::WRITE.with("hello")).unwrap();
         assert_eq!(body_text(&note), "hello");
         append(&mut note, "more");
         assert_eq!(body_text(&note), "hello\nmore");

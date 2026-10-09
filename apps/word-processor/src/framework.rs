@@ -102,6 +102,7 @@ impl Resource for Document {
                 description: decl.description,
                 params: decl.params,
                 permission: decl.permission,
+                kind: decl.kind,
                 destructive: decl.destructive,
                 result: decl.result,
                 tags: decl.tags,

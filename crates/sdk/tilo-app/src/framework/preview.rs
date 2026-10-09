@@ -510,17 +510,17 @@ mod tests {
         // phase: a_record_restores_a_past_version_field_by_field_and_item_by_item
         {
             let mut shelf = Replica::<Shelf>::new();
-            shelf.apply(Shelf::RENAME.with("Reading".into())).unwrap();
-            shelf.apply(Shelf::ADD.with("Dune".into())).unwrap();
-            shelf.apply(Shelf::ADD.with("Emma".into())).unwrap();
+            shelf.apply(Shelf::RENAME.with("Reading")).unwrap();
+            shelf.apply(Shelf::ADD.with("Dune")).unwrap();
+            shelf.apply(Shelf::ADD.with("Emma")).unwrap();
             let ids: Vec<Id> = shelf.state().unwrap().books.ids().cloned().collect();
             let past_heads = shelf.heads();
             let past = shelf.state().unwrap();
 
-            shelf.apply(Shelf::RENAME.with("Done".into())).unwrap();
+            shelf.apply(Shelf::RENAME.with("Done")).unwrap();
             shelf.apply(Shelf::FINISH.with(ids[0].clone())).unwrap();
             shelf.apply(Shelf::REMOVE.with(ids[1].clone())).unwrap();
-            shelf.apply(Shelf::ADD.with("Ulysses".into())).unwrap();
+            shelf.apply(Shelf::ADD.with("Ulysses")).unwrap();
             shelf
                 .apply(Shelf::ANNOTATE.with(Some("tidy up".into())))
                 .unwrap();
@@ -558,10 +558,9 @@ mod tests {
         // phase: a_past_version_renders_through_the_apps_own_view_read_only
         {
             let mut page = Replica::<Page>::new();
-            page.apply(Page::SET_HEADING.with("First draft".into()))
-                .unwrap();
+            page.apply(Page::SET_HEADING.with("First draft")).unwrap();
             let past = page.heads();
-            page.apply(Page::SET_HEADING.with("Final".into())).unwrap();
+            page.apply(Page::SET_HEADING.with("Final")).unwrap();
             let mut doc = page.doc().clone();
             let bytes = doc.fork_at(&past).unwrap().save();
 

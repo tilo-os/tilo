@@ -723,12 +723,11 @@ mod tests {
     #[test]
     fn host_grants_are_capabilities_in_the_shared_spelling() {
         let mut r = replica();
-        r.apply(Environment::ALLOW_HOST.with("GitHub.com.".into()))
+        r.apply(Environment::ALLOW_HOST.with("GitHub.com."))
             .unwrap();
-        r.apply(Environment::ALLOW_HOST.with("*.crates.io".into()))
+        r.apply(Environment::ALLOW_HOST.with("*.crates.io"))
             .unwrap();
-        r.apply(Environment::ALLOW_HOST.with("github.com".into()))
-            .unwrap();
+        r.apply(Environment::ALLOW_HOST.with("github.com")).unwrap();
         let env = r.state().unwrap();
         assert_eq!(env.grants.0.len(), 2, "allowing again replaces the grant");
         let scopes: Vec<&Scope> = env.grants.0.iter().map(|c| &c.scope).collect();
@@ -750,7 +749,7 @@ mod tests {
         assert_eq!(normalize_host(" * ").unwrap(), "*");
         for bad in ["", "1.1.1.1", "::1", "[::1]", "a b", "-x.com", "x..com"] {
             assert!(
-                r.apply(Environment::ALLOW_HOST.with(bad.into())).is_err(),
+                r.apply(Environment::ALLOW_HOST.with(bad)).is_err(),
                 "{bad:?} must not be allowed"
             );
         }
@@ -783,8 +782,8 @@ mod tests {
         assert_eq!(env.runtime_image("x86_64").unwrap(), image(9));
         assert_eq!(env.tools, vec![rebuilt]);
 
-        assert!(r.apply(Environment::RENAME.with("  ".into())).is_err());
-        r.apply(Environment::RENAME.with(" Docs ".into())).unwrap();
+        assert!(r.apply(Environment::RENAME.with("  ")).is_err());
+        r.apply(Environment::RENAME.with(" Docs ")).unwrap();
         assert_eq!(r.state().unwrap().name, "Docs");
         assert_eq!(r.state().unwrap().home, HomePolicy::Persistent);
     }

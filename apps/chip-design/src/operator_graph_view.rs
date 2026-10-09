@@ -21,8 +21,11 @@ fn tr(key: &str) -> String {
     I18nManager::lookup_plain(key)
 }
 fn invoke(edit: OperatorAction) -> Invoke<ChipProject> {
-    ActionRef::new(ui::tilo_resource::APPLY, &[ui::tilo_resource::APPLY_PARAM])
-        .with(ProjectAction::EditGraph { edit })
+    ActionRef::<ChipProject, ProjectAction>::new(
+        ui::tilo_resource::APPLY,
+        &[ui::tilo_resource::APPLY_PARAM],
+    )
+    .with(ProjectAction::EditGraph { edit })
 }
 pub fn port_id(node: &str, port: &str, input: bool) -> String {
     format!(

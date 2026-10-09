@@ -251,12 +251,12 @@ fn preset_card(ui: &Ui, preset: Preset) -> Element {
 // ---------------------------------------------------------------- editor
 
 /// A slider over `band` for one numeric role of the theme `id`.
-fn slider(
+fn slider<A: ui::tilo_resource::Params + From<(Id, f64)>>(
     cx: &ViewCx<Studio>,
     id: &Id,
     band: (f64, f64),
     read: impl Fn(&Theme) -> f64 + 'static,
-    action: ui::tilo_resource::ActionRef<Studio, (Id, f64)>,
+    action: ui::tilo_resource::ActionRef<Studio, A>,
 ) -> Slider {
     let (lo, hi) = band;
     let span = (hi - lo).max(f64::EPSILON);
@@ -310,12 +310,12 @@ fn rung_label(rung: Rung) -> &'static str {
     }
 }
 
-fn choice(
+fn choice<A: ui::tilo_resource::Params + From<(Id, bool)>>(
     cx: &ViewCx<Studio>,
     id: &Id,
     options: [&'static str; 2],
     read: impl Fn(&Theme) -> bool + 'static,
-    action: ui::tilo_resource::ActionRef<Studio, (Id, bool)>,
+    action: ui::tilo_resource::ActionRef<Studio, A>,
 ) -> Dropdown {
     let key = id.clone();
     let target = id.clone();

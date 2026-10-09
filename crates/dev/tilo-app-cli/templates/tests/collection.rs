@@ -22,7 +22,7 @@ fn items_are_added_edited_and_removed_by_actions() {
     let mut items = Replica::<Items>::new();
     assert!(items.apply(Items::ADD.invoke()).is_err(), "no empty items");
     items
-        .apply(Items::SET_DRAFT.with("Buy milk".into()))
+        .apply(Items::SET_DRAFT.with("Buy milk"))
         .expect("draft");
     items.apply(Items::ADD.invoke()).expect("add");
     let state = items.state().expect("items");
@@ -82,7 +82,7 @@ fn the_list_starts_empty_and_rows_edit_their_item() {
 #[test]
 fn items_survive_a_relaunch() {
     let mut app = TestApp::<App>::new().expect("the app opens");
-    app.invoke(Items::SET_DRAFT.with("Call Ada".into()))
+    app.invoke(Items::SET_DRAFT.with("Call Ada"))
         .expect("draft");
     app.invoke(Items::ADD.invoke()).expect("add");
     let app = app.reopen().expect("the app reopens");

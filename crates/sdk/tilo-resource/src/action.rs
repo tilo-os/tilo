@@ -372,10 +372,12 @@ impl<R, A: Serialize> ActionRef<R, A> {
         ActionKey::new(app, R::KIND, self.id)
     }
 
-    /// The JSON arguments this input binds to.
+    /// The JSON arguments this input binds to: a verb's parameter struct
+    /// as its fields, or positional inputs under the declared names.
     pub fn arguments(&self, input: &A) -> serde_json::Map<String, serde_json::Value> {
         let value = serde_json::to_value(input).unwrap_or(serde_json::Value::Null);
         match (self.params, value) {
+            ([], serde_json::Value::Object(fields)) => fields,
             ([], _) => serde_json::Map::new(),
             ([single], value) => serde_json::Map::from_iter([((*single).to_owned(), value)]),
             (names, serde_json::Value::Array(values)) => names
@@ -388,10 +390,12 @@ impl<R, A: Serialize> ActionRef<R, A> {
     }
 
     /// Fully apply the input: an invocation with nothing left to supply.
-    pub fn with(&self, input: A) -> Invoke<R> {
+    /// A verb's parameter struct converts from its parameters in order: one
+    /// value, or a tuple of several.
+    pub fn with(&self, input: impl Into<A>) -> Invoke<R> {
         Invoke {
             id: self.id,
-            arguments: self.arguments(&input),
+            arguments: self.arguments(&input.into()),
             effect: false,
             marker: PhantomData,
         }
@@ -401,9 +405,10 @@ impl<R, A: Serialize> ActionRef<R, A> {
 impl<R, A: Serialize> ActionRef<R, A> {
     /// Adapt a control's input to this action's arguments — typically to bind
     /// the item a row stands for: `Todo::SET_DONE.map(move |done| (id.clone(), done))`.
-    pub fn map<I, F>(self, map: F) -> Mapped<R, A, F>
+    pub fn map<I, T, F>(self, map: F) -> Mapped<R, A, F>
     where
-        F: Fn(I) -> A,
+        F: Fn(I) -> T,
+        T: Into<A>,
     {
         Mapped { action: self, map }
     }
@@ -422,30 +427,49 @@ pub trait Binds<R, I>: Send + Sync + 'static {
     fn arguments(&self, input: I) -> serde_json::Map<String, serde_json::Value>;
 }
 
-impl<R: 'static, A: Serialize + 'static> Binds<R, A> for ActionRef<R, A> {
+/// A control binds an action whose input its value converts to: a text
+/// field binds a verb taking one `String`.
+impl<R: 'static, A: Serialize + 'static, I: Into<A>> Binds<R, I> for ActionRef<R, A> {
     fn action_id(&self) -> &'static str {
         self.id
     }
-    fn arguments(&self, input: A) -> serde_json::Map<String, serde_json::Value> {
-        ActionRef::arguments(self, &input)
+    fn arguments(&self, input: I) -> serde_json::Map<String, serde_json::Value> {
+        ActionRef::arguments(self, &input.into())
     }
 }
 
-impl<R, A, I, F> Binds<R, I> for Mapped<R, A, F>
+impl<R, A, I, T, F> Binds<R, I> for Mapped<R, A, F>
 where
     R: 'static,
     A: Serialize + 'static,
-    F: Fn(I) -> A + Send + Sync + 'static,
+    T: Into<A>,
+    F: Fn(I) -> T + Send + Sync + 'static,
 {
     fn action_id(&self) -> &'static str {
         self.action.id
     }
     fn arguments(&self, input: I) -> serde_json::Map<String, serde_json::Value> {
-        self.action.arguments(&(self.map)(input))
+        self.action.arguments(&(self.map)(input).into())
     }
 }
 
-impl<R> ActionRef<R, ()> {
+/// The input of an action that takes nothing: `()`, or a verb's empty
+/// parameter struct.
+pub trait NoParams {}
+
+impl NoParams for () {}
+
+/// A verb's generated parameter struct, linked to the verb it is the input
+/// of. A form is a local value of it; submitting the form invokes
+/// [`Self::ACTION`] with it.
+pub trait Params: Serialize + DeserializeOwned + crate::JsonSchema + Clone + 'static {
+    /// The resource the verb belongs to.
+    type Resource;
+    /// The verb.
+    const ACTION: ActionRef<Self::Resource, Self>;
+}
+
+impl<R, A: NoParams> ActionRef<R, A> {
     /// The invocation of a nullary action.
     pub fn invoke(&self) -> Invoke<R> {
         Invoke {

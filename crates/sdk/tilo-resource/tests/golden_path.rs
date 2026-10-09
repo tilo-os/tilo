@@ -109,9 +109,7 @@ fn a_housekeeping_action_says_so_in_its_change() {
     let mut channel = Replica::<Channel>::new();
     channel.apply(Channel::MARK_READ.with(3)).unwrap();
     assert!(housekeeping(&mut channel));
-    channel
-        .apply(Channel::SET_TOPIC.with("Launch".into()))
-        .unwrap();
+    channel.apply(Channel::SET_TOPIC.with("Launch")).unwrap();
     assert!(!housekeeping(&mut channel));
     channel
         .apply(Invoke::group([Channel::MARK_READ.with(4)]))
@@ -123,7 +121,7 @@ fn a_housekeeping_action_says_so_in_its_change() {
     channel
         .apply(Invoke::group([
             Channel::MARK_READ.with(5),
-            Channel::SET_TOPIC.with("Ship".into()),
+            Channel::SET_TOPIC.with("Ship"),
         ]))
         .unwrap();
     assert!(
@@ -178,12 +176,10 @@ fn declared_actions_are_typed_and_apply_through_the_one_door() {
     // phase: actions_apply_through_the_same_door_as_every_surface
     {
         let mut board = Replica::<Board>::new();
-        board.apply(Board::RENAME.with("Launch".into())).unwrap();
+        board.apply(Board::RENAME.with("Launch")).unwrap();
         board.set_now_ms(42_000);
-        board
-            .apply(Board::ADD_CARD.with("Write docs".into()))
-            .unwrap();
-        board.apply(Board::ADD_CARD.with("Ship".into())).unwrap();
+        board.apply(Board::ADD_CARD.with("Write docs")).unwrap();
+        board.apply(Board::ADD_CARD.with("Ship")).unwrap();
         let state = board.state().unwrap();
         assert_eq!(state.title, "Launch");
         let texts: Vec<_> = state
@@ -213,9 +209,9 @@ fn declared_actions_are_typed_and_apply_through_the_one_door() {
         let before = first.versions().len();
         first
             .apply(Invoke::group([
-                Board::ADD_CARD.with("milk".into()),
-                Board::ADD_CARD.with("milk".into()),
-                Board::RENAME.with("Shopping".into()),
+                Board::ADD_CARD.with("milk"),
+                Board::ADD_CARD.with("milk"),
+                Board::RENAME.with("Shopping"),
             ]))
             .unwrap();
         let state = first.state().unwrap();
@@ -233,7 +229,7 @@ fn declared_actions_are_typed_and_apply_through_the_one_door() {
         assert!(
             first
                 .apply(Invoke::group([
-                    Board::ADD_CARD.with("eggs".into()),
+                    Board::ADD_CARD.with("eggs"),
                     Board::ADVANCE.with(missing),
                 ]))
                 .is_err()
@@ -243,10 +239,8 @@ fn declared_actions_are_typed_and_apply_through_the_one_door() {
     // phase: actions_on_a_collection_item_are_offered_on_the_item
     {
         let mut board = Replica::<Board>::new();
-        board
-            .apply(Board::ADD_CARD.with("Write docs".into()))
-            .unwrap();
-        board.apply(Board::ADD_CARD.with("Ship".into())).unwrap();
+        board.apply(Board::ADD_CARD.with("Write docs")).unwrap();
+        board.apply(Board::ADD_CARD.with("Ship")).unwrap();
         let state = board.state().unwrap();
         let published = tilo_resource::publish::<Board>("board", "Board", &state);
 
@@ -313,8 +307,8 @@ fn documents_replay_converge_version_index_and_migrate() {
     {
         let mut origin = Replica::<Board>::new();
         let mut peer = origin.fork();
-        origin.apply(Board::ADD_CARD.with("a".into())).unwrap();
-        origin.apply(Board::ADD_CARD.with("b".into())).unwrap();
+        origin.apply(Board::ADD_CARD.with("a")).unwrap();
+        origin.apply(Board::ADD_CARD.with("b")).unwrap();
         let second = card_ids(&origin).remove(1);
         origin.apply(Board::MOVE_CARD.with((second, 0))).unwrap();
         for envelope in origin.log().to_vec() {
@@ -326,15 +320,13 @@ fn documents_replay_converge_version_index_and_migrate() {
     // phase: collaborators_edit_concurrently_and_converge
     {
         let mut alice = Replica::<Board>::new().as_author("alice");
-        alice.apply(Board::ADD_CARD.with("shared".into())).unwrap();
+        alice.apply(Board::ADD_CARD.with("shared")).unwrap();
         let mut bob = alice.fork().as_author("bob");
         let shared = card_ids(&alice).remove(0);
 
-        alice
-            .apply(Board::RENAME.with("Alice's board".into()))
-            .unwrap();
+        alice.apply(Board::RENAME.with("Alice's board")).unwrap();
         alice.apply(Board::ADVANCE.with(shared.clone())).unwrap();
-        bob.apply(Board::ADD_CARD.with("from bob".into())).unwrap();
+        bob.apply(Board::ADD_CARD.with("from bob")).unwrap();
         bob.apply(Board::MOVE_CARD.with((shared.clone(), 1)))
             .unwrap();
 
@@ -350,9 +342,9 @@ fn documents_replay_converge_version_index_and_migrate() {
     // phase: history_is_attributed_and_any_version_reads_back
     {
         let mut board = Replica::<Board>::new().as_author("alice");
-        board.apply(Board::RENAME.with("v1".into())).unwrap();
+        board.apply(Board::RENAME.with("v1")).unwrap();
         let v1 = board.heads();
-        board.apply(Board::RENAME.with("v2".into())).unwrap();
+        board.apply(Board::RENAME.with("v2")).unwrap();
         let versions = board.versions();
         let last = versions.last().unwrap();
         assert_eq!(last.actor, hex(b"alice"));
@@ -363,9 +355,9 @@ fn documents_replay_converge_version_index_and_migrate() {
     // phase: search_indexes_text_fields_by_default
     {
         let mut board = Replica::<Board>::new();
-        board.apply(Board::RENAME.with("Roadmap".into())).unwrap();
+        board.apply(Board::RENAME.with("Roadmap")).unwrap();
         board
-            .apply(Board::ADD_CARD.with("Quarterly review".into()))
+            .apply(Board::ADD_CARD.with("Quarterly review"))
             .unwrap();
         let entries = Board::search(&board.state().unwrap());
         assert_eq!(entries.len(), 1);
@@ -557,9 +549,7 @@ fn schema_reuse_keeps_resource_types_and_live_children_distinct() {
     let mut replica = Replica::<Board>::new();
     let empty = tilo_resource::publish::<SchemaProbe>("probe", "Empty", &replica.state().unwrap());
     assert!(empty.children.is_empty());
-    replica
-        .apply(Board::ADD_CARD.with("Fresh card".into()))
-        .unwrap();
+    replica.apply(Board::ADD_CARD.with("Fresh card")).unwrap();
     let populated =
         tilo_resource::publish::<SchemaProbe>("probe", "Populated", &replica.state().unwrap());
     assert_eq!(populated.label, "Populated");

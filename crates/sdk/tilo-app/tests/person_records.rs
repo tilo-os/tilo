@@ -93,15 +93,10 @@ fn a_persons_record_is_the_same_record_on_each_of_their_devices() {
     // Each device watches something before they meet; the record's genesis
     // is the same on both, so they merge into one history.
     on_laptop
-        .apply(
-            &Watched::WATCH
-                .with("on-the-laptop".into())
-                .build(0)
-                .unwrap(),
-        )
+        .apply(&Watched::WATCH.with("on-the-laptop").build(0).unwrap())
         .unwrap();
     on_phone
-        .invoke(&Watched::WATCH.with("on-the-phone".into()))
+        .invoke(&Watched::WATCH.with("on-the-phone"))
         .unwrap();
     let laptops = on_laptop.record().document().unwrap();
     on_phone.record().merge_peer_document(laptops).unwrap();
@@ -138,11 +133,11 @@ fn a_collaborator_in_the_same_room_never_holds_the_persons_record() {
     let mut ada_app = TestApp::<QueueApp>::for_person(&ada()).unwrap();
     let mut bob_app = TestApp::<QueueApp>::for_person(&bob()).unwrap();
     let adas = ada_app.person::<Watched>().unwrap();
-    adas.invoke(&Watched::WATCH.with("private".into())).unwrap();
+    adas.invoke(&Watched::WATCH.with("private")).unwrap();
 
     // They share the queue: Bob merges what Ada queued, and nothing of what
     // she watched comes with it.
-    ada_app.invoke(Queue::ADD.with("shared".into())).unwrap();
+    ada_app.invoke(Queue::ADD.with("shared")).unwrap();
     let mut shared = ada_app.peer_document();
     bob_app.merge_peer(&mut shared).unwrap();
     assert_eq!(bob_app.state().items, ["shared"]);
@@ -183,7 +178,7 @@ fn a_persons_record_survives_a_relaunch() {
     let mut app = TestApp::<QueueApp>::for_person(&ada()).unwrap();
     app.person::<Watched>()
         .unwrap()
-        .invoke(&Watched::WATCH.with("kept".into()))
+        .invoke(&Watched::WATCH.with("kept"))
         .unwrap();
     let mut app = app.reopen().unwrap();
     assert_eq!(videos(&app.person::<Watched>().unwrap()), ["kept"]);
@@ -193,12 +188,8 @@ fn a_persons_record_survives_a_relaunch() {
 fn the_palette_and_agents_take_back_the_persons_own_steps() {
     let mut app = TestApp::<QueueApp>::for_person(&ada()).unwrap();
     let watched = app.person::<Watched>().unwrap();
-    watched
-        .invoke(&Watched::WATCH.with("first".into()))
-        .unwrap();
-    watched
-        .invoke(&Watched::WATCH.with("second".into()))
-        .unwrap();
+    watched.invoke(&Watched::WATCH.with("first")).unwrap();
+    watched.invoke(&Watched::WATCH.with("second")).unwrap();
     app.harness().relayout();
 
     // The record is published beside the app's resource, with the
@@ -228,7 +219,7 @@ fn the_palette_and_agents_take_back_the_persons_own_steps() {
 
     // The shared queue's history is not the person's: its undo has nothing
     // of theirs to take back, and theirs nothing of the queue's.
-    app.invoke(Queue::ADD.with("shared".into())).unwrap();
+    app.invoke(Queue::ADD.with("shared")).unwrap();
     app.call_on("person:test.watched", "undo", serde_json::json!({}))
         .unwrap();
     assert!(videos(&watched).is_empty());
@@ -292,10 +283,10 @@ fn a_shared_record_is_one_record_kept_by_each_app_and_changed_by_its_owner_and_e
     }
 
     owned
-        .invoke(&Watched::WATCH.with("kept-by-the-owner".into()))
+        .invoke(&Watched::WATCH.with("kept-by-the-owner"))
         .unwrap();
     edited
-        .invoke(&Watched::WATCH.with("added-by-the-editor".into()))
+        .invoke(&Watched::WATCH.with("added-by-the-editor"))
         .unwrap();
     owned
         .record()
@@ -307,7 +298,7 @@ fn a_shared_record_is_one_record_kept_by_each_app_and_changed_by_its_owner_and_e
     assert_eq!(videos(&read), ["added-by-the-editor", "kept-by-the-owner"]);
 
     assert!(
-        read.invoke(&Watched::WATCH.with("from-the-reader".into()))
+        read.invoke(&Watched::WATCH.with("from-the-reader"))
             .is_err(),
         "a reader does not change it"
     );

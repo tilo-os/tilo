@@ -188,7 +188,7 @@ impl Mailbox {
     }
 
     /// Record that a queued message was delivered.
-    #[action]
+    #[action(item = outbox)]
     pub fn delivered(&mut self, cx: &mut ActionCx, entry: Id) -> Result<(), &'static str> {
         let text = self.outbox.remove(&entry).ok_or("no such message")?;
         self.sent.push(cx.id(), text);
@@ -489,11 +489,9 @@ fn captures_publish_view_effects_and_availability_without_running_handlers() {
 fn history_renders_effect_controls_without_replaying_outside_consequences() {
     DELIVERED.with(|delivered| delivered.borrow_mut().clear());
     let mut app = TestApp::<MailApp>::new().unwrap();
-    app.invoke(Mailbox::FETCHED.with("historical".into()))
-        .unwrap();
+    app.invoke(Mailbox::FETCHED.with("historical")).unwrap();
     let version = app.versions().last().unwrap().hash;
-    app.invoke(Mailbox::SEND.with("delivered once".into()))
-        .unwrap();
+    app.invoke(Mailbox::SEND.with("delivered once")).unwrap();
     app.settle();
     let past = app.past_version(&[version]).unwrap();
     assert_eq!(past.state().fetched, "historical");
@@ -516,7 +514,7 @@ fn a_projection_drains_each_queued_entry_once_on_every_change() {
     DELIVERED.with(|delivered| delivered.borrow_mut().clear());
     let mut app = TestApp::<MailApp>::new().unwrap();
 
-    app.invoke(Mailbox::SEND.with("first".into())).unwrap();
+    app.invoke(Mailbox::SEND.with("first")).unwrap();
     app.settle();
     let delivered = || DELIVERED.with(|delivered| delivered.borrow().clone());
     assert_eq!(delivered(), ["first"]);
@@ -527,7 +525,7 @@ fn a_projection_drains_each_queued_entry_once_on_every_change() {
     // A collaborator's queued message is drained here too.
     app.merge_peer_edit(|doc| {
         Mailbox::SEND
-            .with("from a peer".into())
+            .with("from a peer")
             .build(0)
             .unwrap()
             .apply(doc)
@@ -538,7 +536,7 @@ fn a_projection_drains_each_queued_entry_once_on_every_change() {
     assert!(app.state().outbox.is_empty());
 
     // Unrelated changes deliver nothing again.
-    app.invoke(Mailbox::FETCHED.with("x".into())).unwrap();
+    app.invoke(Mailbox::FETCHED.with("x")).unwrap();
     app.settle();
     assert_eq!(delivered().len(), 2);
 
@@ -914,7 +912,7 @@ fn a_projection_looks_again_when_the_outside_it_compares_against_changed() {
     MIRRORED.with(|mirrored| mirrored.borrow_mut().clear());
     let mirrored = || MIRRORED.with(|mirrored| mirrored.borrow().clone());
     let mut app = TestApp::<MirrorApp>::new().unwrap();
-    app.invoke(Mailbox::SEND.with("hello".into())).unwrap();
+    app.invoke(Mailbox::SEND.with("hello")).unwrap();
     let entry = app.state().outbox.iter().next().unwrap().0.clone();
     app.invoke(Mailbox::DELIVERED.with(entry)).unwrap();
     app.settle();
@@ -969,7 +967,9 @@ impl ResourceApp for FilesApp {
                         return Err("no file was chosen".into());
                     };
                     CHOSEN.with(|chosen| chosen.borrow_mut().clone_from(&file.identity));
-                    cx.invoke(Mailbox::FETCHED.with(String::from_utf8_lossy(&file.bytes).into()));
+                    cx.invoke(
+                        Mailbox::FETCHED.with(String::from_utf8_lossy(&file.bytes).into_owned()),
+                    );
                     Ok(Effected::done())
                 },
             )),
@@ -1434,7 +1434,7 @@ fn confirmation_follows_the_arguments_and_a_surface_withholds_an_action() {
     assert_eq!(app.state().fetched, "erased system");
 
     let refused = app
-        .invoke(Mailbox::SEND.with("hello".into()))
+        .invoke(Mailbox::SEND.with("hello"))
         .expect_err("sending is unavailable while recording");
     assert!(format!("{refused:?}").contains("recording"), "{refused:?}");
     assert!(app.state().outbox.is_empty());

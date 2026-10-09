@@ -163,8 +163,8 @@ fn actions_update_the_record_and_view_as_undoable_attributed_versions() {
     // phase: actions_through_the_door_update_the_record_and_the_view
     {
         let mut app = TestApp::<ChecklistApp>::new().unwrap();
-        app.invoke(Checklist::ADD.with("milk".into())).unwrap();
-        app.invoke(Checklist::ADD.with("eggs".into())).unwrap();
+        app.invoke(Checklist::ADD.with("milk")).unwrap();
+        app.invoke(Checklist::ADD.with("eggs")).unwrap();
         assert_eq!(
             texts(&app),
             [("milk".into(), false), ("eggs".into(), false)]
@@ -205,8 +205,8 @@ fn actions_update_the_record_and_view_as_undoable_attributed_versions() {
     // phase: undo_and_redo_revert_actions
     {
         let mut app = TestApp::<ChecklistApp>::new().unwrap();
-        app.invoke(Checklist::RENAME.with("First".into())).unwrap();
-        app.invoke(Checklist::RENAME.with("Second".into())).unwrap();
+        app.invoke(Checklist::RENAME.with("First")).unwrap();
+        app.invoke(Checklist::RENAME.with("Second")).unwrap();
         assert!(app.undo());
         assert_eq!(app.state().title, "First");
         assert!(app.redo());
@@ -215,9 +215,8 @@ fn actions_update_the_record_and_view_as_undoable_attributed_versions() {
     // phase: undo_reverts_a_text_splice_exactly
     {
         let mut app = TestApp::<ChecklistApp>::new().unwrap();
-        app.invoke(Checklist::RENAME.with("first thought".into()))
-            .unwrap();
-        app.invoke(Checklist::RENAME.with("second thought".into()))
+        app.invoke(Checklist::RENAME.with("first thought")).unwrap();
+        app.invoke(Checklist::RENAME.with("second thought"))
             .unwrap();
         assert!(app.undo());
         assert_eq!(app.state().title, "first thought");
@@ -230,14 +229,14 @@ fn actions_update_the_record_and_view_as_undoable_attributed_versions() {
     // phase: state_survives_a_relaunch
     {
         let mut app = TestApp::<ChecklistApp>::new().unwrap();
-        app.invoke(Checklist::ADD.with("persisted".into())).unwrap();
+        app.invoke(Checklist::ADD.with("persisted")).unwrap();
         let app = app.reopen().unwrap();
         assert_eq!(texts(&app), [("persisted".into(), false)]);
     }
     // phase: every_action_is_an_attributed_version
     {
         let mut app = TestApp::<ChecklistApp>::new().unwrap();
-        app.invoke(Checklist::RENAME.with("Weekly".into())).unwrap();
+        app.invoke(Checklist::RENAME.with("Weekly")).unwrap();
         let last = app.versions().pop().unwrap();
         assert_eq!(
             last.summary().as_deref(),
@@ -251,7 +250,7 @@ fn actions_are_gated_by_role_and_confirmed_for_every_surface() {
     // phase: a_viewer_cannot_edit
     {
         let mut app = TestApp::<ChecklistApp>::with_role(tilo_app::Role::Viewer).unwrap();
-        assert!(app.invoke(Checklist::ADD.with("sneaky".into())).is_err());
+        assert!(app.invoke(Checklist::ADD.with("sneaky")).is_err());
         assert!(app.state().items.is_empty());
     }
     // phase: the_palette_and_agents_see_every_action
@@ -294,24 +293,24 @@ fn actions_are_gated_by_role_and_confirmed_for_every_surface() {
     {
         let mut app = TestApp::<ChecklistApp>::new().unwrap();
         // An ordinary typed edit applies directly.
-        app.invoke(typed(ChecklistAction::Rename {
+        app.invoke(typed(ChecklistAction::Rename(checklist::Rename {
             title: "Weekly".into(),
-        }))
+        })))
         .unwrap();
         assert_eq!(app.state().title, "Weekly");
 
-        app.invoke(Checklist::ADD.with("milk".into())).unwrap();
+        app.invoke(Checklist::ADD.with("milk")).unwrap();
         let id = app.state().items.ids().next().cloned().unwrap();
-        app.invoke(typed(ChecklistAction::SetDone {
+        app.invoke(typed(ChecklistAction::SetDone(checklist::SetDone {
             item: id,
             done: true,
-        }))
+        })))
         .unwrap();
 
         // `clear_done` is `#[action(destructive)]`: reached through `apply` it
         // needs the same confirmation its named declaration does.
         assert!(matches!(
-            app.invoke(typed(ChecklistAction::ClearDone {})),
+            app.invoke(typed(ChecklistAction::ClearDone(checklist::ClearDone {}))),
             Err(tilo_actions::DoorError::ConfirmationRequired)
         ));
         assert_eq!(
@@ -319,7 +318,7 @@ fn actions_are_gated_by_role_and_confirmed_for_every_surface() {
             1,
             "the refused edit changed nothing"
         );
-        app.invoke_confirmed(typed(ChecklistAction::ClearDone {}))
+        app.invoke_confirmed(typed(ChecklistAction::ClearDone(checklist::ClearDone {})))
             .unwrap();
         assert!(app.state().items.is_empty());
     }
@@ -336,14 +335,12 @@ fn typed(operation: ChecklistAction) -> Invoke<Checklist> {
 #[test]
 fn history_restores_a_past_version_through_the_host() {
     let mut app = TestApp::<ChecklistApp>::new().unwrap();
-    app.invoke(Checklist::RENAME.with("Groceries".into()))
-        .unwrap();
-    app.invoke(Checklist::ADD.with("milk".into())).unwrap();
+    app.invoke(Checklist::RENAME.with("Groceries")).unwrap();
+    app.invoke(Checklist::ADD.with("milk")).unwrap();
     let past = app.state();
     let version = app.versions().pop().unwrap().hash;
-    app.invoke(Checklist::RENAME.with("Hardware".into()))
-        .unwrap();
-    app.invoke(Checklist::ADD.with("nails".into())).unwrap();
+    app.invoke(Checklist::RENAME.with("Hardware")).unwrap();
+    app.invoke(Checklist::ADD.with("nails")).unwrap();
     assert_ne!(app.state(), past);
 
     let harness = app.harness();

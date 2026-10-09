@@ -785,7 +785,7 @@ fn the_wand_finds_colour_where_the_artwork_is_shown() {
     assert!(d.len() < 400, "a rectangle traces to a few corners: {d}");
 
     let by_colour: ActionRef<ArtworkResource, String> = ActionRef::new("select", &["colour"]);
-    art.apply(by_colour.with("#d03020".into())).unwrap();
+    art.apply(by_colour.with("#d03020")).unwrap();
     let found = selected(&art.state().unwrap());
     assert!(found.contains(Point::new(650.0, 150.0)));
     assert!(!found.contains(Point::new(200.0, 450.0)));

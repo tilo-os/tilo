@@ -9,11 +9,7 @@ fn actions_refuse_out_of_range_values() {
     let mut prefs = Replica::<Preferences>::new();
     assert!(prefs.apply(Preferences::SET_VOLUME.with(2.0)).is_err());
     assert!(prefs.apply(Preferences::SET_REFRESH.with(0.0)).is_err());
-    assert!(
-        prefs
-            .apply(Preferences::SET_REGION.with("Mars".into()))
-            .is_err()
-    );
+    assert!(prefs.apply(Preferences::SET_REGION.with("Mars")).is_err());
     assert_eq!(prefs.state().expect("preferences"), Preferences::default());
 }
 
@@ -80,10 +76,7 @@ fn a_viewer_cannot_change_preferences() {
     app.harness()
         .expect(&SemanticExpectation::named("name-input").enabled(false))
         .expect("the input disables itself");
-    assert!(
-        app.invoke(Preferences::SET_NAME.with("Eve".into()))
-            .is_err()
-    );
+    assert!(app.invoke(Preferences::SET_NAME.with("Eve")).is_err());
 }
 
 /// Every control that causes an effect is bound to a published action.

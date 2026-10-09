@@ -25,11 +25,13 @@
 //!     pub fn edit(&mut self, text: String) { self.body = text; }
 //! }
 //!
-//! let kinds = Kinds::new().with(ResourceKind::of::<Note>());
-//! let note = kinds.get("example.note").unwrap();
-//! let doc = tilo_resource::Doc::new();
-//! let tree = note.publish("example.note", &doc).unwrap();
-//! assert!(tree.actions.iter().any(|action| action.id == "edit"));
+//! fn main() {
+//!     let kinds = Kinds::new().with(ResourceKind::of::<Note>());
+//!     let note = kinds.get("example.note").unwrap();
+//!     let doc = tilo_resource::Doc::new();
+//!     let tree = note.publish("example.note", &doc).unwrap();
+//!     assert!(tree.actions.iter().any(|action| action.id == "edit"));
+//! }
 //! ```
 
 use std::any::Any;

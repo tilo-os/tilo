@@ -99,7 +99,7 @@ fn saved_note_persists_and_is_protected_from_overwrite_and_corruption() {
         let directory = tempfile::tempdir().unwrap();
         {
             let mut app = open(directory.path());
-            app.invoke(Note::EDIT.with("precious".into())).unwrap();
+            app.invoke(Note::EDIT.with("precious")).unwrap();
         }
         let documents = stored_documents(directory.path());
         assert_eq!(documents.len(), 1, "{documents:?}");
@@ -119,9 +119,8 @@ fn edits_are_undoable_permissioned_and_merge_to_identical_heads() {
     {
         let directory = tempfile::tempdir().unwrap();
         let mut app = open(directory.path());
-        app.invoke(Note::EDIT.with("first thought".into())).unwrap();
-        app.invoke(Note::EDIT.with("second thought".into()))
-            .unwrap();
+        app.invoke(Note::EDIT.with("first thought")).unwrap();
+        app.invoke(Note::EDIT.with("second thought")).unwrap();
         let last = app.versions().pop().unwrap();
         assert_eq!(last.summary().as_deref(), Some("Edit note · Note"));
         assert!(app.undo());
@@ -133,7 +132,7 @@ fn edits_are_undoable_permissioned_and_merge_to_identical_heads() {
     eprintln!("phase a_viewer_cannot_edit_the_note");
     {
         let mut app = HeadlessApp::<Scratchpad>::with_role(ui::Role::Viewer).unwrap();
-        assert!(app.invoke(Note::EDIT.with("not mine".into())).is_err());
+        assert!(app.invoke(Note::EDIT.with("not mine")).is_err());
         assert_eq!(app.state().body, "");
     }
 
@@ -142,7 +141,7 @@ fn edits_are_undoable_permissioned_and_merge_to_identical_heads() {
         let mut origin = Replica::<Note>::new();
         let mut peer = origin.fork();
         origin
-            .apply(Note::EDIT.with("Same note, on another replica.".into()))
+            .apply(Note::EDIT.with("Same note, on another replica."))
             .unwrap();
         for envelope in origin.log().to_vec() {
             peer.replay(&envelope).unwrap();
@@ -156,15 +155,12 @@ fn edits_are_undoable_permissioned_and_merge_to_identical_heads() {
         use ui::automerge::{ROOT, ReadDoc};
         let body = |replica: &Replica<Note>| replica.doc().get(ROOT, "body").unwrap().unwrap().1;
         let mut original = Replica::<Note>::new();
-        original
-            .apply(Note::EDIT.with("hello world".into()))
-            .unwrap();
+        original.apply(Note::EDIT.with("hello world")).unwrap();
         let object = body(&original);
         let mut left = original.fork();
         let mut right = original.fork();
-        left.apply(Note::EDIT.with("hello brave world".into()))
-            .unwrap();
-        right.apply(Note::EDIT.with("hello world!".into())).unwrap();
+        left.apply(Note::EDIT.with("hello brave world")).unwrap();
+        right.apply(Note::EDIT.with("hello world!")).unwrap();
         left.sync_with(&mut right).unwrap();
         assert_eq!(body(&left), object);
         assert_eq!(left.state().unwrap().body, "hello brave world!");

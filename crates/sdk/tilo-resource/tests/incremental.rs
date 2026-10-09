@@ -264,9 +264,7 @@ fn editing_one_note_of_many_reads_only_that_note() {
     replica
         .apply(Notebook::DECORATE.with((target.clone(), "red".into())))
         .unwrap();
-    replica
-        .apply(Notebook::RENAME.with("Renamed".into()))
-        .unwrap();
+    replica.apply(Notebook::RENAME.with("Renamed")).unwrap();
     let before = loads();
     replica.live().unwrap();
     assert_eq!(loads() - before, 0, "no note text read for other fields");
@@ -283,7 +281,7 @@ fn editing_one_note_of_many_reads_only_that_note() {
 #[test]
 fn history_pages_newest_first_and_lists_every_change_once() {
     let mut left = Replica::<Notebook>::new();
-    left.apply(Notebook::ADD.with("shared".into())).unwrap();
+    left.apply(Notebook::ADD.with("shared")).unwrap();
     let mut right = left.fork();
     let mut rng = Lcg(3);
     for round in 0..15 {

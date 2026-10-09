@@ -461,9 +461,9 @@ impl ResourceApp for App {
             return Vec::new();
         }
         vec![
-            Publisher::SET_DOMAIN.with("lovelace.dev".into()),
-            Publisher::SET_FORGE_ACCOUNT.with("codeberg:ada".into()),
-            Publisher::SET_CONTACT.with("ada@lovelace.dev".into()),
+            Publisher::SET_DOMAIN.with("lovelace.dev"),
+            Publisher::SET_FORGE_ACCOUNT.with("codeberg:ada"),
+            Publisher::SET_CONTACT.with("ada@lovelace.dev"),
         ]
     }
 

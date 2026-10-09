@@ -169,10 +169,10 @@ fn compare_scores_the_artwork_against_its_reference() {
     let score = |value: &Value| value["difference"].as_f64().unwrap();
     import(&mut app, &rect(100, "#1e40c8"), "wrong");
     let wrong = operate(&mut app, "compare");
-    app.invoke(clear.with("layer-1".into())).unwrap();
+    app.invoke(clear.with("layer-1")).unwrap();
     import(&mut app, &rect(200, "#c81e1e"), "spill");
     let spill = operate(&mut app, "compare");
-    app.invoke(clear.with("layer-1".into())).unwrap();
+    app.invoke(clear.with("layer-1")).unwrap();
     import(&mut app, &rect(100, "#c81e1e"), "right");
     let right = operate(&mut app, "compare");
     assert!(score(&right) < 0.05, "{right}");

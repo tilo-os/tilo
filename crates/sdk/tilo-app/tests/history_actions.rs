@@ -185,7 +185,7 @@ fn newest(app: &mut TestApp<BoardApp>) -> Value {
 #[test]
 fn a_keyboard_undo_and_redo_are_named_after_the_step_and_stay_its_authors() {
     let mut app = TestApp::<BoardApp>::new().unwrap();
-    app.invoke(Board::RENAME.with("Plan".into())).unwrap();
+    app.invoke(Board::RENAME.with("Plan")).unwrap();
     let renamed = newest(&mut app);
     let label = renamed["action"].as_str().unwrap().to_owned();
     assert!(!label.is_empty(), "{renamed}");

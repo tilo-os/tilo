@@ -132,9 +132,7 @@ fn a_path_is_plain_data_naming_fields_and_items() {
 #[test]
 fn field_edits_apply_at_their_path_and_merge() {
     let mut library = Replica::<Library>::new();
-    library
-        .apply(Library::NEW_SNIPPET.with("Deploy".into()))
-        .unwrap();
+    library.apply(Library::NEW_SNIPPET.with("Deploy")).unwrap();
     let id = first_snippet(&library);
     let snippet = Library::paths().snippets.item(&id);
     edit(&mut library, &snippet.favorite.set(true)).unwrap();
@@ -207,13 +205,9 @@ fn collection_edits_insert_move_and_remove_items() {
 #[test]
 fn an_edit_reads_only_its_path() {
     let mut library = Replica::<Library>::new();
-    library
-        .apply(Library::NEW_SNIPPET.with("Deploy".into()))
-        .unwrap();
+    library.apply(Library::NEW_SNIPPET.with("Deploy")).unwrap();
     let id = first_snippet(&library);
-    library
-        .apply(Library::NEW_SNIPPET.with("Other".into()))
-        .unwrap();
+    library.apply(Library::NEW_SNIPPET.with("Other")).unwrap();
     let before = library.heads();
     edit(
         &mut library,
@@ -228,9 +222,7 @@ fn an_edit_reads_only_its_path() {
 #[test]
 fn a_check_refuses_every_way_in() {
     let mut library = Replica::<Library>::new();
-    library
-        .apply(Library::NEW_SNIPPET.with("Deploy".into()))
-        .unwrap();
+    library.apply(Library::NEW_SNIPPET.with("Deploy")).unwrap();
     let id = first_snippet(&library);
     let long = "a title that is far too long".to_owned();
     let title = Library::paths().snippets.item(&id).title;
@@ -247,7 +239,7 @@ fn a_check_refuses_every_way_in() {
     );
     // A group, refused whole.
     let group = Invoke::group([
-        Library::NEW_SNIPPET.with("fine".into()),
+        Library::NEW_SNIPPET.with("fine"),
         Library::NEW_SNIPPET.with(long),
     ]);
     assert!(library.apply(group).is_err());
@@ -261,9 +253,7 @@ fn a_check_refuses_every_way_in() {
 #[test]
 fn readonly_fields_change_only_through_verbs() {
     let mut library = Replica::<Library>::new();
-    library
-        .apply(Library::NEW_SNIPPET.with("Deploy".into()))
-        .unwrap();
+    library.apply(Library::NEW_SNIPPET.with("Deploy")).unwrap();
     let id = first_snippet(&library);
     let uses = Library::paths().snippets.item(&id).uses;
     let refused = edit(&mut library, &uses.add(5)).unwrap_err();
@@ -335,7 +325,7 @@ fn grid_cells_keep_identity_when_rows_and_columns_move() {
 #[test]
 fn an_outbox_queues_entries_the_owner_settles() {
     let mut library = Replica::<Library>::new();
-    library.apply(Library::SHARE.with("ada".into())).unwrap();
+    library.apply(Library::SHARE.with("ada")).unwrap();
     let state = library.state().unwrap();
     let (id, with) = state.sent.pending().next().unwrap();
     assert_eq!(with, "ada");
@@ -428,9 +418,7 @@ fn the_door_stamps_the_time_not_the_caller() {
 #[test]
 fn a_path_reads_its_value_and_names_its_tree_node() {
     let mut library = Replica::<Library>::new();
-    library
-        .apply(Library::NEW_SNIPPET.with("Deploy".into()))
-        .unwrap();
+    library.apply(Library::NEW_SNIPPET.with("Deploy")).unwrap();
     let id = first_snippet(&library);
     let state = library.state().unwrap();
     let snippet = Library::paths().snippets.item(&id);

@@ -28,9 +28,7 @@ fn program(replica: &Replica<Workbench>) -> Program {
 
 fn with_draft() -> (Replica<Workbench>, Id) {
     let mut replica = Replica::<Workbench>::new();
-    replica
-        .apply(Workbench::NEW_DRAFT.with("Tidy".into()))
-        .unwrap();
+    replica.apply(Workbench::NEW_DRAFT.with("Tidy")).unwrap();
     let id = draft_id(&replica);
     (replica, id)
 }

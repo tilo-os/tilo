@@ -2,13 +2,12 @@
 //! crate only generates calls into it.
 
 use proc_macro::TokenStream;
-use proc_macro2::{Span, TokenStream as Tokens};
+use proc_macro2::TokenStream as Tokens;
 use quote::{format_ident, quote};
-use syn::punctuated::Punctuated;
 use syn::spanned::Spanned;
 use syn::{
-    Attribute, Data, DeriveInput, Expr, ExprLit, Fields, FnArg, GenericArgument, ImplItem,
-    ItemImpl, Lit, Meta, MetaNameValue, Pat, PathArguments, Token, Type, parse_macro_input,
+    Attribute, Data, DeriveInput, Expr, ExprLit, Fields, GenericArgument, ItemImpl, Lit, Meta,
+    MetaNameValue, PathArguments, Type, parse_macro_input,
 };
 
 const CRATE: &str = "tilo_resource";
@@ -382,6 +381,7 @@ fn derive_named(input: &DeriveInput, fields: &syn::FieldsNamed) -> syn::Result<T
     let mut label = None;
     let mut readonly_fields = Vec::new();
     let mut get_arms = Vec::new();
+    let mut collection_names = Vec::new();
     let owner = snake_case(&name.to_string()).replace('_', "-");
     for field in &fields.named {
         let ident = field
@@ -468,6 +468,7 @@ fn derive_named(input: &DeriveInput, fields: &syn::FieldsNamed) -> syn::Result<T
         checks.push(quote!(#krate::Model::check(&self.#ident)?;));
         checks_const.push(quote!(<#ty as #krate::Model>::CHECKS));
         if last_ident(ty).is_some_and(|(name, _)| name == "Collection") {
+            collection_names.push(field_name.clone());
             collections.push(quote!(#krate::items::ItemCollection {
                 field: #field_name,
                 items: self
@@ -749,6 +750,11 @@ fn derive_named(input: &DeriveInput, fields: &syn::FieldsNamed) -> syn::Result<T
         }
 
         impl #impl_generics #name #type_generics #where_clause {
+            /// The fields holding a `Collection`, by name: where actions on
+            /// an item can act.
+            #[doc(hidden)]
+            pub const __COLLECTIONS: &'static [&'static str] = &[#(#collection_names),*];
+
             #[doc = #paths_fn_doc]
             #vis fn paths() -> #paths_name<Self, #(#generic_args),*> {
                 <Self as #krate::Model>::paths_at(#krate::Path::root())
@@ -796,115 +802,6 @@ fn doc_lines(attrs: &[Attribute]) -> Vec<String> {
             _ => None,
         })
         .collect()
-}
-
-struct ResourceOptions {
-    kind: String,
-    label: String,
-    search: Option<syn::Path>,
-    scopes: Option<syn::Path>,
-    children: Option<syn::Path>,
-}
-
-fn resource_options(attr: TokenStream) -> syn::Result<ResourceOptions> {
-    let metas = syn::parse::Parser::parse(Punctuated::<Meta, Token![,]>::parse_terminated, attr)?;
-    let mut kind = None;
-    let mut label = None;
-    let mut search = None;
-    let mut scopes = None;
-    let mut children = None;
-    for meta in metas {
-        let Meta::NameValue(pair) = meta else {
-            return Err(syn::Error::new(meta.span(), "expected `key = value`"));
-        };
-        let key = pair
-            .path
-            .get_ident()
-            .map(ToString::to_string)
-            .unwrap_or_default();
-        match (key.as_str(), &pair.value) {
-            (
-                "kind",
-                Expr::Lit(ExprLit {
-                    lit: Lit::Str(text),
-                    ..
-                }),
-            ) => kind = Some(text.value()),
-            (
-                "label",
-                Expr::Lit(ExprLit {
-                    lit: Lit::Str(text),
-                    ..
-                }),
-            ) => label = Some(text.value()),
-            ("search", Expr::Path(path)) => search = Some(path.path.clone()),
-            ("scopes", Expr::Path(path)) => scopes = Some(path.path.clone()),
-            ("children", Expr::Path(path)) => children = Some(path.path.clone()),
-            _ => {
-                return Err(syn::Error::new(
-                    pair.span(),
-                    "expected `kind = \"...\"`, `label = \"...\"`, `search = path`, `scopes = path` or `children = path`",
-                ));
-            }
-        }
-    }
-    let kind =
-        kind.ok_or_else(|| syn::Error::new(Span::call_site(), "missing `kind = \"...\"`"))?;
-    let label = label.unwrap_or_else(|| kind.clone());
-    Ok(ResourceOptions {
-        kind,
-        label,
-        search,
-        scopes,
-        children,
-    })
-}
-
-struct ActionOptions {
-    label: Option<String>,
-    permission: Option<String>,
-    destructive: bool,
-    housekeeping: bool,
-    external: bool,
-    item: Option<String>,
-}
-
-fn action_options(attr: &Attribute) -> syn::Result<ActionOptions> {
-    let mut options = ActionOptions {
-        label: None,
-        permission: None,
-        destructive: false,
-        housekeeping: false,
-        external: false,
-        item: None,
-    };
-    if matches!(attr.meta, Meta::Path(_)) {
-        return Ok(options);
-    }
-    attr.parse_nested_meta(|meta| {
-        if meta.path.is_ident("label") {
-            options.label = Some(meta.value()?.parse::<syn::LitStr>()?.value());
-        } else if meta.path.is_ident("permission") {
-            options.permission = Some(meta.value()?.parse::<syn::LitStr>()?.value());
-        } else if meta.path.is_ident("destructive") {
-            options.destructive = true;
-        } else if meta.path.is_ident("housekeeping") {
-            options.housekeeping = true;
-        } else if meta.path.is_ident("external") {
-            options.external = true;
-        } else if meta.path.is_ident("item") {
-            options.item = Some(meta.value()?.parse::<syn::LitStr>()?.value());
-        } else {
-            return Err(meta.error(
-                "expected `label`, `permission`, `destructive`, `housekeeping`, `external` or `item`",
-            ));
-        }
-        if options.housekeeping && options.external {
-            return Err(meta.error("an action is `housekeeping` or `external`, not both"));
-        }
-        Ok(())
-    })?;
-    Ok(options)
 }
 
 fn last_ident(ty: &Type) -> Option<(String, Option<&Type>)> {
@@ -966,33 +863,6 @@ fn is_action_cx(ty: &Type) -> bool {
         && last_ident(&reference.elem).is_some_and(|(name, _)| name == "ActionCx")
 }
 
-/// Parameter guidance does not constrain the set of valid values.
-struct ActionParamDescription {
-    description: syn::LitStr,
-    example: Option<syn::Expr>,
-}
-
-impl syn::parse::Parse for ActionParamDescription {
-    fn parse(input: syn::parse::ParseStream<'_>) -> syn::Result<Self> {
-        let description = input.parse()?;
-        let example = if input.is_empty() {
-            None
-        } else {
-            input.parse::<syn::Token![,]>()?;
-            let name: syn::Ident = input.parse()?;
-            if name != "example" {
-                return Err(syn::Error::new(name.span(), "expected `example = ...`"));
-            }
-            input.parse::<syn::Token![=]>()?;
-            Some(input.parse()?)
-        };
-        Ok(Self {
-            description,
-            example,
-        })
-    }
-}
-
 /// Turn a record's `#[action]` methods into its replayable, published action
 /// vocabulary, and implement `Resource` for it.
 ///
@@ -1005,516 +875,48 @@ impl syn::parse::Parse for ActionParamDescription {
 /// }
 /// ```
 ///
-/// Generates `NoteAction` (one variant per action), `Note::EDIT` (an
-/// `ActionRef` views bind controls to and tests apply) and `impl Resource`.
-/// `#[param("Description", example = "value")]` publishes an example
-/// callers can use without restricting other valid parameter values.
-/// An action method takes `&mut self`, optionally `cx: &mut ActionCx`, then
-/// its parameters, and returns `()` or `Result<(), impl Into<Refusal>>`.
+/// Generates, per action, a parameter struct in a module named after the
+/// type (`note::Edit { text }`, with a JSON Schema derived from the
+/// parameter types), a variant of `NoteAction` carrying it, and
+/// `Note::EDIT`, an `ActionRef` views bind controls to and tests apply;
+/// then `impl Resource`. Field edits are a built-in variant.
+///
+/// An action method takes `&mut self`, optionally `cx: &mut ActionCx` and
+/// `&mut Outbox<T>` fields of the record (by field name: such an action
+/// reaches outside the document), then its parameters, and returns `()` or
+/// `Result<(), impl Into<Refusal>>`. Its public id is its name in kebab case
+/// unless `#[action(id = "...")]`; a parameter is published under its name
+/// unless `#[param(name = "...")]`, and `#[param("Description", example =
+/// value)]` describes it.
+///
 /// An action whose first parameter is an item `Id` is also published on each
-/// item of the collection it acts on, with the id bound (see
-/// `tilo_resource::items`); `#[action(item = "field")]` names the collection
-/// when its parameter name doesn't.
-/// Options: `#[action(label = "...", permission = "comment", destructive)]`
-/// (`destructive` applies both to the named declaration and to the same
-/// operation reached through the generic `apply` action, so either path asks
-/// for the same confirmation; `housekeeping` declares a change about the
-/// record rather than to it, such as a read marker, which workspace activity
-/// leaves out; `external` declares content that came from outside rather than
-/// from anyone's edit, such as fetched rows, which syncs like any content but
-/// is nobody's undo step);
-/// `#[resource(search = path, scopes = path, children = path)]` override
-/// search entries, the parts search can be narrowed to, and nested resources.
+/// item of the collection it acts on, with the id bound: the collection named
+/// like the parameter, or the record's only one; `#[action(item = field)]`
+/// names it otherwise, and anything else does not compile.
+///
+/// Action options: `label = "..."`, `destructive` (people confirm it, through
+/// any door), `housekeeping` (a change about the record rather than to it,
+/// such as a read marker), `external` (content from outside, nobody's undo
+/// step), `permission = "..."`.
+///
+/// Resource options: `label`, `params = module` (the parameter module's
+/// name), `initialize = path` (`fn() -> Self`, the deterministic genesis),
+/// `seed = path` (`fn(&mut Self, &mut ActionCx)`, the creator's first
+/// content), `available = path` (`fn(&Self, module::Verb) -> Availability`),
+/// `children = path` (`fn(&Self) -> Vec<Derived<Self>>`), `search = path`,
+/// `scopes = path`, `read_content = path` (`fn(&Self, Option<&Id>) ->
+/// Result<serde_json::Value, String>`) and `views = path`.
 #[proc_macro_attribute]
 pub fn resource(attr: TokenStream, item: TokenStream) -> TokenStream {
-    let options = match resource_options(attr) {
+    let options = match verbs::resource_options(attr) {
         Ok(options) => options,
         Err(error) => return error.to_compile_error().into(),
     };
     let mut item = parse_macro_input!(item as ItemImpl);
-    match expand_resource(&options, &mut item) {
+    match verbs::expand(&options, &mut item) {
         Ok(tokens) => tokens.into(),
         Err(error) => error.to_compile_error().into(),
     }
 }
 
-#[allow(
-    clippy::too_many_lines,
-    reason = "one linear expansion reads better than helpers threading a dozen token lists"
-)]
-fn expand_resource(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Result<Tokens> {
-    let krate = krate();
-    let self_ty = item.self_ty.clone();
-    let (type_name, _) = last_ident(&self_ty)
-        .ok_or_else(|| syn::Error::new(self_ty.span(), "expected a named type"))?;
-    let action_enum = format_ident!("{}Action", type_name);
-    let kind = &options.kind;
-    let label = &options.label;
-
-    let mut variants = Vec::new();
-    let mut arms = Vec::new();
-    let mut risks = Vec::new();
-    let mut permissions = Vec::new();
-    // The least any action asks, ranked from none to administering.
-    let mut least: Option<(u8, proc_macro2::TokenStream)> = None;
-    let mut change_kinds = Vec::new();
-    let mut consts = Vec::new();
-    let mut decls = Vec::new();
-    let mut item_actions = Vec::new();
-
-    for impl_item in &mut item.items {
-        let ImplItem::Fn(method) = impl_item else {
-            continue;
-        };
-        let Some(position) = method
-            .attrs
-            .iter()
-            .position(|attr| attr.path().is_ident("action"))
-        else {
-            continue;
-        };
-        let attr = method.attrs.remove(position);
-        let action = action_options(&attr)?;
-        let method_ident = method.sig.ident.clone();
-        let method_name = method_ident.to_string();
-        let id = method_name.replace('_', "-");
-        let variant = format_ident!(
-            "{}",
-            method_name
-                .split('_')
-                .map(|word| {
-                    let mut chars = word.chars();
-                    chars.next().map_or_else(String::new, |first| {
-                        first.to_uppercase().chain(chars).collect::<String>()
-                    })
-                })
-                .collect::<String>()
-        );
-        let docs = doc_lines(&method.attrs);
-        let label_text = action.label.clone().unwrap_or_else(|| {
-            docs.first()
-                .map(|line| line.trim_end_matches('.').to_owned())
-                .filter(|line| !line.is_empty())
-                .unwrap_or_else(|| humanize(&method_name))
-        });
-        let description = docs.join(" ");
-
-        let mut takes_self = false;
-        let mut takes_cx = false;
-        let mut fields = Vec::new();
-        for input in &mut method.sig.inputs {
-            match input {
-                FnArg::Receiver(receiver) => {
-                    if receiver.mutability.is_none() || receiver.reference.is_none() {
-                        return Err(syn::Error::new(
-                            receiver.span(),
-                            "an action takes `&mut self`",
-                        ));
-                    }
-                    takes_self = true;
-                }
-                FnArg::Typed(typed) => {
-                    if is_action_cx(&typed.ty) {
-                        takes_cx = true;
-                        continue;
-                    }
-                    let Pat::Ident(pat) = &*typed.pat else {
-                        return Err(syn::Error::new(
-                            typed.pat.span(),
-                            "action parameters must be plain names",
-                        ));
-                    };
-                    let mut described = None;
-                    if let Some(index) = typed
-                        .attrs
-                        .iter()
-                        .position(|attr| attr.path().is_ident("param"))
-                    {
-                        let attr = typed.attrs.remove(index);
-                        let guidance = attr.parse_args::<ActionParamDescription>()?;
-                        described = Some((guidance.description.value(), guidance.example));
-                    }
-                    let (owned, by_ref) = owned_type(&typed.ty);
-                    fields.push((pat.ident.clone(), owned, described, by_ref));
-                }
-            }
-        }
-        if !takes_self {
-            return Err(syn::Error::new(
-                method.sig.span(),
-                "an action takes `&mut self`",
-            ));
-        }
-        // An action whose first parameter is an item id acts on an element
-        // of a collection: it is also offered on each item, id bound.
-        match fields.first() {
-            Some((ident, ty, _, _)) if last_ident(ty).is_some_and(|(name, _)| name == "Id") => {
-                let param = ident.to_string();
-                let collection = action.item.as_ref().map_or_else(
-                    || quote!(::core::option::Option::None),
-                    |field| quote!(::core::option::Option::Some(#field)),
-                );
-                item_actions.push(quote!(#krate::items::ItemAction {
-                    action: #id,
-                    param: #param,
-                    collection: #collection,
-                }));
-            }
-            _ if action.item.is_some() => {
-                return Err(syn::Error::new(
-                    attr.span(),
-                    "`item = \"...\"` needs the action's first parameter to be an item `Id`",
-                ));
-            }
-            _ => {}
-        }
-
-        method.attrs.push(syn::parse_quote!(#[allow(
-            clippy::needless_pass_by_value,
-            clippy::missing_errors_doc,
-            reason = "an action entry point: arguments arrive owned from the action payload and its docs are the action's description"
-        )]));
-        let field_idents: Vec<_> = fields
-            .iter()
-            .map(|(ident, _, _, _)| ident.clone())
-            .collect();
-        let call_args = fields.iter().map(|(ident, _, _, by_ref)| {
-            if *by_ref {
-                quote!(#ident)
-            } else {
-                quote!(::core::clone::Clone::clone(#ident))
-            }
-        });
-        let field_defs = fields.iter().map(|(ident, ty, _, _)| {
-            let optional = last_ident(ty).is_some_and(|(name, _)| name == "Option");
-            if optional {
-                quote!(#[serde(default)] #ident: #ty)
-            } else {
-                quote!(#ident: #ty)
-            }
-        });
-        variants.push(quote! {
-            #[serde(rename = #id)]
-            #variant { #(#field_defs,)* }
-        });
-        let cx_arg = if takes_cx { quote!(cx,) } else { quote!() };
-        arms.push(quote! {
-            Self::#variant { #(#field_idents,)* } => #krate::Outcome::into_result(
-                record.#method_ident(#cx_arg #(#call_args,)*)
-            ),
-        });
-        if action.destructive {
-            risks.push(quote! {
-                Self::#variant { .. } => #krate::__private::RiskLevel::Destructive,
-            });
-        }
-        if action.housekeeping {
-            change_kinds.push(quote! {
-                Self::#variant { .. } => #krate::__private::ChangeKind::Housekeeping,
-            });
-        }
-        if action.external {
-            change_kinds.push(quote! {
-                Self::#variant { .. } => #krate::__private::ChangeKind::External,
-            });
-        }
-        let const_ident = format_ident!("{}", method_name.to_uppercase());
-        let param_names: Vec<String> = field_idents.iter().map(ToString::to_string).collect();
-        let tys: Vec<&Type> = fields.iter().map(|(_, ty, _, _)| ty).collect();
-        let input_ty = match tys.as_slice() {
-            [] => quote!(()),
-            [single] => quote!(#single),
-            many => quote!((#(#many,)*)),
-        };
-        let const_doc = format!("Bind or apply the `{id}` action: {label_text}.");
-        consts.push(quote! {
-            #[doc = #const_doc]
-            pub const #const_ident: #krate::ActionRef<#self_ty, #input_ty> =
-                #krate::ActionRef::new(#id, &[#(#param_names),*]);
-        });
-        let params = fields.iter().map(|(ident, ty, described, _)| {
-            let name = ident.to_string();
-            let description = described.as_ref().map_or_else(|| humanize(&name), |(text, _)| text.clone());
-            let (param_ty, optional) = param_type(ty);
-            let parameter = if optional {
-                quote!(#krate::__private::ActionParam::optional_owned(#name, #param_ty, #description))
-            } else {
-                quote!(#krate::__private::ActionParam::required_owned(#name, #param_ty, #description))
-            };
-            if let Some((_, Some(example))) = described {
-                quote!(#parameter.with_schema(#krate::__private::serde_json::json!({"examples": [#example]})))
-            } else {
-                parameter
-            }
-        });
-        let permission = match action.permission.as_deref() {
-            None | Some("write") => quote!(Write),
-            Some("none") => quote!(None),
-            Some("read") => quote!(Read),
-            Some("comment") => quote!(Comment),
-            Some("invite") => quote!(Invite),
-            Some("admin") => quote!(Admin),
-            Some(other) => {
-                return Err(syn::Error::new(
-                    attr.span(),
-                    format!("unknown permission `{other}`"),
-                ));
-            }
-        };
-        let destructive = if action.destructive {
-            quote!(.destructive())
-        } else {
-            quote!()
-        };
-        let describe = if description.is_empty() {
-            quote!()
-        } else {
-            quote!(.describe(#description))
-        };
-        let rank = match action.permission.as_deref() {
-            Some("none") => 0,
-            Some("read") => 1,
-            Some("comment") => 2,
-            None | Some("write") => 3,
-            Some("invite") => 4,
-            _ => 5,
-        };
-        if least.as_ref().is_none_or(|(least, _)| rank < *least) {
-            least = Some((rank, permission.clone()));
-        }
-        permissions.push(quote! {
-            #action_enum::#variant { .. } => #krate::__private::PermissionRequirement::#permission,
-        });
-        decls.push(quote! {
-            #krate::ActionDecl::new(
-                #id,
-                #label_text,
-                ::std::vec![#(#params),*],
-                |args, now_ms| {
-                    #krate::__private::decode_operation::<#action_enum>(#id, args).map(|operation| {
-                        #krate::Stamped { operation, now_ms }
-                    })
-                },
-            )
-            #describe
-            .requiring(#krate::__private::PermissionRequirement::#permission)
-            #destructive
-        });
-    }
-
-    let search = options.search.as_ref().map_or_else(
-        || quote!(#krate::__private::default_search(#label, state)),
-        |path| quote!(#path(state)),
-    );
-    let scopes = options.scopes.as_ref().map_or_else(
-        || quote!(::std::vec::Vec::new()),
-        |path| quote!(#path(state)),
-    );
-    let children = options.children.as_ref().map_or_else(
-        || quote!(::std::vec::Vec::new()),
-        |path| quote!(#path(state)),
-    );
-    let children = if item_actions.is_empty() {
-        children
-    } else {
-        quote! {{
-            let mut children: ::std::vec::Vec<#krate::__private::Resource> = #children;
-            children.extend(#krate::items::item_children::<Self>(
-                &<Self as #krate::Fields>::item_collections(state),
-                &[#(#item_actions),*],
-            ));
-            children
-        }}
-    };
-    let serde_path = format!("{CRATE}::__private::serde");
-    let enum_doc =
-        format!("The replayable actions of [`{type_name}`], one per `#[action]` method.");
-    let cx_binding = if arms.is_empty() {
-        quote!(_cx)
-    } else {
-        quote!(cx)
-    };
-    let record_binding = if arms.is_empty() {
-        quote!(_record)
-    } else {
-        quote!(record)
-    };
-    let risk = if risks.is_empty() {
-        quote!()
-    } else {
-        quote! {
-            fn risk(&self) -> #krate::__private::RiskLevel {
-                #[allow(unreachable_patterns, reason = "every other operation is low risk")]
-                match self {
-                    #(#risks)*
-                    _ => #krate::__private::RiskLevel::Low,
-                }
-            }
-        }
-    };
-    let change_kind = if change_kinds.is_empty() {
-        quote!()
-    } else {
-        quote! {
-            fn change_kind(&self) -> #krate::__private::ChangeKind {
-                #[allow(unreachable_patterns, reason = "every other operation changes content")]
-                match self {
-                    #(#change_kinds)*
-                    _ => #krate::__private::ChangeKind::Content,
-                }
-            }
-        }
-    };
-    // An action declared at another level than writing is applied at that
-    // level too, whichever door it comes through.
-    let least_fn = match least {
-        Some((rank, least)) if rank != 3 => quote! {
-            fn least_permission() -> #krate::__private::PermissionRequirement {
-                #krate::__private::PermissionRequirement::#least
-            }
-        },
-        _ => quote!(),
-    };
-    let permission_fn = if permissions.is_empty() {
-        quote!()
-    } else {
-        quote! {
-            fn permission(action: &Self::Action) -> #krate::__private::PermissionRequirement {
-                match &action.operation {
-                    #(#permissions)*
-                    #action_enum::FieldEdit(_) => #krate::__private::PermissionRequirement::Write,
-                }
-            }
-
-            #least_fn
-        }
-    };
-    let body = quote! {
-        match self {
-            #(#arms)*
-            Self::FieldEdit(_) => ::core::result::Result::Err(#krate::Refusal::new(
-                "a field edit applies at its path",
-            )),
-        }
-    };
-
-    Ok(quote! {
-        #item
-
-        #[doc = #enum_doc]
-        #[derive(Clone, Debug, #krate::__private::serde::Serialize, #krate::__private::serde::Deserialize)]
-        #[serde(crate = #serde_path, tag = "action", content = "args")]
-        pub enum #action_enum {
-            #(#variants,)*
-            /// A field edit: a path into the record and an operation.
-            #[serde(rename = "field-edit")]
-            FieldEdit(#krate::Edit<#self_ty>),
-        }
-
-        impl #krate::Operation for #action_enum {
-            type Record = #self_ty;
-            fn edit(&self) -> ::core::option::Option<&#krate::Edit<#self_ty>> {
-                match self {
-                    Self::FieldEdit(edit) => ::core::option::Option::Some(edit),
-                    #[allow(unreachable_patterns, reason = "a record may have no verbs")]
-                    _ => ::core::option::Option::None,
-                }
-            }
-            #[allow(unused_variables, reason = "a method may ignore the action context")]
-            fn perform(
-                &self,
-                #record_binding: &mut #self_ty,
-                #cx_binding: &mut #krate::ActionCx,
-            ) -> ::core::result::Result<(), #krate::Refusal> {
-                #body
-            }
-            #risk
-            #change_kind
-        }
-
-        impl #self_ty {
-            #(#consts)*
-        }
-
-        impl #krate::Resource for #self_ty {
-            const KIND: &'static str = #kind;
-            const LABEL: &'static str = #label;
-            type State = #self_ty;
-            type Action = #krate::Stamped<#action_enum>;
-
-            fn read(doc: &#krate::Doc) -> ::core::result::Result<Self, #krate::ModelError> {
-                <Self as #krate::Fields>::read_fields(doc, &#krate::__private::ROOT)
-            }
-
-            fn refresh(
-                state: &mut Self,
-                doc: &#krate::Doc,
-                delta: &#krate::Delta,
-            ) -> ::core::result::Result<(), #krate::ModelError> {
-                <Self as #krate::Fields>::refresh_fields(state, doc, &#krate::__private::ROOT, delta)
-            }
-
-            fn initialize(doc: &mut #krate::Doc) -> ::core::result::Result<(), #krate::ModelError> {
-                <Self as #krate::Fields>::write_fields(
-                    &<Self as ::core::default::Default>::default(),
-                    doc,
-                    &#krate::__private::ROOT,
-                )
-            }
-
-            fn declarations() -> ::std::vec::Vec<#krate::ActionDecl<Self>> {
-                ::std::vec![#(#decls),*]
-            }
-
-            const EDITS: bool = true;
-
-            fn edit_action(edit: #krate::Edit<Self>) -> ::core::option::Option<Self::Action> {
-                ::core::option::Option::Some(#krate::Stamped {
-                    operation: #action_enum::FieldEdit(edit),
-                    now_ms: 0,
-                })
-            }
-
-            fn stamp(action: &mut Self::Action, now_ms: i64) {
-                action.now_ms = now_ms;
-            }
-
-            fn kind_of(action: &Self::Action) -> #krate::ActionKind {
-                #krate::Operation::kind(&action.operation)
-            }
-
-            fn coalesces(previous: &Self::Action, next: &Self::Action) -> bool {
-                match (&previous.operation, &next.operation) {
-                    (#action_enum::FieldEdit(previous), #action_enum::FieldEdit(next)) => {
-                        previous.coalesces(next)
-                    }
-                    _ => false,
-                }
-            }
-
-            #permission_fn
-
-            fn children(state: &Self) -> ::std::vec::Vec<#krate::__private::Resource> {
-                let _ = state;
-                #children
-            }
-
-            fn search(state: &Self) -> ::std::vec::Vec<#krate::SearchEntry> {
-                #search
-            }
-
-            fn search_scopes(state: &Self) -> ::std::vec::Vec<#krate::ScopeDecl> {
-                let _ = state;
-                #scopes
-            }
-
-            fn shape() -> ::core::option::Option<#krate::Shape> {
-                ::core::option::Option::Some(<Self as #krate::Model>::SHAPE)
-            }
-
-            fn action_schema() -> ::core::option::Option<#krate::__private::serde_json::Value> {
-                ::core::option::Option::Some(#krate::schema::record_action_schema::<Self>())
-            }
-        }
-    })
-}
+mod verbs;

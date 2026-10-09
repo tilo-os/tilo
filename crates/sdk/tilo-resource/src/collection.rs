@@ -43,6 +43,18 @@ impl fmt::Display for Id {
     }
 }
 
+impl From<&str> for Id {
+    fn from(raw: &str) -> Self {
+        Self(raw.to_owned())
+    }
+}
+
+impl From<String> for Id {
+    fn from(raw: String) -> Self {
+        Self(raw)
+    }
+}
+
 impl std::str::FromStr for Id {
     type Err = std::convert::Infallible;
     fn from_str(s: &str) -> Result<Self, Self::Err> {

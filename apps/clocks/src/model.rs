@@ -65,7 +65,18 @@ pub struct Clocks {
 }
 
 /// A weekday an alarm repeats on.
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Serialize,
+    Deserialize,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    ui::tilo_resource::JsonSchema,
+)]
 pub enum WeekdayKey {
     Mon,
     Tue,
@@ -264,7 +275,7 @@ impl Clocks {
     }
 
     /// Remove city.
-    #[action]
+    #[action(item = world_clocks)]
     pub fn remove_world_clock(&mut self, world_clock: Id) -> Result<(), Refusal> {
         self.world_clocks
             .remove(&world_clock)
@@ -301,7 +312,7 @@ impl Clocks {
     }
 
     /// Turn an alarm on or off.
-    #[action]
+    #[action(item = alarms)]
     pub fn set_alarm_enabled(
         &mut self,
         cx: &mut ActionCx,
@@ -318,7 +329,7 @@ impl Clocks {
     }
 
     /// Remove alarm.
-    #[action]
+    #[action(item = alarms)]
     pub fn remove_alarm(&mut self, alarm: Id) -> Result<(), Refusal> {
         self.alarms
             .remove(&alarm)
@@ -351,7 +362,7 @@ impl Clocks {
     }
 
     /// Pause timer.
-    #[action]
+    #[action(item = timers)]
     pub fn pause_timer(&mut self, cx: &mut ActionCx, timer: Id) -> Result<(), Refusal> {
         let now = instant(cx.now_ms());
         let timer = timer_mut(self, &timer)?;
@@ -363,7 +374,7 @@ impl Clocks {
     }
 
     /// Resume timer. A finished timer starts over.
-    #[action]
+    #[action(item = timers)]
     pub fn resume_timer(&mut self, cx: &mut ActionCx, timer: Id) -> Result<(), Refusal> {
         let now_ms = cx.now_ms();
         let timer = timer_mut(self, &timer)?;
@@ -379,7 +390,7 @@ impl Clocks {
     }
 
     /// Add one minute.
-    #[action]
+    #[action(item = timers)]
     pub fn add_minute(&mut self, cx: &mut ActionCx, timer: Id) -> Result<(), Refusal> {
         let now_ms = cx.now_ms();
         let timer = timer_mut(self, &timer)?;
@@ -391,7 +402,7 @@ impl Clocks {
     }
 
     /// Remove timer.
-    #[action]
+    #[action(item = timers)]
     pub fn remove_timer(&mut self, timer: Id) -> Result<(), Refusal> {
         self.timers
             .remove(&timer)

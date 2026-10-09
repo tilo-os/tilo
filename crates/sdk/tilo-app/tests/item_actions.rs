@@ -71,8 +71,8 @@ fn texts(app: &TestApp<TodosApp>) -> Vec<String> {
 #[test]
 fn item_actions_are_offered_on_the_item() {
     let mut app = TestApp::<TodosApp>::new().unwrap();
-    app.invoke(Todos::ADD.with("milk".into())).unwrap();
-    app.invoke(Todos::ADD.with("eggs".into())).unwrap();
+    app.invoke(Todos::ADD.with("milk")).unwrap();
+    app.invoke(Todos::ADD.with("eggs")).unwrap();
     let milk = app.state().items.ids().next().cloned().unwrap();
 
     // The palette and agents see each item as a resource of its own, with

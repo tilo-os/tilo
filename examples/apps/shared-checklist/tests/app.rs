@@ -8,8 +8,7 @@ use ui::prelude::{Id, Replica, TestApp};
 
 #[expect(clippy::expect_used, reason = "a test helper fails the test loudly")]
 fn add(list: &mut Replica<Checklist>, title: &str) -> Id {
-    list.apply(Checklist::SET_DRAFT.with(title.into()))
-        .expect("draft");
+    list.apply(Checklist::SET_DRAFT.with(title)).expect("draft");
     list.apply(Checklist::ADD.invoke()).expect("add");
     let state = list.state().expect("checklist");
     state
@@ -101,7 +100,7 @@ fn concurrent_edits_to_one_item_converge() {
 fn history_is_attributed() {
     let mut ada = Replica::<Checklist>::new().as_author("ada");
     let mut grace = ada.fork().as_author("grace");
-    ada.apply(Checklist::RENAME.with("Groceries".into()))
+    ada.apply(Checklist::RENAME.with("Groceries"))
         .expect("rename");
     add(&mut grace, "Bread");
     ada.sync_with(&mut grace).expect("sync");
@@ -126,7 +125,7 @@ fn history_is_attributed() {
 #[test]
 fn undo_takes_back_only_my_own_actions() {
     let mut app = TestApp::<App>::new().expect("the app opens");
-    app.invoke(Checklist::RENAME.with("Groceries".into()))
+    app.invoke(Checklist::RENAME.with("Groceries"))
         .expect("rename");
     let mut grace = Replica::<Checklist>::from_doc(app.peer_document()).as_author("grace");
     add(&mut grace, "Bread");
@@ -148,8 +147,7 @@ fn undo_takes_back_only_my_own_actions() {
 fn clearing_checked_items_is_one_undo_step() {
     let mut app = TestApp::<App>::new().expect("the app opens");
     for title in ["Milk", "Bread", "Eggs"] {
-        app.invoke(Checklist::SET_DRAFT.with(title.into()))
-            .expect("draft");
+        app.invoke(Checklist::SET_DRAFT.with(title)).expect("draft");
         app.invoke(Checklist::ADD.invoke()).expect("add");
     }
     let ids = app.state().items.ids().cloned().collect::<Vec<_>>();
@@ -172,7 +170,7 @@ fn clearing_checked_items_is_one_undo_step() {
 #[test]
 fn a_viewer_follows_but_cannot_edit() {
     let mut app = TestApp::<App>::with_role(ui::Role::Viewer).expect("the app opens");
-    assert!(app.invoke(Checklist::RENAME.with("Mine".into())).is_err());
+    assert!(app.invoke(Checklist::RENAME.with("Mine")).is_err());
     app.harness()
         .expect(&SemanticExpectation::named("name-input").enabled(false))
         .expect("the input disables itself");

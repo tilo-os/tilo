@@ -451,26 +451,30 @@ fn retained_actions_follow_canonical_publication_through_edits_and_undo() {
         .unwrap();
     let conditional = ActionRef::<Tally, ()>::new("conditional", &[]);
     let root = actions
-        .binding(ActionRef::<Tally, ()>::new("seed", &[]))
+        .binding::<()>(ActionRef::<Tally, ()>::new("seed", &[]))
         .unwrap()
         .address()
         .resource
         .clone();
-    assert!(actions.binding(conditional).is_none());
+    assert!(actions.binding::<()>(conditional).is_none());
     app.invoke(ActionRef::<Tally, ()>::new("seed", &[]).invoke())
         .unwrap();
     let binding = actions
-        .binding(conditional)
+        .binding::<()>(conditional)
         .expect("new declaration is bindable");
     assert_eq!(binding.address().resource, root);
     assert!(app.undo());
     assert!(
-        actions.binding(conditional).is_none(),
+        actions.binding::<()>(conditional).is_none(),
         "removed declaration cannot bind"
     );
     assert!(app.redo());
     assert_eq!(
-        actions.binding(conditional).unwrap().address().resource,
+        actions
+            .binding::<()>(conditional)
+            .unwrap()
+            .address()
+            .resource,
         root
     );
 }

@@ -70,7 +70,7 @@ impl ResourceApp for MemoApp {
                         .with_id("owner-panel")
                         .push(Box::new(cx.button(
                             "owner-configure",
-                            Memo::CONFIGURE.with("Configured".into()),
+                            Memo::CONFIGURE.with("Configured"),
                         ))),
                 )
             } else {
@@ -130,7 +130,7 @@ fn permission_bound_panes_follow_revocation_without_document_or_write_changes() 
             .semantic_owner_instance("no-owner-panel")
             .is_some()
     );
-    assert!(app.invoke(Memo::CONFIGURE.with("Denied".into())).is_err());
+    assert!(app.invoke(Memo::CONFIGURE.with("Denied")).is_err());
     assert_eq!(
         app.state(),
         unchanged,
@@ -152,8 +152,7 @@ fn permission_bound_panes_follow_revocation_without_document_or_write_changes() 
             .semantic_owner_instance("owner-panel")
             .is_some()
     );
-    app.invoke(Memo::CONFIGURE.with("Configured".into()))
-        .unwrap();
+    app.invoke(Memo::CONFIGURE.with("Configured")).unwrap();
     assert_eq!(app.state().title, "Configured");
 }
 
@@ -181,9 +180,9 @@ fn an_unprivileged_first_frame_never_presents_the_owner_pane() {
 #[test]
 fn history_draws_permission_bound_panes_without_live_owner_authority() {
     let mut app = TestApp::<MemoApp>::new().unwrap();
-    app.invoke(Memo::RETITLE.with("Before".into())).unwrap();
+    app.invoke(Memo::RETITLE.with("Before")).unwrap();
     let heads = app.read_document(|doc| doc.clone().get_heads());
-    app.invoke(Memo::RETITLE.with("After".into())).unwrap();
+    app.invoke(Memo::RETITLE.with("After")).unwrap();
     let past = app.past_version(&heads).unwrap();
     assert_eq!(past.state().title, "Before");
     let texts = past.texts();
@@ -258,7 +257,7 @@ fn a_role_change_takes_effect_while_the_app_runs() {
             .is_some(),
         "a surface is addressed by name like any widget"
     );
-    app.invoke(Memo::ADD_LINE.with("milk".into())).unwrap();
+    app.invoke(Memo::ADD_LINE.with("milk")).unwrap();
     assert!(app.harness().inspection_json().unwrap().contains("Editing"));
 
     // The owner makes this participant a viewer while the app is open.
@@ -270,7 +269,7 @@ fn a_role_change_takes_effect_while_the_app_runs() {
             .contains("View only")
     );
     assert_eq!(*changes.borrow(), [true], "the surface is told");
-    assert!(app.invoke(Memo::ADD_LINE.with("sneaky".into())).is_err());
+    assert!(app.invoke(Memo::ADD_LINE.with("sneaky")).is_err());
     app.harness().click_named("title").unwrap();
     app.harness().type_text("typed while viewing");
     assert_eq!(app.state().title, "");
@@ -280,7 +279,7 @@ fn a_role_change_takes_effect_while_the_app_runs() {
     app.set_role(tilo_app::Role::Editor);
     assert!(app.harness().inspection_json().unwrap().contains("Editing"));
     assert_eq!(*changes.borrow(), [true, false]);
-    app.invoke(Memo::ADD_LINE.with("eggs".into())).unwrap();
+    app.invoke(Memo::ADD_LINE.with("eggs")).unwrap();
     app.harness().click_named("title").unwrap();
     app.harness().type_text("Groceries");
     assert_eq!(app.state().title, "Groceries");
@@ -296,10 +295,10 @@ fn a_commenter_may_take_the_actions_that_need_only_commenting() {
     app.set_role(tilo_app::Role::Commenter);
     assert!(dispatcher.read_only(), "a commenter may not write");
 
-    app.invoke(Memo::REMARK.with("looks good".into()))
+    app.invoke(Memo::REMARK.with("looks good"))
         .expect("a commenter remarks through the door");
     assert!(
-        app.invoke(Memo::ADD_LINE.with("sneaky".into())).is_err(),
+        app.invoke(Memo::ADD_LINE.with("sneaky")).is_err(),
         "but adds no line"
     );
     assert_eq!(app.state().remarks.len(), 1);
@@ -307,8 +306,8 @@ fn a_commenter_may_take_the_actions_that_need_only_commenting() {
 
     // A surface asks the dispatcher what this participant may apply, and an
     // immediate edit follows the action's own level.
-    let remark = Memo::REMARK.with("typed".into()).build(0).unwrap();
-    let line = Memo::ADD_LINE.with("typed".into()).build(0).unwrap();
+    let remark = Memo::REMARK.with("typed").build(0).unwrap();
+    let line = Memo::ADD_LINE.with("typed").build(0).unwrap();
     assert!(dispatcher.may_apply(&remark));
     assert!(!dispatcher.may_apply(&line));
     assert!(dispatcher.may(PermissionRequirement::Comment));
@@ -316,7 +315,7 @@ fn a_commenter_may_take_the_actions_that_need_only_commenting() {
 
     // A viewer may do neither.
     app.set_role(tilo_app::Role::Viewer);
-    assert!(app.invoke(Memo::REMARK.with("no".into())).is_err());
+    assert!(app.invoke(Memo::REMARK.with("no")).is_err());
     assert!(!dispatcher.may_apply(&remark));
 }
 
@@ -326,8 +325,8 @@ fn a_commenters_typed_edit_needs_what_its_value_needs() {
     // commenter, and admits the values that need only commenting.
     let mut app = TestApp::<MemoApp>::new().unwrap();
     app.set_role(tilo_app::Role::Commenter);
-    let remark = Memo::REMARK.with("typed remark".into()).build(0).unwrap();
-    let line = Memo::ADD_LINE.with("typed line".into()).build(0).unwrap();
+    let remark = Memo::REMARK.with("typed remark").build(0).unwrap();
+    let line = Memo::ADD_LINE.with("typed line").build(0).unwrap();
     app.invoke(Invoke::apply(&remark).unwrap())
         .expect("a commenter's typed remark is admitted");
     assert!(

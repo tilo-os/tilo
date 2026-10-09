@@ -328,7 +328,7 @@ fn every_operation_is_a_published_action() {
 #[test]
 fn add_steps_bind_them_validate_and_save_through_the_door() {
     let (host, _guard, mut app) = open();
-    app.invoke(Workbench::NEW_DRAFT.with("Tidy".into()))
+    app.invoke(Workbench::NEW_DRAFT.with("Tidy"))
         .expect("a new draft");
     let shortcut_id = app
         .state()
