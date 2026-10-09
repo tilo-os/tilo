@@ -172,7 +172,6 @@ fn accept(
 ) {
     let artifact = envelope.artifact;
     if let Ok(mut ch) = channels.lock() {
-        let mls_vault = ch.mls_vault.clone();
         ch.record_history(&route.cluster_id, &envelope);
         let state = ch.state_for(artifact);
         state.record_validated_op(envelope.clone());
@@ -180,13 +179,6 @@ fn accept(
             && let Ok(cp) = collab_types::parse_compaction_payload(&envelope)
         {
             let _ = state.apply_compaction(&cp);
-        }
-        if envelope.op_class == OpClass::Compaction
-            && let Some(metadata) = envelope.encryption
-            && let Some(vault) = mls_vault
-            && let Err(error) = vault.mint_snapshot_receipt(metadata.channel, &envelope)
-        {
-            tracing::warn!(%error, "encrypted snapshot was accepted but durable receipt minting failed");
         }
     }
     if envelope.op_class == OpClass::Redact {

@@ -796,6 +796,7 @@ mod component_adapter {
             dyn crate::record::capability::RecordScoped,
             dyn crate::view::capability::ViewState,
             dyn crate::component_lifecycle::ComponentLifecycle,
+            dyn crate::component_lifecycle::WindowActivation,
             dyn crate::undo::UndoPoints
         );
         fn as_any(&self) -> Option<&dyn std::any::Any> {
@@ -1814,6 +1815,19 @@ mod component_adapter {
                 return;
             };
             crate::undo::set_state(root, state);
+        }
+    }
+
+    impl crate::component_lifecycle::WindowActivation for BoundAppWidget {
+        fn take_window_activation_intent(&self) -> bool {
+            let binding = self.component.callback_binding();
+            let Ok(_entry) = binding.enter() else {
+                return false;
+            };
+            self.component
+                .root
+                .as_deref()
+                .is_some_and(crate::component_lifecycle::take_window_activation_intent)
         }
     }
 

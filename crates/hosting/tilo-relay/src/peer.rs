@@ -8,9 +8,11 @@
 //! the connection closes; the reader stops on EOF / decode error;
 //! either termination cancels the other via drop.
 
+mod access_audit;
 pub mod sync_refresh;
 
 use crate::store::bounded::Invariant;
+use access_audit::AccessAudit;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -500,9 +502,9 @@ where
     let (private_tx, mut private_rx) = mpsc::channel(PEER_OUTBOUND_CAPACITY);
     // Track our subscriptions so we can unregister on disconnect.
     let mut subscribed: Vec<u64> = Vec::new();
-    let mut access_audit = tokio::time::interval(std::time::Duration::from_secs(1));
-    access_audit.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-    access_audit.tick().await;
+    let mut authority = crate::authority_epoch::subscribe();
+    authority.mark_unchanged();
+    let mut access_audit = AccessAudit::new();
 
     let connection_live = ConnectionLease(Arc::new(std::sync::atomic::AtomicBool::new(true)));
     let session = SessionCtx {
@@ -569,10 +571,11 @@ where
                     }
                     return Ok::<(), PeerError>(());
                 }
-                // Prefer an already-readable inbound frame over the periodic
-                // membership audit. After a live revoke the audit and a refused
-                // delta can become ready together; the delta must win so the
-                // peer still receives NotAuthorised rather than a bare close.
+                // Prefer an already-readable inbound frame over the membership
+                // audit. After a live revoke the audit and a refused delta can
+                // become ready together; the delta must win so the peer still
+                // receives NotAuthorised rather than a bare close.
+                access_audit.cover(&subscribed);
                 tokio::select! {
                     biased;
                     frame = reader.read_next() => {
@@ -595,7 +598,14 @@ where
                         catching_up = !lag.is_empty();
                         match resume { Some(frame) => (EnvelopeV2::State(frame), None), None => continue }
                     }
-                    _ = access_audit.tick() => { audit_subscriber_access(&revocations, &peer, &session, &subscribed).await?; continue; }
+                    () = tokio::time::sleep_until(access_audit.due()) => {
+                        let watched = audit_subscriber_access(&revocations, &peer, &session, &subscribed).await?;
+                        access_audit.audited(&peer, &agents, &subscribed, watched);
+                        continue;
+                    }
+                    // The epoch's sender is a process-wide static and never
+                    // closes, so this cannot spin on an error.
+                    _ = authority.changed() => { access_audit.changed(); continue; }
                 }
             };
             match frame {
@@ -1650,17 +1660,21 @@ async fn replay_direct_wait<T, W: tokio::io::AsyncWrite + Unpin>(
     }
 }
 
-/// Periodic membership + revocation re-check for every workspace this
-/// peer is subscribed to. Reloads membership from disk each tick —
-/// the only way a removal made while a device is connected takes
-/// effect promptly — and ends the session if the device's own cert
-/// was revoked or it fell out of membership.
+/// Membership + revocation re-check for every workspace this peer is
+/// subscribed to, run when [`AccessAudit`] says. Reloads membership
+/// from disk when the membership watch saw it change, or on every audit
+/// while no live watch covers the room, and ends the session if the
+/// device's own cert was revoked or it fell out of membership.
+///
+/// Returns whether every subscribed room's membership is change-notified,
+/// so the next audit can wait for a change instead of the disk.
 async fn audit_subscriber_access(
     revocations: &Arc<std::sync::RwLock<tilo_user_identity::RevocationList>>,
     peer: &AuthenticatedPeer,
     session: &SessionCtx<'_>,
     subscribed: &[u64],
-) -> Result<(), PeerError> {
+) -> Result<bool, PeerError> {
+    let mut watched = true;
     if revocations
         .read()
         .is_ok_and(|list| list.is_revoked(&peer.device_public_key))
@@ -1686,6 +1700,7 @@ async fn audit_subscriber_access(
             continue;
         };
         let workspace = crate::workspace_io::fresh_membership(&workspace).await?;
+        watched &= workspace.membership_is_current();
         if peer.role == crate::auth::PeerRole::PeerRelay
             && peer.user_public_key != *session.own_user_public_key
         {
@@ -1715,7 +1730,7 @@ async fn audit_subscriber_access(
             ));
         }
     }
-    Ok(())
+    Ok(watched)
 }
 
 /// Handle one successfully-decoded inbound envelope: dispatch to

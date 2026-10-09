@@ -324,6 +324,32 @@ pub struct AvailabilityRegistry {
     /// Inside [`Self::batch`]: mutations are validated and persisted once,
     /// when the batch ends.
     deferred: bool,
+    /// Bumped by every commit that changes what pinned hydration acts on;
+    /// see [`Self::hydration_generation`].
+    hydration_generation: u64,
+    #[cfg(test)]
+    persists: std::sync::atomic::AtomicU64,
+}
+
+/// The part of a record pinned hydration reacts to. Transfer bookkeeping,
+/// replica evidence and freshness stamps are deliberately absent: they are
+/// either written by the hydration worker itself or never change its plan.
+fn hydration_view(
+    record: &RecordAvailability,
+) -> (
+    AvailabilityPolicy,
+    RecordKind,
+    Option<FileRecordId>,
+    Option<FileVersionId>,
+    Residency,
+) {
+    (
+        record.policy,
+        record.kind,
+        record.parent,
+        record.current_version,
+        record.residency,
+    )
 }
 
 impl AvailabilityRegistry {
@@ -341,6 +367,9 @@ impl AvailabilityRegistry {
                 path,
                 records: BTreeMap::new(),
                 deferred: false,
+                hydration_generation: 0,
+                #[cfg(test)]
+                persists: std::sync::atomic::AtomicU64::new(0),
             });
         }
 
@@ -362,6 +391,9 @@ impl AvailabilityRegistry {
             path,
             records,
             deferred: false,
+            hydration_generation: 0,
+            #[cfg(test)]
+            persists: std::sync::atomic::AtomicU64::new(0),
         })
     }
 
@@ -371,6 +403,23 @@ impl AvailabilityRegistry {
 
     pub fn records(&self) -> impl Iterator<Item = &RecordAvailability> {
         self.records.values()
+    }
+
+    /// Changes whenever a commit alters a record's policy, kind, parent,
+    /// current version or residency, or adds a record. Transfer progress,
+    /// replica receipts and freshness stamps leave it alone, so a pinned
+    /// hydration worker can compare it to learn, without walking the
+    /// namespace, that nothing it acts on changed since its last pass.
+    #[must_use]
+    pub fn hydration_generation(&self) -> u64 {
+        self.hydration_generation
+    }
+
+    /// Durable writes of the whole registry so far.
+    #[cfg(test)]
+    #[must_use]
+    pub fn persist_count(&self) -> u64 {
+        self.persists.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Whether any record explicitly promises offline residency. Descendants
@@ -499,9 +548,22 @@ impl AvailabilityRegistry {
         self.deferred = true;
         let value = apply(self);
         self.deferred = false;
+        // A batch that changed nothing has nothing to validate or write.
+        if self.records == before {
+            return Ok(value);
+        }
         if let Err(error) = validate_records(&self.records).and_then(|()| self.persist()) {
             self.records = before;
             return Err(error);
+        }
+        let hydration_changed = before.len() != self.records.len()
+            || self.records.iter().any(|(id, record)| {
+                before
+                    .get(id)
+                    .is_none_or(|previous| hydration_view(previous) != hydration_view(record))
+            });
+        if hydration_changed {
+            self.hydration_generation = self.hydration_generation.wrapping_add(1);
         }
         Ok(value)
     }
@@ -534,6 +596,9 @@ impl AvailabilityRegistry {
                 self.records.remove(&id);
             }
             return Err(error);
+        }
+        if previous.as_ref().map(hydration_view) != self.records.get(&id).map(hydration_view) {
+            self.hydration_generation = self.hydration_generation.wrapping_add(1);
         }
         Ok(())
     }
@@ -686,6 +751,9 @@ impl AvailabilityRegistry {
     }
 
     fn persist(&self) -> Result<(), AvailabilityError> {
+        #[cfg(test)]
+        self.persists
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let document = RegistryDocument {
             schema_version: AVAILABILITY_SCHEMA_VERSION,
             records: self.records.values().cloned().collect(),

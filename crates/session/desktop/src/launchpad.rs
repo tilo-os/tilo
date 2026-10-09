@@ -613,7 +613,7 @@ impl Widget for CollaborationLaunchpad {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let node = taffy.leaf_node(Style {
+        let style = Style {
             flex_grow: 1.0,
             size: taffy::Size {
                 width: percent(1.0_f32),
@@ -624,9 +624,8 @@ impl Widget for CollaborationLaunchpad {
                 height: percent(0.0_f32),
             },
             ..Default::default()
-        });
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
 
     fn measure(
@@ -644,12 +643,7 @@ impl Widget for CollaborationLaunchpad {
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let layout = taffy.layout(node).copied().unwrap_or_default();
         let old_rect = self.rect;
-        self.rect = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x + layout.size.width),
-            origin.y + f64::from(layout.location.y + layout.size.height),
-        );
+        self.rect = ui::widget::placed(&layout, origin);
         if self.rect != old_rect {
             self.targets.cancel_pointer_press();
         }

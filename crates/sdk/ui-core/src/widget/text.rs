@@ -870,7 +870,7 @@ impl Widget for Text {
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         self.observe_theme(theme);
-        let node = taffy.leaf_node(Style {
+        let style = Style {
             display: self.flow_display(),
             size: Size {
                 width: taffy::Dimension::auto(),
@@ -881,9 +881,8 @@ impl Widget for Text {
             flex_shrink: 1.0,
             flex_grow: 0.0,
             ..Default::default()
-        });
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
 
     /// A bound text that has nothing to say leaves its container's flow,
@@ -956,13 +955,7 @@ impl Widget for Text {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = vello::kurbo::Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
-            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
-        );
+        self.rect = crate::widget::layout_rect(taffy, node, origin);
         // Without this, scrolling a 1000-widget tree would invalidate every
         // cache every frame and the per-widget cache goes net-negative.
         // Exact equality is the point — this is change detection for the

@@ -58,6 +58,8 @@ impl MembershipWatch {
             .cloned();
         if let Some(room) = room {
             room.fetch_add(1, Ordering::Release);
+            // Sessions in the room re-audit, and so read the change.
+            crate::authority_epoch::bump();
         }
     }
 
@@ -66,6 +68,16 @@ impl MembershipWatch {
         for room in rooms.values() {
             room.fetch_add(1, Ordering::Release);
         }
+        drop(rooms);
+        crate::authority_epoch::bump();
+    }
+
+    /// Whether the watch vouches for its rooms. Either way sessions re-audit:
+    /// one that stops being vouched for goes back to reading the files on
+    /// every audit's cadence.
+    fn set_live(&self, live: bool) {
+        self.live.store(live, Ordering::Release);
+        crate::authority_epoch::bump();
     }
 }
 
@@ -125,7 +137,7 @@ struct Registration(Arc<MembershipWatch>);
 
 impl Drop for Registration {
     fn drop(&mut self) {
-        self.0.live.store(false, Ordering::Release);
+        self.0.set_live(false);
         registry()
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
@@ -212,6 +224,7 @@ async fn establish(watch: &MembershipWatch) -> Option<Watch> {
     match started {
         Ok(native) => {
             watch.live.store(true, Ordering::Release);
+            // Announces the change of liveness too.
             watch.bump_all();
             Some(native)
         }

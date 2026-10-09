@@ -12,6 +12,16 @@ use crate::watch::{Change, ChangeKind, Inbox, Watch};
 use crate::{FsError, VPath};
 
 pub(crate) fn watch(root: &Path, path: &VPath) -> Result<Watch, FsError> {
+    watch_mode(root, path, RecursiveMode::Recursive)
+}
+
+/// Watches the entries directly in `dir`, not below its subdirectories:
+/// [`crate::native::watch_entries`].
+pub(crate) fn watch_entries(dir: &Path) -> Result<Watch, FsError> {
+    watch_mode(dir, &VPath::root(), RecursiveMode::NonRecursive)
+}
+
+fn watch_mode(root: &Path, path: &VPath, mode: RecursiveMode) -> Result<Watch, FsError> {
     let target = crate::disk::resolve(root, path);
     let inbox = Arc::new(Inbox::default());
     let root = root.to_path_buf();
@@ -21,9 +31,7 @@ pub(crate) fn watch(root: &Path, path: &VPath) -> Result<Watch, FsError> {
         deliver(&sink, &root, &rescan, event);
     })
     .map_err(error)?;
-    watcher
-        .watch(&target, RecursiveMode::Recursive)
-        .map_err(error)?;
+    watcher.watch(&target, mode).map_err(error)?;
     Ok(Watch::new(inbox, Box::new(watcher)))
 }
 
@@ -153,5 +161,36 @@ mod tests {
             })
         );
         assert_eq!(watch.try_next(), None);
+    }
+
+    #[test]
+    fn an_entries_watch_sees_replaced_files_but_not_subdirectories() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("sub")).unwrap();
+        let watch = watch_entries(dir.path()).unwrap();
+        crate::native::atomic::write(&dir.path().join("sub/inner.json"), b"below").unwrap();
+        crate::native::atomic::write(&dir.path().join("top.json"), b"one").unwrap();
+        crate::native::atomic::write(&dir.path().join("top.json"), b"two").unwrap();
+        let top = VPath::new("top.json").unwrap();
+        let mut seen = Vec::new();
+        for _ in 0..100 {
+            while let Some(change) = watch.try_next() {
+                seen.push(change);
+            }
+            if seen.iter().any(|change| change.path == top) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        assert!(
+            seen.iter()
+                .any(|change| change.path == top && change.kind == ChangeKind::Changed),
+            "{seen:?}"
+        );
+        assert!(
+            seen.iter()
+                .all(|change| !change.path.as_str().starts_with("sub/")),
+            "{seen:?}"
+        );
     }
 }
