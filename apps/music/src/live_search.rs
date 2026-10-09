@@ -366,19 +366,17 @@ mod tests {
         let album = rows.get(1).expect("album row");
         assert_eq!(album.subtitle.as_deref(), Some("Aurora Skies"));
         assert_eq!(album.anchor(), crate::actions::album_resource_id("MPRE1"));
-        let address = ActionAddress::new(album.anchor(), "open");
+        let anchor = album.anchor();
 
-        // The provider resolves the album's page once the catalogue
-        // answered with it.
+        // The album's page is found once the catalogue answered with it.
         let live = LiveSearch::default();
-        let provider = live.provider();
-        assert!(provider.resolve_action_resource(&address).is_none());
+        assert!(!live.found(&anchor));
         live.answer("glass", &rows);
-        let page = provider
-            .resolve_action_resource(&address)
-            .expect("the answered album resolves");
-        assert_eq!(page.label, "Paper Boats");
-        assert!(live.found(&address.resource));
+        assert!(live.found(&anchor));
+        assert_eq!(
+            live.lock().found.get(&anchor).map(String::as_str),
+            Some("Paper Boats")
+        );
     }
     #[test]
     fn spotify_search_keeps_provider_identity_in_platform_actions() {
@@ -392,15 +390,12 @@ mod tests {
         );
         let anchor = crate::actions::album_resource_id("spotify:album:2234567890123456789012");
         assert_eq!(rows[1].anchor(), anchor);
-        let address = ActionAddress::new(anchor, "open");
         let live = LiveSearch::default();
         live.answer("glass", &rows);
         assert_eq!(
-            live.provider()
-                .resolve_action_resource(&address)
-                .expect("provider album resolves through platform search")
-                .label,
-            "Paper Boats"
+            live.lock().found.get(&anchor).map(String::as_str),
+            Some("Paper Boats"),
+            "provider album is found through platform search"
         );
     }
 }
