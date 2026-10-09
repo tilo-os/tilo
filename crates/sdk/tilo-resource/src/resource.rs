@@ -778,35 +778,57 @@ fn field_edit_spec<R: Resource>() -> ActionSpec {
 /// paths from the item, its editable paths described as the record's are.
 #[must_use]
 pub fn item_field_edit_spec<R: Resource>(field: &str, item: &crate::Id) -> Option<ActionSpec> {
-    let shape = R::shape()?;
-    let collection = shape
-        .fields()
-        .iter()
-        .find(|candidate| candidate.key == field)?;
-    let (crate::Shape::Collection(inner) | crate::Shape::Keyed(inner)) = collection.shape else {
-        return None;
-    };
-    if inner.fields().is_empty() || collection.readonly {
+    field_edit_spec_at::<R>(vec![
+        crate::Segment::Field(field.to_owned()),
+        crate::Segment::Item(item.clone()),
+    ])
+}
+
+/// The field edit offered on the item at `prefix` (fields and item ids from
+/// the record, ending at an item): paths from the item, its editable paths
+/// described as the record's are.
+#[must_use]
+pub fn field_edit_spec_at<R: Resource>(prefix: Vec<crate::Segment>) -> Option<ActionSpec> {
+    let mut shape = R::shape()?;
+    let mut dotted = String::new();
+    let mut readonly = false;
+    for segment in &prefix {
+        match (shape, segment) {
+            (crate::Shape::Record(fields), crate::Segment::Field(key)) => {
+                let field = fields.iter().find(|candidate| candidate.key == key)?;
+                readonly |= field.readonly;
+                shape = field.shape;
+                dotted.push_str(key);
+                dotted.push('.');
+            }
+            (
+                crate::Shape::Collection(inner) | crate::Shape::Keyed(inner),
+                crate::Segment::Item(_),
+            ) => {
+                shape = *inner;
+                dotted.push_str("*.");
+            }
+            _ => return None,
+        }
+    }
+    if shape.fields().is_empty() || readonly {
         return None;
     }
     let ops: Vec<(String, serde_json::Value)> = R::op_schemas()
         .into_iter()
         .filter_map(|(path, schema)| {
-            path.strip_prefix(&format!("{field}.*."))
+            path.strip_prefix(&dotted)
                 .map(|rest| (rest.to_owned(), schema))
         })
         .collect();
     let mut alternatives = Vec::new();
-    edit_paths(*inner, &[], "", &ops, &mut alternatives);
+    edit_paths(shape, &[], "", &ops, &mut alternatives);
     if alternatives.is_empty() {
         return None;
     }
     let schema = described_edit::<R>(&alternatives, &ops);
     Some(rooted_edit_spec::<R>(
-        vec![
-            crate::Segment::Field(field.to_owned()),
-            crate::Segment::Item(item.clone()),
-        ],
+        prefix,
         schema,
         "Edit a field of this item".to_owned(),
         "The path of the field from the item, and the operation",

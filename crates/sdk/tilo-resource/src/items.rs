@@ -118,6 +118,23 @@ pub struct ItemCollection {
     pub labelled: bool,
     /// Each item's id and a human label (its first text, else its id).
     pub items: Vec<(Id, String)>,
+    /// The items this collection sits in, outermost first: a slide's
+    /// elements are within `("slides", <slide>)`. Empty for the record's own
+    /// collections.
+    pub within: Vec<(&'static str, Id)>,
+}
+
+/// The id of the child resource an item of a nested collection is
+/// published as: `<kind>/slides/<slide>/elements/<element>`.
+pub fn nested_resource_id<R: Resource>(within: &[(&str, Id)], field: &str, item: &Id) -> String {
+    let mut id = R::KIND.to_owned();
+    for (outer, outer_id) in within {
+        id.push('/');
+        id.push_str(outer);
+        id.push('/');
+        id.push_str(outer_id.as_str());
+    }
+    format!("{id}/{field}/{item}")
 }
 
 /// One action whose first parameter is an item id, as `#[resource]`
@@ -445,10 +462,26 @@ pub fn item_children<R: Resource>(
     let declarations = R::declarations();
     let fields: Vec<&str> = collections
         .iter()
+        .filter(|collection| collection.within.is_empty())
         .map(|collection| collection.field)
         .collect();
     let mut children = Vec::new();
     for collection in collections {
+        if !collection.within.is_empty() {
+            // An item of a collection inside an item: its label, its fields
+            // and `open`; verbs act on it from its enclosing item.
+            if collection.labelled {
+                for (id, label) in &collection.items {
+                    children.push(nested_item::<R>(
+                        &collection.within,
+                        collection.field,
+                        id,
+                        label,
+                    ));
+                }
+            }
+            continue;
+        }
         let scoped = scoped::<R>(&declarations, actions, &fields, collection.field);
         let offers_effects = collection
             .items
@@ -474,6 +507,31 @@ pub fn item_children<R: Resource>(
         });
     }
     children
+}
+
+/// The resource of an item of a nested collection.
+fn nested_item<R: Resource>(
+    within: &[(&'static str, Id)],
+    field: &'static str,
+    id: &Id,
+    label: &str,
+) -> tilo_actions::Resource {
+    let mut child = tilo_actions::Resource::new(
+        nested_resource_id::<R>(within, field, id),
+        format!("{}.{field}", R::KIND),
+        label,
+    );
+    let mut path: Vec<crate::Segment> = Vec::new();
+    for (outer, outer_id) in within {
+        path.push(crate::Segment::Field((*outer).to_owned()));
+        path.push(crate::Segment::Item(outer_id.clone()));
+    }
+    path.push(crate::Segment::Field(field.to_owned()));
+    path.push(crate::Segment::Item(id.clone()));
+    if let Some(spec) = crate::resource::field_edit_spec_at::<R>(path) {
+        child = child.with_action(spec);
+    }
+    child
 }
 
 /// The spec of `decl` with its item parameter bound to `item`.

@@ -5,6 +5,7 @@
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
+    clippy::float_cmp,
     reason = "test assertions over exact values written and read back"
 )]
 
@@ -591,4 +592,80 @@ fn a_place_offers_a_verb_with_nothing_bound() {
         .expect("offered on the place");
     let params: Vec<String> = spec.params().iter().map(|p| p.name.to_string()).collect();
     assert_eq!(params, ["title", "suffix"]);
+}
+
+#[derive(Model, Default, Debug, Clone, PartialEq)]
+pub struct Element {
+    #[model(label)]
+    pub name: String,
+    pub x: f64,
+}
+
+#[derive(Model, Default, Debug, Clone, PartialEq)]
+pub struct Slide {
+    #[model(label)]
+    pub title: String,
+    pub elements: Collection<Element>,
+}
+
+#[derive(Model, Default, Debug, Clone, PartialEq)]
+pub struct Deck {
+    pub slides: Collection<Slide>,
+}
+
+#[resource(kind = "test.deck", label = "Deck")]
+impl Deck {}
+
+#[test]
+fn items_of_a_nested_collection_are_resources_of_their_own() {
+    let mut deck = Replica::<Deck>::new();
+    let mut slide = Slide {
+        title: "Intro".into(),
+        ..Slide::default()
+    };
+    slide.elements.push(
+        Id::from_raw("e1"),
+        Element {
+            name: "Logo".into(),
+            x: 1.0,
+        },
+    );
+    deck.apply(
+        Deck::paths()
+            .slides
+            .insert_as(&Id::from_raw("s1"), 0, &slide),
+    )
+    .unwrap();
+    let published = deck.published().unwrap();
+    let element = published
+        .children
+        .iter()
+        .find(|child| child.id.as_str() == "test.deck/slides/s1/elements/e1")
+        .expect("the element is a resource of its own");
+    assert_eq!(element.label, "Logo");
+    let edit = element
+        .actions
+        .iter()
+        .find(|spec| spec.id == tilo_resource::FIELD_EDIT)
+        .expect("its fields are edited from it");
+    let encoded = edit
+        .build_json(
+            serde_json::json!({ "edit": { "path": [{"field": "x"}], "op": "set", "value": 4.5 } })
+                .as_object()
+                .unwrap(),
+        )
+        .unwrap();
+    let action: <Deck as tilo_resource::Resource>::Action =
+        serde_json::from_slice(&encoded.payload).unwrap();
+    deck.apply_action(&action).unwrap();
+    let state = deck.state().unwrap();
+    let x = state
+        .slides
+        .get(&Id::from_raw("s1"))
+        .unwrap()
+        .elements
+        .get(&Id::from_raw("e1"))
+        .unwrap()
+        .x;
+    assert_eq!(x, 4.5);
 }

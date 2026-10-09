@@ -438,6 +438,7 @@ fn derive_named(input: &DeriveInput, fields: &syn::FieldsNamed) -> syn::Result<T
     let mut outbox_names = Vec::new();
     let mut item_label_arms = Vec::new();
     let mut item_searches = Vec::new();
+    let mut nested = Vec::new();
     let owner = snake_case(&name.to_string()).replace('_', "-");
     for field in &fields.named {
         let ident = field
@@ -655,7 +656,16 @@ fn derive_named(input: &DeriveInput, fields: &syn::FieldsNamed) -> syn::Result<T
                     }
                 }
             });
+            nested.push(quote! {
+                for (id, item) in #items.take(#krate::items::ITEM_PAGE) {
+                    for mut inner in #krate::Model::nested_collections(item) {
+                        inner.within.insert(0, (#field_name, ::core::clone::Clone::clone(&id)));
+                        out.push(inner);
+                    }
+                }
+            });
             collections.push(quote!(#krate::items::ItemCollection {
+                within: ::std::vec::Vec::new(),
                 field: #field_name,
                 labelled: #items
                     .next()
@@ -670,12 +680,23 @@ fn derive_named(input: &DeriveInput, fields: &syn::FieldsNamed) -> syn::Result<T
             }));
         }
     }
+    let nested_fn = if collections.is_empty() {
+        quote!()
+    } else {
+        quote! {
+            fn nested_collections(&self) -> ::std::vec::Vec<#krate::items::ItemCollection> {
+                <Self as #krate::Fields>::item_collections(self)
+            }
+        }
+    };
     let item_collections = if collections.is_empty() {
         quote!()
     } else {
         quote! {
             fn item_collections(&self) -> ::std::vec::Vec<#krate::items::ItemCollection> {
-                ::std::vec![#(#collections),*]
+                let mut out = ::std::vec![#(#collections),*];
+                #(#nested)*
+                out
             }
 
             fn item_label(
@@ -956,6 +977,8 @@ fn derive_named(input: &DeriveInput, fields: &syn::FieldsNamed) -> syn::Result<T
                     _ => ::core::result::Result::Err(#krate::ModelError::shape("a map")),
                 }
             }
+            #nested_fn
+
             fn value_schema() -> #krate::__private::serde_json::Value {
                 let mut properties = #krate::__private::serde_json::Map::new();
                 #(#value_schemas)*

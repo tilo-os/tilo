@@ -267,6 +267,13 @@ pub trait Model: Sized {
         }
     }
 
+    /// The item collections inside this value, when it is an item of a
+    /// collection itself (a slide's elements); `#[derive(Model)]` lists a
+    /// record's, the default has none.
+    fn nested_collections(&self) -> Vec<crate::items::ItemCollection> {
+        Vec::new()
+    }
+
     /// The JSON Schema of this value's JSON form ([`Self::to_json`]), as
     /// the published field edit describes what a path takes; the default
     /// accepts any value.
