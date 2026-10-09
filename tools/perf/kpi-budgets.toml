@@ -159,6 +159,52 @@ p50 = 2000000.0
 max = 6000000.0
 source = "KPI document: App package size"
 
+# The shared app runtime, libruntime_dylib.so: the newest published one per
+# architecture, measured from its ELF file by tools/perf/runtime_size_ratchet.py
+# published (TIL-604). The targets (tools/perf/runtime-size-budget/ [targets])
+# are reported here; the enforced gate is that command's per-architecture
+# budget, and the default relative rule fails sustained growth.
+
+[kpi."footprint.runtime.bytes.x86_64"]
+unit = "bytes"
+max = 150000000.0
+source = "TIL-604: shared runtime budget targets"
+
+[kpi."footprint.runtime.relocation_bytes.x86_64"]
+unit = "bytes"
+max = 1000000.0
+source = "TIL-604: shared runtime budget targets"
+
+[kpi."footprint.runtime.relocated_bytes.x86_64"]
+unit = "bytes"
+max = 4000000.0
+source = "TIL-604: shared runtime budget targets"
+
+[kpi."footprint.runtime.symbol_relocations.x86_64"]
+unit = "count"
+max = 5000.0
+source = "TIL-604: shared runtime budget targets"
+
+[kpi."footprint.runtime.bytes.aarch64"]
+unit = "bytes"
+max = 150000000.0
+source = "TIL-604: shared runtime budget targets"
+
+[kpi."footprint.runtime.relocation_bytes.aarch64"]
+unit = "bytes"
+max = 1000000.0
+source = "TIL-604: shared runtime budget targets"
+
+[kpi."footprint.runtime.relocated_bytes.aarch64"]
+unit = "bytes"
+max = 4000000.0
+source = "TIL-604: shared runtime budget targets"
+
+[kpi."footprint.runtime.symbol_relocations.aarch64"]
+unit = "count"
+max = 5000.0
+source = "TIL-604: shared runtime budget targets"
+
 # Agent round trip (scripts/perf/agent_rtt.py): one headless compositor on
 # the shared `runner` class, a release build with `dev-overrides` and thin
 # LTO, timed from the client's side of the control socket. Targets from the

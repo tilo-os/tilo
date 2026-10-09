@@ -111,6 +111,36 @@ class TappSizes(unittest.TestCase):
             adapters.tapp_sizes({"entries": []}, ENV)
 
 
+class RuntimeSizes(unittest.TestCase):
+    MEASURED = {"sequence": 809, "runtimes": {
+        "x86_64": {"version": "0.1.9", "runtime": "tilo-runtime/x", "bytes": 241_944_696,
+                   "relocation_bytes": 10_115_280, "relocated_bytes": 7_663_616, "symbol_relocations": 62_255},
+        "aarch64": {"version": "0.1.9", "runtime": "tilo-runtime/a", "bytes": 223_411_008,
+                    "relocation_bytes": 10_089_504, "relocated_bytes": 7_643_136, "symbol_relocations": 62_286}}}
+
+    def test_each_metric_of_each_architecture_is_one_record(self):
+        records = {item.kpi: item for item in adapters.runtime_sizes(self.MEASURED, ENV)}
+        self.assertEqual(len(records), 8)
+        size = records["footprint.runtime.bytes.x86_64"]
+        self.assertEqual((size.n, size.p50, size.unit), (1, 241_944_696, "bytes"))
+        self.assertEqual(size.meta["registry_sequence"], "809")
+        self.assertEqual(size.meta["runtime"], "tilo-runtime/x")
+        self.assertEqual(records["footprint.runtime.symbol_relocations.aarch64"].unit, "count")
+
+    def test_every_runtime_kpi_has_a_budget(self):
+        budgets = compare.load_budgets(HERE / "kpi-budgets.toml")
+        for item in adapters.runtime_sizes(self.MEASURED, ENV):
+            self.assertIn(item.kpi, budgets.kpis)
+            self.assertEqual(budgets.kpis[item.kpi]["unit"], item.unit)
+
+    def test_nothing_measured_and_a_missing_metric_fail(self):
+        with self.assertRaises(ValueError):
+            adapters.runtime_sizes({"runtimes": {}}, ENV)
+        partial = {"runtimes": {"x86_64": {"bytes": 1}}}
+        with self.assertRaises(KeyError):
+            adapters.runtime_sizes(partial, ENV)
+
+
 SWITCH_SOURCE = ROOT / "crates/session/shell/src/compositor/switch_latency.rs"
 
 
