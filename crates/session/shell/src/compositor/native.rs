@@ -14855,11 +14855,11 @@ mod tests {
     }
 
     impl crate::shell::search::SearchProvider for CountingProvider {
-        fn id(&self) -> &str {
+        fn id(&self) -> &'static str {
             "probe"
         }
 
-        fn name(&self) -> &str {
+        fn name(&self) -> &'static str {
             "Probe"
         }
 
