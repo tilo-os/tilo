@@ -139,7 +139,9 @@ impl HistoryLog {
         let basis = Basis {
             max_entries: source.max_entries,
             field_paths: source.field_paths,
-            structural: tilo_doc::snapshot::of(doc).is_some(),
+            // What `tilo_doc::snapshot::of` checks before it materialises
+            // the whole document.
+            structural: tilo_doc::model::open(doc, &automerge::ROOT).is_ok(),
             locale: crate::i18n::I18nManager::revision(),
         };
         let appended = {
