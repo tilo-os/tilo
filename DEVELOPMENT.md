@@ -1124,6 +1124,23 @@ example, `printf '%s\n' tilo-build > .build-container`). This file is ignored by
 Git; there is no shared machine-specific default. Install `tools/ci/cargo-shim`
 as `cargo` on PATH; every invocation from the tree or a worktree routes into it.
 
+Agent sessions identified by `CODEX_THREAD_ID`, `CODEX_SESSION_ID` or
+`CLAUDECODE` compile through `rcargo --no-fallback`. The shim checks this before
+`RCARGO=0`, `QCARGO_BYPASS` and container routing. A missing remote client, a
+builder failure or a returned local compilation fails visibly; it never starts
+a local compiler. Noninteractive invocations in the two existing onboarding and
+prepared-userspace retry worktrees follow the same rule without agent identity.
+Ordinary human shells and remote builder recursion retain their local controls.
+Metadata, formatting and dependency commands can still run without compiling.
+Use explicit `rcargo --no-fallback` when calling the remote client directly;
+invoking an absolute Rustup Cargo path bypasses the shim. This is a routing guard,
+not an operating-system execution boundary.
+
+Run `python3 tools/tests/test_cargo_shim_routing.py` for recording-stub routing
+checks; they never invoke Rust. `tools/tests/cargo_shim.sh` also uses stubs to
+verify cache/container environment handling. The separate real-Cargo cache
+policy tests belong on the builder, not on a remote-only development laptop.
+
 It also selects the sccache server, which this route requires: sccache's server
 executes rustc, so it must share the build's mount namespace or it cannot see that
 namespace's headers. distrobox shares the host network namespace and copies the host
