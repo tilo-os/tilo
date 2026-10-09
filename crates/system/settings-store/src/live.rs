@@ -140,20 +140,22 @@ impl LiveSettings {
 
     fn start_file(path: Option<PathBuf>, on_change: impl Fn() + Send + 'static) -> Self {
         let (nudge, nudges) = mpsc::channel();
-        let mut notified = Notified {
-            _watch: None,
-            _listener: None,
-            degraded: None,
-        };
-        if let Some(path) = &path {
+        let watch = path.as_ref().map(|path| {
             let notify = nudge.clone();
-            match crate::watch::watch_settings_at(path, move || {
+            crate::watch::watch_settings_at(path, move || {
                 let _ = notify.send(());
-            }) {
-                Ok(watch) => notified._watch = Some(watch),
-                Err(error) => notified.degraded = Some(format!("file watch unavailable: {error}")),
-            }
-        }
+            })
+        });
+        let (watch, degraded) = match watch {
+            Some(Ok(watch)) => (Some(watch), None),
+            Some(Err(error)) => (None, Some(format!("file watch unavailable: {error}"))),
+            None => (None, None),
+        };
+        let notified = Notified {
+            _watch: watch,
+            _listener: None,
+            degraded,
+        };
         Self::spawn(Origin::File(path), (nudge, nudges), notified, on_change)
     }
 
@@ -238,12 +240,14 @@ impl LiveSettings {
             .current
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
-        let (current, _) = self
-            .0
-            .changed
-            .wait_timeout_while(current, timeout, |current| current.generation == seen)
-            .unwrap_or_else(PoisonError::into_inner);
-        Arc::clone(&current)
+        Arc::clone(
+            &self
+                .0
+                .changed
+                .wait_timeout_while(current, timeout, |current| current.generation == seen)
+                .unwrap_or_else(PoisonError::into_inner)
+                .0,
+        )
     }
 
     /// Ask the refresh thread to re-read now rather than on the next poll —
@@ -276,7 +280,7 @@ fn follow(
     on_change: &dyn Fn(),
 ) {
     loop {
-        let nudged = match nudges.recv_timeout(POLL_INTERVAL) {
+        let asked = match nudges.recv_timeout(POLL_INTERVAL) {
             Ok(()) => true,
             Err(RecvTimeoutError::Timeout) => false,
             Err(RecvTimeoutError::Disconnected) => return,
@@ -287,7 +291,7 @@ fn follow(
             return;
         };
         let current = inner.origin.stamp();
-        if !nudged && current == stamp {
+        if !asked && current == stamp {
             continue;
         }
         stamp = current;
