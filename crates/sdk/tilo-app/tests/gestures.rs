@@ -120,3 +120,26 @@ fn a_control_of_another_type_maps_to_the_field() {
     let pan = app.state().pan.expect("the drag set the pan");
     assert!(pan > 0.6, "{pan}");
 }
+
+/// Several field edits a surface must see at once (a paste) are one action
+/// when submitted now as a group: one change, one entry in history.
+#[test]
+fn a_group_submitted_now_is_one_change() {
+    use tilo_app::framework::testing::detached_dispatcher;
+    let mut mixer = Replica::<Mixer>::new();
+    let dispatcher = detached_dispatcher::<Mixer>("ada");
+    let p = Mixer::paths();
+    let doc = mixer.doc_mut();
+    let before = doc.get_changes(&[]).len();
+    let group = Invoke::group([
+        Invoke::edit(&p.name.replace("Drums")).unwrap(),
+        Invoke::edit(&p.level.set(0.5)).unwrap(),
+    ]);
+    dispatcher
+        .submit_now(&mut tilo_app::widget::Edits::lend(doc), group)
+        .unwrap();
+    assert_eq!(doc.get_changes(&[]).len(), before + 1, "one change");
+    let state = mixer.state().unwrap();
+    assert_eq!(state.name, "Drums");
+    assert!((state.level - 0.5).abs() < f64::EPSILON);
+}
