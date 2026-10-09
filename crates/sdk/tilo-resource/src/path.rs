@@ -216,6 +216,25 @@ impl<R, T: Settable> Path<R, T> {
     }
 }
 
+/// A type with its own vocabulary of edits beside the generic ones: rich
+/// text's marks and blocks. Its paths offer [`Path::perform`].
+pub trait Operations: Model {
+    /// One edit of the type, in its own terms.
+    type Op: Serialize;
+}
+
+impl<R, T: Operations> Path<R, T> {
+    /// The edit `op` of the value at this path, in the type's own vocabulary.
+    ///
+    /// # Errors
+    /// Returns the serialization error of `op`.
+    pub fn perform(&self, op: &T::Op) -> Result<Edit<R>, serde_json::Error> {
+        Ok(self.edit(EditOp::Rich {
+            rich: serde_json::to_value(op)?,
+        }))
+    }
+}
+
 impl<R, T: Model> Path<R, Option<T>> {
     /// The value when present; edits at it refuse while it is absent.
     #[must_use]
@@ -459,8 +478,8 @@ pub enum EditOp {
         id: Id,
         outcome: crate::Settled,
     },
-    /// An operation of a type with its own vocabulary (rich text marks and
-    /// blocks), in that type's JSON form.
+    /// An edit of a type with its own vocabulary ([`Operations`]: rich text
+    /// marks and blocks), in that type's JSON form.
     Rich {
         rich: serde_json::Value,
     },

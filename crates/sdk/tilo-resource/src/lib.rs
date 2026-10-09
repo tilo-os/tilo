@@ -144,7 +144,7 @@ pub use low_mutation::{APPLY_LOW, GROUP_LOW};
 pub use model::{
     Atom, Doc, Fields, Json, Model, ModelError, Slot, edit_whole, read_key, refresh_key, write_key,
 };
-pub use path::{Edit, EditOp, Path, Segment, Settable};
+pub use path::{Edit, EditOp, Operations, Path, Segment, Settable};
 pub use reader::{Demand, Reader, heads_of};
 pub use replica::Replica;
 pub use resource::{

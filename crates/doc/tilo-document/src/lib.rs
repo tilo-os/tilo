@@ -12,6 +12,7 @@
 //! The heading outline is a projection kept current the same way.
 
 pub mod action;
+pub mod field;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::rc::Rc;
@@ -57,8 +58,16 @@ pub enum ClipAttr {
     Str(String),
 }
 
-/// The rich-text resource. See the module docs.
-pub struct RichText;
+/// The rich-text resource (see the module docs), and rich text as a field of
+/// a record: `pub body: RichText` stores a document's worth of rich text
+/// under the field, read as its [`RichTextState`] and edited through
+/// [`RichTextAction`]s at the field's path ([`field`]).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct RichText {
+    state: Option<RichTextState>,
+    /// Markdown a new value starts with, written when it is stored.
+    initial: Option<String>,
+}
 
 /// One entry of the heading outline.
 #[derive(Clone, Debug, PartialEq, Eq)]
