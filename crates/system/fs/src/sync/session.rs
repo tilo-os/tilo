@@ -874,13 +874,25 @@ impl SessionProtocol {
             return write_frame(send, &SessionFrameV1::Denied).await;
         }
         write_frame(send, &SessionFrameV1::Done).await?;
-        let before = self
-            .namespace
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .heads();
-        let mut state = automerge::sync::State::new();
+        let (before, mut state) = {
+            let mut namespace = self
+                .namespace
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            (
+                namespace.heads(),
+                namespace.begin_sync_with(&peer.device_public_key),
+            )
+        };
         let exchanged = self.namespace_rounds(peer, &mut state, send, recv).await;
+        // Only a completed exchange is resumed from: one cut off midway
+        // may not have agreed on what both sides hold.
+        if matches!(exchanged, Ok(true)) {
+            self.namespace
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .finish_sync_with(peer.device_public_key, &state);
+        }
         // Records that arrived before the placements this exchange brought
         // are projected now, not at this device's next pass.
         let changed = self
@@ -901,16 +913,17 @@ impl SessionProtocol {
             }
             drop(gate);
         }
-        exchanged
+        exchanged.map(|_| ())
     }
 
+    /// Whether the exchange completed: both sides had nothing more to send.
     async fn namespace_rounds(
         &self,
         peer: &AuthenticatedFsPeer,
         state: &mut automerge::sync::State,
         send: &mut SendStream,
         recv: &mut RecvStream,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         for _ in 0..MAX_SYNC_ROUNDS {
             // The authority handle is live: a revocation cuts a connected
             // writer off at the next round.
@@ -965,10 +978,10 @@ impl SessionProtocol {
                 .transpose()?;
             write_frame(send, &SessionFrameV1::Sync(reply)).await?;
             if done {
-                break;
+                return Ok(true);
             }
         }
-        Ok(())
+        Ok(false)
     }
 
     async fn serve_namespace_since(
@@ -1360,8 +1373,13 @@ pub(super) async fn sync_namespace(
     if session.frames(&mut recv, MAX_FRAME_BYTES).await?.is_some() {
         anyhow::bail!("unexpected namespace sync response");
     }
-    let mut state = automerge::sync::State::new();
+    let peer = session.peer.device_public_key;
+    let mut state = namespace
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .begin_sync_with(&peer);
     let mut received = false;
+    let mut completed = false;
     for _ in 0..MAX_SYNC_ROUNDS {
         // Only namespace state between changesets leaves this device.
         let gate = match repository {
@@ -1410,10 +1428,17 @@ pub(super) async fn sync_namespace(
                 .sync_receive(&mut state, &reply);
         }
         if sent_nothing && reply.is_empty() {
+            completed = true;
             break;
         }
     }
     let _ = send.finish();
+    if completed {
+        namespace
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .finish_sync_with(peer, &state);
+    }
     Ok(received)
 }
 
