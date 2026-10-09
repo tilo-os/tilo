@@ -233,7 +233,7 @@ The records, each with its verdict, are appended to the public generic package
 `tilo-perf-results` (one immutable file per run, a version per UTC month), so
 the current numbers come from there, not from `docs/benchmarks/`. Read them with
 `python3 tools/perf/store.py fetch https://code.tilo.so`. Dispatch inputs:
-`kpis` selects groups (`fs`, `footprint`); `accept` takes this run's values as
+`kpis` selects groups (`fs`, `footprint`, `agent`); `accept` takes this run's values as
 the new baseline start after an intended change (from main only); and
 `synthetic_series` with `synthetic_factor` multiplies a run's values to prove
 the gate. A 1.25 factor passes as pending in the first run of a series and fails
