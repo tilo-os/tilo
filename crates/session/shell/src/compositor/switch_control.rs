@@ -205,7 +205,10 @@ mod tests {
     }
 
     fn accessibility(value: serde_json::Value) -> serde_json::Map<String, serde_json::Value> {
-        value.as_object().cloned().unwrap()
+        let serde_json::Value::Object(section) = value else {
+            panic!("a settings section is an object");
+        };
+        section
     }
 
     /// A runtime holding `config` regardless of what its settings say.
