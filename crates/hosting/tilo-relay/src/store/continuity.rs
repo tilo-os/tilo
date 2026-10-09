@@ -394,6 +394,9 @@ mod tests {
         replay::{ReplayBudget, ReplayId, ReplayLimits},
     };
 
+    #[global_allocator]
+    static HEAP: tilo_automerge::heap::ThreadCounting = tilo_automerge::heap::ThreadCounting;
+
     struct Fixture {
         tmp: tempfile::TempDir,
         store: WorkspaceStore,
@@ -524,6 +527,110 @@ mod tests {
             }
         }
         output
+    }
+
+    #[test]
+    fn authenticated_ordinary_delta_does_not_copy_its_body() {
+        const SIZE: usize = 4 * 1024 * 1024;
+        let fixture = Fixture::new();
+        let delta = crate::coedit::CoeditPayload::RetainedDelta {
+            channel: [9; 32],
+            body: vec![0x5a; SIZE],
+        }
+        .encode()
+        .unwrap();
+        let envelope = Envelope::Delta {
+            workspace_id: 7,
+            author_device_public_key: fixture.peer.device_public_key,
+            authored_at_ns: 1,
+            signature: [0; 64],
+            delta,
+        };
+        // The previous path is a control: the allocator must observe the
+        // encoded frame, owned envelope delta and owned co-edit body.
+        let previous = tilo_automerge::heap::allocated_by(|| {
+            let raw = crate::transport::encode(&envelope).unwrap();
+            assert!(Evidence::decode(&raw, 7).is_none());
+        });
+        let current = tilo_automerge::heap::allocated_by(|| {
+            assert!(Evidence::authenticated(&envelope, &fixture.peer).is_none());
+        });
+        eprintln!(
+            "ordinary {SIZE}-byte body: previous {previous}, authenticated {current} allocated bytes"
+        );
+        assert!(previous >= 3 * SIZE, "control did not count payload copies");
+        assert!(current < 4096, "ordinary delta allocated {current} bytes");
+    }
+
+    #[test]
+    fn authenticated_evidence_rejects_ordinary_and_malformed_deltas() {
+        let fixture = Fixture::new();
+        let (channel, original, _, _) = fixture.frame(vec![1], 1);
+        let Envelope::Delta { delta, .. } = &original else {
+            unreachable!()
+        };
+        let crate::coedit::CoeditPayload::Checkpoint { body, .. } =
+            crate::coedit::CoeditPayload::decode(delta).unwrap()
+        else {
+            unreachable!()
+        };
+        let mut cases = vec![Vec::new(), vec![2], vec![0xff; 40]];
+        for body in [Vec::new(), vec![0xff], body] {
+            for payload in [
+                crate::coedit::CoeditPayload::RetainedDelta {
+                    channel,
+                    body: body.clone(),
+                },
+                crate::coedit::CoeditPayload::Checkpoint { channel, body },
+            ] {
+                // The well-formed continuity checkpoint remains eligible.
+                let encoded = payload.encode().unwrap();
+                if matches!(payload, crate::coedit::CoeditPayload::RetainedDelta { .. })
+                    || encoded != *delta
+                {
+                    let mut suffixed = encoded.clone();
+                    suffixed.push(0);
+                    cases.extend([encoded, suffixed]);
+                }
+            }
+        }
+        for encoded in cases {
+            let mut changed = original.clone();
+            let Envelope::Delta { delta, .. } = &mut changed else {
+                unreachable!()
+            };
+            *delta = encoded;
+            assert!(Evidence::authenticated(&changed, &fixture.peer).is_none());
+        }
+    }
+
+    #[test]
+    fn authenticated_checkpoint_keeps_strict_validation() {
+        let fixture = Fixture::new();
+        let (_, original, raw, receipt) = fixture.frame(vec![1; 128], 1);
+        assert_eq!(
+            Evidence::authenticated(&original, &fixture.peer),
+            Some(receipt.evidence)
+        );
+        let Envelope::Delta { delta, .. } = &original else {
+            unreachable!()
+        };
+        for end in 0..delta.len() {
+            let mut truncated = original.clone();
+            let Envelope::Delta { delta: changed, .. } = &mut truncated else {
+                unreachable!()
+            };
+            *changed = delta[..end].to_vec();
+            assert!(
+                Evidence::authenticated(&truncated, &fixture.peer).is_none(),
+                "truncated co-edit payload at {end} gained evidence"
+            );
+        }
+        for end in 0..raw.len() {
+            assert!(Evidence::decode(&raw[..end], 7).is_none());
+        }
+        assert!(Evidence::decode(&raw, 8).is_none());
+        assert!(Evidence::authenticated(&original, &Fixture::new().peer).is_none());
     }
 
     #[test]
