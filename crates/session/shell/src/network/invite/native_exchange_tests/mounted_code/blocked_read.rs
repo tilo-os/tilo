@@ -132,7 +132,7 @@ fn prepare_edit_from_view(
         device.identity.device_cert.device_public_key.to_vec(),
     ));
     let before = document.get_heads();
-    code_editor::actions::text_edit_action(FILE.into(), BODY, expected)
+    code_editor::actions::text_edit_action(FILE, BODY, expected)
         .apply(&mut document)
         .unwrap();
     let message = view.peer().clone().publish_incremental(

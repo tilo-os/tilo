@@ -6,6 +6,9 @@ use std::path::Path;
 use tilo_actions::Action as _;
 use tilo_joined_room::{ApplicationInitialization, ApplicationRecord, DocumentRead};
 
+/// The kind of the record a Code Editor project is.
+const PROJECT_KIND: &str = <code_editor::Project as tilo_resource::Resource>::KIND;
+
 pub(super) const APP: &str = "so.tilo.code-editor";
 pub(super) const RECORD: &str = "tab:000000000000002a";
 pub(super) const FILE: &str = "fe55ab4e-e645-4499-aa86-0c4141907080";
@@ -28,13 +31,8 @@ pub(super) fn governor(directory: &Path) -> TestGovernor {
     let owner = crate::shell::native_workspace_owner::open(tree.shared()).unwrap();
     let mut governor =
         tilo_joined_room::testing::enroll_interactive_governor(&owner, &key, &certificate).unwrap();
-    let route = ApplicationRecord::declared(
-        APP,
-        RECORD,
-        code_editor::resource::PROJECT_KIND,
-        &[code_editor::resource::PROJECT_KIND.into()],
-    )
-    .unwrap();
+    let route =
+        ApplicationRecord::declared(APP, RECORD, PROJECT_KIND, &[PROJECT_KIND.into()]).unwrap();
     let now = SystemTime::now();
     assert!(
         owner
@@ -142,22 +140,24 @@ fn source_document(directory: &Path) -> AutoCommit {
         .unwrap();
     let checkout = RecordCheckout::new(
         RecordId::parse(RECORD).unwrap(),
-        RecordKind::new(code_editor::resource::PROJECT_KIND),
+        RecordKind::new(PROJECT_KIND),
     );
     records.create_record(&checkout).unwrap();
     records.try_open_record(&checkout).unwrap();
     records
         .with(&checkout.id, |document| {
-            code_editor::actions::CodeEditorAction::CreateFile {
-                id: FILE.into(),
-                name: "native.rs".into(),
-                parent: None,
-                language: "rust".into(),
-                order: 0,
-                seed: BODY.into(),
-            }
+            code_editor::actions::record_entry_action(
+                FILE,
+                code_editor::project::EntryKind::File,
+                "native.rs",
+                None,
+                "Rust",
+            )
             .apply(document)
             .unwrap();
+            code_editor::actions::record_text_action(FILE, BODY)
+                .apply(document)
+                .unwrap();
             assert_eq!(
                 body(document),
                 BODY,
@@ -279,7 +279,7 @@ pub(super) fn mount_with_network(
                 42,
                 ui::record::RecordCheckout::new(
                     ui::record::RecordId::parse(RECORD).unwrap(),
-                    ui::record::RecordKind::new(code_editor::resource::PROJECT_KIND),
+                    ui::record::RecordKind::new(PROJECT_KIND),
                 ),
                 inputs,
             )
@@ -478,7 +478,7 @@ fn offline_edit(
                 key.verifying_key().to_bytes().to_vec(),
             ));
             let heads = document.get_heads();
-            code_editor::actions::text_edit_action(FILE.into(), BODY, text)
+            code_editor::actions::text_edit_action(FILE, BODY, text)
                 .apply(&mut document)
                 .unwrap();
             view.peer().clone().publish_incremental(

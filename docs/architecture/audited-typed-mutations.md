@@ -20,12 +20,8 @@ uses it only when all its members select this path; the target revalidates every
 member. The original generic `apply` and `group` retain their dynamic-risk tags
 and confirmation behavior. Explicit `Invoke::apply` also preserves that path.
 
-Code Editor opts in only its contextual text splice, imported entry metadata,
-and first materialization of a buffer. These actions mutate the document;
-reading a file remains an owner-authorized effect with its existing file
-capability. Delete, terminal and other unaudited actions are excluded, even
-when their action-trait risk defaults to Low. The whitelist is a security
-review obligation; callers cannot extend it.
+No resource opts in at present. The whitelist is a security review
+obligation; callers cannot extend it.
 
 Native public-action qualification and model coding evaluation are separate
 receipts. A unit or mounted-app regression alone proves neither native

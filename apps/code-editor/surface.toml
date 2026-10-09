@@ -1,0 +1,346 @@
+# The app's public surface, written by `tilo-app surface`: its resources' verbs
+# and stored fields. Review changes to it like an API change; `tilo-app check`
+# fails when the code and this file disagree.
+
+[[resources]]
+kind = "code_editor.project"
+label = "Code Editor"
+version = 1
+
+[[resources.fields]]
+owner = "project"
+path = "files"
+stored = "collection"
+title = "Files"
+type = "Collection<Entry>"
+
+[[resources.fields]]
+owner = "entry"
+path = "files.*.kind"
+readonly = true
+stored = "value"
+title = "Kind"
+type = "EntryKind"
+
+[[resources.fields]]
+label = true
+owner = "entry"
+path = "files.*.name"
+readonly = true
+stored = "value"
+title = "Name"
+type = "String"
+
+[[resources.fields]]
+owner = "entry"
+path = "files.*.parent"
+readonly = true
+stored = "value"
+title = "Folder"
+type = "Option<Id>"
+
+[[resources.fields]]
+owner = "entry"
+path = "files.*.language"
+stored = "value"
+title = "Language"
+type = "String"
+
+[[resources.fields]]
+owner = "project"
+path = "buffers"
+stored = "value"
+title = "Texts"
+type = "BTreeMap<String, Source>"
+
+[[resources.fields]]
+owner = "project"
+path = "terminal_panel"
+readonly = true
+stored = "record"
+title = "Terminal"
+type = "Option<Terminal>"
+
+[[resources.fields]]
+owner = "terminal"
+path = "terminal_panel.target"
+readonly = true
+stored = "value"
+title = "Where the session runs"
+type = "Option<Atom>"
+
+[[resources.fields]]
+owner = "terminal"
+path = "terminal_panel.relay_session"
+readonly = true
+stored = "value"
+title = "Relay session"
+type = "Option<Atom>"
+
+[[resources.fields]]
+owner = "terminal"
+path = "terminal_panel.pane"
+readonly = true
+stored = "value"
+title = "Pane"
+type = "Option<Atom>"
+
+[[resources.verbs]]
+description = "New file  A new file named `name` in the folder `folder` (the project's root when none), holding `text`."
+id = "new-file"
+kind = "undoable"
+label = "New file"
+
+[[resources.verbs.params]]
+name = "name"
+required = false
+
+[resources.verbs.params.schema]
+description = "File name; `untitled` when none"
+type = [
+    "string",
+    "null",
+]
+
+[[resources.verbs.params]]
+name = "folder"
+required = false
+
+[resources.verbs.params.schema]
+description = "The folder it goes in; the project's root when none"
+type = [
+    "string",
+    "null",
+]
+
+[[resources.verbs.params]]
+name = "text"
+required = false
+
+[resources.verbs.params.schema]
+description = "Its text"
+type = [
+    "string",
+    "null",
+]
+
+[[resources.verbs]]
+description = "New folder  A new folder named `name` in the folder `folder` (the project's root when none)."
+id = "new-folder"
+kind = "undoable"
+label = "New folder"
+
+[[resources.verbs.params]]
+name = "name"
+required = false
+
+[resources.verbs.params.schema]
+description = "Folder name; `untitled` when none"
+type = [
+    "string",
+    "null",
+]
+
+[[resources.verbs.params]]
+name = "folder"
+required = false
+
+[resources.verbs.params.schema]
+description = "The folder it goes in; the project's root when none"
+type = [
+    "string",
+    "null",
+]
+
+[[resources.verbs]]
+description = "Rename  Give the file or folder another name, unique in its folder."
+id = "rename"
+kind = "undoable"
+label = "Rename"
+
+[[resources.verbs.params]]
+name = "entry"
+required = true
+
+[resources.verbs.params.schema]
+description = "Entry"
+type = "string"
+
+[[resources.verbs.params]]
+name = "name"
+required = true
+
+[resources.verbs.params.schema]
+description = "The new name"
+type = "string"
+
+[[resources.verbs]]
+description = "Move  Move the file or folder into the folder `folder` (the project's root when none), before `before` among its entries or after them all."
+id = "move-entry"
+kind = "undoable"
+label = "Move"
+
+[[resources.verbs.params]]
+name = "entry"
+required = true
+
+[resources.verbs.params.schema]
+description = "Entry"
+type = "string"
+
+[[resources.verbs.params]]
+name = "folder"
+required = false
+
+[resources.verbs.params.schema]
+description = "The folder it goes in; the project's root when none"
+type = [
+    "string",
+    "null",
+]
+
+[[resources.verbs.params]]
+name = "before"
+required = false
+
+[resources.verbs.params.schema]
+description = "The entry it goes before; after every entry when none"
+type = [
+    "string",
+    "null",
+]
+
+[[resources.verbs]]
+description = "Delete  Delete the file and its text, or the folder once it is empty."
+destructive = true
+id = "delete"
+kind = "undoable"
+label = "Delete"
+
+[[resources.verbs.params]]
+name = "entry"
+required = true
+
+[resources.verbs.params.schema]
+description = "Entry"
+type = "string"
+
+[[resources.verbs]]
+description = "Record entry  Record a file or folder of the project's folder on disk, the first time the editor reads it, under the id the editor gave it. An entry already recorded, or at a path a collaborator recorded under another id, is left as it is."
+id = "record-entry"
+kind = "undoable"
+label = "Record entry"
+
+[[resources.verbs.params]]
+name = "id"
+required = true
+
+[resources.verbs.params.schema]
+description = "The id it is kept under"
+type = "string"
+
+[[resources.verbs.params]]
+name = "kind"
+required = true
+
+[resources.verbs.params.schema]
+description = "File or folder"
+enum = [
+    "file",
+    "folder",
+]
+type = "string"
+
+[[resources.verbs.params]]
+name = "name"
+required = true
+
+[resources.verbs.params.schema]
+description = "Its name"
+type = "string"
+
+[[resources.verbs.params]]
+name = "folder"
+required = false
+
+[resources.verbs.params.schema]
+description = "The folder it is in; the project's root when none"
+type = [
+    "string",
+    "null",
+]
+
+[[resources.verbs.params]]
+name = "language"
+required = true
+
+[resources.verbs.params.schema]
+description = "A file's language"
+type = "string"
+
+[[resources.verbs]]
+description = "Record text  Keep `text`, read from disk, as the text of `file` the first time the editor opens it. Text already there — a collaborator's or an earlier session's unsaved edits — is left as it is."
+id = "record-text"
+kind = "undoable"
+label = "Record text"
+
+[[resources.verbs.params]]
+name = "file"
+required = true
+
+[resources.verbs.params.schema]
+description = "The file's id"
+type = "string"
+
+[[resources.verbs.params]]
+name = "text"
+required = true
+
+[resources.verbs.params.schema]
+description = "Its text on disk"
+type = "string"
+
+[[resources.verbs]]
+description = "Record terminal target  Record where the embedded terminal's session runs."
+id = "record-target"
+kind = "undoable"
+label = "Record terminal target"
+
+[[resources.verbs.params]]
+name = "target"
+required = true
+
+[resources.verbs.params.schema]
+description = "An encoded session target"
+type = "string"
+
+[[resources.verbs]]
+description = "Record terminal relay session  Record the relay session the embedded terminal re-attaches to, or forget it."
+id = "record-relay-session"
+kind = "undoable"
+label = "Record terminal relay session"
+
+[[resources.verbs.params]]
+name = "session"
+required = false
+
+[resources.verbs.params.schema]
+description = "The relay session's id; none to forget it"
+type = [
+    "string",
+    "null",
+]
+
+[[resources.verbs]]
+description = "Claim terminal pane  Scope presence to a new process's pane of the embedded terminal."
+id = "claim-pane"
+kind = "undoable"
+label = "Claim terminal pane"
+
+[[resources.verbs.params]]
+name = "pane"
+required = true
+
+[resources.verbs.params.schema]
+description = "The pane's id"
+type = "string"

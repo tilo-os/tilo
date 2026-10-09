@@ -58,7 +58,6 @@ use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::tilo_resource::Effect as _;
 use ui::widget::{Button, EmptyState, FindBar, SidebarDrawer, SplitLayout, Text, Widget};
-use uuid::Uuid;
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
@@ -329,8 +328,8 @@ pub(crate) fn effect_binding(
     effect: &crate::effects::CodeEditorEffect,
 ) -> tilo_actions::ActionBinding<()> {
     let resource = tilo_actions::Resource::new(
-        crate::resource::PROJECT_KIND,
-        crate::resource::PROJECT_KIND,
+        <crate::project::Project as ui::tilo_resource::Resource>::KIND,
+        <crate::project::Project as ui::tilo_resource::Resource>::KIND,
         "Code",
     )
     .with_action(effect.bound());
@@ -355,7 +354,7 @@ fn file_header(session: &Session) -> (Text, std::rc::Rc<std::cell::RefCell<Strin
     )
 }
 
-fn language_from_label(label: &str) -> Option<Language> {
+pub(crate) fn language_from_label(label: &str) -> Option<Language> {
     [
         Language::Rust,
         Language::Toml,
@@ -431,6 +430,14 @@ struct SearchRefreshStats {
     indexed_records: usize,
 }
 
+/// The files an opener may show, and the ones asked for since the last
+/// sync.
+#[derive(Default)]
+struct Opened {
+    known: HashSet<String>,
+    requests: Vec<String>,
+}
+
 #[allow(
     clippy::struct_excessive_bools,
     reason = "each bool is an independent, unrelated flag (panel visibility, one-time seed guard, terminal focus, find bar visibility) on the app's top-level state, not a set of options that combine — a bitflag/enum would not read better"
@@ -462,11 +469,14 @@ pub struct CodeApp {
     /// checks, applies, records and replicates it. `None` until the
     /// framework mounts the editor; an editor that is not mounted edits
     /// nothing.
-    dispatch: Option<ui::framework::Dispatcher<crate::resource::CodeEditor>>,
+    dispatch: Option<ui::framework::Dispatcher<crate::project::Project>>,
     /// The project as it was last presented, and the live handle that asks
     /// for the text of the file the window shows.
-    presented: std::rc::Rc<crate::resource::ProjectState>,
-    live_state: Option<ui::framework::Live<crate::resource::CodeEditor>>,
+    presented: std::rc::Rc<crate::project::Project>,
+    /// Files a search hit or an agent's `open` asked to show, taken up in
+    /// the next sync, and the files it may name.
+    opened: std::rc::Rc<std::cell::RefCell<Opened>>,
+    live_state: Option<ui::framework::Live<crate::project::Project>>,
     /// The file ids whose text the window demanded last.
     demanded: Vec<String>,
     /// A command invoked through its published effect. An effect handler has
@@ -858,6 +868,10 @@ impl CodeApp {
         app
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one constructor listing every field of the editor once"
+    )]
     fn from_session(session: Session, default: Option<TreeId>) -> Self {
         let explorer_events = ExplorerEvents::default();
         let mut sidebar = explorer::explorer(&session.project, &explorer_events);
@@ -883,6 +897,7 @@ impl CodeApp {
             test_hook: None,
             dispatch: None,
             presented: std::rc::Rc::default(),
+            opened: std::rc::Rc::default(),
             live_state: None,
             demanded: Vec::new(),
             pending_command: None,
@@ -1082,7 +1097,7 @@ impl CodeApp {
     fn submit_now(
         &self,
         doc: &mut ui::widget::Edits<'_>,
-        action: &actions::CodeEditorAction,
+        action: &actions::Action,
     ) -> Result<(), tilo_actions::ActionError> {
         match &self.dispatch {
             Some(dispatch) => dispatch.apply_now(doc, action),
@@ -1094,7 +1109,7 @@ impl CodeApp {
 
     /// Submit `action` through the framework's door; it applies after the
     /// event.
-    fn submit(&self, action: &actions::CodeEditorAction) {
+    fn submit(&self, action: &actions::Action) {
         if let Some(dispatch) = &self.dispatch {
             dispatch.apply(action);
         }
@@ -1134,7 +1149,7 @@ impl CodeApp {
         // it stuck on.
         if let Some(node) = self.session.active_buffer().map(|b| b.node) {
             let key = self.buffer_key(node);
-            if let Some(current) = self.presented.buffers.get(&key)
+            if let Some(current) = self.presented.text(&key)
                 && let Some(buf) = self.session.buffer.as_mut()
             {
                 buf.dirty = buf.is_dirty(current);
@@ -1204,12 +1219,9 @@ impl CodeApp {
                 let already_opened = self
                     .live_state
                     .as_ref()
-                    .is_some_and(|live| live.with(|state| state.opened_buffers.contains(&key)));
+                    .is_some_and(|live| live.with(|state| state.buffers.contains_key(&key)));
                 if !already_opened {
-                    self.submit(&actions::CodeEditorAction::EnsureBuffer {
-                        key,
-                        seed: text.clone(),
-                    });
+                    self.submit(&actions::record_text_action(key, text.clone()));
                 }
                 let path = self.session.project.disk_path_of(node);
                 if let Some(buffer) = self.session.buffer_of_mut(node) {
@@ -1237,15 +1249,14 @@ impl CodeApp {
         if fresh.is_empty() || self.dispatch.is_none() {
             return;
         }
-        let entries: Vec<actions::CodeEditorAction> = fresh
+        let entries: Vec<actions::Action> = fresh
             .into_iter()
             .filter_map(|id| {
                 let node = self.session.project.get(id)?;
                 if self
                     .presented
                     .files
-                    .iter()
-                    .any(|file| file.id == node.resource_id)
+                    .contains(&ui::tilo_resource::Id::from(node.resource_id.as_str()))
                 {
                     return None;
                 }
@@ -1256,19 +1267,19 @@ impl CodeApp {
                         .map(|parent| parent.resource_id.clone())
                 });
                 let (kind, language) = match &node.kind {
-                    NodeKind::File { language, .. } => {
-                        (actions::EntryKind::File, language.label().to_string())
-                    }
-                    NodeKind::Folder { .. } => (actions::EntryKind::Folder, String::new()),
+                    NodeKind::File { language, .. } => (
+                        crate::project::EntryKind::File,
+                        language.label().to_string(),
+                    ),
+                    NodeKind::Folder { .. } => (crate::project::EntryKind::Folder, String::new()),
                 };
-                Some(actions::CodeEditorAction::ImportEntry {
-                    id: node.resource_id.clone(),
+                Some(actions::record_entry_action(
+                    &node.resource_id,
                     kind,
-                    name: node.name.clone(),
-                    parent,
+                    node.name.clone(),
+                    parent.as_deref(),
                     language,
-                    order: i64::try_from(id).unwrap_or(i64::MAX),
-                })
+                ))
             })
             .collect();
         if let Some(dispatch) = &self.dispatch {
@@ -1289,28 +1300,57 @@ impl CodeApp {
         self.adopt_resource_state(&state);
     }
 
-    pub(crate) fn adopt_resource_state(
-        &mut self,
-        state: &std::rc::Rc<crate::resource::ProjectState>,
-    ) {
-        self.presented = std::rc::Rc::clone(state);
-        if state.files.is_empty() && !self.session.project.nodes.is_empty() {
+    pub(crate) fn adopt_resource_state(&mut self, state: &std::rc::Rc<crate::project::Project>) {
+        let previous = std::mem::replace(&mut self.presented, std::rc::Rc::clone(state));
+        let mut files = crate::doc::CollaborativeFile::all(state);
+        self.opened.borrow_mut().known = files.iter().map(|file| file.id.clone()).collect();
+        // A file a collaborator deleted leaves the tree too.
+        files.extend(
+            crate::doc::CollaborativeFile::all(&previous)
+                .into_iter()
+                .filter(|file| {
+                    !state
+                        .files
+                        .contains(&ui::tilo_resource::Id::from(file.id.as_str()))
+                })
+                .map(|file| crate::doc::CollaborativeFile {
+                    deleted: true,
+                    ..file
+                }),
+        );
+        if files.is_empty() {
             return;
         }
-        if !state.files.is_empty() {
-            let mut files = state.files.clone();
-            files.sort_by_key(|file| file.path.matches('/').count());
-            self.project_files(files);
+        files.sort_by_key(|file| file.path.matches('/').count());
+        self.project_files(files);
+    }
+
+    /// What shows file `id` when a search hit or an agent's `open` names
+    /// it; a file the project does not hold is refused.
+    pub(crate) fn opener(
+        &self,
+    ) -> impl FnMut(&ui::tilo_resource::Id) -> Result<(), ui::tilo_resource::Refusal> + 'static
+    {
+        let opened = std::rc::Rc::clone(&self.opened);
+        move |id| {
+            let mut opened = opened.borrow_mut();
+            if !opened.known.contains(id.as_str()) {
+                return Err(ui::tilo_resource::Refusal::new(
+                    "the project has no such file",
+                ));
+            }
+            opened.requests.push(id.to_string());
+            Ok(())
         }
     }
 
     /// Attach the framework dispatcher when hosted as a [`ResourceSurface`].
     pub(crate) fn attach_framework(
         &mut self,
-        dispatcher: ui::framework::Dispatcher<crate::resource::CodeEditor>,
+        dispatcher: ui::framework::Dispatcher<crate::project::Project>,
         live: bool,
         settings: ui::framework::Setting<crate::settings::CodeSettings>,
-        state: ui::framework::Live<crate::resource::CodeEditor>,
+        state: ui::framework::Live<crate::project::Project>,
     ) {
         self.dispatch = Some(dispatcher);
         self.live_state = Some(state);
@@ -1895,26 +1935,31 @@ impl CodeApp {
     }
 
     /// Run a command. `doc` is threaded in because the one doc-mutating
-    /// command (New file) dispatches a [`CodeEditorAction`] through the action
+    /// command (New file) submits the project's `new-file` verb through the action
     /// host; the rest are pure presentation.
     ///
-    /// [`CodeEditorAction`]: crate::actions::CodeEditorAction
     fn apply_command(&mut self, cmd: Command, doc: &mut ui::widget::Edits<'_>) {
         match cmd {
             Command::NewFile => {
                 // An untitled file at the project root, created through the
                 // project's own action and opened once it is there.
                 let name = format!("untitled-{}.txt", self.session.project.nodes.len());
-                let id = Uuid::new_v4().to_string();
-                let action = actions::create_file_action(
-                    id.clone(),
-                    name.clone(),
-                    None,
-                    i64::MAX / 2,
-                    String::new(),
-                );
+                let before = self.presented.files.ids().cloned().collect::<HashSet<_>>();
+                let action = actions::new_file_action(name.clone(), None, "");
                 match self.submit_now(doc, &action) {
-                    Ok(()) => self.pending_open = Some(id),
+                    Ok(()) => {
+                        let created =
+                            <crate::project::Project as ui::tilo_resource::Resource>::read(doc)
+                                .ok()
+                                .and_then(|project| {
+                                    project
+                                        .files
+                                        .ids()
+                                        .find(|id| !before.contains(*id))
+                                        .map(ToString::to_string)
+                                });
+                        self.pending_open = created;
+                    }
                     Err(error) => self.note(format!("Could not create {name}: {error}"), true),
                 }
             }
@@ -2053,15 +2098,14 @@ impl CodeApp {
                 // The session is the project's terminal child: what it shows
                 // is recorded through the project's own dispatcher.
                 if let Some(dispatch) = &self.dispatch {
-                    w.bind(dispatch.child(
-                        crate::resource::TERMINAL_RESOURCE_ID,
-                        actions::CodeEditorAction::terminal,
-                    ));
+                    w.bind(
+                        dispatch.child(crate::resource::TERMINAL_RESOURCE_ID, actions::terminal),
+                    );
                 }
                 if let Some(session) = self
                     .live_state
                     .as_ref()
-                    .and_then(|live| live.with(|state| state.terminal.clone()))
+                    .and_then(|live| live.with(|state| state.terminal_panel.clone()))
                 {
                     ui::framework::ResourceSurface::present(&mut w, &std::rc::Rc::new(session));
                 }
@@ -2155,7 +2199,7 @@ impl CodeApp {
     /// go-to-line effect.
     pub(crate) fn ask_for_line() {
         ui::host_palette::action(tilo_actions::ActionAddress::new(
-            crate::resource::PROJECT_KIND,
+            <crate::project::Project as ui::tilo_resource::Resource>::KIND,
             ui::tilo_resource::Effect::id(&crate::effects::CodeEditorEffect::GoToLine {
                 value: None,
             }),
@@ -2832,10 +2876,10 @@ impl Widget for CodeApp {
         let (caret_line, caret_column) = self.editor.primary_caret();
         let (highlighted_rows, cached_buffers, inactive_source_bytes) =
             self.editor.native_projection_stats();
-        let (cached_materializations, inactive_materialized_bytes) = self
+        let (read_texts, read_text_bytes) = self
             .live_state
             .as_ref()
-            .map(|live| live.with(crate::resource::ProjectState::cached_buffer_stats))
+            .map(|live| live.with(crate::project::Project::read_texts))
             .unwrap_or_default();
         Some(serde_json::json!({
             "app": "so.tilo.code-editor",
@@ -2846,8 +2890,8 @@ impl Widget for CodeApp {
             "body_bytes": body.as_ref().map(String::len),
             "highlighted_rows": highlighted_rows,
             "cached_buffers": cached_buffers,
-            "cached_materializations": cached_materializations,
-            "inactive_materialized_bytes": inactive_materialized_bytes,
+            "read_texts": read_texts,
+            "read_text_bytes": read_text_bytes,
             "cached_diagnostic_buffers": self.inactive_diagnostics.len(),
             "inactive_diagnostic_records": self.inactive_diagnostics.iter().map(|cache| cache.local.len()).sum::<usize>(),
             "reopen_phase_micros": {
@@ -2882,6 +2926,12 @@ impl Widget for CodeApp {
         let (state, path) = ui::doc::document_ref(state, path);
         if !self.seeded {
             self.seed_terminal();
+        }
+        let opened = std::mem::take(&mut self.opened.borrow_mut().requests);
+        for file in opened {
+            if let Some(node) = self.session.project.node_for_resource(&file) {
+                self.open_node(node);
+            }
         }
         // A file picker in flight is drained here, once a frame, off a channel
         // the worker thread fills — the UI never waits on D-Bus.

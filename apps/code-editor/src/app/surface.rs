@@ -10,7 +10,7 @@ use ui::tilo_resource::Effect as _;
 use super::{AutoCommit, CodeApp, Command, PanelTab, Staging, TreeId, explorer};
 use crate::actions;
 use crate::effects::CodeEditorEffect;
-use crate::resource::CodeEditor;
+use crate::project::Project;
 
 /// How many files, symbols and search hits the published tree carries; the
 /// rest resolve by id.
@@ -22,7 +22,7 @@ const SHELL_ANSWER: ui::time::Duration = ui::time::Duration::from_millis(1500);
 impl CodeApp {
     fn answer_text_read(
         effect: &CodeEditorEffect,
-        cx: &EffectCx<CodeEditor, Self>,
+        cx: &EffectCx<Project, Self>,
     ) -> Option<EffectAnswer> {
         let answer = || match effect {
             CodeEditorEffect::ReadText {
@@ -43,7 +43,7 @@ impl CodeApp {
     pub(crate) fn answer_effect(
         &mut self,
         effect: CodeEditorEffect,
-        cx: &mut EffectCx<CodeEditor, Self>,
+        cx: &mut EffectCx<Project, Self>,
     ) -> EffectAnswer {
         if let Some(answer) = Self::answer_text_read(&effect, cx) {
             return answer;
@@ -146,7 +146,7 @@ impl CodeApp {
     fn answer_command(
         &mut self,
         command: Command,
-        cx: &mut EffectCx<CodeEditor, Self>,
+        cx: &mut EffectCx<Project, Self>,
     ) -> EffectAnswer {
         if command == Command::NextTheme {
             return Err("Appearance is controlled by the operating system; choose it in Appearance settings".into());
@@ -289,11 +289,13 @@ impl CodeApp {
 
     /// The live row `id`, beyond the ones [`Self::live_rows`] publishes.
     pub(crate) fn live_row(&self, id: &str) -> Option<LiveRow> {
-        if let Some(file) = id.strip_prefix("code_editor.file:") {
+        if let Some((_, file)) =
+            ui::tilo_resource::items::item_of_resource::<crate::project::Project>(id)
+        {
             return self
                 .session
                 .project
-                .node_for_resource(file)
+                .node_for_resource(file.as_str())
                 .and_then(|node| self.file_row(node));
         }
         if let Some(symbol) = self
@@ -318,7 +320,7 @@ impl CodeApp {
         }
         let mut row = LiveRow::new(
             actions::file_resource_id(&item.resource_id),
-            "code_editor.file",
+            crate::actions::FILE_KIND,
             item.name.clone(),
         )
         .effect(&CodeEditorEffect::Open {

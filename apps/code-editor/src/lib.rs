@@ -48,6 +48,7 @@ mod lint;
 pub mod lsp;
 pub mod model;
 pub mod native_fixture;
+pub mod project;
 pub mod resource;
 mod row_viewport;
 mod sample_project;
@@ -63,7 +64,8 @@ mod text_operations_tests;
 
 pub use app::CodeApp;
 pub use effects::CodeEditorEffect;
-pub use resource::{CodeEditor, CodeEditorShell};
+pub use project::Project;
+pub use resource::CodeEditorShell;
 
 /// The app's toolkit definition, which every host that mounts the editor
 /// (the shell's Editor tabs, a desktop test) instantiates.

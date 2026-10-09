@@ -950,7 +950,7 @@ mod tests {
             editor
                 .resources()
                 .iter()
-                .any(|resource| resource.kind == code_editor::CodeEditor::KIND),
+                .any(|resource| resource.kind == code_editor::Project::KIND),
             "an Editor tab publishes its project"
         );
         let mut editor = editor;
