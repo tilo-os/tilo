@@ -32,7 +32,7 @@ pub(crate) static SCHEMA: HistoryRestoreSchema = HistoryRestoreSchema {
     validate_result,
 };
 pub(crate) fn context() -> tilo_actions::ActionContext {
-    tilo_actions::ActionContext::for_resource("Restore version", "document:1", "document", "Draft")
+    tilo_actions::ActionContext::for_resource("document:1", "document", "Draft")
         .with_app("dev.tilo.restore-test", "Restore test")
 }
 pub(crate) fn admission(authority: &PermissionContext) -> ConfirmedRestore<'_> {

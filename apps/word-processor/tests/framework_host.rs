@@ -32,7 +32,10 @@ fn a_keystroke_is_an_action_and_typing_undoes_a_word_at_a_time() {
     assert!(typed > 1, "every keystroke is an attributed change");
     let last = app.versions().pop().unwrap();
     let context = last.context.as_ref().unwrap();
-    assert_eq!(context.action_label, "Splice Text");
+    assert!(
+        matches!(&context.what, Some(ui::tilo_actions::Did::Verb(verb)) if verb.action.action == "splice-text"),
+        "{context:?}"
+    );
     assert_eq!(
         context
             .resource

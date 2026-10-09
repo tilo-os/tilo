@@ -464,7 +464,8 @@ fn field_edit_spec<R: Resource>() -> ActionSpec {
     .programmatic()
     // A field edit changes only the document.
     .reversible()
-    .with_history_label(apply_label::<R>)
+    // History records the edit itself, not `field-edit`.
+    .carrying()
 }
 
 /// The edits of a resource whose document holds nothing. An app whose data
@@ -882,92 +883,6 @@ pub fn encode<R: Resource>(action: &R::Action) -> Result<EncodedAction, ActionEr
     EncodedAction::encode(R::ACTION_TYPE, action)
 }
 
-/// What history calls one action value of `R`: the label of the declared
-/// action it names (a `remove-marks` value is "Remove marks"), else its
-/// variant name in words, or `None` when it names neither.
-///
-/// The generic [`APPLY`] and a [`GROUP`](crate::GROUP) of one kind of edit
-/// are recorded under this name, so a person's history says what each edit
-/// did rather than that an edit was applied.
-pub fn action_label<R: Resource>(action: &R::Action) -> Option<String> {
-    serde_json::to_value(action)
-        .ok()
-        .and_then(|value| value_label::<R>(&value))
-}
-
-fn value_label<R: Resource>(value: &serde_json::Value) -> Option<String> {
-    let declarations = R::declarations();
-    let ids: Vec<&str> = declarations.iter().map(|decl| decl.id).collect();
-    if let Some((id, _)) = crate::schema::declared_invocation(value, &ids) {
-        return declarations
-            .into_iter()
-            .find(|decl| decl.id == id)
-            .map(|decl| decl.label);
-    }
-    let value = value.get("op").unwrap_or(value);
-    let variant = match value {
-        serde_json::Value::String(variant) => variant.as_str(),
-        serde_json::Value::Object(fields) => match fields.get("action") {
-            Some(serde_json::Value::String(variant)) => variant.as_str(),
-            _ if fields.len() == 1 => fields.keys().next()?.as_str(),
-            _ => return None,
-        },
-        _ => return None,
-    };
-    let words = in_words(variant);
-    (!words.is_empty()).then_some(words)
-}
-
-/// `remove-marks`, `remove_marks` and `RemoveMarks` as "Remove marks".
-fn in_words(identifier: &str) -> String {
-    let mut words = String::with_capacity(identifier.len().saturating_add(4));
-    let mut previous_lowercase_or_digit = false;
-    for character in identifier.chars() {
-        if matches!(character, '-' | '_' | ' ') {
-            if !words.is_empty() && !words.ends_with(' ') {
-                words.push(' ');
-            }
-            previous_lowercase_or_digit = false;
-            continue;
-        }
-        if character.is_uppercase() && previous_lowercase_or_digit {
-            words.push(' ');
-        }
-        previous_lowercase_or_digit = character.is_lowercase() || character.is_ascii_digit();
-        if words.is_empty() {
-            words.extend(character.to_uppercase());
-        } else {
-            words.extend(character.to_lowercase());
-        }
-    }
-    words.trim_end().to_owned()
-}
-
-/// The history name of an encoded [`APPLY`]: its action's
-/// [`action_label`].
-pub(crate) fn apply_label<R: Resource>(encoded: &EncodedAction) -> Option<String> {
-    if encoded.type_id != R::ACTION_TYPE {
-        return None;
-    }
-    let value = serde_json::from_slice::<serde_json::Value>(&encoded.payload).ok()?;
-    value_label::<R>(&value)
-}
-
-/// The history name of an encoded [`GROUP`](crate::GROUP) whose members are
-/// all one kind of edit (a selection's moves are "Edit marks"); a mixed group
-/// keeps the group's own label.
-pub(crate) fn group_label<R: Resource>(encoded: &EncodedAction) -> Option<String> {
-    if encoded.type_id != crate::group::group_type::<R>() {
-        return None;
-    }
-    let members = serde_json::from_slice::<Vec<serde_json::Value>>(&encoded.payload).ok()?;
-    let mut labels = members.iter().map(value_label::<R>);
-    let first = labels.next()??;
-    labels
-        .all(|label| label.as_deref() == Some(first.as_str()))
-        .then_some(first)
-}
-
 /// The encoded form of a builder's result: the action, or a refusal that
 /// carries the builder's reason.
 pub(crate) fn encode_built<R: Resource>(built: Result<R::Action, String>) -> EncodedAction {
@@ -1257,6 +1172,8 @@ fn apply_spec<R: Resource>() -> ActionSpec {
     // A typed value of the resource's own vocabulary changes only the
     // document, and the host's undo reverts it.
     .reversible()
+    // History records the edit it carried, not `apply`.
+    .carrying()
     // Offered to whoever may take the least of its edits; each value needs
     // what that edit needs.
     .requiring(R::least_permission())
@@ -1267,8 +1184,6 @@ fn apply_spec<R: Resource>() -> ActionSpec {
         read_apply::<R>(serde_json::Value::Object(value.clone()))
             .map_or(PermissionRequirement::Write, |action| R::permission(&action))
     })
-    // History names each value after what it did, not after `apply`.
-    .with_history_label(apply_label::<R>)
     // Each value is classified: deleting is destructive, trimming is not, so
     // a destructive value gets the confirmation a declared one would.
     .with_risk(|args| {
@@ -1326,11 +1241,11 @@ fn group_spec<R: Resource>() -> ActionSpec {
     )
     // One group is one undo step, like any other document action.
     .reversible()
-    // A group of one kind of edit is named after it.
-    .with_history_label(group_label::<R>)
     // A gesture's edits, from a surface, a script or an agent; a person picks
     // the named actions it is made of.
     .programmatic()
+    // History records the members, not the group.
+    .carrying()
     // Needs what its most demanding member needs.
     .requiring(R::least_permission())
     .with_permission_of(|args| {

@@ -178,8 +178,7 @@ impl ActionHost {
             (Some(context), Some(ambient)) => Some(context.enriched_by(ambient)),
             (None, Some(ambient)) => Some(ambient.clone()),
             (context, None) => context,
-        }
-        .map(|context| context.with_args_from_payload(&encoded.payload));
+        };
         let result = match context {
             Some(context) => tilo_actions::dispatch_by_with_context(
                 doc,
@@ -368,14 +367,7 @@ mod tests {
                     key: "score".into(),
                     value: 42,
                 },
-                ActionContext::for_action(
-                    "org.tilo.Test",
-                    "Test",
-                    &Put {
-                        key: "score".into(),
-                        value: 42,
-                    },
-                ),
+                ActionContext::for_app("org.tilo.Test", "Test"),
             );
             let changes = doc.get_changes(&[]);
             assert_eq!(
@@ -466,7 +458,7 @@ mod tests {
                     key: "score".into(),
                     value: 9,
                 },
-                ActionContext::for_resource("Set score", "counter:1", "counter", "Score"),
+                ActionContext::for_resource("counter:1", "counter", "Score"),
             );
             let heads = doc.get_heads();
             let change = doc
@@ -476,7 +468,13 @@ mod tests {
                 .message()
                 .and_then(|message| ActionContext::from_change_message(message))
                 .expect("context embedded in change");
-            assert_eq!(context.summary().as_deref(), Some("Set score · Score"));
+            assert_eq!(
+                context
+                    .resource
+                    .as_ref()
+                    .map(|resource| resource.label.as_str()),
+                Some("Score")
+            );
         }
 
         // Case `ambient_task_context_enriches_explicit_action_context`.
@@ -495,7 +493,7 @@ mod tests {
                     key: "k".into(),
                     value: 1,
                 },
-                ActionContext::for_resource("Set", "counter", "counter", "Counter"),
+                ActionContext::for_resource("counter", "counter", "Counter"),
             );
             let heads = doc.get_heads();
             let change = doc.get_change_by_hash(&heads[0]).unwrap();

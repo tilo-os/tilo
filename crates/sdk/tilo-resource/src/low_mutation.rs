@@ -70,13 +70,13 @@ pub(crate) fn apply_spec<R: Resource>() -> ActionSpec {
     )
     .programmatic()
     .reversible()
+    .carrying()
     .requiring(R::least_permission())
     .with_permission_of(|args| {
         build_action::<R>(&args.to_json()).map_or(PermissionRequirement::Write, |action| {
             R::permission(&action)
         })
     })
-    .with_history_label(crate::resource::apply_label::<R>)
 }
 
 pub(crate) fn group_spec<R: Resource>() -> ActionSpec {
@@ -93,10 +93,10 @@ pub(crate) fn group_spec<R: Resource>() -> ActionSpec {
         },
     )
     .programmatic()
+    .carrying()
     .reversible()
     .requiring(R::least_permission())
     .with_permission_of(group_permission::<R>)
-    .with_history_label(crate::resource::group_label::<R>)
 }
 
 fn group_permission<R: Resource>(args: &ActionArgs) -> PermissionRequirement {

@@ -678,7 +678,7 @@ pub(crate) fn status_snapshot(
         entry
             .step
             .as_ref()
-            .and_then(tilo_actions::ActionContext::summary)
+            .and_then(crate::history_source::sentence::step_summary)
             .unwrap_or_else(|| crate::history_source::change_summary(&mut snapshot, from, to))
     };
     UndoStatus {

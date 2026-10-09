@@ -533,7 +533,7 @@ pub enum MusicAction {
 }
 
 fn recommendation_history(action: &MusicAction) -> Option<tilo_actions::ActionContext> {
-    let (label, id, kind) = match action {
+    let (_, id, kind) = match action {
         MusicAction::SetRecommendationInput { .. } => (
             ui::i18n!("music-recommendations-change-inputs"),
             "library",
@@ -559,8 +559,7 @@ fn recommendation_history(action: &MusicAction) -> Option<tilo_actions::ActionCo
         ),
         _ => return None,
     };
-    let mut context = tilo_actions::ActionContext::for_action("so.tilo.music", "Music", action);
-    context.action_label = label;
+    let mut context = tilo_actions::ActionContext::for_app("so.tilo.music", "Music");
     context.resource = Some(tilo_actions::ActionResource {
         id: format!("{kind}:{id}"),
         kind: kind.to_owned(),
@@ -575,11 +574,11 @@ fn recommendation_history(action: &MusicAction) -> Option<tilo_actions::ActionCo
 
 /// Durable, browseable history metadata for a library mutation.
 pub fn history_context(action: &MusicAction) -> tilo_actions::ActionContext {
-    let mut context = tilo_actions::ActionContext::for_action("so.tilo.music", "Music", action);
+    let mut context = tilo_actions::ActionContext::for_app("so.tilo.music", "Music");
     if let Some(context) = recommendation_history(action) {
         return context;
     }
-    let (label, id, kind, resource_label): (&str, &str, &str, &str) = match action {
+    let (_, id, kind, resource_label): (&str, &str, &str, &str) = match action {
         MusicAction::SetRecommendationInput { .. }
         | MusicAction::SetRecommendationDismissed { .. }
         | MusicAction::SetRecommendationArtist { .. } => return context,
@@ -648,7 +647,6 @@ pub fn history_context(action: &MusicAction) -> tilo_actions::ActionContext {
             &imported.track.title,
         ),
     };
-    context.action_label = label.to_string();
     context.resource = Some(tilo_actions::ActionResource {
         id: format!("{kind}:{id}"),
         kind: kind.to_string(),

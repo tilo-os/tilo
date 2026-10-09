@@ -111,7 +111,11 @@ pub(crate) fn apply_restore(
         return Err(HistoryError::StaleReview);
     }
     let context = tilo_actions::ActionContext {
-        action_label: crate::i18n::I18nManager::lookup_plain("standalone-history-restore-action"),
+        what: Some(tilo_actions::Did::history(
+            tilo_actions::HistoryOp::Restore,
+            0,
+            None,
+        )),
         ..tilo_actions::ActionContext::default()
     };
     Ok(state.restore_to_heads_with_context(&review.target_heads, None, None, author, &context))
@@ -551,7 +555,7 @@ mod tests {
             assert_eq!(doc.pending_ops(), pending);
             assert_eq!(doc.base_heads(), before);
             doc.put(ROOT, "body", "finished").unwrap();
-            let action = tilo_actions::ActionContext::for_resource("Finish edit", "a", "note", "A");
+            let action = tilo_actions::ActionContext::for_resource("a", "note", "A");
             doc.commit_with(
                 CommitOptions::default().with_message(action.change_message().unwrap()),
             );
@@ -561,9 +565,8 @@ mod tests {
                 changes[0]
                     .message()
                     .and_then(|message| tilo_actions::ActionContext::from_change_message(message))
-                    .unwrap()
-                    .action_label,
-                "Finish edit",
+                    .unwrap(),
+                action,
             );
         }
 

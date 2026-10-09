@@ -652,12 +652,7 @@ impl StandaloneHistoryHost {
         }
         let now = crate::time::wall();
         for entry in selected {
-            let action = entry
-                .context
-                .as_ref()
-                .map(|context| context.action_label.as_str())
-                .filter(|label| !label.trim().is_empty())
-                .unwrap_or(&entry.summary);
+            let action = &entry.summary;
             lines.push(format!("{}: {action}", entry.author.name));
             lines.push(crate::widget::history::format_relative_time(
                 entry.timestamp,
@@ -2015,13 +2010,13 @@ mod tests {
         doc.put(ROOT, "value", "before").unwrap();
         doc.commit();
         doc.put(ROOT, "value", "after").unwrap();
-        let context = tilo_actions::ActionContext::for_resource(
-            "Move meeting",
-            "event:one",
-            "calendar.event",
-            "Planning",
-        )
-        .with_app("calendar", "Calendar");
+        let context =
+            tilo_actions::ActionContext::for_resource("event:one", "calendar.event", "Planning")
+                .with_app("calendar", "Calendar")
+                .with_described(tilo_actions::Described::new(tilo_actions::Did::verb(
+                    tilo_actions::ActionKey::new("calendar", "calendar.event", "move-meeting"),
+                    [],
+                )));
         let hash = doc
             .commit_with(
                 automerge::transaction::CommitOptions::default()

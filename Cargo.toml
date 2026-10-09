@@ -134,6 +134,7 @@ members = [
     "crates/sdk/runner-web",
     "crates/sdk/tilo-app",
     "crates/sdk/tilo-caps",
+    "crates/sdk/tilo-history",
     "crates/sdk/tilo-cpu-raster",
     "crates/sdk/tilo-host",
     "crates/sdk/tilo-resource",

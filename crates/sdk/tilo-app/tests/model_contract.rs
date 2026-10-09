@@ -261,9 +261,10 @@ fn a_second_replica_applying_the_same_action_converges() {
 }
 
 fn version_summaries(app: &TestApp<JobApp>) -> Vec<String> {
+    let reader = tilo_history::Reader::new("en-US");
     app.versions()
         .into_iter()
-        .filter_map(|version| version.summary())
+        .filter_map(|version| version.context.map(|context| reader.sentence(&context)))
         .collect()
 }
 
@@ -285,7 +286,7 @@ fn collaboration_and_history_survive_a_move_into_another_room() {
         &remote,
         encoded,
         Some(b"peer-author"),
-        tilo_actions::ActionContext::for_action(ACTION_TYPE, "Job", &remote),
+        tilo_actions::ActionContext::for_app(ACTION_TYPE, "Job"),
     )
     .unwrap();
     app.merge_peer(&mut peer).unwrap();

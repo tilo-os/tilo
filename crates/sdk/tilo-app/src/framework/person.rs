@@ -111,14 +111,11 @@ impl<P: Resource> PersonRecord<P> {
             )));
         }
         let encoded = tilo_resource::encode::<P>(action)?;
-        let label = tilo_resource::action_label::<P>(action)
-            .unwrap_or_else(|| ActionContext::for_action("", "", action).action_label);
         let change = action.change_kind();
-        let context = ActionContext::for_resource(label, P::KIND, P::KIND, P::LABEL)
+        let context = ActionContext::for_resource(P::KIND, P::KIND, P::LABEL)
             .with_app(shared.app_id, shared.app_title)
             .with_invoker(ActionInvoker::actor(&shared.me))
-            .with_change(change)
-            .with_args_from_payload(&encoded.payload);
+            .with_change(change);
         shared
             .record
             .edit(change == ChangeKind::Content, |doc| {

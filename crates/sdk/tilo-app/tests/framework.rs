@@ -238,10 +238,13 @@ fn actions_update_the_record_and_view_as_undoable_attributed_versions() {
         let mut app = TestApp::<ChecklistApp>::new().unwrap();
         app.invoke(Checklist::RENAME.with("Weekly")).unwrap();
         let last = app.versions().pop().unwrap();
-        assert_eq!(
-            last.summary().as_deref(),
-            Some("Rename the checklist · Checklist")
-        );
+        let entry = last.context.expect("an action records an entry");
+        let Some(tilo_actions::Did::Verb(verb)) = &entry.what else {
+            panic!("a verb: {entry:?}");
+        };
+        assert_eq!(verb.action.action, "rename");
+        assert_eq!(verb.args["title"].as_str(), Some("Weekly"));
+        assert!(entry.invoker.is_some(), "attributed: {entry:?}");
     }
 }
 

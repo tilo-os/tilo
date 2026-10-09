@@ -35,14 +35,9 @@ fn entry(id: u8, author: &str, at: u64, summary: &str) -> HistoryEntry {
         diff_payload: None,
         redaction: None,
         context: Some(
-            ActionContext::for_resource(
-                "Edit",
-                "finance:q2",
-                "finance.report",
-                "Q2 finance report",
-            )
-            .with_app("org.tilo.Sheets", "Sheets")
-            .with_group("q2-close", "Prepare Q2 close", "project"),
+            ActionContext::for_resource("finance:q2", "finance.report", "Q2 finance report")
+                .with_app("org.tilo.Sheets", "Sheets")
+                .with_group("q2-close", "Prepare Q2 close", "project"),
         ),
     }
 }

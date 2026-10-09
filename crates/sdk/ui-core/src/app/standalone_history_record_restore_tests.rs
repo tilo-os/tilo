@@ -147,10 +147,13 @@ fn standalone_history_restores_a_record_as_one_undoable_change() {
                 .message()
                 .and_then(tilo_actions::ActionContext::from_change_message)
                 .expect("restore carries its action context");
-            assert_eq!(
-                context.action_label,
-                crate::i18n::I18nManager::lookup_plain("standalone-history-restore-action")
-            );
+            assert!(matches!(
+                context.what,
+                Some(tilo_actions::Did::History(tilo_actions::HistoryStep {
+                    op: tilo_actions::HistoryOp::Restore,
+                    ..
+                }))
+            ));
             assert_eq!(context.app.unwrap().id, binding.app_id);
             let entry = history.peek_last_undo().unwrap();
             assert_eq!(entry.before, reviewed);

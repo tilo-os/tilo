@@ -399,10 +399,13 @@ fn stale_local_view_first_real_edit_uses_current_text_marks_and_one_owned_action
                         tilo_actions::ActionContext::from_change_message(change.message().unwrap())
                             .unwrap();
                     assert_eq!(context.resource.unwrap().id, actions::page_body_id(f.child));
-                    context.action_label
+                    match context.what {
+                        Some(tilo_actions::Did::Verb(verb)) => verb.action.action,
+                        other => panic!("a verb: {other:?}"),
+                    }
                 })
                 .collect::<Vec<_>>();
-            assert_eq!(labels, ["Splice text"]);
+            assert_eq!(labels, ["edit-body"]);
         })
         .unwrap();
     for _ in 0..3 {

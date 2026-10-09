@@ -153,7 +153,7 @@ fn undo_and_redo_take_back_the_callers_own_steps() {
     assert_eq!(app.state().title, "Plan");
     let undone = undone["undone"].as_array().unwrap();
     assert_eq!(undone.len(), 2, "{undone:?}");
-    assert_eq!(undone[0]["args"], json!("{text:\"eggs\"}"), "{undone:?}");
+    assert_eq!(undone[0]["what"]["args"]["text"], "eggs", "{undone:?}");
 
     // A redo brings back one undo, however many steps it took.
     let redone = app.call("redo", json!({})).unwrap().unwrap();
@@ -168,10 +168,11 @@ fn undo_and_redo_take_back_the_callers_own_steps() {
         .as_array()
         .unwrap()
         .iter()
-        .filter(|version| version["action"] == "Undo")
+        .filter(|version| version["what"]["did"] == "history" && version["what"]["op"] == "undo")
         .collect();
     assert_eq!(undos.len(), 1, "{listed}");
-    assert_eq!(undos[0]["args"], json!("{steps:2}"), "{listed}");
+    assert_eq!(undos[0]["what"]["steps"], 2, "{listed}");
+    assert_eq!(undos[0]["sentence"], "Undid 2 steps", "{listed}");
 }
 
 /// The newest listed version, with what it carries over filled in.
@@ -187,7 +188,7 @@ fn a_keyboard_undo_and_redo_are_named_after_the_step_and_stay_its_authors() {
     let mut app = TestApp::<BoardApp>::new().unwrap();
     app.invoke(Board::RENAME.with("Plan")).unwrap();
     let renamed = newest(&mut app);
-    let label = renamed["action"].as_str().unwrap().to_owned();
+    let label = renamed["sentence"].as_str().unwrap().to_owned();
     assert!(!label.is_empty(), "{renamed}");
     let by = renamed["by"].clone();
     assert!(by.is_string(), "{renamed}");
@@ -197,7 +198,11 @@ fn a_keyboard_undo_and_redo_are_named_after_the_step_and_stay_its_authors() {
     assert!(app.undo());
     assert_eq!(app.state().title, "");
     let undo = newest(&mut app);
-    assert_eq!(undo["action"], json!(format!("Undo {label}")), "{undo}");
+    assert_eq!(
+        undo["sentence"],
+        json!(format!("Undid “{label}”")),
+        "{undo}"
+    );
     assert_eq!(undo["by"], by, "{undo}");
     let context = app
         .versions()
@@ -205,20 +210,36 @@ fn a_keyboard_undo_and_redo_are_named_after_the_step_and_stay_its_authors() {
         .unwrap()
         .context
         .expect("an undo says what it did");
-    assert_eq!(context.action_label, format!("Undo {label}"));
+    let Some(tilo_actions::Did::History(step)) = &context.what else {
+        panic!("an undo records a history step: {context:?}");
+    };
+    assert_eq!(step.op, tilo_actions::HistoryOp::Undo);
+    assert_eq!(
+        step.of.as_ref().map(|of| json!(of.what)),
+        Some(renamed["what"].clone()),
+        "the undo records the step it took back"
+    );
     assert!(context.invoker.is_some(), "{context:?}");
 
     // Ctrl+Shift+Z names the same step, not the undo it reverts.
     assert!(app.redo());
     assert_eq!(app.state().title, "Plan");
     let redo = newest(&mut app);
-    assert_eq!(redo["action"], json!(format!("Redo {label}")), "{redo}");
+    assert_eq!(
+        redo["sentence"],
+        json!(format!("Redid “{label}”")),
+        "{redo}"
+    );
     assert_eq!(redo["by"], by, "{redo}");
 
     // And undoing that redo is again an undo of the step.
     assert!(app.undo());
     let again = newest(&mut app);
-    assert_eq!(again["action"], json!(format!("Undo {label}")), "{again}");
+    assert_eq!(
+        again["sentence"],
+        json!(format!("Undid “{label}”")),
+        "{again}"
+    );
     assert_eq!(again["by"], by, "{again}");
 }
 
@@ -324,9 +345,10 @@ fn history_lists_each_step_with_its_arguments_author_and_checkpoints() {
     let versions = carried(listed["versions"].as_array().unwrap());
     let sky = versions
         .iter()
-        .find(|version| version["args"] == "{text:\"sky\"}")
+        .find(|version| version["what"]["args"]["text"] == "sky")
         .unwrap();
-    assert_eq!(sky["action"], "Add a card", "{listed}");
+    assert_eq!(sky["what"]["action"]["action"], "add", "{listed}");
+    assert!(!sky["sentence"].as_str().unwrap().is_empty(), "{listed}");
     assert!(sky["by"].is_string(), "{listed}");
     assert_eq!(sky["checkpoint"], json!(["before sea"]), "{listed}");
     let [.., sea, gull] = versions.as_slice() else {
@@ -455,7 +477,7 @@ fn undo_named_author_preserves_other_authors_and_attributes_the_undo_to_its_call
         .as_array()
         .unwrap()
         .iter()
-        .find(|entry| entry["args"] == r#"{text:"agent card"}"#)
+        .find(|entry| entry["what"]["args"]["text"] == "agent card")
         .and_then(|entry| entry["by"].as_str())
         .expect("history publishes the exact invoker");
     assert_eq!(author, "agent:clipboard-helper");
@@ -469,8 +491,5 @@ fn undo_named_author_preserves_other_authors_and_attributes_the_undo_to_its_call
     assert_eq!(cards(&app), ["person card"]);
     let undo = newest(&mut app);
     assert_eq!(undo["by"], "person:owner", "{undo}");
-    assert!(
-        undo["action"].as_str().unwrap().starts_with("Undo"),
-        "{undo}"
-    );
+    assert_eq!(undo["what"]["op"], "undo", "{undo}");
 }

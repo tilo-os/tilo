@@ -15999,6 +15999,7 @@ dependencies = [
  "tilo-content",
  "tilo-feedback",
  "tilo-files",
+ "tilo-history",
  "tilo-resource",
  "tilo-runner-native",
  "tilo-runner-web",
@@ -16932,6 +16933,17 @@ name = "tilo-headless-schema"
 version = "0.1.0"
 dependencies = [
  "serde_json",
+ "workspace-hack",
+]
+
+[[package]]
+name = "tilo-history"
+version = "0.1.0"
+dependencies = [
+ "fluent",
+ "serde_json",
+ "tilo-actions",
+ "unic-langid",
  "workspace-hack",
 ]
 
@@ -18239,6 +18251,7 @@ dependencies = [
  "tilo-files",
  "tilo-font-catalog",
  "tilo-headless-schema",
+ "tilo-history",
  "tilo-host",
  "tilo-host-search",
  "tilo-image-codec",

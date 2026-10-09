@@ -283,8 +283,8 @@ pub const MAX_AGENT_AUTHOR_NAME_BYTES: usize = 80;
     reason = "one exhaustive action-to-history mapping keeps every ChatAction variant compiler-checked"
 )]
 pub fn history_context(action: &ChatAction) -> tilo_actions::ActionContext {
-    let mut context = tilo_actions::ActionContext::for_action("so.tilo.chat", "Chat", action);
-    let (label, channel, resource_id, kind) = match action {
+    let mut context = tilo_actions::ActionContext::for_app("so.tilo.chat", "Chat");
+    let (_, channel, resource_id, kind) = match action {
         ChatAction::Feedback(feedback) => {
             let (id, channel) = feedback.locus();
             ("File feedback", channel, id, "chat.feedback")
@@ -363,7 +363,6 @@ pub fn history_context(action: &ChatAction) -> tilo_actions::ActionContext {
         ChatAction::EditDraft { key, .. } => ("Edit draft", key, key, "chat.draft"),
         ChatAction::ClearDraft { key } => ("Clear draft", key, key, "chat.draft"),
     };
-    context.action_label = label.to_string();
     context.resource = Some(tilo_actions::ActionResource {
         id: format!("{kind}:{resource_id}"),
         kind: kind.to_string(),
@@ -2565,7 +2564,6 @@ mod tests {
             channel: "launch".into(),
             id: "msg-9".into(),
         });
-        assert_eq!(context.action_label, "Delete message");
         assert_eq!(context.resource.unwrap().id, "chat.message:msg-9");
     }
 

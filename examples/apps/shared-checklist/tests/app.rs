@@ -105,19 +105,16 @@ fn history_is_attributed() {
     add(&mut grace, "Bread");
     ada.sync_with(&mut grace).expect("sync");
     let versions = ada.versions();
-    let by = |author: &[u8], summary: &str| {
+    let by = |author: &[u8], action: &str| {
         versions.iter().any(|version| {
-            version.actor == hex(author) && version.summary().as_deref() == Some(summary)
+            version.actor == hex(author)
+                && version.context.as_ref().is_some_and(|context| {
+                    matches!(&context.what, Some(ui::tilo_actions::Did::Verb(verb)) if verb.action.action == action)
+                })
         })
     };
-    assert!(
-        by(b"ada", "Rename the checklist · Checklist"),
-        "{versions:#?}"
-    );
-    assert!(
-        by(b"grace", "Add the drafted item · Checklist"),
-        "{versions:#?}"
-    );
+    assert!(by(b"ada", "rename"), "{versions:#?}");
+    assert!(by(b"grace", "add"), "{versions:#?}");
 }
 
 /// Undo takes back my last action, not the collaborator's that arrived

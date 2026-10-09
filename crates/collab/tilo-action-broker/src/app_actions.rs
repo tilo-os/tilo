@@ -94,13 +94,14 @@ impl AppActionConsent {
         }
     }
 
-    /// How long the grant lives, in words for the workspace's history.
+    /// How long the grant lives, as the workspace's history records it:
+    /// `once`, `session` or `workspace`.
     #[must_use]
     pub const fn lifetime(self) -> &'static str {
         match self {
             Self::Once => "once",
-            Self::Session => "for this session",
-            Self::Always | Self::Deny => "in this workspace",
+            Self::Session => "session",
+            Self::Always | Self::Deny => "workspace",
         }
     }
 }

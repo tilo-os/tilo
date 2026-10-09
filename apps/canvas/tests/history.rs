@@ -104,12 +104,7 @@ fn a_bad_passage_is_found_by_diff_and_undone_by_its_run() {
     let versions = carried(history["versions"].as_array().unwrap());
     let blot = versions
         .iter()
-        .find(|version| {
-            version["args"]
-                .as_str()
-                .is_some_and(|args| args == r#"{marks:["blot"]}"#)
-                && version["undone"] == true
-        })
+        .find(|version| version["what"]["action"]["action"] == "draw" && version["undone"] == true)
         .unwrap_or_else(|| panic!("the blot step is listed as undone: {history}"));
     assert_eq!(blot["run_id"], RUN, "{history}");
     assert_eq!(history["checkpoints"][0]["name"], "before sky rework");
@@ -318,20 +313,24 @@ fn history_names_each_step_by_what_it_did_for_people_and_agents_alike() {
         .unwrap();
     app.call("add-layer", json!({"name": ""})).unwrap();
     let history = app.call("history", json!({})).unwrap().unwrap();
-    let actions: Vec<&str> = history["versions"]
+    let steps: Vec<(&str, &Value)> = history["versions"]
         .as_array()
         .unwrap()
         .iter()
-        .filter_map(|version| version["action"].as_str())
+        .filter_map(|version| {
+            Some((
+                version["what"]["action"]["action"].as_str()?,
+                &version["what"]["args"],
+            ))
+        })
         .collect();
-    for expected in [
-        "Draw 2 shapes",
-        "Recolour 2 marks",
-        "Move Sun",
-        "Add Layer 2",
-    ] {
-        assert!(actions.contains(&expected), "{expected:?} in {actions:?}");
-    }
+    let verbs: Vec<&str> = steps.iter().map(|(verb, _)| *verb).collect();
+    assert_eq!(
+        verbs,
+        ["draw", "edit-marks", "edit-marks", "add-layer"],
+        "{history}"
+    );
+    assert_eq!(steps[1].1["fill"], "#cc0000", "{history}");
     let layers: Vec<String> = app
         .state()
         .layers

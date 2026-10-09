@@ -161,8 +161,11 @@ fn launch_actions_are_the_participants_own_undoable_edits() {
     let traced = versions
         .last()
         .and_then(|version| version.context.as_ref())
-        .map(|context| context.action_label.as_str());
-    assert_eq!(traced, Some("Trace over an image"), "{versions:?}");
+        .and_then(|context| match &context.what {
+            Some(tilo_actions::Did::Verb(verb)) => Some(verb.action.action.as_str()),
+            _ => None,
+        });
+    assert_eq!(traced, Some("trace"), "{versions:?}");
     assert!(app.undo());
     assert_eq!(app.state().source, "");
 }

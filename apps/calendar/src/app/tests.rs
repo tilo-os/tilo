@@ -3362,7 +3362,10 @@ fn native_event_edits_record_the_actual_resource_title_in_platform_history() {
                     .and_then(tilo_actions::ActionContext::from_change_message)
             })
             .expect("the committed edit carries platform History provenance");
-        assert_eq!(context.action_label, label);
+        assert!(
+            matches!(&context.what, Some(tilo_actions::Did::Verb(_))),
+            "{label}: {context:?}"
+        );
         let resource = context.resource.expect("the edit names its event resource");
         assert_eq!(resource.id, crate::actions::event_resource_id(event.id));
         assert_eq!(resource.kind, "calendar.event");

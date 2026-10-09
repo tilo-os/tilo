@@ -450,10 +450,12 @@ fn effect_and_task_records_persist_in_the_profile() {
     let workspace = ProfileWorkspace::open(temp.path()).unwrap();
 
     let invocation = tilo_actions::InvocationId(uuid::Uuid::from_u128(1));
-    let context = tilo_actions::ActionContext {
-        action_label: "Send".into(),
-        ..tilo_actions::ActionContext::default()
-    };
+    let context = tilo_actions::ActionContext::default().with_described(
+        tilo_actions::Described::new(tilo_actions::Did::verb(
+            tilo_actions::ActionKey::new("org.tilo.Mail", "mail.message", "send"),
+            [],
+        )),
+    );
     let status = tilo_actions::EffectReceiptStatus::Succeeded;
     for _ in 0..2 {
         workspace
@@ -655,14 +657,12 @@ fn grants_in_the_runtimes_own_workspace_are_recorded_by_its_administrator_and_sa
     assert!(workspace.capabilities.iter().any(|cap| cap.id == id));
     let receipt = workspace.effect_receipts.last().unwrap();
     assert_eq!(receipt.actor, "owner");
-    assert!(
-        receipt
-            .context
-            .action_label
-            .contains("Allowed Caller to use Target App: Open in this workspace"),
-        "{}",
-        receipt.context.action_label
-    );
+    let Some(tilo_actions::Did::Verb(verb)) = &receipt.context.what else {
+        panic!("the grant is recorded as a verb: {:?}", receipt.context);
+    };
+    assert_eq!(verb.args["app"].as_str(), Some("Caller"));
+    assert_eq!(verb.args["target"].as_str(), Some("Target App"));
+    assert_eq!(verb.args["lifetime"].as_str(), Some("workspace"));
 
     grants.revoke(&room, &id);
     let saved = read_tree(&temp.path().join(STANDALONE_WORKSPACE)).unwrap();

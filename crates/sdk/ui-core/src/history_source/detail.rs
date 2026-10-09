@@ -119,7 +119,7 @@ mod tests {
             diff_payload: None,
             redaction: None,
             context: Some(
-                ActionContext::for_resource("Edit", resource, "file", resource)
+                ActionContext::for_resource(resource, "file", resource)
                     .with_app("files", "Files")
                     .with_group("issue:42", "Launch", "issue")
                     .with_facet(ActionFacet::new("file-type", "Markdown")),

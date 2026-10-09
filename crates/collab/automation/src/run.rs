@@ -734,7 +734,6 @@ impl<'a, H: ActionHost + Sync, K: RunHooks> Runner<'a, H, K> {
         descriptor: &ActionDescriptor,
     ) -> ActionContext {
         ActionContext::for_resource(
-            descriptor.action_label.clone(),
             row.resource.id.clone(),
             row.resource.kind.clone(),
             row.resource.label.clone(),
@@ -749,6 +748,14 @@ impl<'a, H: ActionHost + Sync, K: RunHooks> Runner<'a, H, K> {
         .with_facet(ActionFacet::new("kind", "shortcut"))
         .with_facet(ActionFacet::new("trigger", self.trigger.clone()))
         .with_facet(ActionFacet::new("shortcut", self.shortcut.id.clone()))
+        .with_described(tilo_actions::Described::new(tilo_actions::Did::verb(
+            tilo_actions::ActionKey::new(
+                app_id,
+                row.resource.kind.clone(),
+                descriptor.address.action.clone(),
+            ),
+            [],
+        )))
     }
 
     /// The row offering `action` on `app_id` at `target`, fetched now so the

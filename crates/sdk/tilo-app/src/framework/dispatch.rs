@@ -583,8 +583,8 @@ impl<R: Resource> Dispatcher<R> {
     }
 
     /// Apply one typed action to the document `edits` lends — an event's,
-    /// or a settle pass's — now, attributed to the participant and labelled
-    /// after the action (its declared label when it names a declared one).
+    /// or a settle pass's — now, attributed to the participant, with history
+    /// recording what the action did.
     /// One event's actions are one undo step, and an action that continues
     /// the previous one ([`Resource::coalesces`], the next letter of a word)
     /// joins its step.
@@ -593,10 +593,7 @@ impl<R: Resource> Dispatcher<R> {
     /// Returns [`ActionError::Refused`] for a participant who may only view,
     /// and the action's own refusal; nothing is written either way.
     pub fn apply_now(&self, edits: &mut Edits<'_>, action: &R::Action) -> Result<(), ActionError> {
-        let label = tilo_resource::action_label::<R>(action)
-            .unwrap_or_else(|| ActionContext::for_action("", "", action).action_label);
         let context = ActionContext::for_resource(
-            label,
             self.resource_id.as_ref(),
             R::KIND,
             self.resource_label.get(),
@@ -629,7 +626,6 @@ impl<R: Resource> Dispatcher<R> {
         // History names the resource and who edited it even when the
         // surface's context does not.
         let mut named = ActionContext::for_resource(
-            "",
             self.resource_id.as_ref(),
             R::KIND,
             self.resource_label.get(),

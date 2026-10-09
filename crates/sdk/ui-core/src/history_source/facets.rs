@@ -97,7 +97,7 @@ mod tests {
             diff_payload: None,
             redaction: None,
             context: Some(
-                ActionContext::for_resource("Rename", "1", "file", "brief.md")
+                ActionContext::for_resource("1", "file", "brief.md")
                     .with_app("files", "Files")
                     .with_group("issue:42", "Launch brief", "issue")
                     .with_facet(ActionFacet::new("file-type", "Markdown")),

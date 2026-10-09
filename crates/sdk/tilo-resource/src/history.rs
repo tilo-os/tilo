@@ -35,16 +35,6 @@ pub struct Version {
     pub message: Option<String>,
 }
 
-impl Version {
-    /// A one-line human description: the action's label when known.
-    pub fn summary(&self) -> Option<String> {
-        self.context
-            .as_ref()
-            .and_then(ActionContext::summary)
-            .or_else(|| self.message.clone())
-    }
-}
-
 fn version_of(meta: &automerge::ChangeMetadata<'_>) -> Version {
     let message = meta.message.as_deref().map(str::to_owned);
     Version {

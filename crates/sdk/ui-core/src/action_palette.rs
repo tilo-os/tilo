@@ -1527,7 +1527,6 @@ impl ActionPalette {
             return false;
         };
         let mut context = ActionContext::for_resource(
-            &flattened.action.label,
             flattened.resource_id.as_str(),
             &flattened.resource_kind,
             &flattened.resource_label,
@@ -1589,12 +1588,20 @@ impl ActionPalette {
                 }
             }
         }
-        Some(Self::dispatch_encoded(
-            doc,
+        let mut context = pending.context;
+        let kind = context
+            .resource
+            .as_ref()
+            .map(|resource| resource.kind.clone())
+            .unwrap_or_default();
+        if let Some(described) = tilo_actions::Described::of_published(
             &encoded,
-            registry,
-            transport,
-            pending.context,
+            tilo_actions::ActionKey::new("", kind, &pending.address.action),
+        ) {
+            context = context.with_described(described);
+        }
+        Some(Self::dispatch_encoded(
+            doc, &encoded, registry, transport, context,
         ))
     }
 
@@ -1845,7 +1852,6 @@ impl ActionPalette {
             return None;
         }
         let mut context = ActionContext::for_resource(
-            &fa.action.label,
             fa.resource_id.as_str(),
             &fa.resource_kind,
             &fa.resource_label,
@@ -3367,7 +3373,13 @@ mod tests {
                 .expect("dispatch ok");
             assert!(matches!(d, Dispatched::AppliedLocal(_)));
             let context = d.envelope().context.as_ref().expect("palette provenance");
-            assert_eq!(context.action_label, "Mark done");
+            let Some(tilo_actions::Did::Verb(verb)) = &context.what else {
+                panic!("the published action is recorded: {context:?}");
+            };
+            assert_eq!(
+                (verb.action.kind.as_str(), verb.action.action.as_str()),
+                ("test.thing", "mark")
+            );
             assert_eq!(
                 context
                     .resource

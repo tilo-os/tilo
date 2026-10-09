@@ -1559,7 +1559,6 @@ mod tests {
                 on_behalf_of: None,
                 argument: InvokeArgument::Json(arguments),
                 context: Some(ActionContext::for_resource(
-                    "Archive",
                     "note:1",
                     "notes.note",
                     "Groceries",

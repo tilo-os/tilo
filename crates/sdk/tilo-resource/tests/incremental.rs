@@ -357,7 +357,11 @@ fn the_first_page_of_a_long_history_reads_only_that_page() {
         paged < listed,
         "a page ({paged:?}) should cost less than the whole history ({listed:?})"
     );
-    // Summaries come from the action that made each change.
-    assert!(page.versions.iter().all(|v| v.summary().is_some()));
+    // Every change records what the action that made it did.
+    assert!(
+        page.versions
+            .iter()
+            .all(|v| v.context.as_ref().is_some_and(|c| c.what.is_some()))
+    );
     assert_eq!(<Notebook as Resource>::KIND, "test.notebook");
 }

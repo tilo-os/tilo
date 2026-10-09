@@ -382,7 +382,6 @@ fn rows_attribute_and_summarise_what_actually_changed() {
         let block = dm.insert_block(None, "paragraph");
         dm.splice_text(&block, 0, 0, "launch");
         let context = tilo_actions::ActionContext::for_resource(
-            "Edit",
             "notes.note:launch",
             "notes.note",
             "Launch brief",
@@ -801,11 +800,20 @@ fn an_action_context_names_its_change_before_any_field_fallback() {
     doc.put(ROOT, "title", "draft").unwrap();
     doc.commit();
     doc.put(ROOT, "title", "final").unwrap();
-    let context = tilo_actions::ActionContext::for_resource("Rename report", "r", "doc", "Report");
+    let context = tilo_actions::ActionContext::for_resource("r", "doc", "Report").with_described(
+        tilo_actions::Described::new(tilo_actions::Did::verb(
+            tilo_actions::ActionKey::new("org.tilo.Reports", "doc", "finalize"),
+            [],
+        )),
+    );
     doc.commit_with(CommitOptions::default().with_message(context.change_message().unwrap()));
     let entries = HistorySource::new().entries(&mut doc);
     let last = entries.last().unwrap();
-    assert_eq!(Some(last.summary.clone()), context.summary());
+    assert_eq!(
+        last.summary,
+        crate::history_source::sentence::sentence(&context)
+    );
+    assert_eq!(last.summary, "Finalize in Report");
     assert!(!last.summary.contains("title"), "{}", last.summary);
 }
 

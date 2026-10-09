@@ -260,14 +260,9 @@ mod tests {
             diff_payload: None,
             redaction: None,
             context: Some(
-                ActionContext::for_resource(
-                    "Edit",
-                    "notes.note:brief",
-                    "notes.note",
-                    "Launch brief",
-                )
-                .with_app("org.tilo.Notes", "Notes")
-                .with_group("issue:42", "Prepare launch brief", "issue"),
+                ActionContext::for_resource("notes.note:brief", "notes.note", "Launch brief")
+                    .with_app("org.tilo.Notes", "Notes")
+                    .with_group("issue:42", "Prepare launch brief", "issue"),
             ),
         }
     }

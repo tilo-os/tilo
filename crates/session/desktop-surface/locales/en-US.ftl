@@ -289,6 +289,7 @@ activity-removed-workspace = a removed workspace
 activity-receipt-completed = Completed
 activity-receipt-failed = Failed
 activity-receipt-cancelled = Cancelled
+activity-receipt-ended = { $status }: { $what }
 activity-replay-pending = Replay is waiting for current edits to finish
 activity-replay-unavailable = Workspace replay is unavailable for these checkpoints
 activity-replay-empty = No replayable workspace checkpoints yet

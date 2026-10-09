@@ -382,6 +382,7 @@ impl App {
         ) {
             resources.extend(legacy);
         }
+        crate::history_source::sentence::learn_labels(&resources);
         resources
     }
 
@@ -1705,19 +1706,12 @@ impl App {
                 });
             return;
         }
-        // The invoker is the delivered actor plus the participant the host
-        // set for it in the delivery context (never trusted from anywhere
-        // else). Resolution below rebuilds that participant's own tree, and
+        // The invoker is the delivered actor plus the participant and the
+        // person it acts for that the host set for it in the delivery context
+        // (never trusted from anywhere else). Resolution below rebuilds that participant's own tree, and
         // durable attribution carries the same invoker.
-        let participant =
-            crate::invocation_scope::PublishedInvocationRequest::delivered_participant(
-                actor,
-                ambient_context,
-            );
-        let invoker = tilo_actions::ActionInvoker {
-            actor: actor.to_owned(),
-            participant: participant.clone(),
-        };
+        let invoker = tilo_actions::ActionInvoker::delivered(actor, ambient_context);
+        let participant = invoker.participant.clone();
         let attributed =
             ambient_context.map(|context| context.clone().with_invoker(invoker.clone()));
         let ambient_context = attributed.as_ref();

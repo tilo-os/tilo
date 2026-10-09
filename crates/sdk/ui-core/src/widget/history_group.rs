@@ -781,7 +781,6 @@ mod tests {
             for entry in &mut entries {
                 entry.context = Some(
                     tilo_actions::ActionContext::for_resource(
-                        "Edit",
                         "notes.note:launch",
                         "notes.note",
                         "Launch brief",

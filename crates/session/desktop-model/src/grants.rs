@@ -6,7 +6,10 @@
 //! document and persists it however it keeps state.
 
 use collab_types::caps::CapOverride;
-use tilo_actions::{ActionContext, ActionFacet, EffectReceiptStatus, InvocationId};
+use tilo_actions::{
+    ActionContext, ActionFacet, ActionKey, Described, Did, EffectReceiptStatus, InvocationId,
+    Scalar,
+};
 
 use crate::ids::WorkspaceId;
 use crate::task::WorkspaceEffectReceipt;
@@ -61,12 +64,6 @@ impl DesktopTree {
         {
             return None;
         }
-        let original_action = bounded_receipt_text(&context.action_label, 160);
-        context.action_label = if original_action.is_empty() {
-            status.label().to_string()
-        } else {
-            format!("{} · {original_action}", status.label())
-        };
         context
             .facets
             .push(ActionFacet::new("tilo.receipt", "effect"));
@@ -87,8 +84,12 @@ impl DesktopTree {
     }
 }
 
-/// What a workspace's history says when a person allows `app_label` to use
-/// `target_label`'s action `action_label` in `room`, for `lifetime`.
+/// The verb a workspace's history records when a person allows an app to
+/// use another app's action.
+pub const ALLOW_APP_ACTION: &str = "allow-app-action";
+
+/// What a workspace's history records when a person allows `app_label` to
+/// use `target_label`'s action `action_label` in `room`, for `lifetime`.
 #[must_use]
 pub fn app_action_grant_context(
     room: &str,
@@ -98,12 +99,24 @@ pub fn app_action_grant_context(
     lifetime: &str,
 ) -> ActionContext {
     ActionContext::for_resource(
-        format!("Allowed {app_label} to use {target_label}: {action_label} {lifetime}"),
         format!("workspace.permissions:{room}"),
         "workspace.permissions",
         "App actions",
     )
     .with_app(WORKSPACE_GOVERNANCE_APP_ID, "Workspace permissions")
+    .with_described(Described::new(Did::verb(
+        ActionKey::new(
+            WORKSPACE_GOVERNANCE_APP_ID,
+            "workspace.permissions",
+            ALLOW_APP_ACTION,
+        ),
+        [
+            ("app".to_owned(), Scalar::text(app_label)),
+            ("target".to_owned(), Scalar::text(target_label)),
+            ("action".to_owned(), Scalar::text(action_label)),
+            ("lifetime".to_owned(), Scalar::text(lifetime)),
+        ],
+    )))
 }
 
 fn bounded_receipt_text(value: &str, max: usize) -> String {
@@ -117,7 +130,10 @@ fn bounded_receipt_text(value: &str, max: usize) -> String {
 }
 
 fn redact_receipt_context(context: &mut ActionContext) {
-    context.action_label = bounded_receipt_text(&context.action_label, 200);
+    if let Some(item) = &mut context.item {
+        item.id = bounded_receipt_text(&item.id, 512);
+        item.label = bounded_receipt_text(&item.label, 200);
+    }
     if let Some(app) = &mut context.app {
         app.id = bounded_receipt_text(&app.id, 160);
         app.label = bounded_receipt_text(&app.label, 160);
@@ -309,8 +325,17 @@ mod tests {
                 42,
             )
             .unwrap();
-        assert!(receipt.context.action_label.chars().count() <= 200);
-        assert!(!receipt.context.action_label.contains('\u{7}'));
+        let Some(Did::Verb(verb)) = &receipt.context.what else {
+            panic!("the grant is recorded as a verb");
+        };
+        assert_eq!(verb.action.action, ALLOW_APP_ACTION);
+        let action = verb.args["action"].as_str().unwrap();
+        assert!(action.chars().count() <= tilo_actions::entry::MAX_SCALAR_CHARS + 1);
+        assert_eq!(
+            verb.args["app"].as_str(),
+            Some("Caller"),
+            "control characters are dropped"
+        );
         assert_eq!(
             receipt.context.app.as_ref().unwrap().id,
             WORKSPACE_GOVERNANCE_APP_ID

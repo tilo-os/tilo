@@ -20,6 +20,19 @@ use tilo_desktop_model::{
 /// The local user every [`TestHost`] answers for.
 pub(crate) const LOCAL_USER: &str = "local";
 
+/// A verb named after `label` (`Rewrite opening` → `rewrite-opening`), as a
+/// test's entry records it.
+pub(crate) fn verb(label: &str) -> tilo_actions::Described {
+    tilo_actions::Described::new(tilo_actions::Did::verb(
+        tilo_actions::ActionKey::new(
+            "org.tilo.Writer",
+            "document",
+            tilo_actions::entry::kebab(label),
+        ),
+        [],
+    ))
+}
+
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 
 /// A fresh id for a workspace, strip, group or tab in a fixture.
@@ -285,11 +298,6 @@ impl TestTree {
         {
             return false;
         }
-        context.action_label = if context.action_label.is_empty() {
-            status.label().to_string()
-        } else {
-            format!("{} · {}", status.label(), context.action_label)
-        };
         context
             .facets
             .push(tilo_actions::ActionFacet::new("tilo.receipt", "effect"));

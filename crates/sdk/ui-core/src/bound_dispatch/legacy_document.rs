@@ -836,7 +836,6 @@ fn execute_owned(
                     ));
                 }
                 let mut context = tilo_actions::ActionContext::for_resource(
-                    spec.history_label(&encoded),
                     resource.id.as_str(),
                     &resource.kind,
                     &resource.label,
@@ -845,7 +844,6 @@ fn execute_owned(
                 if let Some(ambient) = input.ambient {
                     context = context.enriched_by(ambient);
                 }
-                let context = context.with_args_from_payload(&encoded.payload);
                 let dispatched = execute_document(
                     doc,
                     action.as_ref(),

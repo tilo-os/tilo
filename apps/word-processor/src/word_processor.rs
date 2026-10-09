@@ -920,7 +920,7 @@ impl WordProcessor {
         let Some(dispatch) = &self.dispatch else {
             return false;
         };
-        let context = tilo_actions::ActionContext::for_action("org.tilo.Writer", "Writer", &action);
+        let context = tilo_actions::ActionContext::for_app("org.tilo.Writer", "Writer");
         dispatch.apply_now_with(state, &action, context).is_ok()
     }
 

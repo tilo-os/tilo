@@ -104,7 +104,6 @@ pub(crate) fn restore_reviewed_history(
         RestoreWrite::Content,
     );
     let context = tilo_actions::ActionContext::for_resource(
-        "Restore version",
         review.resource().record_id.as_str(),
         "document",
         title,
@@ -229,7 +228,11 @@ pub(crate) fn restore_reviewed_record(
     )
     .map_err(|_| OwnedRestoreError::Denied)?;
     let mut context = tilo_actions::ActionContext {
-        action_label: crate::i18n::I18nManager::lookup_plain("standalone-history-restore-action"),
+        what: Some(tilo_actions::Did::history(
+            tilo_actions::HistoryOp::Restore,
+            0,
+            None,
+        )),
         ..tilo_actions::ActionContext::default()
     }
     .enriched_by(&binding.operation_context);

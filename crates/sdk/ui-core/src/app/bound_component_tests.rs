@@ -263,12 +263,7 @@ impl Widget for Probe {
                 doc.document_mut(),
                 "bound.apply",
                 &FollowUp,
-                tilo_actions::ActionContext::for_resource(
-                    "Declared follow-up",
-                    "bound:probe",
-                    "probe",
-                    "Probe",
-                ),
+                tilo_actions::ActionContext::for_resource("bound:probe", "probe", "Probe"),
             ),
             8 => {
                 let mut queue = tilo_actions::OptimisticQueue::new(doc.document_mut());

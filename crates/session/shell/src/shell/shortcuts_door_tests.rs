@@ -788,7 +788,10 @@ fn a_saved_shortcut_runs_its_steps_through_the_door_and_undoes_as_one() {
     );
     assert_eq!(recorded.apps(), [FIXTURE]);
     assert_eq!(recorded.steps[0].record, RECORD);
-    assert_eq!(recorded.steps[0].summary, "Write draft, Publish draft");
+    assert_eq!(
+        recorded.steps[0].summary,
+        "Draft in Inbox, Publish in Inbox"
+    );
 
     // Undoing the run reverts both steps.
     let mut doc = std::mem::take(&mut door.app.doc);
@@ -1744,7 +1747,10 @@ fn history_mentions(door: &Door, text: &str) -> bool {
         .expect("the room")
         .effect_receipts
         .iter()
-        .any(|receipt| receipt.context.action_label.contains(text))
+        .any(|receipt| {
+            ui::history_source::sentence::step_summary(&receipt.context)
+                .is_some_and(|sentence| sentence.contains(text))
+        })
 }
 
 fn served_until(door: &mut Door, count: usize) {

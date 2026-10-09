@@ -432,12 +432,8 @@ async fn an_invited_person_joins_a_governed_room_edits_sees_presence_and_is_remo
 }
 
 fn terminal_audit(actor: &str, invocation: uuid::Uuid) -> Vec<u8> {
-    let mut context = tilo_actions::ActionContext::for_resource(
-        "Synthetic terminal",
-        "workspace",
-        "workspace",
-        "Private fixture",
-    );
+    let mut context =
+        tilo_actions::ActionContext::for_resource("workspace", "workspace", "Private fixture");
     context.facets = vec![
         tilo_actions::ActionFacet::new("tilo.receipt", "effect"),
         tilo_actions::ActionFacet::new("tilo.invocation", invocation.to_string()),

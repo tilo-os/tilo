@@ -259,12 +259,12 @@ mod tests {
                 invocation,
                 "ada",
                 tilo_actions::ActionContext::for_resource(
-                    "Export",
                     "document:brief",
                     "document",
                     "Release brief",
                 )
-                .with_app("org.tilo.Writer", "Writer"),
+                .with_app("org.tilo.Writer", "Writer")
+                .with_described(crate::activity::testing::verb("Export")),
                 tilo_actions::EffectReceiptStatus::Succeeded,
             )
         );
@@ -282,7 +282,7 @@ mod tests {
             .iter()
             .find(|entry| entry.id == HistoryEntryId::from_bytes(*invocation.0.as_bytes()))
             .expect("receipt is visible after restart");
-        assert_eq!(entry.summary, "Completed · Export · Release brief");
+        assert_eq!(entry.summary, "Export in Release brief");
         assert!(!entry.is_revertible());
     }
 
@@ -296,7 +296,6 @@ mod tests {
             invocation,
             local,
             tilo_actions::ActionContext::for_resource(
-                "Export",
                 "document:brief",
                 "document",
                 "Release brief",
@@ -360,12 +359,12 @@ mod tests {
             ] {
                 doc.put(automerge::ROOT, field, value).unwrap();
                 let context = ui::tilo_actions::ActionContext::for_resource(
-                    action,
                     record.as_str(),
                     "document",
                     "Campaign brief",
                 )
                 .with_app("org.tilo.Writer", "Writer")
+                .with_described(crate::activity::testing::verb(action))
                 .with_purpose("Make the opening concrete")
                 .with_group(
                     "agent-run:test",
@@ -462,7 +461,6 @@ mod tests {
         doc.put(automerge::ROOT, "intro", "A concrete opening")
             .unwrap();
         let context = ui::tilo_actions::ActionContext::for_resource(
-            "Rewrite opening",
             record.as_str(),
             "document",
             "Campaign brief",
@@ -792,7 +790,6 @@ mod tests {
             doc.put(automerge::ROOT, "review", "Check the conclusion")
                 .unwrap();
             let context = ui::tilo_actions::ActionContext::for_resource(
-                "Revise conclusion",
                 record.as_str(),
                 "document",
                 "Campaign brief",
@@ -837,7 +834,6 @@ mod tests {
                 doc.put(automerge::ROOT, "body", format!("Result {n}"))
                     .unwrap();
                 let context = ui::tilo_actions::ActionContext::for_resource(
-                    "Write result",
                     id.as_str(),
                     "note",
                     format!("Result {n}"),
@@ -1040,7 +1036,6 @@ mod tests {
             redaction: None,
             context: Some(
                 ui::tilo_actions::ActionContext::for_resource(
-                    "Edit",
                     "document:launch-brief",
                     "document",
                     "Launch brief",
@@ -1461,7 +1456,6 @@ mod tests {
         let id = HistoryEntryId::from_bytes([9; 16]);
         let resource = "signed-file-record".to_string();
         let context = ui::tilo_actions::ActionContext::for_resource(
-            "Edited",
             resource.clone(),
             "files.entry",
             "Launch brief.md",
@@ -3409,12 +3403,12 @@ mod tests {
                     tilo_actions::InvocationId::new(),
                     "ada",
                     tilo_actions::ActionContext::for_resource(
-                        action,
                         format!("test:{group_id}"),
                         "document",
                         group_label,
                     )
                     .with_app("org.tilo.Writer", "Writer")
+                    .with_described(crate::activity::testing::verb(action))
                     .with_group(group_id, group_label, "work-session"),
                     tilo_actions::EffectReceiptStatus::Succeeded,
                 )
@@ -3512,7 +3506,7 @@ mod resume_card_tests {
             diff_payload: None,
             redaction: None,
             context: Some(
-                ActionContext::for_resource("Edit", "finance:q2", "sheet", "Q2 finance report")
+                ActionContext::for_resource("finance:q2", "sheet", "Q2 finance report")
                     .with_app("so.tilo.sheets", "Sheets"),
             ),
         }

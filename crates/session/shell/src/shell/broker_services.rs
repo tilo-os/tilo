@@ -1069,7 +1069,6 @@ impl WorkspaceGovernanceServices for NativeWorkspaceGovernance {
             operation,
         )?;
         let context = tilo_actions::ActionContext::for_resource(
-            &spec.label,
             resource.id.as_str(),
             &resource.kind,
             &resource.label,

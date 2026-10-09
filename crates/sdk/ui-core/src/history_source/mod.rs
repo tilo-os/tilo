@@ -43,6 +43,7 @@ pub mod run_undo;
 pub mod runs;
 pub mod schema_ops;
 pub mod seen;
+pub mod sentence;
 pub mod steps;
 pub use authors::{
     AuthorDirectory, UNKNOWN_AUTHOR_NAME, actor_handle, agent_display_label, agent_principal_name,
@@ -285,10 +286,14 @@ impl HistorySource {
                     .as_deref()
                     .and_then(tilo_actions::ActionContext::from_change_message)
             };
-            let summary = context
-                .as_ref()
-                .and_then(tilo_actions::ActionContext::summary)
-                .unwrap_or(structural_summary);
+            let summary = if genesis {
+                crate::i18n::I18nManager::lookup_plain("history-genesis")
+            } else {
+                context
+                    .as_ref()
+                    .and_then(sentence::step_summary)
+                    .unwrap_or(structural_summary)
+            };
 
             out.push(HistoryEntry {
                 id: entry_id_from_hash(&v.hash.to_string()),
@@ -315,7 +320,6 @@ impl HistorySource {
 /// particular.
 fn genesis_context() -> tilo_actions::ActionContext {
     tilo_actions::ActionContext {
-        action_label: crate::i18n::I18nManager::lookup_plain("history-genesis"),
         facets: vec![crate::widget::history::genesis_facet()],
         ..tilo_actions::ActionContext::default()
     }
@@ -616,7 +620,8 @@ pub fn change_summary(doc: &mut AutoCommit, from: &[ChangeHash], to: &[ChangeHas
             .and_then(|meta| meta.message.as_deref().map(str::to_owned))
             .as_deref()
             .and_then(tilo_actions::ActionContext::from_change_message)
-            .and_then(|context| context.summary())
+            .as_ref()
+            .and_then(sentence::step_summary)
     {
         return summary;
     }

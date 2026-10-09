@@ -381,8 +381,8 @@ fn redo_targets(doc: &mut AutoCommit, scope: &Scope, limit: usize) -> Vec<Versio
 pub fn step_label(version: &Version) -> String {
     let change = short(&version.hash);
     match version.context.as_ref() {
-        Some(context) if !context.action_label.is_empty() => {
-            format!("{} ({change})", context.action_label)
+        Some(context) if context.what.is_some() => {
+            format!("{} ({change})", super::sentence::sentence(context))
         }
         _ => change,
     }

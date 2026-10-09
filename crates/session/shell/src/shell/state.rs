@@ -9309,12 +9309,15 @@ mod workspace_tree_lifecycle_tests {
             let app_heads_before = app_document.get_heads();
             let invocation = tilo_actions::InvocationId::new();
             let context = tilo_actions::ActionContext::for_resource(
-                "Send",
                 "mail.message:42",
                 "mail.message",
                 "Release update",
             )
-            .with_app("org.tilo.Mail", "Mail");
+            .with_app("org.tilo.Mail", "Mail")
+            .with_described(tilo_actions::Described::new(tilo_actions::Did::verb(
+                tilo_actions::ActionKey::new("org.tilo.Mail", "mail.message", "send"),
+                [],
+            )));
 
             assert!(tree.append_workspace_effect_receipt(
                 workspace,
@@ -9338,7 +9341,11 @@ mod workspace_tree_lifecycle_tests {
             let receipt = &tree.desktop.active_workspace().unwrap().effect_receipts[0];
             assert_eq!(receipt.invocation, invocation);
             assert_eq!(receipt.status.label(), "Failed");
-            assert!(receipt.context.action_label.starts_with("Failed · Send"));
+            assert!(
+                matches!(&receipt.context.what, Some(tilo_actions::Did::Verb(verb)) if verb.action.action == "send"),
+                "the receipt records what the effect was: {:?}",
+                receipt.context
+            );
 
             let entry = ui::HistorySource::new()
                 .entries(&mut tree.doc)

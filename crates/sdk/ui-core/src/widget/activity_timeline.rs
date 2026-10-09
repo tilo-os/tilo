@@ -3948,13 +3948,13 @@ mod tests {
             use tilo_actions::ActionContext;
             let mut files = entry(OpClass::Splice, "Alice", 10, 1);
             files.context = Some(
-                ActionContext::for_resource("Rename", "files:brief", "files.entry", "brief.md")
+                ActionContext::for_resource("files:brief", "files.entry", "brief.md")
                     .with_app("org.tilo.Files", "Files")
                     .with_group("workspace:a", "Alpha", "workspace"),
             );
             let mut notes = entry(OpClass::Splice, "Alice", 11, 2);
             notes.context = Some(
-                ActionContext::for_resource("Edit", "notes:plan", "notes.document", "plan")
+                ActionContext::for_resource("notes:plan", "notes.document", "plan")
                     .with_app("org.tilo.Notes", "Notes")
                     .with_group("workspace:a", "Beta", "workspace"),
             );

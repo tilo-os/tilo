@@ -3734,7 +3734,10 @@ mod tests {
                 tilo_actions::ActionContext::from_change_message(change.message().unwrap())
                     .unwrap();
             let from_button = crate::actions::encode(&actions::delete_page_action(welcome));
-            assert_eq!(context.action_label, "Delete note");
+            assert!(
+                matches!(&context.what, Some(tilo_actions::Did::Verb(verb)) if verb.action.action == "delete-page"),
+                "{context:?}"
+            );
 
             assert_eq!(from_palette.type_id, from_button.type_id);
             assert_eq!(

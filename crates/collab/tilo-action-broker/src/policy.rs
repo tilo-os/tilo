@@ -221,7 +221,14 @@ fn bounded_receipt_text(value: &str, max: usize) -> String {
 }
 
 fn redact_receipt_context(context: &mut tilo_actions::ActionContext) {
-    context.action_label = bounded_receipt_text(&context.action_label, 200);
+    if let Some(item) = &mut context.item {
+        item.id = bounded_receipt_text(&item.id, 512);
+        item.label = bounded_receipt_text(&item.label, 200);
+    }
+    // What the effect was is public; what it was given is not.
+    if let Some(what) = &mut context.what {
+        what.forget_args();
+    }
     if let Some(app) = &mut context.app {
         app.id = bounded_receipt_text(&app.id, 160);
         app.label = bounded_receipt_text(&app.label, 160);
@@ -257,12 +264,6 @@ pub fn redacted_effect_receipt(
     status: tilo_actions::EffectReceiptStatus,
 ) -> WorkspaceEffectReceipt {
     let completed_at = tilo_clock::unix_now_i64();
-    let original_action = bounded_receipt_text(&context.action_label, 160);
-    context.action_label = if original_action.is_empty() {
-        status.label().to_string()
-    } else {
-        format!("{} · {original_action}", status.label())
-    };
     // Arbitrary application facets may contain private argument summaries.
     // Only broker-owned terminal identifiers enter this public audit.
     context.facets.clear();

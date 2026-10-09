@@ -2471,11 +2471,10 @@ impl Session {
     fn task_context(&self) -> Option<tilo_actions::ActionContext> {
         let run = self.active_run.as_ref()?;
         let record = self.cfg.record.as_deref().unwrap_or("active document");
-        let mut context =
-            tilo_actions::ActionContext::for_resource("Agent task", record, "document", record)
-                .with_app(&self.cfg.app_id, "Agent")
-                .with_purpose(&run.instruction)
-                .with_group(&run.group_id, &run.instruction, "agent-run");
+        let mut context = tilo_actions::ActionContext::for_resource(record, "document", record)
+            .with_app(&self.cfg.app_id, "Agent")
+            .with_purpose(&run.instruction)
+            .with_group(&run.group_id, &run.instruction, "agent-run");
         if let Some(issuer) = &run.issued_by {
             context = context.with_facet(tilo_actions::ActionFacet::new("assigned-by", issuer));
         }

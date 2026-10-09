@@ -88,14 +88,24 @@ where
         risk
     }
 
-    /// A gesture of one kind of edit is named as that edit is ("Move 3
-    /// marks" for a selection's moves); a mixed one keeps its own name.
-    fn history_label(&self, doc: &Doc) -> Option<String> {
-        let mut labels = self.actions.iter().map(|action| action.history_label(doc));
-        let first = labels.next()??;
-        labels
-            .all(|label| label.as_deref() == Some(first.as_str()))
-            .then_some(first)
+    /// A gesture records each of its members, and the item they share.
+    fn describe(&self, doc: &Doc) -> Option<tilo_actions::Described> {
+        let members: Vec<tilo_actions::Described> = self
+            .actions
+            .iter()
+            .map(|action| {
+                action.describe(doc).or_else(|| {
+                    let value = serde_json::to_value(action).ok()?;
+                    tilo_actions::Described::from_value("", &value, None)
+                })
+            })
+            .collect::<Option<_>>()?;
+        let item = members.first().and_then(|first| first.item.clone());
+        let shared = members.iter().all(|member| member.item == item);
+        Some(tilo_actions::Described {
+            what: tilo_actions::Did::group(members.into_iter().map(|member| member.what)),
+            item: if shared { item } else { None },
+        })
     }
 
     fn locus(&self) -> ExecutionLocus {

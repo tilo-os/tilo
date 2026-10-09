@@ -130,10 +130,13 @@ fn write_holder_lists_previews_compares_and_restores_through_the_registry() {
         .and_then(|change| change.message())
         .and_then(tilo_actions::ActionContext::from_change_message)
         .expect("restore carries its action context");
-    assert_eq!(
-        context.action_label,
-        crate::i18n::I18nManager::lookup_plain("standalone-history-restore-action")
-    );
+    assert!(matches!(
+        context.what,
+        Some(tilo_actions::Did::History(tilo_actions::HistoryStep {
+            op: tilo_actions::HistoryOp::Restore,
+            ..
+        }))
+    ));
     let author = app.local_author().clone();
     assert!(app.state.undo_as(Some(&author), None, None).is_some());
     assert_eq!(title(&app).as_deref(), Some("v3"));

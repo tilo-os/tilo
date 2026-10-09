@@ -2086,7 +2086,6 @@ impl ShellDriver {
                     redaction: None,
                     context: Some(
                         ActionContext::for_resource(
-                            "Edit assumptions",
                             "sheets:q2-finance",
                             "spreadsheet",
                             "Q2 finance report",
@@ -2190,12 +2189,19 @@ impl ShellDriver {
                 ("Ada", "onboarding", "Onboard Sarah", "Assign mentor"),
             ] {
                 let context = tilo_actions::ActionContext::for_resource(
-                    action,
                     format!("shots:{group_id}"),
                     "document",
                     group_label,
                 )
                 .with_app("org.tilo.Writer", "Writer")
+                .with_described(tilo_actions::Described::new(tilo_actions::Did::verb(
+                    tilo_actions::ActionKey::new(
+                        "org.tilo.Writer",
+                        "document",
+                        tilo_actions::entry::kebab(action),
+                    ),
+                    [],
+                )))
                 .with_group(group_id, group_label, "work-session");
                 let _ = tree.append_workspace_effect_receipt_for_shots(
                     workspace,

@@ -301,6 +301,7 @@ activity-removed-workspace = ein entfernter Arbeitsbereich
 activity-receipt-completed = Abgeschlossen
 activity-receipt-failed = Fehlgeschlagen
 activity-receipt-cancelled = Abgebrochen
+activity-receipt-ended = { $status }: { $what }
 activity-replay-pending = Die Wiedergabe wartet auf laufende Bearbeitungen
 activity-replay-unavailable = Für diese Prüfpunkte ist keine Wiedergabe des Arbeitsbereichs verfügbar
 activity-replay-empty = Noch keine wiedergebbaren Prüfpunkte

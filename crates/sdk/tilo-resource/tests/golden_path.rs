@@ -348,7 +348,16 @@ fn documents_replay_converge_version_index_and_migrate() {
         let versions = board.versions();
         let last = versions.last().unwrap();
         assert_eq!(last.actor, hex(b"alice"));
-        assert_eq!(last.summary().as_deref(), Some("Rename the board · Board"));
+        let entry = last.context.as_ref().expect("an entry");
+        let Some(tilo_actions::Did::Verb(verb)) = &entry.what else {
+            panic!("the rename is recorded as its verb: {entry:?}");
+        };
+        assert_eq!(verb.action.action, "rename");
+        assert_eq!(verb.args["title"].as_str(), Some("v2"));
+        assert_eq!(
+            entry.resource.as_ref().map(|r| r.label.as_str()),
+            Some("Board")
+        );
         assert_eq!(board.state_at(&v1).unwrap().title, "v1");
         assert_eq!(board.state().unwrap().title, "v2");
     }

@@ -529,13 +529,16 @@ pub fn plan_library(
 /// The provenance a library invocation leaves in workspace activity.
 #[must_use]
 pub fn library_context(descriptor: &ActionDescriptor) -> ActionContext {
-    ActionContext::for_resource(
-        descriptor.action_label.clone(),
-        LIBRARY_RESOURCE,
-        LIBRARY_RESOURCE_KIND,
-        "Shortcuts",
-    )
-    .with_app(SHORTCUTS_APP_ID, "Shortcuts")
+    ActionContext::for_resource(LIBRARY_RESOURCE, LIBRARY_RESOURCE_KIND, "Shortcuts")
+        .with_app(SHORTCUTS_APP_ID, "Shortcuts")
+        .with_described(tilo_actions::Described::new(tilo_actions::Did::verb(
+            tilo_actions::ActionKey::new(
+                SHORTCUTS_APP_ID,
+                LIBRARY_RESOURCE_KIND,
+                descriptor.address.action.clone(),
+            ),
+            [],
+        )))
 }
 
 /// How a run started through the door treats a person-shaped question.

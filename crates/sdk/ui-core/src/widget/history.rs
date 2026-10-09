@@ -532,16 +532,11 @@ mod tests {
         fn semantic_facets_filter_context_without_guessing_legacy_entries() {
             let mut contextual = entry(OpClass::EditMeta, "Ada", 100);
             contextual.context = Some(
-                ActionContext::for_resource(
-                    "Rename",
-                    "files.entry:brief.md",
-                    "files.entry",
-                    "brief.md",
-                )
-                .with_app("org.tilo.Files", "Files")
-                .with_group("issue:42", "Launch brief", "issue")
-                .with_facet(ActionFacet::new("file-type", "Markdown"))
-                .with_facet(ActionFacet::new("path", "/work/brief.md")),
+                ActionContext::for_resource("files.entry:brief.md", "files.entry", "brief.md")
+                    .with_app("org.tilo.Files", "Files")
+                    .with_group("issue:42", "Launch brief", "issue")
+                    .with_facet(ActionFacet::new("file-type", "Markdown"))
+                    .with_facet(ActionFacet::new("path", "/work/brief.md")),
             );
             let legacy = entry(OpClass::EditMeta, "Ada", 100);
 

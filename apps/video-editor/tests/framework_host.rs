@@ -51,8 +51,10 @@ fn host_door_edits_publish_resources_and_undo_as_one_action() {
         assert_eq!(app.state().markers.len(), markers + 1);
         let last = app.versions().pop().unwrap();
         assert!(
-            last.summary()
-                .is_some_and(|summary| summary.contains("Add project marker")),
+            last.context
+                .as_ref()
+                .and_then(|context| context.what.as_ref())
+                .is_some_and(|what| matches!(what, ui::tilo_actions::Did::Verb(_))),
             "{last:?}"
         );
         assert!(app.undo());

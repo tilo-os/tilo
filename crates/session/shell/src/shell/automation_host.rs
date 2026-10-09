@@ -73,8 +73,10 @@ pub fn document_share(run: RunId, record: &str, doc: &AutoCommit) -> Option<Docu
         {
             app.clone_from(&owner.id);
         }
-        if !labels.contains(&context.action_label) {
-            labels.push(context.action_label.clone());
+        if let Some(label) = ui::history_source::sentence::step_summary(&context)
+            && !labels.contains(&label)
+        {
+            labels.push(label);
         }
     }
     let (at, start) = first?;
@@ -155,8 +157,12 @@ mod tests {
     fn only_changes_grouped_under_the_run_become_its_steps() {
         let run = RunId::new();
         let context = |label: &str, group: &str| {
-            ActionContext::for_resource(label, "notes.note:1", "notes.note", "Note")
+            ActionContext::for_resource("notes.note:1", "notes.note", "Note")
                 .with_app("so.tilo.notes", "Notes")
+                .with_described(tilo_actions::Described::new(tilo_actions::Did::verb(
+                    tilo_actions::ActionKey::new("so.tilo.notes", "notes.note", label),
+                    [],
+                )))
                 .with_group(group, "Tidy", "shortcut")
                 .change_message()
         };
@@ -192,7 +198,7 @@ mod tests {
         assert_eq!(steps.len(), 1);
         assert_eq!(steps[0].app, "so.tilo.notes");
         assert_eq!(steps[0].record, "file:notes");
-        assert_eq!(steps[0].summary, "Rename, Rewrite");
+        assert_eq!(steps[0].summary, "Rename in Note, Rewrite in Note");
         assert_ne!(steps[0].run.start, steps[0].run.end);
     }
 }

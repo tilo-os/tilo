@@ -1312,7 +1312,7 @@ impl CameraApp {
             .apply_now_with(
                 doc,
                 action,
-                tilo_actions::ActionContext::for_action("so.tilo.camera", "Camera", action),
+                tilo_actions::ActionContext::for_app("so.tilo.camera", "Camera"),
             )
             .map_err(|error| error.to_string())
     }

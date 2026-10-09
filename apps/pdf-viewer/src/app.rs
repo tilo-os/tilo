@@ -1313,7 +1313,7 @@ impl PdfApp {
         if let Err(error) = dispatcher.apply_now_with(
             state,
             action,
-            tilo_actions::ActionContext::for_action(APP_ID, "PDF Viewer", action),
+            tilo_actions::ActionContext::for_app(APP_ID, "PDF Viewer"),
         ) {
             self.status_note = Some(error.to_string());
             self.dirty = true;

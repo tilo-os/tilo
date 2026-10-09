@@ -718,12 +718,8 @@ mod owner_commit_tests {
             },
         };
         let actor = principal_id_for_root(f.owner.peer().authority().user_public_key);
-        let context = tilo_actions::ActionContext::for_resource(
-            "Publish",
-            "record:bounded",
-            "document",
-            "Receipt test",
-        );
+        let context =
+            tilo_actions::ActionContext::for_resource("record:bounded", "document", "Receipt test");
         f.state
             .journal
             .lock()
@@ -1811,7 +1807,6 @@ mod owner_commit_tests {
                     operation_kind: tilo_actions::OperationKind::Effect,
                     cluster_id: f.route.cluster_id.clone(),
                     context: tilo_actions::ActionContext::for_resource(
-                        "Publish",
                         "record:bounded",
                         "document",
                         "Native receipt test",

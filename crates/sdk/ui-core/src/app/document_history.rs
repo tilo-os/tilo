@@ -1539,10 +1539,13 @@ mod tests {
             .and_then(|change| change.message())
             .and_then(tilo_actions::ActionContext::from_change_message)
             .expect("restore carries its action context");
-        assert_eq!(
-            context.action_label,
-            crate::i18n::I18nManager::lookup_plain("standalone-history-restore-action")
-        );
+        assert!(matches!(
+            context.what,
+            Some(tilo_actions::Did::History(tilo_actions::HistoryStep {
+                op: tilo_actions::HistoryOp::Restore,
+                ..
+            }))
+        ));
 
         // The autosaved document reopens at the restored version.
         app.autosave().unwrap().flush();

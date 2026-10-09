@@ -3531,10 +3531,7 @@ mod tests {
         assert_eq!(value["pressed_physical_keys"], serde_json::json!([]));
         assert_eq!(app.settings::<InputPrefs>().get(), before);
         let denied = app.call_by(
-            ui::tilo_actions::ActionInvoker {
-                actor: "unrelated-collaborator".into(),
-                participant: None,
-            },
+            ui::tilo_actions::ActionInvoker::actor("unrelated-collaborator"),
             &address.resource,
             &address.action,
             serde_json::json!({}),
@@ -3918,10 +3915,7 @@ mod input_inspection_tests {
         );
         assert_eq!(app.settings::<InputPrefs>().get(), before);
         let refusal = app.call_by(
-            ui::tilo_actions::ActionInvoker {
-                actor: "unrelated-collaborator".into(),
-                participant: None,
-            },
+            ui::tilo_actions::ActionInvoker::actor("unrelated-collaborator"),
             &action.address.resource,
             &action.address.action,
             serde_json::json!({}),

@@ -447,9 +447,8 @@ pub enum SheetsAction {
 
 /// Durable, browseable history metadata for a workbook mutation.
 pub fn history_context(action: &SheetsAction) -> tilo_actions::ActionContext {
-    let mut context = tilo_actions::ActionContext::for_action("so.tilo.sheets", "Sheets", action);
-    let (label, id, kind, resource_label) = history_resource(action);
-    context.action_label = label.to_string();
+    let mut context = tilo_actions::ActionContext::for_app("so.tilo.sheets", "Sheets");
+    let (_, id, kind, resource_label) = history_resource(action);
     context.resource = Some(tilo_actions::ActionResource {
         id,
         kind: kind.to_string(),
@@ -2627,7 +2626,6 @@ mod tests {
                 raw: "42".into(),
                 fmt: None,
             });
-            assert_eq!(context.action_label, "Edit cell");
             let resource = context.resource.expect("cell resource");
             assert_eq!(resource.id, "sheets.cell:history-sheet:1:4");
             assert_eq!(resource.label, "B5");

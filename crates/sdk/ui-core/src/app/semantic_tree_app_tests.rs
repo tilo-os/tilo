@@ -1046,7 +1046,10 @@ fn broker_and_directed_document_actions_preserve_pending_edits_and_ownership() {
             .message()
             .and_then(|message| tilo_actions::ActionContext::from_change_message(message))
             .expect("the action commit retained semantic provenance");
-        assert_eq!(context.action_label, "Bump");
+        assert!(
+            matches!(&context.what, Some(tilo_actions::Did::Verb(_))),
+            "the action records what it did: {context:?}"
+        );
         assert_eq!(
             context
                 .resource
@@ -1212,12 +1215,7 @@ fn broker_and_directed_document_actions_preserve_pending_edits_and_ownership() {
             assert!(app.state.peek_last_undo().is_none());
         }
         app.state.doc.put(ROOT, "draft", "finished").unwrap();
-        let context = tilo_actions::ActionContext::for_resource(
-            "Finish draft",
-            "test.draft",
-            "note",
-            "Draft",
-        );
+        let context = tilo_actions::ActionContext::for_resource("test.draft", "note", "Draft");
         assert!(app.state.commit_action_authored_with_context(
             None,
             None,
@@ -1230,7 +1228,13 @@ fn broker_and_directed_document_actions_preserve_pending_edits_and_ownership() {
             .message()
             .and_then(|message| tilo_actions::ActionContext::from_change_message(message))
             .unwrap();
-        assert_eq!(context.action_label, "Finish draft");
+        assert_eq!(
+            context
+                .resource
+                .as_ref()
+                .map(|resource| resource.label.as_str()),
+            Some("Draft")
+        );
     }
 
     // Case `host_required_document_action_runs_only_after_broker_admission`.

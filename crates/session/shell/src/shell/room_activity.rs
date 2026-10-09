@@ -764,7 +764,6 @@ mod tests {
             ui::record::init(doc, &record, &checkout.kind, &room.to_string());
             doc.put(automerge::ROOT, "draft", "Launch notes").unwrap();
             let context = ui::tilo_actions::ActionContext::for_resource(
-                "Write draft",
                 "fixture.drafts:inbox",
                 "fixture.drafts",
                 "Inbox",
@@ -822,12 +821,21 @@ mod tests {
     fn commit_draft_step(doc: &mut automerge::AutoCommit, run: tilo_automation::RunId) {
         doc.put(automerge::ROOT, "draft", "Launch notes").unwrap();
         let context = ui::tilo_actions::ActionContext::for_resource(
-            "Write draft",
             "fixture.drafts:inbox",
             "fixture.drafts",
             "Inbox",
         )
         .with_app("so.tilo.fixture-drafts", "Drafts")
+        .with_described(ui::tilo_actions::Described::new(
+            ui::tilo_actions::Did::verb(
+                ui::tilo_actions::ActionKey::new(
+                    "so.tilo.fixture-drafts",
+                    "fixture.drafts",
+                    "write-draft",
+                ),
+                [],
+            ),
+        ))
         .with_group(run.0.to_string(), "Publish a draft", "shortcut");
         doc.commit_with(CommitOptions::default().with_message(context.change_message().unwrap()));
     }
@@ -931,7 +939,7 @@ mod tests {
         assert_eq!(runs[0].steps.len(), 1, "one step, for the closed record");
         assert_eq!(runs[0].steps[0].record, record.to_string());
         assert_eq!(runs[0].steps[0].app, "so.tilo.fixture-drafts");
-        assert_eq!(runs[0].steps[0].summary, "Write draft");
+        assert_eq!(runs[0].steps[0].summary, "Write draft in Inbox");
         assert_eq!(
             runs[0].steps[0].run.start,
             ui::history_source::entry_id_from_hash(

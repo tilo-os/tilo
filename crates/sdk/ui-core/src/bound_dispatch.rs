@@ -1410,9 +1410,8 @@ impl OrdinaryConfirmation {
             return Err(Self::stale());
         }
         let resources = resources_for_control_target(root, doc, &target, &address)?;
-        let (resource, spec) = unique_control_spec(&resources, &address)?;
+        let (resource, _) = unique_control_spec(&resources, &address)?;
         let context = tilo_actions::ActionContext::for_resource(
-            &spec.label,
             resource.id.as_str(),
             &resource.kind,
             &resource.label,
@@ -1909,9 +1908,7 @@ pub(crate) fn execute_resource_operation(
                 "Deferred action locus differs from its declaration".into(),
             ));
         }
-        // Named after the edit it carries, when the spec carries several.
         let mut context = tilo_actions::ActionContext::for_resource(
-            spec.history_label(&encoded),
             resource.id.as_str(),
             &resource.kind,
             &resource.label,
@@ -1927,9 +1924,15 @@ pub(crate) fn execute_resource_operation(
         // Ambient context is descriptive and may arrive from the caller. The
         // retained dispatch boundary is the sole source for invocation
         // identity, so replace any ambient value, including with `None`.
-        let context = context
-            .with_source_invocation(source_invocation)
-            .with_args_from_payload(&encoded.payload);
+        let mut context = context.with_source_invocation(source_invocation);
+        if !spec.carries_actions()
+            && let Some(described) = tilo_actions::Described::of_published(
+                &encoded,
+                tilo_actions::ActionKey::new("", &resource.kind, &spec.id),
+            )
+        {
+            context = context.with_described(described);
+        }
         // Before apply, so a delete can still read the row it removes. Undo
         // of this span applies the compensating action instead of patches.
         note_compensating_action(doc, action.inverse_encoded(doc), encoded.clone());
@@ -4456,13 +4459,9 @@ pub(crate) unsafe fn invoke_bound_semantic_node<R>(
     let app = authorize_legacy_owner(owner, authority, author)?;
     let (store, checkout) = owner.store_checkout();
     let pointer = admitted.pointer;
-    let context = tilo_actions::ActionContext::for_resource(
-        "Edit",
-        checkout.id.as_str(),
-        "document",
-        "Document",
-    )
-    .with_app(&app, &app);
+    let context =
+        tilo_actions::ActionContext::for_resource(checkout.id.as_str(), "document", "Document")
+            .with_app(&app, &app);
     let (result, changed) = store
         .with_action_state(&checkout.id, |doc, history, state| {
             if state.pending.is_some() {

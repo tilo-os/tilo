@@ -1797,7 +1797,7 @@ impl WordProcessorWidget {
         state: &mut ui::widget::Edits<'_>,
         action: &crate::actions::RichTextAction,
     ) -> bool {
-        let context = tilo_actions::ActionContext::for_action("org.tilo.Writer", "Writer", action);
+        let context = tilo_actions::ActionContext::for_app("org.tilo.Writer", "Writer");
         let Some(dispatch) = self.dispatch.clone() else {
             return false;
         };
@@ -2625,7 +2625,7 @@ impl WordProcessorWidget {
                 .apply_now_with(
                     state,
                     action,
-                    tilo_actions::ActionContext::for_action("org.tilo.Writer", "Writer", action)
+                    tilo_actions::ActionContext::for_app("org.tilo.Writer", "Writer")
                         .with_invoker(invoker.clone()),
                 )
                 .map_err(|error| error.to_string())?;

@@ -1123,7 +1123,7 @@ impl ComposeWindow {
             return;
         };
         let action = MailAction::StartDraftBody(seed);
-        let context = tilo_actions::ActionContext::for_action("so.tilo.mail", "Mail", &action);
+        let context = tilo_actions::ActionContext::for_app("so.tilo.mail", "Mail");
         if let Err(error) = dispatcher.apply_now_with(doc, &action, context) {
             tracing::warn!(%error, "draft body could not be started");
         }

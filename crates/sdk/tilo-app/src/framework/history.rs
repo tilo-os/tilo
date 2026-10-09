@@ -106,6 +106,30 @@ impl tilo_actions::Action for HistoryEdit {
             _ => ChangeKind::Content,
         }
     }
+
+    fn describe(&self, _doc: &tilo_actions::Doc) -> Option<tilo_actions::Described> {
+        Some(self.described())
+    }
+}
+
+impl HistoryEdit {
+    /// What history records this step through history did.
+    fn described(&self) -> tilo_actions::Described {
+        use tilo_actions::HistoryOp;
+        let (op, steps) = match self {
+            Self::Undo {
+                steps,
+                run: None,
+                to: None,
+                ..
+            } => (HistoryOp::Undo, steps.unwrap_or(1)),
+            Self::Undo { steps, .. } => (HistoryOp::Undo, steps.unwrap_or(0)),
+            Self::Redo { steps } => (HistoryOp::Redo, steps.unwrap_or(1)),
+            Self::Restore { .. } => (HistoryOp::Restore, 0),
+            Self::Checkpoint { name } => (HistoryOp::Checkpoint { name: name.clone() }, 0),
+        };
+        tilo_actions::Described::new(tilo_actions::Did::history(op, steps, None))
+    }
 }
 
 /// The resource's own registry is the only decoder for its recorded
@@ -131,6 +155,14 @@ impl<'de, R> Deserialize<'de> for ResourceHistoryEdit<R> {
 }
 
 impl<R: tilo_resource::Resource> tilo_actions::Action for ResourceHistoryEdit<R> {
+    fn change_kind(&self) -> ChangeKind {
+        self.edit.change_kind()
+    }
+
+    fn describe(&self, _doc: &tilo_actions::Doc) -> Option<tilo_actions::Described> {
+        Some(self.edit.described())
+    }
+
     fn apply(&self, doc: &mut tilo_actions::Doc) -> Result<(), ActionError> {
         if let HistoryEdit::Redo { steps: count } = &self.edit {
             let scope = Scope::invoking(doc);
@@ -490,6 +522,49 @@ fn by(version: &Version) -> String {
         .unwrap_or_else(|| version.actor.chars().take(8).collect())
 }
 
+/// What a change's entry records, as data: what was done (`what`, with
+/// field paths, values and verb arguments), to which `item`, by which
+/// `actor` (`id`, `kind`, and the person it acted `for`), in which `run`,
+/// and what kind of action and change it was.
+fn recorded(context: &tilo_actions::ActionContext, out: &mut serde_json::Map<String, Value>) {
+    if let Some(what) = &context.what {
+        out.insert("what".into(), json!(what));
+    }
+    if let Some(item) = &context.item {
+        out.insert("item".into(), json!(item));
+    }
+    if let Some(invoker) = &context.invoker {
+        let mut actor = serde_json::Map::new();
+        actor.insert("id".into(), invoker.actor.clone().into());
+        actor.insert("kind".into(), invoker.kind.as_str().into());
+        if let Some(person) = &invoker.on_behalf_of {
+            actor.insert("for".into(), person.clone().into());
+        }
+        out.insert("actor".into(), Value::Object(actor));
+    }
+    if let Some(group) = &context.group {
+        out.insert("run".into(), group.label.clone().into());
+        out.insert("run_id".into(), group.id.clone().into());
+        out.insert("run_kind".into(), group.kind.clone().into());
+    }
+    if context.kind != tilo_actions::ActionKind::Undoable {
+        out.insert("kind".into(), json!(context.kind));
+    }
+    if !context.change.is_content() {
+        out.insert("change_kind".into(), json!(context.change));
+    }
+}
+
+/// The sentence for a version in this thread's locale.
+fn sentence(version: &Version) -> String {
+    version
+        .context
+        .as_ref()
+        .and_then(ui_core::history_source::sentence::step_summary)
+        .or_else(|| version.message.clone())
+        .unwrap_or_default()
+}
+
 /// One version as `history` lists it.
 pub(crate) fn entry(
     version: &Version,
@@ -499,20 +574,11 @@ pub(crate) fn entry(
     let mut entry = serde_json::Map::new();
     entry.insert("change".into(), steps::short(&version.hash).into());
     let context = version.context.as_ref();
-    if let Some(action) = context
-        .map(|context| context.action_label.clone())
-        .filter(|label| !label.is_empty())
-        .or_else(|| version.summary())
-    {
-        entry.insert("action".into(), action.into());
+    if let Some(context) = context {
+        recorded(context, &mut entry);
     }
-    if let Some(args) = context.and_then(tilo_actions::ActionContext::args) {
-        entry.insert("args".into(), args.into());
-    }
-    if let Some(group) = context.and_then(|context| context.group.as_ref()) {
-        entry.insert("run".into(), group.label.clone().into());
-        entry.insert("run_id".into(), group.id.clone().into());
-    } else {
+    entry.insert("sentence".into(), sentence(version).into());
+    if context.and_then(|context| context.group.as_ref()).is_none() {
         entry.insert("by".into(), by(version).into());
     }
     entry.insert("time_ms".into(), version.time_ms.into());
@@ -536,8 +602,10 @@ pub(crate) fn entry(
 pub struct HistoryVersion {
     /// The change id: what `restore`, `diff` and a view's `version` take.
     pub change: String,
-    /// What was done: the action's label.
+    /// What was done, as a sentence in the reader's language.
     pub action: String,
+    /// The entry the change recorded: who did it, for whom, and what.
+    pub entry: Option<tilo_actions::ActionContext>,
     /// Who did it: the person's handle, or the agent run's label.
     pub author: String,
     /// The agent run that made it, when an agent did: what `undo` takes as
@@ -574,11 +642,8 @@ pub(crate) fn recent(doc: &AutoCommit, last: usize) -> Vec<HistoryVersion> {
                 .filter(|group| group.kind == AGENT_RUN);
             HistoryVersion {
                 change: steps::short(&version.hash),
-                action: context
-                    .map(|context| context.action_label.clone())
-                    .filter(|label| !label.is_empty())
-                    .or_else(|| version.summary())
-                    .unwrap_or_default(),
+                action: sentence(version),
+                entry: version.context.clone(),
                 author: run.map_or_else(|| by(version), |run| run.label.clone()),
                 run: run.map(|run| run.id.clone()),
                 time_ms: version.time_ms,
@@ -816,12 +881,13 @@ pub(crate) fn result(action: &str, doc: &AutoCommit, patches: &[Patch]) -> Optio
             .rev()
             .filter(|version| hashes.contains(&version.hash.to_string()))
             .map(|version| {
-                let context = version.context.as_ref();
-                json!({
-                    "change": steps::short(&version.hash),
-                    "action": context.map(|context| context.action_label.clone()),
-                    "args": context.and_then(tilo_actions::ActionContext::args),
-                })
+                let mut entry = serde_json::Map::new();
+                entry.insert("change".into(), steps::short(&version.hash).into());
+                if let Some(context) = &version.context {
+                    recorded(context, &mut entry);
+                }
+                entry.insert("sentence".into(), sentence(version).into());
+                Value::Object(entry)
             })
             .collect()
     };

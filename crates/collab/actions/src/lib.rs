@@ -90,9 +90,11 @@ pub mod action;
 pub mod context;
 pub mod contract;
 pub mod door;
+pub mod entry;
 pub mod envelope;
 pub mod executor;
 pub mod interaction;
+pub mod key;
 pub mod optimistic;
 pub mod outcome;
 pub mod params;
@@ -106,9 +108,10 @@ pub use action::{
     Action, ActionError, ActionId, Doc, EncodedAction, ExecutionLocus, OperationKind,
 };
 pub use context::{
-    AGENT_TASK_PARTICIPANT_PREFIX, ARGS_FACET, ActionApp, ActionContext, ActionFacet, ActionGroup,
-    ActionInvoker, ActionResource, CHANGE_MESSAGE_PREFIX, ChangeKind, MAX_PARTICIPANT_ID_BYTES,
-    ParticipantId, args_summary,
+    AGENT_PRINCIPAL_PREFIX, AGENT_TASK_PARTICIPANT_PREFIX, APP_PRINCIPAL_PREFIX, ActionApp,
+    ActionContext, ActionFacet, ActionGroup, ActionInvoker, ActionResource, ActorKind,
+    CHANGE_MESSAGE_PREFIX, ChangeKind, MAX_PARTICIPANT_ID_BYTES, ParticipantId,
+    SHORTCUT_PRINCIPAL_PREFIX,
 };
 pub use contract::{
     ARGUMENT_RISK_TAG, ActionContract, Availability, ConfirmationPolicy, DOCUMENT_READ_TAG,
@@ -116,6 +119,10 @@ pub use contract::{
     RetryPolicy, RiskLevel, UNTRUSTED_CONTENT_TAG,
 };
 pub use door::{ActionAddress, ActionDescriptor, DoorError, InputSpec, ResourceViewDescriptor};
+pub use entry::{
+    ActionItem, Described, Did, EditOp, FieldEdit, GroupOf, HistoryOp, HistoryStep, PathStep,
+    Scalar, VerbCall,
+};
 pub use envelope::ActionEnvelope;
 pub use executor::{
     ActionTransport, Dispatched, HostDecision, LocalTransport, apply_local, apply_local_by,
@@ -128,6 +135,7 @@ pub use interaction::{
     InteractionViolation, MAX_ANCHOR_ITEMS, MAX_DETAIL_BYTES, MAX_ID_BYTES, MAX_INTERACTION_BYTES,
     MAX_LABEL_BYTES, SemanticInteraction,
 };
+pub use key::{ActionKey, ActionKind};
 pub use optimistic::{Acknowledgement, OptimisticError, OptimisticQueue, RebaseBatch};
 pub use outcome::{
     ActionFailure, ActionOutput, CONTENT_RESOURCE_KIND, EffectReceiptStatus, InvocationId,
@@ -239,7 +247,7 @@ mod tests {
     /// The executor writes an action's declared kind into its change, with or
     /// without a caller's context, and replay reproduces the same change.
     #[test]
-    fn declared_housekeeping_travels_in_the_change_and_content_writes_nothing_new() {
+    fn declared_kinds_travel_in_the_change_and_every_change_names_what_it_did() {
         let (mut a, mut b) = two_replicas();
         let env = apply_local(
             &mut a,
@@ -258,8 +266,7 @@ mod tests {
         replay(&mut b, &env, &registry()).unwrap();
         assert_eq!(a.get_heads(), b.get_heads(), "replay makes the same change");
 
-        let labelled =
-            ActionContext::for_resource("Mark as read", "c:1", "chat.channel", "general");
+        let labelled = ActionContext::for_resource("c:1", "chat.channel", "general");
         apply_local_with_context(
             &mut a,
             &Seen(4),
@@ -271,7 +278,8 @@ mod tests {
         let context = last_context(&mut a).unwrap();
         assert!(context.is_housekeeping());
         assert_eq!(
-            context.action_label, "Mark as read",
+            context.resource.as_ref().map(|r| r.label.as_str()),
+            Some("general"),
             "the caller's context is kept"
         );
 
@@ -285,8 +293,22 @@ mod tests {
             EncodedAction::encode(COUNTER_TYPE, &put).unwrap(),
         )
         .unwrap();
-        assert_eq!(env.context, None, "content without context stays as it was");
-        assert_eq!(last_message(&mut a), None);
+        let entry = env
+            .context
+            .expect("every committed action records an entry");
+        assert!(entry.change.is_step());
+        assert_eq!(
+            entry.what,
+            Some(Did::verb(
+                ActionKey::new("test", COUNTER_TYPE, "put"),
+                [
+                    ("key".to_string(), Scalar::from("score")),
+                    ("value".to_string(), Scalar::from(1)),
+                ],
+            )),
+            "an action that describes nothing is named by its encoded verb"
+        );
+        assert_eq!(last_context(&mut a), Some(entry));
 
         // A context may say a content action is nobody's step this time; an
         // action's own declaration is never overridden by a context.
@@ -368,7 +390,7 @@ mod tests {
             key: "score".into(),
             value: 42,
         };
-        let context = ActionContext::for_resource("Set", "score", "counter", "Score");
+        let context = ActionContext::for_resource("score", "counter", "Score");
         let envelope = ActionEnvelope {
             id: ActionId::new(),
             action: EncodedAction::encode(COUNTER_TYPE, &action).unwrap(),

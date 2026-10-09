@@ -70,7 +70,10 @@ fn a_participant_edits_through_the_door_and_history_names_it() {
     assert_eq!(app.state().count, 1);
     let version = app.versions().into_iter().last().unwrap();
     let context = version.context.unwrap();
-    assert_eq!(context.action_label, "Count one more");
+    let Some(tilo_actions::Did::Verb(verb)) = &context.what else {
+        panic!("the participant's edit records its verb: {context:?}");
+    };
+    assert_eq!(verb.action.action, "bump");
     assert_eq!(context.invoker.unwrap().actor, AGENT);
     assert_eq!(context.app.unwrap().id, TallyApp::ID);
     assert_eq!(context.group.unwrap().id, "run-1");

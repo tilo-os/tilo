@@ -4306,7 +4306,6 @@ impl FileExplorerWidget {
                         .unwrap_or("File")
                         .to_string();
                     let context = ui::tilo_actions::ActionContext::for_resource(
-                        action.clone(),
                         record_id.clone(),
                         "files.entry",
                         resource_label.clone(),

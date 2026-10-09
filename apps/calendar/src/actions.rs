@@ -756,9 +756,8 @@ pub enum NoteOwner {
     reason = "exhaustive action-to-history metadata table is clearer kept beside the action enum"
 )]
 pub fn history_context(action: &CalendarAction) -> tilo_actions::ActionContext {
-    let mut context =
-        tilo_actions::ActionContext::for_action("so.tilo.calendar", "Calendar", action);
-    let (label, id, kind, title) = match action {
+    let mut context = tilo_actions::ActionContext::for_app("so.tilo.calendar", "Calendar");
+    let (_, id, kind, title) = match action {
         CalendarAction::UpsertProject(project) => (
             "Update project",
             project.id.clone(),
@@ -894,7 +893,6 @@ pub fn history_context(action: &CalendarAction) -> tilo_actions::ActionContext {
             calendar_id.clone(),
         ),
     };
-    context.action_label = label.to_string();
     context.resource = Some(tilo_actions::ActionResource {
         id: if kind == "calendar.calendar" {
             kind.to_string()

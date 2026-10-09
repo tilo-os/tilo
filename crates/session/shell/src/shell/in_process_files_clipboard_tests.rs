@@ -564,7 +564,7 @@ mod files_clipboard_tests {
             loop {
                 let history = self.succeeds(1, "history");
                 if history["versions"].as_array().unwrap().iter().any(|entry| {
-                    entry["action"] == "Paste files"
+                    entry["what"]["action"]["action"] == "record-clipboard-transfer"
                         && undone.is_none_or(|undone| entry["undone"] == undone)
                 }) {
                     break;
@@ -697,16 +697,16 @@ mod files_clipboard_tests {
             .as_array()
             .unwrap()
             .iter()
-            .find(|entry| entry["action"] == "Paste files")
+            .find(|entry| entry["what"]["action"]["action"] == "record-clipboard-transfer")
             .unwrap_or_else(|| panic!("native Paste's actual shared history: {history}"));
-        let args = entry["args"].as_str().unwrap();
-        assert!(
-            args.contains("completed:1"),
-            "the production history summarizes the receipted count: {history}"
+        let args = &entry["what"]["args"];
+        assert_eq!(
+            args["receipt.completed"], 1,
+            "the production history records the receipted count: {history}"
         );
-        assert!(
-            args.contains("cut:false"),
-            "the production history summarizes Copy mode: {history}"
+        assert_eq!(
+            args["receipt.cut"], false,
+            "the production history records Copy mode: {history}"
         );
         drop(fixture);
     }
@@ -742,7 +742,7 @@ mod files_clipboard_tests {
                 .as_array()
                 .unwrap()
                 .iter()
-                .find(|entry| entry["action"] == "Paste files")
+                .find(|entry| entry["what"]["action"]["action"] == "record-clipboard-transfer")
                 .unwrap();
             assert_eq!(
                 paste["undone"], true,
@@ -764,7 +764,7 @@ mod files_clipboard_tests {
                 .as_array()
                 .unwrap()
                 .iter()
-                .find(|entry| entry["action"] == "Paste files")
+                .find(|entry| entry["what"]["action"]["action"] == "record-clipboard-transfer")
                 .unwrap();
             // The production history API emits `undone` only when true.
             assert!(
@@ -823,7 +823,7 @@ mod files_clipboard_tests {
                     .as_array()
                     .unwrap()
                     .iter()
-                    .any(|entry| entry["action"] == "Paste files"),
+                    .any(|entry| entry["what"]["action"]["action"] == "record-clipboard-transfer"),
                 "interruption must precede document receipt: {history}"
             );
             let result = fixture.succeeds(1, "recover-clipboard-transfers");
@@ -909,7 +909,7 @@ mod files_clipboard_tests {
                 .as_array()
                 .unwrap()
                 .iter()
-                .any(|entry| entry["action"] == "Paste files"),
+                .any(|entry| entry["what"]["action"]["action"] == "record-clipboard-transfer"),
             "cancelled unpublished Paste has no successful transfer history: {history}"
         );
     }
@@ -979,7 +979,7 @@ mod files_clipboard_tests {
                 .as_array()
                 .unwrap()
                 .iter()
-                .any(|entry| entry["action"] == "Paste files"),
+                .any(|entry| entry["what"]["action"]["action"] == "record-clipboard-transfer"),
             "the physically published subset must remain undoable: {history}"
         );
         fixture.succeeds(1, "undo");
@@ -1114,11 +1114,10 @@ mod files_clipboard_tests {
         );
         let history = fixture.succeeds(1, "history");
         assert!(
-            history["versions"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|entry| entry["action"] == "Paste files" && entry["undone"] == true),
+            history["versions"].as_array().unwrap().iter().any(
+                |entry| entry["what"]["action"]["action"] == "record-clipboard-transfer"
+                    && entry["undone"] == true
+            ),
             "cold recovery must settle the actual saved Undo: {history}"
         );
         let result = fixture.invoke(1, "undo");
@@ -1218,13 +1217,10 @@ mod files_clipboard_tests {
         fixture.succeeds(1, "undo");
         let history = fixture.succeeds(1, "history");
         drop(fixture);
-        assert!(
-            history["versions"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|entry| entry["action"] == "Paste files" && entry["undone"] == true)
-        );
+        assert!(history["versions"].as_array().unwrap().iter().any(
+            |entry| entry["what"]["action"]["action"] == "record-clipboard-transfer"
+                && entry["undone"] == true
+        ));
     }
 
     #[test]
@@ -1323,7 +1319,7 @@ mod files_clipboard_tests {
                 .as_array()
                 .unwrap()
                 .iter()
-                .any(|entry| entry["action"] == "Paste files"),
+                .any(|entry| entry["what"]["action"]["action"] == "record-clipboard-transfer"),
             "persisted Paste history must reopen: {history}"
         );
         {
@@ -1367,7 +1363,7 @@ mod files_clipboard_tests {
             .as_array()
             .unwrap()
             .iter()
-            .find(|entry| entry["action"] == "Paste files")
+            .find(|entry| entry["what"]["action"]["action"] == "record-clipboard-transfer")
             .unwrap();
         assert_eq!(
             paste["undone"], true,
@@ -1546,7 +1542,7 @@ mod files_clipboard_tests {
                 .as_array()
                 .unwrap()
                 .iter()
-                .any(|entry| entry["action"] == "Restore file"),
+                .any(|entry| entry["what"]["action"]["action"] == "record-trash-restore"),
             "{history}"
         );
         fixture
@@ -2027,7 +2023,7 @@ mod files_clipboard_tests {
             .as_array()
             .unwrap()
             .iter()
-            .find(|entry| entry["action"] == "Paste files")
+            .find(|entry| entry["what"]["action"]["action"] == "record-clipboard-transfer")
             .expect("the actual agent paste is recorded");
         assert_eq!(receipt["by"], "agent:clipboard-helper", "{receipt}");
         let author = receipt["by"].as_str().unwrap();
@@ -2084,7 +2080,7 @@ mod files_clipboard_tests {
             .as_array()
             .unwrap()
             .iter()
-            .find(|entry| entry["action"] == "Paste files")
+            .find(|entry| entry["what"]["action"]["action"] == "record-clipboard-transfer")
             .expect("the failed compensation retains its original Paste history");
         assert_ne!(
             paste["undone"], true,
@@ -2113,7 +2109,7 @@ mod files_clipboard_tests {
             .as_array()
             .unwrap()
             .iter()
-            .find(|entry| entry["action"] == "Paste files")
+            .find(|entry| entry["what"]["action"]["action"] == "record-clipboard-transfer")
             .unwrap();
         assert_eq!(
             paste["undone"], true,
@@ -2173,7 +2169,7 @@ mod files_clipboard_tests {
                 .as_array()
                 .unwrap()
                 .iter()
-                .any(|entry| entry["action"] == "Restore file"),
+                .any(|entry| entry["what"]["action"]["action"] == "record-trash-restore"),
             "actual Restore must be in shared history: {history}"
         );
     }

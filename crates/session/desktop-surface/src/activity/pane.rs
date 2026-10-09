@@ -389,7 +389,7 @@ fn others_work(rows: Vec<&WorkspaceHistoryEntry>, local: &str) -> Vec<HistoryEnt
 
 fn is_feed_change(entry: &HistoryEntry) -> bool {
     !entry.context.as_ref().is_some_and(|context| {
-        context.is_housekeeping()
+        !context.is_activity()
             || context
                 .facets
                 .iter()
@@ -2287,10 +2287,7 @@ impl RoomActivityPane {
                             u64::try_from(receipt.completed_at).unwrap_or_default(),
                         ))
                         .unwrap_or(SystemTime::UNIX_EPOCH),
-                    summary: receipt
-                        .context
-                        .summary()
-                        .unwrap_or_else(|| receipt_status_label(&receipt.status)),
+                    summary: receipt_summary(&receipt.context, &receipt.status),
                     text_delta: None,
                     diff_payload: None,
                     redaction: None,
@@ -2299,15 +2296,16 @@ impl RoomActivityPane {
                 tags.push(Some(workspace.id.raw()));
             }
         }
-        // Housekeeping stays in the room document's history, out of the feed.
+        // Housekeeping and what came from outside stay in the room
+        // document's history, out of the feed.
         self.derived = entries
             .into_iter()
             .zip(tags)
             .filter(|(entry, _)| {
-                !entry
+                entry
                     .context
                     .as_ref()
-                    .is_some_and(ui::tilo_actions::ActionContext::is_housekeeping)
+                    .is_none_or(ui::tilo_actions::ActionContext::is_activity)
             })
             .collect();
         self.derived.sort_by_key(|(entry, _)| entry.timestamp);
@@ -2461,13 +2459,7 @@ impl RoomActivityPane {
                             .cloned()
                             .unwrap_or_else(|| t("activity-removed-workspace"));
                         e.summary = format!("{label} \u{00b7} {}", e.summary);
-                        let mut context =
-                            e.context
-                                .take()
-                                .unwrap_or_else(|| ui::tilo_actions::ActionContext {
-                                    action_label: e.summary.clone(),
-                                    ..ui::tilo_actions::ActionContext::default()
-                                });
+                        let mut context = e.context.take().unwrap_or_default();
                         context
                             .facets
                             .push(ui::tilo_actions::ActionFacet::new("workspace", label));
@@ -2638,12 +2630,7 @@ impl RoomActivityPane {
                     {
                         let label = labels.join(" + ");
                         projected.summary = format!("{label} \u{00b7} {}", projected.summary);
-                        let mut context = projected.context.take().unwrap_or_else(|| {
-                            ui::tilo_actions::ActionContext {
-                                action_label: projected.summary.clone(),
-                                ..ui::tilo_actions::ActionContext::default()
-                            }
-                        });
+                        let mut context = projected.context.take().unwrap_or_default();
                         context
                             .facets
                             .push(ui::tilo_actions::ActionFacet::new("workspace", label));
@@ -9148,6 +9135,27 @@ fn task_route_label(route: WorkspaceTaskRoute) -> String {
 }
 
 /// How an action with no summary of its own ended.
+/// What an effect's receipt says: what the effect did, with how it ended
+/// when it did not complete.
+fn receipt_summary(
+    context: &tilo_actions::ActionContext,
+    status: &tilo_actions::EffectReceiptStatus,
+) -> String {
+    let Some(what) = ui::history_source::sentence::step_summary(context) else {
+        return receipt_status_label(status);
+    };
+    match status {
+        tilo_actions::EffectReceiptStatus::Succeeded => what,
+        _ => t_args(
+            "activity-receipt-ended",
+            &[
+                ("status", receipt_status_label(status).into()),
+                ("what", what.into()),
+            ],
+        ),
+    }
+}
+
 fn receipt_status_label(status: &tilo_actions::EffectReceiptStatus) -> String {
     t(match status {
         tilo_actions::EffectReceiptStatus::Succeeded => "activity-receipt-completed",

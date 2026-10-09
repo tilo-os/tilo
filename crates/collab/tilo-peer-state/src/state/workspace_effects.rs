@@ -205,7 +205,10 @@ fn bounded_context(context: &tilo_actions::ActionContext) -> bool {
             && value.chars().count() <= max
             && !value.chars().any(char::is_control)
     }
-    text(&context.action_label, 200)
+    context
+        .item
+        .as_ref()
+        .is_none_or(|item| text(&item.id, 512) && text(&item.label, 200))
         && context
             .app
             .as_ref()

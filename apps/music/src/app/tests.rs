@@ -4457,8 +4457,12 @@ fn canonical_actions_converge_through_the_platform_document() {
         );
         assert_eq!(
             last_action_label(&mut doc).as_deref(),
-            Some("Like song"),
+            Some("set-liked"),
             "the like is a recorded, attributed action the platform replicates"
+        );
+        assert_eq!(
+            last_action(&mut doc).and_then(|verb| verb.args["liked"].as_bool()),
+            Some(true)
         );
         // Model the platform's document replication boundary with an exact
         // Automerge message exchange. Music neither opens a socket nor mints a
@@ -4496,18 +4500,26 @@ fn canonical_actions_converge_through_the_platform_document() {
             "and it actually toggled the track's liked state in the doc"
         );
         assert_eq!(
-            last_action_label(&mut doc).as_deref(),
-            Some(if before { "Unlike song" } else { "Like song" }),
+            last_action(&mut doc).and_then(|verb| verb.args["liked"].as_bool()),
+            Some(!before),
             "the click applied the palette's like action"
         );
     }
 }
 
-/// The history label of the last action applied to `doc`.
-fn last_action_label(doc: &mut AutoCommit) -> Option<String> {
+/// The verb and arguments history recorded for the last action applied to
+/// `doc`.
+fn last_action(doc: &mut AutoCommit) -> Option<tilo_actions::VerbCall> {
     let change = doc.get_last_local_change()?;
     let message = change.message()?;
-    tilo_actions::ActionContext::from_change_message(message).map(|context| context.action_label)
+    match tilo_actions::ActionContext::from_change_message(message)?.what? {
+        tilo_actions::Did::Verb(verb) => Some(verb),
+        _ => None,
+    }
+}
+
+fn last_action_label(doc: &mut AutoCommit) -> Option<String> {
+    last_action(doc).map(|verb| verb.action.action)
 }
 
 // ---- 22. responsive bottom bar: volume + swipe ------------------------
@@ -4628,7 +4640,7 @@ fn recommendations_shared_input_and_dismiss_controls_record_canonical_actions() 
     assert!(!doc::load_library(&doc).recommendations.likes);
     assert_eq!(
         last_action_label(&mut doc).as_deref(),
-        Some(ui::i18n!("music-recommendations-change-inputs").as_str())
+        Some("set-recommendation-input")
     );
     app.dispatch(
         Action::Recommendation(crate::actions::MusicAction::SetRecommendationInput {
@@ -4654,7 +4666,7 @@ fn recommendations_shared_input_and_dismiss_controls_record_canonical_actions() 
     );
     assert_eq!(
         last_action_label(&mut doc).as_deref(),
-        Some(ui::i18n!("music-recommendations-dismiss").as_str())
+        Some("set-recommendation-dismissed")
     );
 }
 

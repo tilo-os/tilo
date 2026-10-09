@@ -232,11 +232,11 @@ pub struct UndoLog {
     revision: u64,
 }
 
-/// History line for a compensating action, from its encoded payload. The
-/// variant name is the same label a door commit would derive.
+/// History entry for a compensating action, from its encoded payload.
 fn history_message_for_encoded_action(encoded: &tilo_actions::EncodedAction) -> Option<String> {
-    let value: serde_json::Value = serde_json::from_slice(&encoded.payload).ok()?;
-    tilo_actions::ActionContext::for_action(&encoded.type_id, &encoded.type_id, &value)
+    let described = tilo_actions::Described::from_encoded(encoded, None)?;
+    tilo_actions::ActionContext::default()
+        .with_described(described)
         .change_message()
 }
 
@@ -270,31 +270,26 @@ fn step_context(
                 .as_deref()
                 .and_then(tilo_actions::ActionContext::from_change_message)
         })
-        .filter(|context| !context.action_label.is_empty())
+        .filter(|context| context.what.is_some())
 }
 
-/// How history names an undo or redo of `step`: "Undo Rename", by whoever
-/// made the step, for the app and resource it was made in. The undo is the
-/// author's own step, so it stays theirs; without a known step it is the bare
-/// verb.
+/// The entry of an undo or redo of `step`: what it took back or brought
+/// back, by whoever made the step, for the app and resource it was made in.
+/// The undo is the author's own step, so it stays theirs.
 fn inverse_message(
     step: Option<&tilo_actions::ActionContext>,
     direction: Direction,
 ) -> Option<String> {
-    let key = match direction {
-        Direction::Undo => "host-undo",
-        Direction::Redo => "host-redo",
-    };
-    let action_label = match step {
-        Some(step) => {
-            let mut args = fluent::FluentArgs::new();
-            args.set("change", step.action_label.clone());
-            crate::i18n::I18nManager::lookup(&format!("{key}-named"), Some(&args))
-        }
-        None => crate::i18n::I18nManager::lookup_plain(key),
+    let op = match direction {
+        Direction::Undo => tilo_actions::HistoryOp::Undo,
+        Direction::Redo => tilo_actions::HistoryOp::Redo,
     };
     let context = tilo_actions::ActionContext {
-        action_label,
+        what: Some(tilo_actions::Did::history(
+            op,
+            1,
+            step.and_then(tilo_actions::ActionContext::described),
+        )),
         app: step.and_then(|step| step.app.clone()),
         resource: step.and_then(|step| step.resource.clone()),
         group: step.and_then(|step| step.group.clone()),
@@ -2361,13 +2356,9 @@ mod tests {
         {
             let mut state = State::new();
             state.doc.put(&ROOT, "body", "hello").unwrap();
-            let context = tilo_actions::ActionContext::for_resource(
-                "Edit document",
-                "document:1",
-                "document",
-                "Draft",
-            )
-            .with_app("org.tilo.Writer", "Writer");
+            let context =
+                tilo_actions::ActionContext::for_resource("document:1", "document", "Draft")
+                    .with_app("org.tilo.Writer", "Writer");
             assert!(state.commit_action_authored_with_context(
                 None,
                 None,

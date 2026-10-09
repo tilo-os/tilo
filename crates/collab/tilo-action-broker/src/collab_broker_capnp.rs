@@ -5013,7 +5013,6 @@ impl CapnpBrokerState {
         };
         let (tx, rx) = std::sync::mpsc::channel();
         let mut receipt_context = tilo_actions::ActionContext::for_resource(
-            &offered.1.action_label,
             &offered.1.resource,
             &offered.1.resource_kind,
             &offered.1.resource_label,
@@ -7945,13 +7944,17 @@ impl channel_handle::Server for CapnpChannelHandle {
                 "only Effects produce durable invocation receipts".into(),
             ));
         }
+        let what = tilo_actions::Did::verb(
+            tilo_actions::ActionKey::new(&surface.app_id, &offered.resource_kind, &offered.action),
+            [],
+        );
         let mut context = tilo_actions::ActionContext::for_resource(
-            offered.action_label,
             offered.resource,
             offered.resource_kind,
             offered.resource_label,
         )
-        .with_app(&surface.app_id, &surface.app_id);
+        .with_app(&surface.app_id, &surface.app_id)
+        .with_described(tilo_actions::Described::new(what));
         let actor = current.broker_actor().id;
         if self.state.durable_owner_required
             || self
@@ -16443,7 +16446,6 @@ pub mod tests {
             operation_kind: tilo_actions::OperationKind::Effect,
             cluster_id,
             context: tilo_actions::ActionContext::for_resource(
-                "Publish",
                 "document:brief",
                 "document",
                 "Release brief",

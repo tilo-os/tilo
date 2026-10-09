@@ -480,19 +480,14 @@ pub(crate) fn apply_seed<A: ResourceApp>(
     let writer = ui_core::history_source::authors::device_actor(author, doc.get_actor());
     for action in &actions {
         let encoded = tilo_resource::encode::<A::Resource>(action).map_err(|e| e.to_string())?;
-        let label = tilo_resource::action_label::<A::Resource>(action).unwrap_or_else(|| {
-            tilo_actions::ActionContext::for_action("", "", action).action_label
-        });
         let context = tilo_actions::ActionContext::for_resource(
-            label,
             <A::Resource as Resource>::KIND,
             <A::Resource as Resource>::KIND,
             <A::Resource as Resource>::LABEL,
         )
         .with_app(A::ID, A::TITLE)
         .with_invoker(tilo_actions::ActionInvoker::actor(author))
-        .with_change(tilo_actions::ChangeKind::External)
-        .with_args_from_payload(&encoded.payload);
+        .with_change(tilo_actions::ChangeKind::External);
         tilo_actions::apply_local_with_context(doc, action, encoded, Some(&writer), context)
             .map_err(|error| format!("seeding the new record failed: {error}"))?;
     }

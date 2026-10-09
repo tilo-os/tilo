@@ -247,8 +247,7 @@ fn consume_launchpad(
         root: root.to_string(),
         choice,
     };
-    let context =
-        tilo_actions::ActionContext::for_action("tilo.desktop", action.choice.path(), &action);
+    let context = tilo_actions::ActionContext::for_app("tilo.desktop", action.choice.path());
     match edits.apply(
         &mut ui::action_host::ActionHost::new(),
         "tilo.desktop.launchpad.consume",
@@ -428,8 +427,7 @@ impl CollaborationLaunchpad {
             root: path.to_string(),
             choice,
         };
-        let context =
-            tilo_actions::ActionContext::for_action("tilo.desktop", action.choice.path(), &action);
+        let context = tilo_actions::ActionContext::for_app("tilo.desktop", action.choice.path());
         match state.apply(&mut self.actions, LAUNCHPAD_ACTION_TYPE, &action, context) {
             Ok(()) => true,
             Err(error) => {

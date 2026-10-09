@@ -799,10 +799,11 @@ pub struct ActionSpec {
     /// Classifies what one invocation's bound arguments need the invoker to
     /// be allowed. See [`ActionSpec::with_permission_of`].
     permission_of: Option<PermissionClassifier>,
-    /// Names one invocation in history from the action it built. See
-    /// [`ActionSpec::with_history_label`].
-    history_label_of: Option<HistoryLabeler>,
     continuation_resolver: Option<ContinuationResolver>,
+    /// Whether the action carries any of its resource's other actions (a
+    /// generic edit, a group) rather than being a verb of its own. See
+    /// [`ActionSpec::carrying`].
+    carrier: bool,
 }
 
 /// Classifies the risk of one invocation from its bound arguments.
@@ -810,10 +811,6 @@ pub type RiskClassifier = Arc<dyn Fn(&ActionArgs) -> RiskLevel + Send + Sync>;
 
 /// Classifies what one invocation needs the invoker to be allowed.
 pub type PermissionClassifier = Arc<dyn Fn(&ActionArgs) -> PermissionRequirement + Send + Sync>;
-
-/// Names one invocation in history from the encoded action it built, or
-/// declines with `None`.
-pub type HistoryLabeler = Arc<dyn Fn(&EncodedAction) -> Option<String> + Send + Sync>;
 
 struct TypedActionSeed {
     id: String,
@@ -976,8 +973,8 @@ impl ActionSpec {
             },
             risk_of: None,
             permission_of: None,
-            history_label_of: None,
             continuation_resolver: None,
+            carrier: false,
         }
     }
 
@@ -1016,8 +1013,8 @@ impl ActionSpec {
             build: InvocationBuilder::Fixed(for_build),
             risk_of: None,
             permission_of: None,
-            history_label_of: None,
             continuation_resolver: None,
+            carrier: false,
         })
     }
 
@@ -1050,8 +1047,8 @@ impl ActionSpec {
             build: InvocationBuilder::Fixed(for_build),
             risk_of: None,
             permission_of: None,
-            history_label_of: None,
             continuation_resolver: None,
+            carrier: false,
         }
     }
 
@@ -1100,8 +1097,8 @@ impl ActionSpec {
             },
             risk_of: None,
             permission_of: None,
-            history_label_of: None,
             continuation_resolver: None,
+            carrier: false,
         }
     }
 
@@ -1142,8 +1139,8 @@ impl ActionSpec {
             build: InvocationBuilder::Fixed(for_build),
             risk_of: None,
             permission_of: None,
-            history_label_of: None,
             continuation_resolver: None,
+            carrier: false,
         })
     }
 
@@ -1193,8 +1190,8 @@ impl ActionSpec {
             },
             risk_of: None,
             permission_of: None,
-            history_label_of: None,
             continuation_resolver: None,
+            carrier: false,
         }
     }
 
@@ -1298,8 +1295,8 @@ impl ActionSpec {
             },
             risk_of: None,
             permission_of: None,
-            history_label_of: None,
             continuation_resolver: None,
+            carrier: false,
         }
     }
 
@@ -1408,6 +1405,21 @@ impl ActionSpec {
         self.contract.is_programmatic()
     }
 
+    /// Declare that this action carries the resource's other actions (a
+    /// generic typed edit, a group of edits): history records the actions
+    /// it carried, never this one.
+    #[must_use]
+    pub fn carrying(mut self) -> Self {
+        self.carrier = true;
+        self
+    }
+
+    /// Whether this action carries the resource's other actions. See
+    /// [`Self::carrying`].
+    pub fn carries_actions(&self) -> bool {
+        self.carrier
+    }
+
     /// Classify each invocation's risk from its bound arguments, for an action
     /// whose consequence depends on them (a generic edit whose value may
     /// delete). Whenever the classified risk
@@ -1495,30 +1507,6 @@ impl ActionSpec {
         self.risk_of
             .as_ref()
             .map_or(self.contract.risk, |classify| classify(args))
-    }
-
-    /// Name each invocation in history after the action it built rather
-    /// than after this spec, for an action that carries different edits (a
-    /// generic typed edit is "Remove marks" once and "Edit marks" the next
-    /// time). `None` falls back to [`label`](Self::label).
-    #[must_use]
-    pub fn with_history_label(
-        mut self,
-        label: impl Fn(&EncodedAction) -> Option<String> + Send + Sync + 'static,
-    ) -> Self {
-        self.history_label_of = Some(Arc::new(label));
-        self
-    }
-
-    /// What history calls one invocation that built `encoded`: the
-    /// [`with_history_label`](Self::with_history_label) name when there is
-    /// one, else the spec's [`label`](Self::label).
-    pub fn history_label(&self, encoded: &EncodedAction) -> String {
-        self.history_label_of
-            .as_ref()
-            .and_then(|label| label(encoded))
-            .filter(|label| !label.trim().is_empty())
-            .unwrap_or_else(|| self.label.clone())
     }
 
     /// The confirmation one invocation with these bound arguments needs: the

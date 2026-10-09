@@ -522,8 +522,8 @@ fn page_tree_action(
 
 /// Durable, browseable history metadata for a Notes mutation.
 pub fn history_context(action: &NotesAction) -> tilo_actions::ActionContext {
-    let mut context = tilo_actions::ActionContext::for_action("so.tilo.notes", "Notes", action);
-    let (label, resource_id, kind, title) = match action {
+    let mut context = tilo_actions::ActionContext::for_app("so.tilo.notes", "Notes");
+    let (_, resource_id, kind, title) = match action {
         NotesAction::UpdatePageTree { .. } => (
             "Move note",
             "notes.notebook".into(),
@@ -605,7 +605,6 @@ pub fn history_context(action: &NotesAction) -> tilo_actions::ActionContext {
             tag.name.clone(),
         ),
     };
-    context.action_label = label.to_string();
     context.resource = Some(tilo_actions::ActionResource {
         id: resource_id,
         kind: kind.to_string(),
@@ -3854,7 +3853,6 @@ mod tests {
                 parent: String::new(),
                 order: "a".into(),
             }));
-            assert_eq!(context.action_label, "Update note");
             let resource = context.resource.expect("note resource");
             assert_eq!(resource.id, "notes.page:page-7");
             assert_eq!(resource.label, "Launch brief");

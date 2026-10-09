@@ -3325,7 +3325,7 @@ impl BooksApp {
         let _ = self.dispatch.apply_now_with(
             doc,
             action,
-            tilo_actions::ActionContext::for_action("so.tilo.ebook", "Ebook", action),
+            tilo_actions::ActionContext::for_app("so.tilo.ebook", "Ebook"),
         );
     }
 

@@ -18,9 +18,10 @@ impl PublishedInvocationRequest {
     /// The invoker this request resolves for: the admitted actor plus the
     /// host-set participant.
     pub fn invoker(&self) -> tilo_actions::ActionInvoker {
-        tilo_actions::ActionInvoker {
-            actor: self.actor.clone(),
-            participant: self.participant.clone(),
+        let invoker = tilo_actions::ActionInvoker::actor(self.actor.clone());
+        match &self.participant {
+            Some(participant) => invoker.with_participant(participant.clone()),
+            None => invoker,
         }
     }
 

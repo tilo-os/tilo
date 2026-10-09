@@ -140,7 +140,7 @@ fn fill_member_capacity(fixture: &Fixture, owner: &NativeWorkspaceOwner, member:
 
 fn request(status: EffectReceiptStatus) -> OwnerCommitRequest {
     let invocation = InvocationId::new();
-    let mut context = ActionContext::for_resource("Test effect", "workspace", "workspace", "Room");
+    let mut context = ActionContext::for_resource("workspace", "workspace", "Room");
     context.facets = vec![
         ActionFacet::new("tilo.receipt", "effect"),
         ActionFacet::new("tilo.invocation", invocation.0.to_string()),
@@ -473,7 +473,12 @@ fn effect_private_facets_and_unbounded_context_refuse_without_publication() {
                     code: "private error text".into(),
                 }
             }
-            _ => effect.context.action_label = "control\nlabel".into(),
+            _ => {
+                effect.context.item = Some(tilo_actions::ActionItem {
+                    id: "item".into(),
+                    label: "control\nlabel".into(),
+                });
+            }
         }
         if let CommitOperation::EffectReceipt { redacted, .. } = &mut operation.operation {
             *redacted = serde_json::to_vec(&effect).unwrap();

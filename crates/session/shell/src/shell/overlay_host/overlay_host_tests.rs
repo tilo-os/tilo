@@ -222,7 +222,6 @@ fn collaboration_status_preferences_round_trip_and_fall_back_to_grounded_intent(
             redaction: None,
             context: Some(
                 ui::tilo_actions::ActionContext::for_resource(
-                    "Edit",
                     "finance:q2",
                     "sheet",
                     "Q2 finance report",
@@ -249,7 +248,6 @@ fn collaboration_status_preferences_round_trip_and_fall_back_to_grounded_intent(
             redaction: None,
             context: Some(
                 ui::tilo_actions::ActionContext::for_resource(
-                    "Edit",
                     format!("resource:{id}"),
                     "document",
                     purpose,

@@ -18,7 +18,8 @@ use automerge::transaction::{CommitOptions, Transactable};
 use tilo_automerge::ApplyIncoming;
 
 use crate::action::{Action, ActionError, ActionId, Doc, EncodedAction, ExecutionLocus};
-use crate::context::ActionContext;
+use crate::context::{ActionContext, ChangeKind};
+use crate::entry::{Described, Did};
 use crate::envelope::ActionEnvelope;
 use crate::registry::ActionRegistry;
 
@@ -68,24 +69,26 @@ fn envelope_for(
     // The action declares what it is; a context may only say a content
     // action is nobody's step this time (a record's first-run seed).
     let change = action.change_kind();
-    // What history calls this step: what the value did, in its own words
-    // ("Recolour 2 marks"), read before it applies, over the label of the
-    // action it came through.
     let id = ActionId::new();
-    let context = context.map(|mut context| {
-        if let Some(label) = action
-            .history_label(doc)
-            .filter(|label| !label.trim().is_empty())
-        {
-            context.action_label = label;
+    let mut context = context.unwrap_or_default();
+    if change != ChangeKind::Content {
+        context.change = change;
+    }
+    context.kind = action.action_kind();
+    // What history records the step did: described by the value itself from
+    // the document before it applies, else as the published action the door
+    // resolved, else as the verb its encoded form names.
+    let app = context.app.as_ref().map(|app| app.id.clone());
+    let described = action
+        .describe(doc)
+        .or_else(|| context.described())
+        .or_else(|| Described::from_encoded(&encoded, app.as_deref()));
+    if let Some(mut described) = described {
+        if let Some(app) = app {
+            name_app(&mut described.what, &app);
         }
-        context
-    });
-    let mut context = match context {
-        Some(context) if change.is_content() => Some(context),
-        Some(context) => Some(context.with_change(change)),
-        None => (!change.is_content()).then(|| ActionContext::default().with_change(change)),
-    };
+        context = context.with_described(described);
+    }
     // Caller-supplied descriptive context cannot choose executable history.
     // Compute it from the actual decoded action at its canonical before state.
     let compensation = action
@@ -104,19 +107,9 @@ fn envelope_for(
             "document compensation exceeds the history budget".into(),
         ));
     }
-    if let Some(context) = context.as_mut() {
-        context.compensation = compensation;
-    } else if compensation.is_some() {
-        context = Some(ActionContext {
-            compensation,
-            ..ActionContext::for_action("", "", &encoded)
-        });
-    }
-    // Fresh executor correlation is written after compensation may synthesize
-    // semantic context. Replay preserves both fields from the original change.
-    if let Some(context) = context.as_mut() {
-        context.executed_action = Some(id);
-    }
+    context.compensation = compensation;
+    context.executed_action = Some(id);
+    let context = Some(context);
     Ok(ActionEnvelope {
         id,
         action: encoded,
@@ -126,6 +119,19 @@ fn envelope_for(
         actor: actor.filter(|a| !a.is_empty()).map(<[u8]>::to_vec),
         context,
     })
+}
+
+/// Fill the app of every verb in `what` that does not name one.
+fn name_app(what: &mut Did, app: &str) {
+    match what {
+        Did::Verb(verb) if verb.action.app.is_empty() => app.clone_into(&mut verb.action.app),
+        Did::Group(group) => {
+            for member in &mut group.members {
+                name_app(member, app);
+            }
+        }
+        _ => {}
+    }
 }
 
 /// Apply `action` to `doc` under the envelope's pinned actor id +

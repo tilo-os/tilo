@@ -122,7 +122,11 @@ fn edits_are_undoable_permissioned_and_merge_to_identical_heads() {
         app.invoke(Note::EDIT.with("first thought")).unwrap();
         app.invoke(Note::EDIT.with("second thought")).unwrap();
         let last = app.versions().pop().unwrap();
-        assert_eq!(last.summary().as_deref(), Some("Edit note · Note"));
+        let entry = last.context.expect("an entry");
+        assert!(
+            matches!(&entry.what, Some(ui::tilo_actions::Did::Verb(verb)) if verb.action.action == "edit"),
+            "{entry:?}"
+        );
         assert!(app.undo());
         assert_eq!(app.state().body, "first thought");
         assert!(app.redo());

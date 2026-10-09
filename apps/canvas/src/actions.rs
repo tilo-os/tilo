@@ -1622,11 +1622,6 @@ fn arrange_marks(doc: &mut Doc, art: &Artwork, arrange: &Arrange) -> Result<(), 
 }
 
 impl tilo_actions::Action for CanvasAction {
-    /// The step as history names it: "Recolour 2 marks", "Move Sun".
-    fn history_label(&self, doc: &Doc) -> Option<String> {
-        crate::described::label(self, doc)
-    }
-
     fn apply(&self, doc: &mut Doc) -> Result<(), ActionError> {
         let art = doc::read(doc);
         match self {

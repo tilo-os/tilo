@@ -351,11 +351,17 @@ fn write_version<R: Resource>(
     use tilo_actions::Action as _;
     let action = version.invoke.build(version.at_ms)?;
     let encoded = tilo_resource::encode::<R>(&action).map_err(|error| error.to_string())?;
-    let label =
-        tilo_resource::action_label::<R>(&action).unwrap_or_else(|| version.invoke.id.to_owned());
-    let context = tilo_actions::ActionContext::for_resource(label, R::KIND, R::KIND, R::LABEL)
+    let mut context = tilo_actions::ActionContext::for_resource(R::KIND, R::KIND, R::LABEL)
         .with_change(action.change_kind())
         .with_host_invoker(version.author.clone(), None);
+    if let Some(described) = action.describe(doc).or_else(|| {
+        tilo_actions::Described::of_published(
+            &encoded,
+            tilo_actions::ActionKey::new("", R::KIND, version.invoke.id),
+        )
+    }) {
+        context = context.with_described(described);
+    }
     let envelope = tilo_actions::ActionEnvelope {
         id: tilo_actions::ActionId::new(),
         action: encoded,
