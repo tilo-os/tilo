@@ -277,7 +277,8 @@ mod tests {
                 .into_iter()
                 .find(|action| action.id == "send-text")
                 .expect("typed input action");
-            assert_eq!(input.contract.kind, ActionKind::Undoable);
+            // Typing into the remote machine reaches outside the record.
+            assert_eq!(input.contract.kind, ActionKind::Outside);
             assert_eq!(input.contract.risk, RiskLevel::Privileged);
             assert_eq!(input.contract.confirmation, ConfirmationPolicy::Confirm);
             assert_eq!(input.contract.retry, RetryPolicy::AtMostOnce);
