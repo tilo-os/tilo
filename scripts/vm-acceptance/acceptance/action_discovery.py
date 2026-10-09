@@ -1,6 +1,7 @@
 """Bounded metadata discovery over the existing semantic action door."""
 import json
 import re
+import time
 import unicodedata
 import uuid
 from .vm import VmError
@@ -19,7 +20,11 @@ def semantic_identity(row):
 
 
 def discover(control, application, bound=None, family=None):
-    """Bootstrap by metadata; once bound, require the server's exact scope."""
+    """Accept only complete metadata, polling the same scope only while pending.
+
+    Every partial response must independently pass the normal metadata guards.
+    Rows are never joined across responses, and a stale cursor is not replayed.
+    """
     def require(ok, message):
         if not ok:
             raise VmError(message)
@@ -43,7 +48,34 @@ def discover(control, application, bound=None, family=None):
         scope = dict(application=application, room=room, record=record, semantic_family=family)
         for flag, value in scope.items():
             arguments.extend(["--" + flag.replace("_", "-"), value])
-    result = control(arguments)
+    for attempt in range(8):
+        result = control(list(arguments))
+        rows = _validated_rows(result, application, bound, family, scope)
+        completion = result.get("completion")
+        require(isinstance(completion, dict)
+                and type(completion.get("complete")) is bool
+                and isinstance(completion.get("incomplete"), list),
+                "unobservable action discovery completion")
+        incomplete = completion["incomplete"]
+        if completion["complete"]:
+            require(not incomplete, "contradictory action discovery completion")
+            return rows
+        require(bool(incomplete) and all(isinstance(item, dict)
+                and isinstance(item.get("provider"), str) and item["provider"]
+                and isinstance(item.get("reason"), str) for item in incomplete),
+                "unobservable action discovery incomplete providers")
+        reasons = sorted({item["reason"] for item in incomplete})
+        require(reasons == ["pending"],
+                "action discovery incomplete: " + ", ".join(reasons))
+        if attempt < 7:
+            time.sleep(0.05)
+    raise VmError("action discovery timed out after 8 pending responses")
+
+
+def _validated_rows(result, application, bound, family, scope):
+    def require(ok, message):
+        if not ok:
+            raise VmError(message)
     require(isinstance(result, dict) and result.get("query") == ""
             and result.get("scope") == scope, "action discovery scope was not observed")
     rows = result.get("actions")

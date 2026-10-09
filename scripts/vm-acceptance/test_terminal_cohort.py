@@ -94,7 +94,7 @@ class VM:
                    provider="app-actions", operation="inspect-session", id="inspect@adopted", params=[],
                    semantic_identity={"kind": module.FAMILY, "key": module.FAMILY},
                    contract={"availability": {"state": "available"}})
-        return dict(query="", scope=scope, count=1, actions=[row])
+        return dict(query="", completion=dict(complete=True, incomplete=[]), scope=scope, count=1, actions=[row])
 
 
 class FreshTerminalGuards(unittest.TestCase):

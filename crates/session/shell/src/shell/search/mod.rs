@@ -481,6 +481,18 @@ pub trait SearchProvider {
         None
     }
 
+    /// Machine catalogue traversal may retain a bounded inert prefix while
+    /// asynchronous pages arrive. It uses the same source and action door as
+    /// ordinary paging; the palette keeps progressive `query_page` results.
+    fn query_catalogue_page(
+        &self,
+        ctx: SearchContext<'_>,
+        cursor: Option<&SearchCursor>,
+        budget: SearchBudget,
+    ) -> SearchPage {
+        self.query_page(ctx, cursor, budget)
+    }
+
     /// Version of the retained index used by [`Self::query_page`].  A
     /// provider whose data is immutable may keep the default.  Mutable
     /// providers must change it whenever their ordering or disclosure can
@@ -1218,20 +1230,25 @@ impl SearchRegistry {
                         .max_bytes
                         .min(HEADLESS_MAX_BYTES.saturating_sub(bytes));
                 }
-                let page = source.provider.query_page(
-                    SearchContext {
-                        query_scope: Some(args.scope),
-                        action_scope: args.action_scope,
-                        include_programmatic,
-                        needle: args.needle,
-                        wanted: &source.wanted,
-                        chrome: args.chrome,
-                        doc: args.doc,
-                        doc_root: args.doc_root,
-                    },
-                    source.cursor.as_ref(),
-                    budget,
-                );
+                let context = SearchContext {
+                    query_scope: Some(args.scope),
+                    action_scope: args.action_scope,
+                    include_programmatic,
+                    needle: args.needle,
+                    wanted: &source.wanted,
+                    chrome: args.chrome,
+                    doc: args.doc,
+                    doc_root: args.doc_root,
+                };
+                let page = if exhaustive {
+                    source
+                        .provider
+                        .query_catalogue_page(context, source.cursor.as_ref(), budget)
+                } else {
+                    source
+                        .provider
+                        .query_page(context, source.cursor.as_ref(), budget)
+                };
                 pages = pages.saturating_add(1);
                 advanced = true;
                 source.note_page(&page);

@@ -31,6 +31,8 @@ use tilo_actions::remote::{
     InvocationReceipt, InvokeArgument, InvokeRequest, Pending, PendingPoll, RemoteActionTarget,
 };
 
+mod catalogue;
+
 pub const PROVIDER_ID: &str = "app-actions";
 /// How long the palette waits for a local action's admission. A closed app
 /// is launched first, and the host gives up on it sooner with a clearer
@@ -260,6 +262,8 @@ pub struct LiveAppActionsProvider {
     directory_pages: RefCell<HashMap<DirectoryCacheKey, CataloguePage>>,
     directory_pending: RefCell<HashMap<DirectoryCacheKey, PendingDirectoryPage>>,
     directory_ancestor_pins: RefCell<HashSet<DirectoryCacheKey>>,
+    catalogue: RefCell<Option<catalogue::Assembly>>,
+    catalogue_failure: Cell<Option<crate::shell::search::QueryIncompleteReason>>,
     /// The palette owns at most one needle's directory projection.
     /// Keeping previous query terms made rapid typing retain unbounded pages
     /// and receivers even though no result could ever be rendered again.
@@ -470,7 +474,9 @@ impl LiveAppActionsProvider {
             .filter(|descriptor| {
                 descriptor.address.resource == resource && descriptor.address.action == operation
             });
-        let first = descriptors.next()?;
+        let Some(first) = descriptors.next() else {
+            return self.compacted_semantic_identity(peer, revision, resource, operation);
+        };
         let identity = first.semantic_identity.clone()?;
         (identity.is_valid()
             && identity.kind == first.resource_kind
@@ -495,6 +501,8 @@ impl LiveAppActionsProvider {
             directory_pages: RefCell::new(HashMap::new()),
             directory_pending: RefCell::new(HashMap::new()),
             directory_ancestor_pins: RefCell::new(HashSet::new()),
+            catalogue: RefCell::new(None),
+            catalogue_failure: Cell::new(None),
             directory_query: RefCell::new(None),
             directory_failures: RefCell::new(HashMap::new()),
             directory_source_unavailable: Cell::new(false),
@@ -891,6 +899,7 @@ impl LiveAppActionsProvider {
         let ancestor_keys = self.directory_ancestor_pins.borrow().clone();
         let mut ready = Vec::new();
         let mut retry_needed = false;
+        let mut stale_chains = HashSet::new();
         self.directory_pending.borrow_mut().retain(|key, pending| {
             // The UI may have been idle after the reply arrived. The deadline
             // bounds unanswered work, not how soon a completed page is read.
@@ -913,6 +922,7 @@ impl LiveAppActionsProvider {
                     false
                 }
                 PendingPoll::Ready(Ok(_)) => {
+                    stale_chains.insert((key.0, key.1.clone(), key.2.clone()));
                     retry_needed = true;
                     self.directory_failures.borrow_mut().insert(
                         key.clone(),
@@ -939,7 +949,26 @@ impl LiveAppActionsProvider {
                 PendingPoll::Waiting => true,
             }
         });
+        if !stale_chains.is_empty() {
+            // A one-use SDK cursor cannot be replayed from its cached root after
+            // the source rejects it. Release this owner's whole query chain,
+            // including child pages, so the next request starts freshly.
+            let belongs = |key: &DirectoryCacheKey| {
+                stale_chains.contains(&(key.0, key.1.clone(), key.2.clone()))
+            };
+            self.directory_pages
+                .borrow_mut()
+                .retain(|key, _| !belongs(key));
+            self.directory_pending
+                .borrow_mut()
+                .retain(|key, _| !belongs(key));
+            self.directory_ancestor_pins
+                .borrow_mut()
+                .retain(|key| !belongs(key));
+            ready.retain(|(key, _, _)| !belongs(key));
+        }
         if retry_needed {
+            self.catalogue.borrow_mut().take();
             // Refused, stale, abandoned and timed-out tickets are not exhausted
             // directories. Release their retained projection so the next query
             // can make another bounded, freshly authorized request.
@@ -950,18 +979,9 @@ impl LiveAppActionsProvider {
             let mut pages = self.directory_pages.borrow_mut();
             for (key, page, initial_page) in ready {
                 self.directory_failures.borrow_mut().remove(&key);
-                // A continuation only needs the page named by its opaque
-                // cursor.  Superseded pages for this same route/query can be
-                // dropped immediately; this bounds a 100k-row remote source
-                // without making later rows unreachable.
-                pages.retain(|existing, _| {
-                    existing == &key
-                        || ancestor_keys.contains(existing)
-                        || existing.0 != key.0
-                        || existing.1 != key.1
-                        || existing.2 != key.2
-                        || existing.4 != key.4
-                });
+                // SDK cursors are one-use. Keep successful replies until the
+                // bounded cache actually needs space: ordinary catalogue reads
+                // start at the root and must not replay a consumed continuation.
                 if !pages.contains_key(&key)
                     && pages.len() >= MAX_RETAINED_DIRECTORY_PAGES
                     && let Some(evicted) = pages
@@ -995,6 +1015,7 @@ impl LiveAppActionsProvider {
             return;
         }
         *current = Some(next.clone());
+        self.catalogue.borrow_mut().take();
         self.directory_ancestor_pins.borrow_mut().clear();
         self.directory_failures.borrow_mut().clear();
         // Dropping stale receivers explicitly cancels their shell-side
@@ -1019,6 +1040,7 @@ impl LiveAppActionsProvider {
         if invalidated.is_empty() {
             return;
         }
+        self.catalogue.borrow_mut().take();
         let mut pages = self.directory_pages.borrow_mut();
         let mut pending = self.directory_pending.borrow_mut();
         for key in invalidated {
@@ -1985,6 +2007,20 @@ impl LiveAppActionsProvider {
         resource: &str,
         action: &str,
     ) -> Option<(tilo_actions::ActionDescriptor, String, Vec<u8>, String)> {
+        self.compacted_directory_action(peer_id, actor, revision, resource, action)
+            .or_else(|| {
+                self.raw_cached_directory_action(peer_id, actor, revision, resource, action)
+            })
+    }
+
+    fn raw_cached_directory_action(
+        &self,
+        peer_id: u64,
+        actor: &str,
+        revision: &str,
+        resource: &str,
+        action: &str,
+    ) -> Option<(tilo_actions::ActionDescriptor, String, Vec<u8>, String)> {
         self.directory_pages.borrow().iter().find_map(
             |((cached_peer, cached_actor, needle, cursor, parent), page)| {
                 if *cached_peer != peer_id || cached_actor != actor || page.revision != revision {
@@ -2713,6 +2749,7 @@ impl SearchProvider for LiveAppActionsProvider {
     }
 
     fn begin_catalogue_query(&self) {
+        self.catalogue_failure.set(None);
         self.directory_failures.borrow_mut().clear();
         self.directory_source_unavailable.set(false);
     }
@@ -2721,7 +2758,9 @@ impl SearchProvider for LiveAppActionsProvider {
         &self,
         ctx: &SearchContext<'_>,
     ) -> Option<crate::shell::search::QueryIncompleteReason> {
-        if let Some(reason) = self.directory_failures.borrow().values().copied().next() {
+        if let Some(reason) = self.catalogue_failure.get() {
+            Some(reason)
+        } else if let Some(reason) = self.directory_failures.borrow().values().copied().next() {
             Some(reason)
         } else if self.directory_source_unavailable.get() {
             Some(crate::shell::search::QueryIncompleteReason::Unavailable)
@@ -2769,6 +2808,18 @@ impl SearchProvider for LiveAppActionsProvider {
             ctx.chrome.active_local_user(),
             ctx.include_programmatic,
         )
+    }
+
+    fn query_catalogue_page(
+        &self,
+        ctx: SearchContext<'_>,
+        cursor: Option<&SearchCursor>,
+        budget: SearchBudget,
+    ) -> SearchPage {
+        if ctx.action_scope.is_none() {
+            return self.query_page(ctx, cursor, budget);
+        }
+        self.compacted_catalogue_page(ctx, cursor, budget)
     }
 
     #[allow(
@@ -3012,7 +3063,11 @@ impl SearchProvider for LiveAppActionsProvider {
                     return Self::live_aux_page(
                         revision,
                         results,
-                        position,
+                        if ctx.action_scope.is_some() {
+                            0
+                        } else {
+                            position
+                        },
                         &needle,
                         &scope,
                         &pending,
@@ -4808,6 +4863,10 @@ mod tests {
         };
         assert_eq!(catalog.enumerate().len(), 1);
         assert!(catalog.contains(&selected));
+        assert!(
+            !catalog.completion().complete,
+            "current local metadata must not mask the unavailable remote directory"
+        );
         let refused = ActionCatalog::build_query(
             &registry,
             &args,
@@ -4915,6 +4974,599 @@ mod tests {
                 .results
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn stale_directory_continuation_releases_its_cached_root() {
+        let provider = LiveAppActionsProvider::new(
+            crate::shell::collab_broker_capnp::CapnpBrokerState::test_broker_with_idle_directory_queue(),
+        );
+        let root = (9, "owner".into(), String::new(), Vec::new(), String::new());
+        let foreign = (
+            9,
+            "other-owner".into(),
+            String::new(),
+            Vec::new(),
+            String::new(),
+        );
+        provider
+            .directory_pages
+            .borrow_mut()
+            .insert(root.clone(), page(Vec::new(), vec![1]));
+        provider
+            .directory_pages
+            .borrow_mut()
+            .insert(foreign.clone(), page(Vec::new(), Vec::new()));
+        let next = (9, "owner".into(), String::new(), vec![1], String::new());
+        let reply = pending_directory_reply(&provider, next);
+        let mut stale = page(Vec::new(), Vec::new());
+        stale.stale_cursor = true;
+        reply.complete(Ok(stale));
+        provider.poll_directory_pages();
+        assert!(
+            !provider.directory_pages.borrow().contains_key(&root),
+            "stale one-use continuation must release the cached root that would replay it"
+        );
+        assert!(
+            provider.directory_pages.borrow().contains_key(&foreign),
+            "one owner's stale chain cannot invalidate another owner's catalogue"
+        );
+    }
+
+    struct LargeCatalogueFixture {
+        chrome: crate::shell::chrome_state::Chrome,
+        provider: Rc<LiveAppActionsProvider>,
+        registry: crate::shell::search::SearchRegistry,
+        scope: crate::shell::search::ActionDiscoveryScope,
+        doc: AutoCommit,
+        actor: String,
+        waiting:
+            RefCell<Vec<tilo_actions::remote::Completer<Result<CataloguePage, ActionHostError>>>>,
+    }
+
+    impl LargeCatalogueFixture {
+        fn new() -> Self {
+            Self::scoped("so.tilo.terminal", "terminal.session")
+        }
+
+        fn scoped(application: &str, family: &str) -> Self {
+            use crate::shell::search::{ActionDiscoveryScope, SearchRegistry};
+            let chrome = chrome();
+            let broker = broker_for(&chrome);
+            let provider = Rc::new(LiveAppActionsProvider::new_with_fixture_identity(
+                broker.clone(),
+            ));
+            let state = chrome.borrow();
+            let room = state.tree().desktop.active_workspace().unwrap().room;
+            let actor = state.local_user_for_room(&room);
+            let scope = ActionDiscoveryScope {
+                application: application.into(),
+                room: room.to_string(),
+                record: "owned-large-terminal".into(),
+                semantic_family: family.into(),
+            };
+            broker.replace_action_directory_roots_for_test(vec![ActionDirectoryRoot {
+                peer_id: 9,
+                app_id: scope.application.clone(),
+                cluster_id: scope.room.clone(),
+                record_id: scope.record.clone(),
+            }]);
+            let doc = AutoCommit::new();
+            let ctx = SearchContext {
+                action_scope: Some(&scope),
+                query_scope: Some(crate::shell::chrome_state::SearchScope::All),
+                include_programmatic: true,
+                ..context("", &state, &doc)
+            };
+            *provider.surface_snapshot.borrow_mut() =
+                Some(LiveAppActionsProvider::build_local_snapshot(
+                    &broker,
+                    &LiveAppActionsProvider::build_scope(&ctx),
+                    &provider.build_probe,
+                ));
+            let mut registry = SearchRegistry::new();
+            registry.register(provider.clone());
+            drop(state);
+            Self {
+                chrome,
+                provider,
+                registry,
+                scope,
+                doc,
+                actor,
+                waiting: RefCell::new(Vec::new()),
+            }
+        }
+
+        fn observe(&self) -> crate::shell::search::action_api::ActionCatalog {
+            use crate::shell::search::action_api::{ActionCatalog, AllVisible};
+            let state = self.chrome.borrow();
+            ActionCatalog::build_query(
+                &self.registry,
+                &crate::shell::search::QueryArgs {
+                    action_scope: Some(&self.scope),
+                    needle: "",
+                    scope: crate::shell::chrome_state::SearchScope::All,
+                    active_provider_id: None,
+                    wanted_kinds: &[],
+                    chrome: &state,
+                    doc: &self.doc,
+                    doc_root: &automerge::ROOT,
+                },
+                &AllVisible,
+                true,
+            )
+        }
+
+        fn reply(&self, number: u8, exhausted: bool, stale: bool) {
+            let cursor = if number == 0 {
+                Vec::new()
+            } else {
+                vec![number]
+            };
+            let key = (9, self.actor.clone(), String::new(), cursor, String::new());
+            let (reply, receiver) = pending();
+            self.provider.directory_pending.borrow_mut().insert(
+                key,
+                PendingDirectoryPage {
+                    receiver,
+                    deadline: super::deadline_after(DIRECTORY_PAGE_REPLY_TIMEOUT),
+                    initial_page: number == 0,
+                },
+            );
+            let resource = format!("terminal.session:{number}");
+            let row = directory_test_row(
+                &self.scope.application,
+                "",
+                &resource,
+                &self.scope.semantic_family,
+                "Recorded screen",
+                true,
+            );
+            let next = if exhausted {
+                Vec::new()
+            } else {
+                vec![number.saturating_add(1)]
+            };
+            let mut response = page(vec![row], next);
+            response.stale_cursor = stale;
+            reply.complete(Ok(response));
+            if !exhausted && !stale {
+                let next_key = (
+                    9,
+                    self.actor.clone(),
+                    String::new(),
+                    vec![number.saturating_add(1)],
+                    String::new(),
+                );
+                let waiting = pending_directory_reply(&self.provider, next_key);
+                self.waiting.borrow_mut().push(waiting);
+                // This is a real continuation, not an initial root publication.
+                for pending in self.provider.directory_pending.borrow_mut().values_mut() {
+                    pending.initial_page = false;
+                }
+            }
+        }
+
+        fn exact_id(number: u8) -> String {
+            format!(
+                "directory{ID_SEPARATOR}9{ID_SEPARATOR}r1{ID_SEPARATOR}terminal.session:{number}{ID_SEPARATOR}read"
+            )
+        }
+    }
+
+    #[test]
+    fn ordinary_scoped_catalogue_completes_eighty_async_transport_pages() {
+        let fixture = LargeCatalogueFixture::new();
+        for number in 0..80 {
+            fixture.reply(number, number == 79, false);
+            let catalogue = fixture.observe();
+            assert!(fixture.provider.directory_pages.borrow().len() <= 64);
+            assert!(fixture.provider.directory_pending.borrow().len() <= 64);
+            if number < 79 {
+                assert!(
+                    !catalogue.completion().complete,
+                    "unanswered continuation is not a completed catalogue"
+                );
+            } else {
+                assert!(
+                    catalogue.completion().complete,
+                    "all eighty actual replies must converge: {:?}",
+                    catalogue.completion()
+                );
+                let rows = catalogue.enumerate();
+                assert_eq!(rows.len(), 80);
+                for expected in 0..80 {
+                    assert_eq!(
+                        rows.iter()
+                            .filter(
+                                |row| row.resource.id == LargeCatalogueFixture::exact_id(expected)
+                            )
+                            .count(),
+                        1
+                    );
+                }
+            }
+        }
+        // Transport eviction cannot remove the canonical descriptors needed
+        // by later automation and scoped metadata. No transport reply remains.
+        fixture.provider.directory_pages.borrow_mut().clear();
+        let catalogue = fixture.observe();
+        assert!(catalogue.completion().complete);
+        assert_eq!(catalogue.enumerate().len(), 80);
+        let state = fixture.chrome.borrow();
+        let ctx = SearchContext {
+            query_scope: Some(crate::shell::chrome_state::SearchScope::All),
+            action_scope: Some(&fixture.scope),
+            include_programmatic: true,
+            ..context("", &state, &fixture.doc)
+        };
+        let id = LargeCatalogueFixture::exact_id(0);
+        assert_eq!(fixture.provider.resolve(&id, ctx).unwrap().id, id);
+        let hierarchy = fixture.provider.action_hierarchy(&id).unwrap();
+        assert_eq!(hierarchy.application, fixture.scope.application);
+        assert_eq!(hierarchy.room, fixture.scope.room);
+        assert_eq!(hierarchy.record, fixture.scope.record);
+        assert_eq!(
+            hierarchy.semantic_identity.unwrap().kind,
+            fixture.scope.semantic_family
+        );
+    }
+
+    #[test]
+    fn scoped_provider_continuation_does_not_skip_a_late_next_page() {
+        let fixture = LargeCatalogueFixture::new();
+        fixture.reply(0, false, false);
+        let state = fixture.chrome.borrow();
+        let ctx = SearchContext {
+            query_scope: Some(crate::shell::chrome_state::SearchScope::All),
+            action_scope: Some(&fixture.scope),
+            include_programmatic: true,
+            ..context("", &state, &fixture.doc)
+        };
+        let page = fixture
+            .provider
+            .query_page(ctx, None, SearchBudget::PALETTE);
+        assert_eq!(page.results.len(), 1);
+        let cursor = page.next_cursor.unwrap();
+        fixture.reply(1, true, false);
+        let next = fixture
+            .provider
+            .query_page(ctx, Some(&cursor), SearchBudget::PALETTE);
+        assert!(!next.stale_cursor);
+        assert_eq!(next.results.len(), 1);
+        assert_eq!(
+            next.results.first().unwrap().id,
+            LargeCatalogueFixture::exact_id(1)
+        );
+    }
+
+    fn store_child_pages(
+        fixture: &LargeCatalogueFixture,
+        revision: &str,
+        child_revision: &str,
+        stale: bool,
+    ) {
+        // The child address is disclosed by this actual resource container;
+        // traversal must use the parent's id, not a guessed provider prefix.
+        let parent = "store.catalogue:flathub";
+        let root_key = (
+            9,
+            fixture.actor.clone(),
+            String::new(),
+            Vec::new(),
+            String::new(),
+        );
+        let root_reply = pending_directory_reply(&fixture.provider, root_key);
+        let container = directory_test_row(
+            &fixture.scope.application,
+            "",
+            parent,
+            "store.catalogue",
+            "Flathub",
+            false,
+        );
+        let mut root = page(vec![container], Vec::new());
+        root.revision = revision.into();
+        root_reply.complete(Ok(root));
+        let child_key = (
+            9,
+            fixture.actor.clone(),
+            String::new(),
+            Vec::new(),
+            parent.into(),
+        );
+        let child_reply = pending_directory_reply(&fixture.provider, child_key);
+        let app = directory_test_row(
+            &fixture.scope.application,
+            parent,
+            "store.app:org.gnome.Calculator",
+            "store.app",
+            "Calculator",
+            true,
+        );
+        let mut child = page(vec![app], Vec::new());
+        child.revision = child_revision.into();
+        child.stale_cursor = stale;
+        child_reply.complete(Ok(child));
+    }
+
+    #[test]
+    fn ordinary_store_child_catalogue_recovers_after_parent_revision_and_stale_child() {
+        use crate::shell::search::QueryIncompleteReason;
+        let fixture = LargeCatalogueFixture::scoped("so.tilo.store", "store.app");
+        store_child_pages(&fixture, "r1", "r2", false);
+        let mismatch = fixture.observe();
+        assert!(!mismatch.completion().complete);
+        assert!(mismatch.enumerate().is_empty());
+        assert!(
+            mismatch
+                .completion()
+                .incomplete
+                .iter()
+                .any(|provider| provider.reason == QueryIncompleteReason::StaleCursor)
+        );
+        store_child_pages(&fixture, "r2", "r2", true);
+        let stale = fixture.observe();
+        assert!(!stale.completion().complete);
+        assert!(stale.enumerate().is_empty());
+        assert!(
+            stale
+                .completion()
+                .incomplete
+                .iter()
+                .any(|provider| provider.reason == QueryIncompleteReason::StaleCursor)
+        );
+        store_child_pages(&fixture, "r3", "r3", false);
+        let fresh = fixture.observe();
+        assert!(
+            fresh.completion().complete,
+            "fresh child scope must recover: {:?}",
+            fresh.completion()
+        );
+        let rows = fresh.enumerate();
+        assert_eq!(rows.len(), 1);
+        let row = rows.first().unwrap();
+        let hierarchy = row.hierarchy.as_ref().unwrap();
+        assert_eq!(hierarchy.application, "so.tilo.store");
+        assert_eq!(
+            hierarchy.semantic_identity.as_ref().unwrap().kind,
+            "store.app"
+        );
+        assert_eq!(row.resource.id.split(ID_SEPARATOR).nth(2), Some("r3"));
+    }
+
+    #[test]
+    fn compacted_catalogue_conflicting_same_address_never_silently_wins() {
+        use crate::shell::search::QueryIncompleteReason;
+        let fixture = LargeCatalogueFixture::new();
+        fixture.reply(0, false, false);
+        assert!(!fixture.observe().completion().complete);
+        let key = (
+            9,
+            fixture.actor.clone(),
+            String::new(),
+            vec![1],
+            String::new(),
+        );
+        let reply = pending_directory_reply(&fixture.provider, key);
+        let conflicting = directory_test_row(
+            &fixture.scope.application,
+            "",
+            "terminal.session:0",
+            &fixture.scope.semantic_family,
+            "Changed declaration",
+            true,
+        );
+        reply.complete(Ok(page(vec![conflicting], Vec::new())));
+        let failed = fixture.observe();
+        assert!(failed.enumerate().is_empty());
+        assert!(!failed.completion().complete);
+        assert!(
+            failed
+                .completion()
+                .incomplete
+                .iter()
+                .any(|provider| provider.reason == QueryIncompleteReason::StaleCursor)
+        );
+        assert!(fixture.provider.catalogue.borrow().is_none());
+    }
+
+    #[test]
+    fn compacted_catalogue_stale_reply_discards_prefix_and_restarts_at_root() {
+        use crate::shell::search::QueryIncompleteReason;
+        let fixture = LargeCatalogueFixture::new();
+        fixture.reply(0, false, false);
+        assert!(!fixture.observe().completion().complete);
+        fixture.reply(1, false, false);
+        assert!(!fixture.observe().completion().complete);
+        fixture.reply(2, false, true);
+        let failed = fixture.observe();
+        assert!(!failed.completion().complete);
+        assert!(failed.enumerate().is_empty());
+        assert!(
+            failed
+                .completion()
+                .incomplete
+                .iter()
+                .any(|provider| provider.reason == QueryIncompleteReason::StaleCursor)
+        );
+        assert!(fixture.provider.catalogue.borrow().is_none());
+        assert!(fixture.provider.directory_pages.borrow().is_empty());
+        assert!(fixture.provider.directory_pending.borrow().is_empty());
+        fixture.reply(0, true, false);
+        let fresh = fixture.observe();
+        assert!(fresh.completion().complete);
+        assert_eq!(fresh.enumerate().len(), 1);
+        assert_eq!(
+            fresh.enumerate().first().unwrap().resource.id,
+            LargeCatalogueFixture::exact_id(0)
+        );
+    }
+
+    #[test]
+    fn compacted_catalogue_enforces_response_byte_budget_on_real_next_reply() {
+        use crate::shell::search::QueryIncompleteReason;
+        let fixture = LargeCatalogueFixture::new();
+        fixture.reply(0, false, false);
+        assert!(!fixture.observe().completion().complete);
+        // Put the real retained observation at the hard budget boundary, then
+        // send a normal actual continuation through the public catalogue door.
+        fixture
+            .provider
+            .catalogue
+            .borrow_mut()
+            .as_mut()
+            .unwrap()
+            .bytes = crate::shell::search::HEADLESS_MAX_BYTES;
+        fixture.reply(1, true, false);
+        let failed = fixture.observe();
+        assert!(!failed.completion().complete);
+        assert!(failed.enumerate().is_empty());
+        assert!(
+            failed
+                .completion()
+                .incomplete
+                .iter()
+                .any(|provider| provider.reason == QueryIncompleteReason::BudgetExhausted)
+        );
+        assert!(fixture.provider.catalogue.borrow().is_none());
+        assert!(fixture.provider.directory_pages.borrow().len() <= 64);
+    }
+
+    #[test]
+    fn compacted_catalogue_owner_replacement_withdraws_folded_descriptors() {
+        let fixture = LargeCatalogueFixture::new();
+        fixture.reply(0, true, false);
+        assert!(fixture.observe().completion().complete);
+        fixture.provider.directory_pages.borrow_mut().clear();
+        fixture
+            .provider
+            .broker
+            .replace_action_directory_roots_for_test(Vec::new());
+        assert!(
+            fixture
+                .provider
+                .action_hierarchy(&LargeCatalogueFixture::exact_id(0))
+                .is_none()
+        );
+        let catalogue = fixture.observe();
+        assert!(catalogue.enumerate().is_empty());
+    }
+
+    fn terminal_inspection_row(scope: &crate::shell::search::ActionDiscoveryScope) -> CatalogueRow {
+        let mut row = directory_test_row(
+            &scope.application,
+            "",
+            "terminal.session",
+            &scope.semantic_family,
+            "Inspect live session",
+            true,
+        );
+        row.action.as_mut().unwrap().address.action = "inspect-session".into();
+        row
+    }
+
+    #[test]
+    fn repeated_scoped_catalogue_retains_completed_directory_prefix() {
+        use crate::shell::search::action_api::{ActionCatalog, AllVisible};
+        use crate::shell::search::{ActionDiscoveryScope, QueryArgs, SearchRegistry};
+        let chrome = chrome();
+        let broker = broker_for(&chrome);
+        let provider = Rc::new(LiveAppActionsProvider::new_with_fixture_identity(
+            broker.clone(),
+        ));
+        let state = chrome.borrow();
+        let room = state.tree().desktop.workspaces[0].room;
+        let actor = state.local_user_for_room(&room);
+        let scope = ActionDiscoveryScope {
+            application: "so.tilo.terminal".into(),
+            room: room.to_string(),
+            record: "owned-terminal".into(),
+            semantic_family: "terminal.session".into(),
+        };
+        broker.replace_action_directory_roots_for_test(vec![ActionDirectoryRoot {
+            peer_id: 9,
+            app_id: scope.application.clone(),
+            cluster_id: scope.room.clone(),
+            record_id: scope.record.clone(),
+        }]);
+        let doc = AutoCommit::new();
+        let mut ctx = context("", &state, &doc);
+        ctx.action_scope = Some(&scope);
+        ctx.query_scope = Some(crate::shell::chrome_state::SearchScope::All);
+        ctx.include_programmatic = true;
+        *provider.surface_snapshot.borrow_mut() =
+            Some(LiveAppActionsProvider::build_local_snapshot(
+                &broker,
+                &LiveAppActionsProvider::build_scope(&ctx),
+                &provider.build_probe,
+            ));
+        let mut registry = SearchRegistry::new();
+        registry.register(provider.clone());
+        let args = QueryArgs {
+            action_scope: Some(&scope),
+            needle: "",
+            scope: crate::shell::chrome_state::SearchScope::All,
+            active_provider_id: None,
+            wanted_kinds: &[],
+            chrome: &state,
+            doc: &doc,
+            doc_root: &automerge::ROOT,
+        };
+        let first_key = (9, actor.clone(), String::new(), Vec::new(), String::new());
+        let first = pending_directory_reply(&provider, first_key);
+        let cold = ActionCatalog::build_query(&registry, &args, &AllVisible, true);
+        assert!(!cold.completion().complete);
+        first.complete(Ok(page(
+            vec![directory_test_row(
+                &scope.application,
+                "",
+                "terminal.session",
+                &scope.semantic_family,
+                "Read recorded screen",
+                true,
+            )],
+            vec![1],
+        )));
+        provider.poll_directory_pages();
+        let second_key = (9, actor, String::new(), vec![1], String::new());
+        let (reply, receiver) = pending();
+        provider.directory_pending.borrow_mut().insert(
+            second_key,
+            PendingDirectoryPage {
+                receiver,
+                deadline: super::deadline_after(DIRECTORY_PAGE_REPLY_TIMEOUT),
+                initial_page: false,
+            },
+        );
+        let partial = ActionCatalog::build_query(&registry, &args, &AllVisible, true);
+        assert!(
+            partial.enumerate().is_empty(),
+            "pending machine observations must not clone the growing prefix"
+        );
+        assert!(!partial.completion().complete);
+        let inspect = terminal_inspection_row(&scope);
+        reply.complete(Ok(page(vec![inspect], Vec::new())));
+        provider.poll_directory_pages();
+        for _ in 0..3 {
+            let catalogue = ActionCatalog::build_query(&registry, &args, &AllVisible, true);
+            let rows = catalogue.enumerate();
+            let completion = catalogue.completion();
+            assert!(
+                completion.complete,
+                "completed same-revision directory must converge: {completion:?}"
+            );
+            assert_eq!(
+                rows.len(),
+                2,
+                "top-level discovery must retain the completed prefix"
+            );
+            assert!(
+                rows.iter()
+                    .any(|row| row.resource.id.ends_with("\u{1f}inspect-session"))
+            );
+        }
     }
 
     #[test]

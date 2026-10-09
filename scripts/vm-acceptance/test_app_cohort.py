@@ -24,7 +24,7 @@ def response(args, rows):
     scope = {key: args[args.index(flag)+1] for key, flag in
              (("application", "--application"), ("room", "--room"),
               ("record", "--record"), ("semantic_family", "--semantic-family"))} if "--application" in args else None
-    return dict(query="", scope=scope, count=len(rows), actions=rows)
+    return dict(query="", completion=dict(complete=True, incomplete=[]), scope=scope, count=len(rows), actions=rows)
 
 def receipt(state, job=17, invocation="owner", value=None):
     return {"receipt": {"broker_invocation_id": job, "update": {
@@ -63,7 +63,7 @@ class ApplicationMetadataDiscovery(unittest.TestCase):
                 words = [word for word in args[2:] if not word.startswith("--")]
                 query = " ".join(words)
                 rows = [] if query else [descriptor, dict(descriptor, application=app.STORE)]
-                return {"query": query, "scope": None, "count": len(rows), "actions": rows}
+                return {"query": query, "completion": {"complete": True, "incomplete": []}, "scope": None, "count": len(rows), "actions": rows}
         self.assertEqual(app.catalog(VM(), app.BROWSER), [descriptor])
 
 
