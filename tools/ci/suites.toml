@@ -398,12 +398,15 @@ suites = [
 name = "perf-tools"
 inputs = [
   "scripts/perf/", "apps/settings/src/categories.rs", "tools/perf/",
-  # tools/perf/test_adapters.py keeps kpi-budgets.toml equal to the gate's SLOs.
+  # tools/perf/test_adapters.py keeps kpi-budgets.toml equal to the gate's SLOs
+  # and the WORKSPACE-SWITCH parser equal to the compositor's line.
   "crates/system/fs/tests/performance_gate.rs",
+  "crates/session/shell/src/compositor/switch_latency.rs",
 ]
 suites = [
   "scripts/perf/check_app_coverage_test.py",
   "scripts/perf/code_editor_effects_test.py",
+  "scripts/perf/device_latency_bench_test.py",
   "scripts/perf/device_notes_latency_test.py",
   "scripts/perf/device_notes_trace_test.py",
   "scripts/perf/collect_code_editor_native_test.py",
@@ -412,6 +415,7 @@ suites = [
   "scripts/perf/collect_settings_native_test.py",
   "scripts/perf/file_explorer_effects_test.py",
   "scripts/perf/input_latency_test.py",
+  "scripts/perf/latency_bench_test.py",
   "scripts/perf/physical_notes_latency_test.py",
   "scripts/perf/physical_notes_stages_test.py",
   "scripts/perf/agent_rtt_test.py",

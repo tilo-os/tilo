@@ -630,6 +630,8 @@ pub struct ShellOverlayHost {
     /// Wall-clock end of that frame run. Draw must not clear it: snapping
     /// the curve let the close flush both scanouts on every remaining paint.
     workspace_switch_until: Option<Instant>,
+    /// Times each switch from its chord to its first and resting frames.
+    workspace_switch_latency: crate::compositor::switch_latency::SwitchLatency,
     /// The workspace root was just rebuilt and has not been encoded yet.
     /// A clip would replay the previous workspace, so that one frame is dense.
     content_rebuild_owes_scene: bool,
@@ -2319,6 +2321,7 @@ impl ShellOverlayHost {
             qs_transition: ui::Transition::closed(),
             workspace_switch: ui::Transition::closed(),
             workspace_switch_until: None,
+            workspace_switch_latency: crate::compositor::switch_latency::SwitchLatency::default(),
             content_rebuild_owes_scene: false,
             qs_was_open: false,
             notification_center: NotificationCenter::new(),
@@ -3391,11 +3394,21 @@ impl ShellOverlayHost {
     /// Call on the chord, not only from `update`: demand is sampled first.
     pub(crate) fn start_workspace_switch_frames(&mut self) {
         let duration = Duration::from_millis(WORKSPACE_SWITCH_MS);
+        let now = Instant::now();
         self.workspace_switch = ui::Transition::closed();
         self.workspace_switch
             .set_open(true, duration, ui::Curve::EaseOut);
-        self.workspace_switch_until = Instant::now().checked_add(duration);
+        self.workspace_switch_until = now.checked_add(duration);
+        self.workspace_switch_latency.chord(now);
         self.request_compositor_transition_paints();
+    }
+
+    /// The switch latency tracker, which the frame loop tells about the
+    /// frames it queues and retires (`WORKSPACE-SWITCH`).
+    pub(crate) fn workspace_switch_latency_mut(
+        &mut self,
+    ) -> &mut crate::compositor::switch_latency::SwitchLatency {
+        &mut self.workspace_switch_latency
     }
 
     /// Whether this frame is one display's content clip. The combined
