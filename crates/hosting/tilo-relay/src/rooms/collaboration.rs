@@ -18,11 +18,15 @@ use tilo_peer_state::join::{
     decode_and_verify_invitation, issue_invitation, issue_invitation_from, verify_join_proof,
     verify_membership_proof,
 };
+use tilo_relay_session::rooms::{
+    CancelInvitationRequest, IssueInvitationRequest, IssuedInvitation, PendingInvitation,
+    RemoveMemberRequest, SetMemberRoleRequest,
+};
 use tilo_user_identity::{DeviceCert, RevocationList};
 
 use tilo_peer_state::StatePeer;
 
-use super::{GovernedRoom, RoomRecord, Rooms, now_ns, system_time};
+use super::{GovernedRoom, RoomRecord, Rooms, system_time};
 
 /// Pending challenges of one kind a room keeps at once.
 const MAX_PENDING_CHALLENGES: usize = 4096;
@@ -30,78 +34,6 @@ const MAX_PENDING_CHALLENGES: usize = 4096;
 const CHALLENGE_LIFETIME_NS: u64 = 60_000_000_000;
 /// The longest an invitation may stay redeemable.
 const MAX_INVITATION_LIFETIME_NS: u64 = 30 * 24 * 60 * 60 * 1_000_000_000;
-
-/// Issue one invitation. A repeated `request_id` returns the invitation it
-/// issued, and fails if it named a different request.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct IssueInvitationRequest {
-    /// Caller-chosen idempotency key; never zero.
-    pub request_id: [u8; 32],
-    /// The role the redeeming person gets.
-    pub role: MemberRole,
-    /// Restrict redemption to devices of this person.
-    pub recipient_user_public_key: Option<[u8; 32]>,
-    /// How the invitation names its recipient to them.
-    pub invitee_name: Option<String>,
-    /// When the invitation stops being redeemable, at most 30 days ahead.
-    pub expires_at_ns: u64,
-    /// The name the inviting person gives, recorded in the invitation with
-    /// their user root.
-    pub inviter_name: Option<String>,
-}
-
-/// An issued invitation.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct IssuedInvitation {
-    /// Digest of `signed_invitation`.
-    pub invite_id: [u8; 32],
-    /// The signed invitation a device redeems.
-    pub signed_invitation: Vec<u8>,
-}
-
-/// Cancel an unredeemed invitation.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct CancelInvitationRequest {
-    /// Caller-chosen idempotency key.
-    pub request_id: [u8; 32],
-    /// The invitation to cancel.
-    pub invite_id: [u8; 32],
-}
-
-/// An invitation still redeemable.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PendingInvitation {
-    /// Digest of the signed invitation.
-    pub invite_id: [u8; 32],
-    /// The role it grants.
-    pub role: MemberRole,
-    /// The only person who may redeem it, if restricted.
-    pub recipient_user_public_key: Option<[u8; 32]>,
-    /// How it names its recipient.
-    pub invitee_name: Option<String>,
-    /// When it expires.
-    pub expires_at_ns: u64,
-}
-
-/// Change a member's role.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SetMemberRoleRequest {
-    /// Caller-chosen idempotency key.
-    pub request_id: [u8; 32],
-    /// The member's person.
-    pub user_public_key: [u8; 32],
-    /// Their new role.
-    pub role: MemberRole,
-}
-
-/// Remove a member and every device of theirs.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RemoveMemberRequest {
-    /// Caller-chosen idempotency key.
-    pub request_id: [u8; 32],
-    /// The member's person.
-    pub user_public_key: [u8; 32],
-}
 
 /// Delegate one application's workspace authorship, with an idempotency key.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -302,7 +234,7 @@ impl Rooms {
         administrator: &DeviceCert,
         request: IssueInvitationRequest,
     ) -> Result<IssuedInvitation, CollaborationError> {
-        let now = now_ns();
+        let now = tilo_clock::unix_now_ns();
         self.authorize(administrator, now, "invitation.issue")?;
         let digest = request_digest(&(
             &request.role,
@@ -392,7 +324,11 @@ impl Rooms {
         administrator: &DeviceCert,
         request: CancelInvitationRequest,
     ) -> Result<(), CollaborationError> {
-        self.authorize(administrator, now_ns(), "invitation.cancel")?;
+        self.authorize(
+            administrator,
+            tilo_clock::unix_now_ns(),
+            "invitation.cancel",
+        )?;
         let digest = request_digest(&request)?;
         let room = self.room(room).await?;
         let mut room = room.lock().await;
@@ -442,7 +378,7 @@ impl Rooms {
         room: &str,
         administrator: &DeviceCert,
     ) -> Result<Vec<PendingInvitation>, CollaborationError> {
-        let now = now_ns();
+        let now = tilo_clock::unix_now_ns();
         self.authorize(administrator, now, "invitation.pending")?;
         let room = self.room(room).await?;
         let room = room.lock().await;
@@ -484,7 +420,7 @@ impl Rooms {
         reason = "the room stays locked until its decision is committed, published and answered"
     )]
     pub async fn enter(&self, room: &str, device: &DeviceCert) -> Result<bool, CollaborationError> {
-        let now = now_ns();
+        let now = tilo_clock::unix_now_ns();
         self.authorize(device, now, "room.enter")?;
         let room = self.room(room).await?;
         let mut room = room.lock().await;
@@ -511,7 +447,7 @@ impl Rooms {
         administrator: &DeviceCert,
         request: SetMemberRoleRequest,
     ) -> Result<GovernanceCompletion, CollaborationError> {
-        let now = now_ns();
+        let now = tilo_clock::unix_now_ns();
         self.authorize(administrator, now, "member.role.set")?;
         let room = self.room(room).await?;
         let mut room = room.lock().await;
@@ -545,7 +481,7 @@ impl Rooms {
         administrator: &DeviceCert,
         request: RemoveMemberRequest,
     ) -> Result<GovernanceCompletion, CollaborationError> {
-        let now = now_ns();
+        let now = tilo_clock::unix_now_ns();
         self.authorize(administrator, now, "member.remove")?;
         let room = self.room(room).await?;
         let mut room = room.lock().await;
@@ -583,7 +519,7 @@ impl Rooms {
         administrator: &DeviceCert,
         request: GrantAppAuthorshipRequest,
     ) -> Result<GovernanceCompletion, CollaborationError> {
-        let now = now_ns();
+        let now = tilo_clock::unix_now_ns();
         self.authorize(administrator, now, "app.authorship.grant")?;
         if request.request_id == [0; 32] {
             return Err(CollaborationError::new(
@@ -636,7 +572,7 @@ impl Rooms {
         invocation: uuid::Uuid,
         redacted: &[u8],
     ) -> Result<GovernanceCompletion, CollaborationError> {
-        let now = now_ns();
+        let now = tilo_clock::unix_now_ns();
         tilo_user_identity::verify_device_cert_at(caller, now)
             .map_err(|error| CollaborationError::new(error.to_string()))?;
         if self.revocations().is_revoked(&caller.device_public_key) {
@@ -1113,7 +1049,7 @@ impl Rooms {
         remote_endpoint: [u8; 32],
         request: JoinTransportRequest,
     ) -> Result<JoinTransportResponse, CollaborationError> {
-        let now = now_ns();
+        let now = tilo_clock::unix_now_ns();
         Ok(match request {
             JoinTransportRequest::Inspect { signed_invitation } => {
                 let room = self.room(&invitation_room(&signed_invitation)?).await?;
@@ -1195,8 +1131,12 @@ impl WorkspaceJoinService for RoomJoinService {
 /// The room an invitation names, read without trusting it: the room it
 /// names is then verified against what that room issued.
 pub(super) fn invitation_room(signed_invitation: &[u8]) -> Result<String, CollaborationError> {
-    let join =
-        decode_and_verify_invitation(signed_invitation, None, &RevocationList::new(), now_ns())?;
+    let join = decode_and_verify_invitation(
+        signed_invitation,
+        None,
+        &RevocationList::new(),
+        tilo_clock::unix_now_ns(),
+    )?;
     Ok(join.grant().room.clone())
 }
 

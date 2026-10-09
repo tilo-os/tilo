@@ -1,6 +1,6 @@
 //! The set of known words.
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 
 /// The embedded English word list.
 ///
@@ -140,10 +140,11 @@ pub struct Dictionary {
     /// `by_len[n]` holds every word of `char`-length `n` (lowercased), so the
     /// suggester can restrict its scan to lengths within +-max of the query.
     by_len: Vec<Vec<String>>,
-    /// Runtime-added user words (lowercased). Kept separate from `words` so the
+    /// Runtime-added user words, keyed case-insensitively while retaining the
+    /// spelling explicitly accepted by the person. Kept separate from `words` so the
     /// built-in list stays a clean compile-time set and the user words can be
     /// persisted independently. Consulted by [`contains`](Self::contains).
-    user_words: HashSet<String>,
+    user_words: BTreeMap<String, String>,
 }
 
 impl Dictionary {
@@ -194,7 +195,9 @@ impl Dictionary {
             for line in contents.lines() {
                 let w = line.trim();
                 if !w.is_empty() && !self.words.contains(&w.to_lowercase()) {
-                    self.user_words.insert(w.to_lowercase());
+                    self.user_words
+                        .entry(w.to_lowercase())
+                        .or_insert_with(|| w.to_owned());
                 }
             }
         }
@@ -232,7 +235,7 @@ impl Dictionary {
         Dictionary {
             words: set,
             by_len,
-            user_words: HashSet::new(),
+            user_words: BTreeMap::new(),
         }
     }
 
@@ -248,10 +251,10 @@ impl Dictionary {
         };
         // Fast path: a word that is already lowercase needs no allocation.
         if word.chars().all(|c| !c.is_uppercase()) {
-            self.words.contains(word) || self.user_words.contains(word)
+            self.words.contains(word) || self.user_words.contains_key(word)
         } else {
             let lower = word.to_lowercase();
-            self.words.contains(&lower) || self.user_words.contains(&lower)
+            self.words.contains(&lower) || self.user_words.contains_key(&lower)
         }
     }
 
@@ -271,7 +274,13 @@ impl Dictionary {
             // Already a built-in word — nothing to record.
             return false;
         }
-        self.user_words.insert(normalized)
+        if let std::collections::btree_map::Entry::Vacant(entry) = self.user_words.entry(normalized)
+        {
+            entry.insert(word.trim().to_owned());
+            true
+        } else {
+            false
+        }
     }
 
     /// Persist the runtime user dictionary to the user-config file
@@ -301,8 +310,9 @@ impl Dictionary {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let mut words: Vec<&str> = self.user_words.iter().map(String::as_str).collect();
-        words.sort_unstable();
+        // Stable case-insensitive order; the same existing file carries the
+        // person's accepted spelling without creating another dictionary.
+        let words: Vec<&str> = self.user_words.values().map(String::as_str).collect();
         let body = words.join("\n");
         std::fs::write(path, body)
     }
@@ -310,7 +320,14 @@ impl Dictionary {
     /// The runtime user-added words, lowercased and unsorted. Mostly useful for
     /// tests and persistence.
     pub fn user_words(&self) -> impl Iterator<Item = &str> {
-        self.user_words.iter().map(String::as_str)
+        self.user_words.keys().map(String::as_str)
+    }
+
+    /// Personal spellings as explicitly accepted, in stable lookup order.
+    /// Readers such as prediction and speech biasing must use these spellings
+    /// rather than changing recognised proper names with a fuzzy rewrite.
+    pub fn user_spellings(&self) -> impl Iterator<Item = &str> {
+        self.user_words.values().map(String::as_str)
     }
 
     /// Number of distinct words in the dictionary.
@@ -342,13 +359,37 @@ impl Dictionary {
 /// variable is set (e.g. a locked-down sandbox), in which case the user
 /// dictionary lives only in memory.
 pub fn user_dict_path() -> Option<std::path::PathBuf> {
-    let base = xdg_paths::xdg::config_home()?;
+    let base = tilo_paths::xdg::config_home()?;
     Some(base.join("tilo").join("userdict.txt"))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn personal_spelling_survives_the_existing_dictionary_file_round_trip() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("userdict.txt");
+        let mut dictionary = Dictionary::default();
+        assert!(dictionary.add_word("Tilo"));
+        assert!(dictionary.add_word("Mélusine"));
+        assert!(!dictionary.add_word("tilo"));
+        dictionary.save_user_dict_to(&path).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "Mélusine\nTilo");
+        let mut restored = Dictionary::default();
+        restored.load_user_dict_from(&path);
+        assert!(restored.contains("MÉLUSINE"));
+        assert!(restored.contains("TILO"));
+        assert_eq!(
+            restored.user_words().collect::<Vec<_>>(),
+            ["mélusine", "tilo"]
+        );
+        assert_eq!(
+            restored.user_spellings().collect::<Vec<_>>(),
+            ["Mélusine", "Tilo"]
+        );
+    }
 
     #[test]
     fn dictionaries_build_case_insensitively_and_accept_added_words() {

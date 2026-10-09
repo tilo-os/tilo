@@ -122,6 +122,15 @@ impl Document {
     /// carry a qdoc schema `open` recognises.
     pub fn load(bytes: &[u8]) -> Result<Self, DocError> {
         let doc = AutoCommit::load(bytes).map_err(|e| DocError::Load(e.to_string()))?;
+        Self::from_automerge(doc)
+    }
+
+    /// Open an Automerge document that is already loaded, as [`Self::load`] does: for bytes
+    /// from peers, which are decoded in `tilo_automerge_isolate` rather than here.
+    ///
+    /// # Errors
+    /// Returns [`DocError`] if `doc` does not carry a qdoc schema `open` recognises.
+    pub fn from_automerge(doc: AutoCommit) -> Result<Self, DocError> {
         let c = crate::model::open(&doc, &ROOT)?;
         let mut ids = crate::model::try_seeded_id_gen(&doc, &c)?;
         ids.allow_commits();

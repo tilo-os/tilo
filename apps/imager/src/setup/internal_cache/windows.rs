@@ -1135,10 +1135,8 @@ mod native {
     }
     fn generated() -> Result<String> {
         static COUNTER: AtomicU64 = AtomicU64::new(0);
-        let ticks = ui::time::wall()
-            .duration_since(ui::time::UNIX_EPOCH)
-            .map_err(|e| e.to_string())?
-            .as_nanos();
+        let ticks = ui::time::try_unix_now_ns()
+            .ok_or_else(|| "system time is before the Unix epoch".to_string())?;
         let mut h = Sha256::new();
         h.update(ticks.to_le_bytes());
         h.update(std::process::id().to_le_bytes());

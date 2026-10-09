@@ -1,11 +1,3 @@
-#![cfg_attr(
-    test,
-    allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        reason = "in a test these are assertions"
-    )
-)]
 //! Native Spotify sessions stay on one worker. Only observations cross to UI;
 //! streaming tokens never enter a resource, profile or collaborative document.
 

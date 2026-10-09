@@ -77,6 +77,14 @@ filter = 'package(shell) and binary(it) and (test(=peer_sync_test::warm_exact_ta
 threads-required = "num-cpus"
 priority = 100
 
+# These four mounted Code journeys fsync a growing retained selection. Under
+# concurrent native journeys, the owner queue passed four seconds and a real
+# checkpoint refresh hit its existing deadline; serial focused runs pass.
+[[profile.default.overrides]]
+filter = 'package(shell) and test(/^network::invite::exchange_tests::mounted_code::/)'
+threads-required = "num-cpus"
+priority = 100
+
 [[profile.default.overrides]]
 filter = '(package(notes) and binary(it) and (test(scenarios::) or test(capture_runtime::))) or (package(shell) and binary(it) and test(foreign_surface_compositing::))'
 threads-required = "num-cpus"

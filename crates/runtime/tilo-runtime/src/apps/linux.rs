@@ -61,12 +61,18 @@ pub(super) fn launch(apps: &Apps, app: &InstalledApp, sockets: &Sockets) -> Resu
             command.env_remove(name);
         }
     }
+    // The launcher waits here until the caller has recorded its pid, so it
+    // can never connect before the broker could attest it.
+    let registration = launcher::registration_gate::install(&mut command).map_err(|error| {
+        format!("refusing to launch: the launcher's registration gate: {error}")
+    })?;
     let child = command
         .spawn()
         .map_err(|error| format!("could not start {}: {error}", launcher.display()))?;
     Ok(Launch {
         pid: child.id(),
         child,
+        registration: Some(registration),
     })
 }
 
@@ -80,7 +86,7 @@ fn wayland_socket() -> Result<PathBuf, String> {
     let socket = if display.is_absolute() {
         display
     } else {
-        xdg_paths::xdg::runtime_dir()
+        tilo_paths::xdg::runtime_dir()
             .ok_or("refusing to launch: the Wayland display has no runtime directory")?
             .join(display)
     };

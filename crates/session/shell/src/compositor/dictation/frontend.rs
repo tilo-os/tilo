@@ -9,6 +9,7 @@ pub(crate) fn service(
     surface: &mut DictationSurface,
     now: Instant,
     locked: bool,
+    field_start: Option<ui::webview::text_input::Receipt>,
 ) {
     state.expire_dictation_recovery(now);
     if locked {
@@ -24,7 +25,12 @@ pub(crate) fn service(
         let result = match request {
             Request::Toggle => {
                 if let Some(id) = surface.session() {
-                    if surface.is_recovery() {
+                    if surface.is_recovery()
+                        || matches!(
+                            state.dictation_status(),
+                            DictationStatus::StoppingRecording | DictationStatus::Finishing
+                        )
+                    {
                         Ok(())
                     } else if state.dictation_status() == DictationStatus::Listening {
                         state.finish_recording(id)
@@ -39,12 +45,15 @@ pub(crate) fn service(
                 }
             }
             Request::Consent(id) if surface.session() == Some(id) && surface.is_consent() => {
-                state.start_authorized_dictation(id, "auto", now).map(|()| {
-                    if let Some(session) = state.text_commit.dictation.session.as_mut() {
-                        session.deadline = now.checked_add(SESSION_WINDOW).unwrap_or(now);
-                    }
-                    surface.status(DictationStatus::Loading);
-                })
+                let language = settings_store::dictation::DictationLanguage::load();
+                state
+                    .start_dictation_after_field_ack(id, language.code(), now, field_start)
+                    .map(|()| {
+                        if let Some(session) = state.text_commit.dictation.session.as_mut() {
+                            session.deadline = now.checked_add(SESSION_WINDOW).unwrap_or(now);
+                        }
+                        surface.status(DictationStatus::Loading);
+                    })
             }
             Request::Finish(id) if surface.session() == Some(id) && !surface.is_recovery() => {
                 state.finish_recording(id)
@@ -65,6 +74,10 @@ pub(crate) fn service(
             state.cancel_active_dictation();
             surface.failure(error);
         }
+    }
+    if let Err(error) = state.advance_authorized_dictation(now) {
+        state.cancel_active_dictation();
+        surface.failure(error);
     }
     // Explicit cancellation wins over a result arriving in the same turn.
     state.pump_dictation_worker(now);
@@ -97,6 +110,8 @@ pub(crate) fn service(
             surface.status(state.dictation_status());
         }
     }
+    let preview = surface.session().and_then(|id| state.dictation_preview(id));
+    surface.preview(preview);
 }
 
 #[cfg(test)]
@@ -130,6 +145,7 @@ mod tests {
                 surface: DictationSurface::default(),
                 field: FieldRequest {
                     purpose: winit::window::ImePurpose::Normal,
+                    multiline: false,
                     x: 420,
                     y: 100,
                     width: 1,
@@ -155,7 +171,13 @@ mod tests {
                 Some(self.field),
                 Some(NativeFieldId::Widget(42)),
             );
-            service(&mut self.state, &mut self.surface, Instant::now(), false);
+            service(
+                &mut self.state,
+                &mut self.surface,
+                Instant::now(),
+                false,
+                None,
+            );
         }
         fn consent(&mut self) -> super::super::SessionId {
             self.surface.request_toggle();
@@ -176,6 +198,405 @@ mod tests {
                 "requesting consent cannot start a worker or microphone"
             );
             self.surface.session().unwrap()
+        }
+
+        fn dictionary_actor(
+            &mut self,
+            reader: settings_store::personal_dictionary::Reader,
+            pid: &std::path::Path,
+            completes: bool,
+        ) -> super::super::SessionId {
+            let id = self.consent();
+            let actor = super::super::runtime::dictionary_test_peer(
+                std::sync::Arc::new(reader),
+                pid,
+                completes,
+            );
+            self.state.text_commit.dictation.recognition = Some(super::super::Recognition {
+                id,
+                actor,
+                language: "en".into(),
+                literal: true,
+                phase: DictationStatus::Listening,
+            });
+            self.surface.status(DictationStatus::Listening);
+            id
+        }
+    }
+
+    #[test]
+    fn dictionary_edit_retains_visible_draft_but_revocation_erases_it() {
+        use super::super::{RecoveryReason, host::VocabularyBinding};
+        use settings_store::personal_dictionary::{Edit, Service, Word};
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        for mode in ["edit", "switch", "relogin", "drop"] {
+            let mut fixture = Fixture::new();
+            let directory = tempfile::tempdir().unwrap();
+            let dictionary = Arc::new(Service::new(directory.path().join("dictionary")).unwrap());
+            let reader = dictionary.bind(Some([7; 32])).unwrap();
+            let word = Word::new("TiLo", None).unwrap();
+            let snapshot = dictionary
+                .edit(&reader, 0, Edit::Add(word.clone()))
+                .unwrap();
+            let wakes = Arc::new(AtomicUsize::new(0));
+            let notified = Arc::clone(&wakes);
+            let mut binding = VocabularyBinding::from_service(
+                Some(&dictionary),
+                Arc::new(move || {
+                    notified.fetch_add(1, Ordering::Relaxed);
+                }),
+            );
+            binding.refresh(&mut fixture.state);
+            let id =
+                fixture.dictionary_actor(reader.clone(), &directory.path().join("peer"), false);
+            fixture
+                .state
+                .update_dictation(id, "Visible draft 日本語".into(), Instant::now())
+                .unwrap();
+            fixture.surface.request_finish();
+            fixture.pump();
+            match mode {
+                "edit" => {
+                    dictionary
+                        .edit(&reader, snapshot.revision, Edit::Remove(word))
+                        .unwrap();
+                }
+                "switch" => {
+                    dictionary.bind(Some([8; 32]));
+                }
+                "relogin" => {
+                    dictionary.bind(None);
+                    dictionary.bind(Some([7; 32]));
+                }
+                _ => drop(dictionary),
+            }
+            assert!(
+                wakes.load(Ordering::Relaxed) > 0,
+                "actual service changes must wake an idle native loop"
+            );
+            binding.refresh(&mut fixture.state);
+            if mode == "edit" {
+                assert_eq!(
+                    fixture.state.dictation_target_id(),
+                    Some(id),
+                    "ordinary edits preserve the draft until actor retirement"
+                );
+            } else {
+                assert!(
+                    fixture.state.dictation_target_id().is_none(),
+                    "identity replacement cancels before consuming queued words"
+                );
+            }
+            let deadline = tilo_test_env::hang_deadline();
+            while fixture.state.text_commit.dictation.recognition.is_some() {
+                assert!(
+                    Instant::now() < deadline,
+                    "changed dictionary must reap the actor"
+                );
+                fixture.pump();
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            assert!(fixture.state.dictation_target_id().is_none());
+            assert!(
+                !fixture.state.take_native_dictation_commit(),
+                "a draft is never automatically inserted"
+            );
+            if mode == "edit" {
+                let recovery = fixture
+                    .state
+                    .text_commit
+                    .dictation
+                    .recovery
+                    .as_ref()
+                    .unwrap();
+                assert_eq!(recovery.reason, RecoveryReason::VocabularyChanged);
+                assert_eq!(recovery.text.as_str(), "Visible draft 日本語");
+                assert!(!recovery.copied, "no automatic clipboard export");
+                assert!(fixture.surface.is_recovery());
+                fixture.state.set_dictation_vocabulary(None);
+                assert!(
+                    fixture.state.text_commit.dictation.recovery.is_none(),
+                    "rebinding erases retained text"
+                );
+            } else {
+                assert!(fixture.state.text_commit.dictation.recovery.is_none());
+            }
+        }
+    }
+
+    #[test]
+    fn live_account_switch_rejects_already_queued_final_without_discarding_normal_delivery() {
+        use super::super::host::VocabularyBinding;
+        use settings_store::personal_dictionary::{Edit, Service, Word};
+        use std::sync::Arc;
+        for switch in [false, true] {
+            let mut fixture = Fixture::new();
+            fixture.state.shell_field_active = true;
+            let directory = tempfile::tempdir().unwrap();
+            let dictionary = Arc::new(Service::new(directory.path().join("dictionary")).unwrap());
+            let reader = dictionary.bind(Some([7; 32])).unwrap();
+            dictionary
+                .edit(&reader, 0, Edit::Add(Word::new("TiLo", None).unwrap()))
+                .unwrap();
+            let mut binding = VocabularyBinding::from_service(Some(&dictionary), Arc::new(|| {}));
+            binding.refresh(&mut fixture.state);
+            let pid = directory.path().join("peer");
+            fixture.dictionary_actor(reader, &pid, true);
+            fixture.surface.request_finish();
+            fixture.pump();
+            std::fs::write(pid.with_extension("release"), b"release prerecorded peer").unwrap();
+            let deadline = tilo_test_env::hang_deadline();
+            // Reap the real producer without consuming its queued Done reply.
+            while !fixture
+                .state
+                .text_commit
+                .dictation
+                .recognition
+                .as_mut()
+                .unwrap()
+                .actor
+                .is_stopped()
+            {
+                assert!(
+                    Instant::now() < deadline,
+                    "the peer must finish before the account switch"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            if switch {
+                dictionary.bind(Some([8; 32]));
+                binding.refresh(&mut fixture.state);
+            }
+            fixture.pump();
+            assert!(fixture.state.text_commit.dictation.recognition.is_none());
+            assert_eq!(fixture.state.take_native_dictation_commit(), !switch);
+            assert!(fixture.state.text_commit.dictation.recovery.is_none());
+            if switch {
+                assert!(
+                    fixture
+                        .state
+                        .text_commit
+                        .dictation
+                        .native_delivery
+                        .is_none()
+                );
+            } else {
+                assert_eq!(
+                    fixture
+                        .state
+                        .text_commit
+                        .dictation
+                        .native_delivery
+                        .as_ref()
+                        .unwrap()
+                        .recovery
+                        .text
+                        .as_str(),
+                    "Corrected 👋"
+                );
+            }
+            fixture.pump();
+            assert!(
+                !fixture.state.take_native_dictation_commit(),
+                "a final is delivered at most once"
+            );
+        }
+    }
+
+    #[test]
+    fn deferred_consent_requires_original_start_ack_before_any_worker() {
+        for failure in [
+            None,
+            Some(ui::webview::text_input::Failure::Rejected),
+            Some(ui::webview::text_input::Failure::Unknown),
+        ] {
+            let mut fixture = Fixture::new();
+            fixture.state.shell_field_active = true;
+            fixture.state.set_native_dictation_deferred(true);
+            let id = fixture.consent();
+            assert!(
+                fixture
+                    .state
+                    .native_dictation_start_required(id, Instant::now())
+            );
+            // The old synchronous entry cannot bypass deferred acknowledgement.
+            assert_eq!(
+                fixture
+                    .state
+                    .start_authorized_dictation(id, "en", Instant::now()),
+                Err(super::super::DictationError::TargetChanged)
+            );
+            fixture.surface.enqueue(Request::Consent(id));
+            service(
+                &mut fixture.state,
+                &mut fixture.surface,
+                Instant::now(),
+                false,
+                failure.map(ui::webview::text_input::Receipt::failed),
+            );
+            assert!(fixture.state.text_commit.dictation.recognition.is_none());
+            assert!(fixture.state.text_commit.dictation.field_start.is_none());
+            assert!(fixture.state.dictation_target_id().is_none());
+            assert!(!fixture.surface.is_consent());
+        }
+    }
+
+    #[test]
+    fn endpoint_correction_commits_once_without_appending_a_stable_hallucination() {
+        let mut fixture = Fixture::new();
+        let id = fixture.consent();
+        fixture.state.shell_field_active = true;
+        fixture
+            .state
+            .update_dictation(id, "Vielen Dank.".into(), Instant::now())
+            .unwrap();
+        assert!(!fixture.state.take_native_dictation_commit());
+        fixture.display.flush_clients().unwrap();
+        assert!(fixture.proxy.drain_dictation_commit().is_none());
+
+        let corrected = "Für Hongkong — nein, für Kowloon. 東京 café";
+        fixture
+            .state
+            .update_dictation(id, corrected.into(), Instant::now())
+            .unwrap();
+        assert!(!fixture.state.take_native_dictation_commit());
+        fixture.state.finish_dictation(id, Instant::now()).unwrap();
+        assert!(fixture.state.take_native_dictation_commit());
+        fixture.display.flush_clients().unwrap();
+        let events = fixture.proxy.drain_dictation_commit().unwrap();
+        let committed: Vec<_> = events
+            .iter()
+            .filter_map(|event| match event {
+                winit::event::WindowEvent::Ime(winit::event::Ime::Commit(text)) => {
+                    Some(text.as_str())
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(committed, [corrected]);
+        assert!(fixture.proxy.drain_dictation_commit().is_none());
+    }
+
+    #[test]
+    fn dictation_repeated_finish_and_toggle_keep_one_final_on_the_original_field() {
+        let mut fixture = Fixture::new();
+        let id = fixture.consent();
+        let directory = tempfile::tempdir().unwrap();
+        let pid = directory.path().join("peer");
+        let actor = super::super::runtime::finishing_test_peer(&pid);
+        fixture.state.shell_field_active = true;
+        fixture.state.text_commit.dictation.recognition = Some(super::super::Recognition {
+            id,
+            actor,
+            language: "en".into(),
+            literal: true,
+            phase: DictationStatus::Listening,
+        });
+        fixture.surface.status(DictationStatus::Listening);
+        fixture.surface.request_finish();
+        fixture.pump();
+        assert!(matches!(
+            fixture.state.dictation_status(),
+            DictationStatus::StoppingRecording | DictationStatus::Finishing
+        ));
+        for request in [Request::Finish(id), Request::Toggle, Request::Finish(id)] {
+            fixture.surface.enqueue(request);
+            fixture.pump();
+            assert_eq!(fixture.state.dictation_target_id(), Some(id));
+        }
+        std::fs::write(
+            directory.path().join("peer.release"),
+            b"public fixture release",
+        )
+        .unwrap();
+        let deadline = tilo_test_env::hang_deadline();
+        while fixture.state.dictation_target_id().is_some()
+            || fixture.state.text_commit.dictation.recognition.is_some()
+        {
+            assert!(
+                Instant::now() < deadline,
+                "the final and actor teardown must complete"
+            );
+            fixture.pump();
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(fixture.state.take_native_dictation_commit());
+        fixture.display.flush_clients().unwrap();
+        let events = fixture.proxy.drain_dictation_commit().unwrap();
+        let commits: Vec<_> = events
+            .iter()
+            .filter_map(|event| match event {
+                winit::event::WindowEvent::Ime(winit::event::Ime::Commit(text)) => {
+                    Some(text.as_str())
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(commits, ["Corrected 👋"]);
+        assert!(fixture.proxy.drain_dictation_commit().is_none());
+        let pid = std::fs::read_to_string(pid).unwrap();
+        assert!(!std::path::Path::new("/proc").join(pid).exists());
+    }
+
+    #[test]
+    fn final_numeric_repair_and_literal_mode_use_one_original_field_commit() {
+        for (language, literal, expected) in [
+            ("en", false, "Let me grab three of these"),
+            ("en", true, "Let me grab two, uh, no, three of these"),
+            ("de", false, "TiLo braucht drei Stück."),
+            ("de", true, "TiLo braucht zwei, äh, nein, drei Stück."),
+            ("fr", false, "Prendre trois exemplaires."),
+            ("fr", true, "Prendre deux, euh, non, trois exemplaires."),
+            ("es", false, "TiLo necesita tres unidades."),
+            ("es", true, "TiLo necesita dos, eh, no, tres unidades."),
+        ] {
+            let mut fixture = Fixture::new();
+            let id = fixture.consent();
+            let directory = tempfile::tempdir().unwrap();
+            let pid = directory.path().join("peer");
+            let actor = super::super::runtime::repair_test_peer(&pid, language);
+            fixture.state.shell_field_active = true;
+            fixture.state.text_commit.dictation.recognition = Some(super::super::Recognition {
+                id,
+                actor,
+                language: language.into(),
+                literal,
+                phase: DictationStatus::Listening,
+            });
+            fixture.surface.status(DictationStatus::Listening);
+            fixture.surface.request_finish();
+            fixture.pump();
+            std::fs::write(
+                directory.path().join("peer.release"),
+                b"public fixture release",
+            )
+            .unwrap();
+            let deadline = tilo_test_env::hang_deadline();
+            while fixture.state.dictation_target_id().is_some()
+                || fixture.state.text_commit.dictation.recognition.is_some()
+            {
+                assert!(
+                    Instant::now() < deadline,
+                    "final edit and worker teardown must complete"
+                );
+                fixture.pump();
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            assert!(fixture.state.take_native_dictation_commit());
+            fixture.display.flush_clients().unwrap();
+            let events = fixture.proxy.drain_dictation_commit().unwrap();
+            let commits: Vec<_> = events
+                .iter()
+                .filter_map(|event| match event {
+                    winit::event::WindowEvent::Ime(winit::event::Ime::Commit(text)) => {
+                        Some(text.as_str())
+                    }
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(commits, [expected]);
+            assert!(fixture.proxy.drain_dictation_commit().is_none());
         }
     }
 
@@ -216,6 +637,7 @@ mod tests {
             &mut fixture.surface,
             Instant::now(),
             true,
+            None,
         );
         assert!(
             fixture.state.dictation_target_id().is_none(),
@@ -347,6 +769,7 @@ mod tests {
             &mut fixture.surface,
             Instant::now(),
             false,
+            None,
         );
         fixture.surface.enqueue(Request::Finish(id));
         service(
@@ -354,6 +777,7 @@ mod tests {
             &mut fixture.surface,
             Instant::now(),
             false,
+            None,
         );
         assert!(
             fixture.surface.is_recovery(),
@@ -371,6 +795,7 @@ mod tests {
             &mut fixture.surface,
             Instant::now(),
             false,
+            None,
         );
         let node = fixture
             .surface
@@ -391,6 +816,7 @@ mod tests {
             &mut fixture.surface,
             Instant::now(),
             false,
+            None,
         );
         assert_eq!(
             crate::compositor::selection::mirror_text(
@@ -404,6 +830,7 @@ mod tests {
         assert!(matches!(
             fixture.state.dictation_status(),
             DictationStatus::Recovery {
+                reason: super::super::RecoveryReason::TooLong,
                 copied: true,
                 copy_failed: false
             }
@@ -427,6 +854,7 @@ mod tests {
             &mut fixture.surface,
             Instant::now(),
             false,
+            None,
         );
         assert!(matches!(
             fixture.state.dictation_status(),
@@ -453,6 +881,7 @@ mod tests {
             &mut fixture.surface,
             Instant::now(),
             false,
+            None,
         );
         assert!(fixture.state.text_commit.dictation.recovery.is_none());
         assert!(
@@ -469,6 +898,7 @@ mod tests {
             &mut fixture.surface,
             Instant::now(),
             false,
+            None,
         );
         assert!(fixture.surface.is_consent());
         assert!(fixture.state.check_dictation(next, Instant::now()).is_ok());
@@ -483,6 +913,7 @@ mod tests {
             &mut fixture.surface,
             Instant::now(),
             true,
+            None,
         );
         assert!(fixture.state.text_commit.dictation.recovery.is_none());
         assert!(
@@ -493,7 +924,13 @@ mod tests {
         );
         let (next, _) = retain_multilingual(&mut fixture);
         let expired = Instant::now() + super::super::RECOVERY_WINDOW;
-        service(&mut fixture.state, &mut fixture.surface, expired, false);
+        service(
+            &mut fixture.state,
+            &mut fixture.surface,
+            expired,
+            false,
+            None,
+        );
         assert!(fixture.state.text_commit.dictation.recovery.is_none());
         assert!(
             fixture
@@ -538,6 +975,203 @@ mod tests {
         assert!(
             fixture.proxy.drain_dictation_commit().is_none(),
             "the final must not be delivered twice"
+        );
+    }
+    #[test]
+    fn native_dictation_rejection_keeps_the_complete_private_transcript() {
+        let mut fixture = Fixture::new();
+        let id = fixture.consent();
+        fixture.state.shell_field_active = true;
+        fixture
+            .state
+            .update_dictation(id, "日本語 café".into(), Instant::now())
+            .unwrap();
+        fixture.state.finish_dictation(id, Instant::now()).unwrap();
+        assert_eq!(fixture.state.dictation_status(), DictationStatus::Finishing);
+        assert_eq!(
+            fixture.state.prepare_dictation(Instant::now()),
+            Err(super::super::DictationError::Busy)
+        );
+        fixture
+            .state
+            .acknowledge_native_dictation(Some(ui::webview::text_input::Receipt::failed(
+                ui::webview::text_input::Failure::Rejected,
+            )));
+        fixture.state.poll_native_dictation_delivery(Instant::now());
+        let recovery = fixture
+            .state
+            .text_commit
+            .dictation
+            .recovery
+            .as_ref()
+            .unwrap();
+        assert_eq!(&*recovery.text, "日本語 café");
+        assert_eq!(recovery.reason, super::super::RecoveryReason::Rejected);
+        assert_eq!(recovery.id, id);
+        assert!(!recovery.copied);
+        fixture.state.discard_dictation_recovery();
+        assert!(fixture.state.text_commit.dictation.recovery.is_none());
+    }
+
+    #[test]
+    fn disappearing_deferred_owner_cannot_be_acknowledged_as_a_synchronous_edit() {
+        let mut fixture = Fixture::new();
+        fixture.state.shell_field_active = true;
+        fixture.state.set_native_dictation_deferred(true);
+        let id = fixture.consent();
+        fixture
+            .state
+            .update_dictation(id, "Original browser transcript".into(), Instant::now())
+            .unwrap();
+        fixture.state.finish_dictation(id, Instant::now()).unwrap();
+        fixture.state.set_native_dictation_deferred(false);
+        assert!(
+            fixture.state.native_dictation_requires_ack(),
+            "the original session retains its delivery contract"
+        );
+        fixture.state.acknowledge_native_dictation(None);
+        fixture.state.poll_native_dictation_delivery(Instant::now());
+        let recovery = fixture
+            .state
+            .text_commit
+            .dictation
+            .recovery
+            .as_ref()
+            .unwrap();
+        assert_eq!(&*recovery.text, "Original browser transcript");
+        assert_eq!(recovery.reason, super::super::RecoveryReason::Rejected);
+    }
+
+    #[test]
+    fn dictionary_binding_replacement_revokes_original_native_final_and_recovery() {
+        use settings_store::personal_dictionary::Service;
+        let mut fixture = Fixture::new();
+        let directory = tempfile::tempdir().unwrap();
+        let dictionary = Service::new(directory.path().join("dictionary")).unwrap();
+        let original = dictionary.bind(Some([1; 32])).unwrap();
+        fixture
+            .state
+            .set_dictation_vocabulary(Some(std::sync::Arc::new(original)));
+        let id = fixture.consent();
+        fixture.state.shell_field_active = true;
+        fixture
+            .state
+            .update_dictation(id, "Private original".into(), Instant::now())
+            .unwrap();
+        fixture.state.finish_dictation(id, Instant::now()).unwrap();
+        assert!(
+            fixture
+                .state
+                .text_commit
+                .dictation
+                .native_delivery
+                .is_some()
+        );
+        let successor = dictionary.bind(Some([2; 32])).unwrap();
+        fixture
+            .state
+            .set_dictation_vocabulary(Some(std::sync::Arc::new(successor)));
+        assert!(
+            fixture
+                .state
+                .text_commit
+                .dictation
+                .native_delivery
+                .is_none()
+        );
+        assert!(fixture.state.dictation_target_id().is_none());
+        assert!(
+            fixture
+                .state
+                .update_dictation(id, "Late original".into(), Instant::now())
+                .is_err()
+        );
+        fixture
+            .state
+            .poll_native_dictation_delivery(Instant::now() + std::time::Duration::from_secs(11));
+        assert!(fixture.state.text_commit.dictation.recovery.is_none());
+    }
+
+    #[test]
+    fn native_final_cancel_requires_its_original_session_and_drops_private_recovery() {
+        let mut fixture = Fixture::new();
+        let id = fixture.consent();
+        fixture.state.shell_field_active = true;
+        fixture
+            .state
+            .update_dictation(id, "Private original".into(), Instant::now())
+            .unwrap();
+        fixture.state.finish_dictation(id, Instant::now()).unwrap();
+        assert!(!fixture.state.cancel_dictation(super::super::SessionId(0)));
+        assert!(
+            fixture
+                .state
+                .text_commit
+                .dictation
+                .native_delivery
+                .is_some()
+        );
+        assert!(fixture.state.cancel_dictation(id));
+        assert!(
+            fixture
+                .state
+                .text_commit
+                .dictation
+                .native_delivery
+                .is_none()
+        );
+        fixture
+            .state
+            .poll_native_dictation_delivery(Instant::now() + std::time::Duration::from_secs(11));
+        assert!(fixture.state.text_commit.dictation.recovery.is_none());
+    }
+
+    #[test]
+    fn unacknowledged_native_final_recovers_once_without_retargeting_or_retry() {
+        let mut fixture = Fixture::new();
+        let id = fixture.consent();
+        fixture.state.shell_field_active = true;
+        fixture
+            .state
+            .update_dictation(id, "Original private transcript".into(), Instant::now())
+            .unwrap();
+        fixture.state.finish_dictation(id, Instant::now()).unwrap();
+        fixture.state.poll_native_dictation_delivery(Instant::now());
+        assert!(fixture.state.text_commit.dictation.recovery.is_none());
+        let expired = Instant::now() + std::time::Duration::from_secs(11);
+        fixture.state.poll_native_dictation_delivery(expired);
+        let recovery = fixture
+            .state
+            .text_commit
+            .dictation
+            .recovery
+            .as_ref()
+            .unwrap();
+        assert_eq!(&*recovery.text, "Original private transcript");
+        assert_eq!(
+            recovery.reason,
+            super::super::RecoveryReason::UnknownDelivery
+        );
+        fixture.state.acknowledge_native_dictation(None);
+        fixture.state.poll_native_dictation_delivery(expired);
+        assert_eq!(
+            &*fixture
+                .state
+                .text_commit
+                .dictation
+                .recovery
+                .as_ref()
+                .unwrap()
+                .text,
+            "Original private transcript"
+        );
+        assert!(
+            fixture
+                .state
+                .text_commit
+                .dictation
+                .native_delivery
+                .is_none()
         );
     }
 }

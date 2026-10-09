@@ -39,6 +39,9 @@ pub enum FakeFault {
     ServerError,
     /// The next GET declares its full length but sends half the body.
     TruncatedBody,
+    /// The next GET sends half the body, declares no length and closes
+    /// the connection.
+    ClosedEarly,
     /// 401 once.
     ExpiredCredential,
 }
@@ -546,14 +549,15 @@ fn handle(state: &mut State, request: &Request) -> Option<Reply> {
     if state.reject || request.header("authorization") != Some(expected.as_str()) {
         return Some(Reply::status(401).header("WWW-Authenticate", "Basic realm=\"fake\""));
     }
-    let truncate = match state.faults.pop_front() {
+    let cut = match state.faults.pop_front() {
         Some(FakeFault::RateLimited) => {
             return Some(Reply::status(429).header("Retry-After", "1"));
         }
         Some(FakeFault::ServerError) => return Some(Reply::status(503)),
         Some(FakeFault::ExpiredCredential) => return Some(Reply::status(401)),
-        Some(FakeFault::TruncatedBody) => true,
-        None => false,
+        Some(FakeFault::TruncatedBody) => Some(true),
+        Some(FakeFault::ClosedEarly) => Some(false),
+        None => None,
     };
     let target = request.target.split('?').next().unwrap_or("");
     let (area, rest) = if state.nextcloud {
@@ -579,7 +583,7 @@ fn handle(state: &mut State, request: &Request) -> Option<Reply> {
     Some(match area {
         "uploads" => uploads(state, request, &path),
         "versions" => versions(state, request, &path),
-        _ => files(state, request, &path, truncate),
+        _ => files(state, request, &path, cut),
     })
 }
 
@@ -603,7 +607,9 @@ fn destination(state: &State, request: &Request) -> Option<String> {
     clippy::too_many_lines,
     reason = "one match over the WebDAV methods reads best in one place"
 )]
-fn files(state: &mut State, request: &Request, path: &str, truncate: bool) -> Reply {
+/// `cut` cuts the body of a GET short, declaring its full length when
+/// `Some(true)` ([`Reply::cut_short`]).
+fn files(state: &mut State, request: &Request, path: &str, cut: Option<bool>) -> Reply {
     let prefix = files_prefix(state);
     match request.method.as_str() {
         "PROPFIND" => {
@@ -688,14 +694,9 @@ fn files(state: &mut State, request: &Request, path: &str, truncate: bool) -> Re
             if let Some(range) = content_range {
                 reply = reply.header("Content-Range", &range);
             }
-            if truncate {
-                let half = slice.len().checked_div(2).unwrap_or(0);
-                reply
-                    .header("Content-Length", &slice.len().to_string())
-                    .body(slice.get(..half).unwrap_or_default().to_vec())
-                    .without_content_length()
-            } else {
-                reply.body(slice)
+            match cut {
+                Some(declare_length) => reply.body(slice).cut_short(declare_length),
+                None => reply.body(slice),
             }
         }
         "PUT" => {

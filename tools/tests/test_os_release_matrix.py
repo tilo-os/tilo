@@ -178,14 +178,14 @@ class OsReleaseMatrixTests(unittest.TestCase):
             self.assertEqual(groups, ["tilo-os-image-validate-2"] * 2)
             self.assertNotEqual(groups[0], concurrency_group(branches[0], "workflow_call", ""))
             self.assertIn("cancel-in-progress: ${{ github.event_name == 'workflow_call' && github.ref != 'refs/heads/main' }}", WORKFLOW.read_text())
-        with self.subTest(phase='Lenovo publication has a source-specific lock'):
+        with self.subTest(phase='Lenovo publications serialize the board generation series'):
             self.assertEqual(
                 concurrency_group("refs/heads/main", "workflow_dispatch", "true", "lenovo-83ed"),
-                f"tilo-os-image-lenovo-{SHA}",
+                "tilo-os-image-lenovo-series",
             )
             self.assertEqual(
                 concurrency_group("refs/heads/main", "workflow_dispatch", "true", "lenovo-83ed", "f" * 40),
-                f"tilo-os-image-lenovo-{'f' * 40}",
+                "tilo-os-image-lenovo-series",
             )
             self.assertNotEqual(
                 concurrency_group("refs/heads/main", "workflow_dispatch", "true"),

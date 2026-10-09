@@ -11,9 +11,12 @@ no descriptor. Closing the application closes its authority.
 
 Legacy schema-1 records contain a 32-byte share. Migration validates that a
 single-device share derives the recorded public key before storing anything.
-It then prefers the freedesktop Secret Service through libsecret's standard
-`secret-tool` client. If no client, session bus, unlocked collection, or usable
-service exists, Tilo falls back to `identity/secrets/<public-key>.key`, mode 0600,
+It then prefers the freedesktop Secret Service through `tilo-secrets`' D-Bus
+backend. Existing `secret-service-v1` records can still read items older builds
+stored under `tilo-purpose` and `tilo-identity-key`: a missing current item falls
+back to those exact attributes without copying or re-labeling the credential.
+A refused current lookup remains a refusal. If no usable service exists during
+initial provisioning, Tilo falls back to `identity/secrets/<public-key>.key`, mode 0600,
 inside mode-0700 user-owned directories. Sandboxes cannot name or mount this
 fallback. Settings labels it **Private session file + app-scoped signing
 broker**; it is intentionally not described as encrypted or hardware-backed.

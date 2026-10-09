@@ -141,7 +141,7 @@ fn original_import(
     let mut certificates = peer.core.certificates.clone();
     let mut revocations = peer.core.revocations.clone();
     let identities = room::governance_of(Some(doc))
-        .3
+        .identities
         .into_iter()
         .map(|(id, bytes)| {
             serde_json::from_slice::<GovernedIdentity>(&bytes)

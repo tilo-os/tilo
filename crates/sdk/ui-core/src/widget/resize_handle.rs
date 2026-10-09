@@ -222,7 +222,7 @@ impl Widget for ResizeHandle {
             reason = "HANDLE_SLOT_PX is a small compile-time pixel constant (8.0), exact in f32"
         )]
         let handle_slot_px = HANDLE_SLOT_PX as f32;
-        let node = taffy.leaf_node(Style {
+        let style = Style {
             size: Size {
                 width: Dimension::length(handle_slot_px),
                 height: Dimension::percent(1.0),
@@ -230,9 +230,8 @@ impl Widget for ResizeHandle {
             flex_grow: 0.0,
             flex_shrink: 0.0,
             ..Default::default()
-        });
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
 
     fn apply_layout(&mut self, _taffy: &TaffyTree<()>, _node: NodeId, _origin: Point) {
@@ -379,7 +378,7 @@ impl Widget for ResizeHandle {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use automerge::AutoCommit;
+    use crate::testing::dispatch;
 
     /// `min_group_px(2000)` is exactly 300, so the clamp cases below
     /// still read against a familiar bound.
@@ -530,67 +529,33 @@ mod tests {
                 Rect::new(0.0, 0.0, 600.0, 400.0),
                 Rect::new(608.0, 0.0, 1208.0, 400.0),
             );
-            let mut handled = false;
-            let mut state = AutoCommit::new();
-            let path = automerge::ROOT.clone();
-            let modifiers = winit::event::Modifiers::default();
-            let mut focus: Option<NodeId> = None;
-            let dev = unsafe { std::mem::zeroed() };
-            let taffy: TaffyTree<()> = TaffyTree::new();
-            let node = NodeId::new(0);
+            let dev = winit::event::DeviceId::dummy();
             let cx_hover = f64::midpoint(h.rect.x0, h.rect.x1);
-            h.handle_event(
+            dispatch(
+                &mut h,
                 &WindowEvent::CursorMoved {
                     device_id: dev,
                     position: winit::dpi::PhysicalPosition::new(cx_hover, 200.0),
                 },
-                &mut crate::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &modifiers,
-                    state: crate::widget::Edits::lend(&mut state),
-                    path: &path,
-                    handled: &mut handled,
-                    focus_target: &mut focus,
-                    node_id: node,
-                    taffy: &taffy,
-                },
             );
             assert!(h.is_hovered(), "cursor in hit area → hover");
 
-            h.handle_event(
+            dispatch(
+                &mut h,
                 &WindowEvent::MouseInput {
                     device_id: dev,
                     state: ElementState::Pressed,
                     button: MouseButton::Left,
                 },
-                &mut crate::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &modifiers,
-                    state: crate::widget::Edits::lend(&mut state),
-                    path: &path,
-                    handled: &mut handled,
-                    focus_target: &mut focus,
-                    node_id: node,
-                    taffy: &taffy,
-                },
             );
             assert!(h.is_dragging(), "press inside hit area → drag started");
             assert!(!h.is_hovered(), "hover clears once drag begins");
 
-            h.handle_event(
+            dispatch(
+                &mut h,
                 &WindowEvent::CursorMoved {
                     device_id: dev,
                     position: winit::dpi::PhysicalPosition::new(cx_hover + 50.0, 200.0),
-                },
-                &mut crate::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &modifiers,
-                    state: crate::widget::Edits::lend(&mut state),
-                    path: &path,
-                    handled: &mut handled,
-                    focus_target: &mut focus,
-                    node_id: node,
-                    taffy: &taffy,
                 },
             );
             let pulse = h
@@ -606,21 +571,12 @@ mod tests {
                 "take-pattern: second poll is None"
             );
 
-            h.handle_event(
+            dispatch(
+                &mut h,
                 &WindowEvent::MouseInput {
                     device_id: dev,
                     state: ElementState::Released,
                     button: MouseButton::Left,
-                },
-                &mut crate::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &modifiers,
-                    state: crate::widget::Edits::lend(&mut state),
-                    path: &path,
-                    handled: &mut handled,
-                    focus_target: &mut focus,
-                    node_id: node,
-                    taffy: &taffy,
                 },
             );
             assert!(!h.is_dragging(), "release ends drag");
@@ -635,47 +591,22 @@ mod tests {
                 Rect::new(0.0, 0.0, 600.0, 400.0),
                 Rect::new(608.0, 0.0, 1208.0, 400.0),
             );
-            let dev = unsafe { std::mem::zeroed() };
-            let taffy: TaffyTree<()> = TaffyTree::new();
-            let node = NodeId::new(0);
-            let mut state = AutoCommit::new();
-            let path = automerge::ROOT.clone();
-            let modifiers = winit::event::Modifiers::default();
-            let mut handled = false;
-            let mut focus: Option<NodeId> = None;
+            let dev = winit::event::DeviceId::dummy();
             // x=100 is well left of the gap centre (604).
-            h.handle_event(
+            dispatch(
+                &mut h,
                 &WindowEvent::CursorMoved {
                     device_id: dev,
                     position: winit::dpi::PhysicalPosition::new(100.0, 200.0),
                 },
-                &mut crate::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &modifiers,
-                    state: crate::widget::Edits::lend(&mut state),
-                    path: &path,
-                    handled: &mut handled,
-                    focus_target: &mut focus,
-                    node_id: node,
-                    taffy: &taffy,
-                },
             );
             assert!(!h.is_hovered(), "cursor outside hit area → no hover");
-            h.handle_event(
+            dispatch(
+                &mut h,
                 &WindowEvent::MouseInput {
                     device_id: dev,
                     state: ElementState::Pressed,
                     button: MouseButton::Left,
-                },
-                &mut crate::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &modifiers,
-                    state: crate::widget::Edits::lend(&mut state),
-                    path: &path,
-                    handled: &mut handled,
-                    focus_target: &mut focus,
-                    node_id: node,
-                    taffy: &taffy,
                 },
             );
             assert!(

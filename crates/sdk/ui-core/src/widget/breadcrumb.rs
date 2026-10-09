@@ -283,7 +283,7 @@ impl Widget for Breadcrumb {
         // In a row it shrinks to what its neighbours leave and stretches to
         // the row's height; in a column it spans the column.
         let line_h = theme.tokens.typography.size(TextRole::Caption) * 1.5;
-        let node = taffy.leaf_node(Style {
+        let style = Style {
             size: Size {
                 width: Dimension::percent(1.0),
                 height: Dimension::auto(),
@@ -294,19 +294,12 @@ impl Widget for Breadcrumb {
             },
             flex_shrink: 1.0,
             ..Default::default()
-        });
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
-            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
-        );
+        self.rect = crate::widget::layout_rect(taffy, node, origin);
         // Per-segment rects need text measurements, which need a
         // `TextRenderer` we don't have here — deferred to `draw`. Stale
         // rects until the first paint are fine: no hover happens before it.
@@ -492,55 +485,18 @@ impl Widget for Breadcrumb {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use automerge::AutoCommit;
+    use crate::testing::dispatch;
     use std::cell::RefCell;
     use std::rc::Rc;
-    use winit::event::{DeviceId, ElementState, Modifiers, MouseButton};
-
-    fn synth_device() -> DeviceId {
-        // SAFETY: `DeviceId` is opaque; tests construct one via
-        // `mem::zeroed`, mirroring `permission_prompt.rs`'s helper.
-        unsafe { std::mem::zeroed() }
-    }
 
     fn cursor_at(p: Point) -> WindowEvent {
         WindowEvent::CursorMoved {
-            device_id: synth_device(),
+            device_id: winit::event::DeviceId::dummy(),
             position: winit::dpi::PhysicalPosition::new(p.x, p.y),
         }
     }
 
-    fn left_press() -> WindowEvent {
-        WindowEvent::MouseInput {
-            device_id: synth_device(),
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        }
-    }
-
-    /// Drive an event through the breadcrumb with default scaffolding.
-    /// Mirrors `permission_prompt.rs::tests::dispatch`.
-    fn dispatch(bc: &mut Breadcrumb, event: &WindowEvent) {
-        let mut tree = TaffyTree::<()>::new();
-        let node = tree.leaf_node(Style::default());
-        let mut handled = false;
-        let mut focus_target = None;
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        bc.handle_event(
-            event,
-            &mut crate::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &Modifiers::default(),
-                state: crate::widget::Edits::lend(&mut doc),
-                path: &root,
-                handled: &mut handled,
-                focus_target: &mut focus_target,
-                node_id: node,
-                taffy: &tree,
-            },
-        );
-    }
+    use crate::synthetic_input::mouse_press;
 
     #[test]
     fn breadcrumb_paints_separators_centres_labels_and_truncates() {
@@ -650,7 +606,7 @@ mod tests {
             );
             let middle_center = bc.segment_rects[1].center();
             dispatch(&mut bc, &cursor_at(middle_center));
-            dispatch(&mut bc, &left_press());
+            dispatch(&mut bc, &mouse_press());
 
             assert_eq!(
                 *received.borrow(),

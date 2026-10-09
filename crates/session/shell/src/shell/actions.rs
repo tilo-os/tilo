@@ -190,6 +190,7 @@ mod tests {
     fn book() -> ResourceRef {
         ResourceRef::Action {
             app: "org.tilo.Ebook".into(),
+            resource: "ebook.book:dune".into(),
             action: "annotate".into(),
         }
     }
@@ -311,6 +312,7 @@ mod tests {
                 Subject::person("bob"),
                 Scope::Action {
                     app: "org.tilo.Ebook".into(),
+                    resource: "ebook.book:dune".into(),
                     action: "annotate".into(),
                 },
                 Verb::Write,
@@ -332,11 +334,28 @@ mod tests {
                     "delete-annotation",
                     &ResourceRef::Action {
                         app: "org.tilo.Ebook".into(),
+                        resource: "ebook.book:dune".into(),
                         action: "delete-annotation".into(),
                     }
                 ),
                 ActionOutcome::Denied(DenyReason::Capability(CapDecision::DeniedByRole)),
                 "a capability on one action must not reach a sibling action"
+            );
+            assert_eq!(
+                check_action(
+                    &ws,
+                    &reg,
+                    &bob,
+                    "org.tilo.Ebook",
+                    "annotate",
+                    &ResourceRef::Action {
+                        app: "org.tilo.Ebook".into(),
+                        resource: "ebook.book:emma".into(),
+                        action: "annotate".into(),
+                    }
+                ),
+                ActionOutcome::Denied(DenyReason::Capability(CapDecision::DeniedByRole)),
+                "a capability on one book's action must not reach the same action on another"
             );
         }
 
@@ -471,6 +490,7 @@ mod tests {
                 Subject::person("dave"),
                 Scope::Action {
                     app: "org.tilo.Ebook".into(),
+                    resource: "ebook.book:dune".into(),
                     action: "annotate".into(),
                 },
                 Verb::Write,

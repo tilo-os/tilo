@@ -493,23 +493,11 @@ mod tests {
     }
 
     fn key(k: Key) -> WindowEvent {
-        // SAFETY: every pub field of `KeyEvent` tolerates the all-zero bit
-        // pattern; `logical_key` is overwritten and `text`'s niche-optimised
-        // `None` is all-zero. winit 0.30 keeps `KeyEventExtra` crate-private.
-        let mut ev: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
-        ev.logical_key = k;
-        ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
-            winit::keyboard::NativeKeyCode::Unidentified,
-        );
-        ev.location = winit::keyboard::KeyLocation::Standard;
-        ev.state = ElementState::Pressed;
-        ev.repeat = false;
-        ev.text = None;
-        WindowEvent::KeyboardInput {
-            device_id: unsafe { std::mem::zeroed() },
-            event: ev,
-            is_synthetic: false,
-        }
+        crate::synthetic_input::keyboard_input(crate::synthetic_input::key_event(
+            k,
+            None,
+            ElementState::Pressed,
+        ))
     }
 
     fn ch(c: char) -> WindowEvent {

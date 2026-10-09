@@ -25,6 +25,7 @@
 //! continuing on another of the person's devices.
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use tilo_actions::remote::{
@@ -256,19 +257,38 @@ fn entries() -> &'static Mutex<Vec<Entry>> {
     &ENTRIES
 }
 
+/// How many [`entries`] are [`Hydration::Waiting`], so the frame loop can ask
+/// [`any_waiting`] every round without taking the entries' lock. Changed only
+/// under that lock, in step with the entry it counts.
+static WAITING: AtomicUsize = AtomicUsize::new(0);
+
 /// Bring `address` here if it is not already being brought, and say where
 /// that stands. Settled answers are kept in `data_home`'s profile for the
 /// app in that room the first time they are looked at.
 pub fn hydrate(address: &RecordAddress, data_home: &Path) -> Hydration {
+    hydrate_from(address, data_home, || {
+        source_slot().lock().ok().and_then(|slot| slot.clone())
+    })
+}
+
+/// [`hydrate`], asking `source` for a record not already being brought.
+fn hydrate_from(
+    address: &RecordAddress,
+    data_home: &Path,
+    source: impl FnOnce() -> Option<Arc<dyn RecordSource>>,
+) -> Hydration {
     let Ok(mut entries) = entries().lock() else {
         return Hydration::Failed("hydration is unavailable".into());
     };
     if let Some(entry) = entries.iter_mut().find(|entry| &entry.address == address) {
+        let was_waiting = entry.state == Hydration::Waiting;
         settle(entry, data_home);
+        if was_waiting && entry.state != Hydration::Waiting {
+            WAITING.fetch_sub(1, Ordering::Release);
+        }
         return entry.state.clone();
     }
-    let source = source_slot().lock().ok().and_then(|slot| slot.clone());
-    let Some(source) = source else {
+    let Some(source) = source() else {
         return Hydration::Failed("no other device of the room is reachable".into());
     };
     let mut entry = Entry {
@@ -278,17 +298,36 @@ pub fn hydrate(address: &RecordAddress, data_home: &Path) -> Hydration {
     };
     settle(&mut entry, data_home);
     let state = entry.state.clone();
+    if state == Hydration::Waiting {
+        WAITING.fetch_add(1, Ordering::Release);
+    }
     entries.push(entry);
     state
 }
 
-/// Whether any hydration still waits for an answer.
+/// Whether any hydration still waits for an answer. One atomic load, so the
+/// frame loop may ask every round.
 pub fn any_waiting() -> bool {
-    entries().lock().is_ok_and(|entries| {
-        entries
-            .iter()
-            .any(|entry| entry.state == Hydration::Waiting)
-    })
+    WAITING.load(Ordering::Acquire) > 0
+}
+
+/// Whether [`WAITING`] agrees with the entries it counts. Both are read under
+/// the entries' lock, which every change to either holds.
+#[cfg(test)]
+fn waiting_count_matches_entries() -> bool {
+    let (scanned, counted) = {
+        let entries = entries()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        (
+            entries
+                .iter()
+                .filter(|entry| entry.state == Hydration::Waiting)
+                .count(),
+            WAITING.load(Ordering::Acquire),
+        )
+    };
+    scanned == counted
 }
 
 /// Forget a settled hydration, so a later need asks again.
@@ -604,5 +643,99 @@ mod tests {
             .is_err(),
             "a record not kept here is not invented"
         );
+    }
+
+    type Fetched = Result<Vec<u8>, String>;
+
+    /// Answers each fetch when the test says so.
+    #[derive(Default)]
+    struct Held(Mutex<Vec<tilo_actions::remote::Completer<Fetched>>>);
+
+    impl RecordSource for Held {
+        fn fetch(&self, _address: &RecordAddress) -> Pending<Fetched> {
+            let (completer, answer) = tilo_actions::remote::pending();
+            self.0.lock().unwrap().push(completer);
+            answer
+        }
+    }
+
+    /// Answers at once, with nothing that proves to be the record.
+    struct Refusing;
+
+    impl RecordSource for Refusing {
+        fn fetch(&self, _address: &RecordAddress) -> Pending<Fetched> {
+            Pending::ready(Err("not kept here".into()))
+        }
+    }
+
+    #[test]
+    fn record_hydration_waiting_counter_tracks_entries() {
+        let home = tempfile::tempdir().unwrap();
+        let room = Workspace::new(crate::shell::state::WorkspaceId(2), "Shared").room;
+        let address = || RecordAddress {
+            room,
+            app_id: APP.into(),
+            record: RecordId::minted(),
+        };
+        let held = Arc::new(Held::default());
+        let from_held = || Some(Arc::clone(&held) as Arc<dyn RecordSource>);
+        let refusing = || Some(Arc::new(Refusing) as Arc<dyn RecordSource>);
+        let (first, second, refused) = (address(), address(), address());
+
+        assert_eq!(
+            hydrate_from(&first, home.path(), from_held),
+            Hydration::Waiting
+        );
+        assert!(waiting_count_matches_entries(), "a new ask is counted");
+        assert!(any_waiting(), "an unanswered ask is waiting");
+        assert_eq!(
+            hydrate_from(&second, home.path(), from_held),
+            Hydration::Waiting
+        );
+        assert!(waiting_count_matches_entries());
+        assert_eq!(
+            hydrate_from(&first, home.path(), from_held),
+            Hydration::Waiting
+        );
+        assert!(
+            waiting_count_matches_entries(),
+            "looking again while unanswered counts once"
+        );
+        assert!(matches!(
+            hydrate_from(&refused, home.path(), refusing),
+            Hydration::Failed(_)
+        ));
+        assert!(
+            waiting_count_matches_entries(),
+            "an ask answered at once is never waiting"
+        );
+        forget(&first);
+        assert!(
+            waiting_count_matches_entries(),
+            "forgetting keeps an ask still waiting"
+        );
+
+        let mut completers = std::mem::take(&mut *held.0.lock().unwrap());
+        assert_eq!(completers.len(), 2, "one fetch per address");
+        // One answers with a refusal; the other's device goes away.
+        completers.remove(0).complete(Err("gone".into()));
+        drop(completers);
+        for asked in [&first, &second, &first] {
+            assert!(matches!(
+                hydrate_from(asked, home.path(), from_held),
+                Hydration::Failed(_)
+            ));
+            assert!(
+                waiting_count_matches_entries(),
+                "an answer leaves the count exactly once"
+            );
+        }
+        for asked in [&first, &second, &refused] {
+            forget(asked);
+            assert!(
+                waiting_count_matches_entries(),
+                "forgetting keeps the count"
+            );
+        }
     }
 }

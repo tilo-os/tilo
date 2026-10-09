@@ -98,6 +98,7 @@ impl Store {
             runtime: String::new(),
             source: String::new(),
             held: false,
+            payload_bytes: 0,
             system: false,
         };
         self.registry.push_str(&registry_row(&package));

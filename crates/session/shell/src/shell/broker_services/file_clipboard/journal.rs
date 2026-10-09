@@ -1103,7 +1103,7 @@ fn already_restored(
     if let Some(path) = &item.trash {
         let path = decode_path(path)?;
         let files = super::trash::files_directory()?;
-        let expected = xdg_paths::data_dir()
+        let expected = tilo_paths::data_dir()
             .ok_or("home Trash unavailable")?
             .join("Trash/files");
         if path.parent() != Some(expected.as_path()) {
@@ -1143,7 +1143,7 @@ fn redo_material(
                 .as_ref()
                 .ok_or("Copy Undo recovery is unavailable")?,
         )?;
-        let expected = xdg_paths::data_dir()
+        let expected = tilo_paths::data_dir()
             .ok_or("home Trash unavailable")?
             .join("Trash/files");
         if trash.parent() != Some(expected.as_path()) {

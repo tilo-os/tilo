@@ -15,6 +15,7 @@ use std::{
     fs, io,
     path::{Path, PathBuf},
 };
+use tilo_automerge_isolate::{Applied, Dependencies};
 
 fn invalid(message: &str) -> StoreError {
     io::Error::new(io::ErrorKind::InvalidData, message).into()
@@ -138,27 +139,43 @@ fn first_chunk(bytes: &[u8]) -> Option<(&[u8], &[u8], u8)> {
 /// loader may skip an appended document whose declared heads are already known.
 /// Valid incremental changes/bundles may lack their dependencies in isolation;
 /// the later containment check resolves those against the candidate snapshot.
-fn independently_valid_chunks(mut bytes: &[u8]) -> bool {
-    if bytes.is_empty() {
+///
+/// Retained bodies are peer-supplied. Reading their frames decodes nothing;
+/// every Automerge decode of them goes through `tilo_automerge_isolate`, so a
+/// hostile body costs a worker process, never the relay.
+fn independently_valid_chunks(bytes: &[u8]) -> bool {
+    if bytes.is_empty()
+        || tilo_automerge_isolate::precheck::check(
+            bytes,
+            tilo_automerge_isolate::Isolate::shared().limits(),
+        )
+        .is_err()
+    {
         return false;
     }
-    while !bytes.is_empty() {
-        let Some((chunk, rest, kind)) = first_chunk(bytes) else {
+    let mut rest = bytes;
+    while !rest.is_empty() {
+        let Some((chunk, after, kind)) = first_chunk(rest) else {
             return false;
         };
-        match automerge::Automerge::load(chunk) {
-            Ok(_) => {}
-            Err(automerge::AutomergeError::MissingDeps) if kind != 0 => {}
-            Err(_) => return false,
+        match tilo_automerge_isolate::apply(
+            &mut automerge::AutoCommit::new(),
+            chunk,
+            Dependencies::RequireComplete,
+        ) {
+            Ok(Applied::Changed(_)) => {}
+            Ok(Applied::MissingDependencies) if kind != 0 => {}
+            Ok(Applied::MissingDependencies) | Err(_) => return false,
         }
-        bytes = rest;
+        rest = after;
     }
     true
 }
 
 /// Only complete, strictly decoded raw Automerge snapshots prove coverage.
-/// In particular `load_incremental` is unsuitable here: it accepts partial
-/// input, so unchanged heads after that operation can hide malformed data.
+/// In particular a bare `load_incremental` is unsuitable here: it accepts
+/// partial input, so unchanged heads after that operation can hide malformed
+/// data. The isolate refuses an input with any malformed chunk whole.
 fn covers(checkpoint: &[u8], prior: &[u8], workspace: u64) -> bool {
     let Some((author, CoeditPayload::Checkpoint { channel, body })) =
         payload(checkpoint, workspace)
@@ -178,21 +195,19 @@ fn covers(checkpoint: &[u8], prior: &[u8], workspace: u64) -> bool {
     if !independently_valid_chunks(&body) || !independently_valid_chunks(&old_body) {
         return false;
     }
-    let Ok(document) = automerge::Automerge::load(&body) else {
+    let Ok(mut document) = tilo_automerge_isolate::load(&body) else {
         return false;
     };
     if !document.get_missing_deps(&[]).is_empty() {
         return false;
     }
-    let heads = document.get_heads();
     // A full snapshot provides dependencies for incremental tail chunks.
-    // Strict load rejects truncated/opaque suffixes; checking missing deps
-    // rejects well-formed changes whose unknown ancestors cannot be applied.
-    let mut combined = document.save();
-    combined.extend_from_slice(&old_body);
-    automerge::Automerge::load(&combined).is_ok_and(|combined| {
-        combined.get_missing_deps(&[]).is_empty() && combined.get_heads() == heads
-    })
+    // Contained: applied to a copy of the snapshot, the prior body leaves its
+    // heads where they were and nothing waiting for a dependency.
+    matches!(
+        tilo_automerge_isolate::apply(&mut document, &old_body, Dependencies::RequireComplete),
+        Ok(Applied::Changed(false))
+    )
 }
 
 #[cfg(test)]
@@ -460,7 +475,8 @@ pub(super) fn durable_write(path: &Path, bytes: &[u8]) -> Result<(), StoreError>
     if let Some(parent) = path.parent() {
         #[cfg(target_vendor = "apple")]
         sync_dir(parent)?;
-        #[cfg(all(test, not(target_vendor = "apple")))]
+        #[cfg(test)]
+        #[cfg(not(target_vendor = "apple"))]
         super::test_barrier::check(parent, "sync-dir")?;
     }
     Ok(())
@@ -637,6 +653,10 @@ pub(crate) struct RetainBuild {
     selected_read: Option<super::shell_selection::SelectedRead>,
     selection: Option<super::shell_selection::Selection>,
     publication: Option<super::shell_selection::Publication>,
+    /// A plain route tail the in-process tail cache can publish without a
+    /// selection; `fast_admitted` once the selected snapshot found it safe.
+    fast: Option<super::shell_selection::tail_cache::FastTail>,
+    fast_admitted: bool,
     selected_obsolete: bool,
     staged_only: bool,
     continuity: Option<super::continuity::Receipt>,
@@ -890,6 +910,27 @@ impl RetainBuild {
     ) -> Result<super::bounded::Step<super::shell_selection::RetainOutcome>, StoreError> {
         use super::bounded::{Meta, Step, increment, read_meta};
         let limit = limit.checked()?;
+        if let Some(fast) = &self.fast
+            && !self.fast_admitted
+        {
+            use super::shell_selection::tail_cache::Admission;
+            match fast.admission(&self.bytes, self.workspace) {
+                Admission::Obsolete => {
+                    self.publication = Some(super::shell_selection::Publication::Suppress);
+                    self.phase = RetainPhase::Done;
+                    self.selected_obsolete = true;
+                    let fast = self.fast.take().invariant("fast tail missing")?;
+                    self.store.tail_cache.finish(fast);
+                }
+                Admission::Tail => self.fast_admitted = true,
+                Admission::Select => {
+                    self.fast = None;
+                    self.store.tail_cache.invalidate();
+                    self.selected_read = super::shell_selection::SelectedRead::new(&self.store)?;
+                }
+            }
+            return Ok(Step::More);
+        }
         if let Some(reader) = &mut self.selected_read {
             if let Step::Done(()) = reader.step()? {
                 if reader.obsolete(&self.bytes)? {
@@ -1098,6 +1139,16 @@ impl RetainBuild {
                 }
             }
             RetainPhase::Done => {
+                if self.publication.is_none()
+                    && let Some(mut fast) = self.fast.take()
+                    && !self.duplicate
+                    && fast.append(&self.bytes, self.workspace)
+                {
+                    // The selection this skips would publish this tail as an
+                    // original and change nothing but its listed tails.
+                    self.store.tail_cache.finish(fast);
+                    self.publication = Some(super::shell_selection::Publication::Original);
+                }
                 if self.publication.is_none() {
                     if let Some(store) = &self.shell_store {
                         if self.selection.is_none() {
@@ -1105,11 +1156,21 @@ impl RetainBuild {
                                 &self.bytes,
                                 self.workspace,
                             );
-                            self.selection = Some(super::shell_selection::Selection::new(
+                            let mut selection = super::shell_selection::Selection::new(
                                 store,
                                 self.scratch.clone(),
                                 incoming,
-                            )?);
+                            )?;
+                            if !self.checkpoint
+                                && let Some(key) =
+                                    super::shell_selection::tail_cache::incoming_route(
+                                        &self.bytes,
+                                        self.workspace,
+                                    )
+                            {
+                                selection.want_route(key);
+                            }
+                            self.selection = Some(selection);
                         }
                         match self.selection.as_mut().invariant("selection missing")?.step(limit)? {
                             Step::More => return Ok(Step::More),
@@ -1215,6 +1276,16 @@ impl WorkspaceStore {
         if actual_channel != *channel || checkpoint != seq.is_none() {
             return Err(invalid("retained envelope channel or kind mismatch"));
         }
+        let fast = if checkpoint {
+            None
+        } else {
+            super::shell_selection::tail_cache::checkout(self, &bytes)?
+        };
+        if fast.is_none() {
+            // Every other write changes retained history the cached cursors
+            // were computed from; the next clean selection seeds them again.
+            self.tail_cache.invalidate();
+        }
         for directory in self.root.ancestors().take(3) {
             sync_dir_once(directory)?;
         }
@@ -1258,9 +1329,15 @@ impl WorkspaceStore {
             survivors: 0,
             written: 0,
             shell_store: self.shell_authority().map(|_| self.clone()),
-            selected_read: super::shell_selection::SelectedRead::new(self)?,
+            selected_read: if fast.is_some() {
+                None
+            } else {
+                super::shell_selection::SelectedRead::new(self)?
+            },
             selection: None,
             publication: None,
+            fast,
+            fast_admitted: false,
             selected_obsolete: false,
             staged_only: false,
             continuity: None,
@@ -1710,6 +1787,41 @@ pub(super) mod tests {
                 "malformed prior was collected through known-head fast path (prefix={valid_prefix})"
             );
             assert!(replay.contains(&checkpoint));
+        }
+    }
+
+    /// A retained tail whose bytes are hostile to Automerge is decoded only in
+    /// the isolate: one that crashes the decoder costs a worker, not the relay,
+    /// and neither it nor a known change with a bad checksum after a valid
+    /// prefix is ever covered by a later checkpoint.
+    #[test]
+    fn hostile_or_corrupt_tail_is_decoded_in_the_isolate_and_never_covered() {
+        use automerge::transaction::Transactable;
+        // Checksum-valid document whose op actor index is past its actor
+        // table: stock Automerge panics on it (tilo-automerge-isolate's
+        // decoder cases).
+        let decoder_crash = hex::decode("856f4a833d51cb7a00f0010110d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1011f0242f07c77fbf3d3aac425927bb392f9d579080452645fdb50bf7e4097564b07010203021303230240034302560210010402061108130d15092102230e3403420d560f5708800109810102830103940103a50107020002017e0a0302007e00017f000207000309010003070102090005050000017f00000302007f0202017c00017b0a7d016b016c017400090c007b0b7e78067b02017b047d0104020308017c0102040703017f0703017f057f1602007f0203167f0002167e18147668656c6c6f010205007f0104007e010002007e0d7f07010400037f0162000801").unwrap();
+        let mut document = automerge::AutoCommit::new();
+        document.put(automerge::ROOT, "first", 1).unwrap();
+        document.commit();
+        let first = document.get_last_local_change().unwrap();
+        let known = first.raw_bytes().to_vec();
+        let mut bad_checksum = known.clone();
+        bad_checksum[4] ^= 0x01;
+        let mut corrupt = known;
+        corrupt.extend_from_slice(&bad_checksum);
+        document.put(automerge::ROOT, "next", 2).unwrap();
+        let checkpoint = frame(true, document.save(), 3);
+        for (what, body) in [("decoder crash", decoder_crash), ("bad checksum", corrupt)] {
+            let tmp = tempfile::tempdir().unwrap();
+            let store = WorkspaceStore::open(tmp.path(), 7, false).unwrap();
+            let tail = frame(false, body, 1);
+            store.retain_delta(&[9; 32], 1, &tail).unwrap();
+            store.retain_checkpoint(&[9; 32], &checkpoint).unwrap();
+            let store = WorkspaceStore::open(tmp.path(), 7, false).unwrap();
+            let replay = store.load_retained().unwrap();
+            assert!(replay.contains(&tail), "{what}: tail was collected");
+            assert!(replay.contains(&checkpoint), "{what}: checkpoint missing");
         }
     }
 

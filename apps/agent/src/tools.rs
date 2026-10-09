@@ -37,13 +37,19 @@
 //!
 //! ## An id cannot be invented
 //!
-//! [`PLAN`]'s `operation` is an enum, and the enum is **what the discovery
-//! tools have actually returned in this conversation** ([`Revealed`]) — plus
-//! the editorial changes and "none", which are the agent's own and finite.
-//! The model does not pick from a list somebody guessed it would need; it
-//! picks from what it asked for and was shown. An id no tool returned is not
-//! in the schema, is refused by [`read_plan`] if a malformed call carries one
-//! anyway, and would still not survive the survey check.
+//! What [`PLAN`] and [`INVOKE`] accept is **what this conversation has
+//! actually shown the model** ([`Revealed`]): the operations summarised in
+//! its first turn ([`catalogue_summary`]) and whatever the discovery tools
+//! returned since — plus "none", which is the agent's own. The model does not
+//! pick from a list somebody guessed it would need; it picks from what it was
+//! shown. An id nothing showed is refused by [`read_plan`] / [`read_invoke`]
+//! with the ids it may have meant, answered to the model so it can correct
+//! itself, and would still not survive the survey check.
+//!
+//! The check lives there rather than in a per-conversation schema `enum` so
+//! the tool definitions stay byte-identical across turns and tasks: they
+//! come first in every request, and a provider's prompt cache keeps only an
+//! unchanged prefix.
 //!
 //! ## Authority is upstream and unchanged
 //!
@@ -112,10 +118,6 @@ impl Revealed {
         self.0.is_empty()
     }
 
-    fn ids(&self) -> Vec<&str> {
-        self.0.iter().map(String::as_str).collect()
-    }
-
     /// The revealed id `given` names: itself, or — when a model copied an id
     /// without its `broker:<peer>:` routing prefix, or with another peer's —
     /// the one revealed id with the same address. Only what was shown can be
@@ -126,6 +128,18 @@ impl Revealed {
     /// In words for the model, with the revealed ids for the same action as
     /// suggestions.
     pub fn resolve(&self, given: &str) -> Result<String, String> {
+        self.lookup(given).map_err(|similar| {
+            format!(
+                "{:?} is not an operation any listing in this conversation showed. {}",
+                given.trim(),
+                copy_advice(&similar)
+            )
+        })
+    }
+
+    /// [`Self::resolve`], refusing with up to three shown ids for the same
+    /// action instead of words.
+    fn lookup(&self, given: &str) -> Result<String, Vec<&str>> {
         let given = given.trim();
         if self.contains(given) && given != plan::NOTHING_FITS {
             return Ok(given.to_owned());
@@ -140,36 +154,40 @@ impl Revealed {
         if let [only] = same.as_slice() {
             return Ok((*only).to_owned());
         }
-        let action = address.rsplit_once(surface::ADDRESS_SEP).map(|(_, a)| a);
-        let similar: Vec<&str> = if same.is_empty() {
-            self.0
-                .iter()
-                .map(String::as_str)
-                .filter(|id| {
-                    action.is_some_and(|action| {
-                        id.rsplit_once(surface::ADDRESS_SEP)
-                            .is_some_and(|(_, a)| a == action)
-                    })
-                })
-                .take(3)
-                .collect()
-        } else {
-            same.into_iter().take(3).collect()
-        };
-        let mut error = format!(
-            "{given:?} is not an operation any listing in this conversation showed. Copy an \
-             id exactly as listed (with its `broker:<n>:` prefix), or ask `{LIST_OPERATIONS}` \
-             first"
-        );
-        if !similar.is_empty() {
-            let _ = write!(
-                error,
-                ". Listed ids for that action: {}",
-                similar.join(", ")
-            );
+        if !same.is_empty() {
+            return Err(same.into_iter().take(3).collect());
         }
-        Err(error)
+        let action = address.rsplit_once(surface::ADDRESS_SEP).map(|(_, a)| a);
+        Err(self
+            .0
+            .iter()
+            .map(String::as_str)
+            .filter(|id| {
+                action.is_some_and(|action| {
+                    id.rsplit_once(surface::ADDRESS_SEP)
+                        .is_some_and(|(_, a)| a == action)
+                })
+            })
+            .take(3)
+            .collect())
     }
+}
+
+/// How to name a shown operation instead, with the shown ids that look
+/// like what was meant.
+fn copy_advice(similar: &[&str]) -> String {
+    let mut advice = format!(
+        "Copy an id exactly as listed (with its `broker:<n>:` prefix), or ask \
+         `{LIST_OPERATIONS}` first"
+    );
+    if !similar.is_empty() {
+        let _ = write!(
+            advice,
+            ". Listed ids for that action: {}",
+            similar.join(", ")
+        );
+    }
+    advice
 }
 
 /// An operation id without its `broker:<peer>:` routing prefix.
@@ -314,8 +332,8 @@ fn list_operations_definition() -> Value {
              to ask what may be done to a kind of thing in any application at all \
              (`files.entry`, `word_processor.section`), `resource` for one named \
              thing, `application` for one application, and `search` to match the \
-             applications' own words. The ids that come back are the only ones \
-             `plan` will accept.",
+             applications' own words. The ids that come back, like those already \
+             listed with the request, are the ones `plan` and `invoke` accept.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -351,9 +369,9 @@ fn describe_operation_definition() -> Value {
              the application's own prompt for that argument and its own example of \
              one. Also what the publishing resource says about itself, which is \
              where an application states a fact it has no operation to hang on. \
-             Call this before planning any operation that takes an argument — the \
-             example and the facts are what make the value computable rather than \
-             guessed.",
+             Call this before planning an operation whose arguments its listed \
+             signature leaves unclear — the example and the facts are what make the \
+             value computable rather than guessed.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -368,18 +386,20 @@ fn describe_operation_definition() -> Value {
     })
 }
 
-/// The [`PLAN`] tool definition. Rebuilt from `revealed` on every turn, which
-/// is what makes "pick from what a tool returned" a property of the request
-/// rather than an instruction in a prompt.
-fn plan_definition(revealed: &Revealed, most_steps: usize) -> Value {
+/// The [`PLAN`] tool definition. Byte-stable across turns and tasks (no
+/// per-conversation enum), so the provider's prompt cache keeps the whole
+/// tool prefix; [`read_plan`] refuses an id nothing in the conversation
+/// showed, and the refusal goes back to the model.
+fn plan_definition(most_steps: usize) -> Value {
     json!({
         "name": PLAN,
         "description": format!(
             "The answer. The operations to perform, in the order the request asks \
              for them — one for a request that asks for one thing, which is most of \
              them, and at most {most_steps}. Call this exactly once, when you know \
-             what to do. Every `operation` must be an id a listing actually \
-             returned; nothing else can be named here."
+             what to do — straight away when the operations listed with the request \
+             already do it. Every `operation` must be an id exactly as that list or a \
+             listing showed it; any other id is refused."
         ),
         "input_schema": {
             "type": "object",
@@ -397,7 +417,6 @@ fn plan_definition(revealed: &Revealed, most_steps: usize) -> Value {
                         "properties": {
                             "operation": {
                                 "type": "string",
-                                "enum": revealed.ids(),
                                 "description": format!(
                                     "The operation to perform, or {:?} for a step whose \
                                      operation cannot be named yet because the application \
@@ -434,13 +453,14 @@ fn plan_definition(revealed: &Revealed, most_steps: usize) -> Value {
     })
 }
 
-/// The tools as the API is told about them.
-pub fn definitions(revealed: &Revealed, most_steps: usize) -> Value {
+/// The plan tool set as the API is told about it. A function of `most_steps`
+/// alone, so it is byte-identical on every turn of a conversation.
+pub fn definitions(most_steps: usize) -> Value {
     json!([
         list_applications_definition(),
         list_operations_definition(),
         describe_operation_definition(),
-        plan_definition(revealed, most_steps),
+        plan_definition(most_steps),
     ])
 }
 
@@ -452,8 +472,7 @@ const ARGUMENTS_DESCRIPTION: &str = "The complete JSON argument object described
     include `confirm: true`; for Phrase include `confirmation_phrase` with the exact phrase. \
     Those two names are invocation metadata, not app parameters.";
 
-/// The [`INVOKE`] tool definition. Its `operation` is an enum of what the
-/// tools have shown in this conversation, rebuilt every turn.
+/// The [`INVOKE`] tool definition.
 fn invoke_definition() -> Value {
     // Byte-stable across turns and tasks (no per-conversation enum), so the
     // provider's prompt cache keeps the whole tool prefix; `read_invoke`
@@ -725,9 +744,10 @@ pub fn parameter_signature(offer: &Offer) -> String {
     format!("{{{params}}}")
 }
 
-/// The published operations, compactly, for the first turn: enough to invoke
-/// the common ones directly without a discovery round trip. Every id shown is
-/// revealed. Every application gets its share (document operations first,
+/// The published operations, compactly, for the first turn (of the task loop
+/// and of a plan decision): enough to invoke or plan the common ones directly
+/// without a discovery round trip. Every id shown is revealed. Every
+/// application gets its share (document operations first,
 /// then view, then the rest), and every open — how a closed application is
 /// started — is always shown; a cut summary says how to reach what it left
 /// out.
@@ -1249,7 +1269,9 @@ fn describe(input: &Value, catalogue: &Catalogue, revealed: &mut Revealed) -> St
 
 /// Read a [`PLAN`] call's input into the answer the gate checks.
 ///
-/// `Err` names what was wrong with it, in words that go in a log line.
+/// `Err` names what was wrong with it, in words that go in a log line and
+/// back to the model ([`plan_refused`]); an unshown id comes with the shown
+/// ids it may have meant.
 ///
 /// # Errors
 ///
@@ -1272,21 +1294,27 @@ pub fn read_plan(input: &Value, revealed: &Revealed, most_steps: usize) -> Resul
         let Some(operation) = step.get("operation").and_then(Value::as_str) else {
             return Err("a step named no operation".to_string());
         };
-        // The enum is the schema's job; this is the check behind it. A
-        // well-formed call cannot carry an id no tool returned, and a
-        // malformed one is refused here — before the survey ever sees it —
-        // so "the model picks from what it was shown" holds whether or not
-        // the API enforced it.
-        if !revealed.contains(operation) {
-            return Err(format!(
-                "named {operation:?}, which no listing in this conversation returned"
-            ));
-        }
-        actions.push(operation.to_string());
+        // The schema names no ids (so it stays byte-stable for the prompt
+        // cache); this is the check. An id nothing in this conversation
+        // showed is refused here — before the survey ever sees it — so "the
+        // model picks from what it was shown" holds whatever it wrote. An id
+        // copied without its routing prefix names the one shown operation
+        // with that address, as for `invoke`.
+        let operation = if operation == plan::NOTHING_FITS {
+            operation.to_owned()
+        } else {
+            revealed.lookup(operation).map_err(|similar| {
+                format!(
+                    "named {operation:?}, which no listing in this conversation returned. {}",
+                    copy_advice(&similar)
+                )
+            })?
+        };
         let arguments_object = step
             .get("arguments")
             .and_then(Value::as_object)
             .ok_or_else(|| format!("step {operation:?} supplied no argument object"))?;
+        actions.push(operation);
         arguments.push(arguments_object.clone());
     }
     if actions.is_empty() {
@@ -1328,6 +1356,12 @@ pub fn read_plan(input: &Value, revealed: &Revealed, most_steps: usize) -> Resul
             .filter(|reply| !reply.is_empty())
             .map(|reply| reply.chars().take(MAX_PLAN_REPLY_CHARS).collect()),
     })
+}
+
+/// The tool result answering a [`PLAN`] call [`read_plan`] refused: nothing
+/// was performed, and the model may correct it and call [`PLAN`] again.
+pub fn plan_refused(error: &str) -> String {
+    format!("Plan refused, nothing was performed: {error}. Correct it and call `{PLAN}` again.")
 }
 
 #[cfg(test)]
@@ -1827,7 +1861,7 @@ mod tests {
     /// when the model writes one.
     #[test]
     fn a_plan_reply_is_optional_first_and_kept() {
-        let definition = plan_definition(&Revealed::new(), STEPS);
+        let definition = plan_definition(STEPS);
         let schema = &definition["input_schema"];
         let first = schema["properties"]
             .as_object()
@@ -1869,6 +1903,98 @@ mod tests {
         )
         .expect("read");
         assert_eq!(bounded.reply.unwrap().chars().count(), MAX_PLAN_REPLY_CHARS);
+    }
+
+    /// The plan tool set names no ids, so it is the same bytes on every turn
+    /// however much the conversation has revealed; what the first turn's
+    /// summary showed can be planned with no listing, a prefix-less copy
+    /// names the one shown operation, and anything else is refused with
+    /// what to copy instead.
+    #[test]
+    fn the_plan_tool_set_is_byte_stable_and_a_plan_names_what_was_shown() {
+        let before = serde_json::to_string(&definitions(STEPS)).unwrap();
+        let mut revealed = Revealed::new();
+        let summary = catalogue_summary(&room(), &mut revealed, MOST_SUMMARISED);
+        let _ = operations(&json!({}), &room(), &mut revealed);
+        assert_eq!(
+            serde_json::to_string(&definitions(STEPS)).unwrap(),
+            before,
+            "revealing operations must not change the tool bytes"
+        );
+        let set = definitions(STEPS);
+        let plan = &set[3];
+        assert_eq!(plan["name"], PLAN);
+        let operation =
+            &plan["input_schema"]["properties"]["steps"]["items"]["properties"]["operation"];
+        assert_eq!(operation["type"], "string");
+        assert!(operation.get("enum").is_none(), "{operation}");
+        assert!(
+            !before.contains("harbour.png"),
+            "no conversation ids in the tools"
+        );
+
+        // Shown by the summary alone: planned with no discovery call.
+        assert!(
+            summary.contains("files.entry:/home/q/harbour.png#rename"),
+            "{summary}"
+        );
+        let mut first_turn = Revealed::new();
+        let _ = catalogue_summary(&room(), &mut first_turn, MOST_SUMMARISED);
+        let answer = read_plan(
+            &json!({
+                "steps": [{"operation": "files.entry:/home/q/harbour.png#rename", "arguments": {"value": "a.png"}}],
+                "why": "", "then": null
+            }),
+            &first_turn,
+            STEPS,
+        )
+        .expect("the summary showed it");
+        assert_eq!(answer.actions, ["files.entry:/home/q/harbour.png#rename"]);
+        assert_eq!(
+            read_plan(
+                &json!({"steps": [{"operation": plan::NOTHING_FITS, "arguments": {}}], "why": "", "then": null}),
+                &first_turn,
+                STEPS,
+            )
+            .expect("none is the agent's own")
+            .actions,
+            [plan::NOTHING_FITS]
+        );
+
+        // A prefix-less copy of a routed id names the one shown operation.
+        let mut routed = Revealed::new();
+        routed.reveal("broker:3:word-processor.document#insert-table");
+        let answer = read_plan(
+            &json!({"steps": [{"operation": "word-processor.document#insert-table", "arguments": {}}], "why": "", "then": null}),
+            &routed,
+            STEPS,
+        )
+        .expect("one shown operation has that address");
+        assert_eq!(
+            answer.actions,
+            ["broker:3:word-processor.document#insert-table"]
+        );
+
+        // An unshown id is refused with what to do instead, in words the
+        // model can act on.
+        let refused = read_plan(
+            &json!({"steps": [{"operation": "word-processor.other#insert-table", "arguments": {}}], "why": "", "then": null}),
+            &routed,
+            STEPS,
+        )
+        .expect_err("never shown");
+        assert!(
+            refused.contains("no listing in this conversation returned"),
+            "{refused}"
+        );
+        assert!(refused.contains(LIST_OPERATIONS), "{refused}");
+        assert!(
+            refused.contains("broker:3:word-processor.document#insert-table"),
+            "suggests the shown id for the same action: {refused}"
+        );
+        let answered = plan_refused(&refused);
+        assert!(answered.contains(&refused), "{answered}");
+        assert!(answered.contains("nothing was performed"), "{answered}");
     }
 
     /// The loop offers only the generic tools; `invoke` can name only what a

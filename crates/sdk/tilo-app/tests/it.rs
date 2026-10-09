@@ -11,6 +11,8 @@ pub mod actors;
 pub mod child_resources;
 #[path = "control_custody_raw_holder.rs"]
 pub mod control_custody_raw_holder;
+#[path = "each_window.rs"]
+pub mod each_window;
 #[path = "effects.rs"]
 pub mod effects;
 #[path = "framework.rs"]
@@ -41,6 +43,8 @@ pub mod participant;
 pub mod person_records;
 #[path = "private_windows.rs"]
 pub mod private_windows;
+#[path = "publication_per_keystroke.rs"]
+pub mod publication_per_keystroke;
 #[path = "render_view.rs"]
 pub mod render_view;
 #[path = "scenarios.rs"]

@@ -187,23 +187,23 @@ pub enum DesktopCommand {
     RecordEffectReceipt {
         receipt_json: String,
     },
-    /// Let application `app` use `target_app`'s `action` here, for
+    /// Let application `app` use `action` on `target_app`'s `resource` here, for
     /// `lifetime` `always` (a hosted workspace has no session to end a
     /// `session` grant with). Only a native owner applies it, with the
-    /// caller's authority over workspace governance. Appended last: existing
-    /// encodings are unchanged.
+    /// caller's authority over workspace governance.
     GrantAppAction {
         app: String,
         target_app: String,
+        resource: String,
         action: String,
         lifetime: String,
     },
-    /// Take back every grant letting `app` use `target_app`'s `action`, as
-    /// for [`Self::GrantAppAction`]. Appended last: existing encodings are
-    /// unchanged.
+    /// Take back every grant letting `app` use `action` on `target_app`'s
+    /// `resource`, as for [`Self::GrantAppAction`].
     RevokeAppAction {
         app: String,
         target_app: String,
+        resource: String,
         action: String,
     },
     /// Move window group `group`, whole, from whichever strip of the

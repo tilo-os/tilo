@@ -650,7 +650,8 @@ pub enum ContinuityFacet {
 /// These schemas describe meaning, not a particular application. A browser,
 /// documentation viewer, or third-party knowledge app may therefore share a
 /// standard location schema without gaining permission to serialize arbitrary
-/// process state.
+/// process state. Each schema's payload shape, safety invariants and wire tag
+/// live in [`crate::continuity_schema`].
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ContinuitySemanticSchema {

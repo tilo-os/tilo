@@ -47,6 +47,7 @@ const P99_LIMIT_US: u128 = 50_000;
 const ACTION_TARGETS: [&str; 2] = ["topbar_tray_pill", "topbar_overview_button"];
 const PROFILE_ENV: &str = "TILO_REDRAW_BENCH_PROFILE";
 const PROFILE_OUTPUT_ENV: &str = "TILO_REDRAW_BENCH_PROFILE_OUTPUT";
+const SAMPLES_ENV: &str = "TILO_REDRAW_BENCH_SAMPLES";
 const SCENE_REUSE_ENV: &str = "TILO_REDRAW_BENCH_SCENE_REUSE";
 const GEOMETRY_REUSE_ENV: &str = "TILO_REDRAW_BENCH_GEOMETRY_REUSE";
 const XRGB_DAMAGE_ENV: &str = "TILO_DRM_XRGB_DAMAGE";
@@ -133,6 +134,7 @@ struct FinishDiagnostics<'a> {
     gpu_dispatch_timestamp_profile: Option<&'a GpuDispatchTimestampProfile>,
     action_correlations: Option<&'a ActionCorrelationProfile>,
     profile_output_path: Option<&'a Path>,
+    samples_output_path: Option<&'a Path>,
     scene_reuse: Option<&'a SceneReuseTelemetry>,
     geometry_reuse: Option<&'a GeometryReuseTelemetry>,
     xrgb_writes: CpuXrgbWriteTotals,
@@ -1307,6 +1309,39 @@ fn profile_output_path(diagnostic: bool) -> Result<Option<PathBuf>, String> {
     profile_output_path_from_value(true, std::env::var_os(PROFILE_OUTPUT_ENV))
 }
 
+/// The acceptance samples' destination for the scheduled performance lane. A diagnostic run times
+/// extra work, so its samples are never handed over as acceptance samples.
+fn samples_output_path_from_value(
+    diagnostic: bool,
+    value: Option<OsString>,
+) -> Result<Option<PathBuf>, String> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    if value.is_empty() {
+        return Err(format!("{SAMPLES_ENV} must name a non-empty output path"));
+    }
+    if diagnostic {
+        return Err(format!(
+            "{SAMPLES_ENV} is incompatible with {PROFILE_ENV}=1; diagnostic timings are not acceptance samples"
+        ));
+    }
+    Ok(Some(PathBuf::from(value)))
+}
+
+/// One validated sample per line, in microseconds and action order: the samples file
+/// `tools/perf/record.py emit` reads. Only a set `summarize_samples` accepts is written, so a
+/// recorded distribution is always a complete one.
+fn sample_lines(samples: &[Option<u128>]) -> Result<String, SampleError> {
+    summarize_samples(samples)?;
+    let mut lines = String::with_capacity(samples.len().saturating_mul(8));
+    for us in samples.iter().flatten() {
+        lines.push_str(&us.to_string());
+        lines.push('\n');
+    }
+    Ok(lines)
+}
+
 fn xrgb_damage_requested() -> bool {
     xrgb_damage_requested_from_value(std::env::var(XRGB_DAMAGE_ENV).ok().as_deref())
 }
@@ -1762,6 +1797,8 @@ fn print_geometry_reuse_profile(telemetry: &GeometryReuseTelemetry) {
 fn run() -> Result<(), String> {
     let diagnostic = profiling_requested();
     let profile_output_path = profile_output_path(diagnostic)?;
+    let samples_output_path =
+        samples_output_path_from_value(diagnostic, std::env::var_os(SAMPLES_ENV))?;
     let scene_reuse_requested = scene_reuse_requested();
     let geometry_reuse_requested = geometry_reuse_requested();
     let xrgb_damage_requested = xrgb_damage_requested();
@@ -2097,6 +2134,7 @@ fn run() -> Result<(), String> {
             gpu_dispatch_timestamp_profile: gpu_dispatch_timestamp_profile.as_ref(),
             action_correlations: action_correlations.as_ref(),
             profile_output_path: profile_output_path.as_deref(),
+            samples_output_path: samples_output_path.as_deref(),
             scene_reuse: scene_reuse.as_ref(),
             geometry_reuse: geometry_reuse.as_ref(),
             xrgb_writes,
@@ -2142,12 +2180,26 @@ fn finish_run(
         gpu_dispatch_timestamp_profile,
         action_correlations,
         profile_output_path,
+        samples_output_path,
         scene_reuse,
         geometry_reuse,
         xrgb_writes,
     } = diagnostics;
     let summary =
         summarize_samples(samples).map_err(|error| format!("invalid sample set: {error:?}"))?;
+    // Written before the gate decides: the lane records the distribution of a run whether or not
+    // this renderer meets the hardware gate below.
+    if let Some(path) = samples_output_path {
+        let lines =
+            sample_lines(samples).map_err(|error| format!("invalid sample set: {error:?}"))?;
+        std::fs::write(path, lines)
+            .map_err(|error| format!("cannot write {}: {error}", path.display()))?;
+        println!(
+            "samples: {} action redraw totals (us) written to {}",
+            summary.count,
+            path.display()
+        );
+    }
     println!(
         "DRM render/readback at {WIDTH}x{HEIGHT}: samples={} mean={}us p99={}us min={}us max={}us",
         summary.count, summary.mean_us, summary.p99_us, summary.min_us, summary.max_us
@@ -2350,7 +2402,8 @@ mod tests {
         dispatch_stage_breakdown, dispatch_timestamp_status_after_take, gate_outcome,
         geometry_reuse_configuration_is_valid, geometry_reuse_requested_from_value,
         geometry_reuse_telemetry_enabled, gpu_dispatch_timestamp_status_name, meets_gates,
-        open_profile_output, profile_output_path_from_value, scene_reuse_configuration_is_valid,
+        open_profile_output, profile_output_path_from_value, sample_lines,
+        samples_output_path_from_value, scene_reuse_configuration_is_valid,
         scene_reuse_requested_from_value, scene_reuse_telemetry_enabled,
         summarize_diagnostic_values, summarize_samples, timestamp_profile_configuration_is_valid,
         write_action_correlation_profile, xrgb_damage_requested_from_value,
@@ -3008,6 +3061,32 @@ mod tests {
             );
             assert!(profile_output_path_from_value(true, Some(OsString::new())).is_err());
         }
+    }
+
+    #[test]
+    fn samples_output_is_acceptance_only_and_writes_complete_sets() {
+        assert_eq!(samples_output_path_from_value(false, None), Ok(None));
+        assert_eq!(samples_output_path_from_value(true, None), Ok(None));
+        assert_eq!(
+            samples_output_path_from_value(false, Some(OsString::from("samples.txt")))
+                .expect("an acceptance run writes samples")
+                .as_deref(),
+            Some(std::path::Path::new("samples.txt"))
+        );
+        assert!(
+            samples_output_path_from_value(true, Some(OsString::from("samples.txt"))).is_err(),
+            "diagnostic timings must not reach the performance lane"
+        );
+        assert!(samples_output_path_from_value(false, Some(OsString::new())).is_err());
+        assert_eq!(
+            sample_lines(&[Some(9_000), Some(7_000), Some(12_000)]),
+            Ok("9000\n7000\n12000\n".to_owned())
+        );
+        assert_eq!(
+            sample_lines(&[Some(9_000), None]),
+            Err(SampleError::Missing { index: 1 })
+        );
+        assert_eq!(sample_lines(&[]), Err(SampleError::Empty));
     }
 
     fn full_scene_reuse_observation(
@@ -3728,10 +3807,8 @@ mod tests {
         }
         // Phase `profile_output_file_is_created_new_and_never_overwritten`.
         {
-            let stamp = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .expect("the test clock is after the Unix epoch")
-                .as_nanos();
+            let stamp =
+                tilo_clock::try_unix_now_ns().expect("the test clock is after the Unix epoch");
             let path = std::env::temp_dir().join(format!(
                 "tilo-redraw-bench-profile-output-{}-{stamp}",
                 std::process::id()

@@ -5,8 +5,8 @@ use super::{
     DIRECTORY_MAX_IDENTIFIER_BYTES, DIRECTORY_MAX_PARAMS_BYTES, DIRECTORY_MAX_QUERY_REVISION_BYTES,
     DirectoryActionConfirmation, DurableInvocation, InvocationCaller, InvocationEnvelope,
     InvocationInputs, InvocationKey, InvocationOwner, LocalActionDirectoryRegistry, Promise,
-    PublishedAction, PublishedSurface, Rc, ResourceRef, Verb, VerifiedActionCaller, channel_handle,
-    mpsc, resolved_invocation, validate_directory_identifier, validate_directory_text,
+    PublishedAction, PublishedSurface, Rc, ResourceRef, VerifiedActionCaller, channel_handle, mpsc,
+    resolved_invocation, validate_directory_identifier, validate_directory_text,
 };
 use resolved_invocation::ResolvedOffer;
 
@@ -151,7 +151,7 @@ impl<'a> DurableContext<'a> {
             Self::Local { caller, .. } => caller.origin(),
         }
     }
-    pub(super) fn network(self) -> Option<tilo_relay::client::CertifiedAction> {
+    pub(super) fn network(self) -> Option<tilo_relay_session::client::CertifiedAction> {
         match self {
             Self::Peer(c, _) => c.network.clone(),
             Self::Local { .. } => None,
@@ -189,6 +189,7 @@ impl<'a> DurableContext<'a> {
         state.authorize_invocation_permission(
             &offered.0.route.cluster_id,
             &offered.0.app_id,
+            &offered.1.resource,
             &offered.1.action,
             offered.1.contract.permission,
             &current.broker_actor(),
@@ -199,51 +200,55 @@ impl<'a> DurableContext<'a> {
     }
 }
 
+/// The action check of one admission, decided on the caller's borrowed
+/// sample of exactly that room's committed workspace.
+pub(super) fn authorize_action_in(
+    workspace: &tilo_desktop_model::Workspace,
+    app: &str,
+    resource: &str,
+    action: &str,
+    permission: tilo_actions::PermissionRequirement,
+    actor: &BrokerActor,
+    now: u64,
+) -> Result<(), String> {
+    // Preserve the existing common dispatch policy projection. Genuine
+    // durable callers revalidate live membership/delegation separately.
+    let caller = actor.policy_in(workspace, now);
+    if super::permission_verb(permission).is_some_and(|verb| {
+        workspace.decide_at(
+            &caller,
+            &ResourceRef::Action {
+                app: app.into(),
+                resource: resource.into(),
+                action: action.into(),
+            },
+            verb,
+            now,
+        ) != CapDecision::Allow
+    }) {
+        return Err("caller no longer authorized for invocation".into());
+    }
+    Ok(())
+}
+
 impl CapnpBrokerState {
     pub(super) fn authorize_invocation_permission(
         &self,
         room: &str,
         app: &str,
+        resource: &str,
         action: &str,
         permission: tilo_actions::PermissionRequirement,
         actor: &BrokerActor,
         now: u64,
     ) -> Result<(), String> {
-        let tree = self
-            .membership
+        self.membership
             .as_ref()
             .ok_or("workspace authority unavailable")?
-            .snapshot()?;
-        let workspace = tree
-            .workspaces
-            .iter()
-            .find(|workspace| workspace.room.to_string() == room)
-            .ok_or("workspace no longer hosted")?;
-        // Preserve the existing common dispatch policy projection. Genuine
-        // durable callers revalidate live membership/delegation separately.
-        let caller = actor.policy_in(workspace, now);
-        let verb = match permission {
-            tilo_actions::PermissionRequirement::None => None,
-            tilo_actions::PermissionRequirement::Read => Some(Verb::Read),
-            tilo_actions::PermissionRequirement::Comment => Some(Verb::Comment),
-            tilo_actions::PermissionRequirement::Write => Some(Verb::Write),
-            tilo_actions::PermissionRequirement::Invite => Some(Verb::Invite),
-            tilo_actions::PermissionRequirement::Admin => Some(Verb::Admin),
-        };
-        if verb.is_some_and(|verb| {
-            workspace.decide_at(
-                &caller,
-                &ResourceRef::Action {
-                    app: app.into(),
-                    action: action.into(),
-                },
-                verb,
-                now,
-            ) != CapDecision::Allow
-        }) {
-            return Err("caller no longer authorized for invocation".into());
-        }
-        Ok(())
+            .decide_in_room(room, |workspace| {
+                let workspace = workspace.ok_or("workspace no longer hosted")?;
+                authorize_action_in(workspace, app, resource, action, permission, actor, now)
+            })?
     }
     pub(super) fn require_current_stable_sender(
         &self,
@@ -314,6 +319,11 @@ impl CapnpBrokerState {
                 .get("app_id")
                 .and_then(serde_json::Value::as_str)
                 .ok_or("journal app invalid")?;
+            let resource = record
+                .intent
+                .get("resource")
+                .and_then(serde_json::Value::as_str)
+                .ok_or("journal resource invalid")?;
             let action = record
                 .intent
                 .get("action")
@@ -323,6 +333,7 @@ impl CapnpBrokerState {
             self.authorize_invocation_permission(
                 &caller.route.cluster_id,
                 app,
+                resource,
                 action,
                 contract.permission,
                 &current.broker_actor(),
@@ -342,13 +353,10 @@ impl CapnpBrokerState {
             uuid::Uuid::from_bytes(request.binding.host),
             request.invocation,
         )?;
-        if existing.as_ref().is_some_and(|record| {
-            record
-                .intent
-                .get("request")
-                .unwrap_or(&serde_json::Value::Null)
-                != &request.intent()
-        }) {
+        if existing
+            .as_ref()
+            .is_some_and(|record| !record.admitted_request_is(&request.intent()))
+        {
             return Err("invocation identity reused with different intent".into());
         }
         Ok(existing)

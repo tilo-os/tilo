@@ -2,9 +2,6 @@
     test,
     allow(
         clippy::disallowed_methods,
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::panic,
         reason = "in a test these are the assertion, not a hazard"
     )
 )]
@@ -166,6 +163,23 @@ pub trait SecretBackend: Send + Sync {
     fn probe(&self) -> Result<(), SecretError> {
         Ok(())
     }
+    /// Read an item an earlier host stored under named attributes.
+    /// Backends without item attributes return no match.
+    ///
+    /// # Errors
+    /// The store is unavailable or refused.
+    fn legacy_get(&self, attributes: &[(&str, &str)]) -> Result<Option<Secret>, SecretError> {
+        let _ = attributes;
+        Ok(None)
+    }
+    /// Delete items under an earlier host's attributes after explicit removal.
+    ///
+    /// # Errors
+    /// The store is unavailable or refused.
+    fn legacy_delete(&self, attributes: &[(&str, &str)]) -> Result<(), SecretError> {
+        let _ = attributes;
+        Ok(())
+    }
 }
 
 #[derive(Clone)]
@@ -296,6 +310,26 @@ impl SecretStore {
         self.sync()?.get(&self.app, key)
     }
 
+    /// Read `key`, falling back to an earlier host's item attributes only
+    /// when it is absent. This never copies, re-labels or writes the item.
+    ///
+    /// # Errors
+    /// As [`get_blocking`](Self::get_blocking). A refused current lookup is
+    /// returned directly rather than trying a different item.
+    pub fn get_with_legacy_blocking(
+        &self,
+        key: &str,
+        legacy: &[(&str, &str)],
+    ) -> Result<Option<Secret>, SecretError> {
+        if let Some(secret) = self.get_blocking(key)? {
+            return Ok(Some(secret));
+        }
+        if legacy.is_empty() {
+            return Ok(None);
+        }
+        self.sync()?.legacy_get(legacy)
+    }
+
     /// [`put`](Self::put), blocking the calling thread. Desktop code only.
     ///
     /// # Errors
@@ -334,6 +368,23 @@ impl SecretStore {
             #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
             Backend::Web => Ok(()),
         }
+    }
+
+    /// Explicitly remove both the current key and the earlier host's item.
+    ///
+    /// # Errors
+    /// As [`delete_blocking`](Self::delete_blocking); a refused deletion stops
+    /// before touching a different item.
+    pub fn delete_with_legacy_blocking(
+        &self,
+        key: &str,
+        legacy: &[(&str, &str)],
+    ) -> Result<(), SecretError> {
+        self.delete_blocking(key)?;
+        if legacy.is_empty() {
+            return Ok(());
+        }
+        self.sync()?.legacy_delete(legacy)
     }
 
     #[cfg_attr(
@@ -725,6 +776,156 @@ impl SecretBackend for MemoryBackend {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct LegacyReader {
+        current: Result<Option<Secret>, SecretError>,
+        reads: std::sync::atomic::AtomicUsize,
+        writes: std::sync::atomic::AtomicUsize,
+    }
+    impl SecretBackend for LegacyReader {
+        fn protection(&self) -> Protection {
+            Protection::OsKeychain
+        }
+        fn get(&self, app: &str, key: &str) -> Result<Option<Secret>, SecretError> {
+            if (app, key) != ("so.tilo.identity", "signing-key") {
+                return Err(SecretError::Failed("unexpected current lookup".into()));
+            }
+            self.current.clone()
+        }
+        fn put(&self, _: &str, _: &str, _: &[u8], _: &str) -> Result<(), SecretError> {
+            self.writes
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            Err(SecretError::Failed("unexpected write".into()))
+        }
+        fn delete(&self, _: &str, _: &str) -> Result<(), SecretError> {
+            self.writes
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            Err(SecretError::Failed("unexpected deletion".into()))
+        }
+        fn legacy_get(&self, attributes: &[(&str, &str)]) -> Result<Option<Secret>, SecretError> {
+            if attributes
+                != [
+                    ("tilo-purpose", "signing"),
+                    ("tilo-identity-key", "public-locator"),
+                ]
+            {
+                return Err(SecretError::Failed("unexpected legacy lookup".into()));
+            }
+            self.reads
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            Ok(Some(Secret::new(b"legacy fixture")))
+        }
+    }
+
+    #[test]
+    fn legacy_credential_reads_do_not_write_or_bypass_a_refusal() {
+        const ATTRIBUTES: &[(&str, &str)] = &[
+            ("tilo-purpose", "signing"),
+            ("tilo-identity-key", "public-locator"),
+        ];
+        for current in [
+            Ok(None),
+            Ok(Some(Secret::new(b"current fixture"))),
+            Err(SecretError::Denied),
+        ] {
+            let backend = Arc::new(LegacyReader {
+                current: current.clone(),
+                reads: std::sync::atomic::AtomicUsize::new(0),
+                writes: std::sync::atomic::AtomicUsize::new(0),
+            });
+            let store = SecretStore::with_backend("so.tilo.identity", backend.clone());
+            let result = store.get_with_legacy_blocking("signing-key", ATTRIBUTES);
+            assert_eq!(backend.writes.load(std::sync::atomic::Ordering::Relaxed), 0);
+            let missing = matches!(&current, Ok(None));
+            if missing {
+                assert_eq!(result.unwrap(), Some(Secret::new(b"legacy fixture")));
+            } else {
+                assert_eq!(result, current);
+            }
+            assert_eq!(
+                backend.reads.load(std::sync::atomic::Ordering::Relaxed),
+                usize::from(missing)
+            );
+        }
+        let backend = Arc::new(LegacyReader {
+            current: Ok(None),
+            reads: std::sync::atomic::AtomicUsize::new(0),
+            writes: std::sync::atomic::AtomicUsize::new(0),
+        });
+        let store = SecretStore::with_backend("so.tilo.identity", backend.clone());
+        assert_eq!(
+            store.get_with_legacy_blocking("signing-key", &[]).unwrap(),
+            None
+        );
+        assert!(matches!(
+            store.get_with_legacy_blocking("", ATTRIBUTES),
+            Err(SecretError::InvalidKey)
+        ));
+        assert_eq!(backend.reads.load(std::sync::atomic::Ordering::Relaxed), 0);
+    }
+
+    struct LegacyRemoval {
+        refused: bool,
+        calls: Mutex<Vec<String>>,
+    }
+    impl SecretBackend for LegacyRemoval {
+        fn protection(&self) -> Protection {
+            Protection::OsKeychain
+        }
+        fn get(&self, _: &str, _: &str) -> Result<Option<Secret>, SecretError> {
+            Err(SecretError::Denied)
+        }
+        fn put(&self, _: &str, _: &str, _: &[u8], _: &str) -> Result<(), SecretError> {
+            Err(SecretError::Denied)
+        }
+        fn delete(&self, app: &str, key: &str) -> Result<(), SecretError> {
+            self.calls
+                .lock()
+                .map_err(|_| SecretError::Denied)?
+                .push(format!("{app}:{key}"));
+            if self.refused {
+                Err(SecretError::Denied)
+            } else {
+                Ok(())
+            }
+        }
+        fn legacy_delete(&self, attributes: &[(&str, &str)]) -> Result<(), SecretError> {
+            if attributes != [("tilo-identity-key", "public-locator")] {
+                return Err(SecretError::InvalidKey);
+            }
+            self.calls
+                .lock()
+                .map_err(|_| SecretError::Denied)?
+                .push("legacy public-locator".into());
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn explicit_legacy_removal_respects_refusal_and_removes_both_names() {
+        for refused in [false, true] {
+            let backend = Arc::new(LegacyRemoval {
+                refused,
+                calls: Mutex::new(Vec::new()),
+            });
+            let store = SecretStore::with_backend("so.tilo.identity", backend.clone());
+            let result = store.delete_with_legacy_blocking(
+                "signing-key",
+                &[("tilo-identity-key", "public-locator")],
+            );
+            let calls = backend.calls.lock().unwrap().clone();
+            if refused {
+                assert_eq!(result, Err(SecretError::Denied));
+                assert_eq!(calls, ["so.tilo.identity:signing-key"]);
+            } else {
+                assert_eq!(result, Ok(()));
+                assert_eq!(
+                    calls,
+                    ["so.tilo.identity:signing-key", "legacy public-locator"]
+                );
+            }
+        }
+    }
 
     #[tokio::test(flavor = "current_thread")]
     async fn the_memory_store_conforms() {

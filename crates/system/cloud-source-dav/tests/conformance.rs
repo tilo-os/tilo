@@ -86,6 +86,7 @@ impl Fixture for FakeFixture {
             Fault::RateLimited => self.server.inject(FakeFault::RateLimited),
             Fault::ServerError => self.server.inject(FakeFault::ServerError),
             Fault::TruncatedBody => self.server.inject(FakeFault::TruncatedBody),
+            Fault::ClosedEarly => self.server.inject(FakeFault::ClosedEarly),
             Fault::ExpiredCredential => self.server.inject(FakeFault::ExpiredCredential),
             Fault::CursorReset => self.server.reset_cursors(),
         }

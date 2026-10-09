@@ -19,7 +19,6 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
-use std::sync::mpsc::{Sender, channel};
 use std::time::{Duration, Instant};
 
 use smithay::reexports::calloop::LoopHandle;
@@ -37,9 +36,13 @@ const PACKAGE_KIND: &str = "service";
 const RETRY_BACKOFF: Duration = Duration::from_secs(5);
 const INSTALL_REFRESH: Duration = Duration::from_secs(30);
 
-pub fn osk_preference() -> OskPreference {
+/// The on-screen keyboard preference in `settings`.
+pub fn osk_preference(settings: &settings_store::live::Snapshot) -> OskPreference {
     OskPreference::from_setting(
-        settings_store::load_section("accessibility").get("on_screen_keyboard"),
+        settings
+            .document
+            .get("accessibility")
+            .and_then(|section| section.get("on_screen_keyboard")),
     )
 }
 
@@ -75,8 +78,18 @@ pub struct InputMethodService {
     installed: Option<crate::shell::launcher::InstalledApp>,
     desired: Option<Request>,
     launched: Option<Request>,
-    stop: Option<Sender<()>>,
+    stop: Option<StopSignal>,
     last_attempt: Option<Instant>,
+}
+
+/// Stops the current launch when dropped. Its supervisor sleeps on this ring
+/// and the child's exit instead of waking every 150 ms to look at both.
+struct StopSignal(Arc<bounded_command::WakeFd>);
+
+impl Drop for StopSignal {
+    fn drop(&mut self) {
+        self.0.ring();
+    }
 }
 
 impl InputMethodService {
@@ -161,7 +174,7 @@ impl InputMethodService {
         self.launched = None;
         if let Some(stop) = self.stop.take() {
             self.stopping = Some(Arc::clone(&self.running));
-            let _ = stop.send(());
+            drop(stop);
         }
         self.running = Arc::new(AtomicBool::new(false));
     }
@@ -194,8 +207,14 @@ impl InputMethodService {
                 return;
             }
         };
-        let (tx, rx) = channel();
-        self.stop = Some(tx);
+        let wake = match bounded_command::WakeFd::new() {
+            Ok(wake) => Arc::new(wake),
+            Err(error) => {
+                tracing::warn!(target: "tilo::input_method", kind = ?self.kind, %error, "input method stop signal unavailable");
+                return;
+            }
+        };
+        self.stop = Some(StopSignal(Arc::clone(&wake)));
         self.launched = Some(request);
         // Reserve this launch before its supervisor thread can run, so a
         // compositor tick cannot create a duplicate while spawn is pending.
@@ -206,7 +225,7 @@ impl InputMethodService {
         let kind = self.kind;
         let supervisor = std::thread::Builder::new()
             .name("tilo-input-method".to_string())
-            .spawn(move || supervise(kind, &launch, &rx, &running, &process_group));
+            .spawn(move || supervise(kind, &launch, &wake, &running, &process_group));
         if let Err(error) = supervisor {
             self.running.store(false, Ordering::Release);
             self.accepting.store(false, Ordering::Release);
@@ -266,7 +285,7 @@ impl InputMethodService {
 fn supervise(
     kind: TrustedInputMethod,
     launch: &Launch,
-    stop: &std::sync::mpsc::Receiver<()>,
+    stop: &bounded_command::WakeFd,
     running: &AtomicBool,
     process_group: &AtomicI32,
 ) {
@@ -306,28 +325,24 @@ fn supervise(
     let armed = process_group
         .compare_exchange(0, pgid, Ordering::AcqRel, Ordering::Acquire)
         .is_ok();
-    loop {
-        if !armed
-            || !matches!(
-                stop.recv_timeout(Duration::from_millis(150)),
-                Err(std::sync::mpsc::RecvTimeoutError::Timeout)
-            )
-        {
-            bounded_command::terminate_tree(&mut child, Duration::from_secs(1));
-            break;
+    // Sleep until the child exits or the stop signal rings (or is dropped).
+    let woke = if armed {
+        bounded_command::wait_child_or(&mut child, Some(stop.fd()), None)
+    } else {
+        Ok(bounded_command::Wakeup::Woken)
+    };
+    match woke {
+        Ok(bounded_command::Wakeup::Exited(status)) => {
+            if !status.success() {
+                tracing::warn!(target: "tilo::input_method", ?kind, ?status, "input method exited");
+            }
         }
-        match child.try_wait() {
-            Ok(Some(status)) => {
-                if !status.success() {
-                    tracing::warn!(target: "tilo::input_method", ?kind, ?status, "input method exited");
-                }
-                break;
-            }
-            Ok(None) => {}
-            Err(error) => {
-                tracing::warn!(target: "tilo::input_method", ?kind, %error, "could not inspect input method");
-                break;
-            }
+        // Only the stop signal rings this descriptor, and there is no deadline.
+        Ok(bounded_command::Wakeup::Woken | bounded_command::Wakeup::Deadline) => {
+            bounded_command::terminate_tree(&mut child, Duration::from_secs(1));
+        }
+        Err(error) => {
+            tracing::warn!(target: "tilo::input_method", ?kind, %error, "could not inspect input method");
         }
     }
     // Even if the launcher exited first, no descendant may retain the old
@@ -567,21 +582,29 @@ impl InputMethodServices {
     }
 
     /// Re-read the preferences that decide the owner and apply the decision.
-    pub fn reload(&mut self, state: &mut State) {
-        self.reload_for_scope(state, &settings_store::keyboard_sources::active_scope());
+    pub fn reload(&mut self, state: &mut State, settings: &settings_store::live::Snapshot) {
+        self.reload_for_scope(
+            state,
+            settings,
+            &settings_store::keyboard_sources::active_scope(),
+        );
     }
 
-    pub fn reload_for_scope(&mut self, state: &mut State, scope: &str) {
-        let input = settings_store::hardware::RichInputConfig::from_section(
-            &settings_store::load_section("input"),
-        );
+    pub fn reload_for_scope(
+        &mut self,
+        state: &mut State,
+        settings: &settings_store::live::Snapshot,
+        scope: &str,
+    ) {
+        let input =
+            settings_store::hardware::RichInputConfig::from_section(&settings.section("input"));
         let input = settings_store::keyboard_sources::effective(&input, scope);
         self.primary_layout = input
             .sources()
             .first()
             .map_or_else(|| "us".to_string(), |source| source.id.clone());
         self.engine = input.active_input_method();
-        self.osk_preference = osk_preference();
+        self.osk_preference = osk_preference(settings);
         self.refresh_installed(state);
         self.apply(state);
     }
@@ -798,6 +821,15 @@ mod tests {
         }
     }
 
+    /// The fixture's settings file as the compositor's live snapshot would
+    /// hold it.
+    fn saved_settings() -> settings_store::live::Snapshot {
+        settings_store::live::Snapshot {
+            generation: 0,
+            document: settings_store::load(),
+        }
+    }
+
     fn wait_for(mut ready: impl FnMut() -> bool) {
         let started = Instant::now();
         while !ready() {
@@ -813,7 +845,9 @@ mod tests {
     #[serial_test::serial(process_env)]
     fn installed_keyboard_update_revokes_old_authority_before_replacement() {
         let mut fixture = InstalledServiceFixture::new();
-        fixture.methods.reload(&mut fixture.state);
+        fixture
+            .methods
+            .reload(&mut fixture.state, &saved_settings());
         wait_for(|| fixture.osk().process_group().is_some());
         let old_group = fixture.osk().process_group().unwrap();
         let old_running = Arc::clone(&fixture.osk().running);
@@ -897,7 +931,9 @@ mod tests {
     #[serial_test::serial(process_env)]
     fn unrelated_package_update_preserves_the_current_keyboard_launch() {
         let mut fixture = InstalledServiceFixture::new();
-        fixture.methods.reload(&mut fixture.state);
+        fixture
+            .methods
+            .reload(&mut fixture.state, &saved_settings());
         wait_for(|| fixture.osk().process_group().is_some());
         let group = fixture.osk().process_group();
         let running = Arc::clone(&fixture.osk().running);
@@ -927,6 +963,54 @@ mod tests {
             unchanged,
             "another installed application must not replace or revoke the keyboard"
         );
+    }
+
+    /// Context switches of this process's one thread named `name`.
+    fn thread_context_switches(name: &str) -> u64 {
+        let threads: Vec<_> = std::fs::read_dir("/proc/self/task")
+            .unwrap()
+            .map(|task| task.unwrap().path())
+            .filter(|task| {
+                std::fs::read_to_string(task.join("comm")).is_ok_and(|comm| comm.trim() == name)
+            })
+            .collect();
+        assert_eq!(threads.len(), 1, "exactly one {name} thread must be live");
+        std::fs::read_to_string(threads[0].join("status"))
+            .unwrap()
+            .lines()
+            .filter(|line| line.contains("ctxt_switches:"))
+            .map(|line| {
+                line.split_whitespace()
+                    .last()
+                    .unwrap()
+                    .parse::<u64>()
+                    .unwrap()
+            })
+            .sum()
+    }
+
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn running_keyboard_supervisor_sleeps_until_stopped() {
+        let mut fixture = InstalledServiceFixture::new();
+        fixture
+            .methods
+            .reload(&mut fixture.state, &saved_settings());
+        wait_for(|| fixture.osk().process_group().is_some());
+        let running = Arc::clone(&fixture.osk().running);
+        // Let the supervisor reach its wait; the kernel truncates names to 15 bytes.
+        std::thread::sleep(Duration::from_millis(100));
+        let before = thread_context_switches("tilo-input-meth");
+        std::thread::sleep(Duration::from_millis(400));
+        let idle = thread_context_switches("tilo-input-meth").saturating_sub(before);
+        let alive = running.load(Ordering::Acquire);
+        // Dropping stops the TERM-ignoring fixture through the stop signal
+        // alone, and waits (bounded) for the supervisor to finish.
+        drop(fixture);
+        assert!(alive, "the fixture keyboard must still be running");
+        // The 150 ms stop poll this replaces switched about three times here.
+        assert_eq!(idle, 0, "an idle input method supervisor must not wake");
+        assert!(!running.load(Ordering::Acquire));
     }
 
     #[test]

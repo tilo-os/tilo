@@ -1021,6 +1021,12 @@ pub struct AccessibilityPrefs {
     /// Backend-neutral voice/language preset.
     #[serde(default)]
     pub screen_reader_voice: ScreenReaderVoice,
+    /// Personal recognition language; selecting it never grants microphone access.
+    #[serde(default)]
+    pub dictation_language: settings_store::dictation::DictationLanguage,
+    /// Preserve recognised speech without removing explicit self-repairs.
+    #[serde(default)]
+    pub dictation_literal: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -1218,6 +1224,8 @@ impl Default for AccessibilityPrefs {
             switch_scan_ms: 0,
             screen_reader_rate: default_screen_reader_rate(),
             screen_reader_voice: ScreenReaderVoice::System,
+            dictation_language: settings_store::dictation::DictationLanguage::default(),
+            dictation_literal: false,
         }
     }
 }

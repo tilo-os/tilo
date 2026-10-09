@@ -7,9 +7,10 @@
 //! membership, revocation or capability checks in `StatePeer`.
 use crate::{NeighbourMsg, coverage::Coverage, durability::DurableReceipt};
 use automerge::transaction::Transactable;
-use automerge::{AutoCommit, Automerge, ROOT, ReadDoc, ScalarValue, Value};
+use automerge::{AutoCommit, ROOT, ReadDoc, ScalarValue, Value};
 use collab_types::{DocumentMutation, WholeDocumentPayload};
 use std::collections::BTreeMap;
+use tilo_automerge_isolate::{Applied, Dependencies};
 use tilo_user_identity::DeviceCert;
 
 pub use tilo_relay_protocol::retention::RetentionAuthority;
@@ -30,7 +31,7 @@ pub fn retention_authority_from_governance(
         .and_then(|(value, _)| value.as_str().map(ToOwned::to_owned))
         .ok_or("governed room id is missing")?;
     let authority = RetentionAuthority::new(&room, governor)?;
-    if crate::room::governance_of(Some(document)).0.as_deref()
+    if crate::room::governance_of(Some(document)).owner.as_deref()
         != Some(&hex::encode(authority.governor().user_public_key))
     {
         return Err("retention governor is not the governed room owner".into());
@@ -83,7 +84,7 @@ pub struct VerifiedRoom {
 /// historical snapshot cache or requirement for one aggregate-wide generation.
 pub struct VerifiedSnapshot {
     authority: RetentionAuthority,
-    doc: Automerge,
+    doc: AutoCommit,
     receipt: DurableReceipt,
     input_hash: [u8; 32],
 }
@@ -93,8 +94,8 @@ pub struct VerifiedSnapshot {
 pub struct OrderedTailReadiness {
     authority: RetentionAuthority,
     coverage: Coverage,
-    snapshot: Automerge,
-    cumulative: Automerge,
+    snapshot: AutoCommit,
+    cumulative: AutoCommit,
 }
 
 fn decode(body: &[u8]) -> Result<NeighbourMsg, ProofError> {
@@ -107,6 +108,11 @@ fn decode(body: &[u8]) -> Result<NeighbourMsg, ProofError> {
 
 // Strict framing is necessary: incremental loaders may accept valid prefixes,
 // and a loader can skip an appended document with already-known heads.
+//
+// These bodies are peer-supplied and retained by a relay. Reading their frames
+// decodes nothing; every Automerge decode of them goes through
+// `tilo_automerge_isolate`, so a hostile body costs a worker process, never the
+// process running the proof.
 fn first_chunk(bytes: &[u8]) -> Option<(&[u8], &[u8], u8)> {
     if !bytes.starts_with(&[0x85, 0x6f, 0x4a, 0x83]) {
         return None;
@@ -132,34 +138,56 @@ fn first_chunk(bytes: &[u8]) -> Option<(&[u8], &[u8], u8)> {
     let (chunk, rest) = bytes.split_at_checked(header.checked_add(len)?)?;
     Some((chunk, rest, kind))
 }
-fn strict_chunks(mut bytes: &[u8]) -> bool {
+/// The chunks of a non-empty, strictly framed input within the isolate's
+/// size and chunk ceilings, each with its kind.
+fn framed_chunks(mut bytes: &[u8]) -> Option<Vec<(&[u8], u8)>> {
     if bytes.is_empty() {
-        return false;
+        return None;
     }
+    tilo_automerge_isolate::precheck::check(
+        bytes,
+        tilo_automerge_isolate::Isolate::shared().limits(),
+    )
+    .ok()?;
+    let mut chunks = Vec::new();
     while !bytes.is_empty() {
-        let Some((chunk, rest, kind)) = first_chunk(bytes) else {
-            return false;
-        };
-        match Automerge::load(chunk) {
-            Ok(_) => {}
-            Err(automerge::AutomergeError::MissingDeps) if kind != 0 => {}
-            Err(_) => return false,
-        }
+        let (chunk, rest, kind) = first_chunk(bytes)?;
+        chunks.push((chunk, kind));
         bytes = rest;
     }
-    true
+    Some(chunks)
 }
-fn document(bytes: &[u8]) -> Result<Automerge, ProofError> {
-    if !strict_chunks(bytes) {
+/// Whether every chunk loads on its own, as a strict standalone load of it
+/// would, decoded in the isolate: a change or bundle may lack dependencies
+/// that live elsewhere, a document may not.
+fn chunks_load_alone(chunks: &[(&[u8], u8)]) -> bool {
+    chunks.iter().all(|&(chunk, kind)| {
+        match tilo_automerge_isolate::apply(
+            &mut AutoCommit::new(),
+            chunk,
+            Dependencies::RequireComplete,
+        ) {
+            Ok(Applied::Changed(_)) => true,
+            Ok(Applied::MissingDependencies) => kind != 0,
+            Err(_) => false,
+        }
+    })
+}
+fn document(bytes: &[u8]) -> Result<AutoCommit, ProofError> {
+    let chunks = framed_chunks(bytes).ok_or(ProofError::Unknown)?;
+    // One chunk that passes the strict whole load below also loads alone.
+    if chunks.len() > 1 && !chunks_load_alone(&chunks) {
         return Err(ProofError::Unknown);
     }
-    let doc = Automerge::load(bytes).map_err(|_| ProofError::Unknown)?;
+    let doc = tilo_automerge_isolate::load(bytes).map_err(|_| ProofError::Unknown)?;
     if !doc.get_missing_deps(&[]).is_empty() {
         return Err(ProofError::Unknown);
     }
     Ok(doc)
 }
-fn room_changes(changes: &[Vec<u8>]) -> Result<(), ProofError> {
+/// A room frame's framing: each entry exactly one change chunk. Nothing is
+/// decoded here; `crate::room::candidate` decodes them in the isolate.
+fn room_framing(changes: &[Vec<u8>]) -> Result<(), ProofError> {
     if changes.is_empty() {
         return Err(ProofError::Unknown);
     }
@@ -170,15 +198,30 @@ fn room_changes(changes: &[Vec<u8>]) -> Result<(), ProofError> {
         if !rest.is_empty() || !matches!(kind, 1 | 2) {
             return Err(ProofError::Unknown);
         }
-        // Change::try_from validates columns but not the stored checksum.
-        // Validate this exact single Change through the loader first; only an
-        // integrity-valid dependent kind 1/2 chunk may return MissingDeps.
-        if !strict_chunks(bytes) {
-            return Err(ProofError::Unknown);
-        }
-        automerge::Change::try_from(bytes.as_slice()).map_err(|_| ProofError::Unknown)?;
     }
     Ok(())
+}
+/// The changes of a room frame that `crate::room::candidate` has already
+/// accepted, parsed in this process only now: the isolate's worker decoded
+/// each of these chunks the same way first.
+///
+/// Parsing a change does not check its stored checksum, and an incremental
+/// load can drop a known change whose checksum is wrong without refusing the
+/// input, so each chunk's stored checksum is compared with its hash here. For
+/// a compressed chunk that hash is the uncompressed change's, which its stored
+/// checksum must match as well.
+fn admitted_changes(changes: &[Vec<u8>]) -> Result<Vec<automerge::Change>, ProofError> {
+    changes
+        .iter()
+        .map(|bytes| {
+            let change =
+                automerge::Change::try_from(bytes.as_slice()).map_err(|_| ProofError::Unknown)?;
+            if bytes.get(4..8) != change.hash().0.get(..4) {
+                return Err(ProofError::Unknown);
+            }
+            Ok(change)
+        })
+        .collect()
 }
 fn valid_coverage(authority: &RetentionAuthority, key: &str, coverage: &Coverage) -> bool {
     coverage.room == authority.room()
@@ -233,7 +276,7 @@ fn identities(
 ) -> Result<(), ProofError> {
     let parse = |doc| {
         crate::room::governance_of(doc)
-            .3
+            .identities
             .into_iter()
             .map(|(id, bytes)| {
                 let identity: crate::state::GovernedIdentity =
@@ -314,12 +357,14 @@ pub fn verify_room(
     if room != authority.room() {
         return Err(ProofError::Unknown);
     }
-    room_changes(&changes)?;
+    room_framing(&changes)?;
     let base = match kind {
         RoomInput::Checkpoint => None,
         RoomInput::Delta => Some(&prior.ok_or(ProofError::Unpaired)?.doc),
     };
+    // The isolate decodes the changes first; only then are they parsed here.
     let doc = crate::room::candidate(base, &changes).map_err(|_| ProofError::Unknown)?;
+    admitted_changes(&changes)?;
     if !doc.get_missing_deps(&[]).is_empty() {
         return Err(ProofError::Unknown);
     }
@@ -448,7 +493,7 @@ pub fn verify_snapshot(
     let DocumentMutation::Snapshot(bytes) = mutation else {
         return Err(ProofError::Unknown);
     };
-    let doc = document(&bytes)?;
+    let mut doc = document(&bytes)?;
     if let Some(policy) = crate::room::media::parse(&room.doc).map_err(|_| ProofError::Unknown)? {
         crate::room::media::validate_bound_chat_change(&policy, &app, &record, &doc)
             .map_err(|_| ProofError::Unknown)?;
@@ -522,13 +567,17 @@ impl VerifiedRoom {
         let Ok(NeighbourMsg::SyncResp { room, changes }) = decode(body) else {
             return CoverageDecision::Unknown;
         };
-        if room != self.authority.room() || room_changes(&changes).is_err() {
+        if room != self.authority.room() || room_framing(&changes).is_err() {
             return CoverageDecision::Unknown;
         }
-        for bytes in changes {
-            let Ok(change) = automerge::Change::try_from(bytes.as_slice()) else {
-                return CoverageDecision::Unknown;
-            };
+        // Decode the frame in the isolate, on its own, before parsing it here.
+        if crate::room::candidate(None, &changes).is_err() {
+            return CoverageDecision::Unknown;
+        }
+        let Ok(changes) = admitted_changes(&changes) else {
+            return CoverageDecision::Unknown;
+        };
+        for change in changes {
             if self.doc.get_change_by_hash(&change.hash()).is_none() {
                 return CoverageDecision::NotCovered;
             }
@@ -566,7 +615,7 @@ impl VerifiedSnapshot {
         {
             return false;
         }
-        let Ok(prior) = document(&bytes) else {
+        let Ok(mut prior) = document(&bytes) else {
             return false;
         };
         if envelope.seq == coverage.sequence
@@ -600,8 +649,8 @@ impl VerifiedSnapshot {
         OrderedTailReadiness {
             authority: self.authority.clone(),
             coverage: self.receipt.coverage.clone(),
-            snapshot: self.doc.fork(),
-            cumulative: self.doc.fork(),
+            snapshot: self.doc.clone(),
+            cumulative: self.doc.clone(),
         }
     }
     pub fn coverage(&self) -> &Coverage {
@@ -629,7 +678,7 @@ impl VerifiedSnapshot {
                 .all(|(author, seq)| new.watermarks.get(author).copied().unwrap_or(0) >= *seq)
             && prior
                 .doc
-                .get_heads()
+                .committed_heads()
                 .iter()
                 .all(|head| self.doc.get_change_by_hash(head).is_some())
     }
@@ -650,30 +699,40 @@ impl VerifiedSnapshot {
 }
 
 impl OrderedTailReadiness {
-    /// Append one signed route increment only when it is floor-safe against the
-    /// original snapshot and dependency-complete against the accepted prefix.
-    pub fn append(&mut self, source: [u8; 32], channel: [u8; 32], body: &[u8]) -> bool {
-        let decision = classify_tail(
+    /// [`VerifiedSnapshot::classify_tail`] against this cursor's immutable
+    /// snapshot, so a holder of the cursor alone keeps the same floor rules.
+    pub fn classify_tail(&self, source: [u8; 32], channel: [u8; 32], body: &[u8]) -> TailDecision {
+        classify_tail(
             &self.authority,
             &self.coverage,
             &self.snapshot,
             source,
             channel,
             body,
-        );
-        if decision.floor != FloorSafety::Safe {
-            return false;
-        }
-        let Ok((app, record, _, DocumentMutation::Incremental(bytes))) =
-            signed_document(source, channel, body, self.authority.room())
+        )
+    }
+    /// Append one signed route increment only when it is floor-safe against the
+    /// original snapshot and dependency-complete against the accepted prefix.
+    pub fn append(&mut self, source: [u8; 32], channel: [u8; 32], body: &[u8]) -> bool {
+        let Some(increment) =
+            route_increment(&self.authority, &self.coverage, source, channel, body)
         else {
             return false;
         };
-        if app != self.coverage.app || record != self.coverage.record || !strict_chunks(&bytes) {
+        if tail_decision(&self.authority, &self.coverage, &self.snapshot, &increment).floor
+            != FloorSafety::Safe
+        {
             return false;
         }
-        let mut next = self.cumulative.fork();
-        if next.load_incremental(&bytes).is_err() || !next.get_missing_deps(&[]).is_empty() {
+        let mut next = self.cumulative.clone();
+        if !matches!(
+            tilo_automerge_isolate::apply(
+                &mut next,
+                &increment.bytes,
+                Dependencies::RequireComplete
+            ),
+            Ok(Applied::Changed(_))
+        ) {
             return false;
         }
         self.cumulative = next;
@@ -681,46 +740,79 @@ impl OrderedTailReadiness {
     }
 }
 
+/// One signed increment on a snapshot's route whose every chunk loads on its own.
+struct Increment {
+    source: [u8; 32],
+    seq: u64,
+    bytes: Vec<u8>,
+}
+
+fn route_increment(
+    authority: &RetentionAuthority,
+    coverage: &Coverage,
+    source: [u8; 32],
+    channel: [u8; 32],
+    body: &[u8],
+) -> Option<Increment> {
+    let Ok((app, record, envelope, DocumentMutation::Incremental(bytes))) =
+        signed_document(source, channel, body, authority.room())
+    else {
+        return None;
+    };
+    if app != coverage.app || record != coverage.record {
+        return None;
+    }
+    chunks_load_alone(&framed_chunks(&bytes)?).then_some(Increment {
+        source,
+        seq: envelope.seq,
+        bytes,
+    })
+}
+
 fn classify_tail(
     authority: &RetentionAuthority,
     coverage: &Coverage,
-    doc: &Automerge,
+    doc: &AutoCommit,
     source: [u8; 32],
     channel: [u8; 32],
     body: &[u8],
 ) -> TailDecision {
-    let unknown = TailDecision {
-        coverage: CoverageDecision::Unknown,
-        floor: FloorSafety::Unknown,
-    };
-    let Ok((app, record, envelope, DocumentMutation::Incremental(bytes))) =
-        signed_document(source, channel, body, authority.room())
-    else {
-        return unknown;
-    };
-    if app != coverage.app || record != coverage.record || !strict_chunks(&bytes) {
-        return unknown;
+    match route_increment(authority, coverage, source, channel, body) {
+        Some(increment) => tail_decision(authority, coverage, doc, &increment),
+        None => TailDecision {
+            coverage: CoverageDecision::Unknown,
+            floor: FloorSafety::Unknown,
+        },
     }
+}
+
+fn tail_decision(
+    authority: &RetentionAuthority,
+    coverage: &Coverage,
+    doc: &AutoCommit,
+    increment: &Increment,
+) -> TailDecision {
     let floor = coverage
         .watermarks
-        .get(&hex::encode(source))
+        .get(&hex::encode(increment.source))
         .copied()
         .unwrap_or(0);
-    let original_heads = doc.get_heads();
-    let mut combined = doc.save();
-    combined.extend_from_slice(&bytes);
-    let contained = Automerge::load(&combined).is_ok_and(|combined| {
-        combined.get_missing_deps(&[]).is_empty() && combined.get_heads() == original_heads
-    });
+    // Contained: applied to a copy of the snapshot, the increment leaves its
+    // heads where they were and nothing waiting for a dependency.
+    let mut probe = doc.clone();
+    let contained = matches!(
+        tilo_automerge_isolate::apply(&mut probe, &increment.bytes, Dependencies::RequireComplete),
+        Ok(Applied::Changed(false))
+    );
     TailDecision {
-        coverage: if source != authority.governor().device_public_key {
+        coverage: if increment.source != authority.governor().device_public_key {
             CoverageDecision::Unknown
-        } else if contained && floor >= envelope.seq {
+        } else if contained && floor >= increment.seq {
             CoverageDecision::Covered
         } else {
             CoverageDecision::NotCovered
         },
-        floor: if contained || envelope.seq > floor {
+        floor: if contained || increment.seq > floor {
             FloorSafety::Safe
         } else {
             FloorSafety::Blocked

@@ -973,7 +973,9 @@ impl PortalDialogQueue {
                         ("target", friendly_app_name(&request.target_app).into()),
                     ],
                 ),
-                action: request.action_label.clone(),
+                // A grant covers this action on this resource only, so the
+                // sheet names both.
+                action: format!("{} · {}", request.resource_label, request.action_label),
                 detail: action_grant_detail(request),
                 choices: AppActionConsent::ALLOWING
                     .iter()
@@ -2864,7 +2866,7 @@ mod tests {
     }
 
     fn type_key(controller: &mut PortalDialogController, key: winit::keyboard::Key) -> bool {
-        let event = crate::shell::test_support::typed_key_event(key);
+        let event = ui::synthetic_input::key_input(&key, winit::event::ElementState::Pressed);
         crate::shell::test_support::with_scratch_event_ctx(|ctx| {
             controller.edit_secret(&event, ctx)
         })

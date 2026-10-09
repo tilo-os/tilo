@@ -80,6 +80,9 @@ where
         .enable_all()
         .build()
         .map_err(|error| error.to_string())?;
+    // Shutdown the owned socket, then keep driving RPC long enough to retire
+    // its pending server calls. Dropping RpcSystem alone can retain call cycles.
+    let disconnect = connection.try_clone().map_err(|error| error.to_string())?;
     tokio::task::LocalSet::new().block_on(&runtime, async move {
         let connection =
             tokio::net::UnixStream::from_std(connection).map_err(|error| error.to_string())?;
@@ -92,17 +95,20 @@ where
         ));
         let service: app_host::Client = capnp_rpc::new_client(server);
         let rpc = RpcSystem::new(network, Some(service.client));
-        let disconnect = rpc.get_disconnector();
         let mut rpc = Box::pin(rpc);
         tokio::select! {
-            _ = &mut shutdown => {
-                tokio::time::timeout(std::time::Duration::from_secs(2), async {
-                    let (disconnected, driven) = tokio::join!(disconnect, &mut rpc);
-                    disconnected.map_err(|error| error.to_string())?;
-                    driver_result(driven)
-                }).await.map_err(|_| "app-host test transport did not disconnect".to_owned())?
-            },
+            biased;
             result = &mut rpc => driver_result(result),
+            _ = &mut shutdown => {
+                // EOF takes the ordinary connection-disconnect path, canceling
+                // pending server calls before we join. A separate Capnp
+                // disconnector can release state ahead of the message loop.
+                disconnect.shutdown(std::net::Shutdown::Both)
+                    .map_err(|error| error.to_string())?;
+                let result = tokio::time::timeout(std::time::Duration::from_secs(2), &mut rpc)
+                    .await.map_err(|_| "app-host test transport did not disconnect".to_owned())?;
+                driver_result(result)
+            },
         }
     })
 }
@@ -112,5 +118,159 @@ fn driver_result(result: Result<(), capnp::Error>) -> Result<(), String> {
         Ok(()) => Ok(()),
         Err(error) if error.kind == capnp::ErrorKind::Disconnected => Ok(()),
         Err(error) => Err(error.to_string()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct EmptyHost;
+
+    impl app_host::Server for EmptyHost {
+        fn list(
+            self: capnp::capability::Rc<Self>,
+            _params: app_host::ListParams,
+            mut results: app_host::ListResults,
+        ) -> impl core::future::Future<Output = Result<(), capnp::Error>> + 'static {
+            results.get().init_entries(0);
+            std::future::ready(Ok(()))
+        }
+    }
+
+    #[test]
+    fn connected_service_stops_and_joins_after_peer_disconnect() {
+        for iteration in 0..128 {
+            let (service, fd) = ConnectedService::start(EmptyHost).unwrap();
+            let client = crate::client::BlockingClient::from_connected_fd(fd).unwrap();
+            assert!(client.list().unwrap().is_empty());
+            drop(client);
+            assert_eq!(
+                service.shutdown(),
+                Ok(()),
+                "owned driver iteration {iteration}"
+            );
+        }
+    }
+
+    #[test]
+    fn connected_service_stops_and_joins_with_a_live_idle_peer() {
+        let (service, fd) = ConnectedService::start(EmptyHost).unwrap();
+        let client = crate::client::BlockingClient::from_connected_fd(fd).unwrap();
+        assert!(client.list().unwrap().is_empty());
+        assert_eq!(service.shutdown(), Ok(()));
+        drop(client);
+    }
+
+    #[test]
+    fn peer_close_races_owned_driver_shutdown() {
+        for iteration in 0..512 {
+            let (service, fd) = ConnectedService::start(EmptyHost).unwrap();
+            let client = crate::client::BlockingClient::from_connected_fd(fd).unwrap();
+            assert!(client.list().unwrap().is_empty());
+            let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+            let stop_barrier = barrier.clone();
+            let stop = std::thread::spawn(move || {
+                stop_barrier.wait();
+                service.shutdown()
+            });
+            barrier.wait();
+            drop(client);
+            assert_eq!(
+                stop.join().unwrap(),
+                Ok(()),
+                "concurrent close iteration {iteration}"
+            );
+        }
+    }
+
+    struct PanickingHost;
+    impl app_host::Server for PanickingHost {
+        fn list(
+            self: capnp::capability::Rc<Self>,
+            _params: app_host::ListParams,
+            _results: app_host::ListResults,
+        ) -> impl core::future::Future<Output = Result<(), capnp::Error>> + 'static {
+            std::future::poll_fn(|_| panic!("injected owned service failure"))
+        }
+    }
+
+    #[test]
+    fn connected_service_shutdown_still_reports_driver_panics() {
+        let (service, fd) = ConnectedService::start(PanickingHost).unwrap();
+        let client = crate::client::BlockingClient::from_connected_fd(fd).unwrap();
+        assert!(client.list().is_err());
+        drop(client);
+        assert_eq!(
+            service.shutdown(),
+            Err("app-host test service panicked".into())
+        );
+    }
+
+    struct PendingCall(std::sync::Arc<std::sync::atomic::AtomicBool>);
+    impl Drop for PendingCall {
+        fn drop(&mut self) {
+            self.0.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+
+    struct PendingHost {
+        entered: std::sync::mpsc::SyncSender<()>,
+        canceled: std::sync::Arc<std::sync::atomic::AtomicBool>,
+        waiter: std::sync::Arc<std::sync::Mutex<Option<std::task::Waker>>>,
+    }
+
+    impl app_host::Server for PendingHost {
+        fn list(
+            self: capnp::capability::Rc<Self>,
+            _params: app_host::ListParams,
+            _results: app_host::ListResults,
+        ) -> impl core::future::Future<Output = Result<(), capnp::Error>> + 'static {
+            let pending = PendingCall(std::sync::Arc::clone(&self.canceled));
+            let entered = self.entered.clone();
+            let waiter = std::sync::Arc::clone(&self.waiter);
+            async move {
+                let _pending = pending;
+                entered.send(()).unwrap();
+                std::future::poll_fn(|cx| {
+                    *waiter.lock().unwrap() = Some(cx.waker().clone());
+                    std::task::Poll::<()>::Pending
+                })
+                .await;
+                Ok(())
+            }
+        }
+    }
+
+    #[test]
+    fn connected_service_shutdown_cancels_an_entered_server_call() {
+        let (entered, observed) = std::sync::mpsc::sync_channel(1);
+        let canceled = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let waiter = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let (service, fd) = ConnectedService::start(PendingHost {
+            entered,
+            canceled: std::sync::Arc::clone(&canceled),
+            waiter: std::sync::Arc::clone(&waiter),
+        })
+        .unwrap();
+        let client = std::thread::spawn(move || {
+            crate::client::BlockingClient::from_connected_fd(fd)
+                .unwrap()
+                .list()
+        });
+        observed
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .unwrap();
+        assert_eq!(service.shutdown(), Ok(()));
+        // Like the Store fixture, release the saved task waker after joining.
+        drop(waiter.lock().unwrap().take());
+        assert!(
+            client.join().unwrap().is_err(),
+            "pending RPC reports disconnect"
+        );
+        assert!(
+            canceled.load(std::sync::atomic::Ordering::SeqCst),
+            "the real entered service future is retired by shutdown"
+        );
     }
 }

@@ -349,12 +349,16 @@ pub enum NetworkShape {
 impl NetworkShape {
     #[must_use]
     pub fn from_capabilities(capabilities: &CapabilityPlan) -> Self {
-        if !capabilities.allow_network || capabilities.net_hosts.is_empty() {
-            Self::Offline
-        } else if capabilities.net_hosts.as_slice() == ["*"] {
-            Self::Unrestricted
-        } else {
-            Self::Filtered
+        if !capabilities.allow_network {
+            return Self::Offline;
+        }
+        // The decision an app's grants get, with no manifest to add: `*` is
+        // the host network, named hosts a gate, and grants that are not hosts
+        // in the one grammar (IP literals) nothing.
+        match launcher::netgate::EgressDecision::resolve("off", &[], &capabilities.net_hosts) {
+            launcher::netgate::EgressDecision::Blocked => Self::Offline,
+            launcher::netgate::EgressDecision::Unrestricted => Self::Unrestricted,
+            launcher::netgate::EgressDecision::Filtered(_) => Self::Filtered,
         }
     }
 }

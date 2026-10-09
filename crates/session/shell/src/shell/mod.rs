@@ -1,30 +1,21 @@
-//! # Visual smoke checklist
+//! The desktop shell: workspace tree, chrome, input policy and the services the
+//! compositor hosts.
 //!
-//! Run `cargo run -p tilo-desktop` and verify:
-//!
-//! - `TopBar` renders with a live clock; wheel over the center area cycles to
-//!   the CPU/RAM sparkline and the calendar (200 ms cooldown).
-//! - Cmd+K opens the search palette; typing filters; Enter invokes; Escape closes.
-//! - Cmd+Tab toggles the `OverviewView`; clicking a card activates the workspace.
-//! - The `RightTray` gear icon opens `QuickSettings`; sliders are interactive;
-//!   WiFi/BT drill-in and back work.
-//! - The workspace-name button opens `WorkspaceSettings`; switching to the Roles
-//!   tab lets you toggle per-app permissions via `DataTable`; the Files tab
-//!   shows per-role × per-file matrix.
-//! - `SidebarWheelDisc` switches workspaces, resists with overscroll at each
-//!   end, and exposes an add-workspace control on the disc band.
-//! - Right-clicking a tile opens the context menu.
-//! - Hovering the workspace-name button reveals a tooltip after ~600 ms.
-//! - Creating a workspace (any path) triggers a toast.
-//! - A simulated remote cursor floats over the active tile.
+//! To see it, drive a running compositor rather than eyeballing a checklist:
+//! `cargo run --bin shell -- --backend headless` plus `tilo-control`
+//! (`scripts/headless-examples/`, `docs/headless-testing.md`), or render stills
+//! and recordings with `cargo run --bin shots`. `--mode hosted` runs the shell
+//! in a window inside an existing X11/Wayland session.
 
 pub mod actions;
 pub(crate) mod animation_diagnostics;
 pub mod app_action_access;
 pub mod app_action_consent;
 pub mod app_close;
+pub mod app_notice_card;
 pub mod app_tabs;
 pub(crate) mod audio_output;
+pub(crate) mod audio_writer;
 pub mod automation_folders;
 pub mod automation_host;
 pub mod automation_triggers;
@@ -42,13 +33,11 @@ pub mod collab_broker;
 pub mod collab_broker_capnp;
 pub mod collab_core;
 pub mod collab_history;
-pub mod collab_mls_authority;
 pub mod collab_outbound;
 pub mod collab_presence;
 pub mod color_pipeline;
 pub mod continuity_policy;
 pub mod continuity_suggestion;
-pub mod cursor_interp;
 pub mod desktop_backdrop;
 pub(crate) mod desktop_commands;
 #[cfg(target_os = "linux")]
@@ -89,16 +78,19 @@ pub mod i18n;
 pub mod identity_provisioning;
 pub mod in_process;
 pub mod input_policy;
-pub mod install_card;
+pub(crate) mod invite_policy;
 pub mod keyboard_shortcuts;
 pub mod launch_gate;
 pub(crate) mod launch_readiness;
 pub mod launcher;
 pub mod live_activities;
 pub mod live_presence;
+pub(crate) mod local_audio_graph;
 mod local_person;
 pub mod magnifier;
 pub mod media_keys;
+pub(crate) mod membership;
+pub mod mls_vault;
 pub mod mpris;
 pub(crate) mod native_media;
 pub(crate) mod native_workspace_owner;
@@ -139,11 +131,11 @@ pub mod remote_action_link;
 pub mod remote_actions;
 pub mod remote_audio;
 pub mod remote_capture;
-pub mod remote_cursors;
 pub mod remote_use;
 pub mod render;
 pub mod room_activity;
 pub mod room_records;
+pub mod scanout_candidate;
 pub mod screenshot_send;
 pub mod search;
 pub mod service_members;
@@ -156,10 +148,8 @@ pub mod speaker_group;
 pub mod speaker_group_audio;
 pub mod speaker_group_runtime;
 pub mod speaker_settings;
-pub mod split_row;
 pub mod state;
 pub mod status;
-pub mod system_monitor;
 pub mod system_sounds;
 pub mod tab_binding;
 pub mod tab_documents;
@@ -485,7 +475,7 @@ fn try_to_ui_tile_for_tab(
             label,
             missing: Some(tilo_desktop_model::MissingApp::Installable { display_name }),
             ..
-        } if tab.is_some() => UiTile::App(Box::new(install_card::InstallCard::new(
+        } if tab.is_some() => UiTile::App(Box::new(app_notice_card::AppNoticeCard::install(
             tab.unwrap_or_default(),
             label,
             display_name,
@@ -527,6 +517,18 @@ fn try_to_ui_tile_for_tab(
                 )],
             ),
         },
+        ShellTile::LocalApp {
+            app_id,
+            label,
+            note,
+        } if tab.is_some() && !note.is_empty() && note != peer_windows::OPENING => {
+            UiTile::App(Box::new(app_notice_card::AppNoticeCard::retry(
+                tab.unwrap_or_default(),
+                app_id,
+                label,
+                note,
+            )))
+        }
         ShellTile::LocalApp { label, note, .. } => UiTile::Notice {
             title: label.clone(),
             detail: if note.is_empty() {
@@ -874,7 +876,7 @@ impl file_explorer::open_with::OpenWithRoute for ShellOpenWithRoute {
 }
 
 /// The production entry point: threads the *shared* [`WorkspaceTreeHandle`](crate::shell::state::WorkspaceTreeHandle)
-/// (the same `Arc<RwLock<_>>` the portal's `GrantStoreHandle` and
+/// (the same handle the portal's `GrantStoreHandle` and
 /// peer-sync's `WorkspaceTreeReplica` hold) so chrome mutations land on the
 /// tree other subsystems read from. Reads it once for the initial widget
 /// tree; later rebuilds run `sync_from_tree` on each chrome widget.
@@ -1075,18 +1077,18 @@ pub fn mount_in_process(
 /// top bar and wallpaper, the collaboration launchpad for an empty
 /// workspace, and a leading inset for the sidebar wheel.
 pub(crate) fn workspace_surface_chrome(
-    tree: &WorkspaceTree,
+    desktop: &state::DesktopTree,
     chrome: &chrome_state::Chrome,
 ) -> tilo_desktop::composition::SurfaceChrome {
     let local = chrome
         .borrow()
         .explicit_local_user()
         .map_or_else(crate::shell::state::local_user_id, str::to_owned);
-    let topbar = topbar_chrome::TopBarChrome::from_tree_with_local_user(&tree.desktop, local)
+    let topbar = topbar_chrome::TopBarChrome::from_tree_with_local_user(desktop, local)
         .with_chrome(topbar_chrome::native_source(chrome.clone()));
     // Full-screen layer under the translucent top bar, so the bar picks up
     // the gradient tint behind it.
-    let backdrop: Box<dyn Widget> = tree.desktop.active_workspace().map_or_else(
+    let backdrop: Box<dyn Widget> = desktop.active_workspace().map_or_else(
         || Box::new(desktop_backdrop::DesktopBackdrop::new()) as Box<dyn Widget>,
         |workspace| {
             let workspace_id = workspace.id.0.to_string();
@@ -1132,15 +1134,30 @@ pub fn build_workspace_root(
     Box<dyn Widget>,
     std::collections::HashMap<state::StripId, *mut GroupRow>,
 ) {
-    let surface_chrome = workspace_surface_chrome(tree, chrome);
+    let failures = chrome.borrow().record_creation_errors(tree);
+    build_desktop_root(&tree.desktop, records, chrome, &failures)
+}
+
+/// [`build_workspace_root`] for a desktop alone, with the tabs whose record
+/// could not be created already found: all a rebuild needs, so it never
+/// copies the tree's replication documents.
+pub(crate) fn build_desktop_root(
+    desktop: &state::DesktopTree,
+    records: &ui::record::RecordStore,
+    chrome: &chrome_state::Chrome,
+    failures: &std::collections::BTreeMap<u64, String>,
+) -> (
+    Box<dyn Widget>,
+    std::collections::HashMap<state::StripId, *mut GroupRow>,
+) {
+    let surface_chrome = workspace_surface_chrome(desktop, chrome);
     let state = chrome.borrow();
-    let failures = state.record_creation_errors(tree);
     let mut resolver = NativeTileResolver {
         inputs: &state.hosted_inputs,
-        failures: &failures,
+        failures,
     };
     let mut surface = Box::new(tilo_desktop::composition::DesktopSurface::build(
-        &tree.desktop,
+        desktop,
         records,
         &mut resolver,
         surface_chrome,
@@ -1148,7 +1165,7 @@ pub fn build_workspace_root(
     for id in surface.strip_ids() {
         if let Some(row) = surface.row_mut(id) {
             for group in &mut row.groups {
-                tab_documents::apply_creation_failures(group, &failures);
+                tab_documents::apply_creation_failures(group, failures);
             }
         }
     }
@@ -1400,9 +1417,8 @@ mod legacy_files_opener_regressions {
         root: &std::path::Path,
         records: ui::record::RecordStore,
     ) -> chrome_state::Chrome {
-        let tree = std::sync::Arc::new(parking_lot::RwLock::new(
-            state::WorkspaceTree::bootstrap_demo(),
-        ));
+        let tree =
+            crate::shell::state::WorkspaceTreeHandle::new(state::WorkspaceTree::bootstrap_demo());
         let chrome = chrome_state::ChromeState::new_with_handle(tree);
         chrome.borrow_mut().hosted_inputs =
             hosted_inputs::HostedTileInputs::for_host_directory_privately(root)
@@ -1452,4 +1468,15 @@ mod legacy_files_opener_regressions {
             "deferred admission must not replace or mutate an already-open canonical file record"
         );
     }
+}
+
+/// Install immutable trusted project check configuration before session admission.
+///
+/// # Errors
+/// Refuses malformed, ambiguous, non-private or unsupported host definitions.
+#[cfg(target_os = "linux")]
+pub fn install_approved_checks_from_args(
+    arguments: impl IntoIterator<Item = std::ffi::OsString>,
+) -> Result<(), String> {
+    broker_services::approved_checks::install_from_args(arguments)
 }

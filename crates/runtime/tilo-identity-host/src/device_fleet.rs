@@ -1,8 +1,12 @@
 //! Persistent device enrollment and revocation for each local user identity.
 
+use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io;
-use std::path::PathBuf;
+use std::os::unix::fs::MetadataExt;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, LazyLock, RwLock};
+use std::time::{Duration, SystemTime};
 
 use getrandom::{SysRng, rand_core::UnwrapErr};
 use rand_core::Rng;
@@ -94,6 +98,8 @@ impl DeviceFleetStore {
     /// its schema version or identity id doesn't match, or if any stored
     /// certificate or revocation entry fails verification.
     pub fn load(&self, identity_id: &str) -> io::Result<DeviceFleet> {
+        #[cfg(test)]
+        LOADS.with(|loads| loads.set(loads.get().saturating_add(1)));
         let path = self.path(identity_id);
         let mut fleet: DeviceFleet = if path.exists() {
             serde_json::from_slice(&fs::read(path)?)
@@ -119,36 +125,76 @@ impl DeviceFleetStore {
         // ordinary device-completion UI. Their root-signed certificates live
         // in the shared enrollment registry and are projected into the same
         // fleet so list/revoke works identically for headless devices.
-        if let Some(root) = self
-            .identity_paths
-            .user_pubkey
-            .parent()
-            .and_then(std::path::Path::parent)
+        if let Some(registry) = self.home_peer_registry()
+            && let Ok(metadata) = fs::metadata(&registry)
+            && metadata.len() <= 1024 * 1024
         {
-            let registry = tilo_relay_protocol::home_peer_registry_path(root);
-            if let Ok(metadata) = fs::metadata(&registry)
-                && metadata.len() <= 1024 * 1024
+            let registrations: Vec<tilo_relay_protocol::HomePeerRegistration> =
+                serde_json::from_slice(&fs::read(&registry)?)
+                    .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+            let identity = decode_hex_32(identity_id)?;
+            for cert in registrations
+                .into_iter()
+                .filter_map(|registration| registration.device_cert)
+                .filter(|cert| cert.user_public_key == identity)
             {
-                let registrations: Vec<tilo_relay_protocol::HomePeerRegistration> =
-                    serde_json::from_slice(&fs::read(&registry)?)
-                        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-                let identity = decode_hex_32(identity_id)?;
-                for cert in registrations
-                    .into_iter()
-                    .filter_map(|registration| registration.device_cert)
-                    .filter(|cert| cert.user_public_key == identity)
+                verify_device_cert(&cert)
+                    .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+                if !fleet
+                    .certificates
+                    .iter()
+                    .any(|known| known.device_public_key == cert.device_public_key)
                 {
-                    verify_device_cert(&cert)
-                        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-                    if !fleet
-                        .certificates
-                        .iter()
-                        .any(|known| known.device_public_key == cert.device_public_key)
-                    {
-                        fleet.certificates.push(cert);
-                    }
+                    fleet.certificates.push(cert);
                 }
             }
+        }
+        Ok(fleet)
+    }
+
+    /// [`Self::load`] for authorization checks that run on every remote
+    /// action and broker call. The verified fleet is served from memory while
+    /// none of its backing files (the fleet file and the home-peer registry)
+    /// changed: one `stat` each instead of reading, parsing and verifying
+    /// them. Every writer replaces the fleet file by rename and [`Self::save`]
+    /// drops the entry, and a file another process rewrites in place changes
+    /// its length or modification time, so a revocation is seen by the very
+    /// next call. A fleet whose files changed within the last two seconds is
+    /// loaded again on each call: a coarse filesystem clock can give a write
+    /// that lands right after the load the same time. Failures are never
+    /// cached.
+    ///
+    /// Writers keep using [`Self::load`] under the fleet lock.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::load`].
+    pub fn load_cached(&self, identity_id: &str) -> io::Result<Arc<DeviceFleet>> {
+        let key = self.cache_key(identity_id);
+        let before = key.stamps();
+        if let Some(stamps) = before
+            && let Ok(cache) = FLEET_CACHE.read()
+            && let Some(entry) = cache.get(&key)
+            && entry.stamps == stamps
+        {
+            return Ok(Arc::clone(&entry.fleet));
+        }
+        let fleet = Arc::new(self.load(identity_id)?);
+        if let Some(stamps) = before
+            && stamps.settled()
+            && key.stamps() == Some(stamps)
+            && let Ok(mut cache) = FLEET_CACHE.write()
+        {
+            if cache.len() >= FLEET_CACHE_LIMIT && !cache.contains_key(&key) {
+                cache.clear();
+            }
+            cache.insert(
+                key,
+                CachedFleet {
+                    stamps,
+                    fleet: Arc::clone(&fleet),
+                },
+            );
         }
         Ok(fleet)
     }
@@ -518,7 +564,11 @@ impl DeviceFleetStore {
         let path = self.path(&fleet.identity_id);
         let bytes = serde_json::to_vec_pretty(fleet)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-        tilo_files::native::atomic::write_creating_parent(&path, &bytes)
+        let written = tilo_files::native::atomic::write_creating_parent(&path, &bytes);
+        if let Ok(mut cache) = FLEET_CACHE.write() {
+            cache.remove(&self.cache_key(&fleet.identity_id));
+        }
+        written
     }
 
     fn lock_fleets(&self) -> io::Result<advisory_lock::FileLock> {
@@ -531,6 +581,126 @@ impl DeviceFleetStore {
         self.identity_dir
             .join("fleets")
             .join(format!("{identity_id}.json"))
+    }
+
+    /// The shared home-peer enrollment registry projected into every fleet.
+    fn home_peer_registry(&self) -> Option<PathBuf> {
+        self.identity_paths
+            .user_pubkey
+            .parent()
+            .and_then(Path::parent)
+            .map(tilo_relay_protocol::home_peer_registry_path)
+    }
+
+    /// Stamps of the files [`Self::load_cached`] reads for `identity_id`, or
+    /// `None` when one can't be examined.
+    pub(crate) fn stamps(&self, identity_id: &str) -> Option<FleetStamps> {
+        self.cache_key(identity_id).stamps()
+    }
+
+    fn cache_key(&self, identity_id: &str) -> FleetKey {
+        FleetKey {
+            fleet: self.path(identity_id),
+            home_peers: self.home_peer_registry(),
+        }
+    }
+}
+
+/// Fleets [`DeviceFleetStore::load_cached`] verified, by their backing files.
+static FLEET_CACHE: LazyLock<RwLock<HashMap<FleetKey, CachedFleet>>> =
+    LazyLock::new(|| RwLock::new(HashMap::new()));
+
+/// A process serves a handful of identities; the bound only stops a caller
+/// that opens stores at ever new paths from growing the cache without limit.
+const FLEET_CACHE_LIMIT: usize = 64;
+
+#[cfg(test)]
+thread_local! {
+    /// [`DeviceFleetStore::load`] calls made on this thread.
+    static LOADS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// How many times this thread ran [`DeviceFleetStore::load`].
+#[cfg(test)]
+pub(crate) fn loads_on_this_thread() -> usize {
+    LOADS.with(std::cell::Cell::get)
+}
+
+/// The files one fleet is loaded from.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct FleetKey {
+    fleet: PathBuf,
+    home_peers: Option<PathBuf>,
+}
+
+impl FleetKey {
+    /// Stamps of both files, or `None` when either can't be examined (the
+    /// caller then loads from disk and caches nothing).
+    fn stamps(&self) -> Option<FleetStamps> {
+        Some(FleetStamps {
+            fleet: FileStamp::of(&self.fleet).ok()?,
+            home_peers: match &self.home_peers {
+                Some(path) => FileStamp::of(path).ok()?,
+                None => None,
+            },
+        })
+    }
+}
+
+struct CachedFleet {
+    stamps: FleetStamps,
+    fleet: Arc<DeviceFleet>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(crate) struct FleetStamps {
+    fleet: Option<FileStamp>,
+    home_peers: Option<FileStamp>,
+}
+
+impl FleetStamps {
+    pub(crate) fn settled(self) -> bool {
+        [self.fleet, self.home_peers]
+            .into_iter()
+            .flatten()
+            .all(FileStamp::settled)
+    }
+}
+
+/// Identity of one file's contents, as far as a writer can change it: a
+/// rename gives a new inode, an in-place rewrite a new length or time, and a
+/// permission change or a reset modification time a new status-change time.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(crate) struct FileStamp {
+    dev: u64,
+    ino: u64,
+    len: u64,
+    modified: SystemTime,
+    changed: (i64, i64),
+}
+
+impl FileStamp {
+    /// `Ok(None)` for a missing file; an error when it can't be examined.
+    pub(crate) fn of(path: &Path) -> io::Result<Option<Self>> {
+        match fs::metadata(path) {
+            Ok(meta) => Ok(Some(Self {
+                dev: meta.dev(),
+                ino: meta.ino(),
+                len: meta.len(),
+                modified: meta.modified()?,
+                changed: (meta.ctime(), meta.ctime_nsec()),
+            })),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(error),
+        }
+    }
+
+    /// Old enough that a later write, which stamps the current time, cannot
+    /// share its modification time.
+    pub(crate) fn settled(self) -> bool {
+        SystemTime::now()
+            .duration_since(self.modified)
+            .is_ok_and(|age| age >= Duration::from_secs(2))
     }
 }
 

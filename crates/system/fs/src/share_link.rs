@@ -7,9 +7,10 @@
 
 use std::fmt;
 
-use collab_types::{
+use collab_types::{Signature, VerifyError, canonical_bytes, sign_event, verify_event};
+use fs_protocol::{
     BearerFileInvite, FILE_INVITE_LINK_PREFIX, FileInviteError, FileInviteSubject, FileInviteV1,
-    Signature, VerifyError, bearer_secret_hash, canonical_bytes, sign_event, verify_event,
+    bearer_secret_hash,
 };
 use iroh_base::EndpointAddr;
 use serde::{Deserialize, Serialize};
@@ -285,7 +286,7 @@ pub enum FileShareLinkError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use collab_types::{
+    use fs_protocol::{
         FileInviteSpec, FileInviteSubject, FilePermission, FileRecordId, mint_bearer_file_invite,
     };
     use rand::{SeedableRng, rngs::StdRng};

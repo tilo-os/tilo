@@ -280,7 +280,7 @@ impl HttpsLink {
         auth::verify_pinned_host_ack(
             &challenge.ack,
             revocations,
-            crate::clock::now_ns(),
+            tilo_clock::unix_now_ns(),
             &client_nonce,
         )
         .map_err(|error: AuthError| LinkError::Refused(error.to_string()))?;

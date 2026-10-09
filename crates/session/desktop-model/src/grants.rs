@@ -166,11 +166,101 @@ mod tests {
         )
     }
 
+    /// Assigning is published on the workspace's permissions and on each
+    /// profile's own resource. A grant on one profile's resource assigns
+    /// that profile and no other; a kind-wide action scope is never a
+    /// workspace capability or a profile rule.
+    #[test]
+    fn a_grant_to_assign_one_role_assigns_that_role_only() {
+        use collab_types::{Expiry, PermissionProfile, PermissionProfileRule};
+        let (mut tree, _) = tree();
+        let workspace = &mut tree.workspaces[0];
+        let owner = "owner".to_string();
+        for name in ["Reviewer", "Admin helper"] {
+            workspace
+                .save_permission_profile_as_at(
+                    &owner,
+                    PermissionProfile {
+                        name: name.into(),
+                        description: String::new(),
+                        rules: vec![PermissionProfileRule::grant(
+                            Scope::App("so.tilo.notes".into()),
+                            Verb::Read,
+                        )],
+                    },
+                    0,
+                )
+                .unwrap();
+        }
+        let reviewer =
+            crate::workspace::permission_profile_resource_id(&workspace.room, "Reviewer");
+        workspace
+            .grant_as_at(
+                &owner,
+                CapOverride::grant(
+                    Subject::agent("scribe"),
+                    Scope::Action {
+                        app: crate::WORKSPACE_GOVERNANCE_APP_ID.into(),
+                        resource: reviewer,
+                        action: crate::PROFILE_ASSIGN_ACTION_ID.into(),
+                    },
+                    Verb::Admin,
+                ),
+                0,
+            )
+            .expect("the owner grants");
+        let scribe = workspace.actor_for_agent("scribe");
+        let ada = Subject::person("ada");
+        assert!(
+            workspace
+                .assign_permission_profile_as_actor_at(&scribe, "Reviewer", &ada, Expiry::Never, 0)
+                .is_ok(),
+            "the granted role is assigned"
+        );
+        assert!(
+            workspace
+                .assign_permission_profile_as_actor_at(
+                    &scribe,
+                    "Admin helper",
+                    &ada,
+                    Expiry::Never,
+                    0
+                )
+                .is_err(),
+            "another role is not"
+        );
+
+        let kind_wide = Scope::ActionOnKind {
+            app: "so.tilo.notes".into(),
+            kind: "notes.page".into(),
+            action: "apply".into(),
+        };
+        assert!(
+            workspace
+                .grant_as_at(
+                    &owner,
+                    CapOverride::grant(Subject::agent("scribe"), kind_wide.clone(), Verb::Write),
+                    0
+                )
+                .is_none()
+        );
+        assert!(
+            PermissionProfile {
+                name: "Kind".into(),
+                description: String::new(),
+                rules: vec![PermissionProfileRule::grant(kind_wide, Verb::Write)],
+            }
+            .validate()
+            .is_err()
+        );
+    }
+
     fn app_grant() -> CapOverride {
         CapOverride::grant(
             Subject::app("so.tilo.caller"),
             Scope::Action {
                 app: "so.tilo.target".into(),
+                resource: "target.document".into(),
                 action: "open".into(),
             },
             Verb::Write,

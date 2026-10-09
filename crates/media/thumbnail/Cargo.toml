@@ -42,7 +42,6 @@ blake3.workspace = true
 # The system content store the encoded previews are kept in.
 tilo-content = { version = "0.1.0", path = "../../system/content", default-features = false, features = ["dir"] }
 # The per-user preview cache location.
-tilo-xdg-paths = { version = "0.1.0", path = "../../system/xdg-paths" }
 tilo-paths = { version = "0.1.0", path = "../../platform/tilo-paths" }
 hex.workspace = true
 serde = { workspace = true, features = ["derive"] }

@@ -3,11 +3,7 @@
 #![cfg_attr(
     test,
     allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
         clippy::string_slice,
-        clippy::panic,
         clippy::unreachable,
         reason = "in a test these are the assertion, not a hazard"
     )
@@ -21,9 +17,10 @@ use std::process::ExitCode;
 use clap::{Parser, Subcommand};
 use desktop_entry::launch::LaunchEnv;
 use launcher::landlock_shim::{SANDBOX_EXEC_SUBCOMMAND, run_sandbox_exec};
-use launcher::run::{IdentitySource, LaunchMode, RunError, RunOptions, run};
-
-const LAUNCH_REGISTRATION_FD_ENV: &str = "TILO_INTERNAL_LAUNCH_REGISTRATION_FD";
+use launcher::registration_gate::LAUNCH_REGISTRATION_FD_ENV;
+use launcher::run::{
+    IdentitySource, LaunchMode, RunError, RunOptions, launch_manifest, run_manifest,
+};
 
 fn wait_for_registration_fd(fd: RawFd) -> std::io::Result<()> {
     if fd < 3 {
@@ -277,10 +274,12 @@ fn exit_code(code: i32) -> ExitCode {
 }
 
 fn main() -> ExitCode {
+    tilo_startup_metrics::handoff_mark("launcher-start");
     if let Err(error) = wait_for_shell_registration() {
         eprintln!("tilo-launcher: {error}");
         return ExitCode::from(126);
     }
+    tilo_startup_metrics::handoff_mark("shell-registered");
     // Hidden subcommand: parsed BEFORE clap so its argv shape (positional
     // paths, `--` separator) doesn't collide with clap's flag parsing.
     let raw_args: Vec<String> = std::env::args().collect();
@@ -460,10 +459,32 @@ fn run_gui_command(args: RunCliArgs) -> ExitCode {
         open_document: args.open,
         open_uri: args.open_uri,
     };
-    if let Some(app_id) = opts.app_id.as_deref() {
-        enter_app_scope(app_id);
-    }
-    match run(&args.manifest, &args.payload_root, &opts) {
+    // Joining the app's scope (a round trip to the user manager) and
+    // verifying the package (reading and hashing its files) need nothing
+    // from each other, so they run side by side. The join completes before
+    // anything below starts a process: every process of the launch, the
+    // D-Bus proxies and the sandbox included, starts inside the scope.
+    let manifest = std::thread::scope(|scope| {
+        let joining = opts.app_id.as_deref().map(|app_id| {
+            std::thread::Builder::new()
+                .name("launch-scope".into())
+                .spawn_scoped(scope, move || enter_app_scope(app_id))
+                .map_err(|_| app_id)
+        });
+        let manifest = launch_manifest(&args.manifest, &args.payload_root, &opts);
+        match joining {
+            Some(Ok(handle)) => {
+                if let Err(panic) = handle.join() {
+                    std::panic::resume_unwind(panic);
+                }
+            }
+            // No thread to spare: join here, as before.
+            Some(Err(app_id)) => enter_app_scope(app_id),
+            None => {}
+        }
+        manifest
+    });
+    match manifest.and_then(|manifest| run_manifest(&manifest, &args.payload_root, &opts)) {
         Ok(status) => {
             // How the app ended, said where its output goes: a signal leaves
             // no exit code of its own, and is folded into 1 below.
@@ -495,6 +516,7 @@ fn enter_app_scope(app_id: &str) {
     if let Err(error) = launcher::scope::join(app_id, app_id) {
         eprintln!("tilo-launcher: {app_id} runs outside a session scope: {error}");
     }
+    tilo_startup_metrics::handoff_mark("scope-joined");
 }
 
 fn admit_share_and_open(
@@ -565,13 +587,13 @@ fn request_received_mount(
     uri: String,
     stream: &mut (impl std::io::Read + std::io::Write),
 ) -> Result<PathBuf, String> {
-    let request = collab_types::RecipientControlRequestV1 {
-        protocol_version: collab_types::RECIPIENT_CONTROL_VERSION,
-        operation: collab_types::RecipientControlOperationV1::AdmitV2 { uri },
+    let request = fs_protocol::RecipientControlRequestV1 {
+        protocol_version: fs_protocol::RECIPIENT_CONTROL_VERSION,
+        operation: fs_protocol::RecipientControlOperationV1::AdmitV2 { uri },
     };
     let request = collab_types::canonical_bytes(&request)
         .map_err(|_| "could not encode received-file request".to_string())?;
-    let framing = collab_types::RECIPIENT_CONTROL_FRAMING;
+    let framing = fs_protocol::RECIPIENT_CONTROL_FRAMING;
     let request = framing
         .encode(&request)
         .map_err(|_| "received-file request exceeds its bound".to_string())?;
@@ -586,15 +608,15 @@ fn request_received_mount(
         }
         Err(_) => return Err("received-file service response was truncated".into()),
     };
-    let response: collab_types::RecipientControlResponseV1 =
+    let response: fs_protocol::RecipientControlResponseV1 =
         collab_types::canonical::from_canonical_bytes(&response)
             .map_err(|_| "received-file service returned an invalid response".to_string())?;
     let status = match response.result {
-        collab_types::RecipientControlResultV1::Admitted { status, .. } => status,
-        collab_types::RecipientControlResultV1::Error { code } => {
+        fs_protocol::RecipientControlResultV1::Admitted { status, .. } => status,
+        fs_protocol::RecipientControlResultV1::Error { code } => {
             return Err(format!("received-file service refused the link ({code:?})"));
         }
-        collab_types::RecipientControlResultV1::Status(_) => {
+        fs_protocol::RecipientControlResultV1::Status(_) => {
             return Err("received-file service returned the wrong response".into());
         }
     };
@@ -977,12 +999,12 @@ mod admit_share_tests {
             let body_len = u32::try_from(stream.written.len() - 4).unwrap();
             assert_eq!(stream.written[..4], body_len.to_be_bytes());
             let length = u32::from_be_bytes(stream.written[..4].try_into().unwrap()) as usize;
-            let request: collab_types::RecipientControlRequestV1 =
+            let request: fs_protocol::RecipientControlRequestV1 =
                 collab_types::canonical::from_canonical_bytes(&stream.written[4..4 + length])
                     .unwrap();
             assert!(matches!(
                 request.operation,
-                collab_types::RecipientControlOperationV1::AdmitV2 { uri: got } if got == uri
+                fs_protocol::RecipientControlOperationV1::AdmitV2 { uri: got } if got == uri
             ));
         }
         // Phase `admission_refuses_a_relative_mount_from_the_service`.
@@ -1010,19 +1032,19 @@ mod admit_share_tests {
     }
 
     fn response(path: &str) -> ScriptedStream {
-        let response = collab_types::RecipientControlResponseV1 {
-            protocol_version: collab_types::RECIPIENT_CONTROL_VERSION,
-            result: collab_types::RecipientControlResultV1::Admitted {
+        let response = fs_protocol::RecipientControlResponseV1 {
+            protocol_version: fs_protocol::RECIPIENT_CONTROL_VERSION,
+            result: fs_protocol::RecipientControlResultV1::Admitted {
                 inserted: true,
-                status: collab_types::RecipientSubscriptionStatusV1 {
-                    key: collab_types::RecipientSubscriptionKeyV1 {
+                status: fs_protocol::RecipientSubscriptionStatusV1 {
+                    key: fs_protocol::RecipientSubscriptionKeyV1 {
                         workspace_id: uuid::Uuid::nil(),
-                        record_id: collab_types::FileRecordId(uuid::Uuid::from_u128(1)),
+                        record_id: fs_protocol::FileRecordId(uuid::Uuid::from_u128(1)),
                     },
-                    permission: collab_types::FilePermission::View,
+                    permission: fs_protocol::FilePermission::View,
                     last_success_at_ms: None,
                     last_error: None,
-                    mount: Some(collab_types::RecipientMountStatusV1 {
+                    mount: Some(fs_protocol::RecipientMountStatusV1 {
                         path: path.into(),
                         running: true,
                     }),

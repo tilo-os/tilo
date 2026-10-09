@@ -37,6 +37,23 @@ class SpeechCatalogPreparation(unittest.TestCase):
                 staging.stage(destination, "https://example.invalid", len(data), digest)
             self.assertEqual(destination.read_bytes(), data)
 
+    def test_base_candidate_uses_exact_receipt_and_complete_existing_notice(self):
+        with tempfile.TemporaryDirectory() as directory:
+            destination = Path(directory) / "review"
+            def stage_without_network(path, url, size, sha):
+                path.parent.mkdir(parents=True, exist_ok=True)
+            with patch("sys.argv", ["prepare", str(destination)]), patch.object(staging, "stage", side_effect=stage_without_network) as transfer:
+                staging.main()
+            import json
+            source = json.loads((destination / "source.json").read_text())
+            base = next(model for model in source["models"] if model["id"] == "whisper-base-multilingual")
+            self.assertEqual(base["artifact"]["sha256"], "60ed5bc3dd14eea856493d334349b405782ddcaf0028d4b5df4088345fba2efe")
+            self.assertEqual(base["artifact"]["size_bytes"], 147951465)
+            self.assertIn("https://huggingface.co/ggerganov/whisper.cpp/resolve/5359861c739e955e79d9a303bcbc70fb988958b1/ggml-base.bin", [call.args[1] for call in transfer.call_args_list])
+            notice = (destination / "artifacts/whisper-base-LICENSE").read_bytes()
+            self.assertEqual(len(notice), 1063)
+            self.assertEqual(staging.hashlib.sha256(notice).hexdigest(), "b5d65a59060e68c4ff940e1eddfa6f94b2d68fdf58ed7f4dd57721c997e35e9d")
+
     def test_preparation_never_overwrites_an_existing_directory(self):
         with tempfile.TemporaryDirectory() as directory:
             marker = Path(directory) / "preserve"

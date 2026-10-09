@@ -54,6 +54,9 @@ policies! {
         "tilo.accessibility.cursor_size",
         "tilo.accessibility.screen_reader",
         "tilo.accessibility.on_screen_keyboard",
+        // Recognition language describes the person, not a microphone or grant.
+        "tilo.accessibility.dictation_language",
+        "tilo.accessibility.dictation_literal",
         "tilo.accessibility.sticky_keys",
         "tilo.accessibility.slow_keys",
         "tilo.accessibility.bounce_keys",
@@ -137,6 +140,9 @@ policies! {
         "tilo.display.night_light",
         "tilo.display.night_light_schedule",
         "tilo.display.night_light_temperature",
+        // Where each of the person's displays sits across their devices.
+        // Each device's own modes and screen layout stay device-local.
+        "tilo.display.arrangement",
         "tilo.shortcuts.bindings",
         "tilo.desktop_controls.vim_mode",
         "tilo.quick_settings.controls",
@@ -193,6 +199,7 @@ policies! {
         "tilo.continuity.wifi_settings",
         "tilo.continuity.media",
         "tilo.continuity.display_input",
+        "tilo.continuity.automatic_display_input",
         "tilo.continuity.file_transfer",
         "tilo.continuity.realtime_sessions",
         "tilo.continuity.typed_gamepad",
@@ -409,6 +416,7 @@ mod tests {
                 "tilo.continuity.wifi_settings",
                 "tilo.continuity.media",
                 "tilo.continuity.display_input",
+                "tilo.continuity.automatic_display_input",
                 "tilo.continuity.file_transfer",
                 "tilo.continuity.realtime_sessions",
                 "tilo.continuity.typed_gamepad",

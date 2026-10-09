@@ -203,6 +203,21 @@ pub fn read_record(
     })
 }
 
+/// The payload collection the record in `dir` names, decoded without
+/// replaying the signature chain. For accounting and garbage collection
+/// only — never for trust: nothing here proves the collection is the one
+/// the publisher signed. [`read_record`] and [`verify`] are the checks.
+///
+/// # Errors
+///
+/// Returns [`IntegrityError::Read`] when the collection cannot be read and
+/// [`IntegrityError::CollectionMalformed`] when it does not decode.
+pub fn read_collection(dir: &Path) -> Result<Collection, IntegrityError> {
+    let path = dir.join(COLLECTION_FILE);
+    let bytes = std::fs::read(&path).map_err(|source| IntegrityError::Read { path, source })?;
+    Collection::decode(&bytes).map_err(|e| IntegrityError::CollectionMalformed(e.to_string()))
+}
+
 fn check_signature(root: &SignedRoot) -> Result<(), IntegrityError> {
     let signature = root.signature.ok_or(IntegrityError::RootUnsigned)?;
     let publisher = VerifyingKey::from_bytes(&root.publisher_identity)
@@ -345,6 +360,7 @@ mod tests {
             runtime: String::new(),
             source: String::new(),
             held: false,
+            payload_bytes: 0,
             system: false,
         }
     }

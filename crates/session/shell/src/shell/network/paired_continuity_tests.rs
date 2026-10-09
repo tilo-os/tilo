@@ -569,6 +569,9 @@ async fn paired_continuity_catchup_preserves_browser_checkpoint_and_launcher_ide
         .unwrap(),
     )
     .unwrap();
+    // Enrolled mid-session: take effect now rather than at the next recheck.
+    left.network.recheck_personal_device_peers();
+    right.network.recheck_personal_device_peers();
     let registry = crate::shell::personal_continuity_registry::global_registry();
     {
         let mut reports = registry.lock().unwrap();
@@ -992,6 +995,14 @@ impl NativeEditorPair {
             .unwrap(),
         )
         .unwrap();
+        self.recheck_enrollment();
+    }
+
+    /// Enrolment changed mid-session: each shell sees it at its next recheck
+    /// of the file; make that now.
+    fn recheck_enrollment(&self) {
+        self.left.network.recheck_personal_device_peers();
+        self.right.network.recheck_personal_device_peers();
     }
 
     fn send_view(
@@ -1231,6 +1242,7 @@ async fn paired_native_editor_views_require_enrollment_and_cancel_on_revocation(
     assert!(second[0].generation > first[0].generation);
     pair.apply_target(&second[0], 70);
     std::fs::remove_file(pair.peers.with_file_name("personal-device-peers.json")).unwrap();
+    pair.recheck_enrollment();
     let stopped = in_owner_registry(&pair.right_registry, || {
         pair.right.network.pump_owner_views()
     });

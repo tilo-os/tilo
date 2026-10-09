@@ -34,6 +34,7 @@
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
+use ui::widget::TaffyTreeExt;
 use ui::widget::{AppModel, ModelPath};
 
 use taffy::{
@@ -364,12 +365,7 @@ fn rect_of(taffy: &TaffyTree<()>, node: NodeId, origin: Point) -> Rect {
         reason = "node was built in this tree by build_layout; a miss means the frame cycle called these out of order"
     )]
     let l = taffy.layout(node).unwrap();
-    Rect::new(
-        origin.x + f64::from(l.location.x),
-        origin.y + f64::from(l.location.y),
-        origin.x + f64::from(l.location.x) + f64::from(l.size.width),
-        origin.y + f64::from(l.location.y) + f64::from(l.size.height),
-    )
+    ui::widget::placed(l, origin)
 }
 
 /// The header's leading fill: the nav cluster and the path bar.
@@ -473,15 +469,12 @@ impl Widget for FileToolbar {
         child_nodes.push(self.path_bar.build_layout(taffy, theme, node_map));
         // `new_with_children` only fails when a child belongs to a different
         // tree; every entry in `child_nodes` was just built in this one above.
-        #[allow(
-            clippy::unwrap_used,
-            reason = "every child node was just created in this same tree"
-        )]
-        let node = taffy
-            .new_with_children(row_style(&theme.tokens.spacing, true), &child_nodes)
-            .unwrap();
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        taffy.widget_node(
+            row_style(&theme.tokens.spacing, true),
+            &child_nodes,
+            node_map,
+            self,
+        )
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
@@ -630,15 +623,12 @@ impl Widget for ToolbarActions {
             .collect();
         // `new_with_children` only fails when a child belongs to a different
         // tree; every entry in `child_nodes` was just built in this one above.
-        #[allow(
-            clippy::unwrap_used,
-            reason = "every child node was just created in this same tree"
-        )]
-        let node = taffy
-            .new_with_children(row_style(&theme.tokens.spacing, false), &child_nodes)
-            .unwrap();
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        taffy.widget_node(
+            row_style(&theme.tokens.spacing, false),
+            &child_nodes,
+            node_map,
+            self,
+        )
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {

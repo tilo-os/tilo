@@ -128,26 +128,17 @@ fn canonical_chat_repaints_only_for_document_changes_and_consumed_input() {
         "an unchanged document must not repaint the canonical app"
     );
 
-    let mut taffy = taffy::TaffyTree::<()>::new();
-    let node = taffy.new_leaf(taffy::style::Style::default()).unwrap();
     let device_id = winit::event::DeviceId::dummy();
-    let (mut handled, mut focus) = (false, None);
-    app.handle_event(
-        &WindowEvent::CursorMoved {
-            device_id,
-            position: winit::dpi::PhysicalPosition::new(5.0, 5.0),
-        },
-        &mut ui::widget::EventCtx {
-            scale_factor: 1.0,
-            modifiers: &winit::event::Modifiers::default(),
-            state: ui::widget::Edits::lend(&mut doc),
-            path: &ROOT,
-            handled: &mut handled,
-            focus_target: &mut focus,
-            node_id: node,
-            taffy: &taffy,
-        },
-    );
+    let handled = ui::testing::Dispatch::new()
+        .doc(&mut doc)
+        .send(
+            &mut app,
+            &WindowEvent::CursorMoved {
+                device_id,
+                position: winit::dpi::PhysicalPosition::new(5.0, 5.0),
+            },
+        )
+        .handled;
     assert!(
         !handled && !app.needs_redraw(),
         "unconsumed pointer motion must not repaint"
@@ -164,22 +155,12 @@ fn canonical_chat_repaints_only_for_document_changes_and_consumed_input() {
         "the change is absorbed after one paint"
     );
 
-    let (mut handled, mut focus) = (false, None);
-    app.handle_event(
+    ui::testing::Dispatch::new().doc(&mut doc).send(
+        &mut app,
         &WindowEvent::MouseInput {
             device_id,
             state: ElementState::Pressed,
             button: MouseButton::Left,
-        },
-        &mut ui::widget::EventCtx {
-            scale_factor: 1.0,
-            modifiers: &winit::event::Modifiers::default(),
-            state: ui::widget::Edits::lend(&mut doc),
-            path: &ROOT,
-            handled: &mut handled,
-            focus_target: &mut focus,
-            node_id: node,
-            taffy: &taffy,
         },
     );
     assert!(app.needs_redraw(), "a press repaints");

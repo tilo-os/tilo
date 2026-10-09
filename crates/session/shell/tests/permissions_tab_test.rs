@@ -19,11 +19,10 @@
 )]
 
 use shell::shell::state::WorkspaceAuthority as _;
-use std::collections::HashMap;
 
-use taffy::{AvailableSpace, Dimension, NodeId, Size, Style, TaffyTree};
+use taffy::{Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Point};
+use vello::kurbo::Affine;
 
 use shell::shell::build_tilo_overlay_host_with_chrome;
 use shell::shell::chrome_state::{Chrome, WsTab};
@@ -35,45 +34,17 @@ use shell::shell::state::{
 use tilo_desktop::workspace_settings::{self, GrantDraft, SubjectKind};
 
 use ui::presence::PresenceCtx;
+use ui::synthetic_input::{cursor_moved, mouse_press, mouse_release};
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::Widget;
 
-use winit::event::{DeviceId, ElementState, MouseButton, WindowEvent};
+use winit::event::{Modifiers, WindowEvent};
+
+use crate::support::host::{dispatch, lay_out, paint};
 
 const W: f32 = 1600.0;
 const H: f32 = 900.0;
-
-fn synth_device() -> DeviceId {
-    // SAFETY: `DeviceId` is opaque; integration-test scaffolding
-    // already uses this pattern in
-    // `tests/permission_prompt_pump.rs` and several other shell
-    // integration tests.
-    unsafe { std::mem::zeroed() }
-}
-
-fn cursor_at(p: Point) -> WindowEvent {
-    WindowEvent::CursorMoved {
-        device_id: synth_device(),
-        position: winit::dpi::PhysicalPosition::new(p.x, p.y),
-    }
-}
-
-fn left_press() -> WindowEvent {
-    WindowEvent::MouseInput {
-        device_id: synth_device(),
-        state: ElementState::Pressed,
-        button: MouseButton::Left,
-    }
-}
-
-fn left_release() -> WindowEvent {
-    WindowEvent::MouseInput {
-        device_id: synth_device(),
-        state: ElementState::Released,
-        button: MouseButton::Left,
-    }
-}
 
 fn tree_with_grants(entries: Vec<(&str, Vec<Capability>)>) -> WorkspaceTree {
     let mut tree = WorkspaceTree::default();
@@ -105,85 +76,32 @@ fn render_at_tab(tree: &WorkspaceTree, tab: WsTab) -> (ShellOverlayHost, Chrome,
         st.overlays.ws_settings = true;
         st.ws_settings_tab = tab;
     }
-    let theme = Theme::dark();
-    let mut taffy: TaffyTree<()> = TaffyTree::new();
-    let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-    let child = host.build_layout(&mut taffy, &theme, &mut node_map);
-    let root_node = taffy
-        .new_with_children(
-            Style {
-                size: Size {
-                    width: Dimension::length(W),
-                    height: Dimension::length(H),
-                },
-                ..Default::default()
-            },
-            &[child],
-        )
-        .unwrap();
-    let mut tr = TextRenderer::new();
-    let measure_map = node_map.clone();
-    taffy
-        .compute_layout_with_measure(
-            root_node,
-            Size {
-                width: AvailableSpace::Definite(W),
-                height: AvailableSpace::Definite(H),
-            },
-            |known, available, node_id, _, _| {
-                if let Some(&ptr) = measure_map.get(&node_id) {
-                    unsafe { (*ptr).measure(known, available, &mut tr) }
-                } else {
-                    taffy::Size::ZERO
-                }
-            },
-        )
-        .expect("compute_layout");
-    host.apply_layout(&taffy, child, Point::ORIGIN);
+    lay_out(&mut host, W, H);
     let mut scene = Scene::new();
     let presence = PresenceCtx::default();
-    host.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+    host.draw(
+        &mut scene,
+        Affine::IDENTITY,
+        &mut TextRenderer::new(),
+        &Theme::dark(),
+        &presence,
+    );
     (host, chrome, scene)
 }
 
 fn dispatch_to_host(host: &mut ShellOverlayHost, event: &WindowEvent) {
-    use automerge::AutoCommit;
     let mut tree = TaffyTree::<()>::new();
     let node = tree.new_leaf(Style::default()).unwrap();
-    let mut handled = false;
-    let mut focus_target = None;
-    let mut doc = AutoCommit::new();
-    let root = automerge::ROOT;
-    host.handle_event(
-        event,
-        &mut ui::widget::EventCtx {
-            scale_factor: 1.0,
-            modifiers: &winit::event::Modifiers::default(),
-            state: ui::widget::Edits::lend(&mut doc),
-            path: &root,
-            handled: &mut handled,
-            focus_target: &mut focus_target,
-            node_id: node,
-            taffy: &tree,
-        },
-    );
+    dispatch(host, &tree, node, Modifiers::default(), event);
 }
 
 /// A cursor move to seed `last_cursor`, then a left press that lands on
 /// the rect.
 fn click(host: &mut ShellOverlayHost, rect: vello::kurbo::Rect) {
-    dispatch_to_host(host, &cursor_at(rect.center()));
-    dispatch_to_host(host, &left_press());
-    dispatch_to_host(host, &left_release());
-}
-
-/// Re-render so the host's control-rect caches match the current state.
-fn repaint(host: &mut ShellOverlayHost) {
-    let theme = Theme::dark();
-    let mut tr = TextRenderer::new();
-    let mut scene = Scene::new();
-    let presence = PresenceCtx::default();
-    host.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+    let at = rect.center();
+    dispatch_to_host(host, &cursor_moved(at.x, at.y));
+    dispatch_to_host(host, &mouse_press());
+    dispatch_to_host(host, &mouse_release());
 }
 
 /// Memberships go in through `grant_as`, so the fixture itself exercises
@@ -325,10 +243,10 @@ fn the_permissions_tab_is_reachable_renders_its_rows_and_keeps_the_draft() {
         let composed = chrome.borrow().ws_grant_draft;
         assert_ne!(composed, GrantDraft::default());
 
-        repaint(&mut host);
+        paint(&mut host);
         let general = host.ws_settings_tab_pill_rect(WsTab::General);
         click(&mut host, general);
-        repaint(&mut host);
+        paint(&mut host);
         assert!(
             host.grant_composer_rects().is_none(),
             "the composer's rects are cleared when its tab is not on screen"
@@ -379,7 +297,7 @@ fn grant_and_revoke_clicks_are_owner_only_and_deliberate() {
         for _ in 0..target {
             let rect = host.grant_composer_rects().unwrap().subject;
             click(&mut host, rect);
-            repaint(&mut host);
+            paint(&mut host);
         }
         assert_eq!(chrome.borrow().ws_grant_draft.subject_index, target);
 
@@ -387,13 +305,13 @@ fn grant_and_revoke_clicks_are_owner_only_and_deliberate() {
         while chrome.borrow().ws_grant_draft.choice().label() != "Microphone" {
             let rect = host.grant_composer_rects().unwrap().capability;
             click(&mut host, rect);
-            repaint(&mut host);
+            paint(&mut host);
         }
 
         // Pick the "Session" expiry segment (index 1 of the picker).
         let session = host.grant_composer_rects().unwrap().expiry[1];
         click(&mut host, session);
-        repaint(&mut host);
+        paint(&mut host);
         assert_eq!(chrome.borrow().ws_grant_draft.expiry, Expiry::EndOfSession);
 
         // Precondition read off the model, not the widget.
@@ -494,7 +412,7 @@ fn grant_and_revoke_clicks_are_owner_only_and_deliberate() {
             before,
             "opening a revoke confirmation must not mutate a capability"
         );
-        repaint(&mut host);
+        paint(&mut host);
         let confirm = host.member_sheet_option_rects_for_tests()[2];
         click(&mut host, confirm);
 
@@ -600,7 +518,7 @@ fn members_tab_role_and_removal_controls_are_explicit_and_owner_only() {
         // Opening the chooser is inert; selecting Editor is the deliberate
         // mutation. The role options are Viewer / Commenter / Editor.
         click(&mut host, ada.1);
-        repaint(&mut host);
+        paint(&mut host);
         assert!(host.member_sheet_is_open_for_tests());
         assert_eq!(
             host.member_sheet_option_rects_for_tests().len(),
@@ -675,7 +593,7 @@ fn members_tab_role_and_removal_controls_are_explicit_and_owner_only() {
                 .any(|cap| cap.subject == Subject::person("ada")),
             "the first click only opens the removal confirmation"
         );
-        repaint(&mut host);
+        paint(&mut host);
         let confirm = host.member_sheet_option_rects_for_tests()[2];
         click(&mut host, confirm);
 
@@ -711,6 +629,55 @@ fn members_tab_role_and_removal_controls_are_explicit_and_owner_only() {
             capabilities(&chrome),
             before,
             "a non-owner driving the member controls must change nothing"
+        );
+    }
+
+    // Phase `a_delegated_admin_can_change_roles_through_the_same_check`.
+    {
+        // Administration delegated as a capability, not ownership: the
+        // click must pass the same capability check `member.role.set` does.
+        let mut tree = WorkspaceTree::default();
+        let id = WorkspaceId::from(1);
+        let mut ws = Workspace::new(id, "perm-test");
+        let local = shell::shell::state::local_user_id_for_room(&ws.room);
+        let owner = "someone-else".to_string();
+        ws.set_owner(owner.clone());
+        let room = ws.room.to_string();
+        ws.grant_as(
+            &owner,
+            CapOverride::membership(Subject::person(local), room.clone(), Verb::Admin),
+        )
+        .expect("the owner may delegate administration");
+        ws.grant_as(
+            &owner,
+            CapOverride::membership(Subject::person("ada"), room, Verb::Read),
+        )
+        .expect("the owner may write a membership");
+        tree.desktop.workspaces.push(ws);
+        tree.set_active(id);
+
+        let (mut host, chrome, _scene) = render_at_tab(&tree, WsTab::Members);
+        let ada = host
+            .member_control_rects()
+            .iter()
+            .find(|(u, _, _)| u == "ada")
+            .cloned()
+            .expect("ada is in the roster");
+        click(&mut host, ada.1);
+        paint(&mut host);
+        assert!(host.member_sheet_is_open_for_tests());
+        let editor = host.member_sheet_option_rects_for_tests()[2];
+        click(&mut host, editor);
+
+        let st = chrome.borrow();
+        let t = st.tree();
+        assert_eq!(
+            t.desktop
+                .active_workspace()
+                .unwrap()
+                .role_of(&"ada".to_string()),
+            Some(shell::shell::state::CapRole::Editor),
+            "a delegated administrator's choice takes effect"
         );
     }
 
@@ -765,6 +732,7 @@ fn an_app_allowed_another_apps_action_is_listed_under_app_actions_and_revocable(
     ws.set_owner(owner.clone());
     let freeform = Scope::Action {
         app: "so.tilo.agent".into(),
+        resource: "agent.transform:freeform".into(),
         action: "freeform".into(),
     };
     let granted = ws
@@ -801,7 +769,7 @@ fn an_app_allowed_another_apps_action_is_listed_under_app_actions_and_revocable(
         .cloned()
         .expect("the grant has a revoke button");
     click(&mut host, revoke);
-    repaint(&mut host);
+    paint(&mut host);
     let confirm = host.member_sheet_option_rects_for_tests()[2];
     click(&mut host, confirm);
 
@@ -819,6 +787,7 @@ fn an_app_allowed_another_apps_action_is_listed_under_app_actions_and_revocable(
                 &shell::shell::state::Actor::app("so.tilo.shortcuts").in_room(room),
                 &ResourceRef::Action {
                     app: "so.tilo.agent".into(),
+                    resource: "agent.transform:freeform".into(),
                     action: "freeform".into(),
                 },
                 Verb::Write,

@@ -6,21 +6,45 @@ use super::{
 // The test module reaches the whole filesystem scope through this module.
 #[cfg(test)]
 use super::*;
+use crate::content_kind::RecordContentKind;
 use crate::record_repository::{RecordRepositoryKey, RepositoryLease};
 #[cfg(test)]
 use crate::record_transaction::RecordTransactionJournalEntry;
 use crate::record_transaction::RecordTransactionPhase as Phase;
-use collab_types::files::{
+use fs_protocol::files::{
     CheckedHistoryOperationV1 as Operation, CheckedHistoryOutcomeV1 as Outcome,
     CheckedHistoryRequestV1 as CheckedRequest, FileRestoreReceiptV1 as Receipt,
     FileRestoreReviewV1 as Review,
 };
-use collab_types::{
+use fs_protocol::{
     ContentHash, ContentRevisionV1, FileMutationOperation, FileMutationParticipant,
     FileMutationParticipantRole, FileMutationTransactionManifest, FileProvenance, FileVersionV1,
 };
 
 type Request = CheckedRequest;
+
+/// Why a serialized document version could not be restored.
+#[derive(Debug)]
+pub(super) enum DocumentRestoreError {
+    /// The current version's bytes could not be read.
+    Unavailable,
+    /// One side is not a document of the record's schema.
+    NotADocument(String),
+}
+
+impl DocumentRestoreError {
+    fn outcome(self) -> Outcome {
+        match self {
+            Self::Unavailable => Outcome::Unavailable,
+            Self::NotADocument(reason) => Outcome::UnsupportedOwner {
+                mapping: format!(
+                    "serialized document: {}",
+                    reason.chars().take(96).collect::<String>()
+                ),
+            },
+        }
+    }
+}
 
 #[expect(
     clippy::result_large_err,
@@ -64,7 +88,7 @@ fn receipt(entry: &RecordTransactionJournalEntry) -> Option<Receipt> {
         record_id: request.review.record_id,
         selected_version: *selected_version,
         prior_revision: *prior_revision,
-        prior_reference: collab_types::files::FileRestorePriorReferenceV1::ObservedRevision,
+        prior_reference: fs_protocol::files::FileRestorePriorReferenceV1::ObservedRevision,
         restored_revision: entry
             .transaction
             .manifest
@@ -104,24 +128,52 @@ impl QuickFS {
         Ok(workspace)
     }
 
-    pub(super) fn restore_codec(namespace: &Namespace, ino: u64) -> Result<(), Outcome> {
-        if let Some(codec) = namespace.document_codec(ino) {
-            return Err(Outcome::UnsupportedOwner {
+    /// How `ino`'s content is restored, from record metadata alone. A
+    /// namespace-held document has no checked restore route yet: restoring it
+    /// needs its CRDT heads recorded with each version.
+    pub(super) fn restore_kind(
+        namespace: &Namespace,
+        ino: u64,
+    ) -> Result<RecordContentKind, Outcome> {
+        match RecordContentKind::of(namespace, ino).ok_or(Outcome::NotVisible)? {
+            RecordContentKind::NamespaceDocument { codec } => Err(Outcome::UnsupportedOwner {
                 mapping: format!(
                     "document codec {}: no checked content-owner restore route",
                     codec.chars().take(64).collect::<String>()
                 ),
-            });
+            }),
+            kind => Ok(kind),
         }
-        if namespace
-            .path_for(ino)
-            .is_some_and(|path| path.to_ascii_lowercase().ends_with(".qdoc"))
-        {
-            return Err(Outcome::UnsupportedOwner {
-                mapping: "qdoc: no checked content-owner restore route".into(),
-            });
+    }
+
+    /// The bytes that restore a serialized document to `selected`, whose
+    /// bytes are `data`: the current document plus one change that reaches
+    /// the selected state, so its history continues instead of forking. With
+    /// no document on one side there is nothing to merge, and the selected
+    /// bytes are the result.
+    pub(super) fn restored_document(
+        &self,
+        current_hash: Option<Hash>,
+        selected: Option<ContentHash>,
+        data: &[u8],
+    ) -> Result<Vec<u8>, DocumentRestoreError> {
+        let Some(current_hash) = current_hash else {
+            return Ok(data.to_vec());
+        };
+        if data.is_empty() || Some(ContentHash(*current_hash.as_bytes())) == selected {
+            return Ok(data.to_vec());
         }
-        Ok(())
+        let hydrator = self.hydrator.clone();
+        let handle = hydrator.runtime_handle.clone();
+        let current = tokio::task::block_in_place(|| {
+            handle.block_on(hydrator.read(current_hash, 0, u64::MAX))
+        })
+        .map_err(|_| DocumentRestoreError::Unavailable)?;
+        match tilo_doc::restore::restore_serialized(&current, data, None) {
+            Ok(Some(restored)) => Ok(restored),
+            Ok(None) => Ok(current),
+            Err(error) => Err(DocumentRestoreError::NotADocument(error.to_string())),
+        }
     }
 
     fn review_locked(
@@ -245,7 +297,7 @@ impl QuickFS {
             .ok_or(Outcome::Unavailable)?;
         let head = version.id;
         Ok(ContentRevisionV1 {
-            schema_version: collab_types::CONTENT_REVISION_VERSION,
+            schema_version: fs_protocol::CONTENT_REVISION_VERSION,
             record_id: history.record_id,
             version_id: head,
             content_hash: hash,
@@ -416,7 +468,7 @@ impl QuickFS {
         if buffers.contains_key(&ino) {
             return Err(Outcome::PendingWrites);
         }
-        Self::restore_codec(&namespace, ino)?;
+        Self::restore_kind(&namespace, ino)?;
         self.review_locked(ino, &namespace, &history, repository.as_ref())
     }
 
@@ -474,7 +526,7 @@ impl QuickFS {
     }
 
     pub(super) fn checked_restore_xattr(&self, ino: u64, value: &[u8]) -> Result<(), i32> {
-        if value.len() > collab_types::files::MAX_CHECKED_HISTORY_REQUEST_BYTES {
+        if value.len() > fs_protocol::files::MAX_CHECKED_HISTORY_REQUEST_BYTES {
             return Err(EINVAL);
         }
         let request: Request = serde_json::from_slice(value).map_err(|_| EINVAL)?;
@@ -570,7 +622,7 @@ impl QuickFS {
         ))
     }
 
-    fn project_checked_availability(&self, record_id: collab_types::FileRecordId) {
+    fn project_checked_availability(&self, record_id: fs_protocol::FileRecordId) {
         let Some(registry) = &self.availability else {
             return;
         };
@@ -610,7 +662,7 @@ impl QuickFS {
         runtime: &super::ReplacementTransactionRuntime,
         ino: u64,
         request: Request,
-    ) -> Result<(collab_types::FileVersionId, Option<uuid::Uuid>), Outcome> {
+    ) -> Result<(fs_protocol::FileVersionId, Option<uuid::Uuid>), Outcome> {
         let journal = runtime.journal.lock().map_err(|_| Outcome::Unavailable)?;
         Ok(match request.operation {
             Operation::Restore { version_id } => (version_id, None),
@@ -697,6 +749,7 @@ impl QuickFS {
                     .find(|value| value.id == selected_id)
             })
             .ok_or(Outcome::InvalidRequest)?;
+        let kind = Self::restore_kind(&self.ns(), ino)?;
         let data = if let Some(hash) = selected.content_hash {
             let hydrator = self.hydrator.clone();
             let handle = hydrator.runtime_handle.clone();
@@ -709,27 +762,33 @@ impl QuickFS {
         };
         #[cfg(test)]
         test_pause(request.intent_id, TestPause::Hydrated);
-        let current_hash = self.ns().hash_for(ino);
-        let (current_document, current_len) = if let Some(hash) =
-            current_hash.filter(|hash| Some(ContentHash(*hash.as_bytes())) != selected.content_hash)
-        {
-            let hydrator = self.hydrator.clone();
-            let handle = hydrator.runtime_handle.clone();
-            let bytes =
-                tokio::task::block_in_place(|| handle.block_on(hydrator.read(hash, 0, u64::MAX)))
-                    .map_err(|_| Outcome::Unavailable)?;
-            (tilo_doc::Document::load(&bytes).is_ok(), bytes.len() as u64)
-        } else {
+        let (current_hash, current_size) = {
+            let namespace = self.ns();
             (
-                false,
-                if current_hash.is_some() {
-                    data.len() as u64
-                } else {
-                    0
-                },
+                namespace.hash_for(ino),
+                namespace.getattr(ino).map(|attr| attr.size),
             )
         };
-        let serialized_document = current_document || tilo_doc::Document::load(&data).is_ok();
+        let current_len = match current_hash {
+            Some(_) => current_size.ok_or(Outcome::NotVisible)?,
+            None => 0,
+        };
+        // The bytes the restore makes current. Opaque content is the selected
+        // version's own; a serialized document is the current document plus
+        // a change reaching the selected state, written to the store before
+        // any lock is taken, as the selected bytes already are.
+        let (restored_hash, data) = if kind.is_serialized_document() {
+            let restored = self
+                .restored_document(current_hash, selected.content_hash, &data)
+                .map_err(DocumentRestoreError::outcome)?;
+            let hash = self
+                .write_content_blocking(&restored)
+                .map_err(|_| Outcome::Unavailable)?
+                .map(|hash| ContentHash(*hash.as_bytes()));
+            (hash, restored)
+        } else {
+            (selected.content_hash, data)
+        };
         let mut journal = runtime.journal.lock().map_err(|_| Outcome::Unavailable)?;
         let _publication = publisher
             .map(|publisher| publisher.publication_lease())
@@ -783,11 +842,8 @@ impl QuickFS {
         if buffers.contains_key(&ino) {
             return Err(Outcome::PendingWrites);
         }
-        Self::restore_codec(&namespace, ino)?;
-        if serialized_document {
-            return Err(Outcome::UnsupportedOwner {
-                mapping: "serialized qdoc content: no checked content-owner restore route".into(),
-            });
+        if Self::restore_kind(&namespace, ino)? != kind {
+            return Err(Outcome::ReviewRequired);
         }
         let current_review = self.review_locked(ino, &namespace, &history, repository.as_ref())?;
         if current_review != request.review {
@@ -806,13 +862,13 @@ impl QuickFS {
         if prior.byte_len != current_len {
             return Err(Outcome::Unavailable);
         }
-        if prior.content_hash == selected.content_hash && prior.byte_len == data.len() as u64 {
+        if prior.content_hash == restored_hash && prior.byte_len == data.len() as u64 {
             return Ok(Outcome::Unchanged {
                 intent_id: request.intent_id,
                 review: current_review,
             });
         }
-        if state.heads.len() > collab_types::files::MAX_VERSION_PARENTS {
+        if state.heads.len() > fs_protocol::files::MAX_VERSION_PARENTS {
             return Err(Outcome::Unavailable);
         }
         if journal.retained_count() >= crate::record_transaction::MAX_RECORD_TRANSACTION_ENTRIES {
@@ -839,17 +895,17 @@ impl QuickFS {
                 .as_bytes(),
         );
         let proposed = FileVersionV1 {
-            id: collab_types::FileVersionId::new(),
+            id: fs_protocol::FileVersionId::new(),
             record_id: request.review.record_id,
             parents: state.heads,
             actor: *actor,
             timestamp_ms: timestamp,
-            content_hash: selected.content_hash,
+            content_hash: restored_hash,
             metadata_hash,
             provenance: FileProvenance::Restore { from: selected_id },
         };
         let revision = ContentRevisionV1 {
-            schema_version: collab_types::CONTENT_REVISION_VERSION,
+            schema_version: fs_protocol::CONTENT_REVISION_VERSION,
             record_id: proposed.record_id,
             version_id: proposed.id,
             content_hash: proposed.content_hash,
@@ -886,9 +942,9 @@ impl QuickFS {
             selected_version: selected_id,
             prior_revision: prior,
             prior_reference: if namespace.content_revision_for(ino).is_some() {
-                collab_types::files::FileRestorePriorReferenceV1::ObservedRevision
+                fs_protocol::files::FileRestorePriorReferenceV1::ObservedRevision
             } else {
-                collab_types::files::FileRestorePriorReferenceV1::LegacyContentRepresentative
+                fs_protocol::files::FileRestorePriorReferenceV1::LegacyContentRepresentative
             },
             restored_revision: revision,
             compensates,
@@ -896,7 +952,7 @@ impl QuickFS {
         let mut entry =
             if let (Some(publisher), Some(repository)) = (publisher, repository.as_ref()) {
                 let manifest = FileMutationTransactionManifest {
-                    schema_version: collab_types::files::FILE_MUTATION_TRANSACTION_VERSION_V3,
+                    schema_version: fs_protocol::files::FILE_MUTATION_TRANSACTION_VERSION_V3,
                     transaction_id: request.intent_id,
                     workspace_id: key.workspace_id,
                     actor: *actor,

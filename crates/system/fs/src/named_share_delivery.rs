@@ -12,9 +12,9 @@ use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 use collab_types::{
-    Ed25519PublicKey, FileInviteSubject, FileInviteV1, Signature, VerifyError, canonical_bytes,
-    sign_event, verify_event,
+    Ed25519PublicKey, Signature, VerifyError, canonical_bytes, sign_event, verify_event,
 };
+use fs_protocol::{FileInviteSubject, FileInviteV1};
 use iroh::endpoint::{Connection, Endpoint};
 use iroh::protocol::{AcceptError, ProtocolHandler};
 use iroh_base::EndpointAddr;
@@ -889,7 +889,7 @@ pub enum NamedShareInboxError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use collab_types::{FileInviteSpec, FilePermission, mint_file_invite};
+    use fs_protocol::{FileInviteSpec, FilePermission, mint_file_invite};
     use iroh::address_lookup::memory::MemoryLookup;
     use iroh::endpoint::presets;
     use iroh::protocol::Router;
@@ -958,7 +958,7 @@ mod tests {
         let invite = mint_file_invite(
             FileInviteSpec {
                 workspace_id: Uuid::from_u128(1),
-                record_id: collab_types::FileRecordId(Uuid::from_u128(id_seed)),
+                record_id: fs_protocol::FileRecordId(Uuid::from_u128(id_seed)),
                 subject: FileInviteSubject::Person(person),
                 permission: FilePermission::View,
                 expires_at_ms: Some(NOW + 100),
@@ -1115,7 +1115,7 @@ mod tests {
         let invite = mint_file_invite(
             FileInviteSpec {
                 workspace_id: Uuid::new_v4(),
-                record_id: collab_types::FileRecordId::new(),
+                record_id: fs_protocol::FileRecordId::new(),
                 subject: FileInviteSubject::Person(person),
                 permission: FilePermission::View,
                 expires_at_ms: Some(unix_now_ms() + 60_000),

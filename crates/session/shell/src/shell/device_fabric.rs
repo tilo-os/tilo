@@ -380,6 +380,10 @@ pub enum PersonalFabricAction {
         address: String,
         authorization: [u8; 16],
     },
+    /// Inline fast path of the one Nearby transfer protocol: a file up to
+    /// [`MAX_NEARBY_DROP_BYTES`] rides in this action instead of an offer and
+    /// a byte stream, saving a round trip. It shares the transfer's consent
+    /// queue and integrity check; it is not a second protocol.
     NearbyDrop {
         file_name: String,
         content_hash: [u8; 32],
@@ -391,7 +395,8 @@ pub enum PersonalFabricAction {
         accepted: bool,
     },
     /// Durable object offer. The source path never leaves its device; the ID
-    /// addresses an immutable private spool object.
+    /// addresses an immutable private spool object. A `MediaHandoff` offer is
+    /// admitted by the `ResumeMedia` that named its ID, never by Files.
     NearbyTransferOffer {
         transfer_id: [u8; 16],
         name: String,
@@ -1493,6 +1498,11 @@ impl RoamingSetting {
         {
             return Err(FabricError::SettingTooLarge);
         }
+        if self.key == settings_store::person_displays::ARRANGEMENT_KEY
+            && settings_store::person_displays::Arrangement::from_value(&self.value).is_none()
+        {
+            return Err(FabricError::InvalidRoamingSetting);
+        }
         Ok(())
     }
 }
@@ -1858,9 +1868,20 @@ impl DeviceFabricSnapshot {
     }
 }
 
+/// Rich hardware facts accompanying the connector extension. They describe
+/// an output but never grant control or change its live geometry.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DisplayOutputObservation {
+    pub connector: String,
+    pub output: settings_store::person_displays::DeviceOutput,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DeviceFabric {
     snapshots: BTreeMap<DeviceId, DeviceFabricSnapshot>,
+    /// Revision-bound observations stay outside the schema-6 checkpoint.
+    #[serde(skip)]
+    display_outputs: BTreeMap<DeviceId, (FabricStamp, Vec<DisplayOutputObservation>)>,
 }
 
 impl DeviceFabric {
@@ -2057,9 +2078,119 @@ impl DeviceFabric {
         Ok(true)
     }
 
+    /// Admit bounded hardware facts for the owner's exact live display revision.
+    /// # Errors
+    /// Rejects unknown owners, stale revisions, conflicting facts and metadata
+    /// that disagrees with the independently admitted connector geometry.
+    pub fn observe_display_outputs(
+        &mut self,
+        owner: &DeviceId,
+        stamp: &FabricStamp,
+        outputs: Vec<DisplayOutputObservation>,
+    ) -> Result<bool, FabricError> {
+        let display = self
+            .snapshots
+            .get(owner)
+            .and_then(|snapshot| snapshot.display.as_ref())
+            .ok_or(FabricError::InvalidDisplayPlacement)?;
+        if &stamp.device != owner || stamp != &display.stamp {
+            return Err(FabricError::ForeignAuthorship);
+        }
+        if outputs.len() > settings_store::person_displays::MAX_DEVICE_OUTPUTS {
+            return Err(FabricError::InvalidDisplayPlacement);
+        }
+        unique(outputs.iter().map(|item| item.connector.as_str()))?;
+        unique(outputs.iter().map(|item| item.output.id.as_str()))?;
+        for item in &outputs {
+            if item.connector.is_empty()
+                || item.connector.len() > 256
+                || item.connector.chars().any(char::is_control)
+                || !item.output.valid()
+            {
+                return Err(FabricError::InvalidDisplayPlacement);
+            }
+            if item.output.active() {
+                let Some(connector) = display
+                    .outputs
+                    .iter()
+                    .find(|connector| connector.connector == item.connector)
+                else {
+                    return Err(FabricError::InvalidDisplayPlacement);
+                };
+                let output = &item.output;
+                if connector.rect
+                    != (DisplayRect {
+                        x: output.x,
+                        y: output.y,
+                        width: output.width,
+                        height: output.height,
+                    })
+                    || connector.scale_milli != output.scale_milli
+                {
+                    return Err(FabricError::InvalidDisplayPlacement);
+                }
+            } else if display
+                .outputs
+                .iter()
+                .any(|connector| connector.connector == item.connector)
+            {
+                return Err(FabricError::InvalidDisplayPlacement);
+            }
+        }
+        if display.outputs.iter().any(|connector| {
+            !outputs
+                .iter()
+                .any(|item| item.connector == connector.connector && item.output.active())
+        }) {
+            return Err(FabricError::InvalidDisplayPlacement);
+        }
+        if let Some((previous_stamp, previous)) = self.display_outputs.get(owner)
+            && previous_stamp == stamp
+        {
+            return if previous == &outputs {
+                Ok(false)
+            } else {
+                Err(FabricError::ConflictingRevision)
+            };
+        }
+        self.display_outputs
+            .insert(owner.clone(), (stamp.clone(), outputs));
+        Ok(true)
+    }
+
+    /// The current revision's observed facts; stale metadata is never projected.
+    pub fn display_outputs(&self, owner: &DeviceId) -> Option<&[DisplayOutputObservation]> {
+        let display = self.snapshots.get(owner)?.display.as_ref()?;
+        let (stamp, outputs) = self.display_outputs.get(owner)?;
+        (stamp == &display.stamp).then_some(outputs.as_slice())
+    }
+
+    /// Certified device observations consumed by the shared layout model.
+    pub fn person_devices(
+        &self,
+        local: &DeviceId,
+    ) -> Vec<settings_store::person_displays::PersonDevice> {
+        self.snapshots
+            .values()
+            .map(|snapshot| settings_store::person_displays::PersonDevice {
+                device: snapshot.owner.as_str().to_owned(),
+                label: snapshot.presence.label.clone(),
+                local: &snapshot.owner == local,
+                online: snapshot.presence.online,
+                outputs: self
+                    .display_outputs(&snapshot.owner)
+                    .unwrap_or_default()
+                    .iter()
+                    .map(|item| item.output.clone())
+                    .collect(),
+            })
+            .collect()
+    }
+
     /// Forget everything a device published, e.g. once it left the fleet.
     /// Returns whether it had published anything.
     pub fn remove_device(&mut self, device: &DeviceId) -> bool {
+        self.display_outputs.remove(device);
         self.snapshots.remove(device).is_some()
     }
 
@@ -2204,10 +2335,13 @@ impl DeviceFabric {
         self.cross_edge(from, DisplayEdge::Right, right.checked_sub(1)?, local_y)
     }
 
-    /// Resolve each roaming key to its newest authenticated authored record.
+    /// Resolve roaming keys from authenticated authored records. Display
+    /// arrangements merge per display; other keys keep their newest record.
     /// Keeping the stamp and author lets runtimes distinguish a remote apply
     /// from a fresh local edit instead of echoing every received preference.
     pub fn merged_setting_records(&self) -> BTreeMap<String, RoamingSetting> {
+        use settings_store::person_displays::{ARRANGEMENT_KEY, Arrangement};
+
         let mut winners: BTreeMap<&str, &RoamingSetting> = BTreeMap::new();
         for item in self
             .snapshots
@@ -2221,10 +2355,25 @@ impl DeviceFabric {
                 winners.insert(item.key.as_str(), item);
             }
         }
-        winners
+        let mut merged: BTreeMap<_, _> = winners
             .into_iter()
             .map(|(key, item)| (key.to_string(), item.clone()))
-            .collect()
+            .collect();
+        if let Some(record) = merged.get_mut(ARRANGEMENT_KEY) {
+            let arrangements = self
+                .snapshots
+                .values()
+                .flat_map(|snapshot| &snapshot.settings)
+                .filter(|setting| setting.key == ARRANGEMENT_KEY)
+                .filter_map(|setting| {
+                    Arrangement::from_value(&setting.value)
+                        .map(|arrangement| (setting.stamp.device.as_str(), arrangement))
+                });
+            // Keep the newest authored record for provenance and echo suppression,
+            // but resolve each display independently so concurrent edits survive.
+            record.value = Arrangement::merge(arrangements).to_value();
+        }
+        merged
     }
 
     pub fn merged_settings(&self) -> BTreeMap<String, Value> {
@@ -2627,6 +2776,227 @@ mod tests {
             unlock: crate::shell::device_unlock::UnlockFabricState::default(),
             speakers: crate::shell::speaker_group::SpeakerFabricState::default(),
         }
+    }
+
+    fn arranged_setting(device: &str, counter: u64, displays: Value) -> RoamingSetting {
+        let mut value = serde_json::Map::new();
+        value.insert("displays".into(), displays);
+        RoamingSetting {
+            key: settings_store::person_displays::ARRANGEMENT_KEY.into(),
+            value: Value::Object(value),
+            stamp: stamp(device, counter),
+        }
+    }
+
+    #[test]
+    fn display_arrangements_merge_concurrent_edits_in_both_delivery_orders() {
+        let entry = |output: &str, x: i32, rev: u64| {
+            serde_json::json!({
+                "device": "desktop", "output": output, "enabled": true,
+                "order": 0, "placed": true, "x": x, "y": 0, "rev": rev
+            })
+        };
+        let mut desktop = snapshot("desktop", 9, 0, FabricCapabilities::default());
+        desktop.settings.push(arranged_setting(
+            "desktop",
+            9,
+            serde_json::json!([entry("DP-1", 100, 3), entry("DP-2", 0, 1)]),
+        ));
+        let mut laptop = snapshot("laptop", 10, 1000, FabricCapabilities::default());
+        laptop.settings.push(arranged_setting(
+            "laptop",
+            10,
+            serde_json::json!([entry("DP-1", 0, 1), entry("DP-2", 200, 3)]),
+        ));
+        let mut first = DeviceFabric::default();
+        first.upsert(desktop.clone()).unwrap();
+        first.upsert(laptop.clone()).unwrap();
+        let mut second = DeviceFabric::default();
+        second.upsert(laptop).unwrap();
+        second.upsert(desktop).unwrap();
+        let records = first.merged_setting_records();
+        assert_eq!(records, second.merged_setting_records());
+        let record = &records[settings_store::person_displays::ARRANGEMENT_KEY];
+        assert_eq!(record.stamp, stamp("laptop", 10));
+        let arrangement =
+            settings_store::person_displays::Arrangement::from_value(&record.value).unwrap();
+        assert_eq!(arrangement.displays.len(), 2);
+        assert_eq!(arrangement.displays[0].x, 100);
+        assert_eq!(arrangement.displays[1].x, 200);
+        // A later fabric publication must not beat a newer per-display edit.
+        let mut stale = snapshot("tablet", 100, 2000, FabricCapabilities::default());
+        stale.settings.push(arranged_setting(
+            "tablet",
+            100,
+            serde_json::json!([entry("DP-1", -300, 2)]),
+        ));
+        first.upsert(stale).unwrap();
+        assert_eq!(
+            first.merged_settings()[settings_store::person_displays::ARRANGEMENT_KEY],
+            record.value
+        );
+    }
+
+    #[test]
+    fn display_arrangements_reject_malformed_fabric_records() {
+        for displays in [
+            serde_json::json!(false),
+            serde_json::json!([{
+                "device": "desktop", "output": "DP-1", "enabled": true,
+                "order": 0, "placed": true, "x": i32::MIN, "y": 0, "rev": 1
+            }]),
+        ] {
+            let mut source = snapshot("desktop", 1, 0, FabricCapabilities::default());
+            source
+                .settings
+                .push(arranged_setting("desktop", 1, displays));
+            assert_eq!(
+                DeviceFabric::default().upsert(source),
+                Err(FabricError::InvalidRoamingSetting)
+            );
+        }
+    }
+
+    #[test]
+    fn rich_display_extension_keeps_existing_payload_bytes() {
+        let payload = crate::network::actor::PersonalFabricPayload::DisplayConnectors {
+            stamp: stamp("peer", 1),
+            outputs: Vec::new(),
+        };
+        let previous = hex::decode("0801047065657200").unwrap();
+        assert_eq!(postcard::to_allocvec(&payload).unwrap(), previous);
+        let decoded: crate::network::actor::PersonalFabricPayload =
+            postcard::from_bytes(&previous).unwrap();
+        assert!(matches!(decoded,
+            crate::network::actor::PersonalFabricPayload::DisplayConnectors { outputs, .. }
+                if outputs.is_empty()));
+    }
+
+    fn rich_display_fixture() -> (DeviceFabricSnapshot, DisplayOutputObservation) {
+        let mut source = snapshot("peer", 2, 960, FabricCapabilities::default());
+        let facts = DisplayOutputObservation {
+            connector: "DP-1".into(),
+            output: settings_store::person_displays::DeviceOutput {
+                id: "monitor:panel".into(),
+                name: "Panel".into(),
+                builtin: false,
+                x: 0,
+                y: 0,
+                width: 1000,
+                height: 800,
+                mode_width: 2000,
+                mode_height: 1600,
+                refresh_mhz: 59_940,
+                scale_milli: 2000,
+                connected: true,
+                enabled: true,
+            },
+        };
+        source
+            .display
+            .as_mut()
+            .unwrap()
+            .outputs
+            .push(DisplayConnectorPlacement {
+                connector: facts.connector.clone(),
+                label: "DP-1".into(),
+                rect: DisplayRect {
+                    x: 0,
+                    y: 0,
+                    width: 1000,
+                    height: 800,
+                },
+                scale_milli: 2000,
+            });
+        (source, facts)
+    }
+
+    #[test]
+    fn rich_display_observations_bind_owner_revision_geometry_and_checkpoint() {
+        let (mut source, facts) = rich_display_fixture();
+        let owner = source.owner.clone();
+        let revision = source.display.as_ref().unwrap().stamp.clone();
+        let mut fabric = DeviceFabric::default();
+        fabric.upsert(source.clone()).unwrap();
+        let checkpoint = fabric.encode_checkpoint().unwrap();
+        for stamp in [stamp("stranger", 2), stamp("peer", 1)] {
+            assert_eq!(
+                fabric.observe_display_outputs(&owner, &stamp, vec![facts.clone()]),
+                Err(FabricError::ForeignAuthorship)
+            );
+        }
+        let mut wrong = facts.clone();
+        wrong.output.width += 1;
+        assert_eq!(
+            fabric.observe_display_outputs(&owner, &revision, vec![wrong]),
+            Err(FabricError::InvalidDisplayPlacement)
+        );
+        assert_eq!(
+            fabric.observe_display_outputs(&owner, &revision, Vec::new()),
+            Err(FabricError::InvalidDisplayPlacement)
+        );
+        assert!(
+            fabric
+                .observe_display_outputs(&owner, &revision, vec![facts.clone()])
+                .unwrap()
+        );
+        assert!(
+            !fabric
+                .observe_display_outputs(&owner, &revision, vec![facts.clone()])
+                .unwrap()
+        );
+        assert_eq!(fabric.encode_checkpoint().unwrap(), checkpoint);
+        assert!(
+            DeviceFabric::decode_checkpoint(&checkpoint)
+                .unwrap()
+                .display_outputs(&owner)
+                .is_none()
+        );
+        let mut conflicting = facts.clone();
+        conflicting.output.refresh_mhz = 60_000;
+        assert_eq!(
+            fabric.observe_display_outputs(&owner, &revision, vec![conflicting]),
+            Err(FabricError::ConflictingRevision)
+        );
+        source.presence.online = false;
+        source.presence.stamp.counter = 3;
+        fabric.upsert(source.clone()).unwrap();
+        let devices = fabric.person_devices(&owner);
+        assert_eq!(devices[0].outputs, vec![facts.output]);
+        assert!(!devices[0].online);
+        source.presence.stamp.counter = 4;
+        source.display.as_mut().unwrap().stamp.counter = 4;
+        fabric.upsert(source).unwrap();
+        assert!(fabric.display_outputs(&owner).is_none());
+        assert!(fabric.person_devices(&owner)[0].outputs.is_empty());
+        assert!(fabric.remove_device(&owner));
+        assert!(fabric.person_devices(&owner).is_empty());
+    }
+
+    #[test]
+    fn rich_display_observations_reject_unbounded_and_duplicate_metadata() {
+        let (source, facts) = rich_display_fixture();
+        let owner = source.owner.clone();
+        let revision = source.display.as_ref().unwrap().stamp.clone();
+        let mut fabric = DeviceFabric::default();
+        fabric.upsert(source).unwrap();
+        for invalid in [
+            {
+                let mut item = facts.clone();
+                item.output.x = i32::MIN;
+                vec![item]
+            },
+            vec![facts.clone(); settings_store::person_displays::MAX_DEVICE_OUTPUTS + 1],
+        ] {
+            assert_eq!(
+                fabric.observe_display_outputs(&owner, &revision, invalid),
+                Err(FabricError::InvalidDisplayPlacement)
+            );
+        }
+        assert_eq!(
+            fabric.observe_display_outputs(&owner, &revision, vec![facts.clone(), facts]),
+            Err(FabricError::DuplicateItem)
+        );
     }
 
     #[test]

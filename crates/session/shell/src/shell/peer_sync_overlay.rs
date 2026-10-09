@@ -38,6 +38,58 @@ pub enum PeerSyncRequest {
     ListPendingInvitations,
     ResendInvitation([u8; 32]),
     CancelInvitation([u8; 32]),
+    /// Mint an invitation on the terms an `invitation.issue` action stated.
+    IssueInvitation(InvitationTerms),
+}
+
+/// What an `invitation.issue` action asks to be minted for the active
+/// workspace.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InvitationTerms {
+    pub role: crate::network::invite::InviteRole,
+    pub expires_in_seconds: u64,
+    /// The authority-side name recorded for the invitee once they join.
+    pub invitee_name: Option<String>,
+    /// When set, only a device certified for this person identity can
+    /// redeem the invitation; possessing the token alone is not enough.
+    pub recipient_user_public_key: Option<[u8; 32]>,
+}
+
+/// The JSON output an invitation action returns for `response`. The token
+/// is returned to the authorized caller and is never logged.
+///
+/// # Errors
+///
+/// When `request` is not an invitation action's request, or the bridge
+/// answered with a response that request cannot produce.
+pub fn network_action_output(
+    request: &PeerSyncRequest,
+    response: PeerSyncResponse,
+) -> Result<serde_json::Value, String> {
+    match (request, response) {
+        (
+            PeerSyncRequest::IssueInvitation(_) | PeerSyncRequest::ResendInvitation(_),
+            PeerSyncResponse::Message(token),
+        ) => Ok(serde_json::json!({ "invite": token })),
+        (PeerSyncRequest::CancelInvitation(_), PeerSyncResponse::Message(_)) => {
+            Ok(serde_json::json!({ "canceled": true }))
+        }
+        (PeerSyncRequest::ListPendingInvitations, PeerSyncResponse::PendingInvitations(rows)) => {
+            let invitations: Vec<serde_json::Value> = rows
+                .into_iter()
+                .map(|invite| {
+                    serde_json::json!({
+                        "invite_id": hex::encode(invite.id),
+                        "name": invite.name,
+                        "role": invite.role,
+                        "expires_at": invite.expiry_unix_seconds,
+                    })
+                })
+                .collect();
+            Ok(serde_json::json!({ "invitations": invitations }))
+        }
+        _ => Err("peer-sync answered an unexpected response".into()),
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -294,6 +346,10 @@ impl PeerSyncOverlay {
         self.finish_typed_request(request, outcome, copy_result);
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one arm per request and response pair keeps every outcome of the card in one table"
+    )]
     pub fn finish_typed_request(
         &mut self,
         request: &PeerSyncRequest,
@@ -324,7 +380,13 @@ impl PeerSyncOverlay {
                 self.enrollment_poll_at = None;
                 self.state.status = Some(format!("Join incomplete: {error}"));
             }
-            (PeerSyncRequest::PollEnrollment(_) | PeerSyncRequest::CancelEnrollment(_), _) => {}
+            // An invitation action answers its caller, not this card.
+            (
+                PeerSyncRequest::PollEnrollment(_)
+                | PeerSyncRequest::CancelEnrollment(_)
+                | PeerSyncRequest::IssueInvitation(_),
+                _,
+            ) => {}
 
             (PeerSyncRequest::IssueInvite, Ok(PeerSyncResponse::Message(token))) => {
                 self.finish_invite(token, None, copy_result);
@@ -1950,15 +2012,7 @@ mod tests {
     }
 
     fn key(key: Key) -> WindowEvent {
-        let mut event: KeyEvent = unsafe { std::mem::zeroed() };
-        event.physical_key = winit::keyboard::PhysicalKey::Unidentified(
-            winit::keyboard::NativeKeyCode::Unidentified,
-        );
-        event.logical_key = key;
-        event.text = None;
-        event.location = winit::keyboard::KeyLocation::Standard;
-        event.state = ElementState::Pressed;
-        event.repeat = false;
+        let event = ui::synthetic_input::key_event(key, None, ElementState::Pressed);
         WindowEvent::KeyboardInput {
             device_id: winit::event::DeviceId::dummy(),
             event,

@@ -33,6 +33,7 @@ pub(super) struct OriginalInvocationData {
     request: PublishedInvocationRequest,
     route: CrdtRoute,
     spec: PublishedInvocationSpec,
+    resource_identity: Option<tilo_actions::ResourceSemanticIdentity>,
     caller: InvocationCaller,
     time: crate::peer_actions::PolicyTime,
     execution: Option<tilo_actions::remote::ExecutionLease>,
@@ -57,7 +58,7 @@ impl OriginalInvocationData {
         let original = OriginalInvocation {
             broker: Arc::downgrade(state),
             peer,
-            worker: worker.clone(),
+            worker: TargetCustody::Registered(worker.clone()),
             data: self.clone(),
         };
         original.check_lifecycle()?;
@@ -127,6 +128,10 @@ impl OriginalInvocationData {
     pub(super) fn clipboard_action(&self) -> &str {
         &self.request.address.action
     }
+    pub(super) fn clipboard_resource(&self) -> &str {
+        &self.request.address.resource
+    }
+
     pub(super) fn revalidate_clipboard_origin(
         &self,
         state: &CapnpBrokerState,
@@ -206,16 +211,6 @@ impl OriginalInvocationData {
         };
         tilo_user_identity::verify_device_cert_at(&certificate, now)
             .map_err(|_| "original invocation certificate expired")?;
-        let tree = state
-            .membership
-            .as_ref()
-            .ok_or("workspace authority unavailable")?
-            .snapshot()?;
-        let workspace = tree
-            .workspaces
-            .iter()
-            .find(|workspace| workspace.room.to_string() == self.route.cluster_id)
-            .ok_or("original invocation workspace unavailable")?;
         let mut person = state.certified_person(&self.route.cluster_id, &certificate);
         if let InvocationCaller::Certified {
             foreign_restriction,
@@ -230,29 +225,30 @@ impl OriginalInvocationData {
             );
         }
         let seconds = now / 1_000_000_000;
-        let actor = person.policy_in(workspace, seconds);
-        let verb = match self.spec.contract.permission {
-            tilo_actions::PermissionRequirement::None => None,
-            tilo_actions::PermissionRequirement::Read => Some(Verb::Read),
-            tilo_actions::PermissionRequirement::Comment => Some(Verb::Comment),
-            tilo_actions::PermissionRequirement::Write => Some(Verb::Write),
-            tilo_actions::PermissionRequirement::Invite => Some(Verb::Invite),
-            tilo_actions::PermissionRequirement::Admin => Some(Verb::Admin),
-        };
-        if verb.is_some_and(|verb| {
-            workspace.decide_at(
-                &actor,
-                &ResourceRef::Action {
-                    app: self.route.app_id.clone(),
-                    action: self.request.address.action.clone(),
-                },
-                verb,
-                seconds,
-            ) != CapDecision::Allow
-        }) {
-            return Err("original invocation caller is no longer authorized".into());
-        }
-        drop(tree);
+        let verb = super::permission_verb(self.spec.contract.permission);
+        state
+            .membership
+            .as_ref()
+            .ok_or("workspace authority unavailable")?
+            .decide_in_room(&self.route.cluster_id, |workspace| {
+                let workspace = workspace.ok_or("original invocation workspace unavailable")?;
+                let actor = person.policy_in(workspace, seconds);
+                if verb.is_some_and(|verb| {
+                    workspace.decide_at(
+                        &actor,
+                        &ResourceRef::Action {
+                            app: self.route.app_id.clone(),
+                            resource: self.request.address.resource.clone(),
+                            action: self.request.address.action.clone(),
+                        },
+                        verb,
+                        seconds,
+                    ) != CapDecision::Allow
+                }) {
+                    return Err("original invocation caller is no longer authorized");
+                }
+                Ok(())
+            })??;
         Ok(certificate)
     }
 
@@ -311,16 +307,6 @@ impl OriginalInvocationData {
     ) -> Result<tilo_user_identity::DeviceCert, String> {
         let certificate = self.launch_person_certificate(state, room)?;
         let (_, now) = state.checked_policy_time(Some(&self.time))?;
-        let tree = state
-            .membership
-            .as_ref()
-            .ok_or("workspace authority unavailable")?
-            .snapshot()?;
-        let workspace = tree
-            .workspaces
-            .iter()
-            .find(|workspace| workspace.room.to_string() == room)
-            .ok_or("original launch workspace unavailable")?;
         let mut actor = state.certified_person(room, &certificate);
         if let InvocationCaller::Certified {
             foreign_restriction,
@@ -335,16 +321,23 @@ impl OriginalInvocationData {
             );
         }
         let seconds = now / 1_000_000_000;
-        if workspace.decide_at(
-            &actor.policy_in(workspace, seconds),
-            &ResourceRef::Workspace,
-            Verb::Admin,
-            seconds,
-        ) != CapDecision::Allow
-        {
-            return Err("original launch caller cannot delegate application authorship".into());
-        }
-        drop(tree);
+        state
+            .membership
+            .as_ref()
+            .ok_or("workspace authority unavailable")?
+            .decide_in_room(room, |workspace| {
+                let workspace = workspace.ok_or("original launch workspace unavailable")?;
+                if workspace.decide_at(
+                    &actor.policy_in(workspace, seconds),
+                    &ResourceRef::Workspace,
+                    Verb::Admin,
+                    seconds,
+                ) != CapDecision::Allow
+                {
+                    return Err("original launch caller cannot delegate application authorship");
+                }
+                Ok(())
+            })??;
         Ok(certificate)
     }
 
@@ -383,11 +376,27 @@ impl OriginalInvocationData {
             request,
             route,
             spec,
+            resource_identity: offered.semantic_identity.clone(),
             caller: caller?,
             time: time?,
             execution,
         }))
     }
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ApprovedCheckArguments {
+    check_id: String,
+}
+
+enum TargetCustody {
+    Registered(PrivateWorkerRegistration),
+    Native {
+        connection: Arc<super::native_media::LocalAppConnection>,
+        admitted: Box<AdmittedJoinIdentity>,
+        certificate: tilo_user_identity::DeviceCert,
+    },
 }
 
 /// Immutable original facts; there is no public constructor or deserializer.
@@ -396,15 +405,49 @@ impl OriginalInvocationData {
 pub struct OriginalInvocation {
     broker: Weak<CapnpBrokerState>,
     peer: u64,
-    worker: PrivateWorkerRegistration,
+    worker: TargetCustody,
     data: Arc<OriginalInvocationData>,
 }
 impl OriginalInvocation {
+    pub(super) fn resource_identity(
+        &self,
+    ) -> Result<&tilo_actions::ResourceSemanticIdentity, String> {
+        self.data
+            .resource_identity
+            .as_ref()
+            .filter(|identity| identity.is_valid())
+            .ok_or_else(|| "accepted resource semantic identity unavailable".into())
+    }
+    pub(super) fn check_resource_publication(
+        &self,
+        state: &CapnpBrokerState,
+    ) -> Result<(), String> {
+        let identity = self.resource_identity()?;
+        let (surface, offered) = state
+            .published_action(
+                &self.data.route,
+                &self.data.request.address.resource,
+                &self.data.request.address.action,
+            )
+            .ok_or("accepted resource publication retired")?;
+        if !surface.live
+            || surface.peer_id != self.peer
+            || offered.semantic_identity.as_ref() != Some(identity)
+        {
+            return Err(
+                "accepted resource semantic identity changed or publication replaced".into(),
+            );
+        }
+        Ok(())
+    }
     pub fn request(&self) -> &PublishedInvocationRequest {
         &self.data.request
     }
     pub fn worker_certificate(&self) -> &tilo_user_identity::DeviceCert {
-        &self.worker.certificate
+        match &self.worker {
+            TargetCustody::Registered(worker) => &worker.certificate,
+            TargetCustody::Native { certificate, .. } => certificate,
+        }
     }
     pub fn route(&self) -> &CrdtRoute {
         &self.data.route
@@ -432,7 +475,7 @@ impl OriginalInvocation {
                     caller
                         .network
                         .as_ref()
-                        .map(tilo_relay::client::CertifiedAction::certificate)
+                        .map(tilo_relay_session::client::CertifiedAction::certificate)
                 })
             }
             InvocationCaller::Local { admitted, .. } => admitted.certificate.as_ref(),
@@ -470,23 +513,143 @@ impl OriginalInvocation {
         if !state.is_accepting() {
             return Err("original invocation broker retired".into());
         }
-        let workers = state
-            .host_workers
-            .lock()
-            .map_err(|_| "worker registry unavailable")?;
-        let same_worker = workers
-            .get(&self.peer)
-            .and_then(|entry| entry.worker_registration.as_ref())
-            == Some(&self.worker);
-        drop(workers);
-        drop(state);
-        if !same_worker {
-            return Err("original invocation worker connection retired or replaced".into());
+        match &self.worker {
+            TargetCustody::Registered(worker) => {
+                let workers = state
+                    .host_workers
+                    .lock()
+                    .map_err(|_| "worker registry unavailable")?;
+                if workers
+                    .get(&self.peer)
+                    .and_then(|entry| entry.worker_registration.as_ref())
+                    != Some(worker)
+                {
+                    return Err("original invocation worker connection retired or replaced".into());
+                }
+            }
+            TargetCustody::Native { connection, .. } => {
+                if !connection.current()
+                    || connection.app_id != self.data.route.app_id
+                    || connection.workspace_id != self.data.route.cluster_id
+                {
+                    return Err("original native target connection retired or replaced".into());
+                }
+                self.check_execution_frontier(&state)?;
+            }
         }
+        drop(state);
         tilo_user_identity::verify_device_cert_at(self.certificate()?, now)
             .map_err(|_| "original invocation certificate expired")?;
         self.data.time.now_ns().map_err(|error| error.to_string())
     }
+    pub(super) fn check_execution_frontier(&self, state: &CapnpBrokerState) -> Result<(), String> {
+        let pending = state
+            .pending_invocations
+            .lock()
+            .map_err(|_| "invocation registry unavailable")?;
+        let retained = pending
+            .get(&self.data.request.wire_id)
+            .ok_or("original invocation no longer retained")?;
+        let invalid = retained.peer_id != self.peer
+            || retained.update.is_terminal()
+            || retained.cancellation_requested_at.is_some()
+            || retained
+                .original
+                .as_ref()
+                .is_none_or(|data| !Arc::ptr_eq(data, &self.data));
+        drop(pending);
+        if invalid {
+            return Err("original invocation execution frontier retired or cancelled".into());
+        }
+        Ok(())
+    }
+
+    pub(super) fn for_approved_check(
+        channel: &super::CapnpChannelHandle,
+        request: &runtime_collab::approved_checks::Request,
+    ) -> Result<Arc<Self>, String> {
+        let route = channel.route();
+        let admitted = channel
+            .state
+            .revalidate_admission(&route, &channel.verified_identity)
+            .map_err(|error| error.to_string())?;
+        let data = {
+            let pending = channel
+                .state
+                .pending_invocations
+                .lock()
+                .map_err(|_| "invocation registry unavailable")?;
+            let mut matches = pending.values().filter(|pending| {
+                pending.peer_id == channel.peer_id
+                    && pending.update.invocation().0.to_string() == request.invocation
+            });
+            let selected = matches
+                .next()
+                .ok_or("approved check has no retained target invocation")?;
+            if matches.next().is_some() {
+                return Err("ambiguous approved-check invocation identity".into());
+            }
+            let original = selected.original.clone();
+            drop(pending);
+            original.ok_or("original invocation authority unavailable")?
+        };
+        if data.route != route
+            || data.request.address.action != runtime_collab::approved_checks::ACTION_ID
+            || data.spec.kind != tilo_actions::OperationKind::Effect
+            || data.spec.contract.execution
+                != (tilo_actions::ExecutionMode::Background { cancellable: true })
+            || data.spec.contract.permission != tilo_actions::PermissionRequirement::Write
+        {
+            return Err("approved check target action or contract mismatch".into());
+        }
+        let argument = data
+            .request
+            .argument
+            .as_deref()
+            .ok_or("approved check ID argument missing")?;
+        if argument.len() > runtime_collab::approved_checks::MAX_REQUEST_BYTES {
+            return Err("approved check arguments exceed bound".into());
+        }
+        let arguments: ApprovedCheckArguments = serde_json::from_str(
+            argument
+                .strip_prefix(tilo_actions::ARGUMENTS_JSON_PREFIX)
+                .unwrap_or(argument),
+        )
+        .map_err(|error| error.to_string())?;
+        if arguments.check_id != request.check_id {
+            return Err("approved check ID differs from accepted action".into());
+        }
+        let worker = if let Some(worker) = admitted.worker_registration.clone() {
+            TargetCustody::Registered(worker)
+        } else {
+            let connection = channel
+                .lease
+                .as_ref()
+                .and_then(|lease| lease.local_media.as_ref())
+                .filter(|connection| connection.current())
+                .cloned()
+                .ok_or("native target process custody unavailable")?;
+            let certificate = admitted
+                .certificate
+                .clone()
+                .ok_or("native target certificate unavailable")?;
+            TargetCustody::Native {
+                connection,
+                admitted: Box::new(admitted),
+                certificate,
+            }
+        };
+        let original = Arc::new(Self {
+            broker: Arc::downgrade(&channel.state),
+            peer: channel.peer_id,
+            worker,
+            data,
+        });
+        original.check_execution_frontier(&channel.state)?;
+        original.check_lifecycle()?;
+        Ok(original)
+    }
+
     /// The original person caller, decided while `state` can still say who
     /// governs the room; `None` for an agent caller.
     fn original_person(
@@ -532,27 +695,35 @@ impl OriginalInvocation {
             .ok_or("original agent membership expired")?;
         Ok(Actor::agent(agent).in_room(self.data.route.cluster_id.clone()))
     }
-    fn check_lifecycle(&self) -> Result<(), String> {
+    pub(super) fn check_lifecycle(&self) -> Result<(), String> {
         self.check_custody()?;
         let state = self
             .broker
             .upgrade()
             .ok_or("original invocation broker retired")?;
         state.checked_policy_time(Some(&self.data.time))?;
-        let admitted = state
-            .host_workers
-            .lock()
-            .map_err(|_| "worker registry unavailable")?
-            .get(&self.peer)
-            .cloned()
-            .ok_or("original worker connection retired")?;
-        if admitted.worker_registration.as_ref() != Some(&self.worker) {
-            return Err("original worker connection replaced".into());
+        match &self.worker {
+            TargetCustody::Registered(worker) => {
+                let admitted = state
+                    .host_workers
+                    .lock()
+                    .map_err(|_| "worker registry unavailable")?
+                    .get(&self.peer)
+                    .cloned()
+                    .ok_or("original worker connection retired")?;
+                if admitted.worker_registration.as_ref() != Some(worker) {
+                    return Err("original worker connection replaced".into());
+                }
+                state
+                    .revalidate_admission(&worker.route, &admitted)
+                    .map_err(|error| error.to_string())?;
+            }
+            TargetCustody::Native { admitted, .. } => {
+                state
+                    .revalidate_admission(&self.data.route, admitted)
+                    .map_err(|error| error.to_string())?;
+            }
         }
-        // Current certificate policy may open Store; the registry lock is gone.
-        state
-            .revalidate_admission(&self.worker.route, &admitted)
-            .map_err(|error| error.to_string())?;
         match &self.data.caller {
             InvocationCaller::NativePerson {
                 room, certificate, ..
@@ -568,43 +739,35 @@ impl OriginalInvocation {
                     .map_err(|error| error.to_string())?;
             }
         }
-        let tree = state
+        let membership = state
             .membership
-            .as_ref()
-            .ok_or("workspace authority unavailable")?
-            .snapshot()?;
+            .clone()
+            .ok_or("workspace authority unavailable")?;
         let person = self.original_person(&state)?;
         drop(state);
-        let workspace = tree
-            .workspaces
-            .iter()
-            .find(|workspace| workspace.room.to_string() == self.data.route.cluster_id)
-            .ok_or("original invocation workspace unavailable")?;
         let seconds = self.data.time.now_ns().map_err(|error| error.to_string())? / 1_000_000_000;
-        let actor = self.original_actor(person, workspace, seconds)?;
-        let verb = match self.data.spec.contract.permission {
-            tilo_actions::PermissionRequirement::None => None,
-            tilo_actions::PermissionRequirement::Read => Some(Verb::Read),
-            tilo_actions::PermissionRequirement::Comment => Some(Verb::Comment),
-            tilo_actions::PermissionRequirement::Write => Some(Verb::Write),
-            tilo_actions::PermissionRequirement::Invite => Some(Verb::Invite),
-            tilo_actions::PermissionRequirement::Admin => Some(Verb::Admin),
-        };
-        if verb.is_some_and(|verb| {
-            workspace.decide_at(
-                &actor,
-                &ResourceRef::Action {
-                    app: self.data.route.app_id.clone(),
-                    action: self.data.request.address.action.clone(),
-                },
-                verb,
-                seconds,
-            ) != CapDecision::Allow
-        }) {
-            return Err("original invocation caller is no longer authorized".into());
-        }
-        drop(tree);
+        let verb = super::permission_verb(self.data.spec.contract.permission);
+        membership.decide_in_room(&self.data.route.cluster_id, |workspace| {
+            let workspace = workspace.ok_or("original invocation workspace unavailable")?;
+            let actor = self.original_actor(person, workspace, seconds)?;
+            if verb.is_some_and(|verb| {
+                workspace.decide_at(
+                    &actor,
+                    &ResourceRef::Action {
+                        app: self.data.route.app_id.clone(),
+                        resource: self.data.request.address.resource.clone(),
+                        action: self.data.request.address.action.clone(),
+                    },
+                    verb,
+                    seconds,
+                ) != CapDecision::Allow
+            }) {
+                return Err("original invocation caller is no longer authorized".to_string());
+            }
+            Ok(())
+        })??;
         self.check_custody()?;
+
         Ok(())
     }
 }
@@ -648,7 +811,7 @@ impl CapnpBrokerState {
                 drop(registry);
                 (peer, data)
             };
-            let original = Arc::new(OriginalInvocation { broker: broker.clone(), peer, worker: worker.clone(), data });
+            let original = Arc::new(OriginalInvocation { broker: broker.clone(), peer, worker: TargetCustody::Registered(worker.clone()), data });
             original.check_lifecycle()?;
             let route = ui::collaboration::RouteSpec {
                 app_id: worker.route.app_id.clone(),
