@@ -122,7 +122,7 @@ fn app_at(w: f64, h: f64) -> MapsApp {
 /// Drive a click `Hit` through the real `dispatch` path of an unattached map,
 /// which shows its edits without submitting them; the door, undo and replay
 /// are proven through the framework in [`crate::resource`] and
-/// [`crate::actions`].
+/// [`crate::workspace`].
 fn tap(a: &mut MapsApp, hit: &Hit) {
     a.dispatch(hit);
 }
@@ -354,13 +354,12 @@ fn local_view_state_never_fabricates_or_overwrites_shared_state() {
         let mut app = app_at(1280.0, 800.0);
         app.pan_by(96.0, 0.0);
         let center = app.model.center;
-        let mut peer = app.model.clone();
+        let mut peer = crate::workspace::Workspace {
+            places: app.model.places.clone().into(),
+            ..crate::workspace::Workspace::default()
+        };
         let id = peer.places[0].id.clone();
-        MapsAction::SetPlaceSaved {
-            id: id.clone(),
-            saved: true,
-        }
-        .apply_to_model(&mut peer);
+        peer.places[0].saved = true;
         app.adopt_resource_state(&peer);
         assert!(app.model.place(&id).is_some_and(|place| place.saved));
         assert_eq!(app.model.center, center, "the camera stays this window's");
@@ -371,11 +370,17 @@ fn local_view_state_never_fabricates_or_overwrites_shared_state() {
         let mut a = app_at(1280.0, 800.0);
         a.endpoints.begin_edit(Endpoint::Origin);
         a.endpoints.sync_queries("Local draft", "");
-        let mut presented = a.model.clone();
-        presented.origin_query = "Peer origin".to_string();
-        presented.dest_query = "Peer destination".to_string();
+        let draft = (a.model.origin_query.clone(), a.model.dest_query.clone());
+        let presented = crate::workspace::Workspace {
+            places: a.model.places.clone().into(),
+            ..crate::workspace::Workspace::default()
+        };
         a.adopt_resource_state(&presented);
-        assert_ne!(a.model.origin_query, "Peer origin");
+        assert_eq!(
+            (a.model.origin_query.clone(), a.model.dest_query.clone()),
+            draft,
+            "the draft stays this window's"
+        );
     }
 
     // Phase `live_app_starts_without_fabricated_content`.
@@ -993,7 +998,7 @@ fn platform_search_opens_finds_and_activates_places() {
         assert_eq!(
             a.model.recents.first().map(String::as_str),
             Some("coffee"),
-            "visible search commits history through MapsAction"
+            "visible search commits history through the map's verb"
         );
 
         let theme = Theme::dark();
