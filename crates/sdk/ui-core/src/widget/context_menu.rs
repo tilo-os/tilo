@@ -781,7 +781,7 @@ impl ContextMenu {
             return;
         }
         let Some(items) = self.items.get(idx).and_then(MenuItem::submenu_items) else {
-            self.submenu = None;
+            self.close_submenu();
             return;
         };
         let Some(row) = self.item_rect(idx) else {
@@ -811,11 +811,16 @@ impl ContextMenu {
         self.hovered = Some(idx);
         self.submenu_focused = keyboard;
         self.submenu = Some((idx, Box::new(menu)));
+        // Hover opens it without marking the move handled.
+        crate::widget::note_resource_presentation_changed();
     }
 
     /// Close the nested menu, keeping this one open.
     pub fn close_submenu(&mut self) {
-        self.submenu = None;
+        if self.submenu.take().is_some() {
+            // Hover closes it without marking the move handled.
+            crate::widget::note_resource_presentation_changed();
+        }
         self.submenu_focused = false;
     }
 
