@@ -700,8 +700,16 @@ def animations(ctx, res):
 @check("W17", AREA, "Real keyboard: typed text, Space and Return reach the focused Terminal")
 def typing(ctx, res):
     ctx.reset()
+    shells = core.terminal_shells(ctx)
     ctx.new_terminal_window()
-    ctx.settle(2.0)
+    # Keys typed before the shell runs only echo; this check is about the keys.
+    ready = core.wait_new_terminal_shell(ctx, shells, core.TERMINAL_SHELL_S)
+    res.metrics["seconds_to_shell"] = ready
+    if ready is None:
+        ctx.write("W17-ush.txt", core.ush_diagnostics(ctx))
+        raise CheckFailed(f"no shell ran in the new Terminal within {core.TERMINAL_SHELL_S} s, "
+                          "so nothing could read the keys (W17-ush.txt shows the shell runtime)")
+    ctx.settle(1.0)
     probe = f"acc-kbd-{int(time.time())}"
     ctx.vm.input("type", f"echo ok > ~/{probe}")
     ctx.vm.key("Return")

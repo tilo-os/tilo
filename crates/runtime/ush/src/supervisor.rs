@@ -237,6 +237,11 @@ impl Session {
             let tree = self.images.tree(&id).map_err(anyhow::Error::msg)?;
             images.push((format!("{label} {id}"), tree));
         }
+        if !self.images.is_local(&runtime) {
+            // Stderr is the session's terminal: the person sees why there is
+            // no prompt yet, instead of a pane that only echoes their keys.
+            eprintln!("ush: preparing this environment's runtime for its first use…");
+        }
         let tree = self.images.tree(&runtime).map_err(anyhow::Error::msg)?;
         images.push((
             format!("runtime {} {runtime}", environment.runtime.release),
