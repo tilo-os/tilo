@@ -1,0 +1,141 @@
+# The app's public surface, written by `tilo-app surface`: its resources' verbs
+# and stored fields. Review changes to it like an API change; `tilo-app check`
+# fails when the code and this file disagree.
+
+[[resources]]
+kind = "typst-editor.workspace"
+label = "Typst workspace"
+version = 1
+
+[[resources.fields]]
+owner = "workspace"
+path = "files"
+stored = "collection"
+title = "Files"
+type = "Collection<TypstFile>"
+
+[[resources.fields]]
+label = true
+owner = "typst-file"
+path = "files.*.name"
+stored = "value"
+title = "Name"
+type = "Atom"
+
+[[resources.fields]]
+owner = "typst-file"
+path = "files.*.path"
+readonly = true
+stored = "value"
+title = "Path"
+type = "Option<Atom>"
+
+[[resources.fields]]
+owner = "typst-file"
+path = "files.*.source"
+stored = "value"
+title = "Source"
+type = "String"
+
+[[resources.verbs]]
+description = "Create a Typst file."
+id = "new-file"
+kind = "undoable"
+label = "Create a Typst file"
+
+[[resources.verbs.params]]
+name = "name"
+required = true
+
+[resources.verbs.params.schema]
+description = "File name"
+type = "string"
+
+[[resources.verbs.params]]
+name = "path"
+required = false
+
+[resources.verbs.params.schema]
+description = "Where it is saved, if anywhere"
+type = [
+    "string",
+    "null",
+]
+
+[[resources.verbs.params]]
+name = "source"
+required = false
+
+[resources.verbs.params.schema]
+description = "Its Typst source; empty when none"
+type = [
+    "string",
+    "null",
+]
+
+[[resources.verbs]]
+description = "Record where a file was saved.  It lives at that path now and takes the path's name."
+id = "saved-at"
+kind = "undoable"
+label = "Record where a file was saved"
+
+[[resources.verbs.params]]
+name = "file"
+required = true
+
+[resources.verbs.params.schema]
+description = "File"
+type = "string"
+
+[[resources.verbs.params]]
+name = "path"
+required = true
+
+[resources.verbs.params.schema]
+description = "Where it was saved"
+type = "string"
+
+[[resources.verbs]]
+description = "Load a file from disk into this one.  Its source becomes what the file holds, and it lives at the file's path."
+id = "load"
+kind = "undoable"
+label = "Load a file from disk into this one"
+
+[[resources.verbs.params]]
+name = "file"
+required = true
+
+[resources.verbs.params.schema]
+description = "File"
+type = "string"
+
+[[resources.verbs.params]]
+name = "path"
+required = true
+
+[resources.verbs.params.schema]
+description = "Where the file was read from"
+type = "string"
+
+[[resources.verbs.params]]
+name = "source"
+required = true
+
+[resources.verbs.params.schema]
+description = "What it holds"
+type = "string"
+
+[[resources.verbs]]
+description = "Close a file.  It leaves the workspace."
+destructive = true
+id = "close-file"
+kind = "undoable"
+label = "Close a file"
+
+[[resources.verbs.params]]
+name = "file"
+required = true
+
+[resources.verbs.params.schema]
+description = "File"
+type = "string"

@@ -14,11 +14,10 @@
 
 use serde::{Deserialize, Serialize};
 use ui::tilo_actions::ActionError;
-use ui::tilo_resource::{self, Doc, JsonSchema, order};
+use ui::tilo_resource::{self, JsonSchema, order};
 use ui::vello::kurbo::{BezPath, Rect, Shape as _};
 
 use crate::actions::{add_marks, derived_id, placed, refuse, target_layer, units};
-use crate::doc;
 use crate::model::{
     Artwork, Layer, MAX_SIDE, Mark, Matte, Selection, Shape, Style, path_data, valid_id,
 };
@@ -212,14 +211,14 @@ impl Select {
             .reduce(|all, part| all.combine(&part, Op::Union)))
     }
 
-    pub(crate) fn apply(&self, doc: &mut Doc, art: &Artwork) -> Result<(), ActionError> {
+    pub(crate) fn apply(&self, doc: &mut Artwork, art: &Artwork) -> Result<(), ActionError> {
         if self.looks() {
             return Err(refuse(
                 "at, colour, subject and refine are found in the artwork as the window shows it: use the select action itself, not apply",
             ));
         }
         if self.mode.as_deref() == Some("none") {
-            doc::write_selection(doc, None)?;
+            doc.selection = None;
             return Ok(());
         }
         let shapes = self.shapes(art)?;
@@ -268,7 +267,7 @@ impl Select {
             .combine(&Region::of_rect(art.bounds()), Op::Intersect)
             .bounded(0.25);
         if region.is_empty() {
-            doc::write_selection(doc, None)?;
+            doc.selection = None;
             return Ok(());
         }
         // A new selection starts sharp; a changed one keeps its feather.
@@ -293,14 +292,11 @@ impl Select {
         {
             return Err(refuse("a matte is a content address and a box"));
         }
-        doc::write_selection(
-            doc,
-            Some(&Selection {
-                d: path_data(&region.to_path()),
-                feather,
-                matte,
-            }),
-        )?;
+        doc.selection = Some(Selection {
+            d: path_data(&region.to_path()),
+            feather,
+            matte,
+        });
         Ok(())
     }
 }
@@ -320,14 +316,14 @@ fn selected_shape(art: &Artwork) -> Result<(Shape, f64), ActionError> {
 }
 
 impl UseSelection {
-    pub(crate) fn apply(&self, doc: &mut Doc, art: &Artwork) -> Result<(), ActionError> {
+    pub(crate) fn apply(&self, doc: &mut Artwork, art: &Artwork) -> Result<(), ActionError> {
         if let Some(cleaned) = self
             .cleaned
             .as_deref()
             .filter(|cleaned| !cleaned.is_empty())
         {
             give_pictures(doc, art, cleaned)?;
-            let art = doc::read(doc);
+            let art = doc.settled();
             return Self {
                 cleaned: None,
                 ..self.clone()
@@ -368,8 +364,8 @@ impl UseSelection {
             "mask" | "clear" => {
                 let reveal = self.what == "mask";
                 let owner = owner_of(art, &layer_id)?;
-                let masking = ensure_mask(doc, art, owner, if reveal { 0.0 } else { 1.0 })?;
-                let art = doc::read(doc);
+                let masking = ensure_mask(doc, art, owner, if reveal { 0.0 } else { 1.0 });
+                let art = doc.settled();
                 let style = Style {
                     fill: Some(if reveal { "#ffffff" } else { "#000000" }.into()),
                     feather: feathered,
@@ -419,7 +415,7 @@ impl UseSelection {
 
 /// Give each named picture mark its cleaned picture.
 fn give_pictures(
-    doc: &mut Doc,
+    doc: &mut Artwork,
     art: &Artwork,
     pictures: &[[String; 2]],
 ) -> Result<(), ActionError> {
@@ -437,7 +433,7 @@ fn give_pictures(
             Shape::Image { src: picture, .. } => picture.clone_from(src),
             _ => return Err(refuse(format!("{id:?} is not a picture"))),
         }
-        doc::write_mark(doc, &cleaned)?;
+        doc.put_mark(cleaned.clone());
     }
     Ok(())
 }
@@ -458,14 +454,9 @@ fn owner_of<'a>(art: &'a Artwork, id: &str) -> Result<&'a Layer, ActionError> {
 
 /// The mask of `owner`, made with `base` grey (1 shows all of the layer,
 /// 0 hides it) when it has none: its id.
-fn ensure_mask(
-    doc: &mut Doc,
-    art: &Artwork,
-    owner: &Layer,
-    base: f64,
-) -> Result<String, ActionError> {
+fn ensure_mask(doc: &mut Artwork, art: &Artwork, owner: &Layer, base: f64) -> String {
     if let Some(mask) = art.mask_of(&owner.id) {
-        return Ok(mask.id.clone());
+        return mask.id.clone();
     }
     let named = format!("{}-mask", owner.id);
     let id = if valid_id(&named) && art.layer(&named).is_none() {
@@ -479,26 +470,23 @@ fn ensure_mask(
         .position(|layer| layer.id == owner.id)
         .and_then(|at| art.layers.get(at.saturating_add(1)))
         .map(|layer| layer.order.as_str());
-    doc::write_layer(
-        doc,
-        &Layer {
-            id: id.clone(),
-            name: format!("{} mask", owner.name),
-            order: order::between(Some(&owner.order), above),
-            opacity: 1.0,
-            visible: true,
-            mask_of: owner.id.clone(),
-            base,
-            ..Layer::default()
-        },
-    )?;
-    Ok(id)
+    doc.put_layer(Layer {
+        id: id.clone(),
+        name: format!("{} mask", owner.name),
+        order: order::between(Some(&owner.order), above),
+        opacity: 1.0,
+        visible: true,
+        mask_of: owner.id.clone(),
+        base,
+        ..Layer::default()
+    });
+    id
 }
 
 /// Give `layer` a mask (`reveal` all, or `hide` all), `remove` it, or
 /// `unlink` it from (or `link` it to) the layer's marks as they move.
 pub(crate) fn edit_mask(
-    doc: &mut Doc,
+    doc: &mut Artwork,
     art: &Artwork,
     layer: &str,
     what: &str,
@@ -508,23 +496,20 @@ pub(crate) fn edit_mask(
         "reveal" | "hide" => {
             let base = if what == "reveal" { 1.0 } else { 0.0 };
             match art.mask_of(&owner.id) {
-                Some(mask) => doc::write_layer(
-                    doc,
-                    &Layer {
-                        base,
-                        ..mask.clone()
-                    },
-                )?,
+                Some(mask) => doc.put_layer(Layer {
+                    base,
+                    ..mask.clone()
+                }),
                 None => {
-                    ensure_mask(doc, art, owner, base)?;
+                    ensure_mask(doc, art, owner, base);
                 }
             }
             Ok(())
         }
         "remove" => {
             if let Some(mask) = art.mask_of(&owner.id) {
-                remove_layer_marks(doc, art, &mask.id)?;
-                doc::remove(doc, doc::LAYERS, &mask.id)?;
+                remove_layer_marks(doc, art, &mask.id);
+                doc.remove_layer(&mask.id);
             }
             Ok(())
         }
@@ -535,13 +520,10 @@ pub(crate) fn edit_mask(
                     owner.id
                 ))
             })?;
-            doc::write_layer(
-                doc,
-                &Layer {
-                    unlinked: what == "unlink",
-                    ..mask.clone()
-                },
-            )?;
+            doc.put_layer(Layer {
+                unlinked: what == "unlink",
+                ..mask.clone()
+            });
             Ok(())
         }
         other => Err(refuse(format!(
@@ -551,19 +533,14 @@ pub(crate) fn edit_mask(
 }
 
 /// Remove every mark of `layer`.
-pub(crate) fn remove_layer_marks(
-    doc: &mut Doc,
-    art: &Artwork,
-    layer: &str,
-) -> Result<(), ActionError> {
+pub(crate) fn remove_layer_marks(doc: &mut Artwork, art: &Artwork, layer: &str) {
     for mark in art.marks_of(layer) {
-        doc::remove(doc, doc::MARKS, &mark.id)?;
+        doc.remove_mark(&mark.id);
     }
-    Ok(())
 }
 
 impl Combine {
-    pub(crate) fn apply(&self, doc: &mut Doc, art: &Artwork) -> Result<(), ActionError> {
+    pub(crate) fn apply(&self, doc: &mut Artwork, art: &Artwork) -> Result<(), ActionError> {
         let op = Op::parse(&self.op).ok_or_else(|| {
             refuse(format!(
                 "op {:?} must be union, subtract, intersect or exclude",
@@ -616,9 +593,9 @@ impl Combine {
             ..(*bottom).clone()
         };
         for mark in rest {
-            doc::remove(doc, doc::MARKS, &mark.id)?;
+            doc.remove_mark(&mark.id);
         }
-        doc::write_mark(doc, &combined)?;
+        doc.put_mark(combined);
         Ok(())
     }
 }

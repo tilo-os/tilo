@@ -71,7 +71,7 @@ pub fn definition() -> &'static ui::application::ApplicationDefinition {
     ui::framework::definition::<TubeShell>()
 }
 
-pub use resource::{Tube, TubeShared, TubeShell};
+pub use resource::{Library, TubeShell};
 
 #[cfg(test)]
 mod tests {

@@ -2,7 +2,7 @@
 //! finds in Tube, each naming the exact resource/action that opens a video,
 //! creator, playlist, or local watch-history entry.
 
-use tilo_actions::ActionAddress;
+use ui::tilo_actions::ActionAddress;
 use ui::tilo_resource::SearchEntry;
 
 const MAX_INDEXED_ENTITIES: usize = 100;
@@ -92,8 +92,9 @@ mod tests {
             video_count: 1,
             video_ids: vec![video_id],
         });
-        let provider =
-            ui::framework::testing::search_source::<crate::resource::Tube>(model_entries(&model));
+        let provider = ui::framework::testing::search_source::<crate::resource::Library>(
+            model_entries(&model),
+        );
         for (query, resource, open) in [
             ("compositor", "tube.video:", "open-video"),
             ("watchlist", "tube.playlist:", "open-playlist"),

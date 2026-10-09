@@ -1,7 +1,7 @@
 use example_localized::{App, Shelf};
 use ui::headless::{InspectionNode, SemanticExpectation};
 use ui::i18n::{I18nManager, PseudoLocale};
-use ui::prelude::TestApp;
+use ui::prelude::{Invoke, TestApp};
 
 /// The app in a known language, whatever the machine running the test uses.
 #[expect(clippy::expect_used, reason = "a test helper fails the test loudly")]
@@ -42,8 +42,8 @@ fn counts_use_each_languages_plural_forms() {
 fn arguments_follow_the_language() {
     let mut app = open("en-US");
     says(&mut app, "greeting", "Welcome!");
-    app.invoke(Shelf::SET_READER.with("Ada"))
-        .expect("name the reader");
+    let ada = Invoke::edit(&Shelf::paths().reader.replace("Ada")).expect("an edit");
+    app.invoke(ada).expect("name the reader");
     says(&mut app, "greeting", "Welcome, Ada!");
     I18nManager::set_locale("de-DE");
     app.harness().relayout();

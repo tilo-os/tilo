@@ -2,11 +2,11 @@
 //! file shown (effects of the compiler and the filesystem), and zoom and
 //! arrange the preview (views). None of them changes the workspace document;
 //! an open or a save that does records what it changed through the
-//! workspace's actions ([`crate::resource::TypstAction`]). Live Problems
+//! workspace's verbs ([`crate::resource::Workspace`]). Live Problems
 //! rows and preview pages are published beneath the workspace by the
 //! surface.
 
-use tilo_actions::Resource;
+use ui::tilo_actions::Resource;
 use ui::tilo_resource::{self, Effect};
 
 /// Bound how many live diagnostic / preview-page rows the palette materialises.
@@ -174,12 +174,12 @@ mod tests {
             assert_eq!(spec.params()[0].name, "path");
             assert!(matches!(
                 spec.contract.execution,
-                tilo_actions::ExecutionMode::Background { cancellable: true }
+                ui::tilo_actions::ExecutionMode::Background { cancellable: true }
             ));
-            assert_eq!(spec.contract.result, tilo_actions::ResultSpec::Job);
+            assert_eq!(spec.contract.result, ui::tilo_actions::ResultSpec::Job);
             assert!(!matches!(
                 spec.contract.confirmation,
-                tilo_actions::ConfirmationPolicy::None
+                ui::tilo_actions::ConfirmationPolicy::None
             ));
         }
         let save = TypstEffect::decode(
@@ -199,7 +199,7 @@ mod tests {
             let spec = specs.iter().find(|spec| spec.id == id).unwrap();
             assert_eq!(
                 spec.contract.risk,
-                tilo_actions::RiskLevel::None,
+                ui::tilo_actions::RiskLevel::None,
                 "{id} is a view"
             );
         }

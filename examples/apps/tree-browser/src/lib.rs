@@ -48,51 +48,40 @@ fn section_key(id: u64) -> Id {
 }
 
 impl Notebook {
-    /// The section `id`, as stored (absent until first edited).
+    /// Every section, empty: what a new notebook holds, the same on every
+    /// device that creates one.
+    #[must_use]
+    pub fn with_sections() -> Self {
+        let mut notebook = Self::default();
+        for id in SECTIONS {
+            notebook.sections.push(section_key(id), Section::default());
+        }
+        notebook
+    }
+
+    /// The section `id`.
     pub fn section(&self, id: u64) -> Option<&Section> {
         self.sections.get(&section_key(id))
     }
 
-    fn edit(&mut self, id: u64) -> Result<&mut Section, &'static str> {
-        if !SECTIONS.contains(&id) {
-            return Err("no such section");
-        }
-        let key = section_key(id);
-        if !self.sections.contains(&key) {
-            self.sections.push(key.clone(), Section::default());
-        }
-        self.sections.get_mut(&key).ok_or("no such section")
+    /// The paths of section `id`, where its fields are edited.
+    #[must_use]
+    pub fn section_paths(id: u64) -> SectionPaths<Notebook> {
+        Self::paths().sections.item(&section_key(id))
     }
 }
 
-#[resource(kind = "example.notebook", label = "Notebook")]
+/// A section's title and notes are edited at their paths
+/// ([`Notebook::section_paths`]); sharing it is a verb.
+#[resource(kind = "example.notebook", label = "Notebook", initialize = Notebook::with_sections)]
 impl Notebook {
-    /// Set a section's title.
-    #[action]
-    pub fn set_title(
-        &mut self,
-        #[param("Stable section id")] id: u64,
-        #[param("Section title")] title: String,
-    ) -> Result<(), &'static str> {
-        self.edit(id)?.title = title;
-        Ok(())
-    }
-
-    /// Set a section's notes.
-    #[action]
-    pub fn set_notes(
-        &mut self,
-        #[param("Stable section id")] id: u64,
-        #[param("Section notes")] notes: String,
-    ) -> Result<(), &'static str> {
-        self.edit(id)?.notes = notes;
-        Ok(())
-    }
-
     /// Share a section.
     #[action]
     pub fn share(&mut self, #[param("Stable section id")] id: u64) -> Result<(), &'static str> {
-        self.edit(id)?.shared = true;
+        self.sections
+            .get_mut(&section_key(id))
+            .ok_or("no such section")?
+            .shared = true;
         Ok(())
     }
 }
@@ -112,28 +101,13 @@ fn node_label(id: u64) -> String {
 /// The detail pane of one section. Built again, with its own bindings, each
 /// time the selection changes.
 fn detail_pane(cx: &ViewCx<Notebook>, id: u64) -> Element {
+    let section = Notebook::section_paths(id);
     let title = cx
-        .input_with(
-            move |notebook| {
-                notebook
-                    .section(id)
-                    .map(|section| section.title.clone())
-                    .unwrap_or_default()
-            },
-            Notebook::SET_TITLE.map(move |title| (id, title)),
-        )
+        .input(section.title)
         .with_id("tree-title-input")
         .with_placeholder("tree-title-placeholder");
     let notes = cx
-        .input_with(
-            move |notebook| {
-                notebook
-                    .section(id)
-                    .map(|section| section.notes.clone())
-                    .unwrap_or_default()
-            },
-            Notebook::SET_NOTES.map(move |notes| (id, notes)),
-        )
+        .input(section.notes)
         .with_id("tree-notes-input")
         .with_placeholder("tree-notes-placeholder")
         .multiline(true);

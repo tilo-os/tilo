@@ -234,17 +234,17 @@ impl<W: Widget> Harness<W> {
     fn dispatch_control_invocations(&mut self) {
         while let Some(intent) = ui::widget::controls::take_control_invocation(&mut self.app) {
             let resources = ui::resources::resources(&self.app, &self.state.doc);
-            let spec = tilo_actions::door::resolve(&resources, &intent.address)
+            let spec = ui::tilo_actions::door::resolve(&resources, &intent.address)
                 .expect("action-bound test control must resolve in the current resource tree");
             assert!(
                 matches!(
                     spec.contract.confirmation,
-                    tilo_actions::ConfirmationPolicy::None
+                    ui::tilo_actions::ConfirmationPolicy::None
                 ),
                 "the harness must not manufacture confirmation"
             );
             let encoded =
-                tilo_actions::door::encode_json(&resources, &intent.address, &intent.arguments)
+                ui::tilo_actions::door::encode_json(&resources, &intent.address, &intent.arguments)
                     .expect("bound control arguments must satisfy their contract");
             self.app
                 .start_encoded(

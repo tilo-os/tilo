@@ -31,7 +31,7 @@ fn one() -> f64 {
 /// A medium: one of the built-in engines with its parameters, a suggested
 /// ground and a palette. Saving one makes it part of the artwork, shared
 /// with everyone who opens it.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct MediumSpec {
     /// Lowercase id, letters, digits and `-`.
     pub id: String,

@@ -8,7 +8,7 @@
 //! configuration to firewalld.
 //!
 //! The configuration lives in the shared Automerge document (`doc.rs`): every
-//! edit is a [`FirewallAction`] submitted through the framework dispatcher,
+//! edit is a field edit or verb submitted through the framework dispatcher,
 //! and the framework presents the stored configuration back (see
 //! [`crate::resource`]), so two instances on one record edit the same
 //! ruleset. Which zone is open, the tab and the draft are this window's
@@ -36,13 +36,15 @@ use ui::widget::{AppModel, ModelPath, NavShell, Widget};
 
 use ui::framework::{Dispatcher, Setting};
 
-use crate::actions::FirewallAction;
 use crate::model::{
     Action, FirewallConfig, Matcher, Proto, Rule, RuleId, Zone, ZoneKind, validate_port,
     validate_source,
 };
+use crate::model::{StoredRule, StoredZonePaths};
 use crate::resource::{AppliedConfig, ApplyOutcome, Firewall, FirewallEffect};
 use crate::view::{self, Draft, Intent, Intents, PageModel, SwitchKey, Switches, Tab};
+use ui::framework::Submit;
+use ui::tilo_resource::Json;
 
 /// How long a result toast stays before it hides itself.
 const TOAST_TTL: Duration = Duration::from_secs(5);
@@ -135,7 +137,7 @@ pub struct FirewallApp {
     /// The add-rule dialog is open.
     adding: bool,
 
-    /// Where every on-screen affordance submits its [`FirewallAction`]: one
+    /// Where every on-screen affordance submits its field edit or verb: one
     /// undo step each, replayed byte-identically on peers — the same door
     /// Ctrl+K takes. `None` only for a widget no resource hosts.
     dispatcher: Option<Dispatcher<Firewall>>,
@@ -309,17 +311,22 @@ impl FirewallApp {
         self.changed = true;
     }
 
-    /// Submit one [`FirewallAction`] — the single write path shared with the
-    /// Ctrl+K palette. The framework applies it after the event and presents
-    /// the stored configuration back, which the next frame shows.
+    /// Submit one field edit or verb of the stored configuration. The
+    /// framework applies it after the event and presents the stored
+    /// configuration back, which the next frame shows.
     ///
     /// This is *only* the document edit. Pushing the ruleset to the kernel
     /// (`firewall-cmd`/`nft`) follows from the stored configuration on each
     /// device — never part of an action.
-    fn dispatch(&self, action: &FirewallAction) {
+    fn dispatch(&self, submit: impl Submit<Firewall>) {
         if let Some(dispatcher) = &self.dispatcher {
-            dispatcher.apply(action);
+            dispatcher.submit(submit);
         }
+    }
+
+    /// The paths of the selected zone's stored fields.
+    fn zone_paths(&self) -> StoredZonePaths<Firewall> {
+        Firewall::paths().zones.key(self.selected_zone.name())
     }
 
     /// Invoke one of the firewall's effects through the same door as the
@@ -499,11 +506,19 @@ impl FirewallApp {
         if self.available {
             let enabled = self.enabled_switch.with(|on| *on);
             if enabled != self.config.enabled {
-                self.dispatch(&crate::actions::set_enabled_action(enabled));
+                self.dispatch(if enabled {
+                    Firewall::START.invoke()
+                } else {
+                    Firewall::STOP.invoke()
+                });
             }
             let panic = self.panic_switch.with(|on| *on);
             if panic != self.config.panic_mode {
-                self.dispatch(&crate::actions::set_panic_action(panic));
+                self.dispatch(if panic {
+                    Firewall::ENTER_PANIC_MODE.invoke()
+                } else {
+                    Firewall::EXIT_PANIC_MODE.invoke()
+                });
             }
         }
         self.sync_switches();
@@ -610,7 +625,16 @@ impl FirewallApp {
         };
         let id = rule.id;
         let title = rule.matcher.title();
-        self.dispatch(&crate::actions::add_rule_action(self.selected_zone, rule));
+        self.dispatch(self.zone_paths().rules.insert_as(
+            &Firewall::rule(id),
+            usize::MAX,
+            &StoredRule {
+                matcher: Json(rule.matcher),
+                action: rule.action,
+                source: rule.source,
+                enabled: rule.enabled,
+            },
+        ));
         self.selected_rule = Some(id);
         self.tab = Tab::Rules;
         self.adding = false;
@@ -620,7 +644,9 @@ impl FirewallApp {
     }
 
     fn delete_rule(&mut self, id: RuleId) {
-        self.dispatch(&crate::actions::delete_rule_action(self.selected_zone, id));
+        self.dispatch(
+            Firewall::DELETE_RULE.with((self.selected_zone.name().to_owned(), Firewall::rule(id))),
+        );
         if self.selected_rule == Some(id) {
             self.selected_rule = None;
         }
@@ -633,25 +659,28 @@ impl FirewallApp {
             .selected_zone_ref()
             .is_some_and(|zone| zone.rules.iter().any(|rule| rule.id == id));
         if exists {
-            self.dispatch(&crate::actions::set_rule_enabled_action(
-                self.selected_zone,
-                id,
-                on,
-            ));
+            self.dispatch(
+                self.zone_paths()
+                    .rules
+                    .item(&Firewall::rule(id))
+                    .enabled
+                    .set(on),
+            );
         }
     }
 
     fn set_service(&self, id: &str, on: bool) {
-        // Resolved at authoring time so the action is order-free on replay.
-        self.dispatch(&crate::actions::set_service_action(
-            self.selected_zone,
-            id,
-            on,
-        ));
+        let services = self.zone_paths().services;
+        let id = id.to_owned();
+        self.dispatch(if on {
+            services.insert(&id)
+        } else {
+            services.remove(&id)
+        });
     }
 
     fn set_active_zone(&mut self) {
-        self.dispatch(&crate::actions::set_default_zone_action(self.selected_zone));
+        self.dispatch(Firewall::paths().default_zone.set(self.selected_zone));
         self.report(
             format!("{} is now the active zone", self.selected_zone.title()),
             Tone::Success,

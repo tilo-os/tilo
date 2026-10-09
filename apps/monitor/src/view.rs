@@ -141,6 +141,8 @@ pub(crate) enum Request {
     Sort(SortKey),
     Filter(String),
     Select(u32),
+    /// Show the process row with this id (a search hit, an agent's `open`).
+    Open(String),
     /// Enter or a double click on a row.
     Activate(u32),
     SetExpanded(u32, bool),
@@ -426,15 +428,9 @@ fn view_toolbar(options: ListOptions, shared: &Shared) -> Toolbar {
         Toolbar::new(Orientation::Horizontal).push_toggle("Tree view", options.tree, move || {
             tree.borrow_mut().push(Request::TreeMode(!options.tree));
         });
-    let tree_mode = !options.tree;
     let binding = shared.borrow().actions.as_ref().and_then(|actions| {
-        actions.binding(
-            ui::tilo_resource::ActionRef::<crate::resource::Monitor, bool>::new(
-                "set-tree-mode",
-                &["tree"],
-            )
-            .map(move |()| tree_mode),
-        )
+        let flat = crate::resource::Monitor::paths().flat.set(options.tree);
+        actions.invocation(ui::tilo_resource::Invoke::edit(&flat).ok()?)
     });
     toolbar = match binding {
         Some(binding) => toolbar.with_action(binding),

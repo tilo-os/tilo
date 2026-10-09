@@ -496,6 +496,11 @@ struct CheckArgs {
 struct SurfaceArgs {
     /// App directory or a file/directory inside it. Defaults to the current directory.
     path: Option<PathBuf>,
+
+    /// Write the surface from a report the app's binary printed for
+    /// `--surface` (on another machine, a CI artifact) instead of building it.
+    #[arg(long)]
+    report: Option<PathBuf>,
 }
 
 #[derive(clap::Args)]
@@ -2303,7 +2308,10 @@ fn check_surface(path: &Path) -> Result<()> {
 /// `tilo-app surface`: commit the app's public surface.
 fn run_surface(args: SurfaceArgs) -> Result<Value> {
     let path = args.path.map_or_else(std::env::current_dir, Ok)?;
-    let (file, report) = tilo_app_cli::surface::write_app(&path)?;
+    let (file, report) = match &args.report {
+        Some(report) => tilo_app_cli::surface::write_reported(&path, report)?,
+        None => tilo_app_cli::surface::write_app(&path)?,
+    };
     println!("Wrote {}", file.display());
     for unbound in &report.unbound {
         println!("warning: {unbound}");

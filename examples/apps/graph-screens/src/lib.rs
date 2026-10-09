@@ -44,14 +44,10 @@ pub struct Projects {
     pub projects: Collection<Project>,
 }
 
+/// The draft is edited at its path (`Projects::paths().draft`); creating a
+/// project from it is a verb.
 #[resource(kind = "example.projects", label = "Project")]
 impl Projects {
-    /// Set the project name draft.
-    #[action]
-    pub fn set_draft(&mut self, #[param("Project name draft")] draft: String) {
-        self.draft = draft;
-    }
-
     /// Create a project from the draft.
     #[action]
     pub fn create(&mut self, cx: &mut ActionCx) -> Result<(), &'static str> {
@@ -92,7 +88,7 @@ impl ResourceApp for App {
     fn view(cx: &mut ViewCx<Projects>) -> Element {
         install_catalog();
         let input = cx
-            .input_with(|projects| projects.draft.clone(), Projects::SET_DRAFT)
+            .input(cx.paths().draft)
             .with_id("name-input")
             .with_placeholder("graph-project-name");
         let preview = cx
