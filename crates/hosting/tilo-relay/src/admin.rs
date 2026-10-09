@@ -6,6 +6,7 @@
 //! periodically persisted metrics snapshot.
 
 mod files_probe;
+mod files_setup;
 
 use std::path::PathBuf;
 
@@ -32,6 +33,23 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
+    /// Explicitly prepare an empty primary Files namespace for the existing device; never recover or replace saved data.
+    FilesWorkspaceInitialize {
+        #[command(flatten)]
+        options: files_setup::InitializeOptions,
+    },
+    /// Validate existing primary Files state and its signed filesystem permission before service launch.
+    FilesWorkspaceCheck {
+        #[arg(long)]
+        identity_root: PathBuf,
+        #[arg(long)]
+        cache_dir: PathBuf,
+    },
+    /// Sign an existing Files authority revision through the existing protected person identity.
+    PublishAuthority {
+        #[arg(long)]
+        acl: PathBuf,
+    },
     /// Query an already-enrolled home peer for public Files binding metadata, without updating local state.
     HomePeerFilesStatus {
         #[arg(long)]
@@ -179,6 +197,12 @@ fn main() -> anyhow::Result<std::process::ExitCode> {
 fn run() -> anyhow::Result<()> {
     let cli = Cli::parse();
     match cli.cmd {
+        Cmd::FilesWorkspaceInitialize { options } => files_setup::initialize(&options),
+        Cmd::FilesWorkspaceCheck {
+            identity_root,
+            cache_dir,
+        } => files_setup::check(&identity_root, &cache_dir),
+        Cmd::PublishAuthority { acl } => files_setup::publish(&acl),
         Cmd::HomePeerFilesStatus {
             identity_root,
             device,

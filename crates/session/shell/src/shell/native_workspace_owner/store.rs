@@ -17,13 +17,13 @@ pub(crate) use tilo_joined_room::{LimitedWriter, MAX_AUTHORITY_BYTES, MAX_STATE_
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct StateSequence(u64);
 
-/// A file written from a snapshot of the tree, beside the state file.
+/// A file written from a snapshot of the tree, beside the state file. The
+/// tree document is not one: it is written as a log of changes, in the
+/// order they were made (see [`NativeStateRuntime::document_log`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Companion {
-    /// The tree document and its meta.
-    Document = 0,
     /// The capability list the filesystem enforces.
-    FsCapabilities = 1,
+    FsCapabilities = 0,
 }
 
 /// What [`NativeStateRuntime::publish`] did with a snapshot.
@@ -138,7 +138,9 @@ pub(super) struct Runtime {
     sequence: AtomicU64,
     /// Per [`Companion`], the newest snapshot it was written from. Held
     /// across the write, so a companion file never goes backwards.
-    companions: Mutex<[u64; 2]>,
+    companions: Mutex<[u64; 1]>,
+    /// The tree document beside the state file.
+    document: crate::shell::persist::DocLog,
 }
 impl Default for Runtime {
     fn default() -> Self {
@@ -148,7 +150,8 @@ impl Default for Runtime {
             healthy: AtomicBool::new(true),
             uncertain_rooms: RwLock::new(std::collections::BTreeSet::default()),
             sequence: AtomicU64::new(0),
-            companions: Mutex::new([0; 2]),
+            companions: Mutex::new([0; 1]),
+            document: crate::shell::persist::DocLog::default(),
         }
     }
 }
@@ -257,6 +260,12 @@ impl NativeStateRuntime {
                 .fetch_add(1, Ordering::AcqRel)
                 .wrapping_add(1),
         )
+    }
+
+    /// The tree document beside this state file: every copy of the tree
+    /// cuts its changes into it, and every save writes them.
+    pub(crate) fn document_log(&self) -> &crate::shell::persist::DocLog {
+        &self.0.document
     }
 
     /// Run `write` for `companion` of snapshot `sequence`, unless that file

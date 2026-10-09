@@ -3470,12 +3470,19 @@ impl CapnpBrokerState {
             failure: &self.owner_commit_failure,
             complete: false,
         };
-        self.publisher
-            .commit_owner(request, record_kind)
-            .await
-            .map_err(capnp::Error::failed)?;
+        let result = self.publisher.commit_owner(request, record_kind).await;
         waiting.complete = true;
-        Ok(())
+        match result {
+            Ok(_) => Ok(()),
+            Err(reason) => {
+                // The owner answered: retain its actual refusal/failure for
+                // later clients instead of labeling this as a dropped RPC.
+                if let Ok(mut failure) = self.owner_commit_failure.lock() {
+                    failure.get_or_insert_with(|| format!("owner commit failed: {reason}"));
+                }
+                Err(capnp::Error::failed(reason))
+            }
+        }
     }
 
     async fn commit_effect_before_terminal(
@@ -9287,6 +9294,13 @@ impl channel_handle::Server for CapnpChannelHandle {
             Ok(snapshot) => Arc::<str>::from(snapshot),
             Err(error) => return Promise::err(capnp::Error::failed(error)),
         };
+        // The session's normal tracing filter passes only errors. Its flight
+        // recorder captures stderr; report numeric metadata without changing
+        // that filter or exporting any authorized catalogue contents.
+        eprintln!(
+            "collab: initial authorized action catalogue snapshot event_kind=ActionCatalogue serialized_bytes={}",
+            initial.len()
+        );
         let (tx, rx) = watch::channel(Some(initial));
         if let Ok(mut subscribers) = self.state.action_catalogue_subscribers.lock() {
             subscribers.insert(self.peer_id, (cluster, actor, tx));
