@@ -1,19 +1,7 @@
-[ratchets.hand_resource_impl]
-"apps/photos/src/resource.rs" = 1
-
-[ratchets.action_decl_new]
-"apps/photos/src/actions.rs" = 3
-
 [ratchets.action_address_new]
-"apps/photos/src/search.rs" = 4
-
-[ratchets.untyped_action_args]
-"apps/photos/src/actions.rs" = 18
+"apps/photos/src/search.rs" = 1
 
 [ratchets.direct_automerge_write]
-"apps/photos/src/actions.rs" = 1
 "apps/photos/src/app.rs" = 3
 "apps/photos/src/app/tests.rs" = 1
-"apps/photos/src/doc.rs" = 9
 "apps/photos/src/lib.rs" = 1
-"apps/photos/src/sample.rs" = 2
