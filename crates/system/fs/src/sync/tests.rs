@@ -3965,3 +3965,230 @@ async fn sync_frames_over_sixty_four_mebibytes_or_truncated_are_refused() {
         ));
     }
 }
+
+/// A device's publisher over a fresh repository, for the conflict-watch
+/// tests: concurrent heads are published from it directly, as a pull from
+/// another writer would apply them.
+struct ConflictWatchFixture {
+    _dir: tempfile::TempDir,
+    repository: Arc<RecordRepository>,
+    publisher: RecordPublisher,
+    workspace_id: uuid::Uuid,
+    actor: FileActor,
+}
+
+impl ConflictWatchFixture {
+    fn new() -> Self {
+        let dir = tempfile::tempdir().unwrap();
+        let repository = Arc::new(RecordRepository::open(dir.path().join("records")).unwrap());
+        let (device_key, device) = collab_types::generate_keypair();
+        let (_, person) = collab_types::generate_keypair();
+        let actor = FileActor { person, device };
+        let workspace_id = uuid::Uuid::from_u128(608);
+        let publisher =
+            RecordPublisher::new(Arc::clone(&repository), workspace_id, actor, device_key).unwrap();
+        Self {
+            _dir: dir,
+            repository,
+            publisher,
+            workspace_id,
+            actor,
+        }
+    }
+
+    fn version(
+        &self,
+        record_id: FileRecordId,
+        revision: u8,
+        parents: &[FileVersionId],
+    ) -> FileVersionV1 {
+        FileVersionV1 {
+            id: FileVersionId::new(),
+            record_id,
+            parents: parents.to_vec(),
+            actor: self.actor,
+            timestamp_ms: u64::from(revision),
+            content_hash: Some(ContentHash([revision; 32])),
+            metadata_hash: ContentHash([revision.wrapping_add(1); 32]),
+            provenance: FileProvenance::Edit,
+        }
+    }
+
+    /// A record with one version, `base`.
+    fn seed(&self) -> (FileRecordId, FileVersionV1) {
+        let record_id = FileRecordId::new();
+        let base = self.version(record_id, 1, &[]);
+        let metadata = FileMetadataV1 {
+            schema_version: 1,
+            record_id,
+            content_hash: base.content_hash,
+            byte_len: 1,
+            mime: Some("text/plain".into()),
+            previews: Vec::new(),
+            latest_actor: Some(self.actor),
+            observed_at_ms: 1,
+            index_status: IndexStatus::Indexed,
+            properties: None,
+        };
+        self.publisher
+            .publish(&metadata, std::slice::from_ref(&base))
+            .unwrap();
+        (record_id, base)
+    }
+
+    /// The conflict part of one reconciliation pass at `now`, as
+    /// `reconcile_loop` runs it: whether a record conflict was published,
+    /// and the namespace conflicts found.
+    fn pass(
+        &self,
+        watch: &mut conflict_watch::ConflictWatch,
+        namespace: &Namespace,
+        now: Instant,
+    ) -> (bool, Vec<crate::conflict::ContentConflict>) {
+        watch.begin_pass(now);
+        let published =
+            watch.publish_record_conflicts(&self.publisher, &self.repository, self.workspace_id);
+        (published, watch.namespace_conflicts(namespace))
+    }
+}
+
+/// Two namespaces holding one file, `doc`, edited concurrently: the second
+/// one's change not yet merged into the first.
+fn concurrently_edited_namespaces() -> (Namespace, Namespace) {
+    let mut namespace = Namespace::new("A").unwrap();
+    let ino = namespace
+        .create_file(ROOT_INO, "doc", Some(&Hash::from([1; 32])), 1, 1)
+        .unwrap();
+    let mut other = Namespace::from_bytes("B", &namespace.save()).unwrap();
+    let other_ino = other.lookup(ROOT_INO, "doc").unwrap().ino.0;
+    other.prime_baseline();
+    namespace.set_content(ino, Some(&Hash::from([10; 32])), 10, 5);
+    other.set_content(other_ino, Some(&Hash::from([20; 32])), 20, 5);
+    (namespace, other)
+}
+
+#[test]
+fn idle_timer_pass_runs_no_conflict_scan() {
+    let fixture = ConflictWatchFixture::new();
+    for _ in 0..1_000 {
+        fixture.seed();
+    }
+    let mut namespace = Namespace::new("idle-writer").unwrap();
+    let doc = namespace
+        .create_file(ROOT_INO, "doc", Some(&Hash::from([1; 32])), 1, 1)
+        .unwrap();
+    let mut watch = conflict_watch::ConflictWatch::default();
+    let start = Instant::now();
+
+    // The first pass after start looks everywhere.
+    let (published, conflicts) = fixture.pass(&mut watch, &namespace, start);
+    assert!(!published);
+    assert!(conflicts.is_empty());
+    assert_eq!(fixture.repository.concurrent_head_checks(), 1_000);
+    assert_eq!(namespace.conflict_scans(), 1);
+
+    // Timer passes that received nothing look nowhere.
+    for pass in 1..=3 {
+        let (published, conflicts) =
+            fixture.pass(&mut watch, &namespace, start + RECONCILE_INTERVAL * pass);
+        assert!(!published);
+        assert!(conflicts.is_empty());
+    }
+    assert_eq!(fixture.repository.concurrent_head_checks(), 1_000);
+    assert_eq!(namespace.conflict_scans(), 1);
+
+    // This device's own namespace writes cannot conflict with each other.
+    namespace.set_content(doc, Some(&Hash::from([2; 32])), 2, 2);
+    fixture.pass(&mut watch, &namespace, start + RECONCILE_INTERVAL * 4);
+    assert_eq!(namespace.conflict_scans(), 1);
+
+    // The slow sweep still looks everywhere, for a signal missed somehow.
+    fixture.pass(
+        &mut watch,
+        &namespace,
+        start + conflict_watch::CONFLICT_SWEEP_INTERVAL,
+    );
+    assert_eq!(fixture.repository.concurrent_head_checks(), 2_000);
+    assert_eq!(namespace.conflict_scans(), 2);
+}
+
+#[test]
+fn received_change_is_checked_for_conflict() {
+    let fixture = ConflictWatchFixture::new();
+    for _ in 0..50 {
+        fixture.seed();
+    }
+    let (record_id, base) = fixture.seed();
+    let left = fixture.version(record_id, 2, &[base.id]);
+    fixture.publisher.publish_structural_version(&left).unwrap();
+    let (mut namespace, mut other) = concurrently_edited_namespaces();
+
+    let mut watch = conflict_watch::ConflictWatch::default();
+    let start = Instant::now();
+    fixture.pass(&mut watch, &namespace, start);
+    let checks = fixture.repository.concurrent_head_checks();
+    assert_eq!(checks, 51);
+    assert_eq!(namespace.conflict_scans(), 1);
+
+    // What a gossip delta or an exchange delivers: the other writer's
+    // concurrent edit, and a version concurrent with `left`.
+    let delta = other.save_incremental();
+    namespace.apply_remote_and_resolve(&delta).unwrap();
+    let right = fixture.version(record_id, 3, &[base.id]);
+    fixture
+        .publisher
+        .publish_structural_version(&right)
+        .unwrap();
+
+    let (published, conflicts) = fixture.pass(&mut watch, &namespace, start + RECONCILE_INTERVAL);
+    assert!(published, "the concurrent heads become one open conflict");
+    assert_eq!(
+        fixture.repository.concurrent_head_checks(),
+        checks + 1,
+        "only the record that was written is checked"
+    );
+    let snapshot = fixture.publisher.snapshot(record_id).unwrap().unwrap();
+    assert_eq!(snapshot.conflicts.len(), 1);
+    assert_eq!(
+        conflicts.len(),
+        1,
+        "one conflict copy for the concurrent edit"
+    );
+    assert_eq!(namespace.conflict_scans(), 2);
+    assert!(!crate::conflict::materialize(&mut namespace, &conflicts[0], 10, 6).is_empty());
+
+    // Publishing the conflict was itself a write: the next pass checks
+    // that one record again and finds it settled; the one after checks
+    // nothing. Materialising the copy was a local change: no new scan.
+    let (published, conflicts) =
+        fixture.pass(&mut watch, &namespace, start + RECONCILE_INTERVAL * 2);
+    assert!(!published);
+    assert!(conflicts.is_empty());
+    let (published, _) = fixture.pass(&mut watch, &namespace, start + RECONCILE_INTERVAL * 3);
+    assert!(!published);
+    assert_eq!(fixture.repository.concurrent_head_checks(), checks + 2);
+    assert_eq!(namespace.conflict_scans(), 2);
+    let snapshot = fixture.publisher.snapshot(record_id).unwrap().unwrap();
+    assert_eq!(snapshot.conflicts.len(), 1);
+}
+
+#[test]
+fn unmaterialised_namespace_conflict_is_scanned_for_again() {
+    let (mut namespace, mut other) = concurrently_edited_namespaces();
+    namespace.merge_doc(&mut other).unwrap();
+
+    let mut watch = conflict_watch::ConflictWatch::default();
+    let start = Instant::now();
+    watch.begin_pass(start);
+    assert_eq!(watch.namespace_conflicts(&namespace).len(), 1);
+    // Its content was not reachable, so the loop asks again.
+    watch.retry_namespace();
+    watch.begin_pass(start + RECONCILE_INTERVAL);
+    assert_eq!(watch.namespace_conflicts(&namespace).len(), 1);
+    assert_eq!(namespace.conflict_scans(), 2);
+    // Merging what this namespace already holds brings nothing to scan.
+    namespace.merge_doc(&mut other).unwrap();
+    watch.begin_pass(start + RECONCILE_INTERVAL * 2);
+    assert!(watch.namespace_conflicts(&namespace).is_empty());
+    assert_eq!(namespace.conflict_scans(), 2);
+}
