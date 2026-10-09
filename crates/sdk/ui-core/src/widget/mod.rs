@@ -2648,6 +2648,8 @@ pub use crate::pen::PenSample;
 pub use decorator::Decorator;
 
 pub(crate) mod layout;
+#[cfg(test)]
+pub(crate) mod replaced_tripwire;
 pub use layout::{
     AuthoredExtent, ExtentSizing, WidgetLayoutError, compute_widget_layout, insets, insets_all,
     insets_xy, text_control_height,

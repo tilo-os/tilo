@@ -463,6 +463,14 @@ impl App {
             // widget presents. Invalidate once at the mutable tree boundary;
             // all later consumers in this event/frame share the rebuilt cache.
             app.invalidate_widget_resource_cache();
+            // The event may have replaced widgets (a dialog closing on its
+            // own button): forget their nodes before the fallbacks below look
+            // the focused node up. A focus target named by the old map is
+            // gone with it; the next frame lays the new widgets out.
+            if app.forget_replaced_widgets() {
+                focus_target = None;
+                window.request_redraw();
+            }
             let presentation_is_floating =
                 !app.root_widget.floating_surface_presentations().is_empty();
             floating_pointer_needs_redraw = matches!(event, WindowEvent::CursorMoved { .. })

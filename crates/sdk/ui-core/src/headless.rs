@@ -511,6 +511,10 @@ pub struct FrameHarness {
     component_wake: Option<ComponentRunnerWakeState>,
     owner_wake_queue: Option<crate::owner_wake::OwnerWakeQueue>,
     owner_service_layout_retired: bool,
+    /// A replaced composition seen by a focus capture before the next
+    /// layout took it up: the next [`Self::take_composition_dirty`] still
+    /// reports it.
+    composition_replaced: bool,
     layout_requested: bool,
     state: State,
     root: Box<dyn Widget>,
@@ -1140,7 +1144,35 @@ impl FrameHarness {
             .history
             .as_mut()
             .is_some_and(|history| history.take_structure_dirty());
-        root || history
+        let seen = std::mem::take(&mut self.composition_replaced);
+        root || history || seen
+    }
+
+    /// Whether a widget replaced children since the maps were admitted. The
+    /// change stays pending for the next [`Self::take_composition_dirty`].
+    fn composition_changed(&mut self) -> bool {
+        self.composition_replaced |= self.take_composition_dirty();
+        self.composition_replaced
+    }
+
+    /// Where focus is, as an identity that survives a rebuild. The mapped
+    /// tree is read only while it still is the live composition: once a
+    /// widget replaced children since the maps were admitted, the focused
+    /// control is found in the live tree instead, and the change stays
+    /// pending for the next layout.
+    fn capture_focus_identity(&mut self) -> Option<crate::widget::layout::CompositionFocus> {
+        if self.composition_changed() || self.node_map.is_empty() {
+            return crate::widget::layout::CompositionFocus::capture_live(self.root.as_ref());
+        }
+        // SAFETY: no composition change since these maps were admitted, so
+        // they describe this exclusively owned live tree.
+        unsafe {
+            crate::widget::layout::CompositionFocus::capture(
+                self.focused,
+                &self.node_map,
+                &self.bindings,
+            )
+        }
     }
 
     /// Replace the whole root control of this harness. `node_map` holds raw
@@ -1556,6 +1588,7 @@ impl FrameHarness {
             component_wake,
             owner_wake_queue: None,
             owner_service_layout_retired: false,
+            composition_replaced: false,
             layout_requested: false,
             state,
             root,
@@ -3762,14 +3795,7 @@ impl FrameHarness {
             .focused
             .and_then(|node| self.bindings.binding_for(node))
         {
-            // SAFETY: these maps belong to this exclusively borrowed runner.
-            if let Some(focus) = unsafe {
-                crate::widget::layout::CompositionFocus::capture(
-                    self.focused,
-                    &self.node_map,
-                    &self.bindings,
-                )
-            } {
+            if let Some(focus) = self.capture_focus_identity() {
                 self.saved_instance_focus.insert(binding.instance_id, focus);
             }
         }
@@ -4420,6 +4446,11 @@ impl FrameHarness {
         use crate::accesskit_bridge::A11yTarget;
         self.pump_component_wakes_checked()
             .map_err(|error| format!("owner layout readmission refused: {error:?}"))?;
+        // The node is resolved through the maps: admit a composition widgets
+        // replaced since they were built first.
+        if self.composition_changed() {
+            self.readmit_replaced_composition();
+        }
         if self.global_search_query().is_some() {
             let handled = self.perform_system_search_a11y(target, action);
             self.finish_system_search();
@@ -4490,6 +4521,17 @@ impl FrameHarness {
         if !key_path.is_empty() {
             self.set_focused(Some(taffy_id));
         }
+        // Who is acted on, as an identity that survives a rebuild the action
+        // itself may cause.
+        // SAFETY: the action below reaches this node through the same
+        // admitted, unchanged maps.
+        let acted = unsafe {
+            crate::widget::layout::CompositionFocus::capture(
+                Some(taffy_id),
+                &self.node_map,
+                &self.bindings,
+            )
+        };
         let handled = self
             .dispatch_semantic_node(taffy_id, action, |widget, doc, root| {
                 if let Some(target) = semantic_target.as_deref() {
@@ -4509,6 +4551,23 @@ impl FrameHarness {
                 }
             })
             .map_err(|error| format!("component dispatch refused: {error:?}"))?;
+        // The action may have replaced widgets: the node acted on is looked
+        // up again only in the newly admitted composition.
+        // The action may have replaced widgets: what follows looks the node
+        // acted on up again in the newly admitted composition, or not at all
+        // when it is gone.
+        let taffy_id = if self.composition_changed() {
+            self.readmit_replaced_composition();
+            // SAFETY: the readmission admitted this fresh, owned tree.
+            acted.and_then(|acted| unsafe { acted.restore(&self.node_map, &self.bindings, None) })
+        } else {
+            Some(taffy_id)
+        };
+        let Some(taffy_id) = taffy_id else {
+            self.host_tick();
+            self.relayout();
+            return Ok(());
+        };
         if handled
             && (matches!(action, crate::a11y::Action::Focus)
                 || (matches!(action, crate::a11y::Action::SetSelection { .. })
@@ -5660,6 +5719,14 @@ impl FrameHarness {
             // Banked; folded into the frame the following `relayout` commits.
             p.record_since(crate::profiling::Pass::HandleEvent, t_event);
         }
+        // The event may have replaced widgets (a dialog closing on its own
+        // button): a focus target named by the old map is gone with them,
+        // and the new composition is admitted before anything below looks a
+        // node up.
+        if self.composition_changed() {
+            focus_target = None;
+            self.readmit_replaced_composition();
+        }
         // Mirror the App: a widget that claimed focus during dispatch
         // becomes the focused node, so subsequent keystrokes route to it.
         if let Some(t) = focus_target {
@@ -6278,15 +6345,9 @@ impl FrameHarness {
             return;
         };
         if self.action_palette.is_none() {
-            // SAFETY: modal admission has not retired this owned live tree.
-            self.ordinary_palette_return_focus = unsafe {
-                crate::widget::layout::CompositionFocus::capture(
-                    self.focused,
-                    &self.node_map,
-                    &self.bindings,
-                )
-            }
-            .or_else(|| crate::widget::layout::CompositionFocus::capture_live(self.root.as_ref()));
+            self.ordinary_palette_return_focus = self.capture_focus_identity().or_else(|| {
+                crate::widget::layout::CompositionFocus::capture_live(self.root.as_ref())
+            });
         }
         self.discard_layout_tree();
         self.focused = None;
@@ -13923,6 +13984,9 @@ mod owner_layout_custody_tests;
 #[cfg(test)]
 #[path = "headless/owner_layout_demand_tests.rs"]
 mod owner_layout_demand_tests;
+#[cfg(test)]
+#[path = "headless/replaced_composition_tests.rs"]
+mod replaced_composition_tests;
 
 #[cfg(test)]
 #[path = "../../../browser/tilo-browser-runtime/src/background_work.rs"]

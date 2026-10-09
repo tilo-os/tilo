@@ -303,6 +303,29 @@ impl super::App {
     /// until the next layout rebuilds it. Drop the map now, so nothing in
     /// between (the cursor and tooltip a pointer move looks up, a key's
     /// focused target) reaches a widget that is gone. Whether it did.
+    /// Where focus is, as an identity that survives a rebuild. The layout's
+    /// map is read only while it still describes the live tree: replaced
+    /// widgets are forgotten first, and then the focused control is found
+    /// in the live tree instead.
+    pub(super) fn capture_focus_identity(
+        &mut self,
+    ) -> Option<crate::widget::layout::CompositionFocus> {
+        if self.forget_replaced_widgets() || self.layout.node_map.is_empty() {
+            return crate::widget::layout::CompositionFocus::capture_live(
+                self.root_widget.as_ref(),
+            );
+        }
+        // SAFETY: no widget was replaced since the map was admitted, so it
+        // describes this exclusively owned live tree.
+        unsafe {
+            crate::widget::layout::CompositionFocus::capture(
+                self.focused_node,
+                &self.layout.node_map,
+                &self.bindings,
+            )
+        }
+    }
+
     pub(super) fn forget_replaced_widgets(&mut self) -> bool {
         if !self.take_composition_dirty() {
             return false;

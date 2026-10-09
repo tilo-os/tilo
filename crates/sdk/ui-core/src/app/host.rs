@@ -497,7 +497,15 @@ fn run_layout_pass(
     // A pending structural rebuild means the old map may already contain
     // removed controls. Capture only from an admitted, unchanged topology.
     app.layout.structure_dirty |= app.take_composition_dirty();
-    let focus = if app.layout.structure_dirty {
+    let pending = app
+        .actions
+        .focus_after_rebuild
+        .take()
+        .filter(|_| app.layout.structure_dirty);
+    let refocus = pending.is_some();
+    let focus = if let Some(pending) = pending {
+        Some(pending)
+    } else if app.layout.structure_dirty {
         CompositionFocus::capture_live(app.root_widget.as_ref())
     } else {
         // SAFETY: the admitted maps belong to App's unchanged exclusive tree.
@@ -538,6 +546,12 @@ fn run_layout_pass(
                 };
                 if app.accessibility.focus_trap_active && app.focused_node.is_none() {
                     app.set_focused_node(app.focusable_order.first().copied());
+                }
+                if refocus {
+                    // An action focused this control while replacing
+                    // widgets: it takes focus now that it is laid out.
+                    let node = app.focused_node.take();
+                    app.set_focused_node(node);
                 }
             } else {
                 // Anonymous retained widgets keep their own state. Resolve a

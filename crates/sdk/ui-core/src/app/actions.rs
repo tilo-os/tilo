@@ -3106,13 +3106,7 @@ impl App {
             crate::history_mode::embedded::drain_pending_commands(self.root_widget.as_mut());
         if !commands.is_empty() || !embedded.is_empty() {
             if self.history_focus.is_none() {
-                self.history_focus = unsafe {
-                    crate::widget::layout::CompositionFocus::capture(
-                        self.focused_node,
-                        &self.layout.node_map,
-                        &self.bindings,
-                    )
-                };
+                self.history_focus = self.capture_focus_identity();
             }
             self.layout.node_map.clear();
             self.bindings.clear();
@@ -4145,18 +4139,10 @@ impl App {
         if self.actions.action_palette.is_none() {
             // Native semantic focus is authoritative even before the next
             // retained render propagates the widget's focused flag.
-            // SAFETY: modal admission has not retired either map; both still
-            // describe this exclusively held, live background widget tree.
-            self.actions.ordinary_palette_return_focus = unsafe {
-                crate::widget::layout::CompositionFocus::capture(
-                    self.focused_node,
-                    &self.layout.node_map,
-                    &self.bindings,
-                )
-            }
-            .or_else(|| {
-                crate::widget::layout::CompositionFocus::capture_live(self.root_widget.as_ref())
-            });
+            self.actions.ordinary_palette_return_focus =
+                self.capture_focus_identity().or_else(|| {
+                    crate::widget::layout::CompositionFocus::capture_live(self.root_widget.as_ref())
+                });
         }
         self.open_action_palette();
         self.bindings.clear();

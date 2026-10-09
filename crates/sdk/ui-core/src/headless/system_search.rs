@@ -288,14 +288,7 @@ impl FrameHarness {
             return Err("Search query is too long".into());
         }
         if self.system_search.overlay.is_none() {
-            // SAFETY: the harness exclusively owns these live maps and tree.
-            self.system_search.saved_focus = unsafe {
-                crate::widget::layout::CompositionFocus::capture(
-                    self.focused,
-                    &self.node_map,
-                    &self.bindings,
-                )
-            };
+            self.system_search.saved_focus = self.capture_focus_identity();
         }
         let mut palette = CommandPalette::new();
         palette.set_modal(true);

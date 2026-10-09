@@ -446,6 +446,10 @@ impl App {
         {
             return false;
         }
+        // The sweep follows every mapped node: forget widgets replaced since
+        // the map was admitted first. Survivors keep what they queued for the
+        // sweep after the next layout.
+        self.forget_replaced_widgets();
         // SAFETY: App exclusively owns this stable live layout for the sweep.
         let mut changed = unsafe {
             crate::undo::record_dispatched_action_bound(
@@ -1052,6 +1056,10 @@ impl App {
         use crate::accesskit_bridge::A11yTarget;
 
         let _entry = self.enter_wake_scope();
+        // The target is resolved through the layout's map: widgets replaced
+        // since it was built are forgotten first, and an action that arrives
+        // before the next layout admits their replacements finds nothing.
+        self.forget_replaced_widgets();
 
         self.refresh_control_action_availability();
         // A retained AT id is operable only while the exact target is exported
@@ -1121,6 +1129,19 @@ impl App {
         if framework {
             self.suspend_history_focus(Some(taffy_id));
         }
+        // Who is acted on, as an identity that survives a rebuild the action
+        // itself may cause.
+        // SAFETY: the action below reaches this node through the same
+        // admitted, unchanged maps.
+        let mut acted = matches!(action, Action::Focus)
+            .then(|| unsafe {
+                crate::widget::layout::CompositionFocus::capture(
+                    Some(taffy_id),
+                    &self.layout.node_map,
+                    &self.bindings,
+                )
+            })
+            .flatten();
         let handled = self
             .dispatch_semantic_node(taffy_id, action, |widget, doc, root| {
                 if let Some(target) = semantic_target.as_deref() {
@@ -1143,12 +1164,20 @@ impl App {
             })
             .ok()?;
         drop(history_frame);
+        // The action may have replaced widgets: their nodes are forgotten
+        // before anything below looks a node up, and the node acted on is
+        // focused only while it is still the one the map names.
+        let replaced = self.forget_replaced_widgets();
+        if handled && replaced {
+            self.actions.focus_after_rebuild = acted.take();
+        }
         if handled {
-            if matches!(action, Action::Focus)
-                || (matches!(action, Action::SetSelection { .. })
-                    && self
-                        .inspect_node(taffy_id, |widget| widget.is_focused())
-                        .unwrap_or(false))
+            if !replaced
+                && (matches!(action, Action::Focus)
+                    || (matches!(action, Action::SetSelection { .. })
+                        && self
+                            .inspect_node(taffy_id, |widget| widget.is_focused())
+                            .unwrap_or(false)))
             {
                 self.set_focused_node(Some(taffy_id));
             }
@@ -1178,6 +1207,15 @@ impl App {
             return None;
         }
 
+        if replaced {
+            // The map that named this node is gone with the widgets the
+            // action replaced: only focus resumes, once the next layout
+            // admits the new composition; nothing is clicked at a guess.
+            if matches!(action, Action::Focus) {
+                self.actions.focus_after_rebuild = acted.take();
+            }
+            return None;
+        }
         match action {
             Action::Focus => {
                 if synthetic && !ordinal_path.is_empty() {
@@ -1245,6 +1283,11 @@ impl App {
             let mut handled = false;
             let mut focus_target = None;
             self.presentation_handle_event(&event, 1.0, &mut handled, &mut focus_target);
+            // A target named by the map the event saw is gone once the
+            // event replaced widgets.
+            if self.forget_replaced_widgets() {
+                focus_target = None;
+            }
             if let Some(id) = focus_target {
                 self.set_focused_node(Some(id));
             }
