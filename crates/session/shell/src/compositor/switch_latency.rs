@@ -297,7 +297,10 @@ mod tests {
             assert_eq!(sample.frames, 4);
             assert_eq!(sample.dropped, 3);
         }
+    }
 
+    #[test]
+    fn an_asynchronous_switch_is_dated_when_its_frames_retire() {
         // Phase `an_asynchronous_run_is_dated_at_retirement`.
         // Frames are shown at their vblank, two retire together, and the
         // sample waits for the resting frame's retirement.
