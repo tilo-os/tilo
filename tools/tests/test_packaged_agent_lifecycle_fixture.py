@@ -1261,6 +1261,54 @@ class PresentedEditorTargetTests(unittest.TestCase):
         self.assertEqual(result, after)
         calls.assert_not_called()
 
+    def test_physical_selection_expected_caret_waits_for_exact_shift_left_baseline(self):
+        stale = {"selection": [4, 9], "caret": 9, "draft_matches": True,
+                 "accessibility_focused": True}
+        exact = dict(stale, caret=4)
+        with patch.object(PROOF, "private_editor_observation", side_effect=[stale, exact]) as read, \
+                patch.object(PROOF.time, "sleep"), \
+                patch.object(PROOF, "call") as calls:
+            result = PROOF.wait_for_private_selection(
+                "socket", {}, "test text", [4, 9], None, pathlib.Path("unused"),
+                expected_caret=4)
+            self.assertEqual(result, exact)
+            self.assertEqual(read.call_count, 2)
+            calls.assert_not_called()
+        # Ctrl+A and callers without an independently required caret keep their
+        # existing selection-only contract; there is no global lower-end rule.
+        with patch.object(PROOF, "private_editor_observation", return_value=stale) as read:
+            self.assertEqual(PROOF.wait_for_private_selection(
+                "socket", {}, "test text", [4, 9], None, pathlib.Path("unused")), stale)
+            self.assertEqual(read.call_count, 1)
+
+    def test_physical_selection_expected_caret_expires_without_accepting_mixed_baseline(self):
+        stale = {"selection": [4, 9], "caret": 9, "draft_matches": True,
+                 "accessibility_focused": True, "private": "PRIVATE-CANARY"}
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(PROOF, "private_editor_observation", return_value=stale) as read, \
+                patch.object(PROOF.time, "sleep"), \
+                patch.object(PROOF.time, "monotonic", side_effect=[0, 0, 0, 10, 20, 30]), \
+                patch.object(PROOF, "call", return_value={"ok": True}) as calls, \
+                patch.object(PROOF, "require_ok"):
+            output = pathlib.Path(directory)
+            with self.assertRaises(PROOF.ProofTimeout):
+                PROOF.wait_for_private_selection(
+                    "socket", {}, "test text", [4, 9], None, output, expected_caret=4)
+            self.assertEqual(read.call_count, 3)
+            receipt = json.loads((output / "physical-selection-refused.json").read_text())
+            self.assertEqual(receipt["expected_caret"], 4)
+            self.assertEqual(receipt["observed_caret"], 9)
+            self.assertNotIn("PRIVATE-CANARY", json.dumps(receipt))
+            self.assertEqual(calls.call_count, 1)
+            self.assertEqual(calls.call_args.args[1]["op"], "snapshot")
+
+    def test_membership_revocation_requires_independent_shift_left_caret_before_float(self):
+        source = inspect.getsource(PROOF.native_agent_membership_revocation)
+        self.assertIn("expected_caret=len(draft) - 10", source)
+        self.assertLess(source.index("before = wait_for_private_selection("),
+                        source.index("activate_agent_conversation_control(access, \"Float\")"))
+        self.assertIn("if detached_before != before:", source)
+
     def test_physical_selection_timeout_keeps_exact_assertion_and_closed_evidence(self):
         timeout = PROOF.ProofTimeout("original selection timeout")
         observed = {"selection": [5, 9], "caret": 5, "draft_matches": True,

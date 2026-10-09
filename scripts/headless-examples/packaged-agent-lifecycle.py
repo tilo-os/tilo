@@ -1224,7 +1224,8 @@ def closed_return_editor_observation(access, before, after, same_chat):
     return observed
 
 
-def wait_for_private_selection(socket, access, expected, selection, process, output):
+def wait_for_private_selection(socket, access, expected, selection, process, output, *,
+                               expected_caret=None):
     """Observe dispatched physical keys; never replay them or change the assertion."""
     last = None
     deadline = time.monotonic() + 30
@@ -1232,7 +1233,8 @@ def wait_for_private_selection(socket, access, expected, selection, process, out
     def selected():
         nonlocal last
         last = private_editor_observation(access, expected, deadline=deadline)
-        return last if last["selection"] == selection else None
+        return last if last["selection"] == selection \
+            and (expected_caret is None or last["caret"] == expected_caret) else None
 
     try:
         return wait_for("physical selection in the actual private editor", selected, process)
@@ -1241,6 +1243,7 @@ def wait_for_private_selection(socket, access, expected, selection, process, out
         # The fixture's draft and raw accessibility replies remain in memory.
         (output / "physical-selection-refused.json").write_text(json.dumps({
             "expected_selection": selection,
+            "expected_caret": expected_caret,
             "observed_selection": last["selection"] if last else None,
             "observed_caret": last["caret"] if last else None,
             "draft_matches": last["draft_matches"] if last else False,
@@ -5702,7 +5705,9 @@ def native_agent_membership_revocation(
     with hold_physical_modifiers(socket, shift=True):
         for _ in range(10):
             require_ok(call(socket, {"op": "key", "key": "ArrowLeft"}))
-    before = private_editor_observation(access, draft)
+    before = wait_for_private_selection(
+        socket, access, draft, [len(draft) - 10, len(draft)], process, output,
+        expected_caret=len(draft) - 10)
     if before["selection"] != [len(draft) - 10, len(draft)]:
         raise RuntimeError("physical revocation selection did not reach the private editor")
 
