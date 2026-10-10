@@ -2386,6 +2386,7 @@ impl FrameBuilder {
             return None;
         }
         let screen_w = scene_px(self.scene_size.0).max(1);
+        let screen_h = scene_px(self.scene_size.1).max(1);
         let max_width = self.retained_layer_width?.min(MAX_CANVAS_WIDTH);
         if screen_w > max_width {
             return None;
@@ -2427,13 +2428,21 @@ impl FrameBuilder {
                     .host
                     .strip_pan_rect(crate::shell::state::StripId(id))
                     .unwrap_or(rect);
-                let dest_y = scene_px(pans.y0);
-                let dest_y1 = scene_px(pans.y1);
+                // Row shadows and a docked wheel may extend past the output.
+                // Their offscreen pixels have no place in a scanout-sized
+                // canvas; retain the visible pan without expanding its bounds.
+                let dest_y = scene_px(pans.y0).min(screen_h);
+                let dest_y1 = scene_px(pans.y1).min(screen_h);
+                let dest_w = dest_w.min(screen_w.saturating_sub(dest_x));
+                let dest_h = dest_y1.saturating_sub(dest_y);
+                if dest_w == 0 || dest_h == 0 {
+                    continue;
+                }
                 plan.strips.push(StripBlit {
                     dest_x,
                     dest_y,
                     dest_w,
-                    dest_h: dest_y1.saturating_sub(dest_y).max(1),
+                    dest_h,
                     scroll_x: scene_px(scroll + pad),
                 });
             }
@@ -4617,6 +4626,101 @@ pub fn walk_widget<S1: std::hash::BuildHasher, S2: std::hash::BuildHasher>(
 )]
 mod tests {
     use super::*;
+
+    #[cfg(target_os = "linux")]
+    fn rasterized_pan_scene(scene: &Scene, size: (u32, u32)) -> Vec<u8> {
+        let stride = usize::try_from(size.0).unwrap().saturating_mul(4);
+        let mut pixels = vec![0; stride.saturating_mul(usize::try_from(size.1).unwrap())];
+        let mut target = tilo_cpu_raster::Target::new(&mut pixels, size.0, size.1, stride).unwrap();
+        tilo_cpu_raster::CpuRasterizer::new(tilo_cpu_raster::Options::default()).render(
+            scene.encoding(),
+            &mut target,
+            None,
+            Color::TRANSPARENT,
+        );
+        pixels
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn retained_strip_plan_clips_shadow_bounds_to_the_viewport() {
+        let _env_lock = tilo_test_env::lock();
+        for size in [(1920, 1080), (640, 480)] {
+            let mut frame = FrameBuilder::new(size);
+            frame.set_retained_layer_width(Some(8192));
+            frame.host.set_pixel_aligned_strip_pan(true);
+            frame.relayout();
+            let outside = frame
+                .host
+                .strip_scroll_offsets()
+                .iter()
+                .find_map(|(id, _, _)| {
+                    frame
+                        .host
+                        .strip_pan_rect(crate::shell::state::StripId(*id))
+                        .filter(|rect| rect.y1 > f64::from(size.1))
+                })
+                .expect("the real row shadow extends beyond the output");
+            let plan = frame
+                .strip_plan()
+                .expect("identity output can retain strips");
+            assert!(!plan.strips.is_empty(), "visible strips must remain panned");
+            for strip in &plan.strips {
+                assert!(strip.dest_w > 0 && strip.dest_h > 0);
+                assert!(
+                    strip.dest_x.saturating_add(strip.dest_w) <= size.0,
+                    "{strip:?}"
+                );
+                assert!(
+                    strip.dest_y.saturating_add(strip.dest_h) <= size.1,
+                    "{strip:?}"
+                );
+                assert!(
+                    strip
+                        .dest_x
+                        .saturating_add(strip.scroll_x)
+                        .saturating_add(strip.dest_w)
+                        <= plan.width
+                );
+            }
+            let mut unclipped = plan.strips.clone();
+            let strip = unclipped
+                .iter_mut()
+                .find(|strip| strip.dest_y == scene_px(outside.y0))
+                .expect("the visible strip with an offscreen shadow");
+            strip.dest_h = scene_px(outside.y1).saturating_sub(strip.dest_y);
+            assert!(strip.dest_y.saturating_add(strip.dest_h) > size.1);
+            let mut workspace = Scene::new();
+            workspace.fill(
+                Fill::NonZero,
+                Affine::IDENTITY,
+                Color::from_rgb8(180, 40, 10),
+                None,
+                &Rect::new(0.0, 0.0, f64::from(plan.width), outside.y1),
+            );
+            workspace.fill(
+                Fill::NonZero,
+                Affine::IDENTITY,
+                Color::from_rgba8(10, 70, 210, 120),
+                None,
+                &Rect::new(
+                    0.0,
+                    f64::from(size.1) - 3.5,
+                    f64::from(plan.width),
+                    outside.y1,
+                ),
+            );
+            let mut retained = Scene::new();
+            frame.append_panned(&mut retained, &workspace, &plan.strips);
+            let mut dense = Scene::new();
+            frame.append_panned(&mut dense, &workspace, &unclipped);
+            assert_eq!(
+                rasterized_pan_scene(&retained, size),
+                rasterized_pan_scene(&dense, size),
+                "clipping the real shadow bounds must preserve every visible pixel"
+            );
+        }
+    }
 
     /// The terminal a hosted Terminal tab shows, inside its app.
     fn hosted_terminal(widget: &mut dyn Widget) -> Option<&mut terminal::TerminalWidget> {

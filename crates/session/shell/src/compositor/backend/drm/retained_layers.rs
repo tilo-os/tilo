@@ -323,7 +323,17 @@ fn validate(cache: &FrameCache, size: (u32, u32), limit: u32) -> Result<(), Stri
                 .and_then(|x| x.checked_add(strip.dest_w))
                 .is_none_or(|x| x > cache.width)
         {
-            return Err("retained strip lies outside its canvas".into());
+            return Err(format!(
+                "retained strip lies outside its canvas: destination=({},{},{},{}), scroll_x={}, canvas_width={}, output={}x{}",
+                strip.dest_x,
+                strip.dest_y,
+                strip.dest_w,
+                strip.dest_h,
+                strip.scroll_x,
+                cache.width,
+                size.0,
+                size.1
+            ));
         }
         if cache.strips.iter().take(index).any(|other| {
             strip.dest_x < other.dest_x.saturating_add(other.dest_w)
