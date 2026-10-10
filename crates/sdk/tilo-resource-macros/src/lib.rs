@@ -129,8 +129,11 @@ fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
             Fields::Named(fields) => {
                 let mut reads = Vec::new();
                 // Every stored field is read in one walk of the map
-                // (`read_slots`), then loaded in declaration order.
-                let mut slot_names = Vec::new();
+                // (`read_slots`), then loaded in declaration order, each
+                // taking its slot out of the one array through the
+                // non-generic `take_slot`. A local per slot would make every
+                // field's `?` drop each slot after it, and an iterator over
+                // the array is generic code of its own in every app (TIL-765).
                 let mut slot_keys = Vec::new();
                 let mut missing = Vec::new();
                 let mut writes = Vec::new();
@@ -153,9 +156,10 @@ fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
                         missing.push(quote!(#ident: ::core::default::Default::default()));
                         continue;
                     }
-                    let slot = format_ident!("__slot_{}", ident);
-                    reads.push(quote!(#ident: #krate::load_slot::<#ty>(doc, #slot, #key)?));
-                    slot_names.push(slot);
+                    let index = proc_macro2::Literal::usize_unsuffixed(slot_keys.len());
+                    reads.push(quote!(#ident: #krate::load_slot::<#ty>(
+                        doc, #krate::take_slot(&mut __slots, #index), #key
+                    )?));
                     slot_keys.push(key.clone());
                     missing.push(quote!(
                         #ident: <#ty as #krate::Model>::missing().map_err(|error| error.at(#key))?
@@ -188,6 +192,11 @@ fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
                         sizes.push(quote!((#field_name, self.#ident.len())));
                     }
                 }
+                let slots = if slot_keys.is_empty() {
+                    quote!()
+                } else {
+                    quote!(let mut __slots = #krate::read_slots(doc, obj, [#(#slot_keys),*]);)
+                };
                 let item_collections = if collections.is_empty() {
                     quote!()
                 } else {
@@ -267,7 +276,7 @@ fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
                             obj: &#krate::__private::ObjId,
                         ) -> ::core::result::Result<Self, #krate::ModelError> {
                             let _ = (&doc, &obj);
-                            let [#(#slot_names),*] = #krate::read_slots(doc, obj, [#(#slot_keys),*]);
+                            #slots
                             ::core::result::Result::Ok(Self { #(#reads,)* })
                         }
                         fn write_fields(

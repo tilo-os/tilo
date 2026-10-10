@@ -9,22 +9,29 @@
 //! its pane opened, an effect or a row lookup reached it — waits for that
 //! read rather than starting a second one, so the device is read once.
 
+use std::any::Any;
 use std::cell::RefCell;
+use std::marker::PhantomData;
 use std::sync::mpsc::{Receiver, TryRecvError};
 
+/// A result on its way from the background executor.
+type Erased = Box<dyn Any + Send>;
+
 /// One background read of a `T`, started at most once.
+///
+/// Only its edges know `T`: [`ErasedRead`] carries every result as an
+/// [`Erased`] box. Six areas read six types, and a channel per type
+/// compiled `std::sync::mpsc` six times into the Settings tapp (TIL-765).
 pub(crate) struct DeviceRead<T> {
-    /// The read on its way, until its result is taken off the channel.
-    pending: RefCell<Option<Receiver<T>>>,
-    /// Its result, once taken off the channel and not yet adopted.
-    done: RefCell<Option<T>>,
+    read: ErasedRead,
+    of: PhantomData<fn() -> T>,
 }
 
 impl<T> Default for DeviceRead<T> {
     fn default() -> Self {
         Self {
-            pending: RefCell::new(None),
-            done: RefCell::new(None),
+            read: ErasedRead::default(),
+            of: PhantomData,
         }
     }
 }
@@ -34,6 +41,35 @@ impl<T: Send + 'static> DeviceRead<T> {
     /// is done. `false` when a read was already started, or when the host
     /// runs no background work — the area then reads when it is asked.
     pub(crate) fn start(&self, read: impl FnOnce() -> T + Send + 'static) -> bool {
+        self.read
+            .start(Box::new(move || Box::new(read()) as Erased))
+    }
+
+    /// Whether the read started has ended: its result is in, or it failed
+    /// and the area will read when asked. `true` when none was started.
+    pub(crate) fn is_finished(&self) -> bool {
+        self.read.is_finished()
+    }
+
+    /// The started read's result, waiting for it if it still runs. `None`
+    /// when no read was started or it failed: the caller reads itself.
+    pub(crate) fn take(&self) -> Option<T> {
+        let value = self.read.take()?.downcast::<T>().ok()?;
+        Some(*value)
+    }
+}
+
+/// [`DeviceRead`] for a result of any type: the reading, compiled once.
+#[derive(Default)]
+struct ErasedRead {
+    /// The read on its way, until its result is taken off the channel.
+    pending: RefCell<Option<Receiver<Erased>>>,
+    /// Its result, once taken off the channel and not yet adopted.
+    done: RefCell<Option<Erased>>,
+}
+
+impl ErasedRead {
+    fn start(&self, read: Box<dyn FnOnce() -> Erased + Send>) -> bool {
         if self.pending.borrow().is_some() || self.done.borrow().is_some() {
             return false;
         }
@@ -50,9 +86,7 @@ impl<T: Send + 'static> DeviceRead<T> {
         true
     }
 
-    /// Whether the read started has ended: its result is in, or it failed
-    /// and the area will read when asked. `true` when none was started.
-    pub(crate) fn is_finished(&self) -> bool {
+    fn is_finished(&self) -> bool {
         let mut pending = self.pending.borrow_mut();
         let Some(receiver) = pending.as_ref() else {
             return true;
@@ -71,9 +105,7 @@ impl<T: Send + 'static> DeviceRead<T> {
         }
     }
 
-    /// The started read's result, waiting for it if it still runs. `None`
-    /// when no read was started or it failed: the caller reads itself.
-    pub(crate) fn take(&self) -> Option<T> {
+    fn take(&self) -> Option<Erased> {
         if let Some(value) = self.done.borrow_mut().take() {
             return Some(value);
         }

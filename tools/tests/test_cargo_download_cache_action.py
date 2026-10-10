@@ -14,7 +14,7 @@ DIRECT_CONSUMERS = {
 }
 PREPARED_CONSUMERS = {
     "release-verifier-bundles.yml": 1,
-    "check.yml": 5,
+    "check.yml": 6,
     "ci-legacy-apps.yml": 1,
     "ci-nightly.yml": 2,
     "dev-visual-baselines.yml": 1,
