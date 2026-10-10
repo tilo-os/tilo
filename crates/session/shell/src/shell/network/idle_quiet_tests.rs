@@ -40,9 +40,18 @@ const IDLE: Duration = Duration::from_secs(60);
 ///
 /// Measured 9.9/s, 10.5/s and 11.6/s on CI (focused runs 89705, 89410,
 /// 89703): the two network runtimes' workers (`tilo-net-rt-*`) over both
-/// desktops, everything else under 0.1/s. That is the highest plus a
-/// quarter; lower it with each fix that removes a waker (TIL-614).
-const IDLE_WAKEUP_BUDGET: f64 = 15.0;
+/// desktops, everything else under 0.1/s.
+///
+/// The gate runs in the pull-request shell shard, which measures more than a
+/// focused runner on the same code. Focused, main and #3983 measured
+/// 10.2–12.5/s. In the shard, across five PRs, it measured 15.18, 15.31,
+/// 15.52, 15.59, 15.82, 16.16 and 16.80/s. The extra is voluntary switches,
+/// not preemptions: 0.7/s of involuntary switches in check run 90601, which
+/// ran with the pool to itself. The budget is the shard's p95, 16.8/s, plus a
+/// quarter (TIL-690, `docs/benchmarks/idle-wakeups-2026-10-09.md`). Lower it
+/// with each fix that removes a waker, for example TIL-702 for the network
+/// runtime.
+const IDLE_WAKEUP_BUDGET: f64 = 21.0;
 
 /// Every thread of this process except the one driving the desktops'
 /// frame loops, whose 10 Hz is the simulation's and not the session's.
