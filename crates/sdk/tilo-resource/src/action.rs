@@ -820,6 +820,7 @@ impl<O: Operation> tilo_actions::Action for Stamped<O> {
         // The record the previous action of this type left behind, brought
         // up to date with only the changes since, stands in for a whole read.
         let committed = automerge::transaction::Transactable::pending_ops(doc) == 0;
+        let started = automerge::transaction::Transactable::base_heads(doc);
         let (mut record, dirty) = match crate::apply_cache::take::<O::Record>(doc) {
             Some(warm) => (warm.record, Some(warm.dirty)),
             None => (O::Record::read_fields(doc, &ROOT).map_err(refused)?, None),
@@ -876,7 +877,7 @@ impl<O: Operation> tilo_actions::Action for Stamped<O> {
         // Kept once all it wrote is written: the next action finds this
         // one's change by its size.
         if let (Some(kept), true) = (kept, committed) {
-            crate::apply_cache::keep(kept, doc);
+            crate::apply_cache::keep(kept, doc, &started);
         }
         Ok(())
     }
