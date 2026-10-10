@@ -6,7 +6,7 @@
 //! production [`tilo_relay::Relay`] with authentication and the co-edit path
 //! as a daemon runs them. The parent then connects N collaborators in rooms
 //! of four, each its own device certificate, iroh endpoint and
-//! `tilo-relay/5` session, and plays a fixed, deterministic minute of work
+//! `tilo-relay/7` session, and plays a fixed, deterministic minute of work
 //! for each of them, over and over:
 //!
 //! - **typing**: 30 one-character edits, one every 200 ms, through the
