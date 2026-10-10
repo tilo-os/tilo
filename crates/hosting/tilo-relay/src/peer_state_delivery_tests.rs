@@ -165,9 +165,15 @@ async fn writer_boundary(
     );
     let mut wire = Vec::new();
     for delivery in deliveries.drain(..written_before_invalidation) {
-        write_state_delivery(delivery, &recipient, &session, &mut wire)
-            .await
-            .unwrap();
+        write_state_delivery(
+            delivery,
+            &recipient,
+            &session,
+            &mut Default::default(),
+            &mut wire,
+        )
+        .await
+        .unwrap();
     }
     assert_eq!(wire.is_empty(), written_before_invalidation == 0);
     let mut delivery = deliveries.remove(0);
@@ -215,9 +221,15 @@ async fn writer_boundary(
         .unwrap();
     delivery.cleanup = Some(pending.clone());
     let before = wire.clone();
-    write_state_delivery(delivery, &recipient, &session, &mut wire)
-        .await
-        .unwrap();
+    write_state_delivery(
+        delivery,
+        &recipient,
+        &session,
+        &mut Default::default(),
+        &mut wire,
+    )
+    .await
+    .unwrap();
     assert!(
         wire == before,
         "invalid or stale queued state must not reach the wire"
@@ -246,9 +258,15 @@ async fn writer_boundary(
             _budget: None,
             live: current,
         };
-        write_state_delivery(current_delivery, &recipient, &session, &mut wire)
-            .await
-            .unwrap();
+        write_state_delivery(
+            current_delivery,
+            &recipient,
+            &session,
+            &mut Default::default(),
+            &mut wire,
+        )
+        .await
+        .unwrap();
         crate::persistence::receipt(owner.read(1, |_| Ok(())).unwrap())
             .await
             .unwrap();
