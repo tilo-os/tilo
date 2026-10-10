@@ -28,7 +28,7 @@ fn the_agent_surface_matches_its_golden_file_and_budget() {
     let _ = app.harness().render_rgba();
     assert!(
         app.harness()
-            .settle_for_capture(std::time::Duration::from_secs(2)),
+            .settle_for_capture(tilo_test_env::hang_bound()),
         "the window settles"
     );
     let surface = app.agent_surface();
