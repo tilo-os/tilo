@@ -1,10 +1,8 @@
 //! Exact retained-owner resource routing. Requests are toolkit-private and finite;
 //! no widget pointer or mutable document loan escapes a traversal.
-#[cfg(not(target_arch = "wasm32"))]
-use super::BoundActionAddress;
 use super::{
-    AutoCommit, BoundActionTarget, CallbackBinding, PermissionContext, ROOT, Transactable, UserId,
-    Widget, authorize_legacy_owner, encode_resource_action, execute_document,
+    AutoCommit, BoundActionAddress, BoundActionTarget, CallbackBinding, PermissionContext, ROOT,
+    Transactable, UserId, Widget, authorize_legacy_owner, encode_resource_action, execute_document,
     resolve_resource_invocation,
 };
 use crate::history_mode::HistoryOwner;
@@ -223,7 +221,6 @@ fn claims(resources: &[Resource], address: &ActionAddress) -> usize {
         })
         .sum()
 }
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn select_local_target(
     root: &dyn Widget,
     doc: &AutoCommit,
@@ -355,7 +352,6 @@ pub(crate) struct LegacyInvocation<'a> {
 }
 pub(crate) struct LegacyDocumentOutcome {
     pub(crate) changed: bool,
-    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) envelope: tilo_actions::ActionEnvelope,
 }
 #[derive(Default)]
@@ -890,11 +886,7 @@ fn execute_owned(
                     doc,
                     &ROOT,
                 );
-                Ok(LegacyDocumentOutcome {
-                    changed,
-                    #[cfg(not(target_arch = "wasm32"))]
-                    envelope,
-                })
+                Ok(LegacyDocumentOutcome { changed, envelope })
             };
             match scope {
                 Some(scope) => scope

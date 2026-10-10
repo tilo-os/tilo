@@ -176,7 +176,6 @@ pub struct PermissionContext {
 
 /// Inert directory cache identity. It cannot make a permission decision.
 #[derive(Clone, Debug, PartialEq, Eq)]
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) struct DirectoryPermissionWitness {
     user: UserId,
     actor: Actor,
@@ -255,7 +254,6 @@ impl PermissionContext {
 
     /// Compare the current policy meaning, not callback allocation or elapsed
     /// seconds. Sampling is fallible; no cached/empty witness replaces failure.
-    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn directory_witness(&self) -> Result<DirectoryPermissionWitness, String> {
         let now = match &self.policy_time {
             Some(sampler) => Some((sampler.0)()?),

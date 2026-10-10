@@ -1412,7 +1412,6 @@ impl RecordSet {
 
     /// Native caller has already read this exact route through its admitted SDK
     /// channel. Install that graph before the legacy empty-document initializer.
-    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn checkout_with_initial(
         &mut self,
         state: &mut crate::state::State,
@@ -3410,7 +3409,6 @@ impl RecordStore {
         ))
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn invocation_provenance(
         &self,
         id: &RecordId,
@@ -3423,7 +3421,6 @@ impl RecordStore {
         Ok(parked.action_state.invocation_provenance.clone())
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn require_invocation_provenance(
         &self,
         checkout: &RecordCheckout,

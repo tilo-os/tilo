@@ -7,10 +7,8 @@
 //! Construction initializes the platform mutex before any handle is shared, so
 //! retirement and drop never allocate.
 mod lifecycle;
-pub(crate) use lifecycle::MountConstructionRetirement;
 pub use lifecycle::MountRetirement;
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) use lifecycle::RootRetirementPrelude;
+pub(crate) use lifecycle::{MountConstructionRetirement, RootRetirementPrelude};
 
 use std::sync::{
     Arc, Mutex, TryLockError,

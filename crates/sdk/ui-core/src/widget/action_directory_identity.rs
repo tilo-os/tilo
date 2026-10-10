@@ -41,7 +41,6 @@ impl ActionDirectoryInvocationDomain {
         Self::Versioned(*sink.0.finalize().as_bytes())
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn is_supported(self) -> bool {
         !matches!(self, Self::Unsupported)
     }

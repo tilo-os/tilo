@@ -568,10 +568,7 @@ struct CommittedValue {
     value: CachedBytes,
 }
 enum CurrentValue {
-    Owned {
-        value: CachedBytes,
-    },
-    #[cfg(not(target_arch = "wasm32"))]
+    Owned { value: CachedBytes },
     Committed,
 }
 impl CurrentValue {
@@ -591,17 +588,13 @@ struct Entry {
     committed: Option<CommittedValue>,
 }
 impl Entry {
-    #[cfg_attr(
-        not(target_arch = "wasm32"),
-        expect(
-            clippy::expect_used,
-            reason = "an entry is only marked Committed together with its committed alias"
-        )
+    #[expect(
+        clippy::expect_used,
+        reason = "an entry is only marked Committed together with its committed alias"
     )]
     fn current(&self) -> &CachedBytes {
         match &self.value {
             CurrentValue::Owned { value, .. } => value,
-            #[cfg(not(target_arch = "wasm32"))]
             CurrentValue::Committed => {
                 &self
                     .committed
@@ -632,11 +625,9 @@ impl CacheBinding {
     fn borrow_mut(&self) -> std::cell::RefMut<'_, Cache> {
         self.inner.borrow_mut()
     }
-    #[cfg(not(target_arch = "wasm32"))]
     fn try_borrow(&self) -> Result<std::cell::Ref<'_, Cache>, std::cell::BorrowError> {
         self.inner.try_borrow()
     }
-    #[cfg(not(target_arch = "wasm32"))]
     fn try_borrow_mut(&self) -> Result<std::cell::RefMut<'_, Cache>, std::cell::BorrowMutError> {
         self.inner.try_borrow_mut()
     }

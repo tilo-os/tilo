@@ -360,7 +360,6 @@ pub struct ActionDirectoryResourcePage {
     clippy::option_option,
     reason = "outer None means end of traversal; inner None means this ordinal has no bounded provider"
 )]
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn action_directory_page_at(
     widget: &dyn Widget,
     doc: &AutoCommit,
