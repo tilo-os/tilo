@@ -5077,12 +5077,16 @@ impl Widget for TextInput {
         // because bullet byte offsets intentionally differ from the secret.
         self.apply_span_highlighter(theme);
         let display = self.layout_display_text();
+        #[cfg(test)]
+        let metrics_probe = crate::profiling::frame_probe::span("single_line_metrics");
         let total_w = self.build_single_line_metrics(
             text_renderer,
             &display,
             text_size,
             self.scale_for(theme.text_scale),
         );
+        #[cfg(test)]
+        drop(metrics_probe);
         self.single_origin = Point::new(self.rect.x0 + padding_x, text_y);
 
         let cursor_x_offset = self.single_line_cursor_x_offset(total_w);
@@ -5123,10 +5127,14 @@ impl Widget for TextInput {
         self.draw_single_line_decorations(scene, transform, theme, true);
         self.draw_single_line_selection(scene, transform, theme);
 
+        #[cfg(test)]
+        let glyph_probe = crate::profiling::frame_probe::span("single_line_glyphs");
         self.draw_single_line_text(
             &mut PaintCtx::new(scene, transform, text_renderer, theme),
             &display,
         );
+        #[cfg(test)]
+        drop(glyph_probe);
 
         self.draw_single_line_decorations(scene, transform, theme, false);
         if self.is_focused && !self.effectively_disabled() {
@@ -5142,7 +5150,11 @@ impl Widget for TextInput {
             self.reveal
                 .draw(scene, transform, text_renderer, theme, presence);
         }
+        #[cfg(test)]
+        let spelling_probe = crate::profiling::frame_probe::span("single_line_spelling");
         self.draw_spelling(scene, transform, theme);
+        #[cfg(test)]
+        drop(spelling_probe);
         self.draw_autocorrection(scene, transform, theme);
         self.draw_autocorrection_preview(scene, transform, text_renderer, theme);
     }
@@ -5921,6 +5933,8 @@ impl TextInput {
                 Self::attributed_signature(base ^ Self::single_attributes_signature(a), &a.spans)
             });
             if self.single_layout.is_none() || self.shaped_layout_signature != signature {
+                #[cfg(test)]
+                let _phase = crate::profiling::frame_probe::span("single_line_shape");
                 let browser_emoji = text_renderer.browser_color_emoji_installed();
                 let mut layout = if let Some(attributes) = attributes {
                     RichTextLayout::shape_styled_browser(
@@ -5957,21 +5971,36 @@ impl TextInput {
                 return 0.0;
             };
             let end_byte = self.text_to_layout_byte(self.text.len());
-            let positions: Vec<(usize, f64)> = grapheme_indices(&self.text)
-                .map(|(byte_idx, _)| {
-                    let x = layout.caret_geometry(self.text_to_layout_byte(byte_idx)).0;
-                    (byte_idx, f64::from(x))
+            let bytes: Vec<_> = grapheme_indices(&self.text)
+                .map(|(byte_idx, _)| byte_idx)
+                .chain(std::iter::once(self.text.len()))
+                .collect();
+            // These bytes already come from the grapheme iterator. Re-clamping
+            // each one would segment the full string again for every caret.
+            // Resolve the composition insertion point once as well.
+            let preedit = self.core.preedit_display_range(&self.text);
+            let positions: Vec<_> = bytes
+                .iter()
+                .map(|byte| {
+                    TextPosition::new(if *byte == self.text.len() {
+                        end_byte
+                    } else if let Some(range) = &preedit
+                        && *byte > range.start
+                    {
+                        byte.saturating_add(range.len())
+                    } else {
+                        *byte
+                    })
                 })
                 .collect();
-            let end_x = f64::from(layout.caret_geometry(end_byte).0);
+            #[cfg(test)]
+            let _phase = crate::profiling::frame_probe::span("single_line_caret_batch");
+            let geometries = layout.caret_geometries(&positions);
             let width = layout.width();
-            for (byte_idx, x) in positions {
-                if let Some(slot) = self.char_x_positions.get_mut(byte_idx) {
-                    *slot = x;
+            for (byte, geometry) in bytes.into_iter().zip(geometries) {
+                if let Some(slot) = self.char_x_positions.get_mut(byte) {
+                    *slot = f64::from(geometry.0);
                 }
-            }
-            if let Some(slot) = self.char_x_positions.get_mut(self.text.len()) {
-                *slot = end_x;
             }
             width
         }

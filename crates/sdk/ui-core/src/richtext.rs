@@ -1015,6 +1015,37 @@ impl RichTextLayout {
         byte_fallback
     }
 
+    /// Resolve a set of carets from one traversal of the shaped visual rows.
+    /// Exact affinity wins over the first byte-only fallback, as in
+    /// `caret_geometry_at`. Geometry is local to this call and never survives
+    /// an edit, reshape, font change or owner replacement.
+    pub(crate) fn caret_geometries(&self, positions: &[TextPosition]) -> Vec<(f32, f32, f32)> {
+        use std::collections::HashMap;
+        let mut exact = HashMap::new();
+        let mut fallback = HashMap::new();
+        for run in self.buffer.layout_runs() {
+            for (x, stop) in self.caret_stops(&run) {
+                let geometry = (x, run.line_top, run.line_height);
+                exact.entry(stop).or_insert(geometry);
+                fallback.entry(stop.byte).or_insert(geometry);
+            }
+        }
+        positions
+            .iter()
+            .map(|position| {
+                let position = TextPosition {
+                    byte: position.byte.min(self.text_len),
+                    affinity: position.affinity,
+                };
+                exact
+                    .get(&position)
+                    .or_else(|| fallback.get(&position.byte))
+                    .copied()
+                    .unwrap_or((0.0, 0.0, self.line_height))
+            })
+            .collect()
+    }
+
     /// Caret geometry for a conventional byte-only position.
     pub fn caret_geometry(&self, byte: usize) -> (f32, f32, f32) {
         self.caret_geometry_at(TextPosition::new(byte))
@@ -1186,10 +1217,7 @@ impl RichTextLayout {
                 continue;
             }
             let cluster = run.text.get(glyph.start..glyph.end).unwrap_or("");
-            let mut boundaries: Vec<usize> = crate::text_break::grapheme_indices(cluster)
-                .map(|(at, _)| at)
-                .collect();
-            boundaries.push(cluster.len());
+            let boundaries = caret_cluster_boundaries(cluster);
             let segments = boundaries.len().saturating_sub(1).max(1);
             for visual in 0..=segments {
                 let logical = if glyph.level.is_rtl() {
@@ -1571,6 +1599,19 @@ fn geometry_run_within_budget(run: &cosmic_text::LayoutRun<'_>) -> bool {
         }
     }
     true
+}
+
+/// One-byte ASCII clusters contain one grapheme. Keep the full segmenter for
+/// ligatures, CRLF and every non-ASCII cluster.
+fn caret_cluster_boundaries(cluster: &str) -> std::borrow::Cow<'_, [usize]> {
+    if cluster.len() == 1 && cluster.is_ascii() {
+        return std::borrow::Cow::Borrowed(&[0, 1]);
+    }
+    let mut boundaries: Vec<_> = crate::text_break::grapheme_indices(cluster)
+        .map(|(at, _)| at)
+        .collect();
+    boundaries.push(cluster.len());
+    std::borrow::Cow::Owned(boundaries)
 }
 
 #[cfg(test)]
@@ -2794,6 +2835,72 @@ mod tests {
             );
             // And the reported block height scales with it too.
             assert!(doubled.height() > single.height() * 1.8);
+        }
+    }
+    #[test]
+    fn batched_carets_match_existing_geometry_and_visit_each_row_once() {
+        let mut fs = crate::font_catalog::fixture_font_system();
+        let style = crate::text_render::TextStyle::new(16.0);
+        for text in [
+            "",
+            "ordinary text and ffi ligatures",
+            "שלום mixed עברית words and English",
+            "emoji 👩‍💻 and é é
+second line",
+            "  indented wrapped text has spaces and several visual rows",
+        ] {
+            for width in [None, Some(90.0)] {
+                let layout = RichTextLayout::shape_styled(
+                    &mut fs,
+                    &[RichSpan::new(text)],
+                    &style,
+                    width,
+                    TextAlign::Left,
+                    vec![],
+                    vec![],
+                );
+                let positions: Vec<_> = text
+                    .char_indices()
+                    .map(|(byte, _)| byte)
+                    .chain([text.len(), text.len() + 1])
+                    .flat_map(|byte| {
+                        [
+                            TextPosition::with_affinity(byte, TextAffinity::Before),
+                            TextPosition::with_affinity(byte, TextAffinity::After),
+                        ]
+                    })
+                    .collect();
+                let expected: Vec<_> = positions
+                    .iter()
+                    .map(|position| layout.caret_geometry_at(*position))
+                    .collect();
+                CARET_STOP_RUNS.with(|count| count.set(0));
+                let actual = layout.caret_geometries(&positions);
+                assert_eq!(actual, expected, "{text:?} width={width:?}");
+                assert_eq!(
+                    CARET_STOP_RUNS.with(std::cell::Cell::get),
+                    layout.buffer.layout_runs().count(),
+                    "one stop construction per visual row, not per requested caret"
+                );
+            }
+        }
+    }
+    #[test]
+    fn caret_cluster_fast_path_matches_unicode_segmenter() {
+        let mut clusters: Vec<String> = (0u8..=127)
+            .map(|byte| char::from(byte).to_string())
+            .collect();
+        clusters.extend(["", "ffi", "\r\n", "é", "é", "👩‍💻", "שלום"].map(str::to_owned));
+        for cluster in clusters {
+            let mut expected: Vec<_> = crate::text_break::grapheme_indices(&cluster)
+                .map(|(at, _)| at)
+                .collect();
+            expected.push(cluster.len());
+            assert_eq!(
+                caret_cluster_boundaries(&cluster).as_ref(),
+                expected.as_slice(),
+                "{cluster:?}"
+            );
         }
     }
 }
