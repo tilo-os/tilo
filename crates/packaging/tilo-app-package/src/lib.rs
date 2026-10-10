@@ -64,7 +64,6 @@ pub mod unpack;
 pub mod validate;
 pub mod verify;
 pub mod version;
-pub mod web;
 
 pub use blobs::{
     BlobFetcher, BlobHash, BlobSink, BlobSource, Collection, CollectionDecodeError, DiscardBlobs,
