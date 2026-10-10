@@ -28,6 +28,92 @@ pub(crate) fn write_introspection(writer: &mut dyn Write, level: usize, xml: &st
     }
 }
 
+/// Implement [`zbus::object_server::Interface`] for `$ty`, a property-less
+/// interface named `$name` and introspected as `$xml`. Method calls go to the
+/// type's inherent `dispatch_call(connection, message, member)`, which
+/// routes each member through [`dispatch`] or [`answer`].
+macro_rules! method_interface {
+    ($ty:ty, $name:literal, $xml:expr) => {
+        #[zbus::export::async_trait::async_trait]
+        impl zbus::object_server::Interface for $ty {
+            fn name() -> zbus::names::InterfaceName<'static> {
+                zbus::names::InterfaceName::from_static_str_unchecked($name)
+            }
+
+            async fn get(
+                &self,
+                _property: &str,
+                _server: &zbus::ObjectServer,
+                _connection: &zbus::Connection,
+                _header: Option<&zbus::message::Header<'_>>,
+                _emitter: &zbus::object_server::SignalEmitter<'_>,
+            ) -> Option<zbus::fdo::Result<zbus::zvariant::OwnedValue>> {
+                None
+            }
+
+            async fn get_all(
+                &self,
+                _server: &zbus::ObjectServer,
+                _connection: &zbus::Connection,
+                _header: Option<&zbus::message::Header<'_>>,
+                _emitter: &zbus::object_server::SignalEmitter<'_>,
+            ) -> zbus::fdo::Result<std::collections::HashMap<String, zbus::zvariant::OwnedValue>>
+            {
+                Ok(std::collections::HashMap::new())
+            }
+
+            fn set<'call>(
+                &'call self,
+                _property: &'call str,
+                _value: &'call zbus::zvariant::Value<'_>,
+                _server: &'call zbus::ObjectServer,
+                _connection: &'call zbus::Connection,
+                _header: Option<&'call zbus::message::Header<'_>>,
+                _emitter: &'call zbus::object_server::SignalEmitter<'_>,
+            ) -> zbus::object_server::DispatchResult2<'call> {
+                zbus::object_server::DispatchResult2::NotFound
+            }
+
+            async fn set_mut(
+                &mut self,
+                _property: &str,
+                _value: &zbus::zvariant::Value<'_>,
+                _server: &zbus::ObjectServer,
+                _connection: &zbus::Connection,
+                _header: Option<&zbus::message::Header<'_>>,
+                _emitter: &zbus::object_server::SignalEmitter<'_>,
+            ) -> Option<zbus::fdo::Result<()>> {
+                None
+            }
+
+            fn call<'call>(
+                &'call self,
+                _server: &'call zbus::ObjectServer,
+                connection: &'call zbus::Connection,
+                message: &'call zbus::message::Message,
+                name: zbus::names::MemberName<'call>,
+            ) -> zbus::object_server::DispatchResult2<'call> {
+                self.dispatch_call(connection, message, name.as_str())
+            }
+
+            fn call_mut<'call>(
+                &'call mut self,
+                _server: &'call zbus::ObjectServer,
+                _connection: &'call zbus::Connection,
+                _message: &'call zbus::message::Message,
+                _name: zbus::names::MemberName<'call>,
+            ) -> zbus::object_server::DispatchResult2<'call> {
+                zbus::object_server::DispatchResult2::NotFound
+            }
+
+            fn introspect_to_writer(&self, writer: &mut dyn std::fmt::Write, level: usize) {
+                $crate::portal::interface_dispatch::write_introspection(writer, level, $xml);
+            }
+        }
+    };
+}
+pub(crate) use method_interface;
+
 /// Decode `message`'s body as `Args`, run `handler` with the call's header,
 /// and reply with its result. A body that does not decode is answered with
 /// the decoding error.
