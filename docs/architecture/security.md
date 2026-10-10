@@ -130,6 +130,12 @@ record is held in its own app worker (`crates/agent/agent-participant/src/worker
   (`participant/unopened.rs`). With no isolate those changes wait and the
   record does not open; nothing decodes them in the host instead. A worker
   that dies is replaced from that copy, at most twice per record.
+- **Keys before acting.** Room actions act on a record only once the host
+  holds that record's channel keys. The wait is woken by the key's arrival
+  and covers only the record the request names, so a record whose keys are
+  withheld holds back no other. When the keys have not arrived after 10 s,
+  the invocation is refused as unavailable; it never runs on a record seen
+  only in part.
 
 Still in the host process: the app catalogue is linked statically (each
 app's `definition()` builds there), and agents' device keys are kept in
