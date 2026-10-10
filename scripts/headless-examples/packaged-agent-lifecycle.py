@@ -1650,6 +1650,44 @@ def activate_named_agent_control(access, label):
     return True
 
 
+def wait_for_named_agent_control(access, label, process):
+    """Wait for one control on the same live editor, then activate it once."""
+    identity = chat_process_identity(access)
+    mode = access.get("composer_name", "Message composer")
+
+    def current_control():
+        current = agent_conversation_accessibility(
+            access["agent"], detached=access["detached"], stale_only=True,
+            composer_name=mode,
+        )
+        if current is None:
+            return None
+        if any(current.get(field) != access.get(field)
+               for field in ("bus", "process", "window", "composer", "agent", "detached")) \
+                or chat_process_identity(current) != identity:
+            raise RuntimeError("the awaited Agent control changed its owned editor")
+        if not chat_editor_contract(current):
+            return None
+        client = atspi.AtspiClient(atspi.atspi_address(), current["bus"])
+        tree = accessible_subtree(client, current["window"], atspi.APP_TREE_NODE_LIMIT)
+        matches = client.named(tree, label)
+        if len(matches) > 1:
+            raise RuntimeError(f"the actual Agent conversation has no unique {label} control")
+        if matches and client.role(matches[0]) != AT_SPI_ROLE_TAB:
+            raise RuntimeError(f"the actual Agent conversation has no exact {label} tab")
+        return (current, matches[0]) if matches else None
+
+    current, control = wait_for(f"exact owned {label} control", current_control, process)
+    client = atspi.AtspiClient(atspi.atspi_address(), current["bus"])
+    focused = client.call(control, "org.a11y.atspi.Component.GrabFocus", check=False)
+    if focused.strip() != "(true,)":
+        raise RuntimeError(f"the actual {label} control refused accessibility focus")
+    activated = client.call(control, "org.a11y.atspi.Action.DoAction", "0", check=False)
+    if activated.strip() != "(true,)":
+        raise RuntimeError(f"the actual {label} control refused accessibility activation")
+    return True
+
+
 def agent_write_restricted_accessibility(agent_name, expected, *, observation=None):
     """Observe the mounted read-only Agent view without exporting its draft."""
     address = atspi.atspi_address()
@@ -7450,7 +7488,7 @@ def native_task_write_downgrade(socket, room, record, person, output, size, proc
         "Message editor before Task restriction",
         lambda: agent_conversation_accessibility("Tide"), process,
     )
-    activate_named_agent_control(message_access, "Queue")
+    wait_for_named_agent_control(message_access, "Queue task", process)
     queue_access = wait_for("Task instruction editor before Task restriction", lambda:
                             agent_conversation_accessibility(
                                 "Tide", composer_name="Task instruction composer"

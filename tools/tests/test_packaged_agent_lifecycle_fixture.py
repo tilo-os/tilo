@@ -1506,6 +1506,94 @@ class PresentedEditorTargetTests(unittest.TestCase):
                     PROOF.accessible_names({"bus": "owned", "window": "/window"})
                 self.assertNotIn(malformed, str(error.exception))
 
+    def test_task_restriction_waits_for_the_unique_owned_message_mode_queue_tab(self):
+        access = {"bus": "owned", "window": "/window", "process": 7,
+                  "agent": "Tide", "detached": False, "composer": "/composer"}
+        client = unittest.mock.Mock()
+        client.call.side_effect = ["(true,)", "(true,)"]
+        client.role.return_value = PROOF.AT_SPI_ROLE_TAB
+        with patch.object(PROOF.atspi, "atspi_address", return_value="address"), \
+                patch.object(PROOF.atspi, "AtspiClient", return_value=client), \
+                patch.object(PROOF, "agent_conversation_accessibility",
+                             return_value=access) as discover, \
+                patch.object(PROOF, "chat_process_identity", return_value=(7, "start")), \
+                patch.object(PROOF, "chat_editor_contract", return_value=True), \
+                patch.object(PROOF, "accessible_subtree", return_value={}), \
+                patch.object(client, "named", side_effect=[[], ["/queue-tab"]]), \
+                patch.object(PROOF.time, "sleep"):
+            self.assertTrue(PROOF.wait_for_named_agent_control(
+                access, "Queue task", process=None))
+        self.assertEqual(discover.call_count, 2)
+        self.assertEqual(client.call.call_args_list, [
+            call("/queue-tab", "org.a11y.atspi.Component.GrabFocus", check=False),
+            call("/queue-tab", "org.a11y.atspi.Action.DoAction", "0", check=False),
+        ])
+        journey = inspect.getsource(PROOF.native_task_write_downgrade)
+        self.assertIn('wait_for_named_agent_control(message_access, "Queue task", process)', journey)
+
+    def test_task_control_wait_refuses_persistent_absence_ambiguity_or_owner_change(self):
+        access = {"bus": "owned", "window": "/window", "process": 7,
+                  "agent": "Tide", "detached": False, "composer": "/composer"}
+        client = unittest.mock.Mock()
+        client.role.return_value = PROOF.AT_SPI_ROLE_TAB
+        common = (
+            patch.object(PROOF.atspi, "atspi_address", return_value="address"),
+            patch.object(PROOF.atspi, "AtspiClient", return_value=client),
+            patch.object(PROOF, "chat_process_identity", return_value=(7, "start")),
+            patch.object(PROOF, "chat_editor_contract", return_value=True),
+            patch.object(PROOF, "accessible_subtree", return_value={}),
+        )
+        with common[0], common[1], common[2], common[3], common[4], \
+                patch.object(PROOF, "agent_conversation_accessibility", return_value=access), \
+                patch.object(client, "named", return_value=[]), \
+                patch.object(PROOF.time, "sleep"), \
+                patch.object(PROOF.time, "monotonic", side_effect=[0, 0, 31]), \
+                self.assertRaises(PROOF.ProofTimeout):
+            PROOF.wait_for_named_agent_control(access, "Queue task", process=None)
+        with common[0], common[1], common[2], common[3], common[4], \
+                patch.object(PROOF, "agent_conversation_accessibility", return_value=access), \
+                patch.object(client, "named", return_value=["/queue-tab", "/queue-submit"]), \
+                self.assertRaisesRegex(RuntimeError, "no unique Queue task control"):
+            PROOF.wait_for_named_agent_control(access, "Queue task", process=None)
+        with common[0], common[1], common[2], common[3], common[4], \
+                patch.object(PROOF, "agent_conversation_accessibility", return_value=access), \
+                patch.object(client, "named", return_value=["/queue-tab"]), \
+                patch.object(client, "role", return_value=PROOF.AT_SPI_ROLE_BUTTON), \
+                self.assertRaisesRegex(RuntimeError, "no exact Queue task tab"):
+            PROOF.wait_for_named_agent_control(access, "Queue task", process=None)
+        with common[0], common[1], common[2], common[3], common[4], \
+                patch.object(PROOF, "agent_conversation_accessibility",
+                             return_value={**access, "process": 8}), \
+                self.assertRaisesRegex(RuntimeError, "changed its owned editor"):
+            PROOF.wait_for_named_agent_control(access, "Queue task", process=None)
+        with common[0], common[1], common[2], common[3], common[4], \
+                patch.object(PROOF, "agent_conversation_accessibility",
+                             return_value={**access, "composer": "/replacement"}), \
+                self.assertRaisesRegex(RuntimeError, "changed its owned editor"):
+            PROOF.wait_for_named_agent_control(access, "Queue task", process=None)
+
+    def test_task_control_wait_never_retries_focus_or_activation_refusal(self):
+        access = {"bus": "owned", "window": "/window", "process": 7,
+                  "agent": "Tide", "detached": False, "composer": "/composer"}
+        for replies, message in [(["(false,)"], "refused accessibility focus"),
+                                 (["(true,)", "(false,)"], "refused accessibility activation")]:
+            client = unittest.mock.Mock()
+            client.named.return_value = ["/queue-tab"]
+            client.role.return_value = PROOF.AT_SPI_ROLE_TAB
+            client.call.side_effect = replies
+            with self.subTest(message=message), \
+                    patch.object(PROOF.atspi, "atspi_address", return_value="address"), \
+                    patch.object(PROOF.atspi, "AtspiClient", return_value=client), \
+                    patch.object(PROOF, "agent_conversation_accessibility", return_value=access), \
+                    patch.object(PROOF, "chat_process_identity", return_value=(7, "start")), \
+                    patch.object(PROOF, "chat_editor_contract", return_value=True), \
+                    patch.object(PROOF, "accessible_subtree", return_value={}), \
+                    patch.object(PROOF.time, "sleep") as sleep, \
+                    self.assertRaisesRegex(RuntimeError, message):
+                PROOF.wait_for_named_agent_control(access, "Queue task", process=None)
+            sleep.assert_not_called()
+            self.assertEqual(client.call.call_count, len(replies))
+
     def test_read_only_and_restricted_views_cannot_hide_serialized_mutable_controls(self):
         client = PROOF.atspi.AtspiClient("address", "owned")
 
