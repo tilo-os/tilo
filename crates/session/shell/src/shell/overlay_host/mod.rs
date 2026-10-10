@@ -12021,16 +12021,47 @@ impl ShellOverlayHost {
         })
     }
 
-    /// Absorbs every non-`Pressed` pointer event over an open overlay so
-    /// a hover/drag can't continue underneath it (`Pressed` is excluded
-    /// so the per-overlay branches later still get clicks), and a
-    /// left-click on an uncovered toast dismisses it. Foreground notification
-    /// history receives its own presses rather than dismissing a covered toast.
+    /// Banners own completed clicks before ordinary overlay absorption.
+    /// Foreground history cancels covered gestures and keeps its own presses.
     fn route_absorbable_pointer_and_toast_click(
         &mut self,
         event: &WindowEvent,
+        scale_factor: f64,
         handled: &mut bool,
     ) -> bool {
+        let covered = self
+            .last_cursor
+            .is_some_and(|point| self.notification_history_covers_pointer(point));
+        if covered {
+            self.notification_stack.cancel_pointer_press();
+        }
+        if let Some(chrome) = self.chrome.clone()
+            && (!covered
+                || (self.notification_stack.wants_pointer_capture()
+                    && !matches!(
+                        event,
+                        WindowEvent::MouseInput {
+                            state: ElementState::Pressed,
+                            button: winit::event::MouseButton::Left,
+                            ..
+                        }
+                    )))
+        {
+            let mut banner_handled = false;
+            let changed = self.notification_stack.handle_pointer_event(
+                &ChromeNotifications::new(&chrome),
+                event,
+                scale_factor,
+                &mut banner_handled,
+            );
+            if changed {
+                chrome.borrow_mut().bump();
+            }
+            if banner_handled {
+                *handled = true;
+                return true;
+            }
+        }
         let is_absorbable_pointer = matches!(
             event,
             WindowEvent::CursorMoved { .. }
@@ -12043,24 +12074,6 @@ impl ShellOverlayHost {
         if is_absorbable_pointer
             && let Some(p) = self.last_cursor
             && self.cursor_over_open_overlay(p)
-        {
-            *handled = true;
-            return true;
-        }
-
-        if let (
-            Some(chrome),
-            WindowEvent::MouseInput {
-                state: ElementState::Pressed,
-                button: winit::event::MouseButton::Left,
-                ..
-            },
-        ) = (self.chrome.as_ref(), event)
-            && let Some(p) = self.last_cursor
-            && !self.notification_history_covers_pointer(p)
-            && self
-                .notification_stack
-                .click_at(&ChromeNotifications::new(chrome), p)
         {
             *handled = true;
             return true;
@@ -18836,7 +18849,7 @@ impl Widget for ShellOverlayHost {
         {
             return;
         }
-        if self.route_absorbable_pointer_and_toast_click(event, ctx.handled) {
+        if self.route_absorbable_pointer_and_toast_click(event, ctx.scale_factor, ctx.handled) {
             return;
         }
         if self.route_permission_prompt_event(
