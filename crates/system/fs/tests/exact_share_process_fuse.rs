@@ -688,7 +688,13 @@ async fn separate_process_exact_share_evicts_restarts_and_rehydrates() {
 /// each voluntary switch is a timer or a poll that fired. Preemptions are
 /// printed but not budgeted: on a loaded shared runner they measure the
 /// neighbours, not this process (TIL-749).
-const IDLE_SERVE_WAKEUP_BUDGET: f64 = 5.0;
+///
+/// Measured on the CI `runner` class: 45.4/s before TIL-750 (a 100 ms
+/// persist poll, a 50 ms session-supervisor poll, repair ticks), 6.5-7.9/s
+/// after (two runs). The budget leaves headroom over the remainder and
+/// still fails if either poll comes back (+10/s or +20/s). Lower it as the
+/// remaining timers go.
+const IDLE_SERVE_WAKEUP_BUDGET: f64 = 12.0;
 
 /// The shipped daemon serving a mounted workspace that nobody touches
 /// sleeps: no persist poll, no session-supervisor poll, no repair tick.

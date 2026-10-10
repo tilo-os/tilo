@@ -535,10 +535,9 @@ mod availability_control_tests {
     async fn pins_are_repaired_on_announcements_without_a_tick() {
         let dir = tempfile::tempdir().unwrap();
         let endpoint = Endpoint::bind(presets::Minimal).await.unwrap();
-        let hydrator = Arc::new(Hydrator::new(
-            endpoint.clone(),
-            Arc::new(ContentStore::memory()),
-        ));
+        let store = Arc::new(ContentStore::memory());
+        let local = store.write_content(b"already here").await.unwrap().unwrap();
+        let hydrator = Arc::new(Hydrator::new(endpoint.clone(), store));
         let namespace = Arc::new(Mutex::new(Namespace::new("announced-pin").unwrap()));
         let (folder, first) = {
             let mut namespace = namespace.lock().unwrap();
@@ -580,7 +579,9 @@ mod availability_control_tests {
             let other = namespace
                 .create_dir(ROOT_INO, "pinned-elsewhere", 3)
                 .unwrap();
-            let inside = namespace.create_file(other, "inside", None, 0, 3).unwrap();
+            let inside = namespace
+                .create_file(other, "inside", Some(&local), 12, 3)
+                .unwrap();
             (
                 namespace.record_id_for(ROOT_INO).unwrap(),
                 namespace.record_id_for(other).unwrap(),
@@ -595,8 +596,8 @@ mod availability_control_tests {
                 .lock()
                 .unwrap()
                 .get(inside)
-                .is_none_or(|record| record.residency == Residency::NotResident),
-            "an unpinned file was hydrated"
+                .is_none_or(|record| record.residency != Residency::Resident { bytes: 12 }),
+            "an unpinned file was proven resident"
         );
         {
             let mut registry = registry.lock().unwrap();
@@ -611,7 +612,7 @@ mod availability_control_tests {
             registry.put(pinned).unwrap();
         }
         wait_for_availability(&registry, inside, |record| {
-            record.residency == Residency::Resident { bytes: 0 }
+            record.residency == Residency::Resident { bytes: 12 }
         })
         .await;
 
