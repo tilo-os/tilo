@@ -21,14 +21,14 @@ HEADER = (
     "seq,start_us,period_us,input_us,pump_us,layout_us,scene_us,submit_us,"
     "testctl_us,clients_us,sleep_us,painted,present_async,input_latency_us,"
     "input_retirement_latency_us,backpressured,deadline_late_us,wake,cpu_us,"
-    "input_step,input_step_us"
+    "input_step,input_step_us,redraw"
 ).split(",")
 
 
 def sample() -> dict:
     return dict(zip(HEADER, (
         0, 1_000_000, 16_667, 100, 200, 300, 400, 500, 10, 20, 15_000,
-        1, 0, None, None, 0, 0, "io", 1_500, "portal", 200,
+        1, 0, None, None, 0, 0, "io", 1_500, "portal", 200, "apps/content",
     )))
 
 
@@ -68,14 +68,14 @@ class FrameLoopTraceTests(unittest.TestCase):
         self.assertEqual(bench.read_trace(self.path)[1], [row])
 
     def test_empty_text_labels_stay_text(self) -> None:
-        row = sample() | {"wake": "", "input_step": ""}
+        row = sample() | {"wake": "", "input_step": "", "redraw": ""}
         self.write(HEADER, [row])
         self.assertEqual(bench.read_trace(self.path)[1], [row])
 
     def test_legacy_numeric_columns_and_missing_optional_columns(self) -> None:
         optional = {
             "wake", "cpu_us", "input_step", "input_step_us", "input_retirement_latency_us",
-            "backpressured", "deadline_late_us",
+            "backpressured", "deadline_late_us", "redraw",
         }
         header = [key for key in reversed(HEADER) if key not in optional] + ["future_counter"]
         row = {key: value for key, value in sample().items() if key not in optional}

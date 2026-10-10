@@ -70,6 +70,61 @@ pub struct FrameSample {
     /// phase had no steps.
     pub input_step: &'static str,
     pub input_step_us: u32,
+    /// Why this tick painted: bits of [`REDRAW_REASONS`], zero on a tick that
+    /// did not paint.
+    pub redraw: u32,
+    /// Which parts of the shell's update asked for it when [`REDRAW_APPS`] is
+    /// among the reasons: bits of the overlay host's update sources.
+    pub redraw_sources: u32,
+}
+
+/// Why a tick painted, in the bit order of [`FrameSample::redraw`]: the
+/// compositor loop's redraw edges.
+pub const REDRAW_REASONS: [&str; 14] = [
+    "force",
+    "backend-event",
+    "visible-input",
+    "session",
+    "revision",
+    "animation",
+    "apps",
+    "peers",
+    "presentation",
+    "capture",
+    "lock-clock",
+    "lock-animation",
+    "lock-osd",
+    "keepalive",
+];
+
+/// [`REDRAW_REASONS`]' bit for a redraw the shell's per-frame update asked for.
+pub const REDRAW_APPS: u32 = 1 << 6;
+
+/// The `redraw` column: reasons joined by `+`, the shell update's sources as
+/// `apps/<source>`. Empty when the tick did not paint.
+fn redraw_label(redraw: u32, sources: u32) -> String {
+    let mut parts = Vec::new();
+    for (bit, name) in REDRAW_REASONS.iter().enumerate() {
+        if redraw & (1 << bit) == 0 {
+            continue;
+        }
+        if 1 << bit == REDRAW_APPS && sources != 0 {
+            let before = parts.len();
+            parts.extend(
+                crate::shell::overlay_host::UPDATE_SOURCE_NAMES
+                    .iter()
+                    .enumerate()
+                    .filter(|(source, _)| sources & (1 << source) != 0)
+                    .map(|(_, source)| format!("apps/{source}")),
+            );
+            if parts.len() == before {
+                parts.push((*name).to_string());
+            }
+        } else {
+            parts.push((*name).to_string());
+        }
+    }
+    parts.join("+")
 }
 
 /// The slowest of a phase's consecutive named steps. Each [`Self::step`]
@@ -126,7 +181,7 @@ impl FrameSample {
     fn write_csv_row(&self, out: &mut impl Write) -> std::io::Result<()> {
         writeln!(
             out,
-            "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
+            "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
             self.seq,
             self.start_us,
             self.period_us,
@@ -152,6 +207,7 @@ impl FrameSample {
             self.cpu_us.map(|v| v.to_string()).unwrap_or_default(),
             self.input_step,
             self.input_step_us,
+            redraw_label(self.redraw, self.redraw_sources),
         )
     }
 }
@@ -159,7 +215,8 @@ impl FrameSample {
 /// Header line for the `TILO_FRAME_TRACE` CSV, kept next to `FrameSample::write_csv_row` so the two cannot drift.
 pub const CSV_HEADER: &str = "seq,start_us,period_us,input_us,pump_us,layout_us,scene_us,\
 submit_us,testctl_us,clients_us,sleep_us,painted,present_async,input_latency_us,\
-input_retirement_latency_us,backpressured,deadline_late_us,wake,cpu_us,input_step,input_step_us";
+input_retirement_latency_us,backpressured,deadline_late_us,wake,cpu_us,input_step,input_step_us,\
+redraw";
 
 /// Percentile bundle for one measured quantity, in microseconds.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize)]
@@ -623,6 +680,19 @@ impl FrameRecorder {
     }
     pub fn mark_wake(&mut self, reason: &'static str) {
         self.cur.wake = reason;
+    }
+
+    /// Why this tick paints: bits of [`REDRAW_REASONS`] and, for
+    /// [`REDRAW_APPS`], of the shell update's sources.
+    pub fn mark_redraw(&mut self, reasons: u32, sources: u32) {
+        if self.enabled {
+            self.cur.redraw = reasons;
+            self.cur.redraw_sources = if reasons & REDRAW_APPS == 0 {
+                0
+            } else {
+                sources
+            };
+        }
     }
 
     pub fn mark_backpressured(&mut self) {
@@ -1226,6 +1296,60 @@ mod tests {
     }
 
     #[test]
+    fn redraw_names_each_reason_and_the_shell_sources_behind_apps() {
+        assert_eq!(
+            redraw_label(0, 0),
+            "",
+            "a tick that did not paint names nothing"
+        );
+        assert_eq!(
+            redraw_label(1 << 4, 0b1),
+            "revision",
+            "sources only follow apps"
+        );
+        assert_eq!(
+            redraw_label((1 << 4) | REDRAW_APPS, 0b1_0000_0001),
+            "revision+apps/content+apps/chrome"
+        );
+        assert_eq!(redraw_label(REDRAW_APPS, 0), "apps");
+        assert_eq!(redraw_label(REDRAW_APPS, 1 << 31), "apps");
+    }
+
+    #[test]
+    fn redraw_attribution_survives_the_production_trace_and_clears_on_idle() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("frames.csv");
+        let mut file = std::fs::File::create(&path).unwrap();
+        writeln!(file, "{CSV_HEADER}").unwrap();
+        let mut recorder = FrameRecorder::disabled();
+        recorder.enabled = true;
+        recorder.trace = Some(std::io::BufWriter::new(file));
+        recorder.trace_path = Some(path.clone());
+        let base = Instant::now();
+        recorder.begin_tick(base + Duration::from_secs(1));
+        recorder.mark_redraw((1 << 4) | REDRAW_APPS | (1 << 13), 0b1_0000_0001);
+        recorder.mark_submit(Duration::ZERO, false, base + Duration::from_secs(1), None);
+        recorder.end_tick();
+        recorder.begin_tick(base + Duration::from_secs(2));
+        recorder.end_tick();
+        let text = std::fs::read_to_string(path).unwrap();
+        let rows: Vec<_> = text
+            .lines()
+            .map(|row| row.split(',').collect::<Vec<_>>())
+            .collect();
+        assert_eq!(rows.len(), 3);
+        let redraw = rows[0].iter().position(|name| *name == "redraw").unwrap();
+        let painted = rows[0].iter().position(|name| *name == "painted").unwrap();
+        assert_eq!(
+            rows[1][redraw],
+            "revision+apps/content+apps/chrome+keepalive"
+        );
+        assert_eq!(rows[1][painted], "1");
+        assert_eq!(rows[2][redraw], "");
+        assert_eq!(rows[2][painted], "0");
+    }
+
+    #[test]
     fn metrics_cli_and_trace_output_are_well_formed() {
         // Phase `parse_run_seconds_accepts_positive_values_only`.
         assert_eq!(
@@ -1277,6 +1401,7 @@ mod tests {
                 cpu_us: Some(15),
                 input_step: "events",
                 input_step_us: 16,
+                ..FrameSample::default()
             }
             .write_csv_row(&mut buf)
             .expect("write csv row into a Vec");
@@ -1292,8 +1417,7 @@ mod tests {
         {
             let dir = tempfile::tempdir().expect("trace tempdir");
             let path = dir.path().join("frame.csv");
-            let file = std::fs::File::create(&path).expect("create trace");
-            let mut file = file;
+            let mut file = std::fs::File::create(&path).expect("create trace");
             writeln!(file, "{CSV_HEADER}").expect("write trace header");
             let mut recorder = FrameRecorder::disabled();
             recorder.enabled = true;
