@@ -8,8 +8,7 @@ use std::rc::Rc;
 use taffy::style_helpers::percent;
 use taffy::{NodeId, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
-use winit::event::WindowEvent;
+use vello::kurbo::{Affine, Rect};
 
 use crate::gesture::NavDirection;
 use crate::nav_stack::NavStack;
@@ -407,48 +406,7 @@ impl Widget for Router {
         taffy.widget_node(style, &[child], node_map, self)
     }
 
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = crate::widget::layout_rect(taffy, node, origin);
-        if let Ok(children) = taffy.children(node)
-            && let Some(child) = children.first()
-        {
-            self.child
-                .apply_layout(taffy, *child, Point::new(self.rect.x0, self.rect.y0));
-        }
-    }
-
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
-        self.child
-            .draw(scene, transform, text_renderer, theme, presence);
-    }
-
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
-        if let Ok(children) = ctx.taffy.children(ctx.node_id)
-            && let Some(child) = children.first()
-        {
-            self.child
-                .handle_event(event, &mut ctx.reborrow(ctx.path, *child));
-        }
-    }
-
-    fn children(&self) -> Vec<&dyn Widget> {
-        vec![self.child.as_ref()]
-    }
-
-    fn for_each_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) {
-        visitor(self.child.as_ref());
-    }
-
-    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        vec![self.child.as_mut()]
-    }
+    crate::forward_to_child!(child, rect);
 
     fn name(&self) -> &'static str {
         "Router"
@@ -456,10 +414,6 @@ impl Widget for Router {
 
     fn test_id(&self) -> Option<&str> {
         Some("router")
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.rect
     }
 
     fn on_nav_gesture(
