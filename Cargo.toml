@@ -198,6 +198,7 @@ members = [
     # Media
     "crates/media/ocr",
     "crates/media/segment",
+    "crates/media/tilo-invidious",
     "crates/media/thumbnail",
     "crates/media/vision",
     "crates/media/wet-media",
