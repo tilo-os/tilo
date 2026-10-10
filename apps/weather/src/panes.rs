@@ -15,6 +15,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 use ui::widget::ModelPath;
+use ui::widget::TaffyTreeExt;
 
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
@@ -59,32 +60,23 @@ impl DetailPane {
     }
 }
 
-// `Widget::build_layout`/`apply_layout` (the callers below) return
-// `NodeId`/`()`, not a `Result` — the trait is shared by every widget in
-// `ui`, so its signature isn't ours to change here. `TaffyTree::new_leaf`
-// and `::layout` both wrap an infallible operation in this taffy version
-// (`new_leaf` always inserts; `layout` always finds a node this module
-// just registered) — the `Result` is vestigial, not a real failure mode.
-#[allow(
-    clippy::unwrap_used,
-    reason = "TaffyTree::new_leaf never fails in this taffy version, and the Widget trait's build_layout signature isn't ours to change to Result"
-)]
+/// A leaf node that fills what its parent gives it, registered for `me`.
 fn leaf(
     taffy: &mut TaffyTree<()>,
     node_map: &mut HashMap<NodeId, *mut dyn Widget>,
-    me: *mut dyn Widget,
+    me: &mut (dyn Widget + 'static),
 ) -> NodeId {
-    let node = taffy
-        .new_leaf(Style {
+    taffy.widget_leaf(
+        Style {
             size: Size {
                 width: Dimension::percent(1.0),
                 height: Dimension::percent(1.0),
             },
             ..Default::default()
-        })
-        .unwrap();
-    node_map.insert(node, me);
-    node
+        },
+        node_map,
+        me,
+    )
 }
 
 impl Widget for OverviewPane {
@@ -94,7 +86,7 @@ impl Widget for OverviewPane {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        leaf(taffy, node_map, std::ptr::from_mut::<dyn Widget>(self))
+        leaf(taffy, node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
@@ -220,7 +212,7 @@ impl Widget for DetailPane {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        leaf(taffy, node_map, std::ptr::from_mut::<dyn Widget>(self))
+        leaf(taffy, node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {

@@ -9,6 +9,7 @@
 
 use std::collections::HashMap;
 use ui::time::{Duration, Instant};
+use ui::widget::TaffyTreeExt;
 use ui::widget::{AppModel, ModelPath};
 
 use taffy::{Dimension, Display, NodeId, Size, Style, TaffyTree};
@@ -4978,20 +4979,7 @@ impl Widget for TopBarChrome {
             flex_shrink: 0.0,
             ..Default::default()
         };
-        let node = match taffy.new_leaf(style) {
-            Ok(node) => node,
-            Err(err) => {
-                // `TaffyTree::new_leaf` only ever returns `Ok` for a
-                // fresh, unattached leaf (see upstream `new_leaf`); this
-                // arm exists so a future upstream change degrades the
-                // bar's layout instead of aborting the whole session
-                // (this crate builds with `panic = "abort"`).
-                tracing::error!("topbar: leaf allocation failed: {err}");
-                NodeId::from(0u64)
-            }
-        };
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        taffy.widget_leaf(style, node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {

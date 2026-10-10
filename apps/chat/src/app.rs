@@ -16,6 +16,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::sync::mpsc::{Receiver, SyncSender};
+use ui::widget::TaffyTreeExt;
 use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId};
@@ -3269,10 +3270,7 @@ impl Widget for ChatApp {
                 ..Default::default()
             }
         };
-        // `new_leaf` on a freshly created tree never fails.
-        #[allow(clippy::unwrap_used, reason = "new_leaf on a fresh tree cannot fail")]
-        let video_node = taffy.new_leaf(video_style).unwrap();
-        node_map.insert(video_node, &raw mut self.video as *mut dyn Widget);
+        let video_node = taffy.widget_leaf(video_style, node_map, &mut self.video);
         self.video_node = Some(video_node);
 
         // `new_with_children` only fails when a child belongs to a different
