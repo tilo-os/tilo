@@ -627,9 +627,11 @@ impl HostContext {
         let keep = store.clone();
         let read = store.clone();
         tilo_actions::keep_content_in(
-            move |content| {
-                if let Err(error) = keep.put_inputs(&content) {
-                    tracing::warn!(%error, "an action's content could not be kept");
+            move |content: tilo_actions::ContentParts| {
+                for (_, bytes) in content {
+                    if let Err(error) = keep.put(&bytes) {
+                        tracing::warn!(%error, "an action's content could not be kept");
+                    }
                 }
             },
             move |hash| read.read(hash),

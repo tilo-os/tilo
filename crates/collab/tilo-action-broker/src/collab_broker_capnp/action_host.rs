@@ -647,8 +647,8 @@ impl CapnpBrokerState {
             != tilo_action_policy::Answer::Deny
     }
 
-    /// Whether `actor` may take the action `target` now. See
-    /// [`crate::published_authorization::permits`].
+    /// Whether `actor` may take the action `target` now
+    /// ([`tilo_action_policy::Answer::admits`]).
     pub(super) fn allowed(
         workspace: &Workspace,
         actor: &BrokerActor,
@@ -657,10 +657,9 @@ impl CapnpBrokerState {
         target: (&str, &str, &str),
         contract: &tilo_actions::ActionContract,
     ) -> bool {
-        crate::published_authorization::permits(
-            actor.action_answer_in(workspace, app, target, &contract.need(), now),
-            actor.direct(),
-        )
+        actor
+            .action_answer_in(workspace, app, target, &contract.need(), now)
+            .admits(actor.direct())
     }
 
     /// Every live published surface, carrying its actions only where

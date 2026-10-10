@@ -44,7 +44,7 @@ impl Ui {
     fn start_from(&self, base: &str) {
         let id = format!("t{}", uuid::Uuid::new_v4().simple());
         self.dispatcher
-            .invoke(Studio::NEW_THEME.with((id.clone(), base.to_owned())));
+            .submit(Studio::NEW_THEME.with((id.clone(), base.to_owned())));
         self.open(Page::Theme(id));
     }
 

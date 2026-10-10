@@ -49,7 +49,7 @@ impl Default for Ground {
 )]
 #[derive(Clone, Debug, Default, PartialEq, Model)]
 pub struct Layer {
-    #[model(atom)]
+    #[model(atom, readonly)]
     pub id: String,
     /// Name
     #[model(label)]
@@ -59,7 +59,7 @@ pub struct Layer {
     #[model(atom)]
     pub group: String,
     /// Fractional position among layers; later is on top.
-    #[model(atom)]
+    #[model(atom, readonly)]
     pub order: String,
     /// The medium preset that paints this layer's marks, or empty for plain
     /// vector art.
@@ -77,7 +77,7 @@ pub struct Layer {
     /// The layer this layer masks, or empty for an ordinary layer. A mask's
     /// marks are drawn in greys: where it is light that layer shows, where
     /// it is dark it is hidden. Hiding the mask turns it off.
-    #[model(atom)]
+    #[model(atom, readonly)]
     pub mask_of: String,
     /// A mask's grey before any mark, `0..=1`: 1 shows all of its layer,
     /// 0 hides all of it.
@@ -453,12 +453,12 @@ impl Style {
 /// A mark as stored: its geometry, style and placement.
 #[derive(Clone, Debug, Default, PartialEq, Model)]
 pub struct Mark {
-    #[model(atom)]
+    #[model(atom, readonly)]
     pub id: String,
     #[model(atom)]
     pub layer: String,
     /// Fractional position within its layer; later is on top.
-    #[model(atom)]
+    #[model(atom, readonly)]
     pub order: String,
     /// Name
     #[model(label)]
@@ -476,7 +476,7 @@ pub struct Mark {
     /// SVG path data of the area the mark is kept inside (the selection's
     /// shape when it was laid), in the units of its geometry so it travels
     /// with it, or empty.
-    #[model(atom)]
+    #[model(atom, readonly)]
     pub area: String,
 }
 
@@ -671,7 +671,7 @@ impl Artwork {
 
     /// Remove the layer `id`, if there is one; its marks stay until
     /// removed too.
-    pub fn remove_layer(&mut self, id: &str) {
+    pub fn drop_layer(&mut self, id: &str) {
         self.layers.retain(|layer| layer.id != id);
     }
 }

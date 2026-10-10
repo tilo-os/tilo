@@ -401,7 +401,7 @@ fn causal_scope_required_unadapted_handler_refuses_before_start_and_cancel_fence
         type_id: "controlled.effect".into(),
         payload: vec![],
     };
-    let result = crate::bound_dispatch::legacy_document::invoke_legacy_effect_scoped(
+    let result = crate::bound_dispatch::legacy_document::invoke_legacy_effect(
         &mut fixture.tile,
         &fixture.target,
         job.invocation(),

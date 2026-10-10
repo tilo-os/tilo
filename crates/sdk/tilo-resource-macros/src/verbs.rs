@@ -653,6 +653,17 @@ fn params_struct(verb: &Verb, self_ty: &Type, type_name: &str) -> Tokens {
         .params
         .is_empty()
         .then(|| quote!(::core::default::Default,));
+    let reads = verb.params.iter().map(|param| {
+        let ident = &param.ident;
+        let public = &param.public;
+        if param.role == Role::Flatten {
+            return quote!(#ident: #krate::__private::serde::Deserialize::deserialize(
+                #krate::__private::serde_json::Value::Object(args),
+            )?);
+        }
+        let optional = last_ident(&param.ty).is_some_and(|(name, _)| name == "Option");
+        quote!(#ident: #krate::__private::arg(&mut args, #public, #optional)?)
+    });
     let label = &verb.label;
     let schema_body = verb
         .params
@@ -674,10 +685,34 @@ fn params_struct(verb: &Verb, self_ty: &Type, type_name: &str) -> Tokens {
         );
     quote! {
         #[doc = #doc]
-        #[derive(Clone, Debug, #derive_default #krate::__private::serde::Serialize, #krate::__private::serde::Deserialize)]
+        #[derive(Clone, Debug, #derive_default #krate::__private::serde::Serialize)]
         #[serde(crate = #serde_path)]
         pub struct #name {
             #(#fields,)*
+        }
+
+        // Read through a JSON value, each argument by its own type's decoder:
+        // a verb's parameters add no decoder of their own.
+        impl<'de> #krate::__private::serde::Deserialize<'de> for #name {
+            fn deserialize<D: #krate::__private::serde::Deserializer<'de>>(
+                deserializer: D,
+            ) -> ::core::result::Result<Self, D::Error> {
+                let value = <#krate::__private::serde_json::Value as #krate::__private::serde::Deserialize>::deserialize(deserializer)?;
+                Self::from_args(value)
+                    .map_err(<D::Error as #krate::__private::serde::de::Error>::custom)
+            }
+        }
+
+        impl #name {
+            /// The parameters in their JSON form, an object of arguments.
+            #[inline(never)]
+            fn from_args(
+                value: #krate::__private::serde_json::Value,
+            ) -> ::core::result::Result<Self, #krate::__private::serde_json::Error> {
+                #[allow(unused_mut, unused_variables, reason = "a verb may take no arguments")]
+                let mut args = #krate::__private::args_object(value)?;
+                ::core::result::Result::Ok(Self { #(#reads,)* })
+            }
         }
 
         impl #krate::JsonSchema for #name {
@@ -1105,8 +1140,8 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
                 )]
             }
         });
-        let destructive = verb.options.destructive.then(|| quote!(.destructive()));
-        let answering = verb.options.answers.then(|| quote!(.answering()));
+        let destructive = verb.options.destructive;
+        let answering = verb.options.answers;
         // Run where the verb is built from its arguments (the origin), never
         // when its recorded action replays: the action carries the result.
         let prepare = verb
@@ -1138,7 +1173,7 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
                     let description = &param.description;
                     let public = &param.public;
                     (
-                        quote!(.collecting_content(#description)),
+                        quote!(::core::option::Option::Some(#description)),
                         quote! {
                             if let ::core::option::Option::Some(hash) =
                                 arguments.remove(#krate::__private::PROMPTED_PARAM)
@@ -1148,27 +1183,38 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
                         },
                     )
                 }
-                None => (quote!(), quote!()),
+                None => (quote!(::core::option::Option::None), quote!()),
             };
-        let describe = (!verb.description.is_empty()).then(|| {
-            let description = &verb.description;
-            quote!(.describe(#description))
-        });
-        let field = verb.options.field.as_deref().map(|field| {
-            fields_of.push(quote! {
-                #action_enum::#variant(..) => ::core::option::Option::Some(#field),
-            });
-            quote!(.below_field(#field))
-        });
+        let description = &verb.description;
+        let field = verb.options.field.as_deref().map_or_else(
+            || quote!(::core::option::Option::None),
+            |field| {
+                fields_of.push(quote! {
+                    #action_enum::#variant(..) => ::core::option::Option::Some(#field),
+                });
+                quote!(::core::option::Option::Some(#field))
+            },
+        );
         decls.push(quote! {
-            #krate::ActionDecl::new(
-                #id,
-                #label_text,
-                {
-                    let mut params: ::std::vec::Vec<#krate::__private::ActionParam> =
-                        ::std::vec::Vec::new();
-                    #(params.extend(#params);)*
-                    params
+            #krate::__private::declare::<#self_ty>(
+                #krate::__private::VerbDecl {
+                    id: #id,
+                    label: #label_text,
+                    description: #description,
+                    kind: #krate::ActionKind::#action_kind,
+                    field: #field,
+                    destructive: #destructive,
+                    answering: #answering,
+                    collects: #collects,
+                    item_field: #item_field,
+                    writes: &[#(#declared_writes),*],
+                    shape: <#self_ty as #krate::Model>::SHAPE,
+                    params: || {
+                        let mut params: ::std::vec::Vec<#krate::__private::ActionParam> =
+                            ::std::vec::Vec::new();
+                        #(params.extend(#params);)*
+                        params
+                    },
                 },
                 |args, now_ms| {
                     let mut arguments = args.to_json();
@@ -1177,17 +1223,6 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
                     #build_body
                 },
             )
-            #describe
-            .of_kind(#krate::ActionKind::#action_kind)
-            #field
-            #destructive
-            #answering
-            #collects
-            .writing(#krate::footprint::declared(
-                <#self_ty as #krate::Model>::SHAPE,
-                #item_field,
-                &[#(#declared_writes),*],
-            ))
         });
     }
 
@@ -1601,8 +1636,18 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
                 deserializer: D,
             ) -> ::core::result::Result<Self, D::Error> {
                 let value = <#krate::__private::serde_json::Value as #krate::__private::serde::Deserialize>::deserialize(deserializer)?;
-                let (action, args) = #krate::__private::tagged(value)
-                    .map_err(<D::Error as #krate::__private::serde::de::Error>::custom)?;
+                Self::from_tagged(value)
+                    .map_err(<D::Error as #krate::__private::serde::de::Error>::custom)
+            }
+        }
+
+        impl #action_enum {
+            /// The action in its JSON form, `{"action": .., "args": ..}`.
+            #[inline(never)]
+            fn from_tagged(
+                value: #krate::__private::serde_json::Value,
+            ) -> ::core::result::Result<Self, #krate::__private::serde_json::Error> {
+                let (action, args) = #krate::__private::tagged(value)?;
                 match action.as_str() {
                     #(#decode_arms)*
                     #seed_decode
@@ -1614,7 +1659,6 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
                         ),
                     ),
                 }
-                .map_err(<D::Error as #krate::__private::serde::de::Error>::custom)
             }
         }
 

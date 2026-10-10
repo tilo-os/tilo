@@ -80,6 +80,59 @@ pub struct AttachedView {
     unsent: Vec<Vec<u8>>,
 }
 
+/// An [`AttachedView`] about to open ([`AttachedView::opening`]): whom it
+/// is for, what they may do, and what the host lends the view.
+pub struct OpenView<'a> {
+    definition: &'static ApplicationDefinition,
+    room: &'a str,
+    checkout: RecordCheckout,
+    document: Vec<u8>,
+    invoker: tilo_actions::ActionInvoker,
+    permissions: PermissionContext,
+    created: bool,
+    content: Option<tilo_content::ContentStore>,
+}
+
+impl OpenView<'_> {
+    /// Open it for `invoker` (by default the record's owner).
+    #[must_use]
+    pub fn for_invoker(mut self, invoker: &tilo_actions::ActionInvoker) -> Self {
+        self.invoker = invoker.clone();
+        self
+    }
+
+    /// What the invoker may do through it (by default anything).
+    #[must_use]
+    pub fn with_permissions(mut self, permissions: PermissionContext) -> Self {
+        self.permissions = permissions;
+        self
+    }
+
+    /// Whether the invoker just created the record, so the first
+    /// [`AttachedView::take_changes`] sends it whole.
+    #[must_use]
+    pub const fn created(mut self, created: bool) -> Self {
+        self.created = created;
+        self
+    }
+
+    /// Lend the view the room's content store, as a host lends a window
+    /// its: the bytes a content hash names (an image another app made).
+    #[must_use]
+    pub fn lending(mut self, store: tilo_content::ContentStore) -> Self {
+        self.content = Some(store);
+        self
+    }
+
+    /// Mount the view.
+    ///
+    /// # Errors
+    /// As [`AttachedView::open`].
+    pub fn open(self) -> Result<AttachedView, String> {
+        AttachedView::open_view(self)
+    }
+}
+
 impl AttachedView {
     /// Mount `definition`'s view over the record `document` holds in
     /// `room`, for `me` with `permissions`. `created` when `me` just created
@@ -123,6 +176,47 @@ impl AttachedView {
         permissions: PermissionContext,
         created: bool,
     ) -> Result<Self, String> {
+        Self::opening(definition, room, checkout, document)
+            .for_invoker(invoker)
+            .with_permissions(permissions)
+            .created(created)
+            .open()
+    }
+
+    /// The view of `definition` over the record `document` holds in `room`,
+    /// to open once said for whom, with what and what the host lends it
+    /// ([`OpenView`]).
+    #[must_use]
+    pub fn opening<'a>(
+        definition: &'static ApplicationDefinition,
+        room: &'a str,
+        checkout: RecordCheckout,
+        document: Vec<u8>,
+    ) -> OpenView<'a> {
+        OpenView {
+            definition,
+            room,
+            checkout,
+            document,
+            invoker: tilo_actions::ActionInvoker::actor("owner"),
+            permissions: PermissionContext::permissive(),
+            created: false,
+            content: None,
+        }
+    }
+
+    fn open_view(view: OpenView<'_>) -> Result<Self, String> {
+        let OpenView {
+            definition,
+            room,
+            checkout,
+            document,
+            invoker,
+            permissions,
+            created,
+            content,
+        } = view;
+        let invoker = &invoker;
         let me = invoker.actor.as_str();
         let cache = PortableStorage::new("attached-views", DEVICE)?;
         let key = if checkout.id.is_package_primary() {
@@ -163,6 +257,10 @@ impl AttachedView {
             &target,
         )
         .map_err(|error| error.to_string())?;
+        let mut context = context;
+        if let Some(store) = content {
+            context.provide_content(store);
+        }
         let component = definition
             .instantiate(context, target, RestoreInput::None)
             .map_err(|error| error.to_string())?;

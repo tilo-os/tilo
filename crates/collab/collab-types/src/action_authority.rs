@@ -3,7 +3,7 @@
 //! app. Its provenance is the launcher-owned read-only namespace, not a
 //! caller-supplied value.
 use serde::{Deserialize, Serialize};
-use tilo_action_policy::{Authority, Party, RoomPolicy, Subject, TreePath, roles};
+use tilo_action_policy::{Authority, RoomPolicy, TreePath, roles};
 
 pub const PROJECTION_PATH: &str = "/run/tilo/action-authority/current.json";
 pub const MAX_PROJECTION_BYTES: usize = 64 * 1024;
@@ -121,15 +121,8 @@ impl AppActionAuthorityProjection {
         &'a self,
         foreign_bound: &'a [tilo_action_policy::Grant],
     ) -> Authority<'a> {
-        let authority = Authority::person(self.policy.party(&self.person));
-        if self.foreign {
-            authority.bounded_by(
-                Party::new(vec![Subject::ForeignDevice], foreign_bound)
-                    .with_grants(self.policy.grants_of(&Subject::ForeignDevice)),
-            )
-        } else {
-            authority
-        }
+        self.policy
+            .person_on_device(&self.person, self.foreign, foreign_bound)
     }
 }
 
@@ -142,7 +135,7 @@ pub fn foreign_device_bound() -> Vec<tilo_action_policy::Grant> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tilo_action_policy::{ActionKind, Answer, Context, Grant, KindSet, Role};
+    use tilo_action_policy::{ActionKind, Answer, Context, Grant, KindSet, Role, Subject};
 
     fn policy() -> AppActionAuthorityProjection {
         let mut room = RoomPolicy::new("room-a", "person-a");

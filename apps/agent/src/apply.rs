@@ -312,17 +312,6 @@ impl Editor {
         Ok(self.take())
     }
 
-    /// How many ancestor changes this replica is waiting for.
-    ///
-    /// Automerge queues a change whose dependencies it has not got, and
-    /// nothing about reading the document afterwards says so: it
-    /// materialises as the page *before* the gap. So a replica missing one
-    /// change in the middle reads exactly like a document with nothing
-    /// more in it — this is the one honest way to tell those apart.
-    pub fn missing_ancestors(&mut self) -> usize {
-        self.doc.get_missing_deps(&[]).len()
-    }
-
     /// The whole document, for a peer that just arrived.
     pub fn full(&mut self) -> Vec<u8> {
         self.doc.save()

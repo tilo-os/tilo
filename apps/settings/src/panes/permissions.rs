@@ -661,6 +661,7 @@ fn build_view(cx: &PaneCx, state_json: Option<&str>) -> Box<dyn Widget> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::host::testing::{count_named, labels_of};
 
     fn cx() -> PaneCx {
         PaneCx::in_file(std::env::temp_dir().join("tilo-settings-permissions-unused.json"))
@@ -700,36 +701,6 @@ mod tests {
     }
     use taffy::{NodeId, TaffyTree};
     use ui::Theme;
-
-    fn count_named(w: &dyn Widget, name: &str) -> usize {
-        let mut n = usize::from(w.name() == name);
-        for c in w.children() {
-            n += count_named(c, name);
-        }
-        n
-    }
-
-    fn button_labels(w: &dyn Widget, labels: &mut Vec<String>) {
-        if w.name() == "Button"
-            && let Some(label) = w.accessibility().and_then(|node| node.name)
-        {
-            labels.push(label);
-        }
-        for c in w.children() {
-            button_labels(c, labels);
-        }
-    }
-
-    fn text_labels(w: &dyn Widget, labels: &mut Vec<String>) {
-        if w.name() == "Text"
-            && let Some(label) = w.accessibility().and_then(|node| node.name)
-        {
-            labels.push(label);
-        }
-        for c in w.children() {
-            text_labels(c, labels);
-        }
-    }
 
     /// A real state.json fragment: one workspace, one app holding a camera
     /// grant and a read-only file grant. Built by serialising the actual
@@ -779,7 +750,7 @@ mod tests {
             let mut pane = build_view(&cx(), Some(&sample_state()));
             build_layout_of(&mut pane);
             let mut labels = Vec::new();
-            button_labels(pane.as_ref(), &mut labels);
+            labels_of(pane.as_ref(), "Button", &mut labels);
             assert_eq!(labels, vec!["Open workspace access"]);
         }
 
@@ -902,7 +873,7 @@ mod tests {
                 "no grant pills when empty"
             );
             let mut labels = Vec::new();
-            text_labels(pane.as_ref(), &mut labels);
+            labels_of(pane.as_ref(), "Text", &mut labels);
             assert!(labels.contains(&"Workspace access can't be checked".to_string()));
             assert!(
                 !labels
@@ -916,7 +887,7 @@ mod tests {
             let mut pane = build_view(&cx(), Some(r#"{"workspaces":[]}"#));
             build_layout_of(&mut pane);
             let mut labels = Vec::new();
-            text_labels(pane.as_ref(), &mut labels);
+            labels_of(pane.as_ref(), "Text", &mut labels);
             assert!(labels.contains(&"No workspace access".to_string()));
             assert!(!labels.contains(&"Workspace access can't be checked".to_string()));
         }
@@ -949,7 +920,7 @@ mod tests {
             build_layout_of(&mut pane);
             assert_eq!(count_named(pane.as_ref(), "Badge"), 0);
             let mut labels = Vec::new();
-            text_labels(pane.as_ref(), &mut labels);
+            labels_of(pane.as_ref(), "Text", &mut labels);
             assert!(labels.contains(&"Workspace access can't be checked".to_string()));
         }
     }

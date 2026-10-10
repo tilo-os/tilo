@@ -290,12 +290,20 @@ impl PersonRecord {
 
     /// Undo the person's last edit of this record. Whether there was one.
     pub fn undo(&self) -> bool {
-        self.step(|doc, history, author| history.undo_for_author(doc, author, None, None).is_some())
+        self.step(|doc, history, author| {
+            history
+                .undo_as(doc, Some(author), None, None, None)
+                .is_some()
+        })
     }
 
     /// Redo the person's last undone edit of this record.
     pub fn redo(&self) -> bool {
-        self.step(|doc, history, author| history.redo_as(doc, Some(author), None, None).is_some())
+        self.step(|doc, history, author| {
+            history
+                .redo_as(doc, Some(author), None, None, None)
+                .is_some()
+        })
     }
 
     fn step(

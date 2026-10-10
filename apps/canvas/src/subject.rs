@@ -18,7 +18,6 @@ use std::cell::RefCell;
 use ui::TextRenderer;
 use ui::vello::kurbo::{Affine, Point};
 
-use crate::actions::CanvasAction;
 use crate::model::{Artwork, Matte};
 use crate::region::{Coverage, Op, Region};
 use crate::render::{Options, Renderer};
@@ -377,9 +376,9 @@ fn index(value: f64) -> usize {
 ///
 /// # Errors
 /// Returns why a picture could not be read or cleaned.
-pub fn clean(using: UseSelection) -> Result<CanvasAction, String> {
+pub fn clean(using: &mut UseSelection) -> Result<(), String> {
     if !matches!(using.what.as_str(), "mask" | "clear") || using.defringe == Some(false) {
-        return Ok(CanvasAction::UseSelection(using));
+        return Ok(());
     }
     let pictures = crate::author::with_sight(|_, _, art| {
         let Some(matte) = art
@@ -410,13 +409,10 @@ pub fn clean(using: UseSelection) -> Result<CanvasAction, String> {
     })
     // Without a window there is nothing to clean with; the mask is still made.
     .unwrap_or_default();
-    if pictures.is_empty() {
-        return Ok(CanvasAction::UseSelection(using));
+    if !pictures.is_empty() {
+        using.cleaned = Some(pictures);
     }
-    Ok(CanvasAction::UseSelection(UseSelection {
-        cleaned: Some(pictures),
-        ..using
-    }))
+    Ok(())
 }
 
 /// A matte picture's coverage.

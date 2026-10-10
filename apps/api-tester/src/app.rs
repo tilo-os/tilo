@@ -1424,7 +1424,7 @@ impl ApiTesterApp {
                     return Err("saved request no longer exists".to_string());
                 };
                 let mut outgoing = saved.shown(&request);
-                cx.invoke(Workspace::OPEN_REQUEST.with(verbs::OpenRequest {
+                cx.submit(Workspace::OPEN_REQUEST.with(verbs::OpenRequest {
                     collection: collection.clone(),
                     request,
                 }));
@@ -1493,7 +1493,7 @@ impl ApiTesterApp {
                 app.dirty = true;
                 match sent {
                     Ok(response) => {
-                        cx.invoke(Workspace::RECORD_SENT.with(verbs::RecordSent {
+                        cx.submit(Workspace::RECORD_SENT.with(verbs::RecordSent {
                             method: method.as_str().to_owned(),
                             url,
                             status: response.status,

@@ -1375,7 +1375,11 @@ impl Session {
             Err(error) => return Ok(refused(with_hint(error))),
         };
         let arguments = match state.handoff.outcome().and_then(|previous| {
-            arguments_for_step(action.carries, &action.arguments, previous.as_ref())
+            arguments_for_step(
+                action.carries.as_deref(),
+                &action.arguments,
+                previous.as_ref(),
+            )
         }) {
             Ok(arguments) => arguments,
             Err(error) => return Ok(refused(error)),

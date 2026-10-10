@@ -911,15 +911,6 @@ impl<O: Operation> tilo_actions::Action for Stamped<O> {
         self.compensation(doc)
     }
 
-    /// Redo runs the action again: a new entry, carried out anew.
-    fn redo_encoded(&self, doc: &Doc) -> Option<tilo_actions::EncodedAction> {
-        let _ = doc;
-        if !self.compensated() {
-            return None;
-        }
-        tilo_actions::EncodedAction::encode(O::KIND, self).ok()
-    }
-
     /// A field edit with the value before and after, or a verb with its
     /// plain arguments, and the item either addressed.
     fn describe(&self, doc: &Doc) -> Option<tilo_actions::Described> {

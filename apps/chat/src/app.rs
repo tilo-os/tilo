@@ -1042,7 +1042,7 @@ impl ChatApp {
             return;
         };
         if let Some(dispatch) = &self.dispatch {
-            dispatch.invoke(invoke);
+            dispatch.submit(invoke);
         }
     }
 

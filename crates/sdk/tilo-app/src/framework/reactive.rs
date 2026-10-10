@@ -38,9 +38,14 @@ pub(crate) enum Change<'a> {
 
 type Update<R> = Box<dyn FnMut(&<R as Resource>::State)>;
 
-struct Entry<R: Resource> {
+/// An [`Update`] over the state of whichever resource it reads.
+type ErasedUpdate = Box<dyn FnMut(&dyn std::any::Any)>;
+
+/// A reader, over the state of whichever resource it reads: the index and
+/// its runs compile once, not per resource.
+struct Entry {
     alive: Weak<()>,
-    update: Update<R>,
+    update: ErasedUpdate,
     /// The row the reader belongs to, when it belongs to one.
     gate: Option<Gate>,
 }
@@ -197,128 +202,157 @@ fn membership_changed(obj: &ObjId, delta: &Delta, doc: &Doc) -> bool {
 /// How many readers a change may cost on average for sweeping out dead ones.
 const SWEEP_EVERY: usize = 16;
 
-struct Index<R: Resource> {
+struct Index {
     next: u64,
     /// Changes followed since dead readers were last swept out.
     since_sweep: usize,
-    entries: BTreeMap<u64, Entry<R>>,
+    entries: BTreeMap<u64, Entry>,
     always: Vec<u64>,
     root: Node,
 }
 
 /// The readers bound controls registered, each tied to the lifetime of the
 /// view scope that created it (a row of an [`Each`](super::Each)).
-pub(crate) struct Updaters<R: Resource>(Rc<RefCell<Index<R>>>);
+pub(crate) struct Updaters<R: Resource>(Rc<RefCell<Index>>, std::marker::PhantomData<fn() -> R>);
 
 impl<R: Resource> Clone for Updaters<R> {
     fn clone(&self) -> Self {
-        Self(Rc::clone(&self.0))
+        Self(Rc::clone(&self.0), std::marker::PhantomData)
     }
 }
 
 impl<R: Resource> Updaters<R> {
     pub(crate) fn new() -> Self {
-        Self(Rc::new(RefCell::new(Index {
-            next: 0,
-            since_sweep: 0,
-            entries: BTreeMap::new(),
-            always: Vec::new(),
-            root: Node::default(),
-        })))
+        Self(
+            Rc::new(RefCell::new(Index {
+                next: 0,
+                since_sweep: 0,
+                entries: BTreeMap::new(),
+                always: Vec::new(),
+                root: Node::default(),
+            })),
+            std::marker::PhantomData,
+        )
     }
 
-    #[inline(never)]
     pub(crate) fn push(
         &self,
         alive: Weak<()>,
         gate: Option<Gate>,
         reads: Reads,
-        update: Update<R>,
+        mut update: Update<R>,
     ) {
-        let mut index = self.0.borrow_mut();
-        let id = index.next;
-        index.next = index.next.saturating_add(1);
-        index.entries.insert(
-            id,
-            Entry {
-                alive,
-                update,
-                gate,
-            },
+        push(
+            &self.0,
+            alive,
+            gate,
+            reads,
+            Box::new(move |state: &dyn std::any::Any| {
+                if let Some(state) = state.downcast_ref::<R::State>() {
+                    update(state);
+                }
+            }),
         );
-        match reads {
-            Reads::Always => index.always.push(id),
-            Reads::At(path) => index.root.at(&path).here.push(id),
-            Reads::Members(path) => index.root.at(&path).members.push(id),
-        }
     }
 
     /// Run the readers `change` wakes, in the order they were registered.
     /// A reader may register more (a rebuilt row); those run from the next
     /// change on.
-    #[inline(never)]
     pub(crate) fn run(&self, state: &R::State, change: &Change<'_>) {
-        let woken: BTreeSet<u64> = {
-            let mut index = self.0.borrow_mut();
-            let index = &mut *index;
-            // Readers of rows and parts that are gone are dropped when they
-            // would run; the whole index is swept only now and then, so a
-            // change costs what it wakes, not what the view holds.
-            index.since_sweep = index.since_sweep.saturating_add(1);
-            if index.since_sweep.saturating_mul(SWEEP_EVERY) >= index.entries.len() {
-                index.since_sweep = 0;
-                index
-                    .entries
-                    .retain(|_, entry| entry.alive.strong_count() > 0);
-                let entries = &index.entries;
-                index.always.retain(|id| entries.contains_key(id));
-                index.root.prune(entries);
-            }
-            let entries = &index.entries;
-            match change {
-                Change::Everything => entries.keys().copied().collect(),
-                Change::Delta { delta, doc } => {
-                    let mut woken: BTreeSet<u64> = index.always.iter().copied().collect();
-                    if delta.is_everything() {
-                        woken.extend(entries.keys().copied());
-                    } else if !delta.is_empty() {
-                        woken.extend(&index.root.here);
-                        index.root.touched(&ROOT, delta, doc, &mut woken);
-                    }
-                    woken
-                }
-            }
-        };
-        for id in woken {
-            let Some(mut entry) = self.0.borrow_mut().entries.remove(&id) else {
-                continue;
-            };
-            if entry.alive.strong_count() == 0 {
-                continue;
-            }
-            if let Some(gate) = entry.gate.as_ref().filter(|gate| !gate.runs()) {
-                gate.stale.borrow_mut().insert(id);
-            } else {
-                #[cfg(feature = "test-support")]
-                let _profile = super::profiling::Scope::start("framework.reader");
-                (entry.update)(state);
-            }
-            self.0.borrow_mut().entries.insert(id, entry);
-        }
+        run(&self.0, state, change);
     }
 
     /// Run the readers of `gate`'s row that changes woke while it was not
     /// mounted, now that it is.
     pub(crate) fn catch_up(&self, gate: &Gate, state: &R::State) {
-        let missed = std::mem::take(&mut *gate.stale.borrow_mut());
-        for id in missed {
-            let Some(mut entry) = self.0.borrow_mut().entries.remove(&id) else {
-                continue;
-            };
-            if entry.alive.strong_count() > 0 {
-                (entry.update)(state);
-                self.0.borrow_mut().entries.insert(id, entry);
+        catch_up(&self.0, gate, state);
+    }
+}
+
+fn push(
+    cell: &RefCell<Index>,
+    alive: Weak<()>,
+    gate: Option<Gate>,
+    reads: Reads,
+    update: ErasedUpdate,
+) {
+    let mut index = cell.borrow_mut();
+    let id = index.next;
+    index.next = index.next.saturating_add(1);
+    index.entries.insert(
+        id,
+        Entry {
+            alive,
+            update,
+            gate,
+        },
+    );
+    match reads {
+        Reads::Always => index.always.push(id),
+        Reads::At(path) => index.root.at(&path).here.push(id),
+        Reads::Members(path) => index.root.at(&path).members.push(id),
+    }
+}
+
+fn run(cell: &RefCell<Index>, state: &dyn std::any::Any, change: &Change<'_>) {
+    let woken: BTreeSet<u64> = {
+        let mut index = cell.borrow_mut();
+        let index = &mut *index;
+        // Readers of rows and parts that are gone are dropped when they
+        // would run; the whole index is swept only now and then, so a
+        // change costs what it wakes, not what the view holds.
+        index.since_sweep = index.since_sweep.saturating_add(1);
+        if index.since_sweep.saturating_mul(SWEEP_EVERY) >= index.entries.len() {
+            index.since_sweep = 0;
+            index
+                .entries
+                .retain(|_, entry| entry.alive.strong_count() > 0);
+            let entries = &index.entries;
+            index.always.retain(|id| entries.contains_key(id));
+            index.root.prune(entries);
+        }
+        let entries = &index.entries;
+        match change {
+            Change::Everything => entries.keys().copied().collect(),
+            Change::Delta { delta, doc } => {
+                let mut woken: BTreeSet<u64> = index.always.iter().copied().collect();
+                if delta.is_everything() {
+                    woken.extend(entries.keys().copied());
+                } else if !delta.is_empty() {
+                    woken.extend(&index.root.here);
+                    index.root.touched(&ROOT, delta, doc, &mut woken);
+                }
+                woken
             }
+        }
+    };
+    for id in woken {
+        let Some(mut entry) = cell.borrow_mut().entries.remove(&id) else {
+            continue;
+        };
+        if entry.alive.strong_count() == 0 {
+            continue;
+        }
+        if let Some(gate) = entry.gate.as_ref().filter(|gate| !gate.runs()) {
+            gate.stale.borrow_mut().insert(id);
+        } else {
+            #[cfg(feature = "test-support")]
+            let _profile = super::profiling::Scope::start("framework.reader");
+            (entry.update)(state);
+        }
+        cell.borrow_mut().entries.insert(id, entry);
+    }
+}
+
+fn catch_up(cell: &RefCell<Index>, gate: &Gate, state: &dyn std::any::Any) {
+    let missed = std::mem::take(&mut *gate.stale.borrow_mut());
+    for id in missed {
+        let Some(mut entry) = cell.borrow_mut().entries.remove(&id) else {
+            continue;
+        };
+        if entry.alive.strong_count() > 0 {
+            (entry.update)(state);
+            cell.borrow_mut().entries.insert(id, entry);
         }
     }
 }

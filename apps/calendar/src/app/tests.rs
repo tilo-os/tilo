@@ -338,6 +338,10 @@ fn layout_reflows_on_resize_instead_of_caching_first_frame_geometry() {
             app.take_structure_dirty(),
             "a resize that changes the notes column must request an editor rebuild"
         );
+        assert!(
+            !app.take_structure_dirty(),
+            "the rebuild is asked for once, even before the host lays it out"
+        );
 
         // The rebuild adopts the resized width.
         let mut taffy2: TaffyTree<()> = TaffyTree::new();
@@ -496,21 +500,9 @@ fn user_edits_and_source_identity_persist_across_restart() {
             title: "Tagged".into(),
             start,
             end: start + Duration::hours(1),
-            all_day: false,
-            location: String::new(),
             color: Palette::Red,
-            recurrence: Recurrence::None,
-            recurrence_interval: 1,
-            recurrence_until: None,
-            recurrence_count: None,
-            recurrence_exdates: ui::tilo_resource::Set::default(),
-            occurrence_overrides: ui::tilo_resource::Keyed::default(),
-            timezone: "floating".into(),
-            organizer: None,
-            attendees: ui::tilo_resource::Keyed::default(),
-            reminder_min: None,
-            project: None,
             calendar_id: Some("work/oncall".into()),
+            ..Event::default()
         };
         apply_to(
             &mut doc,
@@ -2051,7 +2043,7 @@ fn caldav_sync_runs_off_thread_and_drains_results_tags_or_failure() {
         // pull into the model + CRDT and clears the in-flight flag. Driven with
         // a hand-fed channel so it is deterministic and network-free, but it is
         // the exact production code the live worker feeds.
-        use crate::model::{Event, Palette, Recurrence};
+        use crate::model::{Event, Palette};
         use chrono::NaiveTime;
 
         let mut app = CalendarApp::new_demo();
@@ -2068,21 +2060,9 @@ fn caldav_sync_runs_off_thread_and_drains_results_tags_or_failure() {
             title: "Pulled from server".into(),
             start,
             end: start + Duration::hours(1),
-            all_day: false,
             location: "Remote".into(),
             color: Palette::Blue,
-            recurrence: Recurrence::None,
-            recurrence_interval: 1,
-            recurrence_until: None,
-            recurrence_count: None,
-            recurrence_exdates: ui::tilo_resource::Set::default(),
-            occurrence_overrides: ui::tilo_resource::Keyed::default(),
-            timezone: "floating".into(),
-            organizer: None,
-            attendees: ui::tilo_resource::Keyed::default(),
-            reminder_min: None,
-            calendar_id: None,
-            project: None,
+            ..Event::default()
         };
         tx.send((
             caldav::SyncResult {
@@ -2238,21 +2218,9 @@ fn calendar_visibility_and_account_collapse_filter_views_and_sidebar() {
             title: "Remote sync marker".into(),
             start,
             end: start + Duration::hours(1),
-            all_day: false,
-            location: String::new(),
             color: Palette::Blue,
-            recurrence: Recurrence::None,
-            recurrence_interval: 1,
-            recurrence_until: None,
-            recurrence_count: None,
-            recurrence_exdates: ui::tilo_resource::Set::default(),
-            occurrence_overrides: ui::tilo_resource::Keyed::default(),
-            timezone: "floating".into(),
-            organizer: None,
-            attendees: ui::tilo_resource::Keyed::default(),
-            reminder_min: None,
-            project: None,
             calendar_id: Some("work/default".into()),
+            ..Event::default()
         };
         let eid = ev.id;
         app.model.events.push(ev);
@@ -3156,21 +3124,9 @@ fn caldav_reconciliation_keeps_stable_resources_by_href() {
             title: title.into(),
             start,
             end: start + Duration::hours(1),
-            all_day: false,
-            location: String::new(),
             color: Palette::Blue,
-            recurrence: Recurrence::None,
-            recurrence_interval: 1,
-            recurrence_until: None,
-            recurrence_count: None,
-            recurrence_exdates: ui::tilo_resource::Set::default(),
-            occurrence_overrides: ui::tilo_resource::Keyed::default(),
-            timezone: "floating".into(),
-            organizer: None,
-            attendees: ui::tilo_resource::Keyed::default(),
-            reminder_min: None,
-            project: None,
             calendar_id: Some("work/default".into()),
+            ..Event::default()
         };
         app.apply_sync_result(
             caldav::SyncResult {

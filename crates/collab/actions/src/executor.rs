@@ -104,6 +104,32 @@ pub fn await_compensation() -> Vec<String> {
     })
 }
 
+/// Mark the step `hash` as waiting for the outside consequence its undo (or,
+/// with `redo`, its redo) queued: the next attempt's marker, negative for an
+/// undo, positive for a redo. The step stays as it was until
+/// [`settle_compensation`] completes it.
+///
+/// # Errors
+/// Refuses when the attempts exceed the budget or the document refuses the
+/// write.
+pub fn await_settlement(doc: &mut Doc, hash: &str, redo: bool) -> Result<(), ActionError> {
+    use automerge::ReadDoc as _;
+    let key = format!("{UNDONE_KEY}{hash}");
+    let before = doc
+        .get(automerge::ROOT, &key)?
+        .and_then(|(value, _)| value.as_i64())
+        .filter(|attempt| (*attempt > 0) == redo && *attempt != 0)
+        .unwrap_or(0);
+    let attempt = if redo {
+        before.checked_add(1)
+    } else {
+        before.checked_sub(1)
+    }
+    .ok_or_else(|| ActionError::Refused("settlement attempts exceed the budget".into()))?;
+    doc.put(automerge::ROOT, key, attempt)?;
+    Ok(())
+}
+
 /// Mark the undo (or redo) of the step `hash` complete: its outside
 /// consequence settled.
 ///
@@ -217,7 +243,6 @@ fn envelope_for(
     }
     context.action = Some(recorded_form(&encoded)?);
     context.compensation = compensation;
-    context.executed_action = Some(id);
     let context = Some(context);
     Ok(ActionEnvelope {
         id,
@@ -233,17 +258,7 @@ fn envelope_for(
 /// The action's [`inverse_encoded`](Action::inverse_encoded) at `doc`, as
 /// the change written by `actor` records it: what the action mints depends
 /// on its writer.
-pub fn inverse_encoded_by(
-    doc: &mut Doc,
-    action: &dyn Action,
-    actor: &[u8],
-) -> Option<EncodedAction> {
-    inverse_as(doc, action, ActorId::from(actor.to_vec()))
-}
-
-/// The action's [`inverse_encoded`](Action::inverse_encoded) at `doc`, as
-/// `actor` would apply it.
-fn inverse_as(doc: &mut Doc, action: &dyn Action, actor: ActorId) -> Option<EncodedAction> {
+pub fn inverse_as(doc: &mut Doc, action: &dyn Action, actor: ActorId) -> Option<EncodedAction> {
     let previous = doc.get_actor().clone();
     doc.set_actor(actor);
     let inverse = action.inverse_encoded(doc);

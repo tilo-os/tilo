@@ -42,7 +42,8 @@ pub(crate) const MAX_BATCH_PHOTOS: usize = 256;
     label = "Photos",
     children = PhotoLibrary::places,
     search = crate::search::library_search_entries,
-    read_content = PhotoLibrary::content
+    read_content = PhotoLibrary::content,
+    effects = PhotosEffect
 )]
 impl PhotoLibrary {
     /// Import photograph.

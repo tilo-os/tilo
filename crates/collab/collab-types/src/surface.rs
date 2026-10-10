@@ -15,7 +15,7 @@ use std::sync::{Arc, Mutex};
 use serde::Deserialize;
 use tilo_action_policy::ActionKind;
 use tilo_actions::PathStep;
-use tilo_resource::surface::Surface;
+use tilo_actions::surface::Surface;
 
 use crate::claim::{ClaimedAction, UnitPath};
 use crate::receipt::{ReceiptSurface, Record, SurfaceSource};

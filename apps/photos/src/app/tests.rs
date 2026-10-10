@@ -2470,9 +2470,7 @@ fn edited_content_effect_returns_exact_pngs_and_rejects_bad_sources() {
         );
 
         let payload = PhotosEffect::ExportEditedContent {
-            resource_id: resource_id.clone(),
-            source_content: source_hash.clone(),
-            edits,
+            photo: ui::tilo_resource::Id::from_raw(resource_id.clone()),
         };
         let mut app = editing(PhotosApp::with_content(store.clone()));
         let started = app
@@ -2508,29 +2506,38 @@ fn edited_content_effect_returns_exact_pngs_and_rejects_bad_sources() {
         );
         assert_eq!(crate::test_doc::photo_edits(&doc, &resource_id), edits);
 
+        // The photograph as it is when the export runs: edits since are in it.
         crate::test_doc::set_photo_edits(&mut doc, &resource_id, crate::model::Edits::default());
-        assert!(
-            app.answer_effect(
+        let output = app
+            .answer_effect(
                 payload,
                 tilo_actions::InvocationId::new(),
-                &crate::test_doc::library(&doc)
+                &crate::test_doc::library(&doc),
             )
-            .is_err(),
-            "a stale edit snapshot must not produce different content"
+            .expect("export succeeds")
+            .expect("bounded content production completes");
+        let unedited = store
+            .read(tilo_actions::content_hash(&output.resources[0]).expect("one content result"))
+            .expect("produced bytes are retrievable");
+        assert_eq!(
+            pixels::decode(&unedited).expect("produced PNG decodes"),
+            pixels::render(
+                &original,
+                crate::model::Edits::default().crop,
+                crate::model::Edits::default().rotate_quarters
+            ),
+            "the export renders the edits the photograph has now"
         );
     }
 
     eprintln!("phase edited_content_effect_rejects_missing_or_misdirected_source_bytes");
     {
         let missing = "f".repeat(64);
-        let open = OpenImage::from_path("missing.png", 3, 2).with_content(missing.clone());
+        let open = OpenImage::from_path("missing.png", 3, 2).with_content(missing);
         let mut doc = AutoCommit::new();
         let photo_id = crate::test_doc::put_image(&mut doc, &open);
-        let edits = crate::test_doc::photo_edits(&doc, &photo_id);
         let encoded = |resource_id: String| PhotosEffect::ExportEditedContent {
-            resource_id,
-            source_content: missing.clone(),
-            edits,
+            photo: ui::tilo_resource::Id::from_raw(resource_id),
         };
         let mut app = test_app();
         for payload in [

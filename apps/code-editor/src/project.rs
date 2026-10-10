@@ -120,6 +120,7 @@ pub struct Project {
     ///
     /// The command lines asked to run in the embedded terminal's session,
     /// each settled with the run it became by the editor running it.
+    #[model(readonly)]
     pub terminal_requests: Outbox<RunRequest, RunAnswer>,
 }
 

@@ -101,11 +101,14 @@ pub mod registry;
 pub mod remote;
 pub mod resource;
 pub mod schema;
+pub mod surface;
 
 pub use action::{
     Action, ActionError, ActionId, Doc, EncodedAction, ExecutionLocus, OperationKind,
 };
-pub use content::{CONTENT_PART_THRESHOLD, CONTENT_REFERENCE_KEY, MissingContent, keep_content_in};
+pub use content::{
+    CONTENT_PART_THRESHOLD, CONTENT_REFERENCE_KEY, ContentParts, MissingContent, keep_content_in,
+};
 pub use context::{
     AGENT_TASK_PARTICIPANT_PREFIX, ActionApp, ActionContext, ActionFacet, ActionGroup,
     ActionInvoker, ActionResource, CHANGE_MESSAGE_PREFIX, CONTINUATION_PREFIX, ChangeKind,
@@ -125,9 +128,9 @@ pub use envelope::ActionEnvelope;
 pub use executor::{
     ActionTransport, CompensatingScope, Dispatched, EntryReader, HostDecision, LocalTransport,
     UNDONE_KEY, Verified, apply_local, apply_local_by, apply_local_with_context,
-    await_compensation, current_step, dispatch, dispatch_by, dispatch_by_with_context,
-    dispatch_with_context, entry_message, entry_of, invoking_context, open_step, replay,
-    settle_compensation, verify_change,
+    await_compensation, await_settlement, current_step, dispatch, dispatch_by,
+    dispatch_by_with_context, dispatch_with_context, entry_message, entry_of, invoking_context,
+    open_step, replay, settle_compensation, verify_change,
 };
 pub use framework::FrameworkChange;
 pub use interaction::{
@@ -143,11 +146,11 @@ pub use outcome::{
     InvocationUpdate, content_hash, content_resource,
 };
 pub use params::{
-    ARGUMENTS_JSON_PREFIX, ActionArgs, ActionParam, ArgError, ArgValue, PLACE_ANNOTATION,
-    ParamType, place_schema, validate_json_schema,
+    ARGUMENTS_JSON_PREFIX, ActionArgs, ActionParam, ArgError, ArgValue, CONTENT_ANNOTATION,
+    PLACE_ANNOTATION, ParamType, place_schema, validate_json_schema,
 };
 pub use protocol::{ContractViolation, validate_surface, validate_surface_contracts};
-pub use registry::ActionRegistry;
+pub use registry::{ActionRegistry, decode_json};
 #[allow(
     deprecated,
     reason = "existing app impls still name this trait until they publish through tilo_resource"
@@ -268,8 +271,6 @@ mod tests {
                 .is_some_and(ActionContext::is_housekeeping)
         );
         assert!(last_context(&mut a).is_some_and(|context| context.is_housekeeping()));
-        assert_eq!(env.context.as_ref().unwrap().executed_action, Some(env.id));
-        assert_eq!(last_context(&mut a).unwrap().executed_action, Some(env.id));
         replay(&mut b, &env, &registry()).unwrap();
         assert_eq!(a.get_heads(), b.get_heads(), "replay makes the same change");
 
@@ -356,16 +357,14 @@ mod tests {
     }
 
     #[test]
-    fn actual_semantic_executor_pins_correlation_and_replays_identical_change() {
+    fn the_executor_keeps_the_admitted_invocation_and_replays_the_identical_change() {
         let (mut origin, mut peer) = two_replicas();
         let action = Counter::Put {
             key: "score".into(),
             value: 42,
         };
         let invocation = InvocationId::new();
-        let forged = ActionId::new();
         let context = ActionContext {
-            executed_action: Some(forged),
             source_invocation: Some(invocation),
             ..Default::default()
         };
@@ -377,9 +376,7 @@ mod tests {
             context,
         )
         .unwrap();
-        assert_ne!(envelope.id, forged);
         let committed = last_context(&mut origin).unwrap();
-        assert_eq!(committed.executed_action, Some(envelope.id));
         assert_eq!(committed.source_invocation, Some(invocation));
         assert_eq!(envelope.context, Some(committed));
         replay(&mut peer, &envelope, &registry()).unwrap();
@@ -391,7 +388,7 @@ mod tests {
     }
 
     #[test]
-    fn legacy_attributed_context_replays_without_inserting_executor_correlation() {
+    fn a_callers_entry_replays_to_the_identical_change() {
         let (mut origin, mut peer) = two_replicas();
         let action = Counter::Put {
             key: "score".into(),
@@ -408,7 +405,6 @@ mod tests {
             context: Some(context.clone()),
         };
         let old_message = context.change_message().unwrap();
-        assert!(!old_message.contains("executed_action"));
         let wire = serde_json::to_vec(&envelope).unwrap();
         let decoded: ActionEnvelope = serde_json::from_slice(&wire).unwrap();
         assert_eq!(serde_json::to_vec(&decoded).unwrap(), wire);
@@ -421,7 +417,6 @@ mod tests {
         );
         replay(&mut peer, &decoded, &registry()).unwrap();
         assert_eq!(last_message(&mut peer), Some(old_message));
-        assert_eq!(last_context(&mut peer).unwrap().executed_action, None);
         assert_eq!(origin.get_heads(), peer.get_heads());
         assert_eq!(
             origin.get_changes(&envelope.base_change_hashes())[0].raw_bytes(),

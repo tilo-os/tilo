@@ -42,7 +42,7 @@ use tracing::warn;
 use ui::LocalState;
 use ui::framework::{EffectAnswer, EffectCx, Effected, LiveRow};
 use ui::tilo_resource::{self, Effect};
-use ui::widget::{Button, Dropdown, Row, Slider, Spacer, Text, Toggle, Widget};
+use ui::widget::{Button, Dropdown, Row, Slider, Spacer, Text, Widget};
 
 use crate::dispatcher::dispatcher_or_real;
 use crate::effects::{SettingsEffect, effect};
@@ -53,7 +53,7 @@ use crate::prefs::AudioPrefs;
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
 use crate::widgets::{
-    caption, card, choice_row_described, error_caption, error_row, rows, setting_row,
+    caption, card, error_caption, error_row, rows, setting_row, setting_row_described,
 };
 
 /// How often the pane re-reads the `PipeWire` graph while it is open, so a
@@ -1167,22 +1167,18 @@ impl AudioModel {
                 &t_args("sound-volume-error", &[("error", error.as_str().into())]),
             ));
         } else {
-            output_rows.push(setting_row(
-                &t("sound-volume"),
-                Box::new(
-                    self.cx.bind(
-                        Slider::from_state(&LocalState::new(f64::from(self.volume)))
-                            .with_id("audio.volume"),
+            output_rows.push(
+                self.cx
+                    .row(t("sound-volume"))
+                    .id("audio.volume")
+                    .slider_effect(
+                        &LocalState::new(f64::from(self.volume)),
                         effect(AudioEffect::SET_OUTPUT_VOLUME),
                     ),
-                ),
-            ));
-            output_rows.push(setting_row(
-                &t("sound-mute"),
-                Box::new(self.cx.bind(
-                    Toggle::from_state(&LocalState::new(self.muted)).with_id("audio.mute"),
-                    effect(AudioEffect::SET_OUTPUT_MUTED),
-                )),
+            );
+            output_rows.push(self.cx.row(t("sound-mute")).id("audio.mute").toggle_effect(
+                &LocalState::new(self.muted),
+                effect(AudioEffect::SET_OUTPUT_MUTED),
             ));
         }
         let stereo_sink = self.graph.default_sink().filter(|sink| sink.channels == 2);
@@ -1206,15 +1202,9 @@ impl AudioModel {
             ));
         }
         if self.runtime_caps.mono_output && stereo_sink.is_some() {
-            output_rows.push(setting_row(
-                &t("sound-mono"),
-                Box::new(
-                    self.cx.bind(
-                        Toggle::from_state(&LocalState::new(self.prefs.get().mono_output))
-                            .with_id("audio.mono"),
-                        effect(AudioEffect::SET_MONO_OUTPUT),
-                    ),
-                ),
+            output_rows.push(self.cx.row(t("sound-mono")).id("audio.mono").toggle_effect(
+                &LocalState::new(self.prefs.get().mono_output),
+                effect(AudioEffect::SET_MONO_OUTPUT),
             ));
             output_rows.push(caption(&t("sound-mono-caption")));
         }
@@ -1288,16 +1278,15 @@ impl AudioModel {
                 &t_args("sound-input-error", &[("error", error.as_str().into())]),
             ));
         } else {
-            input_rows.push(setting_row(
-                &t("sound-input-level"),
-                Box::new(
-                    self.cx.bind(
-                        Slider::from_state(&LocalState::new(f64::from(self.input_volume)))
-                            .with_id("audio.input_volume"),
+            input_rows.push(
+                self.cx
+                    .row(t("sound-input-level"))
+                    .id("audio.input_volume")
+                    .slider_effect(
+                        &LocalState::new(f64::from(self.input_volume)),
                         effect(AudioEffect::SET_INPUT_VOLUME),
                     ),
-                ),
-            ));
+            );
         }
         if self.runtime_caps.microphone_meter && self.graph.default_source().is_some() {
             let running = self.mic_session.is_some();
@@ -1333,16 +1322,15 @@ impl AudioModel {
             input_rows.push(caption(&t("sound-mic-caption")));
         }
         if self.runtime_caps.echo_cancellation && !self.graph.sources.is_empty() {
-            input_rows.push(setting_row(
-                &t("sound-echo"),
-                Box::new(
-                    self.cx.bind(
-                        Toggle::from_state(&LocalState::new(self.prefs.get().echo_cancellation))
-                            .with_id("audio.echo_cancellation"),
+            input_rows.push(
+                self.cx
+                    .row(t("sound-echo"))
+                    .id("audio.echo_cancellation")
+                    .toggle_effect(
+                        &LocalState::new(self.prefs.get().echo_cancellation),
                         effect(AudioEffect::SET_ECHO_CANCELLATION),
                     ),
-                ),
-            ));
+            );
             input_rows.push(caption(&t("sound-echo-caption")));
         }
         card(&t("sound-input"), rows(input_rows))
@@ -1358,25 +1346,24 @@ impl AudioModel {
             if selectable.len() < 2 {
                 continue;
             }
-            let options = selectable.iter().map(|p| p.description.clone()).collect();
+            let options: Vec<String> = selectable.iter().map(|p| p.description.clone()).collect();
             let device = hw.id;
             let active = hw
                 .active_profile
                 .and_then(|i| hw.profiles.iter().find(|p| p.index == i))
                 .map_or_else(|| t("sound-choose-profile"), |p| p.description.clone());
-            hardware_rows.push(choice_row_described(
-                &hw.description,
-                &t("sound-profile"),
-                Box::new(
-                    self.cx.bind(
-                        Dropdown::from_state(options, &LocalState::new(active.clone()))
-                            .with_id(&format!("audio.profile.{}", hw.id))
-                            .with_placeholder(&active),
+            hardware_rows.push(
+                self.cx
+                    .row(&hw.description)
+                    .described(t("sound-profile"))
+                    .id(format!("audio.profile.{}", hw.id))
+                    .choice_effect(
+                        options,
+                        &LocalState::new(active.clone()),
                         effect(AudioEffect::SET_DEVICE_PROFILE)
                             .map(move |profile: String| (device, profile)),
                     ),
-                ),
-            ));
+            );
         }
         for sink in &self.graph.sinks {
             if let Some(codec) = &sink.codec {
@@ -1422,27 +1409,23 @@ impl AudioModel {
                 effect(AudioEffect::ROUTE_STREAM).map(move |device: String| (id, device)),
             );
             let route_row =
-                choice_row_described(&s.app, s.media_name.as_deref().unwrap_or(""), Box::new(dd));
-            let vol_row = setting_row(
-                &t("sound-volume"),
-                Box::new(
-                    self.cx.bind(
-                        Slider::from_state(&LocalState::new(f64::from(s.volume.unwrap_or(1.0))))
-                            .with_id(&format!("audio.stream.{id}.volume.sl")),
-                        effect(AudioEffect::SET_STREAM_VOLUME).map(move |volume: f64| (id, volume)),
-                    ),
-                ),
-            );
-            let mute_row = setting_row(
-                &t("sound-mute"),
-                Box::new(
-                    self.cx.bind(
-                        Toggle::from_state(&LocalState::new(s.muted.unwrap_or(false)))
-                            .with_id(&format!("audio.stream.{id}.muted.tg")),
-                        effect(AudioEffect::SET_STREAM_MUTED).map(move |muted: bool| (id, muted)),
-                    ),
-                ),
-            );
+                setting_row_described(&s.app, s.media_name.as_deref().unwrap_or(""), Box::new(dd));
+            let vol_row = self
+                .cx
+                .row(t("sound-volume"))
+                .id(format!("audio.stream.{id}.volume.sl"))
+                .slider_effect(
+                    &LocalState::new(f64::from(s.volume.unwrap_or(1.0))),
+                    effect(AudioEffect::SET_STREAM_VOLUME).map(move |volume: f64| (id, volume)),
+                );
+            let mute_row = self
+                .cx
+                .row(t("sound-mute"))
+                .id(format!("audio.stream.{id}.muted.tg"))
+                .toggle_effect(
+                    &LocalState::new(s.muted.unwrap_or(false)),
+                    effect(AudioEffect::SET_STREAM_MUTED).map(move |muted: bool| (id, muted)),
+                );
             blocks.push(rows(vec![route_row, vol_row, mute_row]));
         }
         card(title, rows(blocks))
@@ -1481,28 +1464,29 @@ impl AudioModel {
             };
             return card(&t("sound-system"), rows(vec![reason]));
         }
-        let mut sound_rows = vec![setting_row(
-            &t("sound-system"),
-            Box::new(self.cx.bind_field(
-                Toggle::from_state(&LocalState::new(sounds.enabled)).with_id("audio.system_sounds"),
-                crate::prefs::AudioPrefs::paths().system_sounds.enabled,
-            )),
-        )];
+        let mut sound_rows = vec![
+            self.cx
+                .row(t("sound-system"))
+                .id("audio.system_sounds")
+                .toggle(
+                    &LocalState::new(sounds.enabled),
+                    crate::prefs::AudioPrefs::paths().system_sounds.enabled,
+                ),
+        ];
         if !sounds.enabled {
             return card(&t("sound-system"), rows(sound_rows));
         }
-        sound_rows.push(setting_row(
-            &t("sound-volume"),
-            Box::new(
-                self.cx.bind_field(
-                    Slider::from_state(&LocalState::new(sounds.volume))
-                        .with_id("audio.system_sound_volume"),
+        sound_rows.push(
+            self.cx
+                .row(t("sound-volume"))
+                .id("audio.system_sound_volume")
+                .slider(
+                    &LocalState::new(sounds.volume),
                     AudioPrefs::paths().system_sounds.volume,
                 ),
-            ),
-        ));
+        );
         if self.sound_themes.len() >= 2 {
-            let names = self
+            let names: Vec<String> = self
                 .sound_themes
                 .iter()
                 .map(|theme| theme.name.clone())
@@ -1513,28 +1497,27 @@ impl AudioModel {
                 .find(|theme| theme.id == sounds.theme_name())
                 .map(|theme| theme.name.clone())
                 .unwrap_or_default();
-            sound_rows.push(setting_row(
-                &t("sound-theme"),
-                Box::new(
-                    self.cx.bind(
-                        Dropdown::from_state(names, &LocalState::new(current))
-                            .with_id("audio.sound_theme"),
+            sound_rows.push(
+                self.cx
+                    .row(t("sound-theme"))
+                    .id("audio.sound_theme")
+                    .choice_effect(
+                        names,
+                        &LocalState::new(current),
                         effect(AudioEffect::SET_SOUND_THEME),
                     ),
-                ),
-            ));
+            );
         }
         for event in SystemSoundEvent::ALL {
-            sound_rows.push(setting_row(
-                &event_shown(event),
-                Box::new(
-                    self.cx.bind_field(
-                        Toggle::from_state(&LocalState::new(sounds.events.get(event)))
-                            .with_id(&format!("audio.event_sound.{}", event.key())),
+            sound_rows.push(
+                self.cx
+                    .row(event_shown(event))
+                    .id(format!("audio.event_sound.{}", event.key()))
+                    .toggle(
+                        &LocalState::new(sounds.events.get(event)),
                         event_sound(event),
                     ),
-                ),
-            ));
+            );
         }
         sound_rows.push(caption(&t("sound-system-caption")));
         card(&t("sound-system"), rows(sound_rows))

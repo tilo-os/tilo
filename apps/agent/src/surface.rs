@@ -310,7 +310,25 @@ impl Offer {
     /// content can only be performed as a step after something that
     /// produced some.
     pub fn wants_content(&self) -> bool {
-        self.descriptor.input.wants_content()
+        self.content_param().is_some()
+    }
+
+    /// The parameter content another operation produced is carried under:
+    /// its typed content parameter (`#[param(content)]`), or the one input of
+    /// an operation that collects only content.
+    pub fn content_param(&self) -> Option<String> {
+        if let Some(param) = self
+            .descriptor
+            .params
+            .iter()
+            .find(|param| param.is_content())
+        {
+            return Some(param.name.to_string());
+        }
+        self.descriptor
+            .input
+            .wants_content()
+            .then(|| tilo_actions::PROMPTED_PARAM.to_owned())
     }
 
     /// Whether performing it answers with content another operation takes:
@@ -809,39 +827,6 @@ pub fn find<'a>(offers: &'a [Offer], id: &str) -> Option<&'a Offer> {
 /// address — an identifier in a sentence tells a reader nothing.
 pub fn label_of(offers: &[Offer], id: &str) -> Option<String> {
     find(offers, id).map(|o| o.descriptor.action_label.clone())
-}
-
-/// A short, human list of what is on offer.
-///
-/// De-duplicated by label and capped: a folder of fifty files exports fifty
-/// `Rename`s, and a refusal reciting all of them is a paragraph a person
-/// skims and learns nothing from.
-pub fn in_words(offers: &[Offer], most: usize) -> String {
-    let mut names: Vec<&str> = Vec::new();
-    for o in offers {
-        let label = o.descriptor.action_label.as_str();
-        if !names.iter().any(|n| n.eq_ignore_ascii_case(label)) {
-            names.push(label);
-        }
-    }
-    if names.is_empty() {
-        return String::new();
-    }
-    let shown: Vec<String> = names.iter().take(most).map(|n| n.to_lowercase()).collect();
-    let rest = names.len().saturating_sub(shown.len());
-    let mut s = match shown.split_last() {
-        Some((last, [])) => last.clone(),
-        Some((last, head)) => format!("{}, or {last}", head.join(", ")),
-        None => String::new(),
-    };
-    if rest > 0 {
-        let _ = write!(
-            s,
-            ", among {rest} other thing{}",
-            if rest == 1 { "" } else { "s" }
-        );
-    }
-    s
 }
 
 // ---------------------------------------------------------------------------

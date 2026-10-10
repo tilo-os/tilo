@@ -48,7 +48,7 @@ impl ActionRegistry {
         self.decoders.insert(
             type_id,
             Box::new(move |bytes: &[u8]| {
-                let action: A = serde_json::from_slice(bytes).map_err(|e| ActionError::Decode {
+                let action: A = decode_json(bytes).map_err(|e| ActionError::Decode {
                     type_id: tid.clone(),
                     source: e,
                 })?;
@@ -109,4 +109,18 @@ impl ActionRegistry {
     pub fn type_ids(&self) -> Vec<&str> {
         self.decoders.keys().map(String::as_str).collect()
     }
+}
+
+/// A `T` from its JSON bytes, through a JSON value: one byte parser for
+/// every action type, compiled here, rather than one per type and crate.
+///
+/// # Errors
+/// Why the bytes are not a `T`.
+pub fn decode_json<T: DeserializeOwned>(bytes: &[u8]) -> Result<T, serde_json::Error> {
+    T::deserialize(json_value(bytes)?)
+}
+
+#[inline(never)]
+fn json_value(bytes: &[u8]) -> Result<serde_json::Value, serde_json::Error> {
+    serde_json::from_slice(bytes)
 }

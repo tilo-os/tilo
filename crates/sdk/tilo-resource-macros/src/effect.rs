@@ -16,15 +16,28 @@ use crate::{doc_lines, humanize, krate, param_type, snake_case};
 /// caret; `place = "field"` names the collection whose items it takes.
 #[derive(Default)]
 struct Param {
-    secret: bool,
-    place: bool,
+    /// What the argument is beyond a value, by its leading flag.
+    flag: Flag,
     /// The collection whose items the place names (`place = "blocks"`).
     place_in: Option<String>,
-    /// A documented struct whose fields are the effect's arguments
-    /// (`#[param(flatten)]`, the effect's only field).
-    flatten: bool,
     description: Option<String>,
     choices: Option<syn::Expr>,
+}
+
+/// A parameter's leading flag.
+#[derive(Default, Clone, Copy, PartialEq, Eq)]
+enum Flag {
+    #[default]
+    None,
+    /// A secret the host keeps out of logs, history and confirmations.
+    Secret,
+    /// Content another action produced, carried as its hash.
+    Content,
+    /// A place inside the resource.
+    Place,
+    /// A documented struct whose fields are the effect's arguments (the
+    /// effect's only field).
+    Flatten,
 }
 
 impl syn::parse::Parse for Param {
@@ -33,15 +46,17 @@ impl syn::parse::Parse for Param {
         if input.peek(syn::Ident) && !input.peek2(syn::Token![=]) {
             let flag: syn::Ident = input.parse()?;
             if flag == "flatten" {
-                param.flatten = true;
+                param.flag = Flag::Flatten;
             } else if flag == "secret" {
-                param.secret = true;
+                param.flag = Flag::Secret;
             } else if flag == "place" {
-                param.place = true;
+                param.flag = Flag::Place;
+            } else if flag == "content" {
+                param.flag = Flag::Content;
             } else {
                 return Err(syn::Error::new(
                     flag.span(),
-                    "expected `secret`, `place` or `flatten`",
+                    "expected `secret`, `content`, `place` or `flatten`",
                 ));
             }
             if input.is_empty() {
@@ -59,7 +74,7 @@ impl syn::parse::Parse for Param {
         let key: syn::Ident = input.parse()?;
         input.parse::<syn::Token![=]>()?;
         if key == "place" {
-            param.place = true;
+            param.flag = Flag::Place;
             param.place_in = Some(input.parse::<syn::LitStr>()?.value());
             return Ok(param);
         }
@@ -315,7 +330,9 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
             }
         }
 
-        let flattened = fields.iter().any(|(_, _, described)| described.flatten);
+        let flattened = fields
+            .iter()
+            .any(|(_, _, described)| described.flag == Flag::Flatten);
         if flattened && fields.len() != 1 {
             return Err(syn::Error::new(
                 variant.span(),
@@ -323,7 +340,7 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
             ));
         }
         let params = fields.iter().map(|(field, ty, described)| {
-            if described.flatten {
+            if described.flag == Flag::Flatten {
                 return quote!(#krate::__private::flat_params(
                     &<#ty as #krate::JsonSchema>::json_schema()
                 ));
@@ -334,7 +351,7 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
                 .clone()
                 .unwrap_or_else(|| humanize(&param));
             let (param_ty, optional) = param_type(ty, false);
-            let param_ty = if described.secret {
+            let param_ty = if described.flag == Flag::Secret {
                 quote!(#krate::__private::ParamType::Secret)
             } else {
                 param_ty
@@ -348,7 +365,12 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
                 Some(choices) => quote!(#declared.with_choices(#choices)),
                 None => declared,
             };
-            let declared = match (&described.place_in, described.place) {
+            let declared = if described.flag == Flag::Content {
+                quote!(#declared.as_content())
+            } else {
+                declared
+            };
+            let declared = match (&described.place_in, described.flag == Flag::Place) {
                 (Some(field), _) => quote!(#declared.as_place_in(#field)),
                 (None, true) => quote!(#declared.as_place()),
                 (None, false) => declared,

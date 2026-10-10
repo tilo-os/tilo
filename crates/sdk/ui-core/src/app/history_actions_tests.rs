@@ -135,7 +135,7 @@ fn write_holder_lists_previews_compares_and_restores_through_the_registry() {
         }))
     ));
     let author = app.local_author().clone();
-    assert!(app.state.undo_as(Some(&author), None, None).is_some());
+    assert!(app.state.undo_as(Some(&author), None, None, None).is_some());
     assert_eq!(title(&app).as_deref(), Some("v3"));
 
     let session = preview["session"].as_str().unwrap();
@@ -277,7 +277,7 @@ fn a_broker_delivered_restore_runs_and_is_attributed_to_the_invoker() {
     assert_eq!(all.len(), changes + 1);
     let agent = crate::permissions::UserId("agent:Scribe".into());
     assert!(
-        app.state.undo_as(Some(&agent), None, None).is_some(),
+        app.state.undo_as(Some(&agent), None, None, None).is_some(),
         "the restore is the invoking agent's to undo"
     );
     assert_eq!(title(&app).as_deref(), Some("v2"));

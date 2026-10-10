@@ -37,7 +37,7 @@ use crate::prefs::DisplayPrefs;
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
 use crate::widgets::{
-    El, caption, card, choice_row, error_row, rows, setting_row, setting_row_described, value_row,
+    El, caption, card, error_row, rows, setting_row, setting_row_described, value_row,
 };
 use settings_store::hardware::{
     DisplayConfig, DisplayHardwareSnapshot, DisplaySet, DisplayTransaction,
@@ -1061,10 +1061,6 @@ impl DisplayModel {
     fn with_outputs(mut self, outputs: Vec<DisplayOutput>) -> Self {
         self.outputs = outputs;
         self
-    }
-
-    pub fn outputs(&self) -> &[DisplayOutput] {
-        &self.outputs
     }
 
     /// The outputs the arrangement card lists as rows: only the connected
@@ -2169,16 +2165,13 @@ impl DisplayModel {
     fn build_brightness_card(&self) -> El {
         let prefs = *self.prefs.get();
         let automatic_brightness = if self.ambient_sensor_available {
-            setting_row(
-                &t("display-auto-brightness"),
-                Box::new(
-                    self.cx.bind(
-                        Toggle::from_state(&LocalState::new(prefs.auto_brightness))
-                            .with_id("display.auto_brightness"),
-                        effect(DisplayEffect::SET_AUTOMATIC_BRIGHTNESS),
-                    ),
-                ),
-            )
+            self.cx
+                .row(t("display-auto-brightness"))
+                .id("display.auto_brightness")
+                .toggle_effect(
+                    &LocalState::new(prefs.auto_brightness),
+                    effect(DisplayEffect::SET_AUTOMATIC_BRIGHTNESS),
+                )
         } else {
             value_row(&t("display-auto-brightness"), &t("display-no-ambient"))
         };
@@ -2193,57 +2186,43 @@ impl DisplayModel {
                             &[("error", error.as_str().into())],
                         ),
                     ),
-                    None => setting_row(
-                        &t("display-brightness"),
-                        Box::new(
-                            self.cx.bind(
-                                Slider::from_state(&LocalState::new(f64::from(self.brightness)))
-                                    .with_id("display.brightness"),
-                                effect(DisplayEffect::SET_BRIGHTNESS),
-                            ),
+                    None => self
+                        .cx
+                        .row(t("display-brightness"))
+                        .id("display.brightness")
+                        .slider_effect(
+                            &LocalState::new(f64::from(self.brightness)),
+                            effect(DisplayEffect::SET_BRIGHTNESS),
                         ),
-                    ),
                 },
                 automatic_brightness,
-                setting_row(
-                    &t("display-night-light"),
-                    Box::new(
-                        self.cx.bind_field(
-                            Toggle::from_state(&LocalState::new(prefs.night_light))
-                                .with_id("display.night_light"),
-                            crate::prefs::DisplayPrefs::paths().night_light,
-                        ),
+                self.cx
+                    .row(t("display-night-light"))
+                    .id("display.night_light")
+                    .toggle(
+                        &LocalState::new(prefs.night_light),
+                        crate::prefs::DisplayPrefs::paths().night_light,
                     ),
-                ),
-                setting_row_described(
-                    &t("display-night-light-schedule"),
-                    &t("display-night-light-schedule-desc"),
-                    Box::new(
-                        self.cx.bind_field(
-                            Toggle::from_state(&LocalState::new(prefs.night_light_schedule))
-                                .with_id("display.night_light_schedule"),
-                            crate::prefs::DisplayPrefs::paths().night_light_schedule,
-                        ),
+                self.cx
+                    .row(t("display-night-light-schedule"))
+                    .described(t("display-night-light-schedule-desc"))
+                    .id("display.night_light_schedule")
+                    .toggle(
+                        &LocalState::new(prefs.night_light_schedule),
+                        crate::prefs::DisplayPrefs::paths().night_light_schedule,
                     ),
-                ),
-                choice_row(
-                    &t("display-night-light-warmth"),
-                    Box::new(
-                        self.cx.bind_field_with(
-                            Dropdown::from_state(
-                                temperature_options(),
-                                &LocalState::new(temperature_label(prefs.night_light_temperature)),
-                            )
-                            .with_id("display.night_light_temperature")
-                            .with_placeholder(&temperature_label(prefs.night_light_temperature)),
-                            crate::prefs::DisplayPrefs::paths().night_light_temperature,
-                            |label: String| {
-                                temperature_from_label(&label)
-                                    .ok_or_else(|| format!("`{label}` is not a Night Light warmth"))
-                            },
-                        ),
+                self.cx
+                    .row(t("display-night-light-warmth"))
+                    .id("display.night_light_temperature")
+                    .choice(
+                        temperature_options(),
+                        &LocalState::new(temperature_label(prefs.night_light_temperature)),
+                        crate::prefs::DisplayPrefs::paths().night_light_temperature,
+                        |label: String| {
+                            temperature_from_label(&label)
+                                .ok_or_else(|| format!("`{label}` is not a Night Light warmth"))
+                        },
                     ),
-                ),
                 caption(&t("display-night-light-caption")),
             ]),
         )
@@ -2343,7 +2322,7 @@ impl DisplayModel {
                     )
                 }),
             ),
-            choice_row(
+            setting_row(
                 &t("display-scale"),
                 Box::new(self.choice(
                     &output.connector,
@@ -2353,7 +2332,7 @@ impl DisplayModel {
                     effect(DisplayEffect::SET_OUTPUT_SCALE),
                 )),
             ),
-            choice_row(
+            setting_row(
                 &t("display-position"),
                 Box::new(self.choice(
                     &output.connector,
@@ -2363,7 +2342,7 @@ impl DisplayModel {
                     effect(DisplayEffect::PLACE_DISPLAY),
                 )),
             ),
-            choice_row(
+            setting_row(
                 &t("display-mirroring"),
                 Box::new(self.choice(
                     &output.connector,
@@ -2399,7 +2378,7 @@ impl DisplayModel {
                 .mode
                 .or(output.current_mode)
                 .map_or_else(|| "Preferred".into(), OutputMode::label);
-            out_rows.push(choice_row(
+            out_rows.push(setting_row(
                 "Resolution & refresh rate",
                 Box::new(self.choice(
                     &output.connector,
@@ -2412,7 +2391,7 @@ impl DisplayModel {
         }
         let rotation = transform_options();
         let rotation_current = transform_label(config.transform);
-        out_rows.push(choice_row(
+        out_rows.push(setting_row(
             &t("display-rotation"),
             Box::new(self.choice(
                 &output.connector,
@@ -2506,7 +2485,7 @@ impl DisplayModel {
                         .map(|label| format!("{label} ({id})"))
                 })
                 .unwrap_or_else(|| "System default".into());
-            out_rows.push(choice_row(
+            out_rows.push(setting_row(
                 &t("display-colour-profile"),
                 Box::new(self.choice(
                     &output.connector,

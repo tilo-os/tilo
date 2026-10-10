@@ -240,7 +240,7 @@ pub struct Step {
     /// operation that collects a content hash can only be performed with
     /// content something produced, so there is exactly one place its
     /// argument can come from.
-    pub carries: bool,
+    pub carries: Option<String>,
 }
 
 impl Step {
@@ -248,7 +248,7 @@ impl Step {
     pub fn own(instruction: Instruction) -> Step {
         Step {
             instruction,
-            carries: false,
+            carries: None,
         }
     }
 
@@ -257,9 +257,9 @@ impl Step {
     pub fn bound(instruction: Instruction, offers: &[Offer]) -> Step {
         let carries = match &instruction {
             Instruction::Perform { id, .. } => {
-                surface::find(offers, id).is_some_and(Offer::wants_content)
+                surface::find(offers, id).and_then(Offer::content_param)
             }
-            Instruction::Unknown(_) => false,
+            Instruction::Unknown(_) => None,
         };
         Step {
             instruction,
@@ -1198,17 +1198,21 @@ mod tests {
                 confirmation: ConfirmationEvidence::None,
             };
             assert!(
-                Step::bound(perform(&content), &offers).carries,
+                Step::bound(perform(&content), &offers).carries.is_some(),
                 "an operation that collects content must be carried into"
             );
             assert!(
-                !Step::bound(perform(&words), &offers).carries,
+                Step::bound(perform(&words), &offers).carries.is_none(),
                 "an operation that collects words is never carried into — it is quoted, not carried"
             );
-            assert!(!Step::bound(perform(&none), &offers).carries);
+            assert!(Step::bound(perform(&none), &offers).carries.is_none());
 
             // Never true for anything but Perform, whatever the survey holds.
-            assert!(!Step::bound(Instruction::Unknown("x".into()), &offers).carries);
+            assert!(
+                Step::bound(Instruction::Unknown("x".into()), &offers)
+                    .carries
+                    .is_none()
+            );
         }
 
         // Case `opens_an_application_is_true_only_for_the_open_address`.

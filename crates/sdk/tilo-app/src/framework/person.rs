@@ -561,7 +561,7 @@ impl PersonState {
     /// Answer an undo or redo of an open record: how many steps it took.
     pub(crate) fn answer(&self, payload: &[u8]) -> Result<tilo_actions::ActionOutput, String> {
         let request: HistoryRequest =
-            serde_json::from_slice(payload).map_err(|error| error.to_string())?;
+            tilo_actions::decode_json(payload).map_err(|error| error.to_string())?;
         let steps = request.steps.unwrap_or(1);
         if !(1..=MAX_STEPS).contains(&steps) {
             return Err(format!("steps is 1 to {MAX_STEPS}"));

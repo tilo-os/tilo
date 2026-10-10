@@ -40,7 +40,7 @@ pub fn answer(doc: &Doc, action: &str, changes: &[Patch]) -> Option<Value> {
             }
             Some(answer)
         }
-        "paint" | "draw" | "use-selection" => {
+        "paint" | "draw" | "import-svg" | "use-selection" => {
             let added = added(changes);
             if added.is_empty() {
                 return None;

@@ -68,6 +68,7 @@ pub struct Terminal {
     /// The command lines `run` queued for the device that runs the session;
     /// only verbs queue them, and the terminal running it settles each with
     /// the run it became.
+    #[model(readonly)]
     pub requests: Outbox<RunRequest, RunAnswer>,
 }
 
@@ -426,7 +427,7 @@ impl Terminal {
         let request = RunRequest {
             command: Atom(command.to_owned()),
             requested_by: Atom(cx.author().unwrap_or_default().to_owned()),
-            for_person: None,
+            for_person: cx.for_person().map(Atom),
             pane,
         };
         requests.push(cx.id(), request);

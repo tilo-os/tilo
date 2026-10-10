@@ -56,6 +56,7 @@ pub mod account_probe;
 pub mod accounts;
 pub mod categories;
 pub mod resource;
+pub mod row;
 pub mod scenarios;
 pub use os_actions::codec_pack;
 mod continuity;

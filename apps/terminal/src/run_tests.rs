@@ -186,7 +186,9 @@ fn an_agent_reruns_the_failing_test_of_a_run() {
         assert!(offered.iter().any(|id| id == verb), "{verb}: {offered:?}");
     }
 
-    let agent = ActionInvoker::actor("agent:helper").with_kind(ActorKind::Agent);
+    let agent = ActionInvoker::actor("agent:helper")
+        .with_kind(ActorKind::Agent)
+        .acting_for("person:ada");
     app.call_by(
         agent,
         &item_resource_id::<Terminal>("runs", first),
@@ -215,6 +217,14 @@ fn an_agent_reruns_the_failing_test_of_a_run() {
         .get(request)
         .expect("the run is the request's item");
     assert_eq!(rerun.actor.0, "agent:helper");
+    let ada =
+        |person: &Option<ui::tilo_resource::Atom>| person.as_ref().map(|person| person.0.clone());
+    assert_eq!(ada(&entry.value.for_person), Some("person:ada".to_owned()));
+    assert_eq!(
+        ada(&rerun.for_person),
+        Some("person:ada".to_owned()),
+        "the run names the person the agent ran it for"
+    );
     assert_eq!(rerun.exit, 0);
     assert_eq!(
         entry.settled,

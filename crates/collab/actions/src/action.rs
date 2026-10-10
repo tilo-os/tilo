@@ -178,21 +178,6 @@ pub trait Action: std::fmt::Debug {
         None
     }
 
-    /// A declared outside restoration after this action was undone. The
-    /// history executor calls it only after verifying the original action at
-    /// its dependency heads. Saved metadata alone never enables restoration.
-    fn redo_encoded(&self, doc: &Doc) -> Option<EncodedAction> {
-        let _ = doc;
-        None
-    }
-
-    /// Whether undoing this value needs an outside receipt before history
-    /// can mark it undone. This is a pure declaration, not caller authority.
-    /// The app confirms completion only through its admitted settlement action.
-    fn inverse_requires_settlement(&self) -> bool {
-        false
-    }
-
     /// Whether this value changes the document's content or is housekeeping
     /// about it (a read marker, a reading position). The executor writes it
     /// into the change's [`ActionContext`](crate::ActionContext), where a

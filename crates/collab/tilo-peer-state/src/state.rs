@@ -15,7 +15,7 @@ use ed25519_dalek::SigningKey;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, VecDeque};
 use tilo_action_policy::{
-    ActionKind, Answer, Authority, Grant, GrantId, KindSet, Party, RoomPolicy, Subject, TreePath,
+    ActionKind, Answer, Authority, Grant, GrantId, KindSet, RoomPolicy, Subject, TreePath,
 };
 use tilo_user_identity::{DeviceCert, RevocationList};
 use web_time::{Duration, SystemTime};
@@ -89,15 +89,8 @@ impl MemberAuthority {
     /// The member's authority, held to `foreign_bound` on a foreign device.
     #[must_use]
     pub fn authority<'a>(&'a self, foreign_bound: &'a [Grant]) -> Authority<'a> {
-        let authority = Authority::person(self.policy.party(&self.person));
-        if self.foreign {
-            authority.bounded_by(
-                Party::new(vec![Subject::ForeignDevice], foreign_bound)
-                    .with_grants(self.policy.grants_of(&Subject::ForeignDevice)),
-            )
-        } else {
-            authority
-        }
+        self.policy
+            .person_on_device(&self.person, self.foreign, foreign_bound)
     }
     /// Whether the member may perform an action of `kind` at `node` at `now`.
     #[must_use]

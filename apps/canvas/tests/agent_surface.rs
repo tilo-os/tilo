@@ -15,9 +15,9 @@ use ui::prelude::TestApp;
 
 /// The most the whole surface may weigh, in bytes of JSON: what an agent
 /// reads before it can act. Growing past it is a design decision, not drift.
-/// Vector design took it to 89 KB, most of that `apply` and `group`
-/// repeating every named action's schema; they now name those actions
-/// instead, and it fits the original budget again.
+/// `apply` and `group` name the actions they repeat; the field-edit listing
+/// names each editable path once with its operations; a parameter's schema
+/// does not repeat its description, nor a description its label.
 const BUDGET: usize = 64 * 1024;
 
 #[test]

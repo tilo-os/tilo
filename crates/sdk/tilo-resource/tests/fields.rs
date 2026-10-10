@@ -381,7 +381,8 @@ fn a_derived_place_offers_an_edit_that_asks_for_its_value() {
 }
 
 /// What an agent sees of the field edit at `path` (`notes.*.body`): the
-/// line describing it, and the example edit at it.
+/// line describing it, and an edit at it built from the example of its
+/// shape (one example per shape of path: a field, an item's field, …).
 fn described(schema: &serde_json::Value, path: &str) -> (String, serde_json::Value) {
     let line = schema["description"]
         .as_str()
@@ -390,22 +391,31 @@ fn described(schema: &serde_json::Value, path: &str) -> (String, serde_json::Val
         .find(|line| line.starts_with(&format!("- `{path}`")))
         .expect("the descriptor describes the path")
         .to_owned();
-    let dotted = |example: &serde_json::Value| {
-        example["path"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|step| step["field"].as_str().unwrap_or("*").to_owned())
-            .collect::<Vec<_>>()
-            .join(".")
-    };
-    let example = schema["examples"]
+    let segments: Vec<&str> = path.split('.').collect();
+    let mut example = schema["examples"]
         .as_array()
         .unwrap()
         .iter()
-        .find(|example| dotted(example) == path)
-        .expect("an example edit at the path")
+        .find(|example| {
+            let steps = example["path"].as_array().unwrap();
+            steps.len() == segments.len()
+                && steps
+                    .iter()
+                    .zip(&segments)
+                    .all(|(step, segment)| (*segment == "*") == step.get("item").is_some())
+        })
+        .expect("an example edit of the path's shape")
         .clone();
+    for (step, segment) in example["path"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .zip(&segments)
+    {
+        if *segment != "*" {
+            *step = serde_json::json!({ "field": segment });
+        }
+    }
     (line, example)
 }
 
@@ -429,8 +439,8 @@ fn an_agent_builds_a_field_edit_from_the_published_descriptor_alone() {
 
     // Every editable path is described: title, ops, value, flags.
     let (title, _) = described(&schema, "title");
-    assert!(title.contains("ops: set, splice, replace"), "{title}");
-    assert!(title.contains("\"string\""), "{title}");
+    assert!(title.contains("`title`: set, splice, replace"), "{title}");
+    assert!(title.contains("(string)"), "{title}");
     let (notes, _) = described(&schema, "notes");
     assert!(notes.contains("asks for confirmation"), "{notes}");
     let (drafts, _) = described(&schema, "drafts");

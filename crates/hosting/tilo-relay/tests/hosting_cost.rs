@@ -65,8 +65,9 @@ const DOCUMENT_CHARS: usize = 10_000;
 /// cleartext op carries no second copy of it). Measured here: 544 B.
 const BUDGET_COMPACT_FRAME_P50_BYTES: u64 = 550;
 /// Ceiling for the largest such frame, a word's first keystroke carrying
-/// the gesture's full entry: measured 897 B, plus 5 %.
-const BUDGET_COMPACT_FRAME_MAX_BYTES: u64 = 942;
+/// the gesture's full entry in its compact form: measured 673 B, held to
+/// the 697 B of the frame before changes named their actions.
+const BUDGET_COMPACT_FRAME_MAX_BYTES: u64 = 697;
 
 /// A raw subscriber on one ALPN, reading the exact bytes the relay writes.
 struct RawSubscriber {

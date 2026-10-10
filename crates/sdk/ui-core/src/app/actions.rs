@@ -2456,7 +2456,7 @@ impl App {
             ..
         } = *request;
         use crate::bound_dispatch::legacy_document::{
-            LegacyDocumentServices, LegacyInvocation, invoke_legacy_document_scoped,
+            LegacyDocumentServices, LegacyInvocation, invoke_legacy_document,
             resolve_legacy_invocation,
         };
         let resources = resolve_legacy_invocation(self.root_widget.as_ref(), target)?;
@@ -2475,7 +2475,7 @@ impl App {
                 Some(target),
             );
         }
-        let outcome = invoke_legacy_document_scoped(
+        let outcome = invoke_legacy_document(
             self.root_widget.as_mut(),
             target,
             LegacyDocumentServices {
@@ -2859,7 +2859,7 @@ impl App {
                     &self.permission_ctx,
                     resolved,
                 )?;
-                let started = crate::bound_dispatch::legacy_document::invoke_legacy_effect_scoped(
+                let started = crate::bound_dispatch::legacy_document::invoke_legacy_effect(
                     self.root_widget.as_mut(),
                     target,
                     operation_invocation,

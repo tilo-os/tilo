@@ -6,7 +6,7 @@ use super::{
 use crate::room::key_hex::KeyHex;
 use crate::state::bounded::{BoundedPeerError, BoundedPeerInvalid, PeerLimits};
 use std::collections::BTreeMap;
-use tilo_action_policy::{Authority, Grant, Party, RoomPolicy, Subject};
+use tilo_action_policy::{Authority, Grant, RoomPolicy, Subject};
 mod policy;
 
 #[derive(Debug)]
@@ -206,15 +206,7 @@ impl PeerMember<'_> {
         policy: &'a RoomPolicy,
         foreign_bound: &'a [Grant],
     ) -> Authority<'a> {
-        let authority = Authority::person(policy.party(self.person.as_str()));
-        if self.foreign {
-            authority.bounded_by(
-                Party::new(vec![Subject::ForeignDevice], foreign_bound)
-                    .with_grants(policy.grants_of(&Subject::ForeignDevice)),
-            )
-        } else {
-            authority
-        }
+        policy.person_on_device(self.person.as_str(), self.foreign, foreign_bound)
     }
 }
 pub(in crate::state) fn bounded(

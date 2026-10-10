@@ -1996,7 +1996,7 @@ impl StoreApp {
     ) -> Result<(), String> {
         match case_record(app_id, package_id, case_id, status) {
             Ok(record) => {
-                cx.invoke(Store::RECORD_MODERATION_CASE.with(record));
+                cx.submit(Store::RECORD_MODERATION_CASE.with(record));
                 self.status_line = format!("Moderation case {case_id} is {status}.");
                 Ok(())
             }

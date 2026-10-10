@@ -142,6 +142,18 @@ impl ActionHost {
         A: Action + serde::Serialize,
     {
         let encoded = EncodedAction::encode(type_id, action)?;
+        self.dispatch_encoded(doc, action, encoded, context)
+    }
+
+    /// [`Self::try_dispatch_with_context`] past encoding: one compiled copy
+    /// for every action type.
+    fn dispatch_encoded(
+        &mut self,
+        doc: &mut AutoCommit,
+        action: &dyn Action,
+        encoded: EncodedAction,
+        context: Option<ActionContext>,
+    ) -> Result<(), tilo_actions::ActionError> {
         let observed_before = crate::bound_dispatch::typed_action_before(doc);
         let before = observed_before.clone().unwrap_or_else(|| doc.get_heads());
         let mut transport = tilo_actions::LocalTransport::new();

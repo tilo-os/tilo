@@ -29,7 +29,7 @@ use ui::LocalState;
 use ui::framework::{EffectAnswer, EffectCx, Effected};
 use ui::theme::Theme;
 use ui::tilo_resource;
-use ui::widget::{AppModel, Button, Dropdown, ModelPath, Row, Spacer, Toggle, Widget};
+use ui::widget::{AppModel, Button, ModelPath, Row, Spacer, Widget};
 use vello::kurbo::Rect;
 
 use crate::host::{Followed, PaneCx};
@@ -37,7 +37,7 @@ use crate::i18n::{t, t_args};
 use crate::prefs::AppearancePrefs;
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
-use crate::widgets::{caption, card, choice_row, rows, setting_row_described, value_row};
+use crate::widgets::{caption, card, rows, value_row};
 
 /// `(label, persisted value)` of each day/night schedule.
 pub const SCHEDULES: [(&str, &str); 2] = [("Sunset to sunrise", "sun"), ("Custom times", "custom")];
@@ -181,9 +181,6 @@ pub fn text_size_options() -> Vec<String> {
         .map(|(english, _)| t(text_size_ftl(english)))
         .collect()
 }
-
-/// The English text-size names an effect takes.
-pub const TEXT_SIZE_NAMES: [&str; 4] = ["Small", "Default", "Large", "Larger"];
 
 /// The UI-scale steps an effect takes.
 pub const UI_SCALE_NAMES: [&str; 5] = ["90%", "100%", "110%", "125%", "150%"];
@@ -425,81 +422,38 @@ impl AppearancePane {
         self.prefs.get()
     }
 
-    fn dropdown(
-        options: Vec<String>,
-        state: &LocalState<String>,
-        id: &str,
-        bind: impl FnOnce(Dropdown) -> Dropdown,
-    ) -> Box<dyn Widget> {
-        let placeholder = state.get();
-        Box::new(bind(
-            Dropdown::from_state(options, state)
-                .with_id(id)
-                .with_placeholder(&placeholder),
-        ))
-    }
-
-    fn toggle(
-        &self,
-        state: &LocalState<bool>,
-        id: &str,
-        field: ui::tilo_resource::Path<AppearancePrefs, bool>,
-    ) -> Box<dyn Widget> {
-        Box::new(
-            self.cx
-                .bind_field(Toggle::from_state(state).with_id(id), field),
-        )
-    }
-
     /// The theme, the interface scale and the text size.
     fn theme_card(&self) -> Box<dyn Widget> {
         let cx = &self.cx;
-        let theme = Self::dropdown(
-            AppearancePrefs::THEMES
-                .iter()
-                .map(std::string::ToString::to_string)
-                .collect(),
-            &self.shown.theme,
-            "appearance.theme",
-            |control| cx.bind_verb(control, AppearancePrefs::CHOOSE_THEME),
-        );
-        let ui_scale = Self::dropdown(
-            UI_SCALE_NAMES
-                .iter()
-                .map(|name| (*name).to_owned())
-                .collect(),
-            &self.shown.ui_scale,
-            "appearance.ui_scale",
-            |control| {
-                cx.bind_field_with(
-                    control,
-                    AppearancePrefs::paths().ui_scale,
-                    |shown: String| {
-                        ui_scale_factor(&shown)
-                            .ok_or_else(|| format!("`{shown}` is not a UI scale"))
-                    },
-                )
-            },
-        );
-        let size = Self::dropdown(
-            text_size_options(),
-            &self.shown.text_size,
-            "appearance.text_size",
-            |control| {
-                cx.bind_field_with(
-                    control,
-                    AppearancePrefs::paths().text_scale,
-                    |label: String| text_size_value(&label),
-                )
-            },
-        );
-
         card(
             &t("settings-appearance-theme-card"),
             rows(vec![
-                choice_row(&t("settings-appearance-theme"), theme),
-                choice_row(&t("settings-appearance-ui-scale"), ui_scale),
-                choice_row(&t("settings-appearance-text-size"), size),
+                cx.row(t("settings-appearance-theme"))
+                    .id("appearance.theme")
+                    .choice_verb(
+                        AppearancePrefs::THEMES.iter().copied(),
+                        &self.shown.theme,
+                        AppearancePrefs::CHOOSE_THEME,
+                    ),
+                cx.row(t("settings-appearance-ui-scale"))
+                    .id("appearance.ui_scale")
+                    .choice(
+                        UI_SCALE_NAMES.iter().copied(),
+                        &self.shown.ui_scale,
+                        AppearancePrefs::paths().ui_scale,
+                        |shown: String| {
+                            ui_scale_factor(&shown)
+                                .ok_or_else(|| format!("`{shown}` is not a UI scale"))
+                        },
+                    ),
+                cx.row(t("settings-appearance-text-size"))
+                    .id("appearance.text_size")
+                    .choice(
+                        text_size_options(),
+                        &self.shown.text_size,
+                        AppearancePrefs::paths().text_scale,
+                        |label: String| text_size_value(&label),
+                    ),
             ]),
         )
     }
@@ -509,24 +463,22 @@ impl AppearancePane {
         let access_card = card(
             &t("settings-appearance-access-card"),
             rows(vec![
-                setting_row_described(
-                    &t("settings-appearance-high-contrast"),
-                    &t("settings-appearance-high-contrast-desc"),
-                    self.toggle(
+                self.cx
+                    .row(t("settings-appearance-high-contrast"))
+                    .described(t("settings-appearance-high-contrast-desc"))
+                    .id("appearance.high_contrast")
+                    .toggle(
                         &self.shown.high_contrast,
-                        "appearance.high_contrast",
                         AppearancePrefs::paths().high_contrast,
                     ),
-                ),
-                setting_row_described(
-                    &t("settings-appearance-reduce-motion"),
-                    &t("settings-appearance-reduce-motion-desc"),
-                    self.toggle(
+                self.cx
+                    .row(t("settings-appearance-reduce-motion"))
+                    .described(t("settings-appearance-reduce-motion-desc"))
+                    .id("appearance.reduce_motion")
+                    .toggle(
                         &self.shown.reduce_motion,
-                        "appearance.reduce_motion",
                         AppearancePrefs::paths().reduce_motion,
                     ),
-                ),
             ]),
         );
 
@@ -571,50 +523,32 @@ impl AppearancePane {
         let cx = &self.cx;
         let mut body = vec![
             caption(&t("settings-appearance-wallpaper-body")),
-            choice_row(
-                &t("settings-appearance-use-for"),
-                Self::dropdown(
-                    WALLPAPER_SCOPES
-                        .iter()
-                        .map(|(_, value)| scope_label(value))
-                        .collect(),
+            cx.row(t("settings-appearance-use-for"))
+                .id("appearance.wallpaper_scope")
+                .choice(
+                    WALLPAPER_SCOPES.iter().map(|(_, value)| scope_label(value)),
                     &self.shown.wallpaper_scope,
-                    "appearance.wallpaper_scope",
-                    |control| {
-                        cx.bind_field_with(
-                            control,
-                            AppearancePrefs::paths().wallpaper_scope,
-                            |shown: String| {
-                                value_for_shown(&WALLPAPER_SCOPES, &shown, scope_label)
-                                    .map(str::to_owned)
-                                    .ok_or_else(|| format!("`{shown}` is not offered"))
-                            },
-                        )
+                    AppearancePrefs::paths().wallpaper_scope,
+                    |shown: String| {
+                        value_for_shown(&WALLPAPER_SCOPES, &shown, scope_label)
+                            .map(str::to_owned)
+                            .ok_or_else(|| format!("`{shown}` is not offered"))
                     },
                 ),
-            ),
-            choice_row(
-                &t("settings-appearance-show-on"),
-                Self::dropdown(
+            cx.row(t("settings-appearance-show-on"))
+                .id("appearance.wallpaper_target")
+                .choice(
                     WALLPAPER_TARGETS
                         .iter()
-                        .map(|(_, value)| target_label(value))
-                        .collect(),
+                        .map(|(_, value)| target_label(value)),
                     &self.shown.wallpaper_target,
-                    "appearance.wallpaper_target",
-                    |control| {
-                        cx.bind_field_with(
-                            control,
-                            AppearancePrefs::paths().wallpaper_target,
-                            |shown: String| {
-                                value_for_shown(&WALLPAPER_TARGETS, &shown, target_label)
-                                    .map(str::to_owned)
-                                    .ok_or_else(|| format!("`{shown}` is not offered"))
-                            },
-                        )
+                    AppearancePrefs::paths().wallpaper_target,
+                    |shown: String| {
+                        value_for_shown(&WALLPAPER_TARGETS, &shown, target_label)
+                            .map(str::to_owned)
+                            .ok_or_else(|| format!("`{shown}` is not offered"))
                     },
                 ),
-            ),
             Box::new(
                 Row::new()
                     .push(Box::new(cx.bind_invocation(
@@ -641,48 +575,42 @@ impl AppearancePane {
                 .map(|time| (*time).to_string())
                 .collect::<Vec<_>>()
         };
-        let mut body = vec![choice_row(
-            &t("settings-appearance-schedule"),
-            Self::dropdown(
-                SCHEDULES
-                    .iter()
-                    .map(|(_, value)| schedule_label(value))
-                    .collect(),
-                &self.shown.schedule,
-                "appearance.schedule",
-                |control| {
-                    cx.bind_field_with(
-                        control,
-                        AppearancePrefs::paths().schedule,
-                        |shown: String| {
-                            value_for_shown(&SCHEDULES, &shown, schedule_label)
-                                .map(str::to_owned)
-                                .ok_or_else(|| format!("`{shown}` is not offered"))
-                        },
-                    )
-                },
-            ),
-        )];
+        let mut body = vec![
+            cx.row(t("settings-appearance-schedule"))
+                .id("appearance.schedule")
+                .choice(
+                    SCHEDULES.iter().map(|(_, value)| schedule_label(value)),
+                    &self.shown.schedule,
+                    AppearancePrefs::paths().schedule,
+                    |shown: String| {
+                        value_for_shown(&SCHEDULES, &shown, schedule_label)
+                            .map(str::to_owned)
+                            .ok_or_else(|| format!("`{shown}` is not offered"))
+                    },
+                ),
+        ];
         let schedule = self.prefs().schedule();
         if !schedule.config.follow_sun {
-            body.push(choice_row(
-                &t("settings-appearance-day-starts"),
-                Self::dropdown(
-                    times(),
-                    &self.shown.sunrise,
-                    "appearance.sunrise",
-                    |control| cx.bind_field(control, AppearancePrefs::paths().sunrise),
-                ),
-            ));
-            body.push(choice_row(
-                &t("settings-appearance-night-starts"),
-                Self::dropdown(
-                    times(),
-                    &self.shown.sunset,
-                    "appearance.sunset",
-                    |control| cx.bind_field(control, AppearancePrefs::paths().sunset),
-                ),
-            ));
+            body.push(
+                cx.row(t("settings-appearance-day-starts"))
+                    .id("appearance.sunrise")
+                    .choice(
+                        times(),
+                        &self.shown.sunrise,
+                        AppearancePrefs::paths().sunrise,
+                        Ok,
+                    ),
+            );
+            body.push(
+                cx.row(t("settings-appearance-night-starts"))
+                    .id("appearance.sunset")
+                    .choice(
+                        times(),
+                        &self.shown.sunset,
+                        AppearancePrefs::paths().sunset,
+                        Ok,
+                    ),
+            );
         }
         let today = schedule
             .config

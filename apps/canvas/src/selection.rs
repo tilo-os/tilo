@@ -13,7 +13,7 @@
 )]
 
 use serde::{Deserialize, Serialize};
-use ui::tilo_actions::ActionError;
+use ui::tilo_resource::Refusal;
 use ui::tilo_resource::{self, JsonSchema, order};
 use ui::vello::kurbo::{BezPath, Rect, Shape as _};
 
@@ -96,12 +96,12 @@ pub struct Combine {
 
 /// The region a mark covers in artwork units: a filled shape's inside, an
 /// outline's or a brush stroke's ink.
-fn mark_region(mark: &Mark) -> Result<Region, ActionError> {
+fn mark_region(mark: &Mark) -> Result<Region, Refusal> {
     mark_outline(mark).map(|path| Region::of_path(&path))
 }
 
 /// The outline of the area a mark covers, in artwork units.
-pub(crate) fn mark_outline(mark: &Mark) -> Result<BezPath, ActionError> {
+pub(crate) fn mark_outline(mark: &Mark) -> Result<BezPath, Refusal> {
     use ui::vello::kurbo::{Cap, Join, Stroke, StrokeOpts};
     let filled = mark.style.fill.is_some() || mark.style.gradient.is_some() || !mark.inked();
     let path: BezPath = match &mark.shape {
@@ -127,7 +127,7 @@ pub(crate) fn mark_outline(mark: &Mark) -> Result<BezPath, ActionError> {
 }
 
 /// The marks `ids` name, bottom to top.
-fn named_marks<'a>(art: &'a Artwork, ids: &[String]) -> Result<Vec<&'a Mark>, ActionError> {
+fn named_marks<'a>(art: &'a Artwork, ids: &[String]) -> Result<Vec<&'a Mark>, Refusal> {
     let named: Vec<&str> = units(art, ids)?
         .into_iter()
         .flatten()
@@ -140,7 +140,7 @@ fn named_marks<'a>(art: &'a Artwork, ids: &[String]) -> Result<Vec<&'a Mark>, Ac
         .collect())
 }
 
-fn check_box(value: [f64; 4], what: &str) -> Result<Rect, ActionError> {
+fn check_box(value: [f64; 4], what: &str) -> Result<Rect, Refusal> {
     let [x, y, width, height] = value;
     if [x, y, width, height]
         .iter()
@@ -177,7 +177,7 @@ impl Select {
     }
 
     /// The area the shapes it names cover, if it names any.
-    fn shapes(&self, art: &Artwork) -> Result<Option<Region>, ActionError> {
+    fn shapes(&self, art: &Artwork) -> Result<Option<Region>, Refusal> {
         let mut parts: Vec<Region> = Vec::new();
         if let Some(rect) = self.rect {
             parts.push(Region::of_rect(check_box(rect, "rect")?));
@@ -211,10 +211,10 @@ impl Select {
             .reduce(|all, part| all.combine(&part, Op::Union)))
     }
 
-    pub(crate) fn apply(&self, doc: &mut Artwork, art: &Artwork) -> Result<(), ActionError> {
+    pub(crate) fn apply(&self, doc: &mut Artwork, art: &Artwork) -> Result<(), Refusal> {
         if self.looks() {
             return Err(refuse(
-                "at, colour, subject and refine are found in the artwork as the window shows it: use the select action itself, not apply",
+                "at, colour, subject and refine are found in the artwork as the window shows it, where select is invoked; subject and refine through find-area",
             ));
         }
         if self.mode.as_deref() == Some("none") {
@@ -302,7 +302,7 @@ impl Select {
 }
 
 /// The selection's shape as a mark's geometry.
-fn selected_shape(art: &Artwork) -> Result<(Shape, f64), ActionError> {
+fn selected_shape(art: &Artwork) -> Result<(Shape, f64), Refusal> {
     let selection = art
         .selection
         .as_ref()
@@ -316,7 +316,7 @@ fn selected_shape(art: &Artwork) -> Result<(Shape, f64), ActionError> {
 }
 
 impl UseSelection {
-    pub(crate) fn apply(&self, doc: &mut Artwork, art: &Artwork) -> Result<(), ActionError> {
+    pub(crate) fn apply(&self, doc: &mut Artwork, art: &Artwork) -> Result<(), Refusal> {
         if let Some(cleaned) = self
             .cleaned
             .as_deref()
@@ -418,7 +418,7 @@ fn give_pictures(
     doc: &mut Artwork,
     art: &Artwork,
     pictures: &[[String; 2]],
-) -> Result<(), ActionError> {
+) -> Result<(), Refusal> {
     for [id, src] in pictures {
         if ui::tilo_actions::content_hash(src).is_none() {
             return Err(refuse(format!("{src:?} is not a content address")));
@@ -440,7 +440,7 @@ fn give_pictures(
 
 /// The ordinary layer `id` names, or the one it masks when it names a
 /// mask: a mask is part of its layer, as the layers panel shows it.
-fn owner_of<'a>(art: &'a Artwork, id: &str) -> Result<&'a Layer, ActionError> {
+fn owner_of<'a>(art: &'a Artwork, id: &str) -> Result<&'a Layer, Refusal> {
     let layer = art
         .layer(id)
         .ok_or_else(|| refuse(format!("there is no layer {id:?}")))?;
@@ -490,7 +490,7 @@ pub(crate) fn edit_mask(
     art: &Artwork,
     layer: &str,
     what: &str,
-) -> Result<(), ActionError> {
+) -> Result<(), Refusal> {
     let owner = owner_of(art, layer)?;
     match what {
         "reveal" | "hide" => {
@@ -509,7 +509,7 @@ pub(crate) fn edit_mask(
         "remove" => {
             if let Some(mask) = art.mask_of(&owner.id) {
                 remove_layer_marks(doc, art, &mask.id);
-                doc.remove_layer(&mask.id);
+                doc.drop_layer(&mask.id);
             }
             Ok(())
         }
@@ -540,7 +540,7 @@ pub(crate) fn remove_layer_marks(doc: &mut Artwork, art: &Artwork, layer: &str) 
 }
 
 impl Combine {
-    pub(crate) fn apply(&self, doc: &mut Artwork, art: &Artwork) -> Result<(), ActionError> {
+    pub(crate) fn apply(&self, doc: &mut Artwork, art: &Artwork) -> Result<(), Refusal> {
         let op = Op::parse(&self.op).ok_or_else(|| {
             refuse(format!(
                 "op {:?} must be union, subtract, intersect or exclude",
@@ -557,7 +557,7 @@ impl Combine {
         let outlines = marks
             .iter()
             .map(|mark| mark_outline(mark))
-            .collect::<Result<Vec<BezPath>, ActionError>>()?;
+            .collect::<Result<Vec<BezPath>, Refusal>>()?;
         // Subtract takes everything above from the bottom shape.
         let region = outlines
             .iter()

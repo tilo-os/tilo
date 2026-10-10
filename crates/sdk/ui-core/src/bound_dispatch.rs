@@ -2295,20 +2295,16 @@ pub(crate) fn invoke_resource_action(
                         argument,
                     );
                     let direct = binding.permissions.borrow().standing().bounds.is_empty();
-                    match answer {
-                        tilo_action_policy::Answer::Deny => return Err(denied(spec).into()),
-                        // Someone acting for the person does not get past an
-                        // ask here.
-                        tilo_action_policy::Answer::Ask if !direct => {
-                            return Err(denied(spec).into());
-                        }
-                        // Where the room's grants ask first, the person's
-                        // confirmation in the host is the answer; the broker
-                        // took it before admitting what it delivers.
-                        tilo_action_policy::Answer::Ask if !confirmed && !broker_admitted => {
-                            return Err(tilo_actions::DoorError::ConfirmationRequired.into());
-                        }
-                        tilo_action_policy::Answer::Ask | tilo_action_policy::Answer::Allow => {}
+                    // Someone acting for the person does not get past an ask
+                    // here.
+                    if !answer.admits(direct) {
+                        return Err(denied(spec).into());
+                    }
+                    // Where the room's grants ask first, the person's
+                    // confirmation in the host is the answer; the broker took
+                    // it before admitting what it delivers.
+                    if answer == tilo_action_policy::Answer::Ask && !confirmed && !broker_admitted {
+                        return Err(tilo_actions::DoorError::ConfirmationRequired.into());
                     }
                     crate::invocation_scope::check_continuation(
                         spec,
@@ -3564,22 +3560,16 @@ impl CallbackBinding {
                 .as_mut()
                 .ok_or(BoundDispatchError::Record(RecordOpenError::Busy))?;
             let entry = match request {
-                crate::undo::UndoRequest::Undo => frame.history.undo_in_with_registry(
-                    doc,
-                    &self.author,
-                    self.instance_id,
-                    None,
-                    None,
-                    registry,
-                ),
-                crate::undo::UndoRequest::Redo => frame.history.redo_in_with_registry(
-                    doc,
-                    &self.author,
-                    self.instance_id,
-                    None,
-                    None,
-                    registry,
-                ),
+                crate::undo::UndoRequest::Undo => {
+                    frame
+                        .history
+                        .undo_in(doc, &self.author, self.instance_id, None, None, registry)
+                }
+                crate::undo::UndoRequest::Redo => {
+                    frame
+                        .history
+                        .redo_in(doc, &self.author, self.instance_id, None, None, registry)
+                }
             };
             frame.state.pending = Some(PendingRecordAction::new(self, doc.get_heads()));
             Ok(entry)
@@ -4621,8 +4611,12 @@ pub(crate) fn legacy_history_request(
                 history.commit_action_authored(doc, None, None, Some(author.clone()));
             }
             let result = match request {
-                crate::undo::UndoRequest::Undo => history.undo_as(doc, Some(author), None, None),
-                crate::undo::UndoRequest::Redo => history.redo_as(doc, Some(author), None, None),
+                crate::undo::UndoRequest::Undo => {
+                    history.undo_as(doc, Some(author), None, None, None)
+                }
+                crate::undo::UndoRequest::Redo => {
+                    history.redo_as(doc, Some(author), None, None, None)
+                }
             };
             if result.is_some() {
                 state.generation = Some(next);

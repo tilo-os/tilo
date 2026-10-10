@@ -289,17 +289,26 @@ mod tests {
         )
         .unwrap();
         assert_eq!(desktop.resources.kinds, ["music.library"]);
+        // What the app carries is its own kind and every kind its local
+        // dependencies declare in production code, whatever they are now.
+        let metadata = crate::cargo_metadata(&app).unwrap();
+        let mut expected = std::collections::BTreeSet::from(["music.library".to_owned()]);
+        for dependency in super::local_dependencies(&metadata).unwrap() {
+            expected.extend(super::declared_in(&dependency).unwrap());
+        }
+        let declared = super::declared_by_app(&app).unwrap();
         assert_eq!(
-            super::declared_by_app(&app).unwrap(),
-            [
-                "music.library",
-                "settings.text-assistance",
-                "tilo.accounts",
-                "tilo.feedback-draft",
-                "tilo.text",
-                "tilo.workbook"
-            ],
-            "the production dependency resources are included; SDK test fixtures are excluded"
+            declared,
+            expected.into_iter().collect::<Vec<_>>(),
+            "the production dependency resources are included"
+        );
+        assert!(
+            declared.iter().any(|kind| kind == "tilo.text"),
+            "a framework record the app links is among them: {declared:?}"
+        );
+        assert!(
+            declared.iter().all(|kind| !kind.starts_with("test.")),
+            "SDK test fixtures are excluded: {declared:?}"
         );
     }
 

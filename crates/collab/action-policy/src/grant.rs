@@ -29,6 +29,20 @@ impl Answer {
             Self::Allow => "allowed",
         }
     }
+
+    /// Whether this answer lets an action run without anyone being asked:
+    /// allowed; or asking first when the person acts themselves (`direct`),
+    /// their own gesture being the answer. Someone acting for them, or a
+    /// device not theirs, gets past an ask only with the person's
+    /// confirmation.
+    #[must_use]
+    pub const fn admits(self, direct: bool) -> bool {
+        match self {
+            Self::Allow => true,
+            Self::Ask => direct,
+            Self::Deny => false,
+        }
+    }
 }
 
 impl fmt::Display for Answer {

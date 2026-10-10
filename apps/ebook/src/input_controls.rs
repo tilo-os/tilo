@@ -165,6 +165,25 @@ impl InputEventCtx<'_> {
             handled,
         }
     }
+
+    /// A toolkit widget's event context for this input, with the widget's
+    /// own `handled` and `focus` flags.
+    pub(crate) fn widget_ctx<'a>(
+        &'a mut self,
+        handled: &'a mut bool,
+        focus: &'a mut Option<NodeId>,
+    ) -> ui::widget::EventCtx<'a> {
+        ui::widget::EventCtx {
+            scale_factor: self.scale_factor,
+            modifiers: &self.modifiers,
+            state: self.state.reborrow(),
+            path: self.root,
+            handled,
+            focus_target: focus,
+            node_id: self.node_id,
+            taffy: self.taffy,
+        }
+    }
 }
 
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -344,16 +363,7 @@ impl NumberControls {
             let mut focus_target = None;
             control.input.handle_event(
                 ctx.event,
-                &mut ui::widget::EventCtx {
-                    scale_factor: ctx.scale_factor,
-                    modifiers: &ctx.modifiers,
-                    state: ctx.state.reborrow(),
-                    path: ctx.root,
-                    handled: &mut local_handled,
-                    focus_target: &mut focus_target,
-                    node_id: ctx.node_id,
-                    taffy: ctx.taffy,
-                },
+                &mut ctx.widget_ctx(&mut local_handled, &mut focus_target),
             );
             if focus_target.is_some() {
                 control.input.set_focus(true);
@@ -719,21 +729,7 @@ impl NoteComposer {
 mod tests {
     use super::*;
     use taffy::TaffyTree;
-    use winit::event::ElementState;
-    use winit::keyboard::{Key, NamedKey};
-
-    fn key(logical_key: Key) -> WindowEvent {
-        let text = match &logical_key {
-            Key::Character(text) => Some(text.clone()),
-            _ => None,
-        };
-        let event = ui::synthetic_input::key_event(logical_key, text, ElementState::Pressed);
-        WindowEvent::KeyboardInput {
-            device_id: winit::event::DeviceId::dummy(),
-            event,
-            is_synthetic: false,
-        }
-    }
+    use winit::keyboard::NamedKey;
 
     /// The note composer writes the note as it is typed and Enter finishes; hit testing keeps the card modal and tap-away saves.
     #[test]
@@ -768,7 +764,7 @@ mod tests {
                 assert!(!press(
                     &mut composer,
                     &mut doc,
-                    key(Key::Character(ch.into()))
+                    ui::synthetic_input::char_key(ch)
                 ));
             }
             let stored = |doc: &AutoCommit| {
@@ -787,7 +783,7 @@ mod tests {
             assert!(press(
                 &mut composer,
                 &mut doc,
-                key(Key::Named(NamedKey::Enter))
+                ui::synthetic_input::named_key(NamedKey::Enter)
             ));
             assert_eq!(
                 stored(&doc),
@@ -1046,16 +1042,7 @@ impl SchemeColorSheet {
             let mut local_handled = false;
             picker.handle_event(
                 ctx.event,
-                &mut ui::widget::EventCtx {
-                    scale_factor: ctx.scale_factor,
-                    modifiers: &ctx.modifiers,
-                    state: ctx.state.reborrow(),
-                    path: ctx.root,
-                    handled: &mut local_handled,
-                    focus_target: &mut focus_target,
-                    node_id: ctx.node_id,
-                    taffy: ctx.taffy,
-                },
+                &mut ctx.widget_ctx(&mut local_handled, &mut focus_target),
             );
             if focus_target.is_some() {
                 picker.set_focus(true);

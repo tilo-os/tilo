@@ -16,7 +16,7 @@ use ui::LocalState;
 use ui::framework::{EffectAnswer, EffectCx, Effected};
 use ui::theme::Theme;
 use ui::tilo_resource;
-use ui::widget::{AppModel, ModelPath, ShortcutRecorder, Toggle, Widget};
+use ui::widget::{AppModel, ModelPath, ShortcutRecorder, Widget};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::WindowEvent;
@@ -230,13 +230,12 @@ impl ShortcutPane {
             .map(|category| {
                 let mut body: Vec<Box<dyn Widget>> = Vec::new();
                 if category == ShortcutCategory::Navigation {
-                    body.push(setting_row(
-                        &t("settings-shortcuts-vim"),
-                        Box::new(self.cx.bind_field(
-                            Toggle::from_state(&self.vim_mode).with_id("shortcuts.vim_mode"),
-                            DesktopControls::paths().vim_mode,
-                        )),
-                    ));
+                    body.push(
+                        self.cx
+                            .row(t("settings-shortcuts-vim"))
+                            .id("shortcuts.vim_mode")
+                            .toggle(&self.vim_mode, DesktopControls::paths().vim_mode),
+                    );
                     if let Some(reason) = &self.refusal_shown {
                         body.push(caption(reason));
                     }

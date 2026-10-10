@@ -318,7 +318,6 @@ files-share-response-truncated = Share response was truncated: { $error }
 files-share-response-invalid = Invalid share-service response: { $error }
 files-share-refused = Share service refused the request ({ $code })
 files-received-refused = Received-file service refused the link ({ $code })
-files-received-retry-refused = Received-file service could not retry ({ $code })
 files-received-wrong-response = Received-file service returned the wrong response
 files-received-encode-failed = Could not encode received-file request
 files-received-request-too-large = Received-file request exceeds its bound

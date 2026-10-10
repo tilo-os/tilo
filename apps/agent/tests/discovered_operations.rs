@@ -235,11 +235,12 @@ fn run(
                 ..
             } => {
                 let resources = word_processor_resources(&replica, &content);
-                let update = typed_peer::service_document_invocation(
+                let update = typed_peer::service_document_invocation_lending(
                     &mut peer,
                     &mut replica,
                     &resources,
                     word_processor::actions::register,
+                    Some(&content),
                     typed_peer::DocumentInvocation {
                         invocation,
                         address: ActionAddress::new(resource, action),
@@ -725,10 +726,12 @@ fn fixture_photo_resource() -> String {
     let hash = ContentStore::memory()
         .put(&png)
         .expect("the source photograph is stored");
-    photos::model::LibraryPhoto::from_image(
-        photos::OpenImage::from_path("photo.png", 40, 24).with_content(&hash),
+    photos::resource::photo_resource_id(
+        &photos::model::LibraryPhoto::from_image(
+            photos::OpenImage::from_path("photo.png", 40, 24).with_content(&hash),
+        )
+        .id,
     )
-    .id
 }
 
 /// The capability the agent needs to touch both applications in this room.
@@ -808,17 +811,13 @@ fn drive_photo_peer(
                     .expect("the published export has one immediate operation payload");
                     let result = photos::actions::PhotosEffect::from_payload(&encoded.payload)
                         .and_then(|effect| match effect {
-                            photos::actions::PhotosEffect::ExportEditedContent {
-                                resource_id,
-                                source_content,
-                                edits,
-                            } => photos::actions::export_edited_content(
-                                &resource_id,
-                                &source_content,
-                                edits,
-                                &library(&photo_replica),
-                                content,
-                            ),
+                            photos::actions::PhotosEffect::ExportEditedContent { photo } => {
+                                photos::actions::export_edited_content(
+                                    photo.as_str(),
+                                    &library(&photo_replica),
+                                    content,
+                                )
+                            }
                             _ => Err("the export descriptor did not encode an export".into()),
                         });
                     match result {
@@ -934,11 +933,12 @@ fn drive_word_processor_peer(
                 ..
             } => {
                 let resources = word_processor_resources(&wp_replica, content);
-                let update = typed_peer::service_document_invocation(
+                let update = typed_peer::service_document_invocation_lending(
                     &mut wp_peer,
                     &mut wp_replica,
                     &resources,
                     word_processor::actions::register,
+                    Some(content),
                     typed_peer::DocumentInvocation {
                         invocation,
                         address: ActionAddress::new(resource, action),

@@ -367,7 +367,7 @@ impl DiffMergeApp {
                 let dispatcher = cx.dispatcher();
                 dispatcher.group(|| {
                     for invoke in crate::resource::sample_invocations() {
-                        dispatcher.invoke(invoke);
+                        dispatcher.submit(invoke);
                     }
                 });
                 self.pending_left = None;
@@ -392,7 +392,7 @@ impl DiffMergeApp {
                 |app: &mut Self, opened, cx| match opened {
                     Ok(opened) => {
                         app.load_error = None;
-                        cx.invoke(Session::OPEN_COMPARISON.with(opened));
+                        cx.submit(Session::OPEN_COMPARISON.with(opened));
                         app.show(Mode::Diff);
                         Ok(Effected::done())
                     }
@@ -487,7 +487,7 @@ impl DiffMergeApp {
         if let Some(invoke) = self.merge.take_pending_action()
             && let Some(dispatcher) = &self.dispatcher
         {
-            dispatcher.invoke(invoke);
+            dispatcher.submit(invoke);
         }
     }
 
@@ -627,7 +627,7 @@ impl DiffMergeApp {
             }
             Some((left_label, left)) => {
                 if let Some(dispatcher) = &self.dispatcher {
-                    dispatcher.invoke(Session::OPEN_COMPARISON.with(session::OpenComparison {
+                    dispatcher.submit(Session::OPEN_COMPARISON.with(session::OpenComparison {
                         left_label,
                         left,
                         right_label: label,

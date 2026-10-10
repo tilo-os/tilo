@@ -487,13 +487,6 @@ impl MailState {
         true
     }
 
-    /// Compatibility entry point for the existing painted list controls.
-    /// New code should name the domain boundary explicitly with
-    /// [`Self::open_message`].
-    pub fn select_message(&mut self, doc: &mut ui::widget::Edits<'_>, id: MessageId) {
-        let _ = self.open_message(doc, id);
-    }
-
     /// Select a device-local account. Account identity/credentials live in the
     /// shared Tilo account store + secret vault, never in the collaborative mail
     /// document, so this deliberately has no Automerge write.

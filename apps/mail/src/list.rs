@@ -300,7 +300,7 @@ impl MessageList {
             // A draft reopens the composer, not the reader.
             state.push_intent(Intent::EditDraft(slot.id));
         } else {
-            state.select_message(doc, slot.id);
+            state.open_message(doc, slot.id);
         }
         drop(state);
         self.revealed = Some(slot.id);

@@ -1560,23 +1560,11 @@ impl CalendarApp {
             title: String::new(),
             start,
             end: start + Duration::hours(1),
-            all_day: false,
-            location: String::new(),
             color: self.model.next_event_order_color(),
-            recurrence: Recurrence::None,
-            recurrence_interval: 1,
-            recurrence_until: None,
-            recurrence_count: None,
-            recurrence_exdates: ui::tilo_resource::Set::new(),
-            occurrence_overrides: ui::tilo_resource::Keyed::new(),
-            timezone: "floating".into(),
-            organizer: None,
-            attendees: ui::tilo_resource::Keyed::new(),
             reminder_min: Some(10),
             // Filed on the local (on-device) calendar by default; the form's
             // calendar selector can retarget it to a configured account.
-            calendar_id: None,
-            project: None,
+            ..Event::default()
         };
         self.spawn_event(ev, doc);
     }
@@ -1649,21 +1637,9 @@ impl CalendarApp {
             title: String::new(),
             start,
             end,
-            all_day: false,
-            location: String::new(),
             color: self.model.next_event_order_color(),
-            recurrence: Recurrence::None,
-            recurrence_interval: 1,
-            recurrence_until: None,
-            recurrence_count: None,
-            recurrence_exdates: ui::tilo_resource::Set::new(),
-            occurrence_overrides: ui::tilo_resource::Keyed::new(),
-            timezone: "floating".into(),
-            organizer: None,
-            attendees: ui::tilo_resource::Keyed::new(),
             reminder_min: Some(10),
-            calendar_id: None,
-            project: None,
+            ..Event::default()
         };
         self.spawn_event(ev, doc);
         self.dirty = true;
@@ -2240,7 +2216,7 @@ impl CalendarApp {
                 .map_err(|_| format!("{} is not an iCalendar file", file.name))?;
             let import = crate::resource::import(&payload)
                 .ok_or_else(|| format!("{} holds no events or tasks", file.name))?;
-            cx.invoke(import);
+            cx.submit(import);
             app.status = Some(format!("Imported calendar items from {}", file.name));
             app.dirty = true;
             Ok(ui::framework::Effected::done())
@@ -3377,19 +3353,8 @@ impl CalendarApp {
             self.invite_input.set_focus(false);
             self.notes_editor.set_focus(false);
             self.title_input.set_focus(true);
-            self.title_input.handle_event(
-                input.event,
-                &mut ui::widget::EventCtx {
-                    scale_factor: input.scale_factor,
-                    modifiers: &input.modifiers,
-                    state: input.state.reborrow(),
-                    path: input.path,
-                    handled: input.handled,
-                    focus_target: input.focus_target,
-                    node_id: input.node_id,
-                    taffy: input.taffy,
-                },
-            );
+            self.title_input
+                .handle_event(input.event, &mut input.event_ctx());
             *input.handled = true;
             self.dirty = true;
             return true;
@@ -3399,19 +3364,8 @@ impl CalendarApp {
             self.invite_input.set_focus(false);
             self.notes_editor.set_focus(false);
             self.location_input.set_focus(true);
-            self.location_input.handle_event(
-                input.event,
-                &mut ui::widget::EventCtx {
-                    scale_factor: input.scale_factor,
-                    modifiers: &input.modifiers,
-                    state: input.state.reborrow(),
-                    path: input.path,
-                    handled: input.handled,
-                    focus_target: input.focus_target,
-                    node_id: input.node_id,
-                    taffy: input.taffy,
-                },
-            );
+            self.location_input
+                .handle_event(input.event, &mut input.event_ctx());
             *input.handled = true;
             self.dirty = true;
             return true;
@@ -3421,19 +3375,8 @@ impl CalendarApp {
             self.location_input.set_focus(false);
             self.notes_editor.set_focus(false);
             self.invite_input.set_focus(true);
-            self.invite_input.handle_event(
-                input.event,
-                &mut ui::widget::EventCtx {
-                    scale_factor: input.scale_factor,
-                    modifiers: &input.modifiers,
-                    state: input.state.reborrow(),
-                    path: input.path,
-                    handled: input.handled,
-                    focus_target: input.focus_target,
-                    node_id: input.node_id,
-                    taffy: input.taffy,
-                },
-            );
+            self.invite_input
+                .handle_event(input.event, &mut input.event_ctx());
             *input.handled = true;
             self.dirty = true;
             return true;
@@ -3444,19 +3387,8 @@ impl CalendarApp {
             self.location_input.set_focus(false);
             self.invite_input.set_focus(false);
             if let Some(n) = self.editor_node {
-                self.notes_editor.handle_event(
-                    input.event,
-                    &mut ui::widget::EventCtx {
-                        scale_factor: input.scale_factor,
-                        modifiers: &input.modifiers,
-                        state: input.state.reborrow(),
-                        path: input.path,
-                        handled: input.handled,
-                        focus_target: input.focus_target,
-                        node_id: n,
-                        taffy: input.taffy,
-                    },
-                );
+                self.notes_editor
+                    .handle_event(input.event, &mut input.event_ctx_at(n));
             }
             self.dirty = true;
             return true;
@@ -3480,53 +3412,20 @@ impl CalendarApp {
     /// Returns `true` if the caller should stop dispatching.
     fn handle_form_field_input(&mut self, input: &mut InputContext<'_>) -> bool {
         if self.title_input.is_focused() {
-            self.title_input.handle_event(
-                input.event,
-                &mut ui::widget::EventCtx {
-                    scale_factor: input.scale_factor,
-                    modifiers: &input.modifiers,
-                    state: input.state.reborrow(),
-                    path: input.path,
-                    handled: input.handled,
-                    focus_target: input.focus_target,
-                    node_id: input.node_id,
-                    taffy: input.taffy,
-                },
-            );
+            self.title_input
+                .handle_event(input.event, &mut input.event_ctx());
             self.flush_form_edits(&mut input.state);
             self.dirty = true;
             return *input.handled;
         } else if self.location_input.is_focused() {
-            self.location_input.handle_event(
-                input.event,
-                &mut ui::widget::EventCtx {
-                    scale_factor: input.scale_factor,
-                    modifiers: &input.modifiers,
-                    state: input.state.reborrow(),
-                    path: input.path,
-                    handled: input.handled,
-                    focus_target: input.focus_target,
-                    node_id: input.node_id,
-                    taffy: input.taffy,
-                },
-            );
+            self.location_input
+                .handle_event(input.event, &mut input.event_ctx());
             self.flush_form_edits(&mut input.state);
             self.dirty = true;
             return *input.handled;
         } else if self.invite_input.is_focused() {
-            self.invite_input.handle_event(
-                input.event,
-                &mut ui::widget::EventCtx {
-                    scale_factor: input.scale_factor,
-                    modifiers: &input.modifiers,
-                    state: input.state.reborrow(),
-                    path: input.path,
-                    handled: input.handled,
-                    focus_target: input.focus_target,
-                    node_id: input.node_id,
-                    taffy: input.taffy,
-                },
-            );
+            self.invite_input
+                .handle_event(input.event, &mut input.event_ctx());
             self.submit_invite(&mut input.state);
             self.dirty = true;
             return *input.handled;
@@ -4082,10 +3981,15 @@ impl Widget for CalendarApp {
     fn take_structure_dirty(&mut self) -> bool {
         // Rebuild when the editor's own structure changed, OR when the notes
         // column width the editor was built at no longer matches the current
-        // layout (a resize crossed the breakpoint). The rebuild re-runs
-        // `build_layout`, which resets `built_notes_w`, so this settles in one
-        // frame and never loops while the width is stable.
-        let width_changed = (self.detail_body_w() - self.built_notes_w).abs() > 0.5;
+        // layout (a resize crossed the breakpoint). Taking the change adopts
+        // the width the rebuild will use: a host may update the tree again
+        // before it lays it out, and must not be asked for the same rebuild
+        // twice.
+        let notes_w = self.detail_body_w();
+        let width_changed = (notes_w - self.built_notes_w).abs() > 0.5;
+        if width_changed {
+            self.built_notes_w = notes_w;
+        }
         self.notes_editor.take_structure_dirty() || width_changed
     }
 

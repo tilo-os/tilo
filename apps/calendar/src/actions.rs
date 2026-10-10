@@ -13,8 +13,8 @@ use ui::tilo_resource::{self, Effect as _, JsonSchema, items::item_resource_id};
 use uuid::Uuid;
 
 use crate::model::{
-    Attendee, Calendar, Event, Id, InviteStatus, OccurrenceOverride, Palette, Priority, Project,
-    Recurrence, Task, key,
+    Attendee, Calendar, Event, Id, InviteStatus, OccurrenceOverride, Palette, Priority, Recurrence,
+    Task, key,
 };
 
 /// The published id of the event `id`: an item of the calendar's events.
@@ -424,38 +424,6 @@ impl Default for TaskData {
             project: String::new(),
             parent: String::new(),
         }
-    }
-}
-
-/// Serializable scalar representation of a persisted Calendar task project.
-/// Projects are real collaborative entities, not just labels attached to
-/// tasks, so agents and search address them with their own stable resource.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct ProjectData {
-    pub id: String,
-    pub name: String,
-    pub color: usize,
-    pub order: u32,
-}
-
-impl ProjectData {
-    pub fn from_project(project: &Project) -> Self {
-        Self {
-            id: project.id.to_string(),
-            name: project.name.clone(),
-            color: project.color.index(),
-            order: project.order,
-        }
-    }
-
-    pub fn to_project(&self) -> Option<Project> {
-        let id = self.id.parse::<Id>().ok()?;
-        (!self.name.trim().is_empty() && self.color < Palette::ALL.len()).then_some(Project {
-            id,
-            name: self.name.clone(),
-            color: Palette::from_index(self.color),
-            order: self.order,
-        })
     }
 }
 

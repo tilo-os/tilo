@@ -352,33 +352,6 @@ pub fn reviewed_merge_contact<S: std::hash::BuildHasher>(
     merged
 }
 
-/// One deterministic display spelling for every logical group in the shared
-/// book.  The key is the same NFC/case-folded identity used by filtering and
-/// resource addressing; choosing the lexical spelling makes separate peers
-/// publish the same resource label even when Automerge projects rows in a
-/// different order.
-pub fn ordered_groups(contacts: &[Contact]) -> Vec<String> {
-    let mut groups = std::collections::BTreeMap::<String, String>::new();
-    for contact in contacts {
-        for entry in &contact.groups {
-            let name = entry.value.trim();
-            if name.is_empty() {
-                continue;
-            }
-            let key = normalize_text(name);
-            groups
-                .entry(key)
-                .and_modify(|existing| {
-                    if name < existing.as_str() {
-                        *existing = name.to_string();
-                    }
-                })
-                .or_insert_with(|| name.to_string());
-        }
-    }
-    groups.into_values().collect()
-}
-
 /// Split a typed full name into first / rest-as-last, so a palette "New
 /// contact" / "Rename" that collects a single name string lands the same way
 /// the form's two fields would.

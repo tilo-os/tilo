@@ -198,7 +198,7 @@ impl<P: Resource> RecordDoor for Held<P> {
             ));
         }
         let action: P::Action =
-            serde_json::from_slice(&action.payload).map_err(|error| error.to_string())?;
+            tilo_actions::decode_json(&action.payload).map_err(|error| error.to_string())?;
         self.apply(&action, invoker)
             .map_err(|error| error.to_string())
     }
@@ -216,7 +216,7 @@ pub(crate) fn answer(
     payload: &[u8],
 ) -> Result<tilo_actions::ActionOutput, String> {
     let request: RecordAction =
-        serde_json::from_slice(payload).map_err(|error| error.to_string())?;
+        tilo_actions::decode_json(payload).map_err(|error| error.to_string())?;
     let door = doors
         .iter()
         .find(|door| door.id() == request.record)

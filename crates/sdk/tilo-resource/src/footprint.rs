@@ -30,7 +30,7 @@ use crate::path::{Path, Segment};
 use crate::shape::Shape;
 
 /// The record unit, as footprints and [`units_of`] name it.
-pub const RECORD_UNIT: &str = "record";
+pub const RECORD_UNIT: &str = tilo_actions::surface::RECORD_UNIT;
 
 /// The document key of a record's unit index: the storage patterns of its
 /// units (`comments/*`, `body`), one string each.

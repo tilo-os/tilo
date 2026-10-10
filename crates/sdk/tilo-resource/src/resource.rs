@@ -452,6 +452,7 @@ fn read_edit<R: Resource>(value: serde_json::Value) -> Result<R::Action, String>
 /// value it holds, its title and flags — so an agent builds a valid edit
 /// from the published descriptor alone. A resource without a shape gets
 /// the generic one, with its fields' own operations named for `rich`.
+#[inline(never)]
 pub(crate) fn edit_schema<R: Resource>() -> serde_json::Value {
     let ops = R::op_schemas();
     if let Some(shape) = R::shape()
@@ -460,25 +461,26 @@ pub(crate) fn edit_schema<R: Resource>() -> serde_json::Value {
         let mut alternatives = Vec::new();
         edit_paths(shape, &[], "", &ops, &mut alternatives);
         if !alternatives.is_empty() {
-            return described_edit::<R>(&alternatives, &ops);
+            return described_edit(&alternatives, &ops);
         }
     }
-    generic_edit_schema::<R>(&ops)
+    generic_edit_schema(&ops)
 }
 
 /// The schema a field edit is checked against, with every editable path
 /// described: its template, the operations it takes, the value's schema,
 /// its title and flags (the description), and one example edit per path
 /// (the examples) — what an agent builds a field edit from.
-fn described_edit<R: Resource>(
+fn described_edit(
     alternatives: &[serde_json::Value],
     ops: &[(String, serde_json::Value)],
 ) -> serde_json::Value {
-    let mut schema = generic_edit_schema::<R>(ops);
+    let mut schema = generic_edit_schema(ops);
     let mut lines = vec![
         "A field edit: `path` from the record (fields by name, items by id, map entries by key) and `op` with its arguments. Editable paths:".to_owned(),
     ];
     let mut examples = Vec::new();
+    let mut shapes: Vec<Vec<String>> = Vec::new();
     for alternative in alternatives {
         let at = |pointer: &str| alternative.pointer(pointer).cloned().unwrap_or_default();
         let template = at("/properties/path/examples/0");
@@ -493,13 +495,29 @@ fn described_edit<R: Resource>(
             .unwrap_or_default();
         let value = at("/properties/value");
         let text = |key: &str| at(key).as_str().unwrap_or_default().to_owned();
+        let kind = value_kind(&value);
         lines.push(format!(
-            "- `{}` ({}) ops: {}; value: {}",
+            "- `{}`: {} — {}{}",
             text("/title"),
-            text("/description"),
             ops.join(", "),
-            value
+            text("/description"),
+            kind.map_or_else(String::new, |kind| format!(" ({kind})")),
         ));
+        // One example per shape of path (a field, an item's field, an
+        // entry): the listing names every path of each shape.
+        let shape: Vec<String> = template
+            .as_array()
+            .map(|steps| {
+                steps
+                    .iter()
+                    .filter_map(|step| step.as_object()?.keys().next().cloned())
+                    .collect()
+            })
+            .unwrap_or_default();
+        if shapes.contains(&shape) {
+            continue;
+        }
+        shapes.push(shape);
         let mut example = serde_json::Map::new();
         example.insert("path".into(), template);
         if let Some(op) = ops.first() {
@@ -514,11 +532,40 @@ fn described_edit<R: Resource>(
     schema
 }
 
+/// The kind of value a schema describes, in a word or two, when it says one
+/// (`string`, `number`, `one of a, b`): what a path's line in the field-edit
+/// listing tells beside its operations. Objects are described by their own
+/// paths.
+fn value_kind(schema: &serde_json::Value) -> Option<String> {
+    if let Some(options) = schema.get("enum").and_then(serde_json::Value::as_array) {
+        let options: Vec<String> = options
+            .iter()
+            .map(|option| {
+                option
+                    .as_str()
+                    .map_or_else(|| option.to_string(), str::to_owned)
+            })
+            .collect();
+        return Some(format!("one of {}", options.join(", ")));
+    }
+    match schema.get("type")? {
+        serde_json::Value::String(kind) if kind != "object" => Some(kind.clone()),
+        serde_json::Value::Array(kinds) => Some(
+            kinds
+                .iter()
+                .filter_map(serde_json::Value::as_str)
+                .collect::<Vec<_>>()
+                .join(" or "),
+        ),
+        _ => None,
+    }
+}
+
 /// The generic field-edit schema, with the vocabularies of the record's
 /// fields' own operations named for `rich`.
-fn generic_edit_schema<R: Resource>(ops: &[(String, serde_json::Value)]) -> serde_json::Value {
+fn generic_edit_schema(ops: &[(String, serde_json::Value)]) -> serde_json::Value {
     let ops = ops.to_vec();
-    let mut schema = <Edit<R> as crate::JsonSchema>::json_schema();
+    let mut schema = <Edit<()> as crate::JsonSchema>::json_schema();
     if !ops.is_empty()
         && let Some(properties) = schema
             .get_mut("properties")
@@ -632,14 +679,20 @@ fn edit_paths(
         }
         serde_json::json!({
             "title": dotted.join("."),
-            "description": format!("{title}. {description}"),
+            "description": if description.is_empty() {
+                title.to_owned()
+            } else {
+                format!("{title}; {description}")
+            },
             "type": "object",
             "properties": properties,
             "required": ["path", "op"],
         })
     };
     let item = step_schema("item", serde_json::json!({ "type": "string" }));
-    for field in shape.fields() {
+    // A read-only field is changed only by the record's verbs: no path an
+    // edit could take.
+    for field in shape.fields().iter().filter(|field| !field.readonly) {
         let mut here = steps.to_vec();
         here.push(step_schema(
             "field",
@@ -664,9 +717,6 @@ fn edit_paths(
             serde_json::json!({})
         };
         let mut flags = Vec::new();
-        if field.readonly {
-            flags.push("readonly: changed only by the record's verbs".to_owned());
-        }
         if field.unit {
             flags.push("its own storage unit".to_owned());
         }
@@ -677,12 +727,7 @@ fn edit_paths(
                 "removing an item asks for confirmation".to_owned()
             });
         }
-        let description = format!(
-            "`{path}`: {}{}{}",
-            ops.join(", "),
-            if flags.is_empty() { "" } else { "; " },
-            flags.join("; ")
-        );
+        let description = flags.join("; ");
         out.push(alternative(
             &here,
             false,
@@ -717,7 +762,7 @@ fn edit_paths(
                     item_value,
                     None,
                     field.title,
-                    format!("`{path}.*`: one item, by its id: set"),
+                    "one item, by its id".to_owned(),
                 ));
                 edit_paths(*inner, &items, &format!("{path}.*."), rich, out);
             }
@@ -743,9 +788,7 @@ fn edit_paths(
                     serde_json::json!({}),
                     None,
                     field.title,
-                    format!(
-                        "`{path}.<cell>`: a cell, by its row and column ids, and what is inside it"
-                    ),
+                    "a cell, by its row and column ids, and what is inside it".to_owned(),
                 ));
             }
             crate::Shape::Map(_) => {
@@ -758,7 +801,7 @@ fn edit_paths(
                     serde_json::json!({}),
                     None,
                     field.title,
-                    format!("`{path}.<key>`: an entry, by its key, and what is inside it"),
+                    "an entry, by its key, and what is inside it".to_owned(),
                 ));
             }
             crate::Shape::Value => {}
@@ -767,6 +810,7 @@ fn edit_paths(
 }
 
 /// The published spec of [`FIELD_EDIT`].
+#[inline(never)]
 fn field_edit_spec<R: Resource>() -> ActionSpec {
     rooted_edit_spec::<R>(
         (Vec::new(), R::shape()),
@@ -779,6 +823,7 @@ fn field_edit_spec<R: Resource>() -> ActionSpec {
 /// The field edit offered on the item `item` of the collection `field`:
 /// paths from the item, its editable paths described as the record's are.
 #[must_use]
+#[inline(never)]
 pub fn item_field_edit_spec<R: Resource>(field: &str, item: &crate::Id) -> Option<ActionSpec> {
     field_edit_spec_at::<R>(vec![
         crate::Segment::Field(field.to_owned()),
@@ -790,6 +835,7 @@ pub fn item_field_edit_spec<R: Resource>(field: &str, item: &crate::Id) -> Optio
 /// the record, ending at an item): paths from the item, its editable paths
 /// described as the record's are.
 #[must_use]
+#[inline(never)]
 pub fn field_edit_spec_at<R: Resource>(prefix: Vec<crate::Segment>) -> Option<ActionSpec> {
     let mut shape = R::shape()?;
     let mut dotted = String::new();
@@ -828,7 +874,7 @@ pub fn field_edit_spec_at<R: Resource>(prefix: Vec<crate::Segment>) -> Option<Ac
     if alternatives.is_empty() {
         return None;
     }
-    let schema = described_edit::<R>(&alternatives, &ops);
+    let schema = described_edit(&alternatives, &ops);
     Some(rooted_edit_spec::<R>(
         (prefix, Some(shape)),
         schema,
@@ -838,6 +884,7 @@ pub fn field_edit_spec_at<R: Resource>(prefix: Vec<crate::Segment>) -> Option<Ac
 }
 
 /// The field edit at paths under `prefix`, described by `schema`.
+#[inline(never)]
 fn rooted_edit_spec<R: Resource>(
     (prefix, root): (Vec<crate::Segment>, Option<crate::Shape>),
     schema: serde_json::Value,
@@ -1726,6 +1773,7 @@ fn declared_args<R: Resource>() -> std::collections::BTreeMap<&'static str, serd
 /// The parameter of [`APPLY`]: one action value, described by
 /// [`Resource::action_schema`] when the resource has one, with what only
 /// restates a named action folded into a reference to it.
+#[inline(never)]
 pub(crate) fn apply_param<R: Resource>() -> ActionParam {
     let param = ActionParam::required_owned(
         APPLY_PARAM,
@@ -1829,53 +1877,12 @@ fn read_apply<R: Resource>(value: serde_json::Value) -> Result<R::Action, String
 /// checked against its own action's schema when the group is built, so this
 /// names those actions rather than repeating their schemas; an `apply`
 /// member carries `apply`'s schema, without its descriptions.
+#[inline(never)]
 pub(crate) fn group_param<R: Resource>() -> ActionParam {
-    use crate::schema::{
-        array, constant, describe, nullable, object, one_of, string_enum, undescribed,
-    };
-
     let schema = per_type::<R>(TypeSchema::Group, || {
         let ids: Vec<&str> = R::declarations().iter().map(|decl| decl.id).collect();
-        let mut members = Vec::new();
-        if !ids.is_empty() {
-            members.push(describe(
-                object(vec![
-                    ("action", string_enum(&ids), true),
-                    (
-                        "args",
-                        nullable(serde_json::json!({"type": "object"})),
-                        false,
-                    ),
-                ]),
-                "A named action, args as it takes them",
-            ));
-        }
-        let action = apply_param::<R>().schema.map_or_else(
-            || serde_json::json!({"type": "object"}),
-            |schema| undescribed(&schema),
-        );
-        if R::EDITS {
-            members.push(describe(
-                object(vec![
-                    ("action", constant(FIELD_EDIT), true),
-                    (
-                        "args",
-                        object(vec![(
-                            EDIT_PARAM,
-                            undescribed(&<Edit<R> as crate::JsonSchema>::json_schema()),
-                            true,
-                        )]),
-                        true,
-                    ),
-                ]),
-                "A field edit",
-            ));
-        }
-        members.push(object(vec![
-            ("action", constant(APPLY), true),
-            ("args", object(vec![(APPLY_PARAM, action, true)]), true),
-        ]));
-        Some(array(one_of(members)))
+        let apply = apply_param::<R>().schema;
+        Some(group_schema(&ids, apply.as_deref(), R::EDITS))
     })
     .unwrap_or_else(|| Arc::new(serde_json::json!({"type": "array"})));
     ActionParam::required_owned(
@@ -1889,6 +1896,53 @@ pub(crate) fn group_param<R: Resource>() -> ActionParam {
     .with_shared_schema(schema)
 }
 
+/// The schema of a group of the actions `ids`, `apply` with the action
+/// schema `apply`, and field edits when `edits`: one function for every
+/// resource.
+fn group_schema(ids: &[&str], apply: Option<&serde_json::Value>, edits: bool) -> serde_json::Value {
+    use crate::schema::{
+        array, constant, describe, nullable, object, one_of, string_enum, undescribed,
+    };
+    let mut members = Vec::new();
+    if !ids.is_empty() {
+        members.push(describe(
+            object(vec![
+                ("action", string_enum(ids), true),
+                (
+                    "args",
+                    nullable(serde_json::json!({"type": "object"})),
+                    false,
+                ),
+            ]),
+            "A named action, args as it takes them",
+        ));
+    }
+    let action = apply.map_or_else(|| serde_json::json!({"type": "object"}), undescribed);
+    if edits {
+        members.push(describe(
+            object(vec![
+                ("action", constant(FIELD_EDIT), true),
+                (
+                    "args",
+                    object(vec![(
+                        EDIT_PARAM,
+                        undescribed(&<Edit<()> as crate::JsonSchema>::json_schema()),
+                        true,
+                    )]),
+                    true,
+                ),
+            ]),
+            "A field edit",
+        ));
+    }
+    members.push(object(vec![
+        ("action", constant(APPLY), true),
+        ("args", object(vec![(APPLY_PARAM, action, true)]), true),
+    ]));
+    array(one_of(members))
+}
+
+#[inline(never)]
 fn apply_spec<R: Resource>() -> ActionSpec {
     #[cfg(all(feature = "test-support", not(target_arch = "wasm32")))]
     let _phase = crate::profiling::Phase::start("resource.apply_spec");
@@ -1991,6 +2045,7 @@ pub(crate) fn group_need<R: Resource>(actions: &[R::Action]) -> ActionNeed {
     })
 }
 
+#[inline(never)]
 fn group_spec<R: Resource>() -> ActionSpec {
     #[cfg(all(feature = "test-support", not(target_arch = "wasm32")))]
     let _phase = crate::profiling::Phase::start("resource.group_spec");

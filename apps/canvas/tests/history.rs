@@ -169,19 +169,23 @@ fn a_past_version_is_looked_at_and_its_marks_restored_by_id() {
     assert_eq!(fills(&now), ["#808080", "#808080"]);
 
     let look_now = app
-        .effect(&canvas::resource::ViewOp::Look(canvas::resource::Look {
-            size: Some(256),
-            ..Default::default()
-        }))
+        .effect(&canvas::resource::ViewOp::Look {
+            look: canvas::resource::Look {
+                size: Some(256),
+                ..Default::default()
+            },
+        })
         .unwrap()
         .value
         .unwrap();
     let look_then = app
-        .effect(&canvas::resource::ViewOp::Look(canvas::resource::Look {
-            size: Some(256),
-            version: Some("good".into()),
-            ..Default::default()
-        }))
+        .effect(&canvas::resource::ViewOp::Look {
+            look: canvas::resource::Look {
+                size: Some(256),
+                version: Some("good".into()),
+                ..Default::default()
+            },
+        })
         .unwrap()
         .value
         .unwrap();
@@ -198,10 +202,12 @@ fn a_past_version_is_looked_at_and_its_marks_restored_by_id() {
     assert_eq!(fill(&app, "sky").as_deref(), Some("#808080"));
 
     let unknown = app
-        .effect(&canvas::resource::ViewOp::Look(canvas::resource::Look {
-            version: Some("nothing-like-it".into()),
-            ..Default::default()
-        }))
+        .effect(&canvas::resource::ViewOp::Look {
+            look: canvas::resource::Look {
+                version: Some("nothing-like-it".into()),
+                ..Default::default()
+            },
+        })
         .expect_err("an unknown version is refused")
         .to_string();
     assert!(

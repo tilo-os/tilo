@@ -281,11 +281,6 @@ impl FileView {
         self.scale = scale.clamp(0.5, 3.0);
         self
     }
-    #[must_use]
-    pub fn with_text_scale(mut self, scale: f32) -> Self {
-        self.text_scale = f64::from(scale.clamp(0.5, 4.0));
-        self
-    }
     /// Read the view's metrics from `theme`'s tokens (also done at layout).
     #[must_use]
     pub fn with_theme(mut self, theme: &Theme) -> Self {

@@ -181,6 +181,7 @@ type = "Vec<RunItem>"
 [[resources.fields]]
 owner = "terminal"
 path = "terminal_panel.requests"
+readonly = true
 stored = "value"
 title = "Commands asked to run"
 type = "Outbox<RunRequest, RunAnswer>"
@@ -188,6 +189,7 @@ type = "Outbox<RunRequest, RunAnswer>"
 [[resources.fields]]
 owner = "project"
 path = "terminal_requests"
+readonly = true
 stored = "value"
 title = "Commands asked of the terminal"
 type = "Outbox<RunRequest, RunAnswer>"

@@ -2388,7 +2388,6 @@ dependencies = [
  "tilo-action-policy",
  "tilo-actions",
  "tilo-automerge-fork",
- "tilo-resource",
  "toml 1.0.6+spec-1.1.0",
  "tracing",
  "uuid",
@@ -15899,6 +15898,7 @@ dependencies = [
 name = "tilo-actions"
 version = "0.1.0"
 dependencies = [
+ "blake3",
  "chrono",
  "hex",
  "postcard",
@@ -15910,7 +15910,6 @@ dependencies = [
  "tilo-automerge",
  "tilo-automerge-fork",
  "tilo-clock",
- "tilo-content",
  "tilo-test-env",
  "uuid",
 ]

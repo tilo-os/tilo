@@ -2450,7 +2450,7 @@ fn run_check(args: CheckArgs) -> Result<Value> {
 /// The surface stage of `check`: the app's binary reports its surface and
 /// the controls its view binds, compared with the committed `surface.toml`.
 fn check_surface(path: &Path) -> Result<()> {
-    match tilo_app_cli::surface::check_app(path)? {
+    match tilo_app_cli::surface::check_app(path, None, tilo_app_cli::contract::Level::Error)? {
         None => {
             println!("the app runs no framework resource, so it reports no surface");
             Ok(())
@@ -2466,10 +2466,7 @@ fn check_surface(path: &Path) -> Result<()> {
 /// `tilo-app surface`: commit the app's public surface.
 fn run_surface(args: SurfaceArgs) -> Result<Value> {
     let path = args.path.map_or_else(std::env::current_dir, Ok)?;
-    let (file, report) = match &args.report {
-        Some(report) => tilo_app_cli::surface::write_reported(&path, report)?,
-        None => tilo_app_cli::surface::write_app(&path)?,
-    };
+    let (file, report) = tilo_app_cli::surface::write_app(&path, args.report.as_deref())?;
     println!("Wrote {}", file.display());
     for unbound in &report.unbound {
         println!("warning: {unbound}");
@@ -2645,18 +2642,14 @@ fn lint_workspace(start: &Path) -> Result<Value> {
 /// built binary reports against its committed `surface.toml`. An app that
 /// has not committed one yet is told so without failing.
 fn certify_surface(app: &Path, executable: &Path) -> Result<()> {
-    if !tilo_app_cli::surface::is_framework_app(app) {
-        return Ok(());
-    }
-    let report = tilo_app_cli::surface::report_of(executable, app)?;
-    let committed = tilo_app_cli::surface::committed(app)?;
-    let findings = tilo_app_cli::surface::findings(
-        &tilo_app_cli::surface::app_id(app)?,
-        &report,
-        committed.as_deref(),
-        None,
+    let Some(findings) = tilo_app_cli::surface::check_app(
+        app,
+        Some(executable),
         tilo_app_cli::contract::Level::Warning,
-    );
+    )?
+    else {
+        return Ok(());
+    };
     print!("{}", findings.render());
     anyhow::ensure!(
         findings.passed(),

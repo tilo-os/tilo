@@ -264,7 +264,7 @@ impl NotesApp {
         }
         let (markdown, assets) = super::adopt_inline_images(markdown);
         let page = PageId::new_v4();
-        cx.invoke(
+        cx.submit(
             Notebook::IMPORT_MARKDOWN.with(crate::notebook::notebook::ImportMarkdown {
                 title: title.to_owned(),
                 markdown,

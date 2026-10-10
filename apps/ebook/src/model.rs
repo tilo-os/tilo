@@ -1100,10 +1100,11 @@ pub struct Progress {
 }
 
 impl Progress {
-    /// A book counts as "read" once the reader is essentially at the end — used
-    /// by the shelf's "hide read books" filter.
-    pub fn is_read(&self) -> bool {
-        self.fraction >= 0.985
+    /// A book counts as "read" once the reader is essentially at the end of
+    /// it — `fraction` is how far through — used by the shelf's "hide read
+    /// books" filter.
+    pub fn is_read(fraction: f32) -> bool {
+        fraction >= 0.985
     }
 }
 
@@ -1394,20 +1395,8 @@ mod tests {
 
         // --- phase: progress_is_read_at_the_end ---
         {
-            assert!(
-                !Progress {
-                    fraction: 0.5,
-                    ..Default::default()
-                }
-                .is_read()
-            );
-            assert!(
-                Progress {
-                    fraction: 1.0,
-                    ..Default::default()
-                }
-                .is_read()
-            );
+            assert!(!Progress::is_read(0.5));
+            assert!(Progress::is_read(1.0));
         }
     }
 

@@ -308,7 +308,6 @@ files-share-response-truncated = Antwort des Freigabedienstes wurde abgeschnitte
 files-share-response-invalid = Ungültige Antwort des Freigabedienstes: { $error }
 files-share-refused = Freigabedienst hat die Anfrage abgelehnt ({ $code })
 files-received-refused = Empfangsdienst hat den Link abgelehnt ({ $code })
-files-received-retry-refused = Empfangsdienst konnte die Wiederholung nicht ausführen ({ $code })
 files-received-wrong-response = Empfangsdienst hat die falsche Antwort zurückgegeben
 files-received-encode-failed = Empfangsanfrage konnte nicht kodiert werden
 files-received-request-too-large = Empfangsanfrage überschreitet ihre Grenze

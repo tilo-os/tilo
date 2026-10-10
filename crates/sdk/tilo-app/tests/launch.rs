@@ -523,7 +523,7 @@ fn a_launch_invokes_an_effect_which_changes_no_document_and_a_viewer_reaches() {
     let dispatcher = GALLERY
         .with(|gallery| gallery.borrow_mut().take())
         .expect("the viewer's view was built");
-    dispatcher.invoke(Invoke::effect(&GalleryEffect::Show {
+    dispatcher.submit(Invoke::effect(&GalleryEffect::Show {
         picture: "meadow.png".into(),
     }));
     viewer.settle();

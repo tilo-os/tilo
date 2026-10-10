@@ -664,7 +664,7 @@ impl MailApp {
                 .map(|m| m.id)
         };
         if let Some(id) = id {
-            self.shared.borrow_mut().select_message(doc, id);
+            self.shared.borrow_mut().open_message(doc, id);
             self.process_intents();
         }
     }
@@ -752,6 +752,56 @@ impl MailApp {
         self.set_setup_input(0, "Alex Morgan");
         self.set_setup_input(1, "alex@fastmail.com");
         self.maybe_autofill();
+    }
+
+    /// Open a blank "Add account" sheet with a Gmail address — which presets to
+    /// OAuth — so the shot shows the OAuth sign-in flow.
+    pub fn prime_setup_oauth_shot(&mut self) {
+        self.open_setup_edit(None);
+        self.set_setup_input(0, "Alex Morgan");
+        self.set_setup_input(1, "alex.morgan@gmail.com");
+        self.maybe_autofill();
+    }
+
+    /// Select the bundled HTML newsletter so the reader renders it through the
+    /// sandboxed `WebView` (HTML-mail shot). Also demonstrates the filled-star
+    /// action (the newsletter is starred).
+    pub fn prime_html_mail_shot(&mut self) {
+        let id = {
+            let st = self.shared.borrow();
+            st.mailbox
+                .messages
+                .values()
+                .find(|m| m.from.email == "hello@fieldnotes.example")
+                .map(|m| m.id)
+        };
+        if let Some(id) = id {
+            let mut doc = automerge::AutoCommit::new();
+            self.shared
+                .borrow_mut()
+                .open_message(&mut ui::widget::Edits::lend(&mut doc), id);
+            self.process_intents();
+        }
+        self.dirty = true;
+    }
+
+    /// A configured mailbox before any messages have arrived.
+    pub fn prime_empty_shot(&mut self) {
+        let mut st = self.shared.borrow_mut();
+        let account = st.mailbox.account.clone();
+        st.mailbox = crate::model::Mailbox::new(account);
+        st.selected = None;
+        st.folder = Folder::Inbox;
+        st.dirty = true;
+        drop(st);
+        self.dirty = true;
+    }
+
+    /// A real in-flight sync indication over cached mail.
+    pub fn prime_loading_shot(&mut self) {
+        self.awaiting_engine = true;
+        self.shared.borrow_mut().status = Some("Syncing Inbox…".into());
+        self.dirty = true;
     }
 
     /// Queue one worker request and account for it exactly once.  Every engine
@@ -4730,7 +4780,7 @@ impl MailApp {
         if is_draft {
             mail.push_intent(Intent::EditDraft(id));
         } else {
-            mail.select_message(state, id);
+            mail.open_message(state, id);
         }
         drop(mail);
         self.process_intents();
@@ -5622,7 +5672,7 @@ mod tests {
                 .expect("second sample message");
             app.shared
                 .borrow_mut()
-                .select_message(&mut ui::widget::Edits::lend(&mut doc), other);
+                .open_message(&mut ui::widget::Edits::lend(&mut doc), other);
             app.process_intents();
             assert!(
                 !app.perform_semantic_action(
@@ -5729,7 +5779,7 @@ mod tests {
             .expect("an unread message");
             app.shared
                 .borrow_mut()
-                .select_message(&mut ui::widget::Edits::lend(&mut doc), id);
+                .open_message(&mut ui::widget::Edits::lend(&mut doc), id);
             assert!(app.shared.borrow().mailbox.get(id).unwrap().read);
             let mut fresh = app.shared.borrow().mailbox.clone();
             for m in fresh.messages.values_mut() {

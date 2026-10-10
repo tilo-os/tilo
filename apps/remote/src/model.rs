@@ -101,16 +101,9 @@ impl ConnectionKind {
         ]
     }
 
-    /// Whether Tilo can open this transport today.
+    /// Whether Tilo can open this transport today: Remote can honestly
+    /// start a connection attempt over it.
     pub fn is_supported(self) -> bool {
-        matches!(
-            self,
-            ConnectionKind::Ssh | ConnectionKind::Vnc | ConnectionKind::Tilo
-        )
-    }
-
-    /// Whether Remote can honestly start a connection attempt.
-    pub fn can_attempt(self) -> bool {
         matches!(
             self,
             ConnectionKind::Ssh | ConnectionKind::Vnc | ConnectionKind::Tilo
@@ -613,10 +606,8 @@ mod tests {
             assert!(ConnectionKind::Vnc.is_supported());
             assert!(!ConnectionKind::Rdp.is_supported());
             assert!(ConnectionKind::Tilo.is_supported());
-            assert!(ConnectionKind::Tilo.can_attempt());
             assert!(ConnectionKind::Tilo.streams_framebuffer());
             assert_eq!(ConnectionKind::Tilo.label(), "Tilo device");
-            assert!(!ConnectionKind::Rdp.can_attempt());
         }
 
         eprintln!("phase draft_validation_catches_empty_and_bad_port");

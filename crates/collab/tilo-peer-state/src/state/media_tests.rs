@@ -33,7 +33,10 @@ fn fixture() -> (StatePeer, SigningKey, SystemTime) {
     .unwrap();
     let mut chat = AutoCommit::new();
     let channels = chat.put_object(ROOT, "channels", ObjType::Map).unwrap();
-    let channel = chat.put_object(&channels, "voice", ObjType::Map).unwrap();
+    let channel = {
+        let entry = chat.put_object(&channels, "voice", ObjType::Map).unwrap();
+        chat.put_object(&entry, "v", ObjType::Map).unwrap()
+    };
     chat.put(&channel, "kind", "voice").unwrap();
     chat.put(&channel, "workspace", "home").unwrap();
     peer.install_seed(
@@ -124,7 +127,10 @@ fn room_media_retained_rejects_malformed_present_policy() {
 fn policy(peer: &StatePeer) -> media::RoomMediaV1 {
     let chat = AutoCommit::load(&peer.document(APP, "").unwrap()).unwrap();
     let channels = chat.get(ROOT, "channels").unwrap().unwrap().1;
-    let object = chat.get(&channels, "voice").unwrap().unwrap().1;
+    let object = {
+        let entry = chat.get(&channels, "voice").unwrap().unwrap().1;
+        chat.get(&entry, "v").unwrap().unwrap().1
+    };
     media::RoomMediaV1 {
         version: 1,
         room: *uuid::Uuid::parse_str(ROOM).unwrap().as_bytes(),
@@ -174,11 +180,17 @@ fn edited_chat(peer: &StatePeer, operation: u8) -> (Vec<u8>, Vec<u8>) {
     let mut chat = AutoCommit::load(&peer.document(APP, "").unwrap()).unwrap();
     let heads = chat.get_heads();
     let channels = chat.get(ROOT, "channels").unwrap().unwrap().1;
-    let object = chat.get(&channels, "voice").unwrap().unwrap().1;
+    let object = {
+        let entry = chat.get(&channels, "voice").unwrap().unwrap().1;
+        chat.get(&entry, "v").unwrap().unwrap().1
+    };
     match operation {
         0 => chat.delete(&channels, "voice").unwrap(),
         1 => {
-            chat.put_object(&channels, "voice", ObjType::Map).unwrap();
+            {
+                let entry = chat.put_object(&channels, "voice", ObjType::Map).unwrap();
+                chat.put_object(&entry, "v", ObjType::Map).unwrap()
+            };
         }
         2 => chat.put(&object, "kind", "text").unwrap(),
         3 => chat.put(&object, "workspace", "elsewhere").unwrap(),

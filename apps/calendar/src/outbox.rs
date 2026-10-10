@@ -134,7 +134,7 @@ pub(crate) fn drain(cx: &SurfaceCx<Calendar>, accounts: &DeviceAccounts) {
                 move |(), result: MutationResult, cx| {
                     for revision in &result.revisions {
                         if result.confirmed.contains(&revision.id) {
-                            cx.invoke(Calendar::SERVER_APPLIED.with(calendar::ServerApplied {
+                            cx.submit(Calendar::SERVER_APPLIED.with(calendar::ServerApplied {
                                 event: revision.id,
                                 at: RemoteAt {
                                     calendar: revision.calendar_id.clone(),
@@ -175,7 +175,7 @@ pub(crate) fn drain(cx: &SurfaceCx<Calendar>, accounts: &DeviceAccounts) {
                 move |_| async move { caldav::remove_jobs(std::slice::from_ref(&job)).await },
                 |(), result: MutationResult, cx| {
                     for id in &result.confirmed {
-                        cx.invoke(
+                        cx.submit(
                             Calendar::SERVER_REMOVED.with(calendar::ServerRemoved { item: *id }),
                         );
                     }

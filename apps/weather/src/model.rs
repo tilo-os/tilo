@@ -425,12 +425,6 @@ impl WeatherModel {
             self.selected = self.locations.len() - 1;
         }
     }
-
-    /// Apply a whole-system preset (metric / imperial). Units are a system
-    /// preference read from Settings — this app never hosts a toggle for them.
-    pub fn set_units(&mut self, units: Units) {
-        self.units = units;
-    }
 }
 
 #[cfg(test)]

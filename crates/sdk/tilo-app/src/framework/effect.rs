@@ -35,7 +35,7 @@ use ui_core::automerge::transaction::Transactable;
 use tilo_actions::{
     ActionFailure, ActionOutput, ActionSpec, Availability, InvocationId, InvocationUpdate,
 };
-use tilo_resource::{ActionRef, Effect, Id, Invoke, Outbox, Path, Resource, Settled};
+use tilo_resource::{ActionRef, Effect, Id, Outbox, Path, Resource, Settled};
 use ui_core::WakeHandle;
 use ui_core::host_operation::{ResourceOperation, ResourceOperationStart};
 use ui_core::invocation_scope::{ResourceEffectScope, ResourceInvocationScope};
@@ -431,9 +431,9 @@ impl<R: Resource, H: 'static> EffectCx<R, H> {
         self.env.dispatch.apply(action);
     }
 
-    /// Invoke a declared action, as [`Dispatcher::invoke`].
-    pub fn invoke(&self, invoke: Invoke<R>) {
-        self.env.dispatch.invoke(invoke);
+    /// Submit a field edit or a verb, as [`Dispatcher::submit`].
+    pub fn submit(&self, submit: impl super::Submit<R>) {
+        self.env.dispatch.submit(submit);
     }
 
     /// The resource's live state.

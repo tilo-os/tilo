@@ -83,13 +83,13 @@ fn wrap_encoded<C: Resource, R: Resource>(
     wrap: &(dyn Fn(C::Action) -> R::Action + Send + Sync),
 ) -> EncodedAction {
     let wrapped = if encoded.type_id == C::ACTION_TYPE {
-        serde_json::from_slice::<C::Action>(&encoded.payload)
+        tilo_actions::decode_json::<C::Action>(&encoded.payload)
             .map_err(|error| error.to_string())
             .and_then(|action| {
                 crate::resource::encode::<R>(&wrap(action)).map_err(|error| error.to_string())
             })
     } else if encoded.type_id == group_type::<C>() {
-        serde_json::from_slice::<ActionGroup<C::Action>>(&encoded.payload)
+        tilo_actions::decode_json::<ActionGroup<C::Action>>(&encoded.payload)
             .map_err(|error| error.to_string())
             .and_then(|group| {
                 let group = ActionGroup {

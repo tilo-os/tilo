@@ -10,8 +10,8 @@ use collab_types::caps::{
     Subject as SandboxSubject, decide_capability,
 };
 use tilo_action_policy::{
-    ActionKind, Answer, Authority, Change, Context, Grant, GrantId, KindSet, Lifetime, Party,
-    Preset, PresetError, Refusal, Role, RoomPolicy, Subject, TreePath, roles,
+    ActionKind, Answer, Authority, Change, Context, Grant, GrantId, KindSet, Lifetime, Preset,
+    PresetError, Refusal, Role, RoomPolicy, Subject, TreePath, roles,
 };
 
 use crate::app::AppId;
@@ -505,15 +505,7 @@ impl Workspace {
         foreign: bool,
         foreign_bound: &'a [Grant],
     ) -> Authority<'a> {
-        let authority = self.person_authority(user);
-        if foreign {
-            authority.bounded_by(
-                Party::new(vec![Subject::ForeignDevice], foreign_bound)
-                    .with_grants(self.policy.grants_of(&Subject::ForeignDevice)),
-            )
-        } else {
-            authority
-        }
+        self.policy.person_on_device(user, foreign, foreign_bound)
     }
 
     /// The authority of `subject` acting on its own (an app, or an agent no

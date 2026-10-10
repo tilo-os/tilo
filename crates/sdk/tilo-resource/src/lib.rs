@@ -210,6 +210,61 @@ pub mod __private {
         }
     }
 
+    /// What `#[resource]` declares of one verb, besides how it is built.
+    #[derive(Clone, Copy)]
+    pub struct VerbDecl {
+        pub id: &'static str,
+        pub label: &'static str,
+        pub description: &'static str,
+        pub kind: ActionKind,
+        pub field: Option<&'static str>,
+        pub destructive: bool,
+        pub answering: bool,
+        pub collects: Option<&'static str>,
+        pub item_field: Option<&'static str>,
+        pub writes: &'static [&'static str],
+        pub shape: crate::Shape,
+        pub params: fn() -> Vec<ActionParam>,
+    }
+
+    /// The declaration of the verb `verb`, built by `build`: one function
+    /// per record type, not a builder chain per verb.
+    pub fn declare<R: crate::Resource>(
+        verb: VerbDecl,
+        build: fn(&ActionArgs, i64) -> Result<R::Action, String>,
+    ) -> crate::ActionDecl<R> {
+        let mut decl = crate::ActionDecl::new(verb.id, verb.label, (verb.params)(), build)
+            .of_kind(verb.kind)
+            .writing(crate::footprint::declared(
+                verb.shape,
+                verb.item_field,
+                verb.writes,
+            ));
+        // What the description says beyond its first line, the label.
+        let description = verb
+            .description
+            .strip_prefix(verb.label)
+            .map_or(verb.description, |rest| {
+                rest.trim_start_matches('.').trim_start()
+            });
+        if !description.is_empty() {
+            decl = decl.describe(description);
+        }
+        if let Some(field) = verb.field {
+            decl = decl.below_field(field);
+        }
+        if verb.destructive {
+            decl = decl.destructive();
+        }
+        if verb.answering {
+            decl = decl.answering();
+        }
+        if let Some(prompt) = verb.collects {
+            decl = decl.collecting_content(prompt);
+        }
+        decl
+    }
+
     /// Where a declared parameter names a place in the record.
     #[derive(Clone, Copy)]
     pub enum PlaceIn {
@@ -238,11 +293,9 @@ pub mod __private {
         } else {
             ActionParam::required_owned(name, ty, description)
         }
-        .with_schema(param_schema(
-            schema(),
-            description,
-            example.map(|example| example()),
-        ));
+        // The parameter carries its description; its schema does not say
+        // it again.
+        .with_schema(param_schema(schema(), "", example.map(|example| example())));
         match place {
             PlaceIn::Nowhere => param,
             PlaceIn::Record => param.as_place(),
@@ -464,7 +517,13 @@ pub mod __private {
                 } else {
                     ActionParam::optional_owned(name.clone(), ty, description)
                 };
-                param.with_schema(property.clone())
+                // The parameter carries the description; its schema does not
+                // say it again.
+                let mut schema = property.clone();
+                if let Some(schema) = schema.as_object_mut() {
+                    schema.remove("description");
+                }
+                param.with_schema(schema)
             })
             .collect()
     }
@@ -500,6 +559,43 @@ pub mod __private {
     }
 
     pub use crate::resource::default_search;
+
+    /// The arguments of a verb's JSON form: an object (`null` for none).
+    ///
+    /// # Errors
+    /// Why `value` is no arguments object.
+    #[inline(never)]
+    pub fn args_object(
+        value: serde_json::Value,
+    ) -> Result<serde_json::Map<String, serde_json::Value>, serde_json::Error> {
+        use serde::de::Error as _;
+        match value {
+            serde_json::Value::Object(args) => Ok(args),
+            serde_json::Value::Null => Ok(serde_json::Map::new()),
+            other => Err(serde_json::Error::invalid_type(
+                serde::de::Unexpected::Other(&other.to_string()),
+                &"the arguments as an object",
+            )),
+        }
+    }
+
+    /// The argument `name` taken from `args`, decoded as a `T`; an absent
+    /// one is `None` when `optional`, else missing.
+    ///
+    /// # Errors
+    /// Why the argument is missing or not a `T`.
+    pub fn arg<T: serde::de::DeserializeOwned>(
+        args: &mut serde_json::Map<String, serde_json::Value>,
+        name: &'static str,
+        optional: bool,
+    ) -> Result<T, serde_json::Error> {
+        use serde::de::Error as _;
+        match args.remove(name) {
+            Some(value) => T::deserialize(value),
+            None if optional => T::deserialize(serde_json::Value::Null),
+            None => Err(serde_json::Error::missing_field(name)),
+        }
+    }
 
     /// The action name and arguments of an action's JSON form
     /// (`{"action": .., "args": ..}`, the arguments `null` when absent).

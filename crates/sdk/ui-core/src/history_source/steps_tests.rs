@@ -3,6 +3,12 @@ use automerge::{ActorId, AutoCommit, ObjId, ObjType, ROOT, ReadDoc};
 
 use super::*;
 
+/// No step has an inverse action: every one is undone by its patches.
+#[allow(clippy::unnecessary_wraps, reason = "the shape every compensator has")]
+fn plain(_: &Version) -> Result<Option<Inverse>, String> {
+    Ok(None)
+}
+
 const GENESIS: &[u8] = b"genesis";
 const ALICE: &[u8] = b"alice";
 const BOB: &[u8] = b"bob";
@@ -86,34 +92,34 @@ fn undo_and_redo_take_back_only_the_scopes_own_steps_in_order() {
     add(&mut doc, ALICE, "a2", "green");
     add(&mut doc, BOB, "b1", "blue");
 
-    let undone = verb(&mut doc, ALICE, |doc| undo(doc, &scope(ALICE), 1)).unwrap();
+    let undone = verb(&mut doc, ALICE, |doc| undo(doc, &scope(ALICE), 1, plain)).unwrap();
     assert_eq!(undone.len(), 1);
     assert_eq!(ids(&doc), ["a1", "b1"], "Alice's newest step, not Bob's");
-    verb(&mut doc, ALICE, |doc| undo(doc, &scope(ALICE), 1)).unwrap();
+    verb(&mut doc, ALICE, |doc| undo(doc, &scope(ALICE), 1, plain)).unwrap();
     assert_eq!(ids(&doc), ["b1"]);
-    let refused = verb(&mut doc, ALICE, |doc| undo(doc, &scope(ALICE), 1)).unwrap_err();
+    let refused = verb(&mut doc, ALICE, |doc| undo(doc, &scope(ALICE), 1, plain)).unwrap_err();
     assert!(
         refused.starts_with("You have nothing in effect to undo"),
         "{refused}"
     );
 
-    verb(&mut doc, ALICE, |doc| redo(doc, &scope(ALICE), 1)).unwrap();
+    verb(&mut doc, ALICE, |doc| redo(doc, &scope(ALICE), 1, plain)).unwrap();
     assert_eq!(ids(&doc), ["a1", "b1"], "the last undone comes back first");
-    verb(&mut doc, ALICE, |doc| redo(doc, &scope(ALICE), 1)).unwrap();
+    verb(&mut doc, ALICE, |doc| redo(doc, &scope(ALICE), 1, plain)).unwrap();
     assert_eq!(ids(&doc), ["a1", "a2", "b1"]);
-    assert!(verb(&mut doc, ALICE, |doc| redo(doc, &scope(ALICE), 1)).is_err());
+    assert!(verb(&mut doc, ALICE, |doc| redo(doc, &scope(ALICE), 1, plain)).is_err());
     assert!(
         undone_is_empty(&doc),
         "every redo removed its undo's record"
     );
 
     // Undo after redo takes the redone work back again, in one step each.
-    verb(&mut doc, ALICE, |doc| undo(doc, &scope(ALICE), 2)).unwrap();
+    verb(&mut doc, ALICE, |doc| undo(doc, &scope(ALICE), 2, plain)).unwrap();
     assert_eq!(ids(&doc), ["b1"]);
-    verb(&mut doc, ALICE, |doc| redo(doc, &scope(ALICE), 5)).unwrap();
+    verb(&mut doc, ALICE, |doc| redo(doc, &scope(ALICE), 5, plain)).unwrap();
     assert_eq!(ids(&doc), ["a1", "a2", "b1"]);
 
-    verb(&mut doc, BOB, |doc| undo(doc, &scope(BOB), 1)).unwrap();
+    verb(&mut doc, BOB, |doc| undo(doc, &scope(BOB), 1, plain)).unwrap();
     assert_eq!(ids(&doc), ["a1", "a2"]);
 }
 
@@ -126,15 +132,15 @@ fn a_new_step_ends_redo_and_somebody_elses_later_edit_refuses_undo() {
     let mut doc = document();
     add(&mut doc, ALICE, "a1", "red");
     add(&mut doc, ALICE, "a2", "green");
-    verb(&mut doc, ALICE, |doc| undo(doc, &scope(ALICE), 1)).unwrap();
+    verb(&mut doc, ALICE, |doc| undo(doc, &scope(ALICE), 1, plain)).unwrap();
     add(&mut doc, ALICE, "a3", "white");
-    let refused = verb(&mut doc, ALICE, |doc| redo(doc, &scope(ALICE), 1)).unwrap_err();
+    let refused = verb(&mut doc, ALICE, |doc| redo(doc, &scope(ALICE), 1, plain)).unwrap_err();
     assert!(refused.contains("redo"), "{refused}");
 
     recolour(&mut doc, ALICE, "a1", "pink");
     recolour(&mut doc, BOB, "a1", "black");
     add(&mut doc, ALICE, "a4", "grey");
-    let refused = verb(&mut doc, ALICE, |doc| undo(doc, &scope(ALICE), 2)).unwrap_err();
+    let refused = verb(&mut doc, ALICE, |doc| undo(doc, &scope(ALICE), 2, plain)).unwrap_err();
     assert!(refused.contains("changed since"), "{refused}");
     assert_eq!(colour(&doc, "a1").as_deref(), Some("black"));
     assert!(
@@ -148,7 +154,7 @@ fn undoing_the_step_that_made_a_shared_container_is_refused_not_destructive() {
     let mut doc = AutoCommit::new();
     add(&mut doc, ALICE, "a1", "red");
     add(&mut doc, BOB, "b1", "blue");
-    let refused = verb(&mut doc, ALICE, |doc| undo(doc, &scope(ALICE), 1)).unwrap_err();
+    let refused = verb(&mut doc, ALICE, |doc| undo(doc, &scope(ALICE), 1, plain)).unwrap_err();
     assert!(refused.contains("changed since by"), "{refused}");
     assert_eq!(ids(&doc), ["a1", "b1"], "Bob's mark stays");
 }
@@ -199,7 +205,7 @@ fn restore_checkpoint_and_diff_address_versions_by_name_or_change() {
     assert!(again.contains("already matches"), "{again}");
 
     // A restore is a step of its own: undo takes it back.
-    verb(&mut doc, ALICE, |doc| undo(doc, &scope(ALICE), 1)).unwrap();
+    verb(&mut doc, ALICE, |doc| undo(doc, &scope(ALICE), 1, plain)).unwrap();
     assert!(ids(&doc).contains(&"smear".to_owned()));
 
     let unknown = resolve(&doc, "nope").unwrap_err();

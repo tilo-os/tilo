@@ -5,6 +5,11 @@ use std::{cell::RefCell, rc::Rc};
 use ui::{Widget, headless::Driver};
 use vello::{Scene, kurbo::Rect, peniko::Color};
 
+/// Bounds a wait that ends as soon as the window settles; only a hang
+/// reaches it. Settling is a fixed amount of work, but how long it takes on
+/// a builder running every other test beside it is not.
+const HANG_BOUND: ui::time::Duration = ui::time::Duration::from_secs(30);
+
 struct DamageWitness {
     inner: Box<dyn Widget>,
     damage: Rc<RefCell<Vec<Rect>>>,
@@ -76,7 +81,7 @@ fn paragraph_input(reduce_motion: bool, key: &str, prefix: &str, advance_timesta
     // ordinary edit proves stable app chrome forwards the paragraph damage.
     driver.key("x");
     let started = ui::time::now();
-    let settled = driver.settle_for_capture(ui::time::Duration::from_secs(2));
+    let settled = driver.settle_for_capture(HANG_BOUND);
     if !settled {
         eprintln!(
             "paragraph-settle-demand key={key:?} reduce_motion={reduce_motion} timestamp={advance_timestamp} elapsed={:?}",

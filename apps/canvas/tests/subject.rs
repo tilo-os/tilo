@@ -128,12 +128,12 @@ fn an_edge_job_refuses_to_overwrite_an_edit_made_while_it_runs() {
     open_disc(&mut app);
     call(&mut app, "select", json!({"ellipse": [34, 34, 132, 132]}));
     let invocation = app
-        .start_effect(&canvas::resource::ViewOp::FindArea(
-            canvas::resource::FindArea {
+        .start_effect(&canvas::resource::ViewOp::FindArea {
+            area: canvas::resource::FindArea {
                 refine: Some(8.0),
                 ..Default::default()
             },
-        ))
+        })
         .unwrap();
     call(&mut app, "select", json!({"rect": [0, 0, 10, 10]}));
     let edited = app.state();
@@ -160,10 +160,12 @@ fn an_edge_job_cannot_apply_after_the_person_becomes_a_viewer() {
     open_disc(&mut app);
     call(&mut app, "select", json!({"ellipse": [34, 34, 132, 132]}));
     let before = app.state();
-    let effect = canvas::resource::ViewOp::FindArea(canvas::resource::FindArea {
-        refine: Some(8.0),
-        ..Default::default()
-    });
+    let effect = canvas::resource::ViewOp::FindArea {
+        area: canvas::resource::FindArea {
+            refine: Some(8.0),
+            ..Default::default()
+        },
+    };
     let invocation = app.start_effect(&effect).unwrap();
     app.set_role(ui::Role::Viewer);
     app.harness()
@@ -278,12 +280,12 @@ fn selecting_a_subject_without_its_model_says_where_to_set_it_up() {
     let renderer = Rc::new(RefCell::new(Renderer::default()));
     shown(&app, &renderer);
     let error = app
-        .effect(&canvas::resource::ViewOp::FindArea(
-            canvas::resource::FindArea {
+        .effect(&canvas::resource::ViewOp::FindArea {
+            area: canvas::resource::FindArea {
                 subject: Some(true),
                 ..Default::default()
             },
-        ))
+        })
         .unwrap_err()
         .to_string();
     assert!(
@@ -299,24 +301,24 @@ fn refining_needs_something_selected_and_a_reach_in_range() {
     let renderer = Rc::new(RefCell::new(Renderer::default()));
     shown(&app, &renderer);
     let error = app
-        .effect(&canvas::resource::ViewOp::FindArea(
-            canvas::resource::FindArea {
+        .effect(&canvas::resource::ViewOp::FindArea {
+            area: canvas::resource::FindArea {
                 refine: Some(4.0),
                 ..Default::default()
             },
-        ))
+        })
         .unwrap_err()
         .to_string();
     assert!(error.contains("nothing is selected"), "{error}");
     call(&mut app, "select", json!({"rect": [10, 10, 50, 50]}));
     shown(&app, &renderer);
     let error = app
-        .effect(&canvas::resource::ViewOp::FindArea(
-            canvas::resource::FindArea {
+        .effect(&canvas::resource::ViewOp::FindArea {
+            area: canvas::resource::FindArea {
                 refine: Some(1000.0),
                 ..Default::default()
             },
-        ))
+        })
         .unwrap_err()
         .to_string();
     assert!(error.contains("refine is 0 to"), "{error}");
@@ -435,12 +437,13 @@ fn finder_completion_uses_a_selection_contract_the_broker_can_admit() {
         select.contract.advertised_confirmation(),
         ui::tilo_actions::ConfirmationPolicy::None
     );
-    let invoke = canvas::ArtworkResource::SELECT_FOUND.with((
-        Some("M 4 4 L 12 4 L 12 12 L 4 12 Z".into()),
-        None,
-        None,
-        None,
-    ));
+    let invoke = canvas::Artwork::SELECT.with(canvas::selection::Select {
+        d: Some("M 4 4 L 12 4 L 12 12 L 4 12 Z".into()),
+        matte: None,
+        mode: None,
+        feather: None,
+        ..Default::default()
+    });
     app.invoke(invoke).unwrap();
     assert!(
         app.state()

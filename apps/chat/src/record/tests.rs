@@ -627,15 +627,31 @@ fn a_draft_is_rich_text_edited_at_its_key() {
         crate::projection::draft_text(ada.doc(), "c_general"),
         "\nhalf a thought".trim_start()
     );
+    // Typing into a draft never started starts it, holding just what was
+    // typed; nothing else changes.
+    let before = ada.state().unwrap();
     let elsewhere = Chat::paths()
         .drafts
-        .key("c_nowhere")
-        .perform(&tilo_document::RichTextAction::AppendParagraph { text: "x".into() })
+        .key("c_random")
+        .perform(&tilo_document::RichTextAction::AppendParagraph {
+            text: "an aside".into(),
+        })
         .unwrap();
-    assert!(
-        ada.apply(Invoke::edit(&elsewhere).unwrap()).is_err(),
-        "a draft is started before it is written in"
+    ada.apply(Invoke::edit(&elsewhere).unwrap()).unwrap();
+    assert_eq!(
+        crate::projection::draft_text(ada.doc(), "c_random").trim_start(),
+        "an aside"
     );
+    assert_eq!(
+        crate::projection::draft_text(ada.doc(), "c_general"),
+        "\nhalf a thought".trim_start()
+    );
+    let after = ada.state().unwrap();
+    assert_eq!(after.drafts.len(), before.drafts.len() + 1);
+    assert_eq!(after.messages, before.messages);
+    assert_eq!(after.channels, before.channels);
+    assert_eq!(after.people, before.people);
+    assert_eq!(after.read, before.read);
 }
 
 #[test]

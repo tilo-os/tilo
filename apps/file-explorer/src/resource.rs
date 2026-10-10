@@ -784,15 +784,10 @@ impl ResourceSurface<FileExplorer, FilesEffect> for FileExplorerWidget {
                                 .collect()
                         });
                         for (id, operation) in recovered {
-                            cx.invoke(
-                                FileExplorer::paths()
-                                    .ops
-                                    .settle(
-                                        &id,
-                                        &Settled::Done(vec![Change::ClipboardUndo { operation }]),
-                                    )
-                                    .into(),
-                            );
+                            cx.submit(FileExplorer::paths().ops.settle(
+                                &id,
+                                &Settled::Done(vec![Change::ClipboardUndo { operation }]),
+                            ));
                         }
                         if let Some(error) = value.get("error").and_then(serde_json::Value::as_str)
                         {
@@ -811,7 +806,7 @@ impl ResourceSurface<FileExplorer, FilesEffect> for FileExplorerWidget {
                             let device = files
                                 .clipboard_device()
                                 .ok_or("clipboard receiving device absent")?;
-                            cx.invoke(if receipt.restore {
+                            cx.submit(if receipt.restore {
                                 FileExplorer::RECORD_RESTORE.with(file_explorer::RecordRestore {
                                     device,
                                     receipt: receipt.clone(),

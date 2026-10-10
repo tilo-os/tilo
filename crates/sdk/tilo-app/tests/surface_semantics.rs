@@ -57,8 +57,8 @@ impl Booth {
             return false;
         };
         match target {
-            "approve" => dispatch.invoke(Ballot::APPROVE.invoke()),
-            "reject" => dispatch.invoke(Ballot::REJECT.invoke()),
+            "approve" => dispatch.submit(Ballot::APPROVE.invoke()),
+            "reject" => dispatch.submit(Ballot::REJECT.invoke()),
             _ => return false,
         }
         true

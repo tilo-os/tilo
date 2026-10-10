@@ -328,7 +328,7 @@ pub enum WordProcessorEffect {
     /// Places an image another action produced at your caret.
     #[effect(edit, participant)]
     PlaceImage {
-        #[param("The image's content hash")]
+        #[param(content, "The image another action produced, by its content hash")]
         content: String,
         #[param(
             "Where to act (a paragraph, a point or a range in it); your caret or selection when not given",

@@ -270,7 +270,7 @@ pub struct GitClientApp {
     settings: Settings,
     /// Fingerprint of the last shared-repo projection written to the document.
     shared_repo_fingerprint: Option<String>,
-
+    /// Set once after the first sync seeds the settings into the doc.
     screen: Screen,
     rect: Rect,
 
@@ -499,11 +499,6 @@ impl GitClientApp {
     pub fn test_stage_all(&mut self) {
         self.stage_all();
     }
-    /// Drive the production "unstage all" action.
-    #[doc(hidden)]
-    pub fn test_unstage_all(&mut self) {
-        self.unstage_all();
-    }
     /// Set the commit message and drive the production commit action.
     #[doc(hidden)]
     pub fn test_commit(&mut self, message: &str) {
@@ -530,11 +525,6 @@ impl GitClientApp {
     #[doc(hidden)]
     pub fn test_discard_file(&mut self, area: ChangeArea, idx: usize) {
         self.discard_file(area, idx);
-    }
-    /// Drive the production "discard hunk" action for the selected file.
-    #[doc(hidden)]
-    pub fn test_discard_hunk(&mut self, hunk: usize) {
-        self.discard_hunk(hunk);
     }
     /// Whether the app is showing the empty "open a repository" state.
     #[doc(hidden)]
@@ -3430,7 +3420,7 @@ impl GitClientApp {
     fn submit(&self, invoke: Result<Invoke<crate::resource::GitClient>, serde_json::Error>) {
         // A path and the repository's projection always encode.
         if let (Some(dispatcher), Ok(invoke)) = (&self.dispatcher, invoke) {
-            dispatcher.invoke(invoke);
+            dispatcher.submit(invoke);
         }
     }
 }

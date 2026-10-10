@@ -42,7 +42,6 @@ uuid.workspace = true
 tilo-actions = { version = "0.1.0", path = "../actions" }
 automerge.workspace = true
 # The app surface a receiver decides claims against, read from surface.toml.
-tilo-resource = { version = "0.1.0", path = "../../sdk/tilo-resource" }
 toml.workspace = true
 blake3.workspace = true
 # A continuation's claim is read from its action's JSON payload.

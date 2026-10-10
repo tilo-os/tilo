@@ -371,6 +371,7 @@ fn invoke(
             broker_admitted: false,
             ambient: None,
         },
+        None,
     )
 }
 
@@ -775,7 +776,8 @@ fn legacy_route_fresh_authority_availability_result_arguments_and_transport_refu
                     actor,
                     broker_admitted: broker,
                     ambient: None
-                }
+                },
+                None
             )
             .is_err()
         );
@@ -798,7 +800,8 @@ fn legacy_route_fresh_authority_availability_result_arguments_and_transport_refu
                 actor: "fixture-user",
                 broker_admitted: false,
                 ambient: None
-            }
+            },
+            None
         )
         .is_err()
     );
@@ -1298,6 +1301,7 @@ fn legacy_effect_dispatch_captures_exact_selected_record_without_sibling_fallbac
             tilo_actions::OperationKind::Effect,
             &encoded,
             &mut outer,
+            None,
         )
         .unwrap();
     }
@@ -1320,6 +1324,7 @@ fn legacy_effect_dispatch_captures_exact_selected_record_without_sibling_fallbac
             tilo_actions::OperationKind::Effect,
             &encoded,
             &mut outer,
+            None,
         )
         .is_err()
     );

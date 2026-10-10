@@ -123,7 +123,7 @@ fn owned_legacy_restores_are_exact_guarded_and_roll_back_only_owned_writes() {
         assert_eq!(state.doc.get_actor(), &actor);
         assert_eq!(state.root, root);
         state
-            .undo_as(Some(&UserId("ada".into())), None, None)
+            .undo_as(Some(&UserId("ada".into())), None, None, None)
             .unwrap();
         assert_eq!(value(&state.doc), "live");
     }
@@ -306,7 +306,7 @@ fn owned_restore_mixed_overlay_and_undo_preserve_live_remote_operational_state()
         Some("old")
     );
     state
-        .undo_as(Some(&UserId("ada".into())), None, None)
+        .undo_as(Some(&UserId("ada".into())), None, None, None)
         .unwrap();
     assert_eq!(
         state.doc.get(&mixed, "body").unwrap().unwrap().0.as_str(),

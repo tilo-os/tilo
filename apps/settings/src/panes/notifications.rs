@@ -28,14 +28,13 @@ use ui::LocalState;
 use ui::framework::LiveRow;
 use ui::theme::Theme;
 use ui::tilo_resource;
-use ui::widget::{AppModel, Dropdown, ModelPath, Toggle, Widget};
+use ui::widget::{AppModel, ModelPath, Widget};
 
 use crate::host::{Followed, PaneCx};
-use crate::i18n::{t, t_args};
+use crate::i18n::{english, t, t_args};
 use crate::prefs::NotificationPrefs;
 use crate::widgets::{
-    El, StatusTone, caption, card, choice_row, error_row, rows, semantic_status_pill,
-    setting_row_described, value_row,
+    El, StatusTone, caption, card, error_row, rows, semantic_status_pill, value_row,
 };
 
 const FOCUS_DAYS: &[(&str, u8)] = &[
@@ -131,10 +130,6 @@ fn installed_notification_apps_from(
         .collect();
     apps.sort_by(|a, b| a.name.cmp(&b.name).then_with(|| a.id.cmp(&b.id)));
     apps
-}
-
-fn english<T>(table: &'static [(&'static str, T)]) -> impl Iterator<Item = &'static str> {
-    table.iter().map(|(label, _)| *label)
 }
 
 /// One of an app's delivery choices a person turns on or off.
@@ -566,47 +561,6 @@ impl NotificationsPane {
         }
     }
 
-    fn toggle(
-        &self,
-        id: &str,
-        state: &LocalState<bool>,
-        field: ui::tilo_resource::Path<NotificationPrefs, bool>,
-    ) -> El {
-        Box::new(
-            self.cx
-                .bind_field(Toggle::from_state(state).with_id(id), field),
-        )
-    }
-
-    /// A per-app toggle: the app is bound, the control supplies the value,
-    /// set on the app's own rule.
-    fn app_toggle(
-        &self,
-        app: &str,
-        field: &str,
-        state: &LocalState<bool>,
-        choice: AppChoice,
-    ) -> El {
-        let id = format!("notifications.app.{app}.{field}");
-        let app = app.to_owned();
-        Box::new(self.cx.bind_edit(
-            Toggle::from_state(state).with_id(&id),
-            NotificationPrefs::paths().per_app,
-            move |on: bool| choice.edit(&app, on),
-        ))
-    }
-
-    fn choice(
-        options: Vec<String>,
-        state: &LocalState<String>,
-        bind: impl FnOnce(Dropdown) -> Dropdown,
-    ) -> El {
-        let placeholder = state.get();
-        Box::new(bind(
-            Dropdown::from_state(options, state).with_placeholder(&placeholder),
-        ))
-    }
-
     fn build_composition(&self) -> Box<dyn Widget> {
         let app_cards = self.build_app_cards();
         let mut cards = vec![
@@ -641,15 +595,14 @@ impl NotificationsPane {
             &t("notif-dnd-title"),
             rows(vec![
                 status_row,
-                setting_row_described(
-                    &t("notif-dnd"),
-                    &t("notif-dnd-desc"),
-                    self.toggle(
-                        "notifications.dnd",
+                self.cx
+                    .row(t("notif-dnd"))
+                    .described(t("notif-dnd-desc"))
+                    .id("notifications.dnd")
+                    .toggle(
                         &self.shown.do_not_disturb,
                         NotificationPrefs::paths().do_not_disturb,
                     ),
-                ),
             ]),
         )
     }
@@ -658,24 +611,19 @@ impl NotificationsPane {
         card(
             &t("notif-banners-title"),
             rows(vec![
-                setting_row_described(
-                    &t("notif-show-banners"),
-                    &t("notif-show-banners-desc"),
-                    self.toggle(
-                        "notifications.banners",
-                        &self.shown.banners,
-                        NotificationPrefs::paths().show_banners,
-                    ),
-                ),
-                setting_row_described(
-                    &t("notif-previews"),
-                    &t("notif-previews-desc"),
-                    self.toggle(
-                        "notifications.previews",
+                self.cx
+                    .row(t("notif-show-banners"))
+                    .described(t("notif-show-banners-desc"))
+                    .id("notifications.banners")
+                    .toggle(&self.shown.banners, NotificationPrefs::paths().show_banners),
+                self.cx
+                    .row(t("notif-previews"))
+                    .described(t("notif-previews-desc"))
+                    .id("notifications.previews")
+                    .toggle(
                         &self.shown.previews,
                         NotificationPrefs::paths().show_previews,
                     ),
-                ),
             ]),
         )
     }
@@ -699,86 +647,69 @@ impl NotificationsPane {
         card(
             &t("notif-delivery-title"),
             rows(vec![
-                setting_row_described(
-                    &t("notif-lock-screen"),
-                    &t("notif-lock-screen-desc"),
-                    self.toggle(
-                        "notifications.lock_screen",
+                self.cx
+                    .row(t("notif-lock-screen"))
+                    .described(t("notif-lock-screen-desc"))
+                    .id("notifications.lock_screen")
+                    .toggle(
                         &self.shown.lock_screen,
                         NotificationPrefs::paths().show_on_lock_screen,
                     ),
-                ),
                 sounds_row,
-                setting_row_described(
-                    &t("notif-play-sounds"),
-                    &t("notif-play-sounds-desc"),
-                    self.toggle(
-                        "notifications.sounds",
-                        &self.shown.sounds,
-                        NotificationPrefs::paths().play_sounds,
-                    ),
-                ),
-                setting_row_described(
-                    &t("notif-badges"),
-                    &t("notif-badges-desc"),
-                    self.toggle(
-                        "notifications.badges",
-                        &self.shown.badges,
-                        NotificationPrefs::paths().show_badges,
-                    ),
-                ),
+                self.cx
+                    .row(t("notif-play-sounds"))
+                    .described(t("notif-play-sounds-desc"))
+                    .id("notifications.sounds")
+                    .toggle(&self.shown.sounds, NotificationPrefs::paths().play_sounds),
+                self.cx
+                    .row(t("notif-badges"))
+                    .described(t("notif-badges-desc"))
+                    .id("notifications.badges")
+                    .toggle(&self.shown.badges, NotificationPrefs::paths().show_badges),
             ]),
         )
     }
 
     fn build_focus_card(&self) -> Box<dyn Widget> {
-        let cx = &self.cx;
         let focus_options: Vec<String> = english(FOCUS_TIMES).map(str::to_owned).collect();
         card(
             &t("notif-focus-title"),
             rows(vec![
-                setting_row_described(
-                    &t("notif-focus-enabled"),
-                    &t("notif-focus-enabled-desc"),
-                    self.toggle(
-                        "notifications.focus.enabled",
-                        &self.shown.focus,
-                        NotificationPrefs::paths().focus.enabled,
+                self.cx
+                    .row(t("notif-focus-enabled"))
+                    .described(t("notif-focus-enabled-desc"))
+                    .id("notifications.focus.enabled")
+                    .toggle(&self.shown.focus, NotificationPrefs::paths().focus.enabled),
+                self.cx
+                    .row(t("notif-focus-from"))
+                    .id("notifications.focus.start")
+                    .choice(
+                        focus_options.clone(),
+                        &self.shown.focus_start,
+                        NotificationPrefs::paths().focus.start_minute,
+                        |label: String| focus_minutes(&label),
                     ),
-                ),
-                choice_row(
-                    &t("notif-focus-from"),
-                    Self::choice(focus_options.clone(), &self.shown.focus_start, |control| {
-                        cx.bind_field_with(
-                            control.with_id("notifications.focus.start"),
-                            NotificationPrefs::paths().focus.start_minute,
-                            |label: String| focus_minutes(&label),
-                        )
-                    }),
-                ),
-                choice_row(
-                    &t("notif-focus-days"),
-                    Self::choice(focus_days_options(), &self.shown.focus_days, |control| {
-                        cx.bind_field_with(
-                            control.with_id("notifications.focus.days"),
-                            NotificationPrefs::paths().focus.weekdays,
-                            |shown: String| {
-                                focus_days_from_label(&shown)
-                                    .ok_or_else(|| format!("`{shown}` is not offered"))
-                            },
-                        )
-                    }),
-                ),
-                choice_row(
-                    &t("notif-focus-until"),
-                    Self::choice(focus_options, &self.shown.focus_end, |control| {
-                        cx.bind_field_with(
-                            control.with_id("notifications.focus.end"),
-                            NotificationPrefs::paths().focus.end_minute,
-                            |label: String| focus_minutes(&label),
-                        )
-                    }),
-                ),
+                self.cx
+                    .row(t("notif-focus-days"))
+                    .id("notifications.focus.days")
+                    .choice(
+                        focus_days_options(),
+                        &self.shown.focus_days,
+                        NotificationPrefs::paths().focus.weekdays,
+                        |shown: String| {
+                            focus_days_from_label(&shown)
+                                .ok_or_else(|| format!("`{shown}` is not offered"))
+                        },
+                    ),
+                self.cx
+                    .row(t("notif-focus-until"))
+                    .id("notifications.focus.end")
+                    .choice(
+                        focus_options,
+                        &self.shown.focus_end,
+                        NotificationPrefs::paths().focus.end_minute,
+                        |label: String| focus_minutes(&label),
+                    ),
                 caption(&t("notif-focus-caption")),
             ]),
         )
@@ -802,19 +733,25 @@ impl NotificationsPane {
                 t("notif-app-history")
             };
             let id = app.id.clone();
-            let mute = Self::choice(mute_options(), &shown.mute, |control| {
-                self.cx.bind_verb(
-                    control.with_id(&format!("notifications.app.{}.mute", app.id)),
+            let mute = self
+                .cx
+                .row(t("notif-app-mute"))
+                .id(format!("notifications.app.{}.mute", app.id))
+                .choice_verb(
+                    mute_options(),
+                    &shown.mute,
                     NotificationPrefs::MUTE_APP
                         .map(move |shown: String| (id.clone(), mute_english(&shown))),
-                )
-            });
-            let toggle = |field, description: &str, label: &str, state, set| {
-                setting_row_described(
-                    &t(label),
-                    &t(description),
-                    self.app_toggle(&app.id, field, state, set),
-                )
+                );
+            let toggle = |field: &str, description: &str, label: &str, state, choice: AppChoice| {
+                let app = app.id.clone();
+                self.cx
+                    .row(t(label))
+                    .described(t(description))
+                    .id(format!("notifications.app.{app}.{field}"))
+                    .toggle_edit(state, NotificationPrefs::paths().per_app, move |on| {
+                        choice.edit(&app, on)
+                    })
             };
             app_cards.push(card(
                 &app.name,
@@ -862,7 +799,7 @@ impl NotificationsPane {
                         &shown.priority_contacts,
                         AppChoice::PriorityContacts,
                     ),
-                    choice_row(&t("notif-app-mute"), mute),
+                    mute,
                     caption(&app_caption),
                 ]),
             ));

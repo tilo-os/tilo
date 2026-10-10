@@ -1541,7 +1541,7 @@ mod tests {
 
         // Ctrl+Z on an app-owned document is this call in the native runner.
         let author = app.local_author().clone();
-        assert!(app.state.undo_as(Some(&author), None, None).is_some());
+        assert!(app.state.undo_as(Some(&author), None, None, None).is_some());
         assert_eq!(title(&app).as_deref(), Some("v3"));
 
         // A review that the live document outgrows is refused, unwritten.

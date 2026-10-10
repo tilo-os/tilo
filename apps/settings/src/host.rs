@@ -167,13 +167,6 @@ impl PaneCx {
         Followed::new(self.settings::<T>())
     }
 
-    /// What the panes are built for: a window someone uses, or a
-    /// screenshot that must not reach devices, networks or clocks.
-    #[must_use]
-    pub fn mode(&self) -> RunMode {
-        self.mode
-    }
-
     /// Whether panes may start work that reaches outside the process.
     #[must_use]
     pub fn is_live(&self) -> bool {
@@ -212,7 +205,6 @@ impl PaneCx {
         }
     }
 
-    /// The published actions of section `T`; `None` outside a host.
     /// `decl`, a bound field edit or verb of section `T`, as an operation a
     /// live row offers (one app's notification rule on that app's row).
     /// `None` outside a host, or where the section is read only here.
@@ -224,6 +216,7 @@ impl PaneCx {
         self.section::<T>()?.operation(decl)
     }
 
+    /// The published actions of section `T`; `None` outside a host.
     fn section<T: Section>(&self) -> Option<&Actions<T>> {
         self.door
             .as_ref()?
@@ -313,21 +306,6 @@ impl PaneCx {
             Some(actions) => actions.bind(control, verb),
             None => control.unavailable(),
         }
-    }
-
-    /// The binding of the field of section `T` at `path`, for a pane's own
-    /// widget that emits the field's value. `None` outside a host.
-    #[must_use]
-    pub fn field_binding<T, V>(
-        &self,
-        path: ui::tilo_resource::Path<T, V>,
-    ) -> Option<ui::tilo_actions::ActionBinding<V>>
-    where
-        T: Section,
-        V: ui::tilo_resource::Model + ui::tilo_resource::Settable + 'static,
-    {
-        self.section::<T>()?
-            .edit_binding(path, ui::tilo_resource::Path::set)
     }
 
     /// Bind to a published item operation rather than exporting a row effect
@@ -487,6 +465,28 @@ pub(crate) mod testing {
     pub(crate) const INPUT: &str = "settings.input";
     pub(crate) const TEXT_ASSISTANCE: &str = "settings.text-assistance";
     pub(crate) const CONTINUITY: &str = "settings.continuity";
+
+    /// How many widgets in the tree under `w` are named `name`.
+    pub(crate) fn count_named(w: &dyn ui::Widget, name: &str) -> usize {
+        usize::from(w.name() == name)
+            + w.children()
+                .into_iter()
+                .map(|child| count_named(child, name))
+                .sum::<usize>()
+    }
+
+    /// The accessible names of the widgets named `name` under `w`, in tree
+    /// order, appended to `labels`.
+    pub(crate) fn labels_of(w: &dyn ui::Widget, name: &str, labels: &mut Vec<String>) {
+        if w.name() == name
+            && let Some(label) = w.accessibility().and_then(|node| node.name)
+        {
+            labels.push(label);
+        }
+        for child in w.children() {
+            labels_of(child, name, labels);
+        }
+    }
 
     /// Set the field `field` of the section `kind` to `value` through the
     /// door, as an agent does.
