@@ -520,6 +520,110 @@ pub fn inherited_selection(node: &Path) -> Option<GpuSelection> {
     })
 }
 
+/// The Vulkan driver of a machine with no GPU: Mesa's software rasteriser,
+/// lavapipe.
+const SOFTWARE_VULKAN_LIBRARY: &str = "libvulkan_lvp";
+
+/// Mesa's GLVND vendor, which serves the software OpenGL rasteriser.
+const MESA_EGL_LIBRARY: &str = "libEGL_mesa";
+
+/// The loader pin of a machine whose compositor found no GPU at all (every
+/// render node is a virtio GPU the host renders nothing for): the compositor
+/// renders with lavapipe, and so must its apps.
+///
+/// Without a pin the Vulkan loader still loads every installed driver for
+/// every app, and an app cannot tell a GPU-less render node from a GPU with
+/// only an OpenGL driver, so it also initialises OpenGL (`ui::gpu`). Pinned,
+/// the loader loads lavapipe alone and the app asks for Vulkan alone.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SoftwarePin {
+    /// Lavapipe's Vulkan ICD manifest.
+    pub vulkan_icd_json: PathBuf,
+    /// Mesa's GLVND EGL vendor manifest, if exactly one is installed.
+    pub egl_vendor_json: Option<PathBuf>,
+}
+
+impl SoftwarePin {
+    /// The environment the compositor and its apps run with.
+    pub fn env(&self) -> Vec<(&'static str, String)> {
+        let mut out = Vec::new();
+        if let Some(path) = &self.egl_vendor_json {
+            out.push((EGL_VENDOR_ENV, path.display().to_string()));
+        }
+        let vulkan = self.vulkan_icd_json.display().to_string();
+        out.push((VK_DRIVER_FILES_ENV, vulkan.clone()));
+        out.push((VK_ICD_FILENAMES_ENV, vulkan));
+        out
+    }
+
+    /// Files that must be readable inside the sandbox for [`Self::env`].
+    pub fn manifest_files(&self) -> Vec<PathBuf> {
+        self.egl_vendor_json
+            .iter()
+            .chain(std::iter::once(&self.vulkan_icd_json))
+            .cloned()
+            .collect()
+    }
+}
+
+/// The software pin from the manifests installed under `search`, or why
+/// there is none (no lavapipe manifest, or several).
+///
+/// # Errors
+///
+/// A line for the boot log when lavapipe has not exactly one manifest.
+pub fn software_pin(search: &IcdSearch) -> Result<SoftwarePin, String> {
+    let vulkan_icd_json = unique_manifest_for(
+        &search.vulkan_icd_dirs,
+        SOFTWARE_VULKAN_LIBRARY,
+        "Vulkan ICD",
+    )?;
+    Ok(SoftwarePin {
+        vulkan_icd_json,
+        egl_vendor_json: unique_manifest_for(
+            &search.egl_vendor_dirs,
+            MESA_EGL_LIBRARY,
+            "EGL vendor",
+        )
+        .ok(),
+    })
+}
+
+/// The software pin a GPU-less compositor applied to its own environment,
+/// read back by a launch it started with no render node. Only lavapipe's
+/// manifest counts: an arbitrary driver someone named is no evidence that
+/// the machine has no GPU.
+#[must_use]
+pub fn inherited_software_pin() -> Option<SoftwarePin> {
+    software_pin_from(
+        std::env::var_os(VK_DRIVER_FILES_ENV),
+        std::env::var_os(EGL_VENDOR_ENV),
+    )
+}
+
+fn software_pin_from(
+    vulkan: Option<std::ffi::OsString>,
+    egl: Option<std::ffi::OsString>,
+) -> Option<SoftwarePin> {
+    let single_file = |value: std::ffi::OsString| {
+        let path = PathBuf::from(value);
+        (path.is_absolute() && path.is_file()).then_some(path)
+    };
+    let vulkan_icd_json = single_file(vulkan?)?;
+    let library = manifest_library_name(&vulkan_icd_json)?;
+    if library.split(".so").next() != Some(SOFTWARE_VULKAN_LIBRARY) {
+        return None;
+    }
+    let egl_vendor_json = egl.and_then(single_file).filter(|path| {
+        manifest_library_name(path)
+            .is_some_and(|name| name.split(".so").next() == Some(MESA_EGL_LIBRARY))
+    });
+    Some(SoftwarePin {
+        vulkan_icd_json,
+        egl_vendor_json,
+    })
+}
+
 #[cfg(target_os = "linux")]
 fn driver_name(node: &Path) -> Option<String> {
     driver_for(node)
@@ -851,6 +955,59 @@ mod tests {
             name: name.to_owned(),
             render_node,
         }
+    }
+
+    #[test]
+    fn a_gpu_less_machine_is_pinned_to_lavapipe_and_launches_inherit_only_that() {
+        let tmp = tempfile::tempdir().unwrap();
+        let search = fixture(
+            tmp.path(),
+            &[("50_mesa.json", "libEGL_mesa.so.0")],
+            &[
+                (&host_icd_name("radeon"), "libvulkan_radeon.so"),
+                (&host_icd_name("lvp"), "libvulkan_lvp.so"),
+            ],
+        );
+        let pin = software_pin(&search).expect("lavapipe is installed");
+        assert!(pin.vulkan_icd_json.ends_with(host_icd_name("lvp")));
+        assert!(
+            pin.egl_vendor_json
+                .as_ref()
+                .is_some_and(|path| path.ends_with("50_mesa.json"))
+        );
+        let lavapipe = pin.vulkan_icd_json.display().to_string();
+        assert!(pin.env().contains(&(VK_DRIVER_FILES_ENV, lavapipe.clone())));
+        assert!(pin.env().contains(&(VK_ICD_FILENAMES_ENV, lavapipe)));
+        assert_eq!(pin.manifest_files().len(), 2);
+
+        // What a launch reads back from the compositor's environment.
+        assert_eq!(
+            software_pin_from(
+                Some(pin.vulkan_icd_json.clone().into()),
+                pin.egl_vendor_json.clone().map(Into::into),
+            ),
+            Some(pin.clone())
+        );
+        let radeon = search.vulkan_icd_dirs[0].join(host_icd_name("radeon"));
+        assert_eq!(
+            software_pin_from(Some(radeon.into()), None),
+            None,
+            "a GPU's driver named in the environment is not evidence of a GPU-less machine"
+        );
+        assert_eq!(software_pin_from(None, None), None);
+        assert_eq!(
+            software_pin_from(Some("lvp_icd.json".into()), None),
+            None,
+            "only an absolute path to an existing manifest is inherited"
+        );
+
+        let without = tempfile::tempdir().unwrap();
+        let search = fixture(
+            without.path(),
+            &[],
+            &[(&host_icd_name("radeon"), "libvulkan_radeon.so")],
+        );
+        assert!(software_pin(&search).is_err(), "no lavapipe, no pin");
     }
 
     const RENDER_D128: (u64, u64) = (226, 128);

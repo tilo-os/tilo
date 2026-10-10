@@ -5,12 +5,14 @@
 //! wgpu initialises every backend it is asked for as the instance is made,
 //! and for OpenGL that means EGL, a Mesa driver and a GL context: on lavapipe
 //! +25 ms, +17 threads and +28 MB per process, in every app, on the thread
-//! whose device the first frame waits for (TIL-775). The adapter is Vulkan's
+//! whose device the first frame waits for. The adapter is Vulkan's
 //! whenever both backends offer one of the same kind, so OpenGL only wins when
 //! a GPU has an OpenGL driver and no Vulkan one. That cannot be the case when
 //!
 //! - the launcher pinned the Vulkan driver of the compositor's render node
 //!   (`VK_DRIVER_FILES`/`VK_ICD_FILENAMES`, `launcher::gpu`): the GPU has one;
+//!   or it pinned lavapipe because the compositor found no GPU behind any
+//!   render node (a virtio GPU without 3D), so no OpenGL driver has one either;
 //! - there is no DRM render node at all: on Linux both backends could only
 //!   offer a software rasteriser, and lavapipe is preferred over llvmpipe's
 //!   OpenGL; on macOS OpenGL needs an ANGLE nobody ships.
