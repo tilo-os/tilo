@@ -1059,7 +1059,7 @@ fn find_runtime_bundle(
         .filter(|(name, version)| !name.is_empty() && valid_runtime_version(version))
         .ok_or_else(|| RunError::RuntimeReferenceMalformed(raw.to_string()))?;
     let per_user = runtime_bundle::default_bundle_path_from(
-        crate::dev_env::dev_override(runtime_bundle::RUNTIME_DIR_ENV),
+        package_store::dev_env::dev_override(runtime_bundle::RUNTIME_DIR_ENV),
         version,
     )
     .ok();
@@ -1501,7 +1501,7 @@ mod per_user_runtime_verification_tests {
 /// A present invalid component pin fails closed, including when another key
 /// would otherwise validate the bundle.
 pub(crate) fn load_trusted_publisher_list() -> std::io::Result<Option<Vec<String>>> {
-    let path = trusted_publishers_path_from(crate::dev_env::dev_override(
+    let path = trusted_publishers_path_from(package_store::dev_env::dev_override(
         crate::dev_env::TRUSTED_PUBLISHERS_FILE_ENV,
     ));
     runtime_bundle::component_pins::load_with_components(&path)
@@ -1511,7 +1511,7 @@ pub(crate) fn load_trusted_publisher_list() -> std::io::Result<Option<Vec<String
 pub const TRUSTED_PUBLISHERS_FILE: &str = "/etc/tilo/runtime-bundle-trusted-publishers.txt";
 
 /// Where the trusted-publisher list is read from, given the override the
-/// build's gate let through ([`crate::dev_env::dev_override`]).
+/// build's gate let through ([`package_store::dev_env::dev_override`]).
 fn trusted_publishers_path_from(allowed_override: Option<std::ffi::OsString>) -> PathBuf {
     allowed_override.map_or_else(|| PathBuf::from(TRUSTED_PUBLISHERS_FILE), PathBuf::from)
 }
@@ -1519,7 +1519,8 @@ fn trusted_publishers_path_from(allowed_override: Option<std::ffi::OsString>) ->
 #[cfg(test)]
 mod dev_override_tests {
     use super::*;
-    use crate::dev_env::{TRUSTED_PUBLISHERS_FILE_ENV, dev_override_from};
+    use crate::dev_env::TRUSTED_PUBLISHERS_FILE_ENV;
+    use package_store::dev_env::dev_override_from;
 
     #[test]
     fn trust_roots_follow_the_build_profile() {
