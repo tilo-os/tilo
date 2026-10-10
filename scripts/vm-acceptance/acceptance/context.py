@@ -71,11 +71,11 @@ class Context:
     # -- a known desktop between checks ---------------------------------------
 
     def close_overlays(self) -> None:
+        """Escape until no modal, overlay, prompt or dialog is open (`core.open_surfaces`):
+        overlays and search, and also the Invite composer, portal sheets and the rest the
+        state dump reports outside `overlays`."""
         for _ in range(3):
-            st = self.vm.state()
-            open_ = [k for k, v in core.overlays(st).items() if v]
-            palette = (st["chrome"].get("palette") or {}).get("visible")
-            if not open_ and not palette and not st["chrome"]["window_switcher"].get("open"):
+            if not core.open_surfaces(self.vm.state()):
                 return
             self.vm.key("Escape")
             time.sleep(0.6)
