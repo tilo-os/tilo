@@ -831,20 +831,10 @@ fn share_copies_a_link_through_a_real_click() {
             .settle_for_capture(ui::time::Duration::from_secs(5)),
         "the watch page must finish its entrance before clicking Share"
     );
-    // Start observing immediately after the real pointer sequence, rather
-    // than flushing extra frames against the three-second toast lifetime.
+    // Observe the real effect through the published accessibility notice.
+    // Under a busy shard, the click can enqueue work beyond the next host
+    // tick, so inspect the model only after that effect has appeared.
     app.harness().click_named("watch_copy_link").unwrap();
-    app.with_surface::<TubeApp, _>(|viewer| {
-        assert!(
-            viewer
-                .model_for_test()
-                .notices
-                .iter()
-                .any(|notice| { notice.contains("Link copied") && notice.contains(WATCH_ID) }),
-            "the real pointer sequence must submit Share on the settled watch page"
-        );
-    })
-    .unwrap();
     assert!(
         app.harness()
             .wait_until(ui::time::Duration::from_secs(5), |h| {
@@ -857,6 +847,17 @@ fn share_copies_a_link_through_a_real_click() {
             }),
         "the real click must publish the copied-link notice before inspecting the model"
     );
+    app.with_surface::<TubeApp, _>(|viewer| {
+        assert!(
+            viewer
+                .model_for_test()
+                .notices
+                .iter()
+                .any(|notice| { notice.contains("Link copied") && notice.contains(WATCH_ID) }),
+            "the real pointer sequence must submit Share on the settled watch page"
+        );
+    })
+    .unwrap();
 
     app.with_surface::<TubeApp, _>(|viewer| {
         assert!(
