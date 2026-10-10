@@ -995,7 +995,7 @@ impl ChatApp {
             Hit::AgentIntent(intent)
                 if self.direct_agent.is_some() && self.direct_agent_is_available() =>
             {
-                if self.direct_agent_intent_allowed(intent) {
+                if self.direct_agent_intent_action_allowed(intent) {
                     self.set_direct_agent_intent(intent);
                     self.refresh_composer_read_only();
                     self.set_composer_focus();
@@ -1712,7 +1712,7 @@ impl ChatApp {
         }
         let workspace = self.active_ws.clone();
         let intent = self.direct_agent_intent();
-        if !self.direct_agent_intent_allowed(intent) {
+        if !self.direct_agent_intent_action_allowed(intent) {
             return;
         }
         let Some(draft_revision) = self.composer_main.private_revision_for(&workspace, &agent)
@@ -2172,8 +2172,8 @@ mod tests {
     use crate::model;
     use tilo_actions::remote::{
         ActionHost, ActionHostError, Caller, CataloguePage, CatalogueQuery, CatalogueResource,
-        CatalogueRow, InvocationReceipt, InvocationState, InvokeArgument, InvokeRequest, Pending,
-        ReceiptStatus,
+        CatalogueRow, Completer, InvocationReceipt, InvocationState, InvokeArgument, InvokeRequest,
+        Pending, ReceiptStatus, pending,
     };
     use tilo_actions::{
         ActionAddress, ActionContract, ActionDescriptor, ActionOutput, ExecutionLocus, InputSpec,
@@ -2203,6 +2203,10 @@ mod tests {
     }
 
     type MessageQuery = (Option<String>, String, Option<String>);
+    type DeferredTaskRead = (
+        InvokeRequest,
+        Completer<Result<InvocationReceipt, ActionHostError>>,
+    );
 
     #[derive(Default)]
     struct TaskControlHost {
@@ -2210,6 +2214,8 @@ mod tests {
         message_queries: Mutex<Vec<MessageQuery>>,
         current_unavailable: AtomicBool,
         current_empty: AtomicBool,
+        defer_current: AtomicBool,
+        deferred_current: Mutex<Vec<DeferredTaskRead>>,
         message_refused: AtomicBool,
         message_catalogue_mode: AtomicU8,
         task_controls_revoked: AtomicBool,
@@ -2246,6 +2252,17 @@ mod tests {
             self.current_empty.store(true, Ordering::Release);
         }
 
+        fn defer_current_reads(&self) {
+            self.defer_current.store(true, Ordering::Release);
+        }
+
+        fn complete_current_reads(&self) {
+            self.defer_current.store(false, Ordering::Release);
+            for (request, completer) in self.deferred_current.lock().unwrap().drain(..) {
+                completer.complete(Ok(self.current_tasks_receipt(&request)));
+            }
+        }
+
         fn refuse_message(&self) {
             self.message_refused.store(true, Ordering::Release);
         }
@@ -2263,6 +2280,57 @@ mod tests {
                 .lock()
                 .unwrap()
                 .insert("read-current-tasks".into(), value);
+        }
+
+        fn current_tasks_receipt(&self, request: &InvokeRequest) -> InvocationReceipt {
+            let value = if self.current_empty.load(Ordering::Acquire) {
+                serde_json::json!({
+                    "generation": 9,
+                    "complete": true,
+                    "total": 0,
+                    "tasks": [],
+                    "pending_complete": true,
+                    "pending_total": 0,
+                    "pending": []
+                })
+            } else {
+                serde_json::json!({
+                    "generation": 8,
+                    "complete": true,
+                    "total": 1,
+                    "tasks": [{
+                        "task_id": "task-current",
+                        "title": "Review the release",
+                        "assigned_agent": "scribe",
+                        "status": "in_progress",
+                        "run_epoch": 7,
+                        "active_agent": "scribe",
+                        "after_revision": 4,
+                        "applied_revision": 4,
+                        "route": "model",
+                        "cancellation_requested": false
+                    }],
+                    "pending_complete": true,
+                    "pending_total": 1,
+                    "pending": [{
+                        "task_id": "task-queued",
+                        "title": "Check accessibility",
+                        "assigned_agent": "scribe",
+                        "status": "queued",
+                        "route": "model"
+                    }]
+                })
+            };
+            let value = self.visual_task_value(&request.target.address.action, value);
+            InvocationReceipt {
+                invocation: request.invocation,
+                status: ReceiptStatus::Completed {
+                    output: ActionOutput {
+                        value: Some(value),
+                        resources: Vec::new(),
+                    },
+                },
+            }
         }
 
         fn replace_current_task(&self, run_epoch: u64, after_revision: u64) {
@@ -2538,6 +2606,16 @@ mod tests {
                 return Pending::ready(Err(ActionHostError::Unavailable {
                     reason: "owner read unavailable".into(),
                 }));
+            }
+            if request.target.address.action == "read-current-tasks"
+                && self.defer_current.load(Ordering::Acquire)
+            {
+                let (completer, pending) = pending();
+                self.deferred_current
+                    .lock()
+                    .unwrap()
+                    .push((request, completer));
+                return pending;
             }
             let task = request
                 .target
@@ -6206,6 +6284,148 @@ mod tests {
             app.direct_agent_intent(),
             crate::app::AgentComposerIntent::Message
         );
+    }
+
+    #[test]
+    fn queue_draft_selection_survives_an_unchanged_async_authority_refresh() {
+        let clock = ui::background::Pumped::new();
+        let _entered = clock.background().enter();
+        let (mut app, mut doc, host) = agent_task_control_app();
+        app.on_hit(
+            Hit::AgentIntent(crate::app::AgentComposerIntent::Queue),
+            &mut ui::widget::Edits::lend(&mut doc),
+        );
+        type_str(&mut app, &mut doc, "abcdefgh");
+        app.composer_main.select(8, 8);
+        let tasks = app.direct_agent_tasks().expect("owner-backed task context");
+        let deadline = tasks
+            .borrow()
+            .next_refresh_deadline()
+            .expect("the current offer has a periodic refresh deadline");
+
+        host.defer_current_reads();
+        clock.advance(
+            deadline
+                .saturating_duration_since(clock.background().now())
+                .saturating_add(std::time::Duration::from_millis(1)),
+        );
+        ui::Widget::sync(&mut app, &doc, &automerge::ROOT);
+        assert!(!tasks.borrow().can_queue());
+        render_frame(&mut app, 1200.0, 800.0);
+        let accessible = ui::Widget::accessibility(&app).expect("Chat accessibility tree");
+        assert_eq!(
+            accessible
+                .children
+                .iter()
+                .filter(|node| {
+                    node.role == ui::a11y::Role::MultilineTextInput
+                        && node.name.as_deref() == Some("Task instruction composer")
+                })
+                .count(),
+            1
+        );
+        assert!(!accessible.children.iter().any(|node| {
+            node.role == ui::a11y::Role::StaticText && node.name.as_deref() == Some("abcdefgh")
+        }));
+        for target in [
+            Hit::Send.semantic_id(),
+            Hit::AgentIntent(crate::app::AgentComposerIntent::Queue).semantic_id(),
+            Hit::AgentIntent(crate::app::AgentComposerIntent::Steer).semantic_id(),
+        ] {
+            assert!(!has_semantic_target(&app, &target));
+        }
+        let requests_before_submit = host.requests().len();
+        assert!(feed_mods_handled(
+            &mut app,
+            &mut doc,
+            &named_key(NamedKey::Enter),
+            mods(false, false),
+        ));
+        assert_eq!(host.requests().len(), requests_before_submit);
+
+        for _ in 0..8 {
+            assert!(
+                feed_mods_handled(
+                    &mut app,
+                    &mut doc,
+                    &named_key(NamedKey::ArrowLeft),
+                    mods(false, true),
+                ),
+                "private selection input must not disappear while unchanged authority revalidates"
+            );
+        }
+        // The editor reports (anchor, caret): Shift+Left keeps the anchor at
+        // the end and moves the caret across all eight characters.
+        assert_eq!(app.composer_main.selection(), (8, 0));
+
+        host.complete_current_reads();
+        ui::Widget::sync(&mut app, &doc, &automerge::ROOT);
+        assert!(tasks.borrow().can_queue());
+        assert_eq!(
+            app.composer_main.private_plain().as_deref(),
+            Some("abcdefgh")
+        );
+        assert_eq!(app.composer_main.selection(), (8, 0));
+        assert!(matches!(app.focus, Focus::Main));
+    }
+
+    #[test]
+    fn queue_draft_becomes_read_only_when_async_revalidation_denies_authority() {
+        let clock = ui::background::Pumped::new();
+        let _entered = clock.background().enter();
+        let (mut app, mut doc, host) = agent_task_control_app();
+        app.on_hit(
+            Hit::AgentIntent(crate::app::AgentComposerIntent::Queue),
+            &mut ui::widget::Edits::lend(&mut doc),
+        );
+        type_str(&mut app, &mut doc, "private denied draft");
+        app.composer_main.select(2, 9);
+        let tasks = app.direct_agent_tasks().expect("owner-backed task context");
+        let deadline = tasks
+            .borrow()
+            .next_refresh_deadline()
+            .expect("the current offer has a periodic refresh deadline");
+
+        host.defer_current_reads();
+        clock.advance(
+            deadline
+                .saturating_duration_since(clock.background().now())
+                .saturating_add(std::time::Duration::from_millis(1)),
+        );
+        ui::Widget::sync(&mut app, &doc, &automerge::ROOT);
+        assert!(app.main_composer_can_edit());
+        assert!(!tasks.borrow().can_queue());
+
+        host.revoke_task_controls();
+        host.complete_current_reads();
+        ui::Widget::sync(&mut app, &doc, &automerge::ROOT);
+        render_frame(&mut app, 1200.0, 800.0);
+
+        assert!(!tasks.borrow().can_queue());
+        assert!(!app.main_composer_can_edit());
+        assert_eq!(
+            app.composer_main.private_plain().as_deref(),
+            Some("private denied draft")
+        );
+        assert_eq!(app.composer_main.selection(), (2, 9));
+        let editor = Hit::FocusMain.semantic_id();
+        assert!(!has_semantic_target(&app, &editor));
+        assert!(!ui::Widget::perform_semantic_action(
+            &mut app,
+            &editor,
+            &ui::a11y::Action::SetValue("must not replace private draft".into()),
+            &mut ui::widget::Edits::lend(&mut doc),
+            &automerge::ROOT,
+        ));
+        let accessible = ui::Widget::accessibility(&app).expect("Chat accessibility tree");
+        assert!(accessible.children.iter().all(|node| {
+            node.role != ui::a11y::Role::MultilineTextInput
+                || node.name.as_deref() != Some("Task instruction composer")
+        }));
+        assert!(accessible.children.iter().any(|node| {
+            node.role == ui::a11y::Role::StaticText
+                && node.name.as_deref() == Some("private denied draft")
+        }));
     }
 
     #[test]
@@ -9991,8 +10211,18 @@ mod tests {
     }
 
     fn feed_mods(app: &mut ChatApp, doc: &mut AutoCommit, ev: &WindowEvent, m: Modifiers) {
+        _ = feed_mods_handled(app, doc, ev, m);
+    }
+
+    fn feed_mods_handled(
+        app: &mut ChatApp,
+        doc: &mut AutoCommit,
+        ev: &WindowEvent,
+        m: Modifiers,
+    ) -> bool {
         let mut handled = false;
         app.dispatch_event(ev, 1.0, m, &mut ui::widget::Edits::lend(doc), &mut handled);
+        handled
     }
 
     /// Route an event through the app root exactly as the native runner does.

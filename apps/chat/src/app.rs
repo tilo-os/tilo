@@ -1201,7 +1201,7 @@ impl ChatApp {
     }
 
     fn focused_send_enabled(&self) -> bool {
-        if !self.focused_composer_can_edit() {
+        if !self.focused_composer_can_submit() {
             return false;
         }
         if matches!(self.focus, Focus::Thread) {
@@ -2225,7 +2225,8 @@ impl ChatApp {
             .cloned()
     }
 
-    pub(crate) fn direct_agent_intent_allowed(&self, intent: AgentComposerIntent) -> bool {
+    /// Fresh authority for publishing or invoking the selected intent.
+    pub(crate) fn direct_agent_intent_action_allowed(&self, intent: AgentComposerIntent) -> bool {
         if !self.direct_agent_is_available() {
             return false;
         }
@@ -2240,15 +2241,44 @@ impl ChatApp {
         }
     }
 
+    /// Local editor continuity for the selected private draft. Task effects
+    /// still use `direct_agent_intent_action_allowed` exclusively.
+    pub(crate) fn direct_agent_intent_can_edit(&self, intent: AgentComposerIntent) -> bool {
+        if !self.direct_agent_is_available() {
+            return false;
+        }
+        match intent {
+            AgentComposerIntent::Message => self.can_participate(),
+            AgentComposerIntent::Queue => self
+                .direct_agent_tasks()
+                .is_some_and(|tasks| tasks.borrow().can_edit_queue_draft()),
+            AgentComposerIntent::Steer => self
+                .direct_agent_tasks()
+                .is_some_and(|tasks| tasks.borrow().can_edit_steer_draft()),
+        }
+    }
+
     pub(crate) fn focused_composer_can_edit(&self) -> bool {
         (matches!(self.focus, Focus::Main) && self.main_composer_can_edit())
             || (self.direct_agent.is_none() && self.can_participate())
     }
 
+    fn focused_composer_can_submit(&self) -> bool {
+        (matches!(self.focus, Focus::Main) && self.main_composer_can_submit())
+            || (self.direct_agent.is_none() && self.can_participate())
+    }
+
+    fn main_composer_can_submit(&self) -> bool {
+        self.direct_agent.as_ref().map_or_else(
+            || self.can_participate(),
+            |_| self.direct_agent_intent_action_allowed(self.direct_agent_intent()),
+        )
+    }
+
     pub(crate) fn main_composer_can_edit(&self) -> bool {
         self.direct_agent.as_ref().map_or_else(
             || self.can_participate(),
-            |_| self.direct_agent_intent_allowed(self.direct_agent_intent()),
+            |_| self.direct_agent_intent_can_edit(self.direct_agent_intent()),
         )
     }
 
@@ -2280,10 +2310,11 @@ impl ChatApp {
     /// owner-task refresh; it is geometry, never admission.
     pub(crate) fn semantic_hit_is_currently_available(&self, hit: &Hit) -> bool {
         match hit {
-            Hit::AgentIntent(intent) => self.direct_agent_intent_allowed(*intent),
+            Hit::AgentIntent(intent) => self.direct_agent_intent_action_allowed(*intent),
             Hit::AgentStop => self.direct_agent_stop_allowed(),
             Hit::FocusMain => self.main_composer_can_edit(),
-            Hit::Send | Hit::ComposerEmoji(_) => self.focused_composer_can_edit(),
+            Hit::Send => self.focused_composer_can_submit(),
+            Hit::ComposerEmoji(_) => self.focused_composer_can_edit(),
             Hit::EmojiChoice(_) if self.emoji_target.is_none() => self.focused_composer_can_edit(),
             Hit::FocusThread
             | Hit::AddChannel { .. }
@@ -5632,7 +5663,7 @@ impl ChatApp {
                 );
             }
         }
-        if !self.direct_agent_intent_allowed(self.direct_agent_intent()) {
+        if !self.direct_agent_intent_can_edit(self.direct_agent_intent()) {
             let draft = self.composer_main.value();
             if !draft.is_empty() {
                 nodes.push(

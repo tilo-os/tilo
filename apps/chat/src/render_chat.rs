@@ -2951,7 +2951,7 @@ impl ChatApp {
             return;
         }
         let interactive = self.direct_agent.as_ref().map_or(can_write, |_| {
-            self.direct_agent_intent_allowed(self.direct_agent_intent())
+            self.direct_agent_intent_can_edit(self.direct_agent_intent())
         });
         self.composer_main.set_read_only(!interactive);
         // While an inline message edit is in progress the caret lives in the

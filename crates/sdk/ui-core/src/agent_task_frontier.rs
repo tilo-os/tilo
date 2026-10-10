@@ -216,6 +216,25 @@ struct ConfirmedFrontier {
     observed: u64,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct SteerDraftWitness {
+    task_id: String,
+    run_epoch: u64,
+    after_revision: u64,
+    route: String,
+}
+
+impl From<AgentTaskFrontier> for SteerDraftWitness {
+    fn from(frontier: AgentTaskFrontier) -> Self {
+        Self {
+            task_id: frontier.task_id,
+            run_epoch: frontier.run_epoch,
+            after_revision: frontier.after_revision,
+            route: frontier.route,
+        }
+    }
+}
+
 /// One shared Task Center reader for Chat and marker-adjacent controls.
 pub struct AgentTaskFrontiers {
     remote: RemoteActions,
@@ -227,6 +246,9 @@ pub struct AgentTaskFrontiers {
     /// task visibility. Refreshed on the same authenticated transport.
     controls: BTreeMap<(String, String), LocalState<CatalogueCall>>,
     control_response_until: Option<Instant>,
+    queue_draft_revalidating: bool,
+    steer_draft_revalidating: Option<SteerDraftWitness>,
+    draft_revalidation_until: Option<Instant>,
     current_consumed: bool,
     current_issued: u64,
     current_accepts_frontier_change: bool,
@@ -280,6 +302,9 @@ impl AgentTaskFrontiers {
             current: None,
             controls: BTreeMap::new(),
             control_response_until: None,
+            queue_draft_revalidating: false,
+            steer_draft_revalidating: None,
+            draft_revalidation_until: None,
             current_consumed: false,
             current_issued: 0,
             current_accepts_frontier_change: false,
@@ -317,6 +342,9 @@ impl AgentTaskFrontiers {
         self.current = None;
         self.controls.clear();
         self.control_response_until = None;
+        self.queue_draft_revalidating = false;
+        self.steer_draft_revalidating = None;
+        self.draft_revalidation_until = None;
         self.current_consumed = true;
         self.current_issued = 0;
         self.current_accepts_frontier_change = false;
@@ -358,6 +386,9 @@ impl AgentTaskFrontiers {
         self.current_consumed = true;
         self.controls.clear();
         self.control_response_until = None;
+        self.queue_draft_revalidating = false;
+        self.steer_draft_revalidating = None;
+        self.draft_revalidation_until = None;
         self.next_refresh = None;
         self.snapshot_complete = false;
         if active {
@@ -426,6 +457,7 @@ impl AgentTaskFrontiers {
             self.next_refresh,
             self.remote.next_observation_deadline(),
             control,
+            self.draft_revalidation_until,
         ]
         .into_iter()
         .flatten()
@@ -539,6 +571,22 @@ impl AgentTaskFrontiers {
             && self.offers(&task_collection_target(&self.workspace, QUEUE_TASK_ACTION))
     }
 
+    /// Whether a previously-authorized Queue draft may keep accepting local
+    /// editor input while its exact action offer is being revalidated.
+    /// Submission continues to require [`Self::can_queue`].
+    #[must_use]
+    pub fn can_edit_queue_draft(&self) -> bool {
+        self.can_queue() || self.queue_draft_revalidating
+    }
+
+    /// Whether a previously-authorized Steer draft may keep accepting local
+    /// editor input while its exact action offer is being revalidated.
+    /// Submission continues to require [`Self::can_steer`].
+    #[must_use]
+    pub fn can_edit_steer_draft(&self) -> bool {
+        self.can_steer() || self.steer_draft_revalidating.is_some()
+    }
+
     #[must_use]
     pub fn can_stop(&self) -> bool {
         self.stop.is_none()
@@ -590,6 +638,9 @@ impl AgentTaskFrontiers {
             self.direction_state = AgentDirectionState::Draft;
             self.controls.clear();
             self.control_response_until = None;
+            self.queue_draft_revalidating = false;
+            self.steer_draft_revalidating = None;
+            self.draft_revalidation_until = None;
             self.refresh_control_offers();
             Ok(())
         } else {
@@ -805,13 +856,20 @@ impl AgentTaskFrontiers {
             self.refresh_control_offers();
         }
         let controls_pending = self.controls.values().any(|call| call.get().is_pending());
-        if !controls_pending
-            || self
-                .control_response_until
-                .is_some_and(|until| until <= now)
-        {
+        let controls_expired = self
+            .control_response_until
+            .is_some_and(|until| until <= now);
+        if !controls_pending || controls_expired {
             self.control_response_until = None;
         }
+        if controls_expired
+            || self
+                .draft_revalidation_until
+                .is_some_and(|until| until <= now)
+        {
+            self.clear_draft_revalidation();
+        }
+        self.settle_draft_revalidation();
         self.poll_direction();
         self.poll_saved_direction();
         self.poll_queue();
@@ -865,6 +923,20 @@ impl AgentTaskFrontiers {
         {
             return;
         }
+        self.queue_draft_revalidating = self.can_queue();
+        self.steer_draft_revalidating = if self.can_steer() {
+            self.actionable_frontier().map(SteerDraftWitness::from)
+        } else {
+            None
+        };
+        self.draft_revalidation_until =
+            if self.queue_draft_revalidating || self.steer_draft_revalidating.is_some() {
+                crate::background::Background::current()
+                    .now()
+                    .checked_add(CONTROL_RESPONSE_WINDOW)
+            } else {
+                None
+            };
         self.current_issued = self.issue_observation();
         // Discard old grants immediately while a fresh observation is pending.
         // Browse only this room's Task Center surface; labels never grant access.
@@ -881,6 +953,56 @@ impl AgentTaskFrontiers {
         ));
         self.current_consumed = false;
         self.next_refresh = None;
+    }
+
+    fn settle_draft_revalidation(&mut self) {
+        if !self.current_consumed {
+            return;
+        }
+        if !self.snapshot_complete || self.invalidated {
+            self.clear_draft_revalidation();
+            return;
+        }
+        if self.queue_draft_revalidating {
+            let target = task_collection_target(&self.workspace, QUEUE_TASK_ACTION);
+            let key = (target.address.resource, target.address.action);
+            if self
+                .controls
+                .get(&key)
+                .is_some_and(|call| !call.get().is_pending())
+            {
+                self.queue_draft_revalidating = false;
+            }
+        }
+        if let Some(witness) = self.steer_draft_revalidating.clone() {
+            let Some(frontier) = self.actionable_frontier() else {
+                self.steer_draft_revalidating = None;
+                return;
+            };
+            let current = SteerDraftWitness::from(frontier.clone());
+            if witness != current {
+                self.steer_draft_revalidating = None;
+                return;
+            }
+            let target = task_target(&self.workspace, &frontier.task_id, DIRECT_TASK_ACTION);
+            let key = (target.address.resource, target.address.action);
+            if self
+                .controls
+                .get(&key)
+                .is_some_and(|call| !call.get().is_pending())
+            {
+                self.steer_draft_revalidating = None;
+            }
+        }
+        if !self.queue_draft_revalidating && self.steer_draft_revalidating.is_none() {
+            self.draft_revalidation_until = None;
+        }
+    }
+
+    fn clear_draft_revalidation(&mut self) {
+        self.queue_draft_revalidating = false;
+        self.steer_draft_revalidating = None;
+        self.draft_revalidation_until = None;
     }
 
     fn issue_observation(&mut self) -> u64 {
@@ -1090,6 +1212,7 @@ impl AgentTaskFrontiers {
     fn invalidate_snapshot(&mut self, discovery: AgentTaskDiscovery) {
         self.controls.clear();
         self.control_response_until = None;
+        self.clear_draft_revalidation();
         self.invalidated = true;
         self.snapshot_complete = false;
         self.frontiers.clear();
@@ -1329,6 +1452,7 @@ impl AgentTaskFrontiers {
     }
 
     fn invalidate_direction(&mut self, message: &str) {
+        self.clear_draft_revalidation();
         if let Some(direction) = &self.direction {
             self.context = Some(direction.frontier.clone());
         } else if self.context.is_none() {
@@ -2062,6 +2186,110 @@ mod tests {
         assert!(!model.can_queue());
         assert!(!model.can_steer());
         assert!(!model.can_stop());
+    }
+
+    #[test]
+    fn private_draft_editability_is_bounded_to_authority_revalidation() {
+        let host = Arc::new(FrontierHost::new(
+            vec![current_task("one", "Current task", "agent-a", 4, 4)],
+            [],
+        ));
+        let mut model = model(host, "room", "agent-a");
+        assert!(model.can_queue());
+        assert!(model.can_steer());
+
+        model.remote = RemoteActions::session();
+        model.start_current_refresh(false);
+        assert!(!model.can_queue());
+        assert!(!model.can_steer());
+        assert!(model.can_edit_queue_draft());
+        assert!(model.can_edit_steer_draft());
+
+        let invocation = InvocationId::new();
+        model.current = Some(LocalState::new(RemoteCall::Done(
+            InvocationUpdate::Succeeded {
+                invocation,
+                output: ActionOutput {
+                    value: Some(serde_json::json!({"not": "an owner task snapshot"})),
+                    resources: Vec::new(),
+                },
+            },
+        )));
+        model.collect_current_tasks(crate::background::Background::current().now());
+
+        assert!(!model.can_edit_queue_draft());
+        assert!(!model.can_edit_steer_draft());
+        assert_eq!(model.discovery(), &AgentTaskDiscovery::Unavailable);
+    }
+
+    #[test]
+    fn private_draft_revalidation_expires_while_the_owner_read_is_pending() {
+        let clock = crate::background::Pumped::new();
+        let _entered = clock.background().enter();
+        let host = Arc::new(FrontierHost::new(
+            vec![current_task("one", "Current task", "agent-a", 4, 4)],
+            [],
+        ));
+        let mut model = model(host, "room", "agent-a");
+        model.remote = RemoteActions::session();
+        model.start_current_refresh(false);
+        assert!(model.can_edit_queue_draft());
+        assert!(model.can_edit_steer_draft());
+        let expiry = model
+            .draft_revalidation_until
+            .expect("the pending owner read has a bounded editor grace");
+        assert!(
+            model
+                .next_wake_deadline()
+                .is_some_and(|wake| wake <= expiry)
+        );
+
+        clock.advance(
+            expiry
+                .saturating_duration_since(clock.background().now())
+                .saturating_add(Duration::from_millis(1)),
+        );
+        model.poll();
+
+        assert!(!model.can_edit_queue_draft());
+        assert!(!model.can_edit_steer_draft());
+        assert!(
+            model
+                .current
+                .as_ref()
+                .is_some_and(|call| call.get().is_pending())
+        );
+    }
+
+    #[test]
+    fn changed_steer_frontier_ends_private_draft_revalidation() {
+        let host = Arc::new(FrontierHost::new(
+            vec![current_task("one", "Current task", "agent-a", 4, 4)],
+            [],
+        ));
+        let mut model = model(host, "room", "agent-a");
+        model.remote = RemoteActions::session();
+        model.start_current_refresh(false);
+        assert!(model.can_edit_steer_draft());
+
+        let invocation = InvocationId::new();
+        model.current = Some(LocalState::new(RemoteCall::Done(
+            InvocationUpdate::Succeeded {
+                invocation,
+                output: ActionOutput {
+                    value: Some(current_snapshot(
+                        9,
+                        vec![current_task("one", "Changed frontier", "agent-a", 5, 4)],
+                    )),
+                    resources: Vec::new(),
+                },
+            },
+        )));
+        model.collect_current_tasks(crate::background::Background::current().now());
+        model.settle_draft_revalidation();
+
+        assert!(!model.can_edit_steer_draft());
+        assert!(!model.can_steer());
     }
 
     #[test]
