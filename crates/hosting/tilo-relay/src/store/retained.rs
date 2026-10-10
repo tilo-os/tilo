@@ -490,7 +490,7 @@ fn generation_name(name: &str) -> bool {
     name.len() == 32 && name.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
-pub(super) fn current(lineage: &Path) -> Result<Option<PathBuf>, StoreError> {
+pub(crate) fn current(lineage: &Path) -> Result<Option<PathBuf>, StoreError> {
     use std::io::Read;
     let mut name = String::new();
     match fs::File::open(lineage.join("CURRENT")) {
@@ -979,6 +979,7 @@ impl RetainBuild {
                         return Ok(Step::More);
                     };
                     let entry = entry?;
+                    crate::store::count_listed_entry();
                     let name = entry.file_name();
                     let lossy = name.to_string_lossy();
                     if let Some(slot) = super::continuity::reserved_slot(&lossy) {
