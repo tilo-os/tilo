@@ -42,7 +42,7 @@
    PROP_EDITING_CANCELED,
    NUM_PROPERTIES = PROP_EDITING_CANCELED
  };
-@@ -758,6 +772,114 @@
+@@ -758,6 +772,118 @@
  				G_TYPE_BOOLEAN, TRUE);
  }
 
@@ -138,26 +138,30 @@
 +  entry_history_delete, entry_history_select
 +};
 +
-+static void
++static gboolean
 +entry_history_undo (GtkEntry *entry)
 +{
 +  entry_history_refresh (entry);
-+  if (entry_history_available (entry))
-+    gtk_text_history_undo (entry->priv->history);
++  if (!entry_history_available (entry))
++    return FALSE;
++  gtk_text_history_undo (entry->priv->history);
++  return TRUE;
 +}
 +
-+static void
++static gboolean
 +entry_history_redo (GtkEntry *entry)
 +{
 +  entry_history_refresh (entry);
-+  if (entry_history_available (entry))
-+    gtk_text_history_redo (entry->priv->history);
++  if (!entry_history_available (entry))
++    return FALSE;
++  gtk_text_history_redo (entry->priv->history);
++  return TRUE;
 +}
 +
  static void
  gtk_entry_class_init (GtkEntryClass *class)
  {
-@@ -1547,7 +1669,33 @@
+@@ -1547,7 +1673,33 @@
                              FALSE,
                              GTK_PARAM_READWRITE|G_PARAM_EXPLICIT_NOTIFY);
 
@@ -181,26 +185,26 @@
 +    G_PARAM_READABLE | G_PARAM_STATIC_STRINGS);
    g_object_class_install_properties (gobject_class, NUM_PROPERTIES, entry_props);
 +  signals[HISTORY_UNDO] = g_signal_new_class_handler (
-+    "undo", G_OBJECT_CLASS_TYPE (gobject_class), G_SIGNAL_RUN_LAST | G_SIGNAL_ACTION,
-+    G_CALLBACK (entry_history_undo), NULL, NULL, NULL, G_TYPE_NONE, 0);
++    "tilo-native-undo", G_OBJECT_CLASS_TYPE (gobject_class), G_SIGNAL_RUN_LAST | G_SIGNAL_ACTION,
++    G_CALLBACK (entry_history_undo), NULL, NULL, NULL, G_TYPE_BOOLEAN, 0);
 +  signals[HISTORY_REDO] = g_signal_new_class_handler (
-+    "redo", G_OBJECT_CLASS_TYPE (gobject_class), G_SIGNAL_RUN_LAST | G_SIGNAL_ACTION,
-+    G_CALLBACK (entry_history_redo), NULL, NULL, NULL, G_TYPE_NONE, 0);
++    "tilo-native-redo", G_OBJECT_CLASS_TYPE (gobject_class), G_SIGNAL_RUN_LAST | G_SIGNAL_ACTION,
++    G_CALLBACK (entry_history_redo), NULL, NULL, NULL, G_TYPE_BOOLEAN, 0);
 +
 +
 
    /**
     * GtkEntry:icon-prelight:
-@@ -1949,6 +2097,8 @@
+@@ -1949,6 +2101,8 @@
     */
 
    binding_set = gtk_binding_set_by_class (class);
-+  gtk_binding_entry_add_signal (binding_set, GDK_KEY_z, GDK_CONTROL_MASK, "undo", 0);
-+  gtk_binding_entry_add_signal (binding_set, GDK_KEY_z, GDK_CONTROL_MASK | GDK_SHIFT_MASK, "redo", 0);
++  gtk_binding_entry_add_signal (binding_set, GDK_KEY_z, GDK_CONTROL_MASK, "tilo-native-undo", 0);
++  gtk_binding_entry_add_signal (binding_set, GDK_KEY_z, GDK_CONTROL_MASK | GDK_SHIFT_MASK, "tilo-native-redo", 0);
 
    /* Moving the insertion point */
    add_move_binding (binding_set, GDK_KEY_Right, 0,
-@@ -2193,6 +2343,22 @@
+@@ -2193,6 +2347,22 @@
 
    switch (prop_id)
      {
@@ -223,7 +227,7 @@
      case PROP_BUFFER:
        gtk_entry_set_buffer (entry, g_value_get_object (value));
        break;
-@@ -2491,6 +2657,26 @@
+@@ -2491,6 +2661,26 @@
 
    switch (prop_id)
      {
@@ -250,7 +254,7 @@
      case PROP_BUFFER:
        g_value_set_object (value, gtk_entry_get_buffer (entry));
        break;
-@@ -2799,6 +2985,8 @@
+@@ -2799,6 +2989,8 @@
    gtk_widget_set_can_focus (GTK_WIDGET (entry), TRUE);
    gtk_widget_set_has_window (GTK_WIDGET (entry), FALSE);
 
@@ -259,7 +263,7 @@
    priv->editable = TRUE;
    priv->visible = TRUE;
    priv->dnd_position = -1;
-@@ -3024,6 +3212,9 @@
+@@ -3024,6 +3216,9 @@
    GtkEntryPrivate *priv = entry->priv;
    EntryIconInfo *icon_info = NULL;
    gint i;
@@ -269,7 +273,7 @@
 
    if (priv->tick_id)
      gtk_widget_remove_tick_callback (GTK_WIDGET (entry), priv->tick_id);
-@@ -5393,6 +5584,11 @@
+@@ -5393,6 +5588,11 @@
  {
    guint n_inserted;
    gint n_chars;
@@ -281,7 +285,7 @@
 
    n_chars = g_utf8_strlen (new_text, new_text_length);
 
-@@ -5406,6 +5602,10 @@
+@@ -5406,6 +5606,10 @@
    n_inserted = gtk_entry_buffer_insert_text (get_buffer (GTK_ENTRY (editable)), *position, new_text, n_chars);
 
    end_change (GTK_ENTRY (editable));
@@ -292,7 +296,7 @@
 
    if (n_inserted != n_chars)
        gtk_widget_error_bell (GTK_WIDGET (editable));
-@@ -5426,7 +5626,24 @@
+@@ -5426,7 +5630,24 @@
 
    begin_change (GTK_ENTRY (editable));
 
@@ -318,7 +322,7 @@
 
    end_change (GTK_ENTRY (editable));
  }
-@@ -5441,6 +5658,8 @@
+@@ -5441,6 +5662,8 @@
                        GtkEntry       *entry)
  {
    GtkEntryPrivate *priv = entry->priv;
@@ -327,7 +331,7 @@
    guint password_hint_timeout;
    guint current_pos;
    gint selection_bound;
-@@ -5491,6 +5710,8 @@
+@@ -5491,6 +5714,8 @@
                       GtkEntry       *entry)
  {
    GtkEntryPrivate *priv = entry->priv;
@@ -336,7 +340,7 @@
    guint end_pos = position + n_chars;
    gint selection_bound;
    guint current_pos;
-@@ -6182,6 +6403,12 @@
+@@ -6182,6 +6407,12 @@
    gint tmp_pos;
    guint text_length;
 
@@ -349,7 +353,7 @@
    priv->need_im_reset = FALSE;
 
    if (gtk_editable_get_selection_bounds (editable, NULL, NULL))
-@@ -6199,6 +6426,9 @@
+@@ -6199,6 +6430,9 @@
    tmp_pos = priv->current_pos;
    gtk_editable_insert_text (editable, str, strlen (str), &tmp_pos);
    gtk_editable_set_position (editable, tmp_pos);
@@ -359,7 +363,7 @@
  }
 
  /* All changes to priv->current_pos and priv->selection_bound
-@@ -7631,6 +7861,7 @@
+@@ -7631,6 +7865,7 @@
        g_object_unref (priv->buffer);
      }
 
@@ -367,7 +371,7 @@
    priv->buffer = buffer;
 
    if (priv->buffer)
-@@ -7728,11 +7959,14 @@
+@@ -7728,11 +7963,14 @@
    if (completion && completion->priv->changed_id > 0)
      g_signal_handler_block (entry, completion->priv->changed_id);
 
@@ -382,7 +386,7 @@
 
    if (completion && completion->priv->changed_id > 0)
      g_signal_handler_unblock (entry, completion->priv->changed_id);
-@@ -7772,6 +8006,7 @@
+@@ -7772,6 +8010,7 @@
 
    if (priv->visible != visible)
      {
@@ -390,7 +394,7 @@
        priv->visible = visible;
 
        g_object_notify_by_pspec (G_OBJECT (entry), entry_props[PROP_VISIBILITY]);
-@@ -10910,6 +11145,7 @@
+@@ -10910,6 +11149,7 @@
 
    if (gtk_entry_get_input_purpose (entry) != purpose)
      {
@@ -468,13 +472,13 @@
 
 +  if (i == 1 || i == 2)
 +    {
-+      gboolean available = FALSE, possible = FALSE;
++      gboolean available = FALSE, possible = FALSE, handled = FALSE;
 +      g_object_get (widget, "history-available", &available,
 +                    i == 1 ? "can-undo" : "can-redo", &possible, NULL);
 +      if (!available || !possible)
 +        return FALSE;
-+      g_signal_emit_by_name (widget, i == 1 ? "undo" : "redo");
-+      return TRUE;
++      g_signal_emit_by_name (widget, i == 1 ? "tilo-native-undo" : "tilo-native-redo", &handled);
++      return handled;
 +    }
    if (i != 0)
      return FALSE;
