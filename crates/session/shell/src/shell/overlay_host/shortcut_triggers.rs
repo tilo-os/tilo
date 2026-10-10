@@ -332,6 +332,18 @@ impl ShellOverlayHost {
         let Some(chrome) = self.chrome.clone() else {
             return false;
         };
+        // Every typed key lands here. With no trigger saved anywhere there is
+        // nothing to arm, and arming resolves each workspace's identity
+        // (a registry stat and copy per room) only to find that out.
+        let any_trigger = chrome.borrow().tree().desktop.workspaces.iter().any(|workspace| {
+            workspace
+                .shortcuts
+                .iter()
+                .any(|shortcut| !shortcut.triggers.is_empty())
+        });
+        if !any_trigger {
+            return false;
+        }
         let firings = {
             let state = chrome.borrow();
             let tree = state.tree();

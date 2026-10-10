@@ -6271,6 +6271,8 @@ impl FabricDeviceDirectory {
 
 impl crate::shell::automation_triggers::DeviceDirectory for FabricDeviceDirectory {
     fn personal_devices(&self) -> crate::shell::automation_triggers::PersonalDevices {
+        // Borrowed, not `device_fabric()`: that clones every snapshot, and
+        // this runs on the compositor thread on every trigger observation.
         crate::shell::automation_triggers::PersonalDevices {
             local: self
                 .network
@@ -6278,10 +6280,13 @@ impl crate::shell::automation_triggers::DeviceDirectory for FabricDeviceDirector
                 .map(|(device, _)| device.as_str().to_string()),
             online: self
                 .network
-                .device_fabric()
-                .online_devices()
-                .map(|presence| presence.device.as_str().to_string())
-                .collect(),
+                .with_device_fabric(|fabric| {
+                    fabric
+                        .online_devices()
+                        .map(|presence| presence.device.as_str().to_string())
+                        .collect()
+                })
+                .unwrap_or_default(),
         }
     }
 }
