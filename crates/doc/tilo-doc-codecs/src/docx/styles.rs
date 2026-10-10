@@ -2,7 +2,6 @@
 //! a registry the body parser resolves against — `.docx` files keep most formatting
 //! in named styles and list ordering in numbering definitions.
 
-use crate::generic_font;
 use crate::para_styles::{ParaStyle, StyleTable};
 use quick_xml::events::{BytesStart, Event};
 use quick_xml::reader::Reader;
@@ -41,6 +40,22 @@ pub(super) fn parse_half_point(e: &BytesStart) -> Option<i64> {
     attr_val(e, b"w:val")
         .and_then(|v| v.parse::<f64>().ok())
         .map(|hp| (hp / 2.0).round() as i64)
+}
+
+pub(super) fn generic_font(name: &str) -> String {
+    let n = name.to_ascii_lowercase();
+    if n.contains("mono") || n.contains("courier") || n.contains("consol") {
+        "mono".into()
+    } else if (n.contains("serif") && !n.contains("sans"))
+        || n.contains("times")
+        || n.contains("georgia")
+        || n.contains("garamond")
+        || n.contains("roman")
+    {
+        "serif".into()
+    } else {
+        "sans".into()
+    }
 }
 
 pub(super) fn map_jc(v: &str) -> String {

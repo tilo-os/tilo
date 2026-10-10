@@ -3,7 +3,6 @@
 //! files keep most formatting (headings, bold, fonts, list numbering) in named
 //! styles, which are resolved before body content is imported.
 
-use crate::generic_font;
 use crate::para_styles::{ParaStyle, StyleTable};
 use quick_xml::events::{BytesStart, Event};
 use quick_xml::reader::Reader;
@@ -38,6 +37,22 @@ pub(super) fn parse_pt(v: &str) -> Option<i64> {
         .parse::<f64>()
         .ok()
         .map(|f| f.round() as i64)
+}
+
+pub(super) fn generic_font(name: &str) -> String {
+    let n = name.to_ascii_lowercase();
+    if n.contains("mono") || n.contains("courier") || n.contains("consol") {
+        "mono".into()
+    } else if (n.contains("serif") && !n.contains("sans"))
+        || n.contains("times")
+        || n.contains("georgia")
+        || n.contains("garamond")
+        || n.contains("roman")
+    {
+        "serif".into()
+    } else {
+        "sans".into()
+    }
 }
 
 /// Canonicalise an ODF `fo:color` (`#RRGGBB`) to lowercase so that the round-trip
