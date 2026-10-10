@@ -63,8 +63,8 @@ const LONE_IDLE: Duration = Duration::from_secs(20);
 /// (TIL-702's target, under 2/s).
 ///
 /// Measured on CI (focused, loopback): 2.79/s while gossip swept the room's
-/// topic every second (run 91402), 0.95/s once it sweeps every 10 s (run
-/// 91459). The rest is the 5 s upkeep tick and what the sweep wakes.
+/// topic every second (run 91402), 0.95/s and 1.05/s once it sweeps every
+/// 10 s (runs 91459, 91528). The rest is the 5 s upkeep tick and the sweep.
 const LONE_WAKEUP_BUDGET: f64 = 2.0;
 
 /// Every thread of this process except the one driving the desktops'
