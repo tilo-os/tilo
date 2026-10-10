@@ -8438,9 +8438,12 @@ pub fn run() {
             .is_some_and(|value| value == "1");
     let identity_missing =
         crate::shell::identity_provisioning::needs_first_run_flow(&identity_store);
-    // The device admin's control socket is the real seat's: a nested or
-    // headless compositor is a development session with its own sockets.
-    let mut admin_control_due = (backend_kind == BackendKind::Drm)
+    // The normal admin socket remains the real seat's. An owner can request
+    // a separate semantic endpoint for headless work without enabling the
+    // development input socket or changing first-use and lock handling.
+    let headless_owner_control = backend_kind == BackendKind::Headless
+        && std::env::args().any(|argument| argument == "--headless-owner-control");
+    let mut admin_control_due = (backend_kind == BackendKind::Drm || headless_owner_control)
         .then(|| identity_store.path().parent().map(Path::to_path_buf))
         .flatten();
     let onboarding_identity_dir = if should_activate_first_use(
@@ -11922,7 +11925,12 @@ pub fn run() {
         }
         // First login has to finish before the device has an owner to serve.
         if !onboarding_active && let Some(identity_dir) = admin_control_due.take() {
-            match crate::compositor::admin_control::bind(&identity_dir) {
+            let bound = if headless_owner_control {
+                crate::compositor::admin_control::bind_headless_owner(&identity_dir)
+            } else {
+                crate::compositor::admin_control::bind(&identity_dir)
+            };
+            match bound {
                 Ok((listener, path)) => {
                     tracing::info!(path = %path.display(), "admin control: listening");
                     let wake = control_listener_wake(&listener, &event_loop.handle());
