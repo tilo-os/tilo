@@ -33,7 +33,7 @@ pub trait Participants {
     /// The host serves only remote participants and has no local person (a
     /// headless host worker). The widget then publishes its
     /// participant-independent catalogue schema
-    /// ([`tilo_actions::ResourceProvider::catalogue_schema`]) instead of one
+    /// ([`tilo_actions::schema`]) instead of one
     /// caret's snapshot, so the publication does not change when a caret moves.
     fn set_participant_host(&mut self, _host: bool) {}
 }
