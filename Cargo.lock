@@ -1392,6 +1392,7 @@ dependencies = [
  "host-info",
  "private-fs",
  "reqwest 0.13.4",
+ "ring",
  "runtime-dylib",
  "serde",
  "serde_json",

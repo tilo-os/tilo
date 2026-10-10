@@ -44,6 +44,7 @@ pub mod browser_widget;
 pub mod browser_window;
 pub mod browsing_mode;
 mod credentials;
+pub mod crx;
 mod daily_controls;
 pub mod downloads;
 pub mod effects;
@@ -62,6 +63,7 @@ pub mod search_provider;
 pub mod settings;
 mod site_controls;
 pub mod storage;
+pub mod web_store;
 
 pub use browser_widget::BrowserWidget;
 pub use browser_window::BrowserWindow;
