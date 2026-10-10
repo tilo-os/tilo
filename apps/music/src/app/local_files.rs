@@ -19,7 +19,7 @@ impl MusicApp {
         ui::widget::Button::icon_only(
             "music-open-file",
             ui::icons::Icon::FolderOpen,
-            &ui::i18n!("music-open-audio-file"),
+            &crate::i18n::t("music-open-audio-file"),
         )
         .on_action(binding)
     }
