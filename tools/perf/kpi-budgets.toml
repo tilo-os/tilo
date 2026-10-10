@@ -205,6 +205,53 @@ unit = "count"
 max = 5000.0
 source = "TIL-604: shared runtime budget targets"
 
+# OS image size (TIL-609): main's newest production-layout image (the tilo-ci
+# base tilo-vm:main-ci names), measured by tools/perf/image_size.py in the
+# footprint group. One sample per night: compressed layer bytes (a full pull)
+# and unique content (what composefs stores after install; /sysroot, which
+# bootc does not deploy, is left out). Byte counts are deterministic, so one
+# stored run is a baseline, and growth of more than 5 % over the baseline
+# fails on the second night running; an intended growth is accepted by
+# dispatch (`accept`). The ceilings are enforced, at 5 % over the image TIL-609
+# measured (docs/benchmarks/os-image-size-2026-10-09.md), so creep below the
+# nightly rule fails too. They may only be lowered, except by a change that
+# says why. The KPI targets, 3.5 GB compressed and 7 GB of content for x86_64,
+# are not met yet: Windows compatibility is most of the gap (TIL-711).
+# footprint.image.redundant_payload_bytes.<arch> (bytes shipped more than
+# once) is recorded beside them, under the relative rule only.
+
+[kpi."footprint.image.compressed_bytes.x86_64"]
+unit = "bytes"
+max = 5430000000.0
+enforce = true
+p50_tolerance = 1.05
+p99_tolerance = 1.05
+source = "TIL-609: 5,168,289,107 B with the font and botocore fixes, plus 5 %; KPI target 3.5 GB"
+
+[kpi."footprint.image.unique_content_bytes.x86_64"]
+unit = "bytes"
+max = 11460000000.0
+enforce = true
+p50_tolerance = 1.05
+p99_tolerance = 1.05
+source = "TIL-609: 10,909,686,891 B with the font and botocore fixes, plus 5 %; KPI target 7 GB"
+
+[kpi."footprint.image.compressed_bytes.aarch64"]
+unit = "bytes"
+max = 4520000000.0
+enforce = true
+p50_tolerance = 1.05
+p99_tolerance = 1.05
+source = "TIL-609: 4,304,306,967 B on db91126b44, plus 5 %"
+
+[kpi."footprint.image.unique_content_bytes.aarch64"]
+unit = "bytes"
+max = 9530000000.0
+enforce = true
+p50_tolerance = 1.05
+p99_tolerance = 1.05
+source = "TIL-609: 9,067,894,573 B on db91126b44, plus 5 %"
+
 # Agent round trip (scripts/perf/agent_rtt.py): one headless compositor on
 # the shared `runner` class, a release build with `dev-overrides` and thin
 # LTO, timed from the client's side of the control socket. Targets from the

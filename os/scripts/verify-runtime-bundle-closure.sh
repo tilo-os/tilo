@@ -40,6 +40,20 @@ for object in "${objects[@]}"; do
       broken=1
     fi
   done < <(sed -n 's/.*(NEEDED).*\[\([^]]*\)\].*/\1/p' <<<"$report")
+  # The libraries the runtime loads on first use (GLib, GStreamer;
+  # tools/ci/runtime-dylib-lazy-link.py, TIL-713) must be signed beside it
+  # as well: a media app would otherwise abort at its first media call.
+  if ! lazy=$(readelf -W -p .tilo.lazy_needed "$object" 2>/dev/null); then
+    printf '%s: readelf cannot read its lazily loaded libraries\n' "$object" >&2
+    broken=1
+    continue
+  fi
+  while IFS= read -r needed; do
+    if [ ! -f "$lib/$needed" ]; then
+      printf '%s: signed runtime is missing %s, which it loads on first use\n' "$object" "$needed" >&2
+      broken=1
+    fi
+  done < <(sed -n 's/^ *\[ *[0-9a-f]*\] *\([^ ]*\) *$/\1/p' <<<"$lazy")
 done
 [ "$broken" -eq 0 ] || fail "the runtime bundle does not satisfy what it or its thin apps link against"
 printf 'verify-runtime-bundle-closure: %d objects resolve against %s\n' "${#objects[@]}" "$lib"

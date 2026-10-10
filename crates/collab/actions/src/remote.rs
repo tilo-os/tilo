@@ -133,7 +133,7 @@ impl Caller {
     #[must_use]
     pub fn authenticated(user_public_key: [u8; 32], device_public_key: [u8; 32]) -> Self {
         Self {
-            principal: CallerPrincipal::Person(hex(&user_public_key)),
+            principal: CallerPrincipal::Person(hex::encode(user_public_key)),
             user_public_key: Some(user_public_key),
             device_public_key: Some(device_public_key),
             room: None,
@@ -284,10 +284,6 @@ impl Caller {
     pub const fn device_public_key(&self) -> Option<&[u8; 32]> {
         self.device_public_key.as_ref()
     }
-}
-
-fn hex(bytes: &[u8]) -> String {
-    hex::encode(bytes)
 }
 
 /// Which published action an invocation names on the host.
@@ -950,7 +946,7 @@ impl RecordPiece {
         Self {
             total,
             offset,
-            bytes: hex(bytes),
+            bytes: hex::encode(bytes),
         }
     }
 

@@ -162,13 +162,7 @@ const TAMPERED: &str = "the subject model on this device does not match its veri
 /// The SHA-256 of `bytes` in lowercase hexadecimal, as the store names files.
 fn hex_digest(bytes: &[u8]) -> String {
     use sha2::{Digest as _, Sha256};
-    use std::fmt::Write as _;
-    Sha256::digest(bytes)
-        .iter()
-        .fold(String::with_capacity(64), |mut hex, byte| {
-            let _ = write!(hex, "{byte:02x}");
-            hex
-        })
+    hex::encode(Sha256::digest(bytes))
 }
 
 fn millis(since: Instant) -> u64 {

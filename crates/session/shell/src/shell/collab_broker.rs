@@ -418,6 +418,14 @@ impl DrainQueues {
             .and_then(|service| service.pump_until_due(&*self.net))
     }
 
+    /// Arm `watch` while stewards wait for a policy announcement; `false`
+    /// when one already arrived and governance must be pumped again now.
+    fn arm_policy_watch(&self, watch: &tilo_identity_host::policy_change::Watch) -> bool {
+        self.channel_encryption
+            .as_ref()
+            .is_none_or(|service| service.arm_policy_watch(watch))
+    }
+
     /// Run one pass over every inbound queue, in the same order the
     /// original inline loop drained them. Returns `false` when a
     /// queue's lock is poisoned — the signal the caller uses to stop
@@ -759,10 +767,22 @@ fn spawn_inner(
                 // rather than every frame — the lookup takes the
                 // replica's lock and parses every peer id it holds.
                 let mut labels: HashMap<String, (Instant, PeerLabels)> = HashMap::new();
+                // A steward re-checks its channels' access policy when an
+                // input announces a change or an expiry it registered comes
+                // due, not on a clock (TIL-707). The watch is armed only
+                // while stewards wait for that, so a device stewarding no
+                // channel sleeps through every announcement.
+                let policy_watch = {
+                    let wake = std::sync::Arc::clone(&wake);
+                    tilo_identity_host::policy_change::Watch::new(move || wake.poke())
+                };
                 while !quit.load(Ordering::Relaxed) {
-                    let governance_due = queues.pump_governance();
+                    let mut governance_due = queues.pump_governance();
                     if !queues.drain_once(&mut labels, &mut announced) {
                         break;
+                    }
+                    if !queues.arm_policy_watch(&policy_watch) {
+                        governance_due = Some(Duration::ZERO);
                     }
                     let timeout = if queues.awaiting_action_host.load(Ordering::Relaxed) {
                         Some(
@@ -983,14 +1003,24 @@ fn open_channel_encryption(
     // An endpoint opening a channel queues governance the parked drain
     // must send now (a genesis, an access request): it pokes the drain.
     let drain_wake = net.as_ref().map(|net| Arc::clone(&net.drain_wake));
-    let authenticated: crate::shell::channel_policy::AuthenticatedDevices = match net {
-        Some(net) => Box::new(move |user| net.authenticated_devices_of(user)),
-        None => Box::new(|_| Vec::new()),
+    let (authenticated, authenticated_changes): (
+        crate::shell::channel_policy::AuthenticatedDevices,
+        crate::shell::channel_policy::AuthenticatedChanges,
+    ) = match net {
+        Some(net) => {
+            let changes = Arc::clone(&net);
+            (
+                Box::new(move |user| net.authenticated_devices_of(user)),
+                Box::new(move |after| changes.authenticated_devices_next_change(after)),
+            )
+        }
+        None => (Box::new(|_| Vec::new()), Box::new(|_| None)),
     };
     let directory = crate::shell::channel_policy::WorkspaceChannelDirectory::new(
         workspaces,
         crate::shell::channel_policy::WorkspaceChannelDirectory::session_fleet_with(authenticated),
-    );
+    )
+    .with_authenticated_changes(authenticated_changes);
     match crate::shell::channel_encryption::ChannelEncryption::open(
         crate::shell::channel_encryption::ChannelEncryptionConfig {
             root: vault.channel_state_root(),

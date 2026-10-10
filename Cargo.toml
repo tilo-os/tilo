@@ -218,7 +218,6 @@ members = [
     "crates/packaging/registry-server",
     "crates/packaging/registry-types",
     "crates/packaging/registry-web",
-    "crates/packaging/registry-web-bindgen",
     "crates/packaging/runtime-bundle",
     "crates/packaging/runtime-update",
 

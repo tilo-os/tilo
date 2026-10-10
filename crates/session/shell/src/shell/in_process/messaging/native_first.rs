@@ -17,6 +17,7 @@ use tokio::sync::oneshot;
 // This label performs no HTTP request; the exact private scope is mandatory.
 const ORIGIN: &str = "https://tilo.so";
 const CAPACITY: usize = 8;
+const ANSWER_TIMEOUT: Duration = Duration::from_secs(30);
 type Reply<T> = oneshot::Sender<Result<T, SendError>>;
 enum Request {
     Prepare(Reply<EnrollmentReview>),
@@ -34,25 +35,13 @@ struct Port {
     wake: Wake,
     states: Arc<Mutex<BTreeMap<ServiceAccount, Projection>>>,
 }
-async fn answer<T>(receiver: oneshot::Receiver<Result<T, SendError>>) -> Result<T, SendError> {
-    tokio::time::timeout(Duration::from_secs(30), receiver)
-        .await
-        .map_err(|_| SendError::Unavailable)?
-        .map_err(|_| SendError::Unavailable)?
-}
 impl EnrollmentHost for Port {
     fn prepare(&self, service: String) -> EnrollmentReviewFuture {
         if service != "tilo" {
             return Box::pin(async { Err(SendError::InvalidRequest) });
         }
-        let (reply, receiver) = oneshot::channel();
-        let sent = self.sender.try_send(Request::Prepare(reply)).is_ok();
-        (self.wake)();
-        Box::pin(async move {
-            if !sent {
-                return Err(SendError::Unavailable);
-            }
-            answer(receiver).await
+        super::ask_owner(&self.sender, &self.wake, ANSWER_TIMEOUT, |reply| {
+            Request::Prepare(reply)
         })
     }
     fn begin(&self, _: String) -> PairingFuture {
@@ -62,17 +51,8 @@ impl EnrollmentHost for Port {
         Box::pin(async { Err(SendError::Unavailable) })
     }
     fn review(&self, account: ServiceAccount, name: String) -> EnrollmentApprovalFuture {
-        let (reply, receiver) = oneshot::channel();
-        let sent = self
-            .sender
-            .try_send(Request::Review(account, name, reply))
-            .is_ok();
-        (self.wake)();
-        Box::pin(async move {
-            if !sent {
-                return Err(SendError::Unavailable);
-            }
-            answer(receiver).await
+        super::ask_owner(&self.sender, &self.wake, ANSWER_TIMEOUT, |reply| {
+            Request::Review(account, name, reply)
         })
     }
     fn phase(&self, account: &ServiceAccount) -> EnrollmentPhase {
@@ -332,8 +312,10 @@ impl Actor {
         let account = attempt.review.account.clone();
         let result = (|| {
             let credential = credential.map_err(|_| SendError::Revoked)?;
-            apps.publish_native_tilo_account(
+            apps.publish_native_account(
                 &attempt.identity,
+                tilo_messaging_protocol::Service::Tilo,
+                accounts::person::PersonAccounts::PUBLISH_TILO_ACCOUNT,
                 permission.name.clone(),
                 &attempt.review.scope,
             )
