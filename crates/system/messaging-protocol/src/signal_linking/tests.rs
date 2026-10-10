@@ -46,10 +46,17 @@ fn reply(peer: &mut UnixStream, request: &serde_json::Value, result: &serde_json
 fn provisioning(peer: UnixStream, completed: &'static str) -> std::thread::JoinHandle<()> {
     provisioning_rows(
         peer,
-        serde_json::json!([{"aci":completed,"number":"+15555550101"}]),
+        serde_json::json!([{"number":"+15555550101"}]),
+        serde_json::json!([{"uuid":completed,"number":"+15555550101","trustLevel":"TRUSTED_VERIFIED","fingerprint":format!("05 {}", vec!["aa"; 32].join(" "))}]),
+        None,
     )
 }
-fn provisioning_rows(mut peer: UnixStream, rows: serde_json::Value) -> std::thread::JoinHandle<()> {
+fn provisioning_rows(
+    mut peer: UnixStream,
+    rows: serde_json::Value,
+    identities: serde_json::Value,
+    revoke_at_identity: Option<Arc<Grant>>,
+) -> std::thread::JoinHandle<()> {
     std::thread::spawn(move || {
         let mut reader = BufReader::new(peer.try_clone().unwrap());
         let start = request(&mut reader);
@@ -69,6 +76,21 @@ fn provisioning_rows(mut peer: UnixStream, rows: serde_json::Value) -> std::thre
         let accounts = request(&mut reader);
         assert_eq!(accounts["method"], "listAccounts");
         reply(&mut peer, &accounts, &rows);
+        if rows
+            .as_array()
+            .is_some_and(|rows| rows.len() == 1 && rows[0]["number"] == "+15555550101")
+        {
+            let own_identity = request(&mut reader);
+            assert_eq!(own_identity["method"], "listIdentities");
+            assert_eq!(
+                own_identity["params"],
+                serde_json::json!({"account":"+15555550101","number":"+15555550101"})
+            );
+            if let Some(grant) = revoke_at_identity {
+                grant.0.store(false, Ordering::Release);
+            }
+            reply(&mut peer, &own_identity, &identities);
+        }
         assert_eq!(
             reader.read(&mut [0]).unwrap(),
             0,
@@ -315,11 +337,11 @@ async fn first_account_refuses_ambiguous_or_unrelated_local_account_evidence() {
         serde_json::json!([]),
         serde_json::json!([{"aci":ACI,"number":"+15555550102"}]),
         serde_json::json!([{"aci":ACI,"number":"+15555550101"},{"aci":ACI,"number":"+15555550101"}]),
-        // Stock upstream number-only output is not self-ACI evidence.
+        // Stock number-only output alone is not self-ACI evidence.
         serde_json::json!([{"number":"+15555550101"}]),
     ] {
         let (enrollment, _, peer) = enrollment();
-        let provider = provisioning_rows(peer, rows);
+        let provider = provisioning_rows(peer, rows, serde_json::json!([]), None);
         let pairing = enrollment.begin().await.unwrap();
         assert!(matches!(
             enrollment.finish(pairing.attempt).await,
@@ -331,4 +353,23 @@ async fn first_account_refuses_ambiguous_or_unrelated_local_account_evidence() {
         );
         provider.join().unwrap();
     }
+}
+
+#[tokio::test]
+async fn first_account_revocation_during_local_own_identity_probe_stops_acceptance() {
+    let (enrollment, grant, peer) = enrollment();
+    let provider = provisioning_rows(
+        peer,
+        serde_json::json!([{"number":"+15555550101"}]),
+        serde_json::json!([{"uuid":ACI,"number":"+15555550101","trustLevel":"TRUSTED_VERIFIED",
+            "fingerprint":format!("05 {}", vec!["aa"; 32].join(" "))}]),
+        Some(grant),
+    );
+    let pairing = enrollment.begin().await.unwrap();
+    assert!(matches!(
+        enrollment.finish(pairing.attempt).await,
+        Err(SendError::Revoked)
+    ));
+    assert_eq!(enrollment.state(), tilo_messaging::AccountState::Locked);
+    provider.join().unwrap();
 }
