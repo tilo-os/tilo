@@ -234,17 +234,15 @@ pub fn ask_in_background(binary: &Path, identity_root: &Path, offers: &Path) -> 
         return false;
     };
     std::thread::spawn(move || {
-        // The asker bounds itself; this bounds a hung one.
-        let deadline = std::time::Instant::now()
-            .checked_add(OFFER_BUDGET.saturating_mul(3))
-            .unwrap_or_else(std::time::Instant::now);
-        while matches!(child.try_wait(), Ok(None)) {
-            if std::time::Instant::now() >= deadline {
-                let _ = child.kill();
-                let _ = child.wait();
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(50));
+        // The asker bounds itself; this bounds a hung one, sleeping on its
+        // exit rather than looking every few milliseconds.
+        let deadline = std::time::Instant::now().checked_add(OFFER_BUDGET.saturating_mul(3));
+        if matches!(
+            bounded_command::wait_child_or(&mut child, None, deadline),
+            Ok(bounded_command::Wakeup::Deadline)
+        ) {
+            let _ = child.kill();
+            let _ = child.wait();
         }
         ASKING.store(false, Ordering::Release);
     });
