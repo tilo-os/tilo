@@ -325,3 +325,105 @@ fn automatic_display_input_exclusion_revokes_only_the_matching_automatic_lease()
     );
     drop(fixture);
 }
+
+#[test]
+fn spatial_protocol_crosses_certified_ingress_and_publishes_a_bound_ack() {
+    use crate::shell::device_fabric::FabricInputEvent;
+    use crate::shell::device_fabric_runtime::{handle_spatial_action, take_spatial_input};
+    let mut fixture = Fixture::new();
+    Fixture::policy(false);
+    let lease = grant_input_control(&fixture.network, &fixture.controller).unwrap();
+    assert_eq!(fixture.grants(), vec![lease.clone()]);
+    let route = fixture
+        .network
+        .current_personal_route(&fixture.controller)
+        .unwrap();
+    let button = FabricInputEvent::PointerButton {
+        button: 0x110,
+        pressed: true,
+    };
+    let key = FabricInputEvent::Key {
+        keycode: 30,
+        pressed: false,
+        modifiers: 0,
+    };
+    let motion = |x| FabricInputEvent::PointerMotion { x, y: 0 };
+    let actions = [
+        PersonalFabricAction::SpatialInputProtocol {
+            lease_nonce: lease.nonce,
+            acknowledgement: false,
+        },
+        PersonalFabricAction::SpatialInputSequenced {
+            lease_nonce: lease.nonce,
+            sequence: 2,
+            event: motion(10),
+        },
+        PersonalFabricAction::SpatialInputSequenced {
+            lease_nonce: lease.nonce,
+            sequence: 1,
+            event: motion(5),
+        },
+        PersonalFabricAction::SpatialInputSequenced {
+            lease_nonce: lease.nonce,
+            sequence: 1,
+            event: button,
+        },
+        PersonalFabricAction::SpatialInputSequenced {
+            lease_nonce: lease.nonce,
+            sequence: 1,
+            event: key,
+        },
+        PersonalFabricAction::SpatialInputSequenced {
+            lease_nonce: lease.nonce,
+            sequence: 3,
+            event: motion(12),
+        },
+    ];
+    for (index, action) in actions.into_iter().enumerate() {
+        let request_id = [u8::try_from(index + 1).unwrap(); 16];
+        let envelope = PersonalFabricActionEnvelope {
+            request_id,
+            source: fixture.controller.clone(),
+            target: lease.target.clone(),
+            issued_unix_ms: tilo_clock::unix_now_ms(),
+            action,
+        };
+        fixture.network.dispatch_personal_fabric_action(
+            route.endpoint_id,
+            *route.endpoint_id.as_bytes(),
+            route.clone(),
+            &postcard::to_allocvec(&envelope).unwrap(),
+        );
+        let received = fixture.network.take_personal_fabric_actions();
+        assert_eq!(
+            received.len(),
+            1,
+            "the real wire decoder and replay gate must admit each exact certified packet"
+        );
+        for item in received {
+            assert!(fixture.network.personal_route_is_current(&item.route));
+            assert!(ContinuityPolicySnapshot::load().permits_action(&item.envelope.action));
+            handle_spatial_action(
+                &fixture.network,
+                &item.route,
+                &item.envelope.target,
+                item.envelope.action,
+            );
+        }
+    }
+    assert_eq!(
+        fixture.actions(),
+        vec![PersonalFabricAction::SpatialInputProtocol {
+            lease_nonce: lease.nonce,
+            acknowledgement: true
+        }]
+    );
+    assert_eq!(
+        take_spatial_input(),
+        [motion(10), button, key, motion(12)]
+            .into_iter()
+            .map(|event| (fixture.controller.clone(), event))
+            .collect::<Vec<_>>()
+    );
+    drop(fixture);
+}
