@@ -215,6 +215,20 @@ enum Opaque {
     None,
 }
 
+/// The DRM presenter's report for an output whose primary plane scans out
+/// `XRGB8888` linear and tiled, and `ARGB8888` linear.
+fn stand_in_plane() -> Arc<ScanoutPlane> {
+    let format = |code, modifier| Format { code, modifier };
+    Arc::new(ScanoutPlane {
+        device: SCANOUT_DEVICE,
+        formats: vec![
+            format(Fourcc::Xrgb8888, Modifier::Linear),
+            format(Fourcc::Argb8888, Modifier::Linear),
+            format(Fourcc::Xrgb8888, Modifier::from(TILED)),
+        ],
+    })
+}
+
 /// A fullscreen client with surface feedback, and the frame builder that
 /// decides each frame's scanout candidate.
 struct Fixture {
@@ -299,23 +313,6 @@ impl Fixture {
             "Fullscreen".to_owned(),
             Rect::new(0.0, 0.0, f64::from(size.0), f64::from(size.1)),
         )));
-        let plane = Arc::new(ScanoutPlane {
-            device: SCANOUT_DEVICE,
-            formats: vec![
-                Format {
-                    code: Fourcc::Xrgb8888,
-                    modifier: Modifier::Linear,
-                },
-                Format {
-                    code: Fourcc::Argb8888,
-                    modifier: Modifier::Linear,
-                },
-                Format {
-                    code: Fourcc::Xrgb8888,
-                    modifier: Modifier::from(TILED),
-                },
-            ],
-        });
         let first = h
             .client
             .batches
@@ -337,7 +334,7 @@ impl Fixture {
             memfd: grey_memfd(),
             frames,
             outputs: vec![Output::new(OutputId(0), size, 1.0)],
-            plane,
+            plane: stand_in_plane(),
             importable,
         }
     }
@@ -392,7 +389,7 @@ impl Fixture {
     /// Build a frame and hand the compositor its offer as the native loop
     /// does, with `plane` standing in for the backend's
     /// `Backend::scanout_plane`; returns whether the frame had a candidate.
-    fn frame(&mut self, plane: Option<Arc<ScanoutPlane>>) -> bool {
+    fn frame(&mut self, plane: Option<&Arc<ScanoutPlane>>) -> bool {
         let frame = self.frames.paint_with_damage();
         let candidate = frame.scanout_candidate();
         if let Some(candidate) = candidate {
@@ -402,7 +399,7 @@ impl Fixture {
             );
         }
         let had_candidate = candidate.is_some();
-        let offer = scanout_feedback::offer(candidate, &self.outputs, |_| plane.clone());
+        let offer = scanout_feedback::offer(candidate, &self.outputs, |_| plane.cloned());
         self.h.state.update_scanout_feedback(offer);
         self.h.pump();
         had_candidate
@@ -493,20 +490,17 @@ fn a_fullscreen_opaque_client_gets_a_scanout_tranche_until_it_could_not_be_scann
     fixture.toplevel.set_fullscreen(None);
     fixture.h.pump();
     fixture.commit(Fourcc::Argb8888, Opaque::None);
-    assert!(
-        fixture.frame(Some(Arc::clone(&plane))),
-        "the client is the candidate"
-    );
+    assert!(fixture.frame(Some(&plane)), "the client is the candidate");
     assert_eq!(fixture.batches(), 1, "nothing to tell a translucent client");
 
     // Phase `fullscreen_and_opaque`: the same buffer declared opaque.
     fixture.commit(Fourcc::Argb8888, Opaque::Whole);
-    assert!(fixture.frame(Some(Arc::clone(&plane))));
+    assert!(fixture.frame(Some(&plane)));
     assert_eq!(fixture.batches(), 2, "the client is told");
     fixture.assert_scanout("a fullscreen, opaque client");
 
     // Phase `unchanged_frames_resend_nothing`.
-    assert!(fixture.frame(Some(Arc::clone(&plane))));
+    assert!(fixture.frame(Some(&plane)));
     assert_eq!(fixture.batches(), 2, "the same offer is not resent");
 
     // Phase `chrome_over_it`: the on-screen keyboard rises over the client.
@@ -514,10 +508,7 @@ fn a_fullscreen_opaque_client_gets_a_scanout_tranche_until_it_could_not_be_scann
     fixture
         .frames
         .set_osk_surface(Some(KEYBOARD), None, None, true);
-    assert!(
-        !fixture.frame(Some(Arc::clone(&plane))),
-        "chrome voids the candidate"
-    );
+    assert!(!fixture.frame(Some(&plane)), "chrome voids the candidate");
     assert_eq!(fixture.batches(), 3);
     fixture.assert_default("chrome over the client");
 
@@ -525,7 +516,7 @@ fn a_fullscreen_opaque_client_gets_a_scanout_tranche_until_it_could_not_be_scann
     fixture
         .frames
         .set_osk_surface(Some(KEYBOARD), None, None, false);
-    assert!(fixture.frame(Some(Arc::clone(&plane))));
+    assert!(fixture.frame(Some(&plane)));
     assert_eq!(fixture.batches(), 4);
     fixture.assert_scanout("the keyboard down again");
 
@@ -535,20 +526,20 @@ fn a_fullscreen_opaque_client_gets_a_scanout_tranche_until_it_could_not_be_scann
     fixture
         .frames
         .set_transient_surfaces(&[(popup, Rect::new(4.0, 4.0, 20.0, 20.0))]);
-    assert!(!fixture.frame(Some(Arc::clone(&plane))));
+    assert!(!fixture.frame(Some(&plane)));
     fixture.assert_default("a popup over the client");
     fixture.frames.set_transient_surfaces(&[]);
-    assert!(fixture.frame(Some(Arc::clone(&plane))));
+    assert!(fixture.frame(Some(&plane)));
     fixture.assert_scanout("the popup closed");
 
     // Phase `turned_translucent`: its next buffer drops the region.
     fixture.commit(Fourcc::Argb8888, Opaque::None);
-    assert!(fixture.frame(Some(Arc::clone(&plane))));
+    assert!(fixture.frame(Some(&plane)));
     fixture.assert_default("a translucent buffer");
 
     // Phase `xrgb_is_opaque_by_format`.
     fixture.commit(Fourcc::Xrgb8888, Opaque::None);
-    assert!(fixture.frame(Some(Arc::clone(&plane))));
+    assert!(fixture.frame(Some(&plane)));
     fixture.assert_scanout("an XRGB buffer");
 
     // Phase `no_scanout_plane`: headless, lavapipe, a rotated or calibrated
@@ -569,13 +560,13 @@ fn a_fullscreen_opaque_client_gets_a_scanout_tranche_until_it_could_not_be_scann
         }],
     });
     let before = fixture.batches();
-    assert!(fixture.frame(Some(tiled_only)));
+    assert!(fixture.frame(Some(&tiled_only)));
     assert_eq!(
         fixture.batches(),
         before,
         "still the default, nothing resent"
     );
-    assert!(fixture.frame(Some(Arc::clone(&plane))));
+    assert!(fixture.frame(Some(&plane)));
     fixture.assert_scanout("a plane with linear formats again");
 
     // Phase `left_fullscreen`: the frame still draws the surface on top (the
@@ -583,7 +574,7 @@ fn a_fullscreen_opaque_client_gets_a_scanout_tranche_until_it_could_not_be_scann
     // fullscreen client, so it is not offered the plane.
     fixture.toplevel.unset_fullscreen();
     fixture.h.pump();
-    assert!(fixture.frame(Some(Arc::clone(&plane))));
+    assert!(fixture.frame(Some(&plane)));
     fixture.assert_default("out of fullscreen");
 
     store().forget(KEYBOARD);
