@@ -569,96 +569,21 @@ impl Widget for ContactList {
 
 /// The content column when there is no one to show: the toolkit's empty
 /// state, one sentence and, on a first run, the one action that starts the
-/// book. Its action is handed to the app after every event and activation
-/// that reaches it.
-pub(crate) struct EmptyPane {
-    state: EmptyState,
-    shared: Shared,
-    request: Option<Request>,
+/// book.
+pub(crate) fn empty_pane(
+    shared: &Shared,
+    title: &str,
+    action: Option<(&str, Request)>,
+) -> ui::widget::Element {
+    let state = EmptyState::new(title).with_icon(Icon::Users);
+    Box::new(match action {
+        Some((label, request)) => state
+            .with_action(label)
+            .with_action_id(EMPTY_ACTION)
+            .on_view(queue(shared, request)),
+        None => state,
+    })
 }
 
 /// The empty state's action, for assistive technology and agents.
 pub(crate) const EMPTY_ACTION: &str = "contacts.empty.action";
-
-impl EmptyPane {
-    pub(crate) fn new(shared: Shared, title: &str, action: Option<(&str, Request)>) -> Self {
-        let state = EmptyState::new(title).with_icon(Icon::Users);
-        let (state, request) = match action {
-            Some((label, request)) => (
-                state.with_action(label).with_action_id(EMPTY_ACTION),
-                Some(request),
-            ),
-            None => (state, None),
-        };
-        Self {
-            state,
-            shared,
-            request,
-        }
-    }
-
-    fn drain(&mut self) {
-        if self.state.take_action()
-            && let Some(request) = &self.request
-        {
-            self.shared.borrow_mut().push(request.clone());
-        }
-    }
-}
-
-impl ui::widget::Decorator for EmptyPane {
-    type Inner = EmptyState;
-
-    fn inner(&self) -> &EmptyState {
-        &self.state
-    }
-
-    fn inner_mut(&mut self) -> &mut EmptyState {
-        &mut self.state
-    }
-
-    fn build_layout(
-        &mut self,
-        taffy: &mut TaffyTree<()>,
-        theme: &Theme,
-        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
-    ) -> NodeId {
-        let node = Widget::build_layout(&mut self.state, taffy, theme, node_map);
-        // Keyboard activation reaches the focused node, so this pane answers
-        // for it and hands the action on.
-        ui::widget::decorator::register_node(node_map, node, self);
-        node
-    }
-
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
-        Widget::handle_event(&mut self.state, event, ctx);
-        self.drain();
-    }
-
-    fn perform_action(
-        &mut self,
-        action: &Action,
-        state: &mut ui::widget::Edits<'_>,
-        path: &ui::widget::ModelPath,
-    ) -> bool {
-        let done = Widget::perform_action(&mut self.state, action, state, path);
-        self.drain();
-        done
-    }
-
-    fn perform_semantic_action(
-        &mut self,
-        target: &str,
-        action: &Action,
-        state: &mut ui::widget::Edits<'_>,
-        path: &ui::widget::ModelPath,
-    ) -> bool {
-        let done = Widget::perform_semantic_action(&mut self.state, target, action, state, path);
-        self.drain();
-        done
-    }
-
-    fn test_id(&self) -> Option<&str> {
-        Some("contacts.empty")
-    }
-}
