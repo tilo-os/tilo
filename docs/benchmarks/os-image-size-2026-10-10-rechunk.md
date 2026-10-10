@@ -18,6 +18,51 @@ over the two images of Build / OS dev run 92862 (pull request #4111, revision
 new manifest whose digests the old one does not have, which is what bootc
 downloads.
 
+## Update size
+
+Two Build / OS dev builds (x86_64, runs 93859 and 94090, dispatched on a
+throwaway branch): main `8e6975576c`, then that commit with one app changed
+(`apps/calculator`, `HISTORY_CAP` 64 → 65). Each build pushed both layouts.
+
+| update `8e69755` → `824e3c2` (one app changed) | new layers | download | share of the image |
+|---|---:|---:|---:|
+| layered (one layer per Containerfile instruction) | 118 of 187 | 3,689,501,680 B | 78.3 % |
+| rechunked | 7 of 145 | **215,178,773 B** | **5.1 %** |
+
+17 times less. Other pairs measured the same way:
+
+| update | layered | rechunked |
+|---|---:|---:|
+| pull request `27042bb` → `cd9ed1c` (receipt and ceilings only; nothing the image reads) | 3,689,436,177 B (78.3 %) | 215,088,007 B (5.1 %) |
+| main `5f091b5` → `927bede` (seven merges, 74 files: SDK, packaging, browser, notes) | 3,689,873,407 B (78.3 %) | 689,770,510 B (16.2 %) |
+
+What the one-app update downloads: five layers of app binaries and app
+packages (28 to 42 MB each), the 41 MB layer of Tilo's small files, and the
+directory layer (0.25 MB). The calculator's own change is inside one of the
+five; the other four and most of the small-file layer change in every build,
+because the app packages are not reproducible: each `.tapp` under
+`/usr/share/tilo-apps/cohort` has new bytes at the same size, and each
+env-runtime package under `/usr/share/tilo-apps/pkgs/<hash>/` gets a new hash
+directory around an identical binary. That is why an update that changes
+nothing the image reads costs the same 215 MB. With reproducible app packages
+a one-app update would be about one app layer.
+
+The layered image re-sends 78 % in every case: every layer from the package
+transaction on is a new blob in each build, whatever changed.
+
+## Install and boot
+
+Release / OS refused a dispatch on main (93311) before building, by its own
+rule: the pinned app collection must match the OS commit. Dev / VM acceptance
+installed and booted main's dev disk built FROM the first rechunked main image
+(`5f091b55c1`, run 93675, `swap=none`): 52 of 67 checks pass. The same suite on
+the last main dev image before the change (`8a7f570a0d`, run 93886): 48 of 67.
+Every check that fails on the rechunked image fails on the earlier one too
+(A07 A09 A13 A14 B03 B05 B06 B07 R02 R05 U02 U03 W16 W19 W20: Xwayland, the
+on-screen keyboard, display and Bluetooth hardware, GPU rendering and
+animation pacing on runners without a GPU); R01 R04 R06 W17 failed only on the
+earlier one.
+
 ## Size (same tree, both layouts)
 
 | image | layers | compressed | payload | unique content | undeployed | redundant payload |
