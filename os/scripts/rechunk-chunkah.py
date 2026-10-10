@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run chunkah over the OS image's root, giving some trees layers of their own (TIL-747).
+"""Run chunkah over the OS image's root, giving some trees layers of their own.
 
 chunkah groups files by RPM package, puts files over 1 MB on their own, and
 packs every other file into one "unclaimed" component, which is one layer.

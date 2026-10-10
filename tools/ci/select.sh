@@ -60,7 +60,7 @@ python3 tools/ci/affected_packages.py --base "$base" --shards 2 "${selection_arg
   echo '```'
 } >> "$GITHUB_STEP_SUMMARY"
 # The affected apps whose tapps the `tapps` job packages and holds to their
-# size budgets before the merge (TIL-765; DEVELOPMENT.md, "App package size"):
+# size budgets before the merge (DEVELOPMENT.md, "App package size"):
 # those of the default collection closest to a budget, at most a few, so a
 # toolkit change does not package the whole collection. Only pull requests:
 # on main, Release / apps measures every affected app after the merge.

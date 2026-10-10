@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Re-lay a built OS image out by content (TIL-747), prove it is the same tree,
+# Re-lay a built OS image out by content, prove it is the same tree,
 # and publish it in place of the raw image.
 #
 #   rechunk-image.sh --builder NAME --source SOURCE --name IMAGE:TAG --epoch SECONDS

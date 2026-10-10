@@ -2662,7 +2662,7 @@ fn assert_repaints_under_one_percent(damage: &[FineDamageRect], label: &str) {
         .sum();
     let share = |value: u64| f64::from(u32::try_from(value).unwrap_or(u32::MAX));
     eprintln!(
-        "TIL-579 raster pixels ({label}): {pixels} of {output} ({:.3}%); a dense frame is {output}",
+        "raster pixels ({label}): {pixels} of {output} ({:.3}%); a dense frame is {output}",
         share(pixels) * 100.0 / share(output)
     );
     assert!(
@@ -2872,7 +2872,7 @@ fn hovering_a_tab_repaints_that_tab_not_the_output() {
     paint_retained_and_compare(&mut retained, &mut dense, &hovered, "tab hovered");
 }
 
-// TIL-744: overlays, in-process app widgets and tooltips repaint what they
+// overlays, in-process app widgets and tooltips repaint what they
 // change, not the output or the tile.
 
 /// A theme by name.
@@ -3083,7 +3083,7 @@ fn assert_change_repaints_under(
     let output = u64::from(NATIVE_WIDTH) * u64::from(NATIVE_HEIGHT);
     let pixels = raster_pixels(&changed);
     eprintln!(
-        "TIL-744 raster pixels ({label}): {pixels} of {output} ({}); a dense frame is {output}",
+        "raster pixels ({label}): {pixels} of {output} ({}); a dense frame is {output}",
         if changed.damage_regions.is_some() {
             "sparse"
         } else {

@@ -1,5 +1,5 @@
 //! What presence costs the host, and that coalescing it keeps what a
-//! receiver draws (TIL-710).
+//! receiver draws.
 //!
 //! A collaborator drags a pointer at 100 Hz through the real relay, then
 //! moves a caret and clears the pointer, publishing as the shell does
@@ -18,7 +18,7 @@
 //! A second scenario types: each keystroke is a retained delta followed by
 //! the toolkit's `Typing` and `Caret`, as the shell sends them. The caret
 //! and typing are held for the delta they follow and ride in its write
-//! (TIL-776), so a `tilo-relay/7` member receives a keystroke in one write
+//!, so a `tilo-relay/7` member receives a keystroke in one write
 //! where it took two or three. It prints one `KEYSTROKE_WRITES key=value …`
 //! line and gates the median keystroke.
 //!
@@ -56,7 +56,7 @@ use crate::common::{TestDevice, TestRelay, TestUser, client_endpoint, spawn_rela
 const WORKSPACE: u64 = 710;
 const ROOM: &str = "5e11f00d-7110-4625-8000-000000000710";
 const MOVES: u32 = 60;
-/// What each presence frame cost on `tilo-relay/5` before TIL-710, ~236 B
+/// What each presence frame cost on `tilo-relay/5` before the change, ~236 B
 /// for a pointer move; on `tilo-relay/6` it must stay well below a third.
 const BUDGET_SLOT_CODED_BYTES_PER_PRESENCE: f64 = 70.0;
 

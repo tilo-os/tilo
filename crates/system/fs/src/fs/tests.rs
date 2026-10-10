@@ -526,7 +526,7 @@ mod availability_control_tests {
         endpoint.close().await;
     }
 
-    /// TIL-750. The faults the repair tick existed for, with no tick to
+    /// The faults the repair tick existed for, with no tick to
     /// lean on (an hour's backstop): a pinned folder gains a file through a
     /// namespace change no FUSE callback saw (as a remote apply does), and
     /// a folder is pinned by a registry writer other than this mount (as

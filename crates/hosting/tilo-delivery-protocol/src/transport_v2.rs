@@ -28,7 +28,7 @@ pub const ALPN_SIGNED_ACTIONS_V1: &[u8] = b"tilo-relay/4";
 /// never written to a session on an older protocol, whose decoder lacks it.
 pub const ALPN_COMPACT_STATE_V1: &[u8] = b"tilo-relay/5";
 
-/// [`ALPN_COMPACT_STATE_V1`] whose presence arrives batched (TIL-710): the
+/// [`ALPN_COMPACT_STATE_V1`] whose presence arrives batched: the
 /// relay writes the presence it forwards as [`EnvelopeV2::PresenceBatch`]
 /// frames whose items are coded against what the session last received in
 /// the same slot. The session reader expands a batch back into one
@@ -36,7 +36,7 @@ pub const ALPN_COMPACT_STATE_V1: &[u8] = b"tilo-relay/5";
 /// sees one, and it is never written to a session on an older protocol.
 pub const ALPN_PRESENCE_BATCH_V1: &[u8] = b"tilo-relay/6";
 
-/// [`ALPN_PRESENCE_BATCH_V1`] whose live deltas arrive coded (TIL-755): the
+/// [`ALPN_PRESENCE_BATCH_V1`] whose live deltas arrive coded: the
 /// relay writes a zero-signature delta as [`EnvelopeV2::CodedDelta`], ranges
 /// of the last delta frame the session received from the same author in the
 /// same room and the bytes in between. The session reader rebuilds the

@@ -1,4 +1,4 @@
-//! Per-process cost of establishing the font catalog's bytes (TIL-597).
+//! Per-process cost of establishing the font catalog's bytes.
 //!
 //! Times, warm, the two ways a process can trust the catalog at `ROOT`:
 //! hashing every file ([`Trust::Verify`], what every process did) and the

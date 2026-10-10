@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """Compositor-side input and workspace-switch latency on a headless compositor.
 
-The nightly half of the latency KPIs (TIL-587; the Linear document
-"Performance and cost KPIs"): one disposable `shell --backend headless`
+The nightly half of the latency KPIs: one disposable `shell --backend headless`
 session, driven through its test-control socket, measures
 
 - `latency.workspace_switch.first_frame`, `.settled`, `.dropped_frames`:

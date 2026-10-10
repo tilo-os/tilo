@@ -152,7 +152,7 @@ def thread_groups(rows: list[dict]) -> list[dict]:
 
 # The compositor's threads that its GPU driver started. The compositor names the thread that
 # opens the device `tilo-gpu-driver` while it does, so threads the driver starts then take that
-# name (shell present.rs DRIVER_THREAD_NAME, TIL-739); Mesa's CPU rasteriser names its rasteriser
+# name (shell present.rs DRIVER_THREAD_NAME); Mesa's CPU rasteriser names its rasteriser
 # threads `llvmpipe-N` itself. On a GPU these threads hardly run. On lavapipe they are the
 # rasteriser: its unnamed compute-shader pool runs every Vello stage of every frame.
 GPU_DRIVER_GROUPS = ("llvmpipe", "tilo-gpu-driver")
@@ -582,7 +582,7 @@ def _record_idle(ctx, m: dict, ram_mib: int, variant: str = "") -> None:
     ctx.record(f"idle.ram_mib{suffix}", "MiB", [ram_mib], what="guest MemTotal - MemAvailable")
     if not variant:
         # The part of idle.shell_cpu_pct on the GPU driver's threads: on lavapipe, the
-        # window's frames rasterised (TIL-739).
+        # window's frames rasterised.
         ctx.record("idle.gpu_driver_cpu_pct", "percent", [m["shell_gpu_driver_cpu_pct"]],
                    frames=m["frames_painted"], software=software_renderer(ctx), **window)
         # Context switches of the compositor's main thread, its loop: each is a wakeup or
@@ -612,7 +612,7 @@ def _open_several(ctx):
             pass
     time.sleep(8)
     # Terminal's shell runs once its guest is built, which on an account's first session
-    # imports the environment's runtime first (TIL-708). Waiting for it keeps that
+    # imports the environment's runtime first. Waiting for it keeps that
     # one-time import out of the idle window that follows.
     if "so.tilo.terminal" in groups:
         ctx.facts["terminal_shell_s"] = core.wait_new_terminal_shell(ctx, shells, core.TERMINAL_SHELL_S)
@@ -645,7 +645,7 @@ def _budget_problems(m, budgets, prefix, software=False):
     """The idle window against its budgets.
 
     On a software renderer (`software`) the compositor's CPU is judged without its CPU
-    rasteriser's threads (TIL-739). On a real desktop a GPU does the work of the frames the
+    rasteriser's threads. On a real desktop a GPU does the work of the frames the
     budget allows, a few milliseconds of it, while lavapipe spends ~0.4 s of CPU on each. The
     frames stay gated, and a rasteriser that runs with no frame painted fails."""
     problems = []
@@ -678,7 +678,7 @@ def _budget_problems(m, budgets, prefix, software=False):
 
 
 def ush_problems(ush: dict | None, shell_s: float | None, budgets: dict) -> list[str]:
-    """Terminal's shell runtime against its idle budget (TIL-701): an idle Terminal,
+    """Terminal's shell runtime against its idle budget: an idle Terminal,
     its shell running and nothing typed, costs `tilo-ush` almost nothing."""
     if shell_s is None:
         return [f"Terminal's shell did not run within {core.TERMINAL_SHELL_S} s, so tilo-ush "
@@ -905,8 +905,8 @@ def mem(ctx, res):
 AFTER_CLOSE_SETTLE_S = 5
 
 # The slot user's per-user runtime builds and app store, in bytes: what downloaded
-# runtimes and apps hold on disk once collection after each change ran (TIL-748,
-# TIL-753). A build is a directory under tilo-runtime whose name has no leading dot.
+# runtimes and apps hold on disk once collection after each change ran.
+# A build is a directory under tilo-runtime whose name has no leading dot.
 DISK = r"""
 data=${XDG_DATA_HOME:-$HOME/.local/share}
 for d in tilo-runtime tilo-apps; do
@@ -1052,7 +1052,7 @@ def boot(ctx, res):
 
 # Where a passing boot's time went, written on every run (the gate names it only on a
 # failing or slow boot): systemd's own phases, the greeter's critical chain, the units that
-# took longest and the whole boot as a plot (TIL-767).
+# took longest and the whole boot as a plot.
 BOOT_ANALYSIS = r"""
 exec 2>&1
 echo "== time"; systemd-analyze time --no-pager
@@ -1142,7 +1142,7 @@ def render_gate(ctx, res):
     expect(not failures, "; ".join(failures) + f" [renderer: {ctx.facts.get('renderer')}]")
 
 
-# -- greeter sign-in to the desktop (TIL-767) ---------------------------------------
+# -- greeter sign-in to the desktop ---------------------------------------
 
 # One sh script, so ssh latency never lands inside the measured window: sign in at the
 # seat0 greeter through its console action, then poll every 20 ms for each step of the

@@ -33,7 +33,7 @@ pub const MEDIA_TYPE: &str = "application/zstd";
 
 /// zstd level twins are written at. Measured on real packages, level 19
 /// cuts app `.tapp`s to 34–42 % and the runtime's libraries to about a third
-/// (TIL-600); a higher level gains bytes in the thousandths.
+///; a higher level gains bytes in the thousandths.
 pub const LEVEL: i32 = 19;
 
 /// Largest window, as a power of two, a twin is compressed with and a reader

@@ -791,7 +791,7 @@ def processes(ctx) -> dict:
 # DRM and /dev/shm fd, its size and the bytes allocated to it (`stat -L` through the fd:
 # a memfd's st_blocks are its shmem pages, mapped or not), and from fdinfo a dma-buf's
 # size and exporter and a DRM fd's GEM totals. Shmem the compositor's cgroup holds that
-# nothing maps (TIL-731) is named here.
+# nothing maps is named here.
 SHELL_MEMORY = r'''
 pid=__PID__
 awk '/^(VmRSS|RssAnon|RssFile|RssShmem|VmSwap|Threads):/ {print "S", $1, $2}' /proc/$pid/status
@@ -913,7 +913,7 @@ def terminal_probe(ctx, name: str) -> list[str]:
 # How long a new Terminal window may stand before its shell runs. The first
 # session of an account also imports the environment's runtime into the user's
 # package store: 7.5-21 s on the CI VM depending on its load, 40-46 s while the
-# import synced once per file (TIL-708; runs 90460, 90980 and 90397, 90249).
+# import synced once per file (runs 90460, 90980 and 90397, 90249).
 TERMINAL_SHELL_S = 45
 
 # Performance is a separate verdict from eventual readiness. The batched

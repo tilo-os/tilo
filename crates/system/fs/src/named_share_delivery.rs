@@ -293,7 +293,7 @@ impl NamedShareOutbox {
 
     /// Resolves once a delivery has been enqueued since the last time this
     /// resolved (or since the outbox opened). The delivery loop waits on it
-    /// instead of polling an empty outbox (TIL-750).
+    /// instead of polling an empty outbox.
     pub async fn arrival(&self) {
         self.arrivals.notified().await;
     }
@@ -792,7 +792,7 @@ impl NamedShareInbox {
 
     /// Resolves once an envelope has been accepted since the last time this
     /// resolved (or since the inbox opened), so the recipient service mounts
-    /// it at once instead of on its next pass (TIL-750).
+    /// it at once instead of on its next pass.
     pub async fn arrival(&self) {
         self.arrivals.notified().await;
     }

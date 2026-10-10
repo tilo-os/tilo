@@ -13612,7 +13612,7 @@ mod tests {
 
     /// Automatic brightness is off by default, so on almost every desktop its
     /// worker has nothing to do: it waits for a settings change instead of
-    /// waking every 2 s (TIL-690 measured 0.5 wakeups/s on an idle desktop).
+    /// waking every 2 s (measured at 0.5 wakeups/s on an idle desktop).
     #[test]
     fn auto_brightness_worker_sleeps_while_the_setting_is_off() {
         let source = std::sync::Arc::new(settings_store::HostDocument::new(

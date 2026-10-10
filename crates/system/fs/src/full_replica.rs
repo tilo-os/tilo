@@ -223,7 +223,7 @@ pub fn save_status(path: &Path, status: &FullReplicaStatus) -> Result<()> {
 /// releases it however the process ends, crash included.
 ///
 /// This replaces restamping the status every second to keep it recent
-/// (TIL-774): the replica now writes its status only when the status
+///: the replica now writes its status only when the status
 /// changes, and sleeps in between.
 #[derive(Debug)]
 pub struct ReplicaLiveness {
@@ -539,7 +539,7 @@ mod tests {
     /// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
     const HANG_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
 
-    /// TIL-774. A replica is running exactly while it holds its liveness
+    /// A replica is running exactly while it holds its liveness
     /// lock, and two replicas cannot serve one status file.
     #[test]
     fn a_replica_is_running_while_it_holds_its_liveness_lock() {

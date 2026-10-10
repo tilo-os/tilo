@@ -77,7 +77,7 @@ pub(super) struct Devices {
 /// call reads one (its output, its microphone, the inputs it offers). With no
 /// call there is nothing to keep fresh, so the refresh loop, a blocking
 /// `PipeWire` registry round trip each second, parks instead of waking the
-/// network runtime for nothing (TIL-702).
+/// network runtime for nothing.
 pub(super) struct Watch(Arc<Devices>);
 impl Drop for Watch {
     fn drop(&mut self) {
@@ -518,7 +518,7 @@ mod tests {
         }
     }
 
-    /// TIL-702: with no call nothing reads an observation, so the loop does
+    /// with no call nothing reads an observation, so the loop does
     /// not run its once-a-second registry round trip; a call's watch starts
     /// it and its end parks it again.
     #[test]

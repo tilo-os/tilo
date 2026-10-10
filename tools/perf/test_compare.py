@@ -330,7 +330,7 @@ class EndToEnd(unittest.TestCase):
                 results = root / f"night-{day}.jsonl"
                 record.write(results, record.from_samples("render.frame_ms.4k", "ms", [10, 10, 11],
                                                           started_at=f"2026-10-{day:02d}T01:15:00Z", **ENV))
-                status = self.run_compare(root, results, f"{day}-1", "--synthetic", "til-580",
+                status = self.run_compare(root, results, f"{day}-1", "--synthetic", "synthetic-series",
                                           "--synthetic-factor", "1.25")
                 self.assertEqual(status, expected, (root / f"{day}-1.md").read_text())
             self.assertIn("**regression**", (root / "7-1.md").read_text())

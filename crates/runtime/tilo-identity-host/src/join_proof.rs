@@ -555,7 +555,7 @@ pub(crate) mod tests {
         });
         assert_eq!(mints, 0);
         eprintln!(
-            "TIL-593 join proof: re-derived from disk {:?}/call, served from stamps {:?}/call",
+            "join proof: re-derived from disk {:?}/call, served from stamps {:?}/call",
             minted.checked_div(ROUNDS).unwrap_or_default(),
             cached.checked_div(ROUNDS).unwrap_or_default(),
         );

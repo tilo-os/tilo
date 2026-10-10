@@ -4938,7 +4938,7 @@ mod tests {
     }
 
     /// A dial wakes the relays; what a lone desktop does on every local
-    /// change (join its own topic, publish to it) does not (TIL-740).
+    /// change (join its own topic, publish to it) does not.
     #[test]
     fn only_a_remote_party_needs_this_device_reachable() {
         let addr = EndpointAddr::new(iroh::SecretKey::generate().public());

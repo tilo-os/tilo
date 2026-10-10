@@ -3402,7 +3402,7 @@ mod two_sessions {
         }
         let gated = started.elapsed();
         eprintln!(
-            "TIL-136 roster per idle frame, 30 named peers: derived every frame {:?}, gated {:?}",
+            "roster per idle frame, 30 named peers: derived every frame {:?}, gated {:?}",
             derived / FRAMES,
             gated / FRAMES,
         );

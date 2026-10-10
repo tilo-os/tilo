@@ -34,7 +34,7 @@ Each adapter reads what a benchmark already prints and emits records through
   `wakeups.frame_loop_ticks.headless_two_apps` (its frame loop's iterations).
 - `framework-open LOG...`: the `FRAMEWORK-OPEN tasks=<n> samples_ms=<a,b,...>
   allocations=<x> heap_per_task=<y>` lines of
-  `crates/sdk/tilo-app/examples/framework-scaling.rs` (TIL-758), one per list
+  `crates/sdk/tilo-app/examples/framework-scaling.rs`, one per list
   size: opening a framework app over a record holding `n` items, to its first
   laid-out frame. Each size becomes `render.framework_open.ms.<size>` (every
   open is a sample), `.allocations.<size>` and `.heap_per_item.<size>` (one

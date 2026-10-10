@@ -1,10 +1,10 @@
-//! Handing the heap a closed window freed back to the kernel (TIL-705).
+//! Handing the heap a closed window freed back to the kernel.
 //!
 //! glibc keeps memory it has been given back. A whole-frame buffer freed
 //! after the allocator's dynamic mmap threshold rose past its size stays
 //! inside the arena it came from, and an arena returns only the free space
 //! at its very top. So after a window closed, its frames, its atlas space
-//! and the converted copies of its pixels stayed resident: the TIL-692
+//! and the converted copies of its pixels stayed resident: the window
 //! cycle test measured 61–75 MiB free inside glibc's arenas and still
 //! counted in the compositor's anonymous RSS.
 //!
@@ -17,7 +17,7 @@
 //! [`MIN_INTERVAL`]. Between requests the thread sleeps on a condition
 //! variable, so an idle session never wakes for it.
 //!
-//! The same trim returns what a software GPU freed (TIL-731). Lavapipe keeps
+//! The same trim returns what a software GPU freed. Lavapipe keeps
 //! every page of device memory a closed window's textures touched in a memfd
 //! until something punches it out; a renderer on lavapipe registers its
 //! device with [`register_device`], and each trim hands the device's free
@@ -318,7 +318,7 @@ fn trim() {
     release_device_memory();
 }
 
-/// Return what each registered software-GPU device freed (TIL-731).
+/// Return what each registered software-GPU device freed.
 fn release_device_memory() {
     const MIB: u64 = 1 << 20;
     let registered: Vec<wgpu::Device> =

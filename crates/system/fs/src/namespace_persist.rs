@@ -10,7 +10,7 @@
 //! The persister learns of changes from the namespace itself
 //! ([`Namespace::subscribe_changes`]) instead of asking on a timer: an idle
 //! namespace costs no wakeup at all, where a 100 ms poll cost ten a second
-//! for the life of every mount (TIL-750). While changes keep arriving it
+//! for the life of every mount. While changes keep arriving it
 //! looks at most every [`SETTLE_STEP`], so a burst of edits wakes it a few
 //! times, not once per edit.
 
@@ -186,7 +186,7 @@ mod tests {
             .unwrap();
     }
 
-    /// TIL-750. A change is on disk within the bound the 100 ms poll kept
+    /// A change is on disk within the bound the 100 ms poll kept
     /// (500 ms after it, plus one look), a continuous run at least every
     /// 3 s, and an idle namespace is never written.
     #[tokio::test(start_paused = true)]

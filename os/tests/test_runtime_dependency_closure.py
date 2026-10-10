@@ -25,7 +25,7 @@ class RuntimeDependencies(unittest.TestCase):
             'bridge': 'extern int leaf(void); int bridge(void) { return leaf(); }',
             'runtime': '#include <stdio.h>\nextern int bridge(void); '
                        'int toolkit(void) { return puts("fixture") + bridge(); }\n'
-                       # What tools/ci/runtime-dylib-lazy-link.py records (TIL-713).
+                       # What tools/ci/runtime-dylib-lazy-link.py records.
                        '__attribute__((used, section(".tilo.lazy_needed"))) '
                        'static const char lazy_needed[] = "liblazy.so";',
             'deep': 'int deep(void) { return 3; }',

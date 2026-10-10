@@ -9004,7 +9004,7 @@ mod tests {
         (manager, asked, thread)
     }
 
-    /// TIL-598: an endpoint holding its route's keys asks for them again only
+    /// an endpoint holding its route's keys asks for them again only
     /// when the broker says the channel changed, once per change, and never
     /// on a timer: an idle app costs the identity service nothing.
     #[test]

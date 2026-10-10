@@ -35,12 +35,12 @@ PAYLOAD_STAGE = "native-builder-payload"
 INSTALL_STAGE = "component-files"
 # The baked runtime with the font catalog's other two names hard-linked to its
 # fonts, assembled under /image so the rootfs copies it in one COPY and the
-# fonts' bytes land in one layer (TIL-609). It installs `direct` trees written
+# fonts' bytes land in one layer. It installs `direct` trees written
 # at their final paths, each named in the stage's RUN as /image<path>.
 ASSEMBLED_STAGE = "runtime-image-payload"
 ASSEMBLED_COPY = ("/image/usr/", "/usr/")
 # The app store as the rootfs takes it: the payload stage's store, copied whole
-# and with the env-runtime's host-identical files left out (TIL-735). Its one
+# and with the env-runtime's host-identical files left out. Its one
 # COPY installs the `direct` store tree the payload stage carries.
 SEEDED_STAGE = "app-store"
 SEEDED_TREE = "/usr/share/tilo-apps/"

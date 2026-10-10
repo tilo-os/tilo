@@ -2,8 +2,7 @@
 """What an OS image costs to pull and to hold, and where the bytes go.
 
 The OS image is what every install downloads and every update pulls changed
-layers of. "Small footprint" is marketed, so its size is a KPI ("Performance
-and cost KPIs", Linear af384e878293; TIL-609) with a budget in
+layers of. "Small footprint" is marketed, so its size is a KPI with a budget in
 tools/perf/kpi-budgets.toml, recorded nightly by Perf / scheduled (footprint
 group). This script measures one image without a container engine: it
 streams every layer from the registry (or reads an OCI layout), checks each
@@ -45,7 +44,7 @@ records carry the image's own source revision as their commit.
 
 `--update-from OLD` adds what an update from OLD to the image downloads: the
 compressed layers the image has and OLD does not (bootc fetches a layer only
-when its digest is new; TIL-747). `--update-only` reads just the two
+when its digest is new). `--update-only` reads just the two
 manifests, for comparing many pairs of builds quickly:
 
     python3 tools/perf/image_size.py --image registry.tilo.so/tilo/tilo-ci:main-6503ea1-x86_64 \\

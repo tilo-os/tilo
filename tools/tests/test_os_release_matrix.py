@@ -376,7 +376,7 @@ class ReleaseGateTests(unittest.TestCase):
                     workflow[use.end():use.end() + 24],
                     r"^:\$(?:source_ref|first_ref|repro_ref)\b",
                 )
-            # The archives are rechunked in place (TIL-747); a descriptor is
+            # The archives are rechunked in place; a descriptor is
             # selected by the rechunked digest, or the build's when it is off.
             self.assertIn("'${{ steps.rechunk.outputs.digest || steps.build.outputs.digest "
                           "|| steps.build-uncached.outputs.digest }}'", workflow)

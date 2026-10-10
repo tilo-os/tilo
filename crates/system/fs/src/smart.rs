@@ -180,7 +180,7 @@ impl Heuristics {
         }
     }
 
-    /// Whether a file was opened since the last call (TIL-774).
+    /// Whether a file was opened since the last call.
     pub fn take_opened(&self) -> bool {
         self.opened.swap(false, Ordering::AcqRel)
     }
@@ -334,7 +334,7 @@ mod tests {
         }
     }
 
-    /// TIL-774. The policy monitor sleeps until a file is opened: the first
+    /// The policy monitor sleeps until a file is opened: the first
     /// open after a quiet interval wakes it, and opens are reported once
     /// per interval however many there were.
     #[tokio::test]

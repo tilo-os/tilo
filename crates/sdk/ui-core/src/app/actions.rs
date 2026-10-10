@@ -293,7 +293,7 @@ impl App {
             tracing::warn!(%error, "legacy control availability refused");
         }
         // A first page's control availability took 246 ms in Settings; the
-        // startup file names the stage (TIL-691). Startup-only: this runs on
+        // startup file names the stage. Startup-only: this runs on
         // every rebuild.
         tilo_startup_metrics::startup_mark("actions-legacy-done");
         let trace = self.trace_resource_stage(Stage::BoundDiscovery);
@@ -2330,7 +2330,7 @@ impl App {
         // The door resolves the action once and asks here, before anything
         // runs, whether it goes through the broker instead. Resolving it a
         // second time for that question built the whole published tree twice
-        // per keystroke into a bound field (TIL-751).
+        // per keystroke into a bound field.
         let has_delivery = broker_delivery.is_some();
         let connected = self.collaboration.manager.is_connected();
         let resolved = std::cell::Cell::new(None);

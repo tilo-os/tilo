@@ -147,7 +147,7 @@ level 19 (`tilo_app_package::compressed`): `/blobs/<blake3>.zst` for every
 blob and chunk, `/artifacts/<blake3>.tapp.zst` for every imported package.
 The release pipeline uploads `<file>.tapp.zst` beside every tapp it
 publishes (`tilo-app-package compress`). Measured on real packages, twins are
-34–42 % of an app tapp and 32 % of the runtime's payload (TIL-600).
+34–42 % of an app tapp and 32 % of the runtime's payload.
 
 A twin is transport only. Signatures, `tapp_blake3_hex`, `tapp_size_bytes`,
 blob names and chunk lists all describe the uncompressed bytes, and nothing

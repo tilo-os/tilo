@@ -65,7 +65,7 @@ const TTL: Duration = Duration::from_secs(10);
 // says it acts on, and the earliest retry deadline. This backstop only bounds
 // how long something none of those announce could go unrepaired; it compares
 // cheap change tokens and walks the namespace only when one of them moved.
-// It used to be the repair path itself, at 5 s (TIL-750).
+// It used to be the repair path itself, at 5 s.
 const PINNED_HYDRATION_BACKSTOP: Duration = Duration::from_secs(300);
 // A namespace change wakes the worker after this long, so a burst of remote
 // applies is one pass rather than one per change.

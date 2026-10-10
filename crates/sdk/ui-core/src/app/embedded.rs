@@ -942,7 +942,7 @@ mod theme_repaint_tests {
     }
 }
 
-/// TIL-696: a tile whose record was still being written at its last frame
+/// a tile whose record was still being written at its last frame
 /// left a wake deadline that only its next `draw` moved, so a compositor that
 /// does not paint for a due deadline woke for it on every park.
 #[cfg(test)]
@@ -1027,7 +1027,7 @@ mod saving_record_wake_tests {
         binding
             .records
             .with(&id, |doc| {
-                automerge::transaction::Transactable::put(doc, automerge::ROOT, "til-696", 1_u64)
+                automerge::transaction::Transactable::put(doc, automerge::ROOT, "edit", 1_u64)
                     .unwrap();
             })
             .unwrap();

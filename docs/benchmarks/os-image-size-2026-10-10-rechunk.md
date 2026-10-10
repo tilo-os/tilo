@@ -1,6 +1,6 @@
-# OS image size and update size, 2026-10-10: content-based layers (TIL-747)
+# OS image size and update size, 2026-10-10: content-based layers
 
-A follow-up of [the TIL-733/735/736 receipt](os-image-size-2026-10-10.md).
+A follow-up of [the first receipt](os-image-size-2026-10-10.md).
 Release / OS now re-lays every generic image it publishes out by content
 with chunkah ("Rechunk the image", DEVELOPMENT.md "Content-based layers").
 The raw image of the same build stays in the registry as

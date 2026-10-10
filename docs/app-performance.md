@@ -136,7 +136,7 @@ shared allocation experiment had no measurable benefit. Shared-layer stall is
 still unproven: next measure other widget families using the existing list and
 gallery diagnostic workloads before selecting app-specific changes.
 
-### Pointer motion keeps the published tree (TIL-628)
+### Pointer motion keeps the published tree
 
 Every input event used to drop the resource cache, and for a framework app
 every mutable record loan (each event dispatch takes one) advanced the bound
@@ -150,7 +150,7 @@ when hover opens or closes a nested menu). The bound snapshot is carried to the
 owner's new generation. Hover also skips the pre-dispatch availability
 projection, since hover activates nothing and every frame refreshes
 availability again before it paints. Every other event republishes as before
-(key releases and modifiers keep the tree too since TIL-751, below).
+(key releases and modifiers keep the tree too since the change, below).
 
 `cargo run --release -p tilo-app --features test-support --example
 framework-scaling` mounts a checklist of N tasks (title and checkbox per row) in
@@ -174,7 +174,7 @@ rows. Each frame still runs the full availability refresh in
 discovery still walks the bound owners and projection still visits every
 control.
 
-### A keystroke publishes twice (TIL-751)
+### A keystroke publishes twice
 
 Traced through the hosted path (`App::surface_input` for the key's press and
 release, each followed by the host's frame, `App::surface_frame`, and its
@@ -219,7 +219,7 @@ the real save-status frame to publish while preserving the typed draft. The
 clock override is test-support only, thread-local, and restored on unwind;
 production save sampling and clock readings keep their existing behaviour.
 
-### A frame that changes nothing no longer walks the published tree (TIL-761)
+### A frame that changes nothing no longer walks the published tree
 
 `sample` on the keystroke loop at 10,000 tasks
 (`TILO_SCALING_KEYSTROKES=400`) put layout and draw at 0.4 % of the samples.
@@ -248,14 +248,14 @@ release to the end of the frame after it. Same machine and method as above:
 `publication_per_keystroke::a_hosted_frame_that_changes_nothing_costs_the_same_whatever_the_list`
 holds the release frame at 1,000 tasks within 2× of 100 (it measured 4.2×
 before). The frame that shows a key still grows with the list: the edit
-changes the snapshot, so it publishes twice (TIL-751), rebuilds the
+changes the snapshot, so it publishes twice, rebuilds the
 accessibility tree's resource nodes and the controls' allowed addresses once,
 and `ResourceRoot::nested_views` builds every child once more. Making that
 flat needs publication that shares unchanged children between snapshots.
 
-### The frame that shows a key stays flat: a shared published tree (TIL-766)
+### The frame that shows a key stays flat: a shared published tree
 
-After TIL-761 the frame that shows a typed key still grew with the list,
+After the change the frame that shows a typed key still grew with the list,
 although the key edits the draft, which no item depends on. `sample` at
 10,000 tasks: 58 % rebuilding and diffing a semantic node per item, 25 %
 rebuilding, copying and permission-filtering every item resource on the
@@ -309,7 +309,7 @@ a small constant: each of the two publications per keystroke still reads every
 item's id and label from the state (`Fields::item_collections`) to compare the
 collections, 0.54 ms of publishing per keystroke in all.
 
-### Opening a long list (TIL-758)
+### Opening a long list
 
 `framework-scaling -- 5000,50000 open` reopens the checklist over a record
 already holding N tasks, five times, to its first laid-out frame. Each size

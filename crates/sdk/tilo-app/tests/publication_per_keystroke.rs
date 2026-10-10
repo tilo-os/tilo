@@ -271,7 +271,7 @@ fn a_hosted_keystroke_publishes_at_most_twice() {
         let counts = hosted_keystrokes(tasks).expect("keystrokes into a live window");
         let (first, rest) = counts.split_first().expect("a keystroke was observed");
         // One publication resolves the draft's edit in the door, one shows
-        // it in the next frame. Before TIL-751 the door resolved the edit a
+        // it in the next frame. Before the change the door resolved the edit a
         // second time to choose its route, and the key's release dropped the
         // tree so the frame after it published again: four.
         assert!(
@@ -397,7 +397,7 @@ fn best_hosted_frame_ms(tasks: u32, half: Half) -> Result<f64, String> {
 #[test]
 fn a_hosted_frame_that_changes_nothing_costs_the_same_whatever_the_list() {
     // Both windows are full: they mount the same rows, so only work that
-    // grows with the list can tell them apart. Before TIL-761 each such
+    // grows with the list can tell them apart. Before the change each such
     // frame copied the whole published tree, re-filtered and re-surveyed
     // every action for the controls, and rebuilt a semantic node per
     // resource: at 1,000 tasks it cost several times what it does at 100.
@@ -413,7 +413,7 @@ fn a_hosted_frame_that_changes_nothing_costs_the_same_whatever_the_list() {
 #[test]
 fn a_hosted_keystroke_costs_the_same_whatever_the_list() {
     // Both windows are full: they mount the same rows, so only work that
-    // grows with the list can tell them apart. Before TIL-766 every edit
+    // grows with the list can tell them apart. Before the change every edit
     // rebuilt each item's published resource, copied and filtered the whole
     // tree, re-surveyed every address for the controls and rebuilt a
     // semantic node per item, although the draft is no item's: at 1,000

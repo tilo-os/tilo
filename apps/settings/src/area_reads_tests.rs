@@ -1,5 +1,5 @@
 //! A live window opens on its pane without reading every other area of
-//! Settings first (TIL-712), and loses nothing for it: the pane shown
+//! Settings first, and loses nothing for it: the pane shown
 //! accepts what it accepted, a row of an area not yet read is still
 //! reached, and a few frames after the first the window publishes exactly
 //! what reading every area up front published.
@@ -229,7 +229,7 @@ fn a_window_publishes_every_area_a_little_after_its_first_frame() {
         "the first frame publishes only the areas that have read"
     );
     // The areas whose reads block read on the background executor and
-    // wake the window when they end (TIL-760); the others read a sync at a
+    // wake the window when they end; the others read a sync at a
     // time. `wait_until` drives frames and parks on the executor between
     // them, as the host's event loop sleeps until a wake.
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
@@ -265,7 +265,7 @@ fn a_window_publishes_every_area_a_little_after_its_first_frame() {
 }
 
 /// The host asks for a pending host intent on every turn of its event
-/// loop, the first before the first frame (TIL-760). Asking reads no
+/// loop, the first before the first frame. Asking reads no
 /// display: a display move is only pending in a model an effect has read.
 #[test]
 fn asking_for_a_host_intent_reads_no_display() {

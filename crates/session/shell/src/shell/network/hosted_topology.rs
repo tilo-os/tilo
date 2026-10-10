@@ -697,7 +697,7 @@ mod tests {
         }
         let skipped = started.elapsed();
         eprintln!(
-            "TIL-136 hosted topology look at a settled room ({} changes): copied and projected {:?}, settled {:?}",
+            "hosted topology look at a settled room ({} changes): copied and projected {:?}, settled {:?}",
             room.get_changes(&[]).len(),
             copied / LOOKS,
             skipped / LOOKS,

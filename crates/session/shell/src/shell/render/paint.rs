@@ -2503,7 +2503,7 @@ pub struct VelloDrmBridge {
     /// [`Self::paint_output_until`]. They share `target`'s renderer and device.
     output_surfaces: Vec<(super::OutputId, OutputSurface)>,
     /// On a software rasteriser, has each heap trim return the device memory
-    /// closed windows freed (TIL-731) for as long as this bridge lives.
+    /// closed windows freed for as long as this bridge lives.
     _device_memory: Option<crate::shell::heap_trim::DeviceRegistration>,
     /// Atlas side and renderer allocations at the last `RENDERER-MEMORY` line.
     logged_memory: Option<[u64; 6]>,
@@ -5107,7 +5107,7 @@ impl VelloDrmBridge {
         self.target.vello().memory_stats()
     }
 
-    /// After each frame (TIL-731). When a window closed since the last
+    /// After each frame. When a window closed since the last
     /// frame, the image atlas comes down within the next few frames rather
     /// than after sixty: a desktop that goes idle after a close draws too
     /// few to bring it down the slow way, and kept up to 256 MiB of atlas.

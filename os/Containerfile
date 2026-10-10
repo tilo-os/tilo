@@ -197,7 +197,7 @@ FROM ${BASE_REF} AS windows-compat-artifacts
 ## not execute a record's Steps, URLs, shell snippets, or dependencies.
 ## Proton names much of its content twice (the mono assemblies of each .NET API
 ## level, the prefix template's copies of wine's NLS files): hard-link those
-## within the tree so its layer carries 80 MB once (TIL-736). The Steam runtime
+## within the tree so its layer carries 80 MB once. The Steam runtime
 ## is left as pv-verify checked it.
 RUN --mount=type=bind,from=external-assets,source=/,target=/tilo-assets,ro \
     --mount=type=bind,source=os/scripts/hardlink-identical.py,target=/run/tilo-hardlink-identical.py,ro \
@@ -930,7 +930,7 @@ ENV SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH}
 # bundle's other libraries are the native closure of the runtime and the thin
 # apps (os/scripts/collect-runtime-dependencies.py, with /out on the loader's
 # path), including GLib and GStreamer, which the runtime loads on first use
-# rather than at exec (TIL-713). The closure check then loads every bundled
+# rather than at exec. The closure check then loads every bundled
 # object and thin app the way the launcher does, with only the bundle's lib/
 # on LD_LIBRARY_PATH.
 RUN --mount=type=bind,source=os/scripts/verify-runtime-bundle-closure.sh,target=/usr/local/libexec/tilo-verify-runtime-bundle-closure.sh,ro \
@@ -1067,7 +1067,7 @@ ARG ENV_RUNTIME_REF
 # a device (`tilo-install image add`); see os/scripts/install-env-runtime.sh.
 # Its glibc locales repeat one 2.6 MB LC_COLLATE under 19 names: the store's
 # identical files are hard-linked, so the COPY into the rootfs carries 53 MB
-# once (TIL-736). Readers verify each file against its signed hash, which a
+# once. Readers verify each file against its signed hash, which a
 # hard link does not change; the signed tree records no inode identity.
 RUN --mount=type=bind,from=env-runtime,source=/,target=/tilo-env-runtime,ro \
     --mount=type=bind,source=os/scripts/hardlink-identical.py,target=/run/tilo-hardlink-identical.py,ro \
@@ -1091,7 +1091,7 @@ COPY --from=builder /usr/share/tilo-apps/ /usr/share/tilo-apps/
 # bind /usr/share/fonts, Flatpak's /run/host/fonts) and
 # /usr/share/tilo/font-catalogs/<manifest sha256> (the catalog a binary from a
 # newer userspace looks up by its own manifest). Copied separately they put
-# the same ~55 MB of fonts into three OCI layers (TIL-609). Here the two later
+# the same ~55 MB of fonts into three OCI layers. Here the two later
 # names are hard links to the runtime's files in the one tree the rootfs
 # copies in one COPY, so every pull carries the bytes once; symlinks would
 # dangle under Flatpak and Landlock. The OS catalog's one face the product
@@ -1110,7 +1110,7 @@ RUN --mount=type=cache,id=tilo-font-artifacts,target=/var/cache/tilo-font-artifa
 # carries through systemd-ukify, and fc-match to find the catalog's Noto Sans,
 # mounted where the rootfs carries it. Rendering here rather than in the rootfs
 # keeps Pillow out of the image and a theme edit out of its package layer
-# (TIL-733); rootfs-base copies /out/tilo.
+#; rootfs-base copies /out/tilo.
 FROM ${BASE_REF} AS plymouth-assets
 # Buildah leaves the rpms mount out of the layer cache key; this ARG keys it on RPMS_REF.
 ARG RPMS_REF
@@ -1141,7 +1141,7 @@ RUN --network=none \
     && python3 /tilo-src/tools/font-catalog.py link "$fonts" /image/usr/share/fonts/tilo \
         --scope os --extra /tilo-os-fonts \
     # The runtimes also name some files twice (libgcc_s in lib/ and lib/lib64/,
-    # the native and browser runtimes' shared glibc): one inode each (TIL-736).
+    # the native and browser runtimes' shared glibc): one inode each.
     && python3 /tilo-src/hardlink-identical.py /image/usr \
     && test "$(stat -c %i "$fonts/NotoSansCJK-VF.ttc")" = "$(stat -c %i /image/usr/share/fonts/tilo/NotoSansCJK-VF.ttc)" \
     && test "$(stat -c %i "$fonts/NotoSansCJK-VF.ttc")" = "$(stat -c %i "/image/usr/share/tilo/font-catalogs/$catalog/NotoSansCJK-VF.ttc")"
@@ -1442,7 +1442,7 @@ ARG TILO_WINDOWS_ARCH
 # These groups used to be a RUN each, and every one ended in FINALIZE_RPMDB,
 # which rewrites the whole rpm database at a fresh inode: eighteen layers each
 # carried a complete 34-58 MB rpmdb.sqlite, about 830 MB of payload and 250 MB
-# of every pull that the installed system never reads (TIL-733). The database
+# of every pull that the installed system never reads. The database
 # only has to be finalised where a layer ends, so the groups now run in one RUN,
 # in the order they always ran, and FINALIZE_RPMDB runs once at its end. Each
 # group keeps its own comment below. None of them is shaped by a Tilo build
@@ -1857,7 +1857,7 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
     # The base also ships the AWS SDK for Python: sos (the support-report tool)
     # only *recommends* python3-boto3, for uploading a report to S3, and boto3
     # brings s3transfer, jmespath and python3-botocore, whose bundled API data is
-    # 123 MB of the root (TIL-609; `tools/perf/image_size.py --why
+    # 123 MB of the root (`tools/perf/image_size.py --why
     # python3-botocore` traces the chain). sos stays; nothing requires the SDK.
     # This shrinks the installed root; the pull keeps the bytes, which the base's
     # layer and its undeployed /sysroot ostree repository still carry.
@@ -2983,7 +2983,7 @@ RUN case "${TILO_GENERATION}" in \
 # is built from the same frozen RPM snapshot as this rootfs, so most of its
 # files are byte-identical to the host's /usr; but the store is its own layer,
 # which no hard link can reach across, and every pull carried those bytes twice
-# (TIL-735). Here, on the rootfs's packages, a copy of the store leaves them out
+#. Here, on the rootfs's packages, a copy of the store leaves them out
 # and names the host file for each in the image's host-sources; package-store
 # imports them from there, every byte checked against the image's signed hash.
 # The rootfs's final RUN checks each named host file again, after the last
@@ -3251,7 +3251,7 @@ COPY --from=runtime-resolver-link /out/ /etc/
 # initramfs: the UKI's .initrd section is the same bytes, and the dev image
 # restores it from there (os/scripts/unseal-rootfs.py). Kept, it was a third
 # 102 MB copy in every pull, beside the UKI and the original the split whites
-# out (TIL-733).
+# out.
 #
 # Nothing may be added to the rootfs after the split: the digest was computed over
 # it, and a later layer would invalidate the seal. That is why the sealed command

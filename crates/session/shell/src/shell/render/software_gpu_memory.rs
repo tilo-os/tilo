@@ -1,4 +1,4 @@
-//! Give the shared memory a software GPU freed back to the kernel (TIL-731).
+//! Give the shared memory a software GPU freed back to the kernel.
 //!
 //! Mesa's lavapipe, the Vulkan driver that renders on the CPU, backs every
 //! ordinary `VkDeviceMemory` with a range of one memfd per device, named
@@ -246,7 +246,7 @@ mod tests {
     /// Map `bytes` of fresh device memory, write all of it, and free it.
     fn touch_and_free(device: &wgpu::Device, bytes: u64) {
         let buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("til-731 touched"),
+            label: Some("software-gpu touched"),
             size: bytes,
             usage: wgpu::BufferUsages::MAP_WRITE | wgpu::BufferUsages::COPY_SRC,
             mapped_at_creation: true,
@@ -288,7 +288,7 @@ mod tests {
         );
         // Live memory with contents, mapped for reading after the release.
         let live = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("til-731 live"),
+            label: Some("software-gpu live"),
             size: 8 * MIB,
             usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: true,

@@ -129,7 +129,7 @@ fn semantic_schema_for_app(app_id: &str) -> Option<ContinuitySemanticSchema> {
     }
 }
 
-/// TRANSITION ONLY (TIL-341): senders still write semantic payloads untagged
+/// TRANSITION ONLY: senders still write semantic payloads untagged
 /// (`ContinuitySemanticSchema::LEGACY_UNTAGGED_TAG`), and an untagged payload
 /// from an app this device has not installed can only be read by package id.
 /// Delete this table once senders stamp `ContinuitySemanticSchema::wire_tag`

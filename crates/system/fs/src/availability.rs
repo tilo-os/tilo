@@ -327,7 +327,7 @@ pub struct AvailabilityRegistry {
     /// see [`Self::hydration_generation`].
     hydration_generation: u64,
     /// Announces each bump of `hydration_generation`, so the pinned
-    /// hydration worker waits for one instead of polling (TIL-750).
+    /// hydration worker waits for one instead of polling.
     hydration_watch: tokio::sync::watch::Sender<u64>,
     #[cfg(test)]
     persists: std::sync::atomic::AtomicU64,

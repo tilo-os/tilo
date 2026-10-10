@@ -528,7 +528,7 @@ class CheckAggregateTests(unittest.TestCase):
             self.assertIn("CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUSTFLAGS: -D warnings", wasm)
             self.assertIn("run: bash tools/ci/check-wasm.sh", wasm)
             # Affected tapps against their size budgets, on both architectures,
-            # packaged as Release / apps packages them (TIL-765).
+            # packaged as Release / apps packages them.
             self.assertIn("TAPPS_REQUIRED: ${{ needs.select.outputs.tapp_required }}", checks)
             self.assertIn("tapp_required: ${{ steps.plan.outputs.tapp_required }}", select_job)
             self.assertIn("tapp_apps: ${{ steps.plan.outputs.tapp_apps }}", select_job)

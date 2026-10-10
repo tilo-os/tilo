@@ -31,7 +31,7 @@ const WARM_THUMB_LOOKUPS: usize = 1_000;
 // nearest-rank p99 of the `real-fuse` job of ci-filesystem.yml (debug test
 // profile, shared `runner` class), rounded up to 10 ms (1 ms below 10 ms).
 // Measured 2026-10-09 over 56 runs, main pushes and pull requests between
-// 3bc23c4b40 and b0aee36a66 plus the eight TIL-595 cites; at that N the p99
+// 3bc23c4b40 and b0aee36a66 plus eight cited runs; at that N the p99
 // is the slowest run, so every ceiling is 2x the worst run seen. The trailing
 // comment is that p99 and the median. Revise by the same rule, and keep
 // fixture sizes stable when you do; tools/perf/kpi-budgets.toml mirrors them.
@@ -59,7 +59,7 @@ const IDLE_SYNC_BYTES: usize = 296;
 /// scheduler time slice would fail whenever the runner preempts the pass, so
 /// time only bounds a stall here; `IDLE_SYNC_BYTES` catches a regression.
 const IDLE_SYNC_SLO: Duration = Duration::from_millis(5);
-/// The workspace behind the conflict-watch scenario (TIL-608): 50,000
+/// The workspace behind the conflict-watch scenario: 50,000
 /// files in 500 directories.
 const CONFLICT_DIRECTORIES: usize = 500;
 const CONFLICT_FILES_PER_DIRECTORY: usize = 100;
@@ -70,21 +70,21 @@ const CONFLICT_FILES_PER_DIRECTORY: usize = 100;
 const IDLE_CONFLICT_SLO: Duration = Duration::from_millis(5);
 /// A conflict scan over that workspace holds the namespace lock one step
 /// of `fs::conflict::SCAN_STEP_NODES` nodes at a time, at any workspace
-/// size. Before TIL-608 the whole walk was one hold: 2.5 s on the CI runner
+/// size. Before the change the whole walk was one hold: 2.5 s on the CI runner
 /// (1.4 s on an M-series laptop), both debug builds. The mean hold per step
 /// is the steady gate: 3.3 ms on the runner, 1.8 ms on the laptop. The
 /// longest step of the first two CI runs held 50 and 77 ms (3-5 ms on the
 /// laptop): the shared runner's tail, so the longest hold only bounds a
 /// stall, and its ceiling still fails a walk under one hold 12 times over.
-/// Both are provisional until CI runs give a p99 (TIL-595's rule).
+/// Both are provisional until CI runs give a p99 (the same rule).
 const CONFLICT_SCAN_MEAN_HOLD_SLO: Duration = Duration::from_millis(10);
 const CONFLICT_SCAN_LONGEST_HOLD_SLO: Duration = Duration::from_millis(200);
-/// Files in the namespace behind the restart-resync scenario (TIL-745).
+/// Files in the namespace behind the restart-resync scenario.
 const RESTART_RESYNC_FILES: u64 = 50_000;
 /// A device's first exchange with a peer after a restart, from the sync
 /// progress it persisted: heads only, as an idle pass, so
 /// `IDLE_SYNC_BYTES` is its tight gate and, as for `IDLE_SYNC_SLO`, time
-/// only bounds a stall. Provisional until CI runs give a p99 (TIL-595).
+/// only bounds a stall. Provisional until CI runs give a p99.
 const RESTART_RESYNC_SLO: Duration = Duration::from_millis(5);
 /// The device keys the two writers know each other by.
 const IDLE_SYNC_HOST: [u8; 32] = [1; 32];
@@ -182,7 +182,7 @@ fn idle_namespace_pass(
     None
 }
 
-/// TIL-584: the anti-entropy pass every writer runs with every peer every
+/// the anti-entropy pass every writer runs with every peer every
 /// few seconds, with nothing changed. Starting each pass from a fresh sync
 /// state sent a Bloom filter over the namespace's whole history; resuming
 /// from the last completed pass sends heads, at any history length.
@@ -214,7 +214,7 @@ fn idle_namespace_anti_entropy_performance_gate() {
     )
     .expect("fresh idle pass");
     eprintln!(
-        "PERF idle-namespace-pass-fresh-state-50k: {fresh_bytes} B, {:.3} ms (before TIL-584)",
+        "PERF idle-namespace-pass-fresh-state-50k: {fresh_bytes} B, {:.3} ms (before the change)",
         fresh_time.as_secs_f64() * 1_000.0
     );
 
@@ -242,7 +242,7 @@ fn idle_namespace_anti_entropy_performance_gate() {
     report("idle-namespace-pass-resumed-50k", time, IDLE_SYNC_SLO);
 }
 
-/// TIL-745: a device restarts (an update, a reboot) with 50,000 files in
+/// a device restarts (an update, a reboot) with 50,000 files in
 /// its workspace and resumes its exchange with a peer. Without the sync
 /// progress persisted beside the document, the restarted side started from
 /// a fresh sync state and summarised the whole history again; with it, the
@@ -283,7 +283,7 @@ fn restart_resync_performance_gate() {
     )
     .expect("restart without progress");
     eprintln!(
-        "PERF restart-resync-without-progress-50k-files: {full_bytes} B, {:.3} ms (before TIL-745)",
+        "PERF restart-resync-without-progress-50k-files: {full_bytes} B, {:.3} ms (before the change)",
         full_time.as_secs_f64() * 1_000.0
     );
 
@@ -308,7 +308,7 @@ fn restart_resync_performance_gate() {
     report("restart-resync-50k-files", time, RESTART_RESYNC_SLO);
 }
 
-/// TIL-608: the conflict step every writer's reconciliation loop runs every
+/// the conflict step every writer's reconciliation loop runs every
 /// few seconds. It used to walk every node under one hold of the namespace
 /// lock on every pass. Now a pass with nothing merged since the last scan
 /// reads the namespace's merge generation and examines no node, and a scan
@@ -339,7 +339,7 @@ fn conflict_watch_idle_pass_and_lock_hold_performance_gate() {
     let started = Instant::now();
     assert!(fs::conflict::detect(&namespace).is_empty());
     eprintln!(
-        "PERF conflict-detect-50k: {:.3} ms under one lock hold (each pass before TIL-608)",
+        "PERF conflict-detect-50k: {:.3} ms under one lock hold (each pass before the change)",
         started.elapsed().as_secs_f64() * 1_000.0
     );
 

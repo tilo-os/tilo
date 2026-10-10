@@ -103,7 +103,7 @@ impl super::App {
     /// modifier key's press and a modifier change. Unless something consumed
     /// it, it keeps the published tree when nothing the tree depends on moved.
     /// A key's release followed every keystroke and dropped the tree its
-    /// press had just republished (TIL-751).
+    /// press had just republished.
     fn is_inert_input(&self, event: &WindowEvent) -> bool {
         match event {
             WindowEvent::KeyboardInput { event, .. } => {

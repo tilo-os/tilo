@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""tools/ci/runtime-dylib-lazy-link.py against real ELF objects (TIL-713).
+"""tools/ci/runtime-dylib-lazy-link.py against real ELF objects.
 
 Stand-in libglib-2.0 and libgstreamer-1.0 (built here, so no GLib is needed)
 are linked into a stand-in runtime through the wrapper, the way rustc links

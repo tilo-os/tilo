@@ -41,7 +41,7 @@ for object in "${objects[@]}"; do
     fi
   done < <(sed -n 's/.*(NEEDED).*\[\([^]]*\)\].*/\1/p' <<<"$report")
   # The libraries the runtime loads on first use (GLib, GStreamer;
-  # tools/ci/runtime-dylib-lazy-link.py, TIL-713) must be signed beside it
+  # tools/ci/runtime-dylib-lazy-link.py) must be signed beside it
   # as well: a media app would otherwise abort at its first media call.
   if ! lazy=$(readelf -W -p .tilo.lazy_needed "$object" 2>/dev/null); then
     printf '%s: readelf cannot read its lazily loaded libraries\n' "$object" >&2

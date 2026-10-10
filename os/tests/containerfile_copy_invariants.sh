@@ -144,18 +144,18 @@ containerfile="$repo/os/Containerfile"
 # executable mode; the component installer tests cover their staged sources.
 # The baked runtime, /usr/share/fonts/tilo and the font-catalogs tree arrive
 # in one COPY of the runtime-image-payload tree (hard links carry the font
-# catalog's bytes once, TIL-609): that row replaces the runtime's and the font
+# catalog's bytes once): that row replaces the runtime's and the font
 # catalogs' native-builder-payload rows; every installed path is unchanged and
 # /usr/share/fonts/tilo, formerly written by a RUN, is new to the contract.
 # The Plymouth theme arrives rendered from the plymouth-assets stage, which
 # replaces the context copy of its sources; make-plymouth-assets.py, which
-# rendered it inside the rootfs, no longer enters /usr/local/bin (TIL-733).
+# rendered it inside the rootfs, no longer enters /usr/local/bin.
 # The app store arrives from the app-store stage, the builder's store with the
 # env-runtime's host-identical files left out and named in its host-sources
-# (TIL-735); the installed path is unchanged.
+#; the installed path is unchanged.
 # tilo-network-start.service replaces tilo-network-start.timer: the network is
 # queued once logins are allowed instead of at OnBootSec=0, where it held the
-# greeter through network.target (TIL-767).
+# greeter through network.target.
 expected_contract=0d1f26b3729368602066f2a95a54f9283ee8c2be31ae6626786b3c4161ae2b42
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"

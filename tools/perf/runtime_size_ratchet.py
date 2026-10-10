@@ -4,7 +4,7 @@
 Every thin app maps this one Rust dylib (crates/runtime/runtime-dylib), so its
 size is what a device downloads when an app's runtime is missing, and its
 dynamic relocations are work the loader repeats, and memory it dirties, in
-every app process before `main`. The KPI (TIL-604) holds four numbers per
+every app process before `main`. The KPI holds four numbers per
 architecture, all read from the ELF file itself:
 
 - `bytes`: the file;
@@ -19,7 +19,7 @@ It also names the `DT_NEEDED` libraries. A media library there would be loaded
 by every app, media or not: `[targets] needed_absent` names them, and the
 build gate fails when one is in the runtime's `DT_NEEDED`, in the closure of
 libraries every app loads with it, or in the closure of a built app that
-`apps_without_media` lists (TIL-713). GLib and GStreamer reach the runtime
+`apps_without_media` lists. GLib and GStreamer reach the runtime
 through `tools/ci/runtime-dylib-lazy-link.py`, which loads them on first use
 and records them in the `.tilo.lazy_needed` section; the gate reports those.
 
@@ -308,7 +308,7 @@ def judge(stats: ElfStats, budget: Budget) -> tuple[int, list[str]]:
     if loaded:
         missing = True
         lines.append(f"error: runtime {arch}: every app loads {' '.join(loaded)}; none of "
-                     f"{', '.join(budget.needed_absent)} may be DT_NEEDED (TIL-713): link the runtime "
+                     f"{', '.join(budget.needed_absent)} may be DT_NEEDED: link the runtime "
                      "through tools/ci/runtime-dylib-lazy-link.py")
     if over:
         lines += [f"A deliberate growth adds one raise file for the change, {DIRECTORY}/raises/<change>.toml",
@@ -377,7 +377,7 @@ def closure_lines(path: pathlib.Path, stats: ElfStats, budget: Budget,
                           "an engine library is loaded only by the app that uses it")
         else:
             errors.append(f"error: {path.name} loads {name} at exec ({' <- '.join(chain)}); none of "
-                          f"{', '.join(budget.needed_absent)} may be (TIL-713)")
+                          f"{', '.join(budget.needed_absent)} may be")
     pages = sum(entry[0].relocated_bytes for entry in found.values()) // PAGE
     summary = (f"{path.name}: {len(found)} objects at exec, relocations write {pages} pages "
                f"across them: {' '.join(found)}")

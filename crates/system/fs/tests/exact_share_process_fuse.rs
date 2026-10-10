@@ -703,14 +703,14 @@ async fn separate_process_exact_share_evicts_restarts_and_rehydrates() {
 }
 
 /// Voluntary wakeups per second an idle `fs serve` may make across all of
-/// its threads (TIL-750). An idle thread blocks once and stays blocked, so
+/// its threads. An idle thread blocks once and stays blocked, so
 /// each voluntary switch is a timer or a poll that fired. Preemptions are
 /// printed but not budgeted: on a loaded shared runner they measure the
-/// neighbours, not this process (TIL-749).
+/// neighbours, not this process.
 ///
-/// Measured on the CI `runner` class: 45.4/s before TIL-750 (a 100 ms
+/// Measured on the CI `runner` class: 45.4/s before the change (a 100 ms
 /// persist poll, a 50 ms session-supervisor poll, repair ticks), 6.5-7.9/s
-/// after (two runs). TIL-774 runs the daemon as `fs.service` does, with
+/// after (two runs). A second run runs the daemon as `fs.service` does, with
 /// the shipped capability list: 9.95/s before (probe run 94694; its two
 /// one-second file polls were 3-4/s, iroh's relays 5.8/s), 0.60/s after
 /// (run 94886: one runtime worker, on iroh's own netwatch and re-STUN
@@ -787,7 +787,7 @@ fn idle_serve_mount_stays_asleep() {
     .expect("the idle daemon's threads must be observable");
     eprintln!("{wakeups}");
     let per_second = wakeups.blocking_per_second();
-    eprintln!("TIL-774 idle fs serve: {per_second:.2} voluntary wakeups/s");
+    eprintln!("idle fs serve: {per_second:.2} voluntary wakeups/s");
     let logs = host.logs.lock().unwrap().join("\n");
     assert!(
         !logs.contains("relays: this device may be dialled"),
@@ -806,7 +806,7 @@ fn idle_serve_mount_stays_asleep() {
         std::thread::sleep(Duration::from_millis(10));
     }
     eprintln!(
-        "TIL-774 revocation closed the mount {} ms after the write",
+        "revocation closed the mount {} ms after the write",
         revoked.elapsed().as_millis()
     );
     host.stop();

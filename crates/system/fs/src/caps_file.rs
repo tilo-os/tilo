@@ -7,7 +7,7 @@
 //! [`AclHandle`]; [`CapabilityFile::refresh`] re-reads on change and swaps
 //! the result in underneath the live mount, and
 //! [`CapabilityFile::spawn_reload`] calls it whenever the host reports the
-//! file changed (TIL-774; it used to poll once a second).
+//! file changed (it used to poll once a second).
 //!
 //! The three outcomes are deliberately not treated alike. A changed,
 //! parseable file swaps in — the point. A **gone** file binds an empty
@@ -353,7 +353,7 @@ mod tests {
     }
 
     /// How long the mount may keep serving a revoked capability: what the
-    /// one-second poll gave before the reload watched the file (TIL-774).
+    /// one-second poll gave before the reload watched the file.
     const REVOKE_BOUND: std::time::Duration = std::time::Duration::from_secs(1);
 
     /// How long `holds` took to become true, or `None` if it did not
@@ -369,7 +369,7 @@ mod tests {
         None
     }
 
-    /// TIL-774. The reloader the daemon runs, with its poll fallback and its
+    /// The reloader the daemon runs, with its poll fallback and its
     /// backstop both an hour away, so only the file watch can deliver a
     /// change. A revocation and a removal each reach the live mount within
     /// the old one-second bound, and a half-written file still keeps the

@@ -7189,7 +7189,7 @@ pub(crate) fn ush_backend_on(
     // How long the answer may take. Before it answers, the supervisor checks
     // that the environment can be built, which on a device's first open reads
     // the system store's images: ~400 ms on the CI VM, past the 250 ms a
-    // hosted connection is given to connect (TIL-708). Never shorten a longer
+    // hosted connection is given to connect. Never shorten a longer
     // bound, nor add one where the connection has none.
     const USH_OPEN_REPLY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
     let failed = |error: &dyn std::fmt::Display| OpenError::Failed(error.to_string());

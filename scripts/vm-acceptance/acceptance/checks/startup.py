@@ -466,7 +466,7 @@ def segment_series(results: list[dict]) -> dict[str, list[float]]:
 
 
 def kpi_p95_target(kpi: str) -> float | None:
-    """The KPI document's p95 ceiling for `kpi` (tools/perf/kpi-budgets.toml), if any."""
+    """The KPI target's p95 ceiling for `kpi` (tools/perf/kpi-budgets.toml), if any."""
     budgets = tomllib.loads(KPI_BUDGETS.read_text(encoding="utf-8"))
     target = budgets.get("kpi", {}).get(kpi, {}).get("p95")
     return None if target is None else float(target)
@@ -482,7 +482,7 @@ def p95(values: list[float]) -> float:
 def warm_opens(ctx, res):
     """Each app is opened and closed once unmeasured, so its files are in the page cache,
     then ten times measured. The budget is the app's (acceptance/app_startup.py) on the
-    session's renderer, held by the median; on a GPU the KPI document's p95 target holds as
+    session's renderer, held by the median; on a GPU the KPI's p95 target holds as
     well. Every launch is recorded, split into segments that add up to the open (the
     launcher's phases among them) and the compositor's own request/spawn/map times. Then
     Files opens `REPEATED_OPENS` times more, each to its first frame; a restart of the

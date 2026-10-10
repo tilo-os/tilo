@@ -296,7 +296,7 @@ def builder_mold_asset(name: str, entry: tuple[str, str]) -> bool:
 
 
 def image_tool_asset(name: str, entry: tuple[str, str]) -> bool:
-    """chunkah's release source and vendor tree: only os/Containerfile.rechunk reads them (TIL-747)."""
+    """chunkah's release source and vendor tree: only os/Containerfile.rechunk reads them."""
     match = re.fullmatch(r"chunkah-(\d+\.\d+\.\d+)(?:-vendor)?\.tar\.gz", name)
     if not match:
         return False

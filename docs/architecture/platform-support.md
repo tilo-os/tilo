@@ -60,8 +60,7 @@ Desktop lane selection is implemented in
 Weekly and default manual desktop builds select amd64; PRs run preflight only.
 [The install contract](../install-contract.json) still lists ARM64 desktop sessions as
 planned. Enabled build lanes are not a release-support or hardware acceptance receipt.
-The release surface/support-matrix decision remains with the product owner in
-[TIL-359](https://linear.app/tilo-os/issue/TIL-359); this source reconciliation does not
+The release surface/support-matrix decision remains with the product owner; this source reconciliation does not
 change that contract, select a launch surface, or waive the two-architecture complete-OS
 and Imager requirements.
 

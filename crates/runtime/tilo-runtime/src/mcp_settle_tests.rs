@@ -348,7 +348,7 @@ fn a_call_lists_live_instances_once_and_asks_for_no_rows() {
         );
         assert!(
             listings().is_empty(),
-            "a batch on an instance the session listed lists nothing again (TIL-588)"
+            "a batch on an instance the session listed lists nothing again"
         );
         let apps = call(&endpoint, &session, "tilo_list_apps", json!({})).await;
         assert_eq!(

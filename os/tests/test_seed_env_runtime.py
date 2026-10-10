@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""os/scripts/seed-env-runtime.py: the env-runtime ships without the host's files twice (TIL-735)."""
+"""os/scripts/seed-env-runtime.py: the env-runtime ships without the host's files twice."""
 import importlib.util
 from pathlib import Path
 import shutil

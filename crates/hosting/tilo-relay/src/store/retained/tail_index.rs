@@ -1,5 +1,5 @@
 //! What a lineage's active generation holds, as far as committing a delta
-//! needs it (TIL-742): the highest ordinal any entry reserves, and which
+//! needs it: the highest ordinal any entry reserves, and which
 //! records it holds. A delta's commit used to list the whole generation for
 //! those two facts, so every keystroke cost a `read_dir` and a `stat` per
 //! record the document had retained.

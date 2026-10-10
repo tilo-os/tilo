@@ -85,7 +85,7 @@ class UnsealRootfsTests(unittest.TestCase):
             self.assertFalse((root / "kernel").exists())
             self.assertEqual(list((root / "boot").rglob("*.efi")), [])
         with self.subTest(phase='a split kernel without its initramfs takes the uki initrd'):
-            # The production image since TIL-733: /kernel keeps vmlinuz, the
+            # The production image since the change: /kernel keeps vmlinuz, the
             # initramfs ships only inside the UKI.
             root = self.root()
             uki = self.uki(root)

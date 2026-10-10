@@ -48,7 +48,7 @@ pub const SYSTEM_IMAGE_PUBLISHERS_FILE: &str = "image-publishers";
 /// line each (a third field, the SHA-256 the image build checked, is ignored
 /// here). The OS image ships its env-runtime this way, because most of that
 /// userland is byte-identical to the host's own `/usr`, which a later OCI
-/// layer could otherwise only carry a second time (TIL-735). Nothing is
+/// layer could otherwise only carry a second time. Nothing is
 /// trusted for being named here: every byte is checked against the image's
 /// signed hash as it is imported, exactly as a byte in the tree is.
 pub const HOST_SOURCES_FILE: &str = "host-sources";

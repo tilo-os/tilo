@@ -54,7 +54,7 @@ struct FullReplicaStatusProof {
 /// replica holds its liveness lock beside the file
 /// ([`fs::full_replica::replica_is_running`]), which the kernel releases
 /// when it exits however it exits; a stamp recent by `clock` also counts,
-/// for a replica that keeps no lock (TIL-774: the replica used to restamp
+/// for a replica that keeps no lock (the replica used to restamp
 /// the file every second to stay recent).
 #[derive(Clone)]
 struct ReplicaProof {
@@ -3208,7 +3208,7 @@ mod tests {
         assert!(proof_at(stamped.saturating_add(5_001)).is_none());
     }
 
-    /// TIL-774. A replica that holds its liveness lock keeps its ready
+    /// A replica that holds its liveness lock keeps its ready
     /// proof without restamping it; the proof lapses the moment the lock
     /// is released (the replica exited), however old the stamp.
     #[test]

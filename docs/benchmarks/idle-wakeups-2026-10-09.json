@@ -1,5 +1,5 @@
 {
- "context": "TIL-614 idle wakeups; see idle-wakeups-2026-10-09.md",
+ "context": "Idle wakeups; see idle-wakeups-2026-10-09.md",
  "environment": {
   "runner": "runner (x86-64 KVM guest)",
   "profile": "dev",

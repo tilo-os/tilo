@@ -1,4 +1,4 @@
-//! When the filesystem daemon's endpoint starts its relays (TIL-774).
+//! When the filesystem daemon's endpoint starts its relays.
 //!
 //! A relay is what makes a device dialable from outside its own network: it
 //! holds a home relay connection open with keep-alive pings and, every
@@ -31,7 +31,7 @@
 //!   out its ticket, which leaves no trace.
 //!
 //! Waking is sticky for the life of the process. Same model as the
-//! compositor's (TIL-740, `shell::network::reachability`).
+//! compositor's (`shell::network::reachability`).
 
 use std::sync::{Arc, Mutex};
 

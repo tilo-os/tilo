@@ -454,7 +454,7 @@ impl WorkspaceAuthority {
 /// whenever the file's bytes change, sign them as the next revision with
 /// `governor` and apply it. Waits on the file's change events with
 /// `cadence`'s backstop, or polls every `cadence.poll` when the file cannot
-/// be watched (TIL-774; it used to poll once a second). Bytes present when
+/// be watched (it used to poll once a second). Bytes present when
 /// the task starts are taken as already applied; an unreadable or malformed
 /// file changes nothing, so a half-written list is never signed.
 #[must_use]
@@ -983,7 +983,7 @@ mod tests {
     use collab_types::{Access as CapAccess, Effect, Scope, Subject};
     use std::sync::Arc;
 
-    /// TIL-774. The workspace authority follows the host-local capability
+    /// The workspace authority follows the host-local capability
     /// list through the file watch alone (poll fallback and backstop an
     /// hour away): a revocation written to the list is signed, applied and
     /// enforced within the one-second bound the old poll gave, and a
