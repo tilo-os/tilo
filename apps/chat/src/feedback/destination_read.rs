@@ -2,9 +2,7 @@
 use std::sync::OnceLock;
 
 use serde::{Deserialize, Serialize};
-use tilo_actions::{
-    ActionContract, ActionSpec, EncodedAction, OperationKind, Resource, ResultSpec,
-};
+use tilo_actions::{ActionSpec, Resource};
 use ui::semantic_document_read::{
     MAX_REQUEST_BYTES, ReadPage, RegisteredSemanticReader, SemanticReadError,
 };
@@ -41,32 +39,19 @@ fn validate(resource: &Resource, payload: &[u8]) -> Result<(), SemanticReadError
 
 pub(crate) fn spec(channel: &str) -> ActionSpec {
     let channel = channel.to_owned();
-    ActionSpec::typed_operation(
-        ui::feedback::destination::READ_DESTINATION,
-        "Read feedback destination",
-        "Inspect this existing text channel",
-        OperationKind::Effect,
+    super::receipt_read::read_spec(
+        (
+            ui::feedback::destination::READ_DESTINATION,
+            "Read feedback destination",
+            "Inspect this existing text channel",
+        ),
         OPERATION,
         Vec::new(),
-        move |_| {
-            EncodedAction::encode_operation(
-                OPERATION,
-                &Request {
-                    channel: channel.clone(),
-                },
-            )
-            .unwrap_or_else(|_| EncodedAction {
-                type_id: OPERATION.into(),
-                payload: Vec::new(),
-            })
+        schema,
+        move |_| Request {
+            channel: channel.clone(),
         },
     )
-    .with_contract(ActionContract {
-        result: ResultSpec::Json {
-            schema: schema().clone(),
-        },
-        ..ActionContract::view()
-    })
 }
 
 fn project(

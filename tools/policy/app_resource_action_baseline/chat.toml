@@ -9,7 +9,6 @@
 
 [ratchets.action_spec]
 "apps/chat/src/feedback/receipt_read.rs" = 1
-"apps/chat/src/feedback/status_read.rs" = 1
 "apps/chat/src/semantic_read/action.rs" = 1
 
 [ratchets.direct_automerge_write]

@@ -2,7 +2,7 @@
 //! View door. This projection carries no new task or document authority.
 use std::sync::OnceLock;
 
-use tilo_actions::{ActionContract, ActionSpec, EncodedAction, OperationKind, ResultSpec};
+use tilo_actions::ActionSpec;
 use ui::semantic_document_read::{ReadPage, RegisteredSemanticReader, SemanticReadError};
 
 const OPERATION: &str = "chat.feedback.status";
@@ -11,33 +11,20 @@ pub(crate) const READER: RegisteredSemanticReader =
 
 pub(crate) fn spec(id: &str) -> ActionSpec {
     let id = id.to_owned();
-    ActionSpec::typed_operation(
-        "read-feedback-status",
-        "Read feedback status",
-        "Read this report's recent attributed triage history",
-        OperationKind::Effect,
+    super::receipt_read::read_spec(
+        (
+            "read-feedback-status",
+            "Read feedback status",
+            "Read this report's recent attributed triage history",
+        ),
         OPERATION,
         Vec::new(),
-        move |_| {
-            EncodedAction::encode_operation(
-                OPERATION,
-                &super::receipt_read::Request {
-                    id: id.clone(),
-                    expected_author: None,
-                },
-            )
-            .unwrap_or_else(|_| EncodedAction {
-                type_id: OPERATION.into(),
-                payload: Vec::new(),
-            })
+        schema,
+        move |_| super::receipt_read::Request {
+            id: id.clone(),
+            expected_author: None,
         },
     )
-    .with_contract(ActionContract {
-        result: ResultSpec::Json {
-            schema: schema().clone(),
-        },
-        ..ActionContract::view()
-    })
 }
 
 fn project(

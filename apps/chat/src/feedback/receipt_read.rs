@@ -54,33 +54,29 @@ pub(super) fn validate(resource: &Resource, payload: &[u8]) -> Result<(), Semant
     Ok(())
 }
 
-pub(crate) fn spec(id: &str) -> ActionSpec {
-    let id = id.to_owned();
+/// A feedback read published on a chat item: the semantic read `operation`
+/// with `params`, answering with JSON of `schema`, its request built from the
+/// invocation's arguments.
+pub(super) fn read_spec<R: Serialize>(
+    (id, label, description): (&str, &str, &str),
+    operation: &'static str,
+    params: Vec<ActionParam>,
+    schema: fn() -> &'static serde_json::Value,
+    request: impl Fn(&tilo_actions::ActionArgs) -> R + Send + Sync + 'static,
+) -> ActionSpec {
     ActionSpec::typed_operation(
-        ui::feedback::destination::READ_RECEIPT,
-        "Read feedback receipt",
-        "Read this report from its canonical destination",
+        id,
+        label,
+        description,
         OperationKind::Effect,
-        OPERATION,
-        vec![ActionParam::optional(
-            "expectedAuthor",
-            ParamType::Text,
-            "Require the attributed reporter root",
-        )],
+        operation,
+        params,
         move |args| {
-            let expected_author = args
-                .get("expectedAuthor")
-                .and_then(|value| value.to_json().as_str().map(str::to_owned));
-            EncodedAction::encode_operation(
-                OPERATION,
-                &Request {
-                    id: id.clone(),
-                    expected_author,
-                },
-            )
-            .unwrap_or_else(|_| EncodedAction {
-                type_id: OPERATION.into(),
-                payload: Vec::new(),
+            EncodedAction::encode_operation(operation, &request(args)).unwrap_or_else(|_| {
+                EncodedAction {
+                    type_id: operation.into(),
+                    payload: Vec::new(),
+                }
             })
         },
     )
@@ -90,6 +86,40 @@ pub(crate) fn spec(id: &str) -> ActionSpec {
         },
         ..ActionContract::view()
     })
+}
+
+/// What a receipt read is invoked with.
+#[derive(Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Params {
+    expected_author: Option<String>,
+}
+
+pub(crate) fn spec(id: &str) -> ActionSpec {
+    let id = id.to_owned();
+    read_spec(
+        (
+            ui::feedback::destination::READ_RECEIPT,
+            "Read feedback receipt",
+            "Read this report from its canonical destination",
+        ),
+        OPERATION,
+        vec![ActionParam::optional(
+            "expectedAuthor",
+            ParamType::Text,
+            "Require the attributed reporter root",
+        )],
+        schema,
+        move |args| {
+            let Params { expected_author } =
+                serde_json::from_value(serde_json::Value::Object(args.to_json()))
+                    .unwrap_or_default();
+            Request {
+                id: id.clone(),
+                expected_author,
+            }
+        },
+    )
 }
 
 fn project(
