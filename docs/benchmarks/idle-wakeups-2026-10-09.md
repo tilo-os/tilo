@@ -219,8 +219,11 @@ an iteration no longer queues a settings refresh.
 | 92406 | 72e3096677 (on TIL-704/707/702/740) | 7.30 | 0.2 | 0 |
 | 92444 | 72e3096677 | 7.60 | 0.3 | 0 |
 | 92445 | 72e3096677 | 7.30 | 0.2 | 0 |
+| 92498 (shell shard, beside other tests) | 527f761a98 | 10.29 | 0.1 | 0 |
 
-The gate's budgets drop to 10/s (7.6/s plus a quarter) and 1 tick/s. What is
+The gate runs in the shell shard beside other tests, where its neighbours
+preempt the collaboration shovel and the identity client, so its budget is
+the shard's 10.3/s plus a half, 15/s, and 1 tick/s for the loop. What is
 left: `ui-collab-shovel` 3.4/s, `tilo-identity-client` 2.0/s, the network
 runtime about 1/s, and a few tenths from the fs authority, session audio and
 secrets bus.
