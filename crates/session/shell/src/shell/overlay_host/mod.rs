@@ -9675,6 +9675,90 @@ impl ShellOverlayHost {
         Self::overview_header_font_size_for(&theme.tokens)
     }
 
+    /// Dispatches the shell action for a palette command id, then closes
+    /// the palette (even on an unknown id, to avoid a stale overlay).
+    // No production caller routes a selection here, so `/invite` and
+    // `/connect` are inert even under --enable-peer-sync. Kept as the
+    // only definition of what those commands do; tests pin the contract.
+    #[allow(
+        dead_code,
+        reason = "Tests exercise this palette command contract while production palette selection has no caller for this dispatcher."
+    )]
+    pub(crate) fn dispatch_palette_command(&mut self, id: &str) -> bool {
+        // Peer-sync rows enqueue an action for the compositor to drain
+        // (Iroh stays on the runtime thread) rather than mutating
+        // chrome directly. Ignored when the flag is off, in case a stale
+        // palette row survives a toggle.
+        if self.peer_sync_enabled {
+            match id {
+                "peer.invite" => {
+                    if let Some(chrome) = &self.chrome {
+                        chrome
+                            .borrow_mut()
+                            .push_peer_sync_request(PeerSyncAction::IssueInvite);
+                    }
+                    self.palette_visible = false;
+                    self.palette.close();
+                    return true;
+                }
+                "peer.connect" => {
+                    if let Some(chrome) = &self.chrome {
+                        chrome
+                            .borrow_mut()
+                            .push_peer_sync_request(PeerSyncAction::PromptConnect);
+                    }
+                    self.palette_visible = false;
+                    self.palette.close();
+                    return true;
+                }
+                _ => {}
+            }
+        }
+
+        let matched = if let Some(chrome) = self.chrome.clone() {
+            let mut st = chrome.borrow_mut();
+            let hit = match id {
+                "overview.toggle" => {
+                    st.overlays.overview = !st.overlays.overview;
+                    true
+                }
+                "settings.open" => {
+                    st.overlays.ws_settings = true;
+                    true
+                }
+                "quick-settings.open" => {
+                    st.overlays.quick_settings = true;
+                    true
+                }
+                "projection.open" => {
+                    st.overlays.projection = true;
+                    true
+                }
+                "capture.open" => {
+                    st.overlays.capture = true;
+                    true
+                }
+                // `search.open` is a no-op: the palette is already open
+                // when the user reaches this row. We close it below like
+                // the other commands so behaviour is consistent.
+                "search.open" => true,
+                _ => false,
+            };
+            if hit {
+                st.bump();
+            }
+            hit
+        } else {
+            false
+        };
+        if matched && id == "overview.toggle" {
+            self.latch_overview_transition();
+        }
+        self.palette_visible = false;
+        self.palette.close();
+        matched
+    }
+
     fn overview_header_font_size_for(tokens: &ui::tokens::Tokens) -> f32 {
         tokens.typography.size(TextRole::Display)
     }

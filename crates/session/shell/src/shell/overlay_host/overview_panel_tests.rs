@@ -207,6 +207,16 @@ fn overview_help_and_hidden_controls_expose_no_stray_targets_and_scale_once() {
         assert!(!chrome.borrow().overlays.shortcut_help);
     }
 
+    fn dismissed_palette_command_closes_focus_and_semantics() {
+        let mut h = host();
+        h.palette.open();
+        h.palette_visible = true;
+        h.dispatch_palette_command("unknown");
+        assert!(!h.palette_visible);
+        assert!(!h.palette.is_open());
+        assert!(h.palette.accessibility().unwrap().state.hidden);
+    }
+
     fn desktop_scrolled_settings_name_cannot_receive_projected_focus_or_hits() {
         let mut host = host_with(WorkspaceTree::bootstrap_default());
         {
@@ -319,6 +329,7 @@ fn overview_help_and_hidden_controls_expose_no_stray_targets_and_scale_once() {
     }
 
     app_content_has_no_floating_help_hit_target();
+    dismissed_palette_command_closes_focus_and_semantics();
     desktop_scrolled_settings_name_cannot_receive_projected_focus_or_hits();
     desktop_help_text_is_scaled_once_and_inside_its_hit_target();
     desktop_overlay_text_applies_accessibility_scale_once();
