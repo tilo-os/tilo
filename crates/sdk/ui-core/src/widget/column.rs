@@ -450,44 +450,13 @@ impl Widget for Column {
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
-        // A child with a latched drag (e.g. a slider's knob) gets ALL
-        // events exclusively for the frame, so the drag survives the
-        // cursor crossing a peer widget's rect — otherwise the peer's
-        // CursorMoved handler could set `handled` first.
-        // A child holding an open modal owns the input the same way: what
-        // stands behind the sheet never sees the event, so a table under a
-        // dialog cannot take the press meant for the dialog's button.
-        let owner = self
-            .children
-            .iter()
-            .position(|c| c.wants_pointer_capture())
-            .or_else(|| {
-                self.children
-                    .iter()
-                    .position(|c| c.modal_capture().is_some())
-            });
-        if let Some(idx) = owner {
-            let Some(&cnode) = self.child_nodes.get(idx) else {
-                return;
-            };
-            let Some(child) = self.children.get_mut(idx) else {
-                return;
-            };
-            child.handle_event(event, &mut ctx.reborrow(ctx.path, cnode));
-            return;
-        }
-        for (child_widget, &child_node) in self.children.iter_mut().zip(&self.child_nodes) {
-            child_widget.handle_event(event, &mut ctx.reborrow(ctx.path, child_node));
-            if *ctx.handled {
-                break;
-            }
-        }
+        crate::widget::route_to_children(&mut self.children, &self.child_nodes, event, ctx);
     }
 
     /// Propagate pointer-capture intent from any descendant — without this,
     /// a Column wrapping a Row containing a dragging slider would inherit
-    /// the leaf-widget default of `false`, and the `handle_event`
-    /// short-circuit above would never fire.
+    /// the leaf-widget default of `false`, and the capture routing
+    /// in `route_to_children` would never fire.
     fn wants_pointer_capture(&self) -> bool {
         self.children.iter().any(|c| c.wants_pointer_capture())
     }

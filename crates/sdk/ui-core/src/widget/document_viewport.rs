@@ -16,7 +16,7 @@ use crate::time::Instant;
 use crate::widget::{AppModel, ModelPath};
 
 use std::collections::HashMap;
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use taffy::{NodeId, Size, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Vec2};
 use vello::peniko::Fill;
@@ -984,14 +984,7 @@ impl Widget for DocumentViewport {
             self.state.pad = f64::from(theme.tokens.spacing.s6);
         }
         self.layout_theme = theme.clone();
-        let style = Style {
-            size: Size {
-                width: Dimension::percent(1.0),
-                height: Dimension::percent(1.0),
-            },
-            ..Default::default()
-        };
-        taffy.widget_leaf(style, node_map, self)
+        taffy.fill_leaf(node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {

@@ -553,8 +553,10 @@ dependencies = [
  "futures-util",
  "getrandom 0.4.3",
  "hex",
+ "install",
  "libc",
  "package-store",
+ "runtime-bundle",
  "runtime-portal",
  "sd-notify",
  "serde",
@@ -1318,6 +1320,7 @@ dependencies = [
  "libc",
  "tempfile",
  "thiserror 2.0.21",
+ "tilo-test-env",
  "workspace-hack",
  "zeroize",
 ]
@@ -1429,8 +1432,6 @@ dependencies = [
 [[package]]
 name = "buffa-build"
 version = "0.9.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "eee6b6b4a8d23f1f98a043f188f4d9d2ef8bee43191f42e93ac577f3c3b0f334"
 dependencies = [
  "buffa",
  "buffa-codegen",
@@ -2522,6 +2523,7 @@ dependencies = [
  "tilo-actions",
  "tilo-paths",
  "tilo-test-env",
+ "tracing",
  "workspace-hack",
 ]
 
@@ -4316,7 +4318,6 @@ dependencies = [
  "cloud-source",
  "ed25519-dalek 3.0.0",
  "flate2",
- "fluent",
  "fs-protocol",
  "fuser",
  "hex",
@@ -4340,6 +4341,7 @@ dependencies = [
  "tilo-automation",
  "tilo-automerge-fork",
  "tilo-clock",
+ "tilo-copy-lint",
  "tilo-doc-codecs",
  "tilo-fs",
  "tilo-paths",
@@ -7080,7 +7082,6 @@ dependencies = [
  "tilo-ui",
  "tilo-vello",
  "tilo-winit",
- "tracing",
  "tracing-subscriber",
  "uuid",
  "workspace-hack",
@@ -7910,6 +7911,7 @@ dependencies = [
  "fs-protocol",
  "getrandom 0.4.3",
  "hex",
+ "install",
  "landlock",
  "libc",
  "libloading",
@@ -10620,6 +10622,7 @@ dependencies = [
  "tilo-automerge-fork",
  "tilo-input-context",
  "tilo-keyboard-map",
+ "tilo-test-env",
  "tilo-vello",
  "tilo-winit",
  "tracing",
@@ -12983,6 +12986,7 @@ dependencies = [
  "sha2 0.11.0",
  "tempfile",
  "thiserror 2.0.21",
+ "tilo-advisory-lock",
  "tilo-clock",
  "tilo-paths",
  "tilo-test-env",
@@ -14028,6 +14032,7 @@ dependencies = [
  "test-http",
  "tilo-actions",
  "tilo-app",
+ "tilo-app-package",
  "tilo-automerge-fork",
  "tilo-bluez",
  "tilo-clock",
@@ -14258,7 +14263,6 @@ dependencies = [
  "ed25519-dalek 3.0.0",
  "emoji",
  "file-explorer",
- "fluent",
  "fnv",
  "futures-util",
  "gbm",
@@ -14348,6 +14352,7 @@ dependencies = [
  "tilo-doc",
  "tilo-doc-codecs",
  "tilo-files",
+ "tilo-identity-ceremony",
  "tilo-identity-host",
  "tilo-installed-apps",
  "tilo-joined-room",
@@ -16254,6 +16259,7 @@ dependencies = [
  "tilo-relay",
  "tilo-relay-client",
  "tilo-relay-protocol",
+ "tilo-relay-session",
  "tilo-test-env",
  "tilo-ui",
  "tilo-user-identity",
@@ -16454,6 +16460,7 @@ dependencies = [
 name = "tilo-copy-lint"
 version = "0.1.0"
 dependencies = [
+ "fluent",
  "workspace-hack",
 ]
 
@@ -16625,7 +16632,6 @@ version = "0.1.0"
 dependencies = [
  "blake3",
  "collab-types",
- "fluent",
  "serde",
  "serde_json",
  "taffy",
@@ -16706,7 +16712,6 @@ dependencies = [
  "tilo-actions",
  "tilo-automerge",
  "tilo-automerge-fork",
- "tilo-clock",
  "tilo-content",
  "tilo-resource",
  "tracing",
@@ -16763,11 +16768,13 @@ dependencies = [
 name = "tilo-egress"
 version = "0.1.0"
 dependencies = [
+ "bounded-command",
  "collab-types",
  "libc",
  "tempfile",
  "thiserror 2.0.21",
  "tilo-clock",
+ "tilo-test-env",
  "tracing",
  "workspace-hack",
 ]
@@ -16983,6 +16990,38 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-identity-ceremony"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "collab-types",
+ "data-encoding",
+ "ed25519-dalek 3.0.0",
+ "getrandom 0.4.3",
+ "hex",
+ "hmac 0.13.0",
+ "postcard",
+ "private-fs",
+ "rand_core 0.10.0",
+ "rustls",
+ "serde",
+ "serde_bytes",
+ "serde_json",
+ "sha2 0.11.0",
+ "tempfile",
+ "thiserror 2.0.21",
+ "threshold-identity",
+ "tilo-advisory-lock",
+ "tilo-clock",
+ "tilo-net",
+ "tilo-seal",
+ "tilo-test-env",
+ "wire-frame",
+ "workspace-hack",
+ "zeroize",
+]
+
+[[package]]
 name = "tilo-identity-host"
 version = "0.1.0"
 dependencies = [
@@ -17002,10 +17041,10 @@ dependencies = [
  "tilo-clock",
  "tilo-desktop-model",
  "tilo-files",
+ "tilo-identity-ceremony",
  "tilo-relay-protocol",
  "tilo-seal",
  "tilo-test-env",
- "tilo-ui",
  "tilo-unlock-protocol",
  "tilo-user-identity",
  "tracing",
@@ -17041,7 +17080,6 @@ name = "tilo-installed-apps"
 version = "0.1.0"
 dependencies = [
  "desktop-policy",
- "launcher",
  "package-store",
  "tempfile",
  "tilo-app-package",
@@ -17186,6 +17224,7 @@ name = "tilo-messaging-protocol"
 version = "0.1.0"
 dependencies = [
  "accounts",
+ "buffa-build",
  "chrono",
  "futures-util",
  "messages",
@@ -17709,7 +17748,6 @@ dependencies = [
  "ed25519-dalek 3.0.0",
  "iroh",
  "iroh-base",
- "n0-future",
  "postcard",
  "rand 0.10.1",
  "serde",
@@ -17774,7 +17812,6 @@ dependencies = [
  "tokio",
  "tracing",
  "uuid",
- "wire-frame",
  "workspace-hack",
 ]
 
@@ -17858,6 +17895,7 @@ dependencies = [
  "serde_json",
  "tilo-clock",
  "tilo-moq",
+ "tilo-net",
  "tilo-relay-protocol",
  "tokio",
  "tokio-rustls",
@@ -18207,7 +18245,6 @@ dependencies = [
  "chrono",
  "collab-types",
  "cosmic-text",
- "data-encoding",
  "durable-store",
  "ed25519-dalek 3.0.0",
  "fluent",
@@ -18217,7 +18254,6 @@ dependencies = [
  "getrandom 0.2.17",
  "getrandom 0.4.3",
  "hex",
- "hmac 0.13.0",
  "hypher",
  "icu_segmenter",
  "image",
@@ -18240,7 +18276,6 @@ dependencies = [
  "runtime-identity",
  "runtime-portal",
  "rustc-hash 2.1.3",
- "rustls",
  "serde",
  "serde_bytes",
  "serde_json",
@@ -18269,6 +18304,7 @@ dependencies = [
  "tilo-headless-schema",
  "tilo-host",
  "tilo-host-search",
+ "tilo-identity-ceremony",
  "tilo-image-codec",
  "tilo-media",
  "tilo-paint-stream",
@@ -18277,7 +18313,6 @@ dependencies = [
  "tilo-process",
  "tilo-resource",
  "tilo-rt",
- "tilo-seal",
  "tilo-search",
  "tilo-spellcheck",
  "tilo-startup-metrics",
@@ -19717,6 +19752,7 @@ dependencies = [
  "tilo-automerge-fork",
  "tilo-doc",
  "tilo-files",
+ "tilo-identity-ceremony",
  "tilo-resource",
  "tilo-ui",
  "tilo-vello",

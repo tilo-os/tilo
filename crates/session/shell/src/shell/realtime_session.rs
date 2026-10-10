@@ -85,10 +85,6 @@ pub struct VerifiedAppRegistration {
 impl VerifiedAppRegistration {
     /// Construct only after the caller verified the installed package and
     /// resolved the workspace through trusted shell state.
-    #[allow(
-        dead_code,
-        reason = "the constructor stays crate-private until launcher integration wires verified manifests into this broker"
-    )]
     pub(crate) fn new_verified(
         app_id: impl Into<String>,
         workspace_id: impl Into<String>,

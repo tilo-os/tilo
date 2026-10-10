@@ -23,6 +23,12 @@ const MIN_DELAY_SAMPLES = 5;
 // Packet-loss concealment: an unrepaired gap after a played frame repeats that
 // frame with a falling gain for at most two frames instead of a hard dropout.
 const PLC_MAX_FRAMES = 2;
+// Comfort noise: a publisher in Opus DTX sends one comfort-noise update per
+// 400 ms of silence and nothing in between. A gap after a quiet frame is
+// most likely that, so it keeps playing the update's noise (the last frame,
+// looped back and forth so it stays continuous) at full level for up to
+// 500 ms instead of fading to digital silence.
+const CNG_MAX_FRAMES = 25;
 // Latency trim: a continuous stream never drains the queue, so a mapping set
 // during startup (or a past jitter burst) would keep its excess delay forever.
 // When the playout offset exceeds the adaptive target by 1.5 frames, one quiet
@@ -32,6 +38,12 @@ const TRIM_EXCESS_FRAMES = 1.5;
 // Speaking levels: the RMS of the captured input and of each publisher's
 // played audio, posted every LEVEL_SAMPLES (100 ms).
 const LEVEL_SAMPLES = 4_800;
+
+function peakOf(samples) {
+  let peak = 0;
+  for (let index = 0; index < samples.length; index++) peak = Math.max(peak, Math.abs(samples[index]));
+  return peak;
+}
 
 class VoiceAudioProcessor extends AudioWorkletProcessor {
   constructor({processorOptions = {}} = {}) {
@@ -123,6 +135,7 @@ class VoiceAudioProcessor extends AudioWorkletProcessor {
         delayIndex: 0,
         offset: null,
         lastFrame: null,
+        lastQuiet: false,
         lastEnd: null,
         energy: 0,
       };
@@ -183,9 +196,7 @@ class VoiceAudioProcessor extends AudioWorkletProcessor {
       const {offset} = this.adaptiveOffset(publisher);
       const current = Number(publisher.baseLocalTimestamp - publisher.baseRemoteTimestamp);
       if (current - offset >= TRIM_EXCESS_FRAMES * this.frameSamples) {
-        let peak = 0;
-        for (let index = 0; index < samples.length; index++) peak = Math.max(peak, Math.abs(samples[index]));
-        if (peak < QUIET_PEAK) {
+        if (peakOf(samples) < QUIET_PEAK) {
           publisher.baseLocalTimestamp -= BigInt(samples.length);
           this.drop(message, 'playback-latency-trim', reservedSamples);
           return;
@@ -194,6 +205,7 @@ class VoiceAudioProcessor extends AudioWorkletProcessor {
     }
     publisher.queue.push({
       samples,
+      quiet: peakOf(samples) < QUIET_PEAK,
       timestamp: message.timestamp,
       localTimestamp,
       expiresAt: this.renderTimestamp + BigInt(MAX_PLAYBACK_SAMPLES),
@@ -244,12 +256,24 @@ class VoiceAudioProcessor extends AudioWorkletProcessor {
     return this.jitterInitial;
   }
 
-  // Fill [from, to) of this block with the last played frame at a falling gain.
+  // Fill [from, to) of this block with the last played frame at a falling
+  // gain, or, after a quiet frame, with its comfort noise at full level.
   conceal(publisher, output, blockStart, from, to) {
     if (!publisher.lastFrame || publisher.lastEnd === null || to <= from) return;
+    const frame = publisher.lastFrame;
+    if (publisher.lastQuiet) {
+      const limit = publisher.lastEnd + BigInt(CNG_MAX_FRAMES * this.frameSamples);
+      const end = to < limit ? to : limit;
+      const length = frame.length;
+      for (let position = from; position < end; position++) {
+        // Backwards first: the noise continues from the last played sample.
+        const cycle = Number(position - publisher.lastEnd) % (2 * length);
+        output[Number(position - blockStart)] += frame[cycle < length ? length - 1 - cycle : cycle - length];
+      }
+      return;
+    }
     const limit = publisher.lastEnd + BigInt(PLC_MAX_FRAMES * this.frameSamples);
     const end = to < limit ? to : limit;
-    const frame = publisher.lastFrame;
     for (let position = from; position < end; position++) {
       const since = Number(position - publisher.lastEnd);
       const gain = 1 - since / (PLC_MAX_FRAMES * this.frameSamples);
@@ -376,6 +400,7 @@ class VoiceAudioProcessor extends AudioWorkletProcessor {
         this.release(publisher, 'playback-consumed', count);
         publisher.lastEnd = entry.localTimestamp + BigInt(sourceOffset + count);
         publisher.lastFrame = entry.samples;
+        publisher.lastQuiet = entry.quiet;
         if (entry.releasedSamples >= entry.samples.length) {
           publisher.lastRenderedTimestamp = entry.timestamp;
           publisher.queue.shift();

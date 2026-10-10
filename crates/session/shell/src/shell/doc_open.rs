@@ -950,10 +950,14 @@ mod tests {
             .join(", ");
         std::fs::write(
             &manifest_path,
-            format!(
-                "[package]\nid = \"{package_id}\"\nname = \"{name}\"\n\
-                 version = \"1.0.0\"\n[entrypoint]\nbin = \"bin/app\"\n\
-                 type = \"gui\"\n[providers]\nmime = []\next = [{ext_list}]\n"
+            crate::shell::test_support::canonical_manifest(
+                &format!(
+                    "id = \"{package_id}\"\nname = \"{name}\"\nversion = \"1.0.0\"\nkind = \"app\""
+                ),
+                &format!(
+                    "[entrypoint]\nbin = \"bin/app\"\ntype = \"gui\"\n\
+                     [providers]\nmime = []\next = [{ext_list}]\n"
+                ),
             ),
         )
         .unwrap();

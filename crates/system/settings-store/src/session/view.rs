@@ -3,9 +3,13 @@
 //! Core `SessionSettings` reads retain their synchronous external-copy contract.
 //! The native event loop installs this view instead: its reads enqueue bounded
 //! refresh work while the existing file watcher also incorporates writes.
+//!
+//! Between reads the worker sleeps with no timeout. Only a host whose copy
+//! watch could not start asks it to look at the copy on a timer as well.
 
 use std::sync::{Arc, PoisonError, mpsc};
 use std::thread::JoinHandle;
+use std::time::Duration;
 
 use serde_json::{Map, Value};
 
@@ -18,11 +22,26 @@ struct HostView {
     worker: Option<JoinHandle<()>>,
 }
 
-pub(super) fn start(session: &Arc<SessionSettings>) -> std::io::Result<Arc<dyn SettingsSource>> {
+/// Start the view. With `copy_poll`, the worker also takes in the copy that
+/// often when no read asks it to: for a host that cannot watch the copy.
+pub(super) fn start(
+    session: &Arc<SessionSettings>,
+    copy_poll: Option<Duration>,
+) -> std::io::Result<Arc<dyn SettingsSource>> {
     let (sender, receiver) = mpsc::sync_channel(1);
     let session_weak = Arc::downgrade(session);
     let worker = tilo_rt::spawn_thread("tilo-settings-read", move || {
-        while receiver.recv().is_ok() {
+        loop {
+            let next = match copy_poll {
+                Some(interval) => match receiver.recv_timeout(interval) {
+                    Ok(()) | Err(mpsc::RecvTimeoutError::Timeout) => true,
+                    Err(mpsc::RecvTimeoutError::Disconnected) => false,
+                },
+                None => receiver.recv().is_ok(),
+            };
+            if !next {
+                break;
+            }
             let Some(session) = session_weak.upgrade() else {
                 break;
             };

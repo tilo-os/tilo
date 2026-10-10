@@ -23,7 +23,6 @@ vello.workspace = true
 winit.workspace = true
 taffy.workspace = true
 tracing-subscriber.workspace = true
-tracing.workspace = true
 os-actions = { path = "../../system/os-actions" }
 block-devices = { path = "../../system/block-devices" }
 bounded-command = { path = "../../system/bounded-command" }

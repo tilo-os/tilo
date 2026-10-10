@@ -296,11 +296,12 @@ fn native_publisher_cold_reads_and_same_id_retry_use_the_original_broker_owner()
         .tempdir_in(directory.path())
         .unwrap();
     let socket = runtime.path().join("broker.sock");
-    let broker = crate::shell::collab_broker::spawn_native_owner_harness(
+    let broker = crate::shell::collab_broker::spawn_native_owner_harness_with_reads(
         socket.clone(),
         native_workspace_owner::tree_of(&owner),
         vec![reporter.device_public_key],
         &network,
+        None,
     )
     .unwrap();
     let profile = directory.path().join("cold-publisher");

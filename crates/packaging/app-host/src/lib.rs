@@ -40,7 +40,6 @@ use std::path::PathBuf;
 
 pub mod client;
 #[cfg(feature = "service")]
-pub mod dev_env;
 #[cfg(feature = "service")]
 pub mod fetch;
 pub mod install;

@@ -18,9 +18,7 @@ use clap::{Parser, Subcommand};
 use desktop_entry::launch::LaunchEnv;
 use launcher::landlock_shim::{SANDBOX_EXEC_SUBCOMMAND, run_sandbox_exec};
 use launcher::registration_gate::LAUNCH_REGISTRATION_FD_ENV;
-use launcher::run::{
-    IdentitySource, LaunchMode, RunError, RunOptions, launch_manifest, run_manifest,
-};
+use launcher::run::{IdentitySource, LaunchMode, RunOptions, launch_manifest, run_manifest};
 
 fn wait_for_registration_fd(fd: RawFd) -> std::io::Result<()> {
     if fd < 3 {
@@ -264,7 +262,7 @@ struct RunHostArgs {
 }
 
 /// Fold an `i32` exit code (from [`std::process::ExitStatus::code`] or
-/// [`RunError::to_exit_code`]) into the `u8` [`ExitCode`] takes. Both
+/// [`launcher::run::RunError::to_exit_code`]) into the `u8` [`ExitCode`] takes. Both
 /// sources are always in `0..=255` in practice — a POSIX wait status is
 /// already masked to the low byte, and `RunError`'s codes are small
 /// constants — so the `1` fallback (generic failure) never fires for a real
@@ -458,6 +456,16 @@ fn run_gui_command(args: RunCliArgs) -> ExitCode {
         render_node: args.render_node,
         open_document: args.open,
         open_uri: args.open_uri,
+    };
+    // Held from before the package is verified until the app exits, so an
+    // update meanwhile leaves the build this launch runs alone
+    // (`launcher::lease`).
+    let _payload_held = match launcher::lease::hold_payload(&args.payload_root) {
+        Ok(held) => held,
+        Err(e) => {
+            eprintln!("tilo-launcher: {e}");
+            return exit_code(e.to_exit_code());
+        }
     };
     // Joining the app's scope (a round trip to the user manager) and
     // verifying the package (reading and hashing its files) need nothing
@@ -711,7 +719,9 @@ struct ExecArgs {
 /// same code. The app still gets exactly one writable directory, and
 /// no flag here can change that.
 fn exec_installed(package: &str, args: ExecArgs) -> ExitCode {
-    let entry = match package_store::find_installed(package) {
+    // Held from the lookup until the app exits, so an update meanwhile
+    // leaves the build this launch runs alone (`launcher::lease`).
+    let (entry, _payload_held) = match launcher::lease::find_installed_held(package) {
         Ok(Some(e)) => e,
         Ok(None) => {
             eprintln!(
@@ -835,7 +845,8 @@ fn run_installed(
     minimal_libs: bool,
     rest: Vec<String>,
 ) -> ExitCode {
-    let entry = match package_store::find_installed(package) {
+    // As in `exec_installed`.
+    let (entry, _payload_held) = match launcher::lease::find_installed_held(package) {
         Ok(Some(e)) => e,
         Ok(None) => {
             eprintln!(
@@ -960,13 +971,6 @@ fn init_tracing() {
         .with_target(false)
         .try_init();
 }
-
-// Expose RunError so the binary can use #[derive] paths cleanly.
-#[allow(
-    dead_code,
-    reason = "the link-only helper keeps RunError reachable for derive-generated binary paths"
-)]
-fn _link_run_error(_: &RunError) {}
 
 #[cfg(test)]
 mod admit_share_tests {

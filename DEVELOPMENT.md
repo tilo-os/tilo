@@ -236,7 +236,8 @@ The records, each with its verdict, are appended to the public generic package
 `tilo-perf-results` (one immutable file per run, a version per UTC month), so
 the current numbers come from there, not from `docs/benchmarks/`. Read them with
 `python3 tools/perf/store.py fetch https://code.tilo.so`. Dispatch inputs:
-`kpis` selects groups (`fs`, `footprint` (app and OS image sizes), `agent`, `latency`, `render`, `wakeups`, `hosting`); `accept` takes this run's values as
+`kpis` selects groups (`fs`, `footprint` (app and OS image sizes), `agent`, `latency`, `render`, `wakeups`, `hosting`); `mode: ab` with `ab_base`,
+`ab_candidate` and `ab_rounds` runs the A/B lane below instead; `accept` takes this run's values as
 the new baseline start after an intended change (from main only); and
 `synthetic_series` with `synthetic_factor` multiplies a run's values to prove
 the gate. A 1.25 factor passes as pending in the first run of a series and fails
@@ -290,6 +291,53 @@ Pull requests may gate only on deterministic, runner-independent counters
 (bytes, allocation counts, raster pixels), only when the measured paths change,
 and following `tools/web/wasm_size_ratchet.py`. Wall-clock KPIs belong in
 this lane.
+
+### Proving a performance change (A/B)
+
+A nightly record cannot prove what one change did to a wall-clock or CPU
+KPI: it is compared with earlier nights on other hosts, and the shared
+runners differ by more than most changes (the unchanged relay bench has
+measured 15.9 and 31.2 CPU-seconds per collaborator-hour). To claim a gain,
+or to show there is no regression, dispatch **Perf / scheduled** with
+`mode: ab`:
+
+```bash
+fgj workflow run perf-scheduled.yml -R tilo/tilo --hostname code.tilo.so \
+  --ref <your-branch> -f mode=ab -f kpis=hosting
+# optional: -f ab_base=<ref> (default origin/main)
+#           -f ab_candidate=<ref> (default the dispatched commit) -f ab_rounds=8
+```
+
+One job per group in `kpis` (`hosting`, `latency`, `render`, `agent`,
+`wakeups`, `fs`; `footprint` is bytes of published artifacts and has no A/B)
+builds the base and the candidate in one checkout, one after the other, and
+runs that group's existing benchmark on both, alternating, for `ab_rounds`
+rounds on one runner (`tools/perf/ab.py`). Odd rounds run the base first and
+even rounds the candidate first, so drift over the job falls on both sides.
+Each round pairs the two runs, so a slow host slows both and cancels out.
+The binaries come from each side's commit. The harness (`scripts/perf/`, the
+adapters) comes from the dispatched commit and drives both sides.
+
+For each KPI, the job summary judges the p50 and the p99. The estimate is the
+paired ratio candidate/base (Hodges-Lehmann), with its distribution-free
+95 % interval (exact Wilcoxon signed rank). Beside it are the rounds the
+candidate won and lost, and the sign test. The verdict:
+
+- **improved** or **regressed**: the whole interval lies on one side of no
+  change (lower is better, except fps);
+- **unchanged**: both sides measured the same in every round;
+- **inconclusive**: the interval includes no change. Six rounds is the
+  minimum for a 95 % interval; then every round must agree. Add rounds
+  rather than rerunning until a run agrees with you.
+
+A KPI that only one side reports, such as a metric the candidate adds, is
+listed and not paired. Paste the summary table into the pull request, and
+link the run. The artifact `perf-ab-<group>` holds `ab-result.json`, every
+record and every run's log. Rerun the analysis with
+`python3 tools/perf/ab.py analyse records.jsonl`. A/B results never enter the
+store or the baseline, and the job fails only when a run could not measure,
+never on a verdict. The same tool runs locally on Linux, on a clean checkout:
+`python3 tools/perf/ab.py run --groups hosting --base origin/main --candidate HEAD`.
 
 ## App package size
 
@@ -451,11 +499,60 @@ measures main's newest image for both architectures and records
   the second night running. To land intended growth, dispatch Perf / scheduled
   on main with `kpis=footprint` and `accept=<KPI ids>` once the image has it.
 - **Ceiling.** Compressed bytes and unique content are held to an enforced
-  ceiling, 5 % over the image TIL-609 measured, so slow creep fails too. It
-  may only be lowered, except by a change that says why in the same pull
-  request. The KPI targets (3.5 GB compressed, 7 GB of content for
+  ceiling, set 5 % over the image TIL-609 measured and lowered by what each
+  later size change saved, so slow creep fails too. It may only be lowered,
+  except by a change that says why in the same pull request; a change that
+  shrinks the image lowers it by its measured saving and records the
+  numbers under `docs/benchmarks/`. The KPI targets (3.5 GB compressed, 7 GB of content for
   x86_64) are written beside the ceilings. Windows compatibility is most of
   the gap; TIL-711 moves it to a downloaded system extension.
+
+### Content-based layers (rechunking)
+
+An update downloads every layer whose digest the device does not have. A
+Containerfile layer is a new blob whenever its instruction runs again, so
+with one layer per instruction an update between two commits that changed one
+app pulled about 78 % of the image (TIL-747). Release / OS therefore re-lays
+every generic image it publishes out by content before anything consumes it
+("Rechunk the image", `os/dev/rechunk-image.sh`):
+
+- `os/Containerfile.rechunk` runs [chunkah](https://github.com/coreos/chunkah)
+  (built offline from its checksum-pinned release) over the raw image's root:
+  one component per RPM package, read from the image's rpmdb, files over 1 MB
+  on their own, the rest grouped, packed into at most 128 layers. An unchanged
+  component is the same blob in the next build. Whited-out bytes, the base's
+  old kernel and `/sysroot`'s ostree objects are in no layer. Trees that change
+  on their own schedule get a chunkah run and layers of their own
+  (`os/scripts/rechunk-chunkah.py`, today Proton and the Steam runtime):
+  otherwise their small files share one layer with Tilo's, which change with
+  almost every build.
+- `os/scripts/oci-rechunk.py` takes extended attributes from the raw image's
+  layers where chunkah's differ (BuildKit's snapshot of the image, which
+  chunkah reads, lacks the base binaries' file capabilities), adds one layer
+  with every directory's exact metadata (chunkah caps a directory's time per
+  layer; fontconfig's cache needs font directories' times unchanged), gives
+  the result the raw image's config,
+  and refuses it unless every path matches the raw image: type, mode, owner,
+  xattrs, bytes, symlink target. Only file times may be lower (capped at the
+  package's build time, or for files no package owns at an epoch that moves
+  with the base and the RPM snapshot only), `/sysroot`'s contents are gone,
+  and a hard-link group may be split across layers.
+- The dev lane pushes the rechunked image as `tilo-ci:<ref>-<sha7>-<arch>`
+  and the raw one beside it as `…-<arch>-layered`; a release rechunks its
+  archive, and its independent rebuild's, before the install gate seals it.
+  The repository variable `TILO_RECHUNK=0` turns it off without a commit.
+
+Local images (`os/dev/build-image.sh`, `tilo-vm vm upgrade --from local`) keep
+their Containerfile layers: podman's layer cache is what makes those rebuilds
+cheap, and tilo-vm sends the VM only the blobs it lacks either way.
+
+`--update-from OLD` measures an update: the compressed layers the image has
+and OLD does not. `--update-only` reads only the two manifests:
+
+```bash
+python3 tools/perf/image_size.py --image registry.tilo.so/tilo/tilo-ci:main-<new>-x86_64 \
+  --update-from registry.tilo.so/tilo/tilo-ci:main-<old>-x86_64 --update-only
+```
 
 ## Fast checks before assembly
 

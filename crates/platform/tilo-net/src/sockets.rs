@@ -294,9 +294,7 @@ mod imp_native {
     use std::net::SocketAddr;
     use std::sync::Arc;
 
-    use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
-    use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
-    use rustls::{DigitallySignedStruct, SignatureScheme};
+    use rustls::pki_types::{CertificateDer, ServerName};
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
     use crate::NetError;
@@ -349,18 +347,10 @@ mod imp_native {
             trust: Trust,
         ) -> Result<Self, NetError> {
             let config = match trust {
-                Trust::System => crate::native::tls::client_config()
-                    .map_err(|error| NetError::Protocol(format!("TLS: {error}")))?,
-                Trust::AnyCertificate => {
-                    let provider = crate::native::tls::crypto_provider();
-                    rustls::ClientConfig::builder_with_provider(Arc::clone(&provider))
-                        .with_safe_default_protocol_versions()
-                        .map_err(|error| NetError::Protocol(format!("TLS: {error}")))?
-                        .dangerous()
-                        .with_custom_certificate_verifier(Arc::new(AnyCertificate(provider)))
-                        .with_no_client_auth()
-                }
-            };
+                Trust::System => crate::native::tls::client_config(),
+                Trust::AnyCertificate => crate::native::tls::pinned_client_config(|_| true),
+            }
+            .map_err(|error| NetError::Protocol(format!("TLS: {error}")))?;
             let name = ServerName::try_from(
                 host.trim_start_matches('[')
                     .trim_end_matches(']')
@@ -457,56 +447,6 @@ mod imp_native {
 
         pub(super) fn local_addr(&self) -> Result<SocketAddr, NetError> {
             self.0.local_addr().map_err(io)
-        }
-    }
-
-    /// Any certificate, but the handshake signature must verify under it, so
-    /// the peer holds the key of the certificate the caller pins.
-    #[derive(Debug)]
-    struct AnyCertificate(Arc<rustls::crypto::CryptoProvider>);
-
-    impl ServerCertVerifier for AnyCertificate {
-        fn verify_server_cert(
-            &self,
-            _end_entity: &CertificateDer<'_>,
-            _intermediates: &[CertificateDer<'_>],
-            _server_name: &ServerName<'_>,
-            _ocsp_response: &[u8],
-            _now: UnixTime,
-        ) -> Result<ServerCertVerified, rustls::Error> {
-            Ok(ServerCertVerified::assertion())
-        }
-
-        fn verify_tls12_signature(
-            &self,
-            message: &[u8],
-            cert: &CertificateDer<'_>,
-            dss: &DigitallySignedStruct,
-        ) -> Result<HandshakeSignatureValid, rustls::Error> {
-            rustls::crypto::verify_tls12_signature(
-                message,
-                cert,
-                dss,
-                &self.0.signature_verification_algorithms,
-            )
-        }
-
-        fn verify_tls13_signature(
-            &self,
-            message: &[u8],
-            cert: &CertificateDer<'_>,
-            dss: &DigitallySignedStruct,
-        ) -> Result<HandshakeSignatureValid, rustls::Error> {
-            rustls::crypto::verify_tls13_signature(
-                message,
-                cert,
-                dss,
-                &self.0.signature_verification_algorithms,
-            )
-        }
-
-        fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
-            self.0.signature_verification_algorithms.supported_schemes()
         }
     }
 }

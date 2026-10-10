@@ -1,0 +1,146 @@
+/// The compositor mounts this same component and drives it on its event thread.
+/// Hold the real supervisor protocol reply until after an unrelated system
+/// search has processed keyboard input on that thread.
+#[cfg(unix)]
+#[test]
+fn hosted_terminal_delayed_open_keeps_host_keyboard_input_responsive() {
+    use std::io::{BufRead, Write};
+    use std::os::unix::net::UnixStream;
+    use std::sync::mpsc;
+    use std::time::{Duration, Instant};
+
+    let (client, server) = UnixStream::pair().unwrap();
+    client
+        .set_read_timeout(Some(Duration::from_millis(250)))
+        .unwrap();
+    let (request_sent, request_received) = mpsc::channel();
+    let (release, delayed) = mpsc::channel();
+    let supervisor = std::thread::spawn(move || {
+        let mut request = String::new();
+        std::io::BufReader::new(&server)
+            .read_line(&mut request)
+            .unwrap();
+        request_sent.send(request).unwrap();
+        // A bound only for a broken test, not simulated startup latency.
+        if delayed.recv_timeout(Duration::from_secs(10)).is_ok() {
+            (&server)
+                .write_all(b"{\"result\":\"no-runtime\",\"reason\":\"delayed readiness\"}\n")
+                .unwrap();
+        }
+    });
+    let profile = tempfile::tempdir().unwrap();
+    let mut apps = InProcessApps::at(profile.path(), "test-person").unwrap();
+    let component = apps
+        .mount(
+            terminal::definition(),
+            ROOM,
+            TAB,
+            RecordId::for_tab(TAB),
+            |context| {
+                context.lend(terminal::HostedProcessServices { ush: Some(client) });
+            },
+        )
+        .unwrap();
+    let mut host = ui::headless::FrameHarness::from_component(
+        component,
+        (900, 600),
+        ui::application::ComponentRunnerInputs::from_native_process(),
+    )
+    .unwrap();
+    host.relayout();
+    assert!(
+        request_received
+            .recv_timeout(Duration::from_secs(5))
+            .unwrap()
+            .contains("open-session")
+    );
+    let address = ui::bound_dispatch::BoundActionAddress {
+        instance_id: TAB,
+        address: tilo_actions::ActionAddress::new(terminal::Terminal::KIND, "inspect-session"),
+    };
+    let inspect = |host: &mut ui::headless::FrameHarness| {
+        host.invoke_bound_action(&address, &serde_json::Map::new())
+            .unwrap()
+            .completed()
+            .unwrap()
+            .value
+            .unwrap()
+    };
+    assert_eq!(inspect(&mut host)["lifecycle"], "opening");
+    assert_eq!(inspect(&mut host)["input_available"], false);
+    host.open_global_search_all("").unwrap();
+    host.type_text("unrelated keyboard input");
+    assert_eq!(host.global_search_query(), Some("unrelated keyboard input"));
+    assert_eq!(
+        inspect(&mut host)["lifecycle"],
+        "opening",
+        "startup remains delayed while the host handles input"
+    );
+    host.key("Escape");
+    release.send(()).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while inspect(&mut host)["lifecycle"] == "opening" {
+        assert!(
+            Instant::now() < deadline,
+            "completion must reach the mounted component"
+        );
+        host.relayout();
+        std::thread::yield_now();
+    }
+    assert_eq!(inspect(&mut host)["lifecycle"], "no_runtime");
+    assert_eq!(inspect(&mut host)["startup_reason"], "delayed readiness");
+    assert_eq!(inspect(&mut host)["input_available"], false);
+    host.close_components();
+    supervisor.join().unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn deferred_hosted_terminal_grant_reports_missing_ush_through_its_resource() {
+    use std::time::{Duration, Instant};
+    let profile = tempfile::tempdir().unwrap();
+    let mut apps = InProcessApps::at(profile.path(), "test-person").unwrap();
+    let component = apps
+        .mount(
+            terminal::definition(),
+            ROOM,
+            TAB,
+            RecordId::for_tab(TAB),
+            |context| {
+                context.lend(terminal::HostedSessionSource);
+            },
+        )
+        .unwrap();
+    let mut host = ui::headless::FrameHarness::from_component(
+        component,
+        (900, 600),
+        ui::application::ComponentRunnerInputs::from_native_process(),
+    )
+    .unwrap();
+    let address = ui::bound_dispatch::BoundActionAddress {
+        instance_id: TAB,
+        address: tilo_actions::ActionAddress::new(terminal::Terminal::KIND, "inspect-session"),
+    };
+    let inspect = |host: &mut ui::headless::FrameHarness| {
+        host.invoke_bound_action(&address, &serde_json::Map::new())
+            .unwrap()
+            .completed()
+            .unwrap()
+            .value
+            .unwrap()
+    };
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while matches!(
+        inspect(&mut host)["lifecycle"].as_str(),
+        Some("unopened" | "opening")
+    ) {
+        assert!(Instant::now() < deadline, "missing service must complete");
+        host.relayout();
+        std::thread::yield_now();
+    }
+    let state = inspect(&mut host);
+    assert_eq!(state["lifecycle"], "no_runtime");
+    assert_eq!(state["input_available"], false);
+    assert!(state["startup_reason"].as_str().unwrap().contains("ush"));
+    host.close_components();
+}

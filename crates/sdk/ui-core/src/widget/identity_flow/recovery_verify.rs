@@ -33,14 +33,15 @@ use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
+use crate::widget::identity_flow::ScreenOutcome;
 use crate::widget::identity_flow::sheet::{
     Align, BodyScroll, GRID_SHEET_WIDTH, Resolved, Role, Rows, SheetSpec, WordGrid, edited,
     field_leaf, paint_text, paragraph_height, place_field, resolve, screen_style,
     with_layout_renderer,
 };
-use crate::widget::identity_flow::{RecoveryChallenge, ScreenOutcome};
 use crate::widget::modal_dialog::ModalAction;
 use crate::widget::text_input::TextInput;
+use tilo_identity_ceremony::RecoveryChallenge;
 
 const TITLE: &str = "Confirm your recovery words";
 const EXPLANATION: &str =

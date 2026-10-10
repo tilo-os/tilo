@@ -5,6 +5,7 @@
 # `.cargo/config.toml` applies:
 # `crates/doc/tilo-doc-codec-markdown-wasm/build.sh`.
 exclude = [
+    "vendor/buffa-build",
     "fuzz",
     "crates/doc/tilo-doc-codec-markdown-wasm",
     "vendor/vello",
@@ -46,6 +47,7 @@ members = [
     "crates/dev/registry-review",
     "apps/canvas",
     "crates/collab/tilo-action-broker",
+    "crates/collab/tilo-identity-ceremony",
     "crates/session/desktop",
     "crates/collab/tilo-peer-state",
     "crates/browser/tilo-browser-runtime",
@@ -923,6 +925,8 @@ debug-assertions = true
 # Vendored winit fork adds Wayland `zwp_pointer_gestures_v1` support and maps
 # pinch events to winit's existing `PinchGesture` API.
 [patch.crates-io]
+# Build outputs must not become Cargo inputs; see vendor/buffa-build/PROVENANCE.md.
+buffa-build = { path = "vendor/buffa-build" }
 # Verify Cast TLS handshake signatures and bound cancellation; identity
 # authentication remains a separate explicit trust decision. See provenance.
 fcast-sender-sdk = { path = "vendor/fcast-sender-sdk" }

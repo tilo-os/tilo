@@ -945,3 +945,62 @@ test('feedback startup waits for owner admission and never joins another room', 
   status = 'owner refused current certified admission';
   await assert.rejects(peer.configureFeedback(destination), /owner refused/);
 });
+
+for (const attachSignal of [false, true]) test(`resource close joins peer storage release (signal=${attachSignal})`, async () => {
+  const {closeResourceOperation} = await import('./resource-session.mjs');
+  const runtime = fakeRuntime();
+  const values = new Map();
+  runtime.profile_value = (profile, device, key) => values.get(`${profile}/${device}/${key}`);
+  runtime.set_profile_value = (profile, device, key, bytes) => values.set(`${profile}/${device}/${key}`, bytes);
+  let release, begun, reentered, releases = 0;
+  const gate = new Promise(resolve => {release = resolve;});
+  const started = new Promise(resolve => {begun = resolve;});
+  const controller = new AbortController();
+  const desktop = {
+    async openProfileStorage() {
+      return {
+        async flush() {},
+        async release() { releases++; begun(); reentered = peer.dispose(); await gate; },
+      };
+    },
+  };
+  const peer = await connect(options(runtime, undefined, {profile: 'overlap', device: 'owned', desktop,
+    vaultStorage: vaultMemory(),...(attachSignal ? {signal: controller.signal} : {})}));
+  let completed = false;
+  const closing = closeResourceOperation({controller, peer}).then(() => { completed = true; });
+  try {
+    await started;
+    const repeated = peer.dispose();
+    assert.equal(peer.dispose(), repeated, 'repeated disposal shares one completion');
+    assert.equal(reentered, repeated, 'reentrant disposal joins the installed completion');
+    await settle();
+    assert.equal(completed, false, 'resource close must await storage release');
+  } finally {
+    release();
+    await closing;
+  }
+  await peer.dispose();
+  assert.equal(releases, 1, 'storage is released exactly once');
+});
+
+
+test('every disposal caller observes storage release failure', async () => {
+  const runtime = fakeRuntime();
+  runtime.profile_value = () => undefined;
+  runtime.set_profile_value = () => {};
+  const failure = new Error('storage release refused');
+  let releases = 0;
+  const desktop = {async openProfileStorage() { return {
+    async flush() {}, async release() { releases++; throw failure; },
+  }; }};
+  const peer = await connectPeer(options(runtime, undefined, {
+    profile: 'release-failure', device: 'owned', desktop, vaultStorage: vaultMemory(), live: false,
+  }));
+  const first = peer.dispose(), second = peer.dispose();
+  assert.equal(first, second);
+  const outcomes = await Promise.allSettled([first, second]);
+  assert.deepEqual(outcomes, [{status: 'rejected', reason: failure}, {status: 'rejected', reason: failure}]);
+  await assert.rejects(peer.dispose(), error => error === failure);
+  assert.equal(releases, 1);
+  assert.equal(runtime.peer.disposed, true);
+});

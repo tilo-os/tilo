@@ -232,6 +232,7 @@ struct WorkSessionBoundary {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum TaskAction {
+    ApproveRun,
     ReviewHistory,
     Steer,
     CancelRun,
@@ -251,6 +252,7 @@ enum TaskAction {
 impl TaskAction {
     fn label(self) -> String {
         t(match self {
+            Self::ApproveRun => "activity-task-approve-run",
             Self::ReviewHistory => "activity-task-review-history",
             Self::Steer => "activity-task-steer",
             Self::CancelRun => "activity-task-cancel-run",
@@ -807,6 +809,7 @@ pub struct RoomActivityPane {
     host: Rc<dyn ActivityHost>,
     task_room: String,
     task_review: Option<Result<std::sync::Arc<super::TaskReviewSnapshot>, String>>,
+    review_approval: Option<task_review_view::ApprovalFrontier>,
     direction: Option<task_review_view::DirectionDraft>,
     review_pending: Option<uuid::Uuid>,
     review_notice: Option<String>,
@@ -1013,6 +1016,7 @@ impl RoomActivityPane {
             host: Rc::new(UnavailableActivityHost),
             task_room: String::new(),
             task_review: None,
+            review_approval: None,
             direction: None,
             review_pending: None,
             review_notice: None,
@@ -5503,6 +5507,7 @@ impl RoomActivityPane {
         if matches!(
             action,
             TaskAction::ReviewHistory
+                | TaskAction::ApproveRun
                 | TaskAction::Steer
                 | TaskAction::CancelRun
                 | TaskAction::RetryRun
@@ -5624,6 +5629,18 @@ impl RoomActivityPane {
         }
     }
 
+    fn reviewed_task_description(&self, task: &WorkspaceTask) -> String {
+        let mut description =
+            task_accessibility_description(task, self.now(), &self.task_creator_label(task));
+        if let Some((_, control)) = self.reviewed_control(&task.id) {
+            for line in task_review_view::task_run_evidence(control, self.now()) {
+                description.push('\n');
+                description.push_str(&line);
+            }
+        }
+        description
+    }
+
     fn task_actions_for(&self, task: &WorkspaceTask) -> Vec<TaskAction> {
         if let Some((snapshot, control)) = self.reviewed_control(&task.id) {
             let mut actions = vec![TaskAction::ReviewHistory];
@@ -5631,6 +5648,17 @@ impl RoomActivityPane {
                 actions.push(TaskAction::OpenResource);
             }
             if snapshot.writable && self.review_pending.is_none() {
+                if task.status == WorkspaceTaskStatus::Queued
+                    && control.active_run.is_none()
+                    && task.assigned_agent.is_some()
+                    && task.route != WorkspaceTaskRoute::Manual
+                    && task
+                        .resource
+                        .as_ref()
+                        .is_none_or(|resource| resource.agent_request.is_none())
+                {
+                    actions.push(TaskAction::ApproveRun);
+                }
                 if task.status == WorkspaceTaskStatus::Waiting && control.active_run.is_none() {
                     actions.push(TaskAction::RetryRun);
                 }
@@ -6895,11 +6923,7 @@ impl RoomActivityPane {
                 .map(|task| {
                     AccessNode::new(Role::ListItem)
                         .with_name(task.title.clone())
-                        .with_description(task_accessibility_description(
-                            task,
-                            self.now(),
-                            &self.task_creator_label(task),
-                        ))
+                        .with_description(self.reviewed_task_description(task))
                 })
                 .collect();
             root.children.push(tasks);

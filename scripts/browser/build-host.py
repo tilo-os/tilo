@@ -15,6 +15,7 @@ import json
 import os
 from pathlib import Path
 import platform
+import re
 import shutil
 import subprocess
 import tarfile
@@ -59,11 +60,30 @@ def valid_range(header, first, last, size, received):
     return header == f"bytes {first}-{last}/{size}" and received == last - first + 1
 
 
+def archive_url(entry):
+    if "url" not in entry:
+        if "source_patch_sha256" in entry:
+            raise ValueError("Rebuilt CEF lock requires its immutable SDK URL")
+        return "https://cef-builds.spotifycdn.com/" + urllib.parse.quote(entry["name"])
+    url = entry["url"]
+    if not isinstance(url, str):
+        raise ValueError("CEF lock URL must be a string")
+    parsed = urllib.parse.urlsplit(url)
+    source = entry.get("source_patch_sha256")
+    if not isinstance(source, str) or not re.fullmatch("[0-9a-f]{64}", source):
+        raise ValueError("Rebuilt CEF URL requires the locked source patch SHA-256")
+    expected = "/api/packages/tilo/generic/tilo-cef-sdk/" + source + "/" + urllib.parse.quote(entry["name"], safe="")
+    if (parsed.scheme != "https" or parsed.netloc != "code.tilo.so"
+            or parsed.path != expected or parsed.query or parsed.fragment):
+        raise ValueError("Rebuilt CEF URL must name the immutable locked Tilo SDK package")
+    return url
+
+
 def download_archive(cache, entry):
+    url = archive_url(entry)
     archive = cache / entry["name"]
     if verify_archive(archive, entry):
         return archive
-    url = "https://cef-builds.spotifycdn.com/" + urllib.parse.quote(entry["name"])
     parts = cache / (entry["name"] + ".parts")
     parts.mkdir(parents=True, exist_ok=True)
     chunk = 1024 * 1024
@@ -106,6 +126,7 @@ def download_archive(cache, entry):
 
 
 def acquire_sdk(cache, entry, archive=None):
+    archive_url(entry)
     cache.mkdir(parents=True, exist_ok=True)
     name = entry["name"].removesuffix(".tar.bz2")
     sdk = cache / name

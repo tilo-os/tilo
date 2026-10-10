@@ -124,13 +124,14 @@ pub fn staging_dir() -> Option<PathBuf> {
     Some(staged)
 }
 
-/// The installer binary. `TILO_INSTALL_BIN` overrides it in a developer
-/// build only (see [`crate::dev_env`]), matching the compositor's launcher
-/// resolution; a release build runs `tilo-install` from `PATH`.
+/// Names the `tilo-install` binary instead of the one on `PATH`.
+pub const INSTALL_BIN_ENV: &str = "TILO_INSTALL_BIN";
+
+/// The installer binary. [`INSTALL_BIN_ENV`] overrides it in a developer
+/// build only (see [`package_store::dev_env`]), matching the compositor's
+/// launcher resolution; a release build runs `tilo-install` from `PATH`.
 pub fn tilo_install_bin() -> String {
-    tilo_install_bin_from(crate::dev_env::dev_override(
-        crate::dev_env::INSTALL_BIN_ENV,
-    ))
+    tilo_install_bin_from(package_store::dev_env::dev_override(INSTALL_BIN_ENV))
 }
 
 /// [`tilo_install_bin`] given the override the build's gate let through.
@@ -837,7 +838,7 @@ mod tests {
     fn the_installer_invocation_is_fixed_and_never_relaxes_signatures() {
         // Phase `a_release_build_runs_the_installer_from_path`.
         {
-            use crate::dev_env::{INSTALL_BIN_ENV, dev_override_from};
+            use package_store::dev_env::dev_override_from;
             let gated = dev_override_from(false, INSTALL_BIN_ENV, Some("/tmp/evil-install".into()));
             assert_eq!(tilo_install_bin_from(gated), "tilo-install");
             let honoured =

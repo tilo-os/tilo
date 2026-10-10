@@ -1,0 +1,7 @@
+{
+  "encoding": "UTF-8 lines; concatenate lines to reconstruct stdout",
+  "lines": [
+    "PASS exact owned Qt scope removed featherpad-r1 1433cb6efe73e638c5be9ce842e2da01c2151420491e8800e3ffdbdae9a1b0c3\n",
+    "PASS exact owned Qt scope removed featherpad-r2 870b0c9f73434c70222167a818e3509455f41a6af97bd163123dd5fca81f4a36\n"
+  ]
+}

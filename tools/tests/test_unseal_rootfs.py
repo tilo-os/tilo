@@ -84,6 +84,28 @@ class UnsealRootfsTests(unittest.TestCase):
             self.assertEqual((root / "usr/lib/modules" / KVER / "vmlinuz").read_bytes(), b"SPLIT-KERNEL")
             self.assertFalse((root / "kernel").exists())
             self.assertEqual(list((root / "boot").rglob("*.efi")), [])
+        with self.subTest(phase='a split kernel without its initramfs takes the uki initrd'):
+            # The production image since TIL-733: /kernel keeps vmlinuz, the
+            # initramfs ships only inside the UKI.
+            root = self.root()
+            uki = self.uki(root)
+            split = root / "kernel" / KVER
+            split.mkdir(parents=True)
+            (split / "vmlinuz").write_bytes(b"SPLIT-KERNEL")
+            self.assertEqual(unseal.main(["unseal", str(root)]), 0)
+            kdir = root / "usr/lib/modules" / KVER
+            self.assertEqual((kdir / "vmlinuz").read_bytes(), b"SPLIT-KERNEL")
+            self.assertEqual((kdir / "initramfs.img").read_bytes(), b"INITRD-FROM-UKI")
+            self.assertFalse(uki.exists())
+            self.assertFalse((root / "kernel").exists())
+        with self.subTest(phase='a split kernel without its initramfs and without a uki fails'):
+            root = self.root()
+            split = root / "kernel" / KVER
+            split.mkdir(parents=True)
+            (split / "vmlinuz").write_bytes(b"SPLIT-KERNEL")
+            with self.assertRaisesRegex(SystemExit, "no kernel to restore"):
+                unseal.main(["unseal", str(root)])
+            self.assertFalse((root / "usr/lib/modules" / KVER / "vmlinuz").exists())
         with self.subTest(phase='an unsealed root passes through'):
             root = self.root()
             kdir = root / "usr/lib/modules" / KVER
