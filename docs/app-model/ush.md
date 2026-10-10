@@ -274,7 +274,7 @@ when it ends, by the Terminal that runs the session:
 |---|---|
 | `command`, `cwd` | as the shell marked them |
 | `environment` | where it ran: the session's target |
-| `actor`, `for_person` | who ran it: the person typing, or whoever's `run` asked for it; `for_person` names the person an agent ran it for once actions carry it to the verb |
+| `actor`, `for_person` | who ran it: the person typing, or whoever's `run` asked for it, and the person an agent ran it for |
 | `started_ms`, `ended_ms`, `exit` | start, end and exit status; the duration is their difference |
 | `output` | the raw bytes it printed, escape sequences included, as one content-addressed `Bytes` blob (at most 4 MiB; `truncated` when it printed more) |
 | `tool`, `items` | which parser read it, and what it found |

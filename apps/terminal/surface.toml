@@ -127,6 +127,7 @@ type = "Vec<RunItem>"
 [[resources.fields]]
 owner = "terminal"
 path = "requests"
+readonly = true
 stored = "value"
 title = "Commands asked to run"
 type = "Outbox<RunRequest, RunAnswer>"
