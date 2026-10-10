@@ -21,7 +21,6 @@ blake3.workspace = true
 # Binary inputs (images, binary package parts) are referenced by content address; the bytes live
 # in the caller's content store.
 tilo-content = { version = "0.1.0", path = "../../system/content", default-features = false }
-tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
