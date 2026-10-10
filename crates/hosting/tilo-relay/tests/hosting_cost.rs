@@ -72,9 +72,9 @@ const BUDGET_COMPACT_FRAME_P50_BYTES: u64 = 484;
 /// Ceiling for the largest such frame: measured 489 B on Linux CI, plus 10 %.
 const BUDGET_COMPACT_FRAME_MAX_BYTES: u64 = 538;
 /// Ceiling for the median keystroke frame on `tilo-relay/7`, coded against
-/// the author's previous keystroke on the same document (TIL-755): under
-/// half of the `tilo-relay/5` frame.
-const BUDGET_CODED_FRAME_P50_BYTES: u64 = 240;
+/// the author's previous keystroke on the same document (TIL-755). Measured
+/// on Linux CI: 157 B against 482 B on `tilo-relay/5`, plus 15 %.
+const BUDGET_CODED_FRAME_P50_BYTES: u64 = 181;
 
 /// A stream that counts the bytes read through it.
 struct Counted<R> {
