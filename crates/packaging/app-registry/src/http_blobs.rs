@@ -22,7 +22,10 @@
 //!
 //! An installer's [`BlobFetcher`] keeps [`IN_FLIGHT`] requests going while it
 //! hands the sink one object: a runtime is about thirty objects, and fetched
-//! one after another each costs a full round trip before its first byte.
+//! one after another each costs a full round trip before its first byte. Locating
+//! a chunked blob alone is three sequential requests (twin, raw, chunk list),
+//! each a full round trip on a registry far away, so the window is wide enough
+//! to cover a whole runtime in a few waves.
 //! Delivery stays in order. Memory is bounded by objects, not by the
 //! package: at most [`IN_FLIGHT`] blobs being located ahead, plus, while a
 //! chunked blob is delivered, [`IN_FLIGHT`] of its chunks ahead, plus the
@@ -41,7 +44,7 @@ use tilo_app_package::compressed;
 use tilo_app_package::{BlobFetcher, BlobHash, BlobSink, PackageFetcher, PackageId};
 
 /// Requests an installer keeps going ahead of the object it is delivering.
-pub const IN_FLIGHT: usize = 4;
+pub const IN_FLIGHT: usize = 8;
 
 /// A registry server serving payload blobs at `<base>/blobs/<hash>`.
 #[derive(Clone, Debug)]
@@ -628,6 +631,60 @@ mod tests {
         for ((_, body), expected) in sink.0.iter().zip(&bodies) {
             assert_eq!(body, expected);
         }
+    }
+
+    /// A server that answers after `delay` and records the most requests it
+    /// ever had open at once.
+    fn counting_server(
+        objects: std::collections::HashMap<String, Vec<u8>>,
+        delay: Duration,
+    ) -> (String, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let peak = std::sync::Arc::new(AtomicUsize::new(0));
+        let open = std::sync::Arc::new(AtomicUsize::new(0));
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let seen = peak.clone();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { return };
+                let (objects, open, peak) = (objects.clone(), open.clone(), seen.clone());
+                std::thread::spawn(move || {
+                    let mut request = [0; 2048];
+                    let read = stream.read(&mut request).unwrap_or(0);
+                    let text = String::from_utf8_lossy(&request[..read]).to_string();
+                    let path = text.split_whitespace().nth(1).unwrap_or("").to_string();
+                    peak.fetch_max(open.fetch_add(1, Ordering::SeqCst) + 1, Ordering::SeqCst);
+                    std::thread::sleep(delay);
+                    open.fetch_sub(1, Ordering::SeqCst);
+                    let reply = match objects.get(&path) {
+                        Some(body) => response(body.len(), body),
+                        None => not_found(),
+                    };
+                    let _ = stream.write_all(&reply);
+                });
+            }
+        });
+        (format!("http://{address}"), peak)
+    }
+
+    #[test]
+    fn requests_in_flight_are_bounded_by_the_window() {
+        let bodies: Vec<Vec<u8>> = (0..40u8).map(|n| vec![n; 64]).collect();
+        let hashes: Vec<BlobHash> = bodies.iter().map(|body| BlobHash::of(body)).collect();
+        let objects = hashes
+            .iter()
+            .zip(&bodies)
+            .map(|(hash, body)| (format!("/blobs/{hash}.zst"), twin(body)))
+            .collect();
+        let (url, peak) = counting_server(objects, Duration::from_millis(100));
+        let mut sink = Collected::default();
+        HttpBlobs::new(url).fetch(&hashes, &mut sink).unwrap();
+        let peak = peak.load(std::sync::atomic::Ordering::SeqCst);
+        // The object being delivered plus the window ahead of it.
+        assert!(peak <= IN_FLIGHT + 1, "peak {peak} exceeds the window");
+        assert!(peak >= IN_FLIGHT, "peak {peak}: the window was not used");
+        assert_eq!(sink.0.len(), hashes.len());
     }
 
     #[test]
