@@ -53,14 +53,6 @@ thread_local! {
     static SHELL_PRESENTS_HISTORY: std::cell::Cell<bool> = const { std::cell::Cell::new(true) };
 }
 
-/// Test seam: keep the shell out of the tree the window offers its History
-/// control to. The published host History door remains available without
-/// adding a second toolbar; the component host can invoke that door directly.
-#[doc(hidden)]
-pub fn present_history_in_shell_for_test(present: bool) {
-    SHELL_PRESENTS_HISTORY.set(present);
-}
-
 /// The test id of the sidebar header's "New note" button.
 pub(crate) const NEW_NOTE_BUTTON_ID: &str = "new-note";
 /// The test id of the note header's "Note actions" button.
@@ -866,17 +858,54 @@ impl NotesApp {
     }
 
     fn refresh_transclusion_previews(&mut self, doc: &AutoCommit) {
+        #[cfg(test)]
+        let _profile = crate::cpu_profile::Phase::start("transclusion_previews");
+        self.main
+            .set_transclusion_previews(self.transclusion_previews(doc));
+    }
+
+    fn transclusion_previews(
+        &self,
+        doc: &AutoCommit,
+    ) -> HashMap<PageId, ui::widget::TransclusionPreview> {
         const EXCERPT_LIMIT: usize = 180;
-        let previews = self
-            .workspace
-            .pages()
+        // Only a committed projection of these exact heads can replace a
+        // document read. Open edits and stale projections still read the
+        // actual body, including rollback followed by another edit.
+        let projected = doc.pending_ops() == 0
+            && self.workspace.canonical_projection_heads.as_ref() == Some(&doc.base_heads());
+        let blocks = |page| -> std::borrow::Cow<'_, [actions::StoredBlock]> {
+            if projected {
+                std::borrow::Cow::Borrowed(
+                    self.workspace
+                        .bodies
+                        .get(&page)
+                        .map(Vec::as_slice)
+                        .unwrap_or_default(),
+                )
+            } else {
+                std::borrow::Cow::Owned(NotesDoc::page_stored_blocks(doc, page))
+            }
+        };
+        let selected = self.workspace.selected().map(&blocks).unwrap_or_default();
+        let targets = selected
             .iter()
+            .flat_map(|block| &block.marks)
+            .filter_map(|span| match &span.mark {
+                actions::InlineMark::Transclusion { page } => page.parse::<PageId>().ok(),
+                _ => None,
+            })
+            .collect::<std::collections::HashSet<_>>();
+        targets
+            .into_iter()
+            .filter_map(|id| self.workspace.get(id))
             .map(|page| {
-                let raw = NotesDoc::page_block_snapshots(doc, page.id)
-                    .into_iter()
-                    .map(|(_, text)| text)
+                let body = blocks(page.id);
+                let raw = body
+                    .iter()
+                    .map(|block| block.text.as_str())
                     .find(|text| !text.trim().is_empty())
-                    .unwrap_or_else(|| "Empty note".to_string());
+                    .unwrap_or("Empty note");
                 let mut excerpt = raw.chars().take(EXCERPT_LIMIT).collect::<String>();
                 if raw.chars().nth(EXCERPT_LIMIT).is_some() {
                     excerpt.push('…');
@@ -889,8 +918,7 @@ impl NotesApp {
                     },
                 )
             })
-            .collect();
-        self.main.set_transclusion_previews(previews);
+            .collect()
     }
 
     /// Keep each image pasted into the open note with the notebook and put it
@@ -1269,56 +1297,96 @@ impl NotesApp {
         #[cfg(test)]
         let _profile = crate::cpu_profile::Phase::start("search_blocks");
         let heads = doc.base_heads();
-        if automerge::transaction::Transactable::pending_ops(doc) == 0
-            && self.search_heads.as_ref() == Some(&heads)
-        {
+        let committed = doc.pending_ops() == 0;
+        if committed && self.search_heads.as_ref() == Some(&heads) {
             return;
         }
+        let projected =
+            committed && self.workspace.canonical_projection_heads.as_ref() == Some(&heads);
+        let changed = projected
+            .then_some(self.workspace.body_projection_refresh.as_ref())
+            .flatten()
+            .filter(|refresh| {
+                self.search_heads.as_ref() == Some(&refresh.before) && refresh.after == heads
+            })
+            .map(|refresh| refresh.pages.clone());
+        #[cfg(test)]
+        let _delta_profile = changed
+            .as_ref()
+            .map(|_| crate::cpu_profile::Phase::start("search_delta_adopted"));
+        let pages = changed.unwrap_or_else(|| {
+            self.search_blocks.clear();
+            self.backlink_index.clear();
+            self.workspace.pages().iter().map(|page| page.id).collect()
+        });
         let known_pages = self
             .workspace
             .pages()
             .iter()
             .map(|page| page.id)
             .collect::<std::collections::HashSet<_>>();
-        let mut backlinks = HashMap::<PageId, HashMap<PageId, u32>>::new();
-        let mut search_blocks = HashMap::new();
-        for source in self.workspace.pages().iter().map(|page| page.id) {
-            let stored = NotesDoc::page_stored_blocks(doc, source);
-            let mut blocks = Vec::with_capacity(stored.len());
-            for block in stored {
-                blocks.push(crate::actions::NoteBlockResource {
-                    id: block.id,
-                    text: block.text,
-                });
-                for mark in block.marks {
-                    let actions::InlineMark::Link { page } = mark.mark else {
-                        continue;
-                    };
-                    let Ok(target) = page.parse::<PageId>() else {
-                        continue;
-                    };
-                    if target != source && known_pages.contains(&target) {
-                        let count = backlinks
-                            .entry(target)
-                            .or_default()
-                            .entry(source)
-                            .or_default();
-                        *count = count.saturating_add(1);
+        let bodies = self.workspace.bodies.clone();
+        for source in pages {
+            if projected {
+                self.index_search_page(
+                    source,
+                    bodies.get(&source).map(Vec::as_slice).unwrap_or_default(),
+                    &known_pages,
+                );
+            } else {
+                // Standalone surfaces and open transactions do not carry a
+                // validated projection receipt: read their actual document.
+                #[cfg(test)]
+                let _read_profile = crate::cpu_profile::Phase::start("search_body_decode");
+                let stored = NotesDoc::page_stored_blocks(doc, source);
+                self.index_search_page(source, &stored, &known_pages);
+            }
+        }
+        self.search_heads = committed.then_some(heads);
+    }
+
+    fn index_search_page(
+        &mut self,
+        source: PageId,
+        stored: &[crate::actions::StoredBlock],
+        known_pages: &std::collections::HashSet<PageId>,
+    ) {
+        // Replace this source's outgoing contributions, preserving all other
+        // sources and dropping targets whose last contribution disappeared.
+        if self.search_blocks.contains_key(&source) {
+            self.backlink_index.retain(|_, sources| {
+                sources.retain(|(page, _)| *page != source);
+                !sources.is_empty()
+            });
+        }
+        let mut blocks = Vec::with_capacity(stored.len());
+        for block in stored {
+            blocks.push(crate::actions::NoteBlockResource {
+                id: block.id.clone(),
+                text: block.text.clone(),
+            });
+            for mark in &block.marks {
+                let actions::InlineMark::Link { page } = &mark.mark else {
+                    continue;
+                };
+                let Ok(target) = page.parse::<PageId>() else {
+                    continue;
+                };
+                if target == source || !known_pages.contains(&target) {
+                    continue;
+                }
+                let sources = self.backlink_index.entry(target).or_default();
+                match sources.binary_search_by_key(&source, |(page, _)| *page) {
+                    Ok(index) => {
+                        if let Some((_, count)) = sources.get_mut(index) {
+                            *count = count.saturating_add(1);
+                        }
                     }
+                    Err(index) => sources.insert(index, (source, 1)),
                 }
             }
-            search_blocks.insert(source, blocks);
         }
-        self.search_blocks = search_blocks;
-        self.backlink_index = backlinks
-            .into_iter()
-            .map(|(target, sources)| {
-                let mut sources = sources.into_iter().collect::<Vec<_>>();
-                sources.sort_by_key(|(source, _)| *source);
-                (target, sources)
-            })
-            .collect();
-        self.search_heads = Some(heads);
+        self.search_blocks.insert(source, blocks);
     }
 
     /// Snapshot every page's metadata by id, for the pre/post diff that turns an
@@ -2288,7 +2356,12 @@ impl Widget for NotesApp {
                 && synced.3 == key.3
         });
         if !unchanged {
-            if let Err(error) = self.reconcile_canonical(state) {
+            let adopted =
+                pending == 0 && self.workspace.canonical_projection_heads.as_ref() == Some(&key.0);
+            #[cfg(test)]
+            let _profile =
+                adopted.then(|| crate::cpu_profile::Phase::start("canonical_projection_adopted"));
+            if !adopted && let Err(error) = self.reconcile_canonical(state) {
                 tracing::warn!(%error, "notes: canonical projection refused");
                 return;
             }
@@ -2348,18 +2421,14 @@ impl Widget for NotesApp {
             node
         });
 
-        let root = taffy.parent_node(
-            Style {
-                size: Size {
-                    width: Dimension::percent(1.0),
-                    height: Dimension::percent(1.0),
-                },
-                ..Default::default()
+        let style = Style {
+            size: Size {
+                width: Dimension::percent(1.0),
+                height: Dimension::percent(1.0),
             },
-            &[shell_node],
-        );
-        node_map.insert(root, std::ptr::from_mut::<dyn Widget>(self));
-        root
+            ..Default::default()
+        };
+        taffy.widget_node(style, &[shell_node], node_map, self)
     }
 
     // `taffy.layout(...)` only errors for a `NodeId` from a different tree,
@@ -2372,12 +2441,7 @@ impl Widget for NotesApp {
     #[allow(clippy::unwrap_used, reason = "node always belongs to this tree")]
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let layout = taffy.layout(node).unwrap();
-        self.rect = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
-            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
-        );
+        self.rect = ui::widget::placed(layout, origin);
         // The shell lays its columns, header row and toggle out first; the
         // page tree and the note panel are children of the columns' slots,
         // whose own origin is the column's.
@@ -3264,8 +3328,210 @@ impl NotesApp {
 
 #[cfg(test)]
 mod tests {
+    mod search_refresh;
     use super::*;
     use tempfile::TempDir;
+
+    #[test]
+    fn capture_draw_preserves_import_notification_at_expiry_boundary() {
+        ui::clock::freeze_for_capture();
+        let (mut app, _state, _tmp, _) = app_seeded_into_doc();
+        // A zero remaining lifetime deterministically exercises the expiry
+        // boundary without making CI speed or a real-time sleep the oracle.
+        app.transfer_toasts =
+            ui::widget::toast::ToastStack::new().with_default_ttl(ui::time::Duration::ZERO);
+        app.transfer_toasts.push(
+            "Imported Project brief",
+            ui::widget::toast::ToastKind::Success,
+        );
+        app.rect = Rect::new(0.0, 0.0, 1280.0, 720.0);
+        app.draw(
+            &mut Scene::new(),
+            Affine::IDENTITY,
+            &mut TextRenderer::new(),
+            &Theme::default(),
+            &PresenceCtx::empty(),
+        );
+        let node = app
+            .transfer_toasts
+            .accessibility()
+            .expect("the captured import notification remains announced");
+        assert_eq!(node.name.as_deref(), Some("Notifications"));
+        assert_eq!(node.value.as_deref(), Some("Imported Project brief"));
+    }
+
+    fn adopt_notebook_projection(app: &mut NotesApp, doc: &AutoCommit) {
+        use ui::tilo_resource::Resource as _;
+        let workspace = crate::resource::Notebook::read(doc).unwrap();
+        app.adopt_resource_state(&Rc::new(workspace));
+    }
+
+    #[test]
+    fn unchanged_long_note_preview_probe() {
+        let (mut app, mut state, _tmp, _welcome) = app_seeded_into_doc();
+        let source = PageId::new_v4();
+        let create = actions::append_page_action(source, None, "Long note");
+        tilo_actions::apply_local(&mut state.doc, &create, actions::encode(&create)).unwrap();
+        let text = (0..180)
+            .map(|index| {
+                format!(
+                    "Paragraph {index}: {}",
+                    "Ordinary scrolling words. ".repeat(12)
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n\n");
+        let blocks = MainPanel::seed_blocks(&text, |_| None);
+        let action = actions::write_body_action(source, &blocks);
+        tilo_actions::apply_local(&mut state.doc, &action, actions::encode(&action)).unwrap();
+        state.doc.commit();
+        app.frame(&mut state.doc, &state.root);
+        adopt_notebook_projection(&mut app, &state.doc);
+        app.workspace.set_selected(Some(source));
+        app.frame(&mut state.doc, &state.root);
+        assert_eq!(app.workspace.selected(), Some(source));
+        assert_eq!(app.workspace.bodies[&source].len(), 180);
+        assert_eq!(state.doc.pending_ops(), 0);
+        assert_eq!(
+            app.workspace.canonical_projection_heads,
+            Some(state.doc.base_heads())
+        );
+        let heads = state.doc.base_heads();
+        let scans = tilo_doc::model::ordered_keys_scan_count();
+        let began = std::time::Instant::now();
+        for _ in 0..100 {
+            assert!(app.transclusion_previews(&state.doc).is_empty());
+        }
+        let elapsed = began.elapsed().as_nanos();
+        let scans = tilo_doc::model::ordered_keys_scan_count() - scans;
+        assert_eq!(
+            scans, 0,
+            "unchanged previews must not decode the canonical body again"
+        );
+        assert_eq!(state.doc.base_heads(), heads);
+        assert_eq!(state.doc.pending_ops(), 0);
+        eprintln!(
+            "notes-preview-probe {}",
+            serde_json::json!({
+                "architecture": std::env::consts::ARCH,
+                "paragraphs": 180, "iterations": 100,
+                "elapsed_ns": elapsed, "container_scans": scans,
+                "includes_gpu_or_display": false
+            })
+        );
+    }
+
+    #[test]
+    fn transclusion_previews_follow_selected_marks_remote_edits_and_deleted_targets() {
+        use tilo_automerge::ApplyIncoming as _;
+        let (mut app, mut state, _tmp, source) = app_seeded_into_doc();
+        assert!(
+            app.transclusion_previews(&state.doc).is_empty(),
+            "ordinary notes must not project every other note as a preview"
+        );
+        let target = PageId::new_v4();
+        let mut peer = state.doc.fork();
+        let blocks = MainPanel::seed_blocks("Original preview", |_| None);
+        let source_block = NotesDoc::page_block_snapshots(&peer, source)[0].clone();
+        for action in [
+            actions::append_page_action(target, None, "Target"),
+            actions::write_body_action(target, &blocks),
+            actions::set_mark_action(
+                source,
+                &source_block.0,
+                0..source_block.1.len(),
+                &ui::widget::Mark::Transclusion(target),
+            ),
+        ] {
+            tilo_actions::apply_local(&mut peer, &action, actions::encode(&action)).unwrap();
+        }
+        peer.get_heads();
+        state.doc.merge_incoming(&mut peer).unwrap();
+        app.frame(&mut state.doc, &state.root);
+        adopt_notebook_projection(&mut app, &state.doc);
+        let previews = app.transclusion_previews(&state.doc);
+        assert_eq!(previews.len(), 1);
+        assert_eq!(previews[&target].title, "Target");
+        assert_eq!(previews[&target].excerpt, "Original preview");
+
+        let mut peer = state.doc.fork();
+        let block = NotesDoc::page_block_snapshots(&peer, target)[0].clone();
+        let action = actions::edit_body_action(
+            target,
+            tilo_document::RichTextAction::SpliceText {
+                region: tilo_document::action::RegionKind::Body,
+                block: block.0,
+                at: 0,
+                del: block.1.chars().count(),
+                ins: "é".repeat(181),
+            },
+        );
+        tilo_actions::apply_local(&mut peer, &action, actions::encode(&action)).unwrap();
+        peer.get_heads();
+        state.doc.merge_incoming(&mut peer).unwrap();
+        assert_eq!(
+            app.transclusion_previews(&state.doc)[&target].excerpt,
+            format!("{}…", "é".repeat(180)),
+            "a stale projection must read the collaborator's current body"
+        );
+        app.frame(&mut state.doc, &state.root);
+        adopt_notebook_projection(&mut app, &state.doc);
+        let scans = tilo_doc::model::ordered_keys_scan_count();
+        assert_eq!(
+            app.transclusion_previews(&state.doc)[&target].excerpt,
+            format!("{}…", "é".repeat(180))
+        );
+        assert_eq!(tilo_doc::model::ordered_keys_scan_count(), scans);
+
+        assert_open_preview_edits_and_rollback(&app, &mut state.doc, target);
+
+        app.workspace.set_selected(Some(target));
+        app.frame(&mut state.doc, &state.root);
+        assert!(app.transclusion_previews(&state.doc).is_empty());
+        app.workspace.set_selected(Some(source));
+        app.frame(&mut state.doc, &state.root);
+        assert_eq!(app.transclusion_previews(&state.doc).len(), 1);
+        let action = actions::delete_page_action(target);
+        tilo_actions::apply_local(&mut state.doc, &action, actions::encode(&action)).unwrap();
+        state.doc.get_heads();
+        app.frame(&mut state.doc, &state.root);
+        assert!(app.transclusion_previews(&state.doc).is_empty());
+    }
+
+    fn assert_open_preview_edits_and_rollback(
+        app: &NotesApp,
+        doc: &mut AutoCommit,
+        target: PageId,
+    ) {
+        let block = NotesDoc::page_block_snapshots(doc, target)[0].0.clone();
+        let mut pending_counts = Vec::new();
+        for replacement in ["one", "two"] {
+            NotesDoc::edit_page_body(
+                doc,
+                target,
+                &tilo_document::RichTextAction::SpliceText {
+                    region: tilo_document::action::RegionKind::Body,
+                    block: block.clone(),
+                    at: 0,
+                    del: 181,
+                    ins: replacement.into(),
+                },
+            )
+            .unwrap();
+            assert!(doc.pending_ops() > 0);
+            pending_counts.push(doc.pending_ops());
+            assert_eq!(app.transclusion_previews(doc)[&target].excerpt, replacement);
+            doc.rollback();
+            assert_eq!(
+                app.transclusion_previews(doc)[&target].excerpt,
+                format!("{}…", "é".repeat(180))
+            );
+        }
+        assert_eq!(
+            pending_counts[0], pending_counts[1],
+            "replacement transactions share an operation count"
+        );
+    }
 
     #[test]
     fn capture_draw_preserves_the_import_notification_lifetime() {

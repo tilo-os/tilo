@@ -42,6 +42,7 @@ REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # them comes from the replicated capability list.
 DEMO_APP = "org.tilo.Notes"
 DEMO_ACTION = "edit"
+DEMO_RESOURCE = "notes.notebook"
 # A path the filesystem capability covers. Two capabilities are granted
 # rather than one because they answer different questions and only one of
 # them is expressible in the Permissions tab: `Capability::from_capability`
@@ -310,9 +311,11 @@ class Session:
         return call(self.sock, {"op": "revoke", "id": cap_id})
 
     def check_action(self, actor: str, app: str = DEMO_APP,
-                     action: str = DEMO_ACTION, verb: str = "write") -> dict:
+                     action: str = DEMO_ACTION, verb: str = "write",
+                     resource: str = DEMO_RESOURCE) -> dict:
         return call(self.sock, {"op": "check_action", "actor": actor, "app": app,
-                                "action": action, "verb": verb})
+                                "resource": resource, "action": action,
+                                "verb": verb})
 
 
 # --------------------------------------------------------------------

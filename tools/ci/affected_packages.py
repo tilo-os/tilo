@@ -35,7 +35,7 @@ from ci.workspace_graph import (
     cargo_metadata, changed_files, closure, comparison_merge_base, file_at,
     lockfile_change, owner_for, package_maps, reverse_dependencies, run,
 )
-from ci import runner_labels
+from ci import runner_labels, qualified_native
 from ci import suites as path_suites
 
 
@@ -95,6 +95,7 @@ QUALITY_ONLY_HELPERS = {
     "tools/policy/check_workflow_package_paths.py": "tools/tests/test_workflow_package_paths.py",
     "tools/policy/check_workflow_timeouts.py": "tools/tests/test_workflow_timeouts.py",
     "tools/policy/check_ui_clock_contract.py": "tools/tests/test_ui_clock_contract.py",
+    "tools/policy/check_settings_writes.py": "tools/tests/test_settings_writes.py",
     "tools/policy/check_app_content_store.py": "tools/tests/test_app_content_store.py",
     "tools/policy/check_document_engine_boundary.py": "tools/tests/test_document_engine_boundary.py",
 }
@@ -775,7 +776,9 @@ def make_plan(
     check_rows = []
     for arch, runner in runners.items():
         for shard in balance(selected, packages, effective_shards, test_seconds):
-            check_rows.append({**shard, "arch": arch, "runner": runner, "check_runner": runner})
+            placement = {"qualified_runner": "", "qualified_builders": "",
+                         **qualified_native.placement(root, set(shard["packages"].split()[1::2]), arch)}
+            check_rows.append({**shard, "arch": arch, "runner": runner, "check_runner": runner, **placement})
     # Test shards cover the tested packages and scoped readers, split by
     # recorded test time. Packages too heavy to share a job get their own
     # shards, which start first; the rest balance around them.
@@ -800,7 +803,14 @@ def make_plan(
                    "filter": scoped_tests[name].filter} for name in scoped_names]
         # check_runner: a pull request runs its own check.yml against this
         # planner from the merged tree; older branches' check.yml reads it.
-        return {**shard, "arch": arch, "runner": runner, "check_runner": runner,
+        # Older PR workflows still evaluate optional qualification fields.
+        # Empty strings retain their general fallback without missing lookups.
+        placement = {"qualified_runner": "", "qualified_builders": "",
+                     **qualified_native.placement(root, shard_names, arch)}
+        certify = any(Path(packages[name]["manifest_path"]).resolve().parent.parent == root.resolve() / "apps"
+                      and name != "agent" for name in test_names)
+        return {**shard, "arch": arch, "runner": runner, "check_runner": runner, **placement,
+                "certify": certify,
                 "test_packages": " ".join(f"-p {name}" for name in test_names),
                 "scoped_tests": json.dumps(scoped, separators=(",", ":")) if scoped else ""}
 

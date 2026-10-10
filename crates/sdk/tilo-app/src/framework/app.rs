@@ -438,19 +438,20 @@ pub(crate) fn build_root<A: ResourceApp>(
         .following(permissions, scope)
         .with_presentation(A::local_operations());
     if !A::DOCUMENT_HISTORY {
-        root.without_history()
-    } else if live {
-        root.drawing_past(super::preview::draw_past::<A>)
-    } else {
-        root
+        return root.without_history();
     }
+    if live {
+        #[cfg(not(target_family = "wasm"))]
+        return root.drawing_past(super::preview::draw_past::<A>);
+    }
+    root
 }
 
 /// The decoders of every edit `A`'s document takes: its resource's actions
 /// and History's restores.
 pub(crate) fn action_registry<A: ResourceApp>() -> tilo_actions::ActionRegistry {
-    let mut registry = tilo_actions::ActionRegistry::new();
-    tilo_resource::group::register::<A::Resource>(&mut registry);
+    let mut registry =
+        tilo_actions::ActionRegistry::with(tilo_resource::group::register::<A::Resource>);
     registry
         .register::<super::history::ResourceHistoryEdit<A::Resource>>(super::history::EDIT_TYPE);
     registry

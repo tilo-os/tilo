@@ -68,6 +68,9 @@ const FIXTURE: &str = "so.tilo.fixture-drafts";
 const FIXTURE_HANDLE: &str = "drafts";
 const RECORD: &str = "file:drafts.qdoc";
 const INBOX: &str = "fixture.drafts:inbox";
+/// A second resource offering `draft`, so a grant on the inbox's `draft`
+/// can be shown not to reach it.
+const OUTBOX: &str = "fixture.outbox:outbox";
 /// Devices the owner runs applications on, each connecting as the owner.
 const SHORTCUTS_HANDLE: &str = "shortcuts-app";
 const SILENT_HANDLE: &str = "silent-app";
@@ -185,7 +188,7 @@ fn spawn_broker(
     let membership = tree.shared();
     let broker = crate::shell::collab_broker::spawn_native_harness(
         path.to_path_buf(),
-        std::sync::Arc::clone(&membership),
+        membership.clone(),
         [
             FIXTURE_HANDLE,
             SHORTCUTS_HANDLE,
@@ -214,13 +217,12 @@ fn exported(
         resource_label: "Inbox".into(),
         action_label: label.into(),
         description: None,
-        operation_kind: OperationKind::Document.as_str().to_string(),
-        params_json: serde_json::to_string(&params).expect("params JSON"),
-        contract_json: serde_json::to_string(&ActionContract {
+        operation_kind: OperationKind::Document,
+        params: params.to_vec(),
+        contract: ActionContract {
             result,
             ..ActionContract::default()
-        })
-        .expect("contract JSON"),
+        },
         view: None,
         input: ExportedInput::None,
     }
@@ -281,12 +283,26 @@ impl FixtureApp {
                     ResultSpec::None,
                 ),
                 ExportedAction {
-                    contract_json: serde_json::to_string(&ActionContract {
+                    contract: ActionContract {
                         confirmation: tilo_actions::ConfirmationPolicy::Confirm,
                         ..ActionContract::default()
-                    })
-                    .expect("contract JSON"),
+                    },
                     ..exported("archive", "Archive inbox", &[], ResultSpec::None)
+                },
+                ExportedAction {
+                    resource: OUTBOX.into(),
+                    resource_kind: "fixture.outbox".into(),
+                    resource_label: "Outbox".into(),
+                    ..exported(
+                        "draft",
+                        "Write draft",
+                        &[ActionParam::required(
+                            "title",
+                            ParamType::Text,
+                            "Title of the draft",
+                        )],
+                        ResultSpec::None,
+                    )
                 },
             ],
         });
@@ -489,6 +505,7 @@ impl Door {
                 context: None,
                 confirmation: None,
                 revision: None,
+                wait_ms: None,
             },
         ))?;
         Ok((invocation, receipt.status))
@@ -660,6 +677,7 @@ fn publish_draft(id: &str, granted: &[&str]) -> Shortcut {
                 PermissionProfileRule::grant(
                     Scope::Action {
                         app: FIXTURE.into(),
+                        resource: INBOX.into(),
                         action: (*action).to_string(),
                     },
                     Verb::Write,
@@ -899,8 +917,6 @@ fn press(
                 height: AvailableSpace::Definite(800.0),
             },
             |known, available, node_id, _, _| match node_map.get(&node_id) {
-                // SAFETY: the pointers were registered by this layout pass
-                // and the widgets outlive it.
                 Some(&widget) => unsafe { (*widget).measure(known, available, &mut text) },
                 None => Size::ZERO,
             },
@@ -908,15 +924,7 @@ fn press(
         .unwrap();
     host.apply_layout(&taffy, child, vello::kurbo::Point::ORIGIN);
 
-    // winit's `KeyEvent` carries a private platform field, so the struct is
-    // zero-initialised and every public field overwritten.
-    let mut event: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
-    event.logical_key = key;
-    event.physical_key =
-        winit::keyboard::PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
-    event.location = winit::keyboard::KeyLocation::Standard;
-    event.state = winit::event::ElementState::Pressed;
-    event.repeat = false;
+    let mut event = ui::synthetic_input::key_event(key, None, winit::event::ElementState::Pressed);
     // A plain character key also carries the text it types.
     if modifiers.is_empty()
         && let winit::keyboard::Key::Character(text) = &event.logical_key
@@ -924,26 +932,15 @@ fn press(
         event.text = Some(text.clone());
     }
     let event = winit::event::WindowEvent::KeyboardInput {
-        device_id: unsafe { std::mem::zeroed() },
+        device_id: winit::event::DeviceId::dummy(),
         event,
         is_synthetic: false,
     };
-    let mut doc = AutoCommit::new();
-    let mut handled = false;
-    let mut focus = None;
-    host.handle_event(
-        &event,
-        &mut ui::widget::EventCtx {
-            scale_factor: 1.0,
-            modifiers: &winit::event::Modifiers::from(modifiers),
-            state: ui::widget::Edits::lend(&mut doc),
-            path: &automerge::ROOT,
-            handled: &mut handled,
-            focus_target: &mut focus,
-            node_id: child,
-            taffy: &taffy,
-        },
-    );
+    let handled = ui::testing::Dispatch::new()
+        .modifiers(modifiers)
+        .layout(&taffy, child)
+        .send(host, &event)
+        .handled;
     assert!(handled, "the shell took the chord");
 }
 
@@ -957,10 +954,8 @@ fn a_chord_pressed_in_the_shell_runs_the_shortcut_saved_with_it() {
     door.save_as(&session, &triggered_draft("from-keys", vec![chord]))
         .expect("the shortcut is saved with its keyboard trigger");
 
-    let (mut host, _chrome) = crate::shell::build_tilo_overlay_host_with_handle(
-        std::sync::Arc::clone(&door.membership),
-        false,
-    );
+    let (mut host, _chrome) =
+        crate::shell::build_tilo_overlay_host_with_handle(door.membership.clone(), false);
     host.set_shortcut_config(settings_store::hardware::ShortcutConfig::default())
         .expect("the built-in shortcut table is valid");
     host.attach_app_action_broker(door.broker.app_action_broker().expect("the action broker"));
@@ -1204,6 +1199,7 @@ fn an_unattended_run_takes_a_confirmed_step_only_with_advance_consent() {
     tidy.grant.push(PermissionProfileRule::grant(
         Scope::Action {
             app: FIXTURE.into(),
+            resource: INBOX.into(),
             action: "archive".into(),
         },
         Verb::Write,
@@ -1454,6 +1450,7 @@ impl AppConnection {
                 context: None,
                 confirmation: None,
                 revision: None,
+                wait_ms: None,
             }),
             |message| {
                 matches!(
@@ -1531,6 +1528,10 @@ fn door_with_declared_access() -> Door {
 }
 
 fn fixture_draft(door: &Door) -> RemoteActionTarget {
+    fixture_target(door, INBOX, "draft")
+}
+
+fn fixture_target(door: &Door, resource: &str, action: &str) -> RemoteActionTarget {
     answer(door.host.query(
         &door.owner,
         CatalogueQuery {
@@ -1543,13 +1544,12 @@ fn fixture_draft(door: &Door) -> RemoteActionTarget {
     .iter()
     .find(|row| {
         row.app_id == FIXTURE
-            && row
-                .action
-                .as_ref()
-                .is_some_and(|descriptor| descriptor.address.action == "draft")
+            && row.action.as_ref().is_some_and(|descriptor| {
+                descriptor.address.resource == resource && descriptor.address.action == action
+            })
     })
     .and_then(tilo_actions::remote::CatalogueRow::target)
-    .expect("the fixture offers `draft`")
+    .expect("the fixture offers the action")
 }
 
 fn library(action: &str) -> RemoteActionTarget {
@@ -1708,6 +1708,7 @@ fn invoker_draft_grants(door: &Door) -> Vec<ui::permissions::CapOverride> {
                 && capability.scope
                     == ui::permissions::Scope::Action {
                         app: FIXTURE.to_string(),
+                        resource: INBOX.into(),
                         action: "draft".to_string(),
                     }
         })
@@ -1769,7 +1770,11 @@ fn allowing_once_admits_that_call_and_the_next_asks_again() {
         seen.title().contains("wants to use"),
         "the sheet names who wants what: {seen:?}"
     );
-    assert_eq!(seen.app_name(), "Write draft", "the action as published");
+    assert_eq!(
+        seen.app_name(),
+        "Inbox · Write draft",
+        "the action as published, on the resource it is on"
+    );
     assert!(seen.detail().contains("Low risk"), "{seen:?}");
     assert_eq!(
         seen.choices(),
@@ -1802,6 +1807,44 @@ fn allowing_once_admits_that_call_and_the_next_asks_again() {
     assert!(not_permitted(&status), "{status:?}");
     door.serve_briefly();
     assert_eq!(door.app.served.len(), 1, "the denied call never ran");
+}
+
+/// A grant names one resource's action: the same action on another
+/// resource is another action, asked about afresh and refused when denied.
+#[test]
+fn an_app_granted_one_resources_action_is_asked_again_for_another_resource() {
+    let (mut door, mut sheet) = door_asking(true);
+    let socket = door.dir.path().join("collab.sock");
+    let mut invoker = AppConnection::connect(&socket, INVOKER_APP, INVOKER_HANDLE);
+    let inbox = fixture_draft(&door);
+    let outbox = fixture_target(&door, OUTBOX, "draft");
+
+    let (status, seen) = invoker.invoke_answering(
+        &mut door,
+        &mut sheet,
+        inbox,
+        &json!({"title": "First"}),
+        Some(AppActionConsent::Always),
+    );
+    assert!(seen.is_some());
+    if let ReceiptStatus::Rejected { error } = status {
+        panic!("always allowed, the call goes ahead: {error:?}");
+    }
+    served_until(&mut door, 1);
+    assert_eq!(invoker_draft_grants(&door).len(), 1, "a grant on the inbox");
+
+    let (status, seen) = invoker.invoke_answering(
+        &mut door,
+        &mut sheet,
+        outbox,
+        &json!({"title": "Elsewhere"}),
+        Some(AppActionConsent::Deny),
+    );
+    let seen = seen.expect("the same action on another resource asks again");
+    assert_eq!(seen.app_name(), "Outbox · Write draft");
+    assert!(not_permitted(&status), "{status:?}");
+    door.serve_briefly();
+    assert_eq!(door.app.served.len(), 1, "the outbox's draft never ran");
 }
 
 #[test]
@@ -1862,14 +1905,20 @@ fn always_allowing_records_a_grant_that_asks_no_more_until_revoked() {
                         ),
                     },
                     argument: InvokeArgument::Json(
-                        json!({"app": INVOKER_APP, "target_app": FIXTURE, "action": "draft"})
-                            .as_object()
-                            .cloned()
-                            .expect("an object"),
+                        json!({
+                            "app": INVOKER_APP,
+                            "target_app": FIXTURE,
+                            "resource": INBOX,
+                            "action": "draft",
+                        })
+                        .as_object()
+                        .cloned()
+                        .expect("an object"),
                     ),
                     context: None,
                     confirmation,
                     revision: None,
+                    wait_ms: None,
                 },
             ),
         )
@@ -1942,10 +1991,8 @@ fn with_nobody_present_the_call_is_refused_without_asking() {
 /// A compositor session sharing the door's workspaces and broker, and the
 /// person it acts for.
 fn session_host(door: &Door) -> crate::shell::overlay_host::ShellOverlayHost {
-    let (mut host, _chrome) = crate::shell::build_tilo_overlay_host_with_handle(
-        std::sync::Arc::clone(&door.membership),
-        false,
-    );
+    let (mut host, _chrome) =
+        crate::shell::build_tilo_overlay_host_with_handle(door.membership.clone(), false);
     host.set_shortcut_config(settings_store::hardware::ShortcutConfig::default())
         .expect("the built-in shortcut table is valid");
     host.attach_app_action_broker(door.broker.app_action_broker().expect("the action broker"));
@@ -1956,6 +2003,7 @@ fn archive_grant() -> PermissionProfileRule {
     PermissionProfileRule::grant(
         Scope::Action {
             app: FIXTURE.into(),
+            resource: INBOX.into(),
             action: "archive".into(),
         },
         Verb::Write,

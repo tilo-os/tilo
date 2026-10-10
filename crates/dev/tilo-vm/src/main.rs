@@ -15,7 +15,7 @@ fn main() -> ExitCode {
     // Receipts go to the worktree's target/, or a per-user dir outside one.
     let base = worktree.as_ref().map_or_else(
         || {
-            xdg_paths::data_local_dir()
+            tilo_paths::data_local_dir()
                 .unwrap_or_else(|| cwd.clone())
                 .join("tilo-vm")
         },

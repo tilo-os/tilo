@@ -435,16 +435,6 @@ pub fn set_saved_album(doc: &mut AutoCommit, album_id: &str, saved: bool) {
     let _ = doc.put(&map, album_id, saved);
 }
 
-/// Toggle whether the user follows an artist. Returns the new followed state.
-pub fn toggle_followed_artist(doc: &mut AutoCommit, artist_id: &str) -> bool {
-    let Some(map) = ensure_bool_map(doc, "followed_artists") else {
-        return false;
-    };
-    let followed = !read_bool(doc, &map, artist_id).unwrap_or(false);
-    let _ = doc.put(&map, artist_id, followed);
-    followed
-}
-
 /// Set an artist's followed membership to an explicit, replay-safe value.
 pub fn set_followed_artist(doc: &mut AutoCommit, artist_id: &str, followed: bool) {
     let Some(map) = ensure_bool_map(doc, "followed_artists") else {

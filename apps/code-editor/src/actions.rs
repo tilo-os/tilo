@@ -49,7 +49,7 @@ pub const CODE_EDITOR_ACTION_TYPE: &str = "code_editor.action";
 /// Build a deliberately-invalid action envelope for resource input or
 /// serialization failures. Resource closures cannot return `Result`; this
 /// keeps failures visible to the shared action host rather than panicking.
-fn invalid_arguments(message: &str) -> EncodedAction {
+pub(crate) fn invalid_arguments(message: &str) -> EncodedAction {
     EncodedAction {
         type_id: tilo_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
         payload: message.as_bytes().to_vec(),
@@ -992,7 +992,8 @@ pub(crate) fn publish_file_document(file: &CollaborativeFile) -> Resource {
         file.name.clone()
     };
     let mut resource = Resource::new(file_resource_id(&file.id), "code_editor.file", label)
-        .with_action(replace_text_action(file.id.clone()));
+        .with_action(replace_text_action(file.id.clone()))
+        .with_action(crate::text_operations::edit_action(file.id.clone()));
     resource = resource.with_action(entry_rename_action(
         file.id.clone(),
         EntryKind::File,
@@ -1137,9 +1138,7 @@ mod tests {
     use tilo_actions::LocalTransport;
 
     fn registry() -> ActionRegistry {
-        let mut r = ActionRegistry::new();
-        register(&mut r);
-        r
+        ActionRegistry::with(register)
     }
 
     #[test]

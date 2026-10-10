@@ -148,7 +148,7 @@ impl RelayClient {
             &ack,
             &expected_server_user,
             &revocations,
-            crate::clock::now_ns(),
+            tilo_clock::unix_now_ns(),
             &nonce,
         )?;
         if ack.cert.device_public_key != expected_server_device {
@@ -297,10 +297,10 @@ impl RelayClient {
             .map_err(|error| ClientError::Codec(error.to_string()))?;
         match expected_server.as_ref() {
             Some((user, _)) => {
-                auth::verify_hello_ack(&ack, user, &revocations, crate::clock::now_ns(), &nonce)?
+                auth::verify_hello_ack(&ack, user, &revocations, tilo_clock::unix_now_ns(), &nonce)?
             }
             None => {
-                auth::verify_pinned_host_ack(&ack, &revocations, crate::clock::now_ns(), &nonce)?
+                auth::verify_pinned_host_ack(&ack, &revocations, tilo_clock::unix_now_ns(), &nonce)?
             }
         };
         if let Some((_, expected_device)) = expected_server
@@ -493,7 +493,7 @@ impl RelayClient {
         let ack_bytes = read_frame(&mut recv, MAX_FRAME_BYTES).await?;
         let ack: HelloAck =
             postcard::from_bytes(&ack_bytes).map_err(|e| ClientError::Codec(e.to_string()))?;
-        let now = crate::clock::now_ns();
+        let now = tilo_clock::unix_now_ns();
         let relay_peer = match expected_server_user.as_ref() {
             Some(expected_user) => {
                 let relay_peer =

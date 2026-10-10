@@ -385,11 +385,6 @@ impl Video {
         }
         &self.title
     }
-
-    /// Whether a `DeArrow` alternative exists *and* is active.
-    pub fn dearrow_active(&self, dearrow: bool) -> bool {
-        dearrow && self.dearrow_title.is_some()
-    }
 }
 
 /// How this person likes Tube to play: `SponsorBlock`, `DeArrow`, dislike

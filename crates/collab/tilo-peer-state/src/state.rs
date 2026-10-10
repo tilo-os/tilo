@@ -146,7 +146,7 @@ struct CheckpointBytes {
     decoded: std::sync::OnceLock<Result<std::sync::Arc<DecodedCheckpoint>, String>>,
 }
 struct DecodedCheckpoint {
-    doc: automerge::Automerge,
+    doc: AutoCommit,
     heads: Vec<String>,
     payload_hash: [u8; 32],
 }
@@ -165,7 +165,7 @@ impl AcceptedCheckpoint {
     fn decode(&self) -> Result<std::sync::Arc<DecodedCheckpoint>, String> {
         #[cfg(test)]
         CHECKPOINT_DECODES.with(|count| count.set(count.get().saturating_add(1)));
-        let doc = automerge::Automerge::load(&self.0.bytes).map_err(err)?;
+        let mut doc = AutoCommit::load(&self.0.bytes).map_err(err)?;
         let heads = doc.get_heads().iter().map(ToString::to_string).collect();
         let payload_hash = crate::document::snapshot_hash(&self.0.bytes).map_err(err)?;
         Ok(std::sync::Arc::new(DecodedCheckpoint {
@@ -354,7 +354,7 @@ impl StatePeer {
         let id = hex::encode(cert.device_public_key);
         let encoded = serde_json::to_vec(&identity).map_err(err)?;
         if room::governance_of(Some(&doc))
-            .3
+            .identities
             .get(&id)
             .and_then(|bytes| serde_json::from_slice::<GovernedIdentity>(bytes).ok())
             .is_some_and(|old| old.device_cert == cert)
@@ -433,7 +433,7 @@ impl StatePeer {
             key.verifying_key().to_bytes().to_vec(),
         ));
         let mut changed = false;
-        for (id, bytes) in room::governance_of(Some(&doc)).3 {
+        for (id, bytes) in room::governance_of(Some(&doc)).identities {
             let mut identity: GovernedIdentity = serde_json::from_slice(&bytes).map_err(err)?;
             if identity.device_cert.user_public_key != self.core.authority.user_public_key {
                 continue;
@@ -586,22 +586,6 @@ impl StatePeer {
         now: SystemTime,
     ) -> Result<bool, String> {
         self.set_member_verb(user_public_key, member_verb(role), key, now)
-    }
-
-    /// Make a governed collaborator an administrator of the workspace, with
-    /// the owner's authority over it (never its governance key).
-    /// [`Self::set_member_role`] demotes them again.
-    ///
-    /// # Errors
-    ///
-    /// As [`Self::set_member_role`].
-    pub fn set_member_administrator(
-        &mut self,
-        user_public_key: [u8; 32],
-        key: &SigningKey,
-        now: SystemTime,
-    ) -> Result<bool, String> {
-        self.set_member_verb(user_public_key, Verb::Admin, key, now)
     }
 
     fn set_member_verb(
@@ -859,7 +843,7 @@ impl StatePeer {
             .as_ref()
             .ok_or("room governance missing")?;
         let policy = doc.policy();
-        let names = room::governance_of(Some(doc)).2;
+        let names = room::governance_of(Some(doc)).peers;
         let mut rows: BTreeMap<[u8; 32], GovernedMember> = BTreeMap::new();
         for (id, bytes) in &policy.identities {
             let identity: GovernedIdentity = serde_json::from_slice(bytes).map_err(err)?;
@@ -1291,13 +1275,19 @@ impl StatePeer {
         let Ok(checkpoint) = snapshot.decoded() else {
             return false;
         };
-        let mut proof = checkpoint.doc.clone();
-        let before = proof.get_heads();
         // A sequence floor is not causal coverage: an out-of-order incremental
         // may have been validated while its dependencies were unavailable.
-        proof.load_incremental(&bytes).is_ok()
-            && proof.get_missing_deps(&[]).is_empty()
-            && proof.get_heads() == before
+        // Contained: applied in the isolate to a copy of the checkpoint, the
+        // peer's bytes leave its heads where they were and nothing waiting.
+        let mut proof = checkpoint.doc.clone();
+        matches!(
+            tilo_automerge_isolate::apply(
+                &mut proof,
+                &bytes,
+                tilo_automerge_isolate::Dependencies::RequireComplete
+            ),
+            Ok(tilo_automerge_isolate::Applied::Changed(false))
+        )
     }
     pub fn rows(&self) -> Vec<DocumentRow> {
         self.core
@@ -1339,7 +1329,7 @@ impl StatePeer {
             app: app.into(),
             record: record.into(),
         })?;
-        if entry.encryption_required || !ReadDoc::get_missing_deps(&entry.doc, &[]).is_empty() {
+        if entry.encryption_required || !ReadDoc::get_missing_deps(&*entry.doc, &[]).is_empty() {
             return None;
         }
         Some(entry.doc.base_heads())
@@ -1351,7 +1341,7 @@ impl StatePeer {
                 app: app.into(),
                 record: record.into(),
             })
-            .map(|entry| entry.doc.clone().save())
+            .map(|entry| entry.doc.saved())
     }
     fn certificate(&self, source: &[u8; 32], now: SystemTime) -> Result<&DeviceCert, String> {
         self.core.certificate_typed(source, now).map_err(err)
@@ -1368,9 +1358,11 @@ impl StatePeer {
     ) -> Result<Role, String> {
         let role = self.role(source, authorization_time)?;
         let cert = self.certificate(source, authorization_time)?;
-        let (_, _, mut caps) = room::extract_governed_fields(
-            self.core.room_doc.as_deref().ok_or("missing governance")?,
-        );
+        // Decoded once per governance document state, not per message.
+        let mut caps = (self.core.room_doc.as_ref().ok_or("missing governance")?)
+            .policy()
+            .caps
+            .clone();
         let person = Principal::person_from_key(Ed25519PublicKey::from_bytes(cert.user_public_key));
         backend::member::restrict_foreign_device(
             cert,
@@ -1583,21 +1575,12 @@ impl StatePeer {
                     return Err("transport certificate mismatch".into());
                 }
                 if self.core.certificates.get(&source).map(AsRef::as_ref) != Some(cert.as_ref()) {
-                    let admitted = self
-                        .core
-                        .room_doc
-                        .as_deref()
-                        .and_then(|doc| {
-                            room::governance_of(Some(doc))
-                                .3
-                                .get(&hex::encode(source))
-                                .cloned()
-                        })
-                        .and_then(|bytes| serde_json::from_slice::<GovernedIdentity>(&bytes).ok());
-                    if admitted
-                        .as_ref()
-                        .is_none_or(|identity| identity.device_cert != *cert)
-                    {
+                    let admitted = self.core.room_doc.as_ref().and_then(|doc| {
+                        doc.identities()
+                            .get(&hex::encode(source))
+                            .and_then(|identity| identity.as_ref().ok())
+                    });
+                    if admitted.is_none_or(|identity| identity.device_cert != *cert) {
                         return Err("identity is absent from admitted roster".into());
                     }
                 }
@@ -1665,13 +1648,7 @@ impl StatePeer {
                 // Receipts this peer admitted earlier stay immutable even once
                 // the room document omits them.
                 let mut receipts = self.core.receipts.clone();
-                for (key, value) in room::receipt_values(&candidate) {
-                    let bytes = serde_json::to_vec(&value).map_err(err)?;
-                    if receipts.get(&key).is_some_and(|prior| prior != &bytes) {
-                        return Err("effect receipt is immutable".into());
-                    }
-                    receipts.insert(key, bytes);
-                }
+                room::admit_receipts(&mut receipts, &candidate).map_err(err)?;
                 let changed = self
                     .core
                     .room_doc
@@ -1964,7 +1941,7 @@ impl StatePeer {
             .get(&route)
             .cloned()
             .unwrap_or_else(|| Document {
-                doc: AutoCommit::new(),
+                doc: AutoCommit::new().into(),
                 channel: ChannelState::default(),
                 encryption_required: false,
                 covered: BTreeMap::new(),
@@ -2209,7 +2186,7 @@ impl StatePeer {
                 &policy,
                 &route.app,
                 &route.record,
-                &candidate.doc,
+                &*candidate.doc,
             )
             .map_err(err)?;
         }
@@ -2617,7 +2594,7 @@ impl StatePeer {
                 self.prepare_signed_mutation(
                     &route.app,
                     &route.record,
-                    DocumentMutation::Snapshot(entry.doc.clone().save()),
+                    DocumentMutation::Snapshot(entry.doc.saved()),
                     key,
                     now,
                 )
@@ -2916,7 +2893,7 @@ impl StatePeer {
                     || old_receipts.get(&route_key) != receipts.get(&route_key)
             });
             if changed {
-                dirty.push((route.clone(), document.doc.clone().save()));
+                dirty.push((route.clone(), document.doc.saved()));
             }
         }
         let snapshots = if dirty.is_empty() {
@@ -3085,7 +3062,7 @@ impl StatePeer {
             .iter()
             .map(|(route, entry)| DurableDocument {
                 route: route.clone(),
-                bytes: entry.doc.clone().save(),
+                bytes: entry.doc.saved(),
                 watermarks: entry
                     .channel
                     .last_seq_per_author
@@ -3283,7 +3260,9 @@ impl StatePeer {
             peer.core.documents.insert(
                 document.route,
                 Document {
-                    doc: tilo_automerge_isolate::load(&document.bytes).map_err(err)?,
+                    doc: tilo_automerge_isolate::load(&document.bytes)
+                        .map(CachedDocument::from)
+                        .map_err(err)?,
                     channel,
                     encryption_required: document.encryption_required,
                     covered: document.covered,
@@ -3649,6 +3628,9 @@ mod delivery_admission_resource_tests {
 #[path = "state/media_tests.rs"]
 mod room_media_native_tests;
 
+#[cfg(test)]
+#[path = "state/governance_cache_tests.rs"]
+mod governance_cache_tests;
 #[cfg(test)]
 #[path = "state/sealed_compaction_tests.rs"]
 mod sealed_compaction_tests;

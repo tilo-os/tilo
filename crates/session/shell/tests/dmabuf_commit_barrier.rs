@@ -15,21 +15,15 @@
 //! instead of hanging the suite.
 
 use std::os::fd::{AsFd, FromRawFd, OwnedFd};
-use std::os::unix::net::UnixStream;
-use std::sync::Arc;
 use std::sync::mpsc;
 
-use smithay::reexports::calloop::EventLoop;
-use smithay::reexports::wayland_server::Display;
 use vello::kurbo::Rect;
-use wayland_client::protocol::{wl_buffer, wl_compositor, wl_registry, wl_surface};
-use wayland_client::{Connection, Dispatch, Proxy, QueueHandle, delegate_noop};
+use wayland_client::protocol::{wl_buffer, wl_compositor, wl_surface};
+use wayland_client::{Connection, Dispatch, QueueHandle, delegate_noop};
 use wayland_protocols::wp::linux_dmabuf::zv1::client::{
     zwp_linux_buffer_params_v1, zwp_linux_dmabuf_v1,
 };
 use wayland_protocols::xdg::shell::client::{xdg_surface, xdg_toplevel, xdg_wm_base};
-
-use shell::compositor::state::{ClientState, State};
 
 /// `DRM_FORMAT_ARGB8888`, one of the formats the compositor advertises.
 const DRM_FORMAT_ARGB8888: u32 = 0x3432_5241;
@@ -44,40 +38,7 @@ struct Client {
     configured: bool,
 }
 
-impl Dispatch<wl_registry::WlRegistry, ()> for Client {
-    fn event(
-        state: &mut Self,
-        _: &wl_registry::WlRegistry,
-        event: wl_registry::Event,
-        (): &(),
-        _: &Connection,
-        _: &QueueHandle<Self>,
-    ) {
-        if let wl_registry::Event::Global {
-            name,
-            interface,
-            version,
-        } = event
-        {
-            state.globals.push((name, interface, version));
-        }
-    }
-}
-
-impl Dispatch<xdg_wm_base::XdgWmBase, ()> for Client {
-    fn event(
-        _: &mut Self,
-        base: &xdg_wm_base::XdgWmBase,
-        event: xdg_wm_base::Event,
-        (): &(),
-        _: &Connection,
-        _: &QueueHandle<Self>,
-    ) {
-        if let xdg_wm_base::Event::Ping { serial } = event {
-            base.pong(serial);
-        }
-    }
-}
+crate::support::wayland::test_client!(Client: registry, ping);
 
 impl Dispatch<xdg_surface::XdgSurface, ()> for Client {
     fn event(
@@ -102,71 +63,7 @@ delegate_noop!(Client: ignore xdg_toplevel::XdgToplevel);
 delegate_noop!(Client: ignore zwp_linux_dmabuf_v1::ZwpLinuxDmabufV1);
 delegate_noop!(Client: ignore zwp_linux_buffer_params_v1::ZwpLinuxBufferParamsV1);
 
-struct Harness {
-    display: Display<State>,
-    state: State,
-    queue: wayland_client::EventQueue<Client>,
-    client: Client,
-    conn: Connection,
-    _event_loop: EventLoop<'static, State>,
-}
-
-impl Harness {
-    fn new() -> Self {
-        let event_loop: EventLoop<'static, State> = EventLoop::try_new().expect("calloop");
-        let display: Display<State> = Display::new().expect("display");
-        let state = State::new(event_loop.handle(), display.handle());
-        let (server_side, client_side) = UnixStream::pair().expect("socketpair");
-        display
-            .handle()
-            .insert_client(server_side, Arc::new(ClientState::default()))
-            .expect("insert client");
-        client_side
-            .set_nonblocking(true)
-            .expect("non-blocking client socket");
-        let conn = Connection::from_socket(client_side).expect("client connection");
-        let queue = conn.new_event_queue::<Client>();
-        Self {
-            display,
-            state,
-            queue,
-            client: Client::default(),
-            conn,
-            _event_loop: event_loop,
-        }
-    }
-
-    fn pump(&mut self) {
-        for _ in 0..6 {
-            let _ = self.queue.flush();
-            let _ = self.display.dispatch_clients(&mut self.state);
-            let _ = self.display.flush_clients();
-            if let Some(guard) = self.conn.prepare_read() {
-                let _ = guard.read();
-            }
-            let _ = self.queue.dispatch_pending(&mut self.client);
-        }
-    }
-
-    fn bind<I: Proxy + 'static>(&self, interface: &str, version: u32) -> Option<I>
-    where
-        Client: Dispatch<I, ()>,
-    {
-        let (name, _, advertised) = self
-            .client
-            .globals
-            .iter()
-            .find(|(_, i, _)| i == interface)?
-            .clone();
-        let registry = self.conn.display().get_registry(&self.queue.handle(), ());
-        Some(registry.bind::<I, (), Client>(
-            name,
-            version.min(advertised),
-            &self.queue.handle(),
-            (),
-        ))
-    }
-}
+type Harness = crate::support::wayland::Harness<Client>;
 
 fn linear_argb_memfd() -> OwnedFd {
     let name = c"dmabuf-commit-barrier";
@@ -188,18 +85,13 @@ fn linear_argb_memfd() -> OwnedFd {
 /// machine advertises no dmabuf global.
 fn commit_first_dmabuf() -> bool {
     let mut h = Harness::new();
-    let _registry = h.conn.display().get_registry(&h.queue.handle(), ());
-    h.pump();
-    let Some(dmabuf) = h.bind::<zwp_linux_dmabuf_v1::ZwpLinuxDmabufV1>("zwp_linux_dmabuf_v1", 4)
+    let Some(dmabuf) =
+        h.try_bind::<zwp_linux_dmabuf_v1::ZwpLinuxDmabufV1>("zwp_linux_dmabuf_v1", 4)
     else {
         return false;
     };
-    let compositor = h
-        .bind::<wl_compositor::WlCompositor>("wl_compositor", 4)
-        .expect("wl_compositor");
-    let wm_base = h
-        .bind::<xdg_wm_base::XdgWmBase>("xdg_wm_base", 1)
-        .expect("xdg_wm_base");
+    let compositor = h.bind::<wl_compositor::WlCompositor>("wl_compositor", 4);
+    let wm_base = h.bind::<xdg_wm_base::XdgWmBase>("xdg_wm_base", 1);
     h.pump();
 
     let qh = h.queue.handle();

@@ -110,7 +110,8 @@ class BoardRelease(unittest.TestCase):
         self.assertEqual(self.provenance["buildDefinition"]["externalParameters"]
                          ["hardwareDefinitionSha256"], self.definition)
         (self.root / "provenance").write_text(attestation(self.provenance))
-        (self.root / "freshness").write_text(attestation({"digest": self.digest,
+        (self.root / "freshness").write_text(attestation({"schema": "https://tilo.sh/security/release-freshness/v1",
+            "repository": "code.tilo.so/tilo/tilo", "digest": self.digest,
             "sourceRevision": SOURCE, "generation": 1, "issuedAt": 1, "expiresAt": 1000}))
         # These network-facing verifiers are inert here; the actual production
         # jq checks run unchanged, and the test proves their refusal prevents copy.
@@ -155,6 +156,45 @@ class BoardRelease(unittest.TestCase):
         self.assertNotIn(":latest", copy)
         self.assertNotIn(":gen", copy)
 
+    def test_verified_lenovo_successor_publishes_its_own_dense_namespace(self):
+        self.prepare_promotion()
+        profile = "lenovo-83ed"
+        self.env["HARDWARE_PROFILE"] = profile
+        self.env["FIRMWARE_CANDIDATE"] = "code.tilo.so/tilo/tilo-lenovo-83ed-firmware@sha256:" + "d" * 64
+        self.env["FIRMWARE_MANIFEST_SHA256"] = "e" * 64
+        definition = (REPO / f"os/hardware/profiles/{profile}.json").read_bytes()
+        (self.root / f"os/hardware/profiles/{profile}.json").write_bytes(definition)
+        # The existing private-owner gate is admitted for this fixture only.
+        (self.root / "os/dev/require-private-oci-owner.py").write_text("pass\n")
+        child = self.root / "release-child/aarch64.json"
+        data = json.loads(child.read_text())
+        data["generation"] = 2
+        child.write_text(json.dumps(data))
+        external = self.provenance["buildDefinition"]["externalParameters"]
+        external.update(generation=2, hardwareProfile=profile,
+                        hardwareDefinitionSha256=hashlib.sha256(definition).hexdigest(),
+                        firmwareManifestSha256=self.env["FIRMWARE_MANIFEST_SHA256"])
+        self.provenance["buildDefinition"]["resolvedDependencies"].append(
+            {"uri": self.env["FIRMWARE_CANDIDATE"]})
+        (self.root / "provenance").write_text(attestation(self.provenance))
+        (self.root / "freshness").write_text(attestation({"schema": "https://tilo.sh/security/release-freshness/v1",
+            "repository": "code.tilo.so/tilo/tilo", "digest": self.digest,
+            "sourceRevision": SOURCE, "generation": 2, "issuedAt": 1, "expiresAt": 1000}))
+        # Record every real promotion copy rather than only its last command.
+        tool = self.root / "bin/skopeo"
+        tool.write_text(tool.read_text().replace(' > copied ;;', ' >> copied ;;').replace(
+            '[ -e copied ] ||', '{ [ -e copied ] && grep -Fq -- "$last" copied; } ||').replace(
+            '#!/bin/sh\n', '#!/bin/sh\nfor arg do last=$arg; done\n'))
+        result = self.run_step("Verify and publish immutable board ARM64 image")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        copies = (self.root / "copied").read_text().splitlines()
+        self.assertEqual(len(copies), 3)
+        self.assertIn(f":{profile}-{SOURCE}", copies[0])
+        self.assertIn(":lenovo-83ed-gen2", copies[1])
+        self.assertIn(":lenovo-83ed-latest", copies[2])
+        self.assertTrue(all(f"@{self.digest}" in row for row in copies))
+        self.assertFalse(any("/tilo:gen2" in row or "/tilo:latest" in row for row in copies))
+
     def test_public_orangepi_promotion_does_not_use_lenovo_firmware_override(self):
         self.prepare_promotion()
         result = self.run_step("Verify and publish immutable board ARM64 image")
@@ -185,7 +225,8 @@ class BoardRelease(unittest.TestCase):
 
     def test_expired_freshness_prevents_copy(self):
         self.prepare_promotion()
-        (self.root / "freshness").write_text(attestation({"digest": self.digest,
+        (self.root / "freshness").write_text(attestation({"schema": "https://tilo.sh/security/release-freshness/v1",
+            "repository": "code.tilo.so/tilo/tilo", "digest": self.digest,
             "sourceRevision": SOURCE, "generation": 1, "issuedAt": 1, "expiresAt": 99}))
         self.assertNotEqual(self.run_step("Verify and publish immutable board ARM64 image").returncode, 0)
         self.assertFalse((self.root / "copied").exists())

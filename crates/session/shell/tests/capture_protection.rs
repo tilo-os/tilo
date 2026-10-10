@@ -717,3 +717,67 @@ fn disconnect_retains_the_displayed_secret_until_its_surface_is_destroyed() {
         "destroying the surface clears its protection latch"
     );
 }
+
+/// A popup is part of the window that opened it. While that window's app is
+/// protected, the compositor's per-wakeup pass withholds the popup from the
+/// first wakeup after it maps; once the app's protection is released, the
+/// next wakeup lets it through again. Both changes reach the pass only
+/// through its change signals (the popup list and the store's protection
+/// epoch), so a skipped re-derivation would fail here.
+#[test]
+fn a_protected_windows_popup_is_withheld_from_the_wakeup_it_maps_until_its_app_is_released() {
+    use super::closing_window_frames::{APP_ID, Harness, shown_window};
+    use shell::compositor::state::surface_id;
+    const CONNECTION: u64 = 0xCA97_0188;
+    // One wakeup, in the loop's order: fold tree writes in, then protect.
+    fn wakeup(h: &mut Harness) {
+        let state = &mut h.state;
+        state.client_input.refresh_from_tree(&state.workspace_tree);
+        state.sync_capture_protection();
+    }
+    store().release_capture_protection(CONNECTION);
+
+    let mut h = Harness::new();
+    let qh = h.queue.handle();
+    let (compositor, wm, _window, xdg, _buffer) = shown_window(&mut h);
+    store().request_app_capture_protection(CONNECTION, APP_ID, true);
+    wakeup(&mut h);
+
+    let positioner = wm.create_positioner(&qh, ());
+    positioner.set_size(32, 32);
+    positioner.set_anchor_rect(0, 0, 8, 8);
+    let menu = compositor.create_surface(&qh, ());
+    let menu_xdg = wm.get_xdg_surface(&menu, &qh, ());
+    let _popup = menu_xdg.get_popup(Some(&xdg), &positioner, &qh, ());
+    menu.commit();
+    h.pump();
+    let popups = h
+        .state
+        .xdg_popups()
+        .map(|popup| surface_id(popup.wl_surface()))
+        .collect::<Vec<_>>();
+    let [popup] = popups.as_slice() else {
+        panic!("one popup is mapped, got {popups:?}");
+    };
+
+    wakeup(&mut h);
+    assert!(
+        store().is_capture_protected(*popup, ""),
+        "the menu of a protected window is withheld from captures"
+    );
+    for _ in 0..3 {
+        wakeup(&mut h);
+        assert!(
+            store().is_capture_protected(*popup, ""),
+            "wakeups that change nothing keep it withheld"
+        );
+    }
+
+    store().release_capture_protection(CONNECTION);
+    wakeup(&mut h);
+    assert!(
+        !store().is_capture_protected(*popup, ""),
+        "once the app is no longer protected, neither is its menu"
+    );
+    store().forget(*popup);
+}

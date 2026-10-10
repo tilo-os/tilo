@@ -95,6 +95,37 @@ def stage(source, dest, scope):
     verify(dest, scope)
 
 
+def link(source, dest, scope, extra=None):
+    """Stage `scope` at `dest` as hard links to the files of `source`.
+
+    The OS image ships one catalog's bytes under three names: the signed
+    runtime's lib/fonts, /usr/share/fonts/tilo and the font-catalogs/<sha>
+    fallback. Hard links within one image layer carry the bytes once. A file
+    the scope needs that `source` lacks (an OS-only face beside a product
+    catalog) is copied from the verified catalog `extra`. Every file is
+    verified at `dest` afterwards, so a link never stands in for other bytes.
+    """
+    source, dest = Path(source), Path(dest)
+    data = manifest(source)
+    if extra is not None:
+        verify(extra, scope)
+    dest.mkdir(parents=True, exist_ok=False)
+    files = [f["file"] for f in selected(data, scope) + data["license"]]
+    files += ["manifest.toml", "PROVENANCE.md"]
+    if (source / "LICENSES/UPSTREAM.md").is_file():
+        files.append("LICENSES/UPSTREAM.md")
+    for name in files:
+        target = dest / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if (source / name).is_file():
+            os.link(checked_path(source, name), target)
+        elif extra is not None:
+            shutil.copyfile(checked_path(Path(extra), name), target)
+        else:
+            raise ValueError(f"missing regular file: {source / name}")
+    verify(dest, scope)
+
+
 def artifact_entries(root):
     """Require artifact pins to describe the complete reviewed font catalog."""
     data = manifest(root)
@@ -255,6 +286,11 @@ def main():
     copy.add_argument("source", type=Path)
     copy.add_argument("dest", type=Path)
     copy.add_argument("--scope", choices=list(SCOPES), required=True)
+    linked = commands.add_parser("link", help="stage a catalog as hard links to another one's files")
+    linked.add_argument("source", type=Path)
+    linked.add_argument("dest", type=Path)
+    linked.add_argument("--scope", choices=list(SCOPES), required=True)
+    linked.add_argument("--extra", type=Path, help="a verified catalog for files the source lacks")
     prepared = commands.add_parser("prepare", help="materialize pinned artifacts and notices for an offline build")
     prepared.add_argument("source", type=Path)
     prepared.add_argument("dest", type=Path)
@@ -273,6 +309,8 @@ def main():
             print(verify(args.root, args.scope))
         elif args.command == "stage":
             stage(args.source, args.dest, args.scope)
+        elif args.command == "link":
+            link(args.source, args.dest, args.scope, args.extra)
         elif args.command == "prepare":
             prepare(args.source, args.dest, args.scope, args.cache, args.offline)
         else:

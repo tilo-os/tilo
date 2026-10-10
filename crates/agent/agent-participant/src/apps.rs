@@ -113,6 +113,9 @@ pub enum AppError {
     Launch(String),
     /// The record's durable changes could not be merged.
     Merge(String),
+    /// The app worker that holds the record did not start, could not
+    /// confine itself, or stopped ([`crate::worker`]).
+    Confinement(String),
 }
 
 impl std::fmt::Display for AppError {
@@ -121,6 +124,7 @@ impl std::fmt::Display for AppError {
             Self::UnknownApp(app) => write!(f, "no app {app} can be opened here"),
             Self::Launch(reason) => write!(f, "the record could not be created: {reason}"),
             Self::Merge(reason) => write!(f, "the record did not merge: {reason}"),
+            Self::Confinement(reason) => write!(f, "the app worker failed: {reason}"),
         }
     }
 }
@@ -411,6 +415,7 @@ fn discover_views(
                 && descriptor.kind == tilo_actions::OperationKind::View
                 && permissions.check(&ui::permissions::PermissionScope::action(
                     app_id,
+                    descriptor.address.resource.clone(),
                     descriptor.address.action.clone(),
                     collab_types::caps::Verb::Read,
                 ))

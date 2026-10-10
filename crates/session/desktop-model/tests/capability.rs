@@ -178,3 +178,42 @@ fn app_kind_app_id_is_reverse_dns_or_the_verbatim_label() {
         );
     }
 }
+
+/// What the broker re-checks at (TIL-707): the earliest expiry still ahead,
+/// over every workspace, and nothing for capabilities that never expire or
+/// already did.
+#[test]
+fn the_next_capability_expiry_is_the_earliest_one_still_ahead() {
+    use collab_types::caps::{CapOverride, Effect, Scope, Subject};
+    const SOON: u64 = NOW + 5;
+    const LATER: u64 = NOW + 60;
+    let member = |person: &str| {
+        CapOverride::new(
+            Subject::person(person),
+            Scope::Workspace,
+            Effect::Grant,
+            Verb::Write,
+        )
+    };
+    let mut first = Workspace::new(WorkspaceId::from(1), "First");
+    first.capabilities.push(member("forever"));
+    assert_eq!(first.next_capability_expiry_after(NOW), None);
+    first.capabilities.push(member("past").with_expiry(NOW));
+    assert_eq!(
+        first.next_capability_expiry_after(NOW),
+        None,
+        "a grant ending at `now` is already over"
+    );
+    first.capabilities.push(member("later").with_expiry(LATER));
+    let mut second = Workspace::new(WorkspaceId::from(2), "Second");
+    second.capabilities.push(member("sooner").with_expiry(SOON));
+    assert_eq!(first.next_capability_expiry_after(NOW), Some(LATER));
+    assert_eq!(second.next_capability_expiry_after(NOW), Some(SOON));
+    let tree = DesktopTree {
+        workspaces: vec![first, second],
+        ..DesktopTree::default()
+    };
+    assert_eq!(tree.next_capability_expiry_after(NOW), Some(SOON));
+    assert_eq!(tree.next_capability_expiry_after(SOON), Some(LATER));
+    assert_eq!(tree.next_capability_expiry_after(LATER), None);
+}

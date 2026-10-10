@@ -324,17 +324,16 @@ mod tests {
     fn idle_listener_sleeps_until_a_client_arrives() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("tools.sock");
-        let (service, listener) =
-            crate::idle_thread_probe::spawned_thread("tilo-tool-inten", || {
-                spawn_at(
-                    path.clone(),
-                    Arc::new(|_| Ok(())),
-                    Arc::new(Mutex::new(Vec::new())),
-                    Arc::new(Mutex::new(Vec::new())),
-                )
-                .unwrap()
-            });
-        crate::idle_thread_probe::assert_stays_asleep(&listener, "tool-intent listener");
+        let (service, listener) = tilo_test_env::idle::spawned_thread("tilo-tool-inten", || {
+            spawn_at(
+                path.clone(),
+                Arc::new(|_| Ok(())),
+                Arc::new(Mutex::new(Vec::new())),
+                Arc::new(Mutex::new(Vec::new())),
+            )
+            .unwrap()
+        });
+        tilo_test_env::idle::assert_stays_asleep(&listener, "tool-intent listener");
         UnixStream::connect(&path).expect("still accepts clients");
         let started = std::time::Instant::now();
         drop(service);

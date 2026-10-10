@@ -1,11 +1,3 @@
-#![cfg_attr(
-    test,
-    allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        reason = "in a test these are assertions"
-    )
-)]
 //! Native Spotify sessions stay on one worker. Only observations cross to UI;
 //! streaming tokens never enter a resource, profile or collaborative document.
 
@@ -562,13 +554,32 @@ async fn playback_metadata(session: &Session, uri: &str) -> Result<SpotifyUri, S
     )
     .await
     .map_err(|_| "Spotify playback metadata request timed out".to_string())?
-    .map_err(|error| {
-        format!(
-            "Spotify playback metadata request failed ({:?}); check playback authorization",
-            error.kind
-        )
-    })?;
+    .map_err(|error| playback_metadata_error(&error))?;
     Ok(track)
+}
+
+fn playback_metadata_error(error: &librespot::core::Error) -> String {
+    // Only the typed HTTP status is public. Other error sources can contain
+    // request headers, URLs or credentials and must never reach app state.
+    if let Some(librespot::core::http_client::HttpClientError::StatusCode(status)) =
+        error.error.downcast_ref()
+    {
+        return format!(
+            "Spotify refused the playback metadata request (HTTP {})",
+            status.as_u16()
+        );
+    }
+    if let Some(source) = error.error.downcast_ref::<std::io::Error>() {
+        return format!(
+            "Spotify playback metadata transport failed ({:?}, OS error {:?})",
+            source.kind(),
+            source.raw_os_error()
+        );
+    }
+    format!(
+        "Spotify playback metadata request failed ({:?})",
+        error.kind
+    )
 }
 
 async fn connect_session(
@@ -779,6 +790,31 @@ impl Drop for PcmSink {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn playback_metadata_failure_preserves_provider_status_without_secret_sources() {
+        use librespot::core::http_client::HttpClientError;
+
+        for status in ["401", "402", "403"] {
+            let error = HttpClientError::StatusCode(status.parse().unwrap()).into();
+            assert_eq!(
+                playback_metadata_error(&error),
+                format!("Spotify refused the playback metadata request (HTTP {status})")
+            );
+        }
+        let error = librespot::core::Error::permission_denied(
+            "private bearer and request URL must not enter collaborative state",
+        );
+        assert_eq!(
+            playback_metadata_error(&error),
+            "Spotify playback metadata request failed (PermissionDenied)"
+        );
+        let error = std::io::Error::from_raw_os_error(13).into();
+        assert_eq!(
+            playback_metadata_error(&error),
+            "Spotify playback metadata transport failed (PermissionDenied, OS error Some(13))"
+        );
+    }
 
     fn eligibility_output() -> Output {
         Output::Capture(CaptureOutput {

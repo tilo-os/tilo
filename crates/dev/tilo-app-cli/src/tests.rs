@@ -4093,6 +4093,7 @@ fn packaging_is_scoped_safe_and_never_clobbers_output() {
         let error = package_app(
             &destination.join("src/lib.rs"),
             &PackageRequest {
+                sdk: None,
                 output: None,
                 identity: None,
                 profile: None,
@@ -4127,6 +4128,7 @@ fn packaging_is_scoped_safe_and_never_clobbers_output() {
         let error = package_app(
             &destination,
             &PackageRequest {
+                sdk: None,
                 output: None,
                 identity: None,
                 profile: None,
@@ -5200,7 +5202,8 @@ mod platform;
 #[cfg(test)]
 mod platform_tests;
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
+#[cfg(unix)]
 fn test_symlink() {
     std::os::unix::fs::symlink("a", "b").unwrap();
 }

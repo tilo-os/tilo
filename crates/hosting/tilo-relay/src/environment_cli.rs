@@ -22,15 +22,6 @@
 //! environment records, so the supervisor names a record and never builds
 //! the wire form itself.
 
-#![cfg_attr(
-    test,
-    allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        reason = "in a test these are the assertion, not a hazard"
-    )
-)]
-
 use std::io::Write;
 use std::os::fd::{AsRawFd, FromRawFd, RawFd};
 use std::path::PathBuf;

@@ -23,7 +23,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use getrandom::{SysRng, rand_core::UnwrapErr};
-use launcher::netgate::{Destination, EgressPolicy, connect_upstream_async};
+use launcher::netgate::{Destination, EgressPolicy, NetHostPattern, connect_upstream_async};
 use rand::Rng as _;
 use thiserror::Error;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -87,7 +87,7 @@ pub struct GuestNetworkProxy {
 impl GuestNetworkProxy {
     /// Start on the dedicated host-only address. Failure is a denied grant,
     /// never a reason to attach the appliance to a NAT network.
-    pub fn start(hosts: Vec<String>) -> Result<Self, GuestNetworkError> {
+    pub fn start(hosts: &[String]) -> Result<Self, GuestNetworkError> {
         Self::start_at(
             SocketAddr::new(IpAddr::V4(HOST_ONLY_GATEWAY), 0),
             hosts,
@@ -98,7 +98,7 @@ impl GuestNetworkProxy {
     /// Injectable listener address for tests and service integration checks.
     pub fn start_at(
         address: SocketAddr,
-        hosts: Vec<String>,
+        hosts: &[String],
         require_guest_peer: bool,
     ) -> Result<Self, GuestNetworkError> {
         Self::start_limited(
@@ -111,11 +111,11 @@ impl GuestNetworkProxy {
 
     fn start_limited(
         address: SocketAddr,
-        hosts: Vec<String>,
+        hosts: &[String],
         require_guest_peer: bool,
         max_connections: usize,
     ) -> Result<Self, GuestNetworkError> {
-        validate_hosts(&hosts)?;
+        let policy = lease_policy(hosts)?;
         let listener = std::net::TcpListener::bind(address).map_err(GuestNetworkError::Bind)?;
         let endpoint = listener.local_addr().map_err(GuestNetworkError::Bind)?;
         listener
@@ -132,7 +132,7 @@ impl GuestNetworkProxy {
         random.fill(0);
         let binding = GuestNetworkBinding { endpoint, token };
         let lease = Arc::new(Lease {
-            hosts: Mutex::new(hosts),
+            policy,
             token: binding.token.clone(),
             shutdown: Arc::new(AtomicBool::new(false)),
             active_connections: Arc::new(ActiveTunnels::default()),
@@ -176,26 +176,27 @@ impl Drop for GuestNetworkProxy {
     }
 }
 
-fn validate_hosts(hosts: &[String]) -> Result<(), GuestNetworkError> {
+/// The lease's policy, read through the one `NetHost` grammar
+/// (`collab_types::caps::NetHostPattern`) every other enforcer reads. A host
+/// that does not parse — an IP literal included — refuses the whole lease
+/// rather than silently narrowing it: the caller asked for exact canonical
+/// values.
+fn lease_policy(hosts: &[String]) -> Result<EgressPolicy, GuestNetworkError> {
     if hosts.is_empty() {
         return Err(GuestNetworkError::EmptyAllowlist);
     }
-    for host in hosts {
-        if host.is_empty()
-            || host.len() > 253
-            || host
-                .bytes()
-                .any(|byte| byte.is_ascii_whitespace() || byte.is_ascii_control())
-        {
-            return Err(GuestNetworkError::InvalidHost(host.clone()));
-        }
+    if let Some(bad) = hosts
+        .iter()
+        .find(|host| NetHostPattern::parse(host).is_err())
+    {
+        return Err(GuestNetworkError::InvalidHost(bad.clone()));
     }
-    Ok(())
+    Ok(EgressPolicy::from_grants(hosts.iter().map(String::as_str)))
 }
 
 /// What every connection of one lease shares.
 struct Lease {
-    hosts: Mutex<Vec<String>>,
+    policy: EgressPolicy,
     token: String,
     shutdown: Arc<AtomicBool>,
     active_connections: Arc<ActiveTunnels>,
@@ -260,17 +261,11 @@ async fn serve_connect(mut client: tokio::net::TcpStream, lease: &Lease) -> io::
     // NetHost path: it resolves after policy, rejects address-literal
     // bypasses, and removes loopback/link-local/this-host addresses unless
     // named exactly.
-    let policy = EgressPolicy::new(
-        lease
-            .hosts
-            .lock()
-            .map_err(|_| io::Error::other("network lease policy unavailable"))?
-            .clone(),
-    );
+    let policy = &lease.policy;
     if !policy.permits(&host) {
         return write_response(&mut client, "502 Bad Gateway").await;
     }
-    let Ok(upstream) = connect_upstream_async(&Destination::Domain(host, port), &policy).await
+    let Ok(upstream) = connect_upstream_async(&Destination::Domain(host, port), policy).await
     else {
         return write_response(&mut client, "502 Bad Gateway").await;
     };
@@ -423,23 +418,46 @@ mod tests {
         // Phase `rejects_empty_or_unsafe_canonical_nethosts`.
         {
             assert!(matches!(
-                GuestNetworkProxy::start_at("127.0.0.1:0".parse().unwrap(), Vec::new(), false),
+                GuestNetworkProxy::start_at("127.0.0.1:0".parse().unwrap(), &[], false),
                 Err(GuestNetworkError::EmptyAllowlist)
             ));
             assert!(matches!(
                 GuestNetworkProxy::start_at(
                     "127.0.0.1:0".parse().unwrap(),
-                    vec!["bad host".into()],
+                    &["bad host".into()],
                     false
                 ),
                 Err(GuestNetworkError::InvalidHost(_))
             ));
         }
+        // Phase `reads_hosts_through_the_one_nethost_grammar`.
+        {
+            // An address is not a host, for the guest as for apps and
+            // environments.
+            for address in ["10.0.0.5", "[::1]", "192.168.1.1"] {
+                assert!(
+                    matches!(
+                        GuestNetworkProxy::start_at(
+                            "127.0.0.1:0".parse().unwrap(),
+                            &[address.into()],
+                            false
+                        ),
+                        Err(GuestNetworkError::InvalidHost(ref host)) if host == address
+                    ),
+                    "{address} must not be leased"
+                );
+            }
+            // The domain spelling apps and environments accept is accepted.
+            assert_eq!(
+                lease_policy(&["*.example.test".into()]).unwrap(),
+                EgressPolicy::from_grants([".example.test"])
+            );
+        }
         // Phase `binding_never_exposes_its_bearer_token_through_debug`.
         {
             let proxy = GuestNetworkProxy::start_at(
                 "127.0.0.1:0".parse().unwrap(),
-                vec!["example.test".into()],
+                &["example.test".into()],
                 false,
             )
             .unwrap();
@@ -501,7 +519,7 @@ mod tests {
             let port = service.local_addr().unwrap().port();
             let proxy = GuestNetworkProxy::start_at(
                 "127.0.0.1:0".parse().unwrap(),
-                vec!["localhost".into()],
+                &["localhost".into()],
                 false,
             )
             .unwrap();
@@ -540,7 +558,7 @@ mod tests {
         {
             let proxy = GuestNetworkProxy::start_at(
                 "127.0.0.1:0".parse().unwrap(),
-                vec!["example.test".into()],
+                &["example.test".into()],
                 false,
             )
             .unwrap();
@@ -595,7 +613,7 @@ mod tests {
         let port = service.local_addr().unwrap().port();
         let proxy = GuestNetworkProxy::start_limited(
             "127.0.0.1:0".parse().unwrap(),
-            vec!["localhost".into()],
+            &["localhost".into()],
             false,
             1,
         )

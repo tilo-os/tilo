@@ -87,7 +87,8 @@ xdg_toplevel maps → app-id present
 ### CRDT replication
 ```
 Local mutation → WorkspaceTree write (cache + automerge AutoCommit)
-  → SyncReq heartbeat (every 2 s) or immediate Publish
+  → immediate Publish (SyncResp); SyncReq repair pull 2 s after activity settles,
+    on a peer joining, and every 5 min while idle
   → Iroh gossip workspace topic and optional persistent workspace host
   → remote peer: NeighbourMsg::SyncResp { changes }
   → WorkspaceTree::apply_changes → rebuild_cache_from_doc → re-render
@@ -132,7 +133,7 @@ WorkspaceTree
 ├── active_strip: HashMap<WorkspaceId, StripId>
 ├── active_group: HashMap<StripId, GroupId>
 ├── collaborators: Vec<Collaborator>
-└── doc: automerge::AutoCommit          # backing CRDT; not in state.json, saved beside it as state.automerge
+└── doc: automerge::AutoCommit          # backing CRDT; not in state.json, saved beside it as state.automerge + a .log of later changes
 ```
 
 `TileContent` variants with payload encode the discriminant as a string scalar plus a serde-JSON blob in a sibling `Bytes` field — payload merges are last-write-wins for v1.

@@ -21,17 +21,6 @@
 //! The library needs no session: the `tilo-env-tools` binary drives it for
 //! CI's catalog and for a relay's compute worker.
 
-#![cfg_attr(
-    test,
-    allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
-        clippy::panic,
-        reason = "in a test these are the assertion, not a hazard"
-    )
-)]
-
 pub mod builder;
 pub mod delegated;
 pub mod environment;

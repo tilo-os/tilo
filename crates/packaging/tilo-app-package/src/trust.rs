@@ -369,7 +369,7 @@ pub fn default_revoked_keys_path() -> Option<PathBuf> {
 }
 
 fn config_dir() -> Option<PathBuf> {
-    Some(xdg_paths::xdg::config_home()?.join("tilo"))
+    Some(tilo_paths::xdg::config_home()?.join("tilo"))
 }
 
 fn parse_pubkey_hex(s: &str) -> Result<[u8; 32], TrustLoadError> {

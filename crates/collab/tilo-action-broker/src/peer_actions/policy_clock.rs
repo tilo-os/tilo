@@ -3,7 +3,7 @@ use std::sync::{
     Arc, Mutex, Weak,
     atomic::{AtomicBool, Ordering},
 };
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::Instant;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PolicyClockError;
@@ -92,12 +92,12 @@ impl OwnerPolicyClock {
     ///
     /// # Errors
     ///
-    /// Returns [`PolicyClockError`] when the wall clock is before the Unix epoch or out of range.
+    /// Returns [`PolicyClockError`] when the wall clock is before the Unix epoch.
     pub fn new() -> Result<Self, PolicyClockError> {
         Ok(Self(Arc::new(Clock {
             state: Mutex::new(State {
                 observed: Instant::now(),
-                unix_ns: wall_ns()?,
+                unix_ns: tilo_clock::try_unix_now_ns().ok_or(PolicyClockError)?,
                 failed: false,
             }),
             #[cfg(any(test, feature = "test-support"))]
@@ -116,7 +116,7 @@ impl OwnerPolicyClock {
             let sample = sample.lock().map_err(|_| PolicyClockError)?;
             return state.advance(sample.monotonic, sample.wall_ns);
         }
-        let wall = match wall_ns() {
+        let wall = match tilo_clock::try_unix_now_ns().ok_or(PolicyClockError) {
             Ok(wall) => wall,
             Err(error) => {
                 state.failed = true;
@@ -153,15 +153,6 @@ impl OwnerPolicyClock {
             invalid: AtomicBool::new(false),
         }))
     }
-}
-fn wall_ns() -> Result<u64, PolicyClockError> {
-    u64::try_from(
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_err(|_| PolicyClockError)?
-            .as_nanos(),
-    )
-    .map_err(|_| PolicyClockError)
 }
 struct Origin {
     clock: OwnerPolicyClock,

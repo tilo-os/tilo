@@ -6,8 +6,15 @@ page and their phone join as certified devices. Each room is one
 serving `https://<room>.<domain>`. It certifies a browser only once this
 service has spent a single-use ticket on the pairing code that browser shows;
 the browser keeps a non-extractable device key and never a root. When the
-room expires, or its relay exits, the relay is stopped and its directory
-removed; nothing is kept.
+room expires, its relay exits or breaks the operator protocol, the relay is
+stopped and its directory removed; nothing is kept.
+
+The service and each room relay speak `tilo_relay_protocol::room_operator`:
+typed JSON commands on the relay's stdin, typed events behind a
+`tilo-room-operator ` prefix on its stdout, starting with the protocol
+version. An unknown or malformed line on either side is an error, never
+skipped. Both binaries ship in one image, so the protocol changes in one
+commit.
 
 The room carries only signed document commits, certification and control
 messages. Every browser runs the browser runtime's desktop bundle (the
@@ -20,7 +27,7 @@ itself; the page seeds its own desktop and documents.
 |---|---|
 | `POST /rooms` | `201 {roomId, origin, room, userPublicKey, expiresAt, pageTicket, joinUrl, admit, events, invitations, app}`; `503` when all rooms are in use |
 | `POST /rooms/<id>/invitations` | `201 {joinUrl, ticket}`: one more guest; `429` beyond `TILO_ROOMS_MAX_GUESTS` |
-| `POST /rooms/<id>/admit` `{ticket, pairingCode}` | `200 {label, device, pairingCode, at}` once the room certified that browser; `403` for a spent or unknown ticket |
+| `POST /rooms/<id>/admit` `{ticket, pairingCode}` | `200 {label, device, pairingCode, at}` once the room certified that browser; `403 {error}` for a spent, unknown or busy ticket, or when the room certified nobody for that code (no browser showed it within a minute, more than one did, or the policy refused it), which leaves the ticket usable |
 | `GET /rooms/<id>/events` | Server-sent events: `member` per certified device, earlier ones replayed first; `expired` when the room ends |
 | `GET /app/<path>` | the browser runtime bundle (page modules, `pkg/`, fonts, data), `rooms.mjs`, `join.html` and `page.html` |
 | `GET /healthz` | `{ok: true}` |

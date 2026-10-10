@@ -19,8 +19,6 @@
 //! - [`panes`] — one module per category content pane.
 //! - [`widgets`] — small composition helpers (section, setting row, item row,
 //!   caption) shared across panels.
-//! - `facts` — where the live device facts behind the published resources
-//!   come from: the machine, or the fixed hardware a capture shows.
 //! - [`accounts`] — the **shared external-accounts store** Settings owns
 //!   and Mail / Calendar / file apps consume.
 //! - [`region`] — the **shared region & formats store** (global user
@@ -48,11 +46,7 @@
 #![cfg_attr(
     test,
     allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
         clippy::string_slice,
-        clippy::panic,
         clippy::unreachable,
         reason = "in a test these are the assertion, not a hazard"
     )
@@ -89,3 +83,6 @@ pub use resource::{Settings, SettingsShell, parse_settings_uri};
 pub fn definition() -> &'static ui::application::ApplicationDefinition {
     ui::framework::definition::<SettingsShell>()
 }
+
+#[cfg(test)]
+mod cpu_profile;

@@ -283,12 +283,48 @@ impl ActionParam {
             }
         }
         if let Some(schema) = &self.schema
-            && let Err(reason) = validate_schema_definition(schema)
+            && let Err(reason) = validate_shared_schema_definition(schema)
         {
             errors.push(format!("invalid schema: {reason}"));
         }
         errors
     }
+}
+
+const VALID_SCHEMA_LIMIT: usize = 64;
+
+thread_local! {
+    static VALID_SCHEMAS: std::cell::RefCell<Vec<std::sync::Weak<serde_json::Value>>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Publications reuse immutable type-generation schemas. Remember only successful
+/// structural checks, never argument values, descriptor fields or authority.
+/// Weak identities keep neither the schema tree nor its generation alive and
+/// prevent an allocation at a recycled address from borrowing an old result.
+/// `Arc::make_mut` dissociates these weak identities before changing a schema.
+fn validate_shared_schema_definition(
+    schema: &std::sync::Arc<serde_json::Value>,
+) -> Result<(), String> {
+    let known = VALID_SCHEMAS.with(|schemas| {
+        schemas
+            .borrow()
+            .iter()
+            .any(|validated| std::ptr::eq(validated.as_ptr(), std::sync::Arc::as_ptr(schema)))
+    });
+    if known {
+        return Ok(());
+    }
+    validate_schema_definition(schema)?;
+    VALID_SCHEMAS.with(|schemas| {
+        let mut schemas = schemas.borrow_mut();
+        schemas.retain(|schema| schema.strong_count() != 0);
+        if schemas.len() == VALID_SCHEMA_LIMIT {
+            schemas.remove(0);
+        }
+        schemas.push(std::sync::Arc::downgrade(schema));
+    });
+    Ok(())
 }
 
 /// One bound argument value.
@@ -687,6 +723,33 @@ fn looks_like_rfc3339(value: &str) -> bool {
     chrono::DateTime::parse_from_rfc3339(value).is_ok()
 }
 
+/// Distinct schema patterns kept compiled. A directory publishes a handful;
+/// past this the cache starts again rather than growing with whatever a
+/// caller's schemas name.
+const COMPILED_PATTERNS: usize = 64;
+
+/// `pattern` compiled, from the cache when an earlier argument or schema
+/// already compiled it: every validated value used to compile its schema's
+/// pattern again.
+fn schema_pattern(pattern: &str) -> Result<regex::Regex, regex::Error> {
+    static COMPILED: std::sync::LazyLock<
+        std::sync::Mutex<std::collections::HashMap<String, regex::Regex>>,
+    > = std::sync::LazyLock::new(std::sync::Mutex::default);
+    let mut compiled = COMPILED
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(expression) = compiled.get(pattern) {
+        return Ok(expression.clone());
+    }
+    let expression = regex::Regex::new(pattern)?;
+    if compiled.len() >= COMPILED_PATTERNS {
+        compiled.clear();
+    }
+    compiled.insert(pattern.to_owned(), expression.clone());
+    drop(compiled);
+    Ok(expression)
+}
+
 fn validate_string_schema(
     text: &str,
     schema: &serde_json::Map<String, serde_json::Value>,
@@ -706,7 +769,7 @@ fn validate_string_schema(
         let pattern = pattern
             .as_str()
             .ok_or_else(|| "has a non-string schema pattern".to_string())?;
-        let expression = regex::Regex::new(pattern)
+        let expression = schema_pattern(pattern)
             .map_err(|error| format!("has an invalid schema pattern: {error}"))?;
         if !expression.is_match(text) {
             return Err(format!("must match pattern `{pattern}`"));
@@ -1128,7 +1191,7 @@ fn validate_schema_definition_strings(
         let pattern = pattern
             .as_str()
             .ok_or_else(|| "schema `pattern` must be a string".to_string())?;
-        regex::Regex::new(pattern)
+        schema_pattern(pattern)
             .map_err(|error| format!("schema has an invalid pattern: {error}"))?;
     }
     if let Some(format) = object.get("format") {
@@ -1209,6 +1272,106 @@ fn validate_schema_definition_numbers(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod declaration_reuse_tests {
+    use std::sync::Arc;
+    use std::time::Instant;
+
+    use serde_json::json;
+
+    use super::{ActionArgs, ActionParam, ParamType};
+
+    #[test]
+    fn shared_schema_edits_and_descriptor_changes_are_still_refused() {
+        let original = ActionParam::required("body", ParamType::Text, "Body")
+            .with_schema(json!({"type": "string", "minLength": 3}));
+        assert!(original.validate_declaration().is_empty());
+        assert!(
+            ActionArgs::bind_json(
+                std::slice::from_ref(&original),
+                json!({"body": "a"}).as_object().unwrap()
+            )
+            .is_err()
+        );
+        let mut edited = original.clone();
+        assert!(edited.validate_declaration().is_empty());
+        Arc::make_mut(edited.schema.as_mut().unwrap())["minLength"] = json!(-1);
+        assert!(edited.validate_declaration()[0].contains("non-negative integer"));
+        assert!(original.validate_declaration().is_empty());
+        let mut renamed = original.clone();
+        renamed.name = " ".into();
+        assert_eq!(
+            renamed.validate_declaration(),
+            ["parameter name must be non-empty"]
+        );
+        let mut secret = original;
+        secret.ty = ParamType::Secret;
+        secret.choices.push("private".into());
+        assert!(secret.validate_declaration()[0].contains("must not publish possible values"));
+    }
+
+    #[test]
+    fn last_owner_schema_mutation_dissociates_prior_validation() {
+        let mut parameter = ActionParam::required("body", ParamType::Text, "Body")
+            .with_schema(json!({"type": "string"}));
+        assert!(parameter.validate_declaration().is_empty());
+        Arc::make_mut(parameter.schema.as_mut().unwrap())["type"] = json!("unsupported");
+        assert_eq!(
+            parameter.validate_declaration(),
+            ["invalid schema: schema has an unsupported `type`"]
+        );
+        Arc::make_mut(parameter.schema.as_mut().unwrap())["type"] = json!("string");
+        assert!(parameter.validate_declaration().is_empty());
+    }
+
+    #[test]
+    fn retired_generations_are_released_and_new_invalid_schemas_are_refused() {
+        for _ in 0..128 {
+            let schema = Arc::new(json!({"type": "string"}));
+            let retired = Arc::downgrade(&schema);
+            let parameter =
+                ActionParam::required("body", ParamType::Text, "Body").with_shared_schema(schema);
+            assert!(parameter.validate_declaration().is_empty());
+            drop(parameter);
+            assert!(retired.upgrade().is_none());
+            let invalid = ActionParam::required("body", ParamType::Text, "Body")
+                .with_schema(json!({"pattern": "["}));
+            assert!(invalid.validate_declaration()[0].contains("invalid pattern"));
+        }
+    }
+
+    #[test]
+    fn shared_declaration_observes_recursive_publication_work() {
+        let properties: serde_json::Map<String, serde_json::Value> = (0..128)
+            .map(|index| {
+                (
+                    format!("field{index}"),
+                    json!({"type": "array", "items": {"type": "object", "properties": {
+                        "text": {"type": "string", "minLength": 1},
+                        "count": {"type": "integer", "minimum": 0}
+                    }, "additionalProperties": false}}),
+                )
+            })
+            .collect();
+        let parameter = ActionParam::required("request", ParamType::Object, "Request")
+            .with_shared_schema(Arc::new(
+                json!({"type": "object", "properties": properties}),
+            ));
+        let start = Instant::now();
+        for _ in 0..1000 {
+            assert!(
+                std::hint::black_box(&parameter)
+                    .validate_declaration()
+                    .is_empty()
+            );
+        }
+        eprintln!(
+            "ACTION_SCHEMA_DECLARATION_OBSERVATION iterations=1000 fields=128 elapsed_ns={} includes_gpu_or_display=false",
+            start.elapsed().as_nanos()
+        );
+    }
 }
 
 #[cfg(test)]

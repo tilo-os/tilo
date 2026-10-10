@@ -2,7 +2,7 @@
 //! Only inert authenticated requests cross into its bounded `LocalSet` queue.
 use std::sync::Arc;
 use tilo_delivery_protocol::peer_actions::{ActionMessage, DirectedAction};
-use tilo_relay::client::{CertifiedAction, CertifiedActionEvent};
+use tilo_relay_session::client::{CertifiedAction, CertifiedActionEvent};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc, oneshot};
 use uuid::Uuid;
 
@@ -124,7 +124,7 @@ pub enum PeerActionAttachmentError {
     /// Local validation, custody, capacity, or broker work failed.
     Failed,
     /// The broker answered no effect-free request (the initial catalogue or a
-    /// heartbeat) in time. Nothing was admitted, so a fresh attachment on a
+    /// liveness probe) in time. Nothing was admitted, so a fresh attachment on a
     /// reconnected transport may replace this one.
     Unresponsive,
 }
@@ -150,6 +150,11 @@ impl RequestFailure {
     }
 }
 
+/// How often an attachment asks its broker whether it is still alive and
+/// its durable host available. Matches the request deadline: a hung broker
+/// is noticed within two of them, as a real request would notice it.
+const LIVENESS_PROBE: std::time::Duration = std::time::Duration::from_secs(5);
+
 #[derive(Clone)]
 pub struct PeerActionQueue {
     sender: mpsc::Sender<Request>,
@@ -158,6 +163,9 @@ pub struct PeerActionQueue {
         tokio::sync::broadcast::Sender<(CertifiedAction, Option<tilo_actions::InvocationUpdate>)>,
     /// Owner time retained by relay-served requests; see [`Self::with_policy_time`].
     policy_time: Option<PolicyTime>,
+    /// Signed actions this broker admitted while still fresh, across every
+    /// attachment and reconnect, so a relay cannot deliver one twice.
+    replay: Arc<std::sync::Mutex<tilo_delivery_protocol::peer_actions::ActionReplayWindow>>,
 }
 impl std::fmt::Debug for PeerActionQueue {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -166,6 +174,7 @@ impl std::fmt::Debug for PeerActionQueue {
             .field("permits", &self.permits)
             .field("transitions", &self.transitions)
             .field("policy_time", &self.policy_time.is_some())
+            .field("replay", &self.replay)
             .finish()
     }
 }
@@ -205,6 +214,7 @@ impl PeerActionQueue {
                 permits: Arc::new(Semaphore::new(CAPACITY)),
                 transitions: tokio::sync::broadcast::channel(CAPACITY).0,
                 policy_time: None,
+                replay: Arc::default(),
             },
             receiver,
         )
@@ -323,7 +333,7 @@ impl PeerActionQueue {
     /// Returns `()` once serving stops for any reason; the session is then closed.
     pub async fn serve(
         &self,
-        session: Arc<tilo_relay::RelayCoeditSession>,
+        session: Arc<tilo_relay_session::RelayCoeditSession>,
         room: Uuid,
         host: Uuid,
     ) -> Result<(), ()> {
@@ -344,7 +354,7 @@ impl PeerActionQueue {
     /// Returns why serving stopped; a closed transport also closes the session.
     pub async fn serve_with_readiness(
         &self,
-        session: Arc<tilo_relay::RelayCoeditSession>,
+        session: Arc<tilo_relay_session::RelayCoeditSession>,
         room: Uuid,
         host: Uuid,
         acknowledged: tokio::sync::watch::Sender<bool>,
@@ -358,32 +368,9 @@ impl PeerActionQueue {
         result
     }
 
-    /// [`Self::serve_with_readiness`] that pauses at `barrier` before registering.
-    ///
-    /// # Errors
-    ///
-    /// Returns why serving stopped; a closed transport also closes the session.
-    #[cfg(feature = "test-support")]
-    pub async fn serve_with_readiness_and_registration_barrier_for_test(
-        &self,
-        session: Arc<tilo_relay::RelayCoeditSession>,
-        room: Uuid,
-        host: Uuid,
-        acknowledged: tokio::sync::watch::Sender<bool>,
-        barrier: ActionRegistrationBarrier,
-    ) -> Result<(), PeerActionAttachmentError> {
-        let result = self
-            .serve_with_readiness_inner(session.clone(), room, host, acknowledged, Some(barrier))
-            .await;
-        if result == Err(PeerActionAttachmentError::TransportClosed) {
-            session.close().await;
-        }
-        result
-    }
-
     async fn serve_with_readiness_inner(
         &self,
-        session: Arc<tilo_relay::RelayCoeditSession>,
+        session: Arc<tilo_relay_session::RelayCoeditSession>,
         room: Uuid,
         host: Uuid,
         acknowledged: tokio::sync::watch::Sender<bool>,
@@ -418,13 +405,16 @@ impl PeerActionQueue {
         let mut watches: Vec<(CertifiedAction, tilo_actions::InvocationId, ActionMessage)> =
             Vec::new();
         let mut transitions = self.transitions.subscribe();
-        let mut tick = tokio::time::interval(std::time::Duration::from_millis(100));
+        let mut probe = Self::liveness_probe();
         loop {
             tokio::select! {
                 event = session.recv_certified_action() => match event {
                     Some(CertifiedActionEvent::Delivered(evidence)) => {
                         if evidence.action().room != room { return Err(PeerActionAttachmentError::Failed); }
-                        let response = self.request("delivered_action", Some(evidence.clone()), None, None).await.map_err(|_| PeerActionAttachmentError::Failed)?;
+                        let response = match self.admit_delivery(&evidence) {
+                            Err(error) => ActionMessage::Rejected { code: error.code().into() },
+                            Ok(()) => self.request("delivered_action", Some(evidence.clone()), None, None).await.map_err(|_| PeerActionAttachmentError::Failed)?,
+                        };
                         send(&session, &evidence, response.clone()).map_err(attachment_send_error)?;
                         if let ActionMessage::Observation { invocation, ref update, uncertain, .. } = response {
                             if !uncertain && update.as_ref().is_some_and(|u| !u.is_terminal()) {
@@ -457,11 +447,65 @@ impl PeerActionQueue {
                     }
                     watches.retain(|(_, _, response)| matches!(response, ActionMessage::Observation { update: Some(update), uncertain: false, .. } if !update.is_terminal()));
                 }
-                _ = tick.tick() => {
-                    self.request("heartbeat", None, None, None).await.map_err(effect_free_failure)?;
+                due = self.liveness_due(&mut probe) => {
+                    due?;
+                    self.probe_liveness().await?;
                 }
             }
         }
+    }
+
+    /// Admit a freshly delivered signed action once: within its freshness
+    /// window and not delivered before. The broker still verifies the
+    /// signature, and refuses any effect that carries none.
+    fn admit_delivery(
+        &self,
+        evidence: &CertifiedAction,
+    ) -> Result<(), tilo_delivery_protocol::peer_actions::ActionSignatureError> {
+        let Some(signed) = evidence.signed() else {
+            return Ok(());
+        };
+        self.replay
+            .lock()
+            .map_err(|_| {
+                tilo_delivery_protocol::peer_actions::ActionSignatureError::ReplayCapacity
+            })?
+            .admit(signed, tilo_clock::unix_now_ns())
+    }
+
+    /// The schedule of [`Self::liveness_due`]: its first probe one
+    /// [`LIVENESS_PROBE`] from now.
+    fn liveness_probe() -> tokio::time::Interval {
+        let first = tokio::time::Instant::now()
+            .checked_add(LIVENESS_PROBE)
+            .unwrap_or_else(tokio::time::Instant::now);
+        let mut probe = tokio::time::interval_at(first, LIVENESS_PROBE);
+        probe.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        probe
+    }
+
+    /// Resolves when the broker behind this queue must be asked whether it
+    /// still serves — `probe` ticked — or with why it cannot: its queue
+    /// closed, which is an event and ends the attachment at once. A broker
+    /// whose loop hangs, or whose durable host becomes unavailable, still
+    /// holds its queue open; only asking ([`Self::probe_liveness`]) reveals
+    /// that. Real requests detect both too, as they arrive.
+    async fn liveness_due(
+        &self,
+        probe: &mut tokio::time::Interval,
+    ) -> Result<(), PeerActionAttachmentError> {
+        tokio::select! {
+            () = self.sender.closed() => Err(PeerActionAttachmentError::Failed),
+            _ = probe.tick() => Ok(()),
+        }
+    }
+
+    /// Ask the broker, with an effect-free request, whether it still serves.
+    async fn probe_liveness(&self) -> Result<(), PeerActionAttachmentError> {
+        self.request("liveness_probe", None, None, None)
+            .await
+            .map(drop)
+            .map_err(effect_free_failure)
     }
 }
 fn registration_acknowledged(
@@ -488,15 +532,15 @@ fn sequence(update: &tilo_actions::InvocationUpdate) -> Option<u64> {
 }
 
 fn send(
-    session: &tilo_relay::RelayCoeditSession,
+    session: &tilo_relay_session::RelayCoeditSession,
     evidence: &CertifiedAction,
     message: ActionMessage,
-) -> Result<(), tilo_relay::client::ClientError> {
+) -> Result<(), tilo_relay_session::client::ClientError> {
     let request = evidence.action();
     session.send_action(bounded_reply(request, message))
 }
 
-fn bounded_reply(request: &DirectedAction, message: ActionMessage) -> DirectedAction {
+pub(crate) fn bounded_reply(request: &DirectedAction, message: ActionMessage) -> DirectedAction {
     let mut reply = DirectedAction {
         room: request.room,
         request_id: request.request_id,
@@ -611,9 +655,11 @@ fn reply_limit_diagnostics(reply: &DirectedAction) -> ReplyLimitDiagnostics {
     clippy::needless_pass_by_value,
     reason = "a `map_err` adapter receives the error by value"
 )]
-fn attachment_send_error(error: tilo_relay::client::ClientError) -> PeerActionAttachmentError {
+fn attachment_send_error(
+    error: tilo_relay_session::client::ClientError,
+) -> PeerActionAttachmentError {
     match error {
-        tilo_relay::client::ClientError::PrivateTransportClosed => {
+        tilo_relay_session::client::ClientError::PrivateTransportClosed => {
             PeerActionAttachmentError::TransportClosed
         }
         _ => PeerActionAttachmentError::Failed,
@@ -786,9 +832,77 @@ mod tests {
         }
     }
 
+    /// A broker whose request queue closes ends its attachment then, not on
+    /// the next probe: the clock is paused, and closing the queue must not
+    /// need it to move.
+    #[tokio::test(start_paused = true)]
+    async fn peer_attachment_ends_when_broker_queue_closes() {
+        let (queue, broker) = PeerActionQueue::channel();
+        let mut probe = PeerActionQueue::liveness_probe();
+        let started = tokio::time::Instant::now();
+        let lost = queue.liveness_due(&mut probe);
+        tokio::pin!(lost);
+        assert!(
+            futures::poll!(lost.as_mut()).is_pending(),
+            "a live queue keeps the attachment"
+        );
+        drop(broker);
+        assert_eq!(lost.await, Err(PeerActionAttachmentError::Failed));
+        assert_eq!(
+            started.elapsed(),
+            std::time::Duration::ZERO,
+            "the closed queue woke the attachment; no timer had to notice it"
+        );
+    }
+
+    /// An idle attachment costs one probe per [`LIVENESS_PROBE`], not ten a
+    /// second: a broker that answers keeps it, and one that stops answering
+    /// ends it as replaceable.
+    #[tokio::test(start_paused = true)]
+    async fn an_idle_attachment_probes_its_broker_rarely() {
+        let (queue, mut broker) = PeerActionQueue::channel();
+        let answered = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let answering = {
+            let answered = std::sync::Arc::clone(&answered);
+            tokio::spawn(async move {
+                while let Some(request) = broker.recv().await {
+                    if answered.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 2 {
+                        // The third probe hangs: the broker stopped answering.
+                        let _held = request;
+                        std::future::pending::<()>().await;
+                    } else {
+                        let _ = request.reply.send(Ok(ActionMessage::BrokerCatalogue {
+                            host: Uuid::nil(),
+                            catalogue: serde_json::Value::Null,
+                        }));
+                    }
+                }
+            })
+        };
+        let started = tokio::time::Instant::now();
+        let mut probe = PeerActionQueue::liveness_probe();
+        // What the attachment loop does while idle, until it ends.
+        let ended = loop {
+            if let Err(ended) = queue.liveness_due(&mut probe).await {
+                break ended;
+            }
+            if let Err(ended) = queue.probe_liveness().await {
+                break ended;
+            }
+        };
+        assert_eq!(ended, PeerActionAttachmentError::Unresponsive);
+        assert_eq!(answered.load(std::sync::atomic::Ordering::SeqCst), 3);
+        assert!(
+            started.elapsed() >= LIVENESS_PROBE.saturating_mul(3),
+            "probes are {LIVENESS_PROBE:?} apart, took {:?}",
+            started.elapsed()
+        );
+        answering.abort();
+    }
+
     #[test]
     fn only_closed_private_transport_is_retryable() {
-        use tilo_relay::client::ClientError;
+        use tilo_relay_session::client::ClientError;
 
         assert_eq!(
             attachment_send_error(ClientError::PrivateTransportClosed),

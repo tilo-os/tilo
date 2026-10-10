@@ -44,6 +44,11 @@ impl std::fmt::Debug for SimChoice {
 pub type SimChoicesFuture =
     Pin<Box<dyn Future<Output = Result<Vec<SimChoice>, SendError>> + Send + 'static>>;
 pub trait EnrollmentHost: Send + Sync {
+    /// Prepare private storage review before a service can create device keys.
+    /// The original protected credential owner still decides its grant.
+    fn prepare(&self, _service: String) -> EnrollmentReviewFuture {
+        Box::pin(async { Err(SendError::Unavailable) })
+    }
     fn begin(&self, service: String) -> PairingFuture;
     fn finish(&self, account: ServiceAccount, attempt: String) -> EnrollmentReviewFuture;
     /// Propose only. The original protected Passwords owner must separately
@@ -127,6 +132,24 @@ impl EnrollmentClient {
     }
     pub fn cancel_sim_selection(&self) {
         self.host.cancel_sim_selection();
+    }
+    /// # Errors
+    /// Refuses unsupported storage review or foreign unpublished identity.
+    pub async fn prepare(&self, service: String) -> Result<EnrollmentReview, SendError> {
+        if !matches!(service.as_str(), "tilo" | "whatsapp") {
+            return Err(SendError::InvalidRequest);
+        }
+        let review = self.host.prepare(service.clone()).await?;
+        if review.account.service != service
+            || review.account.account.is_empty()
+            || review.generation == 0
+            || review.scope.is_empty()
+            || review.scope.len() > 512
+        {
+            self.host.cancel(&review.account);
+            return Err(SendError::Revoked);
+        }
+        Ok(review)
     }
     /// # Errors
     /// Refuses unsupported service selections and malformed private results.

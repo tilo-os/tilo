@@ -1,0 +1,633 @@
+name: Perf / scheduled
+
+# The scheduled performance lane (TIL-580): every KPI benchmark writes its
+# results as records (tools/perf/record.py), compare.py checks them against
+# the store's rolling baseline and tools/perf/kpi-budgets.toml, and the
+# annotated records are appended to the store, the public generic package
+# tilo-perf-results (tools/perf/store.py). DEVELOPMENT.md "Performance
+# results" says how a benchmark joins.
+#
+# It is not a required check and never runs per push: wall-clock numbers
+# from a pull request's shared runner would only be noise. Benchmarks consume
+# artifacts that already exist (published tapps, images, release examples
+# built once per night); the tilo-fs gate's debug test build is served by the
+# compiler cache main's check runs fill.
+#
+# One job per benchmark group, each uploading its records as the artifact
+# perf-<group>; a group must produce records whenever it is selected, or the
+# comparison fails it as missing.
+on:
+  schedule:
+    - cron: "15 1 * * *"
+  workflow_dispatch:
+    inputs:
+      kpis:
+        description: "Comma-separated KPI groups to run (fs, footprint (app and OS image sizes), agent, latency, render, wakeups, hosting); empty runs all."
+        required: false
+        default: ""
+      accept:
+        description: "Comma-separated KPI ids (or all) whose values this run records as the new baseline start, for an intended change. Main only."
+        required: false
+        default: ""
+      synthetic_series:
+        description: "Gate test: tag this run's records as this synthetic series and multiply them by synthetic_factor. Synthetic records never enter a real baseline."
+        required: false
+        default: ""
+      synthetic_factor:
+        description: "Gate test: the factor applied to every percentile (1.25 is a 25 % regression)."
+        required: false
+        default: "1.0"
+
+concurrency:
+  # compare.py reads the store's state and then appends to it; two runs at
+  # once could both miss the other's pending regression.
+  group: perf-scheduled
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    runs-on: runner-quality
+    timeout-minutes: 5
+    container:
+      image: registry.tilo.so/tilo/ci-fast@sha256:ecfe2c2abf7a48d9d00d71083aba6b7b9dfc11bc9de63b87e3144522daf6d97c
+    outputs:
+      groups: ${{ steps.select.outputs.groups }}
+      fs: ${{ steps.select.outputs.fs }}
+      footprint: ${{ steps.select.outputs.footprint }}
+      agent: ${{ steps.select.outputs.agent }}
+      latency: ${{ steps.select.outputs.latency }}
+      render: ${{ steps.select.outputs.render }}
+      wakeups: ${{ steps.select.outputs.wakeups }}
+      hosting: ${{ steps.select.outputs.hosting }}
+    steps:
+      - name: Select KPI groups
+        id: select
+        env:
+          KPIS: ${{ github.event.inputs.kpis }}
+        run: |
+          set -euo pipefail
+          known=(fs footprint agent latency render wakeups hosting)
+          IFS=, read -r -a selected <<< "${KPIS:-$(IFS=,; echo "${known[*]}")}"
+          for group in "${selected[@]}"; do
+            [[ " ${known[*]} " == *" $group "* ]] || { echo "::error::unknown KPI group '$group' (known: ${known[*]})"; exit 1; }
+          done
+          echo "groups=$(IFS=,; echo "${selected[*]}")" >> "$GITHUB_OUTPUT"
+          for group in "${known[@]}"; do
+            if [[ " ${selected[*]} " == *" $group "* ]]; then value=true; else value=false; fi
+            echo "$group=$value" >> "$GITHUB_OUTPUT"
+          done
+
+  builder:
+    uses: ./.forgejo/workflows/resolve-builder.yml
+    secrets: inherit
+
+  # The tilo-fs performance gate (crates/system/fs/tests/performance_gate.rs),
+  # five times on the shared `runner` class, through adapters.py fs-gate.
+  fs:
+    needs: [plan, builder]
+    if: needs.plan.outputs.fs == 'true'
+    runs-on: runner
+    timeout-minutes: 60
+    container:
+      image: ${{ needs.builder.outputs.image }}
+    env:
+      # ci-filesystem.yml's Cargo environment, so the build reuses the
+      # compiler outputs main's check runs store.
+      CARGO_BUILD_JOBS: "8"
+      CARGO_INCREMENTAL: "0"
+      CARGO_PROFILE_DEV_DEBUG: "0"
+      CARGO_PROFILE_TEST_DEBUG: "0"
+      CARGO_TERM_COLOR: never
+      CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-D warnings"
+      CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-D warnings"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Build the tilo-fs performance gate
+        run: >-
+          bash scripts/ci-run.sh "tilo-fs performance gate build" --
+          cargo test --locked -p tilo-fs --test performance_gate --no-run
+
+      - name: Run the gate five times and record it
+        env:
+          TILO_FS_PERF_GATE: "1"
+        run: |
+          set -uo pipefail
+          mkdir -p perf
+          status=0
+          for run in 1 2 3 4 5; do
+            cargo test --locked -p tilo-fs --test performance_gate -- --nocapture --test-threads=1 \
+              2> "perf/fs-gate-$run.log" || status=$?
+            grep '^PERF\| PERF ' "perf/fs-gate-$run.log" || true
+          done
+          # The Kata runners are KVM guests; the gate draws nothing.
+          python3 tools/perf/record.py env --profile dev --renderer none \
+            --virtualization kvm --runner runner > perf/env.json || status=1
+          python3 tools/perf/adapters.py fs-gate --env-json perf/env.json perf/fs-gate-*.log \
+            > perf/fs.jsonl || status=1
+          cat perf/fs.jsonl
+          exit "$status"
+
+      - uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
+        if: always()
+        with:
+          name: perf-fs
+          path: perf/
+          if-no-files-found: warn
+
+  # Agent round trip (scripts/perf/agent_rtt.py): actions list, state dump,
+  # a no-op invoke accepted and completed, throughput under eight clients and
+  # the no-op through the MCP server, against one headless compositor on the
+  # shared `runner` class. The compositor is built once here: release
+  # optimisation, thin LTO as release-apps.yml builds, and `dev-overrides`,
+  # the dev image's feature that serves the control socket in a release
+  # build. Authorization and the capability gate stay on.
+  agent:
+    needs: [plan, builder]
+    if: needs.plan.outputs.agent == 'true'
+    runs-on: runner
+    timeout-minutes: 120
+    container:
+      image: ${{ needs.builder.outputs.image }}
+    env:
+      CARGO_BUILD_JOBS: "8"
+      CARGO_INCREMENTAL: "0"
+      CARGO_TERM_COLOR: never
+      CARGO_PROFILE_RELEASE_LTO: thin
+      CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
+      CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-D warnings"
+      CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-D warnings"
+      # The headless backend renders with Mesa's CPU Vulkan driver, as the
+      # nightly headless tests do.
+      WGPU_BACKEND: vulkan
+      VK_DRIVER_FILES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
+      WGPU_ADAPTER_NAME: llvmpipe
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Prepare Rust build caches
+        uses: ./.forgejo/actions/prepare-rust-build
+
+      - name: Build the compositor
+        run: >-
+          bash scripts/ci-run.sh "agent round trip compositor build" --
+          cargo build --locked --release -p shell --bin shell --features dev-overrides
+
+      - name: Measure and record
+        run: |
+          set -euo pipefail
+          ./os/dev/assert-native-arch.sh x86_64
+          test -r "$VK_DRIVER_FILES"
+          mkdir -p perf
+          python3 tools/perf/record.py env --profile release --renderer lavapipe \
+            --virtualization kvm --runner runner > perf/env.json
+          # A fresh HOME, XDG tree and runtime directory, no session bus:
+          # the compositor and everything it leaves behind are this run's.
+          bash tools/with-test-environment.sh python3 scripts/perf/agent_rtt.py \
+            --spawn target/release/shell --samples 1000 --warmup 100 \
+            --transport "test-control socket, headless, release + dev-overrides, thin LTO" \
+            --env-json perf/env.json --out perf/agent.jsonl --log perf/compositor.log
+          cat perf/agent.jsonl
+
+      - uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
+        if: always()
+        with:
+          name: perf-agent
+          path: perf/
+          if-no-files-found: warn
+
+  # App package size: the newest signed tapp of every app in the public
+  # registry index, per architecture. A runner-independent byte count. Also
+  # the shared runtime every app maps, fetched from the same registry (two
+  # ~240 MB downloads, hence the timeout).
+  footprint:
+    needs: plan
+    if: needs.plan.outputs.footprint == 'true'
+    runs-on: runner-quality
+    timeout-minutes: 25
+    container:
+      image: registry.tilo.so/tilo/ci-fast@sha256:ecfe2c2abf7a48d9d00d71083aba6b7b9dfc11bc9de63b87e3144522daf6d97c
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+          sparse-checkout: tools/perf
+          sparse-checkout-cone-mode: false
+
+      - name: Record the published tapp sizes
+        run: |
+          set -euo pipefail
+          mkdir -p perf
+          curl --fail --silent --show-error --retry 3 --retry-all-errors --proto '=https' \
+            --output "$RUNNER_TEMP/entries.json" https://apps.tilo.so/entries
+          python3 tools/perf/record.py env --profile release --renderer none \
+            --virtualization none --runner none --hardware "apps.tilo.so registry index" > perf/env.json
+          python3 tools/perf/adapters.py tapp-sizes --env-json perf/env.json "$RUNNER_TEMP/entries.json" \
+            > perf/footprint.jsonl
+          cat perf/footprint.jsonl
+
+      # The enforced app-size gate (DEVELOPMENT.md, "App package size"): every
+      # published app within its budget, and the apps' median, p90 and max
+      # within the fleet ceilings of tools/perf/tapp-size-budget/. The records
+      # above are uploaded either way; compare fails the run on this job.
+      - name: Published apps within their budgets and the fleet ceilings
+        run: >-
+          python3 tools/perf/tapp_size_ratchet.py fleet "$RUNNER_TEMP/entries.json"
+          --summary "$GITHUB_STEP_SUMMARY"
+
+      # The shared runtime (TIL-604; DEVELOPMENT.md, "Runtime size"): the
+      # newest published libruntime_dylib.so of each architecture against
+      # tools/perf/runtime-size-budget/, recorded as footprint.runtime.*.
+      # Records are written before the gate's verdict, so a run over budget
+      # still enters the store.
+      - name: Published runtime within its size budget
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: |
+          set -uo pipefail
+          python3 tools/perf/runtime_size_ratchet.py published "$RUNNER_TEMP/entries.json" \
+            --measurements "$RUNNER_TEMP/runtime.json" --summary "$GITHUB_STEP_SUMMARY"
+          status=$?
+          [[ -s $RUNNER_TEMP/runtime.json ]] || exit 1
+          python3 tools/perf/adapters.py runtime-sizes --env-json perf/env.json "$RUNNER_TEMP/runtime.json" \
+            >> perf/footprint.jsonl || exit 1
+          exit "$status"
+
+      - uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
+        if: always()
+        with:
+          name: perf-footprint
+          path: perf/
+          if-no-files-found: warn
+
+  # OS image size (TIL-609): main's newest production-layout image per
+  # architecture, the tilo-ci base that tilo-vm:main-ci names, streamed from
+  # the registry and replayed layer by layer through tools/perf/image_size.py.
+  # Compressed layer bytes (a full pull), unique content (what composefs holds
+  # after install) and redundant payload (bytes the layers ship twice). Byte
+  # counts: runner-independent, so `runner` is none. The ceilings and the 5 %
+  # growth rule are in tools/perf/kpi-budgets.toml (DEVELOPMENT.md, "OS image
+  # size"). The full breakdown is the job's summary and the image-size
+  # artifact.
+  footprint-image:
+    needs: plan
+    if: needs.plan.outputs.footprint == 'true'
+    runs-on: runner-quality
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [x86_64, aarch64]
+    container:
+      image: registry.tilo.so/tilo/ci-fast@sha256:ecfe2c2abf7a48d9d00d71083aba6b7b9dfc11bc9de63b87e3144522daf6d97c
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+          sparse-checkout: tools/perf
+          sparse-checkout-cone-mode: false
+
+      - name: Measure main's newest image
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          mkdir -p perf
+          python3 tools/perf/image_size.py --dev-base registry.tilo.so/tilo/tilo-vm:main-ci \
+            --arch "$ARCH" --records perf/image-$ARCH.jsonl --runner none \
+            --json perf/image-size-$ARCH.json --markdown perf/image-size-$ARCH.md > /dev/null
+          cat "perf/image-size-$ARCH.md" >> "$GITHUB_STEP_SUMMARY"
+          cat "perf/image-$ARCH.jsonl"
+
+      - uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
+        if: always()
+        with:
+          name: perf-footprint-image-${{ matrix.arch }}
+          path: perf/
+          if-no-files-found: warn
+
+  # Compositor-side input and workspace-switch latency (TIL-587): a headless
+  # compositor driven through its control socket, rendering with lavapipe on
+  # the shared `runner` class, through scripts/perf/latency_bench.py. The
+  # compositor is ci-legacy-apps.yml's debug build with the same Cargo
+  # environment, so the compiler cache that lane fills serves it. Input to
+  # photon on real hardware is the weekly, report-only
+  # scripts/perf/device_latency_bench.py (docs/benchmarks/reference-hardware.md).
+  latency:
+    needs: [plan, builder]
+    if: needs.plan.outputs.latency == 'true'
+    runs-on: runner
+    timeout-minutes: 60
+    container:
+      image: ${{ needs.builder.outputs.image }}
+    env:
+      CARGO_BUILD_JOBS: "4"
+      CARGO_INCREMENTAL: "0"
+      CARGO_PROFILE_DEV_DEBUG: "0"
+      CARGO_TERM_COLOR: never
+      WGPU_BACKEND: vulkan
+      VK_DRIVER_FILES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
+      WGPU_ADAPTER_NAME: llvmpipe
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Prepare Rust build caches
+        uses: ./.forgejo/actions/prepare-rust-build
+
+      - name: Build the compositor
+        run: >-
+          bash scripts/ci-run.sh "cargo build (latency bench)" --
+          cargo build --locked -p shell --bin shell
+
+      - name: Time pointer input and workspace switches
+        run: |
+          set -euo pipefail
+          mkdir -p perf
+          python3 tools/perf/record.py env --profile dev --renderer lavapipe \
+            --virtualization kvm --runner runner > perf/env.json
+          python3 scripts/perf/latency_bench.py --shell-bin target/debug/shell \
+            --out perf/run --env-json perf/env.json --records perf/latency.jsonl
+
+      - uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
+        if: always()
+        with:
+          name: perf-latency
+          path: perf/
+          if-no-files-found: warn
+
+  # Render frame time at native 4K (TIL-582): the toolkit's dashboard harness
+  # (`ui-perf dashboard_perf_bench`, 1,000 events) and the shell's
+  # `redraw_bench` (1,000 clicks through FrameBuilder, the DRM bridge's render,
+  # readback and XRGB swizzle), both release builds made once here, through
+  # scripts/perf/render_bench.py: retained-frame pixel parity first, then the
+  # timed runs, then the toolkit's runner-independent counters (the per-change
+  # gate, ci-render-counters.yml). The runner has no GPU; lavapipe times the
+  # CPU's rasterisation, so these records are compared only with each other
+  # and never quoted as 4K/144 Hz. Hardware frame time is the reference
+  # machines' weekly run (docs/benchmarks/reference-hardware.md).
+  render:
+    needs: [plan, builder]
+    if: needs.plan.outputs.render == 'true'
+    runs-on: runner
+    timeout-minutes: 120
+    container:
+      image: ${{ needs.builder.outputs.image }}
+    env:
+      # The agent job's and ci-render-counters.yml's Cargo environment
+      # (release optimisation, thin LTO as release-apps.yml builds), so the
+      # release builds share one compiler cache.
+      CARGO_BUILD_JOBS: "8"
+      CARGO_INCREMENTAL: "0"
+      CARGO_TERM_COLOR: never
+      CARGO_PROFILE_RELEASE_LTO: thin
+      CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
+      CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-D warnings"
+      CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-D warnings"
+      WGPU_BACKEND: vulkan
+      VK_DRIVER_FILES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
+      WGPU_ADAPTER_NAME: llvmpipe
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Prepare Rust build caches
+        uses: ./.forgejo/actions/prepare-rust-build
+
+      - name: Build the render benchmarks
+        run: |
+          set -euo pipefail
+          bash scripts/ci-run.sh "ui-perf release build" -- \
+            cargo build --locked --release -p ui-examples --example ui-perf
+          bash scripts/ci-run.sh "redraw_bench release build" -- \
+            cargo build --locked --release -p shell --example redraw_bench
+
+      - name: Verify, time and record
+        run: |
+          set -euo pipefail
+          ./os/dev/assert-native-arch.sh x86_64
+          test -r "$VK_DRIVER_FILES"
+          mkdir -p perf
+          python3 tools/perf/record.py env --profile release --renderer lavapipe \
+            --virtualization kvm --runner runner > perf/env.json
+          python3 scripts/perf/render_bench.py timing target/release/examples/ui-perf \
+            target/release/examples/redraw_bench --env-json perf/env.json --out perf \
+            --records perf/render.jsonl
+          cat perf/render.jsonl
+
+      - name: Check the render counters
+        run: python3 scripts/perf/render_bench.py counters target/release/examples/ui-perf --out perf/counters
+
+      - uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
+        if: always()
+        with:
+          name: perf-render
+          path: perf/
+          if-no-files-found: warn
+
+  # Idle wakeups (TIL-614): the shell integration gate
+  # crates/session/shell/tests/idle_wakeups.rs, which pull requests run with
+  # a 10 s window whenever shell changes, here three times with a 60 s window
+  # through adapters.py idle-wakeups. A debug `it` build with check.yml's
+  # Cargo environment, so the compiler cache its test shards fill serves it.
+  wakeups:
+    needs: [plan, builder]
+    if: needs.plan.outputs.wakeups == 'true'
+    runs-on: runner
+    timeout-minutes: 90
+    container:
+      image: ${{ needs.builder.outputs.image }}
+    env:
+      CARGO_BUILD_JOBS: "8"
+      CARGO_INCREMENTAL: "0"
+      CARGO_PROFILE_DEV_DEBUG: "0"
+      CARGO_PROFILE_TEST_DEBUG: "0"
+      CARGO_TERM_COLOR: never
+      CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-D warnings"
+      CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-D warnings"
+      TILO_IDLE_WAKEUP_WINDOW_SECS: "60"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Prepare Rust build caches
+        uses: ./.forgejo/actions/prepare-rust-build
+
+      - name: Build the shell integration tests
+        run: >-
+          bash scripts/ci-run.sh "idle wakeup gate build" --
+          cargo test --locked -p shell --test it --no-run
+
+      - name: Count an idle desktop's wakeups three times and record them
+        run: |
+          set -uo pipefail
+          ./os/dev/assert-native-arch.sh x86_64
+          mkdir -p perf
+          status=0
+          for run in 1 2 3; do
+            bash tools/test-env.sh cargo test --locked -p shell --test it \
+              idle_wakeups::an_idle_desktop_with_two_apps_stays_within_its_wakeup_budget \
+              -- --exact --nocapture > "perf/idle-$run.log" 2>&1 || status=$?
+            grep -A40 '^idle wakeups over' "perf/idle-$run.log" || true
+          done
+          python3 tools/perf/record.py env --profile dev --renderer lavapipe \
+            --virtualization kvm --runner runner > perf/env.json || status=1
+          python3 tools/perf/adapters.py idle-wakeups --env-json perf/env.json perf/idle-*.log \
+            > perf/wakeups.jsonl || status=1
+          cat perf/wakeups.jsonl
+          exit "$status"
+
+      - uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
+        if: always()
+        with:
+          name: perf-wakeups
+          path: perf/
+          if-no-files-found: warn
+
+  # What an active collaborator costs a relay (TIL-592): 100 collaborators in
+  # rooms of four type, point and idle through one relay process for ten
+  # measured minutes, with authentication and the production co-edit path on
+  # (crates/hosting/tilo-relay/examples/relay_load). Records CPU-seconds,
+  # resident MiB and egress bytes per collaborator-hour and fan-out latency;
+  # adapters.py prices them with tools/perf/prices.toml. Release build made
+  # once here, with the agent and render jobs' Cargo environment.
+  hosting:
+    needs: [plan, builder]
+    if: needs.plan.outputs.hosting == 'true'
+    runs-on: runner
+    timeout-minutes: 75
+    container:
+      image: ${{ needs.builder.outputs.image }}
+    env:
+      CARGO_BUILD_JOBS: "8"
+      CARGO_INCREMENTAL: "0"
+      CARGO_TERM_COLOR: never
+      CARGO_PROFILE_RELEASE_LTO: thin
+      CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
+      CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-D warnings"
+      CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-D warnings"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Prepare Rust build caches
+        uses: ./.forgejo/actions/prepare-rust-build
+
+      - name: Build the load bench
+        run: >-
+          bash scripts/ci-run.sh "relay load bench release build" --
+          cargo build --locked --release -p tilo-relay --example relay_load
+
+      - name: Load the relay and record
+        run: |
+          set -euo pipefail
+          mkdir -p perf
+          python3 tools/perf/record.py env --profile release --renderer none \
+            --virtualization kvm --runner runner > perf/env.json
+          target/release/examples/relay_load --collaborators 100 --minutes 10 --out perf/run \
+            | tee perf/hosting-load.log
+          python3 tools/perf/adapters.py hosting-load --env-json perf/env.json \
+            perf/run/hosting-load.json > perf/hosting.jsonl
+          cat perf/hosting.jsonl
+
+      - uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
+        if: always()
+        with:
+          name: perf-hosting
+          path: perf/
+          if-no-files-found: warn
+
+  compare:
+    needs: [plan, fs, footprint, footprint-image, agent, latency, render, wakeups, hosting]
+    if: ${{ always() && needs.plan.result == 'success' }}
+    runs-on: runner-quality
+    timeout-minutes: 15
+    container:
+      image: registry.tilo.so/tilo/ci-fast@sha256:ecfe2c2abf7a48d9d00d71083aba6b7b9dfc11bc9de63b87e3144522daf6d97c
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+          sparse-checkout: |
+            tools/perf
+            tools/upload_immutable_packages.sh
+          sparse-checkout-cone-mode: false
+
+      - uses: actions/download-artifact@d8d0a99033603453ad2255e58720b460a0555e1e # v4
+        with:
+          path: results
+
+      - name: Compare with the store and publish
+        env:
+          GROUPS: ${{ needs.plan.outputs.groups }}
+          ACCEPT: ${{ github.event.inputs.accept }}
+          SERIES: ${{ github.event.inputs.synthetic_series }}
+          FACTOR: ${{ github.event.inputs.synthetic_factor }}
+          FS_RESULT: ${{ needs.fs.result }}
+          FOOTPRINT_RESULT: ${{ needs.footprint.result }}
+          FOOTPRINT_IMAGE_RESULT: ${{ needs.footprint-image.result }}
+          AGENT_RESULT: ${{ needs.agent.result }}
+          LATENCY_RESULT: ${{ needs.latency.result }}
+          RENDER_RESULT: ${{ needs.render.result }}
+          WAKEUPS_RESULT: ${{ needs.wakeups.result }}
+          HOSTING_RESULT: ${{ needs.hosting.result }}
+          TILO_PACKAGE_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
+        run: |
+          set -uo pipefail
+          shopt -s nullglob
+          owner=${GITHUB_REPOSITORY%%/*}
+          status=0
+          for job in "fs:$FS_RESULT" "footprint:$FOOTPRINT_RESULT" "footprint-image:$FOOTPRINT_IMAGE_RESULT" "agent:$AGENT_RESULT" "latency:$LATENCY_RESULT" "render:$RENDER_RESULT" "wakeups:$WAKEUPS_RESULT" "hosting:$HOSTING_RESULT"; do
+            case ${job#*:} in
+              success|skipped) ;;
+              *) echo "::error::benchmark job ${job%%:*} ended ${job#*:}"; status=1 ;;
+            esac
+          done
+          on_main=false
+          [[ $GITHUB_REF == refs/heads/main ]] && on_main=true
+          if [[ -n ${ACCEPT:-} && $on_main != true ]]; then
+            echo "::error::accept only applies to main, where the store is written"
+            exit 1
+          fi
+          args=(--store "$GITHUB_SERVER_URL" --owner "$owner" --groups "$GROUPS"
+                --publish-dir publish --run "$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" --summary summary.md)
+          [[ -n ${ACCEPT:-} ]] && args+=(--accept "$ACCEPT")
+          [[ -n ${SERIES:-} ]] && args+=(--synthetic "$SERIES" --synthetic-factor "${FACTOR:-1.0}")
+          results=(results/*/*.jsonl)
+          if (( ${#results[@]} == 0 )); then
+            echo "::error::no benchmark produced records"
+            exit 1
+          fi
+          python3 tools/perf/compare.py --results "${results[@]}" "${args[@]}" || status=1
+          # Real records are written from main only; a synthetic series may be
+          # written from any ref because it never enters a real baseline.
+          if [[ $on_main == true || -n ${SERIES:-} ]]; then
+            manifest=$(mktemp)
+            for file in publish/*/*.jsonl; do
+              month=$(basename "$(dirname "$file")")
+              printf '%s\t%s\n' "$file" \
+                "$GITHUB_SERVER_URL/api/packages/$owner/generic/tilo-perf-results/$month/$(basename "$file")"
+            done > "$manifest"
+            bash tools/upload_immutable_packages.sh "$manifest" || status=1
+          else
+            echo "Not main and not synthetic: compared only, nothing written to the store."
+          fi
+          [[ -f summary.md ]] && cat summary.md >> "$GITHUB_STEP_SUMMARY"
+          exit "$status"
+
+      - uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
+        if: always()
+        with:
+          name: perf-summary
+          path: |
+            summary.md
+            publish/
+          if-no-files-found: warn

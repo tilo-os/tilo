@@ -163,28 +163,10 @@ pub fn setting_row_described(label: &str, description: &str, control: El) -> El 
     labelled_row(label, Some(description), control)
 }
 
-/// A row for a continuous control (a slider) that wants the whole measure:
-/// the label on its own line and the control spanning the section.
-pub fn slider_row(label: &str, control: El) -> El {
-    choice_row_stacked(label, control)
-}
-
 /// A row for a text field: the label on its own line and the field beneath
 /// it spanning the section, as every form in Settings lays its fields out.
 pub fn field_row(label: &str, control: El) -> El {
     choice_row_stacked(label, control)
-}
-
-/// [`slider_row`] with a helper line under the label.
-pub fn slider_row_described(label: &str, description: &str, control: El) -> El {
-    stacked_block(
-        vec![
-            Box::new(Text::new(label)) as El,
-            caption(description),
-            control,
-        ],
-        Rhythm::Tight,
-    )
 }
 
 /// One entry of a list of things (a printer, a user, a device): its name with

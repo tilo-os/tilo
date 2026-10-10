@@ -11,6 +11,7 @@
 )]
 
 use std::collections::HashMap;
+use tilo_ui::widget::TaffyTreeExt;
 
 use taffy::{AvailableSpace, Dimension, Style};
 use taffy::{NodeId, Size, TaffyTree};
@@ -116,17 +117,14 @@ impl Widget for FixedContent {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let node = taffy
-            .new_leaf(Style {
-                size: Size {
-                    width: Dimension::length(self.size.width),
-                    height: Dimension::length(self.size.height),
-                },
-                ..Default::default()
-            })
-            .unwrap();
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        let style = Style {
+            size: Size {
+                width: Dimension::length(self.size.width),
+                height: Dimension::length(self.size.height),
+            },
+            ..Default::default()
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
 
     fn measure(

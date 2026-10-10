@@ -708,12 +708,9 @@ fn media_handoff_waits_for_decoder_but_preserves_paused_preroll() {
 }
 
 // ---- synthetic winit events (drive `handle_event` like the real loop) --
-use winit::event::{DeviceId, ElementState, MouseButton, WindowEvent};
+use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::keyboard::NamedKey;
 
-fn synth_device() -> DeviceId {
-    unsafe { std::mem::zeroed() }
-}
 /// Where the row of track `id` stands in the page's track tables.
 fn track_row(app: &MusicApp, id: &str) -> Rect {
     app.track_tables
@@ -764,13 +761,13 @@ fn click_track(app: &mut MusicApp, doc: &mut AutoCommit, id: &str) {
 
 fn cursor_at(p: Point) -> WindowEvent {
     WindowEvent::CursorMoved {
-        device_id: synth_device(),
+        device_id: winit::event::DeviceId::dummy(),
         position: winit::dpi::PhysicalPosition::new(p.x, p.y),
     }
 }
 fn press(button: MouseButton) -> WindowEvent {
     WindowEvent::MouseInput {
-        device_id: synth_device(),
+        device_id: winit::event::DeviceId::dummy(),
         state: ElementState::Pressed,
         button,
     }
@@ -806,30 +803,16 @@ fn send_with(
     mods: winit::event::Modifiers,
     doc: &mut AutoCommit,
 ) -> bool {
-    let mut taffy = TaffyTree::<()>::new();
-    let node = taffy.new_leaf(Style::default()).unwrap();
-    let mut handled = false;
-    let mut focus = None;
-    let root = automerge::ROOT;
-    app.handle_event(
-        ev,
-        &mut ui::widget::EventCtx {
-            scale_factor: 1.0,
-            modifiers: &mods,
-            state: ui::widget::Edits::lend(doc),
-            path: &root,
-            handled: &mut handled,
-            focus_target: &mut focus,
-            node_id: node,
-            taffy: &taffy,
-        },
-    );
-    handled
+    ui::testing::Dispatch::new()
+        .modifiers(mods)
+        .doc(doc)
+        .send(app, ev)
+        .handled
 }
 
 fn released(button: MouseButton) -> WindowEvent {
     WindowEvent::MouseInput {
-        device_id: synth_device(),
+        device_id: winit::event::DeviceId::dummy(),
         state: ElementState::Released,
         button,
     }
@@ -837,47 +820,30 @@ fn released(button: MouseButton) -> WindowEvent {
 
 fn wheel(lines_y: f32) -> WindowEvent {
     WindowEvent::MouseWheel {
-        device_id: synth_device(),
+        device_id: winit::event::DeviceId::dummy(),
         delta: winit::event::MouseScrollDelta::LineDelta(0.0, lines_y),
         phase: winit::event::TouchPhase::Moved,
     }
 }
 
-/// A character keypress event (logical key + committed text). `winit`'s
-/// per-platform `KeyEvent` field is `pub(crate)`, so — like the other app
-/// event-path tests — we zero the struct and set the public fields (the
-/// zeroed discriminants land on non-heap enum variants, so this is sound).
+/// A character keypress event (logical key + committed text). like the other app event-path tests.
 fn char_key(c: &str) -> WindowEvent {
-    use winit::keyboard::{Key, KeyLocation, NativeKeyCode, PhysicalKey};
-    let mut ev: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
-    ev.logical_key = Key::Character(c.into());
-    ev.physical_key = PhysicalKey::Unidentified(NativeKeyCode::Unidentified);
-    ev.location = KeyLocation::Standard;
-    ev.state = ElementState::Pressed;
-    ev.repeat = false;
-    ev.text = Some(c.into());
-    WindowEvent::KeyboardInput {
-        device_id: synth_device(),
-        event: ev,
-        is_synthetic: false,
-    }
+    use winit::keyboard::Key;
+    ui::synthetic_input::keyboard_input(ui::synthetic_input::key_event(
+        Key::Character(c.into()),
+        Some(c.into()),
+        ElementState::Pressed,
+    ))
 }
 
 /// A named keypress event (Enter, Escape, Space, arrows …).
 fn named_key(named: winit::keyboard::NamedKey) -> WindowEvent {
-    use winit::keyboard::{Key, KeyLocation, NativeKeyCode, PhysicalKey};
-    let mut ev: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
-    ev.logical_key = Key::Named(named);
-    ev.physical_key = PhysicalKey::Unidentified(NativeKeyCode::Unidentified);
-    ev.location = KeyLocation::Standard;
-    ev.state = ElementState::Pressed;
-    ev.repeat = false;
-    ev.text = None;
-    WindowEvent::KeyboardInput {
-        device_id: synth_device(),
-        event: ev,
-        is_synthetic: false,
-    }
+    use winit::keyboard::Key;
+    ui::synthetic_input::keyboard_input(ui::synthetic_input::key_event(
+        Key::Named(named),
+        None,
+        ElementState::Pressed,
+    ))
 }
 
 fn shift_mods() -> winit::event::Modifiers {
@@ -3001,10 +2967,15 @@ fn stream_operations_settle_exactly_once_for_their_request() {
         .into_iter()
         .find(|action| action.id == "play")
         .expect("play resource action");
-        assert!(
-            matches!(play.contract.result, tilo_actions::ResultSpec::Job),
+        assert_eq!(
+            play.contract.execution,
+            tilo_actions::ExecutionMode::Background { cancellable: false },
             "playing a track answers when its audio starts"
         );
+        play.contract
+            .result
+            .validate(&output)
+            .expect("the actual stream completion must match its published result");
     }
 
     // Phase `play_drives_the_audio_pipeline_path`.

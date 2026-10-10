@@ -43,9 +43,15 @@ macro_rules! settings_effects {
             const OPERATION: &'static str = OPERATION;
 
             fn declarations() -> Vec<EffectDecl> {
-                let mut declarations = Vec::new();
-                $(declarations.extend(<$ty as Effect>::declarations());)*
-                declarations
+                let build = || {
+                    let mut declarations = Vec::new();
+                    $(declarations.extend(<$ty as Effect>::declarations());)*
+                    declarations
+                };
+                #[cfg(test)]
+                return ui::framework::profiling::measure("settings.flattened_declarations", build);
+                #[cfg(not(test))]
+                build()
             }
 
             fn id(&self) -> &'static str {
@@ -60,6 +66,18 @@ macro_rules! settings_effects {
             fn bound(&self) -> tilo_actions::ActionSpec {
                 match self {
                     $(Self::$variant(effect) => effect.bound(),)*
+                }
+            }
+
+            fn bound_asking(&self, asking: &[&str]) -> tilo_actions::ActionSpec {
+                match self {
+                    $(Self::$variant(effect) => effect.bound_asking(asking),)*
+                }
+            }
+
+            fn bound_asking_params(&self, params: Vec<tilo_actions::ActionParam>) -> tilo_actions::ActionSpec {
+                match self {
+                    $(Self::$variant(effect) => effect.bound_asking_params(params),)*
                 }
             }
 
@@ -122,34 +140,242 @@ settings_effects! {
     Network(crate::panes::network::NetworkEffect) => crate::panes::network::answer,
 }
 
-/// The live rows of every area — the devices, networks, accounts and other
-/// entities outside any document that Settings shows — with the effects each
-/// offers bound to it.
+/// One area of Settings whose live rows show what it reads of the device:
+/// its printers, accounts, audio graph. Reading is what costs — on a device
+/// it runs commands and D-Bus calls — so an area reads when first asked,
+/// and the published rows of a live window name an area only once it has
+/// read ([`SettingsApp::publishes_area`]).
+pub(crate) struct LiveArea {
+    /// The profiling phase its rows are measured under.
+    pub(crate) name: &'static str,
+    /// The pane that shows the area, and so reads it when shown.
+    pub(crate) pane: Category,
+    /// Whether the area has read what its rows show.
+    pub(crate) is_open: fn(&SettingsApp) -> bool,
+    /// Its rows, reading the area first if it has not.
+    pub(crate) rows: fn(&SettingsApp) -> Vec<ui::framework::LiveRow>,
+}
+
+/// Every area with live rows, in the order their rows are published.
+pub(crate) const LIVE_AREAS: &[LiveArea] = &[
+    LiveArea {
+        name: "settings.rows.notifications",
+        pane: Category::Notifications,
+        is_open: |app| app.notifications().is_open(),
+        rows: |app| app.notifications().rows(),
+    },
+    LiveArea {
+        name: "settings.rows.default_apps",
+        pane: Category::DefaultApps,
+        is_open: |app| app.default_apps().is_open(),
+        rows: |app| app.default_apps().rows(),
+    },
+    // Input reads a small snapshot file the compositor keeps, on a timer of
+    // its own; it has nothing slow to put off.
+    LiveArea {
+        name: "settings.rows.input",
+        pane: Category::MouseKeyboard,
+        is_open: |_| true,
+        rows: |app| app.input().rows(),
+    },
+    LiveArea {
+        name: "settings.rows.printers",
+        pane: Category::Printers,
+        is_open: |app| app.printers().is_open(),
+        rows: |app| app.printers().rows(),
+    },
+    LiveArea {
+        name: "settings.rows.users",
+        pane: Category::Users,
+        is_open: |app| app.users().is_open(),
+        rows: |app| app.users().rows(),
+    },
+    LiveArea {
+        name: "settings.rows.bluetooth",
+        pane: Category::Bluetooth,
+        is_open: |app| app.bluetooth().is_open(),
+        rows: |app| app.bluetooth().rows(),
+    },
+    LiveArea {
+        name: "settings.rows.speakers",
+        pane: Category::Speakers,
+        is_open: |app| app.speakers().is_open(),
+        rows: |app| app.speakers().rows(),
+    },
+    LiveArea {
+        name: "settings.rows.agent_models",
+        pane: Category::AgentModels,
+        is_open: |app| app.agent_models().is_open(),
+        rows: |app| app.agent_models().rows(),
+    },
+    LiveArea {
+        name: "settings.rows.device_mesh",
+        pane: Category::DeviceMesh,
+        is_open: |app| app.device_mesh().is_open(),
+        rows: |app| app.device_mesh().rows(),
+    },
+    LiveArea {
+        name: "settings.rows.audio",
+        pane: Category::Sound,
+        is_open: |app| app.audio().is_open(),
+        rows: |app| app.audio().rows(),
+    },
+    LiveArea {
+        name: "settings.rows.accounts",
+        pane: Category::ExternalAccounts,
+        is_open: |app| app.accounts().is_open(),
+        rows: |app| app.accounts().rows(),
+    },
+    LiveArea {
+        name: "settings.rows.displays",
+        pane: Category::Displays,
+        is_open: |app| app.displays().is_open(),
+        rows: |app| app.displays().rows(),
+    },
+    LiveArea {
+        name: "settings.rows.network",
+        pane: Category::Network,
+        is_open: |app| app.network().is_open(),
+        rows: |app| app.network().rows(),
+    },
+    // Disk unlock's rows show only what its pane has already read.
+    LiveArea {
+        name: "settings.rows.disk_unlock",
+        pane: Category::Permissions,
+        is_open: |_| true,
+        rows: |app| app.disk_unlock().rows(),
+    },
+];
+
+/// When the areas of a window read. A window that reaches the device opens
+/// on its first pane without reading every other area first: until its
+/// first frame is drawn it publishes the areas that have read (the pane
+/// shown has), then reads one more area per sync until every one has
+/// ([`SettingsApp::read_next_area`]), so a few frames after the first its
+/// published rows are what reading them all up front published. A
+/// screenshot or a test reads stand-ins, which cost nothing: it publishes
+/// every area at once.
+#[derive(Default)]
+pub(crate) struct AreaReads {
+    /// Publish only the areas that have read.
+    deferred: std::cell::Cell<bool>,
+    /// The window has drawn a frame, so reading may begin.
+    presented: std::cell::Cell<bool>,
+    /// A wake for the next read is on its way.
+    woken: std::cell::Cell<bool>,
+    /// The index in [`LIVE_AREAS`] reading continues from.
+    next: std::cell::Cell<usize>,
+}
+
+#[cfg(test)]
+thread_local! {
+    static DEFERRED_IN_TESTS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Make the windows this thread attaches next read their areas as a live
+/// window does, over the stand-ins a test reads.
+#[cfg(test)]
+pub(crate) fn defer_area_reads_in_tests(deferred: bool) {
+    DEFERRED_IN_TESTS.with(|cell| cell.set(deferred));
+}
+
+impl AreaReads {
+    /// The reads of a window attached through `cx`.
+    pub(crate) fn of(cx: &crate::host::PaneCx) -> Self {
+        #[cfg(test)]
+        let deferred = cx.reaches_devices() || DEFERRED_IN_TESTS.with(std::cell::Cell::get);
+        #[cfg(not(test))]
+        let deferred = cx.reaches_devices();
+        Self {
+            deferred: std::cell::Cell::new(deferred),
+            ..Self::default()
+        }
+    }
+
+    /// Whether only the areas that have read are published.
+    pub(crate) fn deferred(&self) -> bool {
+        self.deferred.get()
+    }
+
+    /// The window drew a frame.
+    pub(crate) fn presented(&self) {
+        self.presented.set(true);
+    }
+
+    /// Whether this sync reads the next area: the window has drawn and not
+    /// every area has read. Taking it consumes the pending wake.
+    pub(crate) fn take_due(&self) -> bool {
+        self.woken.set(false);
+        self.deferred.get() && self.presented.get()
+    }
+
+    /// The next area to read in `app`: the first after the last one read
+    /// that has not. Each area is passed once, so reading ends after one
+    /// pass even if an area's rows never read it; then every area is
+    /// published.
+    pub(crate) fn take_next(&self, app: &SettingsApp) -> Option<&'static LiveArea> {
+        let start = self.next.get();
+        let found = LIVE_AREAS
+            .iter()
+            .enumerate()
+            .skip(start)
+            .find(|(_, area)| !(area.is_open)(app));
+        let Some((index, area)) = found else {
+            self.next.set(LIVE_AREAS.len());
+            self.deferred.set(false);
+            return None;
+        };
+        self.next.set(index + 1);
+        Some(area)
+    }
+
+    /// Ask for a sync to read the next area, unless one is already asked
+    /// for or reading has not begun.
+    pub(crate) fn wake(&self) {
+        if self.deferred.get() && self.presented.get() && !self.woken.replace(true) {
+            ui::WakeHandle::new().wake();
+        }
+    }
+}
+
+/// The live rows Settings publishes — the devices, networks, accounts and
+/// other entities outside any document that it shows — with the effects
+/// each offers bound to it: one per pane, then each area's that
+/// [`SettingsApp::publishes_area`].
 pub(crate) fn rows(app: &SettingsApp) -> Vec<ui::framework::LiveRow> {
-    let mut rows = pane_rows();
-    rows.extend(app.notifications().rows());
-    rows.extend(app.default_apps().rows());
-    rows.extend(app.input().rows());
-    rows.extend(app.printers().rows());
-    rows.extend(app.users().rows());
-    rows.extend(app.bluetooth().rows());
-    rows.extend(app.speakers().rows());
-    rows.extend(app.agent_models().rows());
-    rows.extend(app.device_mesh().rows());
-    rows.extend(app.audio().rows());
-    rows.extend(app.accounts().rows());
-    rows.extend(app.displays().rows());
-    rows.extend(app.network().rows());
-    rows.extend(app.disk_unlock().rows());
+    fn observed<T>(name: &'static str, operation: impl FnOnce() -> T) -> T {
+        #[cfg(test)]
+        let result = ui::framework::profiling::measure(name, operation);
+        #[cfg(not(test))]
+        let result = {
+            let _ = name;
+            operation()
+        };
+        result
+    }
+    let mut rows = observed("settings.rows.panes", pane_rows);
+    for area in LIVE_AREAS {
+        if app.publishes_area(area) {
+            rows.extend(observed(area.name, || (area.rows)(app)));
+        }
+    }
     rows
 }
 
-/// The live row `id`.
+/// The live row `id`, published or not: an address an agent kept or a
+/// search hit names reads the area it belongs to.
 pub(crate) fn row(app: &SettingsApp, id: &str) -> Option<ui::framework::LiveRow> {
     fn find(rows: Vec<ui::framework::LiveRow>, id: &str) -> Option<ui::framework::LiveRow> {
         rows.into_iter().find(|row| row.id() == id)
     }
-    find(rows(app), id)
+    // The areas that have read are asked first, so a published row never
+    // reads another area.
+    find(rows(app), id).or_else(|| {
+        LIVE_AREAS
+            .iter()
+            .filter(|area| !app.publishes_area(area))
+            .find_map(|area| find((area.rows)(app), id))
+    })
 }
 
 /// The effects that differ from their declaration on this device now.
@@ -235,6 +461,95 @@ mod tests {
     use super::*;
 
     struct Flattened(SettingsEffect);
+
+    #[test]
+    fn mounted_live_rows_do_not_rebuild_unrelated_pane_declarations() {
+        let mut app = ui::framework::testing::TestApp::<crate::SettingsShell>::new().unwrap();
+        let (rows, phases) = app
+            .surface::<SettingsApp, _>(|app| ui::framework::profiling::observe(|| super::rows(app)))
+            .unwrap();
+        assert!(
+            rows.iter()
+                .any(|row| row.id() == "settings.display-output:eDP-1")
+        );
+        assert!(
+            !phases
+                .iter()
+                .any(|phase| phase.phase == "settings.flattened_declarations"),
+            "actual mounted rows must bind only their own pane vocabulary"
+        );
+    }
+
+    #[test]
+    fn mounted_display_asking_bindings_preserve_metadata_payload_and_output_custody() {
+        let mut app = ui::framework::testing::TestApp::<crate::SettingsShell>::new().unwrap();
+        let rows = app
+            .surface::<SettingsApp, _>(|app| super::rows(app))
+            .unwrap();
+        let row = rows
+            .into_iter()
+            .find(|row| row.id() == "settings.display-output:eDP-1")
+            .expect("the actual connected output is published")
+            .into_resource();
+        let mut compared = 0;
+        for spec in row.actions.iter().filter(|spec| !spec.params().is_empty()) {
+            let mut args = serde_json::Map::new();
+            for param in spec.params() {
+                let value = param.choices.first().map_or_else(
+                    || match param.ty {
+                        tilo_actions::ParamType::Text => serde_json::json!("observed"),
+                        tilo_actions::ParamType::Integer => serde_json::json!(20),
+                        tilo_actions::ParamType::Number => serde_json::json!(0.5),
+                        tilo_actions::ParamType::Boolean => serde_json::json!(true),
+                        other => panic!("unexpected actual display parameter: {other:?}"),
+                    },
+                    |value| serde_json::json!(value),
+                );
+                args.insert(param.name.to_string(), value);
+            }
+            let published = spec.build_json(&args).unwrap();
+            let effect = SettingsEffect::from_payload(&published.payload).unwrap();
+            let reference = Flattened(effect.clone()).bound_asking_params(spec.params().to_vec());
+            let direct = effect.bound_asking_params(spec.params().to_vec());
+            let survey = |spec| {
+                tilo_actions::door::survey(&[tilo_actions::Resource::new(
+                    "comparison",
+                    "comparison",
+                    "comparison",
+                )
+                .with_action(spec)])
+            };
+            assert_eq!(survey(direct.clone()), survey(reference.clone()));
+            assert_eq!(
+                direct.permission_for_json(&args),
+                reference.permission_for_json(&args)
+            );
+            assert_eq!(
+                direct.confirmation_for_json(&args),
+                reference.confirmation_for_json(&args)
+            );
+            let actual = direct.build_json(&args).unwrap();
+            let expected = reference.build_json(&args).unwrap();
+            assert_eq!(actual.type_id, expected.type_id);
+            assert_eq!(actual.payload, expected.payload);
+            assert_eq!(actual.payload, published.payload);
+            let asking: Vec<_> = spec.params().iter().map(|param| &*param.name).collect();
+            assert_eq!(
+                survey(effect.bound_asking(&asking)),
+                survey(Flattened(effect).bound_asking(&asking))
+            );
+            args.insert("display".to_string(), serde_json::json!("foreign-output"));
+            assert!(
+                spec.build_json(&args).is_err(),
+                "the output identity is not caller controlled"
+            );
+            compared += 1;
+        }
+        assert!(
+            compared >= 7,
+            "the actual output's parameter actions are observed"
+        );
+    }
 
     impl Effect for Flattened {
         const OPERATION: &'static str = super::OPERATION;
@@ -339,3 +654,7 @@ mod tests {
         assert!(SettingsEffect::decode("no-such-effect", &serde_json::Map::new()).is_err());
     }
 }
+
+#[cfg(test)]
+#[path = "area_reads_tests.rs"]
+mod area_reads_tests;

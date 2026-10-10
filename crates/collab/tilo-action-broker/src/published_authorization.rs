@@ -35,6 +35,7 @@ pub fn authorize_person_published<W: WorkspacePolicy>(
     let objects = [
         ResourceRef::Action {
             app: surface.app_id.clone(),
+            resource: action.resource.clone(),
             action: action.action.clone(),
         },
         ResourceRef::Artifact {

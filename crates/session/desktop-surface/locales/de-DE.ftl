@@ -424,6 +424,7 @@ activity-capability = { $effect ->
 activity-capability-unknown = eine Berechtigung
 activity-capability-this-workspace = diesen Arbeitsbereich
 activity-capability-every-type = jede Ressource vom Typ { $kind }
+activity-capability-action-on-kind = { $app }:{ $action } auf jeder Ressource vom Typ { $kind }
 activity-capability-one-artifact = ein Artefakt
 activity-capability-one-shared-file = eine geteilte Datei
 activity-capability-network = Netzwerk { $host }
@@ -539,11 +540,11 @@ workspace-settings-role-assign-placeholder = Rolle und Mitwirkende
 workspace-settings-role-assign-description = Weise einer Person, Anwendung oder einem Agenten eine gespeicherte Rolle mit minimalen Rechten zu.
 workspace-settings-role-assign-named = { $role } zuweisen
 workspace-settings-role-assign-named-placeholder = Identität der mitwirkenden Person
-workspace-settings-app-action-placeholder = App und Aktion
+workspace-settings-app-action-placeholder = App, Ressource und Aktion
 workspace-settings-app-action-grant = Einer App die Aktion einer anderen App erlauben
-workspace-settings-app-action-grant-description = Erlaube einer Anwendung in diesem Arbeitsbereich, eine Aktion zu verwenden, die eine andere Anwendung bereitstellt.
+workspace-settings-app-action-grant-description = Erlaube einer Anwendung in diesem Arbeitsbereich, eine Aktion auf einer Ressource zu verwenden, die eine andere Anwendung bereitstellt.
 workspace-settings-app-action-revoke = Einer App die Aktion einer anderen App entziehen
-workspace-settings-app-action-revoke-description = Nimm in diesem Arbeitsbereich jede Freigabe zurück, mit der eine Anwendung die Aktion einer anderen Anwendung verwenden darf.
+workspace-settings-app-action-revoke-description = Nimm in diesem Arbeitsbereich jede Freigabe zurück, mit der eine Anwendung eine Aktion auf einer Ressource einer anderen Anwendung verwenden darf.
 workspace-settings-ownership-resource = Eigentum an { $workspace }
 workspace-settings-ownership-propose = Eigentumsübertragung vorschlagen
 workspace-settings-ownership-propose-placeholder = Identität der empfangenden Person
@@ -588,7 +589,8 @@ workspace-settings-scope-screencast = Bildschirmaufnahme
 workspace-settings-scope-remote-desktop = Fernsteuerung von Zeiger und Tastatur
 workspace-settings-scope-any-host = ein beliebiger Netzwerkhost
 workspace-settings-scope-host = Netzwerkhost { $host }
-workspace-settings-scope-action = „{ $action }“ in { $app }
+workspace-settings-scope-action = „{ $action }“ auf { $resource } in { $app }
+workspace-settings-scope-action-on-kind = „{ $action }“ auf jeder Ressource vom Typ { $kind } in { $app }
 workspace-settings-scope-resource-type = { $kind ->
     [note] jede Notiz
     [file] jede Datei
@@ -609,7 +611,8 @@ workspace-settings-scope-screencast-object = Bildschirmaufnahme
 workspace-settings-scope-remote-desktop-object = Fernsteuerung von Zeiger und Tastatur
 workspace-settings-scope-any-host-object = Einen beliebigen Netzwerkhost
 workspace-settings-scope-host-object = Netzwerkhost { $host }
-workspace-settings-scope-action-object = „{ $action }“ in { $app }
+workspace-settings-scope-action-object = „{ $action }“ auf { $resource } in { $app }
+workspace-settings-scope-action-on-kind-object = „{ $action }“ auf jeder Ressource vom Typ { $kind } in { $app }
 workspace-settings-scope-resource-type-object = { $kind ->
     [note] Jede Notiz
     [file] Jede Datei

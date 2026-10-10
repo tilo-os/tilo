@@ -60,7 +60,7 @@ use ui::doc::put_if_changed;
 use ui::tilo_resource::TextEdit;
 
 use crate::doc::{CONNECTIONS_KEY, SAVED_QUERIES_KEY};
-use crate::model::{ConnectionProfile, Engine};
+use crate::model::ConnectionProfile;
 
 /// Wire type id under which the client's actions are encoded + registered.
 pub const DB_ACTION_TYPE: &str = "db_client.action";
@@ -304,15 +304,6 @@ pub fn remove_query_action(id: Uuid) -> DbAction {
     DbAction::RemoveQuery { id: id.to_string() }
 }
 
-/// True when `engine` is one this build knows how to open (kept next to the
-/// action so the modal and the decoder agree).
-pub fn known_engine(engine: &str) -> bool {
-    matches!(
-        Engine::from_key(engine),
-        Engine::Sqlite | Engine::Postgres | Engine::MySql
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -376,9 +367,7 @@ mod tests {
     ui::action_contract_tests! {
         seed: seeded_doc(),
         registry: {
-            let mut registry = ActionRegistry::new();
-            register(&mut registry);
-            registry
+            ActionRegistry::with(register)
         },
         resources: |doc| resources_for(doc),
         palette: ["Remove saved connection", "Remove saved query", "Save current query", "Connect", "Add connection"],

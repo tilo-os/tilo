@@ -133,9 +133,7 @@ mod tests {
 
     fn registry() -> ui::tilo_actions::ActionRegistry {
         use ui::tilo_resource::Resource as _;
-        let mut registry = ui::tilo_actions::ActionRegistry::new();
-        FileExplorer::register(&mut registry);
-        registry
+        ui::tilo_actions::ActionRegistry::with(FileExplorer::register)
     }
 
     // The resource's publication (its places and the folder-wide work) and

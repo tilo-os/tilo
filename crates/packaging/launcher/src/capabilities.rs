@@ -226,6 +226,13 @@ impl CapabilityPlan {
                     }
                 }
                 Scope::NetHost(host) => {
+                    // A stored grant that is not a host in the one grammar
+                    // (an IP literal, written before addresses were refused)
+                    // covers nothing; say so rather than drop it silently.
+                    if let Err(reason) = collab_types::caps::NetHostPattern::parse(host) {
+                        tracing::warn!(%reason, "ignoring a network grant that is not a host");
+                        continue;
+                    }
                     if !allows(
                         &actor,
                         &ResourceRef::NetHost(host.clone()),
@@ -356,7 +363,7 @@ pub fn host_device_paths(device: &str) -> Vec<PathBuf> {
         }
         "microphone" => {
             let mut out = Vec::new();
-            let runtime_dir = xdg_paths::xdg::runtime_dir().unwrap_or_else(|| {
+            let runtime_dir = tilo_paths::xdg::runtime_dir().unwrap_or_else(|| {
                 // SAFETY: getuid always succeeds.
                 PathBuf::from(format!("/run/user/{}", unsafe { libc::getuid() }))
             });
@@ -566,6 +573,28 @@ mod tests {
             assert!(
                 !without.allow_network,
                 "without a network capability the namespace stays isolated"
+            );
+        }
+        // Phase `domain_grants_survive_the_plan_and_address_grants_do_not`.
+        {
+            let grant = |host: &str| {
+                CapOverride::grant(
+                    Subject::app("so.tilo.mail"),
+                    Scope::NetHost(host.to_string()),
+                    Verb::Write,
+                )
+            };
+            let caps = vec![
+                grant(".fastmail.com"),
+                grant("*.example.com"),
+                grant("10.0.0.5"),
+            ];
+            let plan =
+                CapabilityPlan::for_app_with("so.tilo.mail", &caps, Some(1), fake_device_paths);
+            assert_eq!(
+                plan.net_hosts,
+                vec![".fastmail.com".to_string(), "*.example.com".to_string()],
+                "a domain grant in either spelling stands; an address is not a host"
             );
         }
     }

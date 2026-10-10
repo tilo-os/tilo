@@ -169,10 +169,7 @@ fn run_case(test: &str, case: &str) -> Outcome {
         child_selection(&case);
         return Outcome::Child;
     }
-    let nonce = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
+    let nonce = tilo_clock::try_unix_now_ns().unwrap();
     let temp = TemporaryConfig(std::env::temp_dir().join(format!(
         "tilo-selection-{test}-{case}-{}-{nonce}",
         std::process::id()

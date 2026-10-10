@@ -51,17 +51,117 @@ pub trait NativeResourceViews: Send + Sync {
     ) -> NativeResourceViewFuture;
 }
 
-/// Reads a fresh immutable projection from the host's committed authority.
+/// Reads the host's committed authority in place.
 /// Mutations go back to that host; this interface owns no replica or persistence.
+///
+/// Policy questions borrow the committed tree rather than copying it: a copy
+/// carries every workspace's strips, tasks and effect-receipt history, and in
+/// the compositor it is taken under the tree lock the render loop writes
+/// through. One admission asks once and decides every check on that one view.
 pub trait WorkspaceAuthority: Send + Sync {
-    /// A fresh immutable projection of the committed workspace tree.
+    /// Run `read` once against the committed workspace tree, borrowed.
+    ///
+    /// `read` must be short: it must not block, await or serialize, because
+    /// a host may hold its tree lock while it runs.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message when the committed authority cannot be read; `read`
+    /// is then not called.
+    fn with_tree(&self, read: &mut dyn FnMut(&DesktopTree)) -> Result<(), String>;
+
+    /// Run `read` once against the committed workspace of exactly `room`
+    /// (`None` when this host has no such workspace). Same rules as
+    /// [`Self::with_tree`]; a host whose rooms are not one tree overrides it
+    /// to look up only the requested room.
     ///
     /// # Errors
     ///
     /// Returns a message when the committed authority cannot be read.
-    fn snapshot(&self) -> Result<DesktopTree, String>;
+    fn with_room(
+        &self,
+        room: &str,
+        read: &mut dyn FnMut(Option<&Workspace>),
+    ) -> Result<(), String> {
+        self.with_tree(&mut |tree| read(room_in(tree, room)))
+    }
+
+    /// An owned copy of the committed workspace tree, for the few callers
+    /// that must keep one past the read. Never on an admission path.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message when the committed authority cannot be read.
+    fn snapshot(&self) -> Result<DesktopTree, String> {
+        let mut copy = None;
+        self.with_tree(&mut |tree| copy = Some(tree.clone()))?;
+        copy.ok_or_else(|| UNANSWERED.to_owned())
+    }
+
     fn legacy_journal_root(&self) -> Option<std::path::PathBuf> {
         None
+    }
+
+    /// Whether every write to what the broker's membership and context
+    /// checks read on this host is announced through
+    /// [`tilo_identity_host::policy_change`]: this tree, the device fleet and
+    /// identity registry behind the installed certificate authority, and the
+    /// owner's task store. The broker then re-checks on those announcements
+    /// and at the next capability or certificate expiry. `false` (the
+    /// default) keeps the one-second re-check: a host that does not announce
+    /// a revocation must not have it go unenforced.
+    fn announces_policy_changes(&self) -> bool {
+        false
+    }
+}
+
+const UNANSWERED: &str = "workspace authority did not answer";
+
+/// The workspace of exactly `room` in `tree`.
+#[must_use]
+pub fn room_in<'a>(tree: &'a DesktopTree, room: &str) -> Option<&'a Workspace> {
+    tree.workspaces
+        .iter()
+        .find(|workspace| workspace.room.to_string() == room)
+}
+
+impl dyn WorkspaceAuthority {
+    /// One policy sample of the whole tree: `decide` runs once on the
+    /// borrowed committed tree and its answer is returned.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message when the committed authority cannot be read.
+    pub fn decide_in_tree<R>(&self, decide: impl FnOnce(&DesktopTree) -> R) -> Result<R, String> {
+        let mut decide = Some(decide);
+        let mut answer = None;
+        self.with_tree(&mut |tree| {
+            if let Some(decide) = decide.take() {
+                answer = Some(decide(tree));
+            }
+        })?;
+        answer.ok_or_else(|| UNANSWERED.to_owned())
+    }
+
+    /// One policy sample of one room: `decide` runs once on the borrowed
+    /// committed workspace of exactly `room` and its answer is returned.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message when the committed authority cannot be read.
+    pub fn decide_in_room<R>(
+        &self,
+        room: &str,
+        decide: impl FnOnce(Option<&Workspace>) -> R,
+    ) -> Result<R, String> {
+        let mut decide = Some(decide);
+        let mut answer = None;
+        self.with_room(room, &mut |workspace| {
+            if let Some(decide) = decide.take() {
+                answer = Some(decide(workspace));
+            }
+        })?;
+        answer.ok_or_else(|| UNANSWERED.to_owned())
     }
 }
 /// Legacy native projection only; success is not an aggregate durability receipt.
@@ -108,6 +208,14 @@ pub trait WorkspaceMemberships: Send + Sync {
     fn health(&self) -> Result<(), String> {
         Err("workspace membership owner continuity is unavailable".into())
     }
+
+    /// Read canonical coordination state directly from the admitted owner.
+    /// # Errors
+    /// Refuses unavailable or fenced owner state; never substitutes presentation data.
+    fn task_snapshot(
+        &self,
+        room: &str,
+    ) -> Result<tilo_peer_state::workspace_task::WorkspaceTaskSnapshot, String>;
 
     fn execute(
         &self,
@@ -893,6 +1001,8 @@ pub trait DisplayControlServices: Send + Sync {
 
 #[derive(Clone, Default)]
 pub struct HostServices {
+    /// Fixed project-host registrations, unavailable unless actual enforcement is configured.
+    pub approved_checks: Option<Arc<dyn crate::collab_broker_capnp::ApprovedCheckServices>>,
     /// Read-only existing-resource discovery, absent unless the native host
     /// can carry it over its current authenticated room connection.
     pub resource_views: Option<Arc<dyn NativeResourceViews>>,
@@ -942,4 +1052,8 @@ pub struct HostServices {
     /// record's route (`offerBlob`, `wantBlob`, `subscribeBlobs`). Without
     /// it apps' content stays in their own process.
     pub record_content: Option<Arc<crate::record_content::RouteContent>>,
+    /// This device's channel encryption service, which tells each route's
+    /// endpoint when its channel keys changed (`channelKeysChanged`).
+    /// Without it endpoints ask the identity service on a timer.
+    pub channel_keys: Option<crate::channel_encryption::ChannelKeyProvider>,
 }

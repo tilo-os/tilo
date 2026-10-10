@@ -635,7 +635,7 @@ impl Room {
             doc,
             &value,
             &author,
-            crate::history::now_seconds(),
+            ui::time::unix_now_i64(),
         ) && doc.put(ROOT, DESKTOP_KEY, value.to_string()).is_ok()
         {
             doc.commit();

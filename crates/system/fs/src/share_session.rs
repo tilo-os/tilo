@@ -7,9 +7,9 @@
 
 use std::sync::Arc;
 
-use collab_types::{
-    BearerFileInvite, Ed25519PublicKey, FileActor, FileInviteSubject, FileInviteV1, FilePermission,
-    FileRecordId,
+use collab_types::Ed25519PublicKey;
+use fs_protocol::{
+    BearerFileInvite, FileActor, FileInviteSubject, FileInviteV1, FilePermission, FileRecordId,
 };
 use thiserror::Error;
 use tilo_clock::Clock;
@@ -298,8 +298,8 @@ pub enum ShareSessionError {
 mod tests {
     use std::sync::atomic::{AtomicBool, Ordering};
 
-    use collab_types::{FileInviteSpec, mint_bearer_file_invite, mint_file_invite};
     use ed25519_dalek::SigningKey;
+    use fs_protocol::{FileInviteSpec, mint_bearer_file_invite, mint_file_invite};
     use getrandom::{SysRng, rand_core::UnwrapErr};
     use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
 

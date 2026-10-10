@@ -152,6 +152,7 @@ fn workspace_activity_view_descriptors_use_exact_ids_and_opaque_workspace_payloa
     let descriptors = workspace_view_descriptors(&tree, true);
     for (action, view) in [
         ("room.activity.open", ActivityView::CatchUp),
+        ("room.activity.tasks", ActivityView::Tasks),
         ("room.activity.explore", ActivityView::Explore),
         ("room.activity.replay", ActivityView::Replay),
     ] {

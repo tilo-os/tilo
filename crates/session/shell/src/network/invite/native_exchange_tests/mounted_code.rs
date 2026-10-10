@@ -5,13 +5,20 @@ use crate::shell::network::ShellNetwork;
 use cold_code::{APP, BODY, FILE, LocalSurface, MountedCode};
 use sha2::{Digest as _, Sha256};
 
-#[tokio::test]
+#[path = "mounted_code/blocked_read.rs"]
+mod blocked_read;
+#[path = "mounted_code/read_recovery.rs"]
+mod read_recovery;
+
+// The mounted UI stays on the caller thread while Iroh and persistence can
+// progress independently, as on ShellNetwork's two-worker runtime.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn native_mounted_code_resource_edit_reaches_another_mounted_app() {
     trace_publication_hops();
     Box::pin(super::actual_exchange(false, true, Some(Journey::Document))).await;
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn native_mounted_code_has_acknowledged_private_continuity() {
     trace_publication_hops();
     Box::pin(super::actual_exchange(
@@ -24,7 +31,7 @@ async fn native_mounted_code_has_acknowledged_private_continuity() {
 
 fn trace_publication_hops() {
     let _ = tracing_subscriber::fmt()
-        .with_env_filter("warn,tilo_joined_room::session::cursor=debug,tilo_joined_room::testing::governor=debug")
+        .with_env_filter("warn,tilo_joined_room::session::cursor=debug,tilo_joined_room::testing::governor=debug,tilo_relay::native_publication=debug")
         .try_init();
 }
 
@@ -32,6 +39,8 @@ fn trace_publication_hops() {
 pub(super) enum Journey {
     Document,
     PrivateAdmission,
+    BlockedRead,
+    ReadRecovery,
 }
 
 pub(super) struct Context<'a> {
@@ -69,6 +78,10 @@ impl Mounted {
         );
         drop(unused_commands);
         network.cmd_tx = commands;
+        // Resource actions reach the governor through the network runtime;
+        // without one the first invocation is refused and the app's
+        // collaboration fails closed for the rest of the journey (#4001).
+        crate::shell::network::with_test_runtime(&mut network);
         let network = Arc::new(network);
         let room = RoomId::parse(tilo_joined_room::testing::ROOM).unwrap();
         network
@@ -174,7 +187,8 @@ pub(super) async fn run(
         context.directory.path(),
         authority.clone(),
         context.publisher.clone(),
-    );
+    )
+    .await;
     let first = Device {
         owner,
         identity: identity.clone(),
@@ -214,32 +228,21 @@ pub(super) async fn run(
         2,
     )
     .await;
-    let edited = format!("{BODY}// edited through a mounted resource action\n");
-    mounted[0].invoke("replace-text", Some(&edited));
-    drive(
-        &context,
-        &authority,
-        &receipts.owner,
-        &mut refreshes,
-        &mut mounted,
-        &edited,
-        2,
-    )
-    .await;
-    // A second fresh edit proves the receiving root remains connected after
-    // its first remote merge; no app remount or record-graph copy occurs.
-    let edited_again = format!("{edited}// second mounted device edits\n");
-    mounted[1].invoke("replace-text", Some(&edited_again));
-    drive(
-        &context,
-        &authority,
-        &receipts.owner,
-        &mut refreshes,
-        &mut mounted,
-        &edited_again,
-        2,
-    )
-    .await;
+    inspect_while_ui_caller_is_blocked(&context, &authority);
+    if matches!(context.journey, Journey::BlockedRead) {
+        blocked_read::run(&first, &mut mounted[0]).await;
+    } else if matches!(context.journey, Journey::ReadRecovery) {
+        read_recovery::run(&first, &mut mounted[0]).await;
+    } else {
+        edit_and_converge(
+            &context,
+            &authority,
+            &receipts.owner,
+            &mut refreshes,
+            &mut mounted,
+        )
+        .await;
+    }
     let private_routes = mounted
         .iter_mut()
         .map(|app| app.code.app.controlled_private_continuity_route_for_test())
@@ -262,6 +265,48 @@ pub(super) async fn run(
             "private admission stays on the original document route, without a continuation-label shortcut"
         );
     }
+}
+
+#[expect(
+    clippy::future_not_send,
+    reason = "mounted UI roots use Rc and run on this test runtime thread"
+)]
+async fn edit_and_converge(
+    context: &Context<'_>,
+    authority: &ActualAuthority,
+    source: &NativeWorkspaceOwner,
+    refreshes: &mut tokio::sync::mpsc::Receiver<tilo_relay::peer::sync_refresh::Request>,
+    mounted: &mut [Mounted],
+) {
+    report_owner_phases("before edit", mounted);
+    let edited = format!("{BODY}// edited through a mounted resource action\n");
+    mounted[0].invoke("replace-text", Some(&edited));
+    drive(context, authority, source, refreshes, mounted, &edited, 2).await;
+    report_owner_phases("after first edit", mounted);
+    // A second fresh edit proves the receiving root remains connected after
+    // its first remote merge; no app remount or record-graph copy occurs.
+    let edited_again = format!("{edited}// second mounted device edits\n");
+    mounted[1].invoke("replace-text", Some(&edited_again));
+    drive(
+        context,
+        authority,
+        source,
+        refreshes,
+        mounted,
+        &edited_again,
+        2,
+    )
+    .await;
+}
+
+fn report_owner_phases(stage: &str, mounted: &[Mounted]) {
+    eprintln!(
+        "owner merge phases {stage}: {:?}",
+        mounted
+            .iter()
+            .map(|app| app.code.app.controlled_document_merge_phase_for_test())
+            .collect::<Vec<_>>()
+    );
 }
 
 async fn enroll_second(
@@ -341,6 +386,36 @@ async fn enroll_second(
     }
 }
 
+fn inspect_while_ui_caller_is_blocked(context: &Context<'_>, authority: &ActualAuthority) {
+    let invitation = {
+        let mut state = authority.lock().unwrap();
+        let state = state.as_mut().unwrap();
+        state.issue(
+            vec![state.hint(context.server.clone())],
+            MemberRole::Viewer,
+            None,
+            None,
+            now_ns(SystemTime::now())
+                .unwrap()
+                .checked_add(60_000_000_000)
+                .unwrap(),
+        )
+    };
+    let client = WorkspaceJoinClient::new(context.endpoint.clone());
+    let server = context.server.clone();
+    let (sender, receiver) = std::sync::mpsc::channel();
+    tokio::spawn(async move {
+        let result = client.inspect(server, invitation).await;
+        let _ = sender.send(result);
+    });
+    // Rendering and CRDT work occupy the UI caller synchronously. A real
+    // invitation inspection must still complete on the network workers.
+    let inspection = tilo_test_env::recv("join inspection while mounted UI is blocked", &receiver)
+        .expect("the actual workspace join service must answer independently of UI frames");
+    assert_eq!(inspection.grant.room, tilo_joined_room::testing::ROOM);
+    assert_eq!(inspection.grant.role, MemberRole::Viewer);
+}
+
 fn publish(authority: &ActualAuthority, publisher: &tilo_relay::RelayCoeditSession) {
     let state = authority.lock().unwrap();
     super::refresh::publish_committed(state.as_ref().unwrap(), publisher);
@@ -386,9 +461,7 @@ async fn drive(
             }
             tokio::select! {
                 Some(request) = refreshes.recv() => {
-                    let mut governor = authority.lock().unwrap().take().unwrap();
-                    super::refresh::refresh_on_request(&mut governor, request).await.unwrap();
-                    *authority.lock().unwrap() = Some(governor);
+                    super::refresh::refresh_shared_on_request(authority, request).await.unwrap();
                     publish(authority, context.publisher);
                 }
                 Some(tilo_relay::Inbound::Delta { author, data }) = context.publisher.recv() => {
@@ -481,6 +554,7 @@ fn report_snapshots(
             .iter()
             .map(|app| serde_json::json!({
                 "connected": app.code.app.collaboration_is_connected(),
+                "owner_phase": app.code.app.controlled_document_merge_phase_for_test(),
                 "ui": app.code.app.controlled_native_input_snapshot_for_test(),
                 "native": committed_snapshot(&app.network.native_owner().unwrap()),
                 "publication": publication_snapshot(&app.network.native_owner().unwrap()),
@@ -514,6 +588,8 @@ fn committed_snapshot(owner: &NativeWorkspaceOwner) -> Option<serde_json::Value>
                     let body = cold_code::body(&document);
                     serde_json::json!({
                         "generation": view.generation(),
+                        "missing_dependencies": document.get_missing_deps(&[]).len(),
+                        "causally_complete": view.peer().plaintext_complete_heads(APP, cold_code::RECORD).is_some(),
                         "body_hash": hex::encode(Sha256::digest(body.as_bytes())),
                         "body_bytes": body.len(),
                         "heads": document.get_heads().iter().map(ToString::to_string).collect::<Vec<_>>(),

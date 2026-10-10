@@ -49,9 +49,38 @@ impl Channels {
     }
 }
 
+/// Hold one fixture admission until the test releases it.
+struct AdmissionGate {
+    entered: tokio::sync::Notify,
+    release: tokio::sync::Semaphore,
+}
+
+type AdmissionGates = Arc<Mutex<HashMap<(ChannelId, Ed25519PublicKey), Arc<AdmissionGate>>>>;
+
+pub struct HeldAdmission(Arc<AdmissionGate>);
+
+impl HeldAdmission {
+    /// Prove the real member requested this channel before proceeding.
+    pub async fn requested(&self) {
+        tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            self.0.entered.notified(),
+        )
+        .await
+        .expect("the held member never requested its channel");
+    }
+}
+
+impl Drop for HeldAdmission {
+    fn drop(&mut self) {
+        self.0.release.add_permits(1);
+    }
+}
+
 pub struct Steward {
     pub device: Device,
     channels: Arc<Mutex<Channels>>,
+    admissions: AdmissionGates,
     task: tokio::task::JoinHandle<()>,
 }
 
@@ -95,10 +124,12 @@ impl Steward {
             },
         );
         let own = device.key.verifying_key().to_bytes();
-        let task = tokio::spawn(admit(session, channels.clone(), own));
+        let admissions = AdmissionGates::default();
+        let task = tokio::spawn(admit(session, channels.clone(), own, admissions.clone()));
         Self {
             device,
             channels,
+            admissions,
             task,
         }
     }
@@ -108,7 +139,36 @@ impl Steward {
         self.task.abort();
         let session = join(host, root, &self.device).await;
         let own = self.device.key.verifying_key().to_bytes();
-        self.task = tokio::spawn(admit(session, self.channels.clone(), own));
+        self.task = tokio::spawn(admit(
+            session,
+            self.channels.clone(),
+            own,
+            self.admissions.clone(),
+        ));
+    }
+
+    /// Pause one device's signed request, leaving other admissions unchanged.
+    pub fn hold_admission(
+        &self,
+        route: &tilo_browser_peer::DocumentRoute,
+        device: [u8; 32],
+    ) -> HeldAdmission {
+        let gate = Arc::new(AdmissionGate {
+            entered: tokio::sync::Notify::new(),
+            release: tokio::sync::Semaphore::new(0),
+        });
+        let channel = document_channel_id(&route.app_id, &route.cluster_id, &route.record);
+        assert!(
+            self.admissions
+                .lock()
+                .unwrap()
+                .insert(
+                    (channel, Ed25519PublicKey::from_bytes(device)),
+                    gate.clone()
+                )
+                .is_none()
+        );
+        HeldAdmission(gate)
     }
 
     /// The current content keys of `route`'s channel.
@@ -157,7 +217,12 @@ async fn join(host: &Relay, root: &SigningKey, device: &Device) -> RelayCoeditSe
 /// empty on every reconnect; reconciling against only the requests seen
 /// since then would remove everyone who has not asked again yet, and a
 /// peer that resumes cannot open edits sealed while it was out.
-async fn admit(session: RelayCoeditSession, channels: Arc<Mutex<Channels>>, own: [u8; 32]) {
+async fn admit(
+    session: RelayCoeditSession,
+    channels: Arc<Mutex<Channels>>,
+    own: [u8; 32],
+    admissions: AdmissionGates,
+) {
     let mut requests: HashMap<ChannelId, BTreeMap<Ed25519PublicKey, MlsAccessRequestV1>> =
         HashMap::new();
     let mut delivery = 1_u64;
@@ -165,8 +230,22 @@ async fn admit(session: RelayCoeditSession, channels: Arc<Mutex<Channels>>, own:
         let Inbound::Delta { data, .. } = inbound else {
             continue;
         };
+        let message = postcard::from_bytes::<NeighbourMsg>(&data);
+        if let Ok(NeighbourMsg::MlsAccessRequest { request, .. }) = &message
+            && request.verify().is_ok()
+        {
+            let gate = admissions
+                .lock()
+                .unwrap()
+                .remove(&(request.channel, request.device));
+            if let Some(gate) = gate {
+                gate.entered.notify_one();
+                let permit = gate.release.acquire().await.unwrap();
+                drop(permit);
+            }
+        }
         let mut channels = channels.lock().unwrap();
-        match postcard::from_bytes::<NeighbourMsg>(&data) {
+        match message {
             Ok(NeighbourMsg::MlsAccessRequest { request, .. }) => {
                 if request.verify().is_err() {
                     continue;

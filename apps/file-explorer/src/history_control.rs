@@ -3,32 +3,6 @@ use std::path::Path;
 
 use crate::i18n::{arg, t, t_args};
 
-/// Request restoration through the original filesystem history-control
-/// attribute. New UI flows use the checked review/restore transport, but this
-/// entry point remains for applications compiled against the stable facade.
-///
-/// # Errors
-///
-/// Returns a localized error when the bounded request cannot be encoded or
-/// written to the file's history-control extended attribute.
-#[deprecated(note = "use the checked file-history transport for reviewed restores")]
-pub fn restore_version(path: &Path, version_id: collab_types::FileVersionId) -> Result<(), String> {
-    let request = collab_types::HistoryControlRequestV1 {
-        schema_version: collab_types::HISTORY_CONTROL_VERSION,
-        operation: collab_types::HistoryControlOperationV1::Restore { version_id },
-    };
-    let bytes = serde_json::to_vec(&request).map_err(|_| t("files-history-encode-failed"))?;
-    if bytes.len() > collab_types::MAX_HISTORY_CONTROL_BYTES {
-        return Err(t("files-history-request-too-large"));
-    }
-    xattr::set(path, crate::model::HISTORY_CONTROL_XATTR, &bytes).map_err(|error| {
-        t_args(
-            "files-history-restore-failed",
-            &[arg("error", error.to_string())],
-        )
-    })
-}
-
 /// Request resolution of one exact conflict member using `strategy`.
 ///
 /// # Errors
@@ -38,28 +12,28 @@ pub fn restore_version(path: &Path, version_id: collab_types::FileVersionId) -> 
 pub fn resolve_conflict(
     path: &Path,
     conflict_id: uuid::Uuid,
-    strategy: collab_types::ConflictStrategy,
-    version_id: collab_types::FileVersionId,
+    strategy: fs_protocol::ConflictStrategy,
+    version_id: fs_protocol::FileVersionId,
 ) -> Result<(), String> {
     if !matches!(
         strategy,
-        collab_types::ConflictStrategy::KeepCurrent
-            | collab_types::ConflictStrategy::UseOther
-            | collab_types::ConflictStrategy::KeepBoth
-            | collab_types::ConflictStrategy::Merge
+        fs_protocol::ConflictStrategy::KeepCurrent
+            | fs_protocol::ConflictStrategy::UseOther
+            | fs_protocol::ConflictStrategy::KeepBoth
+            | fs_protocol::ConflictStrategy::Merge
     ) {
         return Err(t("files-conflict-strategy-unsupported"));
     }
-    let request = collab_types::HistoryControlRequestV1 {
-        schema_version: collab_types::HISTORY_CONTROL_VERSION,
-        operation: collab_types::HistoryControlOperationV1::ResolveConflict {
+    let request = fs_protocol::HistoryControlRequestV1 {
+        schema_version: fs_protocol::HISTORY_CONTROL_VERSION,
+        operation: fs_protocol::HistoryControlOperationV1::ResolveConflict {
             conflict_id,
             strategy,
             version_id,
         },
     };
     let bytes = serde_json::to_vec(&request).map_err(|_| t("files-conflict-encode-failed"))?;
-    if bytes.len() > collab_types::MAX_HISTORY_CONTROL_BYTES {
+    if bytes.len() > fs_protocol::MAX_HISTORY_CONTROL_BYTES {
         return Err(t("files-conflict-request-too-large"));
     }
     xattr::set(path, crate::model::HISTORY_CONTROL_XATTR, &bytes).map_err(|error| {
@@ -70,7 +44,8 @@ pub fn resolve_conflict(
     })
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
+#[cfg(unix)]
 mod tests {
     use super::*;
 
@@ -79,13 +54,13 @@ mod tests {
     fn history_requests_are_versioned_bounded_and_exact() {
         // --- phase: restore_request_is_versioned_bounded_and_exact ---
         {
-            use collab_types::files::*;
+            use fs_protocol::files::*;
             use ui::history_mode::checked_files::FileHistoryTransport;
 
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("record");
             std::fs::write(&path, b"").unwrap();
-            let version_id = collab_types::FileVersionId(uuid::Uuid::new_v4());
+            let version_id = fs_protocol::FileVersionId(uuid::Uuid::new_v4());
             let request = CheckedHistoryRequestV1 {
                 schema_version: CHECKED_HISTORY_VERSION,
                 intent_id: uuid::Uuid::new_v4(),
@@ -93,7 +68,7 @@ mod tests {
                     schema_version: CHECKED_HISTORY_VERSION,
                     workspace_id: uuid::Uuid::new_v4(),
                     mount_lifetime: uuid::Uuid::new_v4(),
-                    record_id: collab_types::FileRecordId(uuid::Uuid::new_v4()),
+                    record_id: fs_protocol::FileRecordId(uuid::Uuid::new_v4()),
                     frontier: [1; 32],
                 },
                 operation: CheckedHistoryOperationV1::Restore { version_id },
@@ -131,35 +106,35 @@ mod tests {
             let path = dir.path().join("record");
             std::fs::write(&path, b"").unwrap();
             let conflict_id = uuid::Uuid::new_v4();
-            let version_id = collab_types::FileVersionId::new();
+            let version_id = fs_protocol::FileVersionId::new();
             resolve_conflict(
                 &path,
                 conflict_id,
-                collab_types::ConflictStrategy::UseOther,
+                fs_protocol::ConflictStrategy::UseOther,
                 version_id,
             )
             .unwrap();
             let bytes = xattr::get(&path, crate::model::HISTORY_CONTROL_XATTR)
                 .unwrap()
                 .unwrap();
-            let request: collab_types::HistoryControlRequestV1 =
+            let request: fs_protocol::HistoryControlRequestV1 =
                 serde_json::from_slice(&bytes).unwrap();
             assert_eq!(
                 request.operation,
-                collab_types::HistoryControlOperationV1::ResolveConflict {
+                fs_protocol::HistoryControlOperationV1::ResolveConflict {
                     conflict_id,
-                    strategy: collab_types::ConflictStrategy::UseOther,
+                    strategy: fs_protocol::ConflictStrategy::UseOther,
                     version_id,
                 }
             );
             resolve_conflict(
                 &path,
                 conflict_id,
-                collab_types::ConflictStrategy::Merge,
+                fs_protocol::ConflictStrategy::Merge,
                 version_id,
             )
             .unwrap();
-            let merge: collab_types::HistoryControlRequestV1 = serde_json::from_slice(
+            let merge: fs_protocol::HistoryControlRequestV1 = serde_json::from_slice(
                 &xattr::get(&path, crate::model::HISTORY_CONTROL_XATTR)
                     .unwrap()
                     .unwrap(),
@@ -167,16 +142,16 @@ mod tests {
             .unwrap();
             assert_eq!(
                 merge.operation,
-                collab_types::HistoryControlOperationV1::ResolveConflict {
+                fs_protocol::HistoryControlOperationV1::ResolveConflict {
                     conflict_id,
-                    strategy: collab_types::ConflictStrategy::Merge,
+                    strategy: fs_protocol::ConflictStrategy::Merge,
                     version_id,
                 }
             );
             resolve_conflict(
                 &path,
                 conflict_id,
-                collab_types::ConflictStrategy::KeepBoth,
+                fs_protocol::ConflictStrategy::KeepBoth,
                 version_id,
             )
             .unwrap();

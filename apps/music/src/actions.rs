@@ -249,15 +249,15 @@ pub enum MusicEffect {
     #[effect(job, device_only)]
     ConnectSpotifyPlayback,
     /// Refresh Spotify devices
-    #[effect(job, device_only)]
+    #[effect(job, device_only, returns)]
     SpotifyDevices,
     /// Show Spotify's remote queue
     ///
     /// Reads a provider snapshot; never replaces this device's queue.
-    #[effect(job, device_only)]
+    #[effect(job, device_only, returns)]
     SpotifyQueue,
     /// Load more Spotify library collections
-    #[effect(job, device_only)]
+    #[effect(job, device_only, returns)]
     SpotifyLibraryMore,
     /// Name a new private Spotify playlist
     #[effect(device_only)]
@@ -265,19 +265,19 @@ pub enum MusicEffect {
     /// Create private Spotify playlist
     ///
     /// Creates an empty private playlist. Refresh before retrying an uncertain result.
-    #[effect(job, device_only)]
+    #[effect(job, device_only, returns)]
     SpotifyCreatePlaylist {
         #[param("Playlist name")]
         name: String,
     },
     /// Transfer Spotify playback
-    #[effect(job, device_only)]
+    #[effect(job, device_only, returns)]
     SpotifyTransfer {
         #[param("Spotify Connect device ID")]
         device: String,
     },
     /// Play on a Spotify device
-    #[effect(job, device_only)]
+    #[effect(job, device_only, returns)]
     SpotifyRemotePlay {
         #[param("Spotify Connect device ID")]
         device: String,
@@ -285,25 +285,25 @@ pub enum MusicEffect {
         track: String,
     },
     /// Pause a Spotify device
-    #[effect(job, device_only)]
+    #[effect(job, device_only, returns)]
     SpotifyRemotePause {
         #[param("Spotify Connect device ID")]
         device: String,
     },
     /// Save to Spotify library
-    #[effect(job, device_only)]
+    #[effect(job, device_only, returns)]
     SpotifySave {
         #[param("Spotify track, album, artist or playlist URI")]
         uri: String,
     },
     /// Remove from Spotify library
-    #[effect(job, device_only)]
+    #[effect(job, device_only, returns)]
     SpotifyUnsave {
         #[param("Spotify track, album, artist or playlist URI")]
         uri: String,
     },
     /// Rename Spotify playlist
-    #[effect(job, device_only)]
+    #[effect(job, device_only, returns)]
     SpotifyRenamePlaylist {
         #[param("Spotify playlist URI")]
         playlist: String,
@@ -311,7 +311,7 @@ pub enum MusicEffect {
         name: String,
     },
     /// Add to Spotify playlist
-    #[effect(job, device_only)]
+    #[effect(job, device_only, returns)]
     SpotifyPlaylistAdd {
         #[param("Spotify playlist URI")]
         playlist: String,
@@ -321,7 +321,7 @@ pub enum MusicEffect {
     /// Remove from Spotify playlist
     ///
     /// Removes every occurrence of the track from this Spotify playlist.
-    #[effect(job, device_only)]
+    #[effect(job, device_only, returns)]
     SpotifyPlaylistRemove {
         #[param("Spotify playlist URI")]
         playlist: String,
@@ -351,7 +351,7 @@ pub enum MusicEffect {
     /// Open audio file
     ///
     /// Plays a local audio file the person chooses on this device.
-    #[effect(job, device_only)]
+    #[effect(job, device_only, returns)]
     OpenFile,
     /// Open
     #[effect(view, row)]
@@ -366,7 +366,7 @@ pub enum MusicEffect {
     ///
     /// Plays a track on its own, or (with `queued`) this exact occurrence of
     /// it in the queue, which a stale queue result cannot select.
-    #[effect(row, job)]
+    #[effect(row, job, returns)]
     Play {
         track: String,
         queued: Option<usize>,
@@ -378,24 +378,24 @@ pub enum MusicEffect {
     #[effect(row)]
     AddToQueue { track: String },
     /// Play next
-    #[effect(row, job)]
+    #[effect(row, job, returns)]
     PlayNext { track: String },
     /// Keep offline
     ///
     /// Downloads the tracks' media to this device only.
-    #[effect(row, job, cancellable, idempotent)]
+    #[effect(row, job, cancellable, idempotent, returns)]
     KeepOffline { tracks: Vec<String> },
     /// Remove from offline cache
     #[effect(row)]
     RemoveOffline { tracks: Vec<String> },
     /// Play or pause
-    #[effect(row, job)]
+    #[effect(row, job, returns)]
     PlayPause,
     /// Previous track
-    #[effect(row, job)]
+    #[effect(row, job, returns)]
     Previous,
     /// Next queued track
-    #[effect(row, job)]
+    #[effect(row, job, returns)]
     Next,
     /// Toggle mute
     #[effect(row)]
@@ -2107,9 +2107,7 @@ mod tests {
     use ui::widget::Widget;
 
     fn registry() -> ActionRegistry {
-        let mut r = ActionRegistry::new();
-        register(&mut r);
-        r
+        ActionRegistry::with(register)
     }
 
     fn prompted_encode(spec: &ActionSpec, arg: &str) -> EncodedAction {
@@ -2705,7 +2703,12 @@ mod tests {
                 play.contract.execution,
                 ExecutionMode::Background { cancellable: false }
             );
-            assert!(matches!(play.contract.result, ResultSpec::Job));
+            assert_eq!(
+                play.contract.result,
+                ResultSpec::Json {
+                    schema: serde_json::json!({}),
+                }
+            );
             let offline = catalog_track_resource(&track)
                 .actions
                 .into_iter()

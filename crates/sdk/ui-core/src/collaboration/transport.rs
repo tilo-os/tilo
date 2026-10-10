@@ -221,6 +221,14 @@ pub trait CollabTransport: Send {
         true
     }
 
+    /// Independently sampled read phases, for bounded test diagnostics only.
+    /// These observations never authorize publication or acknowledge a read.
+    #[cfg(any(test, feature = "test-support"))]
+    fn controlled_document_read_phase_for_test(&self, channel: &str) -> Option<serde_json::Value> {
+        let _ = channel;
+        None
+    }
+
     /// Hand one native media command for `channel` to the transport's media
     /// side channel. Returns whether it was admitted.
     fn send_native_media(

@@ -35,8 +35,15 @@ impl crate::peer_actions::CertificateAuthority for FixturePersonAuthority {
     }
 }
 pub fn certified_person_fixture() -> CertifiedPersonFixture {
-    let root = ed25519_dalek::SigningKey::from_bytes(&[141; 32]);
-    let device = ed25519_dalek::SigningKey::from_bytes(&[142; 32]);
+    certified_person_fixture_for_seeds(141, 142)
+}
+/// Distinct synthetic people, still admitted by the original signed verifier.
+pub fn certified_person_fixture_for_seeds(
+    root_seed: u8,
+    device_seed: u8,
+) -> CertifiedPersonFixture {
+    let root = ed25519_dalek::SigningKey::from_bytes(&[root_seed; 32]);
+    let device = ed25519_dalek::SigningKey::from_bytes(&[device_seed; 32]);
     let clock = crate::peer_actions::OwnerPolicyClock::new().unwrap();
     let origin = clock.new_origin();
     let mut certificate = tilo_user_identity::DeviceCert {

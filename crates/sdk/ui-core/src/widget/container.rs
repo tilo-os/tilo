@@ -305,18 +305,6 @@ impl Container {
         self
     }
 
-    /// [`Self::interactive`] through an exported resource action.
-    #[must_use]
-    pub fn interactive_action(
-        mut self,
-        id: impl Into<String>,
-        binding: tilo_actions::ActionBinding<()>,
-    ) -> Self {
-        self.activation = crate::widget::activation::Activation::new(id);
-        self.activation.set_action(binding);
-        self
-    }
-
     /// The container's surface under its current interaction: the raised
     /// well when it has a background (lifted on hover and press), the
     /// ground's selection lift when it is bare and interactive.
@@ -510,13 +498,7 @@ impl Widget for Container {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
-            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
-        );
+        self.rect = crate::widget::layout_rect(taffy, node, origin);
 
         if let Some(child) = &mut self.child
             && let Some(&child_node) = taffy.children(node).unwrap_or_default().first()
@@ -705,38 +687,21 @@ impl Widget for Container {
             );
         }
 
-        if let Some(scope) = crate::permissions::capability::permission_scope(self)
-            && !permissions.check(&scope)
-        {
-            let overlay = crate::tokens::colors::PERMISSION_DENIED_SCRIM;
-            scene.fill(
-                vello::peniko::Fill::NonZero,
-                transform,
-                overlay,
-                None,
-                &self.rect,
-            );
-        }
-
-        if let Some(key) = crate::presence::capability::presence_key(self)
-            && let Some(peers) = presence.here.get(&key)
-            && let Some(user) = peers.first()
-        {
-            presence.draw_peer_focus(scene, theme, user, self.rect);
-        }
+        crate::widget::draw_gate_and_peer_focus(
+            self,
+            scene,
+            transform,
+            theme,
+            presence,
+            permissions,
+        );
     }
 }
 
 crate::widget::activation::activation_controls!(Container, activation);
 impl crate::presence::capability::PublishesPresence for Container {
     fn presence_key(&self) -> Option<PresenceKey> {
-        if self.presence_path.is_empty() {
-            None
-        } else {
-            Some(PresenceKey::Widget {
-                path: self.presence_path.clone(),
-            })
-        }
+        PresenceKey::widget(&self.presence_path)
     }
 }
 

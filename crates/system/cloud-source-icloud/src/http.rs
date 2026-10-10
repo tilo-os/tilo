@@ -3,8 +3,7 @@
 //! sign-in in `account-custody` speaks to Apple exactly as Drive does.
 
 use std::fmt;
-use std::io::Read;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use reqwest::blocking::{Client, Response};
 use reqwest::header::{HeaderMap, SET_COOKIE};
@@ -20,7 +19,7 @@ pub const USER_AGENT: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) Ap
 pub const ICLOUD_ORIGIN: &str = "https://www.icloud.com";
 
 /// Largest JSON body read from any endpoint.
-pub const MAX_JSON_BYTES: u64 = 64 * 1024 * 1024;
+pub const MAX_JSON_BYTES: usize = 64 * 1024 * 1024;
 
 /// A client that never follows redirects (Apple's 330 is handled by hand,
 /// and cookies must not follow a hop) with a whole-request deadline.
@@ -47,16 +46,16 @@ pub fn read_json<T: DeserializeOwned>(response: Response) -> Result<T, BodyError
     serde_json::from_slice(&bytes).map_err(|_| BodyError::Json)
 }
 
+/// Read at most [`MAX_JSON_BYTES`] of a body, by
+/// [`cloud_source::http::read_bounded`].
 pub fn read_bounded(response: Response) -> Result<Vec<u8>, BodyError> {
-    let mut bytes = Vec::new();
-    response
-        .take(MAX_JSON_BYTES.saturating_add(1))
-        .read_to_end(&mut bytes)
-        .map_err(|_| BodyError::Read)?;
-    if bytes.len() as u64 > MAX_JSON_BYTES {
-        return Err(BodyError::TooLarge);
-    }
-    Ok(bytes)
+    let declared = response.content_length();
+    cloud_source::http::read_bounded(response, declared, MAX_JSON_BYTES).map_err(
+        |error| match error {
+            cloud_source::Error::TooLarge => BodyError::TooLarge,
+            _ => BodyError::Read,
+        },
+    )
 }
 
 pub fn header<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
@@ -66,10 +65,10 @@ pub fn header<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
         .filter(|value| !value.is_empty())
 }
 
+/// The response's `Retry-After`, by [`cloud_source::http::parse_retry_after`].
 pub fn retry_after(headers: &HeaderMap) -> Option<Duration> {
     header(headers, "retry-after")
-        .and_then(|value| value.trim().parse().ok())
-        .map(Duration::from_secs)
+        .and_then(|value| cloud_source::http::parse_retry_after(value, SystemTime::now()))
 }
 
 /// Cookies by name, in the order first set. Values are secrets.

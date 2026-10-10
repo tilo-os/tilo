@@ -88,20 +88,20 @@ impl IconSearchPath {
     /// The current session's search path, Flatpak exports included.
     pub fn system() -> Self {
         let mut path = Self::default();
-        if let Some(home) = xdg_paths::home() {
+        if let Some(home) = tilo_paths::home() {
             path.push_base(home.join(".icons"));
         }
-        if let Some(data_home) = xdg_paths::xdg::data_home() {
+        if let Some(data_home) = tilo_paths::xdg::data_home() {
             path.push_base(data_home.join("icons"));
         }
-        let data_dirs = xdg_paths::xdg::data_dirs();
+        let data_dirs = tilo_paths::xdg::data_dirs();
         for dir in &data_dirs {
             path.push_base(dir.join("icons"));
         }
         // Appended like the `applications` directories in `scan`: a session
         // that already lists the exports keeps their place, and a hand-installed
         // icon still overrides an exported one.
-        if let Some(data_home) = xdg_paths::xdg::data_home() {
+        if let Some(data_home) = tilo_paths::xdg::data_home() {
             path.push_base(data_home.join("flatpak/exports/share/icons"));
         }
         path.push_base(PathBuf::from("/var/lib/flatpak/exports/share/icons"));

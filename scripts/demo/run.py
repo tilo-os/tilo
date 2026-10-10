@@ -667,14 +667,16 @@ class Session:
         return [t.get("name", "") for t in self.targets()]
 
     def check_action(self, actor: str, app: str, action: str,
-                     verb: str = "write") -> dict:
-        """Ask the in-app action gate whether `actor` may invoke this.
+                     verb: str = "write", resource: str = "document") -> dict:
+        """Ask the in-app action gate whether `actor` may invoke `action`
+        on `app`'s `resource`.
 
         Read-only, and the production gate: this is the same check the
         broker runs, asked without performing anything.
         """
         return call(self.sock, {"op": "check_action", "actor": actor,
-                                "app": app, "action": action, "verb": verb})
+                                "app": app, "resource": resource,
+                                "action": action, "verb": verb})
 
     def grant(self, subject: str, scope: str, verb: str) -> dict:
         """Grant a capability, through `Workspace::grant_as`.

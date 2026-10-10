@@ -280,11 +280,6 @@ impl Drive {
         self.size.saturating_sub(self.allocated())
     }
 
-    /// Sum of used bytes across mounted filesystems.
-    pub fn used_total(&self) -> u64 {
-        self.partitions.iter().filter_map(|p| p.used).sum()
-    }
-
     /// SMART status, defaulting to Unknown when no data is present.
     pub fn smart_status(&self) -> SmartStatus {
         self.smart
@@ -302,10 +297,6 @@ pub struct Topology {
 impl Topology {
     pub fn total_size(&self) -> u64 {
         self.drives.iter().map(|d| d.size).sum()
-    }
-
-    pub fn total_used(&self) -> u64 {
-        self.drives.iter().map(Drive::used_total).sum()
     }
 
     /// A curated, fully-populated sample machine for screenshots and tests:

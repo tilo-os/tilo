@@ -14,6 +14,7 @@
 
 use std::collections::HashMap;
 use std::path::Path;
+use ui::widget::TaffyTreeExt;
 use ui::widget::{AppModel, EmptyState, EmptyStateContent, ModelPath};
 
 use taffy::prelude::*;
@@ -784,38 +785,23 @@ impl Widget for DiffMergeApp {
             )
             .unwrap();
 
-        #[allow(
-            clippy::unwrap_used,
-            reason = "content was just created in this same tree"
-        )]
-        let root = taffy
-            .new_with_children(
-                Style {
-                    display: Display::Flex,
-                    flex_direction: FlexDirection::Column,
-                    size: Size {
-                        width: Dimension::percent(1.0),
-                        height: Dimension::percent(1.0),
-                    },
-                    ..Default::default()
-                },
-                &[content],
-            )
-            .unwrap();
-        node_map.insert(root, std::ptr::from_mut::<dyn Widget>(self));
-        root
+        let style = Style {
+            display: Display::Flex,
+            flex_direction: FlexDirection::Column,
+            size: Size {
+                width: Dimension::percent(1.0),
+                height: Dimension::percent(1.0),
+            },
+            ..Default::default()
+        };
+        taffy.widget_node(style, &[content], node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let Ok(l) = taffy.layout(node) else {
             return;
         };
-        self.rect = Rect::new(
-            origin.x + f64::from(l.location.x),
-            origin.y + f64::from(l.location.y),
-            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
-            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
-        );
+        self.rect = ui::widget::placed(l, origin);
         // Drive both views to the content rect directly so mode switches
         // don't require a taffy rebuild to position correctly, and so the
         // views end at the window bottom rather than a toolbar's height below
@@ -1466,20 +1452,12 @@ mod tests {
     }
 
     fn keyboard_event(key: Key) -> WindowEvent {
-        use winit::event::{DeviceId, KeyEvent};
-        use winit::keyboard::{KeyLocation, PhysicalKey};
+        use winit::event::DeviceId;
 
         // `KeyEvent` has an opaque platform payload. The public fields below
         // are exactly the ones the widget reads; this mirrors the toolkit's
         // own headless keyboard helpers.
-        let mut event: KeyEvent = unsafe { std::mem::zeroed() };
-        event.logical_key = key;
-        event.physical_key =
-            PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
-        event.location = KeyLocation::Standard;
-        event.state = ElementState::Pressed;
-        event.repeat = false;
-        event.text = None;
+        let event = ui::synthetic_input::key_event(key, None, ElementState::Pressed);
         WindowEvent::KeyboardInput {
             device_id: DeviceId::dummy(),
             event,
@@ -1811,7 +1789,7 @@ mod tests {
     /// than calling the selection helper directly.
     fn compact_source_switcher_has_pointer_keyboard_and_a11y_parity() {
         use winit::dpi::PhysicalPosition;
-        use winit::event::{DeviceId, Modifiers};
+        use winit::event::DeviceId;
 
         let (app, state) = demo();
         let mut app = merge_frame(app, state, (390.0, 760.0));
@@ -1824,61 +1802,38 @@ mod tests {
             .expect("Theirs selector")
             .0
             .center();
-        let mods = Modifiers::default();
-        let mut handled = false;
-        let mut focus = None;
-        let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let node = taffy.new_leaf(Style::default()).unwrap();
-        app.handle_event(
-            &WindowEvent::CursorMoved {
-                device_id: DeviceId::dummy(),
-                position: PhysicalPosition::new(theirs.x, theirs.y),
-            },
-            &mut ui::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &mods,
-                state: ui::widget::Edits::lend(&mut state.doc),
-                path: &state.root,
-                handled: &mut handled,
-                focus_target: &mut focus,
-                node_id: node,
-                taffy: &taffy,
-            },
-        );
-        app.handle_event(
-            &WindowEvent::MouseInput {
-                device_id: DeviceId::dummy(),
-                state: ElementState::Pressed,
-                button: MouseButton::Left,
-            },
-            &mut ui::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &mods,
-                state: ui::widget::Edits::lend(&mut state.doc),
-                path: &state.root,
-                handled: &mut handled,
-                focus_target: &mut focus,
-                node_id: node,
-                taffy: &taffy,
-            },
-        );
-        assert!(handled);
+        let moved = ui::testing::Dispatch::new()
+            .doc(&mut state.doc)
+            .path(&state.root)
+            .send(
+                app,
+                &WindowEvent::CursorMoved {
+                    device_id: DeviceId::dummy(),
+                    position: PhysicalPosition::new(theirs.x, theirs.y),
+                },
+            );
+        let pressed = ui::testing::Dispatch::new()
+            .doc(&mut state.doc)
+            .path(&state.root)
+            .handled(moved.handled)
+            .focus_target(moved.focus_target)
+            .send(
+                app,
+                &WindowEvent::MouseInput {
+                    device_id: DeviceId::dummy(),
+                    state: ElementState::Pressed,
+                    button: MouseButton::Left,
+                },
+            );
+        assert!(pressed.handled);
         assert_eq!(selected_compact_source(app), "Show Theirs source");
 
-        handled = false;
-        app.handle_event(
-            &keyboard_event(Key::Named(NamedKey::ArrowLeft)),
-            &mut ui::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &mods,
-                state: ui::widget::Edits::lend(&mut state.doc),
-                path: &state.root,
-                handled: &mut handled,
-                focus_target: &mut focus,
-                node_id: node,
-                taffy: &taffy,
-            },
-        );
+        let handled = ui::testing::Dispatch::new()
+            .doc(&mut state.doc)
+            .path(&state.root)
+            .focus_target(pressed.focus_target)
+            .send(app, &keyboard_event(Key::Named(NamedKey::ArrowLeft)))
+            .handled;
         assert!(handled);
         assert_eq!(selected_compact_source(app), "Show Ours source");
 

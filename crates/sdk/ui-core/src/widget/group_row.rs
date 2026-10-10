@@ -261,6 +261,8 @@ pub struct GroupRow {
     /// Pan state of the whole row, or of the lane being worked on while
     /// [`Self::lanes`] is populated (see [`Pan`]).
     pan: Pan,
+    /// A CPU presenter may move existing pixels only at whole layout pixels.
+    pixel_aligned_scroll: bool,
     /// One per display the strip is partitioned across, left to right.
     /// Empty when the strip is one continuous row (a single display).
     lanes: Vec<Lane>,
@@ -898,6 +900,7 @@ impl GroupRow {
             tab_drop_target: None,
             cross_strip_drop_target: None,
             pan: Pan::default(),
+            pixel_aligned_scroll: false,
             lanes: Vec::new(),
             group_lanes: HashMap::new(),
             focus_lane: 0,
@@ -1755,9 +1758,25 @@ impl GroupRow {
         self.leading_pan().scroll_x
     }
 
-    /// The pan as drawn, preserving fractional motion and input geometry.
+    /// Select the presenter's strip-pan precision. Fractional motion is the default.
+    pub fn set_pixel_aligned_scroll(&mut self, enabled: bool) {
+        if self.pixel_aligned_scroll != enabled {
+            self.pixel_aligned_scroll = enabled;
+            self.scroll_dirty = true;
+        }
+    }
+
+    fn drawn_pan_x(&self, pan: &Pan) -> f64 {
+        if self.pixel_aligned_scroll {
+            pan.scroll_x.round()
+        } else {
+            pan.scroll_x
+        }
+    }
+
+    /// The pan used by layout, input geometry and the presenter's canvas.
     pub fn drawn_scroll_x(&self) -> f64 {
-        self.scroll_x()
+        self.drawn_pan_x(self.leading_pan())
     }
 
     /// Where a strip whose viewport is `viewport` draws: the viewport and a
@@ -2285,23 +2304,6 @@ impl GroupRow {
 
     pub fn group_drag_active(&self) -> bool {
         self.group_drag.is_some_and(|d| d.moved)
-    }
-
-    /// Live whole-group reorder drag once past the threshold, for
-    /// collaborator previews: `(group id, press point, current pointer)`
-    /// in this row's scene coordinates.
-    pub fn group_drag_preview(&self) -> Option<(u64, Point, Point)> {
-        self.group_drag
-            .filter(|drag| drag.moved)
-            .map(|drag| (drag.group_id, drag.start, self.last_cursor))
-    }
-
-    /// The resize handle being dragged, if any: handle `i` sits between
-    /// groups `i` and `i + 1`.
-    pub fn dragging_handle(&self) -> Option<usize> {
-        self.handles
-            .iter()
-            .position(super::resize_handle::ResizeHandle::is_dragging)
     }
 
     pub fn group_reorder_target(&self) -> Option<usize> {
@@ -3363,19 +3365,15 @@ impl Widget for GroupRow {
         // Children beyond the viewport are still walked and shifted into
         // screen-space by the pan; still hit-testable since
         // `gap_index_for` uses each group's stored post-shift `Rect`.
-        let node = taffy.parent_node(
-            Style {
-                size: Size {
-                    width: Dimension::percent(1.0),
-                    height: Dimension::auto(),
-                },
-                flex_grow: 1.0,
-                ..run_style(row_display)
+        let style = Style {
+            size: Size {
+                width: Dimension::percent(1.0),
+                height: Dimension::auto(),
             },
-            &children,
-        );
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+            flex_grow: 1.0,
+            ..run_style(row_display)
+        };
+        taffy.widget_node(style, &children, node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
@@ -3383,13 +3381,7 @@ impl Widget for GroupRow {
             self.rect = Rect::ZERO;
             return;
         }
-        let l = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(l.location.x),
-            origin.y + f64::from(l.location.y),
-            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
-            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
-        );
+        self.rect = crate::widget::layout_rect(taffy, node, origin);
         // Portable hosts learn their width here. Rebuild provisional widths
         // in the same bounded settlement, including a same-viewport root swap.
         self.structure_dirty |= !self.width_basis_is_current();
@@ -3524,7 +3516,7 @@ impl Widget for GroupRow {
                 let (inset, scroll) = if collapsed.get(k).copied().unwrap_or(false) {
                     (0.0, 0.0)
                 } else {
-                    (pan.inset, pan.scroll_x)
+                    (pan.inset, self.drawn_pan_x(pan))
                 };
                 Point::new(pan.viewport.x0 + inset - scroll, pan.viewport.y0)
             })
@@ -3595,7 +3587,7 @@ impl Widget for GroupRow {
             // room for the rubber band left of the content, so the content
             // starts `pad` in and an overscroll pans like any other pan.
             let pan = self.pan_of_lane(k);
-            let scroll = pan.scroll_x();
+            let scroll = self.drawn_pan_x(pan);
             let max_scroll = pan.max_scroll_x();
             let pad = pan.canvas_pad();
             let unbake = crate::retained_present::unbake_scroll()
@@ -4632,9 +4624,8 @@ fn collect_named_rects(w: &dyn Widget, out: &mut Vec<(String, Rect)>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testing::Dispatch;
     use crate::widget::{TabDescriptor, TileContent, WindowWidth, min_group_px};
-    use automerge::{AutoCommit, ObjId};
-    use winit::event::Modifiers;
 
     /// Narrows a fixture viewport width to the `f32` taffy layout expects.
     /// Test fixtures only ever pass small literal pixel constants (hundreds
@@ -4955,25 +4946,14 @@ mod tests {
             });
             row.groups[0].bar_mut().pending_detach = Some((1, misleading_release));
 
-            let mut doc = AutoCommit::new();
-            let doc_root = automerge::ROOT.clone();
-            let mut handled = false;
-            let mut focus = None;
-            row.handle_event(
+            dispatch_at(
+                &mut row,
+                &taffy,
+                root,
                 &WindowEvent::MouseInput {
-                    device_id: unsafe { std::mem::zeroed() },
+                    device_id: winit::event::DeviceId::dummy(),
                     state: ElementState::Released,
                     button: MouseButton::Left,
-                },
-                &mut crate::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &Modifiers::default(),
-                    state: crate::widget::Edits::lend(&mut doc),
-                    path: &doc_root,
-                    handled: &mut handled,
-                    focus_target: &mut focus,
-                    node_id: root,
-                    taffy: &taffy,
                 },
             );
 
@@ -5469,7 +5449,7 @@ mod tests {
             taffy,
             root,
             &WindowEvent::CursorMoved {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 position: winit::dpi::PhysicalPosition::new(p.x, p.y),
             },
         );
@@ -5478,7 +5458,7 @@ mod tests {
             taffy,
             root,
             &WindowEvent::MouseInput {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
             },
@@ -5487,7 +5467,7 @@ mod tests {
 
     fn touch_event(id: u64, phase: winit::event::TouchPhase, p: Point) -> WindowEvent {
         WindowEvent::Touch(winit::event::Touch {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             phase,
             location: winit::dpi::PhysicalPosition::new(p.x, p.y),
             force: None,
@@ -5495,25 +5475,14 @@ mod tests {
         })
     }
 
-    fn dispatch_at(row: &mut GroupRow, taffy: &TaffyTree<()>, root: NodeId, ev: &WindowEvent) {
-        let modifiers = Modifiers::default();
-        let mut state = AutoCommit::new();
-        let path = automerge::ROOT.clone();
-        let mut handled = false;
-        let mut focus: Option<NodeId> = None;
-        row.handle_event(
-            ev,
-            &mut crate::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &modifiers,
-                state: crate::widget::Edits::lend(&mut state),
-                path: &path,
-                handled: &mut handled,
-                focus_target: &mut focus,
-                node_id: root,
-                taffy,
-            },
-        );
+    /// Send `ev` to `row` laid out at `root`; whether it was claimed.
+    fn dispatch_at(
+        row: &mut GroupRow,
+        taffy: &TaffyTree<()>,
+        root: NodeId,
+        ev: &WindowEvent,
+    ) -> bool {
+        Dispatch::new().layout(taffy, root).send(row, ev).handled
     }
 
     #[test]
@@ -5543,7 +5512,7 @@ mod tests {
                 &taffy,
                 root,
                 &WindowEvent::CursorMoved {
-                    device_id: unsafe { std::mem::zeroed() },
+                    device_id: winit::event::DeviceId::dummy(),
                     position: winit::dpi::PhysicalPosition::new(past.x, past.y),
                 },
             );
@@ -5561,7 +5530,7 @@ mod tests {
                 &taffy,
                 root,
                 &WindowEvent::MouseInput {
-                    device_id: unsafe { std::mem::zeroed() },
+                    device_id: winit::event::DeviceId::dummy(),
                     state: ElementState::Released,
                     button: MouseButton::Left,
                 },
@@ -5590,7 +5559,7 @@ mod tests {
                 &taffy,
                 root,
                 &WindowEvent::CursorMoved {
-                    device_id: unsafe { std::mem::zeroed() },
+                    device_id: winit::event::DeviceId::dummy(),
                     position: winit::dpi::PhysicalPosition::new(target.x, target.y),
                 },
             );
@@ -5599,7 +5568,7 @@ mod tests {
                 &taffy,
                 root,
                 &WindowEvent::MouseInput {
-                    device_id: unsafe { std::mem::zeroed() },
+                    device_id: winit::event::DeviceId::dummy(),
                     state: ElementState::Released,
                     button: MouseButton::Left,
                 },
@@ -5616,7 +5585,7 @@ mod tests {
                 &taffy,
                 root,
                 &WindowEvent::MouseInput {
-                    device_id: unsafe { std::mem::zeroed() },
+                    device_id: winit::event::DeviceId::dummy(),
                     state: ElementState::Released,
                     button: MouseButton::Left,
                 },
@@ -5909,29 +5878,12 @@ mod tests {
             row.tab_drop_target = row.tab_drop_target_at(release);
             row.groups[0].bar_mut().pending_detach = Some((1, release));
 
-            let mut doc = AutoCommit::new();
-            let doc_root = automerge::ROOT.clone();
-            let modifiers = Modifiers::default();
-            let mut handled = false;
-            let mut focus: Option<NodeId> = None;
             let event = WindowEvent::MouseInput {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 state: ElementState::Released,
                 button: MouseButton::Left,
             };
-            row.handle_event(
-                &event,
-                &mut crate::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &modifiers,
-                    state: crate::widget::Edits::lend(&mut doc),
-                    path: &doc_root,
-                    handled: &mut handled,
-                    focus_target: &mut focus,
-                    node_id: root,
-                    taffy: &taffy,
-                },
-            );
+            dispatch_at(&mut row, &taffy, root, &event);
 
             let b_idx = row
                 .groups
@@ -5988,29 +5940,12 @@ mod tests {
 
             row.tab_drop_target = row.tab_drop_target_at(release_left);
             row.groups[0].bar_mut().pending_detach = Some((1, release_left));
-            let mut doc = AutoCommit::new();
-            let doc_root = automerge::ROOT.clone();
-            let modifiers = Modifiers::default();
-            let mut handled = false;
-            let mut focus: Option<NodeId> = None;
             let release_event = WindowEvent::MouseInput {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 state: ElementState::Released,
                 button: MouseButton::Left,
             };
-            row.handle_event(
-                &release_event,
-                &mut crate::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &modifiers,
-                    state: crate::widget::Edits::lend(&mut doc),
-                    path: &doc_root,
-                    handled: &mut handled,
-                    focus_target: &mut focus,
-                    node_id: root,
-                    taffy: &taffy,
-                },
-            );
+            dispatch_at(&mut row, &taffy, root, &release_event);
 
             let b_ids: Vec<u64> = row.groups[1].tabs().iter().map(|t| t.id).collect();
             assert_eq!(
@@ -6039,21 +5974,7 @@ mod tests {
 
             row.tab_drop_target = row.tab_drop_target_at(release_right);
             row.groups[0].bar_mut().pending_detach = Some((1, release_right));
-            let mut handled = false;
-            let mut focus: Option<NodeId> = None;
-            row.handle_event(
-                &release_event,
-                &mut crate::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &modifiers,
-                    state: crate::widget::Edits::lend(&mut doc),
-                    path: &doc_root,
-                    handled: &mut handled,
-                    focus_target: &mut focus,
-                    node_id: root,
-                    taffy: &taffy,
-                },
-            );
+            dispatch_at(&mut row, &taffy, root, &release_event);
 
             let b_ids: Vec<u64> = row.groups[1].tabs().iter().map(|t| t.id).collect();
             assert_eq!(
@@ -6104,29 +6025,12 @@ mod tests {
             row.tab_drop_target = row.tab_drop_target_at(release);
             row.groups[0].bar_mut().pending_detach = Some((1, release));
 
-            let mut doc = AutoCommit::new();
-            let doc_root = automerge::ROOT.clone();
-            let modifiers = Modifiers::default();
-            let mut handled = false;
-            let mut focus: Option<NodeId> = None;
             let release_event = WindowEvent::MouseInput {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 state: ElementState::Released,
                 button: MouseButton::Left,
             };
-            row.handle_event(
-                &release_event,
-                &mut crate::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &modifiers,
-                    state: crate::widget::Edits::lend(&mut doc),
-                    path: &doc_root,
-                    handled: &mut handled,
-                    focus_target: &mut focus,
-                    node_id: root,
-                    taffy: &taffy,
-                },
-            );
+            dispatch_at(&mut row, &taffy, root, &release_event);
 
             let a_tabs_after: Vec<u64> = row.groups[0].tabs().iter().map(|t| t.id).collect();
             assert_eq!(
@@ -6224,29 +6128,12 @@ mod tests {
             row.groups[0].bar_mut().pending_detach = Some((7, release));
 
             // The release triggers the same post-child detach sweep as production.
-            let mut doc = AutoCommit::new();
-            let doc_root = automerge::ROOT.clone();
-            let modifiers = Modifiers::default();
-            let mut handled = false;
-            let mut focus: Option<NodeId> = None;
             let event = WindowEvent::MouseInput {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 state: ElementState::Released,
                 button: MouseButton::Left,
             };
-            row.handle_event(
-                &event,
-                &mut crate::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &modifiers,
-                    state: crate::widget::Edits::lend(&mut doc),
-                    path: &doc_root,
-                    handled: &mut handled,
-                    focus_target: &mut focus,
-                    node_id: root,
-                    taffy: &taffy,
-                },
-            );
+            dispatch_at(&mut row, &taffy, root, &event);
 
             assert!(
                 row.take_structure_dirty(),
@@ -6274,26 +6161,14 @@ mod tests {
             row.tab_drop_target = row.tab_drop_target_at(release_1);
             row.groups[0].bar_mut_for_tests().pending_detach = Some((4, release_1));
 
-            let modifiers = winit::event::Modifiers::default();
-            let mut state = automerge::AutoCommit::new();
-            let root_obj = automerge::ROOT;
-            let mut handled = false;
-            let mut focus: Option<NodeId> = None;
-            row.handle_event(
+            dispatch_at(
+                &mut row,
+                &taffy,
+                root,
                 &winit::event::WindowEvent::MouseInput {
-                    device_id: unsafe { std::mem::zeroed() },
+                    device_id: winit::event::DeviceId::dummy(),
                     state: winit::event::ElementState::Released,
                     button: winit::event::MouseButton::Left,
-                },
-                &mut crate::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &modifiers,
-                    state: crate::widget::Edits::lend(&mut state),
-                    path: &root_obj,
-                    handled: &mut handled,
-                    focus_target: &mut focus,
-                    node_id: root,
-                    taffy: &taffy,
                 },
             );
             // Mimic App's RedrawRequested path so the new group gets a rect.
@@ -6321,22 +6196,14 @@ mod tests {
             row.tab_drop_target = row.tab_drop_target_at(release_2);
             row.groups[0].bar_mut_for_tests().pending_detach = Some((3, release_2));
 
-            let mut handled2 = false;
-            row.handle_event(
+            dispatch_at(
+                &mut row,
+                &taffy,
+                root,
                 &winit::event::WindowEvent::MouseInput {
-                    device_id: unsafe { std::mem::zeroed() },
+                    device_id: winit::event::DeviceId::dummy(),
                     state: winit::event::ElementState::Released,
                     button: winit::event::MouseButton::Left,
-                },
-                &mut crate::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &modifiers,
-                    state: crate::widget::Edits::lend(&mut state),
-                    path: &root_obj,
-                    handled: &mut handled2,
-                    focus_target: &mut focus,
-                    node_id: root,
-                    taffy: &taffy,
                 },
             );
             assert_eq!(
@@ -6366,27 +6233,10 @@ mod tests {
 
     fn fire_cursor_moved(row: &mut GroupRow, taffy: &TaffyTree<()>, root: NodeId, p: Point) {
         let event = WindowEvent::CursorMoved {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             position: winit::dpi::PhysicalPosition::new(p.x, p.y),
         };
-        let mut doc = AutoCommit::new();
-        let doc_root = automerge::ROOT.clone();
-        let modifiers = Modifiers::default();
-        let mut handled = false;
-        let mut focus: Option<NodeId> = None;
-        row.handle_event(
-            &event,
-            &mut crate::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &modifiers,
-                state: crate::widget::Edits::lend(&mut doc),
-                path: &doc_root,
-                handled: &mut handled,
-                focus_target: &mut focus,
-                node_id: root,
-                taffy,
-            },
-        );
+        dispatch_at(row, taffy, root, &event);
     }
 
     #[test]
@@ -6423,28 +6273,11 @@ mod tests {
             );
 
             let event = WindowEvent::MouseInput {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 state: ElementState::Released,
                 button: MouseButton::Left,
             };
-            let mut doc = AutoCommit::new();
-            let doc_root = automerge::ROOT.clone();
-            let modifiers = Modifiers::default();
-            let mut handled = false;
-            let mut focus: Option<NodeId> = None;
-            row.handle_event(
-                &event,
-                &mut crate::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &modifiers,
-                    state: crate::widget::Edits::lend(&mut doc),
-                    path: &doc_root,
-                    handled: &mut handled,
-                    focus_target: &mut focus,
-                    node_id: root,
-                    taffy: &taffy,
-                },
-            );
+            dispatch_at(&mut row, &taffy, root, &event);
 
             assert_eq!(
                 row.tab_drop_target, None,
@@ -6483,27 +6316,10 @@ mod tests {
             assert_eq!(row.groups.len(), 2, "precondition: two groups before prune");
 
             let event = WindowEvent::CursorMoved {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 position: winit::dpi::PhysicalPosition::new(5000.0, 5000.0),
             };
-            let mut doc = AutoCommit::new();
-            let doc_root = automerge::ROOT.clone();
-            let modifiers = Modifiers::default();
-            let mut handled = false;
-            let mut focus: Option<NodeId> = None;
-            row.handle_event(
-                &event,
-                &mut crate::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &modifiers,
-                    state: crate::widget::Edits::lend(&mut doc),
-                    path: &doc_root,
-                    handled: &mut handled,
-                    focus_target: &mut focus,
-                    node_id: root,
-                    taffy: &taffy,
-                },
-            );
+            dispatch_at(&mut row, &taffy, root, &event);
 
             assert_eq!(
                 row.groups.len(),
@@ -6526,27 +6342,10 @@ mod tests {
             assert!(!row.groups[0].close_complete());
 
             let event = WindowEvent::CursorMoved {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 position: winit::dpi::PhysicalPosition::new(5000.0, 5000.0),
             };
-            let mut doc = AutoCommit::new();
-            let doc_root = automerge::ROOT.clone();
-            let modifiers = Modifiers::default();
-            let mut handled = false;
-            let mut focus: Option<NodeId> = None;
-            row.handle_event(
-                &event,
-                &mut crate::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &modifiers,
-                    state: crate::widget::Edits::lend(&mut doc),
-                    path: &doc_root,
-                    handled: &mut handled,
-                    focus_target: &mut focus,
-                    node_id: root,
-                    taffy: &taffy,
-                },
-            );
+            dispatch_at(&mut row, &taffy, root, &event);
 
             assert_eq!(
                 row.groups.len(),
@@ -6582,27 +6381,10 @@ mod tests {
 
             // Production debug_assert would panic here if node_ids drifted.
             let event = WindowEvent::CursorMoved {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 position: winit::dpi::PhysicalPosition::new(5000.0, 5000.0),
             };
-            let mut doc = AutoCommit::new();
-            let doc_root = automerge::ROOT.clone();
-            let modifiers = Modifiers::default();
-            let mut handled = false;
-            let mut focus: Option<NodeId> = None;
-            row.handle_event(
-                &event,
-                &mut crate::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &modifiers,
-                    state: crate::widget::Edits::lend(&mut doc),
-                    path: &doc_root,
-                    handled: &mut handled,
-                    focus_target: &mut focus,
-                    node_id: root,
-                    taffy: &taffy,
-                },
-            );
+            dispatch_at(&mut row, &taffy, root, &event);
 
             assert_eq!(
                 row.groups.len(),
@@ -6916,6 +6698,22 @@ mod tests {
         row
     }
 
+    #[test]
+    fn presenter_pan_precision_moves_real_input_rects_without_rounding_state() {
+        let mut row = strip_at(3, 800.0, 0.0, 1000);
+        let initial = row.groups[0].get_rect().x0;
+        row.set_scroll_x_for_test(120.5);
+        relayout_strip(&mut row, 800.0);
+        assert_eq!(row.groups[0].get_rect().x0, initial - 120.5);
+        row.set_pixel_aligned_scroll(true);
+        relayout_strip(&mut row, 800.0);
+        assert_eq!(row.groups[0].get_rect().x0, initial - 121.0);
+        assert_eq!(row.scroll_x(), 120.5, "the gesture retains its precision");
+        row.set_pixel_aligned_scroll(false);
+        relayout_strip(&mut row, 800.0);
+        assert_eq!(row.groups[0].get_rect().x0, initial - 120.5);
+    }
+
     fn set_strip_permille(row: &mut GroupRow, permille: u16) {
         for g in &mut row.groups {
             g.set_width(WindowWidth::Fraction(permille));
@@ -6946,43 +6744,24 @@ mod tests {
                 let pre_rect_0 = row.groups[0].get_rect();
                 let cy = f64::midpoint(row.rect.y0, row.rect.y1);
                 let cx = f64::midpoint(row.rect.x0, row.rect.x1);
-                let mut state = AutoCommit::new();
-                let root_obj = automerge::ROOT.clone();
-                let modifiers = Modifiers::default();
-                let mut handled = false;
-                let mut focus = None;
-                let dev = unsafe { std::mem::zeroed() };
-                row.handle_event(
+                let dev = winit::event::DeviceId::dummy();
+                let mut handled = dispatch_at(
+                    &mut row,
+                    &taffy,
+                    root,
                     &WindowEvent::CursorMoved {
                         device_id: dev,
                         position: PhysicalPosition::new(cx, cy),
                     },
-                    &mut crate::widget::EventCtx {
-                        scale_factor: 1.0,
-                        modifiers: &modifiers,
-                        state: crate::widget::Edits::lend(&mut state),
-                        path: &root_obj,
-                        handled: &mut handled,
-                        focus_target: &mut focus,
-                        node_id: root,
-                        taffy: &taffy,
-                    },
                 );
-                row.handle_event(
+                handled |= dispatch_at(
+                    &mut row,
+                    &taffy,
+                    root,
                     &WindowEvent::MouseWheel {
                         device_id: dev,
                         delta: MouseScrollDelta::LineDelta(0.0, -3.0),
                         phase: winit::event::TouchPhase::Moved,
-                    },
-                    &mut crate::widget::EventCtx {
-                        scale_factor: 1.0,
-                        modifiers: &modifiers,
-                        state: crate::widget::Edits::lend(&mut state),
-                        path: &root_obj,
-                        handled: &mut handled,
-                        focus_target: &mut focus,
-                        node_id: root,
-                        taffy: &taffy,
                     },
                 );
                 assert!(!handled, "a bare wheel must be left unclaimed by the strip");
@@ -7160,43 +6939,24 @@ mod tests {
             // Cursor must be inside the row's rect for the handler to claim it.
             let cy = f64::midpoint(row.rect.y0, row.rect.y1);
             let cx = f64::midpoint(row.rect.x0, row.rect.x1);
-            let mut state = AutoCommit::new();
-            let root_obj = automerge::ROOT.clone();
-            let modifiers = Modifiers::default();
-            let mut handled = false;
-            let mut focus = None;
-            let dev = unsafe { std::mem::zeroed() };
-            row.handle_event(
+            let dev = winit::event::DeviceId::dummy();
+            dispatch_at(
+                &mut row,
+                &taffy,
+                root,
                 &WindowEvent::CursorMoved {
                     device_id: dev,
                     position: PhysicalPosition::new(cx, cy),
                 },
-                &mut crate::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &modifiers,
-                    state: crate::widget::Edits::lend(&mut state),
-                    path: &root_obj,
-                    handled: &mut handled,
-                    focus_target: &mut focus,
-                    node_id: root,
-                    taffy: &taffy,
-                },
             );
-            row.handle_event(
+            dispatch_at(
+                &mut row,
+                &taffy,
+                root,
                 &WindowEvent::MouseWheel {
                     device_id: dev,
                     delta: MouseScrollDelta::LineDelta(0.0, -1.0),
                     phase: winit::event::TouchPhase::Moved,
-                },
-                &mut crate::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &modifiers,
-                    state: crate::widget::Edits::lend(&mut state),
-                    path: &root_obj,
-                    handled: &mut handled,
-                    focus_target: &mut focus,
-                    node_id: root,
-                    taffy: &taffy,
                 },
             );
             let anim = row
@@ -7330,56 +7090,40 @@ mod tests {
             let (mut row, taffy, root) = make_row_with_groups_with_taffy(&[&[1]]);
             let group_rect = row.groups[0].get_rect();
             let grab = Point::new(group_rect.x1 - 2.0, group_rect.center().y);
-            let dev = unsafe { std::mem::zeroed() };
-            let modifiers = Modifiers::default();
-            let mut state = AutoCommit::new();
-            let path = automerge::ROOT.clone();
-            let mut focus = None;
+            let dev = winit::event::DeviceId::dummy();
 
-            dispatch_row(
+            dispatch_at(
                 &mut row,
+                &taffy,
+                root,
                 &WindowEvent::CursorMoved {
                     device_id: dev,
                     position: PhysicalPosition::new(grab.x, grab.y),
                 },
-                modifiers,
-                &mut state,
-                &path,
-                &mut focus,
-                root,
-                &taffy,
             );
-            assert!(dispatch_row(
+            assert!(dispatch_at(
                 &mut row,
+                &taffy,
+                root,
                 &WindowEvent::MouseInput {
                     device_id: dev,
                     state: ElementState::Pressed,
                     button: MouseButton::Left,
-                },
-                modifiers,
-                &mut state,
-                &path,
-                &mut focus,
-                root,
-                &taffy,
+                }
             ));
             assert!(
                 row.groups[0].wants_pointer_capture(),
                 "the lone group's resize gesture must own pointer capture",
             );
 
-            assert!(dispatch_row(
+            assert!(dispatch_at(
                 &mut row,
+                &taffy,
+                root,
                 &WindowEvent::CursorMoved {
                     device_id: dev,
                     position: PhysicalPosition::new(grab.x - 80.0, grab.y),
-                },
-                modifiers,
-                &mut state,
-                &path,
-                &mut focus,
-                root,
-                &taffy,
+                }
             ));
             assert!(
                 row.groups[0].resolved_width_px() < group_rect.width(),
@@ -7455,23 +7199,18 @@ mod tests {
             use winit::dpi::PhysicalPosition;
             use winit::event::WindowEvent;
 
-            let (mut row, taffy, root, cx, cy, dev, modifiers, mut state, path, mut focus) =
-                start_handle_drag();
+            let (mut row, taffy, root, cx, cy, dev) = start_handle_drag();
 
             // CursorMoved +50 px right grows the left group and the infinite
             // strip; the right group keeps its own width.
-            dispatch_row(
+            dispatch_at(
                 &mut row,
+                &taffy,
+                root,
                 &WindowEvent::CursorMoved {
                     device_id: dev,
                     position: PhysicalPosition::new(cx + 50.0, cy),
                 },
-                modifiers,
-                &mut state,
-                &path,
-                &mut focus,
-                root,
-                &taffy,
             );
             assert_eq!(
                 row.groups[0].resolved_width_px(),
@@ -7491,19 +7230,15 @@ mod tests {
             );
             assert_eq!(row.groups[1].take_pending_width_change(), None);
 
-            let handled = dispatch_row(
+            let handled = dispatch_at(
                 &mut row,
+                &taffy,
+                root,
                 &WindowEvent::MouseInput {
                     device_id: dev,
                     state: ElementState::Released,
                     button: MouseButton::Left,
                 },
-                modifiers,
-                &mut state,
-                &path,
-                &mut focus,
-                root,
-                &taffy,
             );
             assert!(handled, "release on handle must claim the event");
             assert!(
@@ -7544,42 +7279,30 @@ mod tests {
             let cx = f64::midpoint(handle_rect.x0, handle_rect.x1);
             let cy = f64::midpoint(handle_rect.y0, handle_rect.y1);
 
-            let dev = unsafe { std::mem::zeroed() };
-            let modifiers = Modifiers::default();
-            let mut state = AutoCommit::new();
-            let path = automerge::ROOT.clone();
-            let mut focus: Option<NodeId> = None;
+            let dev = winit::event::DeviceId::dummy();
 
-            dispatch_row(
+            dispatch_at(
                 &mut row,
+                &taffy,
+                root,
                 &WindowEvent::CursorMoved {
                     device_id: dev,
                     position: PhysicalPosition::new(cx, cy),
                 },
-                modifiers,
-                &mut state,
-                &path,
-                &mut focus,
-                root,
-                &taffy,
             );
             assert!(
                 row.handle_at(0).unwrap().is_hovered(),
                 "cursor over handle must engage hover before the press",
             );
-            let handled = dispatch_row(
+            let handled = dispatch_at(
                 &mut row,
+                &taffy,
+                root,
                 &WindowEvent::MouseInput {
                     device_id: dev,
                     state: ElementState::Pressed,
                     button: MouseButton::Left,
                 },
-                modifiers,
-                &mut state,
-                &path,
-                &mut focus,
-                root,
-                &taffy,
             );
             assert!(handled, "press on handle must claim its own event");
             assert!(
@@ -7589,18 +7312,14 @@ mod tests {
             // Drag 500px left: 400 - 500 = -100, below `min_group_px(1200) =
             // 240`. Clamp pins left at 240; ordinary infinite-strip resize
             // leaves the right neighbour at 400.
-            let handled = dispatch_row(
+            let handled = dispatch_at(
                 &mut row,
+                &taffy,
+                root,
                 &WindowEvent::CursorMoved {
                     device_id: dev,
                     position: PhysicalPosition::new(cx - 500.0, cy),
                 },
-                modifiers,
-                &mut state,
-                &path,
-                &mut focus,
-                root,
-                &taffy,
             );
             assert!(handled, "active resize must claim drag motion");
             let min = min_group_px(FIXTURE_USABLE_PX);
@@ -7631,27 +7350,15 @@ mod tests {
             let cx = f64::midpoint(handle_rect.x0, handle_rect.x1);
             let cy = f64::midpoint(handle_rect.y0, handle_rect.y1);
 
-            let dev = unsafe { std::mem::zeroed() };
-            let modifiers = Modifiers::default();
-            let mut state = AutoCommit::new();
-            let path = automerge::ROOT.clone();
-            let mut handled = false;
-            let mut focus: Option<NodeId> = None;
+            let dev = winit::event::DeviceId::dummy();
 
-            row.handle_event(
+            dispatch_at(
+                &mut row,
+                &taffy,
+                root,
                 &WindowEvent::CursorMoved {
                     device_id: dev,
                     position: PhysicalPosition::new(cx, cy),
-                },
-                &mut crate::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &modifiers,
-                    state: crate::widget::Edits::lend(&mut state),
-                    path: &path,
-                    handled: &mut handled,
-                    focus_target: &mut focus,
-                    node_id: root,
-                    taffy: &taffy,
                 },
             );
             assert!(
@@ -7666,36 +7373,6 @@ mod tests {
         drag_handle_expands_strip_without_resizing_the_neighbour();
         drag_clamps_left_neighbour_at_minimum_width();
         handle_does_not_engage_during_tab_drag_in_flight();
-    }
-
-    /// Shared `row.handle_event` shape for the drag-handle tests below
-    /// (fixed scale factor, a caller-owned scratch `handled` flag).
-    /// Returns whether the event was claimed.
-    fn dispatch_row(
-        row: &mut GroupRow,
-        event: &winit::event::WindowEvent,
-        modifiers: Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        focus: &mut Option<NodeId>,
-        root: NodeId,
-        taffy: &TaffyTree<()>,
-    ) -> bool {
-        let mut handled = false;
-        row.handle_event(
-            event,
-            &mut crate::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &modifiers,
-                state: crate::widget::Edits::lend(state),
-                path,
-                handled: &mut handled,
-                focus_target: focus,
-                node_id: root,
-                taffy,
-            },
-        );
-        handled
     }
 
     /// Build a two-group row fixture, hover its resize handle open, and
@@ -7713,10 +7390,6 @@ mod tests {
         f64,
         f64,
         winit::event::DeviceId,
-        Modifiers,
-        AutoCommit,
-        ObjId,
-        Option<NodeId>,
     ) {
         use winit::dpi::PhysicalPosition;
         use winit::event::WindowEvent;
@@ -7733,25 +7406,17 @@ mod tests {
         let cx = f64::midpoint(handle_rect.x0, handle_rect.x1);
         let cy = f64::midpoint(handle_rect.y0, handle_rect.y1);
 
-        let dev = unsafe { std::mem::zeroed() };
-        let modifiers = Modifiers::default();
-        let mut state = AutoCommit::new();
-        let path = automerge::ROOT.clone();
-        let mut focus: Option<NodeId> = None;
+        let dev = winit::event::DeviceId::dummy();
 
         // CursorMoved over the handle → hover engages.
-        dispatch_row(
+        dispatch_at(
             &mut row,
+            &taffy,
+            root,
             &WindowEvent::CursorMoved {
                 device_id: dev,
                 position: PhysicalPosition::new(cx, cy),
             },
-            modifiers,
-            &mut state,
-            &path,
-            &mut focus,
-            root,
-            &taffy,
         );
         assert!(
             row.handle_at(0).unwrap().is_hovered(),
@@ -7759,24 +7424,20 @@ mod tests {
         );
 
         // MouseInput::Pressed → drag starts.
-        let handled = dispatch_row(
+        let handled = dispatch_at(
             &mut row,
+            &taffy,
+            root,
             &WindowEvent::MouseInput {
                 device_id: dev,
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
             },
-            modifiers,
-            &mut state,
-            &path,
-            &mut focus,
-            root,
-            &taffy,
         );
         assert!(handled, "press on handle must claim the event");
         assert!(row.handle_at(0).unwrap().is_dragging(), "press starts drag");
 
-        (row, taffy, root, cx, cy, dev, modifiers, state, path, focus)
+        (row, taffy, root, cx, cy, dev)
     }
 
     #[test]

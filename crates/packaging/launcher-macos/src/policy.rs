@@ -491,7 +491,7 @@ mod tests {
         let policy = SeatbeltPolicy::resolve(&inputs(&l, &plan, &unrestricted)).unwrap();
         assert_eq!(policy.network, SeatbeltNetwork::Unrestricted);
 
-        let filtered = EgressDecision::Filtered(EgressPolicy::new(vec!["example.com".into()]));
+        let filtered = EgressDecision::Filtered(EgressPolicy::from_grants(["example.com"]));
         let offline = SeatbeltPolicy::resolve(&inputs(&l, &plan, &filtered)).unwrap();
         assert_eq!(offline.network, SeatbeltNetwork::Denied);
         assert_eq!(offline.not_enforced.len(), 1);

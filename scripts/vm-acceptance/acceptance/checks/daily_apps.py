@@ -340,7 +340,7 @@ def _text_field(ctx, res, app: DailyApp, sid, undo: bool) -> None:
 
 
 def _home_file(ctx, name):
-    return _lines(ctx.vm.exec(f'find "$HOME" -maxdepth 1 -name {name} 2>/dev/null; true'))
+    return core.terminal_probe(ctx, name)
 
 
 def _terminal(ctx, res, app: DailyApp) -> None:

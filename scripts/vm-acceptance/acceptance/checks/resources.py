@@ -1,52 +1,197 @@
-"""Essential 5: idle CPU, wakeups and frames; memory per app cgroup; frame work
-during interactions. Software rendering in a VM skews GPU-bound numbers, so
-every result carries the renderer it was measured on."""
+"""Essential 5: idle CPU, wakeups, frames and RAM; memory per app cgroup; frame work
+during interactions; boot to a usable greeter; the render-path gate. Software
+rendering in a VM skews GPU-bound numbers, so every result carries the renderer it
+was measured on, and so does every performance record (acceptance/records.py)."""
 
 from __future__ import annotations
 
 import json
+import re
 import time
 
 from .. import core
 from ..core import check, expect
+from ..vm import wait_until
 
 AREA = "resources"
 
-# One sh script, so ssh latency never lands inside the measured window.
-SAMPLE = r'''
+# One sh script, so ssh latency never lands inside the measured window. Per process:
+# its CPU ticks, its main thread's context switches, its parent and its start time.
+# Per thread of every process, one awk per process (a few dozen forks per snapshot,
+# not one per thread): the thread's name, CPU ticks and context switches.
+SAMPLE = r"""
 uid=__UID__; hz=$(getconf CLK_TCK)
+threads() {
+  awk -v pid="$1" 'BEGIN {
+    dir = "/proc/" pid "/task"; ls = "ls " dir " 2>/dev/null"
+    while ((ls | getline tid) > 0) {
+      base = dir "/" tid
+      ok = (getline st < (base "/stat")) > 0; close(base "/stat")
+      if (!ok) continue
+      comm = ""; getline comm < (base "/comm"); close(base "/comm")
+      gsub(/[ \t]/, "_", comm); if (comm == "") comm = "?"
+      sub(/^.*\) /, "", st); split(st, f, " ")
+      cs = 0
+      while ((getline line < (base "/status")) > 0)
+        if (line ~ /^(non)?voluntary_ctxt_switches:/) { split(line, g, /[ \t]+/); cs += g[2] }
+      close(base "/status")
+      print "H", pid, tid, comm, f[12] + f[13], cs
+    }
+    close(ls)
+  }'
+}
 snap() {
+  echo "U $(cut -d' ' -f1 /proc/uptime)"
   for d in /proc/[0-9]*; do
     [ "$(stat -c %u $d 2>/dev/null)" = "$uid" ] || continue
     s=$(cat $d/stat 2>/dev/null) || continue
     comm=$(tr " " _ < $d/comm 2>/dev/null)
     set -- $(echo "$s" | sed 's/^.*) //')
     cs=$(awk '/^voluntary_ctxt_switches|^nonvoluntary_ctxt_switches/ {n+=$2} END {print n+0}' $d/status 2>/dev/null)
-    echo "P ${d#/proc/} $comm $(( ${12} + ${13} )) $cs"
+    echo "P ${d#/proc/} $comm $(( ${12} + ${13} )) $cs $2 ${20}"
+    threads "${d#/proc/}"
   done
   awk '/^cpu / {t=0; for (i=2;i<=NF;i++) t+=$i; print "T", t, $5}' /proc/stat
 }
 echo "@@0"; snap; sleep __SECS__; echo "@@1"; snap; echo "HZ $hz"
-'''
+"""
 
 
-def _parse_sample(text):
-    snaps, cur, hz = [{}, {}], None, 100
-    totals = [None, None]
+def _parse_sample(text: str) -> dict:
+    """`SAMPLE` output -> both snapshots: per process {pid: {comm, ticks, cs, ppid, start}},
+    per thread {(pid, tid): (comm, ticks, cs)}, the guest's CPU totals and uptime, and HZ."""
+    out = {"procs": [{}, {}], "threads": [{}, {}], "totals": [None, None],
+           "uptime": [None, None], "hz": 100}
+    cur = None
     for line in text.splitlines():
-        if line == "@@0":
-            cur = 0
-        elif line == "@@1":
-            cur = 1
-        elif line.startswith("P ") and cur is not None:
-            _, pid, comm, ticks, cs = line.split()[:5]
-            snaps[cur][int(pid)] = (comm, int(ticks), int(cs))
-        elif line.startswith("T ") and cur is not None:
-            _, total, idle = line.split()
-            totals[cur] = (int(total), int(idle))
+        f = line.split()
+        if line in ("@@0", "@@1"):
+            cur = int(line[2])
         elif line.startswith("HZ "):
-            hz = int(line.split()[1])
-    return snaps, totals, hz
+            out["hz"] = int(f[1])
+        elif cur is None or not f:
+            continue
+        elif f[0] == "P" and len(f) >= 5:
+            out["procs"][cur][int(f[1])] = {
+                "comm": f[2], "ticks": int(f[3]), "cs": int(f[4]),
+                "ppid": int(f[5]) if len(f) > 5 else None,
+                "start": int(f[6]) if len(f) > 6 else None}
+        elif f[0] == "H" and len(f) == 6:
+            out["threads"][cur][(int(f[1]), int(f[2]))] = (f[3], int(f[4]), int(f[5]))
+        elif f[0] == "T" and len(f) == 3:
+            out["totals"][cur] = (int(f[1]), int(f[2]))
+        elif f[0] == "U" and len(f) == 2:
+            out["uptime"][cur] = float(f[1])
+    return out
+
+
+def compositor_pid(procs: dict) -> int | None:
+    """The compositor among the slot user's processes: the `shell` with no `shell` above it.
+
+    Every other process named `shell` was started by the compositor from its own binary
+    (the public shader-seed renderer, `--shader-seed-render`), so it has the compositor
+    as an ancestor; the busiest `shell` could be such a child. Two roots would be two
+    compositors, and which of them is the idle desktop cannot be said."""
+    def has_shell_ancestor(pid):
+        seen = {pid}
+        pid = procs[pid]["ppid"]
+        while pid in procs and pid not in seen:
+            if procs[pid]["comm"] == "shell":
+                return True
+            seen.add(pid)
+            pid = procs[pid]["ppid"]
+        return False
+
+    roots = sorted(pid for pid, p in procs.items() if p["comm"] == "shell" and not has_shell_ancestor(pid))
+    if len(roots) > 1:
+        raise core.Unobservable(f"{len(roots)} compositor processes of the slot user (pids {roots})")
+    return roots[0] if roots else None
+
+
+def thread_rows(sample: dict, pid: int, seconds: float) -> dict:
+    """CPU and context switches per thread of `pid` over the window, busiest first.
+
+    A thread started inside the window counts from zero. The CPU of threads that ended
+    inside it is in the process's total but in no thread: `exited_cpu_pct`."""
+    (a, b), hz = sample["threads"], sample["hz"]
+    rows = []
+    for (owner, tid), (comm, ticks, cs) in b.items():
+        if owner != pid:
+            continue
+        _, t0, c0 = a.get((owner, tid), (comm, 0, 0))
+        rows.append({"tid": tid, "comm": comm,
+                     "cpu_pct": round((ticks - t0) / hz / seconds * 100, 2),
+                     "ctxt_switches_per_s": round((cs - c0) / seconds, 2),
+                     "new": (owner, tid) not in a})
+    rows.sort(key=lambda r: (-r["cpu_pct"], -r["ctxt_switches_per_s"]))
+    procs = sample["procs"]
+    proc_cpu = ((procs[1][pid]["ticks"] - procs[0][pid]["ticks"]) / hz / seconds * 100
+                if pid in procs[0] and pid in procs[1] else None)
+    exited = None if proc_cpu is None or not rows else max(proc_cpu - sum(r["cpu_pct"] for r in rows), 0.0)
+    return {"threads": rows,
+            "wakeups_per_s": round(sum(r["ctxt_switches_per_s"] for r in rows), 1),
+            "exited_cpu_pct": None if exited is None else round(exited, 2)}
+
+
+def thread_groups(rows: list[dict]) -> list[dict]:
+    """Threads summed by name less a trailing index, so a pool (`llvmpipe-0`…`llvmpipe-5`,
+    `tilo-session-rt-1`) reads as one line; busiest first."""
+    groups: dict[str, dict] = {}
+    for r in rows:
+        name = re.sub(r"[-_:#.]?\d+$", "", r["comm"]) or r["comm"]
+        g = groups.setdefault(name, {"name": name, "threads": 0, "cpu_pct": 0.0,
+                                     "ctxt_switches_per_s": 0.0})
+        g["threads"] += 1
+        g["cpu_pct"] = round(g["cpu_pct"] + r["cpu_pct"], 2)
+        g["ctxt_switches_per_s"] = round(g["ctxt_switches_per_s"] + r["ctxt_switches_per_s"], 2)
+    return sorted(groups.values(), key=lambda g: (-g["cpu_pct"], -g["ctxt_switches_per_s"]))
+
+
+def describe_threads(groups: list[dict], n: int = 4) -> str:
+    """The busiest thread groups for a failure message: `tilo-net 1.9%, llvmpipe×6 0.8%`."""
+    return ", ".join(f"{g['name']}{'×' + str(g['threads']) if g['threads'] > 1 else ''} {g['cpu_pct']}%"
+                     for g in groups[:n] if g["cpu_pct"] > 0)
+
+
+def summarize(sample: dict, seconds: int) -> dict:
+    """Per-process and per-thread CPU over the window, the compositor named by
+    `compositor_pid` rather than by being the busiest `shell`."""
+    (a, b), hz = sample["procs"], sample["hz"]
+    procs = []
+    for pid, p in b.items():
+        if pid in a:
+            procs.append({"pid": pid, "comm": p["comm"],
+                          "cpu_pct": round((p["ticks"] - a[pid]["ticks"]) / hz / seconds * 100, 2),
+                          "ctxt_switches_per_s": round((p["cs"] - a[pid]["cs"]) / seconds, 1)})
+    procs.sort(key=lambda p: -p["cpu_pct"])
+    pid = compositor_pid(a)
+    shell = next((p for p in procs if p["pid"] == pid), None)
+    threads = thread_rows(sample, pid, seconds) if shell else None
+    # The busiest other processes' threads too: a session service or an app's runtime
+    # (Terminal's tilo-ush) is as much an idle cost as the compositor.
+    for p in procs[:5]:
+        if p is not shell and p["cpu_pct"] >= 0.5:
+            p["threads"] = thread_groups(thread_rows(sample, p["pid"], seconds)["threads"])[:8]
+    start, uptime = (a.get(pid) or {}).get("start"), sample["uptime"][0]
+    guest, totals = None, sample["totals"]
+    if all(totals):
+        dt, di = totals[1][0] - totals[0][0], totals[1][1] - totals[0][1]
+        guest = round((1 - di / dt) * 100, 2) if dt else None
+    return {
+        "compositor_pid": pid,
+        # How long the compositor had run when the window opened: startup work still
+        # running by then is paid inside the idle window, and this says how likely that is.
+        "session_age_s": round(uptime - start / hz, 1) if start is not None and uptime else None,
+        "shell_cpu_pct": shell and shell["cpu_pct"],
+        "shell_wakeups_per_s": shell and shell["ctxt_switches_per_s"],
+        "shell_threads_wakeups_per_s": threads and threads["wakeups_per_s"],
+        "shell_exited_threads_cpu_pct": threads and threads["exited_cpu_pct"],
+        "shell_thread_groups": threads and thread_groups(threads["threads"]),
+        "shell_threads": threads and threads["threads"],
+        "user_cpu_pct_total": round(sum(p["cpu_pct"] for p in procs), 2),
+        "guest_cpu_pct": guest,
+        "top": procs[:10],
+    }
 
 
 def measure(ctx, seconds: int) -> dict:
@@ -54,29 +199,12 @@ def measure(ctx, seconds: int) -> dict:
     mark = core.trace_mark(ctx)
     text = ctx.vm.root_exec(script, timeout=seconds + 90)
     rows = core.trace_after(ctx, mark)
-    (a, b), totals, hz = _parse_sample(text)
-    procs = []
-    for pid, (comm, ticks, cs) in b.items():
-        if pid in a:
-            procs.append({"pid": pid, "comm": comm,
-                          "cpu_pct": round((ticks - a[pid][1]) / hz / seconds * 100, 2),
-                          "ctxt_switches_per_s": round((cs - a[pid][2]) / seconds, 1)})
-    procs.sort(key=lambda p: -p["cpu_pct"])
-    shell = next((p for p in procs if p["comm"] == "shell"), None)
-    guest = None
-    if all(totals):
-        dt, di = totals[1][0] - totals[0][0], totals[1][1] - totals[0][1]
-        guest = round((1 - di / dt) * 100, 2) if dt else None
     painted = [r for r in rows if r.get("painted") == 1]
     return {
         "seconds": seconds,
-        "shell_cpu_pct": shell and shell["cpu_pct"],
-        "shell_wakeups_per_s": shell and shell["ctxt_switches_per_s"],
+        **summarize(_parse_sample(text), seconds),
         "shell_loop_ticks_per_s": round(len(rows) / seconds, 2),
         "frames_painted": len(painted),
-        "user_cpu_pct_total": round(sum(p["cpu_pct"] for p in procs), 2),
-        "guest_cpu_pct": guest,
-        "top": procs[:10],
     }
 
 
@@ -89,7 +217,8 @@ def memory(ctx, apps: list[str]) -> dict:
     uid = ctx.vm.slot_uid()
     procs = sorted((p for p in table["procs"].values() if p["uid"] == uid),
                    key=lambda p: -(p["anon_rss_mb"] or 0))
-    shell = next((p for p in procs if p["comm"] == "shell"), None)
+    pid = compositor_pid({p["pid"]: p for p in procs})
+    shell = next((p for p in procs if p["pid"] == pid), None)
     per_app = {}
     for app in apps:
         a = core.app_cgroup(table, app)
@@ -111,6 +240,249 @@ def memory(ctx, apps: list[str]) -> dict:
         "session_cgroups": sorted(session_cgroups),
         "guest_mem_mb": table["meminfo_mb"],
     }
+
+
+# -- where the guest's memory is: per bucket of cgroups, per process ---------------
+
+# The guest's kernel memory that no process's RSS holds: unreclaimable slab, stacks,
+# page tables, vmalloc and per-CPU areas. SecPageTables (KVM's secondary page tables)
+# is absent before Linux 6.0, so it alone may be missing.
+GUEST_KERNEL = ("SUnreclaim", "KernelStack", "PageTables", "VmallocUsed", "Percpu")
+GUEST_FIELDS = ("MemTotal", "MemAvailable", "AnonPages", "Shmem") + GUEST_KERNEL
+
+# The buckets that exist only because this is a dev VM driven by a harness: seat0's
+# greeter, which an installed machine ends at login but which runs beside the slot here,
+# and the dev image's services and the harness's own ssh sessions.
+VM_ONLY = ("greeter", "harness")
+BUCKETS = ("compositor", "apps", "session_services", "system") + VM_ONLY
+# Dev image only (os/Containerfile.dev): sshd, tilo-device-admin, tilo-vmd's units; and
+# root's sessions, which are the harness's ssh commands (this dump among them).
+HARNESS = re.compile(r"^/system\.slice/(sshd\.service|tilo-device-admin\.service|tilo-vm-[^/]*)(/|$)"
+                     r"|^/user\.slice/user-0\.slice(/|$)")
+
+
+def bucket_of(path: str, procs: list[dict], who: dict) -> str:
+    """The bucket of the cgroup `path`, whose processes are `procs`. `who` names the
+    compositor's cgroup, greetd's uid and the slot's uid; first match wins."""
+    if path == who.get("compositor_cgroup"):
+        return "compositor"
+    if "/app-tilo-so." in path or any(p["app"] for p in procs):
+        return "apps"
+    within = path + "/"
+    if who.get("greeter_uid") is not None and f"/user-{who['greeter_uid']}.slice/" in within:
+        return "greeter"
+    if HARNESS.search(path):
+        return "harness"
+    if who.get("slot_uid") is not None and f"/user-{who['slot_uid']}.slice/" in within:
+        return "session_services"
+    return "system"
+
+
+def _resident(c: dict) -> float:
+    """What a cgroup holds that the kernel cannot reclaim as cache: anon, shmem, kernel."""
+    return round(c["anon_mb"] + c["shmem_mb"] + c["kernel_mb"], 1)
+
+
+def reserve_mib(table: dict, mib: dict) -> dict:
+    """What MemAvailable withholds from free memory and cache, as si_mem_available() does:
+    the zones' reserve (each zone's high watermark plus its largest lowmem protection,
+    capped at its managed pages: totalreserve_pages) and, of the file LRU and reclaimable
+    kernel memory, min(half, the zones' low watermarks summed) each."""
+    zones, page = table.get("zones") or {}, table.get("page_size")
+    if not zones or not page:
+        raise core.Unobservable("/proc/zoneinfo or the page size could not be read")
+    to_mib = page / 2**20
+    reserve = sum(min(z["protection"] + z["high"], z["managed"]) for z in zones.values()) * to_mib
+    low = sum(z["low"] for z in zones.values()) * to_mib
+    missing = [k for k in ("Active(file)", "Inactive(file)", "KReclaimable") if k not in mib]
+    if missing:
+        raise core.Unobservable(f"/proc/meminfo did not name {', '.join(missing)}")
+    cache = mib["Active(file)"] + mib["Inactive(file)"]
+    withheld = min(cache / 2, low) + min(mib["KReclaimable"] / 2, low)
+    return {"zones_mib": round(reserve, 1), "withheld_cache_mib": round(withheld, 1),
+            "low_watermarks_mib": round(low, 1)}
+
+
+def guest_breakdown(table: dict) -> dict:
+    """/proc/meminfo and /proc/zoneinfo -> the guest's used memory (MemTotal less
+    MemAvailable) split into anon, shmem, kernel, the reserve MemAvailable withholds, and
+    what is left: pages a driver or the kernel took that no meminfo counter names (the
+    VM's DRM buffers among them)."""
+    kib = table["meminfo_kib"]
+    missing = [k for k in GUEST_FIELDS if k not in kib]
+    if missing:
+        raise core.Unobservable(f"/proc/meminfo did not name {', '.join(missing)}")
+    mib = {k: round(v / 1024, 1) for k, v in kib.items()}
+    used = round(mib["MemTotal"] - mib["MemAvailable"], 1)
+    kernel = round(sum(mib[k] for k in GUEST_KERNEL) + mib.get("SecPageTables", 0.0), 1)
+    reserve = reserve_mib(table, mib)
+    held = reserve["zones_mib"] + reserve["withheld_cache_mib"]
+    return {"used_mib": used, "anon_mib": mib["AnonPages"], "shmem_mib": mib["Shmem"],
+            "kernel_mib": kernel, "reserve_mib": round(held, 1),
+            "untracked_mib": round(used - mib["AnonPages"] - mib["Shmem"] - kernel - held, 1),
+            "reserve_parts_mib": reserve,
+            "kernel_parts_mib": {k: mib.get(k) for k in GUEST_KERNEL + ("SecPageTables",)},
+            "meminfo_mib": mib}
+
+
+def footprint_of(table: dict, slot_uid: int) -> dict:
+    """A `core.parse_processes` table -> where the guest's memory is.
+
+    Every cgroup a process runs in is charged where its memory controller is (itself, or
+    the nearest ancestor with one); each charge point lands in one bucket. A bucket's
+    `resident_mib` is its anon + shmem + kernel: what it holds that is not reclaimable
+    cache. Every process is listed, all users, by its anonymous RSS, largest first: with
+    no PSS on Tilo's kernel, that is the memory a process holds alone."""
+    procs, cgroups = table["procs"], table["cgroups"]
+    slot = {p["pid"]: p for p in procs.values() if p["uid"] == slot_uid}
+    shell = slot.get(compositor_pid(slot))
+    by_point: dict[str, list[dict]] = {}
+    uncharged = []
+    for p in procs.values():
+        point = (cgroups.get(p["cgroup"]) or {}).get("charged_at")
+        if point is None:
+            uncharged.append(p)
+        else:
+            by_point.setdefault(point, []).append(p)
+    who = {"compositor_cgroup": (cgroups.get(shell["cgroup"]) or {}).get("charged_at") if shell else None,
+           "greeter_uid": table.get("greeter_uid"), "slot_uid": slot_uid}
+    buckets = {b: {"resident_mib": 0.0, "cgroups": []} for b in BUCKETS}
+    point_bucket = {}
+    for point, members in sorted(by_point.items()):
+        c = cgroups[point]
+        if None in (c["memory_mb"], c["anon_mb"], c["shmem_mb"], c["kernel_mb"]):
+            raise core.Unobservable(f"cgroup {point} has no memory.current or memory.stat anon/shmem/kernel")
+        b = point_bucket[point] = bucket_of(point, members, who)
+        buckets[b]["cgroups"].append({"cgroup": point, "resident_mib": _resident(c),
+                                      **{k: c[k] for k in ("memory_mb", "anon_mb", "file_mb", "shmem_mb",
+                                                           "file_mapped_mb", "kernel_mb")},
+                                      "comms": sorted({p["comm"] for p in members})})
+    for b in buckets.values():
+        b["cgroups"].sort(key=lambda c: -c["resident_mib"])
+        b["resident_mib"] = round(sum(c["resident_mib"] for c in b["cgroups"]), 1)
+        for k in ("anon_mb", "shmem_mb", "kernel_mb", "file_mb"):
+            b[k.replace("_mb", "_mib")] = round(sum(c[k] for c in b["cgroups"]), 1)
+    rows = []
+    for p in procs.values():
+        point = (cgroups.get(p["cgroup"]) or {}).get("charged_at")
+        rows.append({"pid": p["pid"], "comm": p["comm"], "uid": p["uid"],
+                     "bucket": point_bucket.get(point), "app": p["app"], "cgroup": p["cgroup"],
+                     **{k: p[k] for k in ("anon_rss_mb", "shmem_rss_mb", "file_rss_mb", "rss_mb",
+                                          "swap_mb")}})
+    rows.sort(key=lambda r: -(r["anon_rss_mb"] or 0))
+    guest = guest_breakdown(table)
+    vm_only = round(sum(buckets[b]["resident_mib"] for b in VM_ONLY), 1)
+    attributed = sum(b["resident_mib"] for b in buckets.values())
+    return {
+        "guest": guest,
+        "buckets": buckets,
+        # Anon, shmem and kernel memory of the guest that no listed cgroup is charged:
+        # tmpfs written by a unit that has since exited (reparented to its slice), the
+        # kernel's own, DRM buffers of the VM's display.
+        "unattributed_mib": round(guest["anon_mib"] + guest["shmem_mib"] + guest["kernel_mib"] - attributed, 1),
+        "vm_only_mib": vm_only,
+        "compositor_pid": shell and shell["pid"],
+        "processes": rows,
+        "uncharged_processes": sorted(p["comm"] for p in uncharged),
+        "tmpfs": table.get("tmpfs", []),
+    }
+
+
+def footprint(ctx) -> dict:
+    """Every process's and cgroup's memory in the guest, read as root in one script."""
+    return footprint_of(core.processes(ctx), ctx.vm.slot_uid())
+
+
+def top_by_comm(rows: list[dict], n: int = 10) -> list[tuple[str, float]]:
+    """Anonymous RSS summed per process name, the `n` largest: `fs` runs three times."""
+    sums: dict[str, float] = {}
+    for r in rows:
+        if r["anon_rss_mb"] is not None:
+            sums[r["comm"]] = sums.get(r["comm"], 0.0) + r["anon_rss_mb"]
+    return sorted(((c, round(v, 1)) for c, v in sums.items()), key=lambda t: -t[1])[:n]
+
+
+def kpi_word(name: str) -> str:
+    """A process name as one KPI path element: `(sd-pam)` -> `sd-pam`."""
+    return re.sub(r"[^A-Za-z0-9_-]+", "_", name).strip("_") or "unnamed"
+
+
+def record_footprint(ctx, fp: dict, ram_mib: float, variant: str = "") -> None:
+    """`idle.ram_mib.{anon,shmem,kernel,reserve,untracked,harness,installed}`,
+    `memory.idle_mib.<bucket>` and the largest processes' anonymous RSS as
+    `memory.idle_anon_mib.<process>`; `variant` is a suffix.
+
+    `installed` is `idle.ram_mib` less what only a dev VM runs (seat0's greeter, the dev
+    image's services, the harness's ssh), counted as anon + shmem + kernel so that
+    reclaimable cache, which `idle.ram_mib` leaves out, is never subtracted."""
+    suffix = f".{variant}" if variant else ""
+    g = fp["guest"]
+    for part in ("anon", "shmem", "kernel", "reserve", "untracked"):
+        ctx.record(f"idle.ram_mib.{part}{suffix}", "MiB", [g[f"{part}_mib"]], what=f"guest {part} (resources.py guest_breakdown)")
+    ctx.record(f"idle.ram_mib.harness{suffix}", "MiB", [fp["vm_only_mib"]],
+               what="anon+shmem+kernel of the dev VM's greeter and harness cgroups")
+    ctx.record(f"idle.ram_mib.installed{suffix}", "MiB", [round(ram_mib - fp["vm_only_mib"], 1)],
+               what="idle.ram_mib less the dev VM's greeter and harness")
+    for name, b in fp["buckets"].items():
+        ctx.record(f"memory.idle_mib.{name}{suffix}", "MiB", [b["resident_mib"]],
+                   what="anon+shmem+kernel of the bucket's cgroups")
+    ctx.record(f"memory.idle_mib.unattributed{suffix}", "MiB", [fp["unattributed_mib"]],
+               what="guest anon+shmem+kernel that no process's cgroup is charged")
+    for comm, anon in top_by_comm(fp["processes"]):
+        ctx.record(f"memory.idle_anon_mib.{kpi_word(comm)}{suffix}", "MiB", [anon],
+                   what="anonymous RSS summed per process name")
+
+
+def write_footprint(ctx, name: str, fp: dict, ram_mib: float, variant: str = "") -> None:
+    ctx.write(name, json.dumps({"idle_ram_mib": ram_mib, **fp}, indent=1))
+    record_footprint(ctx, fp, ram_mib, variant)
+
+
+def shell_anon_mib(table: dict, slot_uid: int) -> float | None:
+    """The compositor's anonymous RSS in a `core.parse_processes` table."""
+    slot = {p["pid"]: p for p in table["procs"].values() if p["uid"] == slot_uid}
+    pid = compositor_pid(slot)
+    return slot[pid]["anon_rss_mb"] if pid is not None else None
+
+
+def slope(values: list[float]) -> float | None:
+    """The least-squares slope of `values` over their index: growth per step."""
+    n = len(values)
+    if n < 2:
+        return None
+    mean_x, mean_y = (n - 1) / 2, sum(values) / n
+    num = sum((i - mean_x) * (v - mean_y) for i, v in enumerate(values))
+    den = sum((i - mean_x) ** 2 for i in range(n))
+    return round(num / den, 2)
+
+
+def guest_ram_used_mib(ctx) -> int:
+    """The guest's memory in use, MemTotal less MemAvailable: what the running system
+    holds and could not hand back without swapping. The dev VM's whole system: its
+    seat0 greeter, tilo-vmd and the slot's session."""
+    out = ctx.vm.exec("awk '/^MemTotal:|^MemAvailable:/ {print $1, $2}' /proc/meminfo", check=False)
+    kib = {line.split()[0].rstrip(":"): int(line.split()[1])
+           for line in out.splitlines() if len(line.split()) == 2 and line.split()[1].isdigit()}
+    if "MemTotal" not in kib or "MemAvailable" not in kib:
+        raise core.Unobservable(f"/proc/meminfo did not name MemTotal and MemAvailable: {out[-200:]!r}")
+    return (kib["MemTotal"] - kib["MemAvailable"]) // 1024
+
+
+def _record_idle(ctx, m: dict, ram_mib: int, variant: str = "") -> None:
+    suffix = f".{variant}" if variant else ""
+    window = {"window_s": m["seconds"]}
+    ctx.record(f"idle.shell_cpu_pct{suffix}", "percent", [m["shell_cpu_pct"]], **window)
+    ctx.record(f"idle.session_cpu_pct{suffix}", "percent", [m["user_cpu_pct_total"]], **window)
+    ctx.record(f"idle.ram_mib{suffix}", "MiB", [ram_mib], what="guest MemTotal - MemAvailable")
+    if not variant:
+        # Context switches of the compositor's main thread, its loop: each is a wakeup or
+        # a preemption.
+        ctx.record("idle.wakeups_per_s.shell", "per_s", [m["shell_wakeups_per_s"]], **window)
+        # The same summed over every thread of the compositor process.
+        ctx.record("idle.wakeups_per_s.shell_threads", "per_s", [m["shell_threads_wakeups_per_s"]],
+                   session_age_s=m["session_age_s"], **window)
+        ctx.record("idle.loop_ticks_per_s", "per_s", [m["shell_loop_ticks_per_s"]], **window)
+        ctx.record("idle.frames", "count", [m["frames_painted"]], **window)
 
 
 def _open_several(ctx):
@@ -152,7 +524,12 @@ def _budget_problems(m, budgets, prefix):
     if m["shell_cpu_pct"] is None:
         raise core.Unobservable("no `shell` process of the slot user found")
     if m["shell_cpu_pct"] > budgets[f"{prefix}_shell_cpu_pct"]:
-        problems.append(f"compositor CPU {m['shell_cpu_pct']}% > {budgets[f'{prefix}_shell_cpu_pct']}%")
+        busiest = [describe_threads(m["shell_thread_groups"] or [])]
+        if m["shell_exited_threads_cpu_pct"]:
+            busiest.append(f"exited threads {m['shell_exited_threads_cpu_pct']}%")
+        problems.append(f"compositor CPU {m['shell_cpu_pct']}% > {budgets[f'{prefix}_shell_cpu_pct']}% "
+                        f"({', '.join(filter(None, busiest)) or 'no thread named'}; "
+                        f"session age {m['session_age_s']} s)")
     if m["frames_painted"] > budgets[f"{prefix}_frames"]:
         problems.append(f"{m['frames_painted']} frames painted while idle > {budgets[f'{prefix}_frames']}")
     if m["shell_loop_ticks_per_s"] > budgets["idle_loop_ticks_per_s"]:
@@ -168,10 +545,39 @@ def idle_empty(ctx, res):
     ctx.reset()
     time.sleep(5)
     m = measure(ctx, ctx.config["idle_seconds"])
+    m["guest_ram_used_mib"] = guest_ram_used_mib(ctx)
     res.metrics.update(m, renderer=ctx.facts.get("renderer"))
     ctx.write("R01-idle-empty.json", json.dumps(m, indent=1))
+    if m["shell_cpu_pct"] is not None:
+        _record_idle(ctx, m, m["guest_ram_used_mib"])
     problems = _budget_problems(m, ctx.config["budgets"], "idle")
+    # The compositor's own memory with no window open: R03's figure less this one is
+    # what four windows cost.
+    try:
+        smaps = core.shell_memory(ctx, m["compositor_pid"])
+    except core.Unobservable as e:
+        problems.append(str(e))
+    else:
+        ctx.write("R01-shell-smaps.json", json.dumps(smaps, indent=1))
+        res.metrics["shell_anon_rss_mib"] = smaps["anon_rss_mib"]
+        ctx.record("memory.shell_anon_mib.empty", "MiB", [smaps["anon_rss_mib"]])
+    # What the idle RAM is made of, every user's processes and cgroups.
+    try:
+        fp = footprint(ctx)
+    except core.Unobservable as e:
+        problems.append(f"idle memory breakdown: {e}")
+    else:
+        write_footprint(ctx, "R01-footprint.json", fp, m["guest_ram_used_mib"])
+        res.metrics["footprint_mib"] = _footprint_summary(fp, m["guest_ram_used_mib"])
     expect(not problems, "; ".join(problems))
+
+
+def _footprint_summary(fp: dict, ram_mib: float) -> dict:
+    return {"used": ram_mib, "installed": round(ram_mib - fp["vm_only_mib"], 1),
+            **{k: fp["guest"][f"{k}_mib"] for k in ("anon", "shmem", "kernel", "reserve", "untracked")},
+            "buckets": {name: b["resident_mib"] for name, b in fp["buckets"].items()},
+            "unattributed": fp["unattributed_mib"],
+            "top_anon": top_by_comm(fp["processes"])}
 
 
 @check("R02", AREA, "Idle with Terminal, Files, Settings and Notes open")
@@ -179,10 +585,22 @@ def idle_apps(ctx, res):
     opened = _open_several(ctx)
     res.metrics["opened"] = opened
     m = measure(ctx, ctx.config["idle_seconds"])
+    m["guest_ram_used_mib"] = guest_ram_used_mib(ctx)
     res.metrics.update(m, renderer=ctx.facts.get("renderer"))
     ctx.write("R02-idle-apps.json", json.dumps(m, indent=1))
+    if m["shell_cpu_pct"] is not None and len(opened) == 4:
+        _record_idle(ctx, m, m["guest_ram_used_mib"], "four_apps")
     ctx.facts["apps_open_for_memory"] = opened
     problems = _budget_problems(m, ctx.config["budgets"], "idle_apps")
+    try:
+        fp = footprint(ctx)
+    except core.Unobservable as e:
+        problems.append(f"memory breakdown with four apps: {e}")
+    else:
+        ctx.write("R02-footprint.json", json.dumps({"idle_ram_mib": m["guest_ram_used_mib"], **fp}, indent=1))
+        if len(opened) == 4:
+            record_footprint(ctx, fp, m["guest_ram_used_mib"], "four_apps")
+        res.metrics["footprint_mib"] = _footprint_summary(fp, m["guest_ram_used_mib"])
     closed = ctx.facts.get("apps_closed_after_open") or []
     if closed:
         problems.append(f"{', '.join(closed)} closed on their own within 8 s of opening "
@@ -192,6 +610,19 @@ def idle_apps(ctx, res):
     expect(not problems, "; ".join(problems))
 
 
+def _record_memory(ctx, m: dict) -> None:
+    if m["shell"]:
+        ctx.record("memory.shell_anon_mib", "MiB", [m["shell"]["anon_rss_mb"]])
+    ctx.record("memory.session_mib", "MiB", [m["session_memory_mb"]],
+               what="the compositor's and the open apps' cgroups")
+    for app, a in m["apps"].items():
+        if a["shared_with"] or a.get("memory_mb") is None:
+            continue
+        short = app.rsplit(".", 1)[-1]
+        ctx.record(f"memory.app_mib.{short}", "MiB", [a["memory_mb"]], app=app)
+        ctx.record(f"memory.app_anon_mib.{short}", "MiB", [a["anon_mb"]], app=app)
+
+
 @check("R03", AREA, "Memory: each open app's cgroup and the compositor stay within budget")
 def mem(ctx, res):
     opened = ctx.facts.get("apps_open_for_memory") or _open_several(ctx)
@@ -199,9 +630,14 @@ def mem(ctx, res):
     res.metrics.update(apps=m["apps"], shell=m["shell"], session_memory_mb=m["session_memory_mb"],
                        top=m["procs"][:15], guest_mem_mb=m["guest_mem_mb"])
     ctx.write("R03-memory.json", json.dumps(m, indent=1))
+    _record_memory(ctx, m)
     b = ctx.config["budgets"]
     expect(m["shell"], "no compositor process found")
     problems, unobserved = [], []
+    try:
+        ctx.write("R03-shell-smaps.json", json.dumps(core.shell_memory(ctx, m["shell"]["pid"]), indent=1))
+    except core.Unobservable as e:
+        unobserved.append(str(e))
     if m["shell"]["anon_rss_mb"] > b["shell_anon_mb"]:
         problems.append(f"compositor anonymous RSS {m['shell']['anon_rss_mb']} MB > {b['shell_anon_mb']} MB")
     big = [p for p in m["procs"] if p["comm"] != "shell" and (p["anon_rss_mb"] or 0) > b["process_anon_mb"]]
@@ -230,9 +666,33 @@ def mem(ctx, res):
     if closed:
         problems.append(f"{', '.join(closed)} closed on their own within 8 s of opening, so their "
                         "memory was not measured (see R-apps-closed-after-open.log)")
+    # The same idle desktop once the apps have closed: what they leave behind.
+    try:
+        after = _footprint_after_close(ctx)
+    except core.Unobservable as e:
+        unobserved.append(f"memory after the apps closed: {e}")
+    else:
+        ram = after["guest"]["used_mib"]
+        write_footprint(ctx, "R03-footprint-after-close.json", after, ram, "after_close")
+        ctx.record("idle.ram_mib.after_close", "MiB", [ram], what="guest MemTotal - MemAvailable")
+        res.metrics["after_close_mib"] = _footprint_summary(after, ram)
     expect(not problems, "; ".join(problems + unobserved))
     if unobserved:
         raise core.Unobservable("; ".join(unobserved))
+
+
+AFTER_CLOSE_SETTLE_S = 5
+
+
+def _footprint_after_close(ctx) -> dict:
+    """Close every window, wait for the apps' processes to exit and the compositor to
+    settle (it trims its heap after a close), then read the footprint."""
+    ctx.reset()
+    gone = wait_until(lambda: not any(p["app"] for p in core.processes(ctx)["procs"].values()), 20, 1.0)
+    if not gone:
+        raise core.Unobservable("app processes were still running 20 s after their windows closed")
+    time.sleep(AFTER_CLOSE_SETTLE_S)
+    return footprint(ctx)
 
 
 @check("R04", AREA, "Frame CPU p50/p95/p99 during overview, focus and workspace interactions")
@@ -261,6 +721,9 @@ def frame_work(ctx, res):
     display = ctx.facts.get("display") or {}
     res.metrics.update(st, renderer=ctx.facts.get("renderer"), display=display)
     ctx.write("R04-frames.csv", core.trace_csv(rows))
+    ctx.record("render.frame_cpu_ms", "ms",
+               [r["cpu_us"] / 1000 for r in rows if r.get("painted") == 1 and isinstance(r.get("cpu_us"), int)],
+               interactions="overview, focus, zoom")
     b = ctx.config["budgets"]
     expect(st["painted"] > 0, "no frame painted during the interactions")
     if not core.has_cpu(rows):
@@ -277,3 +740,71 @@ def frame_work(ctx, res):
         if display.get("hardware") and st[f"work_ms_{pct}"] > b[f"work_ms_{pct}"]:
             problems.append(f"frame wall time {pct} {st[f'work_ms_{pct}']} ms > {b[f'work_ms_{pct}']} ms")
     expect(not problems, "; ".join(problems) + f" [renderer: {ctx.facts.get('renderer')}]")
+
+
+# -- the installed-desktop gates of build-image.yml, on this run's VM -------------
+
+BOOT_GATE = "/usr/libexec/tilo/boot-performance-gate.sh"
+BOOT_TOTAL = re.compile(r"kernel\+userspace reached usable greeter in (\d+)\.(\d{3})s")
+BOOT_PHASES = re.compile(r"phases: kernel ([0-9.]+)s, initrd ([0-9.]+)s, userspace to greeter ([0-9.]+)s")
+GATE_EXIT = re.compile(r"^GATE-EXIT=(\d+)$", re.M)
+
+
+def parse_boot_gate(text: str) -> dict:
+    """The boot gate's output: its exit status, kernel+userspace seconds to a usable
+    greeter and, when it printed them, the kernel, initrd and userspace phases."""
+    exit_ = GATE_EXIT.search(text)
+    total = BOOT_TOTAL.search(text)
+    phases = BOOT_PHASES.search(text)
+    out = {"exit": int(exit_.group(1)) if exit_ else None,
+           "to_greeter_s": int(total.group(1)) + int(total.group(2)) / 1000 if total else None}
+    if phases:
+        out.update(kernel_s=float(phases.group(1)), initrd_s=float(phases.group(2)),
+                   userspace_s=float(phases.group(3)))
+    return out
+
+
+@check("R06", AREA, "The VM booted kernel and userspace to a usable greeter within budget")
+def boot(ctx, res):
+    """The release gate's boot check (os/tests/boot_performance_gate.sh, shipped in the
+    image): graphical.target and greetd's login endpoint up, no device timeout, the
+    image's boot contract, all within the budget. It reads this boot's monotonic
+    timestamps, so it may run at any point of the run."""
+    budget = ctx.config["budgets"]["boot_to_greeter_s"]
+    text = ctx.vm.root_exec(f"TILO_BOOT_USERSPACE_BUDGET_SEC={budget} {BOOT_GATE} 2>&1; echo GATE-EXIT=$?",
+                            timeout=180)
+    ctx.write("R06-boot-gate.txt", text)
+    gate = parse_boot_gate(text)
+    res.metrics.update({k: v for k, v in gate.items() if k != "exit"}, budget_s=budget)
+    said = " | ".join(l.strip() for l in text.splitlines()[-8:] if l.strip() and "GATE-EXIT" not in l)
+    if gate["to_greeter_s"] is None:
+        raise core.Unobservable(f"the boot gate named no time to the greeter (exit {gate['exit']}): {said}")
+    ctx.record("boot.to_greeter_s", "s", [gate["to_greeter_s"]], what="kernel+userspace, firmware excluded")
+    for phase in ("kernel", "initrd", "userspace"):
+        ctx.record(f"boot.{phase}_s", "s", [gate.get(f"{phase}_s")])
+    expect(gate["exit"] == 0, f"the boot gate failed: {said}")
+
+
+RENDER_REPORT = "/usr/libexec/tilo-session-report"
+RENDER_UNOBSERVABLE = ("no session flight record", "the compositor logged no DRM render phase")
+
+
+@check("R07", AREA, "The session presented within the render-path budgets (tilo-session-report --render-gate)")
+def render_gate(ctx, res):
+    """The release gate's render check on this run's session: direct GPU scanout where
+    the renderer shares the scanout GPU, and every DRM render phase and the painted
+    frames' main-thread work within the budgets build-image.yml holds a KVM guest to."""
+    b = ctx.config["budgets"]
+    text = ctx.vm.exec(f"{RENDER_REPORT} --render-gate --render-budget-ms {b['render_frame_ms']} "
+                       f"--frame-work-budget-ms {b['render_frame_work_ms']} 2>&1; echo GATE-EXIT=$?",
+                       timeout=120, check=False)
+    ctx.write("R07-render-gate.txt", text)
+    exit_ = GATE_EXIT.search(text)
+    failures = [l.split("render gate: FAIL ", 1)[1] for l in text.splitlines() if "render gate: FAIL " in l]
+    res.metrics.update(failures=failures, renderer=ctx.facts.get("renderer"))
+    if exit_ is None or (exit_.group(1) != "0" and not failures):
+        raise core.Unobservable(f"{RENDER_REPORT} did not judge the session: {text.strip()[-300:]}")
+    unobserved = [f for f in failures if f.startswith(RENDER_UNOBSERVABLE)]
+    if unobserved:
+        raise core.Unobservable("; ".join(unobserved))
+    expect(not failures, "; ".join(failures) + f" [renderer: {ctx.facts.get('renderer')}]")

@@ -116,7 +116,7 @@ impl RemoteInputInjectorHandle {
         Self { inner }
     }
 
-    /// A handle that drops every action — default for portal contexts that don't host a live seat (e.g. `--portal-server-only`).
+    /// A handle that drops every action — default for portal contexts that don't host a live seat (e.g. tests).
     pub fn null() -> Self {
         Self {
             inner: Arc::new(NullInjector),
@@ -328,8 +328,8 @@ impl RemoteRestoreStore {
         )
     )]
     fn load() -> Self {
-        let path =
-            xdg_paths::state_dir().map(|root| root.join("tilo/portal/remote-desktop-restore.json"));
+        let path = tilo_paths::state_dir()
+            .map(|root| root.join("tilo/portal/remote-desktop-restore.json"));
         let durable = path
             .as_ref()
             .and_then(|path| std::fs::read(path).ok())

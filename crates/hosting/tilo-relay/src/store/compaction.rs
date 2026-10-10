@@ -174,6 +174,7 @@ impl WorkspaceStore {
         snapshot: Option<SnapshotWrite>,
         remove: &dyn Fn(&[u8]) -> bool,
     ) -> Result<Replaced, StoreError> {
+        self.tail_cache.invalidate();
         let v2 = self.root.join(RETAINED_DIR).join("v2");
         create_dir(&v2)?;
         let mut outcome = Replaced::default();
