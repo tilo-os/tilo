@@ -14,7 +14,7 @@
 
 use vello::kurbo::{Point, Rect};
 use vello::peniko::{BlendMode, Fill};
-use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
+use winit::event::{ElementState, MouseButton, WindowEvent};
 
 use ui::chrome::{SelectionState, paint_row_selection};
 use ui::icons::Icon;
@@ -24,8 +24,8 @@ use ui::theme::Theme;
 use ui::tokens::TextRole;
 use ui::widget::{
     AvatarFace, Button, ButtonFace, ButtonRole, ControlSize, EmptyState, EmptyStateContent,
-    Interaction, ListRowFace, PressOutcome, ProgressRingFace, ProgressRingSize, RowAction,
-    RowLeading, ScrollMetrics, Scrollbar, Tone,
+    EventCtx, Interaction, ListRowFace, ProgressRingFace, ProgressRingSize, RowAction, RowLeading,
+    ScrollRegion, Tone,
 };
 
 use crate::model::{Account, AccountId, account_color};
@@ -132,8 +132,6 @@ struct Metrics {
     ring: f64,
     code_w: f64,
     code_h: f64,
-    /// Width reserved for the scroll bar on the viewport's trailing edge.
-    gutter: f64,
 }
 
 impl Metrics {
@@ -156,7 +154,6 @@ impl Metrics {
                 .diameter(theme),
             code_w: f64::from(code_w),
             code_h: f64::from(code_h),
-            gutter: f64::from(theme.tokens.metrics.scrollbar_gutter),
         }
     }
 
@@ -199,11 +196,13 @@ pub struct AccountList {
     column: Rect,
     accounts: Vec<Account>,
     selected: Option<AccountId>,
-    scroll: f64,
+    scroller: ScrollRegion,
+    /// The theme of the last paint, which the scroll region's lanes, steps
+    /// and fade read between paints.
+    theme: Theme,
     hover: Option<(usize, Zone)>,
     last_mouse: Point,
     events: Vec<ListEvent>,
-    bar: Scrollbar,
     /// Measured on each paint and read back by hit-testing and the
     /// accessibility bounds, so the rows the pointer targets are the rows that
     /// were painted. `None` until the first paint.
@@ -226,11 +225,11 @@ impl AccountList {
             column: Rect::ZERO,
             accounts: Vec::new(),
             selected: None,
-            scroll: 0.0,
+            scroller: ScrollRegion::vertical(),
+            theme: Theme::dark(),
             hover: None,
             last_mouse: Point::ZERO,
             events: Vec::new(),
-            bar: Scrollbar::vertical(),
             metrics: None,
             layouts: Vec::new(),
             empty_action: Rect::ZERO,
@@ -241,7 +240,7 @@ impl AccountList {
     pub fn set_accounts(&mut self, accounts: Vec<Account>) {
         self.accounts = accounts;
         self.layouts.clear();
-        self.clamp_scroll();
+        self.sync_content();
     }
 
     pub fn set_selected(&mut self, selected: Option<AccountId>) {
@@ -256,7 +255,8 @@ impl AccountList {
     pub fn set_viewport(&mut self, rect: Rect, column: Rect) {
         self.rect = rect;
         self.column = column;
-        self.clamp_scroll();
+        self.scroller.set_viewport(rect, &self.theme);
+        self.sync_content();
     }
 
     pub fn take_events(&mut self) -> Vec<ListEvent> {
@@ -298,14 +298,13 @@ impl AccountList {
         let Some(index) = self.accounts.iter().position(|account| account.id == id) else {
             return;
         };
-        let top = m.edge + index as f64 * m.row_h;
-        let bottom = top + m.row_h;
-        if top - m.edge < self.scroll {
-            self.scroll = top - m.edge;
-        } else if bottom + m.edge > self.scroll + self.rect.height() {
-            self.scroll = bottom + m.edge - self.rect.height();
-        }
-        self.clamp_scroll();
+        let top = index as f64 * m.row_h;
+        self.scroller.scroll_into_view(Rect::new(
+            0.0,
+            top,
+            self.column.width(),
+            top + m.row_h + 2.0 * m.edge,
+        ));
     }
 
     // ---- geometry shared by painting and hit-testing -------------------
@@ -315,37 +314,15 @@ impl AccountList {
             .map_or(0.0, |m| self.accounts.len() as f64 * m.row_h + 2.0 * m.edge)
     }
 
-    fn max_scroll(&self) -> f64 {
-        (self.content_height() - self.rect.height()).max(0.0)
-    }
-
-    fn clamp_scroll(&mut self) {
-        self.scroll = self.scroll.clamp(0.0, self.max_scroll());
-    }
-
-    fn scroll_metrics(&self) -> ScrollMetrics {
-        ScrollMetrics::new(self.content_height(), self.rect.height(), self.scroll)
-    }
-
-    /// The scroll bar's track, on the viewport's trailing edge.
-    fn track(&self) -> Rect {
-        let gutter = self.metrics.map_or(0.0, |m| m.gutter);
-        Rect::new(
-            self.rect.x1 - gutter,
-            self.rect.y0,
-            self.rect.x1,
-            self.rect.y1,
-        )
-    }
-
-    fn overflows(&self) -> bool {
-        self.scroll_metrics().overflows()
+    fn sync_content(&mut self) {
+        self.scroller
+            .set_content_size(self.column.width(), self.content_height());
     }
 
     /// Bounding rect of visible row `i` in absolute coordinates, scrolled.
     fn row_rect(&self, i: usize) -> Rect {
         let m = self.metrics.unwrap_or_default();
-        let y0 = self.rect.y0 + m.edge + i as f64 * m.row_h - self.scroll;
+        let y0 = self.rect.y0 + m.edge + i as f64 * m.row_h - self.scroller.offset().y;
         Rect::new(self.column.x0, y0, self.column.x1, y0 + m.row_h)
     }
 
@@ -355,7 +332,9 @@ impl AccountList {
     pub(crate) fn layout(&mut self, text: &mut TextRenderer, theme: &Theme) {
         let m = Metrics::measure(text, theme);
         self.metrics = Some(m);
-        self.clamp_scroll();
+        self.theme = theme.clone();
+        self.scroller.set_viewport(self.rect, theme);
+        self.sync_content();
         let count = self.accounts.len();
         let width = self.column.width();
         let set_up = ButtonFace::new(Rect::ZERO, SET_UP_LABEL).control_size(ControlSize::Small);
@@ -450,7 +429,7 @@ impl AccountList {
 
     /// Which row and part is under `p`, from the layout of the last paint.
     fn hit(&self, p: Point) -> Option<(usize, Zone)> {
-        if !self.rect.contains(p) || (self.overflows() && self.track().contains(p)) {
+        if !self.scroller.content_rect().contains(p) {
             return None;
         }
         let row = (0..self.accounts.len()).find(|&i| self.row_rect(i).contains(p))?;
@@ -505,16 +484,7 @@ impl AccountList {
             self.paint_row(ctx, &m, i, now, ground);
         }
         ctx.scene.pop_layer();
-        if self.overflows() {
-            self.bar.draw(
-                ctx.scene,
-                ctx.transform,
-                self.track(),
-                self.scroll_metrics(),
-                theme,
-                false,
-            );
-        }
+        self.scroller.paint_bars(ctx.scene, ctx.transform, theme);
     }
 
     fn paint_row(
@@ -535,7 +505,7 @@ impl AccountList {
             .hover
             .filter(|(hovered, _)| *hovered == i)
             .map(|(_, z)| z);
-        let hovered = hovered_zone.is_some() && !self.bar.is_dragging();
+        let hovered = hovered_zone.is_some() && !self.scroller.is_dragging();
         let has_secret = account.secret_is_valid();
 
         let commands = commands(i, self.accounts.len());
@@ -569,7 +539,7 @@ impl AccountList {
             .get(i + 1)
             .is_some_and(|next| self.selected == Some(next.id));
         let next_hovered =
-            self.hover.is_some_and(|(row, _)| row == i + 1) && !self.bar.is_dragging();
+            self.hover.is_some_and(|(row, _)| row == i + 1) && !self.scroller.is_dragging();
         if i + 1 < self.accounts.len() && !selected && !hovered && !next_selected && !next_hovered {
             // Where the title starts: past the avatar, which is the list-size
             // avatar beside a secondary line and the inline size without one.
@@ -698,64 +668,53 @@ impl AccountList {
 
     // ---- input ---------------------------------------------------------
 
-    pub fn handle_event(&mut self, event: &WindowEvent, scale_factor: f64, handled: &mut bool) {
+    /// Whether the scroll bar's fade needs frames now.
+    pub fn needs_animation_frame(&self) -> bool {
+        self.scroller.needs_animation_frame(&self.theme)
+    }
+
+    /// When the scroll bar starts to fade.
+    pub fn next_wake_deadline(&self) -> Option<ui::time::Instant> {
+        self.scroller.next_wake_deadline(&self.theme)
+    }
+
+    /// Whether the scroll bar's thumb is being dragged.
+    pub fn is_dragging(&self) -> bool {
+        self.scroller.is_dragging()
+    }
+
+    pub fn handle_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
+        // The scroll region takes the wheel, touchpad gestures and its bar.
+        self.scroller.handle_event(event, ctx, &self.theme);
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                let p = Point::new(position.x / scale_factor, position.y / scale_factor);
-                self.last_mouse = p;
-                if self.bar.is_dragging() {
-                    if let Some(offset) = self.bar.drag_to(self.track(), self.scroll_metrics(), p) {
-                        self.scroll = offset;
-                        self.clamp_scroll();
-                    }
-                    *handled = true;
+                self.last_mouse =
+                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                if self.scroller.is_dragging() {
                     return;
-                }
-                if self.overflows() {
-                    self.bar
-                        .update_hover(self.track(), self.scroll_metrics(), p);
                 }
                 // The row's actions appear on hover, so the row under the
                 // pointer is resolved before its parts.
+                let p = self.last_mouse;
                 let row = (0..self.accounts.len())
                     .find(|&i| self.rect.contains(p) && self.row_rect(i).contains(p));
                 let previous = self.hover;
                 self.hover = row.map(|r| (r, Zone::Body));
                 self.hover = self.hit(p).or(self.hover);
                 if self.hover != previous {
-                    *handled = true;
+                    *ctx.handled = true;
                 }
             }
             WindowEvent::CursorLeft { .. } => {
                 if self.hover.take().is_some() {
-                    *handled = true;
+                    *ctx.handled = true;
                 }
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
                 ..
-            } => self.press(handled),
-            WindowEvent::MouseInput {
-                state: ElementState::Released,
-                button: MouseButton::Left,
-                ..
-            } => {
-                if self.bar.release() {
-                    *handled = true;
-                }
-            }
-            WindowEvent::MouseWheel { delta, .. }
-                if self.rect.contains(self.last_mouse) && self.max_scroll() > 0.0 =>
-            {
-                let row = self.metrics.map_or(0.0, |m| m.row_h);
-                let dy = match delta {
-                    MouseScrollDelta::LineDelta(_, y) => f64::from(*y) * row,
-                    MouseScrollDelta::PixelDelta(pos) => pos.y / scale_factor,
-                };
-                self.scroll = (self.scroll - dy).clamp(0.0, self.max_scroll());
-                *handled = true;
-            }
+            } if !*ctx.handled => self.press(ctx.handled),
             _ => {}
         }
     }
@@ -768,21 +727,6 @@ impl AccountList {
                 *handled = true;
             }
             return;
-        }
-        if self.overflows() {
-            match self.bar.press(self.track(), self.scroll_metrics(), p) {
-                PressOutcome::Thumb => {
-                    *handled = true;
-                    return;
-                }
-                PressOutcome::Page(offset) => {
-                    self.scroll = offset;
-                    self.clamp_scroll();
-                    *handled = true;
-                    return;
-                }
-                PressOutcome::Miss => {}
-            }
         }
         let Some((i, zone)) = self.hit(p) else { return };
         let (Some(account), Some(_)) = (self.accounts.get(i), self.layouts.get(i)) else {
@@ -879,8 +823,24 @@ mod tests {
     }
 
     fn dispatch(list: &mut AccountList, event: &WindowEvent) -> bool {
+        let mut taffy = taffy::TaffyTree::new();
+        let node = taffy.new_leaf(taffy::Style::default()).unwrap();
+        let mut doc = automerge::AutoCommit::new();
+        let mut focus = None;
         let mut handled = false;
-        list.handle_event(event, 1.0, &mut handled);
+        list.handle_event(
+            event,
+            &mut EventCtx {
+                scale_factor: 1.0,
+                modifiers: &winit::event::Modifiers::default(),
+                state: ui::widget::Edits::lend(&mut doc),
+                path: &automerge::ROOT,
+                handled: &mut handled,
+                focus_target: &mut focus,
+                node_id: node,
+                taffy: &taffy,
+            },
+        );
         handled
     }
 
@@ -904,12 +864,12 @@ mod tests {
             }
         }
         let mut list = list(600.0, 220.0, 1.0);
-        assert!(list.max_scroll() > 0.0);
+        assert!(list.scroller.overflows_vertically());
         dispatch(&mut list, &cursor_at(Point::new(300.0, 110.0)));
         assert!(dispatch(&mut list, &wheel(-100.0)));
-        assert!((list.scroll - list.max_scroll()).abs() < 0.001);
+        assert!(list.scroller.offset().y > 0.0);
         assert!(dispatch(&mut list, &wheel(100.0)));
-        assert!(list.scroll.abs() < 0.001);
+        assert!(list.scroller.offset().y.abs() < 0.001);
         let first = list.accounts.first().unwrap().id;
         let final_account = list.accounts.last().unwrap().id;
         assert!(
