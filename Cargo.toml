@@ -248,6 +248,7 @@ members = [
     "crates/platform/tilo-location",
     "crates/platform/tilo-image-codec",
     "crates/platform/tilo-keyboard-map",
+    "crates/platform/tilo-locale",
     "crates/platform/tilo-media",
     "crates/platform/tilo-spotify",
     "crates/platform/tilo-invidious",
