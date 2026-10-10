@@ -29,7 +29,7 @@ use winit::keyboard::{Key, NamedKey};
 use crate::shell::build_tilo_overlay_host_with_chrome;
 use crate::shell::chrome_state::{Chrome, ChromeState};
 use crate::shell::foreign::ForeignSurfaceWidget;
-use crate::shell::overlay_host::ShellOverlayHost;
+use crate::shell::overlay_host::{ShellOverlayHost, overlay_part};
 use crate::shell::state::WorkspaceTree;
 
 use ui::backdrop::{BackdropFrame, BackdropRecording, BackdropRegion, RecordedBackdrop};
@@ -1966,60 +1966,78 @@ impl FrameBuilder {
             &self.theme,
             &self.presence,
         );
-        for proxy in &self.floating_transfer_proxies {
-            proxy.draw(&mut sections.above_quick_settings);
-        }
-        for (_, surface) in &mut self.floating_overlays {
-            if surface.is_mapped() {
-                surface.draw(
-                    &mut sections.above_quick_settings,
-                    Affine::IDENTITY,
-                    &mut self.text_renderer,
-                    &self.theme,
-                    &self.presence,
-                );
+        // Each kind of client surface floating over the desktop is one
+        // damage part, there whether or not any is mapped: a popup opening
+        // or a floating window repainting repaints its own rect.
+        let desktop = Rect::new(0.0, 0.0, self.viewport.0, self.viewport.1);
+        let above = &mut sections.above_quick_settings;
+        overlay_part(above, "shell.floating-transfer", desktop, |scene| {
+            for proxy in &self.floating_transfer_proxies {
+                proxy.draw(scene);
             }
-        }
+            None
+        });
+        overlay_part(above, "shell.floating-windows", desktop, |scene| {
+            self.floating_overlays
+                .iter_mut()
+                .filter(|(_, surface)| surface.is_mapped())
+                .map(|(_, surface)| {
+                    surface.draw_bounded(
+                        scene,
+                        Affine::IDENTITY,
+                        &mut self.text_renderer,
+                        &self.theme,
+                        &self.presence,
+                    )
+                })
+                .collect()
+        });
         let mut fullscreen_on_top = None;
-        if let Some((_, surface)) = &mut self.fullscreen_overlay
-            && surface.is_mapped()
-        {
-            let draws_before = sections.above_quick_settings.encoding().draw_tags.len();
-            surface.draw(
-                &mut sections.above_quick_settings,
-                Affine::IDENTITY,
-                &mut self.text_renderer,
-                &self.theme,
-                &self.presence,
-            );
-            fullscreen_on_top = crate::shell::scanout_candidate::DrawnOnTop::last_in(
-                &sections.above_quick_settings,
-                draws_before,
-            );
-        }
-        for (_, surface) in &mut self.transient_overlays {
-            if surface.is_mapped() {
-                surface.draw(
-                    &mut sections.above_quick_settings,
-                    Affine::IDENTITY,
-                    &mut self.text_renderer,
-                    &self.theme,
-                    &self.presence,
-                );
+        overlay_part(above, "shell.fullscreen", desktop, |scene| {
+            let (_, surface) = self.fullscreen_overlay.as_mut()?;
+            if !surface.is_mapped() {
+                return None;
             }
-        }
-        if self.osk_active
-            && let Some(keyboard) = self.osk_overlay.as_mut()
-            && keyboard.is_mapped()
-        {
-            keyboard.draw(
-                &mut sections.above_quick_settings,
+            let draws_before = scene.encoding().draw_tags.len();
+            let bounds = surface.draw_bounded(
+                scene,
                 Affine::IDENTITY,
                 &mut self.text_renderer,
                 &self.theme,
                 &self.presence,
             );
-        }
+            fullscreen_on_top =
+                crate::shell::scanout_candidate::DrawnOnTop::last_in(scene, draws_before);
+            Some(vec![bounds?])
+        });
+        overlay_part(above, "shell.popups", desktop, |scene| {
+            self.transient_overlays
+                .iter_mut()
+                .filter(|(_, surface)| surface.is_mapped())
+                .map(|(_, surface)| {
+                    surface.draw_bounded(
+                        scene,
+                        Affine::IDENTITY,
+                        &mut self.text_renderer,
+                        &self.theme,
+                        &self.presence,
+                    )
+                })
+                .collect()
+        });
+        overlay_part(above, "shell.osk", desktop, |scene| {
+            let keyboard = self.osk_overlay.as_mut().filter(|_| self.osk_active)?;
+            if !keyboard.is_mapped() {
+                return None;
+            }
+            Some(vec![keyboard.draw_bounded(
+                scene,
+                Affine::IDENTITY,
+                &mut self.text_renderer,
+                &self.theme,
+                &self.presence,
+            )?])
+        });
         drop(retained_scope);
 
         let parts = OpaqueParts::of(&parts_recording.finish(), &sections);
@@ -2068,7 +2086,9 @@ impl FrameBuilder {
                 )
             })
             .flatten();
-        let damage_regions = self.with_backdrop_damage(damage_regions, &backdrop_surfaces);
+        let damage_regions = self
+            .with_backdrop_damage(damage_regions, &backdrop_surfaces)
+            .map(without_contained_regions);
         // A backdrop-dependent section is never independently composited.
         let separable = backdrop_surfaces.is_empty()
             && hdr_layers.is_empty()
@@ -7981,6 +8001,28 @@ mod tests {
 #[cfg(test)]
 #[path = "frame_retained_tests.rs"]
 mod retained_tests;
+
+/// `regions` without any region another one contains (the first of two
+/// equal ones stays): the same pixels, rasterised once. A changed card's
+/// old and new bounds and the blurred surface on it often nest.
+fn without_contained_regions(regions: Vec<FineDamageRect>) -> Vec<FineDamageRect> {
+    let contains = |outer: &FineDamageRect, inner: &FineDamageRect| {
+        outer.x <= inner.x
+            && outer.y <= inner.y
+            && outer.x.saturating_add(outer.width) >= inner.x.saturating_add(inner.width)
+            && outer.y.saturating_add(outer.height) >= inner.y.saturating_add(inner.height)
+    };
+    regions
+        .iter()
+        .enumerate()
+        .filter(|&(index, region)| {
+            !regions.iter().enumerate().any(|(other, outer)| {
+                other != index && contains(outer, region) && (outer != region || other < index)
+            })
+        })
+        .map(|(_, region)| *region)
+        .collect()
+}
 
 /// A non-negative scene coordinate as whole pixels, rounded down.
 fn scene_px(value: f64) -> u32 {

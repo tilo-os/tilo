@@ -1768,3 +1768,588 @@ fn hovering_a_tab_repaints_that_tab_not_the_output() {
     assert_damage_covers(pill, damage, "hovered tab");
     paint_retained_and_compare(&mut retained, &mut dense, &hovered, "tab hovered");
 }
+
+// TIL-744: overlays, in-process app widgets and tooltips repaint what they
+// change, not the output or the tile.
+
+const THEMES: [(&str, fn() -> Theme); 3] = [
+    ("dark", Theme::dark),
+    ("light", Theme::light),
+    ("high contrast", Theme::high_contrast),
+];
+
+thread_local! {
+    /// Keyboard focus as the compositor's event loop keeps it between
+    /// events: a click places it, the next key press reads it.
+    static FOCUS: std::cell::Cell<Option<NodeId>> = const { std::cell::Cell::new(None) };
+}
+
+/// [`settled_builder_in`], with no keyboard focus carried over from
+/// another desktop.
+fn desktop_in(theme: Theme) -> (PopulatedShellFixture, tilo_test_env::ScopedEnv) {
+    FOCUS.with(|focus| focus.set(None));
+    settled_builder_in(theme)
+}
+
+fn dispatch(frame: &mut FrameBuilder, event: &WindowEvent) {
+    let mut document = automerge::AutoCommit::new();
+    let mut focus = FOCUS.with(std::cell::Cell::get);
+    let _ = frame.dispatch_event(
+        event,
+        &winit::event::Modifiers::default(),
+        &mut ui::widget::Edits::lend(&mut document),
+        &automerge::ROOT,
+        &mut focus,
+    );
+    FOCUS.with(|cell| cell.set(focus));
+}
+
+fn point_at(frame: &mut FrameBuilder, at: Point) {
+    dispatch(
+        frame,
+        &WindowEvent::CursorMoved {
+            device_id: winit::event::DeviceId::dummy(),
+            position: winit::dpi::PhysicalPosition::new(at.x, at.y),
+        },
+    );
+}
+
+fn press(frame: &mut FrameBuilder, button: winit::event::MouseButton) {
+    for state in [
+        winit::event::ElementState::Pressed,
+        winit::event::ElementState::Released,
+    ] {
+        dispatch(
+            frame,
+            &WindowEvent::MouseInput {
+                device_id: winit::event::DeviceId::dummy(),
+                state,
+                button,
+            },
+        );
+    }
+}
+
+fn type_text(frame: &mut FrameBuilder, text: &str) {
+    for c in text.chars() {
+        dispatch(
+            frame,
+            &ui::synthetic_input::keyboard_input(ui::synthetic_input::key_event(
+                Key::Character(c.to_string().into()),
+                Some(c.to_string().into()),
+                winit::event::ElementState::Pressed,
+            )),
+        );
+    }
+}
+
+/// Why each damage-tracked section of the latest frame could or could not
+/// be compared part by part with `previous` (foreign images not paired).
+fn part_refusals(previous: Option<&ProducedSections>, frame: &FrameBuilder) -> String {
+    let (Some(old), Some(new)) = (previous, frame.last_produced_sections.as_ref()) else {
+        return "missing source sections".into();
+    };
+    let compare = |old_scene: &Scene,
+                   old_parts: &Option<ui::scene_parts::SectionParts>,
+                   new_scene: &Scene,
+                   new_parts: &Option<ui::scene_parts::SectionParts>| {
+        match (old_parts, new_parts) {
+            (Some(old_parts), Some(new_parts)) => format!(
+                "{:?}",
+                ui::scene_parts::damage(old_scene, old_parts, new_scene, new_parts)
+            ),
+            _ => "no parts".into(),
+        }
+    };
+    // Where the workspace's pixels actually differ, when its commands do.
+    let workspace_pixels = if old.workspace.encoding_eq(&new.workspace) {
+        "same".to_owned()
+    } else {
+        let mut oracle = bridge();
+        let before = render_dense(&mut oracle, &old.workspace);
+        let after = render_dense(&mut oracle, &new.workspace);
+        let mut bounds: Option<(usize, usize, usize, usize)> = None;
+        for (index, (a, b)) in before.chunks(4).zip(after.chunks(4)).enumerate() {
+            if a != b {
+                let (x, y) = (index % NATIVE_WIDTH as usize, index / NATIVE_WIDTH as usize);
+                bounds = Some(bounds.map_or((x, y, x, y), |(x0, y0, x1, y1)| {
+                    (x0.min(x), y0.min(y), x1.max(x), y1.max(y))
+                }));
+            }
+        }
+        // And which named widgets are there.
+        let names = bounds.map_or_else(Vec::new, |(x0, y0, x1, y1)| {
+            let px = |value: usize| f64::from(u32::try_from(value).unwrap_or(u32::MAX));
+            let changed = Rect::new(px(x0), px(y0), px(x1) + 1.0, px(y1) + 1.0);
+            frame
+                .widget_registry()
+                .into_iter()
+                .filter(|(_, rect)| {
+                    frame
+                        .layout_rect_to_scene(*rect)
+                        .is_some_and(|rect| !rect.intersect(changed).is_zero_area())
+                })
+                .map(|(name, rect)| format!("{name}@{rect:?}"))
+                .collect()
+        });
+        format!("{bounds:?} under {names:?}")
+    };
+    format!(
+        "workspace={} (pixels differ in {workspace_pixels}) overlays={} above={} | {}",
+        compare(
+            &old.workspace,
+            &old.parts.workspace,
+            &new.workspace,
+            &new.parts.workspace
+        ),
+        compare(
+            &old.workspace_overlays,
+            &old.parts.workspace_overlays,
+            &new.workspace_overlays,
+            &new.parts.workspace_overlays
+        ),
+        compare(
+            &old.above_quick_settings,
+            &old.parts.above_quick_settings,
+            &new.above_quick_settings,
+            &new.parts.above_quick_settings
+        ),
+        sparse_refusal_details(previous, frame)
+    )
+}
+
+/// What each in-process app handed the compositor with its last frame.
+fn embedded_damage(frame: &FrameBuilder) -> String {
+    frame
+        .node_map
+        .values()
+        .filter_map(|&widget| {
+            // SAFETY: node_map pointers are owned by the live widget tree and
+            // remain valid while the frame is borrowed.
+            let widget = unsafe { &*widget };
+            let app = widget.as_any()?.downcast_ref::<ui::app::EmbeddedApp>()?;
+            Some(format!(
+                "[{:?}: {}]",
+                app.get_rect(),
+                app.damage_report_for_test()
+            ))
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// The pixels a frame rasterises: the area of its damage rects (overlap
+/// counted twice, which only overstates), or the whole output when dense.
+fn raster_pixels(paint: &FramePaint) -> u64 {
+    paint.damage_regions.as_deref().map_or(
+        u64::from(NATIVE_WIDTH) * u64::from(NATIVE_HEIGHT),
+        |damage| {
+            damage
+                .iter()
+                .map(|rect| u64::from(rect.width) * u64::from(rect.height))
+                .sum()
+        },
+    )
+}
+
+/// Paint the settled desktop, make `change` and paint again. The change's
+/// frame must be sparse, rasterise under `max_percent` % of the 4K output
+/// and leave the pixels a dense render of it shows. Logs the raster pixels
+/// as the issue's evidence and returns the damage.
+fn assert_change_repaints_under(
+    frame: &mut FrameBuilder,
+    label: &str,
+    max_percent: u64,
+    change: impl FnOnce(&mut FrameBuilder),
+) -> Vec<FineDamageRect> {
+    assert_prepared_change_repaints_under(frame, label, max_percent, |_| {}, change)
+}
+
+/// [`assert_change_repaints_under`], with `prepare` run once the oracles
+/// exist, right before the settled frame: for a change that must follow its
+/// preparation within a deadline (a tooltip's dwell).
+fn assert_prepared_change_repaints_under(
+    frame: &mut FrameBuilder,
+    label: &str,
+    max_percent: u64,
+    prepare: impl FnOnce(&mut FrameBuilder),
+    change: impl FnOnce(&mut FrameBuilder),
+) -> Vec<FineDamageRect> {
+    let mut retained = bridge();
+    let mut dense = bridge();
+    prepare(frame);
+    let settled = frame.paint_with_damage();
+    paint_retained_and_compare(
+        &mut retained,
+        &mut dense,
+        &settled,
+        &format!("{label}: before"),
+    );
+    let previous = frame.last_produced_sections.clone();
+    change(frame);
+    let changed = frame.paint_with_damage();
+    let output = u64::from(NATIVE_WIDTH) * u64::from(NATIVE_HEIGHT);
+    let pixels = raster_pixels(&changed);
+    eprintln!(
+        "TIL-744 raster pixels ({label}): {pixels} of {output} ({}); a dense frame is {output}",
+        if changed.damage_regions.is_some() {
+            "sparse"
+        } else {
+            "dense"
+        }
+    );
+    let damage = changed.damage_regions.clone().unwrap_or_else(|| {
+        panic!(
+            "{label}: must be sparse: {}",
+            part_refusals(previous.as_ref(), frame)
+        )
+    });
+    if !(pixels > 0 && pixels * 100 < output * max_percent) {
+        panic!(
+            "{label}: must repaint under {max_percent}% of a 4K output, not {pixels} px: {damage:?}; {}; {}",
+            part_refusals(previous.as_ref(), frame),
+            embedded_damage(frame)
+        );
+    }
+    paint_retained_and_compare(&mut retained, &mut dense, &changed, label);
+    // Damage over half the output renders whole, as the presenter does.
+    assert!(
+        pixels * 2 >= output || retained.last_sparse_render_attempts() >= 1,
+        "{label}: the change must exercise the production sparse render path"
+    );
+    damage
+}
+
+#[test]
+fn typing_in_the_open_palette_repaints_the_palette_not_the_output() {
+    for (name, theme) in THEMES {
+        let (mut frame, _clock) = desktop_in(theme());
+        frame.host_mut().open_palette_for_test();
+        for _ in 0..3 {
+            frame.relayout();
+            let _ = frame.paint_with_damage();
+        }
+        let card = frame
+            .widget_registry()
+            .into_iter()
+            .find(|(name, _)| name.ends_with("command_palette_input"))
+            .map(|(_, rect)| rect)
+            .expect("the open palette is a named target");
+        let label = format!("typing in the open palette, {name}");
+        // The card grows with its results: at 4K a 720 px card's old and
+        // new extent with its shadow is about 5.4 % of the output.
+        let damage = assert_change_repaints_under(&mut frame, &label, 6, |frame| {
+            type_text(frame, "f");
+            frame.relayout();
+        });
+        let card = frame
+            .layout_rect_to_scene(card)
+            .expect("the palette is on the output");
+        assert_damage_covers(card, &damage, &label);
+    }
+}
+
+#[test]
+fn nested_damage_regions_are_rasterised_once() {
+    let region = |x, y, width, height| FineDamageRect {
+        x,
+        y,
+        width,
+        height,
+    };
+    let card = region(100, 100, 300, 200);
+    let grown = region(100, 100, 300, 400);
+    let blur = region(120, 120, 200, 100);
+    let elsewhere = region(900, 0, 10, 10);
+    assert_eq!(
+        without_contained_regions(vec![card, grown, blur, elsewhere, grown]),
+        vec![grown, elsewhere]
+    );
+}
+
+#[test]
+fn a_notification_appearing_repaints_its_card() {
+    for (name, theme) in THEMES {
+        let (mut frame, _clock) = desktop_in(theme());
+        let label = format!("a notification appearing, {name}");
+        let _ = assert_change_repaints_under(&mut frame, &label, 5, |frame| {
+            frame.with_chrome(|chrome| {
+                chrome.push_notification("Build finished", "tilo-ui passed its tests");
+                chrome.bump();
+            });
+            frame.relayout();
+        });
+    }
+}
+
+#[test]
+fn opening_a_tab_menu_repaints_the_menu() {
+    for (name, theme) in THEMES {
+        let (mut frame, _clock) = desktop_in(theme());
+        let label = format!("opening a tab menu, {name}");
+        // The menu key on the focused tab: the menu, and nothing a pointer
+        // does to the bar on its way there.
+        let _ = assert_change_repaints_under(&mut frame, &label, 5, |frame| {
+            assert!(
+                frame.host_mut().open_focused_tab_context_menu(),
+                "the focused tab has a menu"
+            );
+            frame.relayout();
+        });
+        assert!(
+            frame.host().overlay_shown_for_test(
+                crate::shell::overlay_host::layers::LayerId::TabContextMenu
+            ),
+            "{label}: the menu is open"
+        );
+    }
+}
+
+/// Acknowledge whatever Notes wrote while starting (the 4K desktop mounts
+/// the Notes surfaces it shows) and let the apps present it, so a later
+/// save state does not change under the change being measured.
+#[cfg(target_os = "linux")]
+fn settle_notes(frame: &mut FrameBuilder) {
+    let (apps, room) = {
+        let chrome = frame.chrome();
+        let room = chrome
+            .tree()
+            .desktop
+            .active_workspace()
+            .expect("fixture workspace")
+            .room
+            .to_string();
+        let apps = chrome
+            .hosted_inputs()
+            .in_process()
+            .expect("fixture app owner")
+            .clone();
+        (apps, room)
+    };
+    let flushed = apps
+        .borrow_mut()
+        .flush_fixture_records(notes::definition().app_id, &room)
+        .expect("Notes startup writes acknowledged");
+    assert!(flushed > 0, "the desktop mounted Notes");
+    for _ in 0..3 {
+        frame.wake_mounted_components();
+        frame.relayout();
+        let _ = frame.paint_with_damage();
+    }
+}
+
+/// `read` the Notes surface fully on screen, with its app's rect.
+#[cfg(target_os = "linux")]
+fn with_notes_on_screen<R>(
+    frame: &mut FrameBuilder,
+    read: impl FnOnce(Rect, &mut notes::NotesApp) -> R,
+) -> R {
+    let screen = Rect::new(0.0, 0.0, frame.viewport.0, frame.viewport.1);
+    let mut seen = Vec::new();
+    let found = frame.node_map.values().find_map(|&widget| {
+        // SAFETY: node_map pointers are owned by the live widget tree and
+        // remain valid while the frame is exclusively borrowed.
+        let widget = unsafe { &mut *widget };
+        let app = widget
+            .as_any_mut()?
+            .downcast_mut::<ui::app::EmbeddedApp>()?;
+        let rect = app.get_rect();
+        seen.push(rect);
+        if rect.area() <= 0.0 || screen.intersect(rect) != rect {
+            return None;
+        }
+        let notes = tilo_app::framework::testing::surface_in_root::<
+            notes::NotesShell,
+            notes::NotesApp,
+        >(app.component_root_mut()?)?;
+        Some((rect, notes as *mut notes::NotesApp))
+    });
+    let Some((rect, notes)) = found else {
+        panic!("no Notes surface on screen; embedded apps at {seen:?}");
+    };
+    // SAFETY: the Notes surface lives in the widget tree `frame` borrows
+    // exclusively for this call.
+    read(rect, unsafe { &mut *notes })
+}
+
+/// Paint until the in-process apps have nothing more to show for two frames
+/// running: startup writes, saves and relayouts have landed.
+#[cfg(target_os = "linux")]
+fn quiesce(frame: &mut FrameBuilder, label: &str) {
+    let mut idle = 0;
+    for _ in 0..60 {
+        frame.wake_mounted_components();
+        frame.relayout();
+        let painted = frame.paint_with_damage();
+        let still = painted.damage_regions.as_ref().is_some_and(Vec::is_empty);
+        idle = if still { idle + 1 } else { 0 };
+        if idle == 2 {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    panic!(
+        "{label}: the desktop never came to rest: {}",
+        embedded_damage(frame)
+    );
+}
+
+#[cfg(target_os = "linux")]
+fn settle(frame: &mut FrameBuilder, frames: usize) {
+    for _ in 0..frames {
+        frame.relayout();
+        let _ = frame.paint_with_damage();
+    }
+}
+
+/// Open a note in the Notes surface on screen, through its first-note call
+/// to action when the notebook is empty, and return the centre of the
+/// note's title in layout coordinates.
+#[cfg(target_os = "linux")]
+fn open_a_note(frame: &mut FrameBuilder, label: &str) -> Point {
+    settle_notes(frame);
+    let action = with_notes_on_screen(frame, |rect, notes| {
+        notes
+            .main_panel_mut()
+            .empty_action_center_for_test()
+            .map(|at| Point::new(rect.x0 + at.x, rect.y0 + at.y))
+    });
+    if let Some(action) = action {
+        point_at(frame, action);
+        press(frame, winit::event::MouseButton::Left);
+        settle(frame, 4);
+        settle_notes(frame);
+    }
+    let (opened, title) = with_notes_on_screen(frame, |rect, notes| {
+        let title = notes.main_title_center_for_test();
+        (
+            notes.selected_for_test().is_some(),
+            Point::new(rect.x0 + title.x, rect.y0 + title.y),
+        )
+    });
+    assert!(
+        opened,
+        "{label}: Notes shows a note (first-note action {action:?})"
+    );
+    title
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn typing_in_notes_repaints_what_changed_not_the_tile() {
+    for (name, theme) in THEMES {
+        let (mut frame, _clock) = desktop_in(theme());
+        let label = format!("naming a note, {name}");
+        let title = open_a_note(&mut frame, &label);
+        if !with_notes_on_screen(&mut frame, |_, notes| notes.main_title_editing_for_test()) {
+            point_at(&mut frame, title);
+            press(&mut frame, winit::event::MouseButton::Left);
+            settle(&mut frame, 2);
+        }
+        assert!(
+            with_notes_on_screen(&mut frame, |_, notes| notes.main_title_editing_for_test()),
+            "{label}: the note's title is being named"
+        );
+        type_text(&mut frame, "Plan");
+        settle(&mut frame, 3);
+        // The title grows with every letter. Notes' page reports its whole
+        // panel for a relayout (its paint proof refuses moved geometry), so
+        // the frame repaints about the tile either way; it must stay exact.
+        let _ = assert_change_repaints_under(&mut frame, &label, 100, |frame| {
+            type_text(frame, "s");
+            frame.relayout();
+        });
+
+        // Typing into the note's text rebuilds Notes' widget tree with every
+        // key, so it still repaints the tile (as it repaints a window of its
+        // own); its frame must stay exact.
+        let label = format!("typing in a note, {name}");
+        let body = with_notes_on_screen(&mut frame, |rect, notes| {
+            let panel = notes.main_panel_mut();
+            let title = panel.title_rect_for_test();
+            let line = Point::new(title.x0 + 24.0, panel.body_top_for_test() + 12.0);
+            Point::new(rect.x0 + line.x, rect.y0 + line.y)
+        });
+        point_at(&mut frame, body);
+        press(&mut frame, winit::event::MouseButton::Left);
+        settle(&mut frame, 3);
+        type_text(&mut frame, "The quick brown fox ");
+        settle(&mut frame, 3);
+        let before = with_notes_on_screen(&mut frame, |_, notes| notes.editor_text_for_test());
+        let _ = assert_change_repaints_under(&mut frame, &label, 100, |frame| {
+            type_text(frame, "j");
+            frame.relayout();
+        });
+        let after = with_notes_on_screen(&mut frame, |_, notes| notes.editor_text_for_test());
+        assert!(
+            after.len() > before.len() && after.contains("fox j"),
+            "{label}: the key reached the note's text: {before:?} -> {after:?}"
+        );
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_tooltip_in_an_embedded_app_repaints_the_tooltip() {
+    for (name, theme) in THEMES {
+        let (mut frame, _clock) = desktop_in(theme());
+        let label = format!("a tooltip in an in-process app, {name}");
+        // An empty notebook, at rest: no caret blinks and no write lands in
+        // the status bar while the pointer rests.
+        settle_notes(&mut frame);
+        quiesce(&mut frame, &label);
+        let screen = Rect::new(0.0, 0.0, frame.viewport.0, frame.viewport.1);
+        let control = frame
+            .node_map
+            .values()
+            .find_map(|&widget| {
+                // SAFETY: node_map pointers are owned by the live widget tree
+                // and remain valid while the frame is borrowed.
+                let widget = unsafe { &mut *widget };
+                let app = widget
+                    .as_any_mut()?
+                    .downcast_mut::<ui::app::EmbeddedApp>()?;
+                let rect = app.get_rect();
+                if rect.area() <= 0.0 || screen.intersect(rect) != rect {
+                    return None;
+                }
+                let at = app.app().tooltip_region_for_test()?;
+                Some(Point::new(rect.x0 + at.x, rect.y0 + at.y))
+            })
+            .expect("an app on screen has a control with a tooltip");
+        // The pointer arrives (the settled frame shows its hover), then rests
+        // until the tooltip shows: the measured frame adds the tooltip.
+        let _ = assert_prepared_change_repaints_under(
+            &mut frame,
+            &label,
+            5,
+            |frame| {
+                point_at(frame, control);
+                for _ in 0..4 {
+                    frame.relayout();
+                    let _ = frame.paint_with_damage();
+                    if embedded_damage(frame).contains("tooltip_pending=true") {
+                        break;
+                    }
+                }
+                assert!(
+                    embedded_damage(frame).contains("tooltip_pending=true"),
+                    "the app is waiting to show the control's tooltip: {}",
+                    embedded_damage(frame)
+                );
+            },
+            |frame| {
+                std::thread::sleep(
+                    ui::widget::tooltip::HOVER_DWELL + std::time::Duration::from_millis(100),
+                );
+                frame.wake_mounted_components();
+                frame.relayout();
+            },
+        );
+        assert!(
+            embedded_damage(&frame).contains("tooltip=Some"),
+            "{label}: the tooltip is on screen: {}",
+            embedded_damage(&frame)
+        );
+    }
+}
