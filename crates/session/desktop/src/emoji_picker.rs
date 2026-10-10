@@ -437,6 +437,8 @@ impl EmojiPicker {
     // --- geometry --------------------------------------------------------
 
     fn layout(&mut self) {
+        // A new grid must never complete a press on the old geometry/content.
+        self.press = None;
         let pad = f64::from(self.spacing.s3);
         let gap = f64::from(self.spacing.s2);
         let edge = f64::from(self.spacing.s4);
@@ -693,7 +695,12 @@ impl EmojiPicker {
             WindowEvent::CursorMoved { .. } => {
                 self.hover = cursor.map(|p| self.hit(p));
             }
+            WindowEvent::Focused(false) => {
+                self.press = None;
+                self.hover = None;
+            }
             WindowEvent::MouseWheel { delta, .. } => {
+                self.press = None;
                 let dy = match delta {
                     MouseScrollDelta::LineDelta(_, y) => f64::from(*y) * self.geometry.cell,
                     MouseScrollDelta::PixelDelta(p) => p.y / scale_factor,
@@ -1387,6 +1394,166 @@ mod tests {
                 Key::Character(c.to_string().into())
             };
             press(picker, &key, ModifiersState::empty());
+        }
+    }
+
+    fn pointer_event(picker: &mut EmojiPicker, state: ElementState, point: Point) {
+        picker.handle_event(
+            &WindowEvent::MouseInput {
+                device_id: winit::event::DeviceId::dummy(),
+                state,
+                button: MouseButton::Left,
+            },
+            1.0,
+            ModifiersState::empty(),
+            Some(point),
+            Instant::now(),
+        );
+    }
+
+    #[test]
+    fn interrupted_pointer_pick_does_not_insert_after_focus_loss() {
+        let mut picker = opened();
+        typed(&mut picker, "pizza");
+        let cell = picker.emoji_rect(0).expect("visible match").center();
+        pointer_event(&mut picker, ElementState::Pressed, cell);
+        picker.handle_event(
+            &WindowEvent::Focused(false),
+            1.0,
+            ModifiersState::empty(),
+            Some(cell),
+            Instant::now(),
+        );
+        pointer_event(&mut picker, ElementState::Released, cell);
+        assert!(
+            picker.take_commits().is_empty(),
+            "focus loss cancels the pick"
+        );
+        assert!(picker.is_open(), "cancelled pick keeps the search");
+        pointer_event(&mut picker, ElementState::Pressed, cell);
+        pointer_event(&mut picker, ElementState::Released, cell);
+        assert_eq!(picker.take_commits(), ["🍕"], "a fresh click still works");
+        assert!(
+            picker.take_commits().is_empty(),
+            "one completed click inserts once"
+        );
+    }
+
+    #[test]
+    fn interrupted_pointer_pick_does_not_insert_a_replaced_search_result() {
+        let mut picker = opened();
+        typed(&mut picker, "pizza");
+        let cell = picker.emoji_rect(0).expect("visible match").center();
+        pointer_event(&mut picker, ElementState::Pressed, cell);
+        picker.handle_event(
+            &WindowEvent::Ime(winit::event::Ime::Disabled),
+            1.0,
+            ModifiersState::empty(),
+            Some(cell),
+            Instant::now(),
+        );
+        // Search correction through the production keyboard editing path.
+        press(
+            &mut picker,
+            &Key::Character("a".into()),
+            ModifiersState::CONTROL,
+        );
+        typed(&mut picker, "thumbs up");
+        assert_eq!(picker.selected(), Some("👍"));
+        pointer_event(&mut picker, ElementState::Released, cell);
+        assert!(
+            picker.take_commits().is_empty(),
+            "the old press cannot pick a new result"
+        );
+        assert!(picker.is_open());
+        press(
+            &mut picker,
+            &Key::Named(NamedKey::Enter),
+            ModifiersState::empty(),
+        );
+        assert_eq!(
+            picker.take_commits(),
+            ["👍"],
+            "explicit keyboard pick works"
+        );
+    }
+
+    #[test]
+    fn interrupted_pointer_pick_cancels_scroll_resize_and_touch() {
+        #[derive(Clone, Copy, Debug)]
+        enum Interruption {
+            Scroll,
+            Resize,
+            TouchCancel,
+        }
+        for interruption in [
+            Interruption::Scroll,
+            Interruption::Resize,
+            Interruption::TouchCancel,
+        ] {
+            let mut picker = opened();
+            let expected = picker.selected().expect("first emoji").to_owned();
+            let cell = picker.emoji_rect(0).expect("visible first emoji").center();
+            pointer_event(&mut picker, ElementState::Pressed, cell);
+            match interruption {
+                Interruption::Scroll => {
+                    for delta in [-1.0, 1.0] {
+                        picker.handle_event(
+                            &WindowEvent::MouseWheel {
+                                device_id: winit::event::DeviceId::dummy(),
+                                delta: MouseScrollDelta::LineDelta(0.0, delta),
+                                phase: TouchPhase::Moved,
+                            },
+                            1.0,
+                            ModifiersState::empty(),
+                            Some(cell),
+                            Instant::now(),
+                        );
+                    }
+                }
+                Interruption::Resize => {
+                    picker.draw(
+                        &mut Scene::new(),
+                        Affine::IDENTITY,
+                        &mut TextRenderer::new(),
+                        &Theme::dark(),
+                        &PresenceCtx::default(),
+                        Rect::new(0.0, 0.0, 1260.0, 800.0),
+                    );
+                }
+                Interruption::TouchCancel => {
+                    picker.handle_event(
+                        &WindowEvent::Touch(winit::event::Touch {
+                            device_id: winit::event::DeviceId::dummy(),
+                            phase: TouchPhase::Cancelled,
+                            location: winit::dpi::PhysicalPosition::new(cell.x, cell.y),
+                            force: None,
+                            id: 1,
+                        }),
+                        1.0,
+                        ModifiersState::empty(),
+                        Some(cell),
+                        Instant::now(),
+                    );
+                }
+            }
+            pointer_event(&mut picker, ElementState::Released, cell);
+            assert!(
+                picker.take_commits().is_empty(),
+                "{interruption:?} cancels the pick"
+            );
+            assert!(picker.is_open());
+            let fresh = picker
+                .emoji_rect(0)
+                .expect("first emoji remains visible")
+                .center();
+            pointer_event(&mut picker, ElementState::Pressed, fresh);
+            pointer_event(&mut picker, ElementState::Released, fresh);
+            assert_eq!(
+                picker.take_commits(),
+                [expected],
+                "next click works after {interruption:?}"
+            );
         }
     }
 
