@@ -1834,6 +1834,34 @@ class PresentedEditorTargetTests(unittest.TestCase):
             )
         self.assertNotIn(private, str(raised.exception))
 
+    def test_hidden_read_diagnostics_distinguish_missing_changed_and_duplicate_without_export(self):
+        original = {**self.permission_action(),
+                    "semantic_identity": {"kind": "chat.agent", "key": "PRIVATE-agent"}}
+        opposite = {**original, "provider": "other", "application": "so.tilo.desktop",
+                    "resource": "desktop:tasks", "operation": "queue"}
+        read = {**original, "id": "PRIVATE-open", "operation": "open-agent-conversation"}
+        access = {"bus": "PRIVATE-bus", "process": 7, "window": "/PRIVATE-window"}
+        cases = (([], (0, 0, 0, 0, None, None)),
+                 ([{**read, "resource": "PRIVATE-new-alias"}], (1, 0, 1, 1, False, True)),
+                 ([{**read, "provider": "PRIVATE-other-provider"}], (1, 0, 1, 0, True, False)),
+                 ([read, read], (2, 2, 2, 2, None, None)))
+        fields = ("read_candidates", "read_exact_matches", "read_semantic_matches",
+                  "read_provider_matches", "read_unique_resource_matches", "read_unique_provider_matches")
+        for rows, expected in cases:
+            with self.subTest(expected=expected), tempfile.TemporaryDirectory() as directory, \
+                    patch.object(PROOF, "permission_actions_snapshot", return_value=[opposite, *rows]), \
+                    patch.object(PROOF, "chat_process_identity", return_value=(7, "start")):
+                phase = PROOF.permission_phase_observation(pathlib.Path(directory), "chat", 100)
+                with self.assertRaisesRegex(RuntimeError, "no unique current Read control"):
+                    with PROOF.permission_phase_sample(phase) as sample:
+                        PROOF.observe_hidden_permission_offer(
+                            "socket", original, opposite, "open-agent-conversation",
+                            access, access, (7, "start"), observation=sample)
+                receipt = json.loads(phase["path"].read_text())
+                self.assertEqual(tuple(receipt["samples"][0][field] for field in fields), expected)
+                self.assertFalse(receipt["private_content_recorded"])
+                self.assertNotIn("PRIVATE", json.dumps(receipt))
+
     def test_stale_immediate_errors_are_not_permission_refusals(self):
         action = self.permission_action()
         observed = PROOF.HiddenOfferObservation(PROOF.permission_offer_identity(action), 100)

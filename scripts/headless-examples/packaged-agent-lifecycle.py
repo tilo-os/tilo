@@ -55,11 +55,13 @@ PERMISSION_OBSERVATION_COUNTS = (
     "catalogue_pages", "catalogue_incomplete", "catalogue_stale", "catalogue_complete",
     "chat_processes", "windows", "nodes", "interface_queries", "headings", "notices",
     "retained", "mutable", "editable", "queue_tabs", "queue_buttons", "at_unobservable",
+    "read_candidates", "read_exact_matches", "read_semantic_matches", "read_provider_matches",
 )
 PERMISSION_OBSERVATION_FIELDS = PERMISSION_OBSERVATION_COUNTS + (
     "assignment_unexpired_start", "assignment_unexpired_after_catalogue", "assignment_unexpired_after_at",
     "catalogue_elapsed_ms", "at_elapsed_ms", "sample_elapsed_ms", "message_present", "queue_present",
     "at_attempted", "at_matched", "queue_control_present", "private_editor_state_matches",
+    "read_unique_resource_matches", "read_unique_provider_matches",
 )
 PERMISSION_WINDOW_COUNTS = (
     "heading_count", "notice_count", "retained_count", "send_message_count",
@@ -5405,7 +5407,7 @@ class HiddenOfferObservation(collections.namedtuple(
 
 
 def observe_hidden_permission_offer(socket, original, opposite, read_operation,
-                                    initial_access, current_access, initial_identity):
+                                    initial_access, current_access, initial_identity, *, observation=None):
     """Qualify hidden-address refusal using a current catalogue and mounted restriction.
 
     The caller obtains current_access only after the exact mounted restriction
@@ -5429,9 +5431,23 @@ def observe_hidden_permission_offer(socket, original, opposite, read_operation,
         raise RuntimeError("the permission-restricted offer is still visible")
     if not any(permission_offer_matches(row, opposite_identity) for row in catalogue):
         raise RuntimeError("the independent opposite-app offer is no longer visible")
-    read = [row for row in catalogue if row.get("operation") == read_operation
-            and all(row.get(field) == original[field]
+    candidates = [row for row in catalogue if row.get("operation") == read_operation
+                  and all(row.get(field) == original[field]
+                          for field in ("application", "room", "record"))]
+    read = [row for row in candidates
+            if all(row.get(field) == original[field]
                     for field in ("provider", "application", "room", "record", "resource"))]
+    if observation is not None:
+        permission_count(observation, "read_candidates", len(candidates))
+        permission_count(observation, "read_exact_matches", len(read))
+        permission_count(observation, "read_semantic_matches", sum(
+            row.get("semantic_identity") == original.get("semantic_identity") for row in candidates))
+        permission_count(observation, "read_provider_matches", sum(
+            row.get("provider") == original["provider"] for row in candidates))
+        observation["read_unique_resource_matches"] = (
+            candidates[0].get("resource") == original["resource"] if len(candidates) == 1 else None)
+        observation["read_unique_provider_matches"] = (
+            candidates[0].get("provider") == original["provider"] if len(candidates) == 1 else None)
     if len(read) != 1:
         raise RuntimeError("the same live resource has no unique current Read control")
     return HiddenOfferObservation(identity, time.monotonic())
@@ -7268,10 +7284,11 @@ def native_chat_write_downgrade(socket, room, record, person, output, size, proc
                 permission_phase_checkpoint(phase_observation, sample, "at")
 
     restricted_chat = wait_for("mounted Chat.Write restriction", chat_restricted, process)
-    observation = observe_hidden_permission_offer(
-        socket, stale_message, opposite, "open-agent-conversation",
-        message_access, restricted_chat, initial_identity,
-    )
+    with permission_phase_sample(phase_observation) as sample:
+        observation = observe_hidden_permission_offer(
+            socket, stale_message, opposite, "open-agent-conversation",
+            message_access, restricted_chat, initial_identity, observation=sample,
+        )
     message_refusal = require_stale_action_refused(
         socket, stale_message, {"value": message_draft}, process, observation=observation
     )
@@ -7366,10 +7383,11 @@ def native_task_write_downgrade(socket, room, record, person, output, size, proc
                 permission_phase_checkpoint(phase_observation, sample, "at")
 
     restricted_access, queue_restricted = wait_for("mounted Task.Write restriction", task_restricted, process)
-    observation = observe_hidden_permission_offer(
-        socket, stale_queue, opposite, "read-current-tasks",
-        queue_access, restricted_access, initial_identity,
-    )
+    with permission_phase_sample(phase_observation) as sample:
+        observation = observe_hidden_permission_offer(
+            socket, stale_queue, opposite, "read-current-tasks",
+            queue_access, restricted_access, initial_identity, observation=sample,
+        )
     queue_refusal = require_stale_action_refused(socket, stale_queue, {
         "instruction": queue_draft,
         "title": "Permission proof task",
