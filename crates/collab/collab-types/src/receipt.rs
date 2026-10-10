@@ -296,7 +296,29 @@ pub trait SurfaceSource: Send + Sync {
 #[derive(Clone, Default)]
 pub struct Surfaces(Option<std::sync::Arc<dyn SurfaceSource>>);
 
+fn process_surfaces() -> &'static std::sync::Mutex<Surfaces> {
+    static PROCESS: std::sync::OnceLock<std::sync::Mutex<Surfaces>> = std::sync::OnceLock::new();
+    PROCESS.get_or_init(std::sync::Mutex::default)
+}
+
 impl Surfaces {
+    /// The surfaces every receiver of this process decides with, as its host
+    /// set them once at startup ([`Self::set_process`]); none before.
+    #[must_use]
+    pub fn process() -> Self {
+        process_surfaces()
+            .lock()
+            .map(|surfaces| surfaces.clone())
+            .unwrap_or_default()
+    }
+
+    /// Decide every change this process receives with `surfaces`.
+    pub fn set_process(surfaces: Self) {
+        if let Ok(mut current) = process_surfaces().lock() {
+            *current = surfaces;
+        }
+    }
+
     /// Decide claims with `source`.
     #[must_use]
     pub fn from_source(source: std::sync::Arc<dyn SurfaceSource>) -> Self {

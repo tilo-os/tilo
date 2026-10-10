@@ -47,6 +47,10 @@ workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 tempfile.workspace = true
+# A commenter's comment, as the change a notes window makes.
+automerge.workspace = true
+blake3.workspace = true
+tilo-actions = { path = "../../collab/actions" }
 tilo-test-env = { path = "../../dev/test-env" }
 
 [lints]

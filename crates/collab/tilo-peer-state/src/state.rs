@@ -345,6 +345,7 @@ pub fn decide_with_surfaces(
     surfaces: collab_types::Surfaces,
     of: impl Fn(&str) -> Option<[u8; 32]> + Send + Sync + 'static,
 ) {
+    collab_types::Surfaces::set_process(surfaces.clone());
     if let Ok(mut defaults) = defaults().lock() {
         *defaults = (surfaces, AppSurfaces(Some(std::sync::Arc::new(of))));
     }

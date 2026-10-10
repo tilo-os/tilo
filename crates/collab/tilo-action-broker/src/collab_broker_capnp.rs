@@ -6440,7 +6440,7 @@ impl CapnpBrokerState {
                     &record,
                     None,
                     None,
-                    &collab_types::Surfaces::default(),
+                    &collab_types::Surfaces::process(),
                     &allows,
                 )
                 .is_ok_and(|receipt| receipt == collab_types::Receipt::Admit)
