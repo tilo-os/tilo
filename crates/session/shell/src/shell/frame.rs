@@ -5778,6 +5778,41 @@ mod tests {
         store.forget(POPUP);
     }
 
+    /// A window that was a tile before it went fullscreen keeps drawing over
+    /// the whole output: the tile's last configure must not leave it a
+    /// centred, tile-sized box floating above the desktop.
+    #[test]
+    fn a_fullscreen_client_that_was_a_tile_fills_the_output_not_its_old_box() {
+        const FULLSCREEN: u64 = 9_900_707;
+        const SIZE: (u32, u32) = (1600, 900);
+        let _env_lock = tilo_test_env::lock();
+        let store = crate::shell::foreign::store();
+        let pixels = [10, 20, 30, 255].repeat(SIZE.0.saturating_mul(SIZE.1) as usize);
+        store.publish_rgba(FULLSCREEN, &pixels, SIZE.0, SIZE.1);
+        // Its tile: the configure it last received, and so its extent.
+        store.note_placement(FULLSCREEN, Rect::new(780.0, 70.0, 1656.0, 620.0));
+        assert!(store.take_pending_configure(FULLSCREEN).is_some());
+        let output = Rect::new(0.0, 0.0, f64::from(SIZE.0), f64::from(SIZE.1));
+        let mut fb = FrameBuilder::new(SIZE);
+
+        // The overlay's configure, as `reconcile_fullscreen_overlay` sends it.
+        store.note_fullscreen_extent(FULLSCREEN, (1600, 900));
+        fb.set_fullscreen_surface(Some((FULLSCREEN, "Fullscreen".to_owned(), output)));
+        let frame = fb.paint_with_damage();
+        let candidate = frame
+            .scanout_candidate()
+            .expect("alone on top: no bar, wheel or strip chrome over it");
+        assert_eq!(candidate.origin, (0, 0));
+        assert!(candidate.covers((0, 0), SIZE), "it fills the output");
+        assert_eq!(
+            store.surface_origin(FULLSCREEN, output),
+            (0.0, 0.0),
+            "input addresses the output's corner"
+        );
+        fb.set_fullscreen_surface(None);
+        store.forget(FULLSCREEN);
+    }
+
     fn key_press(key: Key) -> WindowEvent {
         let event = ui::synthetic_input::key_event(key, None, ElementState::Pressed);
         WindowEvent::KeyboardInput {
