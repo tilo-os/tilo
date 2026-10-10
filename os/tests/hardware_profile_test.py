@@ -555,6 +555,60 @@ class HardwareProfileTest(unittest.TestCase):
                     hardware_profile.validate_definition(data)
 
 
+class FirmwareTrimContractTest(unittest.TestCase):
+    """Per-board firmware trimming (`firmware_exclude`) keeps what the board needs."""
+
+    ROOT = SCRIPT.parents[1]
+
+    def definition(self, **changes):
+        data = json.loads(json.dumps(LENOVO))
+        data.update(changes)
+        return data
+
+    def test_lenovo_drops_foreign_vendor_firmware_and_keeps_its_own(self):
+        data = hardware_profile.validate_definition(self.definition())
+        self.assertIn("nvidia-gpu-firmware", data["firmware_exclude"])
+        for kept in ("qcom-firmware", "atheros-firmware", "linux-firmware", "realtek-firmware"):
+            self.assertNotIn(kept, data["firmware_exclude"])
+        trees = [t for p in data["firmware_exclude"] for t in hardware_profile.FIRMWARE_PACKAGE_TREES[p]]
+        for path in [*data["system_firmware"], *data["firmware"].values()]:
+            for tree in trees:
+                self.assertFalse(path == tree or path.startswith(tree + "/"), (path, tree))
+
+    def test_unknown_duplicate_or_needed_packages_are_refused(self):
+        for bad, message in (
+            (["qcom-firmware"], "may not be removed"),
+            (["nvidia-gpu-firmware", "nvidia-gpu-firmware"], "unique"),
+            ("nvidia-gpu-firmware", "bounded package list"),
+            ([7], "may not be removed"),
+        ):
+            with self.subTest(bad=bad), self.assertRaisesRegex(ValueError, message):
+                hardware_profile.validate_definition(self.definition(firmware_exclude=bad))
+        needed = self.definition(firmware_exclude=["brcmfmac-firmware"],
+                                 system_firmware=[*LENOVO["system_firmware"], "brcm/brcmfmac43455-sdio.bin"])
+        with self.assertRaisesRegex(ValueError, "would remove firmware"):
+            hardware_profile.validate_definition(needed)
+        local = self.definition(firmware_exclude=["mt7xxx-firmware"],
+                                firmware={"a.bin": "mediatek/a.bin"})
+        with self.assertRaisesRegex(ValueError, "would remove firmware"):
+            hardware_profile.validate_definition(local)
+
+    def test_only_the_lenovo_board_trims_and_the_layer_applies_it(self):
+        profiles = self.ROOT / "hardware/profiles"
+        for path in profiles.glob("*.json"):
+            data = json.loads(path.read_text(encoding="utf-8"))
+            if data["id"] != "lenovo-83ed":
+                self.assertNotIn("firmware_exclude", data, path.name)
+        layer = (self.ROOT / "dev/install-board-layer.sh").read_text(encoding="utf-8")
+        self.assertIn("dnf remove -y --no-autoremove", layer)
+        self.assertIn("firmware_exclude", layer)
+        self.assertLess(layer.index("firmware_exclude"), layer.index("always_on=$"))
+        self.assertIn("system_firmware", layer)
+        # The qcom-firmware the Lenovo board needs is installed, never excluded.
+        containerfile = (self.ROOT / "Containerfile.board").read_text(encoding="utf-8")
+        self.assertIn("qcom-firmware", containerfile)
+
+
 class OrangePiWifiFirmwareTest(unittest.TestCase):
     """The Orange Pi profile carries its Wi-Fi driver and NVRAM into the
     initramfs, under the board-specific names brcmfmac asks for first, and
