@@ -2,6 +2,7 @@
 """Exercise actual private cohort assembly namespaces without compiling apps."""
 import importlib.util
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -216,6 +217,68 @@ class AssemblyNamespaces(unittest.TestCase):
         rows = ASSEMBLER.applications(SOURCE.parents[2])
         self.assertEqual(len(rows), len(list((SOURCE.parents[2]/'apps').glob('*/tilo-app.toml'))))
         self.assertEqual(len({row[2] for row in rows}), 1)
+
+
+class EngineRuntimeShips(unittest.TestCase):
+    """A swapped-in Browser brings the engine it pins, or the swap is refused."""
+    PUBLISHER = 'ab' * 32
+
+    def fixture(self, directory):
+        root = Path(directory)
+        stage = root / 'stage'
+        (stage / 'tree/usr/lib/tilo-runtime').mkdir(parents=True)
+        (stage / 'tree/usr/share/tilo').mkdir(parents=True)
+        (stage / 'work').mkdir()
+        tool = root / 'bundle'
+        tool.write_text('#!/bin/sh\necho "  publisher: ed25519:%s"\n' % self.PUBLISHER)
+        tool.chmod(0o755)
+        return stage, tool
+
+    def bundle(self, root, version):
+        (root / version).mkdir(parents=True)
+        (root / version / 'bundle.toml').write_text('')
+        (root / version / 'lib').mkdir()
+        (root / version / 'lib/tilo-chromium-host').write_text(version)
+
+    def pinned(self):
+        return ASSEMBLER.engine_pins(SOURCE.parents[2])
+
+    def test_the_browser_pins_exactly_the_engine_the_source_names(self):
+        source = (SOURCE.parents[2] / 'crates/sdk/ui-core/src/webview/chromium/runtime.rs').read_text()
+        version = re.search(r'pub const RUNTIME_REF: &str = "([^"]+)";', source).group(1)
+        self.assertEqual(self.pinned(), [version])
+
+    def test_a_host_bundle_of_the_pinned_version_ships_in_the_layer_and_is_trusted(self):
+        with tempfile.TemporaryDirectory() as directory:
+            stage, tool = self.fixture(directory)
+            host = Path(directory) / 'host'
+            version = self.pinned()[0].split('/', 1)[1]
+            self.bundle(host, version)
+            self.bundle(host, '2026.10.2-chromium')
+            ASSEMBLER.stage_engine_runtimes(SOURCE.parents[2], stage, tool, roots=[host],
+                                            fetch=lambda *_: self.fail('the host has it'))
+            shipped = sorted(p.name for p in (stage / 'tree/usr/lib/tilo-runtime').iterdir())
+            self.assertEqual(shipped, [version], 'only the pinned build, never the old ones')
+            self.assertEqual((stage / 'tree/usr/share/tilo/browser-runtime-publisher.hex').read_text(),
+                             self.PUBLISHER + '\n')
+
+    def test_a_missing_engine_is_fetched_and_a_missing_one_everywhere_refuses_the_cohort(self):
+        with tempfile.TemporaryDirectory() as directory:
+            stage, tool = self.fixture(directory)
+            version = self.pinned()[0].split('/', 1)[1]
+            asked = []
+
+            def fetch(reference, destination):
+                asked.append(reference)
+                self.bundle(destination, version)
+            ASSEMBLER.stage_engine_runtimes(SOURCE.parents[2], stage, tool, roots=[], fetch=fetch)
+            self.assertEqual(asked, self.pinned())
+            self.assertTrue((stage / 'tree/usr/lib/tilo-runtime' / version / 'bundle.toml').is_file())
+        with tempfile.TemporaryDirectory() as directory:
+            stage, tool = self.fixture(directory)
+            with self.assertRaises(ValueError):
+                ASSEMBLER.stage_engine_runtimes(SOURCE.parents[2], stage, tool, roots=[],
+                                                fetch=lambda *_: None)
 
 
 if __name__ == '__main__':
