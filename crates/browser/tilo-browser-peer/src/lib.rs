@@ -33,8 +33,6 @@ pub mod health;
 mod held_live;
 pub mod invite;
 pub mod live;
-#[cfg(feature = "net")]
-pub mod net;
 pub mod remote_page;
 pub mod session;
 #[cfg(feature = "toolkit")]
@@ -50,8 +48,6 @@ pub use custody::{
 pub use document::{ContentCipher, DocumentRoute, OpenedDocument, coalesce};
 pub use health::{PeerSnapshot, SessionHealth};
 pub use live::{LiveChange, LiveState, RemoteMember};
-#[cfg(feature = "net")]
-pub use net::NetHttp;
 pub use session::{
     Failure, FailureSubject, Host, LocalState, NodeCompletion, PAGE_FAILURE_CODES, PeerConfig,
     PeerEvent, PeerEvents, PeerHandle, PeerStatus, RoomsCompletion, TransportPhase,
