@@ -222,7 +222,7 @@ class AuthenticatedAgentNavigationTests(unittest.TestCase):
                 patch.object(PROOF, "accessible_subtree", return_value=tree), \
                 patch.object(client, "named", side_effect=named), \
                 patch.object(client, "role", return_value=(
-                    PROOF.AT_SPI_ROLE_BUTTON if wrong_role else PROOF.AT_SPI_ROLE_LIST_ITEM
+                    31 if wrong_role else 32  # AT-SPI wire roles: LIST / LIST_ITEM.
                 )), \
                 patch.object(client, "call", side_effect=extent), \
                 patch.object(PROOF.atspi, "extents_reply", side_effect=lambda rect: rect):
@@ -231,6 +231,7 @@ class AuthenticatedAgentNavigationTests(unittest.TestCase):
             )
 
     def test_exact_authenticated_rows_require_visible_list_item_extents(self):
+        self.assertEqual(PROOF.AT_SPI_ROLE_LIST_ITEM, 32)
         self.assertEqual(set(self.observe()), {"tide", "reed"})
         self.assertIsNone(self.observe(missing=True))
         self.assertIsNone(self.observe(zero_extent=True))

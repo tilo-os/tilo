@@ -47,7 +47,7 @@ AT_SPI_ROLE_HEADING = 83
 AT_SPI_ROLE_TAB = 37
 AT_SPI_ROLE_BUTTON = 43
 AT_SPI_ROLE_TOGGLE_BUTTON = 62
-AT_SPI_ROLE_LIST_ITEM = 31
+AT_SPI_ROLE_LIST_ITEM = 32
 # atspi_common::State::Enabled is ordinal 8 in the two-word state set.
 AT_SPI_ENABLED_STATE_BIT = 1 << 8
 
