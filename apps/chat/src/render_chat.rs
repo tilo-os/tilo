@@ -1752,7 +1752,7 @@ impl ChatApp {
         let groups =
             model::group_conversation_messages(&self.messages, self.direct_agent.is_some());
         let divider_h = nav_row_height(theme);
-        let (rows, total) = self.measure_message_rows(tr, theme, &groups, text_w, divider_h);
+        let (mut rows, total) = self.measure_message_rows(tr, theme, &groups, text_w, divider_h);
 
         // The origin is pinned to the newest edge. If a message arrives while
         // the reader is looking back through history, compensate for the new
@@ -1823,15 +1823,21 @@ impl ChatApp {
 
         if self.visible_message_rows != visible_rows {
             self.visible_message_rows = visible_rows;
-            let progress_changed = rows.iter().any(|row| {
+            // Visibility is established by this exact measured frame. Refresh
+            // the paint-only caption before drawing it so a newly visible
+            // canonical reply cannot share a frame with the older Saved
+            // receipt. `progress_layout_label` deliberately reserves the same
+            // height in either state, so this neither moves the timeline nor
+            // disturbs a reader's preserved scroll anchor.
+            let changed = refresh_progress_paint_labels(&mut rows, |id| {
                 self.messages
                     .iter()
-                    .find(|message| message.id == row.idx_id)
-                    .is_some_and(|message| {
-                        row.progress_label != self.agent_message_progress_label(message)
-                    })
+                    .find(|message| message.id == id)
+                    .and_then(|message| self.agent_message_progress_label(message))
             });
-            if progress_changed {
+            if changed {
+                // Keep canonical/accessibility publication conservative even
+                // though this frame already paints the corrected caption.
                 self.request_relayout();
             }
         }
@@ -4298,6 +4304,19 @@ struct RowM {
     edit_ctrl_h: f64,
 }
 
+fn refresh_progress_paint_labels(
+    rows: &mut [RowM],
+    mut label_for: impl FnMut(&str) -> Option<String>,
+) -> bool {
+    let mut changed = false;
+    for row in rows.iter_mut().filter(|row| !row.editing) {
+        let label = label_for(&row.idx_id);
+        changed |= row.progress_label != label;
+        row.progress_label = label;
+    }
+    changed
+}
+
 impl RowM {
     fn height(&self) -> f64 {
         let header = if self.show_header { self.header_h } else { 0.0 };
@@ -4354,7 +4373,7 @@ fn composer_slot(slots: &[Rect], index: usize) -> Rect {
 mod tests {
     use super::{
         AgentWorkLineStyle, AgentWorkPresentation, RowM, agent_task_run_state, media_face,
-        media_meta,
+        media_meta, refresh_progress_paint_labels,
     };
     use crate::model::{
         AgentReasoning, AgentRoute, AgentStep, AgentStepOutcome, AgentWork, AgentWorkState,
@@ -4607,6 +4626,39 @@ mod tests {
             row.height(),
             103.0,
             "an empty agent reply reserves its work card"
+        );
+    }
+
+    #[test]
+    fn current_reply_visibility_replaces_a_stale_progress_paint_label() {
+        fn row(id: &str, editing: bool) -> RowM {
+            RowM {
+                idx_id: id.into(),
+                show_header: false,
+                top_gap: 0.0,
+                pad: 0.0,
+                header_h: 0.0,
+                body_h: 0.0,
+                work_h: 0.0,
+                progress_label: Some("Reply saved; waiting for conversation".into()),
+                progress_h: 0.0,
+                resource_h: 0.0,
+                att_h: 0.0,
+                react_h: 0.0,
+                edited_h: 0.0,
+                thread_h: 0.0,
+                editing,
+                edit_ctrl_h: 0.0,
+            }
+        }
+
+        let mut rows = [row("request", false), row("editing", true)];
+        assert!(refresh_progress_paint_labels(&mut rows, |_| None));
+        assert_eq!(rows[0].progress_label, None);
+        assert_eq!(
+            rows[1].progress_label.as_deref(),
+            Some("Reply saved; waiting for conversation"),
+            "an editing row remains owned by its editor presentation"
         );
     }
 }

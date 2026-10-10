@@ -12,15 +12,13 @@ use crate::shell::state::WorkspaceAuthority as _;
 use getrandom::{SysRng, rand_core::UnwrapErr};
 use settings_store::display_mode::DisplayLayoutMode;
 use settings_store::hardware::ShortcutAction;
-use std::{cell::RefCell, collections::BTreeMap, rc::Rc};
+use std::{cell::RefCell, rc::Rc};
 use tilo_clock::unix_now;
 use ui::search::{FieldWeight, ListIndex};
 
 use crate::shell::chrome_state::{Chrome, ChromeState};
 use crate::shell::i18n::{t, t_args};
-use crate::shell::search::action_api::{
-    ActionArgs, ActionError, ActionHierarchy, ActionParam, ParamType,
-};
+use crate::shell::search::action_api::{ActionArgs, ActionError, ActionParam, ParamType};
 use crate::shell::search::{
     ResourceKind, SearchBudget, SearchContext, SearchCursor, SearchPage, SearchProvider,
     SearchResult,
@@ -441,148 +439,6 @@ fn apply_ownership_action(
         "ownership.cancel" => apply_ownership_cancellation(state),
         _ => Err(ActionError::Refused("unknown ownership action".into())),
     }
-}
-
-#[expect(
-    clippy::too_many_lines,
-    reason = "one dispatcher over every workspace governance action; each arm validates and applies a single operation"
-)]
-fn apply_permission_profile_action(
-    state: &ChromeState,
-    action_id: &str,
-    arguments: &ActionArgs,
-) -> Result<(), ActionError> {
-    let actor = state.active_local_user();
-    let mut tree = state.tree_mut();
-    let (workspace_id, room) = tree
-        .desktop
-        .active_workspace()
-        .map(|workspace| (workspace.id, workspace.room))
-        .ok_or_else(|| ActionError::Refused("no active workspace".into()))?;
-    if !tree.governs_room(room) {
-        return Err(ActionError::Refused(
-            "this device is not the workspace governance authority".into(),
-        ));
-    }
-    match action_id {
-        "profile.save" => {
-            let rules = serde_json::from_value::<Vec<collab_types::PermissionProfileRule>>(
-                serde_json::Value::Array(arguments.array("rules").unwrap_or_default().to_vec()),
-            )
-            .map_err(|error| ActionError::Refused(format!("invalid permission rules: {error}")))?;
-            let profile = collab_types::PermissionProfile {
-                name: arguments.text("name").unwrap_or_default().to_string(),
-                description: arguments
-                    .text("description")
-                    .unwrap_or_default()
-                    .to_string(),
-                rules,
-            };
-            tree.desktop
-                .active_workspace_mut()
-                .ok_or_else(|| ActionError::Refused("no active workspace".into()))?
-                .save_permission_profile_as(&actor, profile.clone())
-                .map_err(|error| ActionError::Refused(error.to_string()))?;
-            tree.doc_upsert_permission_profile(workspace_id, &profile);
-        }
-        "profile.assign" => {
-            let profile = arguments
-                .text("profile")
-                .map(str::trim)
-                .filter(|name| !name.is_empty())
-                .ok_or_else(|| ActionError::Refused("permission role is missing".into()))?;
-            let subject_id = arguments.text("subject").unwrap_or_default().trim();
-            if subject_id.is_empty() {
-                return Err(ActionError::Refused(
-                    "choose a collaborator, app, or agent identity".into(),
-                ));
-            }
-            let subject = match arguments
-                .text("subject_kind")
-                .unwrap_or_default()
-                .trim()
-                .to_ascii_lowercase()
-                .as_str()
-            {
-                "person" => collab_types::Subject::person(subject_id),
-                "app" => collab_types::Subject::app(subject_id),
-                "agent" => collab_types::Subject::agent(subject_id),
-                _ => {
-                    return Err(ActionError::Refused(
-                        "subject_kind must be person, app, or agent".into(),
-                    ));
-                }
-            };
-            let expiry = arguments
-                .integer("expires_unix")
-                .and_then(|value| u64::try_from(value).ok())
-                .filter(|value| *value > 0)
-                .map_or(collab_types::Expiry::Never, collab_types::Expiry::AtUnix);
-            let ids = tree
-                .desktop
-                .active_workspace_mut()
-                .ok_or_else(|| ActionError::Refused("no active workspace".into()))?
-                .assign_permission_profile_as(&actor, profile, &subject, expiry)
-                .map_err(|error| ActionError::Refused(error.to_string()))?;
-            let written = tree
-                .desktop
-                .active_workspace()
-                .map(|workspace| {
-                    workspace
-                        .capabilities
-                        .iter()
-                        .filter(|capability| ids.contains(&capability.id))
-                        .cloned()
-                        .collect::<Vec<_>>()
-                })
-                .unwrap_or_default();
-            for capability in written {
-                tree.doc_insert_capability(workspace_id, &capability);
-            }
-        }
-        tilo_desktop::workspace_settings::APP_ACTION_GRANT_ACTION_ID
-        | tilo_desktop::workspace_settings::APP_ACTION_REVOKE_ACTION_ID => {
-            use tilo_desktop::workspace_settings::PermissionProfileOperation;
-            let text = |name: &str| arguments.text(name).unwrap_or_default().to_string();
-            let operation =
-                if action_id == tilo_desktop::workspace_settings::APP_ACTION_GRANT_ACTION_ID {
-                    PermissionProfileOperation::GrantAppAction {
-                        app: text("app"),
-                        target_app: text("target_app"),
-                        resource: text("resource"),
-                        action: text("action"),
-                        lifetime: text("lifetime"),
-                    }
-                } else {
-                    PermissionProfileOperation::RevokeAppAction {
-                        app: text("app"),
-                        target_app: text("target_app"),
-                        resource: text("resource"),
-                        action: text("action"),
-                    }
-                };
-            let person = tree
-                .desktop
-                .active_workspace()
-                .ok_or_else(|| ActionError::Refused("no active workspace".into()))?
-                .actor_for_person(&actor);
-            crate::shell::workspace_governance::apply_app_action_operation(
-                &mut tree,
-                workspace_id,
-                &person,
-                &operation,
-            )
-            .map_err(ActionError::Refused)?;
-        }
-        _ => {
-            return Err(ActionError::Refused(
-                "unknown permission role action".into(),
-            ));
-        }
-    }
-    tree.queue_save();
-    drop(tree);
-    Ok(())
 }
 
 fn apply_ownership_proposal(
@@ -2893,9 +2749,6 @@ pub struct ActionsProvider {
     ranker: ListIndex,
     search_preferences: Option<crate::shell::search::SearchPreferencesHandle>,
     provider_catalog: Option<crate::shell::search::SearchProviderCatalogHandle>,
-    /// Semantic routes derived while surveying the current workspace, not by
-    /// making consumers decode opaque action addresses.
-    governance_hierarchies: RefCell<BTreeMap<String, ActionHierarchy>>,
     /// Every row this provider offers, built once per state they are built
     /// from rather than once per keystroke or lookup.
     catalogue: std::cell::RefCell<Option<Rc<Catalogue>>>,
@@ -2981,7 +2834,6 @@ impl ActionsProvider {
                 crate::shell::quick_settings::actions::QsActionAvailability::default(),
             )),
             ranker: ListIndex::default(),
-            governance_hierarchies: RefCell::default(),
             catalogue: std::cell::RefCell::default(),
             paged_query: RefCell::default(),
             #[cfg(test)]
@@ -2999,7 +2851,6 @@ impl ActionsProvider {
             provider_catalog: Some(provider_catalog),
             qs_actions,
             ranker: ListIndex::default(),
-            governance_hierarchies: RefCell::default(),
             catalogue: std::cell::RefCell::default(),
             paged_query: RefCell::default(),
             #[cfg(test)]
@@ -3054,9 +2905,6 @@ impl SearchProvider for ActionsProvider {
     }
     fn available_in_active_app_scope(&self) -> bool {
         true
-    }
-    fn action_hierarchy(&self, id: &str) -> Option<ActionHierarchy> {
-        self.governance_hierarchies.borrow().get(id).cloned()
     }
     /// An address is looked up in the whole table. The shell offers more
     /// actions than one palette page shows, so the first page of an empty
@@ -3329,7 +3177,6 @@ impl ActionsProvider {
                 "search-action-quick-settings-airplane-mode-set-enabled-subtitle",
             ),
         ];
-        self.governance_hierarchies.borrow_mut().clear();
         #[cfg(test)]
         self.builds.set(self.builds.get().wrapping_add(1));
         let mut out = Vec::new();
@@ -3943,73 +3790,6 @@ impl ActionsProvider {
                 }
             }
         }
-        let profile_resource = {
-            let tree = ctx.chrome.tree();
-            tree.desktop.active_workspace().map(|workspace| {
-                (
-                    workspace.room.to_string(),
-                    tilo_desktop::workspace_settings::permission_profile_resource(
-                        workspace, &actor,
-                    ),
-                )
-            })
-        };
-        if let Some((room, resource)) = profile_resource {
-            let mut surfaces = vec![(resource.id.as_str().to_string(), resource.actions)];
-            surfaces.extend(
-                resource
-                    .children
-                    .into_iter()
-                    .map(|child| (child.id.as_str().to_string(), child.actions)),
-            );
-            for (resource_id, actions) in surfaces {
-                for action in actions {
-                    let subtitle = action
-                        .description
-                        .clone()
-                        .unwrap_or_else(|| t("search-action-permission-roles-subtitle"));
-                    candidates.record(
-                        &action.label.to_lowercase(),
-                        &subtitle.to_lowercase(),
-                        &action.id,
-                    );
-                    let score = 0;
-                    let action_id = action.id.clone();
-                    let params = action.params().to_vec();
-                    self.governance_hierarchies.borrow_mut().insert(
-                        format!("{resource_id}#{}", action.id),
-                        ActionHierarchy {
-                            application: crate::shell::state::WORKSPACE_GOVERNANCE_APP_ID.into(),
-                            room: room.clone(),
-                            record: String::new(),
-                            resource: resource_id.clone(),
-                            semantic_identity: None,
-                            operation: action.id.clone(),
-                        },
-                    );
-                    out.push(SearchResult {
-                        kind: ResourceKind::Action,
-                        operation_kind: tilo_actions::OperationKind::Document,
-                        provider_id: self.id().to_string(),
-                        id: format!("{}#{}", resource_id, action.id),
-                        title: action.label,
-                        subtitle: Some(subtitle),
-                        badge: None,
-                        score,
-                        params,
-                        contract: Some(action.contract),
-                        on_open: Rc::new(move |_doc, _root, chrome: &Chrome, arguments| {
-                            let mut state = chrome.borrow_mut();
-                            apply_permission_profile_action(&state, &action_id, arguments)?;
-                            state.bump();
-                            Ok(())
-                        }),
-                        on_invoke: None,
-                        on_begin_invoke: None,
-                    });
-                }
-            }
-        }
         let mut source_switches = 0..0;
         if let Some(preferences) = &self.search_preferences {
             let id = "search.provider.set";
@@ -4122,73 +3902,6 @@ impl ActionsProvider {
                     });
                 }
                 source_switches.end = out.len();
-            }
-        }
-        let profile_resource = {
-            let tree = ctx.chrome.tree();
-            tree.desktop.active_workspace().map(|workspace| {
-                (
-                    workspace.room.to_string(),
-                    tilo_desktop::workspace_settings::permission_profile_resource(
-                        workspace, &actor,
-                    ),
-                )
-            })
-        };
-        if let Some((room, resource)) = profile_resource {
-            let mut surfaces = vec![(resource.id.as_str().to_string(), resource.actions)];
-            surfaces.extend(
-                resource
-                    .children
-                    .into_iter()
-                    .map(|child| (child.id.as_str().to_string(), child.actions)),
-            );
-            for (resource_id, actions) in surfaces {
-                for action in actions {
-                    let subtitle = action
-                        .description
-                        .clone()
-                        .unwrap_or_else(|| t("search-action-permission-roles-subtitle"));
-                    candidates.record(
-                        &action.label.to_lowercase(),
-                        &subtitle.to_lowercase(),
-                        &action.id,
-                    );
-                    let score = 0;
-                    let action_id = action.id.clone();
-                    let params = action.params().to_vec();
-                    self.governance_hierarchies.borrow_mut().insert(
-                        format!("{resource_id}#{}", action.id),
-                        ActionHierarchy {
-                            application: crate::shell::state::WORKSPACE_GOVERNANCE_APP_ID.into(),
-                            room: room.clone(),
-                            record: String::new(),
-                            resource: resource_id.clone(),
-                            semantic_identity: None,
-                            operation: action.id.clone(),
-                        },
-                    );
-                    out.push(SearchResult {
-                        kind: ResourceKind::Action,
-                        operation_kind: tilo_actions::OperationKind::Document,
-                        provider_id: self.id().to_string(),
-                        id: format!("{}#{}", resource_id, action.id),
-                        title: action.label,
-                        subtitle: Some(subtitle),
-                        badge: None,
-                        score,
-                        params,
-                        contract: Some(action.contract),
-                        on_open: Rc::new(move |_doc, _root, chrome: &Chrome, arguments| {
-                            let mut state = chrome.borrow_mut();
-                            apply_permission_profile_action(&state, &action_id, arguments)?;
-                            state.bump();
-                            Ok(())
-                        }),
-                        on_invoke: None,
-                        on_begin_invoke: None,
-                    });
-                }
             }
         }
         let mut by_id = std::collections::HashMap::with_capacity(out.len());
@@ -7553,17 +7266,89 @@ mod tests {
         }
     }
 
+    fn governance_row(
+        provider: &crate::shell::search::providers::LiveAppActionsProvider,
+        chrome: &Chrome,
+        doc: &AutoCommit,
+        action: &str,
+    ) -> SearchResult {
+        let started = std::time::Instant::now();
+        loop {
+            let state = chrome.borrow();
+            let page = provider.query_page(
+                SearchContext {
+                    query_scope: Some(crate::shell::chrome_state::SearchScope::All),
+                    include_programmatic: false,
+                    needle: action,
+                    wanted: &[ResourceKind::Action],
+                    chrome: &state,
+                    doc,
+                    doc_root: &automerge::ROOT,
+                },
+                None,
+                crate::shell::search::SearchBudget::PALETTE,
+            );
+            drop(state);
+            if let Some(row) = page.results.into_iter().find(|row| {
+                provider
+                    .action_hierarchy(&row.id)
+                    .is_some_and(|route| route.operation == action)
+            }) {
+                return row;
+            }
+            assert!(
+                started.elapsed() < std::time::Duration::from_secs(3),
+                "the actual broker governance row must arrive"
+            );
+            std::thread::yield_now();
+        }
+    }
+
+    fn invoke_governance_row(
+        row: &SearchResult,
+        chrome: &Chrome,
+        doc: &mut AutoCommit,
+        args: &ActionArgs,
+    ) {
+        let disposition = row
+            .on_begin_invoke
+            .as_ref()
+            .expect("governance uses broker admission")(
+            &mut ui::widget::Edits::lend(doc),
+            &automerge::ROOT,
+            chrome,
+            args,
+        )
+        .unwrap();
+        let crate::shell::search::InvocationDisposition::Pending(ticket) = disposition else {
+            panic!("governance requires the retained broker ticket");
+        };
+        let started = std::time::Instant::now();
+        loop {
+            if let Some(receipt) = ticket().unwrap() {
+                assert!(receipt.broker_invocation_id.is_some());
+                return;
+            }
+            assert!(
+                started.elapsed() < std::time::Duration::from_secs(3),
+                "the actual broker receipt must arrive"
+            );
+            std::thread::yield_now();
+        }
+    }
+
     #[test]
     fn governance_actions_publish_only_current_surveyed_semantic_routes() {
         let chrome = chrome_with_room();
-        let provider = ActionsProvider::new();
-        let save = action_results(&provider, &chrome)
-            .into_iter()
-            .find(|result| result.id.ends_with("#profile.save"))
-            .expect("the current workspace publishes its governance action");
-        let hierarchy = provider
-            .action_hierarchy(&save.id)
-            .expect("a published governance action exposes its semantic route");
+        let provider =
+            crate::shell::search::providers::LiveAppActionsProvider::new_with_fixture_identity(
+                crate::shell::broker_services::test_broker_with_membership(
+                    chrome.borrow().tree_handle(),
+                ),
+            );
+        let document = AutoCommit::new();
+        let save = governance_row(&provider, &chrome, &document, "profile.save");
+        let hierarchy = provider.action_hierarchy(&save.id).unwrap();
         let room = chrome
             .borrow()
             .tree()
@@ -7577,36 +7362,49 @@ mod tests {
         assert_eq!(hierarchy.resource, format!("workspace.permissions:{room}"));
         assert_eq!(hierarchy.operation, "profile.save");
         assert!(provider.action_hierarchy("unpublished-address").is_none());
-        {
-            let document = AutoCommit::new();
-            let state = chrome.borrow();
-            let resolved = provider
+        let state = chrome.borrow();
+        let resolved = provider
+            .resolve(
+                &save.id,
+                SearchContext {
+                    query_scope: None,
+                    include_programmatic: false,
+                    needle: "an unrelated query",
+                    wanted: &[ResourceKind::Action],
+                    chrome: &state,
+                    doc: &document,
+                    doc_root: &automerge::ROOT,
+                },
+            )
+            .expect("the retained broker catalogue resolves its exact address");
+        assert_eq!(resolved.id, save.id);
+        drop(state);
+        let no_workspace = chrome_rc();
+        let state = no_workspace.borrow();
+        assert!(
+            provider
                 .resolve(
                     &save.id,
                     SearchContext {
                         query_scope: None,
                         include_programmatic: false,
-                        needle: "an unrelated query",
+                        needle: "",
                         wanted: &[ResourceKind::Action],
                         chrome: &state,
                         doc: &document,
                         doc_root: &automerge::ROOT,
-                    },
+                    }
                 )
-                .expect("the retained catalogue resolves the permission-profile address");
-            assert_eq!(resolved.id, save.id);
-            assert_eq!(provider.builds.get(), 1);
-            assert_eq!(provider.action_hierarchy(&save.id).unwrap().room, room);
-        }
-        // Metadata describes the current survey, not an old workspace or an
-        // authorization cache. A later survey must retire the old address.
-        let no_workspace = chrome_rc();
-        assert!(
-            !action_results(&provider, &no_workspace)
-                .iter()
-                .any(|result| result.id == save.id)
+                .is_none(),
+            "an old workspace route is never reused"
         );
-        assert!(provider.action_hierarchy(&save.id).is_none());
+        drop(provider);
+        assert!(
+            action_results(&ActionsProvider::new(), &chrome)
+                .iter()
+                .all(|row| !row.id.contains("#profile.")),
+            "the builtin catalogue has no competing mutation path"
+        );
     }
 
     #[test]
@@ -7615,7 +7413,12 @@ mod tests {
 
         let chrome = chrome_with_room();
         let mut doc = AutoCommit::new();
-        let provider = ActionsProvider::new();
+        let provider =
+            crate::shell::search::providers::LiveAppActionsProvider::new_with_fixture_identity(
+                crate::shell::broker_services::test_broker_with_membership(
+                    chrome.borrow().tree_handle(),
+                ),
+            );
         let rules = serde_json::to_string(&vec![collab_types::PermissionProfileRule::grant(
             collab_types::Scope::Action {
                 app: "so.tilo.notes".into(),
@@ -7626,26 +7429,12 @@ mod tests {
         )])
         .unwrap();
 
-        let save = {
-            let state = chrome.borrow();
-            provider
-                .query(SearchContext {
-                    query_scope: None,
-                    include_programmatic: false,
-                    needle: "profile.save",
-                    wanted: &[ResourceKind::Action],
-                    chrome: &state,
-                    doc: &doc,
-                    doc_root: &automerge::ROOT,
-                })
-                .into_iter()
-                .find(|result| result.id.ends_with("#profile.save"))
-                .expect("the role creation action is headlessly discoverable")
-        };
+        let save = governance_row(&provider, &chrome, &doc, "profile.save");
         let save_args = ActionArgs::bind(
             &save.params,
             [
                 ("name".into(), ArgValue::Text("Notes reader".into())),
+                ("confirm".into(), ArgValue::Boolean(true)),
                 (
                     "description".into(),
                     ArgValue::Text("May inspect individual notes".into()),
@@ -7657,46 +7446,21 @@ mod tests {
             ],
         )
         .unwrap();
-        (save.on_open)(
-            &mut ui::widget::Edits::lend(&mut doc),
-            &automerge::ROOT,
-            &chrome,
-            &save_args,
-        )
-        .unwrap();
+        invoke_governance_row(&save, &chrome, &mut doc, &save_args);
 
-        let assign = {
-            let state = chrome.borrow();
-            provider
-                .query(SearchContext {
-                    query_scope: None,
-                    include_programmatic: false,
-                    needle: "assign permission role",
-                    wanted: &[ResourceKind::Action],
-                    chrome: &state,
-                    doc: &doc,
-                    doc_root: &automerge::ROOT,
-                })
-                .into_iter()
-                .find(|result| result.id.ends_with("#profile.assign"))
-                .expect("the new role immediately becomes assignable")
-        };
+        let assign = governance_row(&provider, &chrome, &doc, "profile.assign");
         let assign_args = ActionArgs::bind(
             &assign.params,
             [
                 ("profile".into(), ArgValue::Text("Notes reader".into())),
+                ("confirm".into(), ArgValue::Boolean(true)),
                 ("subject".into(), ArgValue::Text("researcher".into())),
                 ("subject_kind".into(), ArgValue::Text("agent".into())),
             ],
         )
         .unwrap();
-        (assign.on_open)(
-            &mut ui::widget::Edits::lend(&mut doc),
-            &automerge::ROOT,
-            &chrome,
-            &assign_args,
-        )
-        .unwrap();
+        invoke_governance_row(&assign, &chrome, &mut doc, &assign_args);
+        drop(provider);
 
         let state = chrome.borrow();
         let tree = state.tree();

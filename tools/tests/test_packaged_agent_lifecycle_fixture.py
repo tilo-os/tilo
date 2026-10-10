@@ -290,7 +290,7 @@ class CoherentAgentCatalogueTests(unittest.TestCase):
     def test_desktop_and_governance_positive_selectors_read_later_pages(self):
         task = {**self.member(), "id": "read-task", "record": "tasks",
                 "resource": "desktop:task:owned", "operation": "read"}
-        governance = {**task, "id": "profile-save", "application": "tilo.workspace",
+        governance = {**task, "provider": "app-actions", "id": "profile-save", "application": "tilo.workspace",
                       "resource": "workspace.permissions:room", "operation": "profile.save"}
         filler = [{**task, "id": f"other-{index}", "resource": f"other-{index}"}
                   for index in range(200)]
@@ -304,6 +304,21 @@ class CoherentAgentCatalogueTests(unittest.TestCase):
                 self.assertEqual(observe(), target)
             with patch.object(PROOF, "call", return_value=PermissionSnapshotTests.page([], settled=False)):
                 self.assertIsNone(observe())
+
+    def test_governance_requires_exact_broker_provenance_without_builtin_fallback(self):
+        broker = {**self.member(), "provider": "app-actions", "id": "broker-save",
+                  "application": "tilo.workspace", "resource": "workspace.permissions:room",
+                  "operation": "profile.save"}
+        builtin = {**broker, "provider": "actions", "id": "builtin-save"}
+        for rows, expected in (([builtin, broker], broker), ([broker, builtin], broker),
+                               ([builtin], None), ([], None)):
+            with self.subTest(rows=rows), patch.object(
+                    PROOF, "call", return_value=PermissionSnapshotTests.page(rows)):
+                self.assertEqual(PROOF.offered_governance_action("socket", "room", "profile.save"),
+                                 expected)
+        with patch.object(PROOF, "call", return_value=PermissionSnapshotTests.page([builtin, broker, broker])):
+            with self.assertRaisesRegex(RuntimeError, "ambiguous workspace governance"):
+                PROOF.offered_governance_action("socket", "room", "profile.save")
 
     def test_canonical_saved_request_and_reply_read_actual_later_page(self):
         read = {**self.member(), "provider": "chat", "id": "read-messages",
@@ -4110,7 +4125,7 @@ class PresentedEditorTargetTests(unittest.TestCase):
         resource = "tilo-ui-bound:v1:host:current:opaque-category"
         target = {"application": "so.tilo.chat", "room": "room-a",
                   "operation": "rename", "resource": resource}
-        rows = [{"application": "tilo.workspace", "room": "room-a",
+        rows = [{"provider": "app-actions", "application": "tilo.workspace", "room": "room-a",
                  "resource": "workspace.permissions:room-a", "operation": operation,
                  "id": operation} for operation in ("profile.save", "profile.assign")]
         requests = []
@@ -4150,11 +4165,11 @@ class PresentedEditorTargetTests(unittest.TestCase):
 
     def test_marker_stage_uses_real_governance_and_accessibility_doors(self):
         rows = [{
-            "application": "tilo.workspace", "room": "room-a",
+            "provider": "app-actions", "application": "tilo.workspace", "room": "room-a",
             "resource": "workspace.permissions:room-a", "operation": "profile.save",
             "id": "save",
         }, {
-            "application": "tilo.workspace", "room": "room-b",
+            "provider": "app-actions", "application": "tilo.workspace", "room": "room-b",
             "resource": "workspace.permissions:room-b", "operation": "profile.save",
             "id": "foreign",
         }]

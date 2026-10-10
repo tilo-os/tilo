@@ -6485,11 +6485,9 @@ mod tests {
                 .as_deref(),
             Some("Reply saved; waiting for conversation")
         );
-        render_frame(
-            &mut app.agent_surfaces.get_mut(&channel).unwrap().view,
-            720.0,
-            640.0,
-        );
+        let view = &mut app.agent_surfaces.get_mut(&channel).unwrap().view;
+        let _ = view.take_relayout_request();
+        render_frame(view, 720.0, 640.0);
         let surface = &app.agent_surfaces[&channel];
         let request = surface
             .view
@@ -6498,6 +6496,14 @@ mod tests {
             .find(|message| message.id == request_row)
             .expect("painted request");
         assert_eq!(surface.view.agent_message_progress_label(request), None);
+        assert!(
+            app.agent_surfaces
+                .get_mut(&channel)
+                .unwrap()
+                .view
+                .take_relayout_request(),
+            "the current frame corrects the stale paint label and schedules canonical propagation"
+        );
         write_progress_shots(
             &mut app.agent_surfaces.get_mut(&channel).unwrap().view,
             "reply-visible-detached",

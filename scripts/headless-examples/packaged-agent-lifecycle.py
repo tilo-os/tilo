@@ -5123,12 +5123,13 @@ def offered_desktop_action(socket, room, record, resource, operation):
 
 
 def offered_governance_action(socket, room, operation):
-    """Select the owner-published governance door without constructing its id."""
+    """Select the authenticated broker governance door, never the direct route."""
     snapshot = permission_actions_snapshot(socket)
     if snapshot is None:
         return None
     matches = [row for row in snapshot
-               if row.get("application") == "tilo.workspace"
+               if row.get("provider") == "app-actions"
+               and row.get("application") == "tilo.workspace"
                and row.get("room") == room
                and row.get("resource") == f"workspace.permissions:{room}"
                and row.get("operation") == operation]

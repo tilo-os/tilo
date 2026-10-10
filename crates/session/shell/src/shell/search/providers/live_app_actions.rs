@@ -4043,6 +4043,9 @@ mod tests {
         let doc = AutoCommit::new();
         let mut registry = SearchRegistry::new();
         registry.register(provider.clone());
+        registry.register(Rc::new(
+            crate::shell::search::providers::ActionsProvider::new(),
+        ));
 
         for authority_changed in [false, true] {
             if authority_changed {
@@ -4095,6 +4098,36 @@ mod tests {
             let hierarchy = provider.action_hierarchy(&row.id).unwrap();
             assert_eq!(hierarchy.application, "tilo.workspace");
             assert_eq!(hierarchy.operation, "profile.save");
+            finish_local_index(&provider, &ctx);
+            let catalogue = crate::shell::search::action_api::ActionCatalog::build_query(
+                &registry,
+                &args,
+                &crate::shell::search::action_api::AllVisible,
+                false,
+            );
+            assert!(
+                catalogue.is_complete(),
+                "the unchanged combined catalogue exhausts both providers"
+            );
+            let rows = catalogue.enumerate();
+            let profiles = rows
+                .iter()
+                .filter(|row| {
+                    row.hierarchy.as_ref().is_some_and(|route| {
+                        route.application == "tilo.workspace"
+                            && route.room == hierarchy.room
+                            && route.resource == hierarchy.resource
+                            && route.operation == "profile.save"
+                    })
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(
+                profiles.len(),
+                1,
+                "one governed capability has exactly one public route"
+            );
+            assert_eq!(profiles[0].resource.provider, PROVIDER_ID);
+
             assert!(provider.service_pending.borrow().is_empty());
             finish_local_index(&provider, &ctx);
             assert!(
@@ -4692,6 +4725,16 @@ mod tests {
         assert!(
             provider.action_hierarchy(&fresh_row.id).is_none(),
             "a refreshed context retires the old cached hierarchy"
+        );
+        let builtin = crate::shell::search::providers::ActionsProvider::new();
+        assert!(
+            builtin
+                .resolve(
+                    &format!("{}#profile.save", hierarchy.resource),
+                    context("", &chrome.borrow(), &doc),
+                )
+                .is_none(),
+            "authority refusal cannot fall back to a local mutation"
         );
     }
 
