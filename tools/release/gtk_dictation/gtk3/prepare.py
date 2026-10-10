@@ -66,6 +66,9 @@ def prepare(archive, history, out):
         "compiled": False,
         "installed": False,
         "production_ready": False,
+        "owner_registration_required": True,
+        "native_accessibility_qualified": False,
+        "semantic_history_qualified": False,
     }
     (out / "preparation-receipt.json").write_text(json.dumps(receipt, indent=2) + "\n")
     print(tree)
