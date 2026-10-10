@@ -1301,7 +1301,7 @@ impl<R: Resource, H: 'static, E: Effect> EffectRunner<R, H, E> {
         op.check()?;
         let effect = E::from_payload(request.payload)?;
         let id = effect.id();
-        let declaration = E::declarations().into_iter().find(|decl| decl.id == id);
+        let declaration = E::declaration(id);
         // A view only changes what its caller sees and is admitted as one;
         // an effect invoked as a view would skip the checks an effect gets.
         if declaration.as_ref().map(|decl| decl.kind) != Some(request.kind) {

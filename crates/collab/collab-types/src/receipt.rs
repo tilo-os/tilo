@@ -170,7 +170,10 @@ fn published_kind(
 ) -> Result<ActionKind, ReceiptRefusal> {
     match action {
         ClaimedAction::Verb { action, .. } => {
-            if action.app != record.app || action.kind != surface.kind() {
+            // A continuation names its verb alone: the record's app and kind.
+            if (!action.app.is_empty() && action.app != record.app)
+                || (!action.kind.is_empty() && action.kind != surface.kind())
+            {
                 return Err(ReceiptRefusal::NotPublished(format!("{action}")));
             }
             surface
@@ -485,7 +488,9 @@ fn claimed_kind(claims: &[ChangeClaim]) -> Option<&str> {
         .iter()
         .flat_map(|claim| claim.action.members())
         .find_map(|action| match action {
-            ClaimedAction::Verb { action, .. } => Some(action.kind.as_str()),
+            ClaimedAction::Verb { action, .. } if !action.kind.is_empty() => {
+                Some(action.kind.as_str())
+            }
             ClaimedAction::Edit { kind, .. } if !kind.is_empty() => Some(kind.as_str()),
             _ => None,
         })

@@ -11,7 +11,7 @@ version = 1
 owner = "file-explorer"
 path = "places"
 stored = "collection"
-title = "The bookmarked places, in order. Each is stored under an id derived"
+title = "The bookmarked places, in order"
 type = "Collection<Bookmark>"
 
 [[resources.fields]]
@@ -357,23 +357,6 @@ type = "string"
 
 [resources.verbs.params.schema.properties.restore]
 type = "boolean"
-
-[[resources.verbs]]
-description = "Record that the native host took back transfers before it could answer (a restart, a killed process): the pending reverts of those transfers settle as done, from the host's durable receipts."
-id = "record-recovered-undos"
-kind = "undoable"
-label = "Recover clipboard transfers"
-
-[[resources.verbs.params]]
-name = "operations"
-required = true
-
-[resources.verbs.params.schema]
-description = "Clipboard operations the host's durable receipts show taken back"
-type = "array"
-
-[resources.verbs.params.schema.items]
-type = "string"
 
 [[resources.verbs]]
 description = "Take back a filesystem change: the device that made it compensates what it recorded, in reverse order."

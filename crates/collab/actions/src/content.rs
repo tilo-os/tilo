@@ -10,7 +10,9 @@
 //! app surface has not arrived is.
 //!
 //! A reference is the JSON object `{"tilo.content/1": "<hash>", "as":
-//! "text" | "bytes"}` in place of the string or byte array it stands for.
+//! "text" | "bytes" | "json"}` in place of the string, byte array, or
+//! array or object (a long list of small parts: a pasted book's
+//! paragraphs) it stands for.
 
 use serde_json::{Map, Value};
 use tilo_content::ContentInputs;
@@ -26,6 +28,7 @@ pub const CONTENT_PART_THRESHOLD: usize = 16 * 1024;
 const AS: &str = "as";
 const TEXT: &str = "text";
 const BYTES: &str = "bytes";
+const JSON: &str = "json";
 
 /// Content a recorded action names that is not here yet.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
@@ -88,7 +91,23 @@ impl EncodedAction {
                 source,
             })?;
         let mut content = ContentInputs::new();
-        externalize(&mut value, threshold, &mut content)?;
+        // The payload's own shape stays inline; only its parts are kept.
+        match &mut value {
+            Value::Object(object) => {
+                if object.contains_key(CONTENT_REFERENCE_KEY) {
+                    return Err(reserved());
+                }
+                for item in object.values_mut() {
+                    externalize(item, threshold, &mut content)?;
+                }
+            }
+            Value::Array(items) => {
+                for item in items {
+                    externalize(item, threshold, &mut content)?;
+                }
+            }
+            other => externalize(other, threshold, &mut content)?,
+        }
         let payload = serde_json::to_vec(&value).map_err(ActionError::Encode)?;
         Ok((
             Self {
@@ -150,6 +169,12 @@ fn byte_run(items: &[Value]) -> Option<Vec<u8>> {
         .collect()
 }
 
+fn reserved() -> ActionError {
+    ActionError::Refused(format!(
+        "an action payload may not use the key {CONTENT_REFERENCE_KEY}"
+    ))
+}
+
 fn externalize(
     value: &mut Value,
     threshold: usize,
@@ -159,15 +184,16 @@ fn externalize(
         Value::String(text) if text.len() >= threshold => {
             let hash = content.add(std::mem::take(text).into_bytes());
             *value = reference(hash, TEXT);
+            return Ok(());
         }
         Value::Array(items) if items.len() >= threshold => {
             if let Some(bytes) = byte_run(items) {
                 let hash = content.add(bytes);
                 *value = reference(hash, BYTES);
-            } else {
-                for item in items {
-                    externalize(item, threshold, content)?;
-                }
+                return Ok(());
+            }
+            for item in items {
+                externalize(item, threshold, content)?;
             }
         }
         Value::Array(items) => {
@@ -177,15 +203,19 @@ fn externalize(
         }
         Value::Object(object) => {
             if object.contains_key(CONTENT_REFERENCE_KEY) {
-                return Err(ActionError::Refused(format!(
-                    "an action payload may not use the key {CONTENT_REFERENCE_KEY}"
-                )));
+                return Err(reserved());
             }
             for item in object.values_mut() {
                 externalize(item, threshold, content)?;
             }
         }
-        _ => {}
+        _ => return Ok(()),
+    }
+    // A long list of small parts is long all the same: kept whole.
+    let encoded = serde_json::to_vec(value).map_err(ActionError::Encode)?;
+    if encoded.len() >= threshold {
+        let hash = content.add(encoded);
+        *value = reference(hash, JSON);
     }
     Ok(())
 }
@@ -197,7 +227,7 @@ fn referenced(object: &Map<String, Value>) -> Option<(&str, &str)> {
     }
     let hash = object.get(CONTENT_REFERENCE_KEY)?.as_str()?;
     let kind = object.get(AS)?.as_str()?;
-    (tilo_content::valid_hash(hash) && (kind == TEXT || kind == BYTES)).then_some((hash, kind))
+    (tilo_content::valid_hash(hash) && matches!(kind, TEXT | BYTES | JSON)).then_some((hash, kind))
 }
 
 fn collect(value: &Value, hashes: &mut Vec<String>) {
@@ -222,10 +252,16 @@ fn internalize(
                 let bytes = read(hash)
                     .filter(|bytes| tilo_content::verify(&hash.to_ascii_lowercase(), bytes))
                     .ok_or_else(missing)?;
-                *value = if kind == TEXT {
-                    Value::String(String::from_utf8(bytes).map_err(|_| missing())?)
-                } else {
-                    Value::Array(bytes.into_iter().map(Value::from).collect())
+                *value = match kind {
+                    TEXT => Value::String(String::from_utf8(bytes).map_err(|_| missing())?),
+                    JSON => {
+                        let mut part: Value =
+                            serde_json::from_slice(&bytes).map_err(|_| missing())?;
+                        // A part kept whole may hold parts kept on their own.
+                        internalize(&mut part, read)?;
+                        part
+                    }
+                    _ => Value::Array(bytes.into_iter().map(Value::from).collect()),
                 };
                 return Ok(());
             }
@@ -287,6 +323,28 @@ mod tests {
                 .unwrap()
                 .is_err()
         );
+    }
+
+    /// A long list of small parts (a pasted book's paragraphs) is kept
+    /// whole and comes back exactly; the payload's own shape stays inline.
+    #[test]
+    fn a_long_list_of_small_parts_is_kept_whole() {
+        let paragraphs: Vec<Value> = (0..4_000)
+            .map(|n| serde_json::json!({ "kind": "paragraph", "text": format!("Paragraph {n}") }))
+            .collect();
+        let original = action(&serde_json::json!({ "paste": { "blocks": paragraphs }, "at": 1 }));
+        let (recorded, content) = original.with_content_parts(CONTENT_PART_THRESHOLD).unwrap();
+        assert!(recorded.payload.len() < 1024, "the payload names its parts");
+        let shape: Value = serde_json::from_slice(&recorded.payload).unwrap();
+        assert_eq!(shape["at"], 1);
+        assert_eq!(recorded.content_parts().len(), content.len());
+        let resolved = recorded
+            .resolve_content(&|hash| content.get(hash).map(<[u8]>::to_vec))
+            .unwrap()
+            .unwrap();
+        let back: Value = serde_json::from_slice(&resolved.payload).unwrap();
+        let want: Value = serde_json::from_slice(&original.payload).unwrap();
+        assert_eq!(back, want);
     }
 
     #[test]

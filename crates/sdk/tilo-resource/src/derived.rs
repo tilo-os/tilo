@@ -319,7 +319,13 @@ impl<R: Resource> Derived<R> {
 
     fn publish_under(&self, parent: &str) -> tilo_actions::Resource {
         let id = format!("{parent}/{}", self.id);
-        let declarations = R::declarations();
+        // Built only when a verb is bound here: a long list of derived
+        // places offering effects alone stays cheap to publish.
+        let declarations = if self.actions.is_empty() {
+            Vec::new()
+        } else {
+            R::declarations()
+        };
         let kind = self.kind.as_deref().unwrap_or("derived");
         let mut child =
             tilo_actions::Resource::new(&id, format!("{}.{kind}", R::KIND), &self.label);

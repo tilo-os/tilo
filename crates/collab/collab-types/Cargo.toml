@@ -45,9 +45,10 @@ automerge.workspace = true
 tilo-resource = { version = "0.1.0", path = "../../sdk/tilo-resource" }
 toml.workspace = true
 blake3.workspace = true
+# A continuation's claim is read from its action's JSON payload.
+serde_json.workspace = true
 
 [dev-dependencies]
-serde_json.workspace = true
 
 [[test]]
 name = "it"

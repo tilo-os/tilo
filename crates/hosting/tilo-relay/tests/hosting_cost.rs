@@ -61,11 +61,12 @@ const DOCUMENT_CHARS: usize = 10_000;
 
 /// Ceiling for the median one-character keystroke frame on `tilo-relay/5`:
 /// 481 B measured on Linux CI before every change named its action, plus
-/// the keystroke's entry in the change (a field edit, ~170 B; a cleartext
-/// op carries no second copy of it). Measured here: 655 B.
-const BUDGET_COMPACT_FRAME_P50_BYTES: u64 = 660;
-/// Ceiling for the largest such frame: measured 663 B, plus 5 %.
-const BUDGET_COMPACT_FRAME_MAX_BYTES: u64 = 697;
+/// the keystroke's compact continuation of its word's gesture (~60 B; a
+/// cleartext op carries no second copy of it). Measured here: 544 B.
+const BUDGET_COMPACT_FRAME_P50_BYTES: u64 = 550;
+/// Ceiling for the largest such frame, a word's first keystroke carrying
+/// the gesture's full entry: measured 897 B, plus 5 %.
+const BUDGET_COMPACT_FRAME_MAX_BYTES: u64 = 942;
 
 /// A raw subscriber on one ALPN, reading the exact bytes the relay writes.
 struct RawSubscriber {
@@ -195,6 +196,56 @@ fn delta_fields(frame: EnvelopeV2) -> DeltaFields {
         },
         other => panic!("not a delta frame: {other:?}"),
     }
+}
+
+/// Typing one character at the end of the body, as an app's text control
+/// does: through the executor, as its writer's step in the gesture of the
+/// word it types. A word is eight keystrokes; every keystroke after a word's
+/// first continues its gesture.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+struct Type(String);
+
+impl tilo_actions::Action for Type {
+    fn apply(&self, doc: &mut tilo_actions::Doc) -> Result<(), tilo_actions::ActionError> {
+        let Some((_, body)) = doc.get(ROOT, "body")? else {
+            return Err(tilo_actions::ActionError::Refused("no body".into()));
+        };
+        let end = doc.length(&body);
+        doc.splice_text(&body, end, 0, &self.0)?;
+        Ok(())
+    }
+}
+
+const WORD_KEYSTROKES: usize = 8;
+
+fn type_one(doc: &mut AutoCommit, typed: usize) {
+    let word = typed / WORD_KEYSTROKES;
+    let gesture = tilo_actions::ActionId(uuid::Uuid::from_u128(
+        u128::try_from(word).unwrap().saturating_add(1),
+    ));
+    let context = tilo_actions::ActionContext {
+        what: Some(tilo_actions::Did::Edit(tilo_actions::FieldEdit {
+            ty: "fixture".into(),
+            field: "body".into(),
+            path: vec![tilo_actions::PathStep::Field("body".into())],
+            op: tilo_actions::EditOp::Splice,
+            old: None,
+            new: None,
+            args: std::collections::BTreeMap::new(),
+        })),
+        gesture: Some(gesture),
+        ..tilo_actions::ActionContext::for_resource("fixture", "fixture", "Fixture")
+    };
+    let action = Type("a".into());
+    tilo_actions::dispatch_by_with_context(
+        doc,
+        &action,
+        tilo_actions::EncodedAction::encode("fixture.type", &action).unwrap(),
+        &mut tilo_actions::LocalTransport::new(),
+        Some(&[3; 32]),
+        context,
+    )
+    .unwrap();
 }
 
 fn text_document(actor: u8) -> Vec<u8> {
@@ -367,11 +418,8 @@ async fn one_keystroke_costs_the_host_bounded_bytes_on_the_wire_and_disk() {
         let route = keystroke % ROUTES.len();
         let (app, record) = ROUTES[route];
         let doc = &mut documents[route];
-        let body = doc.get(ROOT, "body").unwrap().unwrap().1;
         let heads = doc.get_heads();
-        let end = doc.length(&body);
-        doc.splice_text(&body, end, 0, "a").unwrap();
-        doc.commit_edit("fixture", "fixture");
+        type_one(doc, keystroke / ROUTES.len());
         let change = doc.save_after(&heads);
         change_bytes.push(change.len() as u64);
         let message = owner

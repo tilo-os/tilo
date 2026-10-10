@@ -628,7 +628,6 @@ file-explorer-trash = Moved files to Trash
 file-explorer-move = Moved files to { $to }
 file-explorer-copy = Copied files to { $to }
 file-explorer-revert = Took back a change to files
-file-explorer-record-recovered-undos = Recovered interrupted clipboard transfers
 
 files-native-trash-delete-unavailable = These items can be restored. Permanent deletion is unavailable here.
 files-user-trash-unavailable = Your Trash isn’t available in this workspace.

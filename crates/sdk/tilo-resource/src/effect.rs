@@ -94,6 +94,13 @@ pub trait Effect: Sized + 'static {
     /// One declaration per effect, in order.
     fn declarations() -> Vec<EffectDecl>;
 
+    /// The declaration of the effect `id`, built alone: what binding one
+    /// effect to an item reads, so offering it on many items costs one
+    /// declaration each, not the whole vocabulary.
+    fn declaration(id: &str) -> Option<EffectDecl> {
+        Self::declarations().into_iter().find(|decl| decl.id == id)
+    }
+
     /// This effect's id among the declarations.
     fn id(&self) -> &'static str;
 
@@ -137,7 +144,7 @@ pub trait Effect: Sized + 'static {
             type_id: Self::OPERATION.to_owned(),
             payload: Vec::new(),
         });
-        match Self::declarations().into_iter().find(|decl| decl.id == id) {
+        match Self::declaration(id) {
             Some(decl) => decl.spec_with(Self::OPERATION, Vec::new(), move |_| encoded.clone()),
             None => ActionSpec::typed_operation(
                 id,
@@ -156,9 +163,7 @@ pub trait Effect: Sized + 'static {
     /// *this* file, to a name the caller gives. The bound arguments are this
     /// effect's own; an asked one the caller supplies replaces it.
     fn bound_asking(&self, asking: &[&str]) -> ActionSpec {
-        let params = Self::declarations()
-            .into_iter()
-            .find(|decl| decl.id == self.id())
+        let params = Self::declaration(self.id())
             .map(|decl| {
                 decl.params
                     .into_iter()
@@ -174,7 +179,7 @@ pub trait Effect: Sized + 'static {
     /// file as the choices of `app`.
     fn bound_asking_params(&self, params: Vec<ActionParam>) -> ActionSpec {
         let id = self.id();
-        let Some(decl) = Self::declarations().into_iter().find(|decl| decl.id == id) else {
+        let Some(decl) = Self::declaration(id) else {
             return self.bound();
         };
         let bound = self.arguments();

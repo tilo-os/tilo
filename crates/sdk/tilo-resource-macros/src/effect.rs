@@ -237,6 +237,7 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
         .any(|variant| !matches!(variant.fields, Fields::Unit));
 
     let mut decls = Vec::new();
+    let mut decl_ids: Vec<String> = Vec::new();
     let mut ids = Vec::new();
     let mut encodes = Vec::new();
     let mut decodes = Vec::new();
@@ -420,6 +421,7 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
         } else {
             quote!(Effect)
         };
+        decl_ids.push(id.clone());
         decls.push(quote! {
             #krate::effect::EffectDecl {
                 id: #id,
@@ -518,6 +520,13 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
 
             fn declarations() -> ::std::vec::Vec<#krate::effect::EffectDecl> {
                 ::std::vec![#(#decls),*]
+            }
+
+            fn declaration(id: &str) -> ::core::option::Option<#krate::effect::EffectDecl> {
+                match id {
+                    #(#decl_ids => ::core::option::Option::Some(#decls),)*
+                    _ => ::core::option::Option::None,
+                }
             }
 
             fn id(&self) -> &'static str {

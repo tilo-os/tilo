@@ -149,24 +149,11 @@ enum AppChoice {
 }
 
 impl AppChoice {
-    /// The field edit turning this choice of `app`, whose rule is `rule`,
-    /// on or off: the one field of its rule, the rest untouched; the rule
-    /// whole, with only this choice made, where the app has none yet.
-    fn edit(
-        self,
-        app: &str,
-        rule: Option<&AppNotificationRule>,
-        on: bool,
-    ) -> tilo_resource::Edit<NotificationPrefs> {
-        let rules = NotificationPrefs::paths().per_app;
-        if rule.is_none() {
-            let mut made = AppNotificationRule::default();
-            self.make(&mut made, on);
-            return rules
-                .child::<AppNotificationRule>(tilo_resource::Segment::Key(app.to_owned()))
-                .set(made);
-        }
-        let rule = rules.key(app);
+    /// The field edit turning this choice of `app` on or off: the one field
+    /// of its rule, the rest untouched (a rule the app has none of yet
+    /// starts from the default).
+    fn edit(self, app: &str, on: bool) -> tilo_resource::Edit<NotificationPrefs> {
+        let rule = NotificationPrefs::paths().per_app.key(app);
         match self {
             Self::Banners => rule.banners.set(Some(on)),
             Self::Previews => rule.previews.set(Some(on)),
@@ -174,18 +161,6 @@ impl AppChoice {
             Self::Badges => rule.badges.set(Some(on)),
             Self::Priority => rule.priority.set(on),
             Self::PriorityContacts => rule.priority_contacts.set(on),
-        }
-    }
-
-    /// Make this choice in `rule`.
-    fn make(self, rule: &mut AppNotificationRule, on: bool) {
-        match self {
-            Self::Banners => rule.banners = Some(on),
-            Self::Previews => rule.previews = Some(on),
-            Self::Sounds => rule.sounds = Some(on),
-            Self::Badges => rule.badges = Some(on),
-            Self::Priority => rule.priority = on,
-            Self::PriorityContacts => rule.priority_contacts = on,
         }
     }
 
@@ -268,8 +243,7 @@ fn sample_apps() -> Vec<InstalledNotificationApp> {
 /// flip of what applies to it now, and its mute lifted or set, all changes
 /// of the app's rule in the notification section.
 fn app_row(cx: &PaneCx, prefs: &NotificationPrefs, app: &InstalledNotificationApp) -> LiveRow {
-    let stored = prefs.per_app.get(&app.id);
-    let rule = stored.copied().unwrap_or_default();
+    let rule = prefs.per_app.get(&app.id).copied().unwrap_or_default();
     let flips = [
         (
             AppChoice::Banners,
@@ -312,11 +286,7 @@ fn app_row(cx: &PaneCx, prefs: &NotificationPrefs, app: &InstalledNotificationAp
     let offered = flips
         .into_iter()
         .map(|(choice, on, noun)| {
-            tilo_resource::ActionDecl::edit(
-                choice.id(),
-                flip(on, noun),
-                choice.edit(&app.id, stored, on),
-            )
+            tilo_resource::ActionDecl::edit(choice.id(), flip(on, noun), choice.edit(&app.id, on))
         })
         .chain(mute);
     offered.fold(
@@ -611,12 +581,11 @@ impl NotificationsPane {
         choice: AppChoice,
     ) -> El {
         let id = format!("notifications.app.{app}.{field}");
-        let rule = self.prefs().per_app.get(app).copied();
         let app = app.to_owned();
         Box::new(self.cx.bind_edit(
             Toggle::from_state(state).with_id(&id),
             NotificationPrefs::paths().per_app,
-            move |on: bool| choice.edit(&app, rule.as_ref(), on),
+            move |on: bool| choice.edit(&app, on),
         ))
     }
 
@@ -1045,17 +1014,8 @@ mod tests {
         edit_path(&mut app, NOTIFICATIONS, &["focus", "enabled"], true).unwrap();
         edit_path(&mut app, NOTIFICATIONS, &["focus", "start_minute"], 20 * 60).unwrap();
         edit_path(&mut app, NOTIFICATIONS, &["focus", "weekdays"], 0b0001_1111).unwrap();
-        // A rule is set whole where the app has none, then field by field.
-        app.call_on(
-            "settings:settings.notifications",
-            "field-edit",
-            serde_json::json!({ "edit": {
-                "path": [{ "field": "per_app" }, { "key": "so.tilo.chat" }],
-                "op": "set",
-                "value": { "sounds": false },
-            }}),
-        )
-        .unwrap();
+        // An agent sets one field of a rule the app has none of yet.
+        edit_rule(&mut app, "so.tilo.chat", "sounds", false).unwrap();
         edit_rule(&mut app, "so.tilo.chat", "priority", true).unwrap();
         invoke_section(
             &mut app,
@@ -1082,6 +1042,7 @@ mod tests {
             "a minute past the day is refused"
         );
         assert!(edit_rule(&mut app, "so.tilo.mail", "frobnicate", true).is_err());
+        assert!(edit_rule(&mut app, "not an id", "badges", true).is_err());
         assert!(
             invoke_section(
                 &mut app,
