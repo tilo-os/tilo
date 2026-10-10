@@ -293,6 +293,12 @@ follow chip and the notification stack. A retained scene carries its parts
 with it (`scene_parts::record` / `scene_parts::append`), so an in-process
 app's own parts (the terminal's rows and cursor) reach the compositor:
 typing or a peer's pointer moving repaints well under 1 % of a 4K output.
+The shell's adaptive Area renderer canonicalizes each tile's segment order
+before coverage accumulation. Dense and retained repairs then round the same
+unchanged geometry to the same pixels despite GPU scheduling. Each successful
+repair settles its overflow counters before the next frame; explicit pinned
+`VELLO_BUMP_BUDGET=upstream` experiments retain Vello's existing exclusion from
+canonical ordering and do not carry this pixel-repeatability guarantee.
 Foreign buffer swaps keep their client-reported damage. Night light and the
 colour filters are per-pixel tints drawn into the same scene, so frames under
 them stay sparse while the tint is unchanged; the magnifier and the
