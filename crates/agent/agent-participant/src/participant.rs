@@ -94,9 +94,9 @@ struct Asking {
     route: DocumentRoute,
     address: ActionAddress,
     arguments: serde_json::Map<String, serde_json::Value>,
-    /// The person's answer once it arrives; `Some(None)` when their host
-    /// went away without one.
-    answer: Arc<std::sync::Mutex<Option<Option<WitnessAnswer>>>>,
+    /// The person's answer once it arrives; a host that went away without
+    /// one answers that confirmation is still required.
+    answer: Arc<std::sync::Mutex<Option<WitnessAnswer>>>,
 }
 
 type WitnessAnswer =
@@ -397,13 +397,9 @@ impl AgentParticipant {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .take();
-            let answer = match arrived {
-                None => {
-                    self.asking = Some(asking);
-                    return false;
-                }
-                Some(Some(answer)) => answer,
-                Some(None) => Err(tilo_actions::remote::ActionHostError::ConfirmationRequired),
+            let Some(answer) = arrived else {
+                self.asking = Some(asking);
+                return false;
             };
             let outcome = match answer {
                 // The person's own device answered for this invocation.
@@ -556,6 +552,21 @@ impl AgentParticipant {
             self.identity.cert.device_public_key,
         )
         .in_room(self.room.clone());
+        // The action as the record offers it: what the person is asked.
+        let offered = self.apps.get(&route).and_then(|app| {
+            app.survey()
+                .into_iter()
+                .find(|descriptor| descriptor.address == *address)
+        });
+        let context = offered.as_ref().map(|descriptor| {
+            tilo_actions::ActionContext::for_resource(
+                &address.resource,
+                &descriptor.resource_kind,
+                &descriptor.resource_label,
+            )
+            .with_app(&route.app_id, &route.app_id)
+            .with_purpose(&descriptor.action_label)
+        });
         let request = tilo_actions::remote::InvokeRequest {
             invocation: tilo_actions::InvocationId::new(),
             target: tilo_actions::remote::RemoteActionTarget {
@@ -563,7 +574,7 @@ impl AgentParticipant {
                 address: address.clone(),
             },
             argument: tilo_actions::remote::InvokeArgument::Json(arguments.clone()),
-            context: None,
+            context,
             confirmation: None,
             revision: None,
             on_behalf_of: None,
@@ -574,26 +585,20 @@ impl AgentParticipant {
         witness.confirm(&caller, &request).then(move |given| {
             *arrived
                 .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(given);
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(given.unwrap_or(Err(
+                tilo_actions::remote::ActionHostError::ConfirmationRequired,
+            )));
             control.wake();
         });
-        let label = self
-            .apps
-            .get(&route)
-            .and_then(|app| {
-                app.survey()
-                    .into_iter()
-                    .find(|descriptor| descriptor.address == *address)
-            })
-            .map_or_else(
-                || address.action.clone(),
-                |descriptor| {
-                    format!(
-                        "{} · {}",
-                        descriptor.action_label, descriptor.resource_label
-                    )
-                },
-            );
+        let label = offered.map_or_else(
+            || address.action.clone(),
+            |descriptor| {
+                format!(
+                    "{} · {}",
+                    descriptor.action_label, descriptor.resource_label
+                )
+            },
+        );
         self.focus = Some(LiveRecord {
             app: route.app_id.clone(),
             record: route.record.clone(),

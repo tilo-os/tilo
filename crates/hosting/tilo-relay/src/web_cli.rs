@@ -426,14 +426,25 @@ fn loopback_addr(relay: &Relay) -> iroh::EndpointAddr {
     addr
 }
 
-/// Certify every browser device that asks, as the dev user root, and
-/// approve every agent grant a page asks for with its delegation, until
-/// the session fails.
+/// Certify every browser device that asks, as the dev user root, approve
+/// every agent grant a page asks for with its delegation, and allow once
+/// each action an agent asks its person about, until the session fails.
 async fn approve_every_browser(
     mut approver: tilo_relay_client::Approver,
     root: &SigningKey,
 ) -> anyhow::Result<std::convert::Infallible> {
     loop {
+        for asked in approver
+            .list_confirmations()
+            .await
+            .context("list agents' questions")?
+        {
+            tracing::info!(question = %asked.question(), room = %asked.room, "allowing an agent's action once");
+            approver
+                .answer(asked.id, tilo_relay::certify::ConfirmationAnswer::AllowOnce)
+                .await
+                .context("answer an agent's question")?;
+        }
         let agents = approver
             .list_agent_proposals()
             .await

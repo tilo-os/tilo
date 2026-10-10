@@ -795,6 +795,15 @@ than proposed (`AgentProposal::admits`), so an agent never exists without its
 delegation and the host never holds the root. `tilo-relay dev`'s approver
 approves proposals as they come; a production approver shows them.
 
+An agent never confirms an action by its own word. When its grants leave an
+action to the person, the host puts that one invocation to the same approvers
+as a question (`ApproverRequest::Confirmations` lists `PendingConfirmation`s,
+`ApproverRequest::Answer` gives `AllowOnce` or `Deny`); the approver shows it
+as the host's confirmation sheet ("<agent> wants to …, for you"). The agent
+shows it is waiting meanwhile, runs the step only on the witnessed answer, and
+takes no answer within two minutes as a refusal. `tilo-relay dev`'s approver
+allows each once.
+
 `Relay::register_agent` verifies the delegation against the host's user:
 
 - The device is refused outside its rooms, at subscribe and on every

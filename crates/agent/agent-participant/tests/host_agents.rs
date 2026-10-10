@@ -10,7 +10,8 @@
 //! and Sheets, the browser receives the edits and sees the agent's presence
 //! move between the records it works in. The host then restarts: the agent
 //! resumes and takes new work; a stopped agent stays stopped; a revoked
-//! grant ends its agent.
+//! grant ends its agent. An action that asks first is put to the person's
+//! approving device for that one invocation, and runs only on its answer.
 
 #![allow(
     clippy::significant_drop_tightening,
@@ -56,7 +57,7 @@ use tilo_actions::remote::{
 };
 use tilo_agent_participant::{AgentHost, ModelChoice, Replica, Seed};
 use tilo_browser_peer::{DocumentRoute, Host, PeerEvent, PeerEvents, PeerHandle};
-use tilo_relay::certify::{ApproverDecision, ApproverReply};
+use tilo_relay::certify::{ApproverDecision, ApproverReply, ConfirmationAnswer};
 use tilo_relay::daemon::{Relay, RelayIdentity};
 use tilo_relay::web::{TlsSource, WebConfig, WebHandle};
 use tilo_relay_client::Approver;
@@ -74,6 +75,7 @@ use support::{Device, ROOM, enrol, ready, start_peer, workspace};
 
 const NOTES: &str = "so.tilo.notes";
 const SHEETS: &str = "so.tilo.sheets";
+const CALCULATOR: &str = "so.tilo.calculator";
 
 struct Hosted {
     relay: Relay,
@@ -1311,5 +1313,223 @@ async fn an_agent_plans_on_metered_cloud_credits_until_they_run_out() {
             .contains("out of AI credits"),
         "{failed:?}"
     );
+    hosted.stop().await;
+}
+
+/// The person's own device: a root holder's approver session that answers
+/// the questions the host's agents put to their person, as the test says,
+/// and the endpoint it lives on.
+async fn person_device(relay: &Relay, laptop: &Device) -> (iroh::endpoint::Endpoint, Approver) {
+    let endpoint = iroh::endpoint::Endpoint::builder(iroh::endpoint::presets::Minimal)
+        .bind()
+        .await
+        .unwrap();
+    let approver = Approver::connect(
+        &endpoint,
+        relay.node_addr(),
+        laptop.cert.clone(),
+        &laptop.key,
+        &RevocationList::new(),
+    )
+    .await
+    .unwrap();
+    (endpoint, approver)
+}
+
+/// The one question an agent is waiting on, once it is asked.
+async fn asked(device: &mut Approver) -> tilo_relay::certify::PendingConfirmation {
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        let mut asked = device.list_confirmations().await.unwrap();
+        if let Some(question) = asked.pop() {
+            assert!(asked.is_empty(), "one question per invocation: {asked:?}");
+            return question;
+        }
+        assert!(Instant::now() < deadline, "the agent never asked");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+/// Whether agent `grant` has `tasks` tasks, the last of them in `state`.
+fn last_task_is(grant: &str, state: TaskState, tasks: usize) -> impl Fn(&AgentsStatus) -> bool {
+    move |status| {
+        status.agents.iter().any(|agent| {
+            agent.id == grant
+                && agent.tasks.len() == tasks
+                && agent.tasks.last().is_some_and(|task| task.state == state)
+        })
+    }
+}
+
+/// Work out one sum, then clear the calculator's history: an action whose
+/// contract asks a person first.
+fn clear_history() -> String {
+    serde_json::json!([
+        {
+            "app": CALCULATOR,
+            "resource": "calculator.document",
+            "action": "commit-history",
+            "arguments": {"expr": "1+1", "result": "2"},
+        },
+        {
+            "app": CALCULATOR,
+            "resource": "calculator.document",
+            "action": "clear-history",
+        },
+    ])
+    .to_string()
+}
+
+/// An agent the host runs never confirms by its own word: an action that
+/// asks first is put to the person's approving device as the host's
+/// question for that one invocation, while the agent shows it is waiting.
+/// Allowed once it runs, and only that once; denied it does not.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_hosted_agent_asks_the_persons_device_before_an_action_that_asks_first() {
+    let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
+    let host = enrol(&root, "home-server", DeviceCapabilities::host());
+    let laptop = enrol(&root, "laptop", DeviceCapabilities::primary());
+    let browser_device = enrol(&root, "browser", DeviceCapabilities::member());
+    let state = tempfile::tempdir().unwrap();
+    let hosted = start(&root, &host, state.path()).await;
+    let _steward = steward::Steward::start(&hosted.relay, &root).await;
+    let _approver = approve_agents(&hosted.relay, root.clone(), &laptop);
+    let (_endpoint, mut device) = person_device(&hosted.relay, &laptop).await;
+    let mut browser = Browser::open(&hosted, &browser_device, &host).await;
+
+    let requested = browser
+        .call(
+            SUPERVISOR_RESOURCE,
+            REQUEST_GRANT_ACTION,
+            InvokeArgument::Json(
+                serde_json::json!({
+                    "label": "Careful",
+                    "rooms": [ROOM],
+                    "apps": [CALCULATOR],
+                    "expiresInSecs": 3600,
+                })
+                .as_object()
+                .unwrap()
+                .clone(),
+            ),
+        )
+        .await
+        .unwrap();
+    let grant = requested["grant"].as_str().unwrap().to_owned();
+    browser
+        .until("the grant to be approved", |status| {
+            status
+                .grants
+                .iter()
+                .any(|g| g.id == grant && g.state == GrantState::Approved)
+        })
+        .await;
+    browser
+        .call(
+            SUPERVISOR_RESOURCE,
+            SPAWN_ACTION,
+            InvokeArgument::Json(
+                serde_json::json!({ "grant": grant, "task": clear_history(), "room": ROOM })
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+            ),
+        )
+        .await
+        .unwrap();
+
+    // The person's device is asked about this one invocation, in the words
+    // of the record that offers it, while the agent shows it is waiting.
+    let question = asked(&mut device).await;
+    assert_eq!(question.agent_id, grant);
+    assert_eq!(question.agent_label, "Careful");
+    assert_eq!(question.room, ROOM);
+    // The action as the calculator offers it, not the agent's own words.
+    assert_eq!(question.action_label, "Remove every history entry");
+    assert_eq!(question.resource_label, "Calculator");
+    assert!(
+        question.question().starts_with("Careful wants to ")
+            && question.question().ends_with(", for you"),
+        "{}",
+        question.question()
+    );
+    let waiting = browser
+        .until("the agent to wait for its person", |status| {
+            status.agents.iter().any(|agent| {
+                agent.id == grant
+                    && agent
+                        .activity
+                        .as_deref()
+                        .is_some_and(|activity| activity.starts_with("Waiting for confirmation"))
+            })
+        })
+        .await;
+    let agent = waiting
+        .agents
+        .iter()
+        .find(|agent| agent.id == grant)
+        .unwrap();
+    assert_eq!(agent.tasks.last().unwrap().state, TaskState::Running);
+
+    // Allowed once: the step runs, and the answer is spent.
+    assert_eq!(
+        device
+            .answer(question.id, ConfirmationAnswer::AllowOnce)
+            .await
+            .unwrap(),
+        ApproverReply::Decided
+    );
+    browser
+        .until(
+            "the allowed task to complete",
+            last_task_is(&grant, TaskState::Completed, 1),
+        )
+        .await;
+    assert!(matches!(
+        device
+            .answer(question.id, ConfirmationAnswer::AllowOnce)
+            .await
+            .unwrap(),
+        ApproverReply::Refused { .. }
+    ));
+
+    // The next time is a new question; denied, nothing runs.
+    browser
+        .call(
+            &agent_resource(&grant),
+            MESSAGE_ACTION,
+            InvokeArgument::Text(clear_history()),
+        )
+        .await
+        .unwrap();
+    let again = asked(&mut device).await;
+    assert_ne!(again.id, question.id, "every invocation is asked anew");
+    assert_eq!(
+        device
+            .answer(again.id, ConfirmationAnswer::Deny)
+            .await
+            .unwrap(),
+        ApproverReply::Decided
+    );
+    let status = browser
+        .until(
+            "the denied task to fail",
+            last_task_is(&grant, TaskState::Failed, 2),
+        )
+        .await;
+    let denied = status
+        .agents
+        .iter()
+        .find(|agent| agent.id == grant)
+        .and_then(|agent| agent.tasks.last().cloned())
+        .unwrap();
+    assert!(
+        denied
+            .error
+            .as_deref()
+            .is_some_and(|error| error.contains("confirmation_required")),
+        "{denied:?}"
+    );
+    device.close();
     hosted.stop().await;
 }

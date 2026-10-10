@@ -9,6 +9,9 @@
     clippy::expect_used,
     clippy::panic,
     clippy::future_not_send,
+    clippy::arithmetic_side_effects,
+    clippy::too_many_lines,
+    clippy::significant_drop_tightening,
     reason = "in a test these are the assertion, not a hazard; one scenario in order, \
               driven on the test's own thread (the agent's apps are not Send)"
 )]
