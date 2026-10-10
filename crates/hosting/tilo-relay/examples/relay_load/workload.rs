@@ -56,6 +56,11 @@ const GRACE: Duration = Duration::from_secs(5);
 const DIAL_BATCH: usize = 32;
 /// Bounds a subscription that never gets ready: only a hang reaches it.
 const READY: Duration = Duration::from_secs(120);
+/// A published presence sample nobody received by now was superseded by a
+/// later one on the relay (coalesced), and is forgotten.
+const PRESENCE_FORGET: Duration = Duration::from_secs(2);
+/// Unreceived presence samples kept before the forgotten ones are swept.
+const PRESENCE_SWEEP: usize = 4_096;
 const COLOUR: &str = "teal";
 
 struct Device {
@@ -84,6 +89,21 @@ struct Pending {
     remaining: usize,
 }
 
+/// The presence whose delivery is timed: a pointer move and a caret.
+#[derive(Clone, Copy)]
+enum Timed {
+    Pointer,
+    Caret,
+}
+
+/// A presence sample in flight: when it was published, what it is and how
+/// many members still have to receive it.
+struct PendingPresence {
+    sent: Instant,
+    timed: Timed,
+    remaining: usize,
+}
+
 /// Every room and collaborator of a run, and what they observed.
 pub struct Fleet {
     user_public_key: [u8; 32],
@@ -95,6 +115,9 @@ pub struct Fleet {
     pub presence: AtomicU64,
     pending: Mutex<HashMap<blake3::Hash, Pending>>,
     latencies: Mutex<Vec<f64>>,
+    presence_pending: Mutex<HashMap<blake3::Hash, PendingPresence>>,
+    pointer_latencies: Mutex<Vec<f64>>,
+    caret_latencies: Mutex<Vec<f64>>,
 }
 
 impl Fleet {
@@ -144,6 +167,9 @@ impl Fleet {
             presence: AtomicU64::new(0),
             pending: Mutex::new(HashMap::new()),
             latencies: Mutex::new(Vec::new()),
+            presence_pending: Mutex::new(HashMap::new()),
+            pointer_latencies: Mutex::new(Vec::new()),
+            caret_latencies: Mutex::new(Vec::new()),
         }))
     }
 
@@ -288,6 +314,68 @@ impl Fleet {
         }
     }
 
+    /// Note a timed presence sample about to be published to `recipients`
+    /// other members.
+    fn presence_sent(&self, body: &[u8], timed: Timed, recipients: usize) {
+        let now = Instant::now();
+        let mut pending = self
+            .presence_pending
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if pending.len() >= PRESENCE_SWEEP {
+            pending.retain(|_, sample| now.duration_since(sample.sent) < PRESENCE_FORGET);
+        }
+        pending.insert(
+            blake3::hash(body),
+            PendingPresence {
+                sent: now,
+                timed,
+                remaining: recipients,
+            },
+        );
+    }
+
+    /// Note that a member received the presence `body`. Only samples the
+    /// relay forwarded arrive; one it coalesced away never does.
+    fn presence_received(&self, body: &[u8]) {
+        let now = Instant::now();
+        let (sent, timed) = {
+            let mut pending = self
+                .presence_pending
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            let key = blake3::hash(body);
+            let Some(entry) = pending.get_mut(&key) else {
+                return;
+            };
+            entry.remaining = entry.remaining.saturating_sub(1);
+            let found = (entry.sent, entry.timed);
+            if entry.remaining == 0 {
+                pending.remove(&key);
+            }
+            found
+        };
+        if self.measuring.load(Ordering::SeqCst) {
+            let latencies = match timed {
+                Timed::Pointer => &self.pointer_latencies,
+                Timed::Caret => &self.caret_latencies,
+            };
+            latencies
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .push(now.duration_since(sent).as_secs_f64() * 1_000.0);
+        }
+    }
+
+    /// The pointer and caret delivery latencies measured so far, in
+    /// milliseconds: publish to receipt by each other member of the room.
+    pub fn take_presence_latencies(&self) -> (Vec<f64>, Vec<f64>) {
+        let take = |latencies: &Mutex<Vec<f64>>| {
+            std::mem::take(&mut *latencies.lock().unwrap_or_else(PoisonError::into_inner))
+        };
+        (take(&self.pointer_latencies), take(&self.caret_latencies))
+    }
+
     /// The fan-out latencies measured so far, in milliseconds.
     pub fn take_latencies(&self) -> Vec<f64> {
         std::mem::take(
@@ -352,11 +440,14 @@ impl Room {
     }
 }
 
-/// Drain one session, timing every edit another member published.
+/// Drain one session, timing every edit, pointer move and caret another
+/// member published.
 async fn receive(fleet: Arc<Fleet>, session: Arc<RelayCoeditSession>) {
     while let Some(inbound) = session.recv().await {
-        if let Inbound::Delta { data, .. } = inbound {
-            fleet.received(&data);
+        match inbound {
+            Inbound::Delta { data, .. } => fleet.received(&data),
+            Inbound::Presence { payload, .. } => fleet.presence_received(&payload),
+            _ => {}
         }
     }
 }
@@ -469,36 +560,46 @@ impl Collaborator {
     }
 
     fn app_presence(&self, payload: PeerPresencePayload) -> anyhow::Result<()> {
-        self.presence(&NeighbourMsg::AppPresenceV2 {
-            peer: self.handle,
-            app_id: APP.into(),
-            cluster_id: self.room.clone(),
-            presence: PeerPresence {
-                key: self.caret_key.clone(),
-                payload,
+        let timed = matches!(payload, PeerPresencePayload::Caret { .. }).then_some(Timed::Caret);
+        self.presence(
+            &NeighbourMsg::AppPresenceV2 {
+                peer: self.handle,
+                app_id: APP.into(),
+                cluster_id: self.room.clone(),
+                presence: PeerPresence {
+                    key: self.caret_key.clone(),
+                    payload,
+                },
+                colour: Some(COLOUR.into()),
             },
-            colour: Some(COLOUR.into()),
-        })
+            timed,
+        )
     }
 
     /// One pointer move along a fixed path.
     fn point(&self, step: u32) -> anyhow::Result<()> {
-        self.presence(&NeighbourMsg::PresenceMoved {
-            peer: self.handle,
-            user: self.user.clone(),
-            key: self.pointer_key.clone(),
-            point: (
-                f64::from(step).mul_add(3.0, 200.0),
-                f64::from(step.checked_rem(20).unwrap_or(0)).mul_add(2.0, 300.0),
-            ),
-            ts: tilo_clock::unix_now_ms(),
-            colour: Some(COLOUR.into()),
-        })
+        self.presence(
+            &NeighbourMsg::PresenceMoved {
+                peer: self.handle,
+                user: self.user.clone(),
+                key: self.pointer_key.clone(),
+                point: (
+                    f64::from(step).mul_add(3.0, 200.0),
+                    f64::from(step.checked_rem(20).unwrap_or(0)).mul_add(2.0, 300.0),
+                ),
+                ts: tilo_clock::unix_now_ms(),
+                colour: Some(COLOUR.into()),
+            },
+            Some(Timed::Pointer),
+        )
     }
 
-    fn presence(&self, message: &NeighbourMsg) -> anyhow::Result<()> {
-        self.session
-            .publish_presence(postcard::to_allocvec(message)?)?;
+    fn presence(&self, message: &NeighbourMsg, timed: Option<Timed>) -> anyhow::Result<()> {
+        let body = postcard::to_allocvec(message)?;
+        if let Some(timed) = timed {
+            self.fleet.presence_sent(&body, timed, self.recipients);
+        }
+        self.session.publish_presence(body)?;
         self.fleet.presence.fetch_add(1, Ordering::Relaxed);
         Ok(())
     }
