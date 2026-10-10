@@ -440,13 +440,13 @@ impl ChatApp {
             }
             Some(hit) => {
                 let text_input_hit = matches!(
-                    hit,
+                    &hit,
                     Hit::FocusMain
                         | Hit::FocusThread
                         | Hit::FocusRename
                         | Hit::FocusEdit
                         | Hit::FocusEmojiSearch
-                );
+                ) && self.semantic_hit_is_currently_available(&hit);
                 self.on_hit(hit, doc);
                 // A click in a composer focuses it (via `on_hit`) and
                 // then places the caret at the click point — forward the
@@ -901,6 +901,9 @@ impl ChatApp {
         reason = "single exhaustive hit router; splitting by surface would obscure the shared pointer/keyboard activation path"
     )]
     pub(crate) fn on_hit(&mut self, hit: Hit, doc: &mut ui::widget::Edits<'_>) {
+        if !self.semantic_hit_is_currently_available(&hit) {
+            return;
+        }
         self.prepare_hit_activation();
         match hit {
             Hit::Inbox => {
@@ -991,9 +994,13 @@ impl ChatApp {
                 category,
             } if self.can_participate() => self.on_hit_add_channel(&workspace, &category, doc),
             Hit::AddCategory(ws) if self.can_participate() => self.on_hit_add_category(&ws, doc),
-            Hit::FocusRename | Hit::FocusEdit => self.set_composer_focus(),
+            Hit::FocusRename | Hit::FocusEdit if self.can_participate() => {
+                self.set_composer_focus();
+            }
             Hit::Reaction { msg, emoji } => self.on_hit_reaction(&msg, &emoji, doc),
-            Hit::AddReaction { msg, anchor } => self.open_emoji_picker(Some(msg), anchor),
+            Hit::AddReaction { msg, anchor } if self.can_participate() => {
+                self.open_emoji_picker(Some(msg), anchor);
+            }
             Hit::OpenThread(id) => self.on_hit_open_thread(id),
             Hit::EditHistory { msg, anchor } => {
                 self.history_open = Some(msg);
@@ -1004,7 +1011,7 @@ impl ChatApp {
                 self.focus = Focus::Main;
                 self.set_composer_focus();
             }
-            Hit::FocusThread => {
+            Hit::FocusThread if self.can_participate() => {
                 self.focus = Focus::Thread;
                 self.set_composer_focus();
             }
@@ -2132,6 +2139,12 @@ mod tests {
                 && node.name.as_deref() != Some("Send message")
                 && node.name.as_deref() != Some("Emoji")
         }));
+    }
+
+    fn has_semantic_target(app: &ChatApp, target: &str) -> bool {
+        app.semantic_hits()
+            .iter()
+            .any(|(_, hit, ..)| hit.semantic_id() == target)
     }
 
     type MessageQuery = (Option<String>, String, Option<String>);
@@ -5829,6 +5842,120 @@ mod tests {
                 .private_plain()
                 .as_deref(),
             Some("Keep this view-only draft")
+        );
+    }
+
+    #[test]
+    fn stale_message_semantics_refuse_currently_denied_chat_write_without_repaint() {
+        let (mut app, mut doc, _host) = agent_task_control_app();
+        type_str(&mut app, &mut doc, "Keep this private draft");
+        app.composer_main.select(5, 12);
+        render_frame(&mut app, 1280.0, 800.0);
+        let editor = Hit::FocusMain.semantic_id();
+        let send = Hit::Send.semantic_id();
+        let queue = Hit::AgentIntent(crate::app::AgentComposerIntent::Queue).semantic_id();
+        let steer = Hit::AgentIntent(crate::app::AgentComposerIntent::Steer).semantic_id();
+        let stop = Hit::AgentStop.semantic_id();
+        assert!(has_semantic_target(&app, &editor));
+        assert!(has_semantic_target(&app, &send));
+        assert!(has_semantic_target(&app, &queue));
+        assert!(has_semantic_target(&app, &steer));
+        assert!(has_semantic_target(&app, &stop));
+
+        app.perms = crate::permissions::ChatPermissions::from_context(
+            ui::permissions::PermissionContext::from_capabilities(
+                ui::permissions::Actor::person(Some(ui::permissions::Role::Viewer), model::ME),
+                vec![],
+            ),
+        );
+
+        assert!(
+            app.hits
+                .iter()
+                .any(|(_, hit)| matches!(hit, Hit::FocusMain))
+        );
+        assert!(app.hits.iter().any(|(_, hit)| matches!(hit, Hit::Send)));
+        assert!(!has_semantic_target(&app, &editor));
+        assert!(!has_semantic_target(&app, &send));
+        assert!(
+            has_semantic_target(&app, &queue),
+            "owner-published Queue remains independent of Chat Write"
+        );
+        assert!(has_semantic_target(&app, &steer));
+        assert!(has_semantic_target(&app, &stop));
+        assert!(!ui::Widget::perform_semantic_action(
+            &mut app,
+            &editor,
+            &ui::a11y::Action::SetValue("must not replace the draft".into()),
+            &mut ui::widget::Edits::lend(&mut doc),
+            &automerge::ROOT,
+        ));
+        assert!(!ui::Widget::perform_semantic_action(
+            &mut app,
+            &send,
+            &ui::a11y::Action::Activate,
+            &mut ui::widget::Edits::lend(&mut doc),
+            &automerge::ROOT,
+        ));
+        assert_eq!(
+            app.composer_main.private_plain().as_deref(),
+            Some("Keep this private draft")
+        );
+        assert_eq!(app.composer_main.selection(), (5, 12));
+        assert!(ui::Widget::perform_semantic_action(
+            &mut app,
+            &queue,
+            &ui::a11y::Action::Activate,
+            &mut ui::widget::Edits::lend(&mut doc),
+            &automerge::ROOT,
+        ));
+        assert_eq!(
+            app.direct_agent_intent(),
+            crate::app::AgentComposerIntent::Queue
+        );
+        assert!(has_semantic_target(&app, &editor));
+        assert!(has_semantic_target(&app, &send));
+    }
+
+    #[test]
+    fn stale_task_semantics_refuse_currently_denied_controls_but_keep_message() {
+        let (mut app, mut doc, host) = agent_task_control_app();
+        render_frame(&mut app, 1280.0, 800.0);
+        let editor = Hit::FocusMain.semantic_id();
+        let send = Hit::Send.semantic_id();
+        let queue = Hit::AgentIntent(crate::app::AgentComposerIntent::Queue).semantic_id();
+        let steer = Hit::AgentIntent(crate::app::AgentComposerIntent::Steer).semantic_id();
+        let stop = Hit::AgentStop.semantic_id();
+        assert!(has_semantic_target(&app, &queue));
+        assert!(has_semantic_target(&app, &steer));
+        assert!(has_semantic_target(&app, &stop));
+
+        host.revoke_task_controls();
+        let tasks = app.direct_agent_tasks().expect("owner-backed task context");
+        tasks.borrow_mut().refresh();
+        app.poll_agent_tasks();
+
+        assert!(app.hits.iter().any(|(_, hit)| {
+            matches!(
+                hit,
+                Hit::AgentIntent(crate::app::AgentComposerIntent::Queue)
+            )
+        }));
+        assert!(!has_semantic_target(&app, &queue));
+        assert!(!has_semantic_target(&app, &steer));
+        assert!(!has_semantic_target(&app, &stop));
+        assert!(!ui::Widget::perform_semantic_action(
+            &mut app,
+            &queue,
+            &ui::a11y::Action::Activate,
+            &mut ui::widget::Edits::lend(&mut doc),
+            &automerge::ROOT,
+        ));
+        assert!(has_semantic_target(&app, &editor));
+        assert!(has_semantic_target(&app, &send));
+        assert_eq!(
+            app.direct_agent_intent(),
+            crate::app::AgentComposerIntent::Message
         );
     }
 
