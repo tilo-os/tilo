@@ -118,7 +118,6 @@ icu_segmenter = { version = "2", features = ["serde"] }
 idna = { version = "1" }
 image = { version = "0.25", default-features = false, features = ["bmp", "gif", "jpeg", "png", "webp"] }
 indexmap = { version = "2", features = ["rayon", "serde"] }
-inout = { version = "0.2", default-features = false, features = ["block-padding"] }
 ipnet = { version = "2", features = ["serde"] }
 itertools-582f2526e08bb6a0 = { package = "itertools", version = "0.14" }
 kurbo = { version = "0.13" }
@@ -355,7 +354,6 @@ icu_segmenter = { version = "2", features = ["serde"] }
 idna = { version = "1" }
 image = { version = "0.25", default-features = false, features = ["bmp", "gif", "jpeg", "png", "webp"] }
 indexmap = { version = "2", features = ["rayon", "serde"] }
-inout = { version = "0.2", default-features = false, features = ["block-padding"] }
 ipnet = { version = "2", features = ["serde"] }
 itertools-582f2526e08bb6a0 = { package = "itertools", version = "0.14" }
 kurbo = { version = "0.13" }
