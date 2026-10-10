@@ -1271,3 +1271,109 @@ fn a_privileged_action_needs_the_persons_own_allow() {
         Answer::Allow
     );
 }
+
+#[test]
+fn a_governance_change_spends_the_once_grant_it_ran_on() {
+    let mut room = RoomPolicy::new("r", CAROL);
+    room.members.insert(ALICE.into(), Role::Editor);
+    let once = Grant::new(
+        "grant-once",
+        alice(),
+        roles::governance_action("r", governance::GRANT),
+        KindSet::of(roles::GOVERNANCE_KIND),
+        Answer::Allow,
+        Subject::person(CAROL),
+    )
+    .with_lifetime(Lifetime::Once);
+    room.grants.push(once);
+    let denial = |id: &str| {
+        Change::Grant(Grant::new(
+            id,
+            Subject::agent("ag"),
+            mail(),
+            KindSet::ALL,
+            Answer::Deny,
+            alice(),
+        ))
+    };
+    let before = room.clone();
+    let authority = Authority::person(before.party(ALICE));
+    room.apply(ALICE, &authority, denial("first"), &cx(), false)
+        .expect("allowed once");
+    assert!(
+        room.grants
+            .iter()
+            .all(|grant| grant.id.as_str() != "grant-once"),
+        "the grant given for one use is spent"
+    );
+    let after = room.clone();
+    let authority = Authority::person(after.party(ALICE));
+    assert!(matches!(
+        room.apply(ALICE, &authority, denial("second"), &cx(), false),
+        Err(Refusal::NotPermitted(_))
+    ));
+}
+
+#[test]
+fn a_refused_run_spends_nothing() {
+    let grants =
+        [grant("once", send(), KindSet::READ, Answer::Allow).with_lifetime(Lifetime::Once)];
+    let authority = Authority::person(Party::new(vec![alice()], &grants));
+    assert!(
+        authority
+            .decide(&send(), ActionKind::Outside, &cx())
+            .spent()
+            .is_empty()
+    );
+    assert_eq!(
+        authority.decide(&send(), ActionKind::Read, &cx()).spent(),
+        vec![GrantId::new("once")]
+    );
+}
+
+#[test]
+fn grants_given_for_a_task_lapse_with_it() {
+    let mut room = RoomPolicy::new("r", CAROL);
+    for (id, task) in [("t1-grant", "t1"), ("t2-grant", "t2")] {
+        room.grants.push(
+            grant(id, mail(), KindSet::READ, Answer::Allow)
+                .with_lifetime(Lifetime::Task(task.into())),
+        );
+    }
+    room.grants
+        .push(grant("standing", mail(), KindSet::READ, Answer::Allow));
+    assert_eq!(
+        room.lapse_tasks(|task| task == "t2"),
+        vec![GrantId::new("t1-grant")]
+    );
+    let held: Vec<&str> = room.grants.iter().map(|grant| grant.id.as_str()).collect();
+    assert!(held.contains(&"t2-grant") && held.contains(&"standing"));
+}
+
+/// Receivers admit only what the author's grants allow outright, so the
+/// person's own grants allow it too: a privileged action is never admitted
+/// on receipt on an Ask, whatever the delegations say.
+#[test]
+fn what_a_receiver_admits_is_allowed_by_the_persons_own_grants() {
+    for person in ANSWERS {
+        for delegation in ANSWERS {
+            let grants = [
+                grant("person", mail(), KindSet::ALL, person),
+                Grant::new(
+                    "agent",
+                    Subject::agent("ag"),
+                    mail(),
+                    KindSet::ALL,
+                    delegation,
+                    alice(),
+                ),
+            ];
+            let verdict = Authority::person(Party::new(vec![alice()], &grants))
+                .bounded_by(Party::new(vec![Subject::agent("ag")], &grants))
+                .decide(&send(), ActionKind::Outside, &cx());
+            if verdict.answer == Answer::Allow {
+                assert_eq!(verdict.clone().privileged().answer, Answer::Allow);
+            }
+        }
+    }
+}

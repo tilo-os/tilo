@@ -1,6 +1,6 @@
 //! The one decision every door, host and receiver makes.
 
-use crate::{ActionKind, Answer, Context, Grant, Lifetime, Subject, TreePath};
+use crate::{ActionKind, Answer, Context, Grant, GrantId, Lifetime, Subject, TreePath};
 
 /// Why a party answered as it did.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -199,6 +199,18 @@ impl<'g> Verdict<'g> {
             .iter()
             .filter_map(Decision::grant)
             .filter(|grant| grant.lifetime == Lifetime::Once)
+    }
+
+    /// The `Once` grants a run on this verdict spends: those it relied on,
+    /// unless it refuses. The door that runs the action hands them to
+    /// [`crate::RoomPolicy::spend`] (or its host's revocation of them), so a
+    /// grant given for one use is gone after it.
+    #[must_use]
+    pub fn spent(&self) -> Vec<GrantId> {
+        if self.answer == Answer::Deny {
+            return Vec::new();
+        }
+        self.once_grants().map(|grant| grant.id.clone()).collect()
     }
 
     /// The decision that set the answer: the first part giving the minimum.

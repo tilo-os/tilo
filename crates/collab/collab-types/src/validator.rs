@@ -668,7 +668,9 @@ const UNKNOWN_APP: &str = "-";
 /// Step 5: the change the op makes must be allowed by the author's grants.
 /// The wire shares no clock with the author, so grants are judged without
 /// expiry; the authoring device refused after expiry. Fail-closed: no grant,
-/// or one that asks, refuses.
+/// or one that asks, refuses. Admitting only an outright Allow also means the
+/// author's own grants allow it, which is all a privileged action needs
+/// (`tilo_action_policy::Verdict::privileged`).
 fn check_op_permission(
     op: &SignedOp,
     author: &Authority<'_>,

@@ -521,6 +521,36 @@ pub fn task_grants_of(doc: &AutoCommit) -> Vec<tilo_action_policy::Grant> {
         .collect()
 }
 
+/// Remove from `doc`'s grants every one that lapsed with its task
+/// ([`tilo_action_policy::Grant::lapsed_with_tasks`]), so every reader of the
+/// room's grants, the relay's included, stops honouring it. The ids removed.
+///
+/// # Errors
+///
+/// The document's error when the map cannot be written.
+pub fn lapse_task_grants(
+    doc: &mut AutoCommit,
+) -> Result<Vec<tilo_action_policy::GrantId>, automerge::AutomergeError> {
+    use automerge::{ROOT, ReadDoc, transaction::Transactable};
+
+    let open = open_task_ids(doc);
+    let lapsed: Vec<(String, tilo_action_policy::GrantId)> = blob_map_of(doc, ROOM_GRANTS_KEY)
+        .into_iter()
+        .filter(|(_, grant): &(String, tilo_action_policy::Grant)| {
+            grant.lapsed_with_tasks(|task| open.contains(task))
+        })
+        .map(|(name, grant)| (name, grant.id))
+        .collect();
+    if let Some((_, map)) = doc.get(&ROOT, ROOM_GRANTS_KEY)?
+        && !lapsed.is_empty()
+    {
+        for (name, _) in &lapsed {
+            doc.delete(&map, name.as_str())?;
+        }
+    }
+    Ok(lapsed.into_iter().map(|(_, id)| id).collect())
+}
+
 /// The ids of the tasks `doc` holds that are still open: a grant given for
 /// a task ([`tilo_action_policy::Lifetime::Task`]) lives while it is one.
 #[must_use]
@@ -541,19 +571,12 @@ pub fn room_policy_of(doc: &AutoCommit, room: &str) -> tilo_action_policy::RoomP
         .flatten()
         .and_then(|(value, _)| value.into_string().ok());
     let members = blob_map_of(doc, ROOM_MEMBERS_KEY).into_iter().collect();
-    let mut open_tasks = None;
+    let open = open_task_ids(doc);
     let grants = blob_map_of(doc, ROOM_GRANTS_KEY)
         .into_iter()
         .map(|(_, grant): (String, tilo_action_policy::Grant)| grant)
         .filter(|grant| grant.node.room_id() == Some(room))
-        // A grant given for a task lives while that task is open: once it
-        // is done, cancelled or gone, the grant is no longer the room's.
-        .filter(|grant| match &grant.lifetime {
-            tilo_action_policy::Lifetime::Task(task) => open_tasks
-                .get_or_insert_with(|| open_task_ids(doc))
-                .contains(task),
-            _ => true,
-        })
+        .filter(|grant| !grant.lapsed_with_tasks(|task| open.contains(task)))
         .collect();
     tilo_action_policy::RoomPolicy {
         room: room.to_owned(),

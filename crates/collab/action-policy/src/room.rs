@@ -6,7 +6,8 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    ActionKind, Answer, Authority, Context, Grant, GrantId, Party, Role, Subject, TreePath,
+    ActionKind, Answer, Authority, Context, Grant, GrantId, Lifetime, Party, Role, Subject,
+    TreePath,
     roles::{self, governance},
 };
 
@@ -267,14 +268,49 @@ impl RoomPolicy {
         cx: &Context<'_>,
         approved: bool,
     ) -> Result<(), Refusal> {
+        self.admit_action(actor, action, cx, approved).map(drop)
+    }
+
+    /// [`Self::check_action`], with the `Once` grants performing the action
+    /// spends ([`crate::Verdict::spent`]).
+    fn admit_action(
+        &self,
+        actor: &Authority<'_>,
+        action: &str,
+        cx: &Context<'_>,
+        approved: bool,
+    ) -> Result<Vec<GrantId>, Refusal> {
         let node = roles::governance_action(&self.room, action);
         let verdict = actor.decide(&node, roles::GOVERNANCE_KIND, cx);
         match verdict.answer {
-            Answer::Allow => Ok(()),
-            Answer::Ask if approved => Ok(()),
+            Answer::Allow => Ok(verdict.spent()),
+            Answer::Ask if approved => Ok(verdict.spent()),
             Answer::Ask => Err(Refusal::NeedsApproval(verdict.explain())),
             Answer::Deny => Err(Refusal::NotPermitted(verdict.explain())),
         }
+    }
+
+    /// Drop the grants that lapsed with their task
+    /// ([`Grant::lapsed_with_tasks`]). The ids dropped.
+    pub fn lapse_tasks(&mut self, open: impl Fn(&str) -> bool) -> Vec<GrantId> {
+        let mut lapsed = Vec::new();
+        self.grants.retain(|grant| {
+            let keep = !grant.lapsed_with_tasks(&open);
+            if !keep {
+                lapsed.push(grant.id.clone());
+            }
+            keep
+        });
+        lapsed
+    }
+
+    /// Drop the `Once` grants among `spent`: an action ran on them. Any other
+    /// grant named stays. Returns whether anything was dropped.
+    pub fn spend(&mut self, spent: &[GrantId]) -> bool {
+        let before = self.grants.len();
+        self.grants
+            .retain(|grant| grant.lifetime != Lifetime::Once || !spent.contains(&grant.id));
+        self.grants.len() != before
     }
 
     /// Whether `actor_person` (acting through `actor`) may invite someone with
@@ -321,8 +357,9 @@ impl RoomPolicy {
         cx: &Context<'_>,
         approved: bool,
     ) -> Result<(), Refusal> {
-        self.check_action(actor, change.action(), cx, approved)?;
+        let spent = self.admit_action(actor, change.action(), cx, approved)?;
         self.check_change(actor_person, actor, &change, cx)?;
+        self.spend(&spent);
         match change {
             Change::AddMember { person, role } | Change::SetRole { person, role } => {
                 self.members.insert(person, role);

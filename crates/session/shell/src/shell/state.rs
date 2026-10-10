@@ -3607,6 +3607,20 @@ impl WorkspaceTree {
             return false;
         };
         self.doc_upsert_workspace_task(workspace_id, &task);
+        let lapsed = self
+            .desktop
+            .workspaces
+            .iter_mut()
+            .find(|workspace| workspace.id == workspace_id)
+            .map(Workspace::lapse_task_grants)
+            .unwrap_or_default();
+        self.doc_write_policy(
+            workspace_id,
+            &PolicyEdit {
+                revoked: lapsed,
+                ..PolicyEdit::default()
+            },
+        );
         self.queue_save();
         true
     }

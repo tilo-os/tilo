@@ -439,16 +439,24 @@ mod tests {
             snapshot(&peer).unwrap().grants.is_empty(),
             "the grant set ends with the task"
         );
+        let room = peer.core.room_doc.as_deref().unwrap();
+        let policy = tilo_desktop_model::projection::room_policy_of(room, ROOM);
         assert!(
-            !tilo_desktop_model::projection::room_policy_of(
-                peer.core.room_doc.as_deref().unwrap(),
-                ROOM
-            )
-            .grants
-            .iter()
-            .any(|grant| grant.subject == Subject::Task(task.clone())),
+            !holds_task_grant(&policy, &task),
             "and no longer counts as the room's"
         );
+        let held = peer.permissions(governor.device_public_key, now).unwrap();
+        assert!(
+            !holds_task_grant(&held.policy, &task),
+            "a receiver deciding on the room's grants, as the relay does, no longer holds it"
+        );
+    }
+
+    fn holds_task_grant(policy: &tilo_action_policy::RoomPolicy, task: &str) -> bool {
+        policy
+            .grants
+            .iter()
+            .any(|grant| grant.subject == Subject::Task(task.to_owned()))
     }
 
     #[test]

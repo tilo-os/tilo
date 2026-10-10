@@ -264,6 +264,9 @@ pub(crate) fn apply(
     });
     tilo_desktop_model::projection::project_workspace_tasks(doc, &tasks)
         .map_err(|error| error.to_string())?;
+    // A task that closed takes the grants given for it with it, in the same
+    // change, so every reader of the room's grants stops honouring them.
+    tilo_desktop_model::projection::lapse_task_grants(doc).map_err(|error| error.to_string())?;
     project_controls(doc, &controls)?;
     doc.commit();
     Ok(AppliedTaskCommand {

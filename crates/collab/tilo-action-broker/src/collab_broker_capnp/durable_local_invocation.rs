@@ -224,8 +224,8 @@ pub(super) fn authorize_action_in(
 }
 
 /// [`authorize_action_in`] at admission: whether the room's grants ask
-/// first (`Ok(true)`), when the invocation then needs the confirmation of
-/// the person it is made for.
+/// first (`true`), when the invocation then needs the confirmation of the
+/// person it is made for, and the `Once` grants admitting it spends.
 ///
 /// # Errors
 /// When the grants refuse the action.
@@ -235,12 +235,26 @@ pub(super) fn admit_action_in(
     need: &tilo_actions::ActionNeed,
     actor: &BrokerActor,
     now: u64,
-) -> Result<bool, String> {
-    match actor.action_answer_in(workspace, app, (resource_kind, resource, action), need, now) {
-        tilo_action_policy::Answer::Allow => Ok(false),
-        tilo_action_policy::Answer::Ask => Ok(true),
-        tilo_action_policy::Answer::Deny => {
+) -> Result<(bool, Vec<tilo_action_policy::GrantId>), String> {
+    match actor.action_verdict_in(workspace, app, (resource_kind, resource, action), need, now) {
+        (tilo_action_policy::Answer::Allow, spent) => Ok((false, spent)),
+        (tilo_action_policy::Answer::Ask, spent) => Ok((true, spent)),
+        (tilo_action_policy::Answer::Deny, _) => {
             Err("caller no longer authorized for invocation".into())
+        }
+    }
+}
+
+impl CapnpBrokerState {
+    /// Revoke the `Once` grants an admitted action spent in `room`
+    /// ([`tilo_action_policy::Verdict::spent`]), through the host that
+    /// records the room's grants.
+    pub(super) fn spend_once_grants(&self, room: &str, spent: &[tilo_action_policy::GrantId]) {
+        let Some(grants) = self.services.app_action_grants.as_ref() else {
+            return;
+        };
+        for grant in spent {
+            grants.revoke(room, grant.as_str());
         }
     }
 }

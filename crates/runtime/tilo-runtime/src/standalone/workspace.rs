@@ -306,6 +306,7 @@ impl LegacyWorkspaceProjection for ProfileWorkspace {
                 .find(|candidate| candidate.id == workspace)?;
             if let Some(status) = status {
                 workspace.set_task_status_at(task, status, actor, now);
+                workspace.lapse_task_grants();
             }
             workspace.append_task_audit_at(task, actor, summary, now)?;
             Some(())

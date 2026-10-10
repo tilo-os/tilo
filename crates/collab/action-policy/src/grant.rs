@@ -237,6 +237,14 @@ impl Grant {
         self
     }
 
+    /// Whether the grant lived while a task was open and that task no longer
+    /// is (`open` answers for a task id): it has lapsed, and is no longer the
+    /// room's.
+    #[must_use]
+    pub fn lapsed_with_tasks(&self, open: impl Fn(&str) -> bool) -> bool {
+        matches!(&self.lifetime, Lifetime::Task(task) if !open(task))
+    }
+
     /// Whether the grant is live in `cx`.
     #[must_use]
     pub fn is_live(&self, cx: &Context<'_>) -> bool {

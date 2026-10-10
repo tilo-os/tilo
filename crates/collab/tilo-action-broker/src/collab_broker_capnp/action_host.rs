@@ -2143,7 +2143,8 @@ impl CapnpBrokerState {
     /// Admit `descriptor`, published by `app`, for `policy` in `workspace`
     /// at `now`: allowed; or, where the room's grants ask first, with the
     /// confirmation of the person — their own word when they act
-    /// themselves, else the answer they gave on their device.
+    /// themselves, else the answer they gave on their device. Admitted, it
+    /// spends the `Once` grants it relied on.
     fn admit_answer(
         &self,
         (workspace, policy, now): (&Workspace, &BrokerActor, u64),
@@ -2151,7 +2152,7 @@ impl CapnpBrokerState {
         descriptor: &ActionDescriptor,
         (argument, confirmation): (Option<&str>, Option<&Confirmation>),
     ) -> Result<(), ActionHostError> {
-        match policy.action_answer_in(
+        let (answer, spent) = policy.action_verdict_in(
             workspace,
             app,
             (
@@ -2161,27 +2162,26 @@ impl CapnpBrokerState {
             ),
             &descriptor.contract.need(),
             now,
-        ) {
-            tilo_action_policy::Answer::Allow => Ok(()),
-            tilo_action_policy::Answer::Deny => Err(ActionHostError::NotPermitted),
-            tilo_action_policy::Answer::Ask => {
-                let confirmed = match confirmation {
-                    Some(Confirmation::Witnessed(token)) => self.take_witness(
-                        token,
-                        policy.id(),
-                        (&descriptor.address.resource, &descriptor.address.action),
-                        argument,
-                    ),
-                    Some(Confirmation::Confirmed) => policy.direct(),
-                    _ => false,
-                };
-                if confirmed {
-                    Ok(())
-                } else {
-                    Err(ActionHostError::ConfirmationRequired)
-                }
-            }
+        );
+        let confirmed = match answer {
+            tilo_action_policy::Answer::Allow => true,
+            tilo_action_policy::Answer::Deny => return Err(ActionHostError::NotPermitted),
+            tilo_action_policy::Answer::Ask => match confirmation {
+                Some(Confirmation::Witnessed(token)) => self.take_witness(
+                    token,
+                    policy.id(),
+                    (&descriptor.address.resource, &descriptor.address.action),
+                    argument,
+                ),
+                Some(Confirmation::Confirmed) => policy.direct(),
+                _ => false,
+            },
+        };
+        if !confirmed {
+            return Err(ActionHostError::ConfirmationRequired);
         }
+        self.spend_once_grants(&workspace.room.to_string(), &spent);
+        Ok(())
     }
 
     /// Apply one shortcut library action for `caller` in `workspace`. A

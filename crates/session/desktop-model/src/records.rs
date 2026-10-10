@@ -29,6 +29,19 @@ impl Workspace {
         Some(task)
     }
 
+    /// Drop the grants that lapsed with a task no longer open in this room
+    /// ([`tilo_action_policy::Grant::lapsed_with_tasks`]). The ids dropped,
+    /// for the host to remove from the room's records too.
+    pub fn lapse_task_grants(&mut self) -> Vec<tilo_action_policy::GrantId> {
+        let open: std::collections::HashSet<&str> = self
+            .tasks
+            .iter()
+            .filter(|task| !task.status.is_finished())
+            .map(|task| task.id.as_str())
+            .collect();
+        self.policy.lapse_tasks(|task| open.contains(task))
+    }
+
     /// Append the progress `actor` reports, in their own words, to task
     /// `task_id`'s audit at `now` (Unix seconds) without changing its state:
     /// agent progress is shared audit data, not a substitute for a document

@@ -41,13 +41,6 @@ pub(crate) struct PendingConsent {
     answer: tokio::sync::oneshot::Receiver<AppActionConsent>,
 }
 
-/// A grant recorded from the person's answer.
-struct RecordedGrant {
-    room: String,
-    capability: String,
-    consumed_on_use: bool,
-}
-
 impl CapnpBrokerState {
     /// Ask whoever answers for the person using an application from now on.
     pub(crate) fn set_app_action_consent(&self, prompter: Arc<dyn AppActionConsentPrompter>) {
@@ -200,7 +193,7 @@ impl CapnpBrokerState {
         &self,
         consent: &PendingConsent,
         answer: AppActionConsent,
-    ) -> Option<RecordedGrant> {
+    ) -> Option<String> {
         let lifetime = answer.grant_lifetime()?;
         let request = &consent.request;
         let grants = self.services.app_action_grants.as_ref()?;
@@ -208,7 +201,6 @@ impl CapnpBrokerState {
             return None;
         }
         let (resource_kind, need) = &consent.target;
-        let once = lifetime == Lifetime::Once;
         let grant = Grant::new(
             format!("app-action:{}", uuid::Uuid::new_v4()),
             Subject::App(request.app_id.clone()),
@@ -228,25 +220,13 @@ impl CapnpBrokerState {
             Subject::Person(request.person.clone()),
         )
         .with_lifetime(lifetime);
-        let id = grants.record(request, grant, answer)?;
-        Some(RecordedGrant {
-            room: request.room.clone(),
-            capability: id,
-            consumed_on_use: once,
-        })
-    }
-
-    /// Remove a grant given for one call, now that the call was decided.
-    fn consume_app_action_grant(&self, grant: &RecordedGrant) {
-        if let Some(grants) = self.services.app_action_grants.as_ref() {
-            grants.revoke(&grant.room, &grant.capability);
-        }
+        grants.record(request, grant, answer)
     }
 }
 
 /// Answer an application's invocation once the person has answered whether
-/// it may: denied, refused; allowed, recorded and served, and a grant given
-/// once removed as soon as the call is decided.
+/// it may: denied, refused; allowed, recorded and served. A grant given once
+/// is spent by the admission it lets through.
 pub(super) fn serve_after_consent(
     state: Arc<CapnpBrokerState>,
     consent: Box<PendingConsent>,
@@ -262,33 +242,21 @@ pub(super) fn serve_after_consent(
             .await
             .unwrap_or(AppActionConsent::Deny);
         state.finish_app_action_consent(&consent);
-        let reply = match state.record_app_action_grant(&consent, answer) {
-            None => refuse(&message, ActionHostError::NotPermitted),
-            Some(grant) => {
-                // Answered at admission, as before waits existed: a grant
-                // given for this call is spent once the call is decided,
-                // never held open while the action runs.
-                let message = match message {
-                    RemoteActionMessage::Invoke(mut request) => {
-                        request.wait_ms = None;
-                        RemoteActionMessage::Invoke(request)
-                    }
-                    other => other,
-                };
-                let person = consent.request.person.clone();
-                let answered = super::witness::serve_answering(
-                    Arc::clone(&state),
-                    host,
-                    caller,
-                    person,
-                    message,
-                )
-                .await;
-                if grant.consumed_on_use {
-                    state.consume_app_action_grant(&grant);
+        let reply = if state.record_app_action_grant(&consent, answer).is_none() {
+            refuse(&message, ActionHostError::NotPermitted)
+        } else {
+            // Answered at admission, as before waits existed: a grant
+            // given for this call is spent by that admission, never held
+            // open while the action runs.
+            let message = match message {
+                RemoteActionMessage::Invoke(mut request) => {
+                    request.wait_ms = None;
+                    RemoteActionMessage::Invoke(request)
                 }
-                answered
-            }
+                other => other,
+            };
+            let person = consent.request.person.clone();
+            super::witness::serve_answering(Arc::clone(&state), host, caller, person, message).await
         };
         let reply = reply
             .ok_or_else(|| capnp::Error::failed("the action host dropped the request".into()))?;

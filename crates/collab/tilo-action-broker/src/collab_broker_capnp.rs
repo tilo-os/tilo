@@ -693,7 +693,7 @@ impl BrokerActor {
         kind: ActionKind,
         now: u64,
     ) -> Answer {
-        self.answer_for_in(workspace, node, kind, false, now)
+        self.verdict_in(workspace, node, kind, false, now).0
     }
 
     /// The answer for the action `action` on `resource` (of kind
@@ -708,6 +708,20 @@ impl BrokerActor {
         need: &tilo_actions::ActionNeed,
         now: u64,
     ) -> Answer {
+        self.action_verdict_in(workspace, app, (resource_kind, resource, action), need, now)
+            .0
+    }
+
+    /// [`Self::action_answer_in`] for running the action: the answer, and the
+    /// `Once` grants running it spends ([`tilo_action_policy::Verdict::spent`]).
+    pub(crate) fn action_verdict_in(
+        &self,
+        workspace: &tilo_desktop_model::Workspace,
+        app: &str,
+        (resource_kind, resource, action): (&str, &str, &str),
+        need: &tilo_actions::ActionNeed,
+        now: u64,
+    ) -> (Answer, Vec<tilo_action_policy::GrantId>) {
         let node = tilo_actions::action_node(
             &workspace.node(),
             app,
@@ -716,25 +730,24 @@ impl BrokerActor {
             need.field.as_deref(),
             action,
         );
-        self.answer_for_in(workspace, &node, need.kind, need.privileged, now)
+        self.verdict_in(workspace, &node, need.kind, need.privileged, now)
     }
 
-    fn answer_for_in(
+    fn verdict_in(
         &self,
         workspace: &tilo_desktop_model::Workspace,
         node: &TreePath,
         kind: ActionKind,
         privileged: bool,
         now: u64,
-    ) -> Answer {
+    ) -> (Answer, Vec<tilo_action_policy::GrantId>) {
         let bound = roles::foreign_device_bound();
         self.with_authority_in(workspace, &bound, |authority| {
-            let verdict = authority.decide(node, kind, &tilo_desktop_model::context_at(now));
+            let mut verdict = authority.decide(node, kind, &tilo_desktop_model::context_at(now));
             if privileged {
-                verdict.privileged().answer
-            } else {
-                verdict.answer
+                verdict = verdict.privileged();
             }
+            (verdict.answer, verdict.spent())
         })
     }
 
@@ -5222,14 +5235,14 @@ impl CapnpBrokerState {
             .and_then(|context| context.group.as_ref())
             .filter(|group| group.kind == "task")
             .map(|group| group.id.clone());
-        let asks = self
+        let (asks, spent) = self
             .membership
             .as_ref()
             .ok_or("workspace authority unavailable")?
             .decide_in_room(&offered.0.route.cluster_id, |workspace| {
                 let workspace = workspace.ok_or("workspace no longer hosted")?;
                 let need = offered.1.contract.need();
-                let mut asks = durable_local_invocation::admit_action_in(
+                let (mut asks, spent) = durable_local_invocation::admit_action_in(
                     workspace,
                     (
                         &offered.0.app_id,
@@ -5255,19 +5268,19 @@ impl CapnpBrokerState {
                     }
                 }
                 if actor.is_agent {
-                    return Ok::<bool, String>(asks);
+                    return Ok::<_, String>((asks, spent));
                 }
                 // A person is authorized on the route record (Artifact)
                 // too, not only on (app, action).
-                Ok(asks
-                    | crate::published_authorization::authorize_person_published(
-                        workspace,
-                        now,
-                        &actor.id,
-                        actor.capped,
-                        &offered.0,
-                        &offered.1,
-                    )?)
+                let record_asks = crate::published_authorization::authorize_person_published(
+                    workspace,
+                    now,
+                    &actor.id,
+                    actor.capped,
+                    &offered.0,
+                    &offered.1,
+                )?;
+                Ok((asks | record_asks, spent))
             })??;
 
         if (durable.is_some() || execution.is_some())
@@ -5389,6 +5402,7 @@ impl CapnpBrokerState {
             None
         };
         drop(journal_guard);
+        self.spend_once_grants(&offered.0.route.cluster_id, &spent);
         // Keep acceptance before an immediately completing application's first
         // update. Sending to the unbounded app queue and bounded observation
         // bus never waits or calls back into the broker.
