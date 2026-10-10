@@ -251,7 +251,7 @@ impl Fixture {
             delivery,
             &self.recipient,
             &session,
-            &mut Default::default(),
+            &mut tilo_delivery_protocol::transport_v2::DeltaEncoder::default(),
             wire,
         )
         .await
