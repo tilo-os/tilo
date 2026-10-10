@@ -551,7 +551,6 @@ pub(crate) mod integration_tests;
 #[cfg(test)]
 pub(crate) use host_tests::preview as test_preview;
 
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) mod routes;
 
 /// Opaque retained framework surface used only by owning runner traversal.
