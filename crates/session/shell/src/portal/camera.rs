@@ -14,14 +14,14 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 #[cfg(target_os = "linux")]
-use zbus::names::{InterfaceName, MemberName, OwnedUniqueName};
+use zbus::names::OwnedUniqueName;
 #[cfg(target_os = "linux")]
-use zbus::object_server::{DispatchResult2, Interface, SignalEmitter};
+use zbus::object_server::DispatchResult2;
 #[cfg(target_os = "linux")]
 use zbus::zvariant::OwnedObjectPath;
 use zbus::zvariant::OwnedValue;
 #[cfg(target_os = "linux")]
-use zbus::{Connection, ObjectServer, fdo, message::Header, message::Message};
+use zbus::{Connection, message::Header, message::Message};
 
 use crate::shell::state::{Capability, GRANT_ONCE};
 
@@ -108,65 +108,21 @@ const ACCESS_INTROSPECTION: &str = r#"<interface name="org.freedesktop.impl.port
 "#;
 
 #[cfg(target_os = "linux")]
-#[zbus::export::async_trait::async_trait]
-impl Interface for AccessBackend {
-    fn name() -> InterfaceName<'static> {
-        InterfaceName::from_static_str_unchecked("org.freedesktop.impl.portal.Access")
-    }
+interface_dispatch::method_interface!(
+    AccessBackend,
+    "org.freedesktop.impl.portal.Access",
+    ACCESS_INTROSPECTION
+);
 
-    async fn get(
-        &self,
-        _property: &str,
-        _server: &ObjectServer,
-        _connection: &Connection,
-        _header: Option<&Header<'_>>,
-        _emitter: &SignalEmitter<'_>,
-    ) -> Option<fdo::Result<OwnedValue>> {
-        None
-    }
-
-    async fn get_all(
-        &self,
-        _server: &ObjectServer,
-        _connection: &Connection,
-        _header: Option<&Header<'_>>,
-        _emitter: &SignalEmitter<'_>,
-    ) -> fdo::Result<HashMap<String, OwnedValue>> {
-        Ok(HashMap::new())
-    }
-
-    fn set<'call>(
+#[cfg(target_os = "linux")]
+impl AccessBackend {
+    fn dispatch_call<'call>(
         &'call self,
-        _property: &'call str,
-        _value: &'call zbus::zvariant::Value<'_>,
-        _server: &'call ObjectServer,
-        _connection: &'call Connection,
-        _header: Option<&'call Header<'_>>,
-        _emitter: &'call SignalEmitter<'_>,
-    ) -> DispatchResult2<'call> {
-        DispatchResult2::NotFound
-    }
-
-    async fn set_mut(
-        &mut self,
-        _property: &str,
-        _value: &zbus::zvariant::Value<'_>,
-        _server: &ObjectServer,
-        _connection: &Connection,
-        _header: Option<&Header<'_>>,
-        _emitter: &SignalEmitter<'_>,
-    ) -> Option<fdo::Result<()>> {
-        None
-    }
-
-    fn call<'call>(
-        &'call self,
-        _server: &'call ObjectServer,
         connection: &'call Connection,
         message: &'call Message,
-        name: MemberName<'call>,
+        name: &str,
     ) -> DispatchResult2<'call> {
-        match name.as_str() {
+        match name {
             "AccessDialog" => interface_dispatch::dispatch(
                 connection,
                 message,
@@ -178,23 +134,6 @@ impl Interface for AccessBackend {
         }
     }
 
-    fn call_mut<'call>(
-        &'call mut self,
-        _server: &'call ObjectServer,
-        _connection: &'call Connection,
-        _message: &'call Message,
-        _name: MemberName<'call>,
-    ) -> DispatchResult2<'call> {
-        DispatchResult2::NotFound
-    }
-
-    fn introspect_to_writer(&self, writer: &mut dyn std::fmt::Write, level: usize) {
-        interface_dispatch::write_introspection(writer, level, ACCESS_INTROSPECTION);
-    }
-}
-
-#[cfg(target_os = "linux")]
-impl AccessBackend {
     /// `AccessDialog` — generic consent prompt the host portal uses for Camera, Background, and similar capability gates.
     async fn access_dialog(
         &self,
