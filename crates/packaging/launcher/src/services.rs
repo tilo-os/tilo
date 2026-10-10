@@ -131,6 +131,11 @@ pub(crate) const RESERVED_CHILD_FDS: [i32; 8] = [
     SERVICE_NAMESPACE_CHILD_FD,
 ];
 const STORE_APP_ID: &str = "so.tilo.store";
+/// The Browser holds `app-host` too, but is served only the request for a
+/// runtime its own manifest declares (its engine), never the Store's
+/// package-management interface: the host decides by the app id stamped on
+/// the connection.
+const BROWSER_APP_ID: &str = "so.tilo.browser";
 pub const APP_HOST_LAUNCH_MAGIC: [u8; 4] = *b"QAH1";
 /// After [`APP_HOST_LAUNCH_MAGIC`]: a big-endian `u32` length, then the JSON
 /// handoff.
@@ -746,7 +751,11 @@ fn resolve_service_binds_inner(
         }
         let path = socket_for(name);
 
-        if name == APP_HOST_SERVICE && context.is_none_or(|launch| launch.app_id != STORE_APP_ID) {
+        if name == APP_HOST_SERVICE
+            && context.is_none_or(|launch| {
+                launch.app_id != STORE_APP_ID && launch.app_id != BROWSER_APP_ID
+            })
+        {
             return Err(ServiceError::AppHostUnauthorized);
         }
 

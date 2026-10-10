@@ -53,7 +53,8 @@ enum Cmd {
         #[arg(long)]
         version: Option<String>,
     },
-    /// Install an exact runtime without replacing the apps that use it.
+    /// Install an exact signed runtime (an app's engine), without installing or
+    /// replacing the app that uses it.
     Runtime {
         #[command(subcommand)]
         cmd: RuntimeCmd,
@@ -83,13 +84,15 @@ enum Cmd {
 
 #[derive(Debug, Subcommand)]
 enum RuntimeCmd {
-    /// Fetch an exact signed runtime from an already configured repository.
+    /// Fetch an exact signed runtime through the same verified install an app's
+    /// own runtime takes.
     Install {
         /// Runtime reference, for example tilo-runtime/2026.10.4-chromium.
         runtime: String,
         /// Existing enabled repository name; its pinned authority is unchanged.
+        /// Without it, the first enabled repository that offers the build.
         #[arg(long)]
-        repo: String,
+        repo: Option<String>,
     },
 }
 
@@ -159,7 +162,7 @@ fn main() -> ExitCode {
         Cmd::Repo { cmd } => repo(cmd),
         Cmd::Runtime {
             cmd: RuntimeCmd::Install { runtime, repo },
-        } => install_runtime(&runtime, &repo),
+        } => install_runtime(&runtime, repo.as_deref()),
     }
 }
 
@@ -412,14 +415,17 @@ fn human_duration(duration: Duration) -> String {
     }
 }
 
-fn install_runtime(runtime: &str, registry: &str) -> ExitCode {
+fn install_runtime(runtime: &str, registry: Option<&str>) -> ExitCode {
     let mut progress = progress_reporter();
-    match app_cli::install::install_runtime_reporting(runtime, registry, &mut progress) {
-        Ok(offer) => {
-            println!(
-                "installed runtime {runtime} {} {}",
-                offer.package_id, offer.version
-            );
+    let installed = match registry {
+        Some(registry) => app_cli::install::install_runtime_reporting(runtime, registry, &mut progress)
+            .map(|offer| format!("installed runtime {runtime} {} {}", offer.package_id, offer.version)),
+        None => app_cli::install::install_runtime_from_enabled(runtime, &mut progress)
+            .map(|()| format!("runtime {runtime} is installed")),
+    };
+    match installed {
+        Ok(message) => {
+            println!("{message}");
             ExitCode::SUCCESS
         }
         Err(error) => {
@@ -958,7 +964,7 @@ mod tests {
     use clap::CommandFactory;
 
     #[test]
-    fn runtime_install_requires_an_explicit_configured_repository() {
+    fn runtime_install_takes_an_optional_configured_repository() {
         let cli = Cli::try_parse_from([
             "app",
             "runtime",
@@ -970,16 +976,18 @@ mod tests {
         .unwrap();
         assert!(
             matches!(cli.cmd, Cmd::Runtime { cmd: RuntimeCmd::Install { runtime, repo } }
-            if runtime == "tilo-runtime/2026.10.4-chromium" && repo == "Tilo main")
+            if runtime == "tilo-runtime/2026.10.4-chromium"
+                && repo.as_deref() == Some("Tilo main"))
         );
+        let cli = Cli::try_parse_from([
+            "app",
+            "runtime",
+            "install",
+            "tilo-runtime/2026.10.4-chromium",
+        ])
+        .unwrap();
         assert!(
-            Cli::try_parse_from([
-                "app",
-                "runtime",
-                "install",
-                "tilo-runtime/2026.10.4-chromium"
-            ])
-            .is_err()
+            matches!(cli.cmd, Cmd::Runtime { cmd: RuntimeCmd::Install { repo: None, .. } })
         );
     }
 
@@ -1009,6 +1017,21 @@ mod tests {
             assert!(script.contains("default app"), "{script}");
             assert!(script.contains("_store()"), "{script}");
             assert!(script.contains("default store"), "{script}");
+        }
+        // Phase `runtime_install_names_the_exact_runtime`.
+        {
+            let cli = Cli::try_parse_from([
+                "app",
+                "runtime",
+                "install",
+                "tilo-runtime/2026.10.9-chromium",
+            ])
+            .expect("runtime install parses");
+            assert!(matches!(
+                cli.cmd,
+                Cmd::Runtime { cmd: RuntimeCmd::Install { ref runtime, repo: None } }
+                    if runtime == "tilo-runtime/2026.10.9-chromium"
+            ));
         }
         // Phase `concise_update_parses`.
         {

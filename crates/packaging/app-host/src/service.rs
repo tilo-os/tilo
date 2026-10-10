@@ -630,6 +630,28 @@ fn wayland_socket() -> Option<std::path::PathBuf> {
     }
 }
 
+/// Start `package` through the host-owned launcher, on `uri` when given.
+pub(crate) fn launch_package(package: &InstalledPackage, uri: Option<&str>) -> Result<(), String> {
+    let mut command = std::process::Command::new(launcher_bin());
+    command
+        .arg("run")
+        .arg("--manifest")
+        .arg(&package.manifest_path)
+        .arg("--payload-root")
+        .arg(&package.payload_root)
+        .arg("--app-id")
+        .arg(&package.id);
+    if let Some(socket) = wayland_socket() {
+        command.arg("--wayland-socket").arg(socket);
+    }
+    if let Some(uri) = uri {
+        command.arg("--open-uri").arg(uri);
+    }
+    spawn_detached(command)
+        .map(drop)
+        .map_err(|error| error.to_string())
+}
+
 fn spawn_detached(mut command: std::process::Command) -> Result<String, Error> {
     command
         .spawn()
