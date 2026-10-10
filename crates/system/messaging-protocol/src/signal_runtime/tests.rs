@@ -120,30 +120,58 @@ fn socket_send_maps_registry_account_to_signal_and_restart_refuses_duplicates() 
     );
 }
 
+/// Bytes the runtime already handed to the socket, without ever blocking.
+/// `send` writes synchronously, so after it returns anything it wrote is here.
+fn written(peer: &mut UnixStream) -> Vec<u8> {
+    peer.set_nonblocking(true).unwrap();
+    let mut bytes = Vec::new();
+    let mut chunk = [0; 4096];
+    loop {
+        match peer.read(&mut chunk) {
+            Ok(0) => break,
+            Ok(count) => bytes.extend_from_slice(&chunk[..count]),
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => break,
+            Err(error) => panic!("peer read failed: {error}"),
+        }
+    }
+    bytes
+}
+
 #[test]
 fn silent_socket_expires_and_preserves_uncertainty_without_retry() {
-    let root = tempfile::tempdir().unwrap();
-    let (client, mut peer) = UnixStream::pair().unwrap();
-    let mut runtime = runtime(root.path(), client);
-    let start = tilo_clock::now();
-    assert_eq!(
-        runtime.send(
-            &accounts(),
-            &binding(),
-            &route(),
-            "op",
-            "private text",
-            Duration::from_millis(40)
-        ),
-        Err(CheckedSendError::Transport(SendError::Uncertain))
-    );
-    assert!(start.elapsed() < Duration::from_secs(2));
-    assert_eq!(runtime.status("op"), Some(Status::Uncertain));
-    let mut request = String::new();
-    BufReader::new(peer.try_clone().unwrap())
-        .read_line(&mut request)
-        .unwrap();
-    assert!(request.ends_with('\n'));
+    // The budget also covers the durable reservation. On a loaded host that
+    // can use up a short budget before the request is written, which is still
+    // uncertain but not the case under test, so retry with a larger budget.
+    let mut budget = Duration::from_millis(40);
+    let (_root, mut runtime, mut peer, request) = loop {
+        let root = tempfile::tempdir().unwrap();
+        let (client, mut peer) = UnixStream::pair().unwrap();
+        let mut runtime = runtime(root.path(), client);
+        let start = tilo_clock::now();
+        assert_eq!(
+            runtime.send(
+                &accounts(),
+                &binding(),
+                &route(),
+                "op",
+                "private text",
+                budget
+            ),
+            Err(CheckedSendError::Transport(SendError::Uncertain))
+        );
+        assert!(start.elapsed() < budget + Duration::from_secs(2));
+        assert_eq!(runtime.status("op"), Some(Status::Uncertain));
+        let request = written(&mut peer);
+        if !request.is_empty() {
+            break (root, runtime, peer, request);
+        }
+        budget *= 2;
+        assert!(
+            budget <= Duration::from_secs(5),
+            "reservation never left time to write the request"
+        );
+    };
+    assert!(request.ends_with(b"\n"));
     assert_eq!(
         runtime.send(
             &accounts(),
@@ -157,7 +185,6 @@ fn silent_socket_expires_and_preserves_uncertainty_without_retry() {
             Error::ConnectionUnavailable
         )))
     );
-    peer.set_nonblocking(true).unwrap();
     assert_eq!(
         peer.read(&mut [0; 1]).unwrap_err().kind(),
         io::ErrorKind::WouldBlock
