@@ -153,14 +153,6 @@ impl LiveRecord {
             Ok(())
         }
     }
-
-    fn validate_semantic(&self) -> Result<()> {
-        if self.app.is_empty() || self.app.len() > 128 || self.record.len() > 128 {
-            Err(LiveWireError::Invalid)
-        } else {
-            Ok(())
-        }
-    }
 }
 
 /// Object inside a record or on the desktop (window, shape, block).
@@ -361,7 +353,7 @@ impl OpsFrame {
 
     fn validate(&self) -> Result<()> {
         if let Self::Semantic { record, event } = self {
-            record.validate_semantic()?;
+            record.validate()?;
             return event.validate();
         }
         self.record().validate()?;
@@ -776,7 +768,7 @@ mod tests {
     }
 
     #[test]
-    fn only_semantic_ops_may_name_a_canonical_empty_root() {
+    fn every_live_frame_may_name_its_package_primary_record() {
         let mut root = semantic();
         let LiveFrame::Ops(OpsFrame::Semantic { record, .. }) = &mut root else {
             panic!("semantic fixture");
@@ -815,7 +807,7 @@ mod tests {
         );
 
         let empty = root_record;
-        assert!(
+        let frames = [
             LiveFrame::Presence(PresenceFrame {
                 seq: 1,
                 sent_at_ms: 1,
@@ -824,11 +816,7 @@ mod tests {
                 selection: None,
                 drag: None,
                 participant: None,
-            })
-            .encode()
-            .is_err()
-        );
-        assert!(
+            }),
             LiveFrame::Ops(OpsFrame::Preview {
                 seq: 1,
                 record: empty.clone(),
@@ -836,15 +824,43 @@ mod tests {
                     at: LiveAnchor { cursor: vec![1] },
                     len: 1,
                 }],
-            })
-            .encode()
-            .is_err()
-        );
-        assert!(
-            LiveFrame::Ops(OpsFrame::End { record: empty })
+            }),
+            LiveFrame::Ops(OpsFrame::End { record: empty }),
+        ];
+        for frame in frames {
+            let encoded = frame
                 .encode()
-                .is_err()
-        );
+                .expect("package-primary records are canonical");
+            assert_eq!(LiveFrame::decode(&encoded).unwrap(), frame);
+            let sealed = SealedLiveFrame::seal(&frame, seal).unwrap();
+            assert_eq!(
+                SealedLiveFrame::decode(&sealed)
+                    .unwrap()
+                    .open(open)
+                    .unwrap(),
+                frame
+            );
+        }
+
+        for record in [
+            LiveRecord {
+                app: String::new(),
+                record: String::new(),
+            },
+            LiveRecord {
+                app: "a".repeat(129),
+                record: String::new(),
+            },
+            LiveRecord {
+                app: "so.tilo.chat".into(),
+                record: "r".repeat(129),
+            },
+        ] {
+            assert_eq!(
+                LiveFrame::Ops(OpsFrame::End { record }).encode(),
+                Err(LiveWireError::Invalid)
+            );
+        }
     }
 
     #[test]
