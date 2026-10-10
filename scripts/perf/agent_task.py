@@ -398,6 +398,8 @@ class TaskRun:
     model_ms: float = 0.0
     model_first_byte_ms: list[float] = field(default_factory=list)
     calls: list[ToolCall] = field(default_factory=list)
+    # Listings that answered unsettled at their wait_ms (Tools.unsettled).
+    unsettled: list[dict[str, Any]] = field(default_factory=list)
 
     @property
     def tilo_ms(self) -> float:
@@ -468,9 +470,13 @@ class ModelClient:
 class Tools:
     """The agent's tools, run on one persistent control-socket connection."""
 
-    def __init__(self, conn: Connection, split: bool):
+    def __init__(self, conn: Connection, split: bool, unsettled: list[dict[str, Any]] | None = None):
         self.conn = conn
         self.split = split
+        # Listings that answered at their wait_ms without settling: what an
+        # agent then works from is what the desktop had, and the step paid
+        # the whole wait. Reported, never hidden.
+        self.unsettled = unsettled if unsettled is not None else []
 
     def run(self, name: str, arguments: dict[str, Any], step: str) -> tuple[Any, ToolCall]:
         if name == "tilo_enumerate_actions":
@@ -493,6 +499,7 @@ class Tools:
             answer = answer_of(line, f"{step}: actions_enumerate {query!r}")
             if settled is None:
                 settled = answer.get("settled", answer.get("complete"))
+                first = {key: value for key, value in answer.items() if key != "actions"}
             rows.extend(answer.get("actions", []))
             cursor = answer.get("next_cursor")
             if not cursor:
@@ -500,7 +507,10 @@ class Tools:
             payload = {"op": "actions_enumerate", "query": query, "detail": "compact",
                        "cursor": cursor}
         if settled is False:
-            raise BenchError(f"{step}: the listing for {query!r} did not settle within {WAIT_MS} ms")
+            self.unsettled.append({
+                "step": step, "query": query, "ms": round(total_ns / 1e6, 1), "rows": len(rows),
+                "providers": sorted({str(r.get("provider")) for r in rows if isinstance(r, dict)}),
+                "answer": first})
         result = {"query": query, "count": len(rows), "actions": rows}
         return result, ToolCall(step, "tilo_enumerate_actions", total_ns / 1e6, size)
 
@@ -566,6 +576,7 @@ def run_task(model: ModelClient, tools: Tools, prompt: str, max_turns: int = 12)
                             "content": json.dumps(result, separators=(",", ":"))})
         messages.append({"role": "user", "content": results})
     run.wall_ms = (time.perf_counter_ns() - start) / 1e6
+    run.unsettled = list(tools.unsettled)
     if [call.step for call in run.calls] != list(STEPS):
         raise BenchError(f"the task ran {[c.step for c in run.calls]}, not {list(STEPS)}")
     return run
@@ -666,7 +677,9 @@ def collect(runs: list[TaskRun], split_runs: list[TaskRun]) -> list[tuple[str, s
     results: list[tuple[str, str, list[float], dict[str, Any]]] = []
     if not runs:
         raise BenchError("no repetition was measured")
-    results.append(("agent.task.notes.wall", "ms", [r.wall_ms for r in runs], {}))
+    unsettled = sum(len(r.unsettled) for r in runs)
+    results.append(("agent.task.notes.wall", "ms", [r.wall_ms for r in runs],
+                    {"unsettled_listings": unsettled}))
     results.append(("agent.task.notes.tilo", "ms", [r.tilo_ms for r in runs], {}))
     results.append(("agent.task.notes.model", "ms", [r.model_ms for r in runs], {}))
     results.append(("agent.task.notes.client", "ms", [r.client_ms for r in runs], {}))
@@ -725,12 +738,13 @@ def measure(socket_path: str, args: argparse.Namespace) -> tuple[list[TaskRun], 
             task["value"] = NotesTask(title=f"Agent bench {tag} {index:03d}",
                                       body=f"Benchmark body {phrase} written by a scripted agent.",
                                       phrase=phrase)
+            tools = Tools(conn, split)
             try:
-                run = run_task(client, Tools(conn, split), task["value"].prompt())
+                run = run_task(client, tools, task["value"].prompt())
             except BenchError as error:
-                if model.errors:
-                    raise BenchError(f"repetition {index}: {model.errors[-1]}") from error
-                raise
+                why = model.errors[-1] if model.errors else str(error)
+                seen = "".join(f"\n  unsettled: {json.dumps(entry)[:1500]}" for entry in tools.unsettled)
+                raise BenchError(f"repetition {index}: {why}{seen}") from error
             if kind == "measure":
                 runs.append(run)
             elif kind == "split":
@@ -788,6 +802,12 @@ def main(argv: list[str] | None = None) -> int:
         print(f"agent_task: {error}", file=sys.stderr)
         return 1
     print(summary(runs), file=sys.stderr)
+    unsettled = [entry for run in runs + split_runs for entry in run.unsettled]
+    if unsettled:
+        print(f"agent_task: {len(unsettled)} listings answered unsettled at {WAIT_MS} ms; first:",
+              file=sys.stderr)
+        for entry in unsettled[:5]:
+            print(f"  {json.dumps(entry)[:1500]}", file=sys.stderr)
     common = {"transport": args.transport, "task": "notes: create, write, search, open",
               "model": MODEL_NAME, "think_ms": args.think_ms, "tokens_per_s": args.tokens_per_s,
               "warmup": args.warmup}
