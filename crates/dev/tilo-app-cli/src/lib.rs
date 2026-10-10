@@ -637,7 +637,9 @@ impl PackagePlatform {
         Ok(())
     }
 
-    /// The registry's name for the platform family.
+    /// The registry's name for the platform family. The browser has no
+    /// registry family (its runtime compiles its apps in), so `web` is only
+    /// the platform's own name.
     #[must_use]
     pub const fn registry_name(self) -> &'static str {
         match self {
@@ -645,7 +647,7 @@ impl PackagePlatform {
             Self::Linux => registry_types::LINUX_PLATFORM,
             Self::Windows => registry_types::WINDOWS_PLATFORM,
             Self::Macos => registry_types::MACOS_PLATFORM,
-            Self::Web => registry_types::WEB_PLATFORM,
+            Self::Web => "web",
             Self::Android => registry_types::ANDROID_PLATFORM,
         }
     }

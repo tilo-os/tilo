@@ -83,7 +83,7 @@ jobs:
 
       - name: Check browser crates for wasm32
         env:
-          PACKAGES: -p tilo-web-desktop -p tilo-browser-runtime -p registry-web-bindgen -p tilo-browser-compute
+          PACKAGES: -p tilo-web-desktop -p tilo-browser-runtime -p tilo-browser-compute
         run: |
           set -euo pipefail
           # shellcheck disable=SC2086

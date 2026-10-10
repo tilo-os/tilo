@@ -557,22 +557,15 @@ impl Widget for RangeChart {
         _state: &mut crate::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
-        if !matches!(action, crate::a11y::Action::Activate) {
-            return false;
-        }
-        let Some(key) = keys.last() else {
+        let Some(id) = crate::widget::chart_navigation::activated_id(
+            action,
+            keys,
+            self.bars.iter().map(|b| &b.id),
+        ) else {
             return false;
         };
-        if let Some(bar) = self
-            .bars
-            .iter()
-            .find(|b| crate::a11y::hash_key(&b.id) == *key)
-        {
-            self.activated = Some(bar.id.clone());
-            true
-        } else {
-            false
-        }
+        self.activated = Some(id.clone());
+        true
     }
     fn name(&self) -> &'static str {
         "RangeChart"

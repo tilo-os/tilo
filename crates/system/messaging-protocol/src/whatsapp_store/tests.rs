@@ -279,6 +279,58 @@ impl StateAuthority for Grant {
 }
 
 #[tokio::test]
+async fn approved_profile_key_is_bound_before_sdk_state_and_survives_only_original_grant() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("profile");
+    let grant = Arc::new(Grant(std::sync::atomic::AtomicBool::new(false)));
+    assert!(EncryptedBackend::open_profile(&root, owner(), fixture_key(), grant.clone()).is_err());
+    assert!(!root.exists(), "unapproved profile custody performs no I/O");
+    grant.0.store(true, std::sync::atomic::Ordering::SeqCst);
+    let backend =
+        EncryptedBackend::open_profile(&root, owner(), fixture_key(), grant.clone()).unwrap();
+    let sdk: Arc<dyn Backend> = Arc::new(backend.clone());
+    sdk.create().await.unwrap();
+    sdk.put_session("profile-peer@lid", b"approved-private-ratchet")
+        .await
+        .unwrap();
+    let before = std::fs::read(root.join("state.enc")).unwrap();
+    assert!(!before.windows(24).any(|b| b == b"approved-private-ratchet"));
+    grant.0.store(false, std::sync::atomic::Ordering::SeqCst);
+    assert!(sdk.load().await.is_err());
+    assert!(
+        backend
+            .clone()
+            .put_session("profile-peer@lid", b"refused")
+            .await
+            .is_err()
+    );
+    assert_eq!(std::fs::read(root.join("state.enc")).unwrap(), before);
+    drop(sdk);
+    drop(backend);
+    assert!(EncryptedBackend::open_profile(&root, owner(), fixture_key(), grant.clone()).is_err());
+    grant.0.store(true, std::sync::atomic::Ordering::SeqCst);
+    assert!(
+        EncryptedBackend::open_profile(
+            &root,
+            owner(),
+            VaultKey::from_bytes([31; 32]),
+            grant.clone(),
+        )
+        .is_err()
+    );
+    assert_eq!(std::fs::read(root.join("state.enc")).unwrap(), before);
+    let restored = EncryptedBackend::open_profile(&root, owner(), fixture_key(), grant).unwrap();
+    assert_eq!(
+        restored
+            .get_session("profile-peer@lid")
+            .await
+            .unwrap()
+            .unwrap(),
+        b"approved-private-ratchet".as_slice()
+    );
+}
+
+#[tokio::test]
 async fn revoked_original_grant_stops_actual_sdk_ratchet_and_pending_writes() {
     let dir = tempfile::tempdir().unwrap();
     let grant = Arc::new(Grant(std::sync::atomic::AtomicBool::new(true)));

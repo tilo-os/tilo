@@ -484,21 +484,15 @@ impl Widget for Treemap {
         _state: &mut crate::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
-        if !matches!(action, crate::a11y::Action::Activate) {
-            return false;
-        }
-        let Some(key) = key_path.last() else {
+        let Some(id) = crate::widget::chart_navigation::activated_id(
+            action,
+            key_path,
+            self.items.iter().map(|item| &item.id),
+        ) else {
             return false;
         };
-        if let Some(item) = self
-            .items
-            .iter()
-            .find(|item| crate::a11y::hash_key(&item.id) == *key)
-        {
-            self.activated = Some(item.id.clone());
-            return true;
-        }
-        false
+        self.activated = Some(id.clone());
+        true
     }
     fn name(&self) -> &'static str {
         "Treemap"
