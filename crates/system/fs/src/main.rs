@@ -3926,29 +3926,28 @@ async fn run_native(
     })
     .await??;
     let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
-    let outcome = loop {
-        tokio::select! {
-            _ = tokio::signal::ctrl_c() => {
-                println!("Interrupted, exiting...");
-                break MountOutcome::Unmounted;
+    // Every way out is an event: nothing here wakes until one happens.
+    let outcome = tokio::select! {
+        _ = tokio::signal::ctrl_c() => {
+            println!("Interrupted, exiting...");
+            MountOutcome::Unmounted
+        }
+        _ = terminate.recv() => {
+            println!("Terminated, exiting...");
+            MountOutcome::Unmounted
+        }
+        () = async {
+            match rebind.as_mut() {
+                Some(receiver) => { let _ = receiver.recv().await; }
+                None => std::future::pending::<()>().await,
             }
-            _ = terminate.recv() => {
-                println!("Terminated, exiting...");
-                break MountOutcome::Unmounted;
-            }
-            () = async {
-                match rebind.as_mut() {
-                    Some(receiver) => { let _ = receiver.recv().await; }
-                    None => std::future::pending::<()>().await,
-                }
-            } => {
-                println!("Content peer registration requested a clean workspace rebind.");
-                break MountOutcome::RebindRequested;
-            }
-            () = plane.finished() => {
-                eprintln!("the native data plane stopped");
-                break MountOutcome::Unmounted;
-            }
+        } => {
+            println!("Content peer registration requested a clean workspace rebind.");
+            MountOutcome::RebindRequested
+        }
+        () = plane.finished() => {
+            eprintln!("the native data plane stopped");
+            MountOutcome::Unmounted
         }
     };
     tokio::task::spawn_blocking(move || plane.stop()).await??;
