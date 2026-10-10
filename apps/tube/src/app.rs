@@ -341,9 +341,11 @@ impl TubeApp {
                 self.model.playing = self.player.borrow().is_playing();
             }
             TubeEffect::Share { video } => {
+                tracing::debug!(target: "tube::share", %video, at = ?ui::time::now(), "share effect entered");
                 let url = format!("https://youtu.be/{video}");
                 ui::clipboard_copy(&url);
                 self.model.push_notice(format!("Link copied: {url}"));
+                tracing::debug!(target: "tube::share", %video, at = ?ui::time::now(), "share model notice created");
             }
             TubeEffect::Download { video } => {
                 // Published as unavailable; a caller that invokes it anyway
@@ -1438,10 +1440,16 @@ impl TubeApp {
         if current != self.toasted {
             if let Some(notice) = self.model.notices.first() {
                 self.toasts.push(notice.clone(), ToastKind::Info);
+                tracing::debug!(target: "tube::share", at = ?ui::time::now(), count = self.toasts.len(), "notice toast created");
             }
             self.toasted = current;
         }
-        self.toasts.advance(ui::time::now());
+        let before = self.toasts.len();
+        let now = ui::time::now();
+        self.toasts.advance(now);
+        if self.toasts.len() < before {
+            tracing::debug!(target: "tube::share", at = ?now, before, remaining = self.toasts.len(), "notice toast expired");
+        }
     }
 
     /// If the playhead sits inside an enabled `SponsorBlock` segment, jump the
@@ -1649,6 +1657,7 @@ impl TubeApp {
                 }
             }
             Action::Share(id) => {
+                tracing::debug!(target: "tube::share", video = %id, route = ?self.model.route, at = ?ui::time::now(), "share action dispatched");
                 // Share belongs to the open watch page. Refuse a stale leaf
                 // event rather than copying a link for a video no longer shown.
                 if matches!(&self.model.route, Route::Watch(current) if current == &id) {
