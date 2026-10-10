@@ -21,20 +21,17 @@ use vello::peniko::{BlendMode, Color, Fill};
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 
 use crate::a11y::{AccessNode, AccessState, Role};
-use crate::color_compat::ColorCompat;
+use crate::paint::with_alpha;
 use crate::presence::PresenceCtx;
 use crate::text_render::{TextRenderer, TextWeight};
 use crate::theme::Theme;
 use crate::tokens::TextRole;
 use crate::widget::Widget;
+use crate::widget::chart_labels::format_compact;
 use crate::widget::chart_legend;
 use crate::widget::chart_navigation::{
     ChartNavAction, ChartTouchAction, ChartTouchTracker, chart_nav_action, moved_index,
 };
-
-fn alpha(color: Color, value: u8) -> Color {
-    Color::from_rgba8(color.r(), color.g(), color.b(), value)
-}
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum AxisRange {
@@ -1772,7 +1769,7 @@ impl CartesianPlot {
         xd: Domain,
         yd: Domain,
     ) {
-        let grid = alpha(theme.tokens.colors.border_standard, 100);
+        let grid = with_alpha(theme.tokens.colors.border_standard, 100);
         let size = theme.text(TextRole::Caption);
         for tick in Self::ticks(&self.style.y_axis, yd, plot.height()) {
             let Some(y) = Self::project(
@@ -2058,7 +2055,7 @@ impl CartesianPlot {
                         scene.fill(
                             Fill::NonZero,
                             transform,
-                            alpha(series.color, series.fill_alpha),
+                            with_alpha(series.color, series.fill_alpha),
                             None,
                             &area,
                         );
@@ -2095,7 +2092,7 @@ impl CartesianPlot {
                         scene.stroke(
                             &Stroke::new(series.stroke_width),
                             transform,
-                            alpha(series.color, 180),
+                            with_alpha(series.color, 180),
                             None,
                             &Line::new((point.x, zero), *point),
                         );
@@ -2132,7 +2129,7 @@ impl CartesianPlot {
                         scene.fill(
                             Fill::NonZero,
                             transform,
-                            alpha(series.color, 55),
+                            with_alpha(series.color, 55),
                             None,
                             &Circle::new(point, radius + 6.0),
                         );
@@ -2364,7 +2361,7 @@ impl CartesianPlot {
         context.scene.fill(
             Fill::NonZero,
             context.transform,
-            alpha(annotation.color, fill_alpha),
+            with_alpha(annotation.color, fill_alpha),
             None,
             &rect,
         );
@@ -2404,7 +2401,7 @@ impl CartesianPlot {
         context.scene.fill(
             Fill::NonZero,
             context.transform,
-            alpha(annotation.color, 55),
+            with_alpha(annotation.color, 55),
             None,
             &Circle::new((x, y), if hovered { 12.0 } else { 9.0 }),
         );
@@ -2448,7 +2445,7 @@ impl CartesianPlot {
         context.scene.stroke(
             &Stroke::new(1.0),
             context.transform,
-            alpha(annotation.color, 160),
+            with_alpha(annotation.color, 160),
             None,
             &rect,
         );
@@ -2497,12 +2494,12 @@ impl CartesianPlot {
             let y = item.y0;
             let hidden = self.hidden_series.contains(&series.id);
             let color = if hidden {
-                alpha(series.color, 70)
+                with_alpha(series.color, 70)
             } else {
                 series.color
             };
             let text_color = if hidden {
-                alpha(theme.tokens.colors.text_dim, 100)
+                with_alpha(theme.tokens.colors.text_dim, 100)
             } else {
                 theme.tokens.colors.text_dim
             };
@@ -2546,14 +2543,14 @@ impl CartesianPlot {
             scene.stroke(
                 &Stroke::new(1.0),
                 transform,
-                alpha(theme.tokens.colors.text_dim, 110),
+                with_alpha(theme.tokens.colors.text_dim, 110),
                 None,
                 &Line::new((hovered.point.x, plot.y0), (hovered.point.x, plot.y1)),
             );
             scene.stroke(
                 &Stroke::new(1.0),
                 transform,
-                alpha(theme.tokens.colors.text_dim, 110),
+                with_alpha(theme.tokens.colors.text_dim, 110),
                 None,
                 &Line::new((plot.x0, hovered.point.y), (plot.x1, hovered.point.y)),
             );
@@ -2682,7 +2679,7 @@ impl CartesianPlot {
         scene.stroke(
             &Stroke::new(1.0),
             transform,
-            alpha(annotation.color, 180),
+            with_alpha(annotation.color, 180),
             None,
             &RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.control)),
         );
@@ -2872,21 +2869,6 @@ impl CartesianPlot {
     }
 }
 
-fn format_compact(value: f64) -> String {
-    let absolute = value.abs();
-    if absolute >= 1_000_000_000.0 {
-        format!("{:.1}B", value / 1_000_000_000.0)
-    } else if absolute >= 1_000_000.0 {
-        format!("{:.1}M", value / 1_000_000.0)
-    } else if absolute >= 1_000.0 {
-        format!("{:.1}K", value / 1_000.0)
-    } else if absolute >= 10.0 {
-        format!("{value:.0}")
-    } else {
-        format!("{value:.1}")
-    }
-}
-
 fn format_axis_value(value: f64, format: AxisLabelFormat) -> String {
     match format {
         AxisLabelFormat::Auto => {
@@ -3028,7 +3010,7 @@ impl Widget for CartesianPlot {
             scene.fill(
                 Fill::NonZero,
                 transform,
-                alpha(theme.tokens.colors.intent.inverted, 42),
+                with_alpha(theme.tokens.colors.intent.inverted, 42),
                 None,
                 &brush,
             );
