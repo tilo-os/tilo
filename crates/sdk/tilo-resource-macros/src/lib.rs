@@ -218,6 +218,7 @@ fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
                     impl #impl_generics #krate::Model for #name #type_generics #where_clause {
                         const SHAPE: #krate::Shape = <#ty as #krate::Model>::SHAPE;
                         const CHECKS: bool = <#ty as #krate::Model>::CHECKS;
+                        const NULLABLE: bool = <#ty as #krate::Model>::NULLABLE;
                         type Paths<__R> = #krate::Path<__R, Self>;
 
                         fn paths_at<__R>(path: #krate::Path<__R, Self>) -> #krate::Path<__R, Self> {

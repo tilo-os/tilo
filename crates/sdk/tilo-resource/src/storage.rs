@@ -445,6 +445,8 @@ impl Bytes {
 impl Settable for Bytes {}
 impl Model for Bytes {
     crate::model::leaf_paths!();
+    /// `null` is the empty value.
+    const NULLABLE: bool = true;
     /// Inline data as `{ "inline": [bytes] }`, a reference as its
     /// `blake3:<hex>:<len>` string.
     #[inline(never)]

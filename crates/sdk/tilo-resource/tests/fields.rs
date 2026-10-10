@@ -828,3 +828,29 @@ fn a_verb_prepares_its_arguments_once_where_it_is_invoked() {
         .unwrap();
     assert_eq!(origin.state().unwrap().title, "Plain");
 }
+
+/// A field edit sets a value of the field's type: `null` only where the
+/// field is optional, never for a number, a flag or a text.
+#[test]
+fn a_field_edit_refuses_null_for_a_field_that_is_not_optional() {
+    use tilo_resource::{Edit, EditOp, Segment};
+    let mut board = Replica::<Board>::new();
+    for field in ["cards", "title", "layer"] {
+        let edit = Edit::<Board>::new(
+            vec![Segment::Field(field.into())],
+            EditOp::Set {
+                value: serde_json::Value::Null,
+            },
+        );
+        assert!(board.apply(edit).is_err(), "`{field}` refuses null");
+    }
+    board
+        .apply(Edit::<Board>::new(
+            vec![Segment::Field("cards".into())],
+            EditOp::Set {
+                value: serde_json::json!(3),
+            },
+        ))
+        .unwrap();
+    assert_eq!(board.state().unwrap().cards, 3);
+}

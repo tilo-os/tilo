@@ -223,6 +223,10 @@ pub trait Model: Sized {
     /// invariant; [`Self::check`] has nothing to do otherwise.
     const CHECKS: bool = false;
 
+    /// Whether `null` is a value of the type: an absent `Option`. A field
+    /// edit setting any other type to `null` is refused.
+    const NULLABLE: bool = false;
+
     /// The typed paths into a value of this type, rooted in the record `R`:
     /// a struct of field paths for a record, the [`Path`] itself for a value
     /// edited whole or through its own operations.
@@ -626,6 +630,9 @@ pub fn edit_whole<T: Model>(
         )));
     }
     match op {
+        EditOp::Set { value } if value.is_null() && !T::NULLABLE => Err(ModelError::invalid(
+            "`null` is no value of this field: set a value of its type",
+        )),
         EditOp::Set { value } => {
             let value = T::from_json(value)?;
             value.check().map_err(ModelError::refused)?;
@@ -663,6 +670,8 @@ macro_rules! json_model {
         impl $crate::Settable for $ty {}
         impl $crate::Model for $ty {
             $crate::leaf_paths!();
+            // Its serde form decides; `null` reads as its default.
+            const NULLABLE: bool = true;
             fn to_json(&self) -> $crate::__private::serde_json::Value {
                 $crate::__private::serde_json::to_value(self)
                     .unwrap_or($crate::__private::serde_json::Value::Null)
@@ -1151,6 +1160,7 @@ impl<T: Model> Model for Option<T> {
     }
     const SHAPE: crate::Shape = T::SHAPE;
     const CHECKS: bool = T::CHECKS;
+    const NULLABLE: bool = true;
     leaf_paths!();
     fn op_coalesces(
         path: &[Segment],
@@ -1300,6 +1310,7 @@ impl<T: Model> Model for Box<T> {
     }
     const SHAPE: crate::Shape = T::SHAPE;
     const CHECKS: bool = T::CHECKS;
+    const NULLABLE: bool = T::NULLABLE;
     fn op_coalesces(
         path: &[Segment],
         previous: &serde_json::Value,
@@ -1761,6 +1772,8 @@ where
     T: serde::Serialize + serde::de::DeserializeOwned + Default,
 {
     leaf_paths!();
+    /// Any JSON value, `null` among them.
+    const NULLABLE: bool = true;
     #[inline(never)]
     fn to_json(&self) -> serde_json::Value {
         serde_json::to_value(&self.0).unwrap_or(serde_json::Value::Null)
