@@ -554,6 +554,11 @@ python3 tools/perf/image_size.py --image registry.tilo.so/tilo/tilo-ci:main-<new
   --update-from registry.tilo.so/tilo/tilo-ci:main-<old>-x86_64 --update-only
 ```
 
+An update between two commits that change one app downloads 215 MB of the
+rechunked x86_64 image (5 %), where the layered image re-sent 3.69 GB (78 %)
+(`docs/benchmarks/os-image-size-2026-10-10-rechunk.md`). Most of the 215 MB
+is app packages that come out of every build with new bytes.
+
 ## Fast checks before assembly
 
 For a native integration test without a full workspace dispatch, use

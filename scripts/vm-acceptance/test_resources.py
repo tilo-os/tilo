@@ -270,5 +270,16 @@ class Growth(unittest.TestCase):
         self.assertIsNone(resources.shell_anon_mib(table, 4242))
 
 
+class DiskTest(unittest.TestCase):
+    def test_parses_the_slot_users_runtime_and_store_bytes(self):
+        out = "tilo-runtime 430080000\ntilo-apps 12582912\nbuilds 2\n"
+        self.assertEqual(resources.parse_disk(out), {
+            "runtime_bytes": 430080000, "app_store_bytes": 12582912, "runtime_builds": 2})
+
+    def test_a_missing_line_is_unobservable_not_zero(self):
+        with self.assertRaises(core.Unobservable):
+            resources.parse_disk("tilo-runtime 1\nbuilds 0\n")
+
+
 if __name__ == "__main__":
     unittest.main()

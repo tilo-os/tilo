@@ -189,7 +189,9 @@ the store (DEVELOPMENT.md, "Performance results") and publishes the nightly run'
 | `idle.ram_mib.after_close`, `idle.ram_mib.*.after_close`, `memory.idle_*.after_close` | MiB | R03 | the same once R03 has closed the four apps |
 | `memory.shell_anon_mib.per_open_close` | MiB | A15 | least-squares growth of the compositor's anonymous RSS per warm open and close |
 | `memory.shell_anon_mib`, `memory.session_mib`, `memory.app_mib.<app>`, `memory.app_anon_mib.<app>` | MiB | R03 | the compositor's anonymous RSS; the compositor's and apps' cgroups |
+| `disk.runtime_mib.per_user`, `disk.runtime_builds.per_user`, `disk.app_store_mib.per_user` | MiB, count | R03 | the slot user's downloaded runtime builds (`$XDG_DATA_HOME/tilo-runtime`) and app store (`$XDG_DATA_HOME/tilo-apps`) after the apps closed: what collection after each change leaves |
 | `memory.shell_anon_mib.empty` | MiB | R01 | the compositor's anonymous RSS with no app open |
+| `memory.compositor_memfd_mib{,.four_apps,.after_close}` | MiB | R01, R03 | shmem allocated to the memfds and `/dev/shm` files the compositor holds open, mapped or not (`stat -L` through `/proc/PID/fd`); `R0x-shell-smaps*.json` `shm_by_name` splits it by memfd name and `shm_fds` lists every memfd, dma-buf and DRM fd with its fdinfo (TIL-731) |
 | `app.open.warm_ms.<app>` | ms | A15 | open request to first presented frame, ten warm opens |
 | `app.startup_ms.<app>`, `app.startup_ms.file-explorer.first_in_session` | ms | A15, A14 | process start to first presented frame |
 | `app.open.{request_to_launcher,launcher,sandbox_to_main,exec_to_main}_ms.<app>` | ms | A15 | the open before the app's `main`, by segment |

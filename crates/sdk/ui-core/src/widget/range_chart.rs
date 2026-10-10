@@ -14,19 +14,16 @@ use vello::peniko::{Color, Fill};
 use winit::event::WindowEvent;
 
 use crate::a11y::{AccessNode, AccessState, Role};
-use crate::color_compat::ColorCompat;
+use crate::paint::with_alpha;
 use crate::presence::PresenceCtx;
-use crate::text_render::{TextRenderer, TextWeight};
+use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::TextRole;
+use crate::widget::chart_labels::format_compact;
 use crate::widget::chart_navigation::{
     ChartNavAction, ChartTouchTracker, InteractiveChart, handle_chart_event, moved_index,
 };
 use crate::widget::{TaffyTreeExt, Widget};
-
-fn alpha(color: Color, value: u8) -> Color {
-    Color::from_rgba8(color.r(), color.g(), color.b(), value)
-}
 
 /// One interval. Equal start/end values render as milestones.
 #[derive(Clone, Debug)]
@@ -230,25 +227,13 @@ impl RangeChart {
     fn format(&self, value: f64) -> String {
         self.formatter
             .as_ref()
-            .map_or_else(|| format_value(value), |f| f(value))
+            .map_or_else(|| format_compact(value), |f| f(value))
     }
     fn hit(&self, point: Point) -> Option<&str> {
         self.hits
             .iter()
             .find(|(_, rect)| rect.inflate(5.0, 7.0).contains(point))
             .map(|(id, _)| id.as_str())
-    }
-}
-
-fn format_value(value: f64) -> String {
-    if value.abs() >= 1_000_000.0 {
-        format!("{:.1}M", value / 1_000_000.0)
-    } else if value.abs() >= 1_000.0 {
-        format!("{:.1}K", value / 1_000.0)
-    } else if value.fract().abs() < 0.001 {
-        format!("{value:.0}")
-    } else {
-        format!("{value:.1}")
     }
 }
 
@@ -358,7 +343,7 @@ impl Widget for RangeChart {
                 scene.stroke(
                     &Stroke::new(1.0),
                     transform,
-                    alpha(theme.tokens.colors.text_dim, 36),
+                    with_alpha(theme.tokens.colors.text_dim, 36),
                     None,
                     &Line::new((x, plot.y0), (x, plot.y1)),
                 );
@@ -390,7 +375,7 @@ impl Widget for RangeChart {
                 scene.fill(
                     Fill::NonZero,
                     transform,
-                    alpha(theme.tokens.colors.text_dim, 13),
+                    with_alpha(theme.tokens.colors.text_dim, 13),
                     None,
                     &Rect::new(
                         self.rect.x0,
@@ -429,7 +414,7 @@ impl Widget for RangeChart {
                 scene.fill(
                     Fill::NonZero,
                     transform,
-                    alpha(color, 82),
+                    with_alpha(color, 82),
                     None,
                     &RoundedRect::from_rect(rect, self.style.corner_radius),
                 );
@@ -482,41 +467,15 @@ impl Widget for RangeChart {
             } else {
                 format!("{interval} · {}", bar.detail)
             };
-            let (label_width, _) =
-                tr.measure_style(&bar.label, None, &theme.text(TextRole::Caption));
-            let (detail_width, _) = tr.measure_style(&detail, None, &theme.text(TextRole::Caption));
-            let tooltip_width = f64::from(label_width.max(detail_width)).max(150.0) + 28.0;
-            let x = (self.pointer.x + 16.0)
-                .min(self.rect.x1 - tooltip_width - 8.0)
-                .max(self.rect.x0 + 8.0);
-            let y = (self.pointer.y + 16.0)
-                .min(self.rect.y1 - 72.0)
-                .max(self.rect.y0 + 8.0);
-            let tip = Rect::new(x, y, x + tooltip_width, y + 64.0);
-            scene.fill(
-                Fill::NonZero,
+            crate::widget::chart_labels::draw_tooltip(
+                scene,
                 transform,
-                theme.tokens.colors.surfaces.overlay,
-                None,
-                &RoundedRect::from_rect(tip, f64::from(theme.tokens.radii.control)),
-            );
-            tr.draw_style(
-                scene,
-                &bar.label,
-                theme.tokens.colors.text_primary,
-                transform * Affine::translate((x + 14.0, y + 11.0)),
-                None,
-                &theme
-                    .text(TextRole::Label)
-                    .with_weight(TextWeight::Semibold),
-            );
-            tr.draw_style(
-                scene,
-                &detail,
-                theme.tokens.colors.text_dim,
-                transform * Affine::translate((x + 14.0, y + 37.0)),
-                None,
-                &theme.text(TextRole::Caption),
+                tr,
+                theme,
+                self.pointer,
+                self.rect,
+                150.0,
+                (&bar.label, &detail),
             );
         }
     }

@@ -245,13 +245,16 @@ pub(crate) fn ground_ink(theme: &Theme) -> Color {
     theme.tokens.colors.text_dim
 }
 
-/// A value shortened for a label: `1.2M`, `3.4K`, `42`, `0.5`.
+/// A value shortened for a label: `1.2B`, `3.4M`, `5.6K`, `42`, `0.5`.
 pub(crate) fn format_compact(value: f64) -> String {
-    if value.abs() >= 1_000_000.0 {
+    let absolute = value.abs();
+    if absolute >= 1_000_000_000.0 {
+        format!("{:.1}B", value / 1_000_000_000.0)
+    } else if absolute >= 1_000_000.0 {
         format!("{:.1}M", value / 1_000_000.0)
-    } else if value.abs() >= 1_000.0 {
+    } else if absolute >= 1_000.0 {
         format!("{:.1}K", value / 1_000.0)
-    } else if value.abs() >= 10.0 {
+    } else if value.fract().abs() < 0.001 {
         format!("{value:.0}")
     } else {
         format!("{value:.1}")

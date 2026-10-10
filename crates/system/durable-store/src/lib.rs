@@ -279,6 +279,25 @@ pub trait DurableStore {
     fn local_path(&self, _key: &StorageKey) -> Option<PathBuf> {
         None
     }
+
+    /// Keep `hint` beside the key's value on this device: bytes a caller
+    /// derived from a value it wrote, to make the next read of that value
+    /// cheaper to use. A hint is never part of the value, never leaves the
+    /// device and may be dropped at any time, so the caller must recognise
+    /// the value it was made for itself; a store that keeps none drops it.
+    /// The key must be leased, as for [`Self::write`].
+    ///
+    /// # Errors
+    /// An unleased key, or a failure writing the hint.
+    fn write_hint(&self, _key: &StorageKey, _hint: &[u8]) -> Result<(), StoreError> {
+        Ok(())
+    }
+
+    /// The hint last kept beside the key by [`Self::write_hint`], if the
+    /// store still has one.
+    fn read_hint(&self, _key: &StorageKey) -> Option<Vec<u8>> {
+        None
+    }
 }
 
 #[cfg(test)]

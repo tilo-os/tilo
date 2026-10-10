@@ -7,7 +7,8 @@
 
 use crate::actions::{CellWrite, ImportedSheet, SheetsAction};
 use crate::doc::ChartKind;
-use crate::model::{CellFormat, Currency, DateStyle, a1_to_addr};
+use crate::model::{CellFormat, a1_to_addr};
+use tilo_locale::{Currency, DateStyle};
 
 /// The budget sheet's identity.
 pub const BUDGET_SHEET_ID: &str = "5d1c1a52-6a1e-4c7e-9d0b-0b5a6c2e0001";

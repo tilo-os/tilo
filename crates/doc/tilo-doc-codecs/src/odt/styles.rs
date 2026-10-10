@@ -3,15 +3,11 @@
 //! files keep most formatting (headings, bold, fonts, list numbering) in named
 //! styles, which are resolved before body content is imported.
 
+use crate::para_styles::{ParaStyle, StyleTable};
 use quick_xml::events::{BytesStart, Event};
 use quick_xml::reader::Reader;
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 use tilo_doc::document::MarkValue;
-use tilo_doc::schema::{
-    STYLE_ALIGN, STYLE_BOLD, STYLE_COLOR, STYLE_FONT, STYLE_INDENT, STYLE_ITALIC, STYLE_NAME,
-    STYLE_SIZE, STYLE_SPACE_AFTER, STYLE_SPACE_BEFORE,
-};
-use tilo_doc::snapshot::AttrVal;
 
 /// Decode an ODF style name into the qdoc style-id used as the container key:
 /// `LibreOffice` encodes spaces (and other chars) as `_20_`, so `Heading_20_1` becomes `Heading 1`.
@@ -246,31 +242,6 @@ pub(super) fn marks_from_text_props(e: &BytesStart) -> Vec<(String, MarkValue)> 
     m
 }
 
-#[derive(Default, Clone)]
-pub(crate) struct ParaStyle {
-    pub parent: Option<String>,
-    pub align: Option<String>,
-    pub outline_level: Option<i64>,
-    pub heading_name: bool,
-    pub name_level: Option<i64>,
-    pub text: Vec<(String, MarkValue)>,
-    /// Human display name (`style:display-name`), if any.
-    pub display_name: Option<String>,
-    /// A user-facing *named* (common) style — from `styles.xml` or carrying a `style:display-name`,
-    /// distinguished from anonymous automatic styles (`P1`, …); only named styles become container styles + explicit block `style` attrs.
-    pub named: bool,
-    pub size: Option<f64>,
-    pub bold: Option<bool>,
-    pub italic: Option<bool>,
-    pub color: Option<String>,
-    pub font: Option<String>,
-    pub space_before: Option<f64>,
-    pub space_after: Option<f64>,
-    pub indent: Option<f64>,
-    /// Line spacing as a unitless multiple (e.g. 1.5), from `fo:line-height` (%).
-    pub line_height: Option<f64>,
-}
-
 /// Map an ODF `style:num-format` value to the model's canonical numbering format. A bullet
 /// list has no num-format; unknown values fall back to `decimal`.
 pub(super) fn map_num_format(v: &str) -> &'static str {
@@ -293,10 +264,8 @@ pub(crate) struct ListNumbering {
 
 #[derive(Default)]
 pub(crate) struct StyleRegistry {
-    /// `text`-family style name → inline marks.
-    pub text: HashMap<String, Vec<(String, MarkValue)>>,
-    /// `paragraph`-family style name → paragraph style.
-    pub para: HashMap<String, ParaStyle>,
+    /// `text`- and `paragraph`-family styles by name.
+    pub table: StyleTable,
     /// list-style name → is it numbered (ordered)?
     pub list_ordered: HashMap<String, bool>,
     /// list-style name → its level-0 numbering (format + start), for ordered-list fidelity.
@@ -308,135 +277,6 @@ pub(crate) struct StyleRegistry {
     pub text_extra: HashSet<String>,
 }
 
-impl StyleRegistry {
-    /// Heading level for a paragraph style, following parent chains (`LibreOffice` derives custom styles from "Heading N").
-    pub(super) fn heading_level(&self, name: &str) -> Option<i64> {
-        let mut cur = Some(name.to_string());
-        for _ in 0..8 {
-            let n = cur.take()?;
-            let p = self.para.get(&n)?;
-            if let Some(l) = p.outline_level {
-                return Some(l.clamp(1, 6));
-            }
-            if p.heading_name {
-                return Some(p.name_level.unwrap_or(1).clamp(1, 6));
-            }
-            cur.clone_from(&p.parent);
-        }
-        None
-    }
-
-    pub(super) fn para_align(&self, name: &str) -> Option<String> {
-        let mut cur = Some(name.to_string());
-        for _ in 0..8 {
-            let n = cur.take()?;
-            let p = self.para.get(&n)?;
-            if let Some(a) = &p.align {
-                return Some(a.clone());
-            }
-            cur.clone_from(&p.parent);
-        }
-        None
-    }
-
-    pub(super) fn para_line_height(&self, name: &str) -> Option<f64> {
-        let mut cur = Some(name.to_string());
-        for _ in 0..8 {
-            let n = cur.take()?;
-            let p = self.para.get(&n)?;
-            if let Some(lh) = p.line_height {
-                return Some(lh);
-            }
-            cur.clone_from(&p.parent);
-        }
-        None
-    }
-
-    pub(super) fn para_text_marks(&self, name: &str) -> Vec<(String, MarkValue)> {
-        let mut chain: Vec<&ParaStyle> = Vec::new();
-        let mut cur = Some(name.to_string());
-        for _ in 0..8 {
-            let Some(n) = cur.take() else { break };
-            let Some(p) = self.para.get(&n) else { break };
-            chain.push(p);
-            cur.clone_from(&p.parent);
-        }
-        let mut out: Vec<(String, MarkValue)> = Vec::new();
-        for p in chain.iter().rev() {
-            for (k, v) in &p.text {
-                out.retain(|(k2, _)| k2 != k);
-                out.push((k.clone(), v.clone()));
-            }
-        }
-        out
-    }
-
-    pub(super) fn text_marks(&self, name: &str) -> Vec<(String, MarkValue)> {
-        self.text.get(name).cloned().unwrap_or_default()
-    }
-
-    pub(super) fn is_named_para(&self, name: &str) -> bool {
-        self.para.get(name).is_some_and(|p| p.named)
-    }
-
-    /// The paragraph-style chain (self → parent → …), most-derived first.
-    fn para_chain(&self, name: &str) -> Vec<&ParaStyle> {
-        let mut chain = Vec::new();
-        let mut cur = Some(name.to_string());
-        for _ in 0..8 {
-            let Some(n) = cur.take() else { break };
-            let Some(p) = self.para.get(&n) else { break };
-            chain.push(p);
-            cur.clone_from(&p.parent);
-        }
-        chain
-    }
-
-    /// Resolve a named paragraph style into the `StyleProps` scalar map the CRDT styles container
-    /// stores (self overrides parent per field; unset fields fall back to neutral defaults).
-    pub(super) fn style_props(&self, name: &str) -> Option<BTreeMap<String, AttrVal>> {
-        let chain = self.para_chain(name);
-        if chain.is_empty() {
-            return None;
-        }
-        // First-set-wins scan over the chain (most-derived first).
-        let display = chain.iter().find_map(|p| p.display_name.clone());
-        let size = chain.iter().find_map(|p| p.size).unwrap_or(16.0);
-        let bold = chain.iter().find_map(|p| p.bold).unwrap_or(false);
-        let italic = chain.iter().find_map(|p| p.italic).unwrap_or(false);
-        let color = chain
-            .iter()
-            .find_map(|p| p.color.clone())
-            .unwrap_or_else(|| "#000000".to_string());
-        let font = chain
-            .iter()
-            .find_map(|p| p.font.clone())
-            .unwrap_or_else(|| "sans".to_string());
-        let align = chain
-            .iter()
-            .find_map(|p| p.align.clone())
-            .unwrap_or_else(|| "left".to_string());
-        let space_before = chain.iter().find_map(|p| p.space_before).unwrap_or(0.0);
-        let space_after = chain.iter().find_map(|p| p.space_after).unwrap_or(0.0);
-        let indent = chain.iter().find_map(|p| p.indent).unwrap_or(0.0);
-        let name_str = display.unwrap_or_else(|| decode_style_name(name));
-
-        let mut m = BTreeMap::new();
-        m.insert(STYLE_NAME.to_string(), AttrVal::Str(name_str));
-        m.insert(STYLE_FONT.to_string(), AttrVal::Str(font));
-        m.insert(STYLE_SIZE.to_string(), AttrVal::Float(size));
-        m.insert(STYLE_BOLD.to_string(), AttrVal::Bool(bold));
-        m.insert(STYLE_ITALIC.to_string(), AttrVal::Bool(italic));
-        m.insert(STYLE_COLOR.to_string(), AttrVal::Str(color));
-        m.insert(STYLE_ALIGN.to_string(), AttrVal::Str(align));
-        m.insert(STYLE_SPACE_BEFORE.to_string(), AttrVal::Float(space_before));
-        m.insert(STYLE_SPACE_AFTER.to_string(), AttrVal::Float(space_after));
-        m.insert(STYLE_INDENT.to_string(), AttrVal::Float(indent));
-        Some(m)
-    }
-}
-
-/// `(looks like a heading, level from the name)` for a style name/display name.
 fn heading_from_name(name: &str, display: Option<&str>) -> (bool, Option<i64>) {
     for c in [name, display.unwrap_or("")] {
         let c = c.replace("_20_", " ");
@@ -461,7 +301,7 @@ fn register_self_closing_style(e: &BytesStart, reg: &mut StyleRegistry, from_nam
     {
         let disp = attr_val(e, b"style:display-name");
         let (h, l) = heading_from_name(&nm, disp.as_deref());
-        reg.para.insert(
+        reg.table.para.insert(
             nm,
             ParaStyle {
                 parent: attr_val(e, b"style:parent-style-name"),
@@ -612,11 +452,11 @@ impl StyleScratch {
                                 reg.text_extra.insert(n.clone());
                             }
                             if !self.text.is_empty() {
-                                reg.text.insert(n, std::mem::take(&mut self.text));
+                                reg.table.text.insert(n, std::mem::take(&mut self.text));
                             }
                         }
                         "paragraph" => {
-                            reg.para.insert(
+                            reg.table.para.insert(
                                 n,
                                 ParaStyle {
                                     parent: self.parent.take(),
@@ -757,16 +597,25 @@ mod tests {
             </office:document-styles>"#;
             let mut reg = StyleRegistry::default();
             parse_styles(xml, &mut reg, true);
-            assert_eq!(reg.heading_level("Heading_20_1"), Some(1));
+            assert_eq!(reg.table.heading_level("Heading_20_1", |_| None), Some(1));
             assert_eq!(
-                reg.heading_level("MySub"),
+                reg.table.heading_level("MySub", |_| None),
                 Some(1),
                 "inherits heading via parent"
             );
-            assert_eq!(reg.para_align("Heading_20_1").as_deref(), Some("center"));
-            assert!(reg.text_marks("Strong").iter().any(|(n, _)| n == "strong"));
+            assert_eq!(
+                reg.table.para_align("Heading_20_1").as_deref(),
+                Some("center")
+            );
             assert!(
-                reg.para_text_marks("Heading_20_1")
+                reg.table
+                    .text_marks("Strong")
+                    .iter()
+                    .any(|(n, _)| n == "strong")
+            );
+            assert!(
+                reg.table
+                    .para_text_marks("Heading_20_1")
                     .iter()
                     .any(|(n, _)| n == "strong")
             );

@@ -128,6 +128,10 @@ fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
         Data::Struct(data) => match &data.fields {
             Fields::Named(fields) => {
                 let mut reads = Vec::new();
+                // Every stored field is read in one walk of the map
+                // (`read_slots`), then loaded in declaration order.
+                let mut slot_names = Vec::new();
+                let mut slot_keys = Vec::new();
                 let mut missing = Vec::new();
                 let mut writes = Vec::new();
                 let mut changed_writes = Vec::new();
@@ -149,7 +153,10 @@ fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
                         missing.push(quote!(#ident: ::core::default::Default::default()));
                         continue;
                     }
-                    reads.push(quote!(#ident: #krate::read_key::<#ty>(doc, obj, #key)?));
+                    let slot = format_ident!("__slot_{}", ident);
+                    reads.push(quote!(#ident: #krate::load_slot::<#ty>(doc, #slot, #key)?));
+                    slot_names.push(slot);
+                    slot_keys.push(key.clone());
                     missing.push(quote!(
                         #ident: <#ty as #krate::Model>::missing().map_err(|error| error.at(#key))?
                     ));
@@ -260,6 +267,7 @@ fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
                             obj: &#krate::__private::ObjId,
                         ) -> ::core::result::Result<Self, #krate::ModelError> {
                             let _ = (&doc, &obj);
+                            let [#(#slot_names),*] = #krate::read_slots(doc, obj, [#(#slot_keys),*]);
                             ::core::result::Result::Ok(Self { #(#reads,)* })
                         }
                         fn write_fields(
@@ -1018,6 +1026,21 @@ fn expand_resource(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Resul
     } else {
         quote!()
     };
+    // The same parts as `children`, apart, so the framework can keep the
+    // item children it built before (TIL-766).
+    let children_parts = if item_actions.is_empty() {
+        quote!()
+    } else {
+        quote! {
+            fn children_parts(state: &Self) -> #krate::items::ChildrenParts {
+                #krate::items::ChildrenParts {
+                    others: #children,
+                    items: <Self as #krate::Fields>::item_collections(state),
+                    item_actions: ::std::vec![#(#item_actions),*],
+                }
+            }
+        }
+    };
     let children = if item_actions.is_empty() {
         children
     } else {
@@ -1170,6 +1193,7 @@ fn expand_resource(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Resul
             }
 
             #offer_bound
+            #children_parts
             #cache_epoch
 
             fn search(state: &Self) -> ::std::vec::Vec<#krate::SearchEntry> {
