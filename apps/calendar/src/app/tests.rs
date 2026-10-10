@@ -338,6 +338,10 @@ fn layout_reflows_on_resize_instead_of_caching_first_frame_geometry() {
             app.take_structure_dirty(),
             "a resize that changes the notes column must request an editor rebuild"
         );
+        assert!(
+            !app.take_structure_dirty(),
+            "the rebuild is asked for once, even before the host lays it out"
+        );
 
         // The rebuild adopts the resized width.
         let mut taffy2: TaffyTree<()> = TaffyTree::new();

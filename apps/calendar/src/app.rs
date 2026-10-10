@@ -4069,10 +4069,15 @@ impl Widget for CalendarApp {
     fn take_structure_dirty(&mut self) -> bool {
         // Rebuild when the editor's own structure changed, OR when the notes
         // column width the editor was built at no longer matches the current
-        // layout (a resize crossed the breakpoint). The rebuild re-runs
-        // `build_layout`, which resets `built_notes_w`, so this settles in one
-        // frame and never loops while the width is stable.
-        let width_changed = (self.detail_body_w() - self.built_notes_w).abs() > 0.5;
+        // layout (a resize crossed the breakpoint). Taking the change adopts
+        // the width the rebuild will use: a host may update the tree again
+        // before it lays it out, and must not be asked for the same rebuild
+        // twice.
+        let notes_w = self.detail_body_w();
+        let width_changed = (notes_w - self.built_notes_w).abs() > 0.5;
+        if width_changed {
+            self.built_notes_w = notes_w;
+        }
         self.notes_editor.take_structure_dirty() || width_changed
     }
 
