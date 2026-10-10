@@ -191,6 +191,68 @@ class CurrentChatCategoryTests(unittest.TestCase):
             self.observe(duplicate=True)
 
 
+class AuthenticatedAgentNavigationTests(unittest.TestCase):
+    def observe(self, *, duplicate=False, missing=False, zero_extent=False,
+                missing_window=False, zero_window=False, off_window=False,
+                wrong_role=False):
+        client = PROOF.atspi.AtspiClient("owned-address", "owned-chat")
+        tree = {"/tide": "Tide, agent", "/reed": "Reed, agent"}
+        if duplicate:
+            tree["/duplicate"] = "Tide, agent"
+        if missing:
+            tree.pop("/reed")
+        rects = {path: (10, 20 + index * 30, 120, 24)
+                 for index, path in enumerate(tree)}
+        if zero_extent:
+            rects["/reed"] = (0, 0, 0, 0)
+        if off_window:
+            rects["/reed"] = (490, 20, 120, 24)
+        window_rect = None if missing_window else (0, 0, 500, 400)
+        if zero_window:
+            window_rect = (0, 0, 0, 0)
+
+        def named(_tree, label):
+            return [path for path, name in tree.items() if name == label]
+
+        def extent(path, *_args):
+            return window_rect if path == "/window" else rects[path]
+
+        with patch.object(PROOF.atspi, "atspi_address", return_value="owned-address"), \
+                patch.object(PROOF.atspi, "AtspiClient", return_value=client), \
+                patch.object(PROOF, "accessible_subtree", return_value=tree), \
+                patch.object(client, "named", side_effect=named), \
+                patch.object(client, "role", return_value=(
+                    PROOF.AT_SPI_ROLE_BUTTON if wrong_role else PROOF.AT_SPI_ROLE_LIST_ITEM
+                )), \
+                patch.object(client, "call", side_effect=extent), \
+                patch.object(PROOF.atspi, "extents_reply", side_effect=lambda rect: rect):
+            return PROOF.visible_authenticated_agent_navigation(
+                {"bus": "owned-chat", "window": "/window"}, ("Tide", "Reed")
+            )
+
+    def test_exact_authenticated_rows_require_visible_list_item_extents(self):
+        self.assertEqual(set(self.observe()), {"tide", "reed"})
+        self.assertIsNone(self.observe(missing=True))
+        self.assertIsNone(self.observe(zero_extent=True))
+        self.assertIsNone(self.observe(missing_window=True))
+        self.assertIsNone(self.observe(zero_window=True))
+        self.assertIsNone(self.observe(off_window=True))
+        self.assertIsNone(self.observe(wrong_role=True))
+        with self.assertRaisesRegex(RuntimeError, "duplicate authenticated Tide, agent rows"):
+            self.observe(duplicate=True)
+
+    def test_marker_stage_makes_the_signed_agent_capture_mandatory(self):
+        stage = inspect.getsource(PROOF.managed_agent_marker_stage)
+        grant = stage.index("grant_exact_marker_action")
+        observed = stage.index('"exact authenticated Agent navigation rows"', grant)
+        capture = stage.index("authenticated-agent-navigation-", observed)
+        self.assertLess(grant, observed)
+        self.assertLess(observed, capture)
+        helper = inspect.getsource(PROOF.visible_authenticated_agent_navigation)
+        self.assertIn("AT_SPI_ROLE_LIST_ITEM", helper)
+        self.assertIn("org.a11y.atspi.Component.GetExtents", helper)
+
+
 class NativeChatPublicationTests(unittest.TestCase):
     @staticmethod
     def creator():

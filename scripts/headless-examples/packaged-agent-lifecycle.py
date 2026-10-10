@@ -47,6 +47,7 @@ AT_SPI_ROLE_HEADING = 83
 AT_SPI_ROLE_TAB = 37
 AT_SPI_ROLE_BUTTON = 43
 AT_SPI_ROLE_TOGGLE_BUTTON = 62
+AT_SPI_ROLE_LIST_ITEM = 31
 # atspi_common::State::Enabled is ordinal 8 in the two-word state set.
 AT_SPI_ENABLED_STATE_BIT = 1 << 8
 
@@ -689,6 +690,42 @@ def chat_category_accessibility(label, *, owned_route=None):
     if len(matches) > 1:
         raise RuntimeError("Chat published duplicate exact category toggles")
     return matches[0] if matches else None
+
+
+def visible_authenticated_agent_navigation(access, names):
+    """Observe exact authenticated Agent rows in one already-owned Chat window."""
+    client = atspi.AtspiClient(atspi.atspi_address(), access["bus"])
+    try:
+        window_rect = atspi.extents_reply(client.call(
+            access["window"], "org.a11y.atspi.Component.GetExtents", "1",
+        ))
+        if window_rect is None or window_rect[2] <= 2 or window_rect[3] <= 2:
+            return None
+        window_x, window_y, window_w, window_h = window_rect
+        tree = accessible_subtree(client, access["window"], atspi.APP_TREE_NODE_LIMIT)
+        visible = {}
+        for name in names:
+            label = f"{name}, agent"
+            matches = [path for path in client.named(tree, label)
+                       if client.role(path) == AT_SPI_ROLE_LIST_ITEM]
+            if len(matches) > 1:
+                raise RuntimeError(f"Chat published duplicate authenticated {label} rows")
+            if not matches:
+                return None
+            rect = atspi.extents_reply(client.call(
+                matches[0], "org.a11y.atspi.Component.GetExtents", "1",
+            ))
+            if rect is None or rect[2] <= 2 or rect[3] <= 2:
+                return None
+            x, y, width, height = rect
+            if x < window_x or y < window_y \
+                    or x + width > window_x + window_w \
+                    or y + height > window_y + window_h:
+                return None
+            visible[name.casefold()] = dict(zip(("x", "y", "w", "h"), rect, strict=True))
+        return visible
+    except atspi.GateError:
+        return None
 
 
 def chat_accessibility_control(label, *, owned_route=None):
@@ -6115,7 +6152,7 @@ def managed_agent_marker_stage(socket, room, record, provider, output, process, 
                       offered_chat_category_action(
                           socket, room, record, "Lifecycle proof", "rename"
                       ), process)
-    ensure_chat_category_visible(socket, "Lifecycle proof", process,
+    category_access = ensure_chat_category_visible(socket, "Lifecycle proof", process,
         diagnostic_path=output / "marker-category-activation-observation.json")
     require_ok(call(socket, {"op": "snapshot", "path": str(
         output / f"category-marker-visible-before-task-{size}.png"
@@ -6124,6 +6161,14 @@ def managed_agent_marker_stage(socket, room, record, provider, output, process, 
     # decode a mounted component's transport alias from its semantic Person id.
     provider.marker_resource = target["resource"]
     grant = grant_exact_marker_action(socket, room, agent, target, process, output)
+    wait_for(
+        "exact authenticated Agent navigation rows",
+        lambda: visible_authenticated_agent_navigation(category_access, ("Tide", "Reed")),
+        process,
+    )
+    require_ok(call(socket, {"op": "snapshot", "path": str(
+        output / f"authenticated-agent-navigation-{size}.png"
+    )}))
     queue = wait_for("owner-published Queue task action", lambda: offered_desktop_action(
         socket, room, "tasks", "desktop:tasks", "queue"), process)
     queued_receipt = wait_terminal(socket, invoke(socket, queue, {
