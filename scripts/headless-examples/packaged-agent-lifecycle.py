@@ -61,6 +61,30 @@ PERMISSION_OBSERVATION_FIELDS = PERMISSION_OBSERVATION_COUNTS + (
     "catalogue_elapsed_ms", "at_elapsed_ms", "sample_elapsed_ms", "message_present", "queue_present",
     "at_attempted", "at_matched", "queue_control_present", "private_editor_state_matches",
 )
+PERMISSION_WINDOW_COUNTS = (
+    "heading_count", "notice_count", "retained_count", "send_message_count",
+    "queue_button_count", "queue_tab_count", "direction_count", "stop_count",
+    "editable_count", "editable_message_composer_count",
+)
+
+
+def closed_permission_windows(windows):
+    """Only bounded counts and observability cross the per-window diagnostic seam."""
+    if not isinstance(windows, list):
+        return [{"observable": False}]
+    result = []
+    for window in windows[:4]:
+        if not isinstance(window, dict):
+            result.append({"observable": False})
+            continue
+        sample = {"observable": window.get("observable") is True}
+        for key in PERMISSION_WINDOW_COUNTS:
+            count = window.get(key)
+            sample[key] = min(count, 1_000_000) if type(count) is int and count >= 0 else None
+            if sample[key] is None:
+                sample["observable"] = False
+        result.append(sample)
+    return result
 
 
 def permission_count(observation, key, amount=1):
@@ -94,7 +118,10 @@ def permission_phase_sample(state):
     finally:
         sample["sample_elapsed_ms"] = max(0, round((time.monotonic() - started) * 1000))
         state["samples_seen"] += 1
-        state["samples"].append({key: sample[key] for key in PERMISSION_OBSERVATION_FIELDS if key in sample})
+        retained = {key: sample[key] for key in PERMISSION_OBSERVATION_FIELDS if key in sample}
+        if "window_observations" in sample:
+            retained["window_observations"] = closed_permission_windows(sample["window_observations"])
+        state["samples"].append(retained)
         if len(state["samples"]) > 32:
             state["samples"] = state["samples"][:16] + state["samples"][-16:]
         for key in PERMISSION_OBSERVATION_COUNTS:
@@ -1587,6 +1614,11 @@ def agent_write_restricted_accessibility(agent_name, expected, *, observation=No
             children = client.call(atspi.ROOT_PATH, "org.a11y.atspi.Accessible.GetChildren")
             for window in dict.fromkeys(atspi.PATH_RE.findall(children)):
                 permission_count(observation, "windows")
+                window_observation = {"observable": False}
+                if observation is not None:
+                    windows = observation.setdefault("window_observations", [])
+                    if len(windows) < 4:
+                        windows.append(window_observation)
                 tree = (accessible_subtree(client, window, atspi.APP_TREE_NODE_LIMIT)
                         if observation is None else accessible_subtree(
                             client, window, atspi.APP_TREE_NODE_LIMIT, observation=observation))
@@ -1602,7 +1634,10 @@ def agent_write_restricted_accessibility(agent_name, expected, *, observation=No
                 permission_count(observation, "notices", len(notices))
                 permission_count(observation, "retained", len(retained))
                 mutable = []
-                for path, name in decoded_accessible_names(tree).items():
+                decoded = decoded_accessible_names(tree)
+                queue_tabs = 0
+                queue_buttons = 0
+                for path, name in decoded.items():
                     if name not in forbidden:
                         continue
                     if name == "Queue task":
@@ -1613,11 +1648,13 @@ def agent_write_restricted_accessibility(agent_name, expected, *, observation=No
                             raise RuntimeError("restricted Queue control role is unobservable") from None
                         if role == AT_SPI_ROLE_TAB:
                             permission_count(observation, "queue_tabs")
+                            queue_tabs += 1
                             continue
                         if role != AT_SPI_ROLE_BUTTON:
                             permission_count(observation, "at_unobservable")
                             raise RuntimeError("restricted Queue control role is unobservable")
                         permission_count(observation, "queue_buttons")
+                        queue_buttons += 1
                     mutable.append(path)
                 editable = []
                 for path in tree:
@@ -1626,6 +1663,15 @@ def agent_write_restricted_accessibility(agent_name, expected, *, observation=No
                         editable.append(path)
                 permission_count(observation, "mutable", len(mutable))
                 permission_count(observation, "editable", len(editable))
+                window_observation.update({
+                    "observable": True, "heading_count": len(headings), "notice_count": len(notices),
+                    "retained_count": len(retained), "queue_button_count": queue_buttons,
+                    "queue_tab_count": queue_tabs, "editable_count": len(editable),
+                    "editable_message_composer_count": sum(decoded[path] == "Message composer" for path in editable),
+                    "send_message_count": sum(decoded[path] == "Send message" for path in mutable),
+                    "direction_count": sum(decoded[path] == "Send direction" for path in mutable),
+                    "stop_count": sum(decoded[path] == "Stop current task" for path in mutable),
+                })
                 if (len(headings) == 1 and len(notices) == 1 and len(retained) == 1
                         and not mutable and not editable):
                     key = (headings[0], notices[0], retained[0])

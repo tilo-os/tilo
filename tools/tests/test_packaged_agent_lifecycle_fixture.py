@@ -548,6 +548,50 @@ class RestrictedQueueRoleTests(unittest.TestCase):
 
 
 class PermissionPhaseDiagnosticsTests(unittest.TestCase):
+    def test_per_window_restricted_observations_classify_existing_nodes_without_new_queries(self):
+        observation = {}
+        result = RestrictedQueueRoleTests().observe("(uint32 37,)", forbidden="Stop current task",
+                                                    editable=True, observation=observation)
+        self.assertIsNone(result)
+        windows = PROOF.closed_permission_windows(observation["window_observations"])
+        self.assertEqual(len(windows), 1)
+        window = windows[0]
+        self.assertTrue(window["observable"])
+        self.assertEqual((window["heading_count"], window["notice_count"], window["retained_count"]),
+                         (1, 1, 1))
+        self.assertEqual((window["stop_count"], window["queue_tab_count"], window["queue_button_count"]),
+                         (1, 1, 0))
+        self.assertEqual(window["editable_count"], 6)
+        self.assertEqual(window["editable_message_composer_count"], 0)
+        self.assertEqual(observation["interface_queries"], 6)
+        self.assertNotIn("PRIVATE", json.dumps(windows))
+        self.assertNotIn("/", json.dumps(windows))
+
+    def test_per_window_projection_is_bounded_and_rejects_malformed_counts(self):
+        valid = {key: 2_000_000 for key in PROOF.PERMISSION_WINDOW_COUNTS}
+        valid.update(observable=True, bus="PRIVATE-CANARY", window="/PRIVATE", name="PRIVATE-DRAFT", pid=999)
+        projected = PROOF.closed_permission_windows([valid] * 8)
+        self.assertEqual(len(projected), 4)
+        self.assertTrue(all(row[key] == 1_000_000 for row in projected for key in PROOF.PERMISSION_WINDOW_COUNTS))
+        self.assertNotIn("PRIVATE", json.dumps(projected))
+        self.assertNotIn("pid", json.dumps(projected))
+        for malformed in (True, -1, "PRIVATE-CANARY", float("nan"), None):
+            with self.subTest(malformed=malformed):
+                row = PROOF.closed_permission_windows([{**valid, "editable_count": malformed}])[0]
+                self.assertIs(row["observable"], False)
+                self.assertIsNone(row["editable_count"])
+        self.assertEqual(PROOF.closed_permission_windows("PRIVATE"), [{"observable": False}])
+
+    def test_permission_phase_persists_only_closed_per_window_projection(self):
+        with tempfile.TemporaryDirectory() as directory:
+            state = PROOF.permission_phase_observation(pathlib.Path(directory), "chat", 100)
+            with PROOF.permission_phase_sample(state) as sample:
+                sample["window_observations"] = [{"observable": True, "PRIVATE": "PRIVATE",
+                    **{key: 1 for key in PROOF.PERMISSION_WINDOW_COUNTS}}]
+            receipt = json.loads(state["path"].read_text())
+            self.assertTrue(receipt["samples"][0]["window_observations"][0]["observable"])
+            self.assertNotIn("PRIVATE", json.dumps(receipt))
+
     def test_bounded_samples_record_expiry_phase_timing_without_private_state(self):
         with tempfile.TemporaryDirectory() as directory:
             state = PROOF.permission_phase_observation(pathlib.Path(directory), "chat", 100)
