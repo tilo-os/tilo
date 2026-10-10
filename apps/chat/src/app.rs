@@ -3299,14 +3299,11 @@ impl Widget for ChatApp {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let Ok(layout) = taffy.layout(node) else {
-            return;
-        };
         if !self.presented {
             self.presented = true;
             self.read_on_present = true;
         }
-        self.rect = ui::widget::placed(layout, origin);
+        self.rect = ui::widget::layout_rect(taffy, node, origin);
         if !self.call.expanded {
             self.call
                 .placement

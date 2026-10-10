@@ -2115,14 +2115,13 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).copied().unwrap_or_default();
         // Until the top layer has been painted over the window once, the
         // root of the tree the dialog stands in is the window: the sheet is
         // centred where the first paint will put it, so the content is
         // placed where it is drawn and hit from the first frame.
         if !self.presented {
-            self.window =
-                tree_window(taffy, node).unwrap_or_else(|| crate::widget::placed(&l, origin));
+            self.window = tree_window(taffy, node)
+                .unwrap_or_else(|| crate::widget::layout_rect(taffy, node, origin));
         }
         let Some(content_node) = taffy
             .children(node)

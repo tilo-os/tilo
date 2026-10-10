@@ -4672,10 +4672,7 @@ impl Widget for MapsApp {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let Ok(layout) = taffy.layout(node) else {
-            return;
-        };
-        self.rect = ui::widget::placed(layout, origin);
+        self.rect = ui::widget::layout_rect(taffy, node, origin);
         // Arm the first POI fetch once a real viewport exists (live app only).
         if self.online
             && self.poi_fetched_bounds.is_none()

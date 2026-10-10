@@ -1624,10 +1624,7 @@ impl Widget for ContainersApp {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let Ok(layout) = taffy.layout(node) else {
-            return;
-        };
-        self.rect = ui::widget::placed(layout, origin);
+        self.rect = ui::widget::layout_rect(taffy, node, origin);
         let children = taffy.children(node).unwrap_or_default();
         let at = Point::new(self.rect.x0, self.rect.y0);
         let mut nodes = children.iter();

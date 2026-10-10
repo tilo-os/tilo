@@ -2629,16 +2629,8 @@ impl Widget for SlidesApp {
         node
     }
 
-    // `taffy.layout(...)` only errors for a `NodeId` from a different tree,
-    // which never happens here — every id it's called with is one this
-    // widget received from its own `build_layout`. `Widget::apply_layout`
-    // returns `()` across every implementor, so surfacing a theoretical
-    // error here would mean threading a `Result` through the whole toolkit
-    // for a branch that can't be taken.
-    #[allow(clippy::unwrap_used, reason = "node always belongs to this tree")]
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).unwrap();
-        self.rect = ui::widget::placed(layout, origin);
+        self.rect = ui::widget::layout_rect(taffy, node, origin);
     }
 
     fn draw(

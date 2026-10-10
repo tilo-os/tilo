@@ -970,14 +970,9 @@ impl Widget for Filtered {
         let inner = Point::new(self.rect.x0, self.rect.y0);
         if let Some(field) = self.field_node {
             let band = taffy.parent(field);
-            let band_origin =
-                band.and_then(|band| taffy.layout(band).ok())
-                    .map_or(inner, |layout| {
-                        Point::new(
-                            inner.x + f64::from(layout.location.x),
-                            inner.y + f64::from(layout.location.y),
-                        )
-                    });
+            let band_origin = band.map_or(inner, |band| {
+                crate::widget::layout_rect(taffy, band, inner).origin()
+            });
             self.field.apply_layout(taffy, field, band_origin);
         }
         if let Some(content) = self.content_node {

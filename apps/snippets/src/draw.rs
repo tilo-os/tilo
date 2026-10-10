@@ -38,19 +38,6 @@ pub(crate) fn fill_leaf<W: Widget + 'static>(
     node
 }
 
-/// The rect taffy placed `node` at, in window coordinates.
-pub(crate) fn leaf_rect(taffy: &TaffyTree<()>, node: NodeId, origin: Point) -> Rect {
-    let layout = taffy.layout(node).copied().unwrap_or_default();
-    let x = origin.x + f64::from(layout.location.x);
-    let y = origin.y + f64::from(layout.location.y);
-    Rect::new(
-        x,
-        y,
-        x + f64::from(layout.size.width),
-        y + f64::from(layout.size.height),
-    )
-}
-
 /// One painted row of wrapped code: the source line it starts (counted from
 /// 1; `None` when it continues the line above) and its highlighted runs.
 pub(crate) struct CodeRow {

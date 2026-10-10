@@ -701,16 +701,8 @@ impl<R: Resource> Widget for Each<R> {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).copied().unwrap_or_default();
-        let x = origin.x + f64::from(layout.location.x);
-        let y = origin.y + f64::from(layout.location.y);
-        self.rect = Rect::new(
-            x,
-            y,
-            x + f64::from(layout.size.width),
-            y + f64::from(layout.size.height),
-        );
-        let inner = Point::new(x, y);
+        self.rect = ui_core::widget::layout_rect(taffy, node, origin);
+        let inner = self.rect.origin();
         self.for_each_mounted(|row| {
             if let Some(child) = row.node {
                 row.widget.apply_layout(taffy, child, inner);

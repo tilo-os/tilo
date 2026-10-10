@@ -1360,10 +1360,7 @@ impl Widget for CalculatorApp {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let Ok(layout) = taffy.layout(node) else {
-            return;
-        };
-        let area = ui::widget::placed(layout, origin);
+        let area = ui::widget::layout_rect(taffy, node, origin);
         self.dirty |= area != self.area;
         self.area = area;
         self.relayout();

@@ -410,8 +410,7 @@ impl Widget for DatePicker {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).copied().unwrap_or_default();
-        self.set_rect(crate::widget::placed(&l, origin));
+        self.set_rect(crate::widget::layout_rect(taffy, node, origin));
     }
 
     fn draw(

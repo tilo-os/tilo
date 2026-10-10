@@ -339,8 +339,7 @@ impl Widget for Treemap {
         taffy.widget_leaf(style, node_map, self)
     }
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = crate::widget::placed(&layout, origin);
+        self.rect = crate::widget::layout_rect(taffy, node, origin);
     }
     #[allow(
         clippy::too_many_lines,
