@@ -963,15 +963,11 @@ impl Widget for Slider {
         presence: &crate::presence::PresenceCtx,
         permissions: &crate::permissions::PermissionContext,
     ) {
-        if presence.should_cull(self.get_rect()) {
-            return;
-        }
-        self.draw(scene, transform, text_renderer, theme, presence);
-
-        crate::widget::draw_gate_and_peer_focus(
+        crate::widget::draw_gated_leaf(
             self,
             scene,
             transform,
+            text_renderer,
             theme,
             presence,
             permissions,

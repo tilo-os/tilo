@@ -1855,16 +1855,6 @@ impl TopBarChrome {
         TextWeight::Semibold
     }
 
-    /// Distinct from the bold values so the strip is scannable without
-    /// every label shouting.
-    pub fn system_monitor_label_text_weight(&self) -> TextWeight {
-        TextWeight::Semibold
-    }
-
-    pub fn system_monitor_value_text_weight(&self) -> TextWeight {
-        TextWeight::Bold
-    }
-
     /// Routes through the theme's semantic colours rather than a
     /// literal hex, so the cue tracks the theme under high-contrast.
     pub fn metric_label_color(&self, theme: &Theme, k: MetricKind) -> Color {

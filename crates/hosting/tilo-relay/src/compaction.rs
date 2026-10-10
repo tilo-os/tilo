@@ -154,18 +154,6 @@ impl Compactor {
         self.0.rounds.load(std::sync::atomic::Ordering::Relaxed)
     }
 
-    /// Host folds that read their channel and are about to remove from it,
-    /// or did.
-    pub fn folds_started(&self) -> u64 {
-        self.0.folding.load(std::sync::atomic::Ordering::Relaxed)
-    }
-
-    /// Wait this long between reading a channel and removing what the fold
-    /// holds, so a test can write to the channel in between.
-    pub fn hold_before_removing(&self, hold: Duration) {
-        *lock(&self.0.hold) = hold;
-    }
-
     /// The document channel a delta retains to, and its size, before it is
     /// admitted.
     ///

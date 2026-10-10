@@ -350,7 +350,7 @@ fn documents_replay_converge_version_index_and_migrate() {
         board.apply(Board::RENAME.with("v2")).unwrap();
         let versions = board.versions();
         let last = versions.last().unwrap();
-        assert_eq!(last.actor, hex(b"alice"));
+        assert_eq!(last.actor, hex::encode(b"alice"));
         let entry = last.context.as_ref().expect("an entry");
         let Some(tilo_actions::Did::Verb(verb)) = &entry.what else {
             panic!("the rename is recorded as its verb: {entry:?}");
@@ -464,14 +464,6 @@ fn apply_and_group_name_the_declared_actions_instead_of_repeating_them() {
     );
     let refused = tilo_resource::group::build_group::<Board>(&args, 0).unwrap_err();
     assert!(refused.starts_with("member 1 (move-card): "), "{refused}");
-}
-
-fn hex(bytes: &[u8]) -> String {
-    use std::fmt::Write as _;
-    bytes.iter().fold(String::new(), |mut out, byte| {
-        let _ = write!(out, "{byte:02x}");
-        out
-    })
 }
 
 #[test]

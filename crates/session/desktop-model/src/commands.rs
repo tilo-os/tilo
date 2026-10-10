@@ -13,10 +13,6 @@ use serde::{Deserialize, Serialize};
 use crate::apps::canonical_app_id;
 use crate::ids::{MintIds, StripId};
 use crate::layout::{Strip, Tab, TileContent, WindowGroup};
-use crate::projection::{
-    ROOM_CONTENTS_KEY, ROOM_CONTENTS_OWNERS_KEY, ROOM_DESKTOP_COUNTER_KEY, ROOM_ID_KEY,
-    ROOM_NAME_KEY, ROOM_OWNER_KEY,
-};
 use crate::topology::DropTarget;
 use crate::tree::DesktopTree;
 use crate::width::WindowWidth;
@@ -497,63 +493,6 @@ impl DesktopRefusal {
     pub fn details(self, id: &DesktopCommandId) -> serde_json::Value {
         serde_json::json!({"command": id.to_string(), "reason": self.as_str()})
     }
-}
-
-/// Room heads also advance for receipts, enrollment and document durability.
-/// Those changes must not invalidate a gesture against an unchanged desktop.
-/// Compare the original admitted desktop with the current one, without
-/// rebinding the command or weakening the current caller/target checks.
-///
-/// # Errors
-///
-/// Returns a description when the document cannot be read at `heads`.
-pub fn desktop_source_matches(
-    doc: &automerge::AutoCommit,
-    heads: &[[u8; 32]],
-) -> Result<bool, String> {
-    use automerge::ReadDoc;
-    let heads = heads
-        .iter()
-        .copied()
-        .map(automerge::ChangeHash)
-        .collect::<Vec<_>>();
-    if heads.is_empty()
-        || heads
-            .iter()
-            .any(|head| doc.get_change_by_hash(head).is_none())
-    {
-        return Ok(false);
-    }
-    for key in [
-        ROOM_ID_KEY,
-        ROOM_OWNER_KEY,
-        ROOM_NAME_KEY,
-        ROOM_CONTENTS_KEY,
-        ROOM_CONTENTS_OWNERS_KEY,
-        // Also prevents an old launch from being reused after its tab closes.
-        ROOM_DESKTOP_COUNTER_KEY,
-    ] {
-        let previous = doc
-            .get_all_at(automerge::ROOT, key, &heads)
-            .map_err(|e| e.to_string())?;
-        let current = doc
-            .get_all(automerge::ROOT, key)
-            .map_err(|e| e.to_string())?;
-        if previous != current {
-            return Ok(false);
-        }
-        for (value, object) in current {
-            if matches!(value, automerge::Value::Object(_))
-                && doc
-                    .hydrate(&object, Some(&heads))
-                    .map_err(|e| e.to_string())?
-                    != doc.hydrate(&object, None).map_err(|e| e.to_string())?
-            {
-                return Ok(false);
-            }
-        }
-    }
-    Ok(true)
 }
 
 /// Strip, group and tab indices of one located tab.

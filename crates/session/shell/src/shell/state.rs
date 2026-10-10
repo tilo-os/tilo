@@ -4485,12 +4485,6 @@ impl WorkspaceTree {
         true
     }
 
-    pub fn note_continuation_tab_closed(&mut self, tab: TabId) {
-        if let Some(room) = self.continuation_owned_tabs.remove(&tab) {
-            self.continuation_closed_tabs.insert(tab, room);
-        }
-    }
-
     /// Remove rooms which exist here solely because of a continuation offer
     /// and are no longer offered by any device.
     pub fn reconcile_continuation_rooms(&mut self, desired: &BTreeSet<RoomId>) -> bool {

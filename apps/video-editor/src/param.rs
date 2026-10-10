@@ -93,9 +93,6 @@ impl Keyframe {
             interp: Interp::Linear,
         }
     }
-    pub fn with_interp(t: f64, v: f64, interp: Interp) -> Self {
-        Self { t, v, interp }
-    }
 }
 
 /// Which knob a curve drives.
@@ -274,19 +271,6 @@ impl Param {
                 Param::EffectAmount(id.parse().ok()?)
             }
         })
-    }
-
-    /// The range a UI slider should offer for this parameter. Curves are
-    /// never clamped to it — this is presentation guidance, not a model
-    /// constraint.
-    pub fn ui_range(self) -> (f64, f64) {
-        match self {
-            Param::Rotation | Param::MaskRotation => (-180.0, 180.0),
-            Param::ScaleX | Param::ScaleY => (0.0, 4.0),
-            Param::PosX | Param::PosY | Param::MaskX | Param::MaskY => (-1.0, 1.0),
-            Param::MaskW | Param::MaskH => (0.0, 2.0),
-            _ => (0.0, 1.0),
-        }
     }
 }
 

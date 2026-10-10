@@ -643,15 +643,6 @@ impl ScheduleTriggers {
         Self { ledger, path }
     }
 
-    /// When the schedule `key` fires next, when it is armed.
-    #[must_use]
-    pub fn next_fire(&self, room: &str, shortcut: &str, index: usize) -> Option<DateTime<Utc>> {
-        self.ledger
-            .schedules
-            .get(&ledger_key(room, shortcut, index))
-            .and_then(|entry| DateTime::from_timestamp_millis(entry.next_fire_ms))
-    }
-
     fn persist(&self) {
         let Some(path) = &self.path else {
             return;

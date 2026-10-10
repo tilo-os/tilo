@@ -635,9 +635,6 @@ impl Deck {
     pub fn slide(&self, idx: usize) -> Option<&Slide> {
         self.slides.get(idx)
     }
-    pub fn slide_mut(&mut self, idx: usize) -> Option<&mut Slide> {
-        self.slides.get_mut(idx)
-    }
     pub fn index_of(&self, id: &str) -> Option<usize> {
         self.slides.iter().position(|s| s.id == id)
     }
@@ -833,12 +830,6 @@ impl Palette {
         } else {
             text
         }
-    }
-
-    /// Default body / heading text colour for a slide background: the ink
-    /// the `text` role resolves to on it (see [`Palette::on`]).
-    pub fn on_bg(&self, bg: Background) -> Color {
-        self.on(bg).text
     }
 }
 

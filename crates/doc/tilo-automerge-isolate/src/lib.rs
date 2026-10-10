@@ -236,24 +236,6 @@ pub fn load(bytes: &[u8]) -> Result<AutoCommit, Rejected> {
     Isolate::shared().load(bytes)
 }
 
-/// Run the check a browser Web Worker performs for the page: apply
-/// `incoming` to the document saved as `base` (empty for none) in this
-/// process. Only for a process whose crash costs nothing but the check.
-///
-/// # Errors
-///
-/// A [`Rejected`] reason.
-pub fn check_here(
-    base: &[u8],
-    incoming: &[u8],
-    dependencies: Dependencies,
-    limits: &Limits,
-) -> Result<Applied, Rejected> {
-    precheck::check(incoming, limits)?;
-    let mut doc = engine::load(base)?;
-    engine::apply(&mut doc, incoming, dependencies)
-}
-
 /// Outside Linux there are no workers yet, so none of their bounds apply:
 /// input that passes [`precheck`] is decoded in this process with no heap
 /// ceiling, deadline or sandbox, and a decoder panic or hang is the caller's.

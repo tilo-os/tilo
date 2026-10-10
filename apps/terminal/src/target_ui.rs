@@ -697,10 +697,6 @@ impl TerminalWidget {
         self.environments_panel.picker.is_some()
     }
 
-    pub fn environments_panel_is_open(&self) -> bool {
-        self.environments_panel.open
-    }
-
     fn close_environments_panel(&mut self) {
         self.environments_panel = EnvironmentsPanel::default();
     }

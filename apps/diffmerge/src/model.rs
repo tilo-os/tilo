@@ -346,9 +346,6 @@ impl Resolution {
     pub fn is_conflict(&self) -> bool {
         matches!(self, Resolution::Conflict)
     }
-    pub fn is_open_or_conflict(&self) -> bool {
-        matches!(self, Resolution::Conflict)
-    }
 }
 
 /// One merge region: either a clean run carried straight through, or a hunk

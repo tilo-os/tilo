@@ -381,23 +381,6 @@ impl ImagerApp {
         self.live = self.reaches_machine && mode.is_live();
     }
 
-    /// Stage the peer-local confirmation for a deterministic offscreen frame.
-    #[doc(hidden)]
-    pub fn seed_confirmation_for_shot(&mut self, value: &str) {
-        self.confirm_text = value.to_string();
-        self.shot_confirmation_ready = true;
-        // The posed review shows the consent the write waits for.
-        self.shot_focus = Some("imager.confirm");
-    }
-
-    /// Headless-shot only: expose the long, searchable time-zone chooser so
-    /// its overlay placement is part of visual review.
-    pub fn shot_open_customize_timezone(&mut self) {
-        self.shot_timezone_open = true;
-        // The open chooser's field is scrolled into view with it.
-        self.shot_focus = Some("imager.profile.timezone");
-    }
-
     /// Prime local-only state for deterministic offscreen review. None of this
     /// device/job presentation data is written into the collaborative doc.
     pub fn seed_local_shot_state(&mut self, scenario: &str) {
@@ -466,12 +449,6 @@ impl ImagerApp {
             }
             _ => {}
         }
-    }
-
-    /// Local demo inventory/catalogue used by `--demo`; the collaborative
-    /// document still carries only the reviewed source/profile records.
-    pub fn seed_local_demo_state(&mut self) {
-        self.seed_local_shot_state("source");
     }
 
     fn confirm_matches(&self) -> bool {

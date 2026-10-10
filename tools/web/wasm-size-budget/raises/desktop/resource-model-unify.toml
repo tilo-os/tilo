@@ -1,0 +1,4 @@
+bytes = 8126464
+run = 89054
+measured = 106552615
+reason = "Raised while the resource/action/view rework lands, to what app-sdk run 89054 measured; framework code duplicated per app is being removed to bring this back down."

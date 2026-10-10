@@ -131,7 +131,6 @@ members = [
     # SDK
     "crates/sdk/font-catalog",
     "crates/sdk/runner-native",
-    "crates/sdk/runner-web",
     "crates/sdk/tilo-app",
     "crates/sdk/tilo-caps",
     "crates/sdk/tilo-history",
@@ -219,8 +218,6 @@ members = [
     "crates/packaging/registry-client",
     "crates/packaging/registry-server",
     "crates/packaging/registry-types",
-    "crates/packaging/registry-web",
-    "crates/packaging/registry-web-bindgen",
     "crates/packaging/runtime-bundle",
     "crates/packaging/runtime-update",
 

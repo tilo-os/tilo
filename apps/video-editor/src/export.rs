@@ -562,10 +562,6 @@ impl ExportJob {
         self.shared.cancel.store(true, Ordering::Relaxed);
     }
 
-    pub fn was_cancelled(&self) -> bool {
-        self.shared.cancel.load(Ordering::Relaxed)
-    }
-
     /// Block until the worker finishes, returning its outcome. Mostly for
     /// tests; the UI polls [`Self::status`] instead.
     pub fn join(mut self) -> ExportStatus {

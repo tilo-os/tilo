@@ -320,19 +320,8 @@ fn a_row_out_of_view_shows_its_item_as_it_is_when_it_mounts() {
     assert!(!mounted(&mut app, &far), "the row starts out unmounted");
     // Another participant (here an agent) completes the task while its row
     // is out of view.
-    let item = app
-        .harness()
-        .resources()
-        .iter()
-        .find(|resource| resource.kind == Checklist::KIND)
-        .and_then(|root| {
-            root.children
-                .iter()
-                .find(|child| child.label == format!("Task {}", total.saturating_sub(3)))
-        })
-        .unwrap()
-        .id
-        .clone();
+    // Past the published page, the item is addressed by its id.
+    let item = tilo_resource::items::item_resource_id::<Checklist>("tasks", &far);
     app.call_on(
         item.as_str(),
         "set-done",

@@ -23,7 +23,7 @@ description = "The Tilo application SDK: one app source for Linux, macOS and the
 #
 # A headless tool that wants only the toolkit opts out with
 # `default-features = false` and names what it keeps.
-default = ["native", "broker-transport", "portal", "mpris", "notifications", "gpu-video"]
+default = ["native", "broker-transport", "mpris", "gpu-video"]
 # The native desktop runner and host services; see `tilo-runner-native`.
 native = ["dep:tilo-runner-native"]
 # The collaboration manager's built-in broker transport; see `tilo-ui`'s
@@ -33,15 +33,10 @@ test-support = ["ui-core/test-support", "tilo-resource/test-support"]
 # `chrono`'s dates and times as model values (`tilo_resource`'s `chrono`).
 chrono = ["tilo-resource/chrono"]
 # Backend features of the native runner; on wasm32 they have no effect.
-# `portal` and `notifications` select nothing any more: the platform crates
-# choose each target's file choosers and notifications, and the native runner
-# turns the XDG portals on for Linux itself.
 webview-adblock = ["tilo-runner-native?/webview-adblock"]
 dmabuf-import = ["tilo-runner-native?/dmabuf-import"]
 gpu-video = ["tilo-runner-native?/gpu-video"]
 mpris = ["tilo-runner-native?/mpris"]
-portal = []
-notifications = []
 # The session's priority contacts over the desktop bus.
 priority-contacts = ["tilo-runner-native?/priority-contacts"]
 # Optional native presentation diagnostics shared by app entrypoints.
@@ -87,9 +82,6 @@ required-features = ["test-support"]
 # `render` stores the picture it answers with.
 tilo-content = { version = "0.1.0", path = "../../system/content" }
 tilo-runner-native = { version = "0.1.0", path = "../runner-native", default-features = false, optional = true }
-
-[target.'cfg(target_family = "wasm")'.dependencies]
-tilo-runner-web = { version = "0.1.0", path = "../runner-web" }
 
 [lints]
 workspace = true

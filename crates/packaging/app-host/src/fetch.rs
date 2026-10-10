@@ -14,9 +14,7 @@ use thiserror::Error;
 use app_registry::HostProfile;
 use app_registry::resolve::{self, FetchOutcome};
 
-use crate::install::{self, InstallError};
-use package_store::{PackageStore, Pinning};
-use tilo_app_package::id::PackageId;
+use crate::install::InstallError;
 
 #[derive(Debug, Error)]
 pub enum FetchError {
@@ -28,36 +26,6 @@ pub enum FetchError {
     },
     #[error("install: {0}")]
     Install(#[from] InstallError),
-}
-
-/// Resolve + download + verify the tapp for `app_id` (optionally
-/// constrained by a semver `version` requirement), then install it
-/// into `store` with the requested pinning. Returns the installed
-/// [`PackageId`].
-///
-/// `workspace_root`, when given, layers that workspace's
-/// `registries.toml` over the global config so a workspace can add or
-/// override registries.
-///
-/// # Errors
-///
-/// Returns [`FetchError::Resolve`] if resolving or downloading `app_id`
-/// fails, or [`FetchError::Install`] if the fetched tapp fails to
-/// install (bad signature, missing payload, or a store error).
-pub async fn fetch_and_install(
-    store: &PackageStore,
-    workspace_root: Option<&Path>,
-    app_id: &str,
-    version: Option<&str>,
-    pinning: Pinning,
-) -> Result<PackageId, FetchError> {
-    let outcome = fetch_remote(workspace_root, app_id, version).await?;
-    // `install_tapp` re-verifies and does blocking IO; the caller
-    // (service task) already runs this off the capnp event loop. A thin
-    // package's payload comes from the provider that served it, and only
-    // the blobs the store lacks are fetched.
-    let installed = install::install_tapp(store, &outcome.bytes, pinning, Some(&outcome.payload))?;
-    Ok(installed.package_id().unwrap_or(outcome.package_id))
 }
 
 /// Resolve + download + verify the tapp for `app_id` WITHOUT

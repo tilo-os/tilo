@@ -361,6 +361,13 @@ impl DeviceMeshArea {
         }
     }
 
+    /// Whether the area has read what its rows show: its pane was shown,
+    /// an effect or a row lookup reached it, or the window read it after
+    /// its first frame ([`crate::effects::LIVE_AREAS`]).
+    pub(crate) fn is_open(&self) -> bool {
+        self.model.get().is_some()
+    }
+
     /// One row per discovered workspace, personal device and home server.
     pub(crate) fn rows(&self) -> Vec<LiveRow> {
         let model = self.model().borrow();

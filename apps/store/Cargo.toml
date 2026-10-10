@@ -28,7 +28,11 @@ runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 # — one definition, so the two cannot drift into disagreeing about
 # whether an entry verifies.
 app-cli = { path = "../../crates/packaging/app-cli" }
-app-host = { path = "../../crates/packaging/app-host" }
+# The app host's client side only. Its daemon (`service`) is the privileged
+# door this app talks to over the launcher-issued capability, not code it
+# links; with it, the content store and the filesystem would also land in
+# the shared runtime every app maps.
+app-host = { path = "../../crates/packaging/app-host", default-features = false }
 # The installed-package row the app host lists.
 package-store = { path = "../../crates/packaging/package-store" }
 registry-types = { path = "../../crates/packaging/registry-types" }
@@ -56,7 +60,7 @@ tilo-app-package = { path = "../../crates/packaging/tilo-app-package" }
 base64.workspace = true
 flate2.workspace = true
 desktop-entry = { package = "tilo-desktop-entry", path = "../../crates/system/desktop-entry" }
-app-host = { path = "../../crates/packaging/app-host", features = ["test-support"] }
+app-host = { path = "../../crates/packaging/app-host", default-features = false, features = ["test-support"] }
 capnp.workspace = true
 tempfile.workspace = true
 tilo-test-env = { path = "../../crates/dev/test-env" }

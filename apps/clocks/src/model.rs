@@ -218,12 +218,6 @@ impl Alarm {
             .filter(|day| self.repeat & day.bit() != 0)
             .collect()
     }
-
-    /// Whether it rings on `day`.
-    #[must_use]
-    pub fn repeats_on(&self, day: WeekdayKey) -> bool {
-        self.repeat & day.bit() != 0
-    }
 }
 
 impl Timer {

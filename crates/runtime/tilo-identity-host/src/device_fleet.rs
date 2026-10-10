@@ -568,6 +568,9 @@ impl DeviceFleetStore {
         if let Ok(mut cache) = FLEET_CACHE.write() {
             cache.remove(&self.cache_key(&fleet.identity_id));
         }
+        // An enrolment or a revocation changes who may act: re-check now,
+        // not when the identity directory's watch reports it.
+        crate::policy_change::announce();
         written
     }
 

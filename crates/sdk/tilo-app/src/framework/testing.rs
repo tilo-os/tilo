@@ -155,17 +155,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
     /// # Errors
     /// Returns any launch, storage or construction failure.
     pub fn in_room(room: &str) -> Result<Self, LaunchError> {
-        let profile = Rc::new(tempfile::tempdir().map_err(operation)?);
-        Self::open(
-            Profile::Temporary(profile, room.to_owned(), TEST_DEVICE.to_owned()),
-            Role::Owner,
-            AUTHOR,
-            &[],
-            None,
-            None,
-            None,
-            |_| {},
-        )
+        Self::fresh(room, Role::Owner, AUTHOR)
     }
 
     /// The app as its owner opens it on a fresh profile on the device
@@ -193,11 +183,17 @@ impl<A: ResourceApp> HeadlessApp<A> {
     /// # Errors
     /// Returns any launch, storage or construction failure.
     pub fn with_role(role: Role) -> Result<Self, LaunchError> {
+        Self::fresh(TEST_ROOM, role, AUTHOR)
+    }
+
+    /// The app as `person` with `role` opens it on a fresh private profile,
+    /// in `room`.
+    fn fresh(room: &str, role: Role, person: &str) -> Result<Self, LaunchError> {
         let profile = Rc::new(tempfile::tempdir().map_err(operation)?);
         Self::open(
-            Profile::Temporary(profile, TEST_ROOM.to_owned(), TEST_DEVICE.to_owned()),
+            Profile::Temporary(profile, room.to_owned(), TEST_DEVICE.to_owned()),
             role,
-            AUTHOR,
+            person,
             &[],
             None,
             None,
@@ -213,17 +209,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
     /// # Errors
     /// Returns any launch, storage or construction failure.
     pub fn for_person(person: &str) -> Result<Self, LaunchError> {
-        let profile = Rc::new(tempfile::tempdir().map_err(operation)?);
-        Self::open(
-            Profile::Temporary(profile, TEST_ROOM.to_owned(), TEST_DEVICE.to_owned()),
-            Role::Owner,
-            person,
-            &[],
-            None,
-            None,
-            None,
-            |_| {},
-        )
+        Self::fresh(TEST_ROOM, Role::Owner, person)
     }
 
     /// Open a fresh person profile with a service lent by its mounting host.

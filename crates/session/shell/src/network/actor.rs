@@ -923,6 +923,9 @@ struct ActorState {
     /// Number of the last heartbeat sent for an older build's sake (see
     /// [`ActorState::legacy_beat`]).
     compat_beats: u64,
+    /// Remote-action requests that found neither a direct nor a relayed
+    /// route. Sent when that peer is next seen on the workspace.
+    pending_remote_actions: PendingRemoteActions,
 }
 
 /// Every application message this device received from its peers, by kind:
@@ -1041,6 +1044,64 @@ impl PeerMembership {
             &mut self.caps_advert
         };
         last.replace(fingerprint) != Some(fingerprint)
+    }
+}
+
+const MAX_PENDING_REMOTE_ACTIONS: usize = 8;
+/// A request older than this is dropped rather than run long after the
+/// person who sent it has moved on.
+const PENDING_REMOTE_ACTION_TTL: Duration = Duration::from_secs(30);
+
+struct PendingRemoteAction {
+    ws: WorkspaceId,
+    target: EndpointId,
+    frame: Vec<u8>,
+    queued_at: Instant,
+}
+
+#[derive(Default)]
+struct PendingRemoteActions {
+    items: VecDeque<PendingRemoteAction>,
+}
+
+impl PendingRemoteActions {
+    fn hold(&mut self, ws: WorkspaceId, target: EndpointId, frame: Vec<u8>, now: Instant) {
+        self.expire(now);
+        if self.items.len() >= MAX_PENDING_REMOTE_ACTIONS {
+            self.items.pop_front();
+        }
+        self.items.push_back(PendingRemoteAction {
+            ws,
+            target,
+            frame,
+            queued_at: now,
+        });
+    }
+
+    fn expire(&mut self, now: Instant) {
+        self.items.retain(|item| {
+            now.saturating_duration_since(item.queued_at) < PENDING_REMOTE_ACTION_TTL
+        });
+    }
+
+    /// The frames held for `target` on `ws`, oldest first.
+    fn take_for(&mut self, ws: WorkspaceId, target: EndpointId, now: Instant) -> Vec<Vec<u8>> {
+        self.expire(now);
+        let (ready, kept) = std::mem::take(&mut self.items)
+            .into_iter()
+            .partition::<VecDeque<_>, _>(|item| item.ws == ws && item.target == target);
+        self.items = kept;
+        ready.into_iter().map(|item| item.frame).collect()
+    }
+
+    fn targets(&self) -> Vec<(WorkspaceId, EndpointId)> {
+        let mut seen = Vec::new();
+        for item in &self.items {
+            if !seen.contains(&(item.ws, item.target)) {
+                seen.push((item.ws, item.target));
+            }
+        }
+        seen
     }
 }
 
@@ -1998,7 +2059,19 @@ impl ActorState {
                     .is_ok()
             });
         if !relayed {
-            tracing::warn!(ws, peer = %target, "no direct or relayed route for a remote action");
+            tracing::warn!(ws, peer = %target, "no direct or relayed route for a remote action; held until the peer is seen");
+            self.pending_remote_actions
+                .hold(ws, target, frame, Instant::now());
+        }
+    }
+
+    async fn flush_pending_remote_actions(&mut self, ws: WorkspaceId, peer: EndpointId) {
+        for frame in self
+            .pending_remote_actions
+            .take_for(ws, peer, Instant::now())
+        {
+            self.publish_remote_action(ws, peer, NeighbourMsg::RemoteAction { frame })
+                .await;
         }
     }
 
@@ -2081,6 +2154,13 @@ impl ActorState {
             .get(&target)
             .cloned()
             .unwrap_or_else(|| EndpointAddr::new(target));
+        if self
+            .surface_connections
+            .get(&target)
+            .is_some_and(|connection| connection.close_reason().is_some())
+        {
+            self.surface_connections.remove(&target);
+        }
         let connection = if let Some(connection) = self.surface_connections.get(&target) {
             connection.clone()
         } else {
@@ -2102,7 +2182,12 @@ impl ActorState {
             stream.finish().map_err(|_| ())?;
             Ok::<(), ()>(())
         };
-        if matches!(tokio::time::timeout(budget, send).await, Ok(Ok(()))) {
+        let delivered = tokio::select! {
+            biased;
+            _ = connection.closed() => false,
+            result = tokio::time::timeout(budget, send) => matches!(result, Ok(Ok(()))),
+        };
+        if delivered {
             return true;
         }
         self.surface_connections.remove(&target);
@@ -2533,6 +2618,19 @@ impl ActorState {
         }
     }
 
+    fn joined_gossip_peer(&mut self, ws: WorkspaceId, peer: EndpointId) -> (NetEvent, bool) {
+        let (membership_epoch, fresh) = self.touch_or_mint_membership(ws, peer);
+        self.set_link(ws, peer, true);
+        (
+            NetEvent::PeerJoined {
+                ws,
+                peer,
+                membership_epoch,
+            },
+            fresh,
+        )
+    }
+
     /// [`InternalEvent::Topic`] arm of [`Self::handle_internal`], split out
     /// to keep that dispatcher short.
     async fn handle_topic_event(&mut self, ws: WorkspaceId, event: GossipEvent) {
@@ -2547,15 +2645,12 @@ impl ActorState {
         let Some(tx) = self.subscribers.get(&ws).cloned() else {
             return;
         };
+        let mut joined_anew = None;
         let event = match event {
             GossipEvent::NeighborUp(peer) => {
-                let (membership_epoch, _) = self.touch_or_mint_membership(ws, peer);
-                self.set_link(ws, peer, true);
-                Some(NetEvent::PeerJoined {
-                    ws,
-                    peer,
-                    membership_epoch,
-                })
+                let (joined, fresh) = self.joined_gossip_peer(ws, peer);
+                joined_anew = fresh.then_some(peer);
+                Some(joined)
             }
             GossipEvent::NeighborDown(peer) => {
                 // Gossip does not attach a connection incarnation to a down
@@ -2569,6 +2664,9 @@ impl ActorState {
             GossipEvent::Received(message) => {
                 let peer = message.delivered_from;
                 let (membership_epoch, rediscovered) = self.touch_or_mint_membership(ws, peer);
+                if rediscovered {
+                    joined_anew = Some(peer);
+                }
                 let decoded = postcard::from_bytes::<NeighbourMsg>(&message.content);
                 self.tally
                     .note(decoded.as_ref().map_or("Undecodable", NeighbourMsg::kind));
@@ -2592,6 +2690,20 @@ impl ActorState {
                     }
                 };
                 if !new {
+                    // A restarted device repeats a message already seen, such
+                    // as its identity hello. The payload is old but the
+                    // membership is new, and without a join the peer stays
+                    // out of the live set.
+                    if rediscovered {
+                        let _ = tx
+                            .send(NetEvent::PeerJoined {
+                                ws,
+                                peer,
+                                membership_epoch,
+                            })
+                            .await;
+                        self.flush_pending_remote_actions(ws, peer).await;
+                    }
                     return;
                 }
                 match decoded {
@@ -2628,6 +2740,9 @@ impl ActorState {
         };
         if let Some(event) = event {
             let _ = tx.send(event).await;
+        }
+        if let Some(peer) = joined_anew {
+            self.flush_pending_remote_actions(ws, peer).await;
         }
     }
 
@@ -2884,6 +2999,11 @@ impl ActorState {
     /// yet connected, and broadcast this device's identity + a liveness
     /// heartbeat on every joined topic.
     async fn run_heartbeat_tick(&mut self) {
+        for (ws, peer) in self.pending_remote_actions.targets() {
+            if self.peers_seen.contains_key(&(ws, peer)) {
+                self.flush_pending_remote_actions(ws, peer).await;
+            }
+        }
         self.resubscribe_missing_topics().await;
         self.retry_direct_peers().await;
         self.retry_native_routes();
@@ -3483,6 +3603,7 @@ async fn run(
         tally: Arc::default(),
         caps_sent: None,
         compat_beats: 0,
+        pending_remote_actions: PendingRemoteActions::default(),
     };
     let mut heartbeat = tokio::time::interval(heartbeat_interval);
     let mut host_checkpoint = tokio::time::interval(HOST_CHECKPOINT_INTERVAL);
@@ -4234,6 +4355,44 @@ fn topic_id(ws: WorkspaceId) -> TopicId {
 )]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_remote_action_with_no_route_waits_for_that_peer_and_expires() {
+        let mut pending = PendingRemoteActions::default();
+        let peer = iroh::SecretKey::generate().public();
+        let other = iroh::SecretKey::generate().public();
+        let start = Instant::now();
+        pending.hold(1, peer, b"open".to_vec(), start);
+        pending.hold(1, other, b"other".to_vec(), start);
+        pending.hold(1, peer, b"again".to_vec(), start);
+        assert_eq!(pending.targets(), vec![(1, peer), (1, other)]);
+        assert_eq!(
+            pending.take_for(1, peer, start),
+            vec![b"open".to_vec(), b"again".to_vec()]
+        );
+        assert!(
+            pending.take_for(2, other, start).is_empty(),
+            "held per workspace"
+        );
+        assert_eq!(pending.take_for(1, other, start), vec![b"other".to_vec()]);
+
+        for index in 0..MAX_PENDING_REMOTE_ACTIONS {
+            pending.hold(2, peer, vec![u8::try_from(index).unwrap()], start);
+        }
+        pending.hold(2, peer, b"newest".to_vec(), start);
+        let kept = pending.take_for(2, peer, start);
+        assert_eq!(kept.len(), MAX_PENDING_REMOTE_ACTIONS);
+        assert_eq!(kept[0], vec![1]);
+        assert_eq!(kept.last().expect("kept"), b"newest");
+
+        pending.hold(3, peer, b"stale".to_vec(), start);
+        assert!(
+            pending
+                .take_for(3, peer, start + PENDING_REMOTE_ACTION_TTL)
+                .is_empty(),
+            "a request is not run long after it was sent"
+        );
+    }
     use getrandom::{SysRng, rand_core::UnwrapErr};
 
     #[test]

@@ -100,6 +100,7 @@ network runtime (−10/s) and the rest of the table.
 | -- | -- | --: | --: | --: |
 | TIL-704 | `tilo-audio-output-authority` | 20.1/s (run 89961) | 0.0/s (run 89960) | 31.9/s (run 89960) |
 | TIL-706 | `tilo-collab-drain` | 0.0/s (run 90040) | 0.0/s (run 90187) | unchanged |
+| TIL-707 | `tilo-collab-broker-capnp` | 20.1/s (run 90455) | 0.0/s (run 90830) | spinning, see TIL-696 |
 
 TIL-704: the watchdog re-checks an open output's admission every 50 ms as
 before, and blocks on a condition variable while no output is open; `open`
@@ -120,3 +121,17 @@ service's own deadline (a steward's 1 s policy re-check, a member's
 backoff, nothing for a member holding its keys), so a member device's
 drain wakes only for frames. The gate cannot see that, so the budget
 does not move for it.
+
+TIL-707 takes the capnp service thread to 0.0/s. It re-checks what it
+admitted (membership surfaces, native context subscribers, a steward's
+channel readers) when an input announces a policy change and at the first
+grant or certificate expiry it read, instead of once a second, and its turn
+parks with nothing due, so the 100 ms tick goes with it. A first cut that
+announced on every tree write measured 2.7/s (run 90634): the frame loop
+writes the tree on each pass (`push_room_changes`, `replicate_room_records`,
+the overlay host's update), and the broker coalesced those announcements to
+one re-check a second, the old clock's cost. A write now announces only
+when it changed what authorization reads (owners, rosters, grants,
+permission profiles, tasks, admitted devices, stewarded rooms). The
+whole-tree budget does not move: run 90830 still spun at 1215/s (TIL-696),
+which the 3000/s spin budget covers; the parked budget drops with TIL-696.

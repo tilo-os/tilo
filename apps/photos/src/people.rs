@@ -161,11 +161,6 @@ pub struct LocalPersonCluster {
 
 impl LocalPersonCluster {
     #[must_use]
-    pub fn is_proposal(&self) -> bool {
-        self.display_name.is_none() && !self.rejected
-    }
-
-    #[must_use]
     pub fn visible_photo_ids(&self) -> Vec<String> {
         self.photos
             .iter()
@@ -506,10 +501,6 @@ impl PeopleController {
         cluster.rejected = false;
         self.save();
         PeopleChange::Updated
-    }
-
-    pub fn rename_cluster(&mut self, id: &str, name: &str) -> PeopleChange {
-        self.confirm_suggestion(id, name)
     }
 
     pub fn set_hidden(&mut self, id: &str, hidden: bool) -> PeopleChange {

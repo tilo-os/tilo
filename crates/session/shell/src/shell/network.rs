@@ -1265,6 +1265,10 @@ pub struct ShellNetwork {
     /// Remote-action requests from authenticated devices, answered by the
     /// broker's drainer.
     inbound_remote_actions: Arc<Mutex<Vec<crate::shell::remote_action_link::InboundRemoteAction>>>,
+    /// Remote-action requests that arrived before their sender's identity
+    /// hello. Delivered once that identity is accepted, dropped if it is
+    /// refused or the peer leaves.
+    held_remote_actions: Mutex<std::collections::VecDeque<HeldRemoteAction>>,
     /// Local callers waiting for a remote-action answer from a device.
     remote_action_replies: crate::shell::remote_action_link::ReplyWaiters,
     /// The suspend lease actions from the person's own devices renew.
@@ -1279,6 +1283,17 @@ pub struct ShellNetwork {
     /// state so cleanup cannot erase the evidence it needs to diagnose.
     peer_departures: Arc<PeerDepartureHistory>,
 }
+
+/// One remote-action request kept until its sender's identity is accepted.
+struct HeldRemoteAction {
+    workspace_topic: u64,
+    peer: iroh::EndpointId,
+    membership_epoch: Option<crate::network::actor::MembershipEpoch>,
+    replayed: bool,
+    frame: Vec<u8>,
+}
+
+const MAX_HELD_REMOTE_ACTIONS: usize = 8;
 
 /// A live legacy-app message after transport identity and room capability
 /// checks have passed. `workspace_topic` is retained so a viewer's input is
@@ -1748,6 +1763,7 @@ impl ShellNetwork {
             inbound_scrollback_request: Arc::new(Mutex::new(Vec::new())),
             inbound_scrollback_response: Arc::new(Mutex::new(Vec::new())),
             inbound_remote_actions: Arc::new(Mutex::new(Vec::new())),
+            held_remote_actions: Mutex::new(std::collections::VecDeque::new()),
             remote_action_replies: crate::shell::remote_action_link::ReplyWaiters::default(),
             remote_use: Mutex::default(),
             inbound_legacy: Arc::new(Mutex::new(std::collections::VecDeque::new())),
@@ -2445,6 +2461,14 @@ impl ShellNetwork {
     pub fn authenticated_devices_of(&self, user: &[u8; 32]) -> Vec<tilo_user_identity::DeviceCert> {
         self.peer_identities
             .devices_of(user, tilo_clock::unix_now_ns())
+    }
+
+    /// When [`Self::authenticated_devices_of`] next answers differently by
+    /// time alone, after `now_ns`: a certificate expiring or a revocation
+    /// dated ahead taking effect. Its writes are announced
+    /// ([`tilo_identity_host::policy_change`]).
+    pub fn authenticated_devices_next_change(&self, now_ns: u64) -> Option<u64> {
+        self.peer_identities.next_change_after(now_ns)
     }
 
     /// Shared handle to inbound signed document envelopes.
@@ -3279,6 +3303,57 @@ impl ShellNetwork {
         }
     }
 
+    /// Keep a request that arrived before its sender's identity hello. A
+    /// device that has just joined sends both at once, and the request can
+    /// win. Answers are not held: nobody is waiting on an unknown device.
+    fn hold_remote_action(&self, held_action: HeldRemoteAction) {
+        let request = tilo_actions::remote::RemoteActionFrame::decode(&held_action.frame)
+            .is_ok_and(|decoded| decoded.message.is_request());
+        if !request {
+            tracing::warn!(peer = %held_action.peer, "dropping remote action from an unauthenticated device");
+            return;
+        }
+        let Ok(mut held) = self.held_remote_actions.lock() else {
+            return;
+        };
+        if held.len() >= MAX_HELD_REMOTE_ACTIONS {
+            held.pop_front();
+        }
+        held.push_back(held_action);
+    }
+
+    fn drop_held_remote_actions(&self, peer: iroh::EndpointId) {
+        if let Ok(mut held) = self.held_remote_actions.lock() {
+            held.retain(|item| item.peer != peer);
+        }
+    }
+
+    /// Dispatch, in arrival order, the requests held for `peer`. Each goes
+    /// through the full message path again, so room authority is checked
+    /// with the identity that was just accepted.
+    fn release_held_remote_actions(&self, peer: iroh::EndpointId) {
+        let ready: std::collections::VecDeque<HeldRemoteAction> = {
+            let Ok(mut held) = self.held_remote_actions.lock() else {
+                return;
+            };
+            let (ready, rest): (std::collections::VecDeque<_>, std::collections::VecDeque<_>) =
+                std::mem::take(&mut *held)
+                    .into_iter()
+                    .partition(|item| item.peer == peer);
+            *held = rest;
+            ready
+        };
+        for item in ready {
+            self.dispatch_neighbour_msg(
+                item.workspace_topic,
+                item.peer,
+                item.membership_epoch,
+                item.replayed,
+                NeighbourMsg::RemoteAction { frame: item.frame },
+            );
+        }
+    }
+
     /// Hold the session's idle-suspend off while the person works on this
     /// machine from another of their devices; see
     /// [`crate::shell::remote_use`].
@@ -3785,27 +3860,6 @@ impl ShellNetwork {
             None,
             crate::network::invite::InviteRole::Editor,
             None,
-        )
-    }
-
-    /// [`Self::issue_invite`], for a person this machine will name.
-    /// The name remains authority-side and is correlated with the exact
-    /// signed invite when it is redeemed.
-    ///
-    /// # Errors
-    ///
-    /// Same conditions as [`Self::issue_invite`].
-    pub fn issue_invite_named(
-        &self,
-        local: crate::shell::state::WorkspaceId,
-        expiry_seconds_from_now: u64,
-        invitee: &str,
-    ) -> Result<String, String> {
-        self.issue_invite_named_with_role(
-            local,
-            expiry_seconds_from_now,
-            invitee,
-            crate::network::invite::InviteRole::Editor,
         )
     }
 
@@ -5936,6 +5990,7 @@ impl ShellNetwork {
                 if let Ok(mut connected) = self.dialed_direct_peers.lock() {
                     connected.remove(&peer);
                 }
+                self.drop_held_remote_actions(peer);
                 if let Ok(mut live) = self.live_room_peers.lock() {
                     live.remove(&(ws, peer));
                 }
@@ -6491,7 +6546,17 @@ impl ShellNetwork {
             && self.peer_identities.get(&origin).is_none()
             && !governed_action
         {
-            tracing::warn!(peer = %peer, "dropping collaboration message from an unauthenticated device");
+            if let NeighbourMsg::RemoteAction { frame } = msg {
+                self.hold_remote_action(HeldRemoteAction {
+                    workspace_topic: ws,
+                    peer,
+                    membership_epoch,
+                    replayed,
+                    frame,
+                });
+            } else {
+                tracing::warn!(peer = %peer, "dropping collaboration message from an unauthenticated device");
+            }
             return;
         }
         if self.require_peer_identity
@@ -7093,6 +7158,7 @@ impl ShellNetwork {
         if cert.device_public_key != *peer.as_bytes() || revocations.len() > 4096 {
             tracing::warn!(peer = %peer, "rejecting invalid peer identity handshake");
             self.peer_identities.remove(origin);
+            self.drop_held_remote_actions(*peer);
             return;
         }
         let mut list = tilo_user_identity::RevocationList::new();
@@ -7101,6 +7167,7 @@ impl ShellNetwork {
             {
                 tracing::warn!(peer = %peer, "rejecting peer identity with invalid revocation set");
                 self.peer_identities.remove(origin);
+                self.drop_held_remote_actions(*peer);
                 return;
             }
         }
@@ -7120,6 +7187,7 @@ impl ShellNetwork {
         {
             tracing::warn!(peer = %peer, "rejecting expired, invalid, or revoked peer device");
             self.peer_identities.remove(origin);
+            self.drop_held_remote_actions(*peer);
             return;
         }
         tracing::debug!(
@@ -7147,6 +7215,7 @@ impl ShellNetwork {
             self.note_peer_joined();
             self.publish_sync_requests();
         }
+        self.release_held_remote_actions(*peer);
     }
 
     /// Give another of this person's devices its certified label in a room
@@ -7601,6 +7670,7 @@ pub(crate) fn shell_network_for_test(
         inbound_scrollback_request: Arc::new(Mutex::new(Vec::new())),
         inbound_scrollback_response: Arc::new(Mutex::new(Vec::new())),
         inbound_remote_actions: Arc::new(Mutex::new(Vec::new())),
+        held_remote_actions: Mutex::new(std::collections::VecDeque::new()),
         remote_action_replies: crate::shell::remote_action_link::ReplyWaiters::default(),
         remote_use: Mutex::default(),
         inbound_legacy: Arc::new(Mutex::new(std::collections::VecDeque::new())),
@@ -7621,6 +7691,19 @@ pub(crate) fn native_read_network_for_test(
     network.local_peer_id = network.keypair.public();
     network.host_identity = Some(identity);
     (network, commands)
+}
+
+/// Give a fixture network the worker runtime a spawned one owns, so governor
+/// invocations are answered instead of refused as "the network is not running".
+#[cfg(test)]
+pub(crate) fn with_test_runtime(network: &mut ShellNetwork) {
+    network.runtime = Some(
+        tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .expect("fixture network runtime"),
+    );
 }
 
 impl crate::shell::remote_action_link::RemoteActionLink for ShellNetwork {
@@ -8601,6 +8684,82 @@ mod tests {
             assert!(net.inbound_remote_actions.lock().expect("queue").is_empty());
         }
 
+        fn a_remote_action_that_races_the_identity_hello_is_delivered_once_admitted() {
+            let root_a = ed25519_dalek::SigningKey::from_bytes(&[0xA1; 32]);
+            let root_b = ed25519_dalek::SigningKey::from_bytes(&[0xB1; 32]);
+            let device_a = iroh::SecretKey::from_bytes(&[0xA2; 32]);
+            let stranger_root = ed25519_dalek::SigningKey::from_bytes(&[0xD1; 32]);
+            let stranger = iroh::SecretKey::from_bytes(&[0xD2; 32]);
+            let person_a = crate::shell::collab_broker_capnp::principal_id_for_root(
+                root_a.verifying_key().to_bytes(),
+            );
+            let person_b = crate::shell::collab_broker_capnp::principal_id_for_root(
+                root_b.verifying_key().to_bytes(),
+            );
+            let (room_workspace, room) = remote_action_room(&person_a, &person_b);
+            let topic = room_topic_id(room);
+            let mut tree = WorkspaceTree::default();
+            tree.desktop.workspaces.push(room_workspace);
+            let (mut net, _commands) = shell_network_for_test(tree.shared(), 0xB);
+            net.require_peer_identity = true;
+            let request = || {
+                tilo_actions::remote::RemoteActionFrame::new(
+                    tilo_actions::remote::RemoteActionMessage::CatalogueRequest {
+                        correlation: 1,
+                        query: tilo_actions::remote::CatalogueQuery::default(),
+                    },
+                )
+                .encode()
+                .expect("frame")
+            };
+            let epoch = crate::network::actor::MembershipEpoch::for_test(1);
+            for sender in [&device_a, &stranger] {
+                net.dispatch_neighbour_msg(
+                    topic,
+                    sender.public(),
+                    Some(epoch),
+                    false,
+                    NeighbourMsg::RemoteAction { frame: request() },
+                );
+            }
+            assert!(
+                net.inbound_remote_actions.lock().expect("queue").is_empty(),
+                "nothing runs before the sender's identity is accepted"
+            );
+            assert_eq!(net.held_remote_actions.lock().expect("held").len(), 2);
+
+            authenticated_personal_peer_on_topic(&net, &root_a, &device_a, epoch, topic);
+            assert_eq!(
+                net.inbound_remote_actions.lock().expect("queue").len(),
+                1,
+                "the held request runs once its sender is admitted"
+            );
+
+            // A certified device that is not a member of the room is still
+            // refused by room authority after its hello.
+            authenticated_personal_peer_on_topic(&net, &stranger_root, &stranger, epoch, topic);
+            assert_eq!(net.inbound_remote_actions.lock().expect("queue").len(), 1);
+            assert!(net.held_remote_actions.lock().expect("held").is_empty());
+
+            net.dispatch_neighbour_msg(
+                topic,
+                iroh::SecretKey::from_bytes(&[0xE2; 32]).public(),
+                Some(epoch),
+                false,
+                NeighbourMsg::RemoteAction { frame: request() },
+            );
+            net.dispatch_net_event(NetEvent::PeerLeft {
+                ws: topic,
+                peer: iroh::SecretKey::from_bytes(&[0xE2; 32]).public(),
+                cause: PeerDepartureCause::LivenessTimedOut,
+                membership_epoch: Some(epoch),
+            });
+            assert!(
+                net.held_remote_actions.lock().expect("held").is_empty(),
+                "a peer that leaves before its hello takes its requests with it"
+            );
+        }
+
         fn workspace_control_uses_exact_target_direct_and_refuses_fanout_relay() {
             let (net, mut commands) =
                 shell_network_for_test(WorkspaceTree::default().shared(), 0xCA11);
@@ -8675,6 +8834,7 @@ mod tests {
 
         a_peer_invokes_an_app_action_on_another_peer_and_gets_the_receipt();
         remote_actions_from_unauthenticated_devices_are_dropped();
+        a_remote_action_that_races_the_identity_hello_is_delivered_once_admitted();
         workspace_control_uses_exact_target_direct_and_refuses_fanout_relay();
     }
 

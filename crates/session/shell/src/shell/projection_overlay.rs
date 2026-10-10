@@ -33,8 +33,8 @@ use ui::widget::{EventCtx, TextInput, Widget};
 
 use crate::shell::i18n::{t, t_args};
 use crate::shell::projection::{
-    DisplayResolutionLimit, ProjectionBackend, ProjectionController, ProjectionMode,
-    ProjectionProtocol, ProjectionStatus,
+    DisplayResolutionLimit, ProjectionController, ProjectionMode, ProjectionProtocol,
+    ProjectionStatus,
 };
 use ui::TextRole;
 use ui::widget::ButtonRole;
@@ -397,10 +397,6 @@ impl ProjectionOverlay {
                 .with_enter_submits(true),
             credential_rect: Rect::ZERO,
         }
-    }
-
-    pub fn with_backend(backend: Box<dyn ProjectionBackend>) -> Self {
-        Self::from_controller(ProjectionController::new(backend))
     }
 
     pub fn controller(&self) -> &ProjectionController {

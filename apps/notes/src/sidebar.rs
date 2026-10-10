@@ -607,12 +607,6 @@ impl PageSidebar {
         self.tree.row_rect(key).map(|rect| rect.center())
     }
 
-    /// Test hook: the sidebar's laid-out rect.
-    #[doc(hidden)]
-    pub fn rect_for_test(&self) -> vello::kurbo::Rect {
-        ui::Widget::get_rect(&self.tree)
-    }
-
     /// Test hook: the x of the disclosure column's centre on row `index`.
     #[doc(hidden)]
     pub fn row_disclosure_x_for_test(&self, index: usize) -> Option<f64> {

@@ -1464,26 +1464,45 @@ fn ribbon_fill(theme: &Theme, focused: bool, hover: bool) -> Color {
     Colors::hairline_on(theme.tokens.colors.surfaces.base, alpha)
 }
 
+/// Length of a run of `count` segments `gap` apart along a ribbon or rail,
+/// each `segment` long except the one at `focused_index`, which is
+/// `focused_segment`.
+fn segments_extent(
+    count: usize,
+    focused_index: usize,
+    segment: f64,
+    focused_segment: f64,
+    gap: f64,
+) -> f64 {
+    if count == 0 {
+        return 0.0;
+    }
+    let focused = usize::from(focused_index < count);
+    // `count >= 1` here (checked above), and `focused` is 0 or 1, so this
+    // never underflows; saturating_sub documents that rather than relying on
+    // the reader to re-derive it.
+    let plain = count.saturating_sub(focused);
+    #[allow(
+        clippy::cast_precision_loss,
+        reason = "tab/strip counts are tiny, far below where f64 loses \
+                  integer precision"
+    )]
+    {
+        plain as f64 * segment
+            + focused as f64 * focused_segment
+            + (count.saturating_sub(1)) as f64 * gap
+    }
+}
+
 impl StripRibbon {
     pub fn extent(&self) -> f64 {
-        if self.count == 0 {
-            return 0.0;
-        }
-        let focused = usize::from(self.focused < self.count);
-        // `self.count >= 1` here (checked above), and `focused` is 0 or 1, so
-        // this never underflows; saturating_sub documents that rather than
-        // relying on the reader to re-derive it.
-        let plain = self.count.saturating_sub(focused);
-        #[allow(
-            clippy::cast_precision_loss,
-            reason = "tab/strip counts are tiny, far below where f64 loses \
-                      integer precision"
-        )]
-        {
-            plain as f64 * RIBBON_SEG_H
-                + focused as f64 * RIBBON_SEG_H_FOCUSED
-                + (self.count.saturating_sub(1)) as f64 * RIBBON_GAP
-        }
+        segments_extent(
+            self.count,
+            self.focused,
+            RIBBON_SEG_H,
+            RIBBON_SEG_H_FOCUSED,
+            RIBBON_GAP,
+        )
     }
 
     pub fn segment_rect(&self, i: usize) -> Option<Rect> {
@@ -1627,24 +1646,13 @@ impl StripRail {
     }
 
     pub fn extent(&self) -> f64 {
-        if self.count == 0 {
-            return 0.0;
-        }
-        let focused = usize::from(self.focused < self.count);
-        // `self.count >= 1` here (checked above), and `focused` is 0 or 1, so
-        // this never underflows; saturating_sub documents that rather than
-        // relying on the reader to re-derive it.
-        let plain = self.count.saturating_sub(focused);
-        #[allow(
-            clippy::cast_precision_loss,
-            reason = "tab/strip counts are tiny, far below where f64 loses \
-                      integer precision"
-        )]
-        {
-            plain as f64 * RAIL_SEG_W
-                + focused as f64 * RAIL_SEG_W_FOCUSED
-                + (self.count.saturating_sub(1)) as f64 * RAIL_GAP
-        }
+        segments_extent(
+            self.count,
+            self.focused,
+            RAIL_SEG_W,
+            RAIL_SEG_W_FOCUSED,
+            RAIL_GAP,
+        )
     }
 
     pub fn segment_rect(&self, i: usize) -> Option<Rect> {

@@ -164,10 +164,6 @@ impl OverviewGroup {
             .or_else(|| self.tabs.first())
             .map_or_else(|| t("overview-empty-window"), |tab| tab.title.clone())
     }
-
-    pub fn present_people(&self) -> impl Iterator<Item = &RoomPerson> {
-        self.tabs.iter().flat_map(|tab| tab.people.iter())
-    }
 }
 
 /// One cheap, anonymous row of non-overlapping window groups.

@@ -83,10 +83,11 @@ jobs:
             cargo install --locked wasm-bindgen-cli --version "$WASM_BINDGEN_VERSION"
           fi
       - name: Build tilo-app
-        run: cargo build --locked -p tilo-app-cli --bin tilo-app
+        run: bash tools/ci/measure.sh "SDK release web tool build" -- cargo build --locked -p tilo-app-cli --bin tilo-app
       - name: Release desktop bundle within its size budget
         run: |
-          target/debug/tilo-app build --target web --bundle desktop --release apps/calculator
+          bash tools/ci/measure.sh "SDK release desktop bundle build" -- \
+            target/debug/tilo-app build --target web --bundle desktop --release apps/calculator
           python3 tools/web/wasm_size_ratchet.py measure desktop target/tilo-app/web/calculator/bundle
       - name: Stage exact release private image worker
         run: |

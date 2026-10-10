@@ -465,38 +465,6 @@ impl MainPanel {
         self.dirty = true;
     }
 
-    /// Load a page with caller-pre-resolved link page-ids. Used by
-    /// `NotesApp` so a `[[Page Title]]` in the markdown resolves to
-    /// the actual `PageId` at load time (otherwise links would be
-    /// `Mark::Link(Uuid::nil())` placeholders).
-    pub fn load_page_with_link_resolver<F>(
-        &mut self,
-        id: PageId,
-        title: &str,
-        body: impl AsRef<str>,
-        resolver: F,
-    ) where
-        F: FnMut(&str) -> Option<PageId>,
-    {
-        let body = body.as_ref();
-        self.page_id = Some(id);
-        self.dates = self.date_index.get(id);
-        self.refresh_captions();
-        self.set_title_value(title);
-        let mut specs = crate::markdown::parse(body);
-        crate::markdown::resolve_link_ids(&mut specs, resolver);
-        let blocks = crate::markdown::specs_to_blocks(&specs);
-        self.editor = self.fresh_editor(None);
-        self.editor.editor_mut().set_blocks(blocks);
-        self.editor.set_focus(true);
-        self.editor
-            .editor_mut()
-            .focus_block(0, ui::widget::CursorPlacement::Start);
-        self.take_body_snapshot();
-        self.scroll_y = 0.0;
-        self.dirty = true;
-    }
-
     /// Bind the panel's editor to a page's body in the shared document,
     /// showing it as it is now. The editor edits it through its action host
     /// from then on; binding itself writes nothing.

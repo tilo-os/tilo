@@ -434,38 +434,6 @@ impl Relay {
         .await
     }
 
-    /// Start the relay and register one host-owned protocol on the same pinned
-    /// Iroh endpoint. The router owns the handler lifecycle, including its
-    /// shutdown hook. Relay, discovery, management, and compute
-    /// ALPNs remain reserved.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`RelayError::ProtocolRegistration`] for an empty or reserved
-    /// ALPN, otherwise the same startup errors as [`Self::start_with_relay_mode`].
-    pub async fn start_with_relay_mode_and_protocol<H>(
-        cfg: RelayConfig,
-        identity: RelayIdentity,
-        relay_mode: iroh::RelayMode,
-        alpn: &'static [u8],
-        handler: H,
-    ) -> Result<Self, RelayError>
-    where
-        H: ProtocolHandler,
-    {
-        Box::pin(Self::start_inner(
-            cfg,
-            identity,
-            Some(relay_mode),
-            None,
-            vec![(alpn.to_vec(), Box::<dyn DynProtocolHandler>::from(handler))],
-            RelayStartupMode::CertifiedHost,
-            None,
-            Arc::new(tilo_clock::SystemClock),
-        ))
-        .await
-    }
-
     /// Start relay services on an already-bound endpoint and compose any
     /// number of caller-owned protocols into the same router. This is the
     /// production shell path: relay state/action traffic, workspace joining,
@@ -874,6 +842,13 @@ impl Relay {
         };
         let mut router = Router::builder(endpoint.clone())
             .accept(
+                tilo_delivery_protocol::transport_v2::ALPN_PRESENCE_BATCH_V1,
+                RelayProtocol {
+                    protocol: crate::peer::SessionProtocol::PRESENCE_BATCH,
+                    ..handler.clone()
+                },
+            )
+            .accept(
                 tilo_delivery_protocol::transport_v2::ALPN_COMPACT_STATE_V1,
                 RelayProtocol {
                     protocol: crate::peer::SessionProtocol::COMPACT_STATE,
@@ -1122,18 +1097,6 @@ impl Relay {
         // A replacement may narrow an earlier delegation's rooms.
         crate::authority_epoch::bump();
         Ok(())
-    }
-
-    /// Withdraw an agent device: its sessions end at their next access audit,
-    /// which this starts, and it is refused from then on.
-    pub fn withdraw_agent(&self, agent_device_public_key: [u8; 32]) {
-        self.web
-            .relay
-            .agents
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(agent_device_public_key, None);
-        crate::authority_epoch::bump();
     }
 
     /// The iroh endpoint address (node id + reachable addresses) —
@@ -1492,6 +1455,7 @@ fn validate_additional_alpn(alpn: &[u8]) -> Result<(), RelayError> {
         tilo_delivery_protocol::transport_v2::ALPN_AGENT_READS_V1,
         tilo_delivery_protocol::transport_v2::ALPN_SIGNED_ACTIONS_V1,
         tilo_delivery_protocol::transport_v2::ALPN_COMPACT_STATE_V1,
+        tilo_delivery_protocol::transport_v2::ALPN_PRESENCE_BATCH_V1,
         DISCOVERY_ALPN,
         MANAGEMENT_ALPN,
         COMPUTE_ALPN,
@@ -2962,7 +2926,7 @@ async fn handle_peer_relay_envelope(
                 // to peer relays" filter.
                 ws.lock()
                     .await
-                    .fanout_presence(&[0u8; 32], PeerRole::PeerRelay, &env);
+                    .fanout_presence(&[0u8; 32], PeerRole::PeerRelay, &env, None);
             }
         }
         Envelope::SyncResponse {
@@ -4053,6 +4017,7 @@ mod tests {
             tilo_delivery_protocol::transport_v2::ALPN_AGENT_READS_V1,
             tilo_delivery_protocol::transport_v2::ALPN_SIGNED_ACTIONS_V1,
             tilo_delivery_protocol::transport_v2::ALPN_COMPACT_STATE_V1,
+            tilo_delivery_protocol::transport_v2::ALPN_PRESENCE_BATCH_V1,
             DISCOVERY_ALPN,
             MANAGEMENT_ALPN,
             COMPUTE_ALPN,

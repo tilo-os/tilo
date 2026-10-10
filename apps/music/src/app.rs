@@ -1566,6 +1566,23 @@ impl MusicApp {
         }
     }
 
+    /// Decoder teardown at local EOS releases the live position query. Retain
+    /// only the end position whose duration the decoder actually observed;
+    /// catalogue metadata and transport intent cannot establish completion.
+    fn observed_position_ms(&self) -> Option<u64> {
+        self.audio.position_ms().or_else(|| {
+            self.local_file
+                .as_ref()
+                .filter(|file| {
+                    !self.pb.playing
+                        && !self.audio.has_stream()
+                        && self.pb.current.as_deref() == Some(&file.track.id)
+                })
+                .and_then(|file| file.observed_duration_ms)
+                .filter(|duration| self.playhead_ms.max(0.0) as u64 == *duration)
+        })
+    }
+
     fn observed_duration_ms(&self) -> Option<u64> {
         self.audio.duration_ms().or_else(|| {
             self.local_file
@@ -4289,13 +4306,6 @@ impl MusicApp {
         self.dirty = true;
     }
 
-    /// Stage the Songs list with one row under the pointer, showing its
-    /// actions, for a `--shots` frame.
-    pub fn snap_row_actions(&mut self) {
-        self.view = View::Songs;
-        self.staged_row_pointer = Some(2);
-    }
-
     /// Stage a track context menu open for a `--shots` frame. Deferred to the
     /// first `sync` (the catalog is empty at construction); see `apply_shot_stage`.
     pub fn snap_track_menu(&mut self) {
@@ -4314,11 +4324,6 @@ impl MusicApp {
         }
     }
 
-    /// Open `view` for a `--shots` frame.
-    pub fn snap_view(&mut self, view: View) {
-        self.view = view;
-    }
-
     /// Stage the Home skeleton loading state for a `--shots` frame.
     pub fn snap_skeleton(&mut self) {
         self.shot_stage = Some(ShotStage::Skeleton);
@@ -4330,13 +4335,6 @@ impl MusicApp {
     pub fn snap_nowplaying(&mut self) {
         self.shot_stage = Some(ShotStage::NowPlaying);
         self.view = View::Songs;
-    }
-
-    /// Stage a playing track on a narrow window with the transport's More
-    /// menu open (shuffle, repeat, like, lyrics, queue).
-    pub fn snap_player_menu(&mut self) {
-        self.snap_nowplaying();
-        self.staged_player_menu = true;
     }
 
     /// Stage the Queue view with a real "Next up" list: a bundled track plays

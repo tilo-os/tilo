@@ -33,6 +33,12 @@ WHY = ("the image and dev layers are both assembled from os/components.toml, so 
        "build output that bypasses it ships in one and not the other, and they drift")
 PAYLOAD_STAGE = "native-builder-payload"
 INSTALL_STAGE = "component-files"
+# The baked runtime with the font catalog's other two names hard-linked to its
+# fonts, assembled under /image so the rootfs copies it in one COPY and the
+# fonts' bytes land in one layer (TIL-609). It installs `direct` trees written
+# at their final paths, each named in the stage's RUN as /image<path>.
+ASSEMBLED_STAGE = "runtime-image-payload"
+ASSEMBLED_COPY = ("/image/usr/", "/usr/")
 
 
 def load_installer(repo: Path):
@@ -303,6 +309,20 @@ def check_containerfile(report: Report, manifest, installer, containerfile: Path
                                  f"use a layer the manifest declares ({', '.join(sorted(layers))}) or "
                                  "set `layer` on the components that belong in it.")
                 consumed.setdefault(match.group(1), []).append(instruction.line)
+            continue
+        if source_stage == ASSEMBLED_STAGE and instruction.stage != ASSEMBLED_STAGE:
+            assembled = " ".join(i.text for i in parsed if i.stage == ASSEMBLED_STAGE
+                                 and i.words and i.words[0].upper() == "RUN")
+            if pairs != [ASSEMBLED_COPY]:
+                report.error(where, f"COPY --from={ASSEMBLED_STAGE} copies {pairs}",
+                             f"copy the assembled tree whole: COPY --from={ASSEMBLED_STAGE} "
+                             f"{ASSEMBLED_COPY[0]} {ASSEMBLED_COPY[1]}")
+                continue
+            for key in direct:
+                source, destination = key
+                if source == destination and destination.startswith(ASSEMBLED_COPY[1]) \
+                        and "/image" + destination.rstrip("/") in assembled:
+                    matched_direct.add(key)
             continue
         # The image stages take build outputs from the payload stage, an exact
         # copy of the builder's outputs.

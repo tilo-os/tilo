@@ -418,6 +418,7 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
             },
             focus: Rc::new(|state| Some(state)),
             updaters: Updaters::new(),
+            gate: None,
             action_bindings: actions,
             item: None,
             path: Some(Vec::new()),

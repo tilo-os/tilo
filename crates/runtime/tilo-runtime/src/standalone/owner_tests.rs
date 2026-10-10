@@ -409,6 +409,7 @@ fn steward_keys(profile: &Profile, state: &str, readers: &[SigningKey]) -> Chann
             steward: Ed25519PublicKey::from_bytes(profile.key.verifying_key().to_bytes()),
             policy: Policy {
                 allowed: Arc::new(Mutex::new(readers)),
+                ..Policy::default()
             },
         }),
         Arc::new(Mutex::new(

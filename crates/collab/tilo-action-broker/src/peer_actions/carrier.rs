@@ -116,9 +116,6 @@ impl PeerActionQueue {
     pub fn is_closed(&self) -> bool {
         self.sender.is_closed()
     }
-    pub fn carrier_transitions(&self) -> CarrierTransitions {
-        CarrierTransitions(self.transitions.subscribe())
-    }
     /// Submits one certified action to the bounded broker queue.
     ///
     /// # Errors

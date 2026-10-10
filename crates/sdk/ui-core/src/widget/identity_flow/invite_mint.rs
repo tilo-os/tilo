@@ -18,7 +18,7 @@ use std::collections::HashMap;
 
 use collab_types::{ChannelId, Ed25519PublicKey, Role as ChannelRole};
 use ed25519_dalek::SigningKey as DalekSigningKey;
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use taffy::{NodeId, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, MouseButton, WindowEvent};
@@ -32,8 +32,8 @@ use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 use crate::widget::identity_flow::sheet::{
     Align, BodyScroll, FORM_SHEET_WIDTH, Resolved, Role, Rows, SheetSpec, line_height, paint_qr,
-    paint_segments, paint_text, paragraph_height, resolve, segment_rects, with_layout_renderer,
-    wrap_chars,
+    paint_segments, paint_text, paragraph_height, resolve, screen_style, segment_rects,
+    with_layout_renderer, wrap_chars,
 };
 use crate::widget::identity_flow::{InviteEnvelope, InviteExpiry, ScreenOutcome, mint_invite};
 use crate::widget::modal_dialog::ModalAction;
@@ -479,16 +479,7 @@ impl Widget for InviteMintScreen {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         self.layout_theme = Some(theme.clone());
-        // The screen owns the viewport, so the sheet centres on the window
-        // rather than inside a fixed box at the origin.
-        let style = Style {
-            size: Size {
-                width: Dimension::percent(1.0),
-                height: Dimension::percent(1.0),
-            },
-            ..Default::default()
-        };
-        taffy.widget_leaf(style, node_map, self)
+        taffy.widget_leaf(screen_style(), node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {

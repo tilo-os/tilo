@@ -59,10 +59,6 @@ workspace = true
 
 [features]
 default = []
-# Kept for LIVE_V1 cfg gates in browser.rs while the Cloud/relay peer
-# paths are reattached to the current page runtime.
-cloud = []
-relay = []
 
 [dependencies]
 
@@ -70,4 +66,3 @@ relay = []
 # The workspace-hack's native feature set does not build for wasm32.
 workspace-hack = { version = "0.1" }
 
-[dev-dependencies]

@@ -1318,10 +1318,6 @@ async fn checked_restore_scope_codecs_transport_and_parent_bounds_fail_closed() 
                 fixture.fs.checked_history_restore(fixture.ino, request),
                 Outcome::UnsupportedOwner { .. }
             ));
-            assert_eq!(
-                fixture.fs.restore_version(fixture.ino, fixture.original),
-                Err(libc::ENOTSUP)
-            );
             assert_eq!(fixture.durable_bytes(), before);
             fixture
                 .fs
@@ -2761,19 +2757,6 @@ async fn opaque_file_with_document_bytes_restores() {
             receipt.restored_revision.content_hash, original.content_hash,
             "an opaque restore puts the selected bytes back"
         );
-
-        if !signed {
-            // The legacy route treats it the same way.
-            fixture.fs.commit_content(fixture.ino, &bytes).unwrap();
-            assert_eq!(
-                fixture.fs.restore_version(fixture.ino, fixture.original),
-                Ok(())
-            );
-            assert_eq!(
-                fixture.fs.read_full_blocking(fixture.ino).unwrap(),
-                b"first"
-            );
-        }
         fixture.endpoint.close().await;
     }
 }
@@ -2790,9 +2773,5 @@ async fn namespace_documents_still_have_no_checked_restore_route() {
         fixture.fs.checked_history_review(document),
         Err(Outcome::UnsupportedOwner { .. })
     ));
-    assert_eq!(
-        fixture.fs.restore_version(document, fixture.original),
-        Err(libc::ENOTSUP)
-    );
     fixture.endpoint.close().await;
 }

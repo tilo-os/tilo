@@ -162,9 +162,6 @@ pub struct LogsApp {
     /// Pointer/keyboard controls publish inert resource addresses; the host
     /// re-resolves current availability and permissions before effects run.
     pending_control_invocation: Option<ControlInvocation>,
-    /// One-shot deterministic local view seeding used only by the offscreen
-    /// shot factory.
-    shot_filter: Option<Filter>,
 
     // ---- journal source ----
     /// Whether the journal controls are offered: everywhere but a past
@@ -230,7 +227,6 @@ impl LogsApp {
             reveal_detail: false,
             layout_dirty: true,
             pending_control_invocation: None,
-            shot_filter: None,
             allow_live,
             last_poll: ui::time::now(),
             reads: false,
@@ -245,51 +241,11 @@ impl LogsApp {
         app
     }
 
-    /// Construct a live-capable viewer whose initial read failed. Keeping the
-    /// capability enabled means Refresh remains available as a recovery path;
-    /// the error itself is safe, local-only presentation state.
-    pub fn new_with_source_error(
-        entries: Vec<LogEntry>,
-        allow_live: bool,
-        error: crate::journal::JournalLoadError,
-    ) -> Self {
-        let mut app = Self::with_entries(entries, allow_live);
-        app.source_error = Some(error);
-        app.publish();
-        app
-    }
-
     /// Show the selected entry for a capture: on a narrow window the
     /// inspector is a drawer, which this opens once the window is laid out.
     pub fn shots_show_detail(&mut self) {
         self.reveal_detail = true;
         self.layout_dirty = true;
-    }
-
-    /// Seed an errors-and-worse state for deterministic visual regression
-    /// captures.
-    pub fn shots_filter_errors(&mut self) {
-        self.shot_filter = Some(Filter {
-            min_priority: Priority::Err.level(),
-            ..Filter::default()
-        });
-        self.layout_dirty = true;
-    }
-
-    /// Seed a free-text filter for a capture (`--no-matches` captures the
-    /// state where nothing matches).
-    pub fn shots_search(&mut self, query: &str) {
-        self.shot_filter = Some(Filter {
-            search: query.to_owned(),
-            ..self.shot_filter.take().unwrap_or_default()
-        });
-        self.layout_dirty = true;
-    }
-
-    /// Deterministically capture the empty-source loading state.
-    pub fn shots_show_loading(&mut self) {
-        self.source_loading = true;
-        self.publish();
     }
 
     /// Recompute the distinct-unit and distinct-boot lists from entries.

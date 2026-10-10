@@ -133,6 +133,26 @@ pub fn moved_item(
     moved_index(position, items.len(), action).and_then(|position| items.get(position).copied())
 }
 
+/// The item key an accessibility `Activate` at `keys` targets: the last key.
+/// Any other action, or an empty path, targets nothing.
+pub(crate) fn activated_key(action: &crate::a11y::Action, keys: &[u64]) -> Option<u64> {
+    if matches!(action, crate::a11y::Action::Activate) {
+        keys.last().copied()
+    } else {
+        None
+    }
+}
+
+/// The id among `ids` whose accessibility key an `Activate` at `keys` targets.
+pub(crate) fn activated_id<I: std::hash::Hash>(
+    action: &crate::a11y::Action,
+    keys: &[u64],
+    ids: impl IntoIterator<Item = I>,
+) -> Option<I> {
+    let key = activated_key(action, keys)?;
+    ids.into_iter().find(|id| crate::a11y::hash_key(id) == key)
+}
+
 /// What a chart supplies so [`handle_chart_event`] can drive its hover,
 /// activation and keyboard inspection.
 pub(crate) trait InteractiveChart {

@@ -143,19 +143,6 @@ impl WindowsApp {
     pub fn uses_override(&self) -> bool {
         self.route != self.recommended_route
     }
-    pub fn access_summary(&self) -> String {
-        let enabled: Vec<&str> = self
-            .grants
-            .iter()
-            .filter(|grant| grant.enabled)
-            .map(|grant| grant.label.as_str())
-            .collect();
-        if enabled.is_empty() {
-            "No host access".to_string()
-        } else {
-            enabled.join(", ")
-        }
-    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

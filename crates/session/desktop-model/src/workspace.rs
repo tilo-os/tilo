@@ -603,6 +603,30 @@ impl Workspace {
             .collect()
     }
 
+    /// The first instant after `now` (Unix seconds) at which one of this
+    /// workspace's grants or sandbox capabilities stops being live: until then
+    /// every decision answers the same as at `now` unless the workspace is
+    /// written. `None` while nothing expires later.
+    pub fn next_grant_expiry_after(&self, now: u64) -> Option<u64> {
+        let grants = self
+            .policy
+            .grants
+            .iter()
+            .filter_map(|grant| match grant.lifetime {
+                // Live while the clock is before `at` milliseconds.
+                Lifetime::Until(at) => Some(at.div_ceil(1000)),
+                _ => None,
+            });
+        let sandbox = self.sandbox.iter().filter_map(|cap| match cap.expiry {
+            collab_types::caps::Expiry::AtUnix(deadline) => Some(deadline),
+            _ => None,
+        });
+        grants
+            .chain(sandbox)
+            .filter(|deadline| *deadline > now)
+            .min()
+    }
+
     /// Record a grant without a governance check, for a host installing the
     /// room's own state (an accepted invite, a role preset, a consent the
     /// person gave on their device). Returns its id; a grant with the same id

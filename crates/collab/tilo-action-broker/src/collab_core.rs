@@ -114,14 +114,6 @@ impl BrokerChannels {
         self.states.insert(artifact, state);
     }
 
-    pub fn register_governance_journal(
-        &mut self,
-        channel: ChannelId,
-        journal: channel_crypto::GovernanceJournal,
-    ) {
-        self.governance.insert(channel, journal);
-    }
-
     /// Install or refresh a channel's ingress gate.
     pub fn register_channel_gate(&mut self, channel: ChannelId, gate: channel_crypto::ChannelGate) {
         self.gates.insert(channel, gate);

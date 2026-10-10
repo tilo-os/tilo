@@ -2322,16 +2322,6 @@ impl CodeApp {
         self.refresh_status();
     }
 
-    /// Stage the Problems dock over the diagnostics the completion demo
-    /// feeds, with no completion list in front of the code.
-    pub fn shots_problems(&mut self, doc: &AutoCommit) {
-        self.shots_completion_demo(doc);
-        self.editor.hide_completions();
-        self.panel_visible = true;
-        self.panel.set_tab(PanelTab::Problems);
-        self.refresh_status();
-    }
-
     // ---- build_layout helpers (split out of `Widget::build_layout`, which
     // assembles their results into the content row and outer column) ----
 

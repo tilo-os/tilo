@@ -451,14 +451,6 @@ mod tests {
 
     const APP: &str = "dev.tilo.hydration-test";
 
-    fn hex(bytes: &[u8; 32]) -> String {
-        bytes.iter().fold(String::new(), |mut out, byte| {
-            use std::fmt::Write as _;
-            let _ = write!(out, "{byte:02x}");
-            out
-        })
-    }
-
     /// Devices of one room, answering requests the way the broker does.
     struct Room {
         devices: HashMap<iroh::EndpointId, (Workspace, PathBuf)>,
@@ -530,7 +522,7 @@ mod tests {
     fn a_record_is_brought_piece_by_piece_from_a_device_that_keeps_it() {
         let caller = Caller::authenticated([7; 32], [8; 32]);
         let mut workspace = Workspace::new(crate::shell::state::WorkspaceId(1), "Shared");
-        workspace.set_owner(hex(&[7; 32]));
+        workspace.set_owner(hex::encode([7; 32]));
         let (holder_home, checkout, body) = holder(&workspace);
         let empty_home = tempfile::tempdir().unwrap();
         let mut devices = HashMap::new();
@@ -608,7 +600,7 @@ mod tests {
     #[test]
     fn a_record_is_given_only_to_someone_the_room_lets_read_the_app() {
         let mut workspace = Workspace::new(crate::shell::state::WorkspaceId(1), "Shared");
-        workspace.set_owner(hex(&[7; 32]));
+        workspace.set_owner(hex::encode([7; 32]));
         let (home, checkout, _) = holder(&workspace);
         let query = RecordQuery {
             room: workspace.room.to_string(),

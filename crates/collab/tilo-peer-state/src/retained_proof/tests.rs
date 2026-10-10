@@ -4,7 +4,7 @@ use automerge::{AutoCommit, ROOT, transaction::Transactable};
 use collab_types::CommitNamed as _;
 use collab_types::{DocumentMutation, SignedOp};
 use ed25519_dalek::SigningKey;
-use tilo_user_identity::{DeviceCapabilities, RevocationList, sign_device_cert};
+use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
 use web_time::{Duration, SystemTime};
 
 const ROOM: &str = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";

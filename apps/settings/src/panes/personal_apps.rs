@@ -147,6 +147,13 @@ impl DefaultAppsArea {
         })
     }
 
+    /// Whether the area has read what its rows show: its pane was shown,
+    /// an effect or a row lookup reached it, or the window read it after
+    /// its first frame ([`crate::effects::LIVE_AREAS`]).
+    pub(crate) fn is_open(&self) -> bool {
+        self.candidates.get().is_some()
+    }
+
     /// One live row per kind of file or link, showing the app that opens it
     /// now, with a row per installed app that claims it offering to make it
     /// the default.

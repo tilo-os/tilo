@@ -41,6 +41,44 @@ type Update<R> = Box<dyn FnMut(&<R as Resource>::State)>;
 struct Entry<R: Resource> {
     alive: Weak<()>,
     update: Update<R>,
+    /// The row the reader belongs to, when it belongs to one.
+    gate: Option<Gate>,
+}
+
+/// Whether the readers of one row of an [`Each`](super::Each) run: while it
+/// is mounted, or always when something besides its widgets reads what they
+/// feed. A reader woken while its row is not mounted waits in the row's
+/// `stale` list and runs when the row mounts again, so a change costs the
+/// rows shown however long the list.
+#[derive(Clone, Default)]
+pub(crate) struct Gate {
+    mounted: Rc<std::cell::Cell<bool>>,
+    read_unmounted: Rc<std::cell::Cell<bool>>,
+    stale: Rc<RefCell<BTreeSet<u64>>>,
+}
+
+impl Gate {
+    /// A row's gate, mounted until its list lays it out of view.
+    pub(crate) fn mounted() -> Self {
+        let gate = Self::default();
+        gate.mounted.set(true);
+        gate
+    }
+
+    /// Something outside the row's widgets reads its readers' results (an
+    /// edit bound into the published tree, an effect's availability): they
+    /// follow every change, mounted or not.
+    pub(crate) fn read_while_unmounted(&self) {
+        self.read_unmounted.set(true);
+    }
+
+    pub(crate) fn set_mounted(&self, mounted: bool) {
+        self.mounted.set(mounted);
+    }
+
+    fn runs(&self) -> bool {
+        self.mounted.get() || self.read_unmounted.get()
+    }
 }
 
 #[derive(Default)]
@@ -190,11 +228,24 @@ impl<R: Resource> Updaters<R> {
     }
 
     #[inline(never)]
-    pub(crate) fn push(&self, alive: Weak<()>, reads: Reads, update: Update<R>) {
+    pub(crate) fn push(
+        &self,
+        alive: Weak<()>,
+        gate: Option<Gate>,
+        reads: Reads,
+        update: Update<R>,
+    ) {
         let mut index = self.0.borrow_mut();
         let id = index.next;
         index.next = index.next.saturating_add(1);
-        index.entries.insert(id, Entry { alive, update });
+        index.entries.insert(
+            id,
+            Entry {
+                alive,
+                update,
+                gate,
+            },
+        );
         match reads {
             Reads::Always => index.always.push(id),
             Reads::At(path) => index.root.at(&path).here.push(id),
@@ -245,12 +296,29 @@ impl<R: Resource> Updaters<R> {
             if entry.alive.strong_count() == 0 {
                 continue;
             }
-            {
+            if let Some(gate) = entry.gate.as_ref().filter(|gate| !gate.runs()) {
+                gate.stale.borrow_mut().insert(id);
+            } else {
                 #[cfg(feature = "test-support")]
                 let _profile = super::profiling::Scope::start("framework.reader");
                 (entry.update)(state);
             }
             self.0.borrow_mut().entries.insert(id, entry);
+        }
+    }
+
+    /// Run the readers of `gate`'s row that changes woke while it was not
+    /// mounted, now that it is.
+    pub(crate) fn catch_up(&self, gate: &Gate, state: &R::State) {
+        let missed = std::mem::take(&mut *gate.stale.borrow_mut());
+        for id in missed {
+            let Some(mut entry) = self.0.borrow_mut().entries.remove(&id) else {
+                continue;
+            };
+            if entry.alive.strong_count() > 0 {
+                (entry.update)(state);
+                self.0.borrow_mut().entries.insert(id, entry);
+            }
         }
     }
 }

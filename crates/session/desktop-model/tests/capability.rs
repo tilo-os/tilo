@@ -191,3 +191,47 @@ fn app_kind_app_id_is_reverse_dns_or_the_verbatim_label() {
         );
     }
 }
+
+/// What the broker re-checks at: the earliest expiry still ahead, over every
+/// workspace, and nothing for grants that never expire or already did.
+#[test]
+fn the_next_grant_expiry_is_the_earliest_one_still_ahead() {
+    use tilo_action_policy::{Answer, Grant, KindSet, Lifetime, Subject, TreePath};
+    const SOON: u64 = NOW + 5;
+    const LATER: u64 = NOW + 60;
+    let member = |person: &str, until: Option<u64>| {
+        let grant = Grant::new(
+            format!("member-{person}"),
+            Subject::person(person),
+            TreePath::root(),
+            KindSet::ALL,
+            Answer::Allow,
+            Subject::person("owner"),
+        );
+        match until {
+            Some(at) => grant.with_lifetime(Lifetime::Until(at * 1000)),
+            None => grant,
+        }
+    };
+    let mut first = Workspace::new(WorkspaceId::from(1), "First");
+    first.grant(member("forever", None));
+    assert_eq!(first.next_grant_expiry_after(NOW), None);
+    first.grant(member("past", Some(NOW)));
+    assert_eq!(
+        first.next_grant_expiry_after(NOW),
+        None,
+        "a grant ending at `now` is already over"
+    );
+    first.grant(member("later", Some(LATER)));
+    let mut second = Workspace::new(WorkspaceId::from(2), "Second");
+    second.grant(member("sooner", Some(SOON)));
+    assert_eq!(first.next_grant_expiry_after(NOW), Some(LATER));
+    assert_eq!(second.next_grant_expiry_after(NOW), Some(SOON));
+    let tree = DesktopTree {
+        workspaces: vec![first, second],
+        ..DesktopTree::default()
+    };
+    assert_eq!(tree.next_grant_expiry_after(NOW), Some(SOON));
+    assert_eq!(tree.next_grant_expiry_after(SOON), Some(LATER));
+    assert_eq!(tree.next_grant_expiry_after(LATER), None);
+}

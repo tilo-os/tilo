@@ -196,14 +196,6 @@ impl SettingsPane {
         self
     }
 
-    /// Keep New Private Window discoverable when compact chrome moves the
-    /// dedicated toolbar button into Settings.
-    #[must_use]
-    pub fn with_private_window_request(mut self, request: ui::LocalState<bool>) -> Self {
-        self.private_window_request = Some(request);
-        self
-    }
-
     /// Open device-local password or address management through a published view control.
     #[must_use]
     pub fn with_autofill_request(mut self, request: ui::LocalState<Option<bool>>) -> Self {

@@ -1802,15 +1802,6 @@ impl FeedsApp {
         self.shell.snap();
     }
 
-    /// Open the add-subscription dialog with `url` typed into its field.
-    pub fn stage_add_subscription(&mut self, url: &str) {
-        self.core.borrow_mut().open_add_subscription();
-        self.take_pending_modal();
-        if let Some(m) = self.modal.as_mut() {
-            m.dialog.content_mut().set_value(url);
-        }
-    }
-
     /// Open the open article's tag editor.
     pub fn stage_tag_editor(&mut self) {
         self.core.borrow_mut().open_tag_editor();

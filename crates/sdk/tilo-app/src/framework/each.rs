@@ -22,6 +22,7 @@ use ui_core::{Theme, taffy};
 
 use super::dispatch::Dispatcher;
 use super::live::Live;
+use super::reactive::{Gate, Updaters};
 
 /// One entry of a row's context menu: an action published on the row's item.
 struct MenuEntry {
@@ -45,6 +46,8 @@ struct Row {
     id: Id,
     /// Dropping it retires every binding the row registered.
     _alive: Rc<()>,
+    /// Whether the row's readers run: while it is mounted.
+    gate: Gate,
     widget: Element,
     /// Height measured the last time the row was laid out at the list's
     /// current width. Rows not measured yet take the measured average.
@@ -54,7 +57,7 @@ struct Row {
 }
 
 type Ids<R> = Box<dyn Fn(&<R as Resource>::State) -> Vec<Id>>;
-type BuildRow = Box<dyn Fn(&Id, &Rc<()>) -> Element>;
+type BuildRow = Box<dyn Fn(&Id, &Rc<()>, &Gate) -> Element>;
 
 /// Height assumed for a row before any row was measured.
 const ESTIMATED_ROW_HEIGHT: f64 = 32.0;
@@ -95,6 +98,8 @@ pub struct Each<R: Resource> {
     /// Set when the collection's membership may have changed since the rows
     /// were last reconciled with it.
     stale: Rc<Cell<bool>>,
+    /// The view's readers, which run a row's missed changes as it mounts.
+    updaters: Updaters<R>,
     /// Indices into `rows` of the mounted rows, ascending.
     mounted: Vec<usize>,
     /// Top of each row in list coordinates, and the list's whole height.
@@ -120,10 +125,12 @@ impl<R: Resource> Each<R> {
         dispatch: Dispatcher<R>,
         ids: Ids<R>,
         stale: Rc<Cell<bool>>,
+        updaters: Updaters<R>,
         build: BuildRow,
     ) -> Self {
         let mut each = Self {
             stale,
+            updaters,
             live,
             dispatch,
             menu: RowMenu::default(),
@@ -170,10 +177,12 @@ impl<R: Resource> Each<R> {
             .map(|id| {
                 old.remove(&id).unwrap_or_else(|| {
                     let alive = Rc::new(());
-                    let widget = (self.build)(&id, &alive);
+                    let gate = Gate::mounted();
+                    let widget = (self.build)(&id, &alive, &gate);
                     Row {
                         id,
                         _alive: alive,
+                        gate,
                         widget,
                         height: None,
                         node: None,
@@ -548,6 +557,16 @@ impl<R: Resource> Widget for Each<R> {
         let window = self.window();
         for row in &mut self.rows {
             row.node = None;
+        }
+        // Rows leaving the window stop following changes; rows entering it
+        // catch up with the changes they missed before they are laid out.
+        for (index, row) in self.rows.iter().enumerate() {
+            let shown = window.binary_search(&index).is_ok();
+            row.gate.set_mounted(shown);
+            if shown {
+                self.live
+                    .with(|state| self.updaters.catch_up(&row.gate, state));
+            }
         }
         let mut nodes = Vec::with_capacity(window.len());
         for &index in &window {

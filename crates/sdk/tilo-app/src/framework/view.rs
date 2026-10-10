@@ -73,6 +73,9 @@ pub struct ViewCx<R: Resource, T: 'static = <R as Resource>::State> {
     pub(crate) env: RecordEnv<R>,
     pub(crate) focus: Focus<R, T>,
     pub(crate) updaters: Updaters<R>,
+    /// The row of an [`Each`] this scope builds, whose readers run while it
+    /// is mounted; `None` outside a row.
+    pub(crate) gate: Option<super::reactive::Gate>,
     pub(crate) action_bindings: Actions<R>,
     pub(crate) item: Option<Id>,
     /// Where this scope's value sits in the record: the root, or the item a
@@ -125,6 +128,7 @@ impl<R: Resource> ViewCx<R> {
             },
             focus: Rc::new(|state| Some(state)),
             updaters: Updaters::new(),
+            gate: None,
             action_bindings: Actions::new(app, Rc::new(published)),
             item: None,
             path: Some(Vec::new()),
@@ -291,6 +295,7 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
         let mut last = initial.clone();
         self.updaters.push(
             self.alive.clone(),
+            self.gate.clone(),
             reads,
             Box::new(move |state| {
                 let next = read(state);
@@ -405,6 +410,10 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
     /// an id the resource already publishes keeps the resource's action
     /// unless the bound one refines it ([`tilo_resource::bind_declaration`]).
     pub fn bind_declarations(&self, bind: impl Fn(&R::State) -> Vec<ActionDecl<R>> + 'static) {
+        // The published tree reads what `bind` captured, mounted row or not.
+        if let Some(gate) = &self.gate {
+            gate.read_while_unmounted();
+        }
         self.bindings
             .0
             .borrow_mut()
@@ -465,6 +474,7 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
         let env = self.env.clone();
         let focus = Rc::clone(&self.focus);
         let updaters = self.updaters.clone();
+        let gate = self.gate.clone();
         let action_bindings = self.action_bindings.clone();
         let item = self.item.clone();
         let path = self.path.clone();
@@ -478,6 +488,7 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
                     env: env.living(alive),
                     focus: Rc::clone(&focus),
                     updaters: updaters.clone(),
+                    gate: gate.clone(),
                     action_bindings: action_bindings.clone(),
                     item: item.clone(),
                     path: path.clone(),
@@ -542,6 +553,11 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
         handle: impl FnMut(E, &mut EffectCx<R>) -> EffectAnswer + 'static,
     ) -> EffectsHandle {
         let status: StatusSource = Rc::default();
+        // The handler and the status the resource publishes read the scope's
+        // local state, mounted row or not.
+        if let Some(gate) = &self.gate {
+            gate.read_while_unmounted();
+        }
         // Captures and History still describe the controls they draw. Only
         // execution needs a live environment; publication is inert metadata.
         let source = Rc::clone(&status);
@@ -628,6 +644,7 @@ impl<R: Resource, T: Model + 'static> ViewCx<R, T> {
         let mark = Rc::clone(&stale);
         self.updaters.push(
             self.alive.clone(),
+            self.gate.clone(),
             located.clone().map_or(Reads::Always, Reads::Members),
             Box::new(move |_| mark.set(true)),
         );
@@ -644,32 +661,37 @@ impl<R: Resource, T: Model + 'static> ViewCx<R, T> {
             self.dispatch.clone(),
             Box::new(ids),
             stale,
-            Box::new(move |id: &Id, alive: &Rc<()>| {
-                let parent = Rc::clone(&parent_focus);
-                let items = Rc::clone(&items);
-                let key = id.clone();
-                let focus: Focus<R, I> =
-                    Rc::new(move |state| (parent)(state).and_then(|value| items(value).get(&key)));
-                let path = located.as_ref().map(|located| {
-                    let mut path = located.clone();
-                    path.push(Segment::Item(id.clone()));
-                    path
-                });
-                let mut cx = ViewCx {
-                    env: env.living(alive),
-                    focus,
-                    updaters: updaters.clone(),
-                    action_bindings: action_bindings.clone(),
-                    item: Some(id.clone()),
-                    path,
-                    controls: Rc::clone(&controls),
-                    forms: Forms::default(),
-                    stages: stages.clone(),
-                    feeds: feeds.clone(),
-                    bindings: bindings.clone(),
-                };
-                row(&mut cx)
-            }),
+            self.updaters.clone(),
+            Box::new(
+                move |id: &Id, alive: &Rc<()>, gate: &super::reactive::Gate| {
+                    let parent = Rc::clone(&parent_focus);
+                    let items = Rc::clone(&items);
+                    let key = id.clone();
+                    let focus: Focus<R, I> = Rc::new(move |state| {
+                        (parent)(state).and_then(|value| items(value).get(&key))
+                    });
+                    let path = located.as_ref().map(|located| {
+                        let mut path = located.clone();
+                        path.push(Segment::Item(id.clone()));
+                        path
+                    });
+                    let mut cx = ViewCx {
+                        env: env.living(alive),
+                        focus,
+                        updaters: updaters.clone(),
+                        gate: Some(gate.clone()),
+                        action_bindings: action_bindings.clone(),
+                        item: Some(id.clone()),
+                        path,
+                        controls: Rc::clone(&controls),
+                        forms: Forms::default(),
+                        stages: stages.clone(),
+                        feeds: feeds.clone(),
+                        bindings: bindings.clone(),
+                    };
+                    row(&mut cx)
+                },
+            ),
         )
     }
 }
