@@ -25,21 +25,6 @@ use crate::text_render::TextRenderer;
 use crate::widget::{FloatingSurfaceWidgetExt, Widget, WidgetLayoutError};
 use crate::{State, Theme};
 
-/// How [`ShotFrame::layout`] resolves the Taffy tree.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum ShotLayout {
-    /// [`crate::widget::compute_widget_layout`]: the solver `ui::App` and the
-    /// headless harness use, including allocation-dependent style settling
-    /// and manual layout policies.
-    #[default]
-    Settled,
-    /// A single `compute_layout_with_measure` pass that asks each widget in
-    /// the node map for its intrinsic size, with no style settling. Some
-    /// shot handlers predate the settling solver and their reference output
-    /// depends on this pass.
-    Measured,
-}
-
 /// The document, theme, text renderer and layout tree of one offscreen frame.
 pub struct ShotFrame {
     /// Document the widget syncs from. Seed it before [`ShotFrame::sync`].
@@ -53,7 +38,6 @@ pub struct ShotFrame {
     /// Permission context passed to `draw_with_presence`.
     pub permission: PermissionContext,
     viewport: (u32, u32),
-    layout_mode: ShotLayout,
     taffy: TaffyTree<()>,
     node_map: HashMap<NodeId, *mut dyn Widget>,
     child: Option<NodeId>,
@@ -78,19 +62,11 @@ impl ShotFrame {
             presence: PresenceCtx::empty(),
             permission: PermissionContext::permissive(),
             viewport,
-            layout_mode: ShotLayout::Settled,
             taffy: TaffyTree::new(),
             node_map: HashMap::new(),
             child: None,
             backdrop: Vec::new(),
         }
-    }
-
-    /// Choose the layout solver (default [`ShotLayout::Settled`]).
-    #[must_use]
-    pub fn with_layout(mut self, layout: ShotLayout) -> Self {
-        self.layout_mode = layout;
-        self
     }
 
     /// Replace the document the widget syncs from.
@@ -161,38 +137,19 @@ impl ShotFrame {
             width: AvailableSpace::Definite(w),
             height: AvailableSpace::Definite(h),
         };
-        match self.layout_mode {
-            ShotLayout::Settled => {
-                let mut bindings = BoundNodeMap::new();
-                // SAFETY: `widget`, `taffy`, `child` and `node_map` come from
-                // the build above and stay exclusively borrowed for layout.
-                unsafe {
-                    bindings.rebuild(widget, &self.taffy, child, &self.node_map);
-                    crate::widget::compute_widget_layout(
-                        &mut self.taffy,
-                        root,
-                        available,
-                        &self.node_map,
-                        &bindings,
-                        &mut self.text,
-                    )?;
-                }
-            }
-            ShotLayout::Measured => {
-                let nodes = &self.node_map;
-                let text = &mut self.text;
-                self.taffy.compute_layout_with_measure(
-                    root,
-                    available,
-                    |known, available, node, _, _| match nodes.get(&node) {
-                        // SAFETY: the node map was filled by the build above
-                        // from widgets `widget` exclusively owns, and nothing
-                        // else touches them while layout runs.
-                        Some(&ptr) => unsafe { (*ptr).measure(known, available, text) },
-                        None => Size::ZERO,
-                    },
-                )?;
-            }
+        let mut bindings = BoundNodeMap::new();
+        // SAFETY: `widget`, `taffy`, `child` and `node_map` come from the
+        // build above and stay exclusively borrowed for layout.
+        unsafe {
+            bindings.rebuild(widget, &self.taffy, child, &self.node_map);
+            crate::widget::compute_widget_layout(
+                &mut self.taffy,
+                root,
+                available,
+                &self.node_map,
+                &bindings,
+                &mut self.text,
+            )?;
         }
         widget.apply_layout(&self.taffy, child, Point::ORIGIN);
         self.child = Some(child);
@@ -330,24 +287,22 @@ mod tests {
             let frame = ShotFrame::new((100, 100), Theme::dark().with_text_scale(2.0));
             assert!((frame.text.text_scale() - 2.0).abs() < f32::EPSILON);
         }
-        // phase: both_solvers_lay_the_widget_out_inside_the_viewport
+        // phase: the_widget_is_laid_out_inside_the_viewport
         {
-            for mode in [ShotLayout::Settled, ShotLayout::Measured] {
-                let mut widget = Spacer::new();
-                let mut frame = ShotFrame::new((320, 200), Theme::dark()).with_layout(mode);
-                assert!(frame.layout_parts().is_none(), "{mode:?}: no layout yet");
-                frame.sync(&mut widget);
-                frame.layout(&mut widget).unwrap();
-                let rect = widget.get_rect();
-                assert_eq!((rect.x0, rect.y0), (0.0, 0.0), "{mode:?}");
-                assert!(rect.x1 <= 320.0 && rect.y1 <= 200.0, "{mode:?}: {rect:?}");
-                let (_, taffy, child) = frame.layout_parts().expect("laid out");
-                assert!(taffy.layout(child).is_ok(), "{mode:?}");
+            let mut widget = Spacer::new();
+            let mut frame = ShotFrame::new((320, 200), Theme::dark());
+            assert!(frame.layout_parts().is_none(), "no layout yet");
+            frame.sync(&mut widget);
+            frame.layout(&mut widget).unwrap();
+            let rect = widget.get_rect();
+            assert_eq!((rect.x0, rect.y0), (0.0, 0.0));
+            assert!(rect.x1 <= 320.0 && rect.y1 <= 200.0, "{rect:?}");
+            let (_, taffy, child) = frame.layout_parts().expect("laid out");
+            assert!(taffy.layout(child).is_ok());
 
-                frame.layout_at(&mut widget, (100, 50)).unwrap();
-                let rect = widget.get_rect();
-                assert!(rect.x1 <= 100.0 && rect.y1 <= 50.0, "{mode:?}: {rect:?}");
-            }
+            frame.layout_at(&mut widget, (100, 50)).unwrap();
+            let rect = widget.get_rect();
+            assert!(rect.x1 <= 100.0 && rect.y1 <= 50.0, "{rect:?}");
         }
     }
 }
