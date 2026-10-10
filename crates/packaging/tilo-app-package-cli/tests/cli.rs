@@ -1009,3 +1009,55 @@ fn cli_attest_refuses_foreign_publisher_scope_partial_and_existing_output() {
     );
     assert!(decoded(&fixture.original).0.is_complete());
 }
+
+#[test]
+fn cli_compress_writes_a_twin_that_decompresses_to_the_package() {
+    let workdir = tempfile::tempdir().unwrap();
+    let payload_dir = workdir.path().join("payload");
+    std::fs::create_dir_all(payload_dir.join("bin")).unwrap();
+    std::fs::write(
+        payload_dir.join("bin/hello"),
+        b"#!/bin/sh\necho hi\n".repeat(512),
+    )
+    .unwrap();
+    let manifest_path = workdir.path().join("manifest.toml");
+    std::fs::write(&manifest_path, sample_manifest_with(&"00".repeat(32))).unwrap();
+    let tapp = workdir.path().join("example.tapp");
+    run(&[
+        "pack",
+        "--manifest",
+        manifest_path.to_str().unwrap(),
+        "--payload",
+        payload_dir.to_str().unwrap(),
+        "-o",
+        tapp.to_str().unwrap(),
+    ]);
+
+    run(&["compress", tapp.to_str().unwrap()]);
+    let package = std::fs::read(&tapp).unwrap();
+    let twin = std::fs::read(workdir.path().join("example.tapp.zst")).unwrap();
+    assert!(
+        twin.len() < package.len() / 2,
+        "{} of {}",
+        twin.len(),
+        package.len()
+    );
+    let mut plain = Vec::new();
+    tilo_app_package::compressed::decompress_bounded(
+        twin.as_slice(),
+        package.len() as u64,
+        &mut plain,
+    )
+    .unwrap();
+    assert_eq!(plain, package);
+
+    // Only a package gets a twin: anything else is refused, and nothing is written.
+    let other = workdir.path().join("notes.txt");
+    std::fs::write(&other, b"not a package").unwrap();
+    let out = Command::new(bin_path())
+        .args(["compress", other.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert!(!workdir.path().join("notes.txt.zst").exists());
+}

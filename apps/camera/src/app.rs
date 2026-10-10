@@ -3738,25 +3738,11 @@ mod tests {
     }
 
     fn drive(app: &mut CameraApp, ev: &WindowEvent, doc: &mut AutoCommit, root: &ObjId) -> bool {
-        let mods = winit::event::Modifiers::default();
-        let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let node = taffy.new_leaf(Style::default()).unwrap();
-        let mut handled = false;
-        let mut focus = None;
-        app.handle_event(
-            ev,
-            &mut ui::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &mods,
-                state: Edits::lend(doc),
-                path: root,
-                handled: &mut handled,
-                focus_target: &mut focus,
-                node_id: node,
-                taffy: &taffy,
-            },
-        );
-        handled
+        ui::testing::Dispatch::new()
+            .doc(doc)
+            .path(root)
+            .send(app, ev)
+            .handled
     }
 
     /// Every control the camera exposes, by semantic target.
@@ -4218,7 +4204,7 @@ mod tests {
         }
         // Phase `disk_shutter_writes_a_real_jpeg_via_handle_event`.
         {
-            use winit::event::{ElementState, Modifiers, WindowEvent};
+            use winit::event::{ElementState, WindowEvent};
             use winit::keyboard::{Key, NamedKey};
 
             let dir =
@@ -4248,24 +4234,7 @@ mod tests {
                 event: ev,
                 is_synthetic: false,
             };
-            let mods = Modifiers::default();
-            let mut taffy: TaffyTree<()> = TaffyTree::new();
-            let node = taffy.new_leaf(Style::default()).unwrap();
-            let mut handled = false;
-            let mut focus = None;
-            app.handle_event(
-                &event,
-                &mut ui::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &mods,
-                    state: Edits::lend(&mut doc),
-                    path: &root,
-                    handled: &mut handled,
-                    focus_target: &mut focus,
-                    node_id: node,
-                    taffy: &taffy,
-                },
-            );
+            let handled = drive(&mut app, &event, &mut doc, &root);
             assert!(handled, "space should be handled on the camera screen");
 
             // Saving is now bounded background work; pump the real sync boundary

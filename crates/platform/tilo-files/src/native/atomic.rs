@@ -412,6 +412,33 @@ pub fn write_regenerable(path: &Path, bytes: &[u8]) -> io::Result<()> {
     .map(|_| ())
 }
 
+/// [`write_regenerable()`] for a private runtime file: the new contents are created with
+/// `mode` (less the umask) before they are named, so they are never visible wider. Nothing is
+/// synced: for files a crash discards anyway, such as state under `$XDG_RUNTIME_DIR`, where a
+/// sync only makes the writer wait for the filesystem's journal and every other writer with it.
+/// `mode` is ignored where the platform has no permission bits.
+///
+/// # Errors
+///
+/// Returns an error if the temp file can't be created or written, or if the rename fails.
+pub fn write_regenerable_with_mode(path: &Path, bytes: &[u8], mode: u32) -> io::Result<()> {
+    publish(
+        path,
+        bytes,
+        |tmp| {
+            let mut options = fs::OpenOptions::new();
+            options.write(true).create_new(true);
+            #[cfg(unix)]
+            std::os::unix::fs::OpenOptionsExt::mode(&mut options, mode);
+            #[cfg(not(unix))]
+            let _ = mode;
+            options.open(tmp)
+        },
+        Publish::ReplaceUnsynced,
+    )
+    .map(|_| ())
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Publish {
     /// Rename over whatever `path` currently names.
@@ -584,6 +611,25 @@ mod tests {
             write_regenerable(&p, b"a very long previous entry").unwrap();
             write_regenerable(&p, b"short").unwrap();
             assert_eq!(fs::read(&p).unwrap(), b"short");
+            assert_eq!(
+                fs::read_dir(d.path()).unwrap().count(),
+                1,
+                "no temp file left"
+            );
+        }
+        // Phase `private_regenerable_writes_keep_their_mode`.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            let d = TempDir::new().unwrap();
+            let p = d.path().join("workspace-id");
+            write_regenerable_with_mode(&p, b"room-a", 0o600).unwrap();
+            write_regenerable_with_mode(&p, b"room", 0o600).unwrap();
+            assert_eq!(fs::read(&p).unwrap(), b"room");
+            assert_eq!(
+                fs::metadata(&p).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
             assert_eq!(
                 fs::read_dir(d.path()).unwrap().count(),
                 1,

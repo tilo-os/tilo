@@ -249,60 +249,6 @@ impl PhotosDoc {
         Some(album)
     }
 
-    /// Resolve a hashed metadata browse id from the compact keyed index.
-    ///
-    /// Unlike [`Self::library`], this never projects every photograph. The
-    /// index is derived on each authoritative library write, so deletion of
-    /// the final matching photograph removes the entry and stale exact ids
-    /// refuse rather than materialising an empty phantom view.
-    pub fn metadata_view(doc: &AutoCommit, id: &str) -> Option<MetadataView> {
-        let kinds = [
-            (
-                MetadataViewKind::Folder,
-                METADATA_FOLDERS_KEY,
-                "photos.folder:",
-            ),
-            (
-                MetadataViewKind::Person,
-                METADATA_PEOPLE_KEY,
-                "photos.person:",
-            ),
-            (MetadataViewKind::Tag, METADATA_TAGS_KEY, "photos.tag:"),
-            (
-                MetadataViewKind::Object,
-                METADATA_OBJECTS_KEY,
-                "photos.object:",
-            ),
-            (MetadataViewKind::Pet, METADATA_PETS_KEY, "photos.pet:"),
-        ];
-        for root in Self::library_roots(doc) {
-            for (kind, key, prefix) in kinds {
-                let Some(index) = Self::map_at(doc, &root, key) else {
-                    continue;
-                };
-                let Some(entry) = Self::conflicting_at::<MetadataIndexEntry>(doc, &index, id)
-                    .into_iter()
-                    .next()
-                else {
-                    continue;
-                };
-                if entry.label.trim().is_empty()
-                    || entry.label.chars().count() > 128
-                    || entry.count == 0
-                    || metadata_resource_id(prefix, &entry.label) != id
-                {
-                    continue;
-                }
-                return Some(MetadataView {
-                    kind,
-                    label: entry.label,
-                    count: entry.count,
-                });
-            }
-        }
-        None
-    }
-
     /// Apply a validated projection as granular record/field deltas. This is
     /// intentionally the compatibility seam used by existing canonical
     /// actions: they can keep their replayable pure model mutation while the

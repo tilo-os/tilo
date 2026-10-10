@@ -75,7 +75,8 @@ pub fn present(
     }
 }
 
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(test)]
+#[cfg(target_os = "linux")]
 mod wayland_tests {
     use std::time::Duration;
     use winit::platform::wayland::WaylandPresentation;

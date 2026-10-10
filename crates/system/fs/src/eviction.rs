@@ -10,7 +10,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-use collab_types::{FileRecordId, FileVersionId};
+use fs_protocol::{FileRecordId, FileVersionId};
 use futures_util::stream::{self, StreamExt, TryStreamExt};
 use iroh_blobs::Hash;
 use serde::{Deserialize, Serialize};
@@ -236,7 +236,7 @@ impl EvictionCoordinator {
                 .ok_or_else(|| {
                     anyhow::anyhow!("version history changed during eviction planning")
                 })?;
-            if version.content_hash != Some(collab_types::ContentHash(*expected_hash.as_bytes())) {
+            if version.content_hash != Some(fs_protocol::ContentHash(*expected_hash.as_bytes())) {
                 anyhow::bail!("workspace changed since preview");
             }
         }
@@ -1412,8 +1412,9 @@ fn sum_bytes(extents: &[BlobExtent]) -> u64 {
 mod tests {
     use super::*;
     use crate::availability::{RecordAvailability, ReplicaObservation};
-    use collab_types::{ContentHash, Ed25519PublicKey, FileActor};
+    use collab_types::Ed25519PublicKey;
     use ed25519_dalek::SigningKey;
+    use fs_protocol::{ContentHash, FileActor};
     use getrandom::{SysRng, rand_core::UnwrapErr};
     use tempfile::TempDir;
 
@@ -1457,8 +1458,8 @@ mod tests {
         };
         let request = crate::replica_ack::ReplicaAckRequestV1::new(
             uuid::Uuid::new_v4(),
-            collab_types::ContentRevisionV1 {
-                schema_version: collab_types::CONTENT_REVISION_VERSION,
+            fs_protocol::ContentRevisionV1 {
+                schema_version: fs_protocol::CONTENT_REVISION_VERSION,
                 record_id: id,
                 version_id: version,
                 content_hash: Some(ContentHash([6; 32])),

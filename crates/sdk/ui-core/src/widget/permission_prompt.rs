@@ -835,7 +835,6 @@ mod tests {
     //! `self.rect` so tests don't depend on a GPU/text-renderer.
     use super::*;
     use automerge::AutoCommit;
-    use winit::event::{ElementState, MouseButton};
 
     #[test]
     fn local_input_explanation_grows_with_enlarged_text_and_keeps_choices_addressable() {
@@ -897,22 +896,15 @@ mod tests {
         let mut tree = TaffyTree::<()>::new();
         let field = tree.leaf_node(Style::default());
         let overlay = tree.leaf_node(Style::default());
-        let mut focus = Some(field);
-        let mut handled = false;
-        for event in [cursor_at(prompt.allow_rect().center()), left_press()] {
-            prompt.handle_event(
-                &event,
-                &mut crate::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &winit::event::Modifiers::default(),
-                    state: crate::widget::Edits::lend(&mut doc),
-                    path: &automerge::ROOT,
-                    handled: &mut handled,
-                    focus_target: &mut focus,
-                    node_id: overlay,
-                    taffy: &tree,
-                },
-            );
+        let (mut handled, mut focus) = (false, Some(field));
+        for event in [cursor_at(prompt.allow_rect().center()), mouse_press()] {
+            let sent = crate::testing::Dispatch::new()
+                .doc(&mut doc)
+                .handled(handled)
+                .focus_target(focus)
+                .layout(&tree, overlay)
+                .send(&mut prompt, &event);
+            (handled, focus) = (sent.handled, sent.focus_target);
         }
         assert_eq!(prompt.pending_choice, Some(PromptChoice::Allow));
         assert_eq!(
@@ -1032,35 +1024,8 @@ mod tests {
         }
     }
 
-    fn left_press() -> WindowEvent {
-        WindowEvent::MouseInput {
-            device_id: winit::event::DeviceId::dummy(),
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        }
-    }
-
-    fn dispatch(p: &mut PermissionPrompt, event: &WindowEvent) {
-        let mut tree = TaffyTree::<()>::new();
-        let node = tree.leaf_node(Style::default());
-        let mut handled = false;
-        let mut focus_target = None;
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        p.handle_event(
-            event,
-            &mut crate::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &winit::event::Modifiers::default(),
-                state: crate::widget::Edits::lend(&mut doc),
-                path: &root,
-                handled: &mut handled,
-                focus_target: &mut focus_target,
-                node_id: node,
-                taffy: &tree,
-            },
-        );
-    }
+    use crate::synthetic_input::mouse_press;
+    use crate::testing::dispatch;
 
     /// 600x80 with computed button rects; `is_owner` is the only
     /// knob, every other field is fixed.
@@ -1079,7 +1044,7 @@ mod tests {
             let mut p = prompt_at(false);
             let center = p.allow_rect().center();
             dispatch(&mut p, &cursor_at(center));
-            dispatch(&mut p, &left_press());
+            dispatch(&mut p, &mouse_press());
             assert_eq!(p.pending_choice, Some(PromptChoice::Allow));
         }
 
@@ -1088,7 +1053,7 @@ mod tests {
             let mut p = prompt_at(false);
             let center = p.session_rect().center();
             dispatch(&mut p, &cursor_at(center));
-            dispatch(&mut p, &left_press());
+            dispatch(&mut p, &mouse_press());
             assert_eq!(p.pending_choice, Some(PromptChoice::Session));
         }
 
@@ -1097,7 +1062,7 @@ mod tests {
             let mut p = prompt_at(false);
             let center = p.always_rect().center();
             dispatch(&mut p, &cursor_at(center));
-            dispatch(&mut p, &left_press());
+            dispatch(&mut p, &mouse_press());
             assert_eq!(p.pending_choice, None);
         }
 
@@ -1106,7 +1071,7 @@ mod tests {
             let mut p = prompt_at(true);
             let center = p.always_rect().center();
             dispatch(&mut p, &cursor_at(center));
-            dispatch(&mut p, &left_press());
+            dispatch(&mut p, &mouse_press());
             assert_eq!(p.pending_choice, Some(PromptChoice::Always));
         }
 
@@ -1115,7 +1080,7 @@ mod tests {
             let mut p = prompt_at(false);
             let center = p.deny_rect().center();
             dispatch(&mut p, &cursor_at(center));
-            dispatch(&mut p, &left_press());
+            dispatch(&mut p, &mouse_press());
             assert_eq!(p.pending_choice, Some(PromptChoice::Deny));
         }
 
@@ -1125,7 +1090,7 @@ mod tests {
             // button rect.
             let mut p = prompt_at(true);
             dispatch(&mut p, &cursor_at(Point::new(20.0, 40.0)));
-            dispatch(&mut p, &left_press());
+            dispatch(&mut p, &mouse_press());
             assert_eq!(p.pending_choice, None);
         }
     }

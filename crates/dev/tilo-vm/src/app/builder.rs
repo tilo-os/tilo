@@ -195,7 +195,7 @@ impl App {
     ) -> Result<String, CliError> {
         let worktree = self.worktree.clone().ok_or(CliError::NotInWorktree)?;
         self.runner.cwd = Some(worktree.root.clone());
-        let metadata = self.cargo_metadata();
+        let metadata = self.cargo_metadata()?;
         let extra = build::dev_features(&metadata, &component.packages);
         let mut provenance = build::source_provenance(&worktree, &component.name, "remote");
         let inputs = crate::source_inputs::Snapshot::create(&worktree, &component.name)?;
@@ -377,7 +377,8 @@ impl Drop for AppBuilder {
     }
 }
 
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(test)]
+#[cfg(target_os = "linux")]
 mod tests {
     use super::*;
 

@@ -134,7 +134,7 @@ change.
 ## Vello changes
 
 `vendor/vello` and `vendor/vello_encoding` are `vello` 0.9.0 and
-`vello_encoding` 0.9.0 from crates.io, verbatim, except for the ten files
+`vello_encoding` 0.9.0 from crates.io, verbatim, except for the files
 below and the publication identity in `Cargo.toml` (see "Published forks").
 Everything else in both trees — including `Cargo.lock`, the licenses and
 every other `.rs` file — is the unmodified crates.io release; diff either tree
@@ -289,6 +289,36 @@ JavaScript collects it: a 60-window soak kept up to 1,100 of them alive.
 maximum is 8192 px per side, a 256 MB texture. Images that do not fit after
 eviction are omitted and reported, as they already were at the maximum.
 
+## Image cache eviction, shrink and stats (`image_cache.rs`, `resolve.rs`, `lib.rs`)
+
+Upstream evicts a resident image only when an allocation fails, and never
+shrinks the atlas. A Wayland client's frame is a new image on every commit,
+so every superseded frame kept its CPU pixels alive until the atlas was full,
+the atlas grew to its maximum on the way, and the compositor kept that
+high-water mark for the rest of the session (TIL-692: about 14 MiB per app
+opened and closed, past 1 GiB). Now:
+
+- `ImageCache::finish_resolve` evicts every resident no pass drew in the last
+  two (`EVICT_AFTER_GENERATIONS`, upstream's own staleness rule), so a resident
+  survives two scenes that skip it — two outputs, or a capture beside the
+  live frame — and a window that keeps committing holds three frames at most.
+- When a pass's residents cover at most an eighth of the atlas for 60 passes
+  in a row (`SHRINK_AFTER_RESOLVES`), the next pass first repacks into half
+  the side, down to the initial 1024. Repacking marks every resident dirty, so
+  each is uploaded again, at its new position, the next time it is drawn; the
+  halving happens in `begin_resolve`, before the pass hands out positions. A
+  repack that does not fit leaves the atlas as it was.
+- `Renderer::image_cache_stats()` (through `Resolver::image_cache_stats`)
+  reports `ImageCacheStats`: atlas side, resident count, resident CPU bytes
+  and area, and lifetime evictions, shrinks and omissions.
+
+Own tests in `image_cache.rs`: stale residents are released without
+allocation pressure, an image survives two passes that skip it, a committing
+window holds three frames at most, the atlas shrinks after residency drops and
+uploads its residents again where it draws them, a busy atlas does not shrink,
+and thirty open/close cycles leave only the wallpaper resident at the size it
+started with.
+
 ## `vendor/vello/src/wgpu_engine.rs`: cleared pools and freed downloads are destroyed
 
 wgpu's WebGPU backend does not destroy a buffer when it is dropped; the GPU
@@ -325,6 +355,21 @@ transparent when the source has nothing. The compositor keeps Wayland
 client frames on the GPU and draws them on its presenting renderer from
 their textures; screenshots, recordings and renderers on other devices
 reach the same frames through the source, which reads them back on demand.
+
+## `vendor/vello/src/image_source.rs` (new), `lib.rs`, `wgpu_engine.rs`: images drawn from a texture
+
+`Renderer::draw_image_from(image, Some(ImageSource { texture, origin,
+opaque }))` makes an image's atlas write a small render pass instead of a
+`copy_texture_to_texture`: the fragment shader `textureLoad`s the source at
+`origin` and writes the atlas slot (viewport and scissor on the slot), forcing
+alpha to one when `opaque`. The source may therefore be any colour format the
+device samples as float — a Wayland client's `ARGB8888` buffer imports as
+`Bgra8Unorm`, which `copy_texture_to_texture` cannot copy into the
+`Rgba8Unorm` atlas — and an `X` format is drawn opaque, so the compositor
+draws a client's dma-buf straight from its import with this one copy. The
+atlas texture gains `RENDER_ATTACHMENT` usage for it. A source takes
+precedence over an `override_image` texture for the same image.
+`Renderer::image_source_writes()` counts the writes and their bytes.
 
 ## zlink-macros
 

@@ -569,7 +569,8 @@ mod imp {
     }
 }
 
-#[cfg(all(test, feature = "mpris"))]
+#[cfg(test)]
+#[cfg(feature = "mpris")]
 mod tests {
     use super::*;
     #[cfg(freedesktop)]

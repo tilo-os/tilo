@@ -1,6 +1,5 @@
 use super::*;
 use accounts::{SecretId, SecretItem};
-use taffy::{Style, TaffyTree};
 use ui::automerge::{self, AutoCommit};
 use zeroize::Zeroizing;
 
@@ -18,24 +17,7 @@ fn temp_root(name: &str) -> std::path::PathBuf {
 
 /// Run `event` through the window as the host would.
 fn send(app: &mut PasswordsSurface, doc: &mut AutoCommit, event: &WindowEvent) {
-    let mut handled = false;
-    let mut focus = None;
-    let mut taffy = TaffyTree::new();
-    let node = taffy.new_leaf(Style::default()).unwrap();
-    Widget::handle_event(
-        app,
-        event,
-        &mut ui::widget::EventCtx {
-            scale_factor: 1.0,
-            modifiers: &winit::event::Modifiers::default(),
-            state: ui::widget::Edits::lend(doc),
-            path: &automerge::ROOT,
-            handled: &mut handled,
-            focus_target: &mut focus,
-            node_id: node,
-            taffy: &taffy,
-        },
-    );
+    ui::testing::Dispatch::new().doc(doc).send(app, event);
 }
 
 fn request(app: &mut PasswordsSurface, request: Request) {

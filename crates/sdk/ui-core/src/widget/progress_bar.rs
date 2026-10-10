@@ -323,11 +323,6 @@ impl ProgressBar {
             self.progress
         }
     }
-
-    /// Whether the bar is in indeterminate mode.
-    pub fn is_indeterminate(&self) -> bool {
-        self.indeterminate
-    }
 }
 
 /// Rounds an already-clamped `[0, 100]` percentage to a whole-number
@@ -482,15 +477,11 @@ impl Widget for ProgressBar {
         presence: &crate::presence::PresenceCtx,
         permissions: &crate::permissions::PermissionContext,
     ) {
-        if presence.should_cull(self.get_rect()) {
-            return;
-        }
-        self.draw(scene, transform, text_renderer, theme, presence);
-
-        crate::widget::draw_gate_and_peer_focus(
+        crate::widget::draw_gated_leaf(
             self,
             scene,
             transform,
+            text_renderer,
             theme,
             presence,
             permissions,

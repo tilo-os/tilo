@@ -94,14 +94,6 @@ impl Breadcrumb {
         self
     }
 
-    /// Replace the segments (the path changed).
-    pub fn set_segments(&mut self, segments: Vec<String>) {
-        if segments != self.segments {
-            self.segments = segments;
-            self.hover_idx = None;
-        }
-    }
-
     /// Builder: install a click callback. The callback receives the index
     /// into the original `segments` vector — never the visible-list index
     /// — so middle-truncation never confuses the consumer.
@@ -485,10 +477,9 @@ impl Widget for Breadcrumb {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use automerge::AutoCommit;
+    use crate::testing::dispatch;
     use std::cell::RefCell;
     use std::rc::Rc;
-    use winit::event::{ElementState, Modifiers, MouseButton};
 
     fn cursor_at(p: Point) -> WindowEvent {
         WindowEvent::CursorMoved {
@@ -497,37 +488,7 @@ mod tests {
         }
     }
 
-    fn left_press() -> WindowEvent {
-        WindowEvent::MouseInput {
-            device_id: winit::event::DeviceId::dummy(),
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        }
-    }
-
-    /// Drive an event through the breadcrumb with default scaffolding.
-    /// Mirrors `permission_prompt.rs::tests::dispatch`.
-    fn dispatch(bc: &mut Breadcrumb, event: &WindowEvent) {
-        let mut tree = TaffyTree::<()>::new();
-        let node = tree.leaf_node(Style::default());
-        let mut handled = false;
-        let mut focus_target = None;
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        bc.handle_event(
-            event,
-            &mut crate::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &Modifiers::default(),
-                state: crate::widget::Edits::lend(&mut doc),
-                path: &root,
-                handled: &mut handled,
-                focus_target: &mut focus_target,
-                node_id: node,
-                taffy: &tree,
-            },
-        );
-    }
+    use crate::synthetic_input::mouse_press;
 
     #[test]
     fn breadcrumb_paints_separators_centres_labels_and_truncates() {
@@ -637,7 +598,7 @@ mod tests {
             );
             let middle_center = bc.segment_rects[1].center();
             dispatch(&mut bc, &cursor_at(middle_center));
-            dispatch(&mut bc, &left_press());
+            dispatch(&mut bc, &mouse_press());
 
             assert_eq!(
                 *received.borrow(),

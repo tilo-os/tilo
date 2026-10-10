@@ -31,6 +31,7 @@ channel-crypto = { path = "../../collab/channel-crypto" }
 blake3.workspace = true
 chrono = { workspace = true, features = ["std"] }
 collab-types = { path = "../../collab/collab-types" }
+fs-protocol = { path = "../../system/fs-protocol" }
 ed25519-dalek.workspace = true
 # The random key sealing the channel state.
 getrandom.workspace = true
@@ -76,7 +77,7 @@ tilo-relay-session = { path = "../../hosting/tilo-relay-session" }
 tilo-relay-protocol = { path = "../../hosting/tilo-relay-protocol" }
 tilo-rt.workspace = true
 tilo-user-identity = { path = "../../collab/tilo-user-identity" }
-tokio = { workspace = true, features = ["net", "rt-multi-thread", "time"] }
+tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread", "sync", "time"] }
 tracing.workspace = true
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 uuid.workspace = true

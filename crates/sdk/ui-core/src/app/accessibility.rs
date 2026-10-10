@@ -58,12 +58,6 @@ impl App {
         true
     }
 
-    pub fn a11y_settings(&self) -> crate::a11y::A11ySettings {
-        let mut s = self.accessibility.a11y;
-        s.screen_reader = self.accessibility.screen_reader.is_some();
-        s
-    }
-
     pub fn text_scale(&self) -> f32 {
         self.accessibility.text_scale
     }
@@ -337,12 +331,15 @@ impl App {
             self.focused_node = node;
             return;
         }
-        if self.close_admission.dialog.is_none()
-            && (self.history.is_some()
-                || crate::history_mode::embedded::has_surfaces(self.root_widget.as_ref()))
-        {
-            self.update_history_focus_order();
-            return;
+        if self.close_admission.dialog.is_none() {
+            let restrictions = crate::history_mode::embedded::FocusRestrictions::collect(
+                self.root_widget.as_ref(),
+                &self.layout.taffy,
+            );
+            if self.history.is_some() || restrictions.has_surfaces() {
+                self.update_history_focus_order(&restrictions);
+                return;
+            }
         }
         self.focusable_order.clear();
         let Some(root) = self.layout.root_node else {

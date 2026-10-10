@@ -20,16 +20,10 @@
 use tilo_ui::widget::link_popover::PageEntry;
 use tilo_ui::widget::marks::Mark;
 use tilo_ui::widget::{BlockEditor, BlockKind};
-use winit::event::{ElementState, WindowEvent};
+use winit::event::WindowEvent;
 use winit::keyboard::{Key, NamedKey, SmolStr};
 
-fn key_press(logical_key: Key, text: Option<&str>) -> WindowEvent {
-    tilo_ui::synthetic_input::keyboard_input(tilo_ui::synthetic_input::key_event(
-        logical_key,
-        text.map(SmolStr::new),
-        ElementState::Pressed,
-    ))
-}
+use tilo_ui::synthetic_input::key_press;
 
 fn char_press(c: &str) -> WindowEvent {
     key_press(Key::Character(SmolStr::new(c)), Some(c))

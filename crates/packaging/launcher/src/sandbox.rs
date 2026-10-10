@@ -7,7 +7,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::capabilities::CapabilityPlan;
-use crate::manifest::{MinimalManifest, PortalPolicy};
+use crate::manifest::MinimalManifest;
 
 /// In-sandbox mount root for the package payload.
 pub fn payload_mount_for(package_id: &str) -> PathBuf {
@@ -935,18 +935,6 @@ fn push_bind(argv: &mut Vec<String>, kind: &str, src: &Path, dst: &Path) {
     argv.push(dst.display().to_string());
 }
 
-/// If the manifest declared at least one portal as `ViaHost`, return the
-/// current `$DBUS_SESSION_BUS_ADDRESS` — else `None`.
-pub fn host_dbus_bus_address_if_needed(
-    portals: &std::collections::BTreeMap<String, PortalPolicy>,
-) -> Option<String> {
-    let wants_bus = portals.values().any(|p| matches!(p, PortalPolicy::ViaHost));
-    if !wants_bus {
-        return None;
-    }
-    std::env::var("DBUS_SESSION_BUS_ADDRESS").ok()
-}
-
 /// Extract the `unix:path=<path>` from a D-Bus bus address, or `None`
 /// otherwise. Abstract sockets can't be bind-mounted, so callers
 /// surface that as "portal unavailable".
@@ -970,6 +958,7 @@ pub fn parse_unix_path_bus_address(addr: &str) -> Option<String> {
 mod tests {
     use super::*;
     use crate::manifest::Entrypoint;
+    use crate::manifest::PortalPolicy;
     use std::collections::BTreeMap;
 
     #[test]

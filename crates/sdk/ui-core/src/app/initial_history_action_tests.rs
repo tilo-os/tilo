@@ -133,7 +133,7 @@ fn initial_history_action_publication_waits_for_actual_owner_application() {
     assert!(!page.rows.is_empty());
     assert!(matches!(
         app.published_action_directory_resolution(&page.revision, "initial-probe", "inspect"),
-        runtime_collab::ActionDirectoryResolution::Found(_)
+        runtime_collab::ActionDirectoryResolution::Found { .. }
     ));
     app.invoke_published_action(
         77,
@@ -332,7 +332,7 @@ fn initial_history_public_directory_requires_every_actual_live_record_owner() {
             &action.address.resource,
             &action.address.action
         ),
-        runtime_collab::ActionDirectoryResolution::Found(_)
+        runtime_collab::ActionDirectoryResolution::Found { .. }
     ));
     let second = fixture.app.document_routes.owners[1].route.clone();
     fixture

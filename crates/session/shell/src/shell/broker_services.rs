@@ -9,7 +9,8 @@ pub mod approved_checks;
 mod committed_document;
 #[cfg(target_os = "linux")]
 mod file_clipboard;
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(test)]
+#[cfg(target_os = "linux")]
 pub(crate) use file_clipboard::test_support::TestTransferPause;
 #[cfg(test)]
 #[path = "broker_services/native_effect_tests.rs"]
@@ -282,6 +283,13 @@ impl WorkspaceAuthority for NativeWorkspaceAuthority {
             name.push(".invocations");
             name.into()
         })
+    }
+    /// A tree write that changes policy announces as its guard is released;
+    /// the fleet and registry announce on save and through the identity
+    /// directory's watch; the native owner announces each publication
+    /// (`tilo_identity_host::policy_change`).
+    fn announces_policy_changes(&self) -> bool {
+        true
     }
 }
 impl LegacyWorkspaceProjection for NativeWorkspaceAuthority {

@@ -117,12 +117,6 @@ impl IconGrid {
         self
     }
 
-    #[must_use]
-    pub fn with_icon_size(mut self, px: f64) -> Self {
-        self.icon_px = px.max(4.0);
-        self
-    }
-
     /// Host owns the selection across frames.
     pub fn set_selection(&mut self, sel: SelectionModel) {
         self.selection = sel;
@@ -552,7 +546,6 @@ impl Widget for IconGrid {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use automerge::AutoCommit;
     use taffy::prelude::TaffyMaxContent;
 
     fn items(n: usize) -> Vec<IconGridItem> {
@@ -614,28 +607,9 @@ mod tests {
             g.rect = Rect::new(0.0, 0.0, 324.0, 200.0);
             g.columns = 3;
 
-            let mut tree = TaffyTree::<()>::new();
-            let node = tree.leaf_node(Style::default());
-            let mods = winit::event::Modifiers::default();
             let device = winit::event::DeviceId::dummy();
-            let mut doc = AutoCommit::new();
-            let root = automerge::ROOT;
-            let mut feed = |g: &mut IconGrid, ev: WindowEvent| {
-                let mut h = false;
-                let mut f = None;
-                g.handle_event(
-                    &ev,
-                    &mut crate::widget::EventCtx {
-                        scale_factor: 1.0,
-                        modifiers: &mods,
-                        state: crate::widget::Edits::lend(&mut doc),
-                        path: &root,
-                        handled: &mut h,
-                        focus_target: &mut f,
-                        node_id: node,
-                        taffy: &tree,
-                    },
-                );
+            let feed = |g: &mut IconGrid, ev: WindowEvent| {
+                crate::testing::dispatch(g, &ev);
             };
             feed(
                 &mut g,

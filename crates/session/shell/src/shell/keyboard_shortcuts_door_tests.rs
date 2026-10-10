@@ -126,6 +126,7 @@ impl Door {
                 context: None,
                 confirmation: None,
                 revision: None,
+                wait_ms: None,
             },
         ))
         .map(|receipt| receipt.status)
@@ -188,23 +189,11 @@ fn press(
         event,
         is_synthetic: false,
     };
-    let mut doc = automerge::AutoCommit::new();
-    let mut handled = false;
-    let mut focus = None;
-    host.handle_event(
-        &event,
-        &mut ui::widget::EventCtx {
-            scale_factor: 1.0,
-            modifiers: &winit::event::Modifiers::from(modifiers),
-            state: ui::widget::Edits::lend(&mut doc),
-            path: &automerge::ROOT,
-            handled: &mut handled,
-            focus_target: &mut focus,
-            node_id: child,
-            taffy: &taffy,
-        },
-    );
-    handled
+    ui::testing::Dispatch::new()
+        .modifiers(modifiers)
+        .layout(&taffy, child)
+        .send(host, &event)
+        .handled
 }
 
 fn quick_settings_row(listed: &Value) -> Value {

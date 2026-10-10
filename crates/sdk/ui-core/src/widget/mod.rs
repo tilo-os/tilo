@@ -194,6 +194,50 @@ pub(crate) fn draw_gate_and_peer_focus(
     }
 }
 
+/// The whole `draw_with_presence` of a gated, presence-publishing leaf:
+/// culled off-viewport, drawn, then overlaid by [`draw_gate_and_peer_focus`].
+pub(crate) fn draw_gated_leaf(
+    widget: &mut (impl Widget + ?Sized),
+    scene: &mut Scene,
+    transform: Affine,
+    text_renderer: &mut TextRenderer,
+    theme: &Theme,
+    presence: &PresenceCtx,
+    permissions: &crate::permissions::PermissionContext,
+) {
+    if presence.should_cull(widget.get_rect()) {
+        return;
+    }
+    widget.draw(scene, transform, text_renderer, theme, presence);
+    draw_gate_and_peer_focus(widget, scene, transform, theme, presence, permissions);
+}
+
+/// Hand `event` to the widgets a virtualizing container has mounted: the
+/// first one holding pointer capture gets it alone, otherwise each laid-out
+/// widget sees it, topmost first, until one handles it.
+pub(crate) fn route_to_mounted<T>(
+    mounted: &mut [T],
+    parts: fn(&mut T) -> (&mut Element, Option<NodeId>),
+    event: &WindowEvent,
+    ctx: &mut EventCtx<'_>,
+) {
+    if let Some((widget, Some(node))) = mounted
+        .iter_mut()
+        .map(parts)
+        .find(|(widget, _)| widget.wants_pointer_capture())
+    {
+        widget.handle_event(event, &mut ctx.reborrow(ctx.path, node));
+        return;
+    }
+    for (widget, node) in mounted.iter_mut().rev().map(parts) {
+        let Some(node) = node else { continue };
+        widget.handle_event(event, &mut ctx.reborrow(ctx.path, node));
+        if *ctx.handled {
+            break;
+        }
+    }
+}
+
 /// Collect resources from every retained widget without requiring container
 /// authors to remember to forward their children's declarations. Resource
 /// ownership stays local to the widget that implements it; composition is a
@@ -861,6 +905,27 @@ impl std::ops::Deref for Edits<'_> {
 pub(crate) fn settle_mark(doc: &AutoCommit) -> (Vec<automerge::ChangeHash>, usize) {
     use automerge::transaction::Transactable as _;
     (doc.base_heads(), doc.pending_ops())
+}
+
+thread_local! {
+    static RESOURCE_PRESENTATION_EPOCH: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// Tell the host that what a widget presents to the resource surface (the
+/// resources, actions or semantic controls it declares) changed on input it
+/// did not mark handled and without a document edit: hovering a menu row
+/// that opens a nested menu. The host keeps the published resource tree
+/// across bare pointer motion, so such a widget must call this or the tree
+/// agents and assistive technology read would go stale. Clicks, keys and
+/// any handled event already republish.
+pub fn note_resource_presentation_changed() {
+    RESOURCE_PRESENTATION_EPOCH.with(|epoch| epoch.set(epoch.get().wrapping_add(1)));
+}
+
+/// How many times [`note_resource_presentation_changed`] ran on this thread.
+#[cfg(feature = "native")]
+pub(crate) fn resource_presentation_epoch() -> u64 {
+    RESOURCE_PRESENTATION_EPOCH.with(std::cell::Cell::get)
 }
 
 /// Host services associated with one retained widget event dispatch.
@@ -2661,7 +2726,7 @@ pub use decorator::Decorator;
 pub(crate) mod layout;
 pub use layout::{
     AuthoredExtent, ExtentSizing, WidgetLayoutError, compute_widget_layout, insets, insets_all,
-    insets_xy, text_control_height,
+    insets_xy, layout_clip, text_control_height, with_layout_clip,
 };
 
 mod button;

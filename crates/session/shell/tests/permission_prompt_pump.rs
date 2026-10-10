@@ -27,12 +27,11 @@ use std::time::Duration;
 use shell::shell::chrome_state::{ChromeState, OverlayFlags, PendingPrompt};
 use shell::shell::overlay_host::ShellOverlayHost;
 use shell::shell::state::{Capability, GRANT_ONCE, Workspace, WorkspaceId, WorkspaceTree};
-use ui::widget::{PermissionPrompt, PromptChoice, Widget};
+use ui::widget::PromptChoice;
 
-use automerge::AutoCommit;
 use taffy::{Style, TaffyTree};
 use vello::kurbo::{Point, Rect};
-use winit::event::{ElementState, MouseButton, WindowEvent};
+use winit::event::WindowEvent;
 
 fn cursor_at(p: Point) -> WindowEvent {
     WindowEvent::CursorMoved {
@@ -41,37 +40,8 @@ fn cursor_at(p: Point) -> WindowEvent {
     }
 }
 
-fn left_press() -> WindowEvent {
-    WindowEvent::MouseInput {
-        device_id: winit::event::DeviceId::dummy(),
-        state: ElementState::Pressed,
-        button: MouseButton::Left,
-    }
-}
-
-/// Drive an event through a [`PermissionPrompt`], mirroring the shell's own
-/// `pump_permission_prompt`.
-fn dispatch(p: &mut PermissionPrompt, event: &WindowEvent) {
-    let mut tree = TaffyTree::<()>::new();
-    let node = tree.new_leaf(Style::default()).unwrap();
-    let mut handled = false;
-    let mut focus_target = None;
-    let mut doc = AutoCommit::new();
-    let root = automerge::ROOT;
-    p.handle_event(
-        event,
-        &mut ui::widget::EventCtx {
-            scale_factor: 1.0,
-            modifiers: &winit::event::Modifiers::default(),
-            state: ui::widget::Edits::lend(&mut doc),
-            path: &root,
-            handled: &mut handled,
-            focus_target: &mut focus_target,
-            node_id: node,
-            taffy: &tree,
-        },
-    );
-}
+use ui::synthetic_input::mouse_press;
+use ui::testing::dispatch;
 
 /// One workspace plus the requested app's pending grant. The workspace is
 /// handed to the local user because an ownerless room has no administrators,
@@ -172,7 +142,7 @@ fn prompt_pump_drains_one_grant_per_choice_and_never_latches() {
             prompt.set_rect(Rect::new(0.0, 0.0, 600.0, 80.0));
             let center = prompt.allow_rect().center();
             dispatch(prompt, &cursor_at(center));
-            dispatch(prompt, &left_press());
+            dispatch(prompt, &mouse_press());
             assert_eq!(
                 prompt.pending_choice,
                 Some(PromptChoice::Allow),
@@ -248,7 +218,7 @@ fn prompt_pump_drains_one_grant_per_choice_and_never_latches() {
             prompt.set_rect(Rect::new(0.0, 0.0, 600.0, 80.0));
             let center = prompt.allow_rect().center();
             dispatch(prompt, &cursor_at(center));
-            dispatch(prompt, &left_press());
+            dispatch(prompt, &mouse_press());
         }
         host.tick_permission_prompt_for_tests();
 
@@ -263,7 +233,7 @@ fn prompt_pump_drains_one_grant_per_choice_and_never_latches() {
             prompt.set_rect(Rect::new(0.0, 0.0, 600.0, 80.0));
             let center = prompt.deny_rect().center();
             dispatch(prompt, &cursor_at(center));
-            dispatch(prompt, &left_press());
+            dispatch(prompt, &mouse_press());
         }
         host.tick_permission_prompt_for_tests();
 
@@ -301,7 +271,7 @@ fn prompt_pump_persists_only_what_each_choice_allows() {
             prompt.set_rect(Rect::new(0.0, 0.0, 600.0, 80.0));
             let center = prompt.session_rect().center();
             dispatch(prompt, &cursor_at(center));
-            dispatch(prompt, &left_press());
+            dispatch(prompt, &mouse_press());
             assert_eq!(prompt.pending_choice, Some(PromptChoice::Session));
         }
 
@@ -336,7 +306,7 @@ fn prompt_pump_persists_only_what_each_choice_allows() {
             prompt.set_rect(Rect::new(0.0, 0.0, 600.0, 80.0));
             let center = prompt.always_rect().center();
             dispatch(prompt, &cursor_at(center));
-            dispatch(prompt, &left_press());
+            dispatch(prompt, &mouse_press());
             assert_eq!(prompt.pending_choice, Some(PromptChoice::Always));
         }
         host.tick_permission_prompt_for_tests();
@@ -375,7 +345,7 @@ fn prompt_pump_persists_only_what_each_choice_allows() {
             prompt.set_rect(Rect::new(0.0, 0.0, 600.0, 80.0));
             let center = prompt.deny_rect().center();
             dispatch(prompt, &cursor_at(center));
-            dispatch(prompt, &left_press());
+            dispatch(prompt, &mouse_press());
             assert_eq!(prompt.pending_choice, Some(PromptChoice::Deny));
         }
         host.tick_permission_prompt_for_tests();
@@ -459,7 +429,7 @@ fn latched_permission_choice_cannot_answer_a_new_request_from_the_same_app() {
     prompt.set_rect(Rect::new(0.0, 0.0, 600.0, 80.0));
     let center = prompt.allow_rect().center();
     dispatch(prompt, &cursor_at(center));
-    dispatch(prompt, &left_press());
+    dispatch(prompt, &mouse_press());
     assert_eq!(prompt.pending_choice, Some(PromptChoice::Allow));
     host.tick_permission_prompt_for_tests();
     assert!(
@@ -488,7 +458,7 @@ fn permanent_permission_rechecks_owner_after_widget_latching() {
     prompt.set_rect(Rect::new(0.0, 0.0, 600.0, 80.0));
     let center = prompt.always_rect().center();
     dispatch(prompt, &cursor_at(center));
-    dispatch(prompt, &left_press());
+    dispatch(prompt, &mouse_press());
     assert_eq!(prompt.pending_choice, Some(PromptChoice::Always));
     chrome.borrow_mut().test_only_owner_override = Some(false);
     host.tick_permission_prompt_for_tests();

@@ -230,6 +230,7 @@ impl OsSearch {
                 context: None,
                 confirmation: None,
                 revision: Some(resolved.revision),
+                wait_ms: None,
             },
         ))
         .await??;

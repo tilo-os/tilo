@@ -16,7 +16,7 @@ use collab_types::caps::{CapOverride, Expiry, Scope, Subject};
 use runtime_collab::raw::channel_handle;
 use tilo_actions::remote::{Caller, CallerPrincipal, InvokeRequest, RemoteActionMessage};
 
-use super::action_host::ConnectionActionHost;
+use super::action_host::{ConnectionActionHost, RowScope};
 use super::{Actor, CapnpBrokerState, Verb, permission_verb};
 use crate::app_actions::{AppActionConsent, AppActionConsentPrompter, AppActionConsentRequest};
 
@@ -105,7 +105,7 @@ impl CapnpBrokerState {
         let room = person.room()?;
         let grants = self.services.app_action_grants.as_ref()?;
         let row = self
-            .eager_catalogue(person, true)
+            .eager_catalogue(person, RowScope::Provider(&request.target.provider))
             .0
             .into_iter()
             .find(|row| {
@@ -252,6 +252,16 @@ pub(super) fn serve_after_consent(
         let reply = match state.record_app_action_grant(&consent, answer) {
             None => refuse(&message, ActionHostError::NotPermitted),
             Some(grant) => {
+                // Answered at admission, as before waits existed: a grant
+                // given for this call is spent once the call is decided,
+                // never held open while the action runs.
+                let message = match message {
+                    RemoteActionMessage::Invoke(mut request) => {
+                        request.wait_ms = None;
+                        RemoteActionMessage::Invoke(request)
+                    }
+                    other => other,
+                };
                 let answered = match serve(&host, &caller, message) {
                     Some(answer) => answer.await,
                     None => None,

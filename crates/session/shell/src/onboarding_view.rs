@@ -4173,26 +4173,10 @@ mod tests {
     }
 
     fn dispatch_escape(view: &mut OnboardingView, document: &mut AutoCommit) -> bool {
-        let mut taffy = TaffyTree::<()>::new();
-        let node = taffy
-            .new_leaf(taffy::Style::default())
-            .expect("event target");
-        let mut handled = false;
-        let mut focus_target = None;
-        view.handle_event(
-            &escape_event(),
-            &mut ui::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &Modifiers::default(),
-                state: ui::widget::Edits::lend(document),
-                path: &automerge::ROOT,
-                handled: &mut handled,
-                focus_target: &mut focus_target,
-                node_id: node,
-                taffy: &taffy,
-            },
-        );
-        handled
+        ui::testing::Dispatch::new()
+            .doc(document)
+            .send(view, &escape_event())
+            .handled
     }
 
     fn pointer_event(position: Point) -> WindowEvent {
@@ -4202,21 +4186,9 @@ mod tests {
         }
     }
 
-    fn primary_press_event() -> WindowEvent {
-        WindowEvent::MouseInput {
-            device_id: winit::event::DeviceId::dummy(),
-            state: ElementState::Pressed,
-            button: winit::event::MouseButton::Left,
-        }
-    }
+    use ui::synthetic_input::mouse_press;
 
-    fn primary_release_event() -> WindowEvent {
-        WindowEvent::MouseInput {
-            device_id: winit::event::DeviceId::dummy(),
-            state: ElementState::Released,
-            button: winit::event::MouseButton::Left,
-        }
-    }
+    use ui::synthetic_input::mouse_release;
 
     fn accessible_names(widget: &dyn Widget, names: &mut Vec<String>) {
         if let Some(name) = widget.accessibility().and_then(|node| node.name) {
@@ -6364,7 +6336,7 @@ mod tests {
             );
 
             let mut focus = None;
-            for event in [pointer_event(label_point), primary_press_event()] {
+            for event in [pointer_event(label_point), mouse_press()] {
                 let mut handled = false;
                 view.handle_event(
                     &event,
@@ -6443,8 +6415,8 @@ mod tests {
             let mut focus = None;
             for event in [
                 pointer_event(button.center()),
-                primary_press_event(),
-                primary_release_event(),
+                mouse_press(),
+                mouse_release(),
             ] {
                 let mut handled = false;
                 view.handle_event(

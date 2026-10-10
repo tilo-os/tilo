@@ -278,6 +278,7 @@ mod tests {
         "form_composition_shots.rs",
         "managed_history_probe.rs",
         "manual_composition_shots.rs",
+        "multiline_typing.rs",
         "native_file_picker.rs",
         "native_input_probe.rs",
         "reading_face_shots.rs",

@@ -2775,6 +2775,28 @@ impl TileHost {
             transform,
             &shape,
         );
+        // Everything up to the matching pop is clipped to the tile, so the
+        // tile bounds whatever its content changes: a damage part.
+        let content = crate::scene_parts::PartKey::new("ui.tile-content", ());
+        let bounds = vec![transform.transform_rect_bbox(self.rect)];
+        crate::scene_parts::part(scene, content, bounds, |scene| {
+            self.draw_clipped_content(scene, transform, tr, theme, presence, &shape);
+        });
+        scene.pop_layer();
+        self.draw_edge(scene, transform, theme, radius);
+    }
+
+    /// The tile's content inside its clip: the opening card, the app (or a
+    /// card in its place), and the card dissolving over an arrived app.
+    fn draw_clipped_content(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+        shape: &RoundedRect,
+    ) {
         // An app asked for but not arrived gets the card in place of the
         // app, not behind it: its early buffer is the client's own size,
         // not the tab's, and painting it would show the window visibly
@@ -2854,7 +2876,7 @@ impl TileHost {
                         vello::peniko::BlendMode::default(),
                         1.0 - t,
                         transform,
-                        &shape,
+                        shape,
                     );
                     draw_opening_card(
                         scene,
@@ -2870,8 +2892,6 @@ impl TileHost {
                 }
             }
         }
-        scene.pop_layer();
-        self.draw_edge(scene, transform, theme, radius);
     }
 }
 
@@ -3420,20 +3440,10 @@ mod tests {
             let mut taffy = TaffyTree::new();
             let mut node_map = std::collections::HashMap::new();
             let node = host.build_layout(&mut taffy, &Theme::default(), &mut node_map);
-            let mut handled = true;
-            host.handle_event(
-                &WindowEvent::Focused(true),
-                &mut crate::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &winit::event::Modifiers::default(),
-                    state: crate::widget::Edits::lend(&mut AutoCommit::new()),
-                    path: &ROOT,
-                    handled: &mut handled,
-                    focus_target: &mut None,
-                    node_id: node,
-                    taffy: &taffy,
-                },
-            );
+            crate::testing::Dispatch::new()
+                .handled(true)
+                .layout(&taffy, node)
+                .send(&mut host, &WindowEvent::Focused(true));
             assert_eq!(calls.get(), 0);
         }
     }
@@ -5038,23 +5048,12 @@ mod tests {
                 device_id: device,
                 position: (point.x * scale, point.y * scale).into(),
             };
-            let mut doc = AutoCommit::new();
+            let mut sender = crate::testing::Dispatch::new()
+                .scale_factor(scale)
+                .layout(&tree, node);
             let mut send = |event: &WindowEvent| {
                 calls.set(0);
-                let mut handled = false;
-                host.handle_event(
-                    event,
-                    &mut crate::widget::EventCtx {
-                        scale_factor: scale,
-                        modifiers: &winit::event::Modifiers::default(),
-                        state: crate::widget::Edits::lend(&mut doc),
-                        path: &ROOT,
-                        handled: &mut handled,
-                        focus_target: &mut None,
-                        node_id: node,
-                        taffy: &tree,
-                    },
-                );
+                let handled = sender.send(&mut host, event).handled;
                 (handled, calls.get())
             };
             let wheel = WindowEvent::MouseWheel {

@@ -83,6 +83,8 @@ pub(super) struct InputRuntime {
     /// The app is shown inside a host whose focus order continues past it:
     /// Tab at either end of the app's order leaves it for the host.
     pub(super) tab_order_continues_in_host: bool,
+    /// The pointer buttons held down, one bit each; see `input_publication`.
+    pub(super) pointer_buttons: u32,
 }
 
 impl InputRuntime {
@@ -97,6 +99,7 @@ impl InputRuntime {
             tooltip_host: crate::widget::TooltipHost::new(),
             pen: crate::pen::PenInput::default(),
             tab_order_continues_in_host: false,
+            pointer_buttons: 0,
         }
     }
 }

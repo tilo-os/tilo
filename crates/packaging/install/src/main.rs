@@ -9,11 +9,7 @@
 #![cfg_attr(
     test,
     allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
         clippy::string_slice,
-        clippy::panic,
         clippy::unreachable,
         reason = "in a test these are the assertion, not a hazard"
     )
@@ -1121,7 +1117,8 @@ fn install_runtime_package(
         fs::remove_dir_all(&staging)?;
     }
     let result = stage_runtime_bundle(candidate, &staging, payload).and_then(|tree| {
-        check_runtime_bundle(&tree, version)?;
+        let manifest = check_runtime_bundle(&tree, version)?;
+        seal_runtime_bundle(&tree, &manifest);
         if dest.exists() {
             fs::remove_dir_all(&dest)?;
         }
@@ -1173,8 +1170,40 @@ fn stage_runtime_bundle(
     Ok(tree)
 }
 
+/// Enable fs-verity on a fully verified bundle's files, so each launch
+/// trusts them by their kernel-measured, publisher-signed digests instead of
+/// hashing the whole runtime again. Best effort: where the filesystem has no
+/// fs-verity, or the bundle predates its digests, launches hash the payload
+/// as before, which is as safe and only slower.
+fn seal_runtime_bundle(tree: &Path, manifest: &runtime_bundle::BundleManifest) {
+    match runtime_bundle::enable_bundle_verity(tree, manifest) {
+        Ok(0) => {}
+        Ok(sealed) => {
+            println!("  sealed   : {sealed} file(s) with fs-verity");
+            // What a launch will do: a file the kernel measures differently
+            // from its signed digest is hashed at every launch, so say so.
+            let options = runtime_bundle::VerifyOptions::default();
+            if let Ok((_, check)) = runtime_bundle::verify_bundle_verity_with(tree, &options)
+                && check.hashed > 0
+            {
+                println!(
+                    "  warning  : {} file(s) do not measure their signed fs-verity digest; each \
+                     launch hashes them",
+                    check.hashed
+                );
+            }
+        }
+        Err(error) => {
+            println!("  sealed   : no ({error}); each launch hashes the runtime instead");
+        }
+    }
+}
+
 /// The checks the launcher makes before it mounts a per-user bundle.
-fn check_runtime_bundle(tree: &Path, version: &str) -> Result<(), Error> {
+fn check_runtime_bundle(
+    tree: &Path,
+    version: &str,
+) -> Result<runtime_bundle::BundleManifest, Error> {
     let manifest = runtime_bundle::verify_bundle_with(
         tree,
         &runtime_bundle::VerifyOptions {
@@ -1193,6 +1222,7 @@ fn check_runtime_bundle(tree: &Path, version: &str) -> Result<(), Error> {
     if let Some(trusted) = trusted_runtime_publishers()?.filter(|list| !list.is_empty()) {
         let publisher = manifest
             .publisher_hex
+            .as_deref()
             .unwrap_or_default()
             .to_ascii_lowercase();
         if !trusted.contains(&publisher) {
@@ -1202,7 +1232,7 @@ fn check_runtime_bundle(tree: &Path, version: &str) -> Result<(), Error> {
             )));
         }
     }
-    Ok(())
+    Ok(manifest)
 }
 
 /// Let GNOME Shell and `KRunner` search the resources the runtime beside this
@@ -2141,6 +2171,7 @@ fn runtime_install(
     if let Some(pk) = &manifest.publisher_hex {
         println!("  publisher: ed25519:{pk}");
     }
+    seal_runtime_bundle(&dest, &manifest);
     Ok(())
 }
 

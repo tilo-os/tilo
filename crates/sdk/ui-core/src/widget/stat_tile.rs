@@ -509,14 +509,6 @@ impl StatTile {
         }
     }
 
-    /// Replace or clear the tone.
-    pub fn set_tone(&mut self, tone: Option<Tone>) {
-        if tone != self.tone {
-            self.tone = tone;
-            self.dirty = true;
-        }
-    }
-
     /// See [`StatTileFace::unit`].
     #[must_use]
     pub fn unit(mut self, unit: impl Into<String>) -> Self {

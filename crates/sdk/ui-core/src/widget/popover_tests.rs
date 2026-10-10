@@ -3,7 +3,7 @@
 //! for the highlight, painted only in the top layer.
 
 use super::*;
-use automerge::AutoCommit;
+use crate::testing::dispatch;
 use vello_encoding::DrawTag;
 
 const WINDOW: Rect = Rect::new(0.0, 0.0, 800.0, 600.0);
@@ -30,13 +30,7 @@ fn cursor_at(pt: Point) -> WindowEvent {
     }
 }
 
-fn left_press() -> WindowEvent {
-    WindowEvent::MouseInput {
-        device_id: winit::event::DeviceId::dummy(),
-        state: ElementState::Pressed,
-        button: MouseButton::Left,
-    }
-}
+use crate::synthetic_input::mouse_press;
 
 fn key_event(logical: Key) -> WindowEvent {
     crate::synthetic_input::keyboard_input(crate::synthetic_input::key_event(
@@ -48,29 +42,6 @@ fn key_event(logical: Key) -> WindowEvent {
 
 fn key(named: NamedKey) -> WindowEvent {
     key_event(Key::Named(named))
-}
-
-fn dispatch<C: Widget + 'static>(p: &mut Popover<C>, event: &WindowEvent) -> bool {
-    let mut taffy = TaffyTree::<()>::new();
-    let node = taffy.leaf_node(Style::default());
-    let mut handled = false;
-    let mut focus = None;
-    let mut doc = AutoCommit::new();
-    let root = automerge::ROOT;
-    p.handle_event(
-        event,
-        &mut crate::widget::EventCtx {
-            scale_factor: 1.0,
-            modifiers: &winit::event::Modifiers::default(),
-            state: crate::widget::Edits::lend(&mut doc),
-            path: &root,
-            handled: &mut handled,
-            focus_target: &mut focus,
-            node_id: node,
-            taffy: &taffy,
-        },
-    );
-    handled
 }
 
 /// Paint the top layer over `WINDOW`, as hosts do.
@@ -196,7 +167,7 @@ fn menu_pointer_selection_and_dismissal() {
     );
     dispatch(&mut p, &cursor_at(row2.center()));
     assert_eq!(p.highlighted(), 2, "the pointer moves the highlight");
-    assert!(dispatch(&mut p, &left_press()));
+    assert!(dispatch(&mut p, &mouse_press()));
     assert_eq!(p.take_selection(), Some(2));
     assert!(!p.is_open());
 
@@ -206,7 +177,7 @@ fn menu_pointer_selection_and_dismissal() {
     let outside = Point::new(p.rect().x1 + 80.0, p.rect().y1 + 80.0);
     dispatch(&mut p, &cursor_at(outside));
     assert!(
-        dispatch(&mut p, &left_press()),
+        dispatch(&mut p, &mouse_press()),
         "the outside click is swallowed"
     );
     assert!(!p.is_open());

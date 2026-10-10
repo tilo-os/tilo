@@ -1361,6 +1361,7 @@ dependencies = [
  "blake3",
  "bounded-zip",
  "fnv",
+ "hex",
  "host-info",
  "private-fs",
  "reqwest 0.13.4",
@@ -1952,6 +1953,7 @@ name = "chip-design"
 version = "0.1.0"
 dependencies = [
  "blake3",
+ "hex",
  "runtime-dylib",
  "serde",
  "serde_json",
@@ -2372,17 +2374,14 @@ dependencies = [
  "getrandom 0.4.3",
  "hex",
  "postcard",
- "rand 0.10.1",
  "serde",
  "serde_bytes",
  "serde_json",
  "sha2 0.11.0",
  "thiserror 2.0.21",
- "tilo-clock",
  "tracing",
  "uuid",
  "web-time",
- "wire-frame",
 ]
 
 [[package]]
@@ -4315,10 +4314,10 @@ dependencies = [
  "cap-std",
  "chrono",
  "cloud-source",
- "collab-types",
  "ed25519-dalek 3.0.0",
  "flate2",
  "fluent",
+ "fs-protocol",
  "fuser",
  "hex",
  "host-fs",
@@ -4725,6 +4724,25 @@ dependencies = [
  "fs-content",
  "hex",
  "libc",
+ "workspace-hack",
+]
+
+[[package]]
+name = "fs-protocol"
+version = "0.1.0"
+dependencies = [
+ "collab-types",
+ "ed25519-dalek 3.0.0",
+ "getrandom 0.4.3",
+ "hex",
+ "postcard",
+ "rand 0.10.1",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "thiserror 2.0.21",
+ "uuid",
+ "wire-frame",
  "workspace-hack",
 ]
 
@@ -7037,6 +7055,7 @@ dependencies = [
  "tilo-os-search",
  "tilo-paths",
  "tilo-rt",
+ "tilo-test-env",
  "toml 1.0.6+spec-1.1.0",
  "workspace-hack",
 ]
@@ -7883,10 +7902,12 @@ version = "0.1.0"
 dependencies = [
  "ash",
  "blake3",
+ "bounded-command",
  "clap",
  "collab-types",
  "ed25519-dalek 3.0.0",
  "fnv",
+ "fs-protocol",
  "getrandom 0.4.3",
  "hex",
  "landlock",
@@ -7908,6 +7929,7 @@ dependencies = [
  "tilo-paths",
  "tilo-rt",
  "tilo-sandbox-core",
+ "tilo-startup-metrics",
  "tilo-test-env",
  "tokio",
  "toml 1.0.6+spec-1.1.0",
@@ -9365,6 +9387,7 @@ dependencies = [
  "blake3",
  "collab-types",
  "ed25519-dalek 3.0.0",
+ "hex",
  "postcard",
  "serde",
  "serde_json",
@@ -12533,15 +12556,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "registry-web-bindgen"
-version = "0.1.0"
-dependencies = [
- "registry-web",
- "serde_json",
- "wasm-bindgen",
-]
-
-[[package]]
 name = "reis"
 version = "0.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -12982,6 +12996,7 @@ dependencies = [
  "libc",
  "serde",
  "serde_json",
+ "sha2 0.11.0",
  "tempfile",
  "thiserror 2.0.21",
  "tilo-clock",
@@ -14065,6 +14080,7 @@ dependencies = [
 name = "settings-store"
 version = "0.1.0"
 dependencies = [
+ "hex",
  "notify",
  "serde",
  "serde_json",
@@ -14398,10 +14414,10 @@ dependencies = [
  "uuid",
  "walkdir",
  "wayland-client",
- "wayland-scanner",
  "wayland-protocols",
  "wayland-protocols-misc",
  "wayland-protocols-wlr",
+ "wayland-scanner",
  "wgpu",
  "windows-vm",
  "wire-frame",
@@ -15930,6 +15946,7 @@ dependencies = [
  "hyper-util",
  "iroh",
  "iroh-base",
+ "libc",
  "maps",
  "messages",
  "music",
@@ -15941,6 +15958,7 @@ dependencies = [
  "postcard",
  "rustls",
  "scratchpad",
+ "seccompiler",
  "serde",
  "serde_json",
  "sha2 0.11.0",
@@ -15967,6 +15985,8 @@ dependencies = [
  "tilo-relay",
  "tilo-relay-client",
  "tilo-relay-protocol",
+ "tilo-sandbox",
+ "tilo-sandbox-core",
  "tilo-test-env",
  "tilo-user-identity",
  "tokio",
@@ -15979,6 +15999,7 @@ dependencies = [
  "video-editor",
  "video-player",
  "weather",
+ "wire-frame",
  "word-processor",
  "workspace-hack",
 ]
@@ -16009,6 +16030,7 @@ name = "tilo-app-cli"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "blake3",
  "clap",
  "fluent",
  "fluent-syntax",
@@ -16021,6 +16043,7 @@ dependencies = [
  "quote",
  "registry-client",
  "registry-types",
+ "runtime-bundle",
  "serde",
  "serde_json",
  "serde_yaml",
@@ -16062,6 +16085,7 @@ dependencies = [
  "toml 1.0.6+spec-1.1.0",
  "walkdir",
  "workspace-hack",
+ "zstd",
 ]
 
 [[package]]
@@ -16194,7 +16218,6 @@ dependencies = [
 name = "tilo-bluez"
 version = "0.1.0"
 dependencies = [
- "futures-util",
  "tokio",
  "tracing",
  "workspace-hack",
@@ -16274,7 +16297,6 @@ dependencies = [
  "ed25519-dalek 3.0.0",
  "hex",
  "js-sys",
- "notes",
  "postcard",
  "serde",
  "serde_json",
@@ -16853,6 +16875,7 @@ name = "tilo-font-catalog"
 version = "0.1.0"
 dependencies = [
  "hex",
+ "libc",
  "serde",
  "sha2 0.11.0",
  "tempfile",
@@ -16881,6 +16904,7 @@ dependencies = [
  "ed25519-dalek 3.0.0",
  "fs-content",
  "fs-native",
+ "fs-protocol",
  "fuser",
  "futures-util",
  "getrandom 0.4.3",
@@ -17019,6 +17043,7 @@ dependencies = [
 name = "tilo-input-context"
 version = "0.1.0"
 dependencies = [
+ "libc",
  "serde",
  "serde_json",
  "tilo-actions",
@@ -17183,6 +17208,9 @@ dependencies = [
  "futures-util",
  "messages",
  "private-fs",
+ "reqwest 0.13.4",
+ "rustls",
+ "rustls-native-certs",
  "serde",
  "serde_json",
  "tempfile",
@@ -17191,10 +17219,12 @@ dependencies = [
  "tilo-clock",
  "tilo-contact-directory",
  "tilo-messaging",
+ "tilo-net",
  "tilo-resource",
  "tilo-secret-vault",
  "tilo-secrets",
  "tokio",
+ "tokio-tungstenite",
  "uuid",
  "whatsapp-rust",
  "workspace-hack",
@@ -17210,6 +17240,7 @@ dependencies = [
  "agent-provider-config",
  "base64",
  "clap",
+ "hex",
  "image",
  "libc",
  "local-model-service",
@@ -17243,6 +17274,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.11.0",
+ "tempfile",
  "thiserror 2.0.21",
  "tilo-clock",
  "tilo-test-env",
@@ -17769,6 +17801,7 @@ name = "tilo-resource"
 version = "0.1.0"
 dependencies = [
  "blake3",
+ "hex",
  "serde",
  "serde_json",
  "thiserror 2.0.21",
@@ -17839,8 +17872,11 @@ dependencies = [
  "rand 0.10.1",
  "rcgen",
  "rustls",
+ "serde",
  "serde_json",
  "tilo-clock",
+ "tilo-moq",
+ "tilo-relay-protocol",
  "tokio",
  "tokio-rustls",
  "workspace-hack",
@@ -17890,6 +17926,7 @@ dependencies = [
  "collab-types",
  "console-control",
  "ed25519-dalek 3.0.0",
+ "fs-protocol",
  "fuser",
  "getrandom 0.4.3",
  "hex",
@@ -18024,6 +18061,7 @@ dependencies = [
 name = "tilo-secrets"
 version = "0.1.0"
 dependencies = [
+ "hex",
  "js-sys",
  "libc",
  "security-framework",
@@ -18201,6 +18239,7 @@ dependencies = [
  "fluent",
  "fnv",
  "form_urlencoded",
+ "fs-protocol",
  "getrandom 0.2.17",
  "getrandom 0.4.3",
  "hex",
@@ -18594,9 +18633,9 @@ dependencies = [
  "wasm-bindgen-futures",
  "wayland-backend",
  "wayland-client",
- "wayland-scanner",
  "wayland-protocols",
  "wayland-protocols-plasma",
+ "wayland-scanner",
  "web-sys",
  "web-time",
  "windows-sys 0.52.0",
@@ -22145,6 +22184,7 @@ dependencies = [
  "tokio",
  "tokio-rustls",
  "tokio-stream",
+ "tokio-tungstenite",
  "tokio-util",
  "tokio-websockets",
  "toml 1.0.6+spec-1.1.0",

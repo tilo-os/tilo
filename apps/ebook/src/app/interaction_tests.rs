@@ -7,6 +7,7 @@ use crate::content::load_sample_library;
 use crate::model::AnnoKind;
 use serial_test::serial;
 use ui::presence::PresenceCtx;
+use ui::testing::Dispatch;
 use ui::widget::Edits;
 use winit::dpi::PhysicalPosition;
 use winit::event::DeviceId;
@@ -458,131 +459,47 @@ fn find_reading_hit(
 
 /// Route a real left-click at `p` (logical px) through `handle_event`.
 fn click(app: &mut BooksApp, doc: &mut AutoCommit, p: Point) -> bool {
-    let mods = Modifiers::default();
-    let taffy: TaffyTree<()> = TaffyTree::new();
-    let node = NodeId::new(0);
-    let root = automerge::ROOT;
-    let mut handled = false;
-    let mut focus = None;
     let mv = WindowEvent::CursorMoved {
         device_id: DeviceId::dummy(),
         position: PhysicalPosition::new(p.x, p.y),
     };
-    app.handle_event(
-        &mv,
-        &mut ui::widget::EventCtx {
-            scale_factor: 1.0,
-            modifiers: &mods,
-            state: Edits::lend(doc),
-            path: &root,
-            handled: &mut handled,
-            focus_target: &mut focus,
-            node_id: node,
-            taffy: &taffy,
-        },
-    );
+    let moved = Dispatch::new().doc(doc).send(app, &mv);
     let press = WindowEvent::MouseInput {
         device_id: DeviceId::dummy(),
         state: ElementState::Pressed,
         button: MouseButton::Left,
     };
-    handled = false;
-    app.handle_event(
-        &press,
-        &mut ui::widget::EventCtx {
-            scale_factor: 1.0,
-            modifiers: &mods,
-            state: Edits::lend(doc),
-            path: &root,
-            handled: &mut handled,
-            focus_target: &mut focus,
-            node_id: node,
-            taffy: &taffy,
-        },
-    );
-    handled
+    Dispatch::new()
+        .doc(doc)
+        .focus_target(moved.focus_target)
+        .send(app, &press)
+        .handled
 }
 
 /// Route a wheel event (`lines` positive == scroll up) through `handle_event`.
 fn wheel(app: &mut BooksApp, doc: &mut AutoCommit, lines: f32) -> bool {
-    let mods = Modifiers::default();
-    let taffy: TaffyTree<()> = TaffyTree::new();
-    let node = NodeId::new(0);
-    let root = automerge::ROOT;
-    let mut handled = false;
-    let mut focus = None;
     let ev = WindowEvent::MouseWheel {
         device_id: DeviceId::dummy(),
         delta: MouseScrollDelta::LineDelta(0.0, lines),
         phase: winit::event::TouchPhase::Moved,
     };
-    app.handle_event(
-        &ev,
-        &mut ui::widget::EventCtx {
-            scale_factor: 1.0,
-            modifiers: &mods,
-            state: Edits::lend(doc),
-            path: &root,
-            handled: &mut handled,
-            focus_target: &mut focus,
-            node_id: node,
-            taffy: &taffy,
-        },
-    );
-    handled
+    Dispatch::new().doc(doc).send(app, &ev).handled
 }
 
 /// Route a horizontal wheel/scroll through `handle_event`. Positive
 /// `lines` is a physical scroll-right, matching winit's `LineDelta` x sign.
 fn hwheel(app: &mut BooksApp, doc: &mut AutoCommit, lines: f32) -> bool {
-    let mods = Modifiers::default();
-    let taffy: TaffyTree<()> = TaffyTree::new();
-    let node = NodeId::new(0);
-    let root = automerge::ROOT;
-    let mut handled = false;
-    let mut focus = None;
     let ev = WindowEvent::MouseWheel {
         device_id: DeviceId::dummy(),
         delta: MouseScrollDelta::LineDelta(lines, 0.0),
         phase: winit::event::TouchPhase::Moved,
     };
-    app.handle_event(
-        &ev,
-        &mut ui::widget::EventCtx {
-            scale_factor: 1.0,
-            modifiers: &mods,
-            state: Edits::lend(doc),
-            path: &root,
-            handled: &mut handled,
-            focus_target: &mut focus,
-            node_id: node,
-            taffy: &taffy,
-        },
-    );
-    handled
+    Dispatch::new().doc(doc).send(app, &ev).handled
 }
 
 /// Low-level pointer events for drag-selection tests.
 fn send(app: &mut BooksApp, doc: &mut AutoCommit, ev: &WindowEvent) {
-    let mods = Modifiers::default();
-    let taffy: TaffyTree<()> = TaffyTree::new();
-    let node = NodeId::new(0);
-    let root = automerge::ROOT;
-    let mut handled = false;
-    let mut focus = None;
-    app.handle_event(
-        ev,
-        &mut ui::widget::EventCtx {
-            scale_factor: 1.0,
-            modifiers: &mods,
-            state: Edits::lend(doc),
-            path: &root,
-            handled: &mut handled,
-            focus_target: &mut focus,
-            node_id: node,
-            taffy: &taffy,
-        },
-    );
+    Dispatch::new().doc(doc).send(app, ev);
 }
 fn ptr_move(app: &mut BooksApp, doc: &mut AutoCommit, p: Point) {
     send(
@@ -660,26 +577,7 @@ fn named_press(named: NamedKey) -> WindowEvent {
     }
 }
 fn feed(app: &mut BooksApp, doc: &mut AutoCommit, ev: &WindowEvent) -> bool {
-    let mods = Modifiers::default();
-    let taffy: TaffyTree<()> = TaffyTree::new();
-    let node = NodeId::new(0);
-    let root = automerge::ROOT;
-    let mut handled = false;
-    let mut focus = None;
-    app.handle_event(
-        ev,
-        &mut ui::widget::EventCtx {
-            scale_factor: 1.0,
-            modifiers: &mods,
-            state: Edits::lend(doc),
-            path: &root,
-            handled: &mut handled,
-            focus_target: &mut focus,
-            node_id: node,
-            taffy: &taffy,
-        },
-    );
-    handled
+    Dispatch::new().doc(doc).send(app, ev).handled
 }
 fn key_char(app: &mut BooksApp, doc: &mut AutoCommit, ch: &str) -> bool {
     feed(app, doc, &char_press(ch))
@@ -694,26 +592,11 @@ fn key_named_mods(
     named: NamedKey,
     state: ModifiersState,
 ) -> bool {
-    let mods = Modifiers::from(state);
-    let taffy: TaffyTree<()> = TaffyTree::new();
-    let node = NodeId::new(0);
-    let root = automerge::ROOT;
-    let mut handled = false;
-    let mut focus = None;
-    app.handle_event(
-        &named_press(named),
-        &mut ui::widget::EventCtx {
-            scale_factor: 1.0,
-            modifiers: &mods,
-            state: Edits::lend(doc),
-            path: &root,
-            handled: &mut handled,
-            focus_target: &mut focus,
-            node_id: node,
-            taffy: &taffy,
-        },
-    );
-    handled
+    Dispatch::new()
+        .modifiers(state)
+        .doc(doc)
+        .send(app, &named_press(named))
+        .handled
 }
 /// Feed a printable character with explicit modifiers (e.g. Ctrl+A).
 fn key_char_mods(
@@ -722,26 +605,11 @@ fn key_char_mods(
     ch: &str,
     state: ModifiersState,
 ) -> bool {
-    let mods = Modifiers::from(state);
-    let taffy: TaffyTree<()> = TaffyTree::new();
-    let node = NodeId::new(0);
-    let root = automerge::ROOT;
-    let mut handled = false;
-    let mut focus = None;
-    app.handle_event(
-        &char_press(ch),
-        &mut ui::widget::EventCtx {
-            scale_factor: 1.0,
-            modifiers: &mods,
-            state: Edits::lend(doc),
-            path: &root,
-            handled: &mut handled,
-            focus_target: &mut focus,
-            node_id: node,
-            taffy: &taffy,
-        },
-    );
-    handled
+    Dispatch::new()
+        .modifiers(state)
+        .doc(doc)
+        .send(app, &char_press(ch))
+        .handled
 }
 
 /// A point at the centre of the first laid-out word on the current page.

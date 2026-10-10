@@ -665,6 +665,14 @@ impl AppActionBroker {
         self.state.invocation_changes()
     }
 
+    /// Sees every published-surface change after this call — what
+    /// [`Self::surfaces_generation`] counts — so a waiter for a listing of
+    /// these actions can sleep until one happens.
+    #[must_use]
+    pub fn surface_changes(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.state.surface_changes()
+    }
+
     /// One invocation's current status, only when `actor` owns it.
     #[must_use]
     pub fn status_for_actor(&self, id: u64, actor: &str) -> Option<tilo_actions::InvocationUpdate> {
@@ -840,11 +848,6 @@ impl BrokerHandle {
         usize::try_from(self.fanout.connections_seen()).unwrap_or(usize::MAX)
     }
 
-    /// Every typed connection joins a channel as part of setup.
-    pub fn announced_peer_count(&self) -> usize {
-        self.peer_count()
-    }
-
     /// Fan a `CollabEvent` to the peers `route` addresses. `except`
     /// skips one peer id, for the Iroh bridge. No "reach everyone"
     /// form exists — see [`FanoutState::fanout_to_route`].
@@ -945,15 +948,6 @@ impl BrokerHandle {
         self.channels
             .lock()
             .map(|g| g.audit.for_artifact(artifact))
-            .unwrap_or_default()
-    }
-
-    /// Structured redaction records for one artifact, independent of
-    /// `audit_for` so the compliance surface skips filtering drops.
-    pub fn redactions_for(&self, artifact: ArtifactId) -> Vec<RedactionRecord> {
-        self.channels
-            .lock()
-            .map(|g| g.redactions.for_artifact(artifact))
             .unwrap_or_default()
     }
 }

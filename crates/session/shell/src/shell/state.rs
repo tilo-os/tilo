@@ -1970,9 +1970,16 @@ impl WorkspaceTree {
         &self,
         room: RoomId,
     ) -> std::collections::BTreeMap<String, GovernedPeerIdentity> {
+        Self::peer_identities_of(self.room_docs.get(&room))
+    }
+
+    /// The valid governed identities room document `doc` carries.
+    fn peer_identities_of(
+        doc: Option<&AutoCommit>,
+    ) -> std::collections::BTreeMap<String, GovernedPeerIdentity> {
         use automerge::{ROOT, ReadDoc, ScalarValue, Value};
         let mut out = std::collections::BTreeMap::new();
-        let Some(doc) = self.room_docs.get(&room) else {
+        let Some(doc) = doc else {
             return out;
         };
         let Some((_, object)) = doc
@@ -2020,9 +2027,14 @@ impl WorkspaceTree {
         &self,
         room: RoomId,
     ) -> std::collections::BTreeMap<String, String> {
+        Self::peer_names_of(self.room_docs.get(&room))
+    }
+
+    /// Every name room document `doc` carries.
+    fn peer_names_of(doc: Option<&AutoCommit>) -> std::collections::BTreeMap<String, String> {
         use automerge::{ROOT, ReadDoc, ScalarValue, Value};
         let mut out = std::collections::BTreeMap::new();
-        let Some(doc) = self.room_docs.get(&room) else {
+        let Some(doc) = doc else {
             return out;
         };
         let Some((_, peers_id)) = doc.get(&ROOT, Self::ROOM_PEERS_KEY).ok().flatten() else {
@@ -2151,6 +2163,16 @@ impl WorkspaceTree {
                 .map(|c| c.raw_bytes().to_vec())
                 .collect(),
         )
+    }
+
+    /// Whether `heads`, a peer's heads of `room`, name a change this
+    /// machine does not hold.
+    pub fn room_lacks_any(&mut self, room: RoomId, heads: &[ChangeHash]) -> bool {
+        self.room_docs.get_mut(&room).is_some_and(|doc| {
+            heads
+                .iter()
+                .any(|head| doc.get_change_meta_by_hash(head).is_none())
+        })
     }
 
     /// The sender of a batch for `room` as this machine knows it: the
@@ -2379,6 +2401,14 @@ impl WorkspaceTree {
             staged_before = Some(staged);
         }
         let before = staged_before.as_ref().or_else(|| self.room_docs.get(&room));
+        // Another device of the person that governs the room may have named
+        // or certified a peer; what it changed is adopted below.
+        let governed_peers_before = self.governs_room(room).then(|| {
+            (
+                Self::peer_names_of(before),
+                Self::peer_identities_of(before),
+            )
+        });
         let now = tilo_clock::unix_now();
         let authority = self.room_authority(room);
         let local_person = self.local_person;
@@ -2457,6 +2487,12 @@ impl WorkspaceTree {
             }
         }
         let records_changed = self.queue_inbound_records(room, &candidate);
+        let peers_changed = governed_peers_before.is_some_and(|(names, identities)| {
+            self.adopt_governed_peers(room, &names, &identities, &candidate)
+        });
+        if peers_changed {
+            self.queue_save();
+        }
 
         self.room_docs.insert(room, candidate);
 
@@ -2465,7 +2501,7 @@ impl WorkspaceTree {
         let contents_changed = self.merge_room_contents(room);
 
         let Some(ws) = self.desktop.workspaces.iter_mut().find(|w| w.room == room) else {
-            return Ok(records_changed || contents_changed);
+            return Ok(records_changed || contents_changed || peers_changed);
         };
         let mut fields_changed = false;
         if let Some(name) = name
@@ -2517,7 +2553,7 @@ impl WorkspaceTree {
             self.seed_doc_from_cache();
             self.queue_save();
         }
-        let landed = fields_changed || records_changed || media_changed;
+        let landed = fields_changed || records_changed || media_changed || peers_changed;
         if landed {
             // A peer's window is in the tree now but not on screen yet —
             // this runs on the network thread, and only the frame
@@ -2525,6 +2561,57 @@ impl WorkspaceTree {
             self.desktop.room_epoch = self.desktop.room_epoch.wrapping_add(1);
         }
         Ok(landed)
+    }
+
+    /// Adopt what an admitted batch changed in `room`'s governed peer names
+    /// and identities into this machine's own, when it governs the room too.
+    /// Every device of the person who owns a room governs it, and each
+    /// projects its own names into the shared document, sweeping the ones
+    /// it does not hold: without adopting a co-governor's naming, two such
+    /// devices delete and restore each other's entries forever, a change a
+    /// second each way on a desktop nobody uses. Only the delta is taken,
+    /// so an entry this machine holds and the batch did not touch stays.
+    /// The admission already refused a governance change from anyone but
+    /// the room's governor.
+    fn adopt_governed_peers(
+        &mut self,
+        room: RoomId,
+        names_before: &std::collections::BTreeMap<String, String>,
+        identities_before: &std::collections::BTreeMap<String, GovernedPeerIdentity>,
+        candidate: &AutoCommit,
+    ) -> bool {
+        fn adopt<V: Clone + PartialEq>(
+            local: &mut std::collections::BTreeMap<String, V>,
+            before: &std::collections::BTreeMap<String, V>,
+            after: &std::collections::BTreeMap<String, V>,
+        ) -> bool {
+            let mut changed = false;
+            for (key, value) in after {
+                if before.get(key) != Some(value) && local.get(key) != Some(value) {
+                    local.insert(key.clone(), value.clone());
+                    changed = true;
+                }
+            }
+            for key in before.keys().filter(|key| !after.contains_key(*key)) {
+                changed |= local.remove(key).is_some();
+            }
+            changed
+        }
+        let names = self.room_peer_names.entry(room).or_default();
+        let mut changed = adopt(names, names_before, &Self::peer_names_of(Some(candidate)));
+        if names.is_empty() {
+            self.room_peer_names.remove(&room);
+        }
+        let identities = self.room_peer_identities.entry(room).or_default();
+        changed |= adopt(
+            identities,
+            identities_before,
+            &Self::peer_identities_of(Some(candidate)),
+        );
+        if identities.is_empty() {
+            self.room_peer_identities.remove(&room);
+        }
+        changed
     }
 
     /// Seed the automerge doc from the cache. Idempotent and diff-aware:
@@ -4320,12 +4407,6 @@ impl WorkspaceTree {
             self.continuation_owned_tabs.insert(tab, room);
         }
         true
-    }
-
-    pub fn note_continuation_tab_closed(&mut self, tab: TabId) {
-        if let Some(room) = self.continuation_owned_tabs.remove(&tab) {
-            self.continuation_closed_tabs.insert(tab, room);
-        }
     }
 
     /// Remove rooms which exist here solely because of a continuation offer

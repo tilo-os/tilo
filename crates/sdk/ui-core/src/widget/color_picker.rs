@@ -246,14 +246,6 @@ impl ColorPicker {
         self
     }
 
-    /// Replace the swatch palette (see [`Self::with_swatches`]).
-    pub fn set_swatches(&mut self, swatches: impl IntoIterator<Item = ColorSwatch>) {
-        self.swatches = swatches.into_iter().collect();
-        if self.rect != Rect::ZERO {
-            self.apply_layout_external(self.rect);
-        }
-    }
-
     /// Confirm mode: paint `title` above the picker and *Cancel* / *Done*
     /// below it. Edits stay pending — [`Self::color`] follows them and
     /// [`Self::take_changed`] still reports them for a live preview — while
@@ -1385,6 +1377,7 @@ fn parse_hex(s: &str) -> Option<Color> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testing::dispatch;
     use crate::theme::Theme;
     use automerge::AutoCommit;
 
@@ -1397,50 +1390,11 @@ mod tests {
         p
     }
 
-    fn cursor_moved(x: f64, y: f64) -> WindowEvent {
-        WindowEvent::CursorMoved {
-            device_id: winit::event::DeviceId::dummy(),
-            position: winit::dpi::PhysicalPosition::new(x, y),
-        }
-    }
+    use crate::synthetic_input::cursor_moved;
 
-    fn mouse_press() -> WindowEvent {
-        WindowEvent::MouseInput {
-            device_id: winit::event::DeviceId::dummy(),
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        }
-    }
+    use crate::synthetic_input::mouse_press;
 
-    fn mouse_release() -> WindowEvent {
-        WindowEvent::MouseInput {
-            device_id: winit::event::DeviceId::dummy(),
-            state: ElementState::Released,
-            button: MouseButton::Left,
-        }
-    }
-
-    fn dispatch(p: &mut ColorPicker, event: &WindowEvent) {
-        let mut tree = TaffyTree::<()>::new();
-        let node = tree.leaf_node(Style::default());
-        let mut handled = false;
-        let mut focus_target = None;
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        p.handle_event(
-            event,
-            &mut crate::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &winit::event::Modifiers::default(),
-                state: crate::widget::Edits::lend(&mut doc),
-                path: &root,
-                handled: &mut handled,
-                focus_target: &mut focus_target,
-                node_id: node,
-                taffy: &tree,
-            },
-        );
-    }
+    use crate::synthetic_input::mouse_release;
 
     #[test]
     fn picker_surfaces_edit_hue_saturation_value_and_rgb() {

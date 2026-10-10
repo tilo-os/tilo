@@ -917,11 +917,6 @@ impl WindowSwitcher {
             .map(|(index, _)| *index)
     }
 
-    /// The panel covers `point`.
-    pub fn panel_contains(&self, point: Point, now: Instant) -> bool {
-        self.is_revealed(now) && self.geometry().panel.contains(point)
-    }
-
     /// Pointer motion: hovering a card selects it, as it does in every
     /// desktop's switcher, so a release commits what the pointer rests on.
     pub fn pointer_moved(&mut self, point: Point, now: Instant) -> SwitcherOutcome {

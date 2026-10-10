@@ -801,11 +801,6 @@ impl OskWidget {
         self.apply_hint_case();
     }
 
-    /// The focused field's content hints.
-    pub fn content_hints(&self) -> u32 {
-        self.hints
-    }
-
     /// Whether the focused field holds a secret: nothing typed there is
     /// composed, suggested from or learned.
     pub fn is_secret_field(&self) -> bool {
@@ -2581,13 +2576,6 @@ impl OskWidget {
         self.cursor_drag.as_ref().is_some_and(|d| d.active)
     }
 
-    /// Show the effective tap targets over the keys (a debug aid).
-    #[must_use]
-    pub fn with_hit_overlay(mut self, on: bool) -> Self {
-        self.hit_overlay = on;
-        self
-    }
-
     /// Show or stop showing the effective tap targets over the keys.
     pub fn set_hit_overlay(&mut self, on: bool) {
         self.hit_overlay = on;
@@ -3709,7 +3697,6 @@ mod tests {
     fn pointer_and_toolbar_taps_route_to_their_targets() {
         eprintln!("phase pointer_tap_routes_to_key_under_cursor");
         {
-            use winit::event::Modifiers;
             let mut osk = OskWidget::new_with_swipe_model(Box::new(GeometricSwipeModel::english()));
             lay_out(&mut osk, 800.0, 360.0);
 
@@ -3724,25 +3711,8 @@ mod tests {
             let c = rect.center();
 
             let device = winit::event::DeviceId::dummy();
-            let mods = Modifiers::default();
-            let mut doc = AutoCommit::new();
-            let root = automerge::ROOT;
-            let mut dispatch = |osk: &mut OskWidget, ev: WindowEvent| {
-                let mut handled = false;
-                let mut focus = None;
-                osk.handle_event(
-                    &ev,
-                    &mut ui::widget::EventCtx {
-                        scale_factor: 1.0,
-                        modifiers: &mods,
-                        state: ui::widget::Edits::lend(&mut doc),
-                        path: &root,
-                        handled: &mut handled,
-                        focus_target: &mut focus,
-                        node_id: NodeId::new(0),
-                        taffy: &TaffyTree::new(),
-                    },
-                );
+            let dispatch = |osk: &mut OskWidget, ev: WindowEvent| {
+                ui::testing::dispatch(osk, &ev);
             };
 
             dispatch(
@@ -3819,33 +3789,18 @@ mod tests {
         {
             // A hidden keyboard must not consume taps meant for the app behind it:
             // `handle_event` returns early and `handled` stays false.
-            use winit::event::Modifiers;
             let mut osk =
                 OskWidget::new_with_swipe_model(Box::new(GeometricSwipeModel::english())).hidden();
             lay_out(&mut osk, 800.0, 360.0);
 
             let device = winit::event::DeviceId::dummy();
-            let mods = Modifiers::default();
-            let mut doc = AutoCommit::new();
-            let root = automerge::ROOT;
-            let mut handled = false;
-            let mut focus = None;
             // Aim where the 'q' key would be on a visible keyboard.
-            osk.handle_event(
+            let handled = ui::testing::dispatch(
+                &mut osk,
                 &WindowEvent::MouseInput {
                     device_id: device,
                     state: ElementState::Pressed,
                     button: MouseButton::Left,
-                },
-                &mut ui::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &mods,
-                    state: ui::widget::Edits::lend(&mut doc),
-                    path: &root,
-                    handled: &mut handled,
-                    focus_target: &mut focus,
-                    node_id: NodeId::new(0),
-                    taffy: &TaffyTree::new(),
                 },
             );
             assert!(!handled, "a hidden keyboard does not consume pointer input");
@@ -4202,7 +4157,6 @@ mod tests {
 
         eprintln!("phase short_tap_is_not_treated_as_a_swipe");
         {
-            use winit::event::Modifiers;
             let mut osk = OskWidget::new_with_swipe_model(Box::new(GeometricSwipeModel::english()));
             lay_out(&mut osk, 720.0, 360.0);
 
@@ -4216,25 +4170,8 @@ mod tests {
             let c = rect.center();
 
             let device = winit::event::DeviceId::dummy();
-            let mods = Modifiers::default();
-            let mut doc = AutoCommit::new();
-            let root = automerge::ROOT;
-            let mut dispatch = |osk: &mut OskWidget, ev: WindowEvent| {
-                let mut handled = false;
-                let mut focus = None;
-                osk.handle_event(
-                    &ev,
-                    &mut ui::widget::EventCtx {
-                        scale_factor: 1.0,
-                        modifiers: &mods,
-                        state: ui::widget::Edits::lend(&mut doc),
-                        path: &root,
-                        handled: &mut handled,
-                        focus_target: &mut focus,
-                        node_id: NodeId::new(0),
-                        taffy: &TaffyTree::new(),
-                    },
-                );
+            let dispatch = |osk: &mut OskWidget, ev: WindowEvent| {
+                ui::testing::dispatch(osk, &ev);
             };
 
             // Press, a tiny jitter (1px), release — all on 'q'. This must type
@@ -4279,32 +4216,14 @@ mod tests {
 
         eprintln!("phase pointer_swipe_decodes_through_keys");
         {
-            use winit::event::Modifiers;
             let mut osk = OskWidget::new_with_swipe_model(Box::new(GeometricSwipeModel::english()));
             lay_out(&mut osk, 720.0, 360.0);
             let path = path_through(&osk, "the");
             let start = *path.first().unwrap();
 
             let device = winit::event::DeviceId::dummy();
-            let mods = Modifiers::default();
-            let mut doc = AutoCommit::new();
-            let root = automerge::ROOT;
-            let mut dispatch = |osk: &mut OskWidget, ev: WindowEvent| {
-                let mut handled = false;
-                let mut focus = None;
-                osk.handle_event(
-                    &ev,
-                    &mut ui::widget::EventCtx {
-                        scale_factor: 1.0,
-                        modifiers: &mods,
-                        state: ui::widget::Edits::lend(&mut doc),
-                        path: &root,
-                        handled: &mut handled,
-                        focus_target: &mut focus,
-                        node_id: NodeId::new(0),
-                        taffy: &TaffyTree::new(),
-                    },
-                );
+            let dispatch = |osk: &mut OskWidget, ev: WindowEvent| {
+                ui::testing::dispatch(osk, &ev);
             };
 
             // Hover the first key, press, drag along the whole path, release.

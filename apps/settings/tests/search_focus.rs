@@ -30,11 +30,11 @@ use std::collections::HashMap;
 use automerge::AutoCommit;
 use settings::SettingsApp;
 use taffy::{NodeId, TaffyTree};
+use ui::testing::Dispatch;
 use ui::text_render::TextRenderer;
 use ui::widget::Widget;
 use vello::kurbo::Point;
-use winit::event::{ElementState, Modifiers, MouseButton, WindowEvent};
-use winit::keyboard::{Key, SmolStr};
+use winit::event::{ElementState, MouseButton, WindowEvent};
 
 const W: f32 = 1200.0;
 const H: f32 = 760.0;
@@ -43,13 +43,7 @@ fn root() -> automerge::ObjId {
     automerge::ROOT
 }
 
-fn char_key_event(s: &str) -> WindowEvent {
-    ui::synthetic_input::keyboard_input(ui::synthetic_input::key_event(
-        Key::Character(SmolStr::new(s)),
-        Some(SmolStr::new(s)),
-        ElementState::Pressed,
-    ))
-}
+use ui::synthetic_input::char_key;
 
 /// A faithful stand-in for `ui::App` covering focus + the rebuild-on-filter
 /// cycle. Owns the app, its live taffy tree + node map, and the focus state.
@@ -181,7 +175,6 @@ impl Harness {
     /// production event path, then apply any requested focus target — exactly
     /// what `App`'s window-event handler does at the end of dispatch.
     fn click(&mut self, p: Point) {
-        let mods = Modifiers::default();
         let cursor = WindowEvent::CursorMoved {
             device_id: winit::event::DeviceId::dummy(),
             position: winit::dpi::PhysicalPosition::new(p.x, p.y),
@@ -198,20 +191,12 @@ impl Harness {
         };
         let mut focus_target = None;
         for ev in [&cursor, &press, &release] {
-            let mut handled = false;
-            self.app.handle_event(
-                ev,
-                &mut ui::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &mods,
-                    state: ui::widget::Edits::lend(&mut self.doc),
-                    path: &root(),
-                    handled: &mut handled,
-                    focus_target: &mut focus_target,
-                    node_id: self.app_node,
-                    taffy: &self.taffy,
-                },
-            );
+            focus_target = Dispatch::new()
+                .doc(&mut self.doc)
+                .layout(&self.taffy, self.app_node)
+                .focus_target(focus_target)
+                .send(&mut *self.app, ev)
+                .focus_target;
         }
         if let Some(id) = focus_target {
             self.set_focused(Some(id));
@@ -222,24 +207,12 @@ impl Harness {
     /// sync + (if the tree changed) the ordinal-preserving rebuild — the same
     /// thing `App` does with `autofocus_on_structure_change` set.
     fn type_char(&mut self, c: &str) {
-        let mods = Modifiers::default();
-        let ev = char_key_event(c);
-        let mut handled = false;
-        let mut focus_target = None;
-        self.app.handle_event(
-            &ev,
-            &mut ui::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &mods,
-                state: ui::widget::Edits::lend(&mut self.doc),
-                path: &root(),
-                handled: &mut handled,
-                focus_target: &mut focus_target,
-                node_id: self.app_node,
-                taffy: &self.taffy,
-            },
-        );
-        if let Some(id) = focus_target {
+        let ev = char_key(c);
+        let sent = Dispatch::new()
+            .doc(&mut self.doc)
+            .layout(&self.taffy, self.app_node)
+            .send(&mut *self.app, &ev);
+        if let Some(id) = sent.focus_target {
             self.set_focused(Some(id));
         }
         // Frame: sync consumes the field's SEARCH_KEY write; a changed query

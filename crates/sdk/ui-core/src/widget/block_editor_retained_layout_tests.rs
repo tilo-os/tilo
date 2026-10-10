@@ -2,6 +2,7 @@
 //! would erase Taffy's intrinsic-size cache and conceal stale paragraph heights.
 use super::*;
 use crate::bound_dispatch::BoundNodeMap;
+use crate::testing::Dispatch;
 use winit::event::MouseButton;
 use winit::keyboard::ModifiersState;
 
@@ -41,19 +42,10 @@ impl RetainedEditor {
                 button: MouseButton::Left,
             },
         ] {
-            self.editor.handle_event(
-                &event,
-                &mut crate::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &Modifiers::default(),
-                    state: crate::widget::Edits::lend(&mut self.doc),
-                    path: &automerge::ROOT,
-                    handled: &mut false,
-                    focus_target: &mut None,
-                    node_id: self.root,
-                    taffy: &self.tree,
-                },
-            );
+            Dispatch::new()
+                .doc(&mut self.doc)
+                .layout(&self.tree, self.root)
+                .send(&mut *self.editor, &event);
             self.frame();
         }
     }
@@ -165,24 +157,19 @@ impl RetainedEditor {
             },
             ElementState::Pressed,
         );
-        let mut handled = false;
-        self.editor.handle_event(
-            &WindowEvent::KeyboardInput {
-                device_id: winit::event::DeviceId::dummy(),
-                event,
-                is_synthetic: false,
-            },
-            &mut crate::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &modifiers,
-                state: crate::widget::Edits::lend(&mut self.doc),
-                path: &automerge::ROOT,
-                handled: &mut handled,
-                focus_target: &mut None,
-                node_id: self.root,
-                taffy: &self.tree,
-            },
-        );
+        let handled = Dispatch::new()
+            .modifiers(modifiers)
+            .doc(&mut self.doc)
+            .layout(&self.tree, self.root)
+            .send(
+                &mut *self.editor,
+                &WindowEvent::KeyboardInput {
+                    device_id: winit::event::DeviceId::dummy(),
+                    event,
+                    is_synthetic: false,
+                },
+            )
+            .handled;
         assert!(handled, "editor must receive each test keystroke");
         // Notes publishes edits into its document before the next layout.
         // Draining edit notifications must not drain intrinsic-size dirtiness.
