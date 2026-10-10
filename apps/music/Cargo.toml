@@ -32,7 +32,7 @@ audio = ["dep:gstreamer", "dep:tokio", "media/voice"]
 # YouTube Music search and stream resolution through the pure-Rust `rustypipe`
 # InnerTube client. Shots/tests select their hermetic backend at runtime; `reqwest`
 # supports `--probe` verification.
-live = ["dep:rustypipe", "dep:tokio", "dep:reqwest", "tilo-net/http", "tilo-net/blocking", "dep:tilo-spotify"]
+live = ["dep:rustypipe", "dep:tokio", "dep:reqwest", "dep:tilo-invidious", "tilo-net/http", "tilo-net/blocking", "dep:tilo-spotify"]
 # Enable network lyrics without the full live backend; live already enables them.
 lyrics = ["tilo-net/http", "tilo-net/blocking"]
 
@@ -80,6 +80,8 @@ tokio = { workspace = true, optional = true, features = ["rt", "macros", "time"]
 # resolution. Embeds `rquickjs` for signature deobfuscation — no external
 # interpreter, downloader, or JS runtime binary. Gated behind `live`.
 rustypipe = { workspace = true, optional = true, features = ["rustls-no-provider"] }
+# Fully-rangeable stream URLs through Invidious media proxies.
+tilo-invidious = { path = "../../crates/platform/tilo-invidious", optional = true }
 
 [dev-dependencies]
 test-http = { path = "../../crates/dev/test-http" }

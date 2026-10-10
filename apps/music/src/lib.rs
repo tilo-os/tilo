@@ -9,8 +9,7 @@
 //!   across devices; audio transport/cache never do.
 //! - [`backend`] — the swappable YouTube-Music data source
 //!   ([`backend::MusicBackend`]): a hermetic offline sample impl and the
-//!   shipping-default rustypipe impl (`live` feature). `PoToken` is a seam
-//!   ([`backend::potoken`]).
+//!   shipping-default rustypipe impl (`live` feature).
 //! - [`stream`] — the non-blocking worker driving [`backend`] off the UI thread.
 //! - [`audio`] — `GStreamer` `playbin` output + live position query (`audio`
 //!   feature).
