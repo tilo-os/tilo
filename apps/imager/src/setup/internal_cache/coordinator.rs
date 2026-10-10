@@ -32,8 +32,16 @@ fn next_operation(counter: &AtomicU64) -> Result<u64, String> {
 
 /// Read-only cooperative stop view for a scoped consumer. The transfer latch
 /// cannot be reset or retained beyond the borrowed consumption scope.
+#[allow(
+    dead_code,
+    reason = "the live download flow does not consume verified cache entries yet"
+)]
 pub(in crate::setup) struct Cancellation<'a>(&'a AtomicBool);
 impl Cancellation<'_> {
+    #[allow(
+        dead_code,
+        reason = "the live download flow does not consume verified cache entries yet"
+    )]
     pub(in crate::setup) fn is_cancelled(&self) -> bool {
         self.0.load(Ordering::Acquire)
     }
@@ -99,6 +107,10 @@ struct Request {
 }
 #[derive(Clone, Copy)]
 enum Action {
+    #[allow(
+        dead_code,
+        reason = "the live download flow releases rather than consumes verified cache entries"
+    )]
     Consume,
     Release,
 }
@@ -234,6 +246,10 @@ impl Worker {
         self.shared.wake.notify_all();
         Ok(())
     }
+    #[allow(
+        dead_code,
+        reason = "reserved for the verified cache-to-installer handoff"
+    )]
     pub(in crate::setup) fn consume(&self, token: &Token) -> Result<(), String> {
         self.action(token, Action::Consume)
     }

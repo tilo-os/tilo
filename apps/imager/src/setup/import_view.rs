@@ -53,7 +53,10 @@ const SHOT_WAIT_BOUND: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// The links in the posed Documents folder whose copy needs attention: the
 /// shortcuts a person keeps to the folders they use, in sorted order.
-#[cfg(any(unix, test))]
+#[allow(
+    dead_code,
+    reason = "the posed links are symbolic links, which only a unix shot creates"
+)]
 const SHOT_LINKS: [&str; 40] = [
     "Bank statements",
     "Book club",
