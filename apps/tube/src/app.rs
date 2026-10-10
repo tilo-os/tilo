@@ -2464,6 +2464,34 @@ mod tests {
     }
 
     #[test]
+    fn a_fresh_share_notice_survives_a_delayed_previous_toast_frame() {
+        let (mut app, _doc) = fresh();
+        app.model.route = Route::Watch("vid_donut".into());
+        app.toasts.push("Previous notice", ToastKind::Info);
+        // A frame can resume after the old toast's lifetime elapsed. The new
+        // share notice must not inherit the time before its own creation.
+        let earlier = ui::time::now()
+            .checked_sub(app.toasts.default_ttl() + ui::time::Duration::from_secs(1))
+            .expect("the fixture can represent the previous toast frame");
+        app.toasts.advance(earlier);
+        app.perform(TubeEffect::Share {
+            video: "vid_donut".into(),
+        })
+        .unwrap();
+        app.show_new_notices();
+        let published = app.accessibility().unwrap();
+        assert!(
+            published.children.iter().any(|node| {
+                node.name.as_deref() == Some("Notifications")
+                    && node.value.as_deref().is_some_and(|value| {
+                        value.contains("Link copied") && value.contains("vid_donut")
+                    })
+            }),
+            "the fresh share notice must reach accessibility after an old frame stalls"
+        );
+    }
+
+    #[test]
     fn controls_without_a_document_change_act_on_this_window() {
         // Opening a video shows it, starts it from the top and records it in
         // the watch history.
