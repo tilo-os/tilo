@@ -52,6 +52,9 @@ const IDLE: Duration = Duration::from_secs(60);
 /// removes about 4.9/s, so the shard's p95 is now near 11.9/s; the budget is
 /// that plus a quarter. Lower it with each fix that removes a waker (TIL-702).
 const IDLE_WAKEUP_BUDGET: f64 = 15.0;
+/// Most CPU the two desktops' own threads may use while idle, in percent of
+/// one core. PROVISIONAL, set from measurement below.
+const IDLE_CPU_BUDGET: f64 = 2.0;
 
 /// How long a lone desktop runs after it starts before it is measured, so
 /// its endpoint and its room's topic are up, and how long it is measured.
@@ -397,15 +400,24 @@ fn a_converged_idle_pair_exchanges_no_messages_and_repaints_nothing_for_a_minute
         );
     }
     if let Some(wakeups) = &wakeups {
-        let _ = writeln!(report, "both desktops' threads, {wakeups}");
+        let _ = writeln!(
+            report,
+            "both desktops' threads, {wakeups}  blocked {:.2} times a second",
+            wakeups.blocking_per_second()
+        );
     }
     eprintln!("{report}");
     assert_eq!(total, 0, "{report}");
     if let Some(wakeups) = &wakeups {
         assert!(
-            wakeups.per_second() <= IDLE_WAKEUP_BUDGET,
+            wakeups.blocking_per_second() <= IDLE_WAKEUP_BUDGET,
             "the idle pair's threads woke {:.2} times a second, over {IDLE_WAKEUP_BUDGET}/s:\n{report}",
-            wakeups.per_second(),
+            wakeups.blocking_per_second(),
+        );
+        assert!(
+            wakeups.total_cpu_percent() <= IDLE_CPU_BUDGET,
+            "the idle pair's threads used {:.2} % of a core, over {IDLE_CPU_BUDGET} %:\n{report}",
+            wakeups.total_cpu_percent(),
         );
     }
     assert_eq!(repaints, (0, 0), "{report}");
