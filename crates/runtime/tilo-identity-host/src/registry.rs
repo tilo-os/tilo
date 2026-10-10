@@ -326,7 +326,11 @@ impl IdentityRegistryStore {
         set_private_dir_mode(&self.identity_dir)?;
         let bytes = serde_json::to_vec_pretty(registry)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-        tilo_files::native::atomic::write_with_mode(&self.registry_path, &bytes, 0o600)
+        let written =
+            tilo_files::native::atomic::write_with_mode(&self.registry_path, &bytes, 0o600);
+        // The identity a workspace selected decides whose fleet admits.
+        crate::policy_change::announce();
+        written
     }
 
     /// Load the registry after registering every identity record in the

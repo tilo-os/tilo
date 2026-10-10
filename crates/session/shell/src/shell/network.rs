@@ -2432,6 +2432,14 @@ impl ShellNetwork {
             .devices_of(user, tilo_clock::unix_now_ns())
     }
 
+    /// When [`Self::authenticated_devices_of`] next answers differently by
+    /// time alone, after `now_ns`: a certificate expiring or a revocation
+    /// dated ahead taking effect. Its writes are announced
+    /// ([`tilo_identity_host::policy_change`]).
+    pub fn authenticated_devices_next_change(&self, now_ns: u64) -> Option<u64> {
+        self.peer_identities.next_change_after(now_ns)
+    }
+
     /// Shared handle to inbound signed document envelopes.
     pub fn inbound_documents_handle(&self) -> Arc<Mutex<Vec<InboundDocument>>> {
         Arc::clone(&self.inbound_documents)
