@@ -8,6 +8,14 @@ use serde::{Deserialize, Serialize};
 use crate::PathStep;
 use tilo_action_policy::ActionKind;
 
+#[allow(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "serde's skip_serializing_if passes the field by reference"
+)]
+const fn is_false(value: &bool) -> bool {
+    !*value
+}
+
 /// The record unit, as footprints and unit indexes name it.
 pub const RECORD_UNIT: &str = "record";
 
@@ -18,6 +26,12 @@ pub struct Surface {
     pub label: String,
     /// The storage version (`#[resource(version = N)]`).
     pub version: u32,
+    /// A record of the person's own, kept in their room rather than the
+    /// room of the window showing it: one the app opens beside its own
+    /// record (its `ResourceApp::records`). Only the kinds an app's surface
+    /// marks so may it keep in, or read from, the person's room.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub person: bool,
     /// Absent from a surface file that lists none.
     #[serde(default)]
     pub verbs: Vec<VerbSurface>,

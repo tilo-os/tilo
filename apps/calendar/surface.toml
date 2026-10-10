@@ -1222,6 +1222,7 @@ type = "string"
 [[resources]]
 kind = "tilo.accounts"
 label = "Accounts"
+person = true
 version = 1
 
 [[resources.fields]]

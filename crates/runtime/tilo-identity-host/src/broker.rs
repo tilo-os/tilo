@@ -54,6 +54,22 @@ pub trait ChannelKeySource: Send + Sync + 'static {
     ) -> Option<Result<ChannelKeys, String>>;
 }
 
+/// The records of the person's own an app keeps in, or reads from, their
+/// room: the person-record kinds its surface declares. Nothing broader is
+/// signed for an app in the person's room.
+pub trait PersonRecordKinds: Send + Sync + 'static {
+    /// The person-record kinds `app_id` declares; empty for none.
+    fn person_record_kinds(&self, app_id: &str) -> Vec<String>;
+}
+
+/// A host that knows no app's person records: nothing is signed in the
+/// person's room.
+impl PersonRecordKinds for () {
+    fn person_record_kinds(&self, _app_id: &str) -> Vec<String> {
+        Vec::new()
+    }
+}
+
 /// A host without a channel service: every route is unavailable.
 impl ChannelKeySource for () {
     fn access(
@@ -136,6 +152,7 @@ pub fn spawn(
     path: PathBuf,
     tree: Arc<dyn WorkspaceMembership>,
     channels: Arc<dyn ChannelKeySource>,
+    person: Arc<dyn PersonRecordKinds>,
 ) -> io::Result<IdentityBrokerHandle> {
     let _ = std::fs::remove_file(&path);
     let listener = UnixListener::bind(&path)?;
@@ -154,6 +171,7 @@ pub fn spawn(
                     Ok((stream, _)) => {
                         let tree = Arc::clone(&tree);
                         let channels = Arc::clone(&channels);
+                        let person = Arc::clone(&person);
                         let cancellation = match stream.try_clone() {
                             Ok(cancellation) => cancellation,
                             Err(error) => {
@@ -169,7 +187,7 @@ pub fn spawn(
                         match thread::Builder::new()
                             .name("tilo-identity-client".into())
                             .spawn(move || {
-                                serve(stream, &*tree, &*channels);
+                                serve(stream, &*tree, &*channels, &*person);
                                 drop(connection);
                             })
                         {
@@ -200,7 +218,12 @@ pub fn spawn(
     })
 }
 
-fn serve(mut stream: UnixStream, tree: &dyn WorkspaceMembership, channels: &dyn ChannelKeySource) {
+fn serve(
+    mut stream: UnixStream,
+    tree: &dyn WorkspaceMembership,
+    channels: &dyn ChannelKeySource,
+    person: &dyn PersonRecordKinds,
+) {
     // Darwin inherits the listener's nonblocking flag on accept. This worker
     // uses blocking framed I/O; an empty receive is not the end of a session.
     if let Err(error) = stream.set_nonblocking(false) {
@@ -224,7 +247,12 @@ fn serve(mut stream: UnixStream, tree: &dyn WorkspaceMembership, channels: &dyn 
                 sign(tree, &room, &handshake.app_id, &action, &message)
             }
             Request::CollaborationJoin { workspace_id } => {
-                sign_collaboration_join(&room, &workspace_id)
+                let bound = Bound {
+                    room: &room,
+                    app_id: &handshake.app_id,
+                    person,
+                };
+                sign_collaboration_join(&bound, &workspace_id)
             }
             Request::CollaborationOp {
                 workspace_id,
@@ -233,8 +261,11 @@ fn serve(mut stream: UnixStream, tree: &dyn WorkspaceMembership, channels: &dyn 
                 unsigned_op,
             } => sign_collaboration_op(
                 tree,
-                &room,
-                &handshake.app_id,
+                &Bound {
+                    room: &room,
+                    app_id: &handshake.app_id,
+                    person,
+                },
                 &workspace_id,
                 &app_id,
                 &record_id,
@@ -249,8 +280,11 @@ fn serve(mut stream: UnixStream, tree: &dyn WorkspaceMembership, channels: &dyn 
                 tree,
                 channels,
                 &ChannelKeyRoute {
-                    bound_room: &room,
-                    bound_app_id: &handshake.app_id,
+                    bound: Bound {
+                        room: &room,
+                        app_id: &handshake.app_id,
+                        person,
+                    },
                     workspace_id: &workspace_id,
                     app_id: &app_id,
                     record_id: &record_id,
@@ -346,15 +380,56 @@ pub fn device_signature_node(room: &TreePath, app: &str, action: &str) -> TreePa
         .action(action)
 }
 
-fn sign_collaboration_join(bound_room: &RoomId, workspace_id: &str) -> Response {
-    if workspace_id != bound_room.to_string() {
+/// What a client's launch bound it to: its room and app, and the records
+/// of the person's that app declares.
+struct Bound<'a> {
+    room: &'a RoomId,
+    app_id: &'a str,
+    person: &'a dyn PersonRecordKinds,
+}
+
+impl Bound<'_> {
+    /// Whether `workspace_id` is the own room of the person the bound room's
+    /// identity is, and the app keeps records of theirs there.
+    fn in_person_room(
+        &self,
+        profile: &crate::registry::IdentityProfile,
+        workspace_id: &str,
+    ) -> bool {
+        collab_types::person_room(&profile.user_public_key).to_string() == workspace_id
+            && !self.person.person_record_kinds(self.app_id).is_empty()
+    }
+
+    /// Whether the app declares the person's record `record_id`.
+    fn keeps_person_record(&self, record_id: &str) -> bool {
+        collab_types::person_record_kind(record_id).is_some_and(|kind| {
+            self.person
+                .person_record_kinds(self.app_id)
+                .iter()
+                .any(|declared| declared == kind)
+        })
+    }
+}
+
+fn sign_collaboration_join(bound: &Bound<'_>, workspace_id: &str) -> Response {
+    // The launch room, or the person's own room for the records of theirs
+    // the app declares; the broker admits each of those records alone.
+    let foreign = |profile: &crate::registry::IdentityProfile| {
+        workspace_id != bound.room.to_string() && !bound.in_person_room(profile, workspace_id)
+    };
+    if workspace_id != bound.room.to_string()
+        && bound.person.person_record_kinds(bound.app_id).is_empty()
+    {
         return Response::Denied("collaboration join requested for a different workspace".into());
     }
-    let profile = match crate::registry::selected_identity_profile(workspace_id) {
+    let profile = match crate::registry::selected_identity_profile(&bound.room.to_string()) {
         Ok(Some(profile)) => profile,
         Ok(None) => return Response::Denied("no identity selected for this workspace".into()),
         Err(error) => return Response::Error(error.to_string()),
     };
+    if foreign(&profile) {
+        return Response::Denied("collaboration join requested for a different workspace".into());
+    }
     match require_trusted_current_device(&profile) {
         Ok((device, _)) => Response::Signature(
             device
@@ -375,23 +450,31 @@ fn sign_collaboration_join(bound_room: &RoomId, workspace_id: &str) -> Response 
 /// payloads pass.
 fn sign_collaboration_op(
     tree: &dyn WorkspaceMembership,
-    bound_room: &RoomId,
-    bound_app_id: &str,
+    bound: &Bound<'_>,
     workspace_id: &str,
     app_id: &str,
     record_id: &str,
     unsigned_op: &[u8],
 ) -> Response {
-    if workspace_id != bound_room.to_string() || app_id != bound_app_id {
+    let bound_room = bound.room;
+    let launch_room = workspace_id == bound_room.to_string();
+    // The launch route, or a record of the person's this app keeps in their
+    // own room: never another app's, and never a kind it does not declare.
+    if app_id != bound.app_id || (!launch_room && !bound.keeps_person_record(record_id)) {
         return Response::Denied(
             "collaboration operation requested for a different launch route".into(),
         );
     }
-    let profile = match crate::registry::selected_identity_profile(workspace_id) {
+    let profile = match crate::registry::selected_identity_profile(&bound_room.to_string()) {
         Ok(Some(profile)) => profile,
         Ok(None) => return Response::Denied("no identity selected for this workspace".into()),
         Err(error) => return Response::Error(error.to_string()),
     };
+    if !launch_room && !bound.in_person_room(&profile, workspace_id) {
+        return Response::Denied(
+            "collaboration operation requested for a different launch route".into(),
+        );
+    }
     let (device, _) = match require_trusted_current_device(&profile) {
         Ok(material) => material,
         Err(error) => return Response::Denied(error.to_string()),
@@ -424,6 +507,14 @@ fn sign_collaboration_op(
         return Response::Denied(
             "collaboration operation fields do not match its certified document route".into(),
         );
+    }
+    // The person's own room has no roster: it is theirs, and this is their
+    // device editing a record of theirs.
+    if !launch_room {
+        return match op.signing_bytes() {
+            Ok(bytes) => Response::Signature(device.sign(&bytes).to_bytes().to_vec()),
+            Err(error) => Response::Error(error.to_string()),
+        };
     }
     let principal_id =
         Principal::person_from_key(Ed25519PublicKey::from_bytes(profile.user_public_key))
@@ -469,8 +560,7 @@ fn sign_collaboration_op(
 /// The route a [`Request::ChannelKeys`] names, with the launch binding it
 /// must match.
 struct ChannelKeyRoute<'a> {
-    bound_room: &'a RoomId,
-    bound_app_id: &'a str,
+    bound: Bound<'a>,
     workspace_id: &'a str,
     app_id: &'a str,
     record_id: &'a str,
@@ -486,20 +576,30 @@ fn channel_keys(
     route: &ChannelKeyRoute<'_>,
     known_generation: u64,
 ) -> Response {
-    if route.workspace_id != route.bound_room.to_string() || route.app_id != route.bound_app_id {
+    let bound = &route.bound;
+    let launch_room = route.workspace_id == bound.room.to_string();
+    // A route of the launch, or a record of the person's the app declares in
+    // their own room (its own, or another app's it reads).
+    if (launch_room && route.app_id != bound.app_id)
+        || (!launch_room && !bound.keeps_person_record(route.record_id))
+    {
         return Response::Denied("channel keys requested for a different launch route".into());
     }
-    let profile = match crate::registry::selected_identity_profile(route.workspace_id) {
+    let launch = bound.room.to_string();
+    let profile = match crate::registry::selected_identity_profile(&launch) {
         Ok(Some(profile)) => profile,
         Ok(None) => return Response::Denied("no identity selected for this workspace".into()),
         Err(error) => return Response::Error(error.to_string()),
     };
+    if !launch_room && !bound.in_person_room(&profile, route.workspace_id) {
+        return Response::Denied("channel keys requested for a different launch route".into());
+    }
     // The same trust check as signing, served from memory while none of the
     // files it reads changed (`join_proof`): one `stat` of each instead of
     // reading the device key and certificate. A changed, unreadable or
     // just-written file, a revocation included, is checked again from disk;
     // a refusal is never remembered. No key leaves the check.
-    match crate::join_proof::trusted_current_join_proof(route.workspace_id) {
+    match crate::join_proof::trusted_current_join_proof(&launch) {
         Ok(trusted) if trusted.certificate.user_public_key == profile.user_public_key => {}
         Ok(_) => {
             return Response::Denied(
@@ -512,21 +612,26 @@ fn channel_keys(
         Principal::person_from_key(Ed25519PublicKey::from_bytes(profile.user_public_key))
             .id()
             .to_string();
-    let reads = read_workspace(tree, route.bound_room, |workspace| {
-        let node = collab_types::validator::document_node(
-            &workspace.policy.room,
-            route.app_id,
-            route.record_id,
-        );
-        workspace.answer_at(&principal_id, &node, ActionKind::Read, unix_now()) != Answer::Deny
-    })
-    .unwrap_or(false);
+    // The person reads their own room; a workspace, as its policy says.
+    let reads = !launch_room
+        || read_workspace(tree, bound.room, |workspace| {
+            let node = collab_types::validator::document_node(
+                &workspace.policy.room,
+                route.app_id,
+                route.record_id,
+            );
+            workspace.answer_at(&principal_id, &node, ActionKind::Read, unix_now()) != Answer::Deny
+        })
+        .unwrap_or(false);
     if !reads {
         return Response::Denied("identity may not read this workspace".into());
     }
+    let Some(room) = RoomId::parse(route.workspace_id) else {
+        return Response::Denied("channel keys requested for an invalid room".into());
+    };
     let channel =
         collab_types::document_channel_id(route.app_id, route.workspace_id, route.record_id);
-    match channels.access(*route.bound_room, channel, known_generation) {
+    match channels.access(room, channel, known_generation) {
         None => Response::ChannelKeys {
             access: runtime_identity::wire::ChannelAccess::Unavailable,
             generation: 0,
@@ -663,6 +768,29 @@ fn write_action_frame<T: serde::Serialize>(stream: &mut UnixStream, value: &T) -
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// What the client's launch binds it to, for an app that keeps none of
+    /// the person's records.
+    fn bound<'a>(room: &'a RoomId, app_id: &'a str) -> Bound<'a> {
+        Bound {
+            room,
+            app_id,
+            person: &(),
+        }
+    }
+
+    /// Notes keeps the person's record of what they watched.
+    struct NotesKeepsWatched;
+
+    impl PersonRecordKinds for NotesKeepsWatched {
+        fn person_record_kinds(&self, app_id: &str) -> Vec<String> {
+            if app_id == "so.tilo.notes" {
+                vec!["notes.watched".into()]
+            } else {
+                Vec::new()
+            }
+        }
+    }
     use tilo_action_policy::{Grant, KindSet, Role};
 
     /// The owner's grant letting Notes ask for a signature of its
@@ -877,8 +1005,7 @@ mod tests {
         let unsigned = postcard::to_stdvec(&op).expect("unsigned envelope");
         let Response::Signature(signature) = sign_collaboration_op(
             &tree,
-            &room,
-            app_id,
+            &bound(&room, app_id),
             &workspace_id,
             app_id,
             record_id,
@@ -912,8 +1039,7 @@ mod tests {
         assert!(matches!(
             sign_collaboration_op(
                 &tree,
-                &room,
-                app_id,
+                &bound(&room, app_id),
                 &workspace_id,
                 app_id,
                 record_id,
@@ -927,8 +1053,7 @@ mod tests {
         assert!(matches!(
             sign_collaboration_op(
                 &tree,
-                &room,
-                app_id,
+                &bound(&room, app_id),
                 &workspace_id,
                 app_id,
                 record_id,
@@ -940,8 +1065,7 @@ mod tests {
         assert!(matches!(
             sign_collaboration_op(
                 &tree,
-                &room,
-                app_id,
+                &bound(&room, app_id),
                 &workspace_id,
                 "so.tilo.calendar",
                 record_id,
@@ -954,8 +1078,7 @@ mod tests {
         assert!(matches!(
             sign_collaboration_op(
                 &tree,
-                &room,
-                app_id,
+                &bound(&room, app_id),
                 &workspace_id,
                 app_id,
                 record_id,
@@ -974,8 +1097,7 @@ mod tests {
         assert!(matches!(
             sign_collaboration_op(
                 &tree,
-                &room,
-                app_id,
+                &bound(&room, app_id),
                 &workspace_id,
                 app_id,
                 record_id,
@@ -1041,8 +1163,7 @@ params = []
         assert!(matches!(
             sign_collaboration_op(
                 &tree,
-                &room,
-                app_id,
+                &bound(&room, app_id),
                 &workspace_id,
                 app_id,
                 record_id,
@@ -1063,7 +1184,7 @@ params = []
             11,
         );
         assert!(matches!(
-            sign_collaboration_op(&tree, &room, app_id, &workspace_id, app_id, record_id, &edit),
+            sign_collaboration_op(&tree, &bound(&room, app_id), &workspace_id, app_id, record_id, &edit),
             Response::Denied(reason) if reason.contains("denies this document action")
         ));
         let mut tree_guard = tree.write();
@@ -1073,8 +1194,7 @@ params = []
         assert!(matches!(
             sign_collaboration_op(
                 &tree,
-                &room,
-                app_id,
+                &bound(&room, app_id),
                 &workspace_id,
                 app_id,
                 record_id,
@@ -1115,7 +1235,13 @@ params = []
         let mut tree = WorkspaceTree::default();
         tree.desktop.workspaces.push(workspace);
         let socket = temp.path().join("identity.sock");
-        let _broker = spawn(socket.clone(), Arc::new(tree.shared()), Arc::new(())).expect("broker");
+        let _broker = spawn(
+            socket.clone(),
+            Arc::new(tree.shared()),
+            Arc::new(()),
+            Arc::new(NotesKeepsWatched),
+        )
+        .expect("broker");
         let mut client = UnixStream::connect(socket).expect("connect");
         write_frame(
             &mut client,
@@ -1189,6 +1315,80 @@ params = []
         op.signature = collab_types::Signature::from_bytes(op_signature);
         collab_types::verify_op(&op).expect("identity service signature verifies");
         assert!(identity.sign_for("document.delete", b"no").is_err());
+
+        // The person's own room, for the record of theirs Notes declares.
+        let own_room = collab_types::person_room(&identity.group_public_key()).to_string();
+        let own_proof = identity
+            .sign_collaboration_join(&own_room)
+            .expect("an app keeping a record of the person's joins their room");
+        VerifyingKey::from_bytes(&identity.signing_public_key())
+            .expect("device key")
+            .verify(
+                &runtime_identity::collaboration_join_signing_bytes(&own_room),
+                &Signature::from_bytes(&own_proof),
+            )
+            .expect("a proof for the person's room");
+        let person_op = |record: &str| {
+            SignedOp::new_unsigned(
+                DocumentMutation::Incremental(b"automerge changes".to_vec())
+                    .encode()
+                    .expect("typed mutation"),
+                document_artifact_id("so.tilo.notes", &own_room, record),
+                Ed25519PublicKey::from_bytes(identity.signing_public_key()),
+                document_attestation_id("so.tilo.notes", &own_room, record),
+                collab_types::OpKind::Change,
+                now,
+                1,
+            )
+        };
+        let watched = collab_types::person_record_id("notes.watched");
+        let mut kept = person_op(&watched);
+        kept.signature = collab_types::Signature::from_bytes(
+            identity
+                .sign_collaboration_op(
+                    &own_room,
+                    "so.tilo.notes",
+                    &watched,
+                    &postcard::to_stdvec(&kept).expect("unsigned envelope"),
+                )
+                .expect("its own record of the person's is signed"),
+        );
+        collab_types::verify_op(&kept).expect("the person-room change verifies");
+        let undeclared = collab_types::person_record_id("notes.bookmarks");
+        assert!(
+            identity
+                .sign_collaboration_op(
+                    &own_room,
+                    "so.tilo.notes",
+                    &undeclared,
+                    &postcard::to_stdvec(&person_op(&undeclared)).expect("envelope"),
+                )
+                .is_err(),
+            "a kind the app does not declare is not signed"
+        );
+        assert!(
+            identity
+                .sign_collaboration_op(
+                    &own_room,
+                    "so.tilo.notes",
+                    "record-1",
+                    &postcard::to_stdvec(&person_op("record-1")).expect("envelope"),
+                )
+                .is_err(),
+            "nothing but the person's records is signed in their room"
+        );
+        assert!(
+            identity
+                .channel_keys(&own_room, "so.tilo.notes", &watched, 0)
+                .is_ok(),
+            "the keys of a record of the person's the app declares are asked for"
+        );
+        assert!(
+            identity
+                .channel_keys(&own_room, "so.tilo.notes", &undeclared, 0)
+                .is_err(),
+            "not those of a kind it does not declare"
+        );
         drop(identity);
     }
 
@@ -1198,7 +1398,7 @@ params = []
         let socket = temp.path().join("identity.sock");
         let membership = Arc::new(WorkspaceTree::default().shared());
         let retained = Arc::downgrade(&membership);
-        let broker = spawn(socket.clone(), membership, Arc::new(())).unwrap();
+        let broker = spawn(socket.clone(), membership, Arc::new(()), Arc::new(())).unwrap();
         let mut client = UnixStream::connect(&socket).unwrap();
         client
             .set_read_timeout(Some(Duration::from_secs(5)))
@@ -1280,8 +1480,7 @@ params = []
                 &tree,
                 &ReadyChannels,
                 &ChannelKeyRoute {
-                    bound_room: &room,
-                    bound_app_id: app_id,
+                    bound: bound(&room, app_id),
                     workspace_id: &fixture.room,
                     app_id,
                     record_id: "note",
@@ -1335,6 +1534,7 @@ params = []
             spawn(
                 socket.clone(),
                 Arc::new(WorkspaceTree::default().shared()),
+                Arc::new(()),
                 Arc::new(()),
             )
             .expect("broker")

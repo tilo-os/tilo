@@ -387,3 +387,17 @@ impl PersonRecord {
         )
     }
 }
+
+#[cfg(test)]
+mod record_id_tests {
+    /// Hosts name a person record by the id `collab_types` derives; it is
+    /// the one the record is opened under.
+    #[test]
+    fn a_person_record_has_the_id_hosts_derive() {
+        let kind = crate::record::RecordKind::new("terminal.history");
+        assert_eq!(
+            super::record_id(&kind).as_str(),
+            collab_types::person_record_id("terminal.history")
+        );
+    }
+}

@@ -3761,6 +3761,7 @@ async fn drive_shovel(
         participant_kind,
         mut signer,
     } = identity;
+    let person = person_room_presentation(&presentation, &mut signer).await;
     let media_routes = native_media::Routes::default();
     let _media_worker = native_media::start(media_rx, media_routes.clone());
     // Every route of a certified endpoint is an encrypted channel whose keys
@@ -3859,6 +3860,7 @@ async fn drive_shovel(
                             key_signals: &key_signals,
                             client: &client,
                             presentation: &presentation,
+                            person: person.as_ref(),
                             participant_handle: participant_handle.as_deref(),
                             participant_kind,
                             inbound_tx: &inbound_tx,
@@ -3914,6 +3916,7 @@ async fn drive_shovel(
                         key_signals: &key_signals,
                         client: &client,
                         presentation: &presentation,
+                        person: person.as_ref(),
                         participant_handle: participant_handle.as_deref(),
                         participant_kind,
                         inbound_tx: &inbound_tx,
@@ -3933,6 +3936,7 @@ async fn drive_shovel(
                         key_signals: &key_signals,
                         client: &client,
                         presentation: &presentation,
+                        person: person.as_ref(),
                         participant_handle: participant_handle.as_deref(),
                         participant_kind,
                         inbound_tx: &inbound_tx,
@@ -3997,6 +4001,7 @@ async fn drive_shovel(
                         key_signals: &key_signals,
                         client: &client,
                         presentation: &presentation,
+                        person: person.as_ref(),
                         participant_handle: participant_handle.as_deref(),
                         participant_kind,
                         inbound_tx: &inbound_tx,
@@ -4138,6 +4143,50 @@ async fn install_sdk_encryption(
     Ok(())
 }
 
+/// This device's join proof for its person's own room, as the identity
+/// service lends it to an app that keeps records of theirs there; `None`
+/// for any other app, or a connection without a certified identity.
+#[allow(
+    clippy::future_not_send,
+    reason = "the host identity transport is constructed and retained only on the shovel LocalSet"
+)]
+async fn person_room_presentation(
+    presentation: &[u8],
+    signer: &mut LocalSdkDocumentSigner,
+) -> Option<(String, Vec<u8>)> {
+    #[derive(serde::Deserialize)]
+    struct Root {
+        user_public_key: [u8; 32],
+    }
+    let launch = runtime_collab::CertifiedJoinIdentity::decode(presentation).ok()??;
+    let root: Root = serde_json::from_slice(&launch.device_certificate).ok()?;
+    let room = collab_types::person_room(&root.user_public_key).to_string();
+    if room == launch.workspace_id {
+        return None;
+    }
+    let proof = match signer {
+        LocalSdkDocumentSigner::Host(identity) => {
+            identity.sign_collaboration_join(&room).await.ok()?
+        }
+        LocalSdkDocumentSigner::Inherited(SdkDocumentSigner::Certified(identity)) => {
+            let (identity, asked) = (std::sync::Arc::clone(identity), room.clone());
+            tokio::task::spawn_blocking(move || identity.sign_collaboration_join(&asked))
+                .await
+                .ok()?
+                .ok()?
+        }
+        LocalSdkDocumentSigner::Inherited(_) => return None,
+    };
+    let bytes = runtime_collab::CertifiedJoinIdentity {
+        workspace_id: room.clone(),
+        device_certificate: launch.device_certificate,
+        proof: proof.to_vec(),
+    }
+    .encode()
+    .ok()?;
+    Some((room, bytes))
+}
+
 #[derive(Clone, Copy)]
 struct SdkJoinContext<'a> {
     asks_channel_keys: bool,
@@ -4145,6 +4194,10 @@ struct SdkJoinContext<'a> {
     key_signals: &'a tokio_mpsc::UnboundedSender<KeySignal>,
     client: &'a runtime_collab::CollabClient,
     presentation: &'a [u8],
+    /// The person's own room and this device's join proof for it, when the
+    /// identity service lends one: what a route of a record of theirs
+    /// presents instead of the launch room's.
+    person: Option<&'a (String, Vec<u8>)>,
     participant_handle: Option<&'a str>,
     participant_kind: &'a str,
     inbound_tx: &'a InboundBridge,
@@ -4179,7 +4232,8 @@ async fn ensure_sdk_route(
         asks_channel_keys,
         key_signals,
         client,
-        presentation: identity_bytes,
+        presentation,
+        person,
         participant_handle,
         participant_kind,
         inbound_tx,
@@ -4189,6 +4243,10 @@ async fn ensure_sdk_route(
     if routes.contains_key(&channel_id) {
         return Ok(());
     }
+    let identity_bytes = match person {
+        Some((room, proof)) if *room == spec.cluster_id.to_string() => proof.as_slice(),
+        _ => presentation,
+    };
     let channel = match client
         .join_channel_as_kind(
             &channel_id,

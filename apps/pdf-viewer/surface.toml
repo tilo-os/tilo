@@ -1624,6 +1624,7 @@ type = "string"
 [[resources]]
 kind = "pdf.signature-profile"
 label = "Signature"
+person = true
 version = 1
 
 [[resources.fields]]

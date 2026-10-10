@@ -85,6 +85,31 @@ pub fn bytes_of(app_id: &str) -> Option<&'static [u8]> {
         .and_then(|named| named.bytes)
 }
 
+/// The person-record kinds `app_id`'s surface declares (its
+/// `ResourceApp::records`): the records it may keep in, or read from, the
+/// person's own room. Empty when this process holds no surface for it.
+#[must_use]
+pub fn person_record_kinds(app_id: &str) -> Vec<String> {
+    bytes_of(app_id)
+        .and_then(|bytes| collab_types::surface::SurfaceFile::parse(bytes).ok())
+        .map(|file| {
+            file.resources
+                .into_iter()
+                .filter(|surface| surface.person)
+                .map(|surface| surface.kind)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Whether `app_id`'s surface declares the person's records of `kind`.
+#[must_use]
+pub fn keeps_person_record(app_id: &str, kind: &str) -> bool {
+    person_record_kinds(app_id)
+        .iter()
+        .any(|known| known == kind)
+}
+
 /// Parse a lowercase hex hash, as `TILO_SURFACE` carries it.
 #[must_use]
 pub fn parse_hash(hex: &str) -> Option<[u8; 32]> {
@@ -95,6 +120,16 @@ pub fn parse_hash(hex: &str) -> Option<[u8; 32]> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_the_kinds_a_surface_marks_are_the_persons() {
+        static FILE: &[u8] = b"[[resources]]\nkind = \"test.own\"\nlabel = \"Own\"\nversion = 1\n\n[[resources]]\nkind = \"test.history\"\nlabel = \"History\"\nperson = true\nversion = 1\n";
+        register_committed("test.person-kinds", Some(FILE));
+        assert_eq!(person_record_kinds("test.person-kinds"), ["test.history"]);
+        assert!(keeps_person_record("test.person-kinds", "test.history"));
+        assert!(!keeps_person_record("test.person-kinds", "test.own"));
+        assert!(!keeps_person_record("test.unknown-app", "test.history"));
+    }
 
     #[test]
     fn a_launched_surface_wins_and_keeps_matching_bytes() {

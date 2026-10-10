@@ -389,6 +389,7 @@ type = "string"
 [[resources]]
 kind = "terminal.history"
 label = "Command history"
+person = true
 version = 1
 
 [[resources.fields]]

@@ -87,6 +87,7 @@ pub fn surface_of<R: Resource>() -> Surface {
         kind: R::KIND.to_owned(),
         label: R::LABEL.to_owned(),
         version: R::VERSION,
+        person: false,
         verbs: R::declarations().iter().map(verb_of).collect(),
         fields,
     }

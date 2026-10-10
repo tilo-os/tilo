@@ -25,6 +25,17 @@ pub mod test_support;
 #[cfg(test)]
 tilo_automerge_isolate::test_worker!();
 
+/// The person-record kinds an app's surface declares, as this process holds
+/// the surfaces of the apps it runs: what the identity service signs for an
+/// app in the person's own room, and the broker admits it to there.
+pub struct SurfacePersonRecords;
+
+impl tilo_identity_host::broker::PersonRecordKinds for SurfacePersonRecords {
+    fn person_record_kinds(&self, app_id: &str) -> Vec<String> {
+        ui::app_surface::person_record_kinds(app_id)
+    }
+}
+
 /// Decide every change this process's rooms receive by its claim against
 /// the app surface its op names, read by `read` (the host's content store,
 /// in the record's room and app), and name in the changes the process signs

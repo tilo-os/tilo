@@ -12,6 +12,7 @@ version = 1
 [[resources]]
 kind = "settings.appearance"
 label = "Appearance"
+person = true
 version = 1
 
 [[resources.fields]]
@@ -166,6 +167,7 @@ type = "string"
 [[resources]]
 kind = "settings.accessibility"
 label = "Accessibility"
+person = true
 verbs = []
 version = 1
 
@@ -336,6 +338,7 @@ type = "bool"
 [[resources]]
 kind = "settings.input"
 label = "Input"
+person = true
 version = 1
 
 [[resources.fields]]
@@ -604,6 +607,7 @@ type = "number"
 [[resources]]
 kind = "settings.text-assistance"
 label = "Spelling and text"
+person = true
 verbs = []
 version = 1
 
@@ -631,6 +635,7 @@ type = "String"
 [[resources]]
 kind = "settings.power"
 label = "Power"
+person = true
 verbs = []
 version = 1
 
@@ -721,6 +726,7 @@ type = "PowerActionPref"
 [[resources]]
 kind = "settings.updates"
 label = "Updates"
+person = true
 verbs = []
 version = 1
 
@@ -751,6 +757,7 @@ type = "String"
 [[resources]]
 kind = "settings.notifications"
 label = "Notifications"
+person = true
 version = 1
 
 [[resources.fields]]
@@ -871,6 +878,7 @@ type = "string"
 [[resources]]
 kind = "settings.audio"
 label = "Sound"
+person = true
 verbs = []
 version = 1
 
@@ -1007,6 +1015,7 @@ type = "bool"
 [[resources]]
 kind = "settings.display"
 label = "Displays"
+person = true
 verbs = []
 version = 1
 
@@ -1049,6 +1058,7 @@ type = "f64"
 [[resources]]
 kind = "settings.locale"
 label = "Region and language"
+person = true
 verbs = []
 version = 1
 
@@ -1097,6 +1107,7 @@ type = "FirstDayOfWeek"
 [[resources]]
 kind = "settings.continuity"
 label = "Continuity"
+person = true
 version = 1
 
 [[resources.fields]]
@@ -1226,6 +1237,7 @@ type = "boolean"
 [[resources]]
 kind = "settings.desktop-controls"
 label = "Desktop controls"
+person = true
 verbs = []
 version = 1
 
@@ -1239,6 +1251,7 @@ type = "bool"
 [[resources]]
 kind = "settings.agent-providers"
 label = "Agent model providers"
+person = true
 verbs = []
 version = 1
 
@@ -1267,6 +1280,7 @@ type = "Option<String>"
 [[resources]]
 kind = "settings.default-apps"
 label = "Default apps"
+person = true
 verbs = []
 version = 1
 
@@ -1281,6 +1295,7 @@ type = "BTreeMap<String, String>"
 [[resources]]
 kind = "settings.display-arrangement"
 label = "Display arrangement"
+person = true
 verbs = []
 version = 1
 
@@ -1295,6 +1310,7 @@ type = "Arrangement"
 [[resources]]
 kind = "settings.automatic-display"
 label = "Automatic display input"
+person = true
 verbs = []
 version = 1
 
@@ -1309,6 +1325,7 @@ type = "bool"
 [[resources]]
 kind = "settings.osk-sources"
 label = "On-screen keyboard layouts"
+person = true
 verbs = []
 version = 1
 
@@ -1331,6 +1348,7 @@ type = "Vec<String>"
 [[resources]]
 kind = "tilo.accounts"
 label = "Accounts"
+person = true
 version = 1
 
 [[resources.fields]]

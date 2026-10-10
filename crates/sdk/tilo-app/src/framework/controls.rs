@@ -72,14 +72,17 @@ thread_local! {
         const { std::cell::RefCell::new(None) };
 }
 
-/// A view opened a record of `P` beside the app's own: a surface report
-/// lists its surface too.
+/// A view opened a record of `P` beside the app's own, in the person's
+/// room: a surface report lists its surface too, marked as the person's.
 pub(crate) fn opened<P: Resource>() {
     OPENED.with(|opened| {
         if let Some(opened) = opened.borrow_mut().as_mut()
             && !opened.iter().any(|surface| surface.kind == P::KIND)
         {
-            opened.push(P::surface());
+            opened.push(tilo_resource::Surface {
+                person: true,
+                ..P::surface()
+            });
         }
     });
 }

@@ -125,7 +125,7 @@ impl Standalone {
         });
         let identity_socket = root.join(IDENTITY_SOCKET);
         stage("starting the identity service");
-        let identity_broker = tilo_identity_host::broker::spawn(
+        let identity_broker = identity_service(
             identity_socket.clone(),
             Arc::clone(&rooms) as Arc<dyn WorkspaceMembership>,
             Arc::new(channel_keys.keys.clone()),
@@ -741,6 +741,22 @@ fn joined_rooms(
     let mut refused = joined::desktop_enrolled(profile)?;
     refused.extend(RoomId::parse(room));
     Joined::open(profile, custody, endpoint, refused, broker)
+}
+
+/// The identity service apps sign with: over `rooms`, handing out route
+/// keys from `keys`, and in the person's own room only for the records of
+/// theirs an app's surface declares.
+fn identity_service(
+    socket: PathBuf,
+    rooms: Arc<dyn WorkspaceMembership>,
+    keys: Arc<dyn tilo_identity_host::broker::ChannelKeySource>,
+) -> io::Result<tilo_identity_host::broker::IdentityBrokerHandle> {
+    tilo_identity_host::broker::spawn(
+        socket,
+        rooms,
+        keys,
+        Arc::new(tilo_action_broker::SurfacePersonRecords),
+    )
 }
 
 #[cfg(test)]

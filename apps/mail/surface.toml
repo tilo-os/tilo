@@ -2500,6 +2500,7 @@ type = "string"
 [[resources]]
 kind = "tilo.contacts.identities"
 label = "Contact identities"
+person = true
 version = 1
 
 [[resources.fields]]
@@ -2895,6 +2896,7 @@ type = "string"
 [[resources]]
 kind = "tilo.accounts"
 label = "Accounts"
+person = true
 version = 1
 
 [[resources.fields]]

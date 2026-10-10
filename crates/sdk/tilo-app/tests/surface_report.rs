@@ -80,6 +80,14 @@ fn the_surface_report_names_verbs_fields_and_unpublished_bindings() {
         report["resources"][1]["kind"], "test.counter-prefs",
         "the person's records the view opens are part of the surface: {report}"
     );
+    assert_eq!(
+        report["resources"][1]["person"], true,
+        "marked as the person's, the only kinds kept in their room: {report}"
+    );
+    assert!(
+        report["resources"][0].get("person").is_none(),
+        "the app's own record is the room's: {report}"
+    );
     assert!(report["view"].is_null(), "{report}");
 
     let report = tilo_app::framework::testing::surface_report::<TypoApp>();
