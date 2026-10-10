@@ -326,6 +326,7 @@ pub fn read_key<T: Model>(doc: &Doc, obj: &ObjId, key: &str) -> Result<T, ModelE
 /// compiled again into each app that instantiates it, and Automerge's
 /// generic lookup and op-tree walk with it; these are compiled once, into
 /// the shared runtime every app maps (TIL-765).
+#[inline(never)]
 fn get_slot<'doc>(
     doc: &'doc Doc,
     obj: &ObjId,
@@ -335,6 +336,7 @@ fn get_slot<'doc>(
 }
 
 /// What `index` of the list `obj` holds; not generic, as [`get_slot`].
+#[inline(never)]
 fn get_item<'doc>(
     doc: &'doc Doc,
     obj: &ObjId,
@@ -376,6 +378,7 @@ pub fn read_slots<const N: usize>(doc: &Doc, obj: &ObjId, keys: [&str; N]) -> [M
 /// [`read_slots`]' walk, out of its generic shell so that it is compiled once
 /// into the shared runtime rather than into every app that derives a
 /// [`Model`] with another number of fields (TIL-765).
+#[inline(never)]
 fn fill_slots(doc: &Doc, obj: &ObjId, keys: &[&str], slots: &mut [MapSlot]) {
     let mut missing = keys.len();
     if missing == 0 {
@@ -398,6 +401,7 @@ fn fill_slots(doc: &Doc, obj: &ObjId, keys: &[&str], slots: &mut [MapSlot]) {
 
 /// Every key of the map `obj` with what it holds, in key order, in one walk
 /// of the map. Not generic, for the reason [`fill_slots`] is not.
+#[inline(never)]
 fn map_slots(doc: &Doc, obj: &ObjId) -> Vec<(String, MapSlot)> {
     doc.map_range(obj, ..)
         .map(|item| {
@@ -413,7 +417,10 @@ fn map_slots(doc: &Doc, obj: &ObjId) -> Vec<(String, MapSlot)> {
 /// # Errors
 /// Returns [`ModelError`] located at `key`.
 pub fn load_slot<T: Model>(doc: &Doc, slot: MapSlot, key: &str) -> Result<T, ModelError> {
-    load_at(doc, slot.as_ref().map(|(value, id)| (value, id)), key)
+    match slot {
+        Some((value, id)) => load_at(doc, Some((&value, &id)), key),
+        None => load_at(doc, None, key),
+    }
 }
 
 /// Bring `target`, read earlier from `key` of the map `obj`, up to date
