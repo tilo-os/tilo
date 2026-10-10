@@ -1,7 +1,7 @@
 {
   "component": "Actual mounted Terminal selected-range native editing",
   "source_fix_head": "93fd86fa67f6da456327c4603a2238438750901b",
-  "overall_result": "NOT QUALIFIED",
+  "overall_result": "NATIVE EDITING QUALIFIED; FULL MOUNTED SPEECH NOT YET QUALIFIED",
   "control_space_regression": "Actual widget Dispatch emits NUL for Named Space/Character Space/physical fallback under Control; red and green retained in validation logs. Plain space and keyboard regression tests PASS.",
   "mounted_r7": "FAIL selection remained 0..0 because Control-Space emitted byte32. Replacement and Undo not run.",
   "mounted_r8": "Original Unicode selection 0..6 observed; native acknowledged replacement cafe->salut visible with suffix preserved; editor can_undo=true. FAIL immediate semantic host Undo was unavailable. Undo/Redo and speech not qualified.",
@@ -86,8 +86,76 @@
       "file": "tools/release/fixtures/terminal_dictation_20261010/mounted-r10-receipt.json",
       "original_sha256": "1cc74ac48f9f208e966d06db3cfa80f5879aaa23dcc43ae6ea28f9772b2dde6d",
       "portable_file_sha256": "1cc74ac48f9f208e966d06db3cfa80f5879aaa23dcc43ae6ea28f9772b2dde6d"
+    },
+    "mounted-r11-build-receipt.json": {
+      "file": "tools/release/fixtures/terminal_dictation_20261010/mounted-r11-build-receipt.json",
+      "original_sha256": "88cd6f67e18c640f6ab400c49d988a96f0dcc4a4d198c6eac930e2beeccdc536",
+      "portable_file_sha256": "109308916034826fbeec359cc705132dc61a8befe5b91c150ebf486719bcca54"
+    },
+    "mounted-r11-managed.log.json": {
+      "file": "tools/release/fixtures/terminal_dictation_20261010/mounted-r11-managed.log.json",
+      "original_sha256": "02eb2609950afb49f051a95134eaa0255f3494bee478dd13975af1cbdec0c3aa",
+      "portable_file_sha256": "9866bbadfbfa59c786b0fdbcbd924ea13a275fc026b39c9ee10fc20371fe707a"
+    },
+    "mounted-r11-receipt.json": {
+      "file": "tools/release/fixtures/terminal_dictation_20261010/mounted-r11-receipt.json",
+      "original_sha256": "e223d0c059b066fbce10fa2791d932dc036fb9ddc2e03c0e4da7f4650bfccce8",
+      "portable_file_sha256": "e223d0c059b066fbce10fa2791d932dc036fb9ddc2e03c0e4da7f4650bfccce8"
+    },
+    "mounted-r11-managed-inner.py": {
+      "file": "tools/release/fixtures/terminal_dictation_20261010/mounted-r11-managed-inner.py",
+      "original_sha256": "28ac9dfcb592bacfe10701b939c945c6c3c3076248d768f75394a5e1ce0405f6",
+      "portable_file_sha256": "28ac9dfcb592bacfe10701b939c945c6c3c3076248d768f75394a5e1ce0405f6"
+    },
+    "mounted-r11-managed-outer.py": {
+      "file": "tools/release/fixtures/terminal_dictation_20261010/mounted-r11-managed-outer.py",
+      "original_sha256": "04433437f023e1c04960d97c7373e3e9fddf6b621c480ca59e1e8beec71a4a60",
+      "portable_file_sha256": "04433437f023e1c04960d97c7373e3e9fddf6b621c480ca59e1e8beec71a4a60"
+    },
+    "mounted-r12-build-receipt.json": {
+      "file": "tools/release/fixtures/terminal_dictation_20261010/mounted-r12-build-receipt.json",
+      "original_sha256": "88cd6f67e18c640f6ab400c49d988a96f0dcc4a4d198c6eac930e2beeccdc536",
+      "portable_file_sha256": "109308916034826fbeec359cc705132dc61a8befe5b91c150ebf486719bcca54"
+    },
+    "mounted-r12-managed.log.json": {
+      "file": "tools/release/fixtures/terminal_dictation_20261010/mounted-r12-managed.log.json",
+      "original_sha256": "cb396328c8285dd204266aae7758574843ef2a10cab123d723aa2324414bbe5c",
+      "portable_file_sha256": "59d692d6764c4a761efa006ce1ee9f33c83f30b94aee38cf4a96c033575e643c"
+    },
+    "mounted-r12-receipt.json": {
+      "file": "tools/release/fixtures/terminal_dictation_20261010/mounted-r12-receipt.json",
+      "original_sha256": "4bb53e4305c196906e8bea540b53e505f29d63294bda913520cd14baa0219f25",
+      "portable_file_sha256": "4bb53e4305c196906e8bea540b53e505f29d63294bda913520cd14baa0219f25"
+    },
+    "mounted-r12-managed-inner.py": {
+      "file": "tools/release/fixtures/terminal_dictation_20261010/mounted-r12-managed-inner.py",
+      "original_sha256": "28ac9dfcb592bacfe10701b939c945c6c3c3076248d768f75394a5e1ce0405f6",
+      "portable_file_sha256": "28ac9dfcb592bacfe10701b939c945c6c3c3076248d768f75394a5e1ce0405f6"
+    },
+    "mounted-r12-managed-outer.py": {
+      "file": "tools/release/fixtures/terminal_dictation_20261010/mounted-r12-managed-outer.py",
+      "original_sha256": "04433437f023e1c04960d97c7373e3e9fddf6b621c480ca59e1e8beec71a4a60",
+      "portable_file_sha256": "04433437f023e1c04960d97c7373e3e9fddf6b621c480ca59e1e8beec71a4a60"
     }
   },
   "mounted_r10": "FAIL after waiting 25 seconds for actual mounted Terminal tilo.host:edit Undo availability. Same exact selected Unicode replacement and native can_undo=true observed, but shared semantic host history never advertised undo. No Undo/Redo or full speech claim. Owned container dictation-mounted-r10-da46cfa5b389 verified absent.",
-  "follow_up": "Fix shared mounted native history discovery and guarded acknowledged invocation through the existing LocalUndo door. Do not replace with keyboard-only proof, native PTY fallback or loosen field assertions. Coordinate this narrow history integration with the SDK split owner."
+  "follow_up": "Qualify actual recorded speech, cancellation and focus retirement in mounted Terminal using an isolated public-audio source and ephemeral model witness. Keep physical microphone and user model installation/publication approvals separate.",
+  "mounted_r11": "DIAGNOSTIC FAIL retained: original native can_undo=true reached App focused_undo_status through live BoundAppWidget, while shell cached unavailable Undo. Temporary diagnostics emitted flags/types only and were removed. No Undo or speech qualification.",
+  "mounted_r12": "PASS actual mounted Terminal selected Unicode replacement and ONE semantic native Undo/Redo/Undo, restoring original anchor0/focus6 after Undo. Each operation succeeded only after native ACK. Two CPUs,3GiB,zero swap,256 pids; no hardware audio/GPU, deployment or persistent grant. Container dictation-mounted-r12-6ebf00479aaa verified absent. This proves native editing, not recorded speech.",
+  "native_history_repair": {
+    "source_ancestor": "4bb2914d0db47443f974440ce62ffb447f005e9e",
+    "candidate_source_sha256": {
+      "crates/session/shell/src/shell/search/providers/live_app_actions.rs": "f59b0d9a85db3b1f310734664563603f9dd800ea4b732088095f19ad1cda6886",
+      "apps/terminal/src/main_body.rs": "965dec1363b27e6ff864fb7f9dbf697ce81d268c54c72256cfd87175e3335b67",
+      "crates/sdk/ui-core/src/app/host_commands.rs": "18a5ebd644c9bf06cd34d6f9f6086cbea8289cc1858cec292d5c8bd7ea721b74"
+    },
+    "root_cause": "Same-query shell action-directory pages retained the pre-edit native Undo availability after the app published updated contracts.",
+    "fix": "Retire cached pages and pending responses when published surfaces or directory roots change; retain original permission and invocation checks.",
+    "validation": {
+      "focused_regression": "Old production path FAIL 0/1; repaired path PASS1/1.",
+      "directory_module": "PASS23/23. Three fixtures now register publishers before loading current pages; every assertion retained.",
+      "production_build": "PASS shell and Terminal.",
+      "shell_tests_compile": "PASS rcargo --no-fallback --no-fetch check --locked -j2 -p shell --tests; 2m16s."
+    }
+  }
 }
