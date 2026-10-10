@@ -1,0 +1,62 @@
+# OS image size, 2026-10-10 (TIL-733)
+
+A follow-up of [the TIL-609 receipt](os-image-size-2026-10-09.md), whose
+"other redundant payload" table this change works down. The nightly records
+`footprint.image.*` in `tilo-perf-results` hold the current values
+(DEVELOPMENT.md, "OS image size").
+
+## Method
+
+`python3 tools/perf/image_size.py --image <ref> --arch <arch> --json … --markdown …`
+over the production-layout `tilo-ci` images Build / OS dev published (LTO
+off). "Before" is main's newest image of each architecture when the change
+was measured; "after" is the pull request's image, built on main `e6fe675280`.
+The raw output is in `os-image-size-2026-10-10.json`.
+
+| image | revision | layers | compressed | payload | unique content | redundant payload |
+|---|---|---:|---:|---:|---:|---:|
+| `tilo-ci:main-9ce45bf-x86_64` | `9ce45bfda3` | 204 | 5,163,976,980 | 13,019,880,134 | 10,906,388,340 | 900,763,895 |
+| `tilo-ci:pr-4055-7ea8ee3-x86_64` (TIL-733) | `7ea8ee3fe8` | 187 | 4,797,369,652 | 12,041,041,694 | 10,803,088,881 | 521,672,956 |
+| `tilo-ci:main-e3915e1-aarch64` | `e3915e1a6f` | 204 | 4,280,887,035 | 11,203,584,810 | 9,053,757,209 | 942,141,456 |
+| `tilo-ci:pr-4055-7ea8ee3-aarch64` (TIL-733) | `7ea8ee3fe8` | 187 | 3,917,464,742 | 10,212,326,641 | 8,970,543,576 | 570,623,814 |
+
+All values are bytes.
+
+| measure | x86_64 | aarch64 |
+|---|---:|---:|
+| compressed | −366,607,328 (−7.1 %) | −363,422,293 (−8.5 %) |
+| payload | −978,838,440 | −991,258,169 |
+| unique content | −103,299,459 | −83,213,633 |
+| redundant payload | −379,090,939 | −371,517,642 |
+
+## What changed
+
+**One package layer.** The 18 package transactions of `rootfs-base` ran as a
+RUN each, and each ended in `FINALIZE_RPMDB`, which rewrites `rpmdb.sqlite`
+at a fresh inode: 20 layers carried a full 34–58 MB database, 956,600,320 B
+of payload in all. They now run in one RUN, so three layers carry it (the
+package RUN, the kernel swap, the final cleanup). The package layer is
+1,319,324,706 B compressed, where the layers it replaces (72–93 of the x86_64
+"before" image) were 1,586,096,443 B. The Plymouth PNGs render in their own
+stage.
+
+**No second initramfs.** The sealed image's `split` stage moved the kernel
+and initramfs into `/kernel`, a whiteout plus a fresh 114 MB layer beside the
+UKI that embeds both. A throwaway `kernel` stage now feeds the UKI, and the
+shipped `/kernel` keeps only `vmlinuz`: the split layer went from 113,891,084 B
+to 14,176,892 B compressed.
+
+The "before" images are main's newest when measured, a few commits behind
+the change's base; none of those commits touched `os/`.
+
+## Still redundant (x86_64, after)
+
+| what | bytes |
+|---|---:|
+| Proton's copies of `/usr/share/wine` files and its own duplicates (TIL-736) | 179,785,563 |
+| env-runtime files in `/usr/share/tilo-apps/pkgs` (TIL-735) | 170,552,368 |
+| the base's ostree objects | 39,814,868 |
+| the runtime bundle's duplicates (TIL-736) | 22,130,558 |
+| `/etc/selinux/targeted/active` | 14,528,753 |
+| `/usr/lib/udev/hwdb.bin` (`/etc/udev/hwdb.bin` in the base) | 14,372,567 |
+| `/kernel/7.2.8/vmlinuz` (whited-out original in the kernel-swap layer) | 14,299,648 |
