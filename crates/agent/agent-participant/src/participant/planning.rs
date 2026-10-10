@@ -59,13 +59,13 @@ impl Planning {
             .spawn(move || {
                 while let Ok(job) = asked.recv() {
                     let steps = planner.plan(&job.text, &job.context);
-                    let planned = Planned {
+                    let answer = Planned {
                         task: job.task,
                         continues: job.continues,
                         steps,
                         ready_at: Instant::now(),
                     };
-                    if made.send(planned).is_err() {
+                    if made.send(answer).is_err() {
                         return;
                     }
                     control.wake();

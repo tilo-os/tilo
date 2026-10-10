@@ -135,7 +135,8 @@ record is held in its own app worker (`crates/agent/agent-participant/src/worker
   and covers only the record the request names, so a record whose keys are
   withheld holds back no other. When the keys have not arrived after 10 s,
   the invocation is refused as unavailable; it never runs on a record seen
-  only in part.
+  only in part. A catalogue waits for the same keys once, then lists what
+  opened.
 
 Still in the host process: the app catalogue is linked statically (each
 app's `definition()` builds there), and agents' device keys are kept in
