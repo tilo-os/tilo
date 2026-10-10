@@ -93,6 +93,8 @@ jobs:
           '${{ github.event.before }}'
 
       - name: Verify commit messages and exact new blob contents
+        env:
+          PR_HEAD_REF: ${{ github.head_ref }}
         run: >-
           python3 tools/policy/check_commit_policy.py
           '${{ steps.merge.outputs.main }}'
