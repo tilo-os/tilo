@@ -194,3 +194,14 @@ fade scheduling. [Qualification](evidence/people-panel/README.md) records the
 bounded checklist and production capture matrix. Protected integration and
 exact merged-main postchecks remain independent gates; installed-device and
 the broader remaining rows above stay open.
+
+## Emoji picker measured-layout follow-up
+
+The enlarged-text footer and narrow group glyph defects observed during #3719
+are repaired through shared Caption shaping and SegmentedFace target metrics.
+Names and hints stack only when needed; narrow group controls wrap while
+preserving keyboard/pointer identity and localized accessible bounds. Resize
+keeps the selected emoji visible. [Focused evidence](evidence/emoji-picker-responsive/README.md)
+reuses the unchanged inspected hints and qualifies the failing 200% / 320 px
+states plus normal comparison. Installed-device and extremely small viewport
+coverage remain separate from this source layout correction.
