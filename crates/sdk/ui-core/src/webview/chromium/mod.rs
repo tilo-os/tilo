@@ -1530,6 +1530,15 @@ fn validate_event(value: &Value) -> Result<(), &'static str> {
     let valid = match event {
         "credential_result" => super::CredentialReply::decode(value).is_some(),
         "site_status" | "site_result" => valid_site_event(value, event),
+        "devtools_result" => {
+            value["request_id"]
+                .as_u64()
+                .is_some_and(|id| id > 0 && i32::try_from(id).is_ok())
+                && value["ok"].is_boolean()
+                && value["body"]
+                    .as_str()
+                    .is_some_and(|body| body.len() <= 1024 * 1024)
+        }
         "context_closed" | "permission_closed" => valid_id(value),
         "context_menu" => valid_context_menu(value),
         "find_result" => {
@@ -1662,6 +1671,19 @@ fn command_within_limits(command: &WebViewCommand) -> bool {
         WebViewCommand::Credentials(request) => request.valid(),
         WebViewCommand::SetSiteExceptions(origins) => {
             origins.len() <= 1024 && origins.iter().all(|s| !s.is_empty() && s.len() <= 8192)
+        }
+        WebViewCommand::DevTools {
+            request_id,
+            method,
+            params,
+            session,
+        } => {
+            *request_id > 0
+                && i32::try_from(*request_id).is_ok()
+                && method.len() <= 128
+                && params.is_object()
+                && params.to_string().len() <= 64 * 1024
+                && session.as_ref().is_none_or(|session| session.len() <= 128)
         }
         WebViewCommand::RequestSiteStatus { request_id, origin } => {
             *request_id > 0
@@ -1844,6 +1866,11 @@ fn decode_event(value: &Value) -> Option<WebViewEvent> {
         "tab_detached" => WebViewEvent::TabDetached,
         "close_blocked" => WebViewEvent::TabCloseBlocked,
         "site_status" | "site_result" => decode_site_event(value, value["event"].as_str()?)?,
+        "devtools_result" => WebViewEvent::DevToolsResult {
+            request_id: u32::try_from(value["request_id"].as_u64()?).ok()?,
+            ok: value["ok"].as_bool()?,
+            body: value["body"].as_str()?.into(),
+        },
         "context_closed" => WebViewEvent::ContextMenuClosed {
             id: u32::try_from(value["id"].as_u64()?).ok()?,
         },
@@ -2063,6 +2090,18 @@ fn encode_command(command: WebViewCommand) -> Option<Value> {
         WebViewCommand::SetUserScripts(scripts) => json!({"op":"scripts","scripts": &*scripts}),
         WebViewCommand::SetSiteExceptions(origins) => {
             json!({"op":"site_exceptions","origins":origins})
+        }
+        WebViewCommand::DevTools {
+            request_id,
+            method,
+            params,
+            session,
+        } => {
+            let mut command = json!({"op":"devtools_call","request_id":request_id,"method":method,"params":params});
+            if let Some(session) = session {
+                command["session"] = json!(session);
+            }
+            command
         }
         WebViewCommand::RequestSiteStatus { request_id, origin } => {
             json!({"op":"site_status","request_id":request_id,"origin":origin})

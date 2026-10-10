@@ -2423,3 +2423,71 @@ fn native_caret_prepare_opt_in_uses_the_original_tab_capability() {
     assert_eq!(check["action"], "check_text_input");
     assert!(check.get("native_caret").is_none());
 }
+
+#[test]
+fn devtools_extension_calls_round_trip_bounded_and_validated() {
+    // phase: command_encodes_with_its_session_and_is_bounded
+    let load = WebViewCommand::DevTools {
+        request_id: 7,
+        method: "Extensions.loadUnpacked".into(),
+        params: serde_json::json!({"path":"/profile/extensions/a"}),
+        session: None,
+    };
+    assert!(command_within_limits(&load));
+    let encoded = encode_command(load).unwrap();
+    assert_eq!(encoded["op"], "devtools_call");
+    assert_eq!(encoded["request_id"], 7);
+    assert_eq!(encoded["params"]["path"], "/profile/extensions/a");
+    assert!(encoded.get("session").is_none());
+    let attached = encode_command(WebViewCommand::DevTools {
+        request_id: 8,
+        method: "Runtime.evaluate".into(),
+        params: serde_json::json!({}),
+        session: Some("S1".into()),
+    })
+    .unwrap();
+    assert_eq!(attached["session"], "S1");
+    for bad in [
+        WebViewCommand::DevTools {
+            request_id: 0,
+            method: "Extensions.uninstall".into(),
+            params: serde_json::json!({}),
+            session: None,
+        },
+        WebViewCommand::DevTools {
+            request_id: 1,
+            method: "Extensions.uninstall".into(),
+            params: serde_json::json!("not an object"),
+            session: None,
+        },
+        WebViewCommand::DevTools {
+            request_id: 1,
+            method: "x".repeat(129),
+            params: serde_json::json!({}),
+            session: None,
+        },
+        WebViewCommand::DevTools {
+            request_id: 1,
+            method: "Runtime.evaluate".into(),
+            params: serde_json::json!({"expression":"x".repeat(70_000)}),
+            session: Some("S".into()),
+        },
+    ] {
+        assert!(!command_within_limits(&bad));
+    }
+
+    // phase: reply_is_validated_and_decoded
+    let reply = serde_json::json!({"event":"devtools_result","tab":1,"request_id":7,"ok":true,"body":"{\"id\":\"abc\"}"});
+    assert!(validate_event(&reply).is_ok());
+    assert!(matches!(
+        decode_event(&reply),
+        Some(WebViewEvent::DevToolsResult { request_id: 7, ok: true, body }) if body.contains("abc")
+    ));
+    for broken in [
+        serde_json::json!({"event":"devtools_result","tab":1,"request_id":0,"ok":true,"body":""}),
+        serde_json::json!({"event":"devtools_result","tab":1,"request_id":1,"ok":"yes","body":""}),
+        serde_json::json!({"event":"devtools_result","tab":1,"request_id":1,"ok":true}),
+    ] {
+        assert!(validate_event(&broken).is_err());
+    }
+}
