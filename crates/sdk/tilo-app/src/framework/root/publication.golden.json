@@ -49,8 +49,7 @@
           "name": "by",
           "ty": "integer",
           "required": true,
-          "description": "How many",
-          "nullable": false
+          "description": "How many"
         }
       ]
     },
@@ -139,8 +138,7 @@
           "name": "action",
           "ty": "object",
           "required": true,
-          "description": "A Shelf action, as JSON",
-          "nullable": false
+          "description": "A Shelf action, as JSON"
         }
       ]
     },
@@ -249,8 +247,7 @@
                 }
               ]
             }
-          },
-          "nullable": false
+          }
         }
       ]
     },
@@ -373,14 +370,12 @@
         {
           "name": "scale",
           "ty": "number",
-          "required": false,
           "description": "Pixels per point, 0.5 to 2 (default 1)",
           "nullable": true
         },
         {
           "name": "version",
           "ty": "text",
-          "required": false,
           "description": "A past version: change id from history, or checkpoint name",
           "nullable": true
         }
@@ -472,28 +467,24 @@
         {
           "name": "steps",
           "ty": "integer",
-          "required": false,
           "description": "How many steps, newest first",
           "nullable": true
         },
         {
           "name": "run",
           "ty": "text",
-          "required": false,
           "description": "An agent run id from history",
           "nullable": true
         },
         {
           "name": "by",
           "ty": "text",
-          "required": false,
           "description": "Exact author id from history, for steps outside a run",
           "nullable": true
         },
         {
           "name": "to",
           "ty": "text",
-          "required": false,
           "description": "A change id from history, or a checkpoint name",
           "nullable": true
         }
@@ -546,7 +537,6 @@
         {
           "name": "steps",
           "ty": "integer",
-          "required": false,
           "description": "How many undos, newest first",
           "nullable": true
         }
@@ -600,13 +590,11 @@
           "name": "version",
           "ty": "text",
           "required": true,
-          "description": "A change id from history, or a checkpoint name",
-          "nullable": false
+          "description": "A change id from history, or a checkpoint name"
         },
         {
           "name": "ids",
           "ty": "array",
-          "required": false,
           "description": "Only these item ids",
           "schema": {
             "type": "array",
@@ -666,8 +654,7 @@
           "name": "name",
           "ty": "text",
           "required": true,
-          "description": "The name",
-          "nullable": false
+          "description": "The name"
         }
       ]
     },
@@ -718,7 +705,6 @@
         {
           "name": "last",
           "ty": "integer",
-          "required": false,
           "description": "How many recent versions (default 50)",
           "nullable": true
         }
@@ -772,13 +758,11 @@
           "name": "from",
           "ty": "text",
           "required": true,
-          "description": "A change id from history, or a checkpoint name",
-          "nullable": false
+          "description": "A change id from history, or a checkpoint name"
         },
         {
           "name": "to",
           "ty": "text",
-          "required": false,
           "description": "The later version (default now)",
           "nullable": true
         }

@@ -13,22 +13,19 @@
     "action": "add-layer",
     "resource_kind": "canvas.artwork",
     "label": "Add layer",
-    "description": "Add layer.  Add a layer on top (or above another). Give it a medium (see media) to paint in oil or watercolour; without one it holds crisp vector art.",
+    "description": "Add a layer on top (or above another). Give it a medium (see media) to paint in oil or watercolour; without one it holds crisp vector art.",
     "operation": "Document",
     "params": [
       {
         "name": "id",
         "ty": "text",
-        "required": false,
         "description": "An id to address the layer by (`sky`); one is made when absent.",
         "schema": {
           "type": [
             "string",
             "null"
-          ],
-          "description": "An id to address the layer by (`sky`); one is made when absent."
-        },
-        "nullable": false
+          ]
+        }
       },
       {
         "name": "name",
@@ -37,64 +34,51 @@
         "description": "name",
         "schema": {
           "type": "string"
-        },
-        "nullable": false
+        }
       },
       {
         "name": "medium",
         "ty": "text",
-        "required": false,
         "description": "A medium id (`oil`, `watercolour`, … see `media`) to paint this layer's marks with; absent or empty for plain vector art.",
         "schema": {
           "type": [
             "string",
             "null"
-          ],
-          "description": "A medium id (`oil`, `watercolour`, … see `media`) to paint this layer's marks with; absent or empty for plain vector art."
-        },
-        "nullable": false
+          ]
+        }
       },
       {
         "name": "opacity",
         "ty": "number",
-        "required": false,
         "description": "`0..=1`.",
         "schema": {
           "type": [
             "number",
             "null"
-          ],
-          "description": "`0..=1`."
-        },
-        "nullable": false
+          ]
+        }
       },
       {
         "name": "above",
         "ty": "text",
-        "required": false,
         "description": "Put the new layer directly above this layer instead of on top.",
         "schema": {
           "type": [
             "string",
             "null"
-          ],
-          "description": "Put the new layer directly above this layer instead of on top."
-        },
-        "nullable": false
+          ]
+        }
       },
       {
         "name": "texture",
         "ty": "number",
-        "required": false,
         "description": "`0..=1`: let the ground's tooth show through the layer's marks.",
         "schema": {
           "type": [
             "number",
             "null"
-          ],
-          "description": "`0..=1`: let the ground's tooth show through the layer's marks."
-        },
-        "nullable": false
+          ]
+        }
       }
     ]
   },
@@ -103,7 +87,7 @@
     "action": "align",
     "resource_kind": "canvas.artwork",
     "label": "Align marks",
-    "description": "Align marks.  Align marks or groups to an edge or centre line, and/or distribute them with equal gaps, within their own extent, the artwork or another mark.",
+    "description": "Align marks or groups to an edge or centre line, and/or distribute them with equal gaps, within their own extent, the artwork or another mark.",
     "operation": "Document",
     "params": [
       {
@@ -115,52 +99,41 @@
           "type": "array",
           "items": {
             "type": "string"
-          },
-          "description": "Marks or groups."
-        },
-        "nullable": false
+          }
+        }
       },
       {
         "name": "edge",
         "ty": "text",
-        "required": false,
         "description": "`left`, `center`, `right`, `top`, `middle` or `bottom`.",
         "schema": {
           "type": [
             "string",
             "null"
-          ],
-          "description": "`left`, `center`, `right`, `top`, `middle` or `bottom`."
-        },
-        "nullable": false
+          ]
+        }
       },
       {
         "name": "distribute",
         "ty": "text",
-        "required": false,
         "description": "`horizontal` or `vertical`: equal gaps.",
         "schema": {
           "type": [
             "string",
             "null"
-          ],
-          "description": "`horizontal` or `vertical`: equal gaps."
-        },
-        "nullable": false
+          ]
+        }
       },
       {
         "name": "to",
         "ty": "text",
-        "required": false,
         "description": "`artwork` or a mark/group id; else their extent.",
         "schema": {
           "type": [
             "string",
             "null"
-          ],
-          "description": "`artwork` or a mark/group id; else their extent."
-        },
-        "nullable": false
+          ]
+        }
       }
     ]
   },
@@ -250,8 +223,7 @@
             }
           },
           "additionalProperties": false
-        },
-        "nullable": false
+        }
       }
     ]
   },
@@ -260,7 +232,7 @@
     "action": "arrange",
     "resource_kind": "canvas.artwork",
     "label": "Arrange marks",
-    "description": "Arrange marks.  Bring marks to the front or back of their layer, one step forward or backward, or directly above or below another mark or group.",
+    "description": "Bring marks to the front or back of their layer, one step forward or backward, or directly above or below another mark or group.",
     "operation": "Document",
     "params": [
       {
@@ -273,8 +245,7 @@
           "items": {
             "type": "string"
           }
-        },
-        "nullable": false
+        }
       },
       {
         "name": "to",
@@ -282,24 +253,19 @@
         "required": true,
         "description": "`front`, `back`, `forward`, `backward`, or `above`/`below` the mark or group `of`.",
         "schema": {
-          "type": "string",
-          "description": "`front`, `back`, `forward`, `backward`, or `above`/`below` the mark or group `of`."
-        },
-        "nullable": false
+          "type": "string"
+        }
       },
       {
         "name": "of",
         "ty": "text",
-        "required": false,
         "description": "The mark or group `above` and `below` are relative to.",
         "schema": {
           "type": [
             "string",
             "null"
-          ],
-          "description": "The mark or group `above` and `below` are relative to."
-        },
-        "nullable": false
+          ]
+        }
       }
     ]
   },
@@ -315,8 +281,7 @@
         "name": "name",
         "ty": "text",
         "required": true,
-        "description": "The name",
-        "nullable": false
+        "description": "The name"
       }
     ]
   },
@@ -325,7 +290,7 @@
     "action": "combine",
     "resource_kind": "canvas.artwork",
     "label": "Combine shapes",
-    "description": "Combine shapes.  Combine shapes into one path mark, in the bottom one's place and style.",
+    "description": "Combine shapes into one path mark, in the bottom one's place and style.",
     "operation": "Document",
     "params": [
       {
@@ -337,10 +302,8 @@
           "type": "array",
           "items": {
             "type": "string"
-          },
-          "description": "Marks or groups."
-        },
-        "nullable": false
+          }
+        }
       },
       {
         "name": "op",
@@ -348,10 +311,8 @@
         "required": true,
         "description": "`union`, `subtract` (from the bottom one), `intersect` or `exclude`.",
         "schema": {
-          "type": "string",
-          "description": "`union`, `subtract` (from the bottom one), `intersect` or `exclude`."
-        },
-        "nullable": false
+          "type": "string"
+        }
       }
     ]
   },
@@ -366,7 +327,6 @@
       {
         "name": "region",
         "ty": "array",
-        "required": false,
         "description": "`[x, y, width, height]`; the reference's frame when absent.",
         "schema": {
           "type": [
@@ -377,29 +337,23 @@
             "type": "number"
           },
           "minItems": 4,
-          "maxItems": 4,
-          "description": "`[x, y, width, height]`; the reference's frame when absent."
-        },
-        "nullable": false
+          "maxItems": 4
+        }
       },
       {
         "name": "mode",
         "ty": "text",
-        "required": false,
         "description": "`side-by-side` (default; the artwork left, the reference right), `overlay` (the reference at half strength over the artwork) or `difference` (bright where they differ).",
         "schema": {
           "type": [
             "string",
             "null"
-          ],
-          "description": "`side-by-side` (default; the artwork left, the reference right), `overlay` (the reference at half strength over the artwork) or `difference` (bright where they differ)."
-        },
-        "nullable": false
+          ]
+        }
       },
       {
         "name": "size",
         "ty": "integer",
-        "required": false,
         "description": "Longest side of each picture, 64 to 1024 (default 640).",
         "schema": {
           "type": [
@@ -407,10 +361,8 @@
             "null"
           ],
           "minimum": 0,
-          "maximum": 4294967295,
-          "description": "Longest side of each picture, 64 to 1024 (default 640)."
-        },
-        "nullable": false
+          "maximum": 4294967295
+        }
       }
     ]
   },
@@ -428,38 +380,30 @@
         "required": true,
         "description": "The earlier version: a change id from history or a checkpoint name.",
         "schema": {
-          "type": "string",
-          "description": "The earlier version: a change id from history or a checkpoint name."
-        },
-        "nullable": false
+          "type": "string"
+        }
       },
       {
         "name": "to",
         "ty": "text",
-        "required": false,
         "description": "The later version (default now).",
         "schema": {
           "type": [
             "string",
             "null"
-          ],
-          "description": "The later version (default now)."
-        },
-        "nullable": false
+          ]
+        }
       },
       {
         "name": "look",
         "ty": "boolean",
-        "required": false,
         "description": "Also a picture of the changed region: before left, after right.",
         "schema": {
           "type": [
             "boolean",
             "null"
-          ],
-          "description": "Also a picture of the changed region: before left, after right."
-        },
-        "nullable": false
+          ]
+        }
       }
     ]
   },
@@ -468,22 +412,19 @@
     "action": "draw",
     "resource_kind": "canvas.artwork",
     "label": "Draw shapes",
-    "description": "Draw shapes.  Draw shapes on a layer in one step: rect, ellipse, polygon, line, path (SVG d), text, stroke or image (src: a file path, content address or data: URI; a unit per pixel unless sized), each with fill, gradient, stroke and opacity. Answers the new ids; or give your own. On a painted layer filled shapes are laid in with the brush: paint a building or small figure as filled planes (lit and shadow side) with a small brush, not as many strokes.",
+    "description": "Draw shapes on a layer in one step: rect, ellipse, polygon, line, path (SVG d), text, stroke or image (src: a file path, content address or data: URI; a unit per pixel unless sized), each with fill, gradient, stroke and opacity. Answers the new ids; or give your own. On a painted layer filled shapes are laid in with the brush: paint a building or small figure as filled planes (lit and shadow side) with a small brush, not as many strokes.",
     "operation": "Document",
     "params": [
       {
         "name": "layer",
         "ty": "text",
-        "required": false,
         "description": "The layer to draw on; the top layer when absent.",
         "schema": {
           "type": [
             "string",
             "null"
-          ],
-          "description": "The layer to draw on; the top layer when absent."
-        },
-        "nullable": false
+          ]
+        }
       },
       {
         "name": "marks",
@@ -1092,8 +1033,7 @@
             "additionalProperties": false,
             "description": "One shape to draw."
           }
-        },
-        "nullable": false
+        }
       }
     ]
   },
@@ -1102,7 +1042,7 @@
     "action": "edit-layer",
     "resource_kind": "canvas.artwork",
     "label": "Edit layer",
-    "description": "Edit layer.  Rename or place a layer in an organisational folder (group; empty removes it), change its medium, opacity, visibility, lock or adjustments (grading all its marks), or move it to the front, back, forward or backward.",
+    "description": "Rename or place a layer in an organisational folder (group; empty removes it), change its medium, opacity, visibility, lock or adjustments (grading all its marks), or move it to the front, back, forward or backward.",
     "operation": "Document",
     "params": [
       {
@@ -1112,173 +1052,139 @@
         "description": "id",
         "schema": {
           "type": "string"
-        },
-        "nullable": false
+        }
       },
       {
         "name": "name",
         "ty": "text",
-        "required": false,
         "description": "name",
         "schema": {
           "type": [
             "string",
             "null"
           ]
-        },
-        "nullable": false
+        }
       },
       {
         "name": "group",
         "ty": "text",
-        "required": false,
         "description": "Organisational folder name; empty removes the layer from its folder. Consecutive members are presented together without changing stacking.",
         "schema": {
           "type": [
             "string",
             "null"
-          ],
-          "description": "Organisational folder name; empty removes the layer from its folder. Consecutive members are presented together without changing stacking."
-        },
-        "nullable": false
+          ]
+        }
       },
       {
         "name": "medium",
         "ty": "text",
-        "required": false,
         "description": "A medium id, or empty for plain vector art.",
         "schema": {
           "type": [
             "string",
             "null"
-          ],
-          "description": "A medium id, or empty for plain vector art."
-        },
-        "nullable": false
+          ]
+        }
       },
       {
         "name": "opacity",
         "ty": "number",
-        "required": false,
         "description": "opacity",
         "schema": {
           "type": [
             "number",
             "null"
           ]
-        },
-        "nullable": false
+        }
       },
       {
         "name": "visible",
         "ty": "boolean",
-        "required": false,
         "description": "visible",
         "schema": {
           "type": [
             "boolean",
             "null"
           ]
-        },
-        "nullable": false
+        }
       },
       {
         "name": "locked",
         "ty": "boolean",
-        "required": false,
         "description": "Locked marks are not picked by the pointer.",
         "schema": {
           "type": [
             "boolean",
             "null"
-          ],
-          "description": "Locked marks are not picked by the pointer."
-        },
-        "nullable": false
+          ]
+        }
       },
       {
         "name": "to",
         "ty": "text",
-        "required": false,
         "description": "`front`, `back`, `forward` or `backward` among the layers.",
         "schema": {
           "type": [
             "string",
             "null"
-          ],
-          "description": "`front`, `back`, `forward` or `backward` among the layers."
-        },
-        "nullable": false
+          ]
+        }
       },
       {
         "name": "texture",
         "ty": "number",
-        "required": false,
         "description": "`0..=1`: let the ground's tooth show through the layer's marks.",
         "schema": {
           "type": [
             "number",
             "null"
-          ],
-          "description": "`0..=1`: let the ground's tooth show through the layer's marks."
-        },
-        "nullable": false
+          ]
+        }
       },
       {
         "name": "adjust",
         "ty": "object",
-        "required": false,
         "description": "Colour and tone of all on it, as `edit-marks` adjust; `{}` clears.",
         "schema": {
           "type": [
             "object",
             "null"
-          ],
-          "description": "Colour and tone of all on it, as `edit-marks` adjust; `{}` clears."
-        },
-        "nullable": false
+          ]
+        }
       },
       {
         "name": "mask",
         "ty": "text",
-        "required": false,
         "description": "`reveal`, `hide` or `remove`: a mask layer `<id>-mask` to paint greys on, white shows, black hides; `unlink` keeps it put as the layer's marks move (`link` again).",
         "schema": {
           "type": [
             "string",
             "null"
-          ],
-          "description": "`reveal`, `hide` or `remove`: a mask layer `<id>-mask` to paint greys on, white shows, black hides; `unlink` keeps it put as the layer's marks move (`link` again)."
-        },
-        "nullable": false
+          ]
+        }
       },
       {
         "name": "invert",
         "ty": "boolean",
-        "required": false,
         "description": "Invert the mask.",
         "schema": {
           "type": [
             "boolean",
             "null"
-          ],
-          "description": "Invert the mask."
-        },
-        "nullable": false
+          ]
+        }
       },
       {
         "name": "clip",
         "ty": "boolean",
-        "required": false,
         "description": "Clip to the layer below.",
         "schema": {
           "type": [
             "boolean",
             "null"
-          ],
-          "description": "Clip to the layer below."
-        },
-        "nullable": false
+          ]
+        }
       }
     ]
   },
@@ -1287,22 +1193,19 @@
     "action": "edit-marks",
     "resource_kind": "canvas.artwork",
     "label": "Edit marks",
-    "description": "Edit marks.  Change marks by id: colours, opacity, name, `move_by` [dx,dy], scale, rotate and flip about their centre, or move them to another layer. Strokes: re-brush (brush, size, params), smooth, simplify, extend, split at a point, merge. Pictures: crop, straighten, adjust (exposure, white balance, …; look to judge).",
+    "description": "Change marks by id: colours, opacity, name, `move_by` [dx,dy], scale, rotate and flip about their centre, or move them to another layer. Strokes: re-brush (brush, size, params), smooth, simplify, extend, split at a point, merge. Pictures: crop, straighten, adjust (exposure, white balance, …; look to judge).",
     "operation": "Document",
     "params": [
       {
         "name": "pixelated",
         "ty": "boolean",
-        "required": false,
         "description": "Images: preserve hard pixel edges when enlarged.",
         "schema": {
           "type": [
             "boolean",
             "null"
-          ],
-          "description": "Images: preserve hard pixel edges when enlarged."
-        },
-        "nullable": false
+          ]
+        }
       },
       {
         "name": "ids",
@@ -1313,42 +1216,34 @@
           "type": "array",
           "items": {
             "type": "string"
-          },
-          "description": "Marks, or groups (all their members)."
-        },
-        "nullable": false
+          }
+        }
       },
       {
         "name": "name",
         "ty": "text",
-        "required": false,
         "description": "name",
         "schema": {
           "type": [
             "string",
             "null"
           ]
-        },
-        "nullable": false
+        }
       },
       {
         "name": "shape",
         "ty": "object",
-        "required": false,
         "description": "Replace the geometry: a shape as `draw` takes it (e.g. a path's new `d`).",
         "schema": {
           "type": [
             "object",
             "null"
-          ],
-          "description": "Replace the geometry: a shape as `draw` takes it (e.g. a path's new `d`)."
-        },
-        "nullable": false
+          ]
+        }
       },
       {
         "name": "dash",
         "ty": "array",
-        "required": false,
         "description": "`[]` removes dashes.",
         "schema": {
           "type": [
@@ -1357,287 +1252,232 @@
           ],
           "items": {
             "type": "number"
-          },
-          "description": "`[]` removes dashes."
-        },
-        "nullable": false
+          }
+        }
       },
       {
         "name": "cap",
         "ty": "text",
-        "required": false,
         "description": "cap",
         "schema": {
           "type": [
             "string",
             "null"
           ]
-        },
-        "nullable": false
+        }
       },
       {
         "name": "join",
         "ty": "text",
-        "required": false,
         "description": "join",
         "schema": {
           "type": [
             "string",
             "null"
           ]
-        },
-        "nullable": false
+        }
       },
       {
         "name": "blend",
         "ty": "text",
-        "required": false,
         "description": "blend",
         "schema": {
           "type": [
             "string",
             "null"
           ]
-        },
-        "nullable": false
+        }
       },
       {
         "name": "shadow",
         "ty": "object",
-        "required": false,
         "description": "As draw's; zero offset and blur removes it.",
         "schema": {
           "type": [
             "object",
             "null"
-          ],
-          "description": "As draw's; zero offset and blur removes it."
-        },
-        "nullable": false
+          ]
+        }
       },
       {
         "name": "inner_shadow",
         "ty": "object",
-        "required": false,
         "description": "As draw's; zero offset and blur removes it.",
         "schema": {
           "type": [
             "object",
             "null"
-          ],
-          "description": "As draw's; zero offset and blur removes it."
-        },
-        "nullable": false
+          ]
+        }
       },
       {
         "name": "grain",
         "ty": "number",
-        "required": false,
         "description": "0 removes it.",
         "schema": {
           "type": [
             "number",
             "null"
-          ],
-          "description": "0 removes it."
-        },
-        "nullable": false
+          ]
+        }
       },
       {
         "name": "feather",
         "ty": "number",
-        "required": false,
         "description": "0 removes it.",
         "schema": {
           "type": [
             "number",
             "null"
-          ],
-          "description": "0 removes it."
-        },
-        "nullable": false
+          ]
+        }
       },
       {
         "name": "group",
         "ty": "text",
-        "required": false,
         "description": "Put into this group (`a/b` nests b in a); empty takes out of any.",
         "schema": {
           "type": [
             "string",
             "null"
-          ],
-          "description": "Put into this group (`a/b` nests b in a); empty takes out of any."
-        },
-        "nullable": false
+          ]
+        }
       },
       {
         "name": "clip",
         "ty": "text",
-        "required": false,
         "description": "Cut to this mark's or group's shape, `selection` or an area's SVG path data; empty uncuts.",
         "schema": {
           "type": [
             "string",
             "null"
-          ],
-          "description": "Cut to this mark's or group's shape, `selection` or an area's SVG path data; empty uncuts."
-        },
-        "nullable": false
+          ]
+        }
       },
       {
         "name": "fill",
         "ty": "text",
-        "required": false,
         "description": "A colour (replacing a gradient), or `none`.",
         "schema": {
           "type": [
             "string",
             "null"
-          ],
-          "description": "A colour (replacing a gradient), or `none`."
-        },
-        "nullable": false
+          ]
+        }
       },
       {
         "name": "gradient",
         "ty": "object",
-        "required": false,
         "description": "As draw's.",
         "schema": {
           "type": [
             "object",
             "null"
-          ],
-          "description": "As draw's."
-        },
-        "nullable": false
+          ]
+        }
       },
       {
         "name": "stroke",
         "ty": "text",
-        "required": false,
         "description": "A colour, or `none`.",
         "schema": {
           "type": [
             "string",
             "null"
-          ],
-          "description": "A colour, or `none`."
-        },
-        "nullable": false
+          ]
+        }
       },
       {
         "name": "stroke_width",
         "ty": "number",
-        "required": false,
         "description": "stroke_width",
         "schema": {
           "type": [
             "number",
             "null"
           ]
-        },
-        "nullable": false
+        }
       },
       {
         "name": "opacity",
         "ty": "number",
-        "required": false,
         "description": "opacity",
         "schema": {
           "type": [
             "number",
             "null"
           ]
-        },
-        "nullable": false
+        }
       },
       {
         "name": "brush",
         "ty": "text",
-        "required": false,
         "description": "A stroke's brush preset (see paint).",
         "schema": {
           "type": [
             "string",
             "null"
-          ],
-          "description": "A stroke's brush preset (see paint)."
-        },
-        "nullable": false
+          ]
+        }
       },
       {
         "name": "size",
         "ty": "number",
-        "required": false,
         "description": "A stroke's width.",
         "schema": {
           "type": [
             "number",
             "null"
-          ],
-          "description": "A stroke's width."
-        },
-        "nullable": false
+          ]
+        }
       },
       {
         "name": "brush_size",
         "ty": "number",
-        "required": false,
         "description": "Painted layers: the brush size a filled shape is laid in with.",
         "schema": {
           "type": [
             "number",
             "null"
-          ],
-          "description": "Painted layers: the brush size a filled shape is laid in with."
-        },
-        "nullable": false
+          ]
+        }
       },
       {
         "name": "angle",
         "ty": "number",
-        "required": false,
         "description": "angle",
         "schema": {
           "type": [
             "number",
             "null"
           ]
-        },
-        "nullable": false
+        }
       },
       {
         "name": "wet",
         "ty": "boolean",
-        "required": false,
         "description": "wet",
         "schema": {
           "type": [
             "boolean",
             "null"
           ]
-        },
-        "nullable": false
+        }
       },
       {
         "name": "params",
         "ty": "object",
-        "required": false,
         "description": "params",
         "schema": {
           "type": [
             "object",
             "null"
           ]
-        },
-        "nullable": false
+        }
       },
       {
         "name": "move_by",
         "ty": "array",
-        "required": false,
         "description": "Move by `[dx, dy]` units.",
         "schema": {
           "type": [
@@ -1648,57 +1488,45 @@
             "type": "number"
           },
           "minItems": 2,
-          "maxItems": 2,
-          "description": "Move by `[dx, dy]` units."
-        },
-        "nullable": false
+          "maxItems": 2
+        }
       },
       {
         "name": "scale",
         "ty": "number",
-        "required": false,
         "description": "Scale about each mark's or group's centre.",
         "schema": {
           "type": [
             "number",
             "null"
-          ],
-          "description": "Scale about each mark's or group's centre."
-        },
-        "nullable": false
+          ]
+        }
       },
       {
         "name": "rotate",
         "ty": "number",
-        "required": false,
         "description": "Degrees clockwise about each centre.",
         "schema": {
           "type": [
             "number",
             "null"
-          ],
-          "description": "Degrees clockwise about each centre."
-        },
-        "nullable": false
+          ]
+        }
       },
       {
         "name": "layer",
         "ty": "text",
-        "required": false,
         "description": "Move the marks onto this layer, on top.",
         "schema": {
           "type": [
             "string",
             "null"
-          ],
-          "description": "Move the marks onto this layer, on top."
-        },
-        "nullable": false
+          ]
+        }
       },
       {
         "name": "transform",
         "ty": "array",
-        "required": false,
         "description": "An affine `[a, b, c, d, e, f]` in artwork units applied after the rest, to all the marks as one: a stretch or turn about any point.",
         "schema": {
           "type": [
@@ -1709,29 +1537,23 @@
             "type": "number"
           },
           "minItems": 6,
-          "maxItems": 6,
-          "description": "An affine `[a, b, c, d, e, f]` in artwork units applied after the rest, to all the marks as one: a stretch or turn about any point."
-        },
-        "nullable": false
+          "maxItems": 6
+        }
       },
       {
         "name": "flip",
         "ty": "text",
-        "required": false,
         "description": "`horizontal` or `vertical`: mirror about each centre.",
         "schema": {
           "type": [
             "string",
             "null"
-          ],
-          "description": "`horizontal` or `vertical`: mirror about each centre."
-        },
-        "nullable": false
+          ]
+        }
       },
       {
         "name": "crop",
         "ty": "array",
-        "required": false,
         "description": "Images: fractions `[x, y, w, h]` of the picture to show (it stays put); `[]` all of it.",
         "schema": {
           "type": [
@@ -1740,29 +1562,23 @@
           ],
           "items": {
             "type": "number"
-          },
-          "description": "Images: fractions `[x, y, w, h]` of the picture to show (it stays put); `[]` all of it."
-        },
-        "nullable": false
+          }
+        }
       },
       {
         "name": "straighten",
         "ty": "number",
-        "required": false,
         "description": "Images: degrees, -45 to 45, to level it.",
         "schema": {
           "type": [
             "number",
             "null"
-          ],
-          "description": "Images: degrees, -45 to 45, to level it."
-        },
-        "nullable": false
+          ]
+        }
       },
       {
         "name": "adjust",
         "ty": "object",
-        "required": false,
         "description": "Colour and tone; given steps replace, `{}` clears.",
         "schema": {
           "type": [
@@ -1878,43 +1694,34 @@
               "description": "Edges darker +, lighter -."
             }
           },
-          "additionalProperties": false,
-          "description": "Colour and tone; given steps replace, `{}` clears."
-        },
-        "nullable": false
+          "additionalProperties": false
+        }
       },
       {
         "name": "smooth",
         "ty": "number",
-        "required": false,
         "description": "Strokes: take the wobble out of their paths, 0..=1.",
         "schema": {
           "type": [
             "number",
             "null"
-          ],
-          "description": "Strokes: take the wobble out of their paths, 0..=1."
-        },
-        "nullable": false
+          ]
+        }
       },
       {
         "name": "simplify",
         "ty": "number",
-        "required": false,
         "description": "Strokes: drop points within this many units of the line.",
         "schema": {
           "type": [
             "number",
             "null"
-          ],
-          "description": "Strokes: drop points within this many units of the line."
-        },
-        "nullable": false
+          ]
+        }
       },
       {
         "name": "extend",
         "ty": "array",
-        "required": false,
         "description": "A stroke: continue it through these points, from the end they start nearer.",
         "schema": {
           "type": [
@@ -1926,15 +1733,12 @@
             "items": {
               "type": "number"
             }
-          },
-          "description": "A stroke: continue it through these points, from the end they start nearer."
-        },
-        "nullable": false
+          }
+        }
       },
       {
         "name": "split",
         "ty": "array",
-        "required": false,
         "description": "A stroke: cut it in two at the point nearest x, y; the far part gets a new id.",
         "schema": {
           "type": [
@@ -1945,24 +1749,19 @@
             "type": "number"
           },
           "minItems": 2,
-          "maxItems": 2,
-          "description": "A stroke: cut it in two at the point nearest x, y; the far part gets a new id."
-        },
-        "nullable": false
+          "maxItems": 2
+        }
       },
       {
         "name": "merge",
         "ty": "boolean",
-        "required": false,
         "description": "Strokes: join them, in the order named, into the first.",
         "schema": {
           "type": [
             "boolean",
             "null"
-          ],
-          "description": "Strokes: join them, in the order named, into the first."
-        },
-        "nullable": false
+          ]
+        }
       }
     ]
   },
@@ -1977,49 +1776,39 @@
       {
         "name": "transparent",
         "ty": "boolean",
-        "required": false,
         "description": "Omit the artwork ground for a transparent PNG or WebP.",
         "schema": {
           "type": [
             "boolean",
             "null"
-          ],
-          "description": "Omit the artwork ground for a transparent PNG or WebP."
-        },
-        "nullable": false
+          ]
+        }
       },
       {
         "name": "scale",
         "ty": "number",
-        "required": false,
         "description": "Pixels per artwork unit, 0.05 to 4 (default 1).",
         "schema": {
           "type": [
             "number",
             "null"
-          ],
-          "description": "Pixels per artwork unit, 0.05 to 4 (default 1)."
-        },
-        "nullable": false
+          ]
+        }
       },
       {
         "name": "format",
         "ty": "text",
-        "required": false,
         "description": "`png` (default, or the path's), `jpeg` or `webp` (lossless).",
         "schema": {
           "type": [
             "string",
             "null"
-          ],
-          "description": "`png` (default, or the path's), `jpeg` or `webp` (lossless)."
-        },
-        "nullable": false
+          ]
+        }
       },
       {
         "name": "quality",
         "ty": "integer",
-        "required": false,
         "description": "JPEG quality (default 90).",
         "schema": {
           "type": [
@@ -2027,24 +1816,19 @@
             "null"
           ],
           "minimum": 1,
-          "maximum": 100,
-          "description": "JPEG quality (default 90)."
-        },
-        "nullable": false
+          "maximum": 100
+        }
       },
       {
         "name": "path",
         "ty": "text",
-        "required": false,
         "description": "An absolute `.png`, `.jpg` or `.webp` path to write it to.",
         "schema": {
           "type": [
             "string",
             "null"
-          ],
-          "description": "An absolute `.png`, `.jpg` or `.webp` path to write it to."
-        },
-        "nullable": false
+          ]
+        }
       }
     ]
   },
@@ -2059,7 +1843,6 @@
       {
         "name": "ids",
         "ty": "array",
-        "required": false,
         "description": "Only these marks or groups, cropped to them and without the ground: one icon of a set.",
         "schema": {
           "type": [
@@ -2068,38 +1851,30 @@
           ],
           "items": {
             "type": "string"
-          },
-          "description": "Only these marks or groups, cropped to them and without the ground: one icon of a set."
-        },
-        "nullable": false
+          }
+        }
       },
       {
         "name": "outline_text",
         "ty": "boolean",
-        "required": false,
         "description": "Write text as outlines, which look the same without its fonts. Text along a path is always outlined.",
         "schema": {
           "type": [
             "boolean",
             "null"
-          ],
-          "description": "Write text as outlines, which look the same without its fonts. Text along a path is always outlined."
-        },
-        "nullable": false
+          ]
+        }
       },
       {
         "name": "path",
         "ty": "text",
-        "required": false,
         "description": "An absolute `.svg` path to write it to.",
         "schema": {
           "type": [
             "string",
             "null"
-          ],
-          "description": "An absolute `.svg` path to write it to."
-        },
-        "nullable": false
+          ]
+        }
       }
     ]
   },
@@ -2118,7 +1893,7 @@
         "description": "The path of the field from the record's root, and the operation",
         "schema": {
           "type": "object",
-          "description": "A field edit: `path` from the record (fields by name, items by id, map entries by key) and `op` with its arguments. Editable paths:\n- `title` (Title. `title`: set, splice, replace) ops: set, splice, replace; value: {\"type\":\"string\"}\n- `width` (Width. `width`: set) ops: set; value: {\"type\":\"number\"}\n- `height` (Height. `height`: set) ops: set; value: {\"type\":\"number\"}\n- `ground` (Ground. `ground`: set) ops: set; value: {}\n- `layers` (Bottom to top. `layers`: insert-item, remove-item, move-to, set; removing an item asks for confirmation) ops: insert-item, remove-item, move-to, set; value: {}\n- `layers.*` (Bottom to top. `layers.*`: one item, by its id: set) ops: set; value: {\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"string\"},\"name\":{\"type\":\"string\"},\"group\":{\"type\":\"string\"},\"order\":{\"type\":\"string\"},\"medium\":{\"type\":\"string\"},\"opacity\":{\"type\":\"number\"},\"visible\":{\"type\":\"boolean\"},\"texture\":{\"type\":\"number\"},\"locked\":{\"type\":\"boolean\"},\"adjust\":{},\"mask_of\":{\"type\":\"string\"},\"base\":{\"type\":\"number\"},\"invert\":{\"type\":\"boolean\"},\"clip\":{\"type\":\"boolean\"},\"unlinked\":{\"type\":\"boolean\"}}}\n- `layers.*.id` (Id. `layers.*.id`: set, splice, replace; readonly: changed only by the record's verbs) ops: set, splice, replace; value: {\"type\":\"string\"}\n- `layers.*.name` (Name. `layers.*.name`: set, splice, replace) ops: set, splice, replace; value: {\"type\":\"string\"}\n- `layers.*.group` (Organisational folder; empty for an ungrouped layer. It does not. `layers.*.group`: set, splice, replace) ops: set, splice, replace; value: {\"type\":\"string\"}\n- `layers.*.order` (Fractional position among layers; later is on top. `layers.*.order`: set, splice, replace; readonly: changed only by the record's verbs) ops: set, splice, replace; value: {\"type\":\"string\"}\n- `layers.*.medium` (The medium preset that paints this layer's marks, or empty for plain. `layers.*.medium`: set, splice, replace) ops: set, splice, replace; value: {\"type\":\"string\"}\n- `layers.*.opacity` (Opacity. `layers.*.opacity`: set) ops: set; value: {\"type\":\"number\"}\n- `layers.*.visible` (Visible. `layers.*.visible`: set) ops: set; value: {\"type\":\"boolean\"}\n- `layers.*.texture` (`0..=1`: how much of the ground's tooth shows through the layer's. `layers.*.texture`: set) ops: set; value: {\"type\":\"number\"}\n- `layers.*.locked` (Held still: the pointer passes through its marks to those beneath. `layers.*.locked`: set) ops: set; value: {\"type\":\"boolean\"}\n- `layers.*.adjust` (Colour and tone adjustments of everything on the layer. `layers.*.adjust`: set) ops: set; value: {}\n- `layers.*.mask_of` (The layer this layer masks, or empty for an ordinary layer. A mask's. `layers.*.mask_of`: set, splice, replace; readonly: changed only by the record's verbs) ops: set, splice, replace; value: {\"type\":\"string\"}\n- `layers.*.base` (A mask's grey before any mark, `0..=1`: 1 shows all of its layer,. `layers.*.base`: set) ops: set; value: {\"type\":\"number\"}\n- `layers.*.invert` (A mask that hides where it is light and shows where it is dark. `layers.*.invert`: set) ops: set; value: {\"type\":\"boolean\"}\n- `layers.*.clip` (Clipped to the layer below: it shows only where that layer has paint. `layers.*.clip`: set) ops: set; value: {\"type\":\"boolean\"}\n- `layers.*.unlinked` (A mask that stays put when its layer's marks move. Linked, it moves. `layers.*.unlinked`: set) ops: set; value: {\"type\":\"boolean\"}\n- `marks` (Bottom to top within each layer, layers bottom to top (see. `marks`: insert-item, remove-item, move-to, set; removing an item asks for confirmation) ops: insert-item, remove-item, move-to, set; value: {}\n- `marks.*` (Bottom to top within each layer, layers bottom to top (see. `marks.*`: one item, by its id: set) ops: set; value: {\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"string\"},\"layer\":{\"type\":\"string\"},\"order\":{\"type\":\"string\"},\"name\":{\"type\":\"string\"},\"shape\":{},\"style\":{},\"transform\":{\"type\":[\"array\",\"null\"],\"items\":{\"type\":\"number\"},\"minItems\":6,\"maxItems\":6},\"group\":{\"type\":\"string\"},\"clip\":{\"type\":\"string\"},\"area\":{\"type\":\"string\"}}}\n- `marks.*.id` (Id. `marks.*.id`: set, splice, replace; readonly: changed only by the record's verbs) ops: set, splice, replace; value: {\"type\":\"string\"}\n- `marks.*.layer` (Layer. `marks.*.layer`: set, splice, replace) ops: set, splice, replace; value: {\"type\":\"string\"}\n- `marks.*.order` (Fractional position within its layer; later is on top. `marks.*.order`: set, splice, replace; readonly: changed only by the record's verbs) ops: set, splice, replace; value: {\"type\":\"string\"}\n- `marks.*.name` (Name. `marks.*.name`: set, splice, replace) ops: set, splice, replace; value: {\"type\":\"string\"}\n- `marks.*.shape` (Shape. `marks.*.shape`: set) ops: set; value: {}\n- `marks.*.style` (Style. `marks.*.style`: set) ops: set; value: {}\n- `marks.*.transform` (An affine transform `[a, b, c, d, e, f]` applied to the geometry. `marks.*.transform`: set) ops: set; value: {\"type\":[\"array\",\"null\"],\"items\":{\"type\":\"number\"},\"minItems\":6,\"maxItems\":6}\n- `marks.*.group` (The group the mark belongs to, or empty. `marks.*.group`: set, splice, replace) ops: set, splice, replace; value: {\"type\":\"string\"}\n- `marks.*.clip` (The mark whose shape this mark is cut to, or empty. `marks.*.clip`: set, splice, replace) ops: set, splice, replace; value: {\"type\":\"string\"}\n- `marks.*.area` (SVG path data of the area the mark is kept inside (the selection's. `marks.*.area`: set, splice, replace; readonly: changed only by the record's verbs) ops: set, splice, replace; value: {\"type\":\"string\"}\n- `media` (Media presets saved in this artwork, by id. `media`: set, remove-key) ops: set, remove-key; value: {\"type\":\"object\"}\n- `media.*` (Media presets saved in this artwork, by id. `media.<key>`: an entry, by its key, and what is inside it) ops: set, splice, replace, add, insert, remove; value: {}\n- `reference` (Reference. `reference`: set) ops: set; value: {}\n- `selection` (Selection. `selection`: set) ops: set; value: {}",
+          "description": "A field edit: `path` from the record (fields by name, items by id, map entries by key) and `op` with its arguments. Editable paths:\n- `title`: set, splice, replace — Title (string)\n- `width`: set — Width (number)\n- `height`: set — Height (number)\n- `ground`: set — Ground\n- `layers`: insert-item, remove-item, move-to, set — Bottom to top; removing an item asks for confirmation\n- `layers.*`: set — Bottom to top; one item, by its id\n- `layers.*.name`: set, splice, replace — Name (string)\n- `layers.*.group`: set, splice, replace — Organisational folder; empty for an ungrouped layer. It does not (string)\n- `layers.*.medium`: set, splice, replace — The medium preset that paints this layer's marks, or empty for plain (string)\n- `layers.*.opacity`: set — Opacity (number)\n- `layers.*.visible`: set — Visible (boolean)\n- `layers.*.texture`: set — `0..=1`: how much of the ground's tooth shows through the layer's (number)\n- `layers.*.locked`: set — Held still: the pointer passes through its marks to those beneath (boolean)\n- `layers.*.adjust`: set — Colour and tone adjustments of everything on the layer\n- `layers.*.base`: set — A mask's grey before any mark, `0..=1`: 1 shows all of its layer, (number)\n- `layers.*.invert`: set — A mask that hides where it is light and shows where it is dark (boolean)\n- `layers.*.clip`: set — Clipped to the layer below: it shows only where that layer has paint (boolean)\n- `layers.*.unlinked`: set — A mask that stays put when its layer's marks move. Linked, it moves (boolean)\n- `marks`: insert-item, remove-item, move-to, set — Bottom to top within each layer, layers bottom to top (see; removing an item asks for confirmation\n- `marks.*`: set — Bottom to top within each layer, layers bottom to top (see; one item, by its id\n- `marks.*.layer`: set, splice, replace — Layer (string)\n- `marks.*.name`: set, splice, replace — Name (string)\n- `marks.*.shape`: set — Shape\n- `marks.*.style`: set — Style\n- `marks.*.transform`: set — An affine transform `[a, b, c, d, e, f]` applied to the geometry (array or null)\n- `marks.*.group`: set, splice, replace — The group the mark belongs to, or empty (string)\n- `marks.*.clip`: set, splice, replace — The mark whose shape this mark is cut to, or empty (string)\n- `media`: set, remove-key — Media presets saved in this artwork, by id\n- `media.*`: set, splice, replace, add, insert, remove — Media presets saved in this artwork, by id; an entry, by its key, and what is inside it\n- `reference`: set — Reference\n- `selection`: set — Selection",
           "properties": {
             "path": {
               "type": "array",
@@ -2165,56 +1940,10 @@
             {
               "path": [
                 {
-                  "field": "width"
-                }
-              ],
-              "op": "set"
-            },
-            {
-              "path": [
-                {
-                  "field": "height"
-                }
-              ],
-              "op": "set"
-            },
-            {
-              "path": [
-                {
-                  "field": "ground"
-                }
-              ],
-              "op": "set"
-            },
-            {
-              "path": [
-                {
-                  "field": "layers"
-                }
-              ],
-              "op": "insert-item"
-            },
-            {
-              "path": [
-                {
                   "field": "layers"
                 },
                 {
                   "item": "<item>"
-                }
-              ],
-              "op": "set"
-            },
-            {
-              "path": [
-                {
-                  "field": "layers"
-                },
-                {
-                  "item": "<item>"
-                },
-                {
-                  "field": "id"
                 }
               ],
               "op": "set"
@@ -2229,355 +1958,6 @@
                 },
                 {
                   "field": "name"
-                }
-              ],
-              "op": "set"
-            },
-            {
-              "path": [
-                {
-                  "field": "layers"
-                },
-                {
-                  "item": "<item>"
-                },
-                {
-                  "field": "group"
-                }
-              ],
-              "op": "set"
-            },
-            {
-              "path": [
-                {
-                  "field": "layers"
-                },
-                {
-                  "item": "<item>"
-                },
-                {
-                  "field": "order"
-                }
-              ],
-              "op": "set"
-            },
-            {
-              "path": [
-                {
-                  "field": "layers"
-                },
-                {
-                  "item": "<item>"
-                },
-                {
-                  "field": "medium"
-                }
-              ],
-              "op": "set"
-            },
-            {
-              "path": [
-                {
-                  "field": "layers"
-                },
-                {
-                  "item": "<item>"
-                },
-                {
-                  "field": "opacity"
-                }
-              ],
-              "op": "set"
-            },
-            {
-              "path": [
-                {
-                  "field": "layers"
-                },
-                {
-                  "item": "<item>"
-                },
-                {
-                  "field": "visible"
-                }
-              ],
-              "op": "set"
-            },
-            {
-              "path": [
-                {
-                  "field": "layers"
-                },
-                {
-                  "item": "<item>"
-                },
-                {
-                  "field": "texture"
-                }
-              ],
-              "op": "set"
-            },
-            {
-              "path": [
-                {
-                  "field": "layers"
-                },
-                {
-                  "item": "<item>"
-                },
-                {
-                  "field": "locked"
-                }
-              ],
-              "op": "set"
-            },
-            {
-              "path": [
-                {
-                  "field": "layers"
-                },
-                {
-                  "item": "<item>"
-                },
-                {
-                  "field": "adjust"
-                }
-              ],
-              "op": "set"
-            },
-            {
-              "path": [
-                {
-                  "field": "layers"
-                },
-                {
-                  "item": "<item>"
-                },
-                {
-                  "field": "mask_of"
-                }
-              ],
-              "op": "set"
-            },
-            {
-              "path": [
-                {
-                  "field": "layers"
-                },
-                {
-                  "item": "<item>"
-                },
-                {
-                  "field": "base"
-                }
-              ],
-              "op": "set"
-            },
-            {
-              "path": [
-                {
-                  "field": "layers"
-                },
-                {
-                  "item": "<item>"
-                },
-                {
-                  "field": "invert"
-                }
-              ],
-              "op": "set"
-            },
-            {
-              "path": [
-                {
-                  "field": "layers"
-                },
-                {
-                  "item": "<item>"
-                },
-                {
-                  "field": "clip"
-                }
-              ],
-              "op": "set"
-            },
-            {
-              "path": [
-                {
-                  "field": "layers"
-                },
-                {
-                  "item": "<item>"
-                },
-                {
-                  "field": "unlinked"
-                }
-              ],
-              "op": "set"
-            },
-            {
-              "path": [
-                {
-                  "field": "marks"
-                }
-              ],
-              "op": "insert-item"
-            },
-            {
-              "path": [
-                {
-                  "field": "marks"
-                },
-                {
-                  "item": "<item>"
-                }
-              ],
-              "op": "set"
-            },
-            {
-              "path": [
-                {
-                  "field": "marks"
-                },
-                {
-                  "item": "<item>"
-                },
-                {
-                  "field": "id"
-                }
-              ],
-              "op": "set"
-            },
-            {
-              "path": [
-                {
-                  "field": "marks"
-                },
-                {
-                  "item": "<item>"
-                },
-                {
-                  "field": "layer"
-                }
-              ],
-              "op": "set"
-            },
-            {
-              "path": [
-                {
-                  "field": "marks"
-                },
-                {
-                  "item": "<item>"
-                },
-                {
-                  "field": "order"
-                }
-              ],
-              "op": "set"
-            },
-            {
-              "path": [
-                {
-                  "field": "marks"
-                },
-                {
-                  "item": "<item>"
-                },
-                {
-                  "field": "name"
-                }
-              ],
-              "op": "set"
-            },
-            {
-              "path": [
-                {
-                  "field": "marks"
-                },
-                {
-                  "item": "<item>"
-                },
-                {
-                  "field": "shape"
-                }
-              ],
-              "op": "set"
-            },
-            {
-              "path": [
-                {
-                  "field": "marks"
-                },
-                {
-                  "item": "<item>"
-                },
-                {
-                  "field": "style"
-                }
-              ],
-              "op": "set"
-            },
-            {
-              "path": [
-                {
-                  "field": "marks"
-                },
-                {
-                  "item": "<item>"
-                },
-                {
-                  "field": "transform"
-                }
-              ],
-              "op": "set"
-            },
-            {
-              "path": [
-                {
-                  "field": "marks"
-                },
-                {
-                  "item": "<item>"
-                },
-                {
-                  "field": "group"
-                }
-              ],
-              "op": "set"
-            },
-            {
-              "path": [
-                {
-                  "field": "marks"
-                },
-                {
-                  "item": "<item>"
-                },
-                {
-                  "field": "clip"
-                }
-              ],
-              "op": "set"
-            },
-            {
-              "path": [
-                {
-                  "field": "marks"
-                },
-                {
-                  "item": "<item>"
-                },
-                {
-                  "field": "area"
-                }
-              ],
-              "op": "set"
-            },
-            {
-              "path": [
-                {
-                  "field": "media"
                 }
               ],
               "op": "set"
@@ -2592,26 +1972,9 @@
                 }
               ],
               "op": "set"
-            },
-            {
-              "path": [
-                {
-                  "field": "reference"
-                }
-              ],
-              "op": "set"
-            },
-            {
-              "path": [
-                {
-                  "field": "selection"
-                }
-              ],
-              "op": "set"
             }
           ]
-        },
-        "nullable": false
+        }
       }
     ]
   },
@@ -2626,35 +1989,28 @@
       {
         "name": "subject",
         "ty": "boolean",
-        "required": false,
         "description": "Find the main subject on-device; with at, the object there.",
         "schema": {
           "type": [
             "boolean",
             "null"
-          ],
-          "description": "Find the main subject on-device; with at, the object there."
-        },
-        "nullable": false
+          ]
+        }
       },
       {
         "name": "refine",
         "ty": "number",
-        "required": false,
         "description": "Edge reach in artwork units; subject defaults to 6 image pixels.",
         "schema": {
           "type": [
             "number",
             "null"
-          ],
-          "description": "Edge reach in artwork units; subject defaults to 6 image pixels."
-        },
-        "nullable": false
+          ]
+        }
       },
       {
         "name": "at",
         "ty": "array",
-        "required": false,
         "description": "Subject point `[x, y]` in artwork units.",
         "schema": {
           "type": [
@@ -2665,52 +2021,41 @@
             "type": "number"
           },
           "minItems": 2,
-          "maxItems": 2,
-          "description": "Subject point `[x, y]` in artwork units."
-        },
-        "nullable": false
+          "maxItems": 2
+        }
       },
       {
         "name": "layer",
         "ty": "text",
-        "required": false,
         "description": "Find on this layer alone; otherwise use all visible layers.",
         "schema": {
           "type": [
             "string",
             "null"
-          ],
-          "description": "Find on this layer alone; otherwise use all visible layers."
-        },
-        "nullable": false
+          ]
+        }
       },
       {
         "name": "mode",
         "ty": "text",
-        "required": false,
         "description": "`replace` (default), `add`, `subtract` or `intersect`.",
         "schema": {
           "type": [
             "string",
             "null"
-          ],
-          "description": "`replace` (default), `add`, `subtract` or `intersect`."
-        },
-        "nullable": false
+          ]
+        }
       },
       {
         "name": "feather",
         "ty": "number",
-        "required": false,
         "description": "Feather in artwork units.",
         "schema": {
           "type": [
             "number",
             "null"
-          ],
-          "description": "Feather in artwork units."
-        },
-        "nullable": false
+          ]
+        }
       }
     ]
   },
@@ -2929,8 +2274,7 @@
               }
             ]
           }
-        },
-        "nullable": false
+        }
       }
     ]
   },
@@ -2945,7 +2289,6 @@
       {
         "name": "last",
         "ty": "integer",
-        "required": false,
         "description": "How many recent versions (default 50)",
         "nullable": true
       }
@@ -2956,7 +2299,7 @@
     "action": "import-svg",
     "resource_kind": "canvas.artwork",
     "label": "Import SVG",
-    "description": "Import SVG.  Import an SVG (markup, file path or content address) as one draw of path and text marks in a group: fills, gradients, outlines, opacity, blends and clip paths.",
+    "description": "Import an SVG (markup, file path or content address) as one draw of path and text marks in a group: fills, gradients, outlines, opacity, blends and clip paths.",
     "operation": "Document",
     "params": [
       {
@@ -2965,43 +2308,34 @@
         "required": true,
         "description": "SVG markup, an absolute path to a `.svg`, or a content address.",
         "schema": {
-          "type": "string",
-          "description": "SVG markup, an absolute path to a `.svg`, or a content address."
-        },
-        "nullable": false
+          "type": "string"
+        }
       },
       {
         "name": "layer",
         "ty": "text",
-        "required": false,
         "description": "The layer to draw on; the top layer when absent.",
         "schema": {
           "type": [
             "string",
             "null"
-          ],
-          "description": "The layer to draw on; the top layer when absent."
-        },
-        "nullable": false
+          ]
+        }
       },
       {
         "name": "group",
         "ty": "text",
-        "required": false,
         "description": "The group the marks join (one is made when absent).",
         "schema": {
           "type": [
             "string",
             "null"
-          ],
-          "description": "The group the marks join (one is made when absent)."
-        },
-        "nullable": false
+          ]
+        }
       },
       {
         "name": "fit",
         "ty": "array",
-        "required": false,
         "description": "Fit into `[x, y, width, height]`, aspect kept; own size otherwise.",
         "schema": {
           "type": [
@@ -3012,10 +2346,8 @@
             "type": "number"
           },
           "minItems": 4,
-          "maxItems": 4,
-          "description": "Fit into `[x, y, width, height]`, aspect kept; own size otherwise."
-        },
-        "nullable": false
+          "maxItems": 4
+        }
       }
     ]
   },
@@ -3030,21 +2362,17 @@
       {
         "name": "palette",
         "ty": "boolean",
-        "required": false,
         "description": "Include literal fill, stroke and gradient colours with mark counts, scoped by region/layer, independent of the newest-mark limit.",
         "schema": {
           "type": [
             "boolean",
             "null"
-          ],
-          "description": "Include literal fill, stroke and gradient colours with mark counts, scoped by region/layer, independent of the newest-mark limit."
-        },
-        "nullable": false
+          ]
+        }
       },
       {
         "name": "region",
         "ty": "array",
-        "required": false,
         "description": "Only marks touching `[x, y, width, height]`.",
         "schema": {
           "type": [
@@ -3055,29 +2383,23 @@
             "type": "number"
           },
           "minItems": 4,
-          "maxItems": 4,
-          "description": "Only marks touching `[x, y, width, height]`."
-        },
-        "nullable": false
+          "maxItems": 4
+        }
       },
       {
         "name": "layer",
         "ty": "text",
-        "required": false,
         "description": "Only marks on this layer.",
         "schema": {
           "type": [
             "string",
             "null"
-          ],
-          "description": "Only marks on this layer."
-        },
-        "nullable": false
+          ]
+        }
       },
       {
         "name": "limit",
         "ty": "integer",
-        "required": false,
         "description": "How many of the newest matching marks to list, 0 to 400 (default 100; none with measure).",
         "schema": {
           "type": [
@@ -3085,43 +2407,34 @@
             "null"
           ],
           "minimum": 0,
-          "maximum": 4294967295,
-          "description": "How many of the newest matching marks to list, 0 to 400 (default 100; none with measure)."
-        },
-        "nullable": false
+          "maximum": 4294967295
+        }
       },
       {
         "name": "version",
         "ty": "text",
-        "required": false,
         "description": "A past version: a change id from history or a checkpoint name.",
         "schema": {
           "type": [
             "string",
             "null"
-          ],
-          "description": "A past version: a change id from history or a checkpoint name."
-        },
-        "nullable": false
+          ]
+        }
       },
       {
         "name": "full",
         "ty": "boolean",
-        "required": false,
         "description": "Also each mark's shape, style and transform, to edit exactly.",
         "schema": {
           "type": [
             "boolean",
             "null"
-          ],
-          "description": "Also each mark's shape, style and transform, to edit exactly."
-        },
-        "nullable": false
+          ]
+        }
       },
       {
         "name": "measure",
         "ty": "array",
-        "required": false,
         "description": "Marks or groups to measure as the eye sees them: ink box, ink area, centre of mass and its offset from the box's middle (for balancing icons optically), and a text's letter boxes.",
         "schema": {
           "type": [
@@ -3130,10 +2443,8 @@
           ],
           "items": {
             "type": "string"
-          },
-          "description": "Marks or groups to measure as the eye sees them: ink box, ink area, centre of mass and its offset from the box's middle (for balancing icons optically), and a text's letter boxes."
-        },
-        "nullable": false
+          }
+        }
       }
     ]
   },
@@ -3148,7 +2459,6 @@
       {
         "name": "region",
         "ty": "array",
-        "required": false,
         "description": "`[x, y, width, height]` in artwork units; the whole artwork when absent. A small region is a close look at detail.",
         "schema": {
           "type": [
@@ -3159,15 +2469,12 @@
             "type": "number"
           },
           "minItems": 4,
-          "maxItems": 4,
-          "description": "`[x, y, width, height]` in artwork units; the whole artwork when absent. A small region is a close look at detail."
-        },
-        "nullable": false
+          "maxItems": 4
+        }
       },
       {
         "name": "size",
         "ty": "integer",
-        "required": false,
         "description": "The longest side of the picture in pixels, 64 to 1536 (default 768).",
         "schema": {
           "type": [
@@ -3175,43 +2482,34 @@
             "null"
           ],
           "minimum": 0,
-          "maximum": 4294967295,
-          "description": "The longest side of the picture in pixels, 64 to 1536 (default 768)."
-        },
-        "nullable": false
+          "maximum": 4294967295
+        }
       },
       {
         "name": "format",
         "ty": "text",
-        "required": false,
         "description": "`jpeg` (default) or `png` for exact pixels.",
         "schema": {
           "type": [
             "string",
             "null"
-          ],
-          "description": "`jpeg` (default) or `png` for exact pixels."
-        },
-        "nullable": false
+          ]
+        }
       },
       {
         "name": "grid",
         "ty": "boolean",
-        "required": false,
         "description": "Draw a labelled coordinate grid over the picture, to place marks.",
         "schema": {
           "type": [
             "boolean",
             "null"
-          ],
-          "description": "Draw a labelled coordinate grid over the picture, to place marks."
-        },
-        "nullable": false
+          ]
+        }
       },
       {
         "name": "layers",
         "ty": "array",
-        "required": false,
         "description": "Show only these layers.",
         "schema": {
           "type": [
@@ -3220,38 +2518,30 @@
           ],
           "items": {
             "type": "string"
-          },
-          "description": "Show only these layers."
-        },
-        "nullable": false
+          }
+        }
       },
       {
         "name": "version",
         "ty": "text",
-        "required": false,
         "description": "A past version: a change id from history or a checkpoint name.",
         "schema": {
           "type": [
             "string",
             "null"
-          ],
-          "description": "A past version: a change id from history or a checkpoint name."
-        },
-        "nullable": false
+          ]
+        }
       },
       {
         "name": "reference",
         "ty": "boolean",
-        "required": false,
         "description": "Show the reference picture over the artwork; as set when absent.",
         "schema": {
           "type": [
             "boolean",
             "null"
-          ],
-          "description": "Show the reference picture over the artwork; as set when absent."
-        },
-        "nullable": false
+          ]
+        }
       }
     ]
   },
@@ -3269,132 +2559,107 @@
     "action": "new-artwork",
     "resource_kind": "canvas.artwork",
     "label": "New artwork",
-    "description": "New artwork.  Start a blank artwork (one undo away). size: screen, a4, letter, square, poster, icon (landscape turns it). start: paper, white, watercolour, oil, panel, dark.",
+    "description": "Start a blank artwork (one undo away). size: screen, a4, letter, square, poster, icon (landscape turns it). start: paper, white, watercolour, oil, panel, dark.",
     "operation": "Document",
     "params": [
       {
         "name": "title",
         "ty": "text",
-        "required": false,
         "description": "title",
         "schema": {
           "type": [
             "string",
             "null"
           ]
-        },
-        "nullable": false
+        }
       },
       {
         "name": "size",
         "ty": "text",
-        "required": false,
         "description": "A size preset; `width` and `height` override it.",
         "schema": {
           "type": [
             "string",
             "null"
-          ],
-          "description": "A size preset; `width` and `height` override it."
-        },
-        "nullable": false
+          ]
+        }
       },
       {
         "name": "landscape",
         "ty": "boolean",
-        "required": false,
         "description": "Turn the size on its side.",
         "schema": {
           "type": [
             "boolean",
             "null"
-          ],
-          "description": "Turn the size on its side."
-        },
-        "nullable": false
+          ]
+        }
       },
       {
         "name": "width",
         "ty": "number",
-        "required": false,
         "description": "Width in units, 16 to 8192.",
         "schema": {
           "type": [
             "number",
             "null"
-          ],
-          "description": "Width in units, 16 to 8192."
-        },
-        "nullable": false
+          ]
+        }
       },
       {
         "name": "height",
         "ty": "number",
-        "required": false,
         "description": "Height in units, 16 to 8192.",
         "schema": {
           "type": [
             "number",
             "null"
-          ],
-          "description": "Height in units, 16 to 8192."
-        },
-        "nullable": false
+          ]
+        }
       },
       {
         "name": "start",
         "ty": "text",
-        "required": false,
         "description": "A ground and first medium; the fields below override it.",
         "schema": {
           "type": [
             "string",
             "null"
-          ],
-          "description": "A ground and first medium; the fields below override it."
-        },
-        "nullable": false
+          ]
+        }
       },
       {
         "name": "texture",
         "ty": "text",
-        "required": false,
         "description": "texture",
         "schema": {
           "type": [
             "string",
             "null"
           ]
-        },
-        "nullable": false
+        }
       },
       {
         "name": "ground_colour",
         "ty": "text",
-        "required": false,
         "description": "Ground colour, `#rrggbb`.",
         "schema": {
           "type": [
             "string",
             "null"
-          ],
-          "description": "Ground colour, `#rrggbb`."
-        },
-        "nullable": false
+          ]
+        }
       },
       {
         "name": "medium",
         "ty": "text",
-        "required": false,
         "description": "The first layer's medium; empty for plain.",
         "schema": {
           "type": [
             "string",
             "null"
-          ],
-          "description": "The first layer's medium; empty for plain."
-        },
-        "nullable": false
+          ]
+        }
       }
     ]
   },
@@ -3403,7 +2668,7 @@
     "action": "open",
     "resource_kind": "canvas.artwork",
     "label": "Open picture",
-    "description": "Open picture.  Open a PNG, JPEG or WebP as a new artwork the size of the picture (a unit per pixel), the picture its first mark, `picture`. Replaces what the artwork held (undo brings it back).",
+    "description": "Open a PNG, JPEG or WebP as a new artwork the size of the picture (a unit per pixel), the picture its first mark, `picture`. Replaces what the artwork held (undo brings it back).",
     "operation": "Document",
     "params": [
       {
@@ -3412,24 +2677,19 @@
         "required": true,
         "description": "A PNG, JPEG or WebP: an absolute path, a content address or a data: URI.",
         "schema": {
-          "type": "string",
-          "description": "A PNG, JPEG or WebP: an absolute path, a content address or a data: URI."
-        },
-        "nullable": false
+          "type": "string"
+        }
       },
       {
         "name": "title",
         "ty": "text",
-        "required": false,
         "description": "The new artwork's title; the file's name when absent.",
         "schema": {
           "type": [
             "string",
             "null"
-          ],
-          "description": "The new artwork's title; the file's name when absent."
-        },
-        "nullable": false
+          ]
+        }
       }
     ]
   },
@@ -3438,7 +2698,7 @@
     "action": "open-artwork",
     "resource_kind": "canvas.artwork",
     "label": "Open artwork",
-    "description": "Open artwork.  Replace the artwork with a saved .artwork file (path, content address or JSON), one undo away.",
+    "description": "Replace the artwork with a saved .artwork file (path, content address or JSON), one undo away.",
     "operation": "Document",
     "params": [
       {
@@ -3447,10 +2707,8 @@
         "required": true,
         "description": "A `.artwork` path, a content address, or the file's JSON.",
         "schema": {
-          "type": "string",
-          "description": "A `.artwork` path, a content address, or the file's JSON."
-        },
-        "nullable": false
+          "type": "string"
+        }
       }
     ]
   },
@@ -3459,22 +2717,19 @@
     "action": "paint",
     "resource_kind": "canvas.artwork",
     "label": "Paint strokes",
-    "description": "Paint strokes.  Paint brush strokes on a layer in one step. On an oil or watercolour layer the medium simulates real paint; on a plain layer the brush preset draws them: pen for clean line art (pressure swells the line), pencil or charcoal to shade (pressure sets darkness; charcoal catches the paper), marker for flat see-through tone, airbrush for soft glows, calligraphy for lettering. brush eraser (no colour) clears paint under it on its layer; remove-marks along takes whole strokes. Each stroke: points [[x,y] or [x,y,pressure]], size, colour (#rrggbb or pigment:<name>). Answers the new ids. One stroke can be many: forks grows a branch or bare tree; dabs scatters foliage, flowers or (with `dab_length`, angle -90) grass; hatch shades the area its points enclose. Work like a painter, looking close after each passage: big shapes first; then forms in a few values (dark mass, middle, lit side); small lights and accents last.",
+    "description": "Paint brush strokes on a layer in one step. On an oil or watercolour layer the medium simulates real paint; on a plain layer the brush preset draws them: pen for clean line art (pressure swells the line), pencil or charcoal to shade (pressure sets darkness; charcoal catches the paper), marker for flat see-through tone, airbrush for soft glows, calligraphy for lettering. brush eraser (no colour) clears paint under it on its layer; remove-marks along takes whole strokes. Each stroke: points [[x,y] or [x,y,pressure]], size, colour (#rrggbb or pigment:<name>). Answers the new ids. One stroke can be many: forks grows a branch or bare tree; dabs scatters foliage, flowers or (with `dab_length`, angle -90) grass; hatch shades the area its points enclose. Work like a painter, looking close after each passage: big shapes first; then forms in a few values (dark mass, middle, lit side); small lights and accents last.",
     "operation": "Document",
     "params": [
       {
         "name": "layer",
         "ty": "text",
-        "required": false,
         "description": "The layer to paint on; the top layer when absent.",
         "schema": {
           "type": [
             "string",
             "null"
-          ],
-          "description": "The layer to paint on; the top layer when absent."
-        },
-        "nullable": false
+          ]
+        }
       },
       {
         "name": "strokes",
@@ -3611,22 +2866,18 @@
             "additionalProperties": false,
             "description": "One brush stroke."
           }
-        },
-        "nullable": false
+        }
       },
       {
         "name": "group",
         "ty": "text",
-        "required": false,
         "description": "Put them in this group, to edit or remove them as one.",
         "schema": {
           "type": [
             "string",
             "null"
-          ],
-          "description": "Put them in this group, to edit or remove them as one."
-        },
-        "nullable": false
+          ]
+        }
       }
     ]
   },
@@ -3641,7 +2892,6 @@
       {
         "name": "steps",
         "ty": "integer",
-        "required": false,
         "description": "How many undos, newest first",
         "nullable": true
       }
@@ -3652,7 +2902,7 @@
     "action": "remove-layer",
     "resource_kind": "canvas.artwork",
     "label": "Remove layer",
-    "description": "Remove layer.  Remove a layer and every mark on it.",
+    "description": "Remove a layer and every mark on it.",
     "operation": "Document",
     "params": [
       {
@@ -3662,8 +2912,7 @@
         "description": "id",
         "schema": {
           "type": "string"
-        },
-        "nullable": false
+        }
       }
     ]
   },
@@ -3672,40 +2921,34 @@
     "action": "remove-marks",
     "resource_kind": "canvas.artwork",
     "label": "Remove marks",
-    "description": "Remove marks.  Remove marks by id, every mark of a layer, or the strokes a path along crosses.",
+    "description": "Remove marks by id, every mark of a layer, or the strokes a path along crosses.",
     "operation": "Document",
     "params": [
       {
         "name": "ids",
         "ty": "array",
-        "required": false,
         "description": "ids",
         "schema": {
           "type": "array",
           "items": {
             "type": "string"
           }
-        },
-        "nullable": false
+        }
       },
       {
         "name": "layer",
         "ty": "text",
-        "required": false,
         "description": "Remove every mark on this layer (with along: only its strokes).",
         "schema": {
           "type": [
             "string",
             "null"
-          ],
-          "description": "Remove every mark on this layer (with along: only its strokes)."
-        },
-        "nullable": false
+          ]
+        }
       },
       {
         "name": "along",
         "ty": "array",
-        "required": false,
         "description": "Remove the brush strokes this path `[[x, y], …]` crosses, as a stroke eraser does.",
         "schema": {
           "type": [
@@ -3719,10 +2962,8 @@
             },
             "minItems": 2,
             "maxItems": 2
-          },
-          "description": "Remove the brush strokes this path `[[x, y], …]` crosses, as a stroke eraser does."
-        },
-        "nullable": false
+          }
+        }
       }
     ]
   },
@@ -3731,7 +2972,7 @@
     "action": "remove-medium",
     "resource_kind": "canvas.artwork",
     "label": "Remove medium",
-    "description": "Remove medium.  Remove a medium saved in this artwork.",
+    "description": "Remove a medium saved in this artwork.",
     "operation": "Document",
     "params": [
       {
@@ -3741,8 +2982,7 @@
         "description": "id",
         "schema": {
           "type": "string"
-        },
-        "nullable": false
+        }
       }
     ]
   },
@@ -3757,14 +2997,12 @@
       {
         "name": "scale",
         "ty": "number",
-        "required": false,
         "description": "Pixels per point, 0.5 to 2 (default 1)",
         "nullable": true
       },
       {
         "name": "version",
         "ty": "text",
-        "required": false,
         "description": "A past version: change id from history, or checkpoint name",
         "nullable": true
       }
@@ -3782,13 +3020,11 @@
         "name": "version",
         "ty": "text",
         "required": true,
-        "description": "A change id from history, or a checkpoint name",
-        "nullable": false
+        "description": "A change id from history, or a checkpoint name"
       },
       {
         "name": "ids",
         "ty": "array",
-        "required": false,
         "description": "Only these item ids",
         "schema": {
           "type": "array",
@@ -3811,16 +3047,13 @@
       {
         "name": "path",
         "ty": "text",
-        "required": false,
         "description": "An absolute `.artwork` path to write; else kept as content.",
         "schema": {
           "type": [
             "string",
             "null"
-          ],
-          "description": "An absolute `.artwork` path to write; else kept as content."
-        },
-        "nullable": false
+          ]
+        }
       }
     ]
   },
@@ -3829,7 +3062,7 @@
     "action": "save-medium",
     "resource_kind": "canvas.artwork",
     "label": "Save medium",
-    "description": "Save medium.  Save a medium preset in the artwork: an engine (oil or watercolour) with parameters, a ground and a pigment palette. Layers can then use its id.",
+    "description": "Save a medium preset in the artwork: an engine (oil or watercolour) with parameters, a ground and a pigment palette. Layers can then use its id.",
     "operation": "Document",
     "params": [
       {
@@ -3901,10 +3134,8 @@
               }
             }
           },
-          "additionalProperties": false,
-          "description": "A medium: one of the built-in engines with its parameters, a suggested ground and a palette. Saving one makes it part of the artwork, shared with everyone who opens it."
-        },
-        "nullable": false
+          "additionalProperties": false
+        }
       }
     ]
   },
@@ -3913,13 +3144,12 @@
     "action": "select",
     "resource_kind": "canvas.artwork",
     "label": "Select area",
-    "description": "Select area.  Select an area: shapes, marks, magic wand (at) or colour; add, subtract, intersect, grow, feather, invert. For subject or edge refinement invoke find-area (a background job). Then use-selection, or clip: \"selection\" in paint or draw. Bucket fill: select at, use-selection fill. Cut-out: subject, use-selection mask. look outlines it",
+    "description": "Select an area: shapes, marks, magic wand (at) or colour; add, subtract, intersect, grow, feather, invert. For subject or edge refinement invoke find-area (a background job). Then use-selection, or clip: \"selection\" in paint or draw. Bucket fill: select at, use-selection fill. Cut-out: subject, use-selection mask. look outlines it",
     "operation": "Document",
     "params": [
       {
         "name": "rect",
         "ty": "array",
-        "required": false,
         "description": "`[x, y, w, h]`.",
         "schema": {
           "type": [
@@ -3930,15 +3160,12 @@
             "type": "number"
           },
           "minItems": 4,
-          "maxItems": 4,
-          "description": "`[x, y, w, h]`."
-        },
-        "nullable": false
+          "maxItems": 4
+        }
       },
       {
         "name": "ellipse",
         "ty": "array",
-        "required": false,
         "description": "In `[x, y, w, h]`.",
         "schema": {
           "type": [
@@ -3949,15 +3176,12 @@
             "type": "number"
           },
           "minItems": 4,
-          "maxItems": 4,
-          "description": "In `[x, y, w, h]`."
-        },
-        "nullable": false
+          "maxItems": 4
+        }
       },
       {
         "name": "points",
         "ty": "array",
-        "required": false,
         "description": "Lasso `[[x, y], …]`.",
         "schema": {
           "type": [
@@ -3971,29 +3195,23 @@
             },
             "minItems": 2,
             "maxItems": 2
-          },
-          "description": "Lasso `[[x, y], …]`."
-        },
-        "nullable": false
+          }
+        }
       },
       {
         "name": "d",
         "ty": "text",
-        "required": false,
         "description": "SVG path data.",
         "schema": {
           "type": [
             "string",
             "null"
-          ],
-          "description": "SVG path data."
-        },
-        "nullable": false
+          ]
+        }
       },
       {
         "name": "marks",
         "ty": "array",
-        "required": false,
         "description": "Marks or groups.",
         "schema": {
           "type": [
@@ -4002,15 +3220,12 @@
           ],
           "items": {
             "type": "string"
-          },
-          "description": "Marks or groups."
-        },
-        "nullable": false
+          }
+        }
       },
       {
         "name": "at",
         "ty": "array",
-        "required": false,
         "description": "Magic wand `[x, y]`: like colour touching it.",
         "schema": {
           "type": [
@@ -4021,43 +3236,34 @@
             "type": "number"
           },
           "minItems": 2,
-          "maxItems": 2,
-          "description": "Magic wand `[x, y]`: like colour touching it."
-        },
-        "nullable": false
+          "maxItems": 2
+        }
       },
       {
         "name": "subject",
         "ty": "boolean",
-        "required": false,
         "description": "The photo's main subject, found on-device (with at: the object there).",
         "schema": {
           "type": [
             "boolean",
             "null"
-          ],
-          "description": "The photo's main subject, found on-device (with at: the object there)."
-        },
-        "nullable": false
+          ]
+        }
       },
       {
         "name": "refine",
         "ty": "number",
-        "required": false,
         "description": "Units: fit the edge to the picture, soft for fur (subject: 6px).",
         "schema": {
           "type": [
             "number",
             "null"
-          ],
-          "description": "Units: fit the edge to the picture, soft for fur (subject: 6px)."
-        },
-        "nullable": false
+          ]
+        }
       },
       {
         "name": "matte",
         "ty": "object",
-        "required": false,
         "description": "Set by subject/refine.",
         "schema": {
           "type": [
@@ -4082,107 +3288,85 @@
               "description": "`[x, y, w, h]`."
             }
           },
-          "additionalProperties": false,
-          "description": "Set by subject/refine."
-        },
-        "nullable": false
+          "additionalProperties": false
+        }
       },
       {
         "name": "colour",
         "ty": "text",
-        "required": false,
         "description": "`#rrggbb`, everywhere.",
         "schema": {
           "type": [
             "string",
             "null"
-          ],
-          "description": "`#rrggbb`, everywhere."
-        },
-        "nullable": false
+          ]
+        }
       },
       {
         "name": "tolerance",
         "ty": "number",
-        "required": false,
         "description": "0..1, default 0.15.",
         "schema": {
           "type": [
             "number",
             "null"
-          ],
-          "description": "0..1, default 0.15."
-        },
-        "nullable": false
+          ]
+        }
       },
       {
         "name": "layer",
         "ty": "text",
-        "required": false,
         "description": "at or colour: on this layer alone, not as all show.",
         "schema": {
           "type": [
             "string",
             "null"
-          ],
-          "description": "at or colour: on this layer alone, not as all show."
-        },
-        "nullable": false
+          ]
+        }
       },
       {
         "name": "mode",
         "ty": "text",
-        "required": false,
         "description": "`replace`, `add`, `subtract`, `intersect` or `none` (deselect).",
         "schema": {
           "type": [
             "string",
             "null"
-          ],
-          "description": "`replace`, `add`, `subtract`, `intersect` or `none` (deselect)."
-        },
-        "nullable": false
+          ]
+        }
       },
       {
         "name": "feather",
         "ty": "number",
-        "required": false,
         "description": "Units.",
         "schema": {
           "type": [
             "number",
             "null"
-          ],
-          "description": "Units."
-        },
-        "nullable": false
+          ]
+        }
       },
       {
         "name": "grow",
         "ty": "number",
-        "required": false,
         "description": "Units, after invert; negative shrinks.",
         "schema": {
           "type": [
             "number",
             "null"
-          ],
-          "description": "Units, after invert; negative shrinks."
-        },
-        "nullable": false
+          ]
+        }
       },
       {
         "name": "invert",
         "ty": "boolean",
-        "required": false,
         "description": "invert",
         "schema": {
           "type": [
             "boolean",
             "null"
           ]
-        },
-        "nullable": false
+        }
       }
     ]
   },
@@ -4191,82 +3375,67 @@
     "action": "set-artwork",
     "resource_kind": "canvas.artwork",
     "label": "Set artwork",
-    "description": "Set artwork.  Set the title, size (units) or ground: texture (smooth, paper, cold-press, rough, linen, panel) and colour; or crop the artwork to a region or to what a mark shows (fit).",
+    "description": "Set the title, size (units) or ground: texture (smooth, paper, cold-press, rough, linen, panel) and colour; or crop the artwork to a region or to what a mark shows (fit).",
     "operation": "Document",
     "params": [
       {
         "name": "title",
         "ty": "text",
-        "required": false,
         "description": "title",
         "schema": {
           "type": [
             "string",
             "null"
           ]
-        },
-        "nullable": false
+        }
       },
       {
         "name": "width",
         "ty": "number",
-        "required": false,
         "description": "Width in units, 16 to 8192.",
         "schema": {
           "type": [
             "number",
             "null"
-          ],
-          "description": "Width in units, 16 to 8192."
-        },
-        "nullable": false
+          ]
+        }
       },
       {
         "name": "height",
         "ty": "number",
-        "required": false,
         "description": "Height in units, 16 to 8192.",
         "schema": {
           "type": [
             "number",
             "null"
-          ],
-          "description": "Height in units, 16 to 8192."
-        },
-        "nullable": false
+          ]
+        }
       },
       {
         "name": "texture",
         "ty": "text",
-        "required": false,
         "description": "`smooth`, `paper`, `cold-press`, `rough`, `linen` or `panel`.",
         "schema": {
           "type": [
             "string",
             "null"
-          ],
-          "description": "`smooth`, `paper`, `cold-press`, `rough`, `linen` or `panel`."
-        },
-        "nullable": false
+          ]
+        }
       },
       {
         "name": "ground_colour",
         "ty": "text",
-        "required": false,
         "description": "Ground colour, `#rrggbb`.",
         "schema": {
           "type": [
             "string",
             "null"
-          ],
-          "description": "Ground colour, `#rrggbb`."
-        },
-        "nullable": false
+          ]
+        }
       },
       {
         "name": "crop",
         "ty": "array",
-        "required": false,
         "description": "Crop to `[x, y, width, height]`; marks move with it.",
         "schema": {
           "type": [
@@ -4277,24 +3446,19 @@
             "type": "number"
           },
           "minItems": 4,
-          "maxItems": 4,
-          "description": "Crop to `[x, y, width, height]`; marks move with it."
-        },
-        "nullable": false
+          "maxItems": 4
+        }
       },
       {
         "name": "fit",
         "ty": "text",
-        "required": false,
         "description": "Crop to what this mark or group shows.",
         "schema": {
           "type": [
             "string",
             "null"
-          ],
-          "description": "Crop to what this mark or group shows."
-        },
-        "nullable": false
+          ]
+        }
       }
     ]
   },
@@ -4303,27 +3467,23 @@
     "action": "set-reference",
     "resource_kind": "canvas.artwork",
     "label": "Set reference",
-    "description": "Set reference.  Set the reference picture to recreate or trace: shown over the artwork at its opacity, seen by look (reference: false hides it) and compare; never exported.",
+    "description": "Set the reference picture to recreate or trace: shown over the artwork at its opacity, seen by look (reference: false hides it) and compare; never exported.",
     "operation": "Document",
     "params": [
       {
         "name": "image",
         "ty": "text",
-        "required": false,
         "description": "A PNG or JPEG: an absolute file path, a content address, or the picture itself as `data:image/png;base64,…`.",
         "schema": {
           "type": [
             "string",
             "null"
-          ],
-          "description": "A PNG or JPEG: an absolute file path, a content address, or the picture itself as `data:image/png;base64,…`."
-        },
-        "nullable": false
+          ]
+        }
       },
       {
         "name": "frame",
         "ty": "array",
-        "required": false,
         "description": "`[x, y, width, height]`; fitted to the artwork when absent.",
         "schema": {
           "type": [
@@ -4334,51 +3494,41 @@
             "type": "number"
           },
           "minItems": 4,
-          "maxItems": 4,
-          "description": "`[x, y, width, height]`; fitted to the artwork when absent."
-        },
-        "nullable": false
+          "maxItems": 4
+        }
       },
       {
         "name": "opacity",
         "ty": "number",
-        "required": false,
         "description": "`0..=1` (default 0.5).",
         "schema": {
           "type": [
             "number",
             "null"
-          ],
-          "description": "`0..=1` (default 0.5)."
-        },
-        "nullable": false
+          ]
+        }
       },
       {
         "name": "visible",
         "ty": "boolean",
-        "required": false,
         "description": "visible",
         "schema": {
           "type": [
             "boolean",
             "null"
           ]
-        },
-        "nullable": false
+        }
       },
       {
         "name": "remove",
         "ty": "boolean",
-        "required": false,
         "description": "Remove the reference.",
         "schema": {
           "type": [
             "boolean",
             "null"
-          ],
-          "description": "Remove the reference."
-        },
-        "nullable": false
+          ]
+        }
       }
     ]
   },
@@ -4393,28 +3543,24 @@
       {
         "name": "steps",
         "ty": "integer",
-        "required": false,
         "description": "How many steps, newest first",
         "nullable": true
       },
       {
         "name": "run",
         "ty": "text",
-        "required": false,
         "description": "An agent run id from history",
         "nullable": true
       },
       {
         "name": "by",
         "ty": "text",
-        "required": false,
         "description": "Exact author id from history, for steps outside a run",
         "nullable": true
       },
       {
         "name": "to",
         "ty": "text",
-        "required": false,
         "description": "A change id from history, or a checkpoint name",
         "nullable": true
       }
@@ -4425,7 +3571,7 @@
     "action": "use-selection",
     "resource_kind": "canvas.artwork",
     "label": "Use selection",
-    "description": "Use selection.  Fill or stroke the selection as a mark on a layer, mask the layer to it, or clear it from the layer (by its mask, a layer of grey marks).",
+    "description": "Fill or stroke the selection as a mark on a layer, mask the layer to it, or clear it from the layer (by its mask, a layer of grey marks).",
     "operation": "Document",
     "params": [
       {
@@ -4434,83 +3580,67 @@
         "required": true,
         "description": "`fill`, `stroke`, `mask` or `clear`.",
         "schema": {
-          "type": "string",
-          "description": "`fill`, `stroke`, `mask` or `clear`."
-        },
-        "nullable": false
+          "type": "string"
+        }
       },
       {
         "name": "layer",
         "ty": "text",
-        "required": false,
         "description": "layer",
         "schema": {
           "type": [
             "string",
             "null"
           ]
-        },
-        "nullable": false
+        }
       },
       {
         "name": "colour",
         "ty": "text",
-        "required": false,
         "description": "colour",
         "schema": {
           "type": [
             "string",
             "null"
           ]
-        },
-        "nullable": false
+        }
       },
       {
         "name": "width",
         "ty": "number",
-        "required": false,
         "description": "Stroke width (2).",
         "schema": {
           "type": [
             "number",
             "null"
-          ],
-          "description": "Stroke width (2)."
-        },
-        "nullable": false
+          ]
+        }
       },
       {
         "name": "id",
         "ty": "text",
-        "required": false,
         "description": "The new mark's.",
         "schema": {
           "type": [
             "string",
             "null"
-          ],
-          "description": "The new mark's."
-        },
-        "nullable": false
+          ]
+        }
       },
       {
         "name": "defringe",
         "ty": "boolean",
-        "required": false,
         "description": "mask/clear by a refined edge: clean the old background out of the pictures' edge (default true).",
         "schema": {
           "type": [
             "boolean",
             "null"
-          ],
-          "description": "mask/clear by a refined edge: clean the old background out of the pictures' edge (default true)."
-        },
-        "nullable": false
+          ]
+        }
       },
       {
         "name": "cleaned",
         "ty": "array",
-        "required": false,
         "description": "Set by defringe.",
         "schema": {
           "type": [
@@ -4524,10 +3654,8 @@
             },
             "minItems": 2,
             "maxItems": 2
-          },
-          "description": "Set by defringe."
-        },
-        "nullable": false
+          }
+        }
       }
     ]
   },
@@ -4546,7 +3674,7 @@
         "description": "The path of the field from the item, and the operation",
         "schema": {
           "type": "object",
-          "description": "A field edit: `path` from the record (fields by name, items by id, map entries by key) and `op` with its arguments. Editable paths:\n- `id` (Id. `id`: set, splice, replace; readonly: changed only by the record's verbs) ops: set, splice, replace; value: {\"type\":\"string\"}\n- `name` (Name. `name`: set, splice, replace) ops: set, splice, replace; value: {\"type\":\"string\"}\n- `group` (Organisational folder; empty for an ungrouped layer. It does not. `group`: set, splice, replace) ops: set, splice, replace; value: {\"type\":\"string\"}\n- `order` (Fractional position among layers; later is on top. `order`: set, splice, replace; readonly: changed only by the record's verbs) ops: set, splice, replace; value: {\"type\":\"string\"}\n- `medium` (The medium preset that paints this layer's marks, or empty for plain. `medium`: set, splice, replace) ops: set, splice, replace; value: {\"type\":\"string\"}\n- `opacity` (Opacity. `opacity`: set) ops: set; value: {\"type\":\"number\"}\n- `visible` (Visible. `visible`: set) ops: set; value: {\"type\":\"boolean\"}\n- `texture` (`0..=1`: how much of the ground's tooth shows through the layer's. `texture`: set) ops: set; value: {\"type\":\"number\"}\n- `locked` (Held still: the pointer passes through its marks to those beneath. `locked`: set) ops: set; value: {\"type\":\"boolean\"}\n- `adjust` (Colour and tone adjustments of everything on the layer. `adjust`: set) ops: set; value: {}\n- `mask_of` (The layer this layer masks, or empty for an ordinary layer. A mask's. `mask_of`: set, splice, replace; readonly: changed only by the record's verbs) ops: set, splice, replace; value: {\"type\":\"string\"}\n- `base` (A mask's grey before any mark, `0..=1`: 1 shows all of its layer,. `base`: set) ops: set; value: {\"type\":\"number\"}\n- `invert` (A mask that hides where it is light and shows where it is dark. `invert`: set) ops: set; value: {\"type\":\"boolean\"}\n- `clip` (Clipped to the layer below: it shows only where that layer has paint. `clip`: set) ops: set; value: {\"type\":\"boolean\"}\n- `unlinked` (A mask that stays put when its layer's marks move. Linked, it moves. `unlinked`: set) ops: set; value: {\"type\":\"boolean\"}",
+          "description": "A field edit: `path` from the record (fields by name, items by id, map entries by key) and `op` with its arguments. Editable paths:\n- `name`: set, splice, replace — Name (string)\n- `group`: set, splice, replace — Organisational folder; empty for an ungrouped layer. It does not (string)\n- `medium`: set, splice, replace — The medium preset that paints this layer's marks, or empty for plain (string)\n- `opacity`: set — Opacity (number)\n- `visible`: set — Visible (boolean)\n- `texture`: set — `0..=1`: how much of the ground's tooth shows through the layer's (number)\n- `locked`: set — Held still: the pointer passes through its marks to those beneath (boolean)\n- `adjust`: set — Colour and tone adjustments of everything on the layer\n- `base`: set — A mask's grey before any mark, `0..=1`: 1 shows all of its layer, (number)\n- `invert`: set — A mask that hides where it is light and shows where it is dark (boolean)\n- `clip`: set — Clipped to the layer below: it shows only where that layer has paint (boolean)\n- `unlinked`: set — A mask that stays put when its layer's marks move. Linked, it moves (boolean)",
           "properties": {
             "path": {
               "type": "array",
@@ -4585,126 +3713,13 @@
             {
               "path": [
                 {
-                  "field": "id"
-                }
-              ],
-              "op": "set"
-            },
-            {
-              "path": [
-                {
                   "field": "name"
-                }
-              ],
-              "op": "set"
-            },
-            {
-              "path": [
-                {
-                  "field": "group"
-                }
-              ],
-              "op": "set"
-            },
-            {
-              "path": [
-                {
-                  "field": "order"
-                }
-              ],
-              "op": "set"
-            },
-            {
-              "path": [
-                {
-                  "field": "medium"
-                }
-              ],
-              "op": "set"
-            },
-            {
-              "path": [
-                {
-                  "field": "opacity"
-                }
-              ],
-              "op": "set"
-            },
-            {
-              "path": [
-                {
-                  "field": "visible"
-                }
-              ],
-              "op": "set"
-            },
-            {
-              "path": [
-                {
-                  "field": "texture"
-                }
-              ],
-              "op": "set"
-            },
-            {
-              "path": [
-                {
-                  "field": "locked"
-                }
-              ],
-              "op": "set"
-            },
-            {
-              "path": [
-                {
-                  "field": "adjust"
-                }
-              ],
-              "op": "set"
-            },
-            {
-              "path": [
-                {
-                  "field": "mask_of"
-                }
-              ],
-              "op": "set"
-            },
-            {
-              "path": [
-                {
-                  "field": "base"
-                }
-              ],
-              "op": "set"
-            },
-            {
-              "path": [
-                {
-                  "field": "invert"
-                }
-              ],
-              "op": "set"
-            },
-            {
-              "path": [
-                {
-                  "field": "clip"
-                }
-              ],
-              "op": "set"
-            },
-            {
-              "path": [
-                {
-                  "field": "unlinked"
                 }
               ],
               "op": "set"
             }
           ]
-        },
-        "nullable": false
+        }
       }
     ]
   },
@@ -4720,8 +3735,7 @@
         "name": "name",
         "ty": "text",
         "required": true,
-        "description": "Name",
-        "nullable": false
+        "description": "Name"
       }
     ]
   },
@@ -4737,8 +3751,7 @@
         "name": "index",
         "ty": "integer",
         "required": true,
-        "description": "Zero-based segment index",
-        "nullable": false
+        "description": "Zero-based segment index"
       }
     ]
   },
@@ -4790,8 +3803,7 @@
         "name": "index",
         "ty": "integer",
         "required": true,
-        "description": "Zero-based segment index",
-        "nullable": false
+        "description": "Zero-based segment index"
       }
     ]
   },
@@ -4834,8 +3846,7 @@
         "name": "index",
         "ty": "integer",
         "required": true,
-        "description": "Zero-based segment index",
-        "nullable": false
+        "description": "Zero-based segment index"
       }
     ]
   },
@@ -4886,23 +3897,17 @@
       {
         "name": "query",
         "ty": "text",
-        "required": false,
-        "description": "Text to search for",
-        "nullable": false
+        "description": "Text to search for"
       },
       {
         "name": "scope",
         "ty": "text",
-        "required": false,
-        "description": "Resource id of the part of the app to search",
-        "nullable": false
+        "description": "Resource id of the part of the app to search"
       },
       {
         "name": "scope_label",
         "ty": "text",
-        "required": false,
-        "description": "Name of that part, shown on the scope pill",
-        "nullable": false
+        "description": "Name of that part, shown on the scope pill"
       }
     ]
   },

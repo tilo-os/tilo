@@ -126,6 +126,7 @@ pub struct ActionParam {
     /// Whether an invocation must supply it. An optional parameter's default
     /// belongs to the action and is stated in `description` — the surface does
     /// not invent one.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub required: bool,
     pub description: Str,
     /// When non-empty, the only values this parameter accepts.
@@ -143,7 +144,7 @@ pub struct ActionParam {
     pub schema: Option<std::sync::Arc<serde_json::Value>>,
     /// Explicitly permits JSON null. Optional means omitted; nullable means
     /// present with no value, and callers need to distinguish the two.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub nullable: bool,
 }
 
@@ -1401,7 +1402,7 @@ mod rich_schema_tests {
         ));
         let expected = serde_json::json!({
             "name":"count", "ty":"integer", "required":true,
-            "description":"Count", "schema":schema, "nullable":false
+            "description":"Count", "schema":schema
         });
         assert_eq!(serde_json::to_value(&clone).unwrap(), expected);
         let decoded: ActionParam = serde_json::from_value(expected).unwrap();

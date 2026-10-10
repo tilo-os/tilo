@@ -240,8 +240,15 @@ pub mod __private {
                 verb.item_field,
                 verb.writes,
             ));
-        if !verb.description.is_empty() {
-            decl = decl.describe(verb.description);
+        // What the description says beyond its first line, the label.
+        let description = verb
+            .description
+            .strip_prefix(verb.label)
+            .map_or(verb.description, |rest| {
+                rest.trim_start_matches('.').trim_start()
+            });
+        if !description.is_empty() {
+            decl = decl.describe(description);
         }
         if let Some(field) = verb.field {
             decl = decl.below_field(field);
@@ -286,11 +293,9 @@ pub mod __private {
         } else {
             ActionParam::required_owned(name, ty, description)
         }
-        .with_schema(param_schema(
-            schema(),
-            description,
-            example.map(|example| example()),
-        ));
+        // The parameter carries its description; its schema does not say
+        // it again.
+        .with_schema(param_schema(schema(), "", example.map(|example| example())));
         match place {
             PlaceIn::Nowhere => param,
             PlaceIn::Record => param.as_place(),
@@ -512,7 +517,13 @@ pub mod __private {
                 } else {
                     ActionParam::optional_owned(name.clone(), ty, description)
                 };
-                param.with_schema(property.clone())
+                // The parameter carries the description; its schema does not
+                // say it again.
+                let mut schema = property.clone();
+                if let Some(schema) = schema.as_object_mut() {
+                    schema.remove("description");
+                }
+                param.with_schema(schema)
             })
             .collect()
     }

@@ -461,6 +461,7 @@ fn described_edit(
         "A field edit: `path` from the record (fields by name, items by id, map entries by key) and `op` with its arguments. Editable paths:".to_owned(),
     ];
     let mut examples = Vec::new();
+    let mut shapes: Vec<Vec<String>> = Vec::new();
     for alternative in alternatives {
         let at = |pointer: &str| alternative.pointer(pointer).cloned().unwrap_or_default();
         let template = at("/properties/path/examples/0");
@@ -475,13 +476,29 @@ fn described_edit(
             .unwrap_or_default();
         let value = at("/properties/value");
         let text = |key: &str| at(key).as_str().unwrap_or_default().to_owned();
+        let kind = value_kind(&value);
         lines.push(format!(
-            "- `{}` ({}) ops: {}; value: {}",
+            "- `{}`: {} — {}{}",
             text("/title"),
-            text("/description"),
             ops.join(", "),
-            value
+            text("/description"),
+            kind.map_or_else(String::new, |kind| format!(" ({kind})")),
         ));
+        // One example per shape of path (a field, an item's field, an
+        // entry): the listing names every path of each shape.
+        let shape: Vec<String> = template
+            .as_array()
+            .map(|steps| {
+                steps
+                    .iter()
+                    .filter_map(|step| step.as_object()?.keys().next().cloned())
+                    .collect()
+            })
+            .unwrap_or_default();
+        if shapes.contains(&shape) {
+            continue;
+        }
+        shapes.push(shape);
         let mut example = serde_json::Map::new();
         example.insert("path".into(), template);
         if let Some(op) = ops.first() {
@@ -494,6 +511,35 @@ fn described_edit(
         object.insert("examples".into(), examples.into());
     }
     schema
+}
+
+/// The kind of value a schema describes, in a word or two, when it says one
+/// (`string`, `number`, `one of a, b`): what a path's line in the field-edit
+/// listing tells beside its operations. Objects are described by their own
+/// paths.
+fn value_kind(schema: &serde_json::Value) -> Option<String> {
+    if let Some(options) = schema.get("enum").and_then(serde_json::Value::as_array) {
+        let options: Vec<String> = options
+            .iter()
+            .map(|option| {
+                option
+                    .as_str()
+                    .map_or_else(|| option.to_string(), str::to_owned)
+            })
+            .collect();
+        return Some(format!("one of {}", options.join(", ")));
+    }
+    match schema.get("type")? {
+        serde_json::Value::String(kind) if kind != "object" => Some(kind.clone()),
+        serde_json::Value::Array(kinds) => Some(
+            kinds
+                .iter()
+                .filter_map(serde_json::Value::as_str)
+                .collect::<Vec<_>>()
+                .join(" or "),
+        ),
+        _ => None,
+    }
 }
 
 /// The generic field-edit schema, with the vocabularies of the record's
@@ -614,14 +660,20 @@ fn edit_paths(
         }
         serde_json::json!({
             "title": dotted.join("."),
-            "description": format!("{title}. {description}"),
+            "description": if description.is_empty() {
+                title.to_owned()
+            } else {
+                format!("{title}; {description}")
+            },
             "type": "object",
             "properties": properties,
             "required": ["path", "op"],
         })
     };
     let item = step_schema("item", serde_json::json!({ "type": "string" }));
-    for field in shape.fields() {
+    // A read-only field is changed only by the record's verbs: no path an
+    // edit could take.
+    for field in shape.fields().iter().filter(|field| !field.readonly) {
         let mut here = steps.to_vec();
         here.push(step_schema(
             "field",
@@ -646,9 +698,6 @@ fn edit_paths(
             serde_json::json!({})
         };
         let mut flags = Vec::new();
-        if field.readonly {
-            flags.push("readonly: changed only by the record's verbs".to_owned());
-        }
         if field.unit {
             flags.push("its own storage unit".to_owned());
         }
@@ -659,12 +708,7 @@ fn edit_paths(
                 "removing an item asks for confirmation".to_owned()
             });
         }
-        let description = format!(
-            "`{path}`: {}{}{}",
-            ops.join(", "),
-            if flags.is_empty() { "" } else { "; " },
-            flags.join("; ")
-        );
+        let description = flags.join("; ");
         out.push(alternative(
             &here,
             false,
@@ -699,7 +743,7 @@ fn edit_paths(
                     item_value,
                     None,
                     field.title,
-                    format!("`{path}.*`: one item, by its id: set"),
+                    "one item, by its id".to_owned(),
                 ));
                 edit_paths(*inner, &items, &format!("{path}.*."), rich, out);
             }
@@ -725,9 +769,7 @@ fn edit_paths(
                     serde_json::json!({}),
                     None,
                     field.title,
-                    format!(
-                        "`{path}.<cell>`: a cell, by its row and column ids, and what is inside it"
-                    ),
+                    "a cell, by its row and column ids, and what is inside it".to_owned(),
                 ));
             }
             crate::Shape::Map(_) => {
@@ -740,7 +782,7 @@ fn edit_paths(
                     serde_json::json!({}),
                     None,
                     field.title,
-                    format!("`{path}.<key>`: an entry, by its key, and what is inside it"),
+                    "an entry, by its key, and what is inside it".to_owned(),
                 ));
             }
             crate::Shape::Value => {}
