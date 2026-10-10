@@ -39,19 +39,19 @@ const IDLE: Duration = Duration::from_secs(60);
 /// loops) may make while idle, together.
 ///
 /// Measured 9.9/s, 10.5/s and 11.6/s on CI (focused runs 89705, 89410,
-/// 89703): the two network runtimes' workers (`tilo-net-rt-*`) over both
-/// desktops, everything else under 0.1/s.
+/// 89703) while gossip swept its caches every second; 6.9/s, 7.0/s and
+/// 7.5/s on the builder (11.9/s before) once it sweeps every 10 s. What
+/// remains is the two network runtimes' workers (`tilo-net-rt-*`) over both
+/// desktops, mostly the transport's 5 s keep-alives, everything else under
+/// 0.1/s.
 ///
 /// The gate runs in the pull-request shell shard, which measures more than a
-/// focused runner on the same code. Focused, main and #3983 measured
-/// 10.2–12.5/s. In the shard, across five PRs, it measured 15.18, 15.31,
-/// 15.52, 15.59, 15.82, 16.16 and 16.80/s. The extra is voluntary switches,
-/// not preemptions: 0.7/s of involuntary switches in check run 90601, which
-/// ran with the pool to itself. The budget is the shard's p95, 16.8/s, plus a
-/// quarter (TIL-690, `docs/benchmarks/idle-wakeups-2026-10-09.md`). Lower it
-/// with each fix that removes a waker, for example TIL-702 for the network
-/// runtime.
-const IDLE_WAKEUP_BUDGET: f64 = 21.0;
+/// focused runner on the same code: 15.18 to 16.80/s across five PRs before
+/// the sweep change, the extra being voluntary switches, not preemptions
+/// (TIL-690, `docs/benchmarks/idle-wakeups-2026-10-09.md`). The sweep change
+/// removes about 4.9/s, so the shard's p95 is now near 11.9/s; the budget is
+/// that plus a quarter. Lower it with each fix that removes a waker (TIL-702).
+const IDLE_WAKEUP_BUDGET: f64 = 15.0;
 
 /// Every thread of this process except the one driving the desktops'
 /// frame loops, whose 10 Hz is the simulation's and not the session's.
