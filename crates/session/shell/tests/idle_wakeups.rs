@@ -510,9 +510,9 @@ impl LoopStats {
 /// identity service's per-client thread. Fails if the shovel is not there to
 /// observe: the Terminal opens a route, so a desktop without one did not
 /// measure what this bounds.
-/// The shovels' and identity clients' wakeups per second, and how many
-/// apps' shovels ran.
-fn key_ask_wakeups(wakeups: &tilo_test_env::idle::Wakeups) -> (f64, usize) {
+/// The shovels' and identity clients' wakeups per second, and their budget:
+/// [`KEY_ASK_BUDGET`] for each app whose shovel ran.
+fn key_ask_wakeups(wakeups: &tilo_test_env::idle::Wakeups) -> (f64, f64) {
     // The kernel truncates thread names to 15 bytes.
     const SHOVEL: &str = "ui-collab-shove";
     const IDENTITY_CLIENT: &str = "tilo-identity-c";
@@ -526,14 +526,15 @@ fn key_ask_wakeups(wakeups: &tilo_test_env::idle::Wakeups) -> (f64, usize) {
         rows.iter().any(|row| row.thread == SHOVEL),
         "no collaboration shovel ran in the compositor, so the Terminal's route was not measured:\n{wakeups}"
     );
-    let shovels = rows
+    let shovels: usize = rows
         .iter()
         .filter(|row| row.thread == SHOVEL)
         .map(|row| row.threads)
         .sum();
+    let budget = KEY_ASK_BUDGET * f64::from(u32::try_from(shovels).unwrap_or(u32::MAX));
     (
         wakeups.rate(rows.iter().map(|row| row.voluntary).sum()),
-        shovels,
+        budget,
     )
 }
 
@@ -657,12 +658,7 @@ fn an_idle_desktop_with_two_apps_stays_within_its_wakeup_budget() {
         desktop.log_tail()
     );
 
-    let (key_asks, shovels) = key_ask_wakeups(&wakeups);
-    #[allow(
-        clippy::cast_precision_loss,
-        reason = "a count of collaborating apps, a handful"
-    )]
-    let key_ask_budget = KEY_ASK_BUDGET * shovels as f64;
+    let (key_asks, key_ask_budget) = key_ask_wakeups(&wakeups);
     let report = format!(
         "{wakeups}\nblocked {:.2} times a second; the collaboration shovel and identity client {key_asks:.2}\ncompositor frame loop: {:.1} ticks/s ({} ticks, woken by: {}), {} frames painted (after: {}), {clock_turns} clock minute(s) turned; its paint-stats in the window:\n  {}",
         wakeups.blocking_per_second(),
@@ -698,7 +694,7 @@ fn an_idle_desktop_with_two_apps_stays_within_its_wakeup_budget() {
     );
     assert!(
         key_asks <= key_ask_budget,
-        "the {shovels} apps' collaboration shovels and the identity client woke {key_asks:.2} times a second, over {KEY_ASK_BUDGET}/s per app: is a route asking for its channel keys on a 1 s timer again?\n{report}",
+        "the apps' collaboration shovels and the identity client woke {key_asks:.2} times a second, over {key_ask_budget}/s ({KEY_ASK_BUDGET}/s per app): is a route asking for its channel keys on a 1 s timer again?\n{report}",
     );
     assert!(
         frame_loop.ticks_per_second() <= LOOP_TICK_BUDGET,
