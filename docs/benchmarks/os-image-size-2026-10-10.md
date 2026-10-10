@@ -1,4 +1,4 @@
-# OS image size, 2026-10-10 (TIL-733)
+# OS image size, 2026-10-10 (TIL-733, TIL-736)
 
 A follow-up of [the TIL-609 receipt](os-image-size-2026-10-09.md), whose
 "other redundant payload" table this change works down. The nightly records
@@ -60,3 +60,25 @@ the change's base; none of those commits touched `os/`.
 | `/etc/selinux/targeted/active` | 14,528,753 |
 | `/usr/lib/udev/hwdb.bin` (`/etc/udev/hwdb.bin` in the base) | 14,372,567 |
 | `/kernel/7.2.8/vmlinuz` (whited-out original in the kernel-swap layer) | 14,299,648 |
+
+## TIL-736: one inode per identical file
+
+`os/scripts/hardlink-identical.py` hard-links the identical files of three
+trees, each in the RUN that writes it, before the COPY that carries it into
+the rootfs. The build logged 73,094,460 B under Proton, 53,114,139 B under the
+app store's packages (the env-runtime's glibc locales) and 11,746,503 B under
+the runtime bundles. Measured on the pull request's x86_64 image
+(`tilo-ci:pr-4064-84e57e4-x86_64`, revision `84e57e4ca5`, built before TIL-733
+landed) against the same "before" image, in bytes:
+
+| measure | before | after | change |
+|---|---:|---:|---:|
+| compressed | 5,163,976,980 | 5,123,013,161 | −40,963,819 |
+| payload | 13,019,880,134 | 12,881,851,920 | −138,028,214 |
+| content | 11,337,321,341 | 11,199,293,127 | −138,028,214 |
+| unique content | 10,906,388,340 | 10,906,315,228 | −73,112 |
+| redundant payload | 900,763,895 | 762,808,793 | −137,955,102 |
+
+Unique content counts identical files once already, so it barely moves; the
+pull and the deployed content shrink. The pull request built x86_64 only, so
+the aarch64 ceiling is left to the nightly records.
