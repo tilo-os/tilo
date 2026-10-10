@@ -10,6 +10,8 @@
 //!   what a session can run.
 //! - [`layout`] — where a store keeps its files, and where the stores are.
 //! - [`mounts`] — which installed trees running apps have mounted.
+//! - `lease` (feature `lease`) — the hold a launch keeps on its payload
+//!   tree from choosing it until its sandbox exits.
 //! - [`integrity`] — replay an installed package's signature chain against
 //!   its files.
 //! - `PackageStore` (feature `store`) — install, remove, pin and collect.
@@ -31,6 +33,8 @@ pub mod dev_env;
 pub mod integrity;
 pub mod interfaces;
 pub mod layout;
+#[cfg(feature = "lease")]
+pub mod lease;
 pub mod mounts;
 pub mod registry;
 
