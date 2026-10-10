@@ -250,3 +250,15 @@ keeps the selected emoji visible. [Focused evidence](evidence/emoji-picker-respo
 reuses the unchanged inspected hints and qualifies the failing 200% / 320 px
 states plus normal comparison. Installed-device and extremely small viewport
 coverage remain separate from this source layout correction.
+
+
+## Top-bar original-request reconciliation (2026-10-10)
+
+The combined PR3386/3446 delivery preserves both authored heads and all 23
+original regression assertions, and composes the measured shared-face editor
+with the constrained primary Toolbar. The historical 320px collision above is
+addressed by this combined source. Current main placement helpers and locale
+catalogue entries are retained. Editor semantic opening, pointer cancellation
+and focus trapping compose with Toolbar overflow ownership rather than losing
+either original surface. Qualification and historical-source distinctions are
+recorded in [top-bar editor evidence](evidence/topbar-editor/README.md).

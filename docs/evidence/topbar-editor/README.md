@@ -66,3 +66,44 @@ The locale files overlap Dictation #2974 at file level, with independent hunks:
 these two entries sit beside overview actions, while Dictation adds dictation
 messages near the end. Messages #2881 and Files #3009 have no locale overlap.
 The example now rejects an overlong Unix socket path before spawning a process.
+
+
+## Original editor and responsive-bar reconciliation (2026-10-10)
+
+The composed delivery retains exact authored PR3386 head
+83c0fa1074e06e70b7e5df2308e866d2a8c5eb7c and PR3446 head
+c6433af3dc39344f74a1d3d5289d65e331dc9457 as ancestors, against main
+c83f787da3ad3836547eae8521e29b24b8af8c54. The historical 320px primary
+collision described above is addressed by the responsive Toolbar in this combined
+source. Original capture manifests remain historical evidence, unchanged.
+
+Current main's shared placement helper is retained alongside editor resize and
+hidden-layout cancellation. Both editor and Toolbar contribute popup capture,
+focus trapping and retained-scene invalidation. The editor owns input while open;
+opening either original semantic editor target closes the Toolbar menu first.
+A new actual narrow production regression reproduced a rejected editor target
+before this dispatch repair, and covers focus-loss drag cancellation and Escape.
+
+All 23 original regression names and assertions remain. Twenty-two complete test
+bodies are unchanged. The held-key test alone adapts synthetic event construction
+to main's current KeyEvent API while retaining its actual Framed host path,
+native certification, repeat mutation and every original assertion.
+
+Fresh production offscreen editor and responsive-row/overflow matrices cover
+dark, light, high contrast, 200% text, combined UI/text scaling and 320px width.
+These use the remote software Vulkan adapter and fail if they cannot render.
+They qualify fixture production chrome, not an installed VM or hardware display.
+The combined delivery's PR carries inspected original PNGs and an exact-source
+qualification receipt. Protected CI and integrator exact-main checks remain
+separate gates; neither original request is closed based only on these captures.
+
+
+The combined 320px scaling captures exposed another original-editor limitation:
+labelled Remove buttons could leave only an ellipsis for widget names. Measured
+constrained rows now reuse named shared icon-only Remove faces and shared
+two-line titles, prioritizing complete names over the decorative drag grip.
+The existing row drag gesture and semantic Add/Remove targets remain unchanged.
+The strengthened combined capture regression fails on elided widget names and
+passes with complete names at 320x600 under 200% text and combined 150% UI/130%
+text. Before and after originals distinguish this repair from earlier wide
+captures; narrower heights are not claimed by these combined-scale captures.
