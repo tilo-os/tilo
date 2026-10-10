@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Diagnostic only: warm cache, identical native targets, then 8/6/6/8 builds.
 
-Owns only a previously absent target directory in a disposable CI checkout.
+Owns only a previously absent target/debug directory in a disposable CI checkout.
 No required workflow, compiler flags, cache keys or test filters are changed.
 """
 import hashlib
@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import signal
 import subprocess
 import threading
 import time
@@ -53,7 +54,8 @@ def binary_receipt(messages, target, package_ids):
         if not path.is_relative_to(target.resolve()):
             raise RuntimeError('Compiled executable is outside the owned target')
         identity = (row['package_id'], row['target']['name'],
-                    ','.join(row['target']['kind']), bool(row['profile']['test']))
+                    ','.join(row['target']['kind']), bool(row['profile']['test']),
+                    str(path.relative_to(target.resolve())))
         key = json.dumps(identity)
         if key in binaries:
             raise RuntimeError('Duplicate compiled executable identity')
@@ -96,7 +98,7 @@ def build_phase(jobs, output, target, package_ids, root):
                 ['bash', 'tools/test-env.sh', 'cargo', 'test', '--locked', '--no-run', '--tests',
                  '-p', 'shell', '-p', 'tilo-ui', '--message-format=json-render-diagnostics'],
                 env=dict(os.environ, CARGO_BUILD_JOBS=str(jobs)),
-                stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
 
             def drain_errors():
                 written = 0
@@ -119,11 +121,11 @@ def build_phase(jobs, output, target, package_ids, root):
             drainer.join()
     except BaseException:
         if process is not None and process.poll() is None:
-            process.terminate()
+            os.killpg(process.pid, signal.SIGTERM)
             try:
                 process.wait(timeout=30)
             except subprocess.TimeoutExpired:
-                process.kill()
+                os.killpg(process.pid, signal.SIGKILL)
                 process.wait(timeout=30)
         raise
     finally:
@@ -157,7 +159,7 @@ def main():
     if os.environ.get('GITHUB_ACTIONS') != 'true' or os.environ.get('CARGO_TARGET_DIR'):
         raise RuntimeError('Run only in a fresh admitted CI checkout without target overrides')
     workspace = Path(os.environ['GITHUB_WORKSPACE']).resolve(strict=True)
-    if Path.cwd().resolve() != workspace or (workspace / 'target').exists():
+    if Path.cwd().resolve() != workspace or (workspace / 'target/debug').exists():
         raise RuntimeError('Expected a fresh disposable checkout')
     root = Path('/sys/fs/cgroup')
     quota, period = map(int, (root / 'cpu.max').read_text().split())
@@ -182,7 +184,11 @@ def main():
                 'builder': os.environ['BUILDER_IMAGE']}
     (output / 'identity.json').write_text(json.dumps(identity, indent=2) + '\n')
     print('NATIVE_WIDTH_IDENTITY=' + json.dumps(identity), flush=True)
-    target = workspace / 'target'
+    cache_root = workspace / 'target'
+    if cache_root.is_symlink():
+        raise RuntimeError('Refusing a symlinked Cargo target root')
+    cache_root.mkdir(exist_ok=True)
+    target = cache_root / 'debug'
     target.mkdir()
     (target / '.native-width-owned').touch()
     receipts = []

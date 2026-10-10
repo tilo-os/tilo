@@ -59,6 +59,22 @@ class NativeWidthTrial(unittest.TestCase):
             self.assertFalse(precious.exists())
             self.assertTrue((target / '.native-width-owned').is_file())
 
+    def test_owned_debug_cleanup_keeps_verified_download_assets(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / 'target'
+            root.mkdir()
+            fonts = root / 'font-artifacts'
+            fonts.mkdir()
+            asset = fonts / 'verified.ttf'
+            asset.write_bytes(b'verified fixture')
+            debug = root / 'debug'
+            debug.mkdir()
+            (debug / '.native-width-owned').touch()
+            (debug / 'compiled').write_bytes(b'owned binary')
+            TRIAL.reset_owned_target(debug)
+            self.assertEqual(asset.read_bytes(), b'verified fixture')
+            self.assertFalse((debug / 'compiled').exists())
+
     def test_missing_or_reset_observation_is_not_a_healthy_zero(self):
         for after in ({}, {'usage_usec': 9}):
             with self.assertRaises(ValueError):

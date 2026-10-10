@@ -16,6 +16,8 @@ env:
   TILO_REQUIRE_MEDIA: "1"
   TILO_REQUIRE_AUDIO: "1"
   TILO_REQUIRE_GPU: "1"
+  # Same as production shards that select shell+tilo-ui without the NTFS helper.
+  TILO_TEST_NTFS_FIXTURES: "0"
 jobs:
   builder:
     runs-on: runner-quality
