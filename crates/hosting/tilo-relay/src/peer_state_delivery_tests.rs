@@ -169,7 +169,7 @@ async fn writer_boundary(
             delivery,
             &recipient,
             &session,
-            &mut Default::default(),
+            &mut tilo_delivery_protocol::transport_v2::DeltaEncoder::default(),
             &mut wire,
         )
         .await
@@ -225,7 +225,7 @@ async fn writer_boundary(
         delivery,
         &recipient,
         &session,
-        &mut Default::default(),
+        &mut tilo_delivery_protocol::transport_v2::DeltaEncoder::default(),
         &mut wire,
     )
     .await
@@ -262,7 +262,7 @@ async fn writer_boundary(
             current_delivery,
             &recipient,
             &session,
-            &mut Default::default(),
+            &mut tilo_delivery_protocol::transport_v2::DeltaEncoder::default(),
             &mut wire,
         )
         .await
