@@ -511,7 +511,7 @@ mod tests {
     }
 
     fn wait_for(what: &str, mut done: impl FnMut() -> bool) {
-        let deadline = Instant::now() + Duration::from_secs(10);
+        let deadline = Instant::now().checked_add(Duration::from_secs(10)).unwrap();
         while !done() {
             assert!(Instant::now() < deadline, "{what}");
             std::thread::sleep(Duration::from_millis(20));
@@ -539,7 +539,7 @@ mod tests {
         drop(watch);
         // The refresh under way finishes (its observation bounded by
         // `FRESH`, then its one-second pause) and the loop parks.
-        std::thread::sleep(FRESH + Duration::from_millis(1500));
+        std::thread::sleep(FRESH.saturating_add(Duration::from_millis(1500)));
         let parked = refreshes(&devices);
         std::thread::sleep(Duration::from_millis(1500));
         assert_eq!(
