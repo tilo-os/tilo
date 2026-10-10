@@ -658,13 +658,14 @@ jobs:
           [[ -n $app ]] || app=$(find target/thin-app -maxdepth 1 -type f -executable ! -name '*.so' ! -name '*.d' | sort | head -1)
           [[ -n $app ]] || { echo "no built app to load" >&2; exit 1; }
           # Resolved first: an assignment beside LD_DEBUG would print rustc's own statistics.
+          # An app need not accept --help; only reaching main matters, so its status is ignored.
           libdir=$(rustc --print target-libdir)
           export LD_LIBRARY_PATH="target/thin-app:$libdir"
           stats=$(LD_DEBUG=statistics "$app" --help 2>&1 >/dev/null </dev/null \
             | sed -n 's/^ *[0-9]*: *//p' | grep -E 'time|relocations' || true)
           [[ -n $stats ]] || { echo "the loader printed no statistics for $app" >&2; exit 1; }
           loaded=$(LD_DEBUG=files "$app" --help 2>&1 >/dev/null </dev/null \
-            | sed -n 's/^ *[0-9]*: *file=\([^ ]*\) .*/\1/p' | sort -u | tr '\n' ' ')
+            | sed -n 's/^ *[0-9]*: *file=\([^ ]*\) .*/\1/p' | sort -u | tr '\n' ' ' || true)
           printf '%s --help\n%s\nloaded at exec: %s\n' "$(basename "$app")" "$stats" "$loaded" \
             | tee -a "$GITHUB_STEP_SUMMARY"
           # Up, without a display: a headless drive that waits for a widget
