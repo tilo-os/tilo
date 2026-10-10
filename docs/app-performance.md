@@ -210,6 +210,15 @@ window to keyboard modality, which may change what it presents. The headless
 every relayout is uncached. Publication is 0.8 ms of the 5 ms a keystroke
 takes at 1,000 tasks; the rest of the frame was not profiled here.
 
+The hosted input-cost regression scopes monotonic time to one instant while
+it drives the real press/frame/release/frame path. The record-save status
+poll is an independent 100 ms idle deadline; under CI load it can otherwise
+fall inside that observation and add a publication unrelated to input. A
+separate regression advances that scoped clock to the deadline and requires
+the real save-status frame to publish while preserving the typed draft. The
+clock override is test-support only, thread-local, and restored on unwind;
+production save sampling and clock readings keep their existing behaviour.
+
 ## Verified shared-list CPU workload
 
 The `ui-perf perf_scenario --count 1200 --json` list case now checks the real
