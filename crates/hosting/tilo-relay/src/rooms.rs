@@ -866,6 +866,14 @@ impl Rooms {
             .replace(room.workspace_id(), true, access)
             .await
             .map_err(|error| error.to_string())?;
+        host.access
+            .replace_standings(
+                room.workspace_id(),
+                true,
+                room.peer().governed_standings(SystemTime::now())?,
+            )
+            .await
+            .map_err(|error| error.to_string())?;
         while let Some(entry) = room.record.outgoing.get(room.record.published) {
             let message: tilo_peer_state::NeighbourMsg =
                 postcard::from_bytes(&entry.bytes).map_err(|error| error.to_string())?;

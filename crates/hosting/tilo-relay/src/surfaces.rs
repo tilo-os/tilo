@@ -68,10 +68,14 @@ fn tilo_app_registry_blobs(registry: &str) -> app_registry::http_blobs::HttpBlob
 /// Why the relay refuses the change the delta `delta` carries, if it does:
 /// a change that names no action, a cleartext op that brings claims of its
 /// own, a claim to an action or field the app's surface does not publish,
-/// or one writing a unit outside its action's footprint. The relay holds no
-/// room's grants; those are decided by the room's governor and devices,
-/// as are ops whose surface has not arrived here yet.
-pub(crate) fn refusal(delta: &[u8]) -> Option<String> {
+/// one writing a unit outside its action's footprint, or, where the room's
+/// governor projected its members' standings (`standings`), an action the
+/// author is not granted. Ops whose surface has not arrived here yet are
+/// left to the room's devices, which hold them.
+pub(crate) fn refusal(
+    delta: &[u8],
+    standings: Option<&crate::workspace::Standings>,
+) -> Option<String> {
     let (_, _, body) = crate::coedit::retention_view(delta)?;
     let Ok(tilo_peer_state::NeighbourMsg::AppDocument {
         app_id,
@@ -88,13 +92,26 @@ pub(crate) fn refusal(delta: &[u8]) -> Option<String> {
         app: &app_id,
         record: &record_id,
     };
+    let author = standings.map(|standings| standings.get(envelope.author.as_bytes()));
+    let allows = |node: &tilo_action_policy::TreePath, kind| match author {
+        // No projection: membership already decided who may write here.
+        None => true,
+        Some(None) => false,
+        Some(Some(standing)) => {
+            standing.answer(
+                node,
+                kind,
+                &tilo_action_policy::Context::at(tilo_clock::unix_now()),
+            ) == tilo_action_policy::Answer::Allow
+        }
+    };
     collab_types::decide_op(
         &envelope,
         &record,
         None,
         None,
         &tilo_peer_state::default_surfaces(),
-        &|_, _| true,
+        &allows,
     )
     .err()
     .map(|refusal| refusal.to_string())

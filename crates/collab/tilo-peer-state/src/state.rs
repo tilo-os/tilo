@@ -982,6 +982,29 @@ impl StatePeer {
             .collect()
     }
 
+    /// The standing of every governed member device at `now`: what a relay
+    /// that does not hold the room's governance decides their changes
+    /// with, each held to its foreign-device bound.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the room's governance is missing or malformed.
+    pub fn governed_standings(
+        &self,
+        now: SystemTime,
+    ) -> Result<std::collections::BTreeMap<[u8; 32], tilo_action_policy::Standing>, String> {
+        let access = self.governed_access(now)?;
+        Ok(access
+            .member_devices
+            .into_iter()
+            .filter_map(|device| {
+                self.permissions(device, now)
+                    .ok()
+                    .map(|member| (device, member.standing()))
+            })
+            .collect())
+    }
+
     /// Current governed access derived from the admitted room document.
     ///
     /// # Errors

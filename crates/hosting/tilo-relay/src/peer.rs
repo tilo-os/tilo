@@ -5263,8 +5263,9 @@ async fn handle_delta(
     trace_native_publication("server_authorized", &env, None);
     // The change itself must say what it does and stay inside what its app
     // publishes, before the relay keeps or forwards it.
+    let standings = ws.lock().await.standings.clone();
     if let Envelope::Delta { delta, .. } = &env
-        && let Some(reason) = crate::surfaces::refusal(delta)
+        && let Some(reason) = crate::surfaces::refusal(delta, standings.as_deref())
     {
         // Neither kept nor forwarded. The session stays: one bad change
         // is not a membership decision.

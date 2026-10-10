@@ -118,6 +118,26 @@ impl GovernedAccessWriter {
         &self.state_root
     }
 
+    /// Replace the standing of each member device of the room.
+    pub(crate) async fn replace_standings(
+        &self,
+        workspace_id: u64,
+        pinned: bool,
+        standings: crate::workspace::Standings,
+    ) -> Result<(), RelayError> {
+        let workspace = crate::workspace_io::get_or_initialize(
+            &self.workspaces,
+            self.state_root.clone(),
+            workspace_id,
+            pinned,
+            crate::room_access::AdmissionMode::Explicit,
+            crate::peer::MAX_AUTOBOUND_WORKSPACES,
+        )
+        .await?;
+        workspace.lock().await.standings = Some(Arc::new(standings));
+        Ok(())
+    }
+
     #[expect(
         clippy::significant_drop_tightening,
         reason = "the flagged value is a shared workspace handle (an Arc clone); dropping it earlier releases no lock"
@@ -1200,6 +1220,26 @@ impl Relay {
         self.ensure_workspace_mutation_scope(workspace_id)?;
         self.governed_access_writer()
             .replace(workspace_id, pinned, access)
+            .await
+    }
+
+    /// Replace the standing of each member device of `workspace_id`'s room,
+    /// as its governor projects them: the relay then decides each change it
+    /// receives against its author's grants for the action it claims.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RelayError::GovernedAccess`] outside this relay's mutation
+    /// scope, and [`RelayError::Store`] when the workspace cannot be opened.
+    pub async fn replace_governed_workspace_standings(
+        &self,
+        workspace_id: u64,
+        pinned: bool,
+        standings: crate::workspace::Standings,
+    ) -> Result<(), RelayError> {
+        self.ensure_workspace_mutation_scope(workspace_id)?;
+        self.governed_access_writer()
+            .replace_standings(workspace_id, pinned, standings)
             .await
     }
 
