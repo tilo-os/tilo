@@ -275,14 +275,11 @@ fn draw_visible_tooltip(
             .tooltip_host
             .refresh(current.map(|(rect, label, _)| (rect, label)));
     }
-    let Some((text, anchor)) = app
+    let (text, anchor) = app
         .input
         .tooltip_host
         .visible()
-        .map(|(label, anchor)| (crate::i18n::I18nManager::lookup(label, None), anchor))
-    else {
-        return None;
-    };
+        .map(|(label, anchor)| (crate::i18n::I18nManager::lookup(label, None), anchor))?;
     let viewport = KurboRect::new(
         0.0,
         0.0,
