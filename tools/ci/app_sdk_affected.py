@@ -91,13 +91,20 @@ def integration_only(root: Path, path: str, packages: dict, by_dir: dict) -> boo
         # module. Include comments too: a conservative false positive is cheap.
         for package in packages.values():
             package_dir = Path(package["manifest_path"]).parent
-            sources = set((package_dir / "src").rglob("*.rs"))
+            source_roots = [package_dir / "src"]
+            if package["name"] in SDK_PACKAGES:
+                source_roots.append(package_dir / "tests")
+            sources = set()
+            for source_root in source_roots:
+                # rglob omits directory links and extensionless file aliases.
+                # Either can make SDK code consume a dependency's test file.
+                if source_root.is_symlink() or any(
+                        entry.is_symlink()
+                        for entry in source_root.rglob("*")):
+                    return False
+                sources |= set(source_root.rglob("*.rs"))
             sources |= {Path(target["src_path"]) for target in package.get("targets", [])
                         if target.get("kind") != ["test"]}
-            # The SDK explicitly runs its own tests, which can include a
-            # dependency's fixture even when no production source names it.
-            if package["name"] in SDK_PACKAGES:
-                sources |= set((package_dir / "tests").rglob("*.rs"))
             if any(source.resolve() == changed.resolve() or
                    relative.name in source.read_text() for source in sources):
                 return False

@@ -218,6 +218,27 @@ class AppSdkAffectedTests(unittest.TestCase):
         path.symlink_to(source)
         self.assertTrue(self.check(str(path.relative_to(self.root))))
 
+    def test_sdk_test_directory_alias_retains_its_dependency_fixture(self):
+        _, path, _ = self.standalone_fixture()
+        (path.parent / 'mod.rs').write_text('mod native_flow;\n')
+        sdk_tests = self.root / 'crates/dev/tilo-app-cli/tests'
+        sdk_tests.mkdir()
+        (sdk_tests / 'it.rs').write_text('mod shared;\n')
+        (sdk_tests / 'shared').symlink_to(path.parent, target_is_directory=True)
+        self.assertTrue(self.check(str(path.relative_to(self.root))))
+
+    def test_sdk_test_extensionless_or_broken_alias_retains_lanes(self):
+        _, path, _ = self.standalone_fixture()
+        sdk_tests = self.root / 'crates/dev/tilo-app-cli/tests'
+        sdk_tests.mkdir()
+        (sdk_tests / 'it.rs').write_text('const X: &str = include_str!("fixture");\n')
+        alias = sdk_tests / 'fixture'
+        alias.symlink_to(path)
+        self.assertTrue(self.check(str(path.relative_to(self.root))))
+        alias.unlink()
+        alias.symlink_to(path.parent / 'missing')
+        self.assertTrue(self.check(str(path.relative_to(self.root))))
+
     def test_repository_wide_inputs_run_the_lanes(self):
         self.assertTrue(self.check('rust-toolchain.toml'))
         self.assertTrue(self.check('.forgejo/workflows/app-sdk.yml'))
