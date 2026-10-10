@@ -22,7 +22,7 @@ on:
   workflow_dispatch:
     inputs:
       kpis:
-        description: "Comma-separated KPI groups to run (fs, footprint, agent, latency, render, wakeups, hosting); empty runs all."
+        description: "Comma-separated KPI groups to run (fs, footprint (app and OS image sizes), agent, latency, render, wakeups, hosting); empty runs all."
         required: false
         default: ""
       accept:
@@ -264,6 +264,52 @@ jobs:
           path: perf/
           if-no-files-found: warn
 
+  # OS image size (TIL-609): main's newest production-layout image per
+  # architecture, the tilo-ci base that tilo-vm:main-ci names, streamed from
+  # the registry and replayed layer by layer through tools/perf/image_size.py.
+  # Compressed layer bytes (a full pull), unique content (what composefs holds
+  # after install) and redundant payload (bytes the layers ship twice). Byte
+  # counts: runner-independent, so `runner` is none. The ceilings and the 5 %
+  # growth rule are in tools/perf/kpi-budgets.toml (DEVELOPMENT.md, "OS image
+  # size"). The full breakdown is the job's summary and the image-size
+  # artifact.
+  footprint-image:
+    needs: plan
+    if: needs.plan.outputs.footprint == 'true'
+    runs-on: runner-quality
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [x86_64, aarch64]
+    container:
+      image: registry.tilo.so/tilo/ci-fast@sha256:ecfe2c2abf7a48d9d00d71083aba6b7b9dfc11bc9de63b87e3144522daf6d97c
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+          sparse-checkout: tools/perf
+          sparse-checkout-cone-mode: false
+
+      - name: Measure main's newest image
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          mkdir -p perf
+          python3 tools/perf/image_size.py --dev-base registry.tilo.so/tilo/tilo-vm:main-ci \
+            --arch "$ARCH" --records perf/image-$ARCH.jsonl --runner none \
+            --json perf/image-size-$ARCH.json --markdown perf/image-size-$ARCH.md > /dev/null
+          cat "perf/image-size-$ARCH.md" >> "$GITHUB_STEP_SUMMARY"
+          cat "perf/image-$ARCH.jsonl"
+
+      - uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
+        if: always()
+        with:
+          name: perf-footprint-image-${{ matrix.arch }}
+          path: perf/
+          if-no-files-found: warn
+
   # Compositor-side input and workspace-switch latency (TIL-587): a headless
   # compositor driven through its control socket, rendering with lavapipe on
   # the shared `runner` class, through scripts/perf/latency_bench.py. The
@@ -500,7 +546,7 @@ jobs:
           if-no-files-found: warn
 
   compare:
-    needs: [plan, fs, footprint, agent, latency, render, wakeups, hosting]
+    needs: [plan, fs, footprint, footprint-image, agent, latency, render, wakeups, hosting]
     if: ${{ always() && needs.plan.result == 'success' }}
     runs-on: runner-quality
     timeout-minutes: 15
@@ -527,6 +573,7 @@ jobs:
           FACTOR: ${{ github.event.inputs.synthetic_factor }}
           FS_RESULT: ${{ needs.fs.result }}
           FOOTPRINT_RESULT: ${{ needs.footprint.result }}
+          FOOTPRINT_IMAGE_RESULT: ${{ needs.footprint-image.result }}
           AGENT_RESULT: ${{ needs.agent.result }}
           LATENCY_RESULT: ${{ needs.latency.result }}
           RENDER_RESULT: ${{ needs.render.result }}
@@ -538,7 +585,7 @@ jobs:
           shopt -s nullglob
           owner=${GITHUB_REPOSITORY%%/*}
           status=0
-          for job in "fs:$FS_RESULT" "footprint:$FOOTPRINT_RESULT" "agent:$AGENT_RESULT" "latency:$LATENCY_RESULT" "render:$RENDER_RESULT" "wakeups:$WAKEUPS_RESULT" "hosting:$HOSTING_RESULT"; do
+          for job in "fs:$FS_RESULT" "footprint:$FOOTPRINT_RESULT" "footprint-image:$FOOTPRINT_IMAGE_RESULT" "agent:$AGENT_RESULT" "latency:$LATENCY_RESULT" "render:$RENDER_RESULT" "wakeups:$WAKEUPS_RESULT" "hosting:$HOSTING_RESULT"; do
             case ${job#*:} in
               success|skipped) ;;
               *) echo "::error::benchmark job ${job%%:*} ended ${job#*:}"; status=1 ;;

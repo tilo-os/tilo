@@ -1361,6 +1361,7 @@ dependencies = [
  "blake3",
  "bounded-zip",
  "fnv",
+ "hex",
  "host-info",
  "private-fs",
  "reqwest 0.13.4",
@@ -1952,6 +1953,7 @@ name = "chip-design"
 version = "0.1.0"
 dependencies = [
  "blake3",
+ "hex",
  "runtime-dylib",
  "serde",
  "serde_json",
@@ -9385,6 +9387,7 @@ dependencies = [
  "blake3",
  "collab-types",
  "ed25519-dalek 3.0.0",
+ "hex",
  "postcard",
  "serde",
  "serde_json",
@@ -12499,7 +12502,6 @@ dependencies = [
  "hyper-util",
  "registry-client",
  "registry-types",
- "registry-web",
  "reqwest 0.13.4",
  "serde",
  "serde_json",
@@ -12534,31 +12536,7 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.21",
-]
-
-[[package]]
-name = "registry-web"
-version = "0.1.0"
-dependencies = [
- "blake3",
- "ed25519-dalek 3.0.0",
- "hex",
- "registry-types",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 2.0.21",
- "tilo-app-package",
- "toml 1.0.6+spec-1.1.0",
-]
-
-[[package]]
-name = "registry-web-bindgen"
-version = "0.1.0"
-dependencies = [
- "registry-web",
- "serde_json",
- "wasm-bindgen",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -14086,6 +14064,7 @@ dependencies = [
 name = "settings-store"
 version = "0.1.0"
 dependencies = [
+ "hex",
  "notify",
  "serde",
  "serde_json",
@@ -16302,7 +16281,6 @@ dependencies = [
  "ed25519-dalek 3.0.0",
  "hex",
  "js-sys",
- "notes",
  "postcard",
  "serde",
  "serde_json",
@@ -17214,6 +17192,9 @@ dependencies = [
  "futures-util",
  "messages",
  "private-fs",
+ "reqwest 0.13.4",
+ "rustls",
+ "rustls-native-certs",
  "serde",
  "serde_json",
  "tempfile",
@@ -17222,10 +17203,12 @@ dependencies = [
  "tilo-clock",
  "tilo-contact-directory",
  "tilo-messaging",
+ "tilo-net",
  "tilo-resource",
  "tilo-secret-vault",
  "tilo-secrets",
  "tokio",
+ "tokio-tungstenite",
  "uuid",
  "whatsapp-rust",
  "workspace-hack",
@@ -17241,6 +17224,7 @@ dependencies = [
  "agent-provider-config",
  "base64",
  "clap",
+ "hex",
  "image",
  "libc",
  "local-model-service",
@@ -17801,6 +17785,7 @@ name = "tilo-resource"
 version = "0.1.0"
 dependencies = [
  "blake3",
+ "hex",
  "serde",
  "serde_json",
  "thiserror 2.0.21",
@@ -18060,6 +18045,7 @@ dependencies = [
 name = "tilo-secrets"
 version = "0.1.0"
 dependencies = [
+ "hex",
  "js-sys",
  "libc",
  "security-framework",
@@ -22182,6 +22168,7 @@ dependencies = [
  "tokio",
  "tokio-rustls",
  "tokio-stream",
+ "tokio-tungstenite",
  "tokio-util",
  "tokio-websockets",
  "toml 1.0.6+spec-1.1.0",

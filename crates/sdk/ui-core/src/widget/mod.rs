@@ -194,6 +194,50 @@ pub(crate) fn draw_gate_and_peer_focus(
     }
 }
 
+/// The whole `draw_with_presence` of a gated, presence-publishing leaf:
+/// culled off-viewport, drawn, then overlaid by [`draw_gate_and_peer_focus`].
+pub(crate) fn draw_gated_leaf(
+    widget: &mut (impl Widget + ?Sized),
+    scene: &mut Scene,
+    transform: Affine,
+    text_renderer: &mut TextRenderer,
+    theme: &Theme,
+    presence: &PresenceCtx,
+    permissions: &crate::permissions::PermissionContext,
+) {
+    if presence.should_cull(widget.get_rect()) {
+        return;
+    }
+    widget.draw(scene, transform, text_renderer, theme, presence);
+    draw_gate_and_peer_focus(widget, scene, transform, theme, presence, permissions);
+}
+
+/// Hand `event` to the widgets a virtualizing container has mounted: the
+/// first one holding pointer capture gets it alone, otherwise each laid-out
+/// widget sees it, topmost first, until one handles it.
+pub(crate) fn route_to_mounted<T>(
+    mounted: &mut [T],
+    parts: fn(&mut T) -> (&mut Element, Option<NodeId>),
+    event: &WindowEvent,
+    ctx: &mut EventCtx<'_>,
+) {
+    if let Some((widget, Some(node))) = mounted
+        .iter_mut()
+        .map(parts)
+        .find(|(widget, _)| widget.wants_pointer_capture())
+    {
+        widget.handle_event(event, &mut ctx.reborrow(ctx.path, node));
+        return;
+    }
+    for (widget, node) in mounted.iter_mut().rev().map(parts) {
+        let Some(node) = node else { continue };
+        widget.handle_event(event, &mut ctx.reborrow(ctx.path, node));
+        if *ctx.handled {
+            break;
+        }
+    }
+}
+
 /// Collect resources from every retained widget without requiring container
 /// authors to remember to forward their children's declarations. Resource
 /// ownership stays local to the widget that implements it; composition is a

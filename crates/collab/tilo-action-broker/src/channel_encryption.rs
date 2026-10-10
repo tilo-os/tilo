@@ -31,7 +31,9 @@
 //! asks the identity service again only when it fires, rather than on a
 //! timer. A key rotation, an invite, a removal, a role change that ends
 //! reading and a device's enrolment or revocation each become a commit the
-//! steward makes within [`RECONCILE_INTERVAL`] of the policy change; the
+//! steward makes within [`RECONCILE_INTERVAL`] of the policy change (on its
+//! announcement, or at the expiry, when the directory announces changes:
+//! [`ChannelDirectory::policy_epoch`]); the
 //! commit is announced on the steward the moment it is made and on a member
 //! the moment its frame arrives, and the endpoint asks for keys at once.
 
@@ -52,11 +54,13 @@ use ed25519_dalek::SigningKey;
 use neighbour_wire::NeighbourMsg;
 
 use crate::collab_core::BrokerChannels;
+use crate::policy_schedule::{PolicySchedule, RECHECK_INTERVAL};
 use tilo_desktop_model::RoomId;
 
-/// How often stewards re-check the access policy without a trigger, which
-/// also bounds how late an expiring grant is enforced.
-const RECONCILE_INTERVAL: Duration = Duration::from_secs(1);
+/// How often stewards re-check the access policy when their directory
+/// announces no changes, the longest an announced change waits, and how soon
+/// a pass that left work due tries again ([`crate::policy_schedule`]).
+const RECONCILE_INTERVAL: Duration = RECHECK_INTERVAL;
 /// First and longest wait before redelivering unacknowledged frames.
 const REDELIVERY_FIRST: Duration = Duration::from_secs(1);
 const REDELIVERY_LONGEST: Duration = Duration::from_secs(60);
@@ -138,6 +142,22 @@ pub trait ChannelDirectory: Send {
     /// Every device that may read `room`'s channels at wall-clock `now`
     /// (seconds since the Unix epoch).
     fn allowed_devices(&self, room: RoomId, now: u64) -> BTreeSet<Ed25519PublicKey>;
+    /// The [`tilo_identity_host::policy_change`] epoch (or a test's own) when
+    /// every write to what [`Self::allowed_devices`] reads is announced and
+    /// its expiries can be timed: stewards then re-check on announcements and
+    /// at [`Self::next_policy_change`]. `None` (the default) keeps the
+    /// re-check every [`RECHECK_INTERVAL`].
+    fn policy_epoch(&self) -> Option<u64> {
+        None
+    }
+    /// The first wall-clock second after `now` at which
+    /// [`Self::allowed_devices`] for `room` can answer differently with
+    /// nothing written: a grant or a certificate expiring, a revocation
+    /// dated ahead. Read only while [`Self::policy_epoch`] is `Some`.
+    fn next_policy_change(&self, room: RoomId, now: u64) -> Option<u64> {
+        let _ = (room, now);
+        None
+    }
 }
 
 /// Durable location and keys of this device's channel state.
@@ -205,7 +225,9 @@ pub struct ChannelEncryption {
     broker: Arc<Mutex<BrokerChannels>>,
     stewards: HashMap<ChannelId, StewardEntry>,
     members: HashMap<ChannelId, MemberEntry>,
-    last_reconcile: Option<Instant>,
+    /// When stewards last re-checked the access policy, and what the next
+    /// re-check waits for.
+    reconcile: PolicySchedule,
     delivery: u64,
     generation: u64,
     /// The [`Self::generation`] each channel last changed at.
@@ -239,7 +261,7 @@ impl ChannelEncryption {
             broker,
             stewards: HashMap::new(),
             members: HashMap::new(),
-            last_reconcile: None,
+            reconcile: PolicySchedule::default(),
             delivery: 0,
             generation: 0,
             changed: HashMap::new(),
@@ -364,19 +386,30 @@ impl ChannelEncryption {
         for inbound in transport.take_inbound() {
             self.receive(inbound, now, wall);
         }
+        // Read before the policy is: a change announced while the stewards
+        // reconcile has a later epoch and makes the next re-check due.
+        let epoch = self.directory.policy_epoch();
         let reconcile_due = self
-            .last_reconcile
-            .is_none_or(|last| now.saturating_duration_since(last) >= RECONCILE_INTERVAL);
-        if reconcile_due {
-            self.last_reconcile = Some(now);
-        }
+            .reconcile
+            .due(now, epoch.unwrap_or(0))
+            .is_some_and(|due| due <= now);
         let channels: Vec<ChannelId> = self.stewards.keys().copied().collect();
+        let mut reconciled = false;
         for channel in channels {
             let due = reconcile_due || self.stewards.get(&channel).is_some_and(|entry| entry.dirty);
             if due {
                 self.reconcile(channel, now, wall);
+                reconciled = true;
             }
             self.redeliver(channel, transport, now);
+        }
+        if reconcile_due {
+            self.reconcile
+                .checked(now, epoch.unwrap_or(0), epoch.is_none());
+        }
+        // A new steward's room brings its own expiries.
+        if reconciled && epoch.is_some() {
+            self.register_next_policy_change(wall);
         }
         let channels: Vec<ChannelId> = self.members.keys().copied().collect();
         for channel in channels {
@@ -388,22 +421,28 @@ impl ChannelEncryption {
     /// `None` while there is none, so its caller can park until a message
     /// arrives or an endpoint's access wakes it ([`ChannelKeyAccess::with_wake`]).
     ///
-    /// A steward re-checks its access policy every [`RECONCILE_INTERVAL`],
-    /// since a grant can expire with nothing announcing it; the same pass
-    /// redelivers what its members have not acknowledged and retries an
-    /// unaccepted genesis announcement. A member is due only while it still
-    /// has to acknowledge a frame or is asking for access, on its backoff. A
-    /// member holding its keys has nothing to do until a frame arrives.
+    /// A steward re-checks its access policy when its directory announces a
+    /// change ([`Self::waits_for_policy_change`]) and at the next expiry the
+    /// last re-check read, which [`Self::pump`] registers with
+    /// [`tilo_identity_host::policy_change::wake_at`]; neither is a deadline
+    /// here. A directory that announces nothing keeps the re-check every
+    /// [`RECONCILE_INTERVAL`]. The re-check also redelivers what members have
+    /// not acknowledged (on their own backoff) and retries an unaccepted
+    /// genesis announcement. A member is due only while it still has to
+    /// acknowledge a frame or is asking for access, on its backoff. A member
+    /// holding its keys has nothing to do until a frame arrives.
     #[must_use]
     pub fn next_pump_deadline(&self, now: Instant) -> Option<Instant> {
-        let steward = (!self.stewards.is_empty()).then(|| {
-            if self.stewards.values().any(|entry| entry.dirty) {
-                return now;
-            }
-            self.last_reconcile
-                .and_then(|last| last.checked_add(RECONCILE_INTERVAL))
-                .unwrap_or(now)
-        });
+        let steward = if self.stewards.is_empty() {
+            None
+        } else if self.stewards.values().any(|entry| entry.dirty) {
+            Some(now)
+        } else {
+            let policy = self
+                .reconcile
+                .due(now, self.directory.policy_epoch().unwrap_or(0));
+            policy.into_iter().chain(self.next_redelivery(now)).min()
+        };
         let member = self
             .members
             .values()
@@ -420,6 +459,50 @@ impl ChannelEncryption {
             })
             .min();
         steward.into_iter().chain(member).min()
+    }
+
+    /// When a steward next owes a delivery that no message brings, after a
+    /// pass at `now`: a frame a member has not acknowledged, on that
+    /// member's backoff, or a genesis announcement the transport did not
+    /// accept, retried every [`RECONCILE_INTERVAL`] as before.
+    fn next_redelivery(&self, now: Instant) -> Option<Instant> {
+        let retry = now.checked_add(RECONCILE_INTERVAL).unwrap_or(now);
+        self.stewards
+            .values()
+            .filter_map(|entry| {
+                let genesis = (!entry.announced && !entry.steward.journal().frames().is_empty())
+                    .then_some(retry);
+                let frames = entry.redelivery.values().map(|backoff| backoff.due).min();
+                genesis.into_iter().chain(frames).min()
+            })
+            .min()
+    }
+
+    /// Whether stewards wait for their directory to announce a policy
+    /// change: there are some, the directory announces, and nothing changed
+    /// since their last re-check. The host's pump then sleeps until an
+    /// announcement wakes it ([`ChannelKeyAccess::arm_policy_watch`]).
+    fn waits_for_policy_change(&self) -> bool {
+        !self.stewards.is_empty()
+            && self
+                .directory
+                .policy_epoch()
+                .is_some_and(|epoch| self.reconcile.waits_for_change(epoch))
+    }
+
+    /// Register the first instant after `wall` at which the access policy of
+    /// a stewarded room can change by time alone, so the stewards re-check
+    /// then ([`tilo_identity_host::policy_change::wake_at`]).
+    fn register_next_policy_change(&self, wall: u64) {
+        let rooms: BTreeSet<RoomId> = self.stewards.values().map(|entry| entry.room).collect();
+        let next = rooms
+            .into_iter()
+            .filter_map(|room| self.directory.next_policy_change(room, wall))
+            .filter(|at| *at > wall)
+            .min();
+        if let Some(at) = next {
+            tilo_identity_host::policy_change::wake_at(at.saturating_mul(1_000_000_000));
+        }
     }
 
     fn receive(&mut self, inbound: InboundChannelGovernance, now: Instant, wall: u64) {
@@ -964,6 +1047,27 @@ impl ChannelKeyAccess {
         wait_after_pass(deadline, now)
     }
 
+    /// Arm `watch` (whose wake pokes this host's pump) when stewards wait
+    /// for a policy announcement, so a revocation, a role change or an
+    /// expiry re-checks their groups with no timer running. Returns `false`
+    /// when a change already arrived that the arming will not wake for: the
+    /// caller pumps again now instead of parking.
+    ///
+    /// A device stewarding no channel never arms it, and so sleeps through
+    /// every announcement.
+    pub fn arm_policy_watch(&self, watch: &tilo_identity_host::policy_change::Watch) -> bool {
+        let Ok(service) = self.inner.lock() else {
+            return true;
+        };
+        if !service.waits_for_policy_change() {
+            return true;
+        }
+        let _ = watch.arm();
+        let unchanged = service.directory.policy_epoch() == Some(service.reconcile.epoch());
+        drop(service);
+        unchanged
+    }
+
     /// Whether a timer still has to pump governance. An idle device with no
     /// channel parks the drainer until the next inbound frame.
     pub fn has_live_channels(&self) -> bool {
@@ -1221,6 +1325,22 @@ pub mod testing {
     #[derive(Clone, Default)]
     pub struct Policy {
         pub allowed: Arc<Mutex<BTreeSet<Ed25519PublicKey>>>,
+        /// Devices allowed only until a wall-clock second: a grant that
+        /// expires.
+        pub until: Arc<Mutex<BTreeMap<Ed25519PublicKey, u64>>>,
+        /// How the directory announces changes; `None` announces none, and
+        /// stewards keep their one-second re-check.
+        pub announces: Arc<Mutex<Option<Announcements>>>,
+    }
+
+    /// The epoch a test [`Directory`] reports as its
+    /// [`ChannelDirectory::policy_epoch`].
+    #[derive(Clone)]
+    pub enum Announcements {
+        /// [`tilo_identity_host::policy_change`]'s, as production reports.
+        Process,
+        /// The test's own, bumped by hand.
+        Own(Arc<std::sync::atomic::AtomicU64>),
     }
 
     pub struct Directory {
@@ -1236,8 +1356,35 @@ pub mod testing {
         fn steward_of(&self, _: RoomId) -> Option<Ed25519PublicKey> {
             (!self.governs).then_some(self.steward)
         }
-        fn allowed_devices(&self, _: RoomId, _: u64) -> BTreeSet<Ed25519PublicKey> {
-            self.policy.allowed.lock().unwrap().clone()
+        fn allowed_devices(&self, _: RoomId, now: u64) -> BTreeSet<Ed25519PublicKey> {
+            let mut allowed = self.policy.allowed.lock().unwrap().clone();
+            allowed.extend(
+                self.policy
+                    .until
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .filter(|(_, until)| now < **until)
+                    .map(|(device, _)| *device),
+            );
+            allowed
+        }
+        fn policy_epoch(&self) -> Option<u64> {
+            match &*self.policy.announces.lock().unwrap() {
+                None => None,
+                Some(Announcements::Process) => Some(tilo_identity_host::policy_change::epoch()),
+                Some(Announcements::Own(epoch)) => Some(epoch.load(Ordering::SeqCst)),
+            }
+        }
+        fn next_policy_change(&self, _: RoomId, now: u64) -> Option<u64> {
+            self.policy
+                .until
+                .lock()
+                .unwrap()
+                .values()
+                .copied()
+                .filter(|until| *until > now)
+                .min()
         }
     }
 
@@ -1698,6 +1845,149 @@ mod tests {
             laptop.service.access(room_id, channel, now),
             ChannelAccess::Removed
         ));
+    }
+
+    /// TIL-707: with a directory that announces its changes, an idle steward
+    /// has no deadline at all, and a revocation is enforced as soon as it is
+    /// announced, with no clock having run in between.
+    #[test]
+    fn an_announced_revocation_is_enforced_at_once_and_idle_stewards_park() {
+        let room = Arc::new(Room::default());
+        let room_id = RoomId::new();
+        let channel = ChannelId::new();
+        let epoch = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let policy = Policy::default();
+        *policy.announces.lock().unwrap() = Some(Announcements::Own(Arc::clone(&epoch)));
+        policy.allowed.lock().unwrap().insert(public(2));
+        let (owner_dir, laptop_dir) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let mut now = Instant::now();
+        let mut owner = device(&room, room_id, 0, (1, 1), &policy, owner_dir.path());
+        let mut laptop = device(&room, room_id, 1, (2, 1), &policy, laptop_dir.path());
+        assert!(ready_epoch(&owner.service.access(room_id, channel, now)).is_some());
+        assert!(matches!(
+            laptop.service.access(room_id, channel, now),
+            ChannelAccess::Waiting
+        ));
+        let mut parked = [Some(now), Some(now)];
+        run_parked(&mut [&mut owner, &mut laptop], &mut parked, &mut now, 5);
+        assert!(ready_epoch(&laptop.service.access(room_id, channel, now)).is_some());
+        assert_eq!(parked, [None, None], "both park once the member holds keys");
+
+        // A minute with nothing announced runs no pass at all.
+        let idle = run_parked(&mut [&mut owner, &mut laptop], &mut parked, &mut now, 60);
+        assert_eq!(idle, 0, "an idle steward polls nothing");
+        assert!(owner.service.waits_for_policy_change());
+
+        // The revocation, announced. The steward is due at once, and one
+        // pass removes the member.
+        policy.allowed.lock().unwrap().clear();
+        epoch.fetch_add(1, Ordering::SeqCst);
+        assert!(!owner.service.waits_for_policy_change());
+        assert_eq!(owner.service.next_pump_deadline(now), Some(now));
+        parked[0] = Some(now); // what the armed watch's wake does
+        run_parked(&mut [&mut owner, &mut laptop], &mut parked, &mut now, 1);
+        assert!(matches!(
+            laptop.service.access(room_id, channel, now),
+            ChannelAccess::Removed
+        ));
+    }
+
+    /// TIL-707: announcements in quick succession cost at most one re-check
+    /// a reconcile interval, and none waits longer than that.
+    #[test]
+    fn announcements_in_quick_succession_coalesce() {
+        let room = Arc::new(Room::default());
+        let room_id = RoomId::new();
+        let channel = ChannelId::new();
+        let epoch = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let policy = Policy::default();
+        *policy.announces.lock().unwrap() = Some(Announcements::Own(Arc::clone(&epoch)));
+        let dir = tempfile::tempdir().unwrap();
+        let mut now = Instant::now();
+        let mut owner = device(&room, room_id, 0, (1, 1), &policy, dir.path());
+        assert!(ready_epoch(&owner.service.access(room_id, channel, now)).is_some());
+        owner.service.pump(&owner.endpoint, now, 1_000);
+        let reconciled = now;
+        now = now.checked_add(Duration::from_millis(100)).unwrap();
+        epoch.fetch_add(1, Ordering::SeqCst);
+        assert_eq!(
+            owner.service.next_pump_deadline(now),
+            Some(reconciled.checked_add(RECONCILE_INTERVAL).unwrap()),
+            "a change right after a re-check waits out the interval"
+        );
+    }
+
+    /// TIL-707: a grant that expires while nothing else happens is enforced
+    /// when it expires: the steward registered the expiry, the process clock
+    /// announces it, and the pump's watch wakes it. In between, the steward
+    /// stays asleep.
+    #[test]
+    fn a_grant_expiring_while_idle_is_enforced_at_its_expiry() {
+        /// Waking, reconciling and the member applying the removal, on a
+        /// loaded runner.
+        const SCHEDULING: Duration = Duration::from_millis(500);
+        let room = Arc::new(Room::default());
+        let room_id = RoomId::new();
+        let channel = ChannelId::new();
+        let policy = Policy::default();
+        *policy.announces.lock().unwrap() = Some(Announcements::Process);
+        let expiry = tilo_clock::unix_now().saturating_add(3);
+        policy.until.lock().unwrap().insert(public(2), expiry);
+        let (owner_dir, laptop_dir) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let owner = device(&room, room_id, 0, (1, 1), &policy, owner_dir.path());
+        let laptop = device(&room, room_id, 1, (2, 1), &policy, laptop_dir.path());
+        let (owner_endpoint, laptop_endpoint) = (owner.endpoint, laptop.endpoint);
+        let owner = ChannelKeyAccess::new(owner.service);
+        let laptop = ChannelKeyAccess::new(laptop.service);
+        let (woke, wakes) = std::sync::mpsc::channel();
+        let woke = Mutex::new(woke);
+        let watch = tilo_identity_host::policy_change::Watch::new(move || {
+            let _ = woke.lock().unwrap().send(());
+        });
+        assert!(ready_epoch(&owner.access(room_id, channel).0).is_some());
+        let joined = Instant::now();
+        while ready_epoch(&laptop.access(room_id, channel).0).is_none() {
+            let _ = owner.pump_until_due(&owner_endpoint);
+            let _ = laptop.pump_until_due(&laptop_endpoint);
+            assert!(
+                joined.elapsed() < tilo_test_env::hang_bound(),
+                "never joined"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+
+        // Idle until the grant runs out, pumping only when woken.
+        let mut owner_passes = 0_u32;
+        loop {
+            let due = owner.pump_until_due(&owner_endpoint);
+            owner_passes = owner_passes.saturating_add(1);
+            let _ = laptop.pump_until_due(&laptop_endpoint);
+            if matches!(laptop.access(room_id, channel).0, ChannelAccess::Removed) {
+                break;
+            }
+            if owner.arm_policy_watch(&watch) {
+                let wait = due.unwrap_or_else(tilo_test_env::hang_bound);
+                let _ = wakes.recv_timeout(wait);
+            }
+            assert!(
+                tilo_clock::unix_now() <= expiry.saturating_add(5),
+                "the expired grant was never enforced"
+            );
+        }
+        let removed_at = tilo_clock::unix_now_ns();
+        let expired_at = expiry.saturating_mul(1_000_000_000);
+        assert!(removed_at >= expired_at, "removed before the grant ended");
+        let late = Duration::from_nanos(removed_at.saturating_sub(expired_at));
+        assert!(
+            late <= RECONCILE_INTERVAL.saturating_add(SCHEDULING),
+            "enforced {late:?} after the grant ended"
+        );
+        // The pass that joined, the expiry, and an announcement another test
+        // of this process may have made: never one a second.
+        assert!(
+            owner_passes <= 4,
+            "the steward ran {owner_passes} passes in an idle wait of about 2 s"
+        );
     }
 
     /// TIL-598: an app endpoint waiting on its route's channel hears of its
