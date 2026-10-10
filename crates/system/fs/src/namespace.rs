@@ -2963,19 +2963,6 @@ impl Namespace {
             .is_some()
     }
 
-    pub fn document_blocks(&self, ino: u64) -> Vec<String> {
-        let Some(id) = self.ino_to_id.get(&ino) else {
-            return Vec::new();
-        };
-        let Some(root) = self.document_root(id) else {
-            return Vec::new();
-        };
-        match tilo_doc::model::open(&self.doc, &root) {
-            Ok(c) => tilo_doc::model::blocks_in_order(&self.doc, &c),
-            Err(_) => Vec::new(),
-        }
-    }
-
     pub fn document_block_text(&self, ino: u64, block_id: &str) -> Option<String> {
         let id = self.ino_to_id.get(&ino)?;
         let root = self.document_root(id)?;

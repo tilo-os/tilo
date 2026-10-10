@@ -300,19 +300,25 @@ pub fn parse_portals(args: &[&str]) -> bool {
 
 /// Pure, testable mode parser. Accepts `--mode <value>` and `--mode=<value>`; unknown/missing values default to [`Mode::Native`] so a typo never refuses to start the compositor.
 pub fn parse_mode(args: &[&str]) -> Mode {
+    flag_value(args, "--mode").map_or(Mode::Native, value_to_mode)
+}
+
+/// The value of the first `<flag> <value>` or `<flag>=<value>`, if any. A
+/// trailing `<flag>` with no value has none.
+fn flag_value<'a>(args: &[&'a str], flag: &str) -> Option<&'a str> {
     let mut iter = args.iter().copied();
     while let Some(arg) = iter.next() {
-        if let Some(value) = arg.strip_prefix("--mode=") {
-            return value_to_mode(value);
-        }
-        if arg == "--mode"
-            && let Some(value) = iter.next()
+        if let Some(value) = arg
+            .strip_prefix(flag)
+            .and_then(|rest| rest.strip_prefix('='))
         {
-            return value_to_mode(value);
+            return Some(value);
         }
-        // Trailing `--mode` with no value: fall through to default.
+        if arg == flag {
+            return iter.next();
+        }
     }
-    Mode::Native
+    None
 }
 
 fn value_to_mode(value: &str) -> Mode {
@@ -331,19 +337,7 @@ pub fn parse_backend_from_args() -> BackendKind {
 
 /// Pure, testable backend parser, mirroring [`parse_mode`]: `--backend <value>`/`--backend=<value>`, defaulting to [`BackendKind::Winit`] for unknown/missing values.
 pub fn parse_backend(args: &[&str]) -> BackendKind {
-    let mut iter = args.iter().copied();
-    while let Some(arg) = iter.next() {
-        if let Some(value) = arg.strip_prefix("--backend=") {
-            return value_to_backend(value);
-        }
-        if arg == "--backend"
-            && let Some(value) = iter.next()
-        {
-            return value_to_backend(value);
-        }
-        // Trailing `--backend` with no value: fall through to default.
-    }
-    BackendKind::Winit
+    flag_value(args, "--backend").map_or(BackendKind::Winit, value_to_backend)
 }
 
 fn value_to_backend(value: &str) -> BackendKind {

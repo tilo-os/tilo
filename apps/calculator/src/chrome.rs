@@ -206,11 +206,6 @@ impl SidePanel {
         !(self.column != Rect::ZERO && self.column.contains_rect(self.toggle))
     }
 
-    /// Whether the panel is docked at the leading edge.
-    pub fn is_leading(&self) -> bool {
-        self.leading
-    }
-
     pub fn toggle_at(&self, p: Point) -> bool {
         self.toggle != Rect::ZERO && self.toggle.contains(p)
     }

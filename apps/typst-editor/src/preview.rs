@@ -233,10 +233,6 @@ impl PreviewPane {
         self.clear_selection();
     }
 
-    pub fn set_pages(&mut self, pages: &[PageImage]) {
-        self.set_pages_with_text(pages, &[]);
-    }
-
     /// Install freshly compiled pages together with their extracted text layer.
     /// `page_text` is parallel to `pages` (empty when the compile failed).
     pub fn set_pages_with_text(&mut self, pages: &[PageImage], page_text: &[Vec<TextRun>]) {

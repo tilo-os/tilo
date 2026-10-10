@@ -2988,31 +2988,6 @@ impl<Row> DataTable<Row> {
             _ => {}
         }
     }
-
-    fn route_to_cell_widgets(
-        &mut self,
-        event: &WindowEvent,
-        ctx: &mut crate::widget::EventCtx<'_>,
-    ) {
-        if let Some(cell) = self
-            .mounted_cells
-            .iter_mut()
-            .find(|cell| cell.widget.wants_pointer_capture())
-            && let Some(node) = cell.node
-        {
-            cell.widget
-                .handle_event(event, &mut ctx.reborrow(ctx.path, node));
-            return;
-        }
-        for cell in self.mounted_cells.iter_mut().rev() {
-            let Some(node) = cell.node else { continue };
-            cell.widget
-                .handle_event(event, &mut ctx.reborrow(ctx.path, node));
-            if *ctx.handled {
-                break;
-            }
-        }
-    }
 }
 
 const HEADER_HEIGHT: f64 = 32.0;
@@ -3602,7 +3577,12 @@ impl<Row: 'static> Widget for DataTable<Row> {
             _ => {}
         }
         if self.resize.is_none() && !self.vbar.is_dragging() && !self.drag_scroll.is_tracking() {
-            self.route_to_cell_widgets(event, ctx);
+            crate::widget::route_to_mounted(
+                &mut self.mounted_cells,
+                |mounted| (&mut mounted.widget, mounted.node),
+                event,
+                ctx,
+            );
         }
         if *ctx.handled {
             return;
