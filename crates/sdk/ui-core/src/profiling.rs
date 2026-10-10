@@ -21,7 +21,6 @@
 
 #[cfg(test)]
 pub(crate) mod frame_probe;
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) mod resource_trace;
 
 use crate::time::{Duration, Instant};
