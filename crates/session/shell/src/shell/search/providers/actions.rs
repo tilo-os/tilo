@@ -21,7 +21,10 @@ use crate::shell::i18n::{t, t_args};
 use crate::shell::search::action_api::{
     ActionArgs, ActionError, ActionHierarchy, ActionParam, ParamType,
 };
-use crate::shell::search::{ResourceKind, SearchContext, SearchProvider, SearchResult};
+use crate::shell::search::{
+    ResourceKind, SearchBudget, SearchContext, SearchCursor, SearchPage, SearchProvider,
+    SearchResult,
+};
 
 mod native_identity;
 
@@ -2896,9 +2899,15 @@ pub struct ActionsProvider {
     /// Every row this provider offers, built once per state they are built
     /// from rather than once per keystroke or lookup.
     catalogue: std::cell::RefCell<Option<Rc<Catalogue>>>,
+    paged_query: RefCell<Option<Rc<ActionQuerySnapshot>>>,
     /// How many times the catalogue has been built.
     #[cfg(test)]
     builds: Rc<std::cell::Cell<usize>>,
+}
+
+struct ActionQuerySnapshot {
+    revision: String,
+    rows: Vec<SearchResult>,
 }
 
 /// The shell's action rows for one [`CatalogueKey`], before any query
@@ -2936,6 +2945,9 @@ struct CatalogueState {
     /// ...and mutations from outside the chrome bump this, until the next
     /// tick folds them into `chrome_revision`.
     external_tree_revision: u64,
+    room_epoch: u64,
+    /// Crossing this deadline changes authority without a tree mutation.
+    next_capability_expiry: Option<u64>,
     locale: String,
     peer_sync: bool,
     /// Whether this device can issue an invitation into the active workspace
@@ -2971,6 +2983,7 @@ impl ActionsProvider {
             ranker: ListIndex::default(),
             governance_hierarchies: RefCell::default(),
             catalogue: std::cell::RefCell::default(),
+            paged_query: RefCell::default(),
             #[cfg(test)]
             builds: Rc::default(),
         }
@@ -2988,6 +3001,7 @@ impl ActionsProvider {
             ranker: ListIndex::default(),
             governance_hierarchies: RefCell::default(),
             catalogue: std::cell::RefCell::default(),
+            paged_query: RefCell::default(),
             #[cfg(test)]
             builds: Rc::default(),
         }
@@ -3069,7 +3083,75 @@ impl SearchProvider for ActionsProvider {
         use std::hash::{Hash as _, Hasher as _};
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         self.catalogue_state(ctx).hash(&mut hasher);
+        ctx.chrome.active_local_user().hash(&mut hasher);
+        // Alarm offers are read outside the retained catalogue. A snooze or
+        // dismissal must not retain their earlier ranked query snapshot.
+        for row in crate::shell::notification::alarm_action_rows(ctx.chrome) {
+            row.id.hash(&mut hasher);
+            row.title.hash(&mut hasher);
+            row.subtitle.hash(&mut hasher);
+        }
         format!("{:016x}", hasher.finish())
+    }
+
+    fn query_page(
+        &self,
+        ctx: SearchContext<'_>,
+        cursor: Option<&SearchCursor>,
+        budget: SearchBudget,
+    ) -> SearchPage {
+        let revision = self.page_revision(&ctx);
+        let offset = match cursor {
+            Some(cursor) if cursor.revision == revision => match cursor.token.parse::<usize>() {
+                Ok(offset) => offset,
+                Err(_) => return SearchPage::stale(revision),
+            },
+            Some(_) => return SearchPage::stale(revision),
+            None => 0,
+        };
+        let retained = self.paged_query.borrow().clone();
+        let snapshot = retained
+            .filter(|snapshot| snapshot.revision == revision)
+            .unwrap_or_else(|| {
+                // Reuse the established catalogue and ranker once per source
+                // and query; continuations never rebuild all ranked rows.
+                let snapshot = Rc::new(ActionQuerySnapshot {
+                    revision: revision.clone(),
+                    rows: self.query(ctx),
+                });
+                self.paged_query.replace(Some(snapshot.clone()));
+                snapshot
+            });
+        if offset > snapshot.rows.len() || self.page_revision(&ctx) != revision {
+            return SearchPage::stale(revision);
+        }
+        let mut results = Vec::new();
+        let mut bytes = 0usize;
+        let mut position = offset;
+        while let Some(row) = snapshot.rows.get(position) {
+            if results.len() >= budget.max_results || results.len() >= budget.max_work {
+                break;
+            }
+            let size = crate::shell::search::estimated_result_bytes(row);
+            if bytes.saturating_add(size) > budget.max_bytes {
+                break;
+            }
+            bytes = bytes.saturating_add(size);
+            results.push(row.clone());
+            position = position.saturating_add(1);
+        }
+        let exhausted = position == snapshot.rows.len();
+        SearchPage {
+            revision: revision.clone(),
+            results,
+            next_cursor: (!exhausted).then(|| SearchCursor {
+                revision,
+                token: position.to_string(),
+            }),
+            exhausted,
+            stale_cursor: false,
+            budget_exhausted: !exhausted,
+        }
     }
 
     fn query(&self, ctx: SearchContext<'_>) -> Vec<SearchResult> {
@@ -3131,6 +3213,17 @@ impl SearchProvider for ActionsProvider {
 }
 
 impl ActionsProvider {
+    fn page_revision(&self, ctx: &SearchContext<'_>) -> String {
+        use std::hash::{Hash as _, Hasher as _};
+        let mut binding = std::collections::hash_map::DefaultHasher::new();
+        self.search_revision(ctx).hash(&mut binding);
+        ctx.needle.hash(&mut binding);
+        format!("{:?}", ctx.effective_scope()).hash(&mut binding);
+        format!("{:?}", ctx.wanted).hash(&mut binding);
+        ctx.include_programmatic.hash(&mut binding);
+        format!("actions:{:016x}", binding.finish())
+    }
+
     /// The catalogue for the current state, built only if that is not the
     /// state the retained one was built from.
     fn catalogue(&self, ctx: &SearchContext<'_>) -> Rc<Catalogue> {
@@ -3150,6 +3243,8 @@ impl ActionsProvider {
     fn catalogue_state(&self, ctx: &SearchContext<'_>) -> CatalogueState {
         let tree = ctx.chrome.tree();
         let external_tree_revision = tree.desktop.external_revision;
+        let room_epoch = tree.desktop.room_epoch;
+        let next_capability_expiry = tree.desktop.next_capability_expiry_after(unix_now());
         let active_workspace = tree
             .desktop
             .active_workspace()
@@ -3159,6 +3254,8 @@ impl ActionsProvider {
             chrome: ctx.chrome.instance(),
             chrome_revision: ctx.chrome.revision,
             external_tree_revision,
+            room_epoch,
+            next_capability_expiry,
             locale: crate::shell::i18n::current_locale(),
             peer_sync: ctx.chrome.peer_sync_enabled,
             invite_offered: ctx.chrome.peer_sync_enabled
@@ -4254,6 +4351,204 @@ mod tests {
             doc: &document,
             doc_root: &automerge::ROOT,
         })
+    }
+
+    #[test]
+    fn retained_action_pages_exhaust_the_actual_catalogue_beyond_palette_limit() {
+        use crate::shell::search::action_api::{ActionCatalog, AllVisible};
+        use crate::shell::search::{QueryArgs, SearchRegistry};
+        let chrome = chrome_with_room();
+        let provider = Rc::new(ActionsProvider::new());
+        let expected = action_results(&provider, &chrome);
+        assert!(expected.len() > SearchBudget::PALETTE.max_results);
+        let expected_ids = expected
+            .iter()
+            .map(|row| row.id.clone())
+            .collect::<std::collections::BTreeSet<_>>();
+        let builds = provider.builds.get();
+        let mut registry = SearchRegistry::new();
+        registry.register(provider.clone());
+        let document = AutoCommit::new();
+        let state = chrome.borrow();
+        let args = QueryArgs {
+            needle: "",
+            scope: crate::shell::chrome_state::SearchScope::All,
+            active_provider_id: None,
+            wanted_kinds: &[],
+            chrome: &state,
+            doc: &document,
+            doc_root: &automerge::ROOT,
+        };
+        let catalogue = ActionCatalog::build_query(&registry, &args, &AllVisible, false);
+        assert!(catalogue.is_complete());
+        assert_eq!(
+            catalogue
+                .enumerate()
+                .iter()
+                .map(|row| row.resource.id.clone())
+                .collect::<std::collections::BTreeSet<_>>(),
+            expected_ids
+        );
+        assert_eq!(
+            provider.builds.get(),
+            builds,
+            "continuations reuse the real retained source"
+        );
+    }
+
+    fn paging_context<'a>(state: &'a ChromeState, document: &'a AutoCommit) -> SearchContext<'a> {
+        SearchContext {
+            query_scope: Some(crate::shell::chrome_state::SearchScope::All),
+            include_programmatic: false,
+            needle: "",
+            wanted: &[ResourceKind::Action],
+            chrome: state,
+            doc: document,
+            doc_root: &automerge::ROOT,
+        }
+    }
+
+    #[test]
+    fn retained_action_pages_respect_row_work_and_byte_limits() {
+        let chrome = chrome_with_room();
+        let provider = ActionsProvider::new();
+        let document = AutoCommit::new();
+        let state = chrome.borrow();
+        let ctx = paging_context(&state, &document);
+        let work_limited = provider.query_page(
+            ctx,
+            None,
+            SearchBudget {
+                max_work: 1,
+                ..SearchBudget::PALETTE
+            },
+        );
+        assert_eq!(work_limited.results.len(), 1);
+        assert!(!work_limited.exhausted);
+        assert!(work_limited.budget_exhausted);
+        let byte_limited = provider.query_page(
+            ctx,
+            None,
+            SearchBudget {
+                max_bytes: 0,
+                ..SearchBudget::PALETTE
+            },
+        );
+        assert!(byte_limited.results.is_empty());
+        assert!(!byte_limited.exhausted);
+        assert!(byte_limited.budget_exhausted);
+    }
+
+    #[test]
+    fn retained_action_cursors_bind_query_scope_and_kinds() {
+        let chrome = chrome_with_room();
+        let provider = ActionsProvider::new();
+        let document = AutoCommit::new();
+        let budget = SearchBudget {
+            max_results: 2,
+            ..SearchBudget::PALETTE
+        };
+        {
+            let state = chrome.borrow();
+            let ctx = paging_context(&state, &document);
+            let first = provider.query_page(ctx, None, budget);
+            assert_eq!(first.results.len(), 2);
+            let cursor = first.next_cursor.unwrap();
+            let next = provider.query_page(ctx, Some(&cursor), budget);
+            assert_eq!(next.results.len(), 2);
+            assert_ne!(next.results[0].id, first.results[0].id);
+            assert!(
+                provider
+                    .query_page(
+                        SearchContext {
+                            needle: "history",
+                            ..ctx
+                        },
+                        Some(&cursor),
+                        budget
+                    )
+                    .stale_cursor
+            );
+            assert!(
+                provider
+                    .query_page(
+                        SearchContext {
+                            query_scope: Some(crate::shell::chrome_state::SearchScope::Workspace),
+                            ..ctx
+                        },
+                        Some(&cursor),
+                        budget
+                    )
+                    .stale_cursor
+            );
+            assert!(
+                provider
+                    .query_page(SearchContext { wanted: &[], ..ctx }, Some(&cursor), budget)
+                    .stale_cursor
+            );
+            assert!(
+                provider
+                    .query_page(
+                        SearchContext {
+                            include_programmatic: true,
+                            ..ctx
+                        },
+                        Some(&cursor),
+                        budget
+                    )
+                    .stale_cursor
+            );
+            let malformed = SearchCursor {
+                token: "not-an-offset".into(),
+                ..cursor
+            };
+            assert!(
+                provider
+                    .query_page(ctx, Some(&malformed), budget)
+                    .stale_cursor
+            );
+        }
+    }
+
+    #[test]
+    fn retained_action_cursors_reject_live_authority_and_actor_changes() {
+        for change_actor in [false, true] {
+            let chrome = chrome_with_room();
+            let provider = ActionsProvider::new();
+            let document = AutoCommit::new();
+            let budget = SearchBudget {
+                max_results: 2,
+                ..SearchBudget::PALETTE
+            };
+            let cursor = {
+                let state = chrome.borrow();
+                provider
+                    .query_page(paging_context(&state, &document), None, budget)
+                    .next_cursor
+                    .expect("the actual catalogue requires a continuation")
+            };
+            // An actual committed authority mutation invalidates the retained
+            // source even before chrome folds the external state into its revision.
+            if change_actor {
+                chrome.borrow_mut().act_as("different-person".into());
+            } else {
+                use collab_types::{CapOverride, Effect, Scope, Subject, Verb};
+                let handle = chrome.borrow().tree_handle();
+                let mut tree = handle.write();
+                tree.desktop.workspaces[0].grant_capability(CapOverride::new(
+                    Subject::person("shell-fixture"),
+                    Scope::App("so.tilo.chat".into()),
+                    Effect::Restrict,
+                    Verb::Read,
+                ));
+                tree.desktop.room_epoch = tree.desktop.room_epoch.wrapping_add(1);
+            }
+            let state = chrome.borrow();
+            let rejected_page =
+                provider.query_page(paging_context(&state, &document), Some(&cursor), budget);
+            assert!(rejected_page.stale_cursor);
+            assert!(rejected_page.results.is_empty());
+        }
     }
 
     fn invoke_action(results: &[crate::shell::search::SearchResult], id: &str, chrome: &Chrome) {
