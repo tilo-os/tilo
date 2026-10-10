@@ -1613,11 +1613,11 @@ mod tests {
         assert!(sealed_for(&routes, workspace, read("a"), &fresh).is_empty());
         assert_eq!(
             sealed_for(&routes, workspace, act("b"), &fresh),
-            [b.clone()]
+            std::slice::from_ref(&b)
         );
         assert_eq!(
             sealed_for(&routes, workspace, read("b"), &fresh),
-            [b.clone()]
+            std::slice::from_ref(&b)
         );
         assert!(
             sealed_for(
@@ -1634,7 +1634,7 @@ mod tests {
         );
         assert_eq!(
             sealed_for(&routes, workspace, Needs::Room, &fresh),
-            [b.clone()],
+            std::slice::from_ref(&b),
             "the first listing waits for this room's sealed records only"
         );
         assert!(sealed_for(&routes, workspace, Needs::Joined, &fresh).is_empty());
