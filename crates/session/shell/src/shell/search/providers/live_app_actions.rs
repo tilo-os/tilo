@@ -3199,8 +3199,8 @@ impl SearchProvider for LiveAppActionsProvider {
     }
 
     /// Settling while the local index for this scope is not built from the
-    /// current publications, or while a directory page is still owed. Both
-    /// wake the loop that asked when they land.
+    /// current publications, or while an application directory or workspace
+    /// service page is still owed. Each can add rows to the current listing.
     fn index_settling(&self, ctx: &SearchContext<'_>) -> bool {
         let scope = Self::surface_scope(ctx);
         let source_generation = self.broker.surfaces_generation();
@@ -3211,7 +3211,9 @@ impl SearchProvider for LiveAppActionsProvider {
             .is_some_and(|snapshot| {
                 snapshot.source_generation == source_generation && snapshot.scope == scope
             });
-        !ready || !self.directory_pending.borrow().is_empty()
+        !ready
+            || !self.directory_pending.borrow().is_empty()
+            || !self.service_pending.borrow().is_empty()
     }
 
     #[allow(
@@ -3926,6 +3928,99 @@ mod tests {
         chrome: &crate::shell::chrome_state::Chrome,
     ) -> crate::shell::collab_broker::AppActionBroker {
         crate::shell::broker_services::test_broker_with_membership(chrome.borrow().tree_handle())
+    }
+
+    fn finish_local_index(provider: &LiveAppActionsProvider, ctx: &SearchContext<'_>) {
+        let deadline = Instant::now()
+            .checked_add(Duration::from_secs(3))
+            .expect("the fixture deadline fits the monotonic clock");
+        loop {
+            // Complete the actual production worker without polling the
+            // separately owed workspace-service response.
+            provider.refresh_local_snapshot(ctx);
+            if provider.surface_build.borrow().is_none() {
+                return;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "the real local index did not complete"
+            );
+            std::thread::yield_now();
+        }
+    }
+
+    #[test]
+    fn workspace_service_listing_settles_only_after_current_authority_reply() {
+        use crate::shell::search::{QueryArgs, SearchRegistry};
+        use collab_types::{CapOverride, Effect, Scope, Subject, Verb};
+
+        let chrome = chrome();
+        let owner = chrome.borrow().active_local_user();
+        chrome.borrow().tree_handle().write().desktop.workspaces[0].set_owner(owner.clone());
+        let broker = broker_for(&chrome);
+        let provider = Rc::new(LiveAppActionsProvider::new_with_fixture_identity(broker));
+        let doc = AutoCommit::new();
+        let mut registry = SearchRegistry::new();
+        registry.register(provider.clone());
+
+        for authority_changed in [false, true] {
+            if authority_changed {
+                let handle = chrome.borrow().tree_handle();
+                let mut tree = handle.write();
+                tree.desktop.workspaces[0].grant_capability(CapOverride::new(
+                    Subject::person(owner.clone()),
+                    Scope::App("so.tilo.chat".into()),
+                    Effect::Restrict,
+                    Verb::Read,
+                ));
+                // Native authority projection advances this cache boundary;
+                // the signed projection itself is tested at its owner seam.
+                tree.desktop.room_epoch = tree.desktop.room_epoch.wrapping_add(1);
+            }
+            let chrome_state = chrome.borrow();
+            let ctx = SearchContext {
+                query_scope: Some(crate::shell::chrome_state::SearchScope::All),
+                ..context("profile.save", &chrome_state, &doc)
+            };
+            let args = QueryArgs {
+                needle: "profile.save",
+                scope: crate::shell::chrome_state::SearchScope::All,
+                active_provider_id: None,
+                wanted_kinds: &[ResourceKind::Action],
+                chrome: &chrome_state,
+                doc: &doc,
+                doc_root: &automerge::ROOT,
+            };
+            let cold = provider.query_page(ctx, None, SearchBudget::PALETTE);
+            assert!(
+                cold.results
+                    .iter()
+                    .all(|row| !row.id.starts_with("service\u{1f}"))
+            );
+            finish_local_index(&provider, &ctx);
+            assert!(provider.directory_pending.borrow().is_empty());
+            assert!(!provider.service_pending.borrow().is_empty());
+            assert!(
+                registry.indexes_settling(&args),
+                "an owed workspace-service reply must keep the real listing incomplete"
+            );
+
+            let completed = provider.query_page(ctx, None, SearchBudget::PALETTE);
+            let row = completed
+                .results
+                .iter()
+                .find(|row| row.id.ends_with("\u{1f}profile.save"))
+                .expect("the actual broker offers the independent governance action");
+            let hierarchy = provider.action_hierarchy(&row.id).unwrap();
+            assert_eq!(hierarchy.application, "tilo.workspace");
+            assert_eq!(hierarchy.operation, "profile.save");
+            assert!(provider.service_pending.borrow().is_empty());
+            finish_local_index(&provider, &ctx);
+            assert!(
+                !registry.indexes_settling(&args),
+                "the actual completed workspace-service listing may settle"
+            );
+        }
     }
 
     #[test]
