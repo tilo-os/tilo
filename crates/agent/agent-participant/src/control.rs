@@ -144,20 +144,19 @@ impl SnapshotChanges {
     /// once, so none is lost between a write and this wait.
     pub(crate) fn wait_past(&self, seen: u64, timeout: Option<Duration>) {
         let generation = self.generation_guard();
-        match timeout {
+        let woken = match timeout {
             Some(timeout) => {
-                let _ = self
-                    .condvar
+                self.condvar
                     .wait_timeout_while(generation, timeout, |now| *now == seen)
-                    .unwrap_or_else(PoisonError::into_inner);
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .0
             }
-            None => {
-                let _ = self
-                    .condvar
-                    .wait_while(generation, |now| *now == seen)
-                    .unwrap_or_else(PoisonError::into_inner);
-            }
-        }
+            None => self
+                .condvar
+                .wait_while(generation, |now| *now == seen)
+                .unwrap_or_else(PoisonError::into_inner),
+        };
+        drop(woken);
     }
 }
 
