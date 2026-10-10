@@ -717,6 +717,17 @@ pub enum PersonalFabricAction {
         rect: DisplayRect,
         expires_unix_ms: u64,
     },
+    /// Probe/acknowledge sequencing only for an existing exact-route lease.
+    SpatialInputProtocol {
+        lease_nonce: [u8; 16],
+        acknowledgement: bool,
+    },
+    /// Appended optional action; the existing Input tag and bytes do not move.
+    SpatialInputSequenced {
+        lease_nonce: [u8; 16],
+        sequence: u64,
+        event: FabricInputEvent,
+    },
 }
 
 /// What became of one request to wake a device.
@@ -1308,6 +1319,20 @@ impl PersonalFabricActionEnvelope {
                     return Err(FabricError::InvalidAction);
                 }
             }
+            PersonalFabricAction::SpatialInputProtocol { lease_nonce, .. } => {
+                if lease_nonce == &[0; 16] {
+                    return Err(FabricError::InvalidAction);
+                }
+            }
+            PersonalFabricAction::SpatialInputSequenced {
+                lease_nonce,
+                sequence,
+                event,
+            } => {
+                if lease_nonce == &[0; 16] || *sequence == 0 || !event.validate() {
+                    return Err(FabricError::InvalidAction);
+                }
+            }
             PersonalFabricAction::Input { lease_nonce, event } => {
                 if lease_nonce == &[0; 16] || !event.validate() {
                     return Err(FabricError::InvalidAction);
@@ -1737,7 +1762,7 @@ pub enum FabricInputEvent {
 }
 
 impl FabricInputEvent {
-    fn validate(self) -> bool {
+    pub(super) fn validate(self) -> bool {
         match self {
             Self::PointerMotion { x, y } => {
                 x.unsigned_abs() <= 1_000_000 && y.unsigned_abs() <= 1_000_000

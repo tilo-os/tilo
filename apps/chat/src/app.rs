@@ -124,10 +124,6 @@ pub(crate) enum MenuTarget {
     /// One of your own messages — the action menu offers Edit.
     Message(Id),
     /// The workspace background / the sidebar's "+" — create affordances.
-    #[allow(
-        dead_code,
-        reason = "legacy CRDT scope selection remains testable for wire compatibility; production navigation uses Inbox and CurrentContext"
-    )]
     Workspace(Id),
 }
 
@@ -338,14 +334,6 @@ pub(crate) enum Hit {
     /// Toggle the participant list expand/collapse in the overlay.
     CallParticipantsToggle,
     CallMute,
-    /// Share-screen control. The native voice path refuses it (calls are
-    /// microphone audio only); the shipped call chrome does not expose it
-    /// until production has a real screen-capture producer.
-    #[allow(
-        dead_code,
-        reason = "kept for defensive refusal handling and the voice-profile refusal test"
-    )]
-    CallShareScreen,
     CallExpand,
     CallLeave,
     /// Toggle the left flap (rail + channel sidebar).
@@ -395,7 +383,6 @@ impl Hit {
             Self::EditSave => "chat.edit-save".into(),
             Self::EditCancel => "chat.edit-cancel".into(),
             Self::CallMute => "chat.call-mute".into(),
-            Self::CallShareScreen => "chat.call-share-screen".into(),
             Self::CallParticipantsToggle => "chat.call-participants".into(),
             Self::CallExpand => "chat.call-expand".into(),
             Self::CallLeave => "chat.call-leave".into(),
@@ -1378,38 +1365,6 @@ impl ChatApp {
         })
     }
 
-    /// Open a scenario's context menu where a right-click on its row would:
-    /// at the pointer, on the row the menu acts on, read from the frame that
-    /// was just drawn.
-    #[doc(hidden)]
-    pub fn stage_after_draw_for_shot(&mut self, scenario: &str) {
-        let (target, items) = match scenario {
-            "context" => (
-                MenuTarget::Channel("c_frontend".into()),
-                MenuAction::for_channel().to_vec(),
-            ),
-            "msgmenu" => (
-                MenuTarget::Message("m_me2".into()),
-                MenuAction::for_message().to_vec(),
-            ),
-            _ => return,
-        };
-        let row = self
-            .hits
-            .iter()
-            .find_map(|(rect, hit)| match (hit, &target) {
-                (Hit::Channel(id), MenuTarget::Channel(want)) if id == want => Some(*rect),
-                (Hit::MessageMenu { msg }, MenuTarget::Message(want)) if msg == want => Some(*rect),
-                _ => None,
-            });
-        let Some(row) = row else {
-            return;
-        };
-        // The pointer rests on the row's text, a third of the way in.
-        let pointer = Point::new(row.x0 + row.width() / 3.0, row.center().y);
-        self.menu = Some(self.context_menu(target, pointer, items));
-    }
-
     /// Show the call as the voice service reports a joined call: connected,
     /// with nobody else's audio arriving yet.
     fn stage_connected_call(&mut self) {
@@ -1505,17 +1460,6 @@ impl ChatApp {
         self.call
             .placement
             .pin_handoff_for_visual_review(handoff_phase);
-    }
-
-    /// Whether this peer is currently sharing its screen — the shared-truth
-    /// flag used by the featured tile and the call-control tests. Chat has no
-    /// local screen-capture producer, so production never sets it.
-    #[allow(
-        dead_code,
-        reason = "queried by call-control tests while the production capture control is hidden"
-    )]
-    pub(crate) fn sharing_screen(&self) -> bool {
-        self.call.sharing
     }
 
     // --- model lookups ----------------------------------------------------
@@ -2719,9 +2663,6 @@ impl ChatApp {
                         Role::ToggleButton,
                         self.call.muted,
                     ),
-                    Hit::CallShareScreen => {
-                        ("Share screen".into(), Role::ToggleButton, self.call.sharing)
-                    }
                     Hit::CallParticipantsToggle => (
                         "Show call participants".into(),
                         Role::ToggleButton,

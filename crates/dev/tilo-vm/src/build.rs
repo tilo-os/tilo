@@ -89,6 +89,29 @@ pub fn cargo_build(component: &Component, extra_features: &[String]) -> CommandL
     command
 }
 
+/// Build outputs a component ships that cargo does not make: where the file
+/// is installed, where the installer finds it under the profile directory,
+/// and the script the image build runs to make it (`os/Containerfile`).
+const NATIVE_OUTPUTS: &[(&str, &str, &str)] = &[(
+    "/usr/lib/tilo/ush/bash-editor.so",
+    "ush-editor/bash-editor.so",
+    "crates/runtime/ush/native/build.py",
+)];
+
+/// The non-cargo builds `component` needs before the installer can lay it
+/// out, each writing into `target_dir`'s profile directory.
+pub fn native_builds(component: &Component, target_dir: &str) -> Vec<CommandLine> {
+    NATIVE_OUTPUTS
+        .iter()
+        .filter(|(installed, ..)| component.paths.iter().any(|path| path == installed))
+        .map(|(_, output, script)| {
+            CommandLine::new("python3", &[script])
+                .arg("--out")
+                .arg(format!("{target_dir}/{}/{output}", component.profile_dir()))
+        })
+        .collect()
+}
+
 pub fn install(component: &Component, target_dir: &str, dest: &Path) -> CommandLine {
     let from = format!("{target_dir}/{}", component.profile_dir());
     let mut command = CommandLine::new("python3", &[]);
@@ -420,6 +443,30 @@ mod tests {
             );
             assert_eq!(target_dir(&json!({"target_directory": "/t"})), "/t");
             assert_eq!(target_dir(&json!(null)), "target");
+        }
+
+        // Phase: native_outputs_are_built_before_the_installer_needs_them.
+        {
+            let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..");
+            let manifest =
+                Manifest::parse(&std::fs::read_to_string(repo.join("os/components.toml")).unwrap())
+                    .unwrap();
+            let ush = &manifest.components["ush"];
+            let builds: Vec<String> = native_builds(ush, "/t")
+                .iter()
+                .map(CommandLine::display)
+                .collect();
+            assert_eq!(
+                builds,
+                [
+                    "python3 crates/runtime/ush/native/build.py --out /t/release/ush-editor/bash-editor.so"
+                ]
+            );
+            for (_, _, script) in NATIVE_OUTPUTS {
+                assert!(repo.join(script).is_file(), "{script}");
+            }
+            let fs = component("[[component]]\nname = \"fs\"\npackages = [\"fs\"]\n");
+            assert!(native_builds(&fs, "/t").is_empty());
         }
 
         // Phase: apps_package_with_their_own_tools.

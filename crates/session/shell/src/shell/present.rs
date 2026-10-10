@@ -301,6 +301,43 @@ fn report_frame(presenter: &mut dyn Presenter, serial: u64, revision: u64, timin
     }
 }
 
+/// The name of every thread a GPU driver starts while the render thread builds its renderer.
+///
+/// Linux names a new thread after the thread that started it, and drivers do not always rename
+/// theirs. Mesa's CPU rasteriser (lavapipe) names its rasteriser threads `llvmpipe-N` but leaves
+/// its compute-shader pool, which runs every Vello stage, unnamed. Built on the render thread,
+/// that pool was called `tilo-present` too, so the CPU a software-rendered VM spent rasterising
+/// one frame read as the present thread's (TIL-739: `tilo-present×14 1.51%` with the present
+/// thread itself at 0.07%).
+pub const DRIVER_THREAD_NAME: &std::ffi::CStr = c"tilo-gpu-driver";
+
+/// Run `build` (device and renderer setup) with the calling thread named
+/// [`DRIVER_THREAD_NAME`], so the threads the driver starts inside it carry that name rather
+/// than the caller's. The caller's own name is restored afterwards, also when `build` unwinds.
+pub fn with_driver_thread_name<R>(build: impl FnOnce() -> R) -> R {
+    #[cfg(target_os = "linux")]
+    {
+        /// The caller's name as `PR_GET_NAME` wrote it: at most 15 bytes and a NUL.
+        struct Restore([u8; 16]);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                // SAFETY: PR_SET_NAME reads a NUL-terminated string of at most 16 bytes, and
+                // the buffer is the 16 bytes PR_GET_NAME filled, NUL included.
+                unsafe { libc::prctl(libc::PR_SET_NAME, self.0.as_ptr(), 0, 0, 0) };
+            }
+        }
+        let mut own = [0u8; 16];
+        // SAFETY: PR_GET_NAME writes at most 16 bytes, NUL included, into a 16-byte buffer.
+        if unsafe { libc::prctl(libc::PR_GET_NAME, own.as_mut_ptr(), 0, 0, 0) } == 0 {
+            let _restore = Restore(own);
+            // SAFETY: a NUL-terminated string of 15 bytes and its NUL, the most PR_SET_NAME keeps.
+            unsafe { libc::prctl(libc::PR_SET_NAME, DRIVER_THREAD_NAME.as_ptr(), 0, 0, 0) };
+            return build();
+        }
+    }
+    build()
+}
+
 /// How long [`PresentPipe::shutdown`] waits for the render thread before giving up on it.
 ///
 /// Generous enough to cover a frame in flight on any real display (a 24 Hz mode is 42 ms) plus a slow driver's teardown, short enough that a wedged GPU cannot hold the session open.
@@ -624,6 +661,42 @@ mod tests {
     use super::*;
     use std::sync::Mutex;
     use std::time::Duration;
+
+    /// A thread a driver starts while the renderer is built reads [`DRIVER_THREAD_NAME`], not
+    /// the render thread's name, and the render thread gets its own name back, also when the
+    /// build unwinds.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn driver_thread_name_reaches_threads_started_inside_and_is_undone_after() {
+        fn comm() -> String {
+            std::fs::read_to_string("/proc/thread-self/comm")
+                .expect("read this thread's name")
+                .trim_end()
+                .to_owned()
+        }
+        fn started_thread_comm() -> String {
+            std::thread::spawn(comm)
+                .join()
+                .expect("join an unnamed thread")
+        }
+        std::thread::Builder::new()
+            .name("tilo-present".to_owned())
+            .spawn(|| {
+                assert_eq!(started_thread_comm(), "tilo-present");
+                let inside = with_driver_thread_name(started_thread_comm);
+                assert_eq!(inside, DRIVER_THREAD_NAME.to_str().expect("UTF-8 name"));
+                assert_eq!(comm(), "tilo-present");
+                assert_eq!(started_thread_comm(), "tilo-present");
+                let unwound = std::panic::catch_unwind(|| {
+                    with_driver_thread_name(|| panic!("intentional driver setup failure"))
+                });
+                assert!(unwound.is_err());
+                assert_eq!(comm(), "tilo-present");
+            })
+            .expect("spawn a render thread")
+            .join()
+            .expect("render thread assertions");
+    }
 
     /// A presenter that blocks until released, so a test can hold a frame "on the GPU" and observe the pipe's back-pressure.
     struct Blocking {

@@ -900,6 +900,15 @@ pub(crate) struct BoundOwnerMark {
     document: Option<(Vec<automerge::ChangeHash>, usize)>,
 }
 
+#[cfg(feature = "native")]
+impl BoundOwnerMark {
+    pub(crate) fn is_committed(&self) -> bool {
+        self.document
+            .as_ref()
+            .is_some_and(|(_, pending)| *pending == 0)
+    }
+}
+
 /// Every live bound owner under `root`, once each, in tree order.
 #[cfg(feature = "native")]
 pub(crate) fn bound_owner_marks(root: &dyn Widget, outer: &AutoCommit) -> Vec<BoundOwnerMark> {
@@ -2414,24 +2423,12 @@ pub struct CallbackBinding {
     /// intents by the shell that presents search.
     pub(crate) search_requests:
         Rc<RefCell<std::collections::VecDeque<crate::search::SearchRequest>>>,
-    #[allow(
-        dead_code,
-        reason = "binding retains original authority for the following typed-action provenance task"
-    )]
     pub(crate) instance_id: crate::application::InstanceId,
     pub(crate) app_id: String,
     pub(crate) records: RecordStore,
     pub(crate) checkout: RecordCheckout,
     pub(crate) permissions: Rc<RefCell<PermissionContext>>,
-    #[allow(
-        dead_code,
-        reason = "binding retains original authority for the following typed-action provenance task"
-    )]
     pub(crate) author: UserId,
-    #[allow(
-        dead_code,
-        reason = "binding retains original authority for the following typed-action provenance task"
-    )]
     pub(crate) operation_context: tilo_actions::ActionContext,
     /// Edits commit as the author's own writer on the record
     /// ([`crate::application::HostContext::write_as_author`]).

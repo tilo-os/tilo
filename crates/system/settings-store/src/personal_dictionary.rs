@@ -508,12 +508,7 @@ impl Service {
 
 impl Inner {
     fn path(&self, owner: [u8; 32]) -> PathBuf {
-        use std::fmt::Write as _;
-        let mut name = String::with_capacity(64);
-        for byte in owner {
-            let _ = write!(name, "{byte:02x}");
-        }
-        self.root.join(format!("{name}.json"))
+        self.root.join(format!("{}.json", hex::encode(owner)))
     }
 }
 

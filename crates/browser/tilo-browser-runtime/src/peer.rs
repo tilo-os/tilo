@@ -1931,15 +1931,3 @@ impl WasmPeer {
         ui::local_identity::install_source(None);
     }
 }
-
-impl WasmPeer {
-    /// A toolkit transport over this session for the desktop's
-    /// `CollaborationManager::with_transport`.
-    #[allow(
-        dead_code,
-        reason = "consumed by the desktop mount (milestone 3), which lands separately"
-    )]
-    pub(crate) fn collab_transport(&self) -> tilo_browser_peer::transport::RelayCollabTransport {
-        tilo_browser_peer::transport::RelayCollabTransport::new(self.handle.clone())
-    }
-}

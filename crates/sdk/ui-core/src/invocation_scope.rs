@@ -960,12 +960,14 @@ impl InvocationProvenance {
             .map(|change| change.hash())
             .collect::<BTreeSet<_>>();
         let mut contributions: Vec<Contribution> = vec![];
+        #[cfg(feature = "broker-transport")]
         let mut acknowledgements = vec![];
         for hash in &exported {
             if let Some(retained) = self.contributions.get(hash) {
                 if retained.committed.load(Ordering::Acquire) {
                     continue;
                 }
+                #[cfg(feature = "broker-transport")]
                 acknowledgements.push(retained.committed.clone());
                 let lease = &retained.lease;
                 if let Some(group) = contributions
@@ -990,6 +992,7 @@ impl InvocationProvenance {
                 to: document.base_heads(),
                 exported,
                 contributions,
+                #[cfg(feature = "broker-transport")]
                 acknowledgements,
             },
         ))))
@@ -1007,10 +1010,7 @@ struct DocumentAuthorizationInner {
     to: Vec<ChangeHash>,
     exported: BTreeSet<ChangeHash>,
     contributions: Vec<Contribution>,
-    #[cfg_attr(
-        not(feature = "broker-transport"),
-        allow(dead_code, reason = "only the broker transport acknowledges commits")
-    )]
+    #[cfg(feature = "broker-transport")]
     acknowledgements: Vec<Arc<AtomicBool>>,
 }
 
@@ -1029,46 +1029,6 @@ impl DocumentAuthorization {
     pub fn frontiers(&self) -> (&[ChangeHash], &[ChangeHash]) {
         (&self.0.from, &self.0.to)
     }
-    /// Check the concrete committer's returned operation against the exact
-    /// captured body (including its encoded causal dependencies) and route.
-    /// Actual bounded graph/basis admission is still the final owner's job.
-    #[cfg_attr(
-        not(feature = "broker-transport"),
-        allow(dead_code, reason = "only the broker transport commits documents")
-    )]
-    pub(crate) fn check_committed_operation(
-        &self,
-        route: &RouteSpec,
-        operation: &collab_types::SignedOp,
-    ) -> Result<(), String> {
-        let room = route.cluster_id.to_string();
-        let record = route.record.as_deref().unwrap_or("");
-        if route != &self.0.route
-            || operation.encryption.is_some()
-            || operation.op_class != collab_types::OpClass::Splice
-            || operation.artifact
-                != collab_types::document_artifact_id(&route.app_id, &room, record)
-            || operation.attestation_id
-                != collab_types::document_attestation_id(&route.app_id, &room, record)
-            || blake3::hash(&operation.payload).as_bytes() != &self.0.body
-        {
-            return Err("scoped owner returned a different document operation".into());
-        }
-        Ok(())
-    }
-
-    // Private SDK-only confirmation, after exact scoped durable success and
-    // matching receipt handoff. A handler or terminal receipt cannot set it.
-    #[cfg_attr(
-        not(feature = "broker-transport"),
-        allow(dead_code, reason = "only the broker transport commits documents")
-    )]
-    pub(crate) fn acknowledge_committed(&self) {
-        for acknowledgement in &self.0.acknowledgements {
-            acknowledgement.store(true, Ordering::Release);
-        }
-    }
-
     /// This verifies body binding and current contributors, not graph coverage.
     /// The concrete owner must ALSO call validate_owner_base with the actual
     /// bounded admission/parser's complete mutation range under its owner turn.
@@ -1156,10 +1116,7 @@ impl DocumentAuthorization {
         Ok(())
     }
 
-    #[cfg_attr(
-        not(feature = "broker-transport"),
-        allow(dead_code, reason = "only the broker transport commits documents")
-    )]
+    #[cfg(feature = "broker-transport")]
     pub(crate) fn retained_bytes(&self) -> Option<usize> {
         let mut bytes = std::mem::size_of::<DocumentAuthorizationInner>();
         bytes = bytes

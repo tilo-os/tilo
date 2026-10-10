@@ -21,7 +21,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use launcher::capabilities::CapabilityPlan;
-use launcher::manifest::{Entrypoint, Fs, MinimalManifest, Net, Sandbox, read_manifest};
+use launcher::manifest::{Entrypoint, Fs, ManifestView, Net, Sandbox, read_manifest};
 use launcher::run::{RunError, RunOptions, run, run_with, run_with_captured};
 use launcher::services::EXIT_REQUIRED_SERVICE_MISSING;
 use tilo_test_env::{ScopedEnv, TestHome};
@@ -40,9 +40,9 @@ fn runtime_dir_env(dir: &Path) -> ScopedEnv {
 // `with_glibc_binds` is gone: those loader paths are in the launcher's
 // system read profile now, so every app gets them without declaring.
 
-fn hello_manifest(payload_root: &Path, services: BTreeMap<String, String>) -> MinimalManifest {
+fn hello_manifest(payload_root: &Path, services: BTreeMap<String, String>) -> ManifestView {
     let _ = payload_root;
-    MinimalManifest {
+    ManifestView {
         package_id: "com.example.hello".to_string(),
         name: None,
         localized_names: BTreeMap::default(),
@@ -134,11 +134,21 @@ fn manifest_errors_fail_before_exec_and_manifests_round_trip() {
         std::fs::write(
             &path,
             r#"
-    package_id = "com.example.demo"
+    [package]
+    id = "com.example.demo"
     version = "1.2.3"
+    kind = "app"
+
+    [publisher]
+    identity = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
 
     [entrypoint]
     bin = "bin/demo"
+
+    [sandbox]
+    namespaces = []
+    seccomp = "tilo-default"
+    landlock = "strict"
 
     [sandbox.net]
     mode = "off"
@@ -151,6 +161,7 @@ fn manifest_errors_fail_before_exec_and_manifests_round_trip() {
         .unwrap();
         let m = read_manifest(&path).expect("parse");
         assert_eq!(m.package_id, "com.example.demo");
+        assert_eq!(m.version, "1.2.3");
         assert_eq!(m.entrypoint.bin, "bin/demo");
         assert_eq!(m.sandbox.services.get("collab").unwrap(), "required@1");
     }
@@ -427,7 +438,7 @@ fn runtime_bundles_and_the_dbus_proxy_shape_the_launch_argv() {
         let home = runtime_home();
         let (bundle_dir, _identity) = install_signed_bundle(home.data(), "smoke-1.0.0");
 
-        let mut m = MinimalManifest {
+        let mut m = ManifestView {
             package_id: "com.example.hello".to_string(),
             name: None,
             localized_names: BTreeMap::default(),
@@ -552,7 +563,7 @@ fn runtime_bundles_and_the_dbus_proxy_shape_the_launch_argv() {
         assert!(bundle_dir.join("lib/libstd-abc123.so").exists());
         assert!(bundle_dir.join("lib/libruntime_dylib.so").exists());
 
-        let m = MinimalManifest {
+        let m = ManifestView {
             package_id: "so.tilo.thin".to_string(),
             name: None,
             localized_names: BTreeMap::default(),

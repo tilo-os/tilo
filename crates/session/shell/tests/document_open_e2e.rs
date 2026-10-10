@@ -111,8 +111,13 @@ fn install(dir: &Path, package_id: &str, name: &str, exts: &[&str]) {
         &manifest_path,
         format!(
             "[package]\nid = \"{package_id}\"\nname = \"{name}\"\n\
-             version = \"1.0.0\"\n[entrypoint]\nbin = \"bin/app\"\n\
-             type = \"gui\"\n[providers]\nmime = []\next = [{ext_list}]\n"
+             version = \"1.0.0\"\nkind = \"app\"\n\
+             [publisher]\nidentity = \"ed25519:{zeros}\"\n\
+             [sandbox]\nnamespaces = []\nseccomp = \"tilo-default\"\nlandlock = \"strict\"\n\
+             [sandbox.net]\nmode = \"off\"\n\
+             [entrypoint]\nbin = \"bin/app\"\n\
+             type = \"gui\"\n[providers]\nmime = []\next = [{ext_list}]\n",
+            zeros = "00".repeat(32)
         ),
     )
     .unwrap();

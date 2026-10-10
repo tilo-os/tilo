@@ -722,10 +722,6 @@ pub(crate) fn role_permissions(author: &str, role: Role) -> Rc<RefCell<Permissio
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-/// Keeps a capture's temporary profile alive for as long as the host needs it.
-struct CaptureProfile(#[allow(dead_code, reason = "held for its Drop")] tempfile::TempDir);
-
-#[cfg(not(target_arch = "wasm32"))]
 fn operation(error: impl std::fmt::Display) -> LaunchError {
     LaunchError::Operation(error.to_string())
 }
@@ -957,7 +953,7 @@ fn prepare_named(
             UserId("capture-author".into()),
             role_permissions("capture-author", Role::Owner),
             tilo_actions::ActionContext::default(),
-            Rc::new(CaptureProfile(profile)),
+            Rc::new(profile),
         )?;
         let mut prepared = prepare_on(&mut host, definition, CAPTURE_INSTANCE, named, inputs)?;
         prepared.context.provide_content(content);

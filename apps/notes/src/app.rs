@@ -869,13 +869,29 @@ impl NotesApp {
         doc: &AutoCommit,
     ) -> HashMap<PageId, ui::widget::TransclusionPreview> {
         const EXCERPT_LIMIT: usize = 180;
-        let targets = self
-            .workspace
-            .selected()
-            .into_iter()
-            .flat_map(|page| NotesDoc::page_stored_blocks(doc, page))
-            .flat_map(|block| block.marks)
-            .filter_map(|span| match span.mark {
+        // Only a committed projection of these exact heads can replace a
+        // document read. Open edits and stale projections still read the
+        // actual body, including rollback followed by another edit.
+        let projected = doc.pending_ops() == 0
+            && self.workspace.canonical_projection_heads.as_ref() == Some(&doc.base_heads());
+        let blocks = |page| -> std::borrow::Cow<'_, [actions::StoredBlock]> {
+            if projected {
+                std::borrow::Cow::Borrowed(
+                    self.workspace
+                        .bodies
+                        .get(&page)
+                        .map(Vec::as_slice)
+                        .unwrap_or_default(),
+                )
+            } else {
+                std::borrow::Cow::Owned(NotesDoc::page_stored_blocks(doc, page))
+            }
+        };
+        let selected = self.workspace.selected().map(&blocks).unwrap_or_default();
+        let targets = selected
+            .iter()
+            .flat_map(|block| &block.marks)
+            .filter_map(|span| match &span.mark {
                 actions::InlineMark::Transclusion { page } => page.parse::<PageId>().ok(),
                 _ => None,
             })
@@ -884,11 +900,12 @@ impl NotesApp {
             .into_iter()
             .filter_map(|id| self.workspace.get(id))
             .map(|page| {
-                let raw = NotesDoc::page_block_snapshots(doc, page.id)
-                    .into_iter()
-                    .map(|(_, text)| text)
+                let body = blocks(page.id);
+                let raw = body
+                    .iter()
+                    .map(|block| block.text.as_str())
                     .find(|text| !text.trim().is_empty())
-                    .unwrap_or_else(|| "Empty note".to_string());
+                    .unwrap_or("Empty note");
                 let mut excerpt = raw.chars().take(EXCERPT_LIMIT).collect::<String>();
                 if raw.chars().nth(EXCERPT_LIMIT).is_some() {
                     excerpt.push('…');
@@ -2615,6 +2632,18 @@ impl Widget for NotesApp {
         self.route_to_children(event, ctx);
     }
 
+    fn view_only_scroll(&self, event: &WindowEvent) -> bool {
+        matches!(event, WindowEvent::MouseWheel { .. })
+            && self.main.view_only_scroll(event)
+            && !self.note_menu.is_open()
+            && !self.shortcuts.is_visible()
+            && !self.sidebar.menu_is_open()
+            && !self.sidebar.is_renaming()
+            && self.pending_events.is_empty()
+            && !(self.shell.geometry().sidebar == SidebarPlacement::Drawer
+                && self.shell.is_sidebar_open())
+    }
+
     fn name(&self) -> &'static str {
         "NotesApp"
     }
@@ -3343,6 +3372,67 @@ mod tests {
         assert_eq!(node.value.as_deref(), Some("Imported Project brief"));
     }
 
+    fn adopt_notebook_projection(app: &mut NotesApp, doc: &AutoCommit) {
+        use ui::tilo_resource::Resource as _;
+        let workspace = crate::resource::Notebook::read(doc).unwrap();
+        app.adopt_resource_state(&Rc::new(workspace));
+    }
+
+    #[test]
+    fn unchanged_long_note_preview_probe() {
+        let (mut app, mut state, _tmp, _welcome) = app_seeded_into_doc();
+        let source = PageId::new_v4();
+        let create = actions::append_page_action(source, None, "Long note");
+        tilo_actions::apply_local(&mut state.doc, &create, actions::encode(&create)).unwrap();
+        let text = (0..180)
+            .map(|index| {
+                format!(
+                    "Paragraph {index}: {}",
+                    "Ordinary scrolling words. ".repeat(12)
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n\n");
+        let blocks = MainPanel::seed_blocks(&text, |_| None);
+        let action = actions::write_body_action(source, &blocks);
+        tilo_actions::apply_local(&mut state.doc, &action, actions::encode(&action)).unwrap();
+        state.doc.commit();
+        app.frame(&mut state.doc, &state.root);
+        adopt_notebook_projection(&mut app, &state.doc);
+        app.workspace.set_selected(Some(source));
+        app.frame(&mut state.doc, &state.root);
+        assert_eq!(app.workspace.selected(), Some(source));
+        assert_eq!(app.workspace.bodies[&source].len(), 180);
+        assert_eq!(state.doc.pending_ops(), 0);
+        assert_eq!(
+            app.workspace.canonical_projection_heads,
+            Some(state.doc.base_heads())
+        );
+        let heads = state.doc.base_heads();
+        let scans = tilo_doc::model::ordered_keys_scan_count();
+        let began = std::time::Instant::now();
+        for _ in 0..100 {
+            assert!(app.transclusion_previews(&state.doc).is_empty());
+        }
+        let elapsed = began.elapsed().as_nanos();
+        let scans = tilo_doc::model::ordered_keys_scan_count() - scans;
+        assert_eq!(
+            scans, 0,
+            "unchanged previews must not decode the canonical body again"
+        );
+        assert_eq!(state.doc.base_heads(), heads);
+        assert_eq!(state.doc.pending_ops(), 0);
+        eprintln!(
+            "notes-preview-probe {}",
+            serde_json::json!({
+                "architecture": std::env::consts::ARCH,
+                "paragraphs": 180, "iterations": 100,
+                "elapsed_ns": elapsed, "container_scans": scans,
+                "includes_gpu_or_display": false
+            })
+        );
+    }
+
     #[test]
     fn transclusion_previews_follow_selected_marks_remote_edits_and_deleted_targets() {
         use tilo_automerge::ApplyIncoming as _;
@@ -3370,6 +3460,7 @@ mod tests {
         peer.get_heads();
         state.doc.merge_incoming(&mut peer).unwrap();
         app.frame(&mut state.doc, &state.root);
+        adopt_notebook_projection(&mut app, &state.doc);
         let previews = app.transclusion_previews(&state.doc);
         assert_eq!(previews.len(), 1);
         assert_eq!(previews[&target].title, "Target");
@@ -3390,11 +3481,21 @@ mod tests {
         tilo_actions::apply_local(&mut peer, &action, actions::encode(&action)).unwrap();
         peer.get_heads();
         state.doc.merge_incoming(&mut peer).unwrap();
+        assert_eq!(
+            app.transclusion_previews(&state.doc)[&target].excerpt,
+            format!("{}…", "é".repeat(180)),
+            "a stale projection must read the collaborator's current body"
+        );
         app.frame(&mut state.doc, &state.root);
+        adopt_notebook_projection(&mut app, &state.doc);
+        let scans = tilo_doc::model::ordered_keys_scan_count();
         assert_eq!(
             app.transclusion_previews(&state.doc)[&target].excerpt,
             format!("{}…", "é".repeat(180))
         );
+        assert_eq!(tilo_doc::model::ordered_keys_scan_count(), scans);
+
+        assert_open_preview_edits_and_rollback(&app, &mut state.doc, target);
 
         app.workspace.set_selected(Some(target));
         app.frame(&mut state.doc, &state.root);
@@ -3407,6 +3508,41 @@ mod tests {
         state.doc.get_heads();
         app.frame(&mut state.doc, &state.root);
         assert!(app.transclusion_previews(&state.doc).is_empty());
+    }
+
+    fn assert_open_preview_edits_and_rollback(
+        app: &NotesApp,
+        doc: &mut AutoCommit,
+        target: PageId,
+    ) {
+        let block = NotesDoc::page_block_snapshots(doc, target)[0].0.clone();
+        let mut pending_counts = Vec::new();
+        for replacement in ["one", "two"] {
+            NotesDoc::edit_page_body(
+                doc,
+                target,
+                &tilo_document::RichTextAction::SpliceText {
+                    region: tilo_document::action::RegionKind::Body,
+                    block: block.clone(),
+                    at: 0,
+                    del: 181,
+                    ins: replacement.into(),
+                },
+            )
+            .unwrap();
+            assert!(doc.pending_ops() > 0);
+            pending_counts.push(doc.pending_ops());
+            assert_eq!(app.transclusion_previews(doc)[&target].excerpt, replacement);
+            doc.rollback();
+            assert_eq!(
+                app.transclusion_previews(doc)[&target].excerpt,
+                format!("{}…", "é".repeat(180))
+            );
+        }
+        assert_eq!(
+            pending_counts[0], pending_counts[1],
+            "replacement transactions share an operation count"
+        );
     }
 
     #[test]

@@ -1,9 +1,12 @@
 //! One independently refreshed observation table. No device enumeration runs
-//! while the shell holds a capture lease or service installation lock.
+//! while the shell holds a capture lease or service installation lock, and
+//! none at all while no call holds a [`Watch`] on the table.
 use super::{Arc, AtomicBool, AtomicU64, Duration, Instant, Mutex, Ordering, observer};
 use crate::portal::{CaptureBroker, CaptureKind, capture_broker::LocalCaptureHandle};
 use media::AudioGraph;
 use std::collections::BTreeMap;
+use std::sync::atomic::AtomicUsize;
+use tokio::sync::Notify;
 
 const FRESH: Duration = Duration::from_secs(2);
 pub(super) struct Observation {
@@ -60,12 +63,34 @@ pub(super) struct Devices {
     stopped: AtomicBool,
     next: AtomicU64,
     task: Mutex<Option<tokio::task::AbortHandle>>,
+    /// Live [`Watch`]es. The refresh loop runs only while there is one.
+    watchers: AtomicUsize,
+    /// Wakes the parked refresh loop when the first [`Watch`] is taken. Held
+    /// apart from `Devices` so the parked loop does not keep it alive.
+    watched: Arc<Notify>,
 }
+
+/// Keeps the observation table fresh while held: a call holds one from the
+/// moment it starts preparing until it ends.
+///
+/// An observation is current for [`FRESH`] after it was last seen, and only a
+/// call reads one (its output, its microphone, the inputs it offers). With no
+/// call there is nothing to keep fresh, so the refresh loop, a blocking
+/// `PipeWire` registry round trip each second, parks instead of waking the
+/// network runtime for nothing (TIL-702).
+pub(super) struct Watch(Arc<Devices>);
+impl Drop for Watch {
+    fn drop(&mut self) {
+        self.0.watchers.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
 impl Devices {
     pub fn start(
         broker: Arc<std::sync::Mutex<CaptureBroker>>,
         runtime: &tokio::runtime::Handle,
     ) -> Arc<Self> {
+        let watched = Arc::new(Notify::new());
         let value = Arc::new(Self {
             broker,
             graph: Mutex::new(Graph::default()),
@@ -73,6 +98,8 @@ impl Devices {
             stopped: AtomicBool::new(false),
             next: AtomicU64::new(0),
             task: Mutex::new(None),
+            watchers: AtomicUsize::new(0),
+            watched: Arc::clone(&watched),
         });
         let weak = Arc::downgrade(&value);
         let task = runtime.spawn(async move {
@@ -80,6 +107,13 @@ impl Devices {
                 let Some(owner) = weak.upgrade() else {
                     return;
                 };
+                if owner.watchers.load(Ordering::Acquire) == 0 {
+                    drop(owner);
+                    // `notify_one` leaves a permit when nothing waits yet, so
+                    // a watch taken since the check above is not missed.
+                    watched.notified().await;
+                    continue;
+                }
                 let Ok(sequence) = owner.sequence() else {
                     return;
                 };
@@ -117,6 +151,12 @@ impl Devices {
         });
         *value.task.lock() = Some(task.abort_handle());
         value
+    }
+    /// Keep the table fresh until the returned [`Watch`] drops.
+    pub fn watch(self: &Arc<Self>) -> Watch {
+        self.watchers.fetch_add(1, Ordering::AcqRel);
+        self.watched.notify_one();
+        Watch(Arc::clone(self))
     }
     fn sequence(&self) -> Result<u64, String> {
         self.next
@@ -336,6 +376,8 @@ mod tests {
             stopped: AtomicBool::new(false),
             next: AtomicU64::new(0),
             task: Mutex::new(None),
+            watchers: AtomicUsize::new(0),
+            watched: Arc::new(Notify::new()),
         };
         let mut observed = graph(SERIAL);
         observed.sinks = observed.sources.clone();
@@ -383,6 +425,8 @@ mod tests {
             stopped: AtomicBool::new(false),
             next: AtomicU64::new(0),
             task: Mutex::new(None),
+            watchers: AtomicUsize::new(0),
+            watched: Arc::new(Notify::new()),
         };
         devices.update(devices.sequence().unwrap(), Some((11, &graph(SERIAL))));
         let id = broker.lock().unwrap().enumerate(CaptureKind::Microphone)[0]
@@ -459,5 +503,55 @@ mod tests {
                 .enumerate(CaptureKind::Microphone)
                 .is_empty()
         );
+    }
+
+    /// Refreshes the loop has started so far.
+    fn refreshes(devices: &Devices) -> u64 {
+        devices.next.load(Ordering::SeqCst)
+    }
+
+    fn wait_for(what: &str, mut done: impl FnMut() -> bool) {
+        let deadline = Instant::now().checked_add(Duration::from_secs(10)).unwrap();
+        while !done() {
+            assert!(Instant::now() < deadline, "{what}");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    /// TIL-702: with no call nothing reads an observation, so the loop does
+    /// not run its once-a-second registry round trip; a call's watch starts
+    /// it and its end parks it again.
+    #[test]
+    fn the_refresh_loop_runs_only_while_a_call_watches() {
+        let runtime = tilo_rt::daemon("devices-test").workers(1).build().unwrap();
+        let devices = Devices::start(
+            Arc::new(std::sync::Mutex::new(CaptureBroker::new())),
+            runtime.handle(),
+        );
+        std::thread::sleep(Duration::from_millis(1500));
+        assert_eq!(refreshes(&devices), 0, "no call, yet the table refreshed");
+
+        let watch = devices.watch();
+        wait_for("a watched table never refreshed twice", || {
+            refreshes(&devices) >= 2
+        });
+
+        drop(watch);
+        // The refresh under way finishes (its observation bounded by
+        // `FRESH`, then its one-second pause) and the loop parks.
+        std::thread::sleep(FRESH.saturating_add(Duration::from_millis(1500)));
+        let parked = refreshes(&devices);
+        std::thread::sleep(Duration::from_millis(1500));
+        assert_eq!(
+            refreshes(&devices),
+            parked,
+            "the table kept refreshing after the call ended"
+        );
+
+        // A second call wakes it again.
+        let _watch = devices.watch();
+        wait_for("a second watch never woke the loop", || {
+            refreshes(&devices) > parked
+        });
     }
 }

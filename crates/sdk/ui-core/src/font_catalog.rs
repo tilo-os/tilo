@@ -30,10 +30,7 @@ pub(crate) use android::android_font_system;
 /// renderer gets its own copy of the database, so its shaping caches stay its
 /// own while font bytes and discovery are shared. `None` when no root in
 /// [`catalog_roots`] holds a catalog this build accepts.
-#[cfg_attr(
-    test,
-    allow(dead_code, reason = "unit tests build the fixture font system instead")
-)]
+#[cfg(not(test))]
 pub(crate) fn bundled_font_system(locale: String) -> Option<FontSystem> {
     static DATABASE: OnceLock<Option<fontdb::Database>> = OnceLock::new();
     let database = DATABASE.get_or_init(|| {
@@ -59,10 +56,6 @@ pub(crate) fn bundled_font_system(locale: String) -> Option<FontSystem> {
 /// catalog named by this build's manifest digest, then this
 /// build's verified artifact catalog, so a binary run from a checkout sets text in
 /// the faces the product ships.
-#[cfg_attr(
-    test,
-    allow(dead_code, reason = "unit tests build the fixture font system instead")
-)]
 pub(crate) fn catalog_roots() -> Vec<PathBuf> {
     let mut roots: Vec<PathBuf> = std::env::current_exe()
         .ok()
@@ -88,10 +81,6 @@ pub(crate) fn catalog_roots() -> Vec<PathBuf> {
 /// # Errors
 ///
 /// Every root's failure, in order, when none loads.
-#[cfg_attr(
-    test,
-    allow(dead_code, reason = "unit tests build the fixture font system instead")
-)]
 pub(crate) fn load_first_catalog(
     roots: &[PathBuf],
     locale: &str,
@@ -151,10 +140,6 @@ pub(crate) fn drop_duplicate_faces(db: &mut fontdb::Database) {
 }
 
 /// A font system over an already verified database, with Tilo's fallback.
-#[cfg_attr(
-    test,
-    allow(dead_code, reason = "unit tests build the fixture font system instead")
-)]
 pub(crate) fn system_over(locale: String, db: fontdb::Database) -> FontSystem {
     FontSystem::new_with_locale_and_db_and_fallback(locale, db, fallback::TiloFallback)
 }

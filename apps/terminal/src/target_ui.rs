@@ -2,6 +2,7 @@
 // the target picker it opens, and the environments panel. Included into the
 // widget's module next to `main_body.rs`.
 
+use crate::i18n::t;
 use crate::sessions::OpenState;
 use crate::target::{EnvironmentSummary, Location, RelaySummary, SessionTarget};
 use ui::widget::{Button, ButtonFace, ButtonRole, ControlSize, TextInput};
@@ -45,10 +46,6 @@ enum RowAction {
     Grant,
     Rename,
     Open,
-}
-
-fn t(key: &str) -> String {
-    ui::i18n::I18nManager::lookup(key, None)
 }
 
 /// The tools and granted folders of an environment, as the panel shows them.
@@ -261,7 +258,34 @@ impl TerminalWidget {
         attach: Option<&str>,
     ) {
         self.sessions.target = Some(target.clone());
-        match self.sessions.open(target, requested_by, attach) {
+        // Dropping the platform lifetime also shuts down reader-held clones.
+        self.service_lifetime = None;
+        if let Some(result) =
+            self.sessions
+                .begin_open(target, requested_by, attach, Arc::clone(&self.waker))
+        {
+            self.finish_session_open(target, requested_by, attach, result);
+        }
+    }
+
+    fn poll_session_open(&mut self) -> bool {
+        let Some((requester, attach, result)) = self.sessions.take_open_answer() else {
+            return false;
+        };
+        if let Some(target) = self.sessions.target.clone() {
+            self.finish_session_open(&target, requester, attach.as_deref(), result);
+        }
+        true
+    }
+
+    fn finish_session_open(
+        &mut self,
+        target: &SessionTarget,
+        requested_by: Requester,
+        attach: Option<&str>,
+        result: Result<TerminalBackend, OpenError>,
+    ) {
+        match result {
             Ok(backend) => {
                 self.record_relay_session(backend.relay_session.clone());
                 self.attach_backend(backend);

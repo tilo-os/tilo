@@ -2306,23 +2306,6 @@ impl GroupRow {
         self.group_drag.is_some_and(|d| d.moved)
     }
 
-    /// Live whole-group reorder drag once past the threshold, for
-    /// collaborator previews: `(group id, press point, current pointer)`
-    /// in this row's scene coordinates.
-    pub fn group_drag_preview(&self) -> Option<(u64, Point, Point)> {
-        self.group_drag
-            .filter(|drag| drag.moved)
-            .map(|drag| (drag.group_id, drag.start, self.last_cursor))
-    }
-
-    /// The resize handle being dragged, if any: handle `i` sits between
-    /// groups `i` and `i + 1`.
-    pub fn dragging_handle(&self) -> Option<usize> {
-        self.handles
-            .iter()
-            .position(super::resize_handle::ResizeHandle::is_dragging)
-    }
-
     pub fn group_reorder_target(&self) -> Option<usize> {
         self.group_reorder_target
     }

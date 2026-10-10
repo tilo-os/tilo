@@ -175,11 +175,19 @@ the store (DEVELOPMENT.md, "Performance results") and publishes the nightly run'
 |---|---|---|---|
 | `boot.to_greeter_s`, `boot.{kernel,initrd,userspace}_s` | s | R06 | kernel+userspace to a usable greeter, and its phases |
 | `idle.shell_cpu_pct`, `idle.session_cpu_pct` | percent | R01 | compositor and whole session CPU over the idle window |
+| `idle.gpu_driver_cpu_pct` | percent | R01 | the part of `idle.shell_cpu_pct` on threads the GPU driver started (`llvmpipe-N`, and `tilo-gpu-driver`, the name the compositor gives threads started while it opens the device). On lavapipe this is the window's frames rasterised, a GPU's work on real hardware, so R01 and R02 judge a software renderer's compositor CPU without it; with no frame painted it must stay under `idle_software_raster_cpu_pct` (TIL-739) |
 | `idle.wakeups_per_s.shell`, `idle.loop_ticks_per_s` | per_s | R01 | context switches of the compositor's loop thread; loop ticks |
 | `idle.wakeups_per_s.shell_threads` | per_s | R01 | context switches of every thread of the compositor process |
 | `idle.frames` | count | R01 | frames painted while still |
 | `idle.ram_mib` | MiB | R01 | guest `MemTotal - MemAvailable` with no app open |
-| `idle.*.four_apps` | | R02 | the same with Terminal, Files, Settings and Notes open |
+| `idle.ram_mib.{anon,shmem,kernel}` | MiB | R01 | `/proc/meminfo` AnonPages, Shmem and unreclaimable kernel memory (SUnreclaim, KernelStack, PageTables, SecPageTables, VmallocUsed, Percpu) |
+| `idle.ram_mib.harness`, `idle.ram_mib.installed` | MiB | R01 | anon + shmem + kernel of what only the dev VM runs (seat0's greeter, the dev image's sshd, tilo-device-admin and tilo-vmd units, root's ssh sessions); `idle.ram_mib` less it |
+| `memory.idle_mib.<bucket>`, `memory.idle_mib.unattributed` | MiB | R01 | anon + shmem + kernel per bucket of cgroups (`compositor`, `apps`, `session_services`, `system`, `greeter`, `harness`); the guest's that no process's cgroup is charged |
+| `idle.ram_mib.{reserve,untracked}` | MiB | R01 | what MemAvailable withholds (the zones' reserve from `/proc/zoneinfo`, and min(half, low watermarks) of the file LRU and reclaimable kernel memory); the rest, pages no meminfo counter names |
+| `memory.idle_anon_mib.<process>` | MiB | R01 | anonymous RSS of the ten largest process names, every user's |
+| `idle.*.four_apps`, `memory.idle_*.four_apps` | | R02 | the same with Terminal, Files, Settings and Notes open |
+| `idle.ram_mib.after_close`, `idle.ram_mib.*.after_close`, `memory.idle_*.after_close` | MiB | R03 | the same once R03 has closed the four apps |
+| `memory.shell_anon_mib.per_open_close` | MiB | A15 | least-squares growth of the compositor's anonymous RSS per warm open and close |
 | `memory.shell_anon_mib`, `memory.session_mib`, `memory.app_mib.<app>`, `memory.app_anon_mib.<app>` | MiB | R03 | the compositor's anonymous RSS; the compositor's and apps' cgroups |
 | `memory.shell_anon_mib.empty` | MiB | R01 | the compositor's anonymous RSS with no app open |
 | `app.open.warm_ms.<app>` | ms | A15 | open request to first presented frame, ten warm opens |
@@ -188,6 +196,14 @@ the store (DEVELOPMENT.md, "Performance results") and publishes the nightly run'
 | `app.open.launcher_phase_ms.<app>.<mark>` | ms | A15 | each launcher phase, the interval ending at its mark |
 | `app.open.{request_to_spawn,spawn_to_map,map_to_first_present,request_to_first_present}_ms.<app>` | ms | A15 | the compositor's own split of the open |
 | `render.frame_cpu_ms` | ms | R04 | compositor CPU per painted frame during interactions |
+
+`idle.ram_mib` stays the guest-wide figure the KPI document defines. Beside it, R01, R02
+and R03 write `R0x-footprint*.json` (`resources.footprint`): every user's processes by RSS
+split into anon, file and shmem (Tilo's kernel has no smaps, so there is no PSS), every
+cgroup's anon, file, shmem and kernel charge grouped into the buckets above, each tmpfs's
+use, and the guest's meminfo and zoneinfo split. A tilo-vm guest runs seat0's greeter
+beside the slot, which an installed machine ends at login, so `idle.ram_mib.installed` is
+the number to hold against the target.
 
 The records name the commit whose code ran (the swapped ref's, else the disk's) and keep
 the base disk's commit, the swapped components and the booted image digest in `meta`.
@@ -238,6 +254,20 @@ one; the report's `session_recovered_after` lists those checks. W21, the one che
 on purpose, unlocks in a `finally` the way a person would (the passcode on the real
 keyboard), falls back to the restart, and records the route in its `unlock_recovery` metric.
 Nothing goes around the lock. The guard is unit-tested in `test_lock_guard.py`.
+
+For the same reason no check may leave a modal, overlay, prompt or dialog open: each takes
+the keyboard from the window behind it, and the next check's typing lands in it (run 89618's
+A01 typed its Terminal command into the Invite composer W20's first touch had opened on the
+launchpad). After the lock guard, `run_check` reads the state dump again (`core.open_surfaces`:
+the `overlays`, search, the window switcher, the Invite composer and Join card in `peer_sync`,
+`portal_dialog`, pending permission prompts, the workspace-name editor, the `input_capture`
+surfaces, and any other surface for which `input_capture.chrome` says the shell holds input,
+pointer hover over a maximized window's controls aside). A check that ended with one open
+fails ("left a dialog open (…)"), and the harness closes it the way a person cancels: Escape,
+then a slot session restart if Escape does not do it. Nothing is ever confirmed to clean up. The
+report's `dialog_recovered_after` lists each such check, what was open and how it was closed.
+`ctx.reset()` dismisses the same surfaces. A touch that is not itself under test lands where it
+activates nothing (W20 picks a point on no launchpad card). Unit-tested in `test_dialog_guard.py`.
 
 Budgets live in `run.py` (`BUDGETS`). The German pass (U03, U04, S03) runs after the
 English one: the shell takes its language from the session's environment, so the run
