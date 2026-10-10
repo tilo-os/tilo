@@ -116,7 +116,8 @@ What a relay costs per active collaborator is measured, not estimated:
   subscribers read.
 - **Load bench** (`examples/relay_load`, nightly in
   `perf-scheduled.yml`): 100 collaborators in rooms of four, each typing 30
-  characters, then pointing for four seconds at 30 Hz, then idle, every
+  characters, then pointing for four seconds at 30 Hz (which each client's
+  session writer paces to the relay's 20 Hz before it is sent), then idle, every
   minute, against one relay process. It records CPU-seconds, resident MiB and
   egress bytes per collaborator-hour, fan-out latency, and the workspace
   store's fsyncs per committed edit (`store::fsyncs`; the durability
