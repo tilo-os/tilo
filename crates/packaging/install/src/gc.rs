@@ -76,7 +76,9 @@ pub fn collect(
     request: Request,
 ) -> Result<Report, String> {
     let mut report = Report::default();
-    if !request.dry_run {
+    // A device with no app store yet has no payloads; collecting must not
+    // create one.
+    if !request.dry_run && store.layout().registry().is_file() {
         report.evicted = store
             .sweep(request.max_store_bytes)
             .map_err(|error| format!("size sweep: {error}"))?;
