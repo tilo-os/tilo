@@ -121,6 +121,9 @@ pub enum Command {
     #[command(subcommand)]
     Slot(SlotCommand),
     /// Import an exact same-run layer artifact without invoking Cargo or a builder.
+    #[command(
+        after_help = "Examples:\n  tilo-vm swap-artifact shell --slot review-a --receipt layers/manifest.json --source <commit> --builder-image <immutable-image> --run-id <workflow-api-id> --run-attempt 1 --receipt-sha256 <upstream-manifest-sha256>\n\nSupply expected identities from the authenticated producer job. The daemon retains normal signed cohort validation; artifact failures never fall back to a build."
+    )]
     SwapArtifact(ArtifactSwap),
     /// Put a build of a component (or an app) into a slot and restart what it needs.
     #[command(
@@ -300,19 +303,27 @@ pub enum Command {
 /// The expected identities come from the authenticated upstream job, not the downloaded receipt.
 #[derive(Debug, Args)]
 pub struct ArtifactSwap {
+    /// Session component to activate; apps+runtime requires the complete same-run cohort.
     pub component: String,
+    /// The slot to update (default: your slot).
     #[arg(long)]
     pub slot: Option<String>,
+    /// Downloaded v1 artifact manifest; payload paths are relative to its directory.
     #[arg(long)]
     pub receipt: PathBuf,
+    /// Exact producing source commit, independently pinned by the upstream job.
     #[arg(long)]
     pub source: String,
+    /// Immutable producing builder image reference, independently pinned upstream.
     #[arg(long)]
     pub builder_image: String,
+    /// Producing Forgejo workflow API run ID, not its web run number.
     #[arg(long)]
     pub run_id: u64,
+    /// Producing workflow attempt, independently pinned upstream.
     #[arg(long)]
     pub run_attempt: u32,
+    /// SHA256 of the exact raw manifest bytes, supplied by the authenticated upstream job.
     #[arg(long)]
     pub receipt_sha256: String,
 }
