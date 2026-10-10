@@ -339,7 +339,7 @@ mod tests {
     use chrono::{Duration, NaiveDate};
     use uuid::Uuid;
 
-    use crate::model::{Palette, Recurrence};
+    use crate::model::Palette;
 
     fn event() -> Event {
         let start = NaiveDate::from_ymd_opt(2026, 8, 31)
@@ -351,21 +351,8 @@ mod tests {
             title: "Test".into(),
             start,
             end: start + Duration::minutes(90),
-            all_day: false,
-            location: String::new(),
             color: Palette::Blue,
-            recurrence: Recurrence::None,
-            recurrence_interval: 1,
-            recurrence_until: None,
-            recurrence_count: None,
-            recurrence_exdates: ui::tilo_resource::Set::default(),
-            occurrence_overrides: ui::tilo_resource::Keyed::default(),
-            timezone: "floating".into(),
-            organizer: None,
-            attendees: ui::tilo_resource::Keyed::default(),
-            reminder_min: None,
-            project: None,
-            calendar_id: None,
+            ..Event::default()
         }
     }
 

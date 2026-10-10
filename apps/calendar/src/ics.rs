@@ -16,14 +16,14 @@
 
 use std::fmt::Write as _;
 
-use chrono::{Datelike, NaiveDate, NaiveDateTime, NaiveTime, Timelike};
+use chrono::{Datelike, NaiveDate, NaiveDateTime, NaiveTime};
 use pim_lines::{ContentLine, escape_text as escape, fold_into, unescape_text as unescape};
 use uuid::Uuid;
 
 use crate::model::{
     Attendee, Calendar, Event, Id, InviteStatus, Palette, Priority, Recurrence, Task,
 };
-use ui::tilo_resource::{Keyed, Set};
+use ui::tilo_resource::Keyed;
 
 const DT_LOCAL: &str = "%Y%m%dT%H%M%S";
 const D_ONLY: &str = "%Y%m%d";
@@ -685,21 +685,10 @@ pub fn sample_ics(today: NaiveDate) -> String {
                 title: "Quarterly all-hands".into(),
                 start: at(d(2), 16, 0),
                 end: at(d(2), 17, 0),
-                all_day: false,
                 location: "Auditorium".into(),
                 color: Palette::Blue,
-                recurrence: Recurrence::None,
-                recurrence_interval: 1,
-                recurrence_until: None,
-                recurrence_count: None,
-                recurrence_exdates: Set::default(),
-                occurrence_overrides: Keyed::default(),
-                timezone: "floating".into(),
-                organizer: None,
-                attendees: Keyed::default(),
                 reminder_min: Some(15),
-                calendar_id: None,
-                project: None,
+                ..Event::default()
             },
             Event {
                 id: Uuid::new_v4(),
@@ -707,20 +696,8 @@ pub fn sample_ics(today: NaiveDate) -> String {
                 start: at(d(6), 0, 0),
                 end: at(d(8), 0, 0),
                 all_day: true,
-                location: String::new(),
                 color: Palette::Violet,
-                recurrence: Recurrence::None,
-                recurrence_interval: 1,
-                recurrence_until: None,
-                recurrence_count: None,
-                recurrence_exdates: Set::default(),
-                occurrence_overrides: Keyed::default(),
-                timezone: "floating".into(),
-                organizer: None,
-                attendees: Keyed::default(),
-                reminder_min: None,
-                calendar_id: None,
-                project: None,
+                ..Event::default()
             },
         ]
         .into(),
@@ -739,14 +716,10 @@ pub fn sample_ics(today: NaiveDate) -> String {
     export(&model)
 }
 
-/// `9:00 AM`-style hour helper exposed for the export summary toast.
-pub fn time_label(dt: &NaiveDateTime) -> String {
-    format!("{}:{:02}", dt.hour(), dt.minute())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::Timelike as _;
 
     #[test]
     fn export_envelope_and_event_task_all_day_round_trips() {
@@ -792,20 +765,7 @@ mod tests {
                     start: start.and_time(NaiveTime::MIN),
                     end: (start + chrono::Duration::days(3)).and_time(NaiveTime::MIN),
                     all_day: true,
-                    location: String::new(),
-                    color: Palette::Indigo,
-                    recurrence: Recurrence::None,
-                    recurrence_interval: 1,
-                    recurrence_until: None,
-                    recurrence_count: None,
-                    recurrence_exdates: Set::default(),
-                    occurrence_overrides: Keyed::default(),
-                    timezone: "floating".into(),
-                    organizer: None,
-                    attendees: Keyed::default(),
-                    reminder_min: None,
-                    calendar_id: None,
-                    project: None,
+                    ..Event::default()
                 }]
                 .into(),
                 ..Calendar::default()
@@ -1055,21 +1015,7 @@ mod tests {
                     .unwrap()
                     .and_hms_opt(10, 0, 0)
                     .unwrap(),
-                all_day: false,
-                location: String::new(),
-                color: Palette::Indigo,
-                recurrence: Recurrence::None,
-                recurrence_interval: 1,
-                recurrence_until: None,
-                recurrence_count: None,
-                recurrence_exdates: Set::default(),
-                occurrence_overrides: Keyed::default(),
-                timezone: "floating".into(),
-                organizer: None,
-                attendees: Keyed::default(),
-                reminder_min: None,
-                calendar_id: None,
-                project: None,
+                ..Event::default()
             };
             let ics = export(&Calendar {
                 events: vec![event].into(),

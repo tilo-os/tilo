@@ -421,7 +421,6 @@ fn clamp_hit(row: Rect, viewport: Rect) -> Option<Rect> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{Palette, Recurrence};
     use uuid::Uuid;
 
     fn date(day: u32) -> NaiveDate {
@@ -448,21 +447,8 @@ mod tests {
             title: "Event".into(),
             start,
             end: start + Duration::hours(1),
-            all_day: false,
-            location: String::new(),
-            color: Palette::Indigo,
-            recurrence: Recurrence::None,
-            recurrence_interval: 1,
-            recurrence_until: None,
-            recurrence_count: None,
-            recurrence_exdates: ui::tilo_resource::Set::default(),
-            occurrence_overrides: ui::tilo_resource::Keyed::default(),
-            timezone: "floating".into(),
-            organizer: None,
-            attendees: ui::tilo_resource::Keyed::default(),
-            reminder_min: None,
-            project: None,
             calendar_id: calendar_id.map(str::to_owned),
+            ..Event::default()
         }
     }
 

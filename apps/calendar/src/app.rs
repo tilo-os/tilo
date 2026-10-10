@@ -1648,23 +1648,11 @@ impl CalendarApp {
             title: String::new(),
             start,
             end: start + Duration::hours(1),
-            all_day: false,
-            location: String::new(),
             color: self.model.next_event_order_color(),
-            recurrence: Recurrence::None,
-            recurrence_interval: 1,
-            recurrence_until: None,
-            recurrence_count: None,
-            recurrence_exdates: ui::tilo_resource::Set::new(),
-            occurrence_overrides: ui::tilo_resource::Keyed::new(),
-            timezone: "floating".into(),
-            organizer: None,
-            attendees: ui::tilo_resource::Keyed::new(),
             reminder_min: Some(10),
             // Filed on the local (on-device) calendar by default; the form's
             // calendar selector can retarget it to a configured account.
-            calendar_id: None,
-            project: None,
+            ..Event::default()
         };
         self.spawn_event(ev, doc);
     }
@@ -1737,21 +1725,9 @@ impl CalendarApp {
             title: String::new(),
             start,
             end,
-            all_day: false,
-            location: String::new(),
             color: self.model.next_event_order_color(),
-            recurrence: Recurrence::None,
-            recurrence_interval: 1,
-            recurrence_until: None,
-            recurrence_count: None,
-            recurrence_exdates: ui::tilo_resource::Set::new(),
-            occurrence_overrides: ui::tilo_resource::Keyed::new(),
-            timezone: "floating".into(),
-            organizer: None,
-            attendees: ui::tilo_resource::Keyed::new(),
             reminder_min: Some(10),
-            calendar_id: None,
-            project: None,
+            ..Event::default()
         };
         self.spawn_event(ev, doc);
         self.dirty = true;
