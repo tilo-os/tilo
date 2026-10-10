@@ -2010,6 +2010,7 @@ impl DisplayModel {
         if !self.device_displays.iter().any(|display| !display.local) {
             return None;
         }
+        let layout = self.shared_layout();
         let first_local = self
             .device_displays
             .iter()
@@ -2038,7 +2039,17 @@ impl DisplayModel {
                             ),
                         ],
                     ),
-                    number: index + 1,
+                    number: display
+                        .output_id
+                        .as_deref()
+                        .and_then(|output| {
+                            layout
+                                .displays
+                                .iter()
+                                .chain(&layout.inactive)
+                                .find(|resolved| resolved.is(&display.device, output))
+                        })
+                        .map_or(index + 1, |resolved| resolved.order + 1),
                     placement: Placement::new(
                         display.x,
                         display.y,
@@ -2853,6 +2864,7 @@ mod tests {
             device: "drag-peer".into(),
             device_label: "Laptop".into(),
             connector: "eDP-1".into(),
+            output_id: None,
             label: "Panel".into(),
             online: true,
             local: false,
@@ -2916,6 +2928,7 @@ mod tests {
                 device: "confirmation-peer".into(),
                 device_label: "Peer".into(),
                 connector: "eDP-1".into(),
+                output_id: None,
                 label: "Panel".into(),
                 online: true,
                 local: false,
@@ -2975,6 +2988,7 @@ mod tests {
             device: "timeout-peer".into(),
             device_label: "Peer".into(),
             connector: "eDP-1".into(),
+            output_id: None,
             label: "Panel".into(),
             online: true,
             local: false,
@@ -3022,6 +3036,7 @@ mod tests {
                     device: "semantic-peer".into(),
                     device_label: "Peer laptop".into(),
                     connector: "eDP-1".into(),
+                    output_id: None,
                     label: "Panel".into(),
                     online: true,
                     local: false,
@@ -4067,6 +4082,7 @@ mod tests {
             device: "certified-peer".into(),
             device_label: "Peer laptop".into(),
             connector: "eDP-1".into(),
+            output_id: None,
             label: "Panel".into(),
             online: false,
             local: false,
