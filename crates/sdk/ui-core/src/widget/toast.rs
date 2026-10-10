@@ -452,6 +452,8 @@ pub struct ToastCard<'a> {
     pub closable: bool,
     /// Hover state for the dismiss button, when the caller tracks the cursor.
     pub close_hovered: bool,
+    /// Whether the shared pointer controller has armed this control.
+    pub close_pressed: bool,
     /// Draw an "actionable" chevron at the trailing edge (the card carries
     /// activatable actions).
     pub actionable: bool,
@@ -462,9 +464,13 @@ pub struct ToastCard<'a> {
     pub secondary_action: &'a str,
     pub secondary_action_icon: Option<crate::icons::Icon>,
     pub secondary_action_hovered: bool,
+    /// Whether the shared pointer controller has armed this control.
+    pub secondary_action_pressed: bool,
     pub primary_action: &'a str,
     pub primary_action_icon: Option<crate::icons::Icon>,
     pub primary_action_hovered: bool,
+    /// Whether the shared pointer controller has armed this control.
+    pub primary_action_pressed: bool,
 }
 
 impl<'a> ToastCard<'a> {
@@ -477,13 +483,16 @@ impl<'a> ToastCard<'a> {
             alpha: 1.0,
             closable: false,
             close_hovered: false,
+            close_pressed: false,
             actionable: false,
             secondary_action: "",
             secondary_action_icon: None,
             secondary_action_hovered: false,
+            secondary_action_pressed: false,
             primary_action: "",
             primary_action_icon: None,
             primary_action_hovered: false,
+            primary_action_pressed: false,
         }
     }
     #[must_use]
@@ -752,7 +761,8 @@ fn paint_card_actions(
     }
     let mut secondary_face = ButtonFace::new(secondary, card.secondary_action)
         .control_size(crate::widget::ControlSize::Small)
-        .hovered(card.secondary_action_hovered);
+        .hovered(card.secondary_action_hovered)
+        .pressed(card.secondary_action_pressed);
     if let Some(icon) = card.secondary_action_icon {
         secondary_face = secondary_face.icon(icon);
     }
@@ -760,7 +770,8 @@ fn paint_card_actions(
     let mut primary_face = ButtonFace::new(primary, card.primary_action)
         .role(ButtonRole::Primary)
         .control_size(crate::widget::ControlSize::Small)
-        .hovered(card.primary_action_hovered);
+        .hovered(card.primary_action_hovered)
+        .pressed(card.primary_action_pressed);
     if let Some(icon) = card.primary_action_icon {
         primary_face = primary_face.icon(icon);
     }
@@ -842,7 +853,8 @@ fn paint_single_action(
         theme,
         &ButtonFace::new(rect, card.primary_action)
             .control_size(crate::widget::ControlSize::Small)
-            .hovered(card.primary_action_hovered),
+            .hovered(card.primary_action_hovered)
+            .pressed(card.primary_action_pressed),
     );
     if faded {
         scene.pop_layer();
@@ -1002,6 +1014,7 @@ fn paint_dismiss_button(
             .icon(crate::icons::Icon::X)
             .control_size(crate::widget::control_size::ControlSize::Small)
             .hovered(card.close_hovered)
+            .pressed(card.close_pressed)
             .accessible_name("Dismiss"),
     );
     if faded {

@@ -3209,3 +3209,231 @@ fn workspace_name_submit_ownership_ends_on_release_focus_loss_and_fresh_press() 
         assert!(h.chrome.borrow().overlays.ws_settings);
     }
 }
+
+#[test]
+fn notification_banner_completed_click_and_interrupted_gestures() {
+    for interruption in ["outside", "escape", "focus", "resize", "retired"] {
+        let mut h = build_harness_sized(960.0, 540.0);
+        let id = h.chrome.borrow_mut().push_notification_full(
+            tilo_desktop::notifications::Notification::new(
+                "Backup failed",
+                "Try again from Search.",
+            ),
+        );
+        let theme = Theme::dark().with_reduce_motion(true);
+        settle_with_theme(&mut h, 960.0, 540.0, &theme);
+        let point = h.host.notification_stack.rect().center();
+        pump(&mut h, &cursor_moved_at(point));
+        assert!(pump(&mut h, &left_button_pressed()));
+        assert_eq!(
+            h.chrome.borrow().notifications().len(),
+            1,
+            "a press must not activate or retire the banner: {interruption}"
+        );
+        match interruption {
+            "outside" => {
+                pump(&mut h, &cursor_moved_at(Point::new(80.0, 400.0)));
+            }
+            "escape" => {
+                assert!(pump(&mut h, &key_pressed(Key::Named(NamedKey::Escape))));
+            }
+            "focus" => {
+                pump(&mut h, &WindowEvent::Focused(false));
+            }
+            "resize" => {
+                settle_with_theme(&mut h, 780.0, 540.0, &theme);
+            }
+            "retired" => {
+                h.chrome.borrow_mut().dismiss_notification(id);
+            }
+            _ => unreachable!(),
+        }
+        assert!(
+            pump(&mut h, &left_button_released()),
+            "the banner owns its release"
+        );
+        assert_eq!(
+            h.chrome.borrow().notifications().len(),
+            usize::from(interruption != "retired")
+        );
+        assert!(
+            !h.log
+                .borrow()
+                .iter()
+                .any(|event| event == "MouseInput::Released"),
+            "an interrupted banner release must not reach content"
+        );
+        pump(&mut h, &cursor_moved_at(Point::new(80.0, 400.0)));
+        h.log.borrow_mut().clear();
+        pump(&mut h, &left_button_pressed());
+        pump(&mut h, &left_button_released());
+        assert!(
+            h.log
+                .borrow()
+                .iter()
+                .any(|event| event == "MouseInput::Released"),
+            "the next ordinary desktop click is not captured"
+        );
+        if interruption != "retired" {
+            settle_with_theme(&mut h, 780.0, 540.0, &theme);
+            let point = h.host.notification_stack.rect().center();
+            pump(&mut h, &cursor_moved_at(point));
+            assert!(pump(&mut h, &left_button_pressed()));
+            assert!(pump(&mut h, &left_button_released()));
+            assert!(h.chrome.borrow().notifications().is_empty());
+            assert_eq!(h.chrome.borrow().notification_history().len(), 1);
+        }
+    }
+}
+
+fn capture_banner_pointer_state(
+    h: &mut AbsorbHarness,
+    theme: &Theme,
+    width: u32,
+    path: &std::path::Path,
+) {
+    let bounds = h.host.notification_stack.rect();
+    let mut scene = Scene::new();
+    h.host.notification_stack.draw(
+        &ChromeNotifications::new(&h.chrome),
+        &mut scene,
+        Affine::translate((24.0 - bounds.x0, 24.0 - bounds.y0)),
+        &mut TextRenderer::new(),
+        theme,
+    );
+    offscreen::OffscreenRenderer::new(width, 300).render_png(
+        &scene,
+        theme.tokens.colors.surfaces.base,
+        path,
+    );
+    assert!(path.is_file(), "the banner capture must exist");
+}
+
+fn banner_pointer_capture_variants() -> [(&'static str, Theme, f64, u32); 6] {
+    [
+        ("dark", Theme::dark(), 640.0, 440),
+        ("light", Theme::light(), 640.0, 440),
+        ("large-text", Theme::dark().with_text_scale(2.0), 640.0, 440),
+        (
+            "contrast",
+            Theme::high_contrast().with_text_scale(2.0),
+            640.0,
+            440,
+        ),
+        (
+            "combined",
+            Theme::dark().with_ui_scale(1.5).with_text_scale(1.3),
+            800.0,
+            440,
+        ),
+        ("narrow", Theme::light().with_text_scale(2.0), 320.0, 320),
+    ]
+}
+
+#[test]
+fn notification_banner_pointer_feedback_matches_shared_close_face() {
+    let out = std::env::var_os("TILO_BANNER_POINTER_EVIDENCE").map_or_else(
+        || std::path::PathBuf::from("target/banner-pointer-review"),
+        std::path::PathBuf::from,
+    );
+    std::fs::create_dir_all(&out).unwrap();
+    let mut missing_feedback = Vec::new();
+    for (name, theme, viewport, width) in banner_pointer_capture_variants() {
+        let theme = theme.with_reduce_motion(true);
+        let mut h = build_harness_sized(viewport, 540.0);
+        h.chrome.borrow_mut().push_notification_full(
+            tilo_desktop::notifications::Notification::new(
+                "Backup failed",
+                "Try again from Search.",
+            )
+            .with_app_name("Files")
+            .with_severity(tilo_desktop::notifications::NotificationSeverity::Error),
+        );
+        settle_with_theme(&mut h, viewport, 540.0, &theme);
+        let card = h.host.notification_stack.rect();
+        assert!(card.area() > 0.0);
+        let hit = ui::widget::toast::paint_card(
+            &mut Scene::new(),
+            Affine::IDENTITY,
+            &mut TextRenderer::new(),
+            &theme,
+            card,
+            &ui::widget::toast::ToastCard::new(
+                "Backup failed",
+                ui::widget::toast::ToastKind::Error,
+            )
+            .body("Try again from Search.")
+            .caption("Files")
+            .closable(true),
+        );
+        let idle = out.join(format!("{name}-idle.png"));
+        capture_banner_pointer_state(&mut h, &theme, width, &idle);
+        pump(&mut h, &cursor_moved_at(hit.close_rect.center()));
+        let hover = out.join(format!("{name}-hover.png"));
+        capture_banner_pointer_state(&mut h, &theme, width, &hover);
+        if std::fs::read(&idle).unwrap() == std::fs::read(&hover).unwrap() {
+            missing_feedback.push(name);
+        }
+        assert!(pump(&mut h, &left_button_pressed()));
+        assert_eq!(h.chrome.borrow().notifications().len(), 1);
+        capture_banner_pointer_state(
+            &mut h,
+            &theme,
+            width,
+            &out.join(format!("{name}-pressed.png")),
+        );
+        assert!(pump(&mut h, &key_pressed(Key::Named(NamedKey::Escape))));
+        assert!(pump(&mut h, &left_button_released()));
+        assert_eq!(
+            h.chrome.borrow().notifications().len(),
+            1,
+            "cancelled close gestures retain the error"
+        );
+    }
+    assert!(
+        missing_feedback.is_empty(),
+        "the actual banner pointer path must feed shared close hover: {missing_feedback:?}"
+    );
+}
+
+#[test]
+fn notification_banner_lost_release_does_not_capture_a_fresh_content_click() {
+    for lost_focus in [true, false] {
+        let mut h = build_harness_sized(960.0, 540.0);
+        h.chrome.borrow_mut().push_notification_full(
+            tilo_desktop::notifications::Notification::new(
+                "Backup failed",
+                "Try again from Search.",
+            ),
+        );
+        let theme = Theme::dark().with_reduce_motion(true);
+        settle_with_theme(&mut h, 960.0, 540.0, &theme);
+        let point = h.host.notification_stack.rect().center();
+        pump(&mut h, &cursor_moved_at(point));
+        assert!(pump(&mut h, &left_button_pressed()));
+        if lost_focus {
+            pump(&mut h, &WindowEvent::Focused(false));
+            pump(&mut h, &WindowEvent::Focused(true));
+        }
+        // The old release is absent. A fresh click belongs to content.
+        pump(&mut h, &cursor_moved_at(Point::new(8.0, 400.0)));
+        h.log.borrow_mut().clear();
+        pump(&mut h, &left_button_pressed());
+        assert!(
+            h.log
+                .borrow()
+                .iter()
+                .any(|event| event == "MouseInput::Pressed")
+        );
+        pump(&mut h, &left_button_released());
+        assert!(
+            h.log
+                .borrow()
+                .iter()
+                .any(|event| event == "MouseInput::Released"),
+            "a lost banner release cannot steal a fresh click: lost_focus={lost_focus}"
+        );
+        assert_eq!(h.chrome.borrow().notifications().len(), 1);
+        assert!(h.chrome.borrow().notification_history().is_empty());
+    }
+}
