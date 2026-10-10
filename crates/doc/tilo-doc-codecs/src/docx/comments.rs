@@ -130,16 +130,16 @@ fn import_one_comment(raw: &str, author: &str, date: &str, doc: &mut DocMut) -> 
     comment_id
 }
 
-fn attr_w_val(e: &quick_xml::events::BytesStart, key: &[u8]) -> Option<String> {
+pub(super) fn attr_w_val(e: &quick_xml::events::BytesStart, key: &[u8]) -> Option<String> {
     e.attributes()
         .flatten()
         .find(|a| a.key.as_ref() == key)
         .and_then(|a| crate::unescape_attr(&a))
 }
 
-/// Render a comment's paragraphs as `w:comment` inner XML (plain text + tabs/breaks;
-/// richer inline styling in comments is not modeled).
-fn render_comment_body(blocks: &[BlockView]) -> String {
+/// Render a comment's or note's paragraphs as `w:comment`/`w:footnote`/`w:endnote` inner XML
+/// (plain text + tabs/breaks; richer inline styling in comments and notes is not modeled).
+pub(super) fn render_plain_body(blocks: &[BlockView]) -> String {
     let mut out = String::new();
     for b in blocks {
         out.push_str("<w:p>");
@@ -203,7 +203,7 @@ pub(super) fn export_comments(doc: &DocRef) -> ExportedComments {
             inner,
             r#"<w:comment w:id="{docx_id}" w:author="{}"{date} w:initials="">{}</w:comment>"#,
             escape_attr(&c.author),
-            render_comment_body(&c.blocks),
+            render_plain_body(&c.blocks),
         );
     }
     let xml = format!(

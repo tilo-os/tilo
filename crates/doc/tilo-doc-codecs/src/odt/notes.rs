@@ -3,11 +3,11 @@
 //! position in the body paragraph, plus its content as a block sequence in the
 //! `notes` container, both directions.
 
-use crate::xml_escape::push_text;
+use super::comments::render_plain_body;
 use quick_xml::events::Event;
 use quick_xml::reader::Reader;
 use tilo_doc::model::{DocMut, NoteKind};
-use tilo_doc::snapshot::{BlockView, NoteView};
+use tilo_doc::snapshot::NoteView;
 
 /// Parse one `<text:note>` element into a fresh note, importing its body paragraphs
 /// into blocks; returns the new note id. Citation text is recomputed by renderers,
@@ -114,24 +114,6 @@ fn note_class(raw: &str) -> Option<String> {
     }
 }
 
-/// Render a note's blocks as `text:note-body` inner XML; only plain text + tabs/breaks
-/// are modeled (richer inline styling isn't supported in note bodies).
-fn render_note_body(blocks: &[BlockView]) -> String {
-    let mut out = String::new();
-    for b in blocks {
-        out.push_str("<text:p>");
-        for c in b.text.chars() {
-            match c {
-                '\t' => out.push_str("<text:tab/>"),
-                '\n' => out.push_str("<text:line-break/>"),
-                _ => push_text(&mut out, c),
-            }
-        }
-        out.push_str("</text:p>");
-    }
-    out
-}
-
 /// Full inline `<text:note>` XML for a note; `n` is the 1-based citation number, recomputed on export from reference order.
 pub(super) fn render_inline_note(note: &NoteView, n: usize) -> String {
     let kind = NoteKind::from_str(&note.kind);
@@ -143,6 +125,6 @@ pub(super) fn render_inline_note(note: &NoteView, n: usize) -> String {
     };
     format!(
         r#"<text:note text:id="{id_prefix}{n}" text:note-class="{class}"><text:note-citation>{n}</text:note-citation><text:note-body>{}</text:note-body></text:note>"#,
-        render_note_body(&note.blocks)
+        render_plain_body(&note.blocks)
     )
 }

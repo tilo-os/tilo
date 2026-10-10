@@ -3,22 +3,13 @@
 //! keywords/created/modified) and `app.xml`'s `Properties > Application` generator string.
 //! This maps those onto `meta.props`, preserving unmodeled `core.xml` children on export.
 
+use crate::office_meta::{import_elements, strip_modeled};
 use crate::xml_escape::escape_text;
-use quick_xml::events::{BytesStart, Event};
-use quick_xml::reader::Reader;
-use std::collections::BTreeSet;
 use tilo_doc::model::{DocMut, DocRef, doc_prop};
 use tilo_doc::schema::{
     PROP_AUTHOR, PROP_CREATED, PROP_GENERATOR, PROP_KEYWORDS, PROP_MODIFIED, PROP_SUBJECT,
     PROP_TITLE,
 };
-
-fn local_name(name: &[u8]) -> &[u8] {
-    match name.iter().rposition(|&b| b == b':') {
-        Some(i) => name.get(i.saturating_add(1)..).unwrap_or(name),
-        None => name,
-    }
-}
 
 /// Map a `core.xml` element local-name onto a canonical document-property key.
 fn core_prop_for_element(local: &[u8]) -> Option<&'static str> {
@@ -30,49 +21,6 @@ fn core_prop_for_element(local: &[u8]) -> Option<&'static str> {
         b"created" => Some(PROP_CREATED),
         b"modified" => Some(PROP_MODIFIED),
         _ => None,
-    }
-}
-
-/// Collect the text content of every element matching `prop_of` into `meta.props`.
-fn import_elements(xml: &[u8], doc: &mut DocMut, prop_of: impl Fn(&[u8]) -> Option<&'static str>) {
-    let mut reader = Reader::from_reader(xml);
-    reader.config_mut().trim_text(false);
-    let mut buf = Vec::new();
-    let mut current: Option<&'static str> = None;
-    let mut text = String::new();
-    loop {
-        match reader.read_event_into(&mut buf) {
-            Ok(Event::Start(e)) => {
-                if let Some(prop) = prop_of(local_name(e.name().as_ref())) {
-                    current = Some(prop);
-                    text.clear();
-                }
-            }
-            Ok(Event::Text(t)) => {
-                if current.is_some()
-                    && let Ok(s) = t.xml10_content()
-                {
-                    text.push_str(&s);
-                }
-            }
-            Ok(Event::GeneralRef(r)) if current.is_some() => {
-                text.extend(crate::resolve_general_ref(&r));
-            }
-            Ok(Event::End(e)) => {
-                if let Some(prop) = prop_of(local_name(e.name().as_ref()))
-                    && current == Some(prop)
-                {
-                    if !text.is_empty() {
-                        doc.set_doc_prop(prop, &text);
-                    }
-                    current = None;
-                    text.clear();
-                }
-            }
-            Ok(Event::Eof) | Err(_) => break,
-            _ => {}
-        }
-        buf.clear();
     }
 }
 
@@ -138,23 +86,6 @@ fn core_modeled_children(doc: &DocRef) -> String {
     out
 }
 
-fn append_start(out: &mut Vec<u8>, e: &BytesStart, empty: bool) {
-    out.push(b'<');
-    out.extend_from_slice(e.name().as_ref());
-    for attr in e.attributes().flatten() {
-        out.push(b' ');
-        out.extend_from_slice(attr.key.as_ref());
-        out.extend_from_slice(b"=\"");
-        out.extend_from_slice(&attr.value);
-        out.push(b'"');
-    }
-    if empty {
-        out.extend_from_slice(b"/>");
-    } else {
-        out.push(b'>');
-    }
-}
-
 /// The inner XML of `cp:coreProperties` with modeled children stripped, so an existing
 /// `core.xml`'s unmodeled fields (lastModifiedBy, revision, …) survive.
 fn core_unmodeled_children(xml: &[u8]) -> String {
@@ -163,61 +94,9 @@ fn core_unmodeled_children(xml: &[u8]) -> String {
 
 /// Strip elements whose local-name is in `modeled_names`, returning the surviving inner XML.
 fn unmodeled_inner(xml: &[u8], container: &str, modeled_names: &[&[u8]]) -> String {
-    let modeled: BTreeSet<&[u8]> = modeled_names.iter().copied().collect();
-    let Some(inner) = element_inner(xml, container) else {
-        return String::new();
-    };
-    let mut reader = Reader::from_reader(inner.as_slice());
-    reader.config_mut().trim_text(false);
-    let mut buf = Vec::new();
-    let mut out: Vec<u8> = Vec::new();
-    let mut skip_depth = 0usize;
-    loop {
-        match reader.read_event_into(&mut buf) {
-            Ok(Event::Start(e)) => {
-                let is_modeled = modeled.contains(local_name(e.name().as_ref()));
-                if skip_depth > 0 {
-                    skip_depth = skip_depth.saturating_add(1);
-                } else if is_modeled {
-                    skip_depth = 1;
-                } else {
-                    append_start(&mut out, &e, false);
-                }
-            }
-            Ok(Event::Empty(e)) => {
-                let is_modeled = modeled.contains(local_name(e.name().as_ref()));
-                if skip_depth == 0 && !is_modeled {
-                    append_start(&mut out, &e, true);
-                }
-            }
-            Ok(Event::End(e)) => {
-                if skip_depth > 0 {
-                    skip_depth = skip_depth.saturating_sub(1);
-                } else {
-                    out.extend_from_slice(b"</");
-                    out.extend_from_slice(e.name().as_ref());
-                    out.push(b'>');
-                }
-            }
-            Ok(Event::Text(t)) => {
-                if skip_depth == 0 {
-                    out.extend_from_slice(t.into_inner().as_ref());
-                }
-            }
-            // Copied through still escaped: `&amp;` has to stay `&amp;` in the output.
-            Ok(Event::GeneralRef(r)) => {
-                if skip_depth == 0 {
-                    out.push(b'&');
-                    out.extend_from_slice(&r);
-                    out.push(b';');
-                }
-            }
-            Ok(Event::Eof) | Err(_) => break,
-            _ => {}
-        }
-        buf.clear();
-    }
-    String::from_utf8_lossy(&out).into_owned()
+    element_inner(xml, container)
+        .map(|inner| strip_modeled(&inner, modeled_names))
+        .unwrap_or_default()
 }
 
 /// Inner XML of the first element whose local-name is `local`. Shallow substring
