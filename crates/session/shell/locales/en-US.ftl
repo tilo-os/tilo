@@ -1035,7 +1035,7 @@ notification-source-caption = { $app } · From { $device }
 notification-app-host-apps = Host Apps
 notification-app-power = Power
 notification-remote-input-stopped = Remote input stopped
-notification-remote-input-stopped-sessions = Remote control and sharing sessions were stopped.
+notification-remote-input-stopped-sessions = Everyone connected to this computer was disconnected.
 notification-remote-input-stopped-shares = { $count ->
     [one] Remote control was removed and sharing was stopped.
    *[other] Remote control was removed from { $count } shares; sharing was stopped.

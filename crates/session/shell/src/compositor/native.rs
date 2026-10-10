@@ -10073,7 +10073,11 @@ pub fn run() {
                     } else if route == PriorityRoute::RemoteInputKillSwitch {
                         // Super+Esc: every peer's input stops and stays stopped. Ahead of the
                         // client router and shell's Escape handling — a panic key a client can swallow isn't one.
-                        client_input::stop_remote_input(&mut state, &mut frame_builder);
+                        client_input::stop_remote_input(
+                            &mut state,
+                            &mut frame_builder,
+                            spatial_control.is_some(),
+                        );
                         if let Some(network) = peer_sync.as_ref() {
                             end_spatial_control(network, &mut spatial_control);
                         } else {

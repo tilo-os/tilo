@@ -3641,6 +3641,24 @@ impl State {
     /// this survive a restart of the input path — a latch alone would be
     /// undone by anything that rebuilt the firewall. Returns the number of shares that lost write access, so the caller can tell the user what happened.
     pub fn engage_remote_input_kill_switch(&mut self) -> usize {
+        self.end_all_remote_input().revoked
+    }
+
+    /// How many remote participants (shares, seats, streams, device-control
+    /// controllers) are live right now. The kill switch only has something
+    /// to report when this is non-zero.
+    pub fn live_remote_input_participants(&self) -> usize {
+        self.share_registry
+            .len()
+            .saturating_add(self.remote_seats.len())
+            .saturating_add(self.active_sessions.len())
+            .saturating_add(self.personal_fabric_input.controllers().len())
+    }
+
+    /// The kill switch proper; reports what it ended so callers can decide
+    /// whether there is anything worth telling the person.
+    pub fn end_all_remote_input(&mut self) -> RemoteInputEnded {
+        let live = self.live_remote_input_participants();
         self.remote_input_firewall.engage_kill_switch();
         let revoked = self.share_registry.revoke_all_input();
 
@@ -3664,7 +3682,7 @@ impl State {
             personal_controllers,
             "remote-input kill switch engaged; shares and streams terminated"
         );
-        revoked
+        RemoteInputEnded { revoked, live }
     }
 
     /// Inject a single `org.freedesktop.impl.portal.RemoteDesktop`
@@ -8686,3 +8704,12 @@ mod loop_gating_tests {
 }
 
 smithay::delegate_presentation!(State);
+
+/// What the remote-input kill switch actually ended.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RemoteInputEnded {
+    /// Shares that lost write access.
+    pub revoked: usize,
+    /// Participants (shares, seats, streams, controllers) that were live.
+    pub live: usize,
+}

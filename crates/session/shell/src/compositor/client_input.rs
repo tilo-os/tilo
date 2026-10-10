@@ -1411,18 +1411,34 @@ pub fn publish_remote_input_view(state: &mut State, fb: &FrameBuilder, session_l
     state.remote_input_firewall.publish_view(view);
 }
 
-/// Stop every peer from driving this seat, and say so on screen.
+/// Stop every peer from driving this seat, and say so on screen when there
+/// was anything to stop.
 ///
 /// Action half of the `Super+Esc` kill switch, split from the backend loop
 /// (a `-> !` function) so it can be driven from a test. Returns how many
-/// shares lost write access. The confirmation toast bypasses Do-Not-Disturb ([`Notification::bypassing_dnd`]) and is persistent.
-pub fn stop_remote_input(state: &mut State, fb: &mut FrameBuilder) -> usize {
-    let revoked = state.engage_remote_input_kill_switch();
+/// shares lost write access.
+///
+/// The chord always latches the firewall, but the toast is only for a
+/// person who just cut off someone who was connected (`other_control_live`
+/// covers a device-control session the registry does not see). With nobody
+/// connected, `Super+Esc` is just a stray chord (Esc to leave the palette
+/// with Super still held) and a "stopped" warning would report an event
+/// nobody saw start. When shown, the toast bypasses Do-Not-Disturb
+/// ([`Notification::bypassing_dnd`]) and is persistent.
+pub fn stop_remote_input(
+    state: &mut State,
+    fb: &mut FrameBuilder,
+    other_control_live: bool,
+) -> usize {
+    let ended = state.end_all_remote_input();
+    if ended.live == 0 && !other_control_live {
+        return ended.revoked;
+    }
     fb.with_chrome(|chrome| {
         chrome.push_notification_full(
             Notification::new(
                 crate::shell::i18n::t("notification-remote-input-stopped"),
-                match revoked {
+                match ended.revoked {
                     0 => crate::shell::i18n::t("notification-remote-input-stopped-sessions"),
                     n => crate::shell::i18n::t_args(
                         "notification-remote-input-stopped-shares",
@@ -1436,7 +1452,7 @@ pub fn stop_remote_input(state: &mut State, fb: &mut FrameBuilder) -> usize {
             .bypassing_dnd(),
         );
     });
-    revoked
+    ended.revoked
 }
 
 /// Route one backend input event. Returns `true` when consumed by a client
@@ -3150,7 +3166,7 @@ mod tests {
 
             guest_motion(&mut state).expect("the guest is driving the seat to begin with");
 
-            let revoked = stop_remote_input(&mut state, &mut fb);
+            let revoked = stop_remote_input(&mut state, &mut fb, false);
             assert_eq!(
                 revoked, 1,
                 "the one writable share had to lose write access"
@@ -3186,7 +3202,7 @@ mod tests {
             let mut state = state_sharing(KILL_SURFACE);
             fb.with_chrome(|chrome| chrome.set_dnd(true));
 
-            stop_remote_input(&mut state, &mut fb);
+            stop_remote_input(&mut state, &mut fb, false);
 
             let chrome = fb.chrome();
             assert!(
@@ -3212,7 +3228,7 @@ mod tests {
                 }
             });
 
-            stop_remote_input(&mut state, &mut fb);
+            stop_remote_input(&mut state, &mut fb, false);
 
             let chrome = fb.chrome();
             assert!(
@@ -3223,6 +3239,33 @@ mod tests {
                 "a flood of app toasts buried the kill-switch confirmation",
             );
         }
+    }
+
+    #[test]
+    fn stopping_remote_input_with_nobody_connected_stays_silent() {
+        // A stray Super+Esc (leaving the palette with Super still held) must
+        // not warn about a session nobody saw start, but still latches.
+        let mut fb = FrameBuilder::new((1600, 900));
+        let mut state = state_sharing(KILL_SURFACE);
+        state.share_registry.clear();
+        assert_eq!(state.live_remote_input_participants(), 0);
+
+        assert_eq!(stop_remote_input(&mut state, &mut fb, false), 0);
+        assert!(
+            fb.chrome().notifications().is_empty(),
+            "a kill switch with nothing connected raised a toast"
+        );
+        assert!(state.remote_input_firewall.kill_switch_engaged());
+
+        // A device-control session outside the registry still counts.
+        let mut fb = FrameBuilder::new((1600, 900));
+        stop_remote_input(&mut state, &mut fb, true);
+        assert!(
+            fb.chrome()
+                .notifications()
+                .iter()
+                .any(|n| n.title == "Remote input stopped")
+        );
     }
 
     #[test]

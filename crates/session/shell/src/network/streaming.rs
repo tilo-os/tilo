@@ -198,6 +198,16 @@ impl ShareRegistry {
         }
     }
 
+    /// Number of live shares.
+    pub fn len(&self) -> usize {
+        self.shares.len()
+    }
+
+    /// Whether no share is live.
+    pub fn is_empty(&self) -> bool {
+        self.shares.is_empty()
+    }
+
     /// Mark every share read-only — the registry side of the kill switch. Returns how many shares lost write access.
     pub fn revoke_all_input(&mut self) -> usize {
         let mut revoked: usize = 0;
