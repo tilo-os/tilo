@@ -1,0 +1,70 @@
+# Content-based layers for the published OS image (TIL-747).
+#
+# os/Containerfile makes one layer per instruction, and a layer is a new blob
+# whenever its RUN or COPY runs again, so an update between two commits that
+# change one app pulled most of the image. chunkah (github.com/coreos/chunkah)
+# re-lays the finished image out by content instead: one component per RPM
+# package (read from the image's own rpmdb), files over 1 MB on their own, the
+# rest grouped, packed into at most TILO_RECHUNK_MAX_LAYERS layers. A component
+# whose files did not change is the same blob in the next build, so an update
+# downloads the changed components only. Files the image does not carry any
+# more (whited-out originals, the base's kernel, /sysroot's ostree objects)
+# are not in any layer.
+#
+# os/dev/rechunk-image.sh builds the `rechunked` target with the raw image as
+# the named build context `rootfs`, then os/scripts/oci-rechunk.py adds the
+# directory-metadata layer, adopts the raw image's config and proves the result
+# is the raw image's tree. Nothing here ships but the layout it writes.
+
+# The pinned builder that also compiles bootc (os/Containerfile, bootc-builder):
+# a Fedora image with the workspace's Rust toolchain, openssl-devel and rpm,
+# which chunkah calls to read the image's package database.
+ARG BOOTC_BUILD_IMAGE=registry.tilo.so/tilo/tilo-builder@sha256:568fca1f8b4a4b1700c871cca033d2d291a5eb02c4b3be9681410f456b5a7bc9
+
+# Checksum-pinned in os/external-assets/github-assets.tsv; os/dev/rechunk-image.sh
+# materializes them with os/dev/cache-github-assets.sh.
+FROM scratch AS external-assets
+COPY --from=github-assets /chunkah-0.7.1.tar.gz /chunkah-0.7.1-vendor.tar.gz /
+
+FROM ${BOOTC_BUILD_IMAGE} AS chunkah
+ARG CHUNKAH_VERSION=0.7.1
+ARG CHUNKAH_SHA256=12c0101532e4c65cd63244f28ed801296df9d0a7302e3646026387f684fb690b
+ARG CHUNKAH_VENDOR_SHA256=56c73d1003f6c88fb8467434563a25ce65aa2125331b9d258202de3239dee328
+# Offline: the release's own vendor tree is every crate it builds with.
+RUN --network=none \
+    --mount=type=bind,from=external-assets,source=/,target=/tilo-assets,ro \
+    --mount=type=tmpfs,target=/tmp \
+    echo "${CHUNKAH_SHA256}  /tilo-assets/chunkah-${CHUNKAH_VERSION}.tar.gz" | sha256sum -c - \
+    && echo "${CHUNKAH_VENDOR_SHA256}  /tilo-assets/chunkah-${CHUNKAH_VERSION}-vendor.tar.gz" | sha256sum -c - \
+    && mkdir /tmp/chunkah \
+    && tar -xzf "/tilo-assets/chunkah-${CHUNKAH_VERSION}.tar.gz" --strip-components=1 -C /tmp/chunkah \
+    && tar -xzf "/tilo-assets/chunkah-${CHUNKAH_VERSION}-vendor.tar.gz" -C /tmp/chunkah \
+    && mkdir -p /tmp/chunkah/.cargo \
+    && printf '%s\n' '[source.crates-io]' 'replace-with = "vendored-sources"' \
+         '[source.vendored-sources]' 'directory = "vendor"' > /tmp/chunkah/.cargo/config.toml \
+    && cd /tmp/chunkah \
+    && CARGO_HOME=/tmp/cargo-home CARGO_PROFILE_RELEASE_DEBUG=0 CARGO_PROFILE_RELEASE_STRIP=symbols \
+       cargo build --offline --locked --release \
+    && install -D -m 0755 target/release/chunkah /usr/local/bin/chunkah \
+    && chunkah build --help >/dev/null \
+    && command -v rpm
+
+# The raw image arrives as the named build context `rootfs` (a registry image or
+# an OCI layout). `--prune /sysroot/` drops the base's ostree repository, which
+# bootc's composefs backend never deploys, and keeps the directory. The epoch
+# caps the time of files no package owns (a package's files are capped at its
+# build time), so it must be the same for two builds that should share layers.
+FROM chunkah AS rechunk
+ARG SOURCE_DATE_EPOCH
+ARG TILO_RECHUNK_MAX_LAYERS=128
+RUN --network=none \
+    --mount=type=bind,from=rootfs,source=/,target=/rootfs,rw \
+    --mount=type=tmpfs,target=/tmp \
+    { [ "${SOURCE_DATE_EPOCH:-0}" -gt 0 ] || { echo 'SOURCE_DATE_EPOCH must be a positive epoch' >&2; exit 1; }; } \
+    && mkdir /out \
+    && SOURCE_DATE_EPOCH="$SOURCE_DATE_EPOCH" chunkah build --rootfs /rootfs \
+         --prune /sysroot/ --max-layers "$TILO_RECHUNK_MAX_LAYERS" --compressed \
+         --write-manifest-to /out/components.json --output oci:/out/image
+
+FROM scratch AS rechunked
+COPY --from=rechunk /out/ /

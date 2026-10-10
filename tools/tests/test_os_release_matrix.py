@@ -376,8 +376,11 @@ class ReleaseGateTests(unittest.TestCase):
                     workflow[use.end():use.end() + 24],
                     r"^:\$(?:source_ref|first_ref|repro_ref)\b",
                 )
-            self.assertIn("'${{ steps.build.outputs.digest || steps.build-uncached.outputs.digest }}'", workflow)
-            self.assertIn("'${{ steps.repro.outputs.digest }}'", workflow)
+            # The archives are rechunked in place (TIL-747); a descriptor is
+            # selected by the rechunked digest, or the build's when it is off.
+            self.assertIn("'${{ steps.rechunk.outputs.digest || steps.build.outputs.digest "
+                          "|| steps.build-uncached.outputs.digest }}'", workflow)
+            self.assertIn("'${{ steps.repro-rechunk.outputs.digest || steps.repro.outputs.digest }}'", workflow)
             self.assertNotIn("podman load --input /var/tmp/tilo-image", workflow)
 
     @unittest.skipUnless(os.name == "posix" and shutil.which("skopeo"), "skopeo on POSIX required")
