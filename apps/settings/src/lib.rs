@@ -60,6 +60,7 @@ pub mod scenarios;
 pub use os_actions::codec_pack;
 mod continuity;
 mod device_fleet;
+pub(crate) mod device_read;
 pub mod dispatcher;
 pub mod effects;
 pub mod host;
