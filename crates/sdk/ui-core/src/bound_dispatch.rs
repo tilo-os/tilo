@@ -2295,20 +2295,16 @@ pub(crate) fn invoke_resource_action(
                         argument,
                     );
                     let direct = binding.permissions.borrow().standing().bounds.is_empty();
-                    match answer {
-                        tilo_action_policy::Answer::Deny => return Err(denied(spec).into()),
-                        // Someone acting for the person does not get past an
-                        // ask here.
-                        tilo_action_policy::Answer::Ask if !direct => {
-                            return Err(denied(spec).into());
-                        }
-                        // Where the room's grants ask first, the person's
-                        // confirmation in the host is the answer; the broker
-                        // took it before admitting what it delivers.
-                        tilo_action_policy::Answer::Ask if !confirmed && !broker_admitted => {
-                            return Err(tilo_actions::DoorError::ConfirmationRequired.into());
-                        }
-                        tilo_action_policy::Answer::Ask | tilo_action_policy::Answer::Allow => {}
+                    // Someone acting for the person does not get past an ask
+                    // here.
+                    if !answer.admits(direct) {
+                        return Err(denied(spec).into());
+                    }
+                    // Where the room's grants ask first, the person's
+                    // confirmation in the host is the answer; the broker took
+                    // it before admitting what it delivers.
+                    if answer == tilo_action_policy::Answer::Ask && !confirmed && !broker_admitted {
+                        return Err(tilo_actions::DoorError::ConfirmationRequired.into());
                     }
                     crate::invocation_scope::check_continuation(
                         spec,

@@ -1,79 +1,14 @@
-//! Whether a person may invoke one live published operation: the current
-//! workspace policy must allow the action *and* the document artifact of the
-//! route record it acts on, so a person restricted on one record cannot act
-//! on it through an action they may otherwise use.
-use tilo_action_policy::{Answer, roles};
-use tilo_desktop_model::Workspace;
-
-use crate::collab_broker_capnp::{PublishedAction, PublishedSurface};
+//! The route record a published operation acts on. The admission itself is
+//! [`BrokerActor::admit_published_in`](crate::collab_broker_capnp::BrokerActor::admit_published_in).
 
 /// Spelling of the package-primary record (route record `""`).
 const PRIMARY_RECORD_ALIAS: &str = "@tilo:package-primary";
 const MAX_RECORD_ID_BYTES: usize = 128;
 
-/// Whether `answer` lets an action be taken without anyone being asked:
-/// allowed; or asking first when the person acts themselves (`direct`),
-/// their own gesture being the answer. Someone acting for them, or a device
-/// not theirs, gets past an ask only with the person's confirmation, which
-/// admission requires (see [`authorize_person_published`]).
-#[must_use]
-pub fn permits(answer: Answer, direct: bool) -> bool {
-    match answer {
-        Answer::Allow => true,
-        Answer::Ask => direct,
-        Answer::Deny => false,
-    }
-}
-
-/// Authorize `person` (from a device held to the foreign-device bound when
-/// `capped`) for `action` on `surface` at policy time `now`: the room's
-/// grants must allow the action where it is published *and* a change of the
-/// route record it acts on. `Ok(true)` when the grants ask first: the
-/// invocation then runs only on the person's confirmation in the host.
-///
-/// # Errors
-///
-/// Returns the refusal text when the route record is reserved or malformed,
-/// or when the grants refuse the action or the record.
-pub fn authorize_person_published(
-    workspace: &Workspace,
-    now: u64,
-    person: &str,
-    capped: bool,
-    surface: &PublishedSurface,
-    action: &PublishedAction,
-) -> Result<bool, String> {
-    let record = canonical_record(&surface.route.record_id)?;
-    let bound = roles::foreign_device_bound();
-    let authority = workspace.person_authority_on(person, capped, &bound);
-    let cx = tilo_desktop_model::context_at(now);
-    let kind = action.contract.kind;
-    let nodes = [
-        tilo_actions::action_node(
-            &workspace.node(),
-            &surface.app_id,
-            &action.resource_kind,
-            &action.resource,
-            action.contract.field.as_deref(),
-            &action.action,
-        ),
-        collab_types::validator::document_node(&workspace.policy.room, &surface.app_id, &record),
-    ];
-    let answers: Vec<Answer> = nodes
-        .iter()
-        .map(|node| authority.decide(node, kind, &cx).answer)
-        .collect();
-    if answers.contains(&Answer::Deny) {
-        Err("not authorized: caller no longer authorized for invocation".into())
-    } else {
-        Ok(answers.contains(&Answer::Ask))
-    }
-}
-
 /// The one canonical spelling of a live route record: `""` is the
 /// package-primary record, reserved spellings are never literal record ids,
 /// and everything else must be bounded, trimmed, printable ASCII.
-fn canonical_record(route_record: &str) -> Result<String, String> {
+pub(crate) fn canonical_record(route_record: &str) -> Result<String, String> {
     if route_record.is_empty() {
         return Ok(PRIMARY_RECORD_ALIAS.into());
     }
@@ -91,7 +26,7 @@ fn canonical_record(route_record: &str) -> Result<String, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use crate::collab_broker_capnp::{BrokerActor, PublishedAction, PublishedSurface};
     use crate::route::CrdtRoute;
     use crate::test_support::{Workspace, WorkspaceId};
     use tilo_action_policy::{Grant, KindSet, Lifetime, Role, Subject};
@@ -99,6 +34,21 @@ mod tests {
     const OWNER: &str = "owner-person";
     const ROOM: &str = "room-7";
     const WRITER: &str = "so.tilo.word-processor";
+
+    /// Admit `action` on `surface` for `person` at `now`: whether it asks.
+    fn authorize_person_published(
+        workspace: &Workspace,
+        now: u64,
+        person: &str,
+        capped: bool,
+        surface: &PublishedSurface,
+        action: &PublishedAction,
+    ) -> Result<bool, String> {
+        BrokerActor::person(person)
+            .capped(capped)
+            .admit_published_in(workspace, now, None, (surface, action))
+            .map(|(asks, _)| asks)
+    }
 
     fn workspace() -> Workspace {
         let mut w = Workspace::new(WorkspaceId(7), "Room");

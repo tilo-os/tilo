@@ -608,6 +608,14 @@ impl BrokerActor {
         self
     }
 
+    /// The same actor, held to the foreign-device bound when `capped`: from
+    /// a device that is not its person's.
+    #[must_use]
+    pub fn capped(mut self, capped: bool) -> Self {
+        self.capped = capped;
+        self
+    }
+
     /// The same agent, delegated by its person's own device for this
     /// session.
     #[must_use]
@@ -733,6 +741,65 @@ impl BrokerActor {
         self.verdict_in(workspace, &node, need.kind, need.privileged, now)
     }
 
+    /// Admit `action`, published on `surface`, in `workspace` at `now`:
+    /// whether the room's grants ask first (`true`), when the invocation
+    /// then needs the confirmation of the person it is made for, and the
+    /// `Once` grants admitting it spends. Decided on one sample: the action
+    /// where it is published; the task the call works in (`task`, and every
+    /// task an agent runs: [`tilo_desktop_model::Workspace::task_bound_at`]);
+    /// and, for a person, a change of the route record it acts on, so a
+    /// person restricted on one record cannot act on it through an action
+    /// they may otherwise use.
+    ///
+    /// # Errors
+    /// The refusal: a reserved or malformed route record, or grants that
+    /// refuse the action, the task's work or the record.
+    pub(crate) fn admit_published_in(
+        &self,
+        workspace: &tilo_desktop_model::Workspace,
+        now: u64,
+        task: Option<&str>,
+        (surface, action): (&PublishedSurface, &PublishedAction),
+    ) -> Result<(bool, Vec<tilo_action_policy::GrantId>), String> {
+        let refused = || "caller no longer authorized for invocation".to_owned();
+        let record = if self.is_agent {
+            None
+        } else {
+            Some(crate::published_authorization::canonical_record(
+                &surface.route.record_id,
+            )?)
+        };
+        let need = action.contract.need();
+        let node = published_node(workspace, &surface.app_id, action);
+        let (answer, spent) = self.verdict_in(workspace, &node, need.kind, need.privileged, now);
+        let mut asks = match answer {
+            Answer::Allow => false,
+            Answer::Ask => true,
+            Answer::Deny => return Err(refused()),
+        };
+        let agent = self
+            .is_agent
+            .then(|| self.id.strip_prefix("agent:").unwrap_or(&self.id));
+        match workspace.task_bound_at(agent, task, &node, need.kind, now) {
+            Some(Answer::Deny) => return Err("the task's grants do not cover this action".into()),
+            Some(Answer::Ask) => asks = true,
+            Some(Answer::Allow) | None => {}
+        }
+        if let Some(record) = record {
+            let node = collab_types::validator::document_node(
+                &workspace.policy.room,
+                &surface.app_id,
+                &record,
+            );
+            match self.answer_in(workspace, &node, need.kind, now) {
+                Answer::Allow => {}
+                Answer::Ask => asks = true,
+                Answer::Deny => return Err(refused()),
+            }
+        }
+        Ok((asks, spent))
+    }
+
     fn verdict_in(
         &self,
         workspace: &tilo_desktop_model::Workspace,
@@ -752,7 +819,7 @@ impl BrokerActor {
     }
 
     /// Whether this actor may take an action of `kind` at `node` in
-    /// `workspace` at `now`. See [`crate::published_authorization::permits`].
+    /// `workspace` at `now` ([`Answer::admits`]).
     pub(crate) fn may_in(
         &self,
         workspace: &tilo_desktop_model::Workspace,
@@ -760,10 +827,8 @@ impl BrokerActor {
         kind: ActionKind,
         now: u64,
     ) -> bool {
-        crate::published_authorization::permits(
-            self.answer_in(workspace, node, kind, now),
-            self.direct(),
-        )
+        self.answer_in(workspace, node, kind, now)
+            .admits(self.direct())
     }
 
     /// Whether this actor takes part in `workspace` at `now`: it may at
@@ -806,24 +871,19 @@ impl AdmittedJoinIdentity {
     }
 
     fn broker_actor(&self) -> BrokerActor {
-        match &self.agent_id {
+        let actor = match &self.agent_id {
             Some(agent) => {
-                let actor = BrokerActor {
-                    capped: self.verified.capped,
-                    ..BrokerActor::agent(format!("agent:{agent}"))
-                        .for_person(self.principal_id.clone())
-                };
+                let actor = BrokerActor::agent(format!("agent:{agent}"))
+                    .for_person(self.principal_id.clone());
                 if self.session_delegated {
                     actor.session_delegated()
                 } else {
                     actor
                 }
             }
-            None => BrokerActor {
-                capped: self.verified.capped,
-                ..BrokerActor::person(self.principal_id.clone())
-            },
-        }
+            None => BrokerActor::person(self.principal_id.clone()),
+        };
+        actor.capped(self.verified.capped)
     }
 
     /// The caller this admitted connection is, confined to its room.
@@ -892,15 +952,8 @@ impl AdmittedJoinIdentity {
             // held to the foreign-device bound there as anywhere, and an
             // agent one of them was handed to, to that delegation too.
             let policy = RoomPolicy::new(room, self.principal_id.clone());
-            let authority = Authority::person(policy.party(&self.principal_id));
-            let authority = if self.verified.capped {
-                authority.bounded_by(tilo_action_policy::Party::new(
-                    vec![Subject::ForeignDevice],
-                    &bound,
-                ))
-            } else {
-                authority
-            };
+            let authority =
+                policy.person_on_device(&self.principal_id, self.verified.capped, &bound);
             let actor = self.broker_actor();
             let carried = actor.session_grants(room, &self.principal_id);
             let authority = match actor.delegate() {
@@ -1923,15 +1976,12 @@ impl CapnpBrokerState {
         caller: &tilo_actions::remote::Caller,
         room: &str,
     ) -> BrokerActor {
-        BrokerActor {
-            capped: cap_applies_in(
-                self.certificate_authority.get().map(AsRef::as_ref),
-                room,
-                caller.is_foreign_device(),
-                caller.device_public_key(),
-            ),
-            ..BrokerActor::for_caller(caller)
-        }
+        BrokerActor::for_caller(caller).capped(cap_applies_in(
+            self.certificate_authority.get().map(AsRef::as_ref),
+            room,
+            caller.is_foreign_device(),
+            caller.device_public_key(),
+        ))
     }
 
     /// The person `cert` certifies, acting in `room` from that certificate's device.
@@ -5241,46 +5291,7 @@ impl CapnpBrokerState {
             .ok_or("workspace authority unavailable")?
             .decide_in_room(&offered.0.route.cluster_id, |workspace| {
                 let workspace = workspace.ok_or("workspace no longer hosted")?;
-                let need = offered.1.contract.need();
-                let (mut asks, spent) = durable_local_invocation::admit_action_in(
-                    workspace,
-                    (
-                        &offered.0.app_id,
-                        &offered.1.resource_kind,
-                        &offered.1.resource,
-                        &offered.1.action,
-                    ),
-                    &need,
-                    actor,
-                    now,
-                )?;
-                {
-                    let node = published_node(workspace, &offered.0.app_id, &offered.1);
-                    let agent = actor
-                        .is_agent
-                        .then(|| actor.id.strip_prefix("agent:").unwrap_or(&actor.id));
-                    match workspace.task_bound_at(agent, task.as_deref(), &node, need.kind, now) {
-                        Some(Answer::Deny) => {
-                            return Err("the task's grants do not cover this action".to_owned());
-                        }
-                        Some(Answer::Ask) => asks = true,
-                        Some(Answer::Allow) | None => {}
-                    }
-                }
-                if actor.is_agent {
-                    return Ok::<_, String>((asks, spent));
-                }
-                // A person is authorized on the route record (Artifact)
-                // too, not only on (app, action).
-                let record_asks = crate::published_authorization::authorize_person_published(
-                    workspace,
-                    now,
-                    &actor.id,
-                    actor.capped,
-                    &offered.0,
-                    &offered.1,
-                )?;
-                Ok((asks | record_asks, spent))
+                actor.admit_published_in(workspace, now, task.as_deref(), (&offered.0, &offered.1))
             })??;
 
         if (durable.is_some() || execution.is_some())

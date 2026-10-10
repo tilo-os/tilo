@@ -11,7 +11,7 @@
 //! The whole batch is refused or the whole candidate is returned: a partial
 //! merge would advance local heads past refused operations.
 use automerge::AutoCommit;
-use tilo_action_policy::{ActionKind, Answer, Authority, Context, Party, Subject, TreePath};
+use tilo_action_policy::{ActionKind, Answer, Context, TreePath};
 
 use super::media;
 
@@ -257,13 +257,7 @@ fn may_write(
         return Err(RoomRefusal::WriteForbidden);
     }
     let bound = tilo_action_policy::roles::foreign_device_bound();
-    let mut authority = Authority::person(policy.party(&person));
-    if foreign {
-        authority = authority.bounded_by(
-            Party::new(vec![Subject::ForeignDevice], &bound)
-                .with_grants(policy.grants_of(&Subject::ForeignDevice)),
-        );
-    }
+    let authority = policy.person_on_device(&person, foreign, &bound);
     let cx = Context::at_secs(caps_now);
     if authority
         .decide(&TreePath::room(room), ActionKind::Undoable, &cx)

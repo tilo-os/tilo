@@ -214,35 +214,13 @@ pub(super) fn authorize_action_in(
 ) -> Result<(), String> {
     // Genuine durable callers revalidate live membership and delegation
     // separately; this is the action's own grant.
-    if !crate::published_authorization::permits(
-        actor.action_answer_in(workspace, app, (resource_kind, resource, action), need, now),
-        actor.direct(),
-    ) {
+    if !actor
+        .action_answer_in(workspace, app, (resource_kind, resource, action), need, now)
+        .admits(actor.direct())
+    {
         return Err("caller no longer authorized for invocation".into());
     }
     Ok(())
-}
-
-/// [`authorize_action_in`] at admission: whether the room's grants ask
-/// first (`true`), when the invocation then needs the confirmation of the
-/// person it is made for, and the `Once` grants admitting it spends.
-///
-/// # Errors
-/// When the grants refuse the action.
-pub(super) fn admit_action_in(
-    workspace: &tilo_desktop_model::Workspace,
-    (app, resource_kind, resource, action): (&str, &str, &str, &str),
-    need: &tilo_actions::ActionNeed,
-    actor: &BrokerActor,
-    now: u64,
-) -> Result<(bool, Vec<tilo_action_policy::GrantId>), String> {
-    match actor.action_verdict_in(workspace, app, (resource_kind, resource, action), need, now) {
-        (tilo_action_policy::Answer::Allow, spent) => Ok((false, spent)),
-        (tilo_action_policy::Answer::Ask, spent) => Ok((true, spent)),
-        (tilo_action_policy::Answer::Deny, _) => {
-            Err("caller no longer authorized for invocation".into())
-        }
-    }
 }
 
 impl CapnpBrokerState {

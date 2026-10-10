@@ -709,11 +709,8 @@ impl PermissionContext {
         json: Option<&serde_json::Map<String, serde_json::Value>>,
         argument: Option<&str>,
     ) -> bool {
-        match self.invocation_answer(app_id, resource, action, json, argument) {
-            Answer::Allow => true,
-            Answer::Ask => self.standing.bounds.is_empty(),
-            Answer::Deny => false,
-        }
+        self.invocation_answer(app_id, resource, action, json, argument)
+            .admits(self.standing.bounds.is_empty())
     }
 
     /// The answer for invoking `action` on `resource` with these arguments.

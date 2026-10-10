@@ -232,6 +232,27 @@ impl RoomPolicy {
         }
     }
 
+    /// `person`'s authority from one of their devices: their own, and from a
+    /// device that is not theirs (`foreign`), held to `foreign_bound` and to
+    /// the room's grants for such devices too.
+    #[must_use]
+    pub fn person_on_device<'a>(
+        &'a self,
+        person: &str,
+        foreign: bool,
+        foreign_bound: &'a [Grant],
+    ) -> Authority<'a> {
+        let authority = Authority::person(self.party(person));
+        if foreign {
+            authority.bounded_by(
+                Party::new(vec![Subject::ForeignDevice], foreign_bound)
+                    .with_grants(self.grants_of(&Subject::ForeignDevice)),
+            )
+        } else {
+            authority
+        }
+    }
+
     /// The room's grants naming a delegation subject (an agent, an app, a
     /// task), for bounding a person's authority.
     #[must_use]
