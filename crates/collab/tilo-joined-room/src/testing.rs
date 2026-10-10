@@ -227,7 +227,10 @@ pub fn raw_fixture_at(
     .unwrap();
     let mut chat = AutoCommit::new();
     let channels = chat.put_object(ROOT, "channels", ObjType::Map).unwrap();
-    let channel = chat.put_object(&channels, "voice", ObjType::Map).unwrap();
+    let channel = {
+        let entry = chat.put_object(&channels, "voice", ObjType::Map).unwrap();
+        chat.put_object(&entry, "v", ObjType::Map).unwrap()
+    };
     chat.put(&channel, "kind", "voice").unwrap();
     chat.put(&channel, "workspace", "home").unwrap();
     collab_types::CommitNamed::commit_edit(&mut chat, "chat", "channels");
