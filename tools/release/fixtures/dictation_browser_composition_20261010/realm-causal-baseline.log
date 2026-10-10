@@ -1,0 +1,105 @@
+✖ an unrelated custom-editor end cannot clear the original composition (5.013334ms)
+✖ overlapping custom-editor compositions end independently (1.564251ms)
+✖ a removed custom editor no longer blocks a fresh editable successor (4.299255ms)
+✔ removal and forged ends never certify trusted native composition as idle (1.026153ms)
+✔ document replacement remains unknown after all composition ends (0.839322ms)
+✖ unobservable composition targets and excess targets fail closed (0.916898ms)
+✖ the field consumer admits only the fresh successor after custom-editor removal (1.831572ms)
+✔ the field consumer still requires the original document-start observer (1.014731ms)
+✔ a fresh consumer remains blocked by trusted composition and protected fields (0.863388ms)
+ℹ tests 9
+ℹ suites 0
+ℹ pass 4
+ℹ fail 5
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 24.570807
+
+✖ failing tests:
+
+test at ../../../../../../..${OWNED_FIXTURE}/tests/composition_observer.mjs:85:1
+✖ an unrelated custom-editor end cannot clear the original composition (5.013334ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+
+  false !== true
+
+      at TestContext.<anonymous> (file://${OWNED_FIXTURE}/tests/composition_observer.mjs:89:10)
+      at Test.runInAsyncScope (node:async_hooks:226:14)
+      at Test.run (node:internal/test_runner/test:1402:25)
+      at Test.start (node:internal/test_runner/test:1262:17)
+      at startSubtestAfterBootstrap (node:internal/test_runner/harness:387:17) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: false,
+    expected: true,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+
+test at ../../../../../../..${OWNED_FIXTURE}/tests/composition_observer.mjs:94:1
+✖ overlapping custom-editor compositions end independently (1.564251ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+
+  false !== true
+
+      at TestContext.<anonymous> (file://${OWNED_FIXTURE}/tests/composition_observer.mjs:99:10)
+      at Test.runInAsyncScope (node:async_hooks:226:14)
+      at Test.run (node:internal/test_runner/test:1402:25)
+      at Test.processPendingSubtests (node:internal/test_runner/test:974:18)
+      at Test.postRun (node:internal/test_runner/test:1542:19)
+      at Test.run (node:internal/test_runner/test:1467:12)
+      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:387:3) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: false,
+    expected: true,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+
+test at ../../../../../../..${OWNED_FIXTURE}/tests/composition_observer.mjs:104:1
+✖ a removed custom editor no longer blocks a fresh editable successor (4.299255ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+
+  true !== false
+
+      at TestContext.<anonymous> (file://${OWNED_FIXTURE}/tests/composition_observer.mjs:108:10)
+      at Test.runInAsyncScope (node:async_hooks:226:14)
+      at Test.run (node:internal/test_runner/test:1402:25)
+      at Test.processPendingSubtests (node:internal/test_runner/test:974:18)
+      at Test.postRun (node:internal/test_runner/test:1542:19)
+      at Test.run (node:internal/test_runner/test:1467:12)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:974:7) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: true,
+    expected: false,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+
+test at ../../../../../../..${OWNED_FIXTURE}/tests/composition_observer.mjs:134:1
+✖ unobservable composition targets and excess targets fail closed (0.916898ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+
+  false !== true
+
+      at TestContext.<anonymous> (file://${OWNED_FIXTURE}/tests/composition_observer.mjs:141:12)
+      at Test.runInAsyncScope (node:async_hooks:226:14)
+      at Test.run (node:internal/test_runner/test:1402:25)
+      at Test.processPendingSubtests (node:internal/test_runner/test:974:18)
+      at Test.postRun (node:internal/test_runner/test:1542:19)
+      at Test.run (node:internal/test_runner/test:1467:12)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:974:7) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: false,
+    expected: true,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+
+test at ../../../../../../..${OWNED_FIXTURE}/tests/composition_observer.mjs:145:1
+✖ the field consumer admits only the fresh successor after custom-editor removal (1.831572ms)
+  { code: 'text_input_composition' }

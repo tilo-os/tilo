@@ -1,0 +1,40 @@
+{
+  "image": "sha256:3e643adc70d3dc2b6c3f3fecf0944f5c9273e0ac1aef0c382b5ca208456a67b8",
+  "existing_runtime_only": true,
+  "source_sha256": {
+    "apps/browser/chromium/src/host.cc": "11de5ba9110c68cc88cb9c962284942669206c9daf17129afd63169f2d13ae5a",
+    "apps/browser/chromium/src/page_automation.js": "6c6b94597687b8c11466528f9dc3199e283035c2e3a282d1432c81a1581e2ce0",
+    "apps/browser/chromium/tests/composition_observer.mjs": "f01872948c50a7777cf7ccf215566a5c5b535d65ff78956d66df7141f5c95985",
+    "tools/tests/test_browser_composition_observer.py": "6dd983fd026bba1b22e330df695eae21abe3ff802b792d7edc22c9b70a844647"
+  },
+  "records": [
+    {
+      "label": "vm-delete-probe",
+      "exit": 0,
+      "sha256": "c47ba6ca43ba1ac1bc4f3d6227124f7b5a2ca16aea7ab9c7259023a92dbb6df1",
+      "owned_container_verified_absent": "dictation-node22-153fa3e1b6"
+    },
+    {
+      "label": "candidate",
+      "exit": 0,
+      "sha256": "c308d3aa943f1d0e87da6bd992c698f54054b8d9868922a18b27930c07f43a29",
+      "owned_container_verified_absent": "dictation-node22-5343300c64"
+    },
+    {
+      "label": "ci-python-wrapper",
+      "exit": 0,
+      "sha256": "64ef6a1d5dbc4246f2f0b78e2a4fad11112a3c5229a99dfafe49b4cbbccda2ef",
+      "owned_container_verified_absent": "dictation-node22-0bf7d18f30"
+    },
+    {
+      "label": "negative-missing-observer-guard",
+      "exit": 1,
+      "sha256": "e017cf2a863a7170bcad1c70910f661dd9444d176e5bf3483b2a8e593ac2649c",
+      "owned_container_verified_absent": "dictation-node22-232de1b5cc"
+    }
+  ],
+  "negative_control": "Only remove missing-observer refusal from a disposable source copy; the original assert.throws must fail",
+  "production_changed": false,
+  "runtime_acquisition": false,
+  "root": "${OWNED_CONTEXT_REVIEW}"
+}

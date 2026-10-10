@@ -48,7 +48,8 @@ function fixture() {
       handlers.set(kind, (handlers.get(kind) || []).filter(owned => owned !== callback));
     },
   };
-  vm.runInNewContext(script, context, {timeout: 1000});
+  const realm = vm.createContext(context);
+  vm.runInContext(script, realm, {timeout: 1000});
   const event = (kind, target, isTrusted = false) => {
     for (const callback of handlers.get(kind) || []) callback({target, isTrusted});
   };
@@ -60,8 +61,8 @@ function fixture() {
       context.ShadowRoot = class { getSelection() { return null; } };
       context.getComputedStyle = () => ({webkitTextSecurity: 'none'});
       context.failure = code => ({code});
-      vm.runInNewContext(type + '\n' + secret + '\n' + inputSetup + inputSnapshot +
-        '\nglobalThis.reviewSnapshot = textSnapshot;', context, {timeout: 1000});
+      vm.runInContext(type + '\n' + secret + '\n' + inputSetup + inputSnapshot +
+        '\nglobalThis.reviewSnapshot = textSnapshot;', realm, {timeout: 1000});
       return {
         field() {
           const field = new Node();
@@ -71,7 +72,12 @@ function fixture() {
           return field;
         },
         snapshot(field) { document.activeElement = field; return context.reviewSnapshot(field); },
-        loseObserver() { delete context.__tiloTextComposition; },
+        loseObserver() {
+          // Contextified host-object deletion does not reliably remove the
+          // actual realm's global on Node 22. Match the Blink probe's stimulus.
+          assert.equal(vm.runInContext('delete globalThis.__tiloTextComposition', realm), true);
+          assert.equal(vm.runInContext('typeof globalThis.__tiloTextComposition', realm), 'undefined');
+        },
       };
     }};
 }
