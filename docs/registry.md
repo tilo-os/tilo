@@ -421,24 +421,7 @@ signed entry and append to its immutable version history; re-running the same
 artifact reproduces the existing entry, while reusing a version/target identity
 for different bytes fails closed.
 
-Web builds use the same flow. `tilo-app-package pack-web` packs the authored
-manifest around the WebAssembly module (see
-[packaging.md](app-model/packaging.md#target--written-by-the-packer)), and
-`entry --platform web --arch wasm32` copies the signed `[target]` into the
-version:
-
-```text
-tilo-app-package pack-web --manifest apps/ebook/tilo-app.toml \
-  --module out/apps/so.tilo.ebook/app.wasm \
-  --identity /run/secrets/app-publisher.json -o ebook-web.tapp
-tilo-app-package entry --platform web --arch wasm32 --action add \
-  --identity /run/secrets/app-publisher.json \
-  --url https://apps.tilo.so/artifacts/<blake3>.tapp ebook-web.tapp > request.json
-```
-
-The toolkit core is published the same way, as a `kind = "runtime"` package
-whose `[target].runtime` is the ABI id it provides; a browser only offers an
-app version whose `runtime` equals a published core's. Artifact URLs must be
+Artifact URLs must be
 under `https://apps.tilo.so/artifacts/`; a registry whose `base_url` is a
 loopback address (`http://127.0.0.1:<port>`, `http://localhost:<port>`,
 `http://[::1]:<port>`) also accepts its own `<base_url>/artifacts/`, where
@@ -507,20 +490,19 @@ the same fallback rule and distinguish `icon`, `screenshot`, and `banner`.
 
 Each signed version binds the package root, exact final-file BLAKE3 and size,
 platform family, architecture, minimum ISA and runtime ABI. The schema can add
-future platform families without changing the signed entry shape. Six
+future platform families without changing the signed entry shape. Five
 families are accepted (`registry_types::target`):
 
 | `platform` | `architecture` | `isa` | `runtime` |
 |---|---|---|---|
 | `tilo-os` | `x86_64`, `aarch64` | `x86_64`, `x86_64-v2`…`v4`, `aarch64`, `aarch64-v8.2`/`v8.4`/`v9` | optional, `tilo-runtime/<version>` |
-| `web` | `wasm32` | canonical wasm feature set, see below | **required**, `tilo-runtime/<version>+wasm.<32 hex>` |
 | `linux` | `x86_64`, `aarch64` | the feature level it was compiled for, non-empty | **required**, the linked `tilo-runtime/<version>` |
 | `windows` | `x86_64`, `aarch64` | the feature level it was compiled for, non-empty | **required**, the linked `tilo-runtime/<version>` |
 | `macos` | `x86_64`, `aarch64` | the feature level it was compiled for, non-empty | **required**, the linked `tilo-runtime/<version>` |
 | `android` | `x86_64`, `aarch64` | the feature level it was compiled for, non-empty | **required**, the linked `tilo-runtime/<version>` |
 
 A native release must publish a distinct `.tapp` for both architectures. Pass
-each tapp's target with `tilo-app-package entry --arch`. Web, Linux, Windows,
+each tapp's target with `tilo-app-package entry --arch`. Linux, Windows,
 macOS and Android versions sit beside Tilo OS versions in the same entry: version identity
 is `(version, platform, architecture)`, and a Tilo OS client installs only
 `tilo-os` versions.
@@ -535,34 +517,6 @@ and the linked release as `runtime`, equal to `[package].runtime`
 `MAX_DESKTOP_APP_TAPP_BYTES` (64 MiB), a distribution policy rather than a
 design target; `tilo-app-package entry --platform linux|windows|macos|android`
 binds it.
-
-**Web `isa`.** `wasm32-mvp` followed by zero or more `+<feature>`, where each
-feature is one of `atomics`, `bulk-memory`, `bulk-memory-opt`,
-`call-indirect-overlong`, `exception-handling`, `extended-const`,
-`multimemory`, `multivalue`, `mutable-globals`, `nontrapping-fptoint`,
-`reference-types`, `relaxed-simd`, `sign-ext`, `simd128`, `tail-call` (LLVM's
-`target_features` spelling). Features appear at most once and in byte-wise
-ascending order, so every feature set has exactly one spelling, for example
-`wasm32-mvp+bulk-memory+multivalue+mutable-globals+nontrapping-fptoint+reference-types+sign-ext`.
-Unknown features are refused rather than dropped: a client must be able to
-decide support from the string alone (it runs a module when the features it
-offers are a superset). The `isa` is at most 256 bytes.
-
-**Web `runtime`.** The web runtime ABI id,
-`tilo-runtime/<version>+wasm.<build>`, for example
-`tilo-runtime/2026.07+wasm.fe8836616de68a65d59c02eb73caa005`: exactly the
-bytes of the module's `tilo.runtime_abi` custom section. `<version>` is the
-toolkit-core release, CalVer or a SemVer core (`2026.07`, `2026.7.0-browser.1`)
-without build metadata, and equals the authored `package.runtime` of an app;
-`<build>` is exactly 32 lower-case hex digits. The loader refuses a module
-whose ABI id differs from the loaded core, so a client only offers an app
-version when a core (`kind = "runtime"`) with the same `runtime` is
-published.
-
-Existing native clients validate every version of every entry before trusting
-a snapshot and predate the `web` family: they reject a snapshot containing a
-web version. Roll out a client that accepts web targets before the first web
-version is published to a registry those clients follow.
 
 ### 6. Moderator workflow
 
@@ -788,32 +742,6 @@ For urgent removal, `review quarantine` immediately moves a public entry
 out of search while keeping its bytes and decision record recoverable.
 `review restore` re-checks the signature and current allowlist before
 making it visible again.
-
-## Web apps in the browser
-
-The browser runtime (`crates/browser/tilo-browser-runtime`) compiles its
-apps in and loads nothing from a registry. What a browser would check
-before running a registry app is already written:
-
-**Verification** lives in `crates/packaging/registry-web`, plain Rust that
-builds for `wasm32-unknown-unknown` without wasm-bindgen, web-sys or
-getrandom:
-
-- `verify_snapshot(bytes, owner_pubkey_hex, checkpoint, now_unix)` runs
-  `registry_types::verify_snapshot` against the pinned owner key and enforces
-  the anti-rollback `Checkpoint` (`{"sequence", "snapshot_hash_hex"}`, the
-  native client's shape): a lower sequence, or another snapshot at the same
-  sequence, is refused. It returns a `VerifiedSnapshot` and the checkpoint to
-  keep.
-- `VerifiedSnapshot::select(package_id, &Host { features, runtime })` picks the
-  newest `web`/`wasm32` version whose `isa` features the browser offers and,
-  when `runtime` is given, whose ABI id is exactly that.
-- `verify_package(tapp_bytes, &selection)` checks a thin or full tapp: its
-  signed root hashes to the version's `tapp_root_hash_hex`, is signed by the
-  entry's publisher, commits to the manifest and collection, and the manifest's
-  id, version and `[target]` are the selected version's. It returns the module
-  and the payload files (`assets/…` separately) by BLAKE3.
-- `verify_blob(bytes, blake3_hex)` checks each payload blob.
 
 ## TLS
 

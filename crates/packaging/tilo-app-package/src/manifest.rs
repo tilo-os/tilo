@@ -125,35 +125,30 @@ impl Capabilities {
     }
 }
 
-/// `[target]` — a WebAssembly, Linux, Windows, macOS or Android build of the
-/// package.
+/// `[target]` — a Linux, Windows, macOS or Android build of the package.
 ///
-/// For `linux`, `windows`, `macos` and `android`, `architecture` is `x86_64`
-/// or `aarch64`, `module` is the executable the GUI entrypoint names (for
-/// `android`, an `.apk` or `.aab`), and `runtime` is the toolkit release
-/// linked into it (`[package].runtime`).
+/// `architecture` is `x86_64` or `aarch64`, `module` is the executable the
+/// GUI entrypoint names (for `android`, an `.apk` or `.aab`), and `runtime`
+/// is the toolkit release linked into it (`[package].runtime`).
 ///
 /// The first four fields are exactly the registry's signed `RegistryTarget`
 /// (see `registry_types::target` for the canonical spellings):
 ///
 /// ```toml
 /// [target]
-/// platform = "web"
-/// architecture = "wasm32"
-/// isa = "wasm32-mvp+bulk-memory+mutable-globals+sign-ext"
-/// runtime = "tilo-runtime/2026.07+wasm.fe8836616de68a65d59c02eb73caa005"
-/// module = "books.wasm"
+/// platform = "linux"
+/// architecture = "x86_64"
+/// isa = "x86_64"
+/// runtime = "tilo-runtime/2026.07"
+/// module = "bin/books"
 /// ```
-///
-/// For an app, `runtime` is the toolkit core it links against; for
-/// `kind = "runtime"` it is the core the package provides.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Target {
     pub platform: String,
     pub architecture: String,
     pub isa: String,
     pub runtime: String,
-    /// Payload path of the WebAssembly module the loader instantiates.
+    /// Payload path of the executable the GUI entrypoint names.
     pub module: String,
 }
 
