@@ -87,12 +87,16 @@ const IDLE_WAKEUP_BUDGET: f64 = 7.5;
 /// same seven runs.
 const IDLE_CPU_BUDGET: f64 = 1.5;
 
-/// Most times per second the Terminal's collaboration shovel
+/// Most times per second one collaborating app's shovel
 /// (`ui-collab-shovel`) and the identity service's thread serving it
 /// (`tilo-identity-client`) may wake together. A route that holds no keys
 /// asks for them on a timer backing off from 1 s to 30 s, and is told when
 /// they change; asking once a second cost 5.3/s together (TIL-754, run
-/// 92445); after it they measured 0.60–0.70/s in all seven runs.
+/// 92445); after it the Terminal's measured 0.60–0.70/s in all seven runs.
+///
+/// The budget is per app with a shovel: until TIL-759 the restored Notes
+/// notebook never reached the broker, so only the Terminal had one. With
+/// both connected, CI measured 2.10/s for the two (PR #4197, run 94384).
 const KEY_ASK_BUDGET: f64 = 1.5;
 
 /// Most iterations per second the compositor's frame loop may make while
@@ -136,6 +140,9 @@ fn window() -> Duration {
 /// this fixture seeds.
 const FIXTURE_RECORD_SCOPE: &str = "00000000-0000-0000-0000-000000000000";
 
+/// How many desktops this process started, so each has its own runtime dir.
+static STARTED: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
 /// A line the compositor printed, with when the test read it.
 type Log = Arc<Mutex<Vec<(Instant, String)>>>;
 
@@ -154,7 +161,6 @@ impl Desktop {
         tilo_test_env::require_isolated_desktop();
         // SUN_LEN caps a unix socket path, so the runtime dir stays short.
         // One per desktop: this module's tests run beside each other.
-        static STARTED: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
         let runtime_dir = PathBuf::from(format!(
             "/run/user/{}/tilo-idle-{}-{}",
             unsafe { libc::getuid() },
@@ -504,7 +510,9 @@ impl LoopStats {
 /// identity service's per-client thread. Fails if the shovel is not there to
 /// observe: the Terminal opens a route, so a desktop without one did not
 /// measure what this bounds.
-fn key_ask_wakeups(wakeups: &tilo_test_env::idle::Wakeups) -> f64 {
+/// The shovels' and identity clients' wakeups per second, and how many
+/// apps' shovels ran.
+fn key_ask_wakeups(wakeups: &tilo_test_env::idle::Wakeups) -> (f64, usize) {
     // The kernel truncates thread names to 15 bytes.
     const SHOVEL: &str = "ui-collab-shove";
     const IDENTITY_CLIENT: &str = "tilo-identity-c";
@@ -518,7 +526,15 @@ fn key_ask_wakeups(wakeups: &tilo_test_env::idle::Wakeups) -> f64 {
         rows.iter().any(|row| row.thread == SHOVEL),
         "no collaboration shovel ran in the compositor, so the Terminal's route was not measured:\n{wakeups}"
     );
-    wakeups.rate(rows.iter().map(|row| row.voluntary).sum())
+    let shovels = rows
+        .iter()
+        .filter(|row| row.thread == SHOVEL)
+        .map(|row| row.threads)
+        .sum();
+    (
+        wakeups.rate(rows.iter().map(|row| row.voluntary).sum()),
+        shovels,
+    )
 }
 
 /// Whether a process named `name` runs in the compositor's tree.
@@ -641,7 +657,12 @@ fn an_idle_desktop_with_two_apps_stays_within_its_wakeup_budget() {
         desktop.log_tail()
     );
 
-    let key_asks = key_ask_wakeups(&wakeups);
+    let (key_asks, shovels) = key_ask_wakeups(&wakeups);
+    #[allow(
+        clippy::cast_precision_loss,
+        reason = "a count of collaborating apps, a handful"
+    )]
+    let key_ask_budget = KEY_ASK_BUDGET * shovels as f64;
     let report = format!(
         "{wakeups}\nblocked {:.2} times a second; the collaboration shovel and identity client {key_asks:.2}\ncompositor frame loop: {:.1} ticks/s ({} ticks, woken by: {}), {} frames painted (after: {}), {clock_turns} clock minute(s) turned; its paint-stats in the window:\n  {}",
         wakeups.blocking_per_second(),
@@ -676,8 +697,8 @@ fn an_idle_desktop_with_two_apps_stays_within_its_wakeup_budget() {
         wakeups.total_cpu_percent(),
     );
     assert!(
-        key_asks <= KEY_ASK_BUDGET,
-        "the Terminal's collaboration shovel and the identity client woke {key_asks:.2} times a second, over {KEY_ASK_BUDGET}/s: is a route asking for its channel keys on a 1 s timer again?\n{report}",
+        key_asks <= key_ask_budget,
+        "the {shovels} apps' collaboration shovels and the identity client woke {key_asks:.2} times a second, over {KEY_ASK_BUDGET}/s per app: is a route asking for its channel keys on a 1 s timer again?\n{report}",
     );
     assert!(
         frame_loop.ticks_per_second() <= LOOP_TICK_BUDGET,
