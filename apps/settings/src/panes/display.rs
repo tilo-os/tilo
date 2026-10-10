@@ -26,7 +26,7 @@ use tracing::warn;
 use ui::LocalState;
 use ui::framework::{EffectAnswer, EffectCx, Effected, LiveRow};
 use ui::tilo_resource::{self, ActionRef, Effect};
-use ui::widget::{Button, Dropdown, Slider, Toggle, Widget};
+use ui::widget::{Dropdown, Slider, Toggle, Widget};
 
 use crate::dispatcher::dispatcher_or_real;
 use crate::effects::{SettingsEffect, effect};
@@ -2060,15 +2060,10 @@ impl DisplayModel {
                 self.arrangement_drag.clone(),
             )),
             caption(&crate::i18n::t("display-arrangement-hint")),
-            setting_row(
-                &crate::i18n::t("display-identify-row"),
-                Box::new(self.cx.bind_invocation(
-                    Button::new(
-                        "settings.display.identify",
-                        &crate::i18n::t("display-identify"),
-                    ),
-                    DisplayEffect::IdentifyDisplays,
-                )),
+            self.cx.row(crate::i18n::t("display-identify-row")).button(
+                "settings.display.identify",
+                &crate::i18n::t("display-identify"),
+                DisplayEffect::IdentifyDisplays,
             ),
         ];
         // One honest line about the idle ports rather than a row each.
@@ -2513,19 +2508,15 @@ impl DisplayModel {
                             "display-keep-caption",
                             &[("seconds", seconds.into())],
                         )),
-                        setting_row(
-                            &t("display-keep-ok"),
-                            Box::new(self.cx.bind_invocation(
-                                Button::new("settings.display.keep", &keep),
-                                DisplayEffect::KeepDisplayChanges,
-                            )),
+                        self.cx.row(t("display-keep-ok")).button(
+                            "settings.display.keep",
+                            &keep,
+                            DisplayEffect::KeepDisplayChanges,
                         ),
-                        setting_row(
-                            &t("display-keep-wrong"),
-                            Box::new(self.cx.bind_invocation(
-                                Button::new("settings.display.revert", &revert),
-                                DisplayEffect::RevertDisplayChanges,
-                            )),
+                        self.cx.row(t("display-keep-wrong")).button(
+                            "settings.display.revert",
+                            &revert,
+                            DisplayEffect::RevertDisplayChanges,
                         ),
                     ]),
                 )
@@ -2549,12 +2540,10 @@ impl DisplayModel {
                 let mut content = vec![caption(&rejected)];
                 if self.pending_candidate.is_some() {
                     let try_again = t("display-try-again");
-                    content.push(setting_row(
-                        &t("display-retry"),
-                        Box::new(self.cx.bind_invocation(
-                            Button::new("settings.display.apply", &try_again),
-                            DisplayEffect::ApplyDisplayChanges,
-                        )),
+                    content.push(self.cx.row(t("display-retry")).button(
+                        "settings.display.apply",
+                        &try_again,
+                        DisplayEffect::ApplyDisplayChanges,
                     ));
                 }
                 card(&t("display-rejected-title"), rows(content))
@@ -2565,12 +2554,10 @@ impl DisplayModel {
                     &t("display-apply-title"),
                     rows(vec![
                         caption(&t("display-apply-caption")),
-                        setting_row(
-                            &t("display-apply-row"),
-                            Box::new(self.cx.bind_invocation(
-                                Button::new("settings.display.apply", &apply),
-                                DisplayEffect::ApplyDisplayChanges,
-                            )),
+                        self.cx.row(t("display-apply-row")).button(
+                            "settings.display.apply",
+                            &apply,
+                            DisplayEffect::ApplyDisplayChanges,
                         ),
                     ]),
                 )
@@ -2594,17 +2581,12 @@ impl DisplayModel {
         }
         let mut content = vec![caption(&crate::i18n::t("display-tools-caption"))];
         for tool in &trusted.tools {
-            content.push(setting_row(
-                tool.name(),
-                Box::new(self.cx.bind_invocation(
-                    Button::new(
-                        "settings.display.tool.forget",
-                        &crate::i18n::t("display-tools-forget"),
-                    ),
-                    DisplayEffect::ForgetDisplayTool {
-                        tool: tool.executable.clone(),
-                    },
-                )),
+            content.push(self.cx.row(tool.name()).button(
+                "settings.display.tool.forget",
+                &crate::i18n::t("display-tools-forget"),
+                DisplayEffect::ForgetDisplayTool {
+                    tool: tool.executable.clone(),
+                },
             ));
         }
         Some(card(&crate::i18n::t("display-tools-title"), rows(content)))

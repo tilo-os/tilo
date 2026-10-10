@@ -1338,18 +1338,16 @@ impl DeviceMeshModel {
                 )
             },
         );
-        let continuity_toggle = self.cx.bind_verb(
-            Toggle::from_state(&ui::LocalState::new(self.continuity.enabled))
-                .with_id(CONTINUITY_ENABLED_KEY),
-            ContinuityPrivacy::ALLOW_CONTINUITY,
-        );
-        let allow = t("mesh-allow-continuity");
-        let allow_desc = t("mesh-allow-continuity-desc");
-        let mut privacy_rows = vec![setting_row_described(
-            &allow,
-            &allow_desc,
-            Box::new(continuity_toggle),
-        )];
+        let mut privacy_rows = vec![
+            self.cx
+                .row(t("mesh-allow-continuity"))
+                .described(t("mesh-allow-continuity-desc"))
+                .id(CONTINUITY_ENABLED_KEY)
+                .toggle_verb(
+                    &ui::LocalState::new(self.continuity.enabled),
+                    ContinuityPrivacy::ALLOW_CONTINUITY,
+                ),
+        ];
         for capability in Capability::ALL {
             let key = continuity_key(capability);
             let desc = capability.description();
@@ -1367,13 +1365,17 @@ impl DeviceMeshModel {
                 t_args("mesh-facet-off", &[("desc", desc.into())])
             };
             let facet = capability.key().to_owned();
-            let toggle = self.cx.bind_verb(
-                Toggle::from_state(&ui::LocalState::new(self.continuity.allowed(capability)))
-                    .with_id(&key),
-                ContinuityPrivacy::ALLOW_CAPABILITY.map(move |on: bool| (facet.clone(), on)),
+            privacy_rows.push(
+                self.cx
+                    .row(capability.label())
+                    .described(status)
+                    .id(key)
+                    .toggle_verb(
+                        &ui::LocalState::new(self.continuity.allowed(capability)),
+                        ContinuityPrivacy::ALLOW_CAPABILITY
+                            .map(move |on: bool| (facet.clone(), on)),
+                    ),
             );
-            let cap_label = capability.label();
-            privacy_rows.push(setting_row_described(&cap_label, &status, Box::new(toggle)));
         }
         privacy_rows.push(caption(&t("mesh-privacy-stay")));
 
@@ -1516,53 +1518,36 @@ impl DeviceMeshModel {
             sections.push(card_with_action(&peer.label, remove, rows(peer_rows)));
         }
         if shows_advanced_services(self.config.device_role) {
-            let services_title = t("mesh-services-title");
-            let svc_relay = t("mesh-svc-relay");
-            let svc_relay_desc = t("mesh-svc-relay-desc");
-            let svc_remote = t("mesh-svc-remote");
-            let svc_remote_desc = t("mesh-svc-remote-desc");
-            let svc_apps = t("mesh-svc-apps");
-            let svc_apps_desc = t("mesh-svc-apps-desc");
-            let svc_jobs = t("mesh-svc-jobs");
-            let svc_jobs_desc = t("mesh-svc-jobs-desc");
             sections.push(card(
-                &services_title,
+                &t("mesh-services-title"),
                 rows(vec![
-                    setting_row_described(
-                        &svc_relay,
-                        &svc_relay_desc,
-                        Box::new(self.service_toggle(
-                            "inbound_relay",
-                            "device_mesh.inbound_relay",
-                            self.config.services.inbound_relay,
-                        )),
+                    self.service_row(
+                        "mesh-svc-relay",
+                        "mesh-svc-relay-desc",
+                        "inbound_relay",
+                        "device_mesh.inbound_relay",
+                        self.config.services.inbound_relay,
                     ),
-                    setting_row_described(
-                        &svc_remote,
-                        &svc_remote_desc,
-                        Box::new(self.service_toggle(
-                            "remote_control_relay",
-                            "device_mesh.remote_relay",
-                            self.config.services.remote_control_relay,
-                        )),
+                    self.service_row(
+                        "mesh-svc-remote",
+                        "mesh-svc-remote-desc",
+                        "remote_control_relay",
+                        "device_mesh.remote_relay",
+                        self.config.services.remote_control_relay,
                     ),
-                    setting_row_described(
-                        &svc_apps,
-                        &svc_apps_desc,
-                        Box::new(self.service_toggle(
-                            "app_serving",
-                            "device_mesh.app_serving",
-                            self.config.services.app_serving,
-                        )),
+                    self.service_row(
+                        "mesh-svc-apps",
+                        "mesh-svc-apps-desc",
+                        "app_serving",
+                        "device_mesh.app_serving",
+                        self.config.services.app_serving,
                     ),
-                    setting_row_described(
-                        &svc_jobs,
-                        &svc_jobs_desc,
-                        Box::new(self.service_toggle(
-                            "compute",
-                            "device_mesh.compute",
-                            self.config.services.compute,
-                        )),
+                    self.service_row(
+                        "mesh-svc-jobs",
+                        "mesh-svc-jobs-desc",
+                        "compute",
+                        "device_mesh.compute",
+                        self.config.services.compute,
                     ),
                 ]),
             ));
@@ -1571,12 +1556,24 @@ impl DeviceMeshModel {
         cards(sections)
     }
 
-    fn service_toggle(&self, service: &'static str, id: &str, on: bool) -> Toggle {
-        self.cx.bind(
-            Toggle::from_state(&ui::LocalState::new(on)).with_id(id),
-            effect(DeviceMeshEffect::SET_DEVICE_SERVICE)
-                .map(move |on: bool| (service.to_owned(), on)),
-        )
+    /// The row switching the mesh service `service` of this device.
+    fn service_row(
+        &self,
+        label: &str,
+        description: &str,
+        service: &'static str,
+        id: &str,
+        on: bool,
+    ) -> crate::widgets::El {
+        self.cx
+            .row(t(label))
+            .described(t(description))
+            .id(id)
+            .toggle_effect(
+                &ui::LocalState::new(on),
+                effect(DeviceMeshEffect::SET_DEVICE_SERVICE)
+                    .map(move |on: bool| (service.to_owned(), on)),
+            )
     }
 
     fn persist(&mut self) {
