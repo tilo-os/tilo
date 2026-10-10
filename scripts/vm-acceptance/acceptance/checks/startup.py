@@ -43,15 +43,21 @@ ANSI = re.compile(r"\x1b\[[0-9;]*m")
 # host every call would cross ssh. Prints one JSON object: the bus it read, whether the
 # root was there, and the names in the folder listing (None: no listing found).
 ATSPI_PROBE = r'''
-import importlib.util, json, re, sys, time
-CLIENT = "/usr/libexec/tilo/atspi-external-client.py"
+import importlib.util, json, os, re, sys, time
+CLIENT = os.environ.get("TILO_ATSPI_CLIENT", "/usr/libexec/tilo/atspi-external-client.py")
 program, root_name, list_name, timeout = sys.argv[1], sys.argv[2], sys.argv[3], float(sys.argv[4])
 try:
     spec = importlib.util.spec_from_file_location("atspi_client", CLIENT)
     m = importlib.util.module_from_spec(spec)
+    # dataclasses resolves the client's string annotations through sys.modules.
+    sys.modules[spec.name] = m
     spec.loader.exec_module(m)
 except Exception as e:
-    print(json.dumps({"error": f"no AT-SPI client at {CLIENT}: {e}"}))
+    if isinstance(e, FileNotFoundError) and e.filename == CLIENT:
+        error = f"no AT-SPI client at {CLIENT}: {e}"
+    else:
+        error = f"the AT-SPI client at {CLIENT} failed to load: {type(e).__name__}: {e}"
+    print(json.dumps({"error": error}))
     sys.exit(0)
 
 # AtspiRole's list. AccessKit has no role-name method; roles are numbers.

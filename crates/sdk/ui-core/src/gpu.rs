@@ -17,6 +17,10 @@
 //! reimplementing, for its private `adapter` field. vello stays unmodified,
 //! and this file stays close to `vello::util`'s own logic so the two can be
 //! compared when vello moves.
+//!
+//! It also decides which backends the instance is made with
+//! (`default_backends`): without OpenGL whenever OpenGL could not be
+//! chosen anyway, because wgpu initialises every backend it is asked for.
 
 use std::sync::{Arc, Mutex};
 
@@ -126,6 +130,10 @@ const MEMORY_HINTS: wgpu::MemoryHints = wgpu::MemoryHints::Manual {
 pub struct RenderContext {
     pub instance: Instance,
     pub devices: Vec<DeviceHandle>,
+    /// Backends to start `instance` again with if its own offer no adapter
+    /// at all, before any device or surface came from it (`default_backends`).
+    fallback: Option<wgpu::Backends>,
+    backend_options: wgpu::BackendOptions,
     #[cfg(all(windows, feature = "dx12-shader-cache"))]
     compiler_identity: Option<Arc<crate::dx12_shader_cache::CompilerIdentity>>,
 }
@@ -176,8 +184,84 @@ fn required_limits(adapter: &Limits) -> Limits {
     }
 }
 
+/// The backends a context's instance is made with, and those it is made
+/// again with when the first offer no adapter at all.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct BackendChoice {
+    pub(crate) primary: wgpu::Backends,
+    pub(crate) fallback: Option<wgpu::Backends>,
+}
+
+impl BackendChoice {
+    const fn only(backends: wgpu::Backends) -> Self {
+        Self {
+            primary: backends,
+            fallback: None,
+        }
+    }
+}
+
+/// The backends a context starts with when `WGPU_BACKEND` names none.
+///
+/// Windows uses DX12 alone: probing every backend can enter optional Vulkan
+/// translation-layer drivers before a working DX12 adapter is selected.
+/// Every Android device the app installs on has Vulkan 1.1. A native process
+/// elsewhere leaves OpenGL out whenever it could not be chosen anyway
+/// (`native::gpu_backends`).
+fn default_backends() -> BackendChoice {
+    if cfg!(target_os = "windows") {
+        BackendChoice::only(wgpu::Backends::DX12)
+    } else if cfg!(target_os = "android") {
+        BackendChoice::only(wgpu::Backends::VULKAN)
+    } else {
+        native_backends()
+    }
+}
+
+#[cfg(feature = "native")]
+fn native_backends() -> BackendChoice {
+    crate::native::gpu_backends::default_choice()
+}
+
+#[cfg(not(feature = "native"))]
+fn native_backends() -> BackendChoice {
+    BackendChoice::only(wgpu::Backends::all())
+}
+
+/// An instance of `backends`, with every field spelled out:
+/// `InstanceDescriptor` has no `Default`, and these are the values vello
+/// would have used.
+fn create_instance(backends: wgpu::Backends, backend_options: &wgpu::BackendOptions) -> Instance {
+    let instance = Instance::new(wgpu::InstanceDescriptor {
+        display: None,
+        backends,
+        flags: {
+            let flags = wgpu::InstanceFlags::from_build_config();
+            // The Android emulator's Vulkan driver crashes in
+            // vkSetDebugUtilsObjectNameEXT; `WGPU_DEBUG=1` still asks
+            // for object labels.
+            #[cfg(target_os = "android")]
+            let flags = flags.difference(wgpu::InstanceFlags::DEBUG);
+            flags.with_env()
+        },
+        memory_budget_thresholds: wgpu::MemoryBudgetThresholds::default(),
+        backend_options: backend_options.clone(),
+    });
+    tilo_startup_metrics::mark("gpu-instance-created");
+    instance
+}
+
 impl RenderContext {
+    /// A context on the backends `WGPU_BACKEND` names, or this platform's
+    /// `default_backends`. `WGPU_BACKEND` stays available for explicit
+    /// diagnostics and alternate drivers, and is never second-guessed.
     pub fn new() -> Self {
+        Self::with_backends(
+            wgpu::Backends::from_env().map_or_else(default_backends, BackendChoice::only),
+        )
+    }
+
+    pub(crate) fn with_backends(choice: BackendChoice) -> Self {
         let backend_options = wgpu::BackendOptions::from_env_or_default();
         #[cfg(windows)]
         let backend_options = {
@@ -197,8 +281,6 @@ impl RenderContext {
             }
             options
         };
-        // Every field spelled out: `InstanceDescriptor` has no `Default`, and
-        // these are the values vello would have used.
         #[cfg(all(windows, feature = "dx12-shader-cache"))]
         let compiler_identity =
             crate::dx12_shader_cache::CompilerIdentity::open(&backend_options.dx12.shader_compiler);
@@ -210,39 +292,34 @@ impl RenderContext {
             }
             options
         };
-        let instance = Instance::new(wgpu::InstanceDescriptor {
-            display: None,
-            // Use the host's native graphics API on Windows. Probing every
-            // backend can enter optional Vulkan translation-layer drivers
-            // before a working DX12 adapter is selected. Keep WGPU_BACKEND
-            // available for explicit diagnostics and alternate drivers.
-            backends: wgpu::Backends::from_env().unwrap_or_else(|| {
-                if cfg!(target_os = "windows") {
-                    wgpu::Backends::DX12
-                } else if cfg!(target_os = "android") {
-                    // Every device the app installs on has Vulkan 1.1.
-                    wgpu::Backends::VULKAN
-                } else {
-                    wgpu::Backends::default()
-                }
-            }),
-            flags: {
-                let flags = wgpu::InstanceFlags::from_build_config();
-                // The Android emulator's Vulkan driver crashes in
-                // vkSetDebugUtilsObjectNameEXT; `WGPU_DEBUG=1` still asks
-                // for object labels.
-                #[cfg(target_os = "android")]
-                let flags = flags.difference(wgpu::InstanceFlags::DEBUG);
-                flags.with_env()
-            },
-            memory_budget_thresholds: wgpu::MemoryBudgetThresholds::default(),
-            backend_options,
-        });
         Self {
-            instance,
+            instance: create_instance(choice.primary, &backend_options),
             devices: Vec::new(),
+            fallback: choice.fallback,
+            backend_options,
             #[cfg(all(windows, feature = "dx12-shader-cache"))]
             compiler_identity,
+        }
+    }
+
+    /// Before the first device or surface comes from `instance`: if it may
+    /// still be replaced and offers no adapter at all, make it again with the
+    /// fallback backends, once. Nothing of the first instance exists yet, so
+    /// nothing of it can meet the new one; afterwards the instance stays.
+    /// Free once settled.
+    async fn settle_backends(&mut self) {
+        let Some(fallback) = self.fallback.take() else {
+            return;
+        };
+        if self.devices.is_empty()
+            && self
+                .instance
+                .enumerate_adapters(wgpu::Backends::all())
+                .await
+                .is_empty()
+        {
+            tilo_startup_metrics::mark("gpu-instance-fallback");
+            self.instance = create_instance(fallback, &self.backend_options);
         }
     }
 
@@ -266,6 +343,10 @@ impl RenderContext {
 
     async fn new_device(&mut self, compatible_surface: Option<&Surface<'_>>) -> Option<usize> {
         tilo_startup_metrics::mark("gpu-adapter-request-start");
+        // The first device decides the instance for good. Asked first, not
+        // after a failed request: with `WGPU_ADAPTER_NAME` set, wgpu panics
+        // on an instance that offers no adapter instead of failing.
+        self.settle_backends().await;
         let adapter =
             wgpu::util::initialize_adapter_from_env_or_default(&self.instance, compatible_surface)
                 .await
@@ -413,6 +494,7 @@ impl RenderContext {
         height: u32,
         present_mode: wgpu::PresentMode,
     ) -> Result<RenderSurface<'w>, CreateSurfaceError> {
+        self.settle_backends().await;
         tilo_startup_metrics::mark("surface-native-create-start");
         let surface = self
             .instance
@@ -605,7 +687,37 @@ pub enum CreateSurfaceError {
 
 #[cfg(test)]
 mod tests {
-    use super::{create_targets, passed_over_hardware};
+    use super::{BackendChoice, RenderContext, create_targets, passed_over_hardware};
+    use wgpu::Backends;
+
+    #[test]
+    fn a_context_whose_backends_offer_no_adapter_starts_again_on_its_fallback_once() {
+        // The production fallback, from an instance that can offer nothing to
+        // the backends of this machine's real adapter.
+        let mut context = RenderContext::with_backends(BackendChoice {
+            primary: Backends::empty(),
+            fallback: Some(Backends::all()),
+        });
+        let index = pollster::block_on(context.device(None))
+            .expect("the fallback instance opens this machine's adapter");
+        assert_eq!(index, 0);
+        assert!(
+            context.fallback.is_none(),
+            "an instance is only ever made again once"
+        );
+
+        // An instance that offers an adapter is kept: falling back here
+        // would leave this context with no backend at all.
+        let mut kept = RenderContext::with_backends(BackendChoice {
+            primary: Backends::all(),
+            fallback: Some(Backends::empty()),
+        });
+        assert!(
+            pollster::block_on(kept.device(None)).is_some(),
+            "an instance with an adapter is never replaced"
+        );
+        assert!(kept.fallback.is_none());
+    }
     use crate::offscreen::shared_gpu;
     use wgpu::DeviceType;
 

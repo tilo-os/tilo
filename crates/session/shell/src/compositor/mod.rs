@@ -95,6 +95,8 @@ pub mod published_room;
 #[cfg(target_os = "linux")]
 pub mod remote_seat;
 pub mod render_node;
+#[cfg(target_os = "linux")]
+pub mod scanout_feedback;
 pub mod screen_dim;
 pub mod selection;
 pub mod session_env;

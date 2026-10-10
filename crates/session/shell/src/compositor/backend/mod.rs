@@ -777,6 +777,19 @@ pub trait Backend {
         false
     }
 
+    /// What `output`'s primary plane would scan out of a fullscreen client,
+    /// as last learned while presenting one there; `None` when the output
+    /// cannot scan a client out (no planes, rotated, calibrated, HDR) or the
+    /// backend has no planes at all. Fullscreen clients are told through
+    /// their dma-buf feedback ([`crate::compositor::scanout_feedback`]).
+    #[cfg(target_os = "linux")]
+    fn scanout_plane(
+        &self,
+        _output: OutputId,
+    ) -> Option<std::sync::Arc<crate::compositor::scanout_feedback::ScanoutPlane>> {
+        None
+    }
+
     /// The HDR signal an output is being driven with, or `None` for SDR.
     /// Clients learn it through `wp_color_management_output_v1`.
     fn output_hdr(&self, _output: OutputId) -> Option<OutputHdr> {
