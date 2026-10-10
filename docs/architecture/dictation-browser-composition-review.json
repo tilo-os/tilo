@@ -40,10 +40,95 @@
     "production_javascript_cases": 9,
     "candidate_pass": 9,
     "native_cef_regressions_added": 2,
-    "native_cef_regressions_executed": false,
-    "native_cpp_compile_executed": false,
+    "native_cef_regressions_executed": true,
+    "native_cpp_compile_executed": true,
     "mic_grant": false,
-    "model_acquisition": false
+    "model_acquisition": false,
+    "selected_native_tests_pass": 12,
+    "native_composition_tests_pass": 4,
+    "native_test_skips": 0
   },
-  "log_normalization": "Owned temporary path redacted; line-end whitespace stripped. Raw digest refers to the redacted captured log before whitespace normalization."
+  "log_normalization": "Owned temporary path redacted; line-end whitespace stripped. Raw digest refers to the redacted captured log before whitespace normalization.",
+  "native_evidence": {
+    "tested_source_head": "3b54993ac921d7dd33aa6b743ed650aa3d148a53",
+    "source_hashes": {
+      "apps/browser/chromium/src/host.cc": "11de5ba9110c68cc88cb9c962284942669206c9daf17129afd63169f2d13ae5a",
+      "apps/browser/chromium/src/page_automation.js": "6c6b94597687b8c11466528f9dc3199e283035c2e3a282d1432c81a1581e2ce0",
+      "apps/browser/chromium/tests/guarded_text_input.py": "0fd1aced9b1669e998769dff6c1e34643e0c7ee232dee6708f3c9f945ce8b99b",
+      "apps/browser/chromium/tests/native_composition.py": "f10ecffcf9a637f29361a3d56bb1c8ae893bf29529c930e34b0c99927e964ac8"
+    },
+    "host_sha256": "486fbdeba20beee3b7d787364c5344d969c2f3db9dedbdaa0097cdf88dfc49d9",
+    "blocker_sha256": "9d638720d2f6eeee07d5e2a16a903ef42a40443222d43bed4fb1d1ac1eea68fc",
+    "build_seconds": 101.68131611298304,
+    "sdk_archive_sha256": "cece35681a153ef16446214a8be35a766a2f9f64a5b9149c63c900857a70c57f",
+    "sdk_archive_size": 167327081,
+    "sdk_inventory_verified": 960,
+    "image": "sha256:3e643adc70d3dc2b6c3f3fecf0944f5c9273e0ac1aef0c382b5ca208456a67b8",
+    "selected_tests": [
+      {
+        "fixture": "guarded-lifecycle",
+        "fixture_sha256": "0fd1aced9b1669e998769dff6c1e34643e0c7ee232dee6708f3c9f945ce8b99b",
+        "exit": 0,
+        "expected_tests": 8,
+        "executed_tests": 8,
+        "seconds": 6.627605262998259
+      },
+      {
+        "fixture": "actual-native-composition",
+        "fixture_sha256": "f10ecffcf9a637f29361a3d56bb1c8ae893bf29529c930e34b0c99927e964ac8",
+        "exit": 0,
+        "expected_tests": 4,
+        "executed_tests": 4,
+        "seconds": 5.022997184016276
+      }
+    ],
+    "portable_manifest": [
+      {
+        "path": "tools/release/fixtures/dictation_browser_composition_20261010/native-build-receipt.json",
+        "raw_sha256": "2ff2853f4ac7a2a139787235e1b0a987840878d12d6d8610102db5be61a6c10c",
+        "canonical_sha256": "1b9aa93870b5efc305b5f46baa057a5737e269af3bf635e1073fa9f0b42f89aa"
+      },
+      {
+        "path": "tools/release/fixtures/dictation_browser_composition_20261010/native-native-test-receipt.json",
+        "raw_sha256": "91d3eaaf9715f2b98e58c420a502cfe33d51a83816e5c53a614c6055e7329e83",
+        "canonical_sha256": "7d034300d88e7fb1de94008ea276341e95e9c3ad060fcc4d59dbd27deadd478d"
+      },
+      {
+        "path": "tools/release/fixtures/dictation_browser_composition_20261010/native-transient-unit-receipt.json",
+        "raw_sha256": "de1d6f75d3dd222c7d22fd3205a776ec2714c5538e3d53131b02214ddf7f38d8",
+        "canonical_sha256": "de1d6f75d3dd222c7d22fd3205a776ec2714c5538e3d53131b02214ddf7f38d8"
+      },
+      {
+        "path": "tools/release/fixtures/dictation_browser_composition_20261010/native-build.log",
+        "raw_sha256": "141d5c94da41d60e66ca7ed7183c4b11b96abaa536ebe75fb791f6fbb4deccb5",
+        "canonical_sha256": "141d5c94da41d60e66ca7ed7183c4b11b96abaa536ebe75fb791f6fbb4deccb5"
+      },
+      {
+        "path": "tools/release/fixtures/dictation_browser_composition_20261010/native-guarded-lifecycle.log",
+        "raw_sha256": "f7b664797ba4d4af6aff356f3f2fa66367d255ffa2b262882da6c5e577d15aef",
+        "canonical_sha256": "f7b664797ba4d4af6aff356f3f2fa66367d255ffa2b262882da6c5e577d15aef"
+      },
+      {
+        "path": "tools/release/fixtures/dictation_browser_composition_20261010/native-actual-native-composition.log",
+        "raw_sha256": "a10f687f3e5b5a6713b670d7fe428f0f4d205b7d21bfe8780d2f4383dcacafc9",
+        "canonical_sha256": "a10f687f3e5b5a6713b670d7fe428f0f4d205b7d21bfe8780d2f4383dcacafc9"
+      },
+      {
+        "path": "tools/release/fixtures/dictation_browser_composition_20261010/build-wrapper.py",
+        "raw_sha256": "b7aa17cbdc469c8d86038a03149181ae82f5210ae2556d8efe2e60abea4d3ee8",
+        "canonical_sha256": "a6545e9d730920d30f9f315a43a71f3c7028959e695f63895fd5f82a28d342d0"
+      },
+      {
+        "path": "tools/release/fixtures/dictation_browser_composition_20261010/lifecycle-wrapper.py",
+        "raw_sha256": "48211f4356a11e783baf145cac8dd473d1f04742b0f66a32032f55d86092c6ed",
+        "canonical_sha256": "48211f4356a11e783baf145cac8dd473d1f04742b0f66a32032f55d86092c6ed"
+      },
+      {
+        "path": "tools/release/fixtures/dictation_browser_composition_20261010/service-wrapper.py",
+        "raw_sha256": "e53d34e2185278e7eff5eadc37efaa52df559133828783079c75bc665fa4310d",
+        "canonical_sha256": "d1ebbe9858f55f987cf341c1babe6ecb958e268fdc211fd088b3dd5367581edb"
+      }
+    ],
+    "normalization": "Private task/owner paths replaced and trailing whitespace stripped; raw log references in canonical receipts refer to original export digests."
+  }
 }

@@ -1,0 +1,24 @@
+{
+  "head": "3b54993ac921d7dd33aa6b743ed650aa3d148a53",
+  "source_hashes": {
+    "apps/browser/chromium/src/host.cc": "11de5ba9110c68cc88cb9c962284942669206c9daf17129afd63169f2d13ae5a",
+    "apps/browser/chromium/src/page_automation.js": "6c6b94597687b8c11466528f9dc3199e283035c2e3a282d1432c81a1581e2ce0",
+    "apps/browser/chromium/tests/guarded_text_input.py": "0fd1aced9b1669e998769dff6c1e34643e0c7ee232dee6708f3c9f945ce8b99b",
+    "apps/browser/chromium/tests/native_composition.py": "f10ecffcf9a637f29361a3d56bb1c8ae893bf29529c930e34b0c99927e964ac8"
+  },
+  "existing_corrected_sdk": "${CEF_OWNER_ROOT}/native-qualification-revision-two/native-output/sdk/cef_binary_152.0.6+g708dc14+chromium-152.0.7977.83_linux64_tilo-40a39125d44e97d1_minimal",
+  "sdk_archive_sha256": "cece35681a153ef16446214a8be35a766a2f9f64a5b9149c63c900857a70c57f",
+  "sdk_archive_size": 167327081,
+  "sdk_inventory_verified": 960,
+  "sdk_read_only": true,
+  "production_pins_changed": false,
+  "image": "sha256:3e643adc70d3dc2b6c3f3fecf0944f5c9273e0ac1aef0c382b5ca208456a67b8",
+  "blocker_sha256": "9d638720d2f6eeee07d5e2a16a903ef42a40443222d43bed4fb1d1ac1eea68fc",
+  "build_exit": 0,
+  "build_seconds": 101.68131611298304,
+  "owned_container_verified_absent": "dictation-browser-composition-3049c348fb6e",
+  "build_log_sha256": "141d5c94da41d60e66ca7ed7183c4b11b96abaa536ebe75fb791f6fbb4deccb5",
+  "owned_review": "${OWNED_REVIEW}",
+  "host_sha256": "486fbdeba20beee3b7d787364c5344d969c2f3db9dedbdaa0097cdf88dfc49d9",
+  "runtime_libcef_sha256": "c8c3c51ebcb086b5b22cfdcdc07115826332ed3c6e038b316ec593951cf4e3da"
+}

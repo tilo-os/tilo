@@ -1,0 +1,13 @@
+test_unrelated_custom_composition_end_cannot_release_the_original_field (__main__.GuardedTextInput.test_unrelated_custom_composition_end_cannot_release_the_original_field) ... ok
+test_removed_custom_composition_editor_allows_only_a_fresh_successor (__main__.GuardedTextInput.test_removed_custom_composition_editor_allows_only_a_fresh_successor) ... ok
+test_composition_before_first_private_prepare_is_refused_and_recovers (__main__.GuardedTextInput.test_composition_before_first_private_prepare_is_refused_and_recovers) ... ok
+test_preexisting_composition_blocks_successor_focus_until_it_ends (__main__.GuardedTextInput.test_preexisting_composition_blocks_successor_focus_until_it_ends) ... ok
+test_password_otp_and_composition_are_refused (__main__.GuardedTextInput.test_password_otp_and_composition_are_refused) ... ok
+test_cancel_and_retired_cancel_cannot_affect_a_successor (__main__.GuardedTextInput.test_cancel_and_retired_cancel_cannot_affect_a_successor) ... ok
+test_focus_change_and_return_permanently_retires_original_lease (__main__.GuardedTextInput.test_focus_change_and_return_permanently_retires_original_lease) ... ok
+test_document_open_cannot_reuse_removed_composition_observer (__main__.GuardedTextInput.test_document_open_cannot_reuse_removed_composition_observer) ... ok
+
+----------------------------------------------------------------------
+Ran 8 tests in 6.447s
+
+OK
