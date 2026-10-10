@@ -323,11 +323,6 @@ impl ProgressBar {
             self.progress
         }
     }
-
-    /// Whether the bar is in indeterminate mode.
-    pub fn is_indeterminate(&self) -> bool {
-        self.indeterminate
-    }
 }
 
 /// Rounds an already-clamped `[0, 100]` percentage to a whole-number

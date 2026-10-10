@@ -224,7 +224,10 @@ records of the same KPI and environment, and fails the run on
 
 - a p50 more than 10 % or a p99 more than 20 % above the median of the last five
   comparable runs, on two consecutive runs (one bad night is reported as
-  `regression-pending`);
+  `regression-pending`). A noisy KPI sets `baseline_min_runs` (three for latency
+  timing KPIs; one for dropped frames) and is compared once that many
+  comparable runs, or one accepted run, are stored; until then a run is `new`
+  and joins the baseline;
 - an enforced ceiling in `tools/perf/kpi-budgets.toml` (non-enforced ceilings
   are marketing targets and are only reported);
 - a selected benchmark that produced no record.
@@ -233,11 +236,14 @@ The records, each with its verdict, are appended to the public generic package
 `tilo-perf-results` (one immutable file per run, a version per UTC month), so
 the current numbers come from there, not from `docs/benchmarks/`. Read them with
 `python3 tools/perf/store.py fetch https://code.tilo.so`. Dispatch inputs:
-`kpis` selects groups (`fs`, `footprint`, `agent`, `latency`, `render`); `accept` takes this run's values as
+`kpis` selects groups (`fs`, `footprint`, `agent`, `latency`, `render`, `wakeups`, `hosting`); `accept` takes this run's values as
 the new baseline start after an intended change (from main only); and
 `synthetic_series` with `synthetic_factor` multiplies a run's values to prove
 the gate. A 1.25 factor passes as pending in the first run of a series and fails
-in the second. Synthetic records never enter a real baseline.
+in the second. Synthetic records never enter a real baseline, and `fetch` leaves
+them out (it says how many on stderr; `--synthetic` prints them too): their
+values are multiplied on purpose and their `regression` verdicts are the gate
+test, not a measurement.
 
 The installed desktop's groups, `boot`, `idle`, `memory`, `app` and `render`, come from
 **Dev / VM acceptance** (`vm-acceptance.yml`) instead: its nightly run already boots the
@@ -284,6 +290,98 @@ Pull requests may gate only on deterministic, runner-independent counters
 (bytes, allocation counts, raster pixels), only when the measured paths change,
 and following `tools/web/wasm_size_ratchet.py`. Wall-clock KPIs belong in
 this lane.
+
+## App package size
+
+"Apps are ~2 MB" is measured as the bytes of the signed `.tapp` a person
+downloads, per architecture. The KPI targets are a median of at most 2 MB, a
+p90 of at most 4 MB and a max of at most 6 MB (decimal). Each app has its own
+budget in `tools/perf/tapp-size-budget/budget.toml`, set at its measured size
+plus 1 % headroom, rounded up to 64 KiB. `tools/perf/tapp_size_ratchet.py`
+enforces the budgets in three places:
+
+- **Release / apps** (`Shipped tapps within their size budget`) measures each
+  tapp it has just packaged and signed, which is the affected apps only. It
+  fails when an app is over its budget or has none, so nothing is published.
+  Pull requests do not package tapps. To measure a branch before merging,
+  dispatch Release / apps on it with `apps=<dir>`, the one architecture you
+  need, and publish off.
+- **Perf / scheduled** (footprint group, nightly) holds every published app to
+  its budget. It also holds the apps' median, p90 and max to the fleet
+  ceilings: the KPI targets, or an interim ceiling where the fleet does not
+  meet a target yet.
+- **CI / fast quality** runs `check-budget`, a text check. A budget or ceiling
+  may only grow by what a raise file new in the same change adds. The budgeted
+  apps must be exactly the default collection, so an app added to `apps/`
+  brings its budget. A new app may start at the 6 MB max target until it is
+  measured.
+
+The population is the default collection's apps. The runtime package is the
+runtime's own KPI. The runtime and provider stubs are not apps, and apps the
+registry still lists but this repository no longer builds are not counted. The
+nightly names every package it leaves out.
+
+To raise a budget for an intended growth, add one file per change. Never edit
+the base numbers upward:
+
+```toml
+# tools/perf/tapp-size-budget/raises/<change>.toml
+reason = "the toolkit gained guarded OS dictation"  # at least 20 characters
+run = 90210                  # the Release / apps run that measured the growth
+
+[apps."so.tilo.settings"]    # bytes added to each app's budget
+x86_64 = 65536
+aarch64 = 65536
+
+[fleet.x86_64]               # only if a fleet ceiling is crossed
+p50 = 65536
+```
+
+A failing Release / apps job prints this file with each over-budget app's
+numbers. Each architecture's job prints its own lines, so merge them. A raise
+may at most double a budget. When an app shrinks, both gates print the lower
+budget to commit (`[apps."<id>"] <arch> = <bytes>`), with the app removed from
+its raise files. They also print when an interim fleet ceiling can be lowered,
+or removed once its target holds. To re-seed the budgets from the registry,
+run `python3 tools/perf/tapp_size_ratchet.py seed entries.json`, where
+`entries.json` is `https://apps.tilo.so/entries`.
+
+`tools/binary-budget.toml` is different: it is a weekly guard against static
+linking in release binaries, not this KPI.
+
+## Runtime size
+
+Every thin app maps one shared Rust dylib, `libruntime_dylib.so`. A device
+downloads it when an app's runtime is missing, and every app process applies
+its dynamic relocations before `main`. `tools/perf/runtime_size_ratchet.py`
+reads four numbers from the ELF file, per architecture: `bytes`,
+`relocation_bytes` (the relocation tables), `relocated_bytes` (the 4 KiB pages
+those relocations dirty in each app process) and `symbol_relocations` (the
+relocations that need a symbol lookup). It also names any media library the
+runtime makes every app load. The budgets are in
+`tools/perf/runtime-size-budget/budget.toml`, with the same headroom, rounding
+and raise files as the app budgets above:
+
+- **Release / apps** (`Shared runtime within its size budget`) measures the
+  dylib it has just built.
+- **Perf / scheduled** (footprint group) fetches the newest published
+  `so.tilo.runtime` of each architecture, holds it to the budgets and records
+  `footprint.runtime.<metric>.<arch>`.
+- **CI / fast quality** fails when a budget grows without a raise file new in
+  the same change.
+
+To raise a budget for an intended growth, add one file per change:
+
+```toml
+# tools/perf/runtime-size-budget/raises/<change>.toml
+reason = "the toolkit gained a PDF engine"  # at least 20 characters
+run = 90210                  # the Release / apps run that measured the growth
+
+[runtime.x86_64]             # added to each metric's budget
+bytes = 4194304
+```
+
+When the runtime shrinks, both gates print the lower budget to commit.
 
 ## Fast checks before assembly
 

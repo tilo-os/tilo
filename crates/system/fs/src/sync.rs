@@ -3261,6 +3261,7 @@ async fn reconcile_loop(reconcile: ReconcileLoop) {
     // previews once even if the first anti-entropy exchange is clean.
     let mut refresh_thumbnails = true;
     let mut first_pass = true;
+    let mut conflict_watch = conflict_watch::ConflictWatch::default();
     let trace = std::env::var_os("TILO_FS_NATIVE_TRACE").is_some();
     loop {
         // A local change or a peer's announcement starts a pass at once;
@@ -3338,11 +3339,13 @@ async fn reconcile_loop(reconcile: ReconcileLoop) {
 
         // Conflicts come from what peers sent: a pass that only announced
         // this device's own changes and received nothing has none to find,
-        // and a burst of local changes must not rescan every record per
-        // change. Timer passes still look.
+        // and a burst of local changes must not recheck records per change.
+        // Other passes look only at what was written or merged since the
+        // last look ([`conflict_watch`]), so an idle pass does nothing.
         if !may_write || (local_change && !namespace_changed) {
             continue;
         }
+        conflict_watch.begin_pass(Instant::now());
         if let Some(records) = &records {
             let actor = fs_protocol::FileActor {
                 person: collab_types::Ed25519PublicKey(identity.user_public_key()),
@@ -3355,15 +3358,11 @@ async fn reconcile_loop(reconcile: ReconcileLoop) {
                 identity.credentials().signing_key().clone(),
             ) {
                 Ok(publisher) => {
-                    let mut conflict_published = false;
-                    for key in records.repository.reconciliation_keys(records.workspace_id) {
-                        match publisher.publish_concurrent_head_conflict(key.record_id) {
-                            Ok(changed) => conflict_published |= changed,
-                            Err(error) => {
-                                eprintln!("record conflict publication failed: {error}");
-                            }
-                        }
-                    }
+                    let conflict_published = conflict_watch.publish_record_conflicts(
+                        &publisher,
+                        &records.repository,
+                        records.workspace_id,
+                    );
                     if conflict_published
                         && let Some(materializer) = &records.materializer
                         && let Err(error) = materializer.reconcile_repository(&records.repository)
@@ -3374,27 +3373,36 @@ async fn reconcile_loop(reconcile: ReconcileLoop) {
                 Err(error) => eprintln!("record conflict publisher unavailable: {error}"),
             }
         }
-        let conflicts = crate::conflict::detect(
-            &namespace
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner),
-        );
+        // Takes the namespace lock a step at a time: FUSE requests between
+        // the steps never wait for the whole walk.
+        let conflicts = conflict_watch.namespace_conflicts(&namespace);
+        if trace {
+            let pass = conflict_watch.namespace_pass();
+            eprintln!(
+                "  conflict scan: {} node(s) in {} lock hold(s), longest {} us",
+                pass.nodes,
+                pass.lock_holds,
+                pass.longest_hold.as_micros()
+            );
+        }
         for c in conflicts {
             // Fetch just the loser's manifest for its length (chunks hydrate
             // lazily on read). Skipped if no peer can serve it yet; retried next pass.
-            if let Ok(len) = hydrator.content_len(c.loser).await {
-                let delta = {
-                    let mut ns = namespace
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner);
-                    crate::conflict::materialize(&mut ns, &c, len, unix_now_ms())
-                };
-                if !delta.is_empty()
-                    && let Some(sender) = &sender
-                {
-                    let _gate = changeset_boundary(records.as_ref().map(|r| &*r.repository)).await;
-                    let _ = sender.broadcast(Bytes::from(delta)).await;
-                }
+            let Ok(len) = hydrator.content_len(c.loser).await else {
+                conflict_watch.retry_namespace();
+                continue;
+            };
+            let delta = {
+                let mut ns = namespace
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                crate::conflict::materialize(&mut ns, &c, len, unix_now_ms())
+            };
+            if !delta.is_empty()
+                && let Some(sender) = &sender
+            {
+                let _gate = changeset_boundary(records.as_ref().map(|r| &*r.repository)).await;
+                let _ = sender.broadcast(Bytes::from(delta)).await;
             }
         }
     }
@@ -3456,6 +3464,7 @@ async fn bind_certified_test_endpoint_with_root() -> (
     (endpoint, lookup, transport, root, device)
 }
 
+mod conflict_watch;
 mod session;
 pub use session::TILO_FS_SESSION_ALPN;
 

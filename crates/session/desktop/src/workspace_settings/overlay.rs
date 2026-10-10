@@ -647,14 +647,6 @@ impl WorkspaceSettingsOverlay {
         &self.device_toggle_rects
     }
 
-    pub fn move_workspace_rects(&self) -> [Rect; 2] {
-        self.move_rects
-    }
-
-    pub fn delete_workspace_rect(&self) -> Rect {
-        self.delete_rect
-    }
-
     pub fn name_rect(&self) -> Rect {
         let body = self.general_body_rect();
         Rect::new(

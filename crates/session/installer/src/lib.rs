@@ -83,3 +83,16 @@ pub mod timezones;
 
 pub use disks::{Disk, DiskPartition, parse_lsblk, read_disks};
 pub use installer_app::{InstallState, InstallerApp, Step};
+
+/// Layout of a full-width wizard row that keeps its `height` instead of
+/// shrinking when the column runs short.
+fn full_width_row(height: f32) -> taffy::Style {
+    taffy::Style {
+        size: taffy::Size {
+            width: taffy::Dimension::percent(1.0),
+            height: taffy::Dimension::length(height),
+        },
+        flex_shrink: 0.0,
+        ..Default::default()
+    }
+}

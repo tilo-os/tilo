@@ -894,26 +894,6 @@ impl PairingHandshake {
         }
     }
 
-    pub fn take_pairer_round1(&self, nonce: &[u8; 16]) -> Option<EnrolmentRound1> {
-        let key = hex::encode(nonce);
-        match &self.backend {
-            PairingBackend::Memory(inner) => inner
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .get_mut(&key)?
-                .pairer_round1
-                .take(),
-            #[cfg(unix)]
-            PairingBackend::Durable(backend) => {
-                let mut out = None;
-                Self::durable_update(backend, nonce, |state| out = state.pairer_round1.take())
-                    .then_some(())?;
-                out
-            }
-            PairingBackend::Remote { .. } => None,
-        }
-    }
-
     pub fn publish_pairer_reply(&self, nonce: &[u8; 16], reply: EnrolmentRound2, mac: [u8; 64]) {
         let key = hex::encode(nonce);
         // Recover rather than panic on a poisoned lock: a panic here

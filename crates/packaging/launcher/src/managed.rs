@@ -26,8 +26,8 @@ pub struct PackageTrust {
 }
 
 impl PackageTrust {
-    /// Load the same independently configured app trust used by the installer.
-    /// This never adds the installed package's self-declared publisher.
+    /// Load the independently configured application trust used by the installer.
+    /// The installed package's self-declared publisher never grants trust.
     ///
     /// # Errors
     /// Refuses unavailable configuration roots or malformed trust/revocation files.

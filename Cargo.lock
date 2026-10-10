@@ -4739,7 +4739,6 @@ dependencies = [
  "serde_json",
  "sha2 0.11.0",
  "thiserror 2.0.21",
- "tilo-clock",
  "uuid",
  "wire-frame",
  "workspace-hack",
@@ -7928,6 +7927,7 @@ dependencies = [
  "tilo-paths",
  "tilo-rt",
  "tilo-sandbox-core",
+ "tilo-startup-metrics",
  "tilo-test-env",
  "tokio",
  "toml 1.0.6+spec-1.1.0",
@@ -14419,10 +14419,10 @@ dependencies = [
  "uuid",
  "walkdir",
  "wayland-client",
- "wayland-scanner",
  "wayland-protocols",
  "wayland-protocols-misc",
  "wayland-protocols-wlr",
+ "wayland-scanner",
  "wgpu",
  "windows-vm",
  "wire-frame",
@@ -16223,7 +16223,6 @@ dependencies = [
 name = "tilo-bluez"
 version = "0.1.0"
 dependencies = [
- "futures-util",
  "tokio",
  "tracing",
  "workspace-hack",
@@ -16882,6 +16881,7 @@ name = "tilo-font-catalog"
 version = "0.1.0"
 dependencies = [
  "hex",
+ "libc",
  "serde",
  "sha2 0.11.0",
  "tempfile",
@@ -17049,6 +17049,7 @@ dependencies = [
 name = "tilo-input-context"
 version = "0.1.0"
 dependencies = [
+ "libc",
  "serde",
  "serde_json",
  "tilo-actions",
@@ -18631,9 +18632,9 @@ dependencies = [
  "wasm-bindgen-futures",
  "wayland-backend",
  "wayland-client",
- "wayland-scanner",
  "wayland-protocols",
  "wayland-protocols-plasma",
+ "wayland-scanner",
  "web-sys",
  "web-time",
  "windows-sys 0.52.0",

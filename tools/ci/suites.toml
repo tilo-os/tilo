@@ -70,6 +70,7 @@ suites = [
   "os/tests/containerfile_copy_invariants.sh",
   "os/tests/board_session.sh",
   "os/tests/board_release_promotion.py",
+  "os/tests/test_board_successor.py",
   "os/tests/board_generation_series.py",
   "os/tests/cage_session_env.sh",
   "os/tests/board_audio_contract.sh",
@@ -406,9 +407,14 @@ inputs = [
   # and the WORKSPACE-SWITCH parser equal to the compositor's line.
   "crates/system/fs/tests/performance_gate.rs",
   "crates/session/shell/src/compositor/switch_latency.rs",
+  # ... and the hosting-load KPI ids equal to the relay load bench's.
+  "crates/hosting/tilo-relay/examples/relay_load/main.rs",
   # scripts/perf/render_bench_test.py keeps the parsed lines equal to the harnesses'.
   "crates/dev/ui-examples/examples/dashboard_perf_bench.rs",
   "crates/session/shell/examples/redraw_bench.rs",
+  # tools/perf/test_tapp_size_ratchet.py holds the budgeted apps equal to the
+  # default collection.
+  "tools/apps/app_release.py", "dist/apps/app-collections.toml", "apps/*/tilo-app.toml",
 ]
 suites = [
   "scripts/perf/check_app_coverage_test.py",
@@ -440,7 +446,9 @@ suites = [
   "tools/perf/test_adapters.py",
   "tools/perf/test_compare.py",
   "tools/perf/test_record.py",
+  "tools/perf/test_runtime_size_ratchet.py",
   "tools/perf/test_store.py",
+  "tools/perf/test_tapp_size_ratchet.py",
 ]
 
 [[group]]

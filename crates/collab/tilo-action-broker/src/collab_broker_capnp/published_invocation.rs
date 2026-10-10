@@ -117,7 +117,7 @@ impl OriginalInvocationData {
         let original = OriginalInvocation {
             broker: Arc::downgrade(state),
             peer,
-            worker: TargetCustody::Registered(worker.clone()),
+            worker: TargetCustody::Registered(Box::new(worker.clone())),
             data: self.clone(),
         };
         original.check_lifecycle()?;
@@ -595,11 +595,10 @@ struct ApprovedCheckArguments {
 }
 
 enum TargetCustody {
-    Registered(PrivateWorkerRegistration),
+    Registered(Box<PrivateWorkerRegistration>),
     Native {
         connection: Arc<super::native_media::LocalAppConnection>,
         admitted: Box<AdmittedJoinIdentity>,
-        certificate: tilo_user_identity::DeviceCert,
     },
 }
 
@@ -646,12 +645,6 @@ impl OriginalInvocation {
     }
     pub fn request(&self) -> &PublishedInvocationRequest {
         &self.data.request
-    }
-    pub fn worker_certificate(&self) -> &tilo_user_identity::DeviceCert {
-        match &self.worker {
-            TargetCustody::Registered(worker) => &worker.certificate,
-            TargetCustody::Native { certificate, .. } => certificate,
-        }
     }
     pub fn route(&self) -> &CrdtRoute {
         &self.data.route
@@ -827,7 +820,7 @@ impl OriginalInvocation {
             return Err("approved check ID differs from accepted action".into());
         }
         let worker = if let Some(worker) = admitted.worker_registration.clone() {
-            TargetCustody::Registered(worker)
+            TargetCustody::Registered(Box::new(worker))
         } else {
             let connection = channel
                 .lease
@@ -836,14 +829,13 @@ impl OriginalInvocation {
                 .filter(|connection| connection.current())
                 .cloned()
                 .ok_or("native target process custody unavailable")?;
-            let certificate = admitted
+            admitted
                 .certificate
-                .clone()
+                .as_ref()
                 .ok_or("native target certificate unavailable")?;
             TargetCustody::Native {
                 connection,
                 admitted: Box::new(admitted),
-                certificate,
             }
         };
         let original = Arc::new(Self {
@@ -1019,7 +1011,7 @@ impl CapnpBrokerState {
                 drop(registry);
                 (peer, data)
             };
-            let original = Arc::new(OriginalInvocation { broker: broker.clone(), peer, worker: TargetCustody::Registered(worker.clone()), data });
+            let original = Arc::new(OriginalInvocation { broker: broker.clone(), peer, worker: TargetCustody::Registered(Box::new(worker.clone())), data });
             original.check_lifecycle()?;
             let route = ui::collaboration::RouteSpec {
                 app_id: worker.route.app_id.clone(),

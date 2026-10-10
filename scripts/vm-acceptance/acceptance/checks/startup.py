@@ -18,6 +18,8 @@ import json
 import re
 import shlex
 import time
+import tomllib
+from pathlib import Path
 
 from .. import app_startup, core, gpu, records
 from ..core import CheckFailed, Unobservable, check
@@ -32,6 +34,7 @@ FILES_LIST = "Files"
 SESSION_LOG = "$HOME/.local/state/tilo/session-logs/latest.log"
 MARKS_WAIT_S = 10
 LISTING_WAIT_S = 30
+KPI_BUDGETS = Path(__file__).resolve().parents[4] / "tools/perf/kpi-budgets.toml"
 
 ANSI = re.compile(r"\x1b\[[0-9;]*m")
 
@@ -103,8 +106,12 @@ while True:
 
 def parse_startup_marks(text: str, since_ms: int) -> dict | None:
     """The startup marks of the first launch that began at or after `since_ms` (the guest's
-    clock before the open): {"path", "origin_epoch_ms", "events": {name: seconds}}. Input is
-    one `<path>\\t<json>` line per startup file; unreadable or partial files are skipped."""
+    clock before the open): {"path", "origin_epoch_ms", "origin_epoch_us", "events": {name:
+    seconds}, "launcher": [(name, epoch_us)], "exec_to_main_us"}. `launcher` holds the
+    phase marks the launcher handed the app (empty from a launcher that hands none) and
+    `exec_to_main_us` the time from the process's creation to its `main` (None where the
+    app did not measure it). Input is one `<path>\\t<json>` line per startup file;
+    unreadable or partial files are skipped."""
     best = None
     for line in text.splitlines():
         path, _, body = line.partition("\t")
@@ -120,21 +127,77 @@ def parse_startup_marks(text: str, since_ms: int) -> dict | None:
             for e in doc.get("events") or []:
                 if isinstance(e, dict) and isinstance(e.get("ns"), int) and e.get("name") not in events:
                     events[e["name"]] = round(e["ns"] / 1e9, 3)
-            best = {"path": path, "origin_epoch_ms": origin, "events": events}
+            origin_us = doc.get("origin_epoch_us")
+            launcher = [(e["name"], e["epoch_us"]) for e in doc.get("launcher") or []
+                        if isinstance(e, dict) and isinstance(e.get("name"), str)
+                        and isinstance(e.get("epoch_us"), int)]
+            exec_to_main = doc.get("exec_to_main_us")
+            best = {"path": path, "origin_epoch_ms": origin,
+                    "origin_epoch_us": origin_us if isinstance(origin_us, int) else origin * 1000,
+                    "events": events, "launcher": launcher,
+                    "exec_to_main_us": exec_to_main if isinstance(exec_to_main, int) else None}
     return best
+
+
+# The compositor's per-launch timing fields (crates/system/tilo-startup-metrics), each
+# on one of its three `tilo::launch_latency` lines.
+LATENCY_FIELDS = ("request_to_spawn", "spawn_to_map", "map_to_first_present", "request_to_first_present")
+
+
+def parse_launch_latencies(log: str, package: str) -> dict[str, float]:
+    """{field: ms} from the compositor's `tilo::launch_latency` lines for `package`, the
+    first value of each field in `log`; a field no line carries is absent."""
+    out: dict[str, float] = {}
+    for line in ANSI.sub("", log).splitlines():
+        if f"package_id={package} " not in line + " " and f'package_id="{package}"' not in line:
+            continue
+        for field in LATENCY_FIELDS:
+            found = re.search(rf"\b{field}_us=(\d+)", line)
+            if found and field not in out:
+                out[field] = round(int(found.group(1)) / 1e3, 1)
+    return out
 
 
 def parse_launch_latency(log: str, package: str) -> float | None:
     """Seconds from the open request to the first presented frame, from the compositor's
-    `tilo::launch_latency` line for `package` (logged at info, so only when the session's
-    log level includes it). The first such line in `log`, else None."""
-    for line in ANSI.sub("", log).splitlines():
-        if f"package_id={package} " not in line + " " and f'package_id="{package}"' not in line:
-            continue
-        found = re.search(r"request_to_first_present_us=(\d+)", line)
-        if found:
-            return round(int(found.group(1)) / 1e6, 3)
-    return None
+    `tilo::launch_latency` line for `package`. The first such line in `log`, else None."""
+    ms = parse_launch_latencies(log, package).get("request_to_first_present")
+    return None if ms is None else round(ms / 1e3, 3)
+
+
+def open_segments(t0_ms: int, marks: dict | None) -> dict | None:
+    """Where one open requested at guest time `t0_ms` spent its time, in ms, as segments
+    that add up to the open: `request_to_launcher` (tilo-control, the compositor's
+    dispatch and the launcher's exec), `launcher` (its checks and sandbox preparation, to
+    its `sandbox-argv-ready` mark), `sandbox_to_main` (bubblewrap, the Landlock shim, the
+    dynamic loader) and `main_to_first_frame` (the app's own start). `launcher_phases`
+    holds each mark's interval, ending at that mark, the sandbox shim's
+    `sandbox-entered` (bubblewrap) and `sandbox-exec` (Landlock) among them;
+    `exec_to_main`, from `sandbox-exec` to `main`, is the loader. None when the marks hold
+    no first frame or no launcher phases."""
+    if not marks or "first-frame-presented" not in marks["events"]:
+        return None
+    launcher = marks.get("launcher") or []
+    if len(launcher) < 2 or launcher[0][0] != "launcher-start":
+        return None
+    at = dict(launcher)
+    start_us = launcher[0][1]
+    handoff_us = at.get("sandbox-argv-ready", launcher[-1][1])
+    phases, previous = {}, start_us
+    for name, epoch_us in launcher[1:]:
+        phases[name] = round((epoch_us - previous) / 1e3, 1)
+        previous = epoch_us
+    origin_us = marks["origin_epoch_us"]
+    out = {"request_to_launcher": round(start_us / 1e3 - t0_ms, 1),
+           "launcher": round((handoff_us - start_us) / 1e3, 1),
+           "sandbox_to_main": round((origin_us - handoff_us) / 1e3, 1),
+           "main_to_first_frame": round(marks["events"]["first-frame-presented"] * 1e3, 1),
+           "launcher_phases": phases}
+    if "sandbox-exec" in at:
+        out["exec_to_main"] = round((origin_us - at["sandbox-exec"]) / 1e3, 1)
+    elif marks.get("exec_to_main_us") is not None:
+        out["exec_to_main"] = round(marks["exec_to_main_us"] / 1e3, 1)
+    return out
 
 
 def first_frame_budget(budgets: dict, hardware: bool) -> tuple[float, str]:
@@ -303,13 +366,24 @@ def _app_gone(ctx, app: str) -> bool:
                       EXIT_WAIT_S, 1.0) is not None
 
 
-def _timed_open(ctx, app: str) -> tuple[float, float] | None:
+def _timed_open(ctx, app: str) -> dict | None:
     """Open `app` from the slot's session as a person's request does, wait for its first
-    frame, close every window and wait until its processes are gone."""
-    out = ctx.vm.exec(f"date +%s%3N; tilo-control actions invoke applications {shlex.quote(app)} >/dev/null",
+    frame, close every window and wait until its processes are gone. Returns the open's
+    `open_times`, its `open_segments` and the compositor's `launch_latency` fields."""
+    out = ctx.vm.exec(f'wc -l < "{SESSION_LOG}" 2>/dev/null || echo 0; date +%s%3N; '
+                      f"tilo-control actions invoke applications {shlex.quote(app)} >/dev/null",
                       timeout=60)
-    t0 = _first_int(out)
-    times = open_times(t0, _marks(ctx, t0, app, OPEN_WAIT_S)) if t0 is not None else None
+    numbers = [int(word) for word in out.split() if word.isdigit()]
+    log_lines, t0 = (numbers + [None, None])[:2]
+    result = None
+    if t0 is not None:
+        marks = _marks(ctx, t0, app, OPEN_WAIT_S)
+        times = open_times(t0, marks)
+        if times is not None:
+            log = ctx.vm.exec(f'tail -n +{(log_lines or 0) + 1} "{SESSION_LOG}" | grep -a "tilo::launch_latency"',
+                              check=False)
+            result = {"open": times[0], "startup": times[1], "segments": open_segments(t0, marks),
+                      "compositor": parse_launch_latencies(log, app)}
     ctx.reset()
     # Opens through the control socket are no user activity: without a real input the
     # session locks itself on idle a few minutes into the series, as a person's would.
@@ -318,14 +392,49 @@ def _timed_open(ctx, app: str) -> tuple[float, float] | None:
     if not _app_gone(ctx, app):
         raise CheckFailed(f"{app}'s processes were still running {EXIT_WAIT_S} s after its window closed, "
                           "so the next open would not start it afresh")
-    return times
+    return result
+
+
+# The segments of an open before the app's `main`, recorded as `app.open.<name>_ms.<app>`;
+# with `app.startup_ms.<app>` (main to first frame) they add up to the open.
+SEGMENTS = ("request_to_launcher", "launcher", "sandbox_to_main", "exec_to_main")
+
+
+def segment_series(results: list[dict]) -> dict[str, list[float]]:
+    """{KPI name stem: one value per open} over the opens' segments before `main`, the
+    launcher's phases (`launcher_phase.<mark>`) and the compositor's fields; an open that
+    lacks one leaves it out."""
+    series: dict[str, list[float]] = {}
+    for result in results:
+        segments = result.get("segments") or {}
+        values = {name: segments[name] for name in SEGMENTS if name in segments}
+        values.update({f"launcher_phase.{mark}": ms for mark, ms in segments.get("launcher_phases", {}).items()})
+        values.update(result.get("compositor") or {})
+        for name, value in values.items():
+            series.setdefault(name, []).append(value)
+    return series
+
+
+def kpi_p95_target(kpi: str) -> float | None:
+    """The KPI document's p95 ceiling for `kpi` (tools/perf/kpi-budgets.toml), if any."""
+    budgets = tomllib.loads(KPI_BUDGETS.read_text(encoding="utf-8"))
+    target = budgets.get("kpi", {}).get(kpi, {}).get("p95")
+    return None if target is None else float(target)
+
+
+def p95(values: list[float]) -> float:
+    """The nearest-rank 95th percentile, the perf records' rule."""
+    ordered = sorted(values)
+    return ordered[max(0, -(-len(ordered) * 95 // 100) - 1)]
 
 
 @check("A15", "apps", "Warm opens of Files, Notes and Settings reach their first frame within budget")
 def warm_opens(ctx, res):
     """Each app is opened and closed once unmeasured, so its files are in the page cache,
     then ten times measured. The budget is the app's (acceptance/app_startup.py) on the
-    session's renderer, held by the median; every launch is recorded."""
+    session's renderer, held by the median; on a GPU the KPI document's p95 target holds as
+    well. Every launch is recorded, split into segments that add up to the open (the
+    launcher's phases among them) and the compositor's own request/spawn/map times."""
     software = records.renderer(ctx.facts.get("renderer"), ctx.facts.get("display")) == "lavapipe"
     kind = "cpu" if software else "gpu"
     launches = WARM_LAUNCHES
@@ -334,28 +443,46 @@ def warm_opens(ctx, res):
     problems, unobserved, summary = [], [], {}
     for app in WARM_APPS:
         _timed_open(ctx, app)
-        opens, starts = [], []
-        for _ in range(launches):
-            times = _timed_open(ctx, app)
-            if times is not None:
-                opens.append(times[0])
-                starts.append(times[1])
+        results = [result for result in (_timed_open(ctx, app) for _ in range(launches)) if result]
+        opens = [result["open"] for result in results]
+        starts = [result["startup"] for result in results]
         short = _short(app)
         ctx.record(f"app.open.warm_ms.{short}", "ms", opens, app=app,
                    what="open request to the app's first presented frame, launcher and sandbox included",
                    clock="guest wall clock; the request is stamped in the session before tilo-control")
         ctx.record(f"app.startup_ms.{short}", "ms", starts, app=app,
                    what="process start to the app's first presented frame")
+        series = segment_series(results)
+        for name, values in series.items():
+            stem, _, mark = name.partition(".")
+            ctx.record(f"app.open.{stem}_ms.{short}" + (f".{mark}" if mark else ""), "ms", values, app=app,
+                       what="one segment of the warm open (acceptance/checks/startup.py open_segments)")
         budget = app_startup.budget_ms(app, kind)
-        summary[app] = {"open_ms": opens, "startup_ms": starts, "budget_ms": budget}
+        summary[app] = {"open_ms": opens, "startup_ms": starts, "budget_ms": budget,
+                        "median_ms": {name: median(values) for name, values in series.items()},
+                        "opens": results}
         if len(opens) < launches:
             unobserved.append(f"{app}: {launches - len(opens)} of {launches} opens wrote no first-frame "
                               f"startup mark within {OPEN_WAIT_S} s")
+        unsplit = sum(1 for result in results if result["segments"] is None)
+        if unsplit:
+            unobserved.append(f"{app}: {unsplit} of {len(results)} opens carry no launcher phase marks, "
+                              "so the time before the app's main is not split")
+        untimed = sum(1 for result in results if "request_to_spawn" not in result["compositor"])
+        if untimed:
+            unobserved.append(f"{app}: the session log holds no compositor launch timing for {untimed} "
+                              f"of {len(results)} opens")
         if opens and median(opens) > budget:
             problems.append(f"{app} took {median(opens)} ms (median of {len(opens)}) from the open request "
                             f"to its first frame, over its {budget} ms budget on {kind} rendering "
                             f"(process start to first frame: median {median(starts)} ms)")
-    res.metrics.update(warm_opens=summary, renderer=ctx.facts.get("renderer"))
+        target = kpi_p95_target(f"app.open.warm_ms.{short}")
+        if kind == "gpu" and opens and target is not None and p95(opens) > target:
+            problems.append(f"{app} took {p95(opens)} ms (p95 of {len(opens)}) from the open request to its "
+                            f"first frame on a GPU, over the KPI's {target:.0f} ms")
+    res.metrics.update(warm_opens={app: {k: v for k, v in entry.items() if k != "opens"}
+                                   for app, entry in summary.items()},
+                       renderer=ctx.facts.get("renderer"))
     ctx.write("A15-warm-opens.json", json.dumps(summary, indent=1))
     if problems:
         raise CheckFailed("; ".join(problems + unobserved))

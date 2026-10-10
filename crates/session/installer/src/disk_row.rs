@@ -13,7 +13,7 @@ use std::collections::HashMap;
 use ui::widget::ModelPath;
 use ui::widget::TaffyTreeExt;
 
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use taffy::{NodeId, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke, Vec2};
 use vello::peniko::Fill;
@@ -126,19 +126,7 @@ impl Widget for DiskRow {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        // `new_leaf` only errors for a corrupted tree; `Widget::build_layout`
-        // returns a bare `NodeId` across every implementor, so surfacing a
-        // theoretical error here would mean threading a `Result` through the
-        // whole toolkit for a branch that can't be taken.
-        let style = Style {
-            size: Size {
-                width: Dimension::percent(1.0),
-                height: Dimension::length(ROW_HEIGHT),
-            },
-            flex_shrink: 0.0,
-            ..Default::default()
-        };
-        taffy.widget_leaf(style, node_map, self)
+        taffy.widget_leaf(crate::full_width_row(ROW_HEIGHT), node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
@@ -402,21 +390,11 @@ mod tests {
         let mut taffy = TaffyTree::new();
         let mut node_map = HashMap::new();
         let node = row.build_layout(&mut taffy, &Theme::dark(), &mut node_map);
-        let mut handled = false;
-        let mut focus_target = None;
-        row.handle_event(
-            &named_key(key),
-            &mut ui::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &winit::event::Modifiers::default(),
-                state: ui::widget::Edits::lend(&mut doc),
-                path: &ROOT,
-                handled: &mut handled,
-                focus_target: &mut focus_target,
-                node_id: node,
-                taffy: &taffy,
-            },
-        );
+        let handled = ui::testing::Dispatch::new()
+            .doc(&mut doc)
+            .layout(&taffy, node)
+            .send(&mut row, &named_key(key))
+            .handled;
         assert!(handled);
         assert_eq!(
             presses.take().map(|press| press.address.encode()),

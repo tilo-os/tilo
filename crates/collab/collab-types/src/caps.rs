@@ -314,15 +314,6 @@ pub enum Scope {
 }
 
 impl Scope {
-    /// Does this scope apply to an op with the given resource context?
-    pub fn matches_op(&self, ctx: &ResourceScope) -> bool {
-        self.matches_resource(&ResourceRef::Artifact {
-            app: ctx.app.clone(),
-            kind: ctx.kind,
-            instance: ctx.instance,
-        })
-    }
-
     /// Does this scope cover `resource`?
     ///
     /// Scopes nest: `Workspace` covers everything, `App(a)` covers every

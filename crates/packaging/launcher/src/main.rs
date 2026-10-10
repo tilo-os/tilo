@@ -18,7 +18,9 @@ use clap::{Parser, Subcommand};
 use desktop_entry::launch::LaunchEnv;
 use launcher::landlock_shim::{SANDBOX_EXEC_SUBCOMMAND, run_sandbox_exec};
 use launcher::registration_gate::LAUNCH_REGISTRATION_FD_ENV;
-use launcher::run::{IdentitySource, LaunchMode, RunError, RunOptions, run};
+use launcher::run::{
+    IdentitySource, LaunchMode, RunError, RunOptions, launch_manifest, run_manifest,
+};
 
 fn wait_for_registration_fd(fd: RawFd) -> std::io::Result<()> {
     if fd < 3 {
@@ -272,10 +274,12 @@ fn exit_code(code: i32) -> ExitCode {
 }
 
 fn main() -> ExitCode {
+    tilo_startup_metrics::handoff_mark("launcher-start");
     if let Err(error) = wait_for_shell_registration() {
         eprintln!("tilo-launcher: {error}");
         return ExitCode::from(126);
     }
+    tilo_startup_metrics::handoff_mark("shell-registered");
     // Hidden subcommand: parsed BEFORE clap so its argv shape (positional
     // paths, `--` separator) doesn't collide with clap's flag parsing.
     let raw_args: Vec<String> = std::env::args().collect();
@@ -455,10 +459,32 @@ fn run_gui_command(args: RunCliArgs) -> ExitCode {
         open_document: args.open,
         open_uri: args.open_uri,
     };
-    if let Some(app_id) = opts.app_id.as_deref() {
-        enter_app_scope(app_id);
-    }
-    match run(&args.manifest, &args.payload_root, &opts) {
+    // Joining the app's scope (a round trip to the user manager) and
+    // verifying the package (reading and hashing its files) need nothing
+    // from each other, so they run side by side. The join completes before
+    // anything below starts a process: every process of the launch, the
+    // D-Bus proxies and the sandbox included, starts inside the scope.
+    let manifest = std::thread::scope(|scope| {
+        let joining = opts.app_id.as_deref().map(|app_id| {
+            std::thread::Builder::new()
+                .name("launch-scope".into())
+                .spawn_scoped(scope, move || enter_app_scope(app_id))
+                .map_err(|_| app_id)
+        });
+        let manifest = launch_manifest(&args.manifest, &args.payload_root, &opts);
+        match joining {
+            Some(Ok(handle)) => {
+                if let Err(panic) = handle.join() {
+                    std::panic::resume_unwind(panic);
+                }
+            }
+            // No thread to spare: join here, as before.
+            Some(Err(app_id)) => enter_app_scope(app_id),
+            None => {}
+        }
+        manifest
+    });
+    match manifest.and_then(|manifest| run_manifest(&manifest, &args.payload_root, &opts)) {
         Ok(status) => {
             // How the app ended, said where its output goes: a signal leaves
             // no exit code of its own, and is folded into 1 below.
@@ -490,6 +516,7 @@ fn enter_app_scope(app_id: &str) {
     if let Err(error) = launcher::scope::join(app_id, app_id) {
         eprintln!("tilo-launcher: {app_id} runs outside a session scope: {error}");
     }
+    tilo_startup_metrics::handoff_mark("scope-joined");
 }
 
 fn admit_share_and_open(

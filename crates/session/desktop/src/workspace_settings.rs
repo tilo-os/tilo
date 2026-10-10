@@ -2640,16 +2640,6 @@ impl AgentAuthorityPreset {
         })
     }
 
-    /// Plain-language preview shown before the user grants a surface.
-    pub fn review_hint(self) -> String {
-        t(match self {
-            Self::Observer => "workspace-settings-preset-observer-hint",
-            Self::Contributor => "workspace-settings-preset-contributor-hint",
-            Self::Operator => "workspace-settings-preset-operator-hint",
-            Self::Custom => "workspace-settings-preset-custom-hint",
-        })
-    }
-
     /// The admission marker used for an initial, permission-free setup. It
     /// does not confer this verb on arbitrary resources: `actor_for_agent`
     /// intentionally carries no role.

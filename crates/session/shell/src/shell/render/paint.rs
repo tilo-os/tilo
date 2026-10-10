@@ -38,6 +38,9 @@ use crate::shell::hdr_surface::HdrLayer;
 use settings_store::hardware::OutputTransform;
 
 mod output_view;
+#[cfg(test)]
+#[cfg(target_os = "linux")]
+mod window_cycle_memory_tests;
 use output_view::OutputSurface;
 pub use output_view::{OutputSignal, OutputTarget, OutputView};
 
@@ -1852,6 +1855,10 @@ impl RetainedGpuTarget {
     pub fn memory_stats(&self) -> vello::RendererMemoryStats {
         self.renderer.memory_stats()
     }
+    /// The image atlas and the CPU pixels its residents keep alive.
+    pub fn image_cache_stats(&self) -> vello::ImageCacheStats {
+        self.renderer.image_cache_stats()
+    }
     /// Existing opt-in timestamp status.
     pub fn gpu_timestamp_status(&mut self) -> vello::GpuTimestampStatus {
         self.renderer.gpu_timestamp_status()
@@ -2990,35 +2997,13 @@ impl VelloDrmBridge {
         sparse_dst: &mut [u8],
         dst_pitch: usize,
     ) -> Result<Option<vello::SparseRenderStats>, BridgeError> {
-        self.target.check_health()?;
-        self.last_phase_timing = None;
-        self.invalidate_retained();
-        self.reset_render_attempts();
-        let Some(damage) = Self::validate_diagnostic_damage(damage, self.target.size) else {
-            return Ok(None);
-        };
-
-        let (width, height) = self.target.size;
-        let dev_handle = self.context.devices.get(self.dev_id).ok_or_else(|| {
-            BridgeError::InvalidDevice(format!("wgpu device id {} out of range", self.dev_id))
-        })?;
-        let device = dev_handle.device.clone();
-        let (sparse_texture, sparse_view, sparse_readback, sparse_stride) =
-            Self::allocate_targets(&device, width, height);
-        let sparse_target = SharedCoarseDiagnosticTarget {
-            texture: &sparse_texture,
-            view: &sparse_view,
-            readback: &sparse_readback,
-            padded_bytes_per_row: sparse_stride,
-        };
-
-        self.render_shared_coarse_diagnostic_attempts(
+        self.shared_coarse_diagnostic(
             scene,
-            &damage,
+            damage,
             full_dst,
             sparse_dst,
             dst_pitch,
-            sparse_target,
+            Self::render_shared_coarse_diagnostic_attempts,
         )
     }
 
@@ -3033,6 +3018,35 @@ impl VelloDrmBridge {
         sparse_dst: &mut [u8],
         dst_pitch: usize,
     ) -> Result<Option<SharedCoarseGeometryDiagnostic>, BridgeError> {
+        self.shared_coarse_diagnostic(
+            scene,
+            damage,
+            full_dst,
+            sparse_dst,
+            dst_pitch,
+            Self::render_shared_coarse_geometry_diagnostic_attempts,
+        )
+    }
+
+    /// Validate `damage`, allocate the sparse diagnostic target and run
+    /// `attempts` against it on a freshly invalidated retained state.
+    fn shared_coarse_diagnostic<T>(
+        &mut self,
+        scene: &Scene,
+        damage: &[vello::FineDamageRect],
+        full_dst: &mut [u8],
+        sparse_dst: &mut [u8],
+        dst_pitch: usize,
+        attempts: impl FnOnce(
+            &mut Self,
+            &Scene,
+            &[vello::FineDamageRect],
+            &mut [u8],
+            &mut [u8],
+            usize,
+            SharedCoarseDiagnosticTarget<'_>,
+        ) -> Result<Option<T>, BridgeError>,
+    ) -> Result<Option<T>, BridgeError> {
         self.target.check_health()?;
         self.last_phase_timing = None;
         self.invalidate_retained();
@@ -3055,7 +3069,8 @@ impl VelloDrmBridge {
             padded_bytes_per_row: sparse_stride,
         };
 
-        self.render_shared_coarse_geometry_diagnostic_attempts(
+        attempts(
+            self,
             scene,
             &damage,
             full_dst,
@@ -4499,6 +4514,16 @@ impl VelloDrmBridge {
     /// full-render API and for conservative versioned fallbacks.
     pub fn last_sparse_render_attempts(&self) -> usize {
         self.target.last_sparse_render_attempts
+    }
+
+    /// The image atlas and the CPU pixels its residents keep alive.
+    pub fn image_cache_stats(&self) -> vello::ImageCacheStats {
+        self.target.image_cache_stats()
+    }
+
+    /// GPU allocations the renderer accounts for, the image atlas included.
+    pub fn renderer_memory_stats(&self) -> vello::RendererMemoryStats {
+        self.target.memory_stats()
     }
 
     /// Dense Vello submissions used by the latest paint, including bump-budget retries.

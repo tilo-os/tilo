@@ -23,7 +23,7 @@ use std::process::Command;
 use std::process::Stdio;
 
 use std::collections::{HashMap, HashSet};
-use std::ffi::{OsStr, OsString};
+use std::ffi::OsStr;
 #[cfg(any(test, target_os = "linux"))]
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -1891,12 +1891,6 @@ pub fn gui_apps() -> Vec<InstalledApp> {
     apps.retain(|a| a.has_gui);
     apps.sort_by(|a, b| a.display_name.cmp(&b.display_name));
     apps
-}
-
-/// Two packages can claim the same extension; the shared policy resolver uses
-/// personal/workspace defaults and a deterministic display-name fallback.
-pub fn app_for_extension(ext: &str) -> Option<InstalledApp> {
-    app_for_extension_with_policy(ext, "", None)
 }
 
 /// Resolve an extension through the shared personal/workspace policy engine.
@@ -4707,14 +4701,6 @@ pub fn clear_pending_placements() {
 #[cfg(test)]
 pub(crate) fn set_wayland_socket_path(path: Option<PathBuf>) {
     *WAYLAND_SOCKET.lock().expect("WAYLAND_SOCKET poisoned") = path;
-}
-
-/// Rendered `OsString` form of the socket name for logging.
-pub fn wayland_socket_display() -> OsString {
-    wayland_socket().map_or_else(
-        || OsString::from("<none>"),
-        std::path::PathBuf::into_os_string,
-    )
 }
 
 /// Package processes require the Linux execution authority.

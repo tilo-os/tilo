@@ -409,6 +409,15 @@ struct DrainQueues {
 }
 
 impl DrainQueues {
+    /// Run channel governance once, so a channel's gate is in place before
+    /// the pass's first op. Returns how long until governance next has work
+    /// that no inbound frame brings; `None` parks the drain until one does.
+    fn pump_governance(&self) -> Option<Duration> {
+        self.channel_encryption
+            .as_ref()
+            .and_then(|service| service.pump_until_due(&*self.net))
+    }
+
     /// Run one pass over every inbound queue, in the same order the
     /// original inline loop drained them. Returns `false` when a
     /// queue's lock is poisoned — the signal the caller uses to stop
@@ -421,9 +430,6 @@ impl DrainQueues {
         labels: &mut HashMap<String, (Instant, PeerLabels)>,
         announced: &mut Announced,
     ) -> bool {
-        if let Some(service) = &self.channel_encryption {
-            service.pump(&*self.net);
-        }
         self.drain_owner_views();
         self.drain_presence(labels, announced)
             && self.drain_live_interactions()
@@ -718,7 +724,8 @@ fn spawn_inner(
 
     // Inbound-drain: when peer-sync is on, drain signed documents, presence,
     // and cooperative scrollback. The thread parks until a frame arrives,
-    // or for a second while a channel still has governance to pump.
+    // a channel is opened, or channel governance has work due (a steward's
+    // policy re-check, a member's access-request backoff).
     // Every remote entry is routed like a local one, by the `(app_id,
     // cluster_id)` the publishing host stamped on the wire.
     let drain_quit = Arc::new(AtomicBool::new(false));
@@ -745,7 +752,7 @@ fn spawn_inner(
         let quit = Arc::clone(&drain_quit);
         let wake = std::sync::Arc::clone(&net.drain_wake);
         std::thread::Builder::new()
-            .name("tilo-collab-broker-drain".into())
+            .name("tilo-collab-drain".into())
             .spawn(move || {
                 // Name already announced per (peer, cluster) — said
                 // again only when it changes, not on every
@@ -756,15 +763,11 @@ fn spawn_inner(
                 // replica's lock and parses every peer id it holds.
                 let mut labels: HashMap<String, (Instant, PeerLabels)> = HashMap::new();
                 while !quit.load(Ordering::Relaxed) {
+                    let governance_due = queues.pump_governance();
                     if !queues.drain_once(&mut labels, &mut announced) {
                         break;
                     }
-                    let timeout = queues
-                        .channel_encryption
-                        .as_ref()
-                        .filter(|service| service.has_live_channels())
-                        .map(|_| Duration::from_secs(1));
-                    wake.wait(timeout);
+                    wake.wait(governance_due);
                 }
             })
             .ok()
@@ -787,6 +790,13 @@ fn spawn_inner(
         tilo_action_broker::services::HostServices::default()
     };
     services.record_content = record_content;
+    // The same service the identity broker answers key requests from: its
+    // changes tell each route's endpoint when to ask again.
+    services.channel_keys = channel_encryption.clone().map(|access| {
+        let keys = crate::shell::channel_encryption::ChannelKeyProvider::default();
+        keys.set(Some(access));
+        keys
+    });
     services.audio_output = Some(Arc::new(super::audio_output::AudioOutputService::new(
         local_session.lifecycle(),
     )));
@@ -984,6 +994,9 @@ fn open_channel_encryption(
             return None;
         }
     };
+    // An endpoint opening a channel queues governance the parked drain
+    // must send now (a genesis, an access request): it pokes the drain.
+    let drain_wake = net.as_ref().map(|net| Arc::clone(&net.drain_wake));
     let authenticated: crate::shell::channel_policy::AuthenticatedDevices = match net {
         Some(net) => Box::new(move |user| net.authenticated_devices_of(user)),
         None => Box::new(|_| Vec::new()),
@@ -1001,9 +1014,13 @@ fn open_channel_encryption(
         Box::new(directory),
         channels,
     ) {
-        Ok(service) => Some(crate::shell::channel_encryption::ChannelKeyAccess::new(
-            service,
-        )),
+        Ok(service) => Some(match drain_wake {
+            Some(wake) => crate::shell::channel_encryption::ChannelKeyAccess::with_wake(
+                service,
+                Arc::new(move || wake.poke()),
+            ),
+            None => crate::shell::channel_encryption::ChannelKeyAccess::new(service),
+        }),
         Err(error) => {
             tracing::warn!(%error, "channel encryption state could not be opened");
             None

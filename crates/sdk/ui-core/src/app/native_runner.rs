@@ -1104,13 +1104,21 @@ fn create_window_render(
 
 pub(crate) use crate::render_thread::PreparedRenderer;
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "linux"))]
 pub(crate) type RendererPreparation = mpsc::Receiver<Result<PreparedRenderer, String>>;
 
 /// Start only for a real native launch, before loading app state and fonts.
 /// This owns no window/surface and can safely finish if construction fails:
 /// dropping the receiving end drops the prepared GPU resources at send.
-#[cfg(windows)]
+///
+/// It runs on its own thread, never in the event loop: on Wayland, device
+/// creation inside `resumed` delayed its seat wiring, and mutter then left a
+/// first launch's toplevel unfocused with dead input. The device is chosen
+/// without a surface; the launcher's GPU pin (`VK_DRIVER_FILES`, the EGL
+/// vendor) is this process's environment, so it holds here as well. If the
+/// window's surface turns out to need another device, `init_render` builds
+/// the renderer for that one instead (`create_window_render_prepared`).
+#[cfg(any(windows, target_os = "linux"))]
 #[allow(
     clippy::disallowed_methods,
     reason = "native host runner: GPU preparation overlaps app start on its own thread"
@@ -1205,7 +1213,12 @@ fn create_window_render_prepared(
     // if necessary. Never use pipelines built for a different device.
     let renderer = match prepared_renderer {
         Some((device_id, renderer)) if device_id == surface.dev_id => renderer,
-        _ => create_native_renderer(device_handle)?,
+        Some(_) => {
+            // The preparation's work is wasted; the startup file says so.
+            tilo_startup_metrics::mark("native-render-prepare-discarded");
+            create_native_renderer(device_handle)?
+        }
+        None => create_native_renderer(device_handle)?,
     };
     // After this, every GPU call happens on its render worker.
     let window_id = window.id();
@@ -1434,9 +1447,10 @@ impl AppHandler {
                 }
             }
         }
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "linux"))]
         if let Some(preparation) = self.app.startup_renderer.take() {
-            match preparation.recv() {
+            // How long the first redraw still waits on the preparation.
+            match tilo_startup_metrics::span("native-render-prepare-wait", || preparation.recv()) {
                 Ok(Ok(prepared)) => {
                     self.render = Some(create_window_render_prepared(
                         window,
@@ -2391,7 +2405,9 @@ impl AppHandler {
         let is_undo_redo = app.handle_floating_undo_shortcut(&event);
         let mut handled = is_undo_redo;
         let mut focus_target = None;
-        app.refresh_control_action_availability();
+        app.track_pointer_buttons(&event);
+        app.refresh_controls_before_input(&event);
+        let resources_before = app.resource_input_mark(&event);
         if !handled {
             app.root_widget.handle_event(
                 &event,
@@ -2408,8 +2424,13 @@ impl AppHandler {
             );
         }
         // `handle_event` may change presentation-only resource declarations
-        // without touching the CRDT (selected tab, open media, local mode).
-        app.invalidate_widget_resource_cache();
+        // without touching the CRDT (selected tab, open media, local mode);
+        // only bare hover that changed nothing keeps the published tree.
+        app.invalidate_resources_after_input(
+            &event,
+            handled || focus_target.is_some(),
+            &resources_before,
+        );
         if let Some(id) = focus_target {
             app.set_focused_node(Some(id));
         }
@@ -4593,7 +4614,7 @@ impl App {
         self.run_with_setup(|_| {});
     }
 
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "linux"))]
     pub(crate) fn with_startup_renderer(mut self, renderer: Option<RendererPreparation>) -> Self {
         self.startup_renderer = renderer;
         self

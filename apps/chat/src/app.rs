@@ -1876,32 +1876,6 @@ impl ChatApp {
         }
     }
 
-    /// Headless visual-review hook for the real shell → app call handoff.
-    ///
-    /// This runs after layout so the same `FloatingPlacement` methods used by
-    /// pointer input and the `Suspended` host reply see authoritative app and
-    /// desktop coordinate spaces. The `returning` and `returned` frames land
-    /// on identical geometry on opposite sides of the ownership boundary.
-    /// Stage what a scenario needs once the window is laid out: the floating
-    /// call's ownership edge, or the navigation drawer floating open over a
-    /// narrow window (a choice the drawer records per size class).
-    #[doc(hidden)]
-    pub fn stage_after_layout_for_shot(&mut self, scenario: &str) {
-        // A channel's menu opens on its row, so the channel list is out
-        // (floating over a narrow window).
-        if scenario == "sidebar-narrow" || scenario == "context" {
-            self.reconcile_flaps();
-            self.left_flap.snap(true);
-            self.reconcile_flaps();
-        }
-        if scenario == "thread-narrow" {
-            self.reconcile_flaps();
-            self.right_flap.snap(true);
-            self.reconcile_flaps();
-        }
-        self.stage_floating_call(scenario);
-    }
-
     /// The permission context a scenario is captured under, when it is not
     /// the local unrestricted user: `no-access` is a person the workspace
     /// has granted nothing, so its attachments cannot be opened.
@@ -1913,13 +1887,6 @@ impl ChatApp {
                 Vec::new(),
             )
         })
-    }
-
-    /// Whether `scenario` stages something on the rows a first frame placed
-    /// ([`Self::stage_after_draw_for_shot`]).
-    #[doc(hidden)]
-    pub fn stages_after_draw(&self, scenario: &str) -> bool {
-        matches!(scenario, "context" | "msgmenu")
     }
 
     /// Open a scenario's context menu where a right-click on its row would:
@@ -3954,7 +3921,7 @@ impl ChatApp {
                 continue;
             }
             let name = self.agent_display_name(agent);
-            let color_idx = crate::identity::color_index_for(canonical.as_bytes());
+            let color_idx = crate::identity::color_from_bytes(canonical.as_bytes());
             rows.push((
                 User {
                     id: canonical,

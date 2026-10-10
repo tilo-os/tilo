@@ -23,3 +23,16 @@ The raw samples, warm-rebuild pass profiles and exact source/artifact hashes are
 Build the `store` example `startup-layout-probe` with the configured Cargo implementation in release mode, locked. Run it with no argument, `--fixture`, or `--full-page` against separate private HOME/XDG paths; do not point it at a user's profile or desktop. `--full-page` repeats the screenshot fixture with unique app identities and text, and supplies 48 items. It is synthetic input rather than a captured live catalogue.
 
 A first frame here includes widget construction of the retained tree, layout and CPU scene recording. Warm profiler BuildLayout includes the Taffy solve. It excludes the framework app host, app worker, native surface/device creation, GPU rendering/presentation and OS services. It does not establish matched VM startup, physical GPU latency, frame rate, idle CPU or idle RAM. Guest wall-clock layout costs cannot be attributed to this native result without matching SDK/app provenance and guest CPU/phase samples. Initial-frame per-pass profiling is not available through the current harness; only the warm rebuild's passes are captured.
+
+## Font catalog verification (TIL-597, 2026-10-09)
+
+A large part of the 37–38 ms above was SHA-256 over the whole catalog: 36 files, 54,891,768 bytes. Every process hashed them before its first frame. A process now hashes only a catalog it cannot prove immutable (`tilo_font_catalog::Trust`). Such a catalog is root-owned, writable by nobody else and on a read-only mount, which on the image means `/usr`'s composefs/fs-verity tree or the launcher's read-only bind of a system runtime. For that catalog, the manifest is still compared byte for byte, file sizes and faces are still checked, and no font bytes are read. A checkout, a per-user runtime and any writable catalog are still hashed in full.
+
+These are warm-cache medians of nine runs on an Apple M5 Max. They come from `cargo run -p tilo-font-catalog --example catalog_verify_startup` and an equivalent timing of `verify_bundle` in the test profile, where `sha2` and `fontdb` build at opt-level 3. They are not a rerun on the EPYC host:
+
+| Step | Hash every file (before) | Immutable catalog (after) |
+|---|---:|---:|
+| Establish the catalog's bytes | 26.3 ms | 0.48 ms |
+| Verified catalog database (bytes plus face parsing and validation) | 23.0 ms | 1.1 ms |
+
+On x86 without SHA-NI, the hash runs at about 400 MB/s, roughly 140 ms for the catalog. That cost is now gone for the image catalog, and the remaining work does not depend on the CPU's SHA support. Host font discovery (`load_system_fonts`) is separate. It took 6.6 ms on this Mac and was not changed.

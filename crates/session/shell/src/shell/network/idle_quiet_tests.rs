@@ -34,6 +34,24 @@ const FRAME: Duration = Duration::from_millis(100);
 const SETTLE: Duration = Duration::from_secs(10);
 /// The idle stretch measured.
 const IDLE: Duration = Duration::from_secs(60);
+/// Most context switches per second the two desktops' own threads (their
+/// network actors, endpoints and drains; not the thread driving their frame
+/// loops) may make while idle, together.
+///
+/// Measured 9.9/s, 10.5/s and 11.6/s on CI (focused runs 89705, 89410,
+/// 89703): the two network runtimes' workers (`tilo-net-rt-*`) over both
+/// desktops, everything else under 0.1/s. That is the highest plus a
+/// quarter; lower it with each fix that removes a waker (TIL-614).
+const IDLE_WAKEUP_BUDGET: f64 = 15.0;
+
+/// Every thread of this process except the one driving the desktops'
+/// frame loops, whose 10 Hz is the simulation's and not the session's.
+fn session_threads(driver: Option<u32>) -> Vec<tilo_test_env::idle::ThreadSample> {
+    let mut threads = tilo_test_env::idle::sample_process(std::process::id())
+        .expect("sample this process's threads");
+    threads.retain(|thread| Some(thread.tid) != driver);
+    threads
+}
 
 fn device(
     tree: WorkspaceTreeHandle,
@@ -284,9 +302,16 @@ fn a_converged_idle_pair_exchanges_no_messages_and_repaints_nothing_for_a_minute
         room_change_count(&first.tree, room),
         room_change_count(&second.tree, room),
     );
+    // Wakeups are read from /proc, so only where there is one.
+    let linux = cfg!(target_os = "linux");
+    let driver = linux.then(|| tilo_test_env::idle::current_thread_id().expect("this thread's id"));
+    let threads_before = linux.then(|| session_threads(driver));
     let started = Instant::now();
     let _ = run(&mut [&mut first, &mut second], IDLE, |_| false);
     let measured = started.elapsed();
+    let wakeups = threads_before.map(|before| {
+        tilo_test_env::idle::Wakeups::between(before, session_threads(driver), measured)
+    });
     let first_idle = since(&first_before, &received(&first_net));
     let second_idle = since(&second_before, &received(&second_net));
     let repaints = (
@@ -326,8 +351,18 @@ fn a_converged_idle_pair_exchanges_no_messages_and_repaints_nothing_for_a_minute
             newest_room_changes(tree, room, before)
         );
     }
+    if let Some(wakeups) = &wakeups {
+        let _ = writeln!(report, "both desktops' threads, {wakeups}");
+    }
     eprintln!("{report}");
     assert_eq!(total, 0, "{report}");
+    if let Some(wakeups) = &wakeups {
+        assert!(
+            wakeups.per_second() <= IDLE_WAKEUP_BUDGET,
+            "the idle pair's threads woke {:.2} times a second, over {IDLE_WAKEUP_BUDGET}/s:\n{report}",
+            wakeups.per_second(),
+        );
+    }
     assert_eq!(repaints, (0, 0), "{report}");
     drop((first, second, first_net, second_net));
 }

@@ -94,14 +94,6 @@ impl Breadcrumb {
         self
     }
 
-    /// Replace the segments (the path changed).
-    pub fn set_segments(&mut self, segments: Vec<String>) {
-        if segments != self.segments {
-            self.segments = segments;
-            self.hover_idx = None;
-        }
-    }
-
     /// Builder: install a click callback. The callback receives the index
     /// into the original `segments` vector — never the visible-list index
     /// — so middle-truncation never confuses the consumer.

@@ -373,9 +373,6 @@ enum Input {
 /// Drive one real key press through `handle_event`.
 fn press(wp: &mut WordProcessorWidget, state: &mut ui::State, input: &Input) {
     use winit::keyboard::{ModifiersState, NativeKeyCode, PhysicalKey, SmolStr};
-    let taffy: TaffyTree<()> = TaffyTree::new();
-    let mut handled = false;
-    let mut focus: Option<NodeId> = None;
     let mut ev = ui::synthetic_input::key_event(
         winit::keyboard::Key::Unidentified(winit::keyboard::NativeKey::Unidentified),
         None,
@@ -401,23 +398,18 @@ fn press(wp: &mut WordProcessorWidget, state: &mut ui::State, input: &Input) {
     ev.location = winit::keyboard::KeyLocation::Standard;
     ev.state = ElementState::Pressed;
     ev.repeat = false;
-    wp.handle_event(
-        &WindowEvent::KeyboardInput {
-            device_id: winit::event::DeviceId::dummy(),
-            event: ev,
-            is_synthetic: false,
-        },
-        &mut ui::widget::EventCtx {
-            scale_factor: 1.0,
-            modifiers: &mods,
-            state: Edits::lend(&mut state.doc),
-            path: &state.root,
-            handled: &mut handled,
-            focus_target: &mut focus,
-            node_id: NodeId::new(0),
-            taffy: &taffy,
-        },
-    );
+    ui::testing::Dispatch::new()
+        .modifiers(mods)
+        .doc(&mut state.doc)
+        .path(&state.root)
+        .send(
+            wp,
+            &WindowEvent::KeyboardInput {
+                device_id: winit::event::DeviceId::dummy(),
+                event: ev,
+                is_synthetic: false,
+            },
+        );
 }
 
 type Step = Box<dyn Fn(&ParticipantView, &AutoCommit) -> crate::actions::editing::EditResult>;

@@ -307,6 +307,7 @@ impl App {
         synthesized_touch: bool,
     ) -> bool {
         let _entry = self.enter_wake_scope();
+        self.track_pointer_buttons(&event);
         if matches!(
             &event,
             WindowEvent::KeyboardInput {
@@ -683,7 +684,7 @@ impl App {
         }
 
         if !handled && app.layout.root_node.is_some() {
-            app.refresh_control_action_availability();
+            app.refresh_controls_before_input(&event);
             let scale_factor = window.scale_factor();
             let presentation_was_floating =
                 !app.root_widget.floating_surface_presentations().is_empty();
@@ -697,18 +698,29 @@ impl App {
                     ..
                 }
             );
+            let resources_before = app.resource_input_mark(&event);
             history_handled |= app.presentation_handle_event(
                 event_for_root,
                 scale_factor,
                 &mut handled,
                 &mut focus_target,
             );
-            // Even a document-free interaction may switch which resources a
-            // widget presents. Invalidate once at the mutable tree boundary;
-            // all later consumers in this event/frame share the rebuilt cache.
-            app.invalidate_widget_resource_cache();
             let presentation_is_floating =
                 !app.root_widget.floating_surface_presentations().is_empty();
+            // Even a document-free interaction may switch which resources a
+            // widget presents (a tab, open media, a local mode), so the tree
+            // is dropped once here at the mutable tree boundary and every
+            // later consumer in this event/frame shares the rebuilt one. Bare
+            // hover that changed nothing keeps it: rebuilding the whole tree
+            // per pointer move cost a full publication at the report rate.
+            app.invalidate_resources_after_input(
+                &event,
+                handled
+                    || history_handled
+                    || focus_target.is_some()
+                    || presentation_was_floating != presentation_is_floating,
+                &resources_before,
+            );
             floating_pointer_needs_redraw = matches!(event, WindowEvent::CursorMoved { .. })
                 && (used_desktop_pointer_space
                     || presentation_was_floating != presentation_is_floating);

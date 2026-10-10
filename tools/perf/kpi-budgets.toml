@@ -11,10 +11,12 @@
 #   enforce                  true: a ceiling miss fails the run at once;
 #                            false (default): it is reported as a target not
 #                            yet met (marketing targets that are not true yet)
-#   p50_tolerance, p99_tolerance, baseline_runs, min_delta
+#   p50_tolerance, p99_tolerance, baseline_runs, baseline_min_runs, min_delta
 #                            override [defaults]; min_delta is the absolute
 #                            change (in the unit) below which a ratio never
-#                            counts as a regression
+#                            counts as a regression; baseline_min_runs is how
+#                            many stored runs a baseline needs before a run is
+#                            compared with it (an accepted run counts at once)
 #   source                   where the number comes from
 #
 # A KPI with a budget whose group ran but produced no record fails the run, so
@@ -24,6 +26,7 @@
 p50_tolerance = 1.10
 p99_tolerance = 1.20
 baseline_runs = 5
+baseline_min_runs = 1
 min_delta = 0.0
 
 # tilo-fs performance gate (crates/system/fs/tests/performance_gate.rs), a
@@ -101,10 +104,48 @@ p99_tolerance = 2.0
 min_delta = 1.0
 source = "IDLE_SYNC_SLO"
 
+# The conflict step of a writer's reconciliation pass over a 50,000-file
+# workspace (TIL-608). Idle: the namespace merge generation under one lock hold,
+# no node examined (the gate also asserts that count). After a merge: the
+# namespace lock holds of the stepwise scan, one step of
+# fs::conflict::SCAN_STEP_NODES nodes each at any workspace size. The mean
+# hold is the steady gate; the longest only bounds a stall, since one
+# step on the shared runner held 50-77 ms against a 3.3 ms mean.
+[kpi."fs.conflict-idle-pass-50k"]
+unit = "ms"
+max = 5.0
+enforce = true
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 1.0
+source = "IDLE_CONFLICT_SLO"
+
+[kpi."fs.conflict-scan-mean-lock-hold-50k"]
+unit = "ms"
+max = 10.0
+enforce = true
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 1.0
+source = "CONFLICT_SCAN_MEAN_HOLD_SLO"
+
+[kpi."fs.conflict-scan-longest-lock-hold-50k"]
+unit = "ms"
+max = 200.0
+enforce = true
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 1.0
+source = "CONFLICT_SCAN_LONGEST_HOLD_SLO"
+
 # App package size: bytes of the newest signed tapp per app in the public
-# registry index. Targets from the KPI document (median <= 2 MB, max <= 6 MB,
-# decimal megabytes); reported, not enforced, until TIL-590's per-app ratchet
-# owns the gate. The default relative rule already fails sustained growth.
+# registry index, over the apps of tools/perf/tapp-size-budget/ (the default
+# collection; runtime and provider stubs and withdrawn packages are not apps).
+# Targets from the KPI document (median <= 2 MB, max <= 6 MB, decimal
+# megabytes) are reported here. The enforced gate is the same job's
+# tools/perf/tapp_size_ratchet.py fleet: each app within its budget, and the
+# median, p90 and max within the fleet ceilings beside those budgets
+# (TIL-590). The default relative rule also fails sustained growth.
 
 [kpi."footprint.tapp.bytes.x86_64"]
 unit = "bytes"
@@ -117,6 +158,52 @@ unit = "bytes"
 p50 = 2000000.0
 max = 6000000.0
 source = "KPI document: App package size"
+
+# The shared app runtime, libruntime_dylib.so: the newest published one per
+# architecture, measured from its ELF file by tools/perf/runtime_size_ratchet.py
+# published (TIL-604). The targets (tools/perf/runtime-size-budget/ [targets])
+# are reported here; the enforced gate is that command's per-architecture
+# budget, and the default relative rule fails sustained growth.
+
+[kpi."footprint.runtime.bytes.x86_64"]
+unit = "bytes"
+max = 150000000.0
+source = "TIL-604: shared runtime budget targets"
+
+[kpi."footprint.runtime.relocation_bytes.x86_64"]
+unit = "bytes"
+max = 1000000.0
+source = "TIL-604: shared runtime budget targets"
+
+[kpi."footprint.runtime.relocated_bytes.x86_64"]
+unit = "bytes"
+max = 4000000.0
+source = "TIL-604: shared runtime budget targets"
+
+[kpi."footprint.runtime.symbol_relocations.x86_64"]
+unit = "count"
+max = 5000.0
+source = "TIL-604: shared runtime budget targets"
+
+[kpi."footprint.runtime.bytes.aarch64"]
+unit = "bytes"
+max = 150000000.0
+source = "TIL-604: shared runtime budget targets"
+
+[kpi."footprint.runtime.relocation_bytes.aarch64"]
+unit = "bytes"
+max = 1000000.0
+source = "TIL-604: shared runtime budget targets"
+
+[kpi."footprint.runtime.relocated_bytes.aarch64"]
+unit = "bytes"
+max = 4000000.0
+source = "TIL-604: shared runtime budget targets"
+
+[kpi."footprint.runtime.symbol_relocations.aarch64"]
+unit = "count"
+max = 5000.0
+source = "TIL-604: shared runtime budget targets"
 
 # Agent round trip (scripts/perf/agent_rtt.py): one headless compositor on
 # the shared `runner` class, a release build with `dev-overrides` and thin
@@ -197,28 +284,82 @@ source = "KPI document: MCP tool call <= local invoke + 2 ms"
 # This lane has no panel, so they are reported, never enforced; the relative
 # rule catches regressions of the compositor's own work. A dropped-frame count
 # whose baseline is zero has no ratio, so one frame either way is not a change.
+# Timing KPIs need three stored runs before comparison: pointer p99 has ranged
+# from 7 to 13 ms between nights on identical code (TIL-700). Dropped frames
+# keep the one-run comparison: with a three-run minimum, elevated `new` runs
+# enter the baseline and can hide sustained growth from zero. Its two-run
+# regression rule still distinguishes a single noisy night.
 
 [kpi."latency.input_to_frame.pointer"]
 unit = "ms"
 p50 = 24.7
 p99 = 41.3
+baseline_min_runs = 3
 source = "KPI document: Input→photon latency (compositor side, headless)"
 
 [kpi."latency.workspace_switch.first_frame"]
 unit = "ms"
 p99 = 16.7
+baseline_min_runs = 3
 source = "KPI document: Workspace switch, first frame (compositor side, headless)"
 
 [kpi."latency.workspace_switch.settled"]
 unit = "ms"
 max = 300.0
+baseline_min_runs = 3
 source = "KPI document: Workspace switch, total (compositor side, headless)"
 
 [kpi."latency.workspace_switch.dropped_frames"]
 unit = "count"
 max = 0.0
 min_delta = 1.0
+baseline_min_runs = 1
 source = "KPI document: Workspace switch, dropped frames (compositor side, headless)"
+
+# Idle wakeups (crates/session/shell/tests/idle_wakeups.rs, TIL-614): a
+# headless dev build on the shared `runner` class with a signed-in desktop,
+# a restored Notes tab and a Terminal, left alone and sampled from /proc over
+# 60 s; context switches per second of every thread of the compositor's
+# process tree, of the compositor process alone, and its frame loop's
+# iterations. The installed desktop's counterpart is Dev / VM acceptance's
+# `idle.*` (TIL-589). The ceilings are the KPI target (an idle desktop <= 5
+# wakeups/s); reported, not enforced: the pull-request gate's budgets fail a
+# regression, and are lowered there as each idle fix lands.
+#
+# A count of timers moves little with the runner, but TIL-696 makes these
+# bimodal: until an unrelated paint, the frame loop spins at a rate that
+# follows the runner, and whether a run measures inside the spin depends on
+# the wall clock (60/s parked, 2008/s spinning, docs/benchmarks/
+# idle-wakeups-2026-10-09.md). Until TIL-696 lands the relative rule would
+# call that a regression every other night, so its tolerances are wide; the
+# fix restores the defaults. The floor keeps a single extra timer tick from
+# reading as a percentage regression.
+
+[kpi."wakeups.headless_two_apps"]
+unit = "per_s"
+max = 5.0
+p50_tolerance = 40.0
+p99_tolerance = 40.0
+min_delta = 1.0
+source = "KPI document: idle desktop <= 5 wakeups/s (headless share)"
+
+[kpi."wakeups.headless_two_apps.shell"]
+unit = "per_s"
+max = 5.0
+p50_tolerance = 40.0
+p99_tolerance = 40.0
+min_delta = 1.0
+source = "KPI document: idle desktop <= 5 wakeups/s (compositor process)"
+
+# The compositor's frame loop parks while nothing asks for a frame, so an
+# idle loop iterates about never; any rate here is a deadline or a source
+# that keeps it awake. Its baseline is 0 while parked, which has no ratio;
+# min_delta is the TIL-696 spin's floor until that lands.
+[kpi."wakeups.frame_loop_ticks.headless_two_apps"]
+unit = "per_s"
+max = 1.0
+min_delta = 1500.0
+source = "the frame loop parks while idle (TIL-136, TIL-614)"
 
 # Latency on reference hardware (scripts/perf/device_latency_bench.py,
 # docs/benchmarks/reference-hardware.md): kernel input event to KMS
@@ -348,6 +489,12 @@ max = 250.0
 min_delta = 32.0
 source = "KPI document: shell anon at most 250 MiB (run.py shell_anon_mb holds 500)"
 
+[kpi."memory.shell_anon_mib.empty"]
+unit = "MiB"
+max = 250.0
+min_delta = 32.0
+source = "vm-acceptance R01: the compositor's anonymous RSS with no app open; no target of its own yet, so the four-app KPI caps it"
+
 [kpi."memory.session_mib"]
 unit = "MiB"
 max = 2500.0
@@ -378,3 +525,68 @@ p95 = 16.7
 p99 = 33.4
 min_delta = 2.0
 source = "run.py work_ms_p95 / work_ms_p99: compositor CPU per painted frame during interactions"
+
+# Relay hosting cost (TIL-592): crates/hosting/tilo-relay/examples/relay_load,
+# 100 collaborators in rooms of four, ten measured minutes, one sample per
+# minute; tools/perf/adapters.py hosting-load prices them with
+# tools/perf/prices.toml. The KPI document's target is at most $0.001 per
+# active collaborator-hour.
+#
+# The enforced ceilings are about twice the first measurement (Perf /
+# scheduled run 90022 on `runner`): CPU 31.2 s, RSS 0.86 MiB, fan-out p50 13.8
+# and p99 244 ms. Bytes are nearly deterministic (egress 11.04 MB, frames
+# 9.50 MB, max within 0.5 % of p50), so their ceilings sit about 15 % above:
+# a delta resent whole or a presence storm fails at once. CPU and latency
+# share the runner and get the fs gate's wider tolerances.
+
+[kpi."hosting.relay.cpu_s_per_collab_hour.n100"]
+unit = "s"
+p50 = 62.0
+enforce = true
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 3.0
+source = "relay_load: relay process CPU-seconds per active collaborator-hour"
+
+[kpi."hosting.relay.rss_mib_per_collab.n100"]
+unit = "MiB"
+p50 = 2.0
+enforce = true
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 0.2
+source = "relay_load: relay resident memory per connected collaborator, above the idle relay"
+
+[kpi."hosting.relay.egress_bytes_per_collab_hour.n100"]
+unit = "bytes"
+p50 = 12700000.0
+enforce = true
+source = "relay_load: UDP bytes the relay's endpoint sent per active collaborator-hour"
+
+[kpi."hosting.relay.frame_bytes_per_collab_hour.n100"]
+unit = "bytes"
+p50 = 10900000.0
+enforce = true
+source = "relay_load: framed bytes written to peer sessions per active collaborator-hour"
+
+[kpi."hosting.relay.fanout_ms.n100"]
+unit = "ms"
+p50 = 30.0
+p99 = 500.0
+enforce = true
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 10.0
+source = "relay_load: one edit, publish to receipt by each other member of the room"
+
+# Not met on AWS: egress at $0.09/GB is $0.00099 of the measured $0.00113.
+[kpi."hosting.relay.cost_usd_per_collab_hour.aws-t4g-small.n100"]
+unit = "usd"
+p50 = 0.001
+source = "KPI document: Relay cost per active collaborator-hour"
+
+[kpi."hosting.relay.cost_usd_per_collab_hour.hetzner-cx22.n100"]
+unit = "usd"
+p50 = 0.001
+enforce = true
+source = "KPI document: Relay cost per active collaborator-hour"

@@ -801,6 +801,42 @@ impl ForeignEntry {
 
     /// Drop the CPU frame; the next SHM commit then copies its whole buffer.
     /// Returned to be freed outside the lock.
+    /// Make `pixels`, a captured `size` frame, the current one. Returns the
+    /// frame it replaces, for the caller to drop outside the lock.
+    #[cfg(target_os = "linux")]
+    fn publish_frame(
+        &mut self,
+        pixels: Arc<Vec<u8>>,
+        (width, height): (u32, u32),
+        generation: u64,
+    ) -> Arc<Vec<u8>> {
+        let replaced = std::mem::replace(&mut self.rgba, pixels);
+        // Protocol commit/unmap owns mapping. A late worker completion
+        // cannot map a pending buffer early or remap a detached surface.
+        self.hdr = None;
+        self.set_gpu(None);
+        self.width = width;
+        self.height = height;
+        self.seq = self.seq.wrapping_add(1);
+        self.damage_history
+            .publish(self.seq, generation, (width, height));
+        self.last_error = None;
+        replaced
+    }
+
+    /// The last capture failed: drop the stale frame and keep `reason`.
+    /// Returns the pixels it held, for the caller to drop outside the lock.
+    fn fail(&mut self, reason: String) -> Arc<Vec<u8>> {
+        let released = self.take_pixels();
+        self.hdr = None;
+        self.set_gpu(None);
+        self.width = 0;
+        self.height = 0;
+        self.seq = self.seq.wrapping_add(1);
+        self.last_error = Some(reason);
+        released
+    }
+
     fn take_pixels(&mut self) -> Arc<Vec<u8>> {
         #[cfg(target_os = "linux")]
         self.forget_shm_base();
@@ -1176,6 +1212,22 @@ struct ShmJob {
     /// older one moot. A damaged-only copy is laid over the frame before it,
     /// so a newer commit cannot simply replace one.
     patches: Vec<ShmPatch>,
+}
+
+/// The entry `job` was queued for, unless its surface went while the job
+/// ran. A client that commits and closes its window at once leaves the worker
+/// building a frame for a surface that is gone; `forget` removed the entry,
+/// but a closing tile still placing itself makes an empty one again, and
+/// publishing into that would keep a whole frame nothing frees. That entry has
+/// queued no SHM job, so the job's generation tells it apart.
+#[cfg(target_os = "linux")]
+fn shm_job_entry<'a>(
+    entries: &'a mut HashMap<SurfaceId, ForeignEntry>,
+    job: &ShmJob,
+) -> Option<&'a mut ForeignEntry> {
+    entries
+        .get_mut(&job.surface)
+        .filter(|entry| job.generation != 0 && job.generation <= entry.shm_queued)
 }
 
 /// One SHM commit's copy, and what it was copied against.
@@ -1762,12 +1814,7 @@ impl ShmWorker<'_> {
                     u32::try_from(built.shape.width).unwrap_or(u32::MAX),
                     u32::try_from(built.shape.height).unwrap_or(u32::MAX),
                 );
-                let published = store().publish_captured_rgba(
-                    job.surface,
-                    Arc::clone(&built.pixels),
-                    size,
-                    job.damage_generation,
-                );
+                let published = store().publish_shm_frame(&job, Arc::clone(&built.pixels), size);
                 // A surface forgotten meanwhile stays forgotten.
                 if published {
                     let replaced = self.surfaces().insert(job.surface, built);
@@ -1781,7 +1828,7 @@ impl ShmWorker<'_> {
                     %error,
                     "foreign shm readback failed"
                 );
-                store().note_failure(job.surface, error.to_string());
+                store().note_shm_failure(&job, error.to_string());
             }
             Err(ShmBuildError::Unanchored) => {
                 // Its damage is relative to a frame this worker no longer
@@ -2970,15 +3017,46 @@ impl ForeignFrameStore {
         drop(replaced);
     }
 
-    /// Make a frame the SHM worker built current: the pixels change hands,
-    /// they are not copied under the lock. Returns `false`, publishing
-    /// nothing, when the surface was forgotten meanwhile.
+    /// Make a frame the SHM worker built for `job` current: the pixels
+    /// change hands, they are not copied under the lock. Returns `false`,
+    /// publishing nothing, when the job's surface went meanwhile.
+    #[cfg(target_os = "linux")]
+    fn publish_shm_frame(&self, job: &ShmJob, pixels: Arc<Vec<u8>>, size: (u32, u32)) -> bool {
+        let mut guard = self
+            .entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(entry) = shm_job_entry(&mut guard, job) else {
+            return false;
+        };
+        let replaced = entry.publish_frame(pixels, size, job.damage_generation);
+        drop(guard);
+        drop(replaced);
+        true
+    }
+
+    /// Record that the SHM worker could not read `job`'s buffer, unless the
+    /// job's surface went meanwhile.
+    #[cfg(target_os = "linux")]
+    fn note_shm_failure(&self, job: &ShmJob, reason: String) {
+        let mut guard = self
+            .entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let released = shm_job_entry(&mut guard, job).map(|entry| entry.fail(reason));
+        drop(guard);
+        drop(released);
+    }
+
+    /// Publish a captured frame into `id`'s entry, as the SHM worker does,
+    /// without a queued job. `false` when `id` is not tracked.
+    #[cfg(test)]
     #[cfg(target_os = "linux")]
     fn publish_captured_rgba(
         &self,
         id: SurfaceId,
         pixels: Arc<Vec<u8>>,
-        (width, height): (u32, u32),
+        size: (u32, u32),
         generation: u64,
     ) -> bool {
         let mut guard = self
@@ -2988,18 +3066,7 @@ impl ForeignFrameStore {
         let Some(entry) = guard.get_mut(&id) else {
             return false;
         };
-        let replaced = std::mem::replace(&mut entry.rgba, pixels);
-        // Protocol commit/unmap owns mapping. A late worker completion
-        // cannot map a pending buffer early or remap a detached surface.
-        entry.hdr = None;
-        entry.set_gpu(None);
-        entry.width = width;
-        entry.height = height;
-        entry.seq = entry.seq.wrapping_add(1);
-        entry
-            .damage_history
-            .publish(entry.seq, generation, (width, height));
-        entry.last_error = None;
+        let replaced = entry.publish_frame(pixels, size, generation);
         drop(guard);
         drop(replaced);
         true
@@ -3053,16 +3120,7 @@ impl ForeignFrameStore {
     /// Two things read it: the window stops waiting (shown at once rather
     /// than held back for a frame that isn't coming), and `ForeignSurfaceWidget::unshowable_text` chooses the words shown, leaving `reason` here for debugging.
     pub fn note_failure(&self, id: SurfaceId, reason: String) {
-        let released = self.with_entry(id, |e| {
-            let released = e.take_pixels();
-            e.hdr = None;
-            e.set_gpu(None);
-            e.width = 0;
-            e.height = 0;
-            e.seq = e.seq.wrapping_add(1);
-            e.last_error = Some(reason);
-            released
-        });
+        let released = self.with_entry(id, |e| e.fail(reason));
         drop(released);
     }
 
@@ -3191,6 +3249,10 @@ impl ForeignFrameStore {
         drop(guard);
         if let Some(mut entry) = forgotten {
             entry.set_gpu(None);
+            drop(entry);
+            // Its frames are gone, and Vello drops the last one from its
+            // atlas a couple of paints later: give that memory back.
+            crate::shell::heap_trim::request();
         }
         crate::shell::gpu_frames::forget_surface(id);
         let mut children = self
@@ -6278,6 +6340,68 @@ mod tests {
         assert_ne!(store().frame_seq(id), 0, "reported only once published");
         assert!(!take_published_shm_frames(), "reported once");
         store().forget(id);
+    }
+
+    /// A client that commits and closes its window at once leaves the shm
+    /// worker building a frame for a surface that is gone. A closing tile
+    /// still placing itself makes an empty entry for it again; publishing
+    /// into that kept a whole frame nothing freed: a window's worth of
+    /// compositor memory per close.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn an_shm_frame_finished_after_its_surface_went_is_dropped() {
+        let frames = ForeignFrameStore::default();
+        let queue = |id: SurfaceId| {
+            let (generation, damage_generation) = frames.with_entry(id, |entry| {
+                entry.shm_queued = entry.shm_queued.wrapping_add(1);
+                (entry.shm_queued, entry.damage_history.begin(None))
+            });
+            ShmJob {
+                surface: id,
+                generation,
+                damage_generation,
+                patches: Vec::new(),
+            }
+        };
+        let tracked = |id: SurfaceId| {
+            frames
+                .entries
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .get(&id)
+                .map(|entry| entry.rgba.len())
+        };
+        let pixels = || Arc::new(vec![0x40; 64 * 64 * 4]);
+
+        let gone = sid(74);
+        let job = queue(gone);
+        frames.forget(gone);
+        assert!(!frames.publish_shm_frame(&job, pixels(), (64, 64)));
+        assert_eq!(
+            tracked(gone),
+            None,
+            "the late frame brought the surface back"
+        );
+
+        frames.note_placement(gone, Rect::new(0.0, 0.0, 64.0, 64.0));
+        assert!(!frames.publish_shm_frame(&job, pixels(), (64, 64)));
+        frames.note_shm_failure(&job, "late".into());
+        assert_eq!(
+            tracked(gone),
+            Some(0),
+            "the late frame filled a re-created entry"
+        );
+        assert_eq!(frames.last_error(gone), None, "the late failure reached it");
+        frames.forget(gone);
+
+        let live = sid(75);
+        let job = queue(live);
+        assert!(frames.publish_shm_frame(&job, pixels(), (64, 64)));
+        let snapshot = frames
+            .snapshot(live)
+            .expect("a live surface gets its frame");
+        assert_eq!((snapshot.width, snapshot.height), (64, 64));
+        frames.forget(live);
     }
 
     #[cfg(target_os = "linux")]

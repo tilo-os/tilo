@@ -1059,57 +1059,6 @@ pub fn focus_touch_target(state: &mut State, fb: &mut FrameBuilder, surface_id: 
 
 // Run-loop entry points.
 
-/// Mirror foreign toplevels adopted at the protocol layer into the shell
-/// chrome's workspace tree, and reap the tabs of destroyed ones; `true` when changed. Each becomes its own window group in the active strip.
-pub fn sync_foreign_tabs(state: &mut State, fb: &mut FrameBuilder) -> bool {
-    let adoptions = std::mem::take(&mut state.client_input.pending_adoptions);
-    let removals = std::mem::take(&mut state.client_input.pending_removals);
-    let renames = std::mem::take(&mut state.client_input.pending_renames);
-    if adoptions.is_empty() && removals.is_empty() && renames.is_empty() {
-        return false;
-    }
-    let mut changed = false;
-    let mut placements: Vec<(u64, StripId, GroupId)> = Vec::new();
-
-    fb.with_chrome(|chrome| {
-        {
-            let mut tree = chrome.tree_mut();
-            for adoption in &adoptions {
-                if let Some((strip, group)) =
-                    insert_foreign_group(&mut tree, adoption.surface_id, adoption.app_id.as_deref())
-                {
-                    placements.push((adoption.surface_id, strip, group));
-                    changed = true;
-                }
-            }
-            for surface_id in &removals {
-                if remove_foreign_tab(&mut tree, *surface_id) {
-                    changed = true;
-                }
-            }
-            for (surface_id, app_id) in &renames {
-                if rename_foreign_tab(&mut tree, *surface_id, app_id) {
-                    changed = true;
-                }
-            }
-        }
-        if changed {
-            chrome.bump();
-        }
-    });
-
-    for (surface_id, strip, group) in placements {
-        state
-            .client_input
-            .placements
-            .insert(surface_id, (strip, group));
-    }
-    for surface_id in &removals {
-        state.client_input.placements.remove(surface_id);
-    }
-    changed
-}
-
 /// Reconcile the seat's keyboard focus with the shell's focused tab. Called every tick: chrome capture drops client focus outright; otherwise focus follows the active tab.
 pub fn sync_keyboard_focus(state: &mut State, fb: &FrameBuilder) {
     let captured = chrome_captures_input(fb);

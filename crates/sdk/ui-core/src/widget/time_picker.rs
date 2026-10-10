@@ -325,11 +325,6 @@ impl TimePicker {
         self.publish_local_state();
     }
 
-    pub fn set_seconds(&mut self, seconds: Option<u8>) {
-        self.seconds = seconds.map(|seconds| seconds.min(MINSEC_MAX));
-        self.publish_local_state();
-    }
-
     pub fn set_value(&mut self, value: TimeValue) {
         self.apply_value(value.normalized());
         self.publish_local_state();

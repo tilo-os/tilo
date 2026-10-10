@@ -890,24 +890,6 @@ impl FileHistoryStore {
         Some(result)
     }
 
-    /// Content roots retained by the durable immutable history.  A home peer
-    /// uses these to keep historical versions recoverable while reclaiming
-    /// only blobs proven unreachable from both the live namespace and history.
-    pub fn retained_content_hashes(&self) -> Vec<fs_protocol::ContentHash> {
-        let Ok(current) = self.state.lock() else {
-            return Vec::new();
-        };
-        let mut hashes = current
-            .records
-            .values()
-            .flat_map(|record| record.versions.values())
-            .filter_map(|version| version.content_hash)
-            .collect::<Vec<_>>();
-        hashes.sort_unstable_by_key(|hash| hash.0);
-        hashes.dedup();
-        hashes
-    }
-
     pub fn projection(&self, record_id: FileRecordId) -> Option<HistoryProjectionV1> {
         let snapshot = self.snapshot(record_id)?;
         let total_versions = snapshot.versions.len() as u64;

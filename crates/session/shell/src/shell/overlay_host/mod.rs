@@ -3278,17 +3278,6 @@ impl ShellOverlayHost {
         }
     }
 
-    /// Gate this host behind the shell-owned identity ceremony.
-    ///
-    /// This lives on the compositor root rather than in a pre-session winit
-    /// window: on a fresh machine there is no display server before `shell`,
-    /// and an application-shaped setup window could be imitated by an app.
-    #[must_use]
-    pub fn with_onboarding(mut self, identity_dir: std::path::PathBuf) -> Self {
-        self.onboarding = Some(crate::onboarding_view::OnboardingView::new(identity_dir));
-        self
-    }
-
     /// Activate first-login chrome on an already constructed compositor
     /// host. Production uses this after resolving the canonical XDG path.
     pub fn enable_onboarding(&mut self, identity_dir: std::path::PathBuf) {
@@ -3372,17 +3361,6 @@ impl ShellOverlayHost {
     /// Whether first-login chrome is still withholding the desktop.
     pub fn onboarding_active(&self) -> bool {
         self.onboarding.is_some()
-    }
-
-    /// Replace the protocol broker. Headless tests use this to drive
-    /// discovery, connection and failure states without receiver hardware.
-    #[must_use]
-    pub fn with_projection_backend(
-        mut self,
-        backend: Box<dyn crate::shell::projection::ProjectionBackend>,
-    ) -> Self {
-        self.projection_overlay = ProjectionOverlay::with_backend(backend);
-        self
     }
 
     pub fn projection(&self) -> &crate::shell::projection::ProjectionController {
@@ -5853,16 +5831,12 @@ impl ShellOverlayHost {
             .count()
     }
 
-    /// Every group's pending maximize toggle, persisted through the desktop
-    /// controller — without this the toggle lives only on the widget and
-    /// resets on the next restart.
-    fn harvest_pending_maximize_changes(&self) {
-        if self.group_row_ptrs.is_empty() {
-            return;
-        }
-        let Some(chrome) = self.chrome.clone() else {
-            return;
-        };
+    /// Drain every row's groups through `take`, collecting the intents it
+    /// finds pending.
+    fn take_group_intents(
+        &self,
+        mut take: impl FnMut(&mut UiWindowGroup) -> Option<tilo_desktop::intents::DesktopIntent>,
+    ) -> Vec<tilo_desktop::intents::DesktopIntent> {
         let mut intents = Vec::new();
         for &ptr in self.group_row_ptrs.values() {
             // SAFETY: see field doc on `group_row_ptrs` — pointer was
@@ -5870,13 +5844,22 @@ impl ShellOverlayHost {
             // tree, the host outlives the content, and reconcile sweeps
             // run sequentially so no other path is aliasing this row.
             let row: &mut GroupRow = unsafe { &mut *ptr };
-            intents.extend(
-                row.groups
-                    .iter_mut()
-                    .filter_map(tilo_desktop::intents::take_maximize)
-                    .map(tilo_desktop::intents::DesktopIntent::Local),
-            );
+            intents.extend(row.groups.iter_mut().filter_map(&mut take));
         }
+        intents
+    }
+
+    /// Every group's pending maximize toggle, persisted through the desktop
+    /// controller — without this the toggle lives only on the widget and
+    /// resets on the next restart.
+    fn harvest_pending_maximize_changes(&self) {
+        let Some(chrome) = self.chrome.clone() else {
+            return;
+        };
+        let intents = self.take_group_intents(|group| {
+            tilo_desktop::intents::take_maximize(group)
+                .map(tilo_desktop::intents::DesktopIntent::Local)
+        });
         if intents.is_empty() {
             return;
         }
@@ -6163,23 +6146,13 @@ impl ShellOverlayHost {
     }
 
     fn harvest_pending_width_changes(&self) {
-        if self.group_row_ptrs.is_empty() {
-            return;
-        }
         let Some(chrome) = self.chrome.clone() else {
             return;
         };
-        let mut intents = Vec::new();
-        for &ptr in self.group_row_ptrs.values() {
-            // SAFETY: see field doc on `group_row_ptrs`.
-            let row: &mut GroupRow = unsafe { &mut *ptr };
-            intents.extend(
-                row.groups
-                    .iter_mut()
-                    .filter_map(tilo_desktop::intents::take_width)
-                    .map(tilo_desktop::intents::DesktopIntent::Local),
-            );
-        }
+        let intents = self.take_group_intents(|group| {
+            tilo_desktop::intents::take_width(group)
+                .map(tilo_desktop::intents::DesktopIntent::Local)
+        });
         Self::dispatch_desktop_intents(&chrome, intents);
     }
 
@@ -6295,23 +6268,13 @@ impl ShellOverlayHost {
     /// Same as [`Self::harvest_pending_group_reorder`], for an
     /// *intra-group* tab reorder.
     fn harvest_pending_tab_reorder(&self) {
-        if self.group_row_ptrs.is_empty() {
-            return;
-        }
         let Some(chrome) = self.chrome.clone() else {
             return;
         };
-        let mut intents = Vec::new();
-        for &ptr in self.group_row_ptrs.values() {
-            // SAFETY: see field doc on `group_row_ptrs`.
-            let row: &mut GroupRow = unsafe { &mut *ptr };
-            intents.extend(
-                row.groups
-                    .iter_mut()
-                    .filter_map(tilo_desktop::intents::take_tab_reorder)
-                    .map(tilo_desktop::intents::DesktopIntent::Session),
-            );
-        }
+        let intents = self.take_group_intents(|group| {
+            tilo_desktop::intents::take_tab_reorder(group)
+                .map(tilo_desktop::intents::DesktopIntent::Session)
+        });
         Self::dispatch_desktop_intents(&chrome, intents);
     }
 
@@ -7299,11 +7262,6 @@ impl ShellOverlayHost {
     #[cfg(any(test, debug_assertions))]
     pub fn tick_pending_tab_reorder_harvest_for_tests(&mut self) {
         self.harvest_pending_tab_reorder();
-    }
-
-    /// Test and deterministic-scenario entry point for same-strip tab moves.
-    pub fn tick_pending_group_topology_harvest_for_tests(&mut self) {
-        self.harvest_pending_group_topology();
     }
 
     /// Test-only: runs the per-frame decoration-search-chip handling outside `update`.

@@ -415,13 +415,6 @@ impl<'a> PropertyListFace<'a> {
         self
     }
 
-    /// The row and which of its actions the pointer is over.
-    #[must_use]
-    pub fn hovered_action_at(mut self, target: Option<(usize, usize)>) -> Self {
-        self.hovered_action = target;
-        self
-    }
-
     fn layout(
         &self,
         text: &mut TextRenderer,

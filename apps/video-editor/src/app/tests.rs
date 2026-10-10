@@ -4537,23 +4537,7 @@ fn inspector_grade_and_geometry_controls_write_the_document() {
     reason = "call sites build the event inline; the helper only borrows it"
 )]
 fn dispatch(app: &mut VideoEditorApp, doc: &mut AutoCommit, ev: WindowEvent) {
-    let mut handled = false;
-    let mut focus = None;
-    let taffy = TaffyTree::<()>::new();
-    let node = NodeId::new(0);
-    app.handle_event(
-        &ev,
-        &mut ui::widget::EventCtx {
-            scale_factor: 1.0,
-            modifiers: &winit::event::Modifiers::default(),
-            state: ui::widget::Edits::lend(doc),
-            path: &automerge::ROOT,
-            handled: &mut handled,
-            focus_target: &mut focus,
-            node_id: node,
-            taffy: &taffy,
-        },
-    );
+    ui::testing::Dispatch::new().doc(doc).send(app, &ev);
     settle(app, doc);
 }
 
@@ -4663,23 +4647,10 @@ fn dispatch_mods(
     ev: WindowEvent,
     mods: ModifiersState,
 ) {
-    let mut handled = false;
-    let mut focus = None;
-    let taffy = TaffyTree::<()>::new();
-    let node = NodeId::new(0);
-    app.handle_event(
-        &ev,
-        &mut ui::widget::EventCtx {
-            scale_factor: 1.0,
-            modifiers: &winit::event::Modifiers::from(mods),
-            state: ui::widget::Edits::lend(doc),
-            path: &automerge::ROOT,
-            handled: &mut handled,
-            focus_target: &mut focus,
-            node_id: node,
-            taffy: &taffy,
-        },
-    );
+    ui::testing::Dispatch::new()
+        .modifiers(mods)
+        .doc(doc)
+        .send(app, &ev);
     settle(app, doc);
 }
 

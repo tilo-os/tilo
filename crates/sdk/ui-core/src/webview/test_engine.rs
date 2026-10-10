@@ -85,11 +85,6 @@ impl TestEngine {
         self.lock_inner().paint_snapshot = Some(snapshot.into());
     }
 
-    /// Serve `bytes` for a paint resource request for `url`.
-    pub fn set_paint_resource(&self, url: impl Into<String>, bytes: Vec<u8>) {
-        self.lock_inner().paint_resources.insert(url.into(), bytes);
-    }
-
     /// Queue the answer to the next page request. Without one, an outline
     /// is a single document line and every other request succeeds.
     pub fn push_page_reply(&self, reply: Result<PageReply, PageFailure>) {

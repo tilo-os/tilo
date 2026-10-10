@@ -4507,19 +4507,12 @@ mod tests {
                         },
                     ];
                     for event in events {
-                        grid.handle_event(
-                            &event,
-                            &mut ui::widget::EventCtx {
-                                scale_factor: 1.0,
-                                modifiers: &winit::event::Modifiers::default(),
-                                state: ui::widget::Edits::lend(&mut doc),
-                                path: &automerge::ROOT,
-                                handled: &mut false,
-                                focus_target: &mut focus,
-                                node_id: node,
-                                taffy: &tree,
-                            },
-                        );
+                        focus = ui::testing::Dispatch::new()
+                            .doc(&mut doc)
+                            .layout(&tree, node)
+                            .focus_target(focus)
+                            .send(&mut grid, &event)
+                            .focus_target;
                     }
                     let details = ui::widget::controls::take_control_invocation(&mut grid)
                         .expect("pressing the card shows its details");

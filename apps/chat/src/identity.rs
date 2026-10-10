@@ -49,16 +49,8 @@ impl LocalIdentity {
 }
 
 /// A stable palette index (0..8) from arbitrary bytes.
-fn color_from_bytes(b: &[u8]) -> usize {
+pub(crate) fn color_from_bytes(b: &[u8]) -> usize {
     (fnv1a(b) % 8) as usize
-}
-
-/// `color_from_bytes`, for a caller outside this module that has taken a
-/// new id and has to move the colour with it. A colour derived from an id
-/// the peer no longer authors under is a caret that disagrees with the
-/// avatar beside it.
-pub fn color_index_for(bytes: &[u8]) -> usize {
-    color_from_bytes(bytes)
 }
 
 /// 64-bit FNV-1a — a stable hash (never used for

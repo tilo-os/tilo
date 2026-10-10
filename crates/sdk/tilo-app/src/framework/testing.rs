@@ -1424,6 +1424,18 @@ pub fn detached_live<R: Resource>(
 pub fn inspect_live_window<A: ResourceApp, T>(
     inspect: impl FnOnce(&ui_core::App) -> T,
 ) -> Result<T, LaunchError> {
+    drive_live_window::<A, T>(|app| inspect(app))
+}
+
+/// Drive the window `A`'s live launch opens, mounted as
+/// [`inspect_live_window`] mounts it: the real [`ui_core::App`], which a
+/// test or benchmark feeds input through [`ui_core::App::surface_input`].
+///
+/// # Errors
+/// Returns any launch, storage or construction failure.
+pub fn drive_live_window<A: ResourceApp, T>(
+    drive: impl FnOnce(&mut ui_core::App) -> T,
+) -> Result<T, LaunchError> {
     let profile = tempfile::tempdir().map_err(operation)?;
     let mut host = ApplicationHost::new(
         profile.path().join("state"),
@@ -1443,7 +1455,7 @@ pub fn inspect_live_window<A: ResourceApp, T>(
     )?;
     let component = definition.instantiate(prepared.context, prepared.target, prepared.restore)?;
     let mut app = ui_core::App::from_component(component, prepared.runner_inputs)?;
-    let seen = inspect(&app);
+    let seen = drive(&mut app);
     app.close_components();
     Ok(seen)
 }

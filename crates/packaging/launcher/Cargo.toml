@@ -54,6 +54,9 @@ tempfile.workspace = true
 tilo-paths.workspace = true
 fnv.workspace = true
 tilo-clock = { path = "../../platform/tilo-clock" }
+# Launch phase marks, handed to the app so its startup file covers the time
+# before its own `main` (run.rs, `splice_startup_marks`).
+tilo-startup-metrics = { path = "../../system/tilo-startup-metrics" }
 clap.workspace = true
 serde.workspace = true
 # Also how `gpu.rs` reads an EGL vendor / Vulkan ICD manifest's

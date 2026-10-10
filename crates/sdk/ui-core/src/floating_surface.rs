@@ -1474,12 +1474,6 @@ impl FloatingPlacement {
         self.desktop_covered = false;
     }
 
-    /// Convenience for non-drag programmatic adoption.
-    pub fn adopt_desktop_rect(&mut self, rect: Rect) {
-        self.prepare_desktop_rect(rect);
-        self.confirm_desktop_adoption();
-    }
-
     pub fn is_handoff_animating(&self) -> bool {
         (self.handoff_progress_override.is_none()
             && self

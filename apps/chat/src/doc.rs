@@ -2067,12 +2067,6 @@ impl ChatDoc {
         }
     }
 
-    pub fn set_channel_topic(doc: &mut AutoCommit, id: &str, topic: &str) {
-        if let Some(c) = map_at(doc, &map_at(doc, &ROOT, "channels").unwrap_or(ROOT), id) {
-            let _ = doc.put(&c, "topic", topic);
-        }
-    }
-
     pub fn rename_category(doc: &mut AutoCommit, id: &str, name: &str) {
         if let Some(c) = map_at(doc, &map_at(doc, &ROOT, "categories").unwrap_or(ROOT), id) {
             let _ = doc.put(&c, "name", name);

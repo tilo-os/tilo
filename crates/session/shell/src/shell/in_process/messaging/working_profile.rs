@@ -84,18 +84,6 @@ impl NativeSignalWorkingProfile {
             .checkpoint(image)
             .map_err(|_| SendError::Unavailable)
     }
-    /// Own the signed provider until its namespace has stopped, then collect
-    /// and seal its newest private image. No PID label or leader status can
-    /// substitute for the launcher's unforgeable, exact-lease exit witness.
-    /// # Errors
-    /// Refuses invalid launch, revocation, forced exit or failed collection.
-    pub fn run_and_checkpoint(
-        self,
-        launch: launcher::owned_service::ServiceLaunch,
-        cancellation: launcher::owned_service::ServiceCancellation,
-    ) -> Result<(), SendError> {
-        self.run_connected_and_checkpoint(launch, cancellation, None, None)
-    }
     pub(super) fn run_connected_and_checkpoint(
         mut self,
         mut launch: launcher::owned_service::ServiceLaunch,

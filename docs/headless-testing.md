@@ -475,6 +475,51 @@ its first painted row and then once per second, retains no sample history, and
 stops after 200,000 painted rows with a diagnostic. Its row formatting allocates
 no heap memory; only explicitly enabled tracing incurs CPU clock and I/O costs.
 
+## Idle wakeups
+
+An idle desktop should leave the CPU asleep. `idle_wakeups::` in the shell's
+`it` target holds it to a budget: it starts the production binary headless with
+a signed-in desktop, restores a Notes tab, opens a Terminal through
+`window.new.terminal`, waits out startup work and 5 s more, then samples every thread of the
+compositor's process tree from `/proc` for 10 s and fails above
+`IDLE_WAKEUP_BUDGET` context switches per second, or if the compositor painted
+while nobody touched it.
+
+```bash
+cargo test --locked -p shell --test it idle_wakeups:: -- --nocapture
+```
+
+It prints a table, busiest first:
+
+```text
+idle wakeups over 10.0 s: 60.27/s and 2.1 % of a core across 1 processes
+  wakeups/s  preempt/s   cpu %  threads  process / thread
+      20.79       1.20     0.6        2  shell / tilo-collab-bro
+      19.89       0.00     0.4        1  shell / tilo-audio-outp
+       ...
+compositor frame loop: 0.0 ticks/s, 0 frames painted; its paint-stats in the window:
+```
+
+`wakeups/s` counts every context switch (voluntary: the thread blocked again;
+involuntary: it was preempted), `preempt/s` the involuntary share, `cpu %` its
+CPU time, `threads` how many threads of that name were seen (names are the
+kernel's 15-byte truncation). A loop that spins without blocking shows in
+`cpu %` and in the frame loop's tick rate rather than in wakeups, so the gate
+also holds the loop to `LOOP_TICK_BUDGET` and to zero painted frames; the
+`paint-stats: wakes` lines name what woke it. Pull requests run it whenever
+`shell` changes; the scheduled lane (`kpis=wakeups`) runs it with a 60 s window
+(`TILO_IDLE_WAKEUP_WINDOW_SECS`) and records `wakeups.*`. When a change
+removes a waker, lower `IDLE_WAKEUP_BUDGET` in the same pull request to the new
+measurement plus the same margin.
+
+Headless covers what headless runs. DRM-only services (power, hotplug, the
+rotation sensor) and out-of-process apps are held by per-thread probes in
+their own crates: `tilo_test_env::idle::{spawned_thread, assert_stays_asleep}`
+for one service thread of a unit test, `idle_wakeups(pid, settle, window)` for
+a process tree, and `sample_process` with `Wakeups::between` for a stretch the
+test drives itself (`shell::network::idle_quiet_tests` uses it for the
+collaboration plane of two converged desktops).
+
 ## Where to look in source
 
 | What | Where |

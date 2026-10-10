@@ -903,15 +903,6 @@ impl Popover {
         };
     }
 
-    pub fn highlight_first(&mut self) {
-        self.options_mut().highlighted = 0;
-    }
-
-    pub fn highlight_last(&mut self) {
-        let options = self.options_mut();
-        options.highlighted = options.items.len().saturating_sub(1);
-    }
-
     /// Record `idx` as selected and pending, and close. Out-of-range
     /// indices are ignored.
     pub fn select(&mut self, idx: usize) {
@@ -1361,10 +1352,6 @@ impl<C: Widget + 'static> PopoverButton<C> {
 
     pub fn popover(&self) -> &Popover<C> {
         &self.popover
-    }
-
-    pub fn popover_mut(&mut self) -> &mut Popover<C> {
-        &mut self.popover
     }
 
     pub fn button_mut(&mut self) -> &mut crate::widget::Button {

@@ -164,15 +164,6 @@ impl RangeChart {
         self.axis_title = title.into();
         self
     }
-    #[must_use]
-    pub fn format_values(mut self, formatter: impl Fn(f64) -> String + 'static) -> Self {
-        self.formatter = Some(Box::new(formatter));
-        self
-    }
-    pub fn set_bars(&mut self, bars: Vec<RangeBar>) {
-        self.bars = bars;
-        self.hovered = None;
-    }
     pub fn take_activated(&mut self) -> Option<String> {
         self.activated.take()
     }

@@ -136,7 +136,13 @@ containerfile="$repo/os/Containerfile"
 # Combining the application publisher with the existing runtime publisher
 # COPY preserves their exact payload mappings and the 156-instruction budget.
 # The first-login Flatpak unit and cooperative Bash editor are both retained.
-expected_contract=7ae5fa508eee4062dda7e997189cd678c0d213eeed43990e3b9863245704fded
+# The Windows egress reaper gains two path units (tilo-windows-vm-egress-reaper
+# .path and tilo-windows-vm-egress-lease.path); they are the intentional delta.
+# The user-identity component carries the board-successor verifier, hardware
+# profile and pinned Cosign. Its staged-trust and verified-update helpers move
+# from direct rootfs COPY to that component at the same installed paths and
+# executable mode; the component installer tests cover their staged sources.
+expected_contract=01e3f452f1160b9a99aeb6135d8e0ca32fea63ab2fbaa0463f8ebf805f574489
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {

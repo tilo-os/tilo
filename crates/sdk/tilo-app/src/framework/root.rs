@@ -81,6 +81,10 @@ pub(crate) struct ResourceRoot<R: Resource> {
     /// The document-owned tree at one live and translation revision. Surface bindings, local
     /// rows and effect availability are decorated afresh for every caller.
     publication_tree: std::cell::RefCell<Option<PublicationCache>>,
+    /// The head bound controls were last refreshed from, kept between syncs
+    /// for a resource whose publication may be reused
+    /// ([`Resource::publication_cache_epoch`]).
+    binding_head: std::cell::RefCell<Option<BindingHead>>,
     /// The view operation types of the nested resources at one live revision.
     nested_views: std::cell::RefCell<Option<(u64, Rc<HashSet<String>>)>>,
     /// Whether the resource keeps document state History shows.
@@ -229,6 +233,7 @@ impl<R: Resource> ResourceRoot<R> {
             presentation: Vec::new(),
             search: std::cell::RefCell::new(None),
             publication_tree: std::cell::RefCell::new(None),
+            binding_head: std::cell::RefCell::new(None),
             nested_views: std::cell::RefCell::new(None),
             history: true,
             native_presentation,
@@ -396,13 +401,41 @@ impl<R: Resource> ResourceRoot<R> {
     }
 
     /// The document-owned part of what controls bind to: the live
-    /// resource's identity and own actions, without its children.
+    /// resource's identity and own actions, without its children. Taken
+    /// from the cached tree when it holds this change; else published
+    /// without building a child, so it costs the same however many items
+    /// the resource holds.
     fn binding_head(&self) -> BindingHead {
         let state = self.live.get();
+        let revision = (self.live.revision(), ui_core::i18n::I18nManager::revision());
+        let epoch = R::publication_cache_epoch(&state);
+        let cached = epoch.as_ref().and_then(|epoch| {
+            self.publication_tree
+                .borrow()
+                .as_ref()
+                .filter(|cached| cached.revision == (revision.0, revision.1, epoch.clone()))
+                .map(|cached| without_children(&cached.tree))
+        });
+        let resource = cached.unwrap_or_else(|| {
+            #[cfg(feature = "test-support")]
+            let _profile = super::profiling::Scope::start("framework.resource_head");
+            tilo_resource::publish_head::<R>(self.dispatch.resource_id(), &self.label, &state)
+        });
         BindingHead {
-            revision: (self.live.revision(), ui_core::i18n::I18nManager::revision()),
-            resource: self.document_tree(&state, without_children),
+            revision,
+            epoch,
+            resource,
         }
+    }
+
+    /// The head bound controls were last refreshed from, while it still
+    /// holds: the resource may reuse its publication
+    /// ([`Resource::publication_cache_epoch`]) and nothing it depends on
+    /// moved since. A resource that may not is published afresh each sync.
+    fn retained_head(&self) -> Option<BindingHead> {
+        let head = self.binding_head.borrow_mut().take()?;
+        let current = self.live.with(R::publication_cache_epoch);
+        (head.epoch.is_some() && head.epoch == current).then_some(head)
     }
 
     /// What bound controls look up ([`super::controls::Actions`]): the
@@ -601,7 +634,7 @@ impl<R: Resource> ResourceRoot<R> {
         }
         // Refresh the same declarations the host publishes before rebuilt
         // controls look up their bindings. Retained surface handles share it.
-        let head = self.refresh_bindings(None);
+        let head = self.refresh_bindings(self.retained_head());
         // A surface may have synced the state itself after its own edit.
         let revision = self.live.revision();
         if revision != self.followed.get() {
@@ -631,6 +664,8 @@ enum Decoration {
 #[derive(Clone)]
 struct BindingHead {
     revision: (u64, u64),
+    /// [`Resource::publication_cache_epoch`] at the time.
+    epoch: Option<String>,
     resource: tilo_actions::Resource,
 }
 
@@ -1091,7 +1126,8 @@ impl<R: Resource> Decorator for ResourceRoot<R> {
         // What the view's sync changed (a surface's bound edits, its
         // availability) reaches the bindings; the document-owned head is
         // rebuilt only when the sync moved the state.
-        self.refresh_bindings(Some(head));
+        let head = self.refresh_bindings(Some(head));
+        *self.binding_head.borrow_mut() = Some(head);
     }
 
     fn settle(&mut self, edits: &mut ui_core::widget::Edits<'_>, path: &ui_core::automerge::ObjId) {

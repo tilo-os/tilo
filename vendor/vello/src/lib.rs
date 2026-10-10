@@ -149,6 +149,7 @@ pub use wgpu;
 #[cfg(feature = "wgpu")]
 pub use image_source::ImageSource;
 pub use scene::{DrawGlyphs, Scene};
+pub use vello_encoding::ImageCacheStats;
 pub use vello_encoding::{FontEmbolden, Glyph, NormalizedCoord};
 
 use low_level::ShaderId;
@@ -1793,6 +1794,13 @@ impl Renderer {
     /// past its memory limit.
     pub fn set_image_atlas_max(&mut self, max_size: u32) {
         self.resolver.set_image_atlas_max(max_size);
+    }
+
+    /// The image atlas's side and the images resident in it, with the CPU
+    /// pixels they keep alive. The atlas texture itself is in
+    /// [`Self::memory_stats`]' `image_bytes`.
+    pub fn image_cache_stats(&self) -> ImageCacheStats {
+        self.resolver.image_cache_stats()
     }
 
     /// Grow the bump buffers at most once, straight to the

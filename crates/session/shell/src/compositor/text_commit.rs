@@ -562,36 +562,41 @@ struct LentState {
 /// The compositor's in-process `input-method-v2` connection, alive for one
 /// commit. Dropping it closes the connection and releases the seat.
 pub(super) struct LentInputMethod {
+    /// Declared first so the server side disconnects before `conn` closes.
+    _link: LoopbackClient,
     conn: Connection,
     queue: EventQueue<LentState>,
     state: LentState,
     input_method: Option<zwp_input_method_v2::ZwpInputMethodV2>,
     committed: bool,
-    server: Client,
-    display: DisplayHandle,
+}
+
+/// The compositor's own end of an in-process Wayland client: the server-side
+/// client and the event-loop wake on the client's socket. Dropping it
+/// disconnects the client.
+pub(super) struct LoopbackClient {
+    pub(super) server: Client,
+    pub(super) display: DisplayHandle,
     loop_handle: LoopHandle<'static, State>,
     wake: Option<RegistrationToken>,
 }
 
-impl LentInputMethod {
-    pub(super) fn connect(state: &mut State) -> Result<Self, String> {
+impl LoopbackClient {
+    /// Insert a client carrying `data` into the compositor's own display and
+    /// return the client side's connection. The event loop only wakes when
+    /// something arrives on it; the loop's tick reads it, so the source is
+    /// never removed from inside its own callback.
+    pub(super) fn connect(
+        state: &mut State,
+        data: std::sync::Arc<ClientState>,
+    ) -> Result<(Self, Connection), String> {
         let (server, client) = UnixStream::pair().map_err(|e| e.to_string())?;
         client.set_nonblocking(true).map_err(|e| e.to_string())?;
         let server = state
             .display_handle
-            .insert_client(
-                server,
-                ClientState::input_method_arc(TrustedInputMethod::Compositor),
-            )
+            .insert_client(server, data)
             .map_err(|e| e.to_string())?;
-        state.register_trusted_input_method_client(&server, TrustedInputMethod::Compositor);
         let conn = Connection::from_socket(client).map_err(|e| e.to_string())?;
-        let queue = conn.new_event_queue::<LentState>();
-        let _registry = conn.display().get_registry(&queue.handle(), ());
-        let _ = conn.flush();
-        // Wake the event loop when the compositor answers. Only a wake: the
-        // loop's tick reads the answer and moves the request forward, so the
-        // source is never removed from inside its own callback.
         let wake = conn
             .backend()
             .poll_fd()
@@ -606,16 +611,52 @@ impl LentInputMethod {
                     )
                     .ok()
             });
+        let link = Self {
+            server,
+            display: state.display_handle.clone(),
+            loop_handle: state.loop_handle.clone(),
+            wake,
+        };
+        Ok((link, conn))
+    }
+}
+
+impl Drop for LoopbackClient {
+    fn drop(&mut self) {
+        if let Some(wake) = self.wake.take() {
+            self.loop_handle.remove(wake);
+        }
+        let id = self.server.id();
+        if self
+            .display
+            .backend_handle()
+            .get_client_data(id.clone())
+            .is_ok()
+        {
+            self.display
+                .backend_handle()
+                .kill_client(id, DisconnectReason::ConnectionClosed);
+        }
+    }
+}
+
+impl LentInputMethod {
+    pub(super) fn connect(state: &mut State) -> Result<Self, String> {
+        let (link, conn) = LoopbackClient::connect(
+            state,
+            ClientState::input_method_arc(TrustedInputMethod::Compositor),
+        )?;
+        state.register_trusted_input_method_client(&link.server, TrustedInputMethod::Compositor);
+        let queue = conn.new_event_queue::<LentState>();
+        let _registry = conn.display().get_registry(&queue.handle(), ());
+        let _ = conn.flush();
         Ok(Self {
+            _link: link,
             conn,
             queue,
             state: LentState::default(),
             input_method: None,
             committed: false,
-            server,
-            display: state.display_handle.clone(),
-            loop_handle: state.loop_handle.clone(),
-            wake,
         })
     }
 
@@ -666,25 +707,6 @@ impl LentInputMethod {
         let _ = self.conn.display().sync(&self.queue.handle(), ());
         self.committed = true;
         let _ = self.conn.flush();
-    }
-}
-
-impl Drop for LentInputMethod {
-    fn drop(&mut self) {
-        if let Some(wake) = self.wake.take() {
-            self.loop_handle.remove(wake);
-        }
-        let id = self.server.id();
-        if self
-            .display
-            .backend_handle()
-            .get_client_data(id.clone())
-            .is_ok()
-        {
-            self.display
-                .backend_handle()
-                .kill_client(id, DisconnectReason::ConnectionClosed);
-        }
     }
 }
 

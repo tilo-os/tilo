@@ -589,22 +589,6 @@ impl StatePeer {
         self.set_member_verb(user_public_key, member_verb(role), key, now)
     }
 
-    /// Make a governed collaborator an administrator of the workspace, with
-    /// the owner's authority over it (never its governance key).
-    /// [`Self::set_member_role`] demotes them again.
-    ///
-    /// # Errors
-    ///
-    /// As [`Self::set_member_role`].
-    pub fn set_member_administrator(
-        &mut self,
-        user_public_key: [u8; 32],
-        key: &SigningKey,
-        now: SystemTime,
-    ) -> Result<bool, String> {
-        self.set_member_verb(user_public_key, Verb::Admin, key, now)
-    }
-
     fn set_member_verb(
         &mut self,
         user_public_key: [u8; 32],

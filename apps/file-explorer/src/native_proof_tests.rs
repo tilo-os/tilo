@@ -143,21 +143,12 @@ fn native_pointer_observer_tracks_logical_cursor_and_survives_rebuild() {
         device_id: winit::event::DeviceId::dummy(),
         position: winit::dpi::PhysicalPosition::new(1000.0, 400.0),
     };
-    let mut handled = false;
-    let mut focus = None;
-    h.w.handle_event(
-        &event,
-        &mut ui::widget::EventCtx {
-            scale_factor: 2.0,
-            modifiers: &winit::event::Modifiers::default(),
-            state: ui::widget::Edits::lend(&mut h.state.doc),
-            path: &h.state.root,
-            handled: &mut handled,
-            focus_target: &mut focus,
-            node_id: h.node,
-            taffy: &h.taffy,
-        },
-    );
+    ui::testing::Dispatch::new()
+        .scale_factor(2.0)
+        .doc(&mut h.state.doc)
+        .path(&h.state.root)
+        .layout(&h.taffy, h.node)
+        .send(&mut h.w, &event);
     let snapshot =
         h.w.native_input_snapshot(&h.state.doc, &h.state.root)
             .unwrap();

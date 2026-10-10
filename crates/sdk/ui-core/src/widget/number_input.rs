@@ -616,12 +616,6 @@ impl NumberInput {
         self.value
     }
 
-    /// The current value as an `i64` (rounded) — convenience for the common
-    /// integer-inspector case (font size, margins).
-    pub fn value_i64(&self) -> i64 {
-        round_to_i64(self.value)
-    }
-
     /// Push a value in programmatically. Clamps and re-formats the
     /// display, but does NOT report a change through
     /// [`take_changed`](NumberInput::take_changed). A bound

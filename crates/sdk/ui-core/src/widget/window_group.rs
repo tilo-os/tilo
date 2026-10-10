@@ -623,10 +623,6 @@ impl WindowGroup {
         self.closing_at.is_some()
     }
 
-    pub fn close_elapsed(&self) -> Option<Duration> {
-        self.closing_at.map(|t| t.elapsed())
-    }
-
     pub fn close_complete(&self) -> bool {
         self.closing_at
             .is_some_and(|t| t.elapsed() >= Duration::from_millis(GROUP_CLOSE_FADE_MS))

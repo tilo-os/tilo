@@ -414,13 +414,15 @@ interface ChannelHandle {
   # Unsupported brokers refuse; clients must not fall back to raw execution.
   approvedCheck @58 (request :Data) -> (receipt :Data);
 
-  # Native addressed contributions use the existing complete signed-document
-  # door, not incomplete native document frames. The opaque source token came
-  # from this actual stable invocation stream; no caller/room/Agent authority
-  # can be asserted here. Upload and aggregate budgets are checked before
-  # allocating, and a reference binds the actual signed-op bytes at send@0.
-  openDocumentContribution @59 (sourceToken :Data, totalBytes :UInt64)
-      -> (writer :DocumentContributionWriter, reference :Data);
+  # Resolves once this route's channel keys, or this device's access to
+  # them, may have changed since `after`: 0 at first, then the `change` the
+  # previous call returned. It says only that this route's own channel
+  # changed; the endpoint then asks the workspace identity service for the
+  # keys, which checks the device and the person's role on every answer. An
+  # endpoint holding current keys keeps one call pending instead of asking on
+  # a timer. A host without a channel service answers unimplemented, and the
+  # endpoint asks on a timer as before.
+  channelKeysChanged @59 (after :UInt64) -> (change :UInt64);
 
   # Actual managed Agent private input, with no fallback to Chat access.
   subscribeAgentMessages @60 () -> (stream :AgentMessageStream);
@@ -432,6 +434,14 @@ interface ChannelHandle {
   # Public phase only, under current exact canonical Chat document Read.
   # No room parameter, private input/output or execution proof is returned.
   readAgentMessageProgress @65 (invocation :Text, requestRow :Text) -> (progressJson :Text);
+
+  # Native addressed contributions use the existing complete signed-document
+  # door, not incomplete native document frames. The opaque source token came
+  # from this actual stable invocation stream; no caller/room/Agent authority
+  # can be asserted here. Upload and aggregate budgets are checked before
+  # allocating, and a reference binds the actual signed-op bytes at send@0.
+  openDocumentContribution @67 (sourceToken :Data, totalBytes :UInt64)
+      -> (writer :DocumentContributionWriter, reference :Data);
 
 }
 
