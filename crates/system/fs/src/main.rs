@@ -33,9 +33,8 @@ use fs::{
     RecordProtocolClient, RecordProtocolClientError, RecordProtocolOperationV1,
     RecordProtocolResponseV1, RecordProtocolSnapshotV1, RecordPublisher, RecordRepository,
     RecordServices, RecordSubscriptionFailureCode, RecordSubscriptionKey, RecordSubscriptionStore,
-    Refresh, ShareAuthority, ShareControlServer, ShareManagement, Ticket, Workspace,
-    identity_paths, load_certified_mount_identity, load_revocation_list,
-    load_workspace_share_issuer,
+    ShareAuthority, ShareControlServer, ShareManagement, Ticket, Workspace, identity_paths,
+    load_certified_mount_identity, load_revocation_list, load_workspace_share_issuer,
 };
 use fuser::{Config, MountOption, SessionACL};
 use std::io::Read;
@@ -371,7 +370,9 @@ struct AclArgs {
     /// A principal this mount can prove beyond its own person id (`room:<id>`, `app:<id>`, `agent:<id>`, `token:<id>`, `person:<id>`); repeatable.
     #[arg(long = "principal", value_name = "KIND:ID")]
     principals: Vec<String>,
-    /// How often to re-read `--acl`, in seconds (`0` = once, at mount time; default 1).
+    /// `0` reads `--acl` once, at mount time. Otherwise it is re-read on
+    /// every change, and every this many seconds only when the file cannot
+    /// be watched (default 1).
     #[arg(long, value_name = "SECONDS", default_value_t = 1)]
     acl_reload_secs: u64,
 }
@@ -706,7 +707,8 @@ async fn run_command() -> Result<()> {
                     .context("recovery requires --cache-dir")?;
                 workspace_startup::inspect(cache)?.require_existing()?;
             }
-            serve(
+            // Boxed: serving holds every service's state across one await.
+            Box::pin(serve(
                 mount_point,
                 cache_dir,
                 seed,
@@ -715,7 +717,7 @@ async fn run_command() -> Result<()> {
                 blob_sock,
                 acl,
                 data_plane,
-            )
+            ))
             .await
         }
         Command::Mount {
@@ -1092,7 +1094,9 @@ fn resolve_acl(
     Ok(Some(Arc::new(file)))
 }
 
-/// Re-read the capability list every `every` seconds and swap it into the live mount (`0` disables reload).
+/// Keep the live mount's capability list current (`every == 0` disables
+/// reload): re-read on every change of the file, and poll every `every`
+/// seconds only when it cannot be watched (TIL-774).
 fn spawn_acl_reload(file: Arc<CapabilityFile>, every: u64) -> Option<tokio::task::JoinHandle<()>> {
     if every == 0 {
         println!(
@@ -1101,68 +1105,26 @@ fn spawn_acl_reload(file: Arc<CapabilityFile>, every: u64) -> Option<tokio::task
         );
         return None;
     }
-    Some(tokio::spawn(async move {
-        let mut tick = tokio::time::interval(Duration::from_secs(every));
-        loop {
-            tick.tick().await;
-            match file.refresh() {
-                Refresh::Unchanged => {}
-                Refresh::Reloaded(n) => {
-                    println!(
-                        "Capability list {} reloaded: {n} in force",
-                        file.path().display()
-                    );
-                }
-                Refresh::Revoked => eprintln!(
-                    "Capability list {} is gone; denying every access until it returns",
-                    file.path().display()
-                ),
-                Refresh::Failed(e) => eprintln!(
-                    "Capability list {} could not be re-read ({e}); the previously loaded list \
-                     stays in force",
-                    file.path().display()
-                ),
-            }
-        }
-    }))
+    Some(
+        file.spawn_reload(fs::file_watch::ReloadCadence::new(Duration::from_secs(
+            every,
+        ))),
+    )
 }
 
+/// Sign each new version of the capability list into the workspace
+/// authority; polls once a second only when the file cannot be watched.
 fn spawn_workspace_authority_reload(
     path: PathBuf,
     authority: Arc<WorkspaceAuthority>,
     governor: ed25519_dalek::SigningKey,
 ) -> tokio::task::JoinHandle<()> {
-    tokio::spawn(async move {
-        let mut previous = std::fs::read(&path).ok();
-        let mut tick = tokio::time::interval(Duration::from_secs(1));
-        loop {
-            tick.tick().await;
-            let Ok(bytes) = std::fs::read(&path) else {
-                continue;
-            };
-            if previous.as_ref() == Some(&bytes) {
-                continue;
-            }
-            let Ok(capabilities) = serde_json::from_slice(&bytes) else {
-                continue;
-            };
-            let revision = authority
-                .current()
-                .map_or(1, |current| current.revision.saturating_add(1));
-            let Ok(envelope) = WorkspaceAuthorityEnvelope::sign(
-                authority.workspace(),
-                revision,
-                capabilities,
-                false,
-                &governor,
-            ) else {
-                continue;
-            };
-            if authority.apply(envelope).is_ok() {
-                previous = Some(bytes);
-            }
-        }
-    })
+    fs::workspace_authority::spawn_capability_file_reload(
+        path,
+        authority,
+        governor,
+        fs::file_watch::ReloadCadence::new(Duration::from_secs(1)),
+    )
 }
 
 /// Serve document media from the content store (best-effort, like the other
@@ -1426,6 +1388,12 @@ async fn replica(config_path: PathBuf) -> Result<()> {
     let bundle: HomePeerSet = toml::from_str(&config_text)
         .with_context(|| format!("parse home-peer bundle {}", config_path.display()))?;
     validate_home_peer_set(&bundle)?;
+    // Held for the life of the process: the relay honours a ready status
+    // only while this lock is held (or its stamp is a few seconds old), so
+    // the status is written when it changes rather than every second
+    // (TIL-774). Taken before the status is touched, so a second replica
+    // refused here cannot clobber a running one's status.
+    let _alive = fs::full_replica::ReplicaLiveness::hold(&bundle.status_file)?;
     save_status(
         &bundle.status_file,
         &fs::full_replica::FullReplicaStatus::syncing(),
@@ -1563,7 +1531,7 @@ async fn replica_workspace(
         .map(|path| spawn_persist(Arc::clone(&namespace), path));
     println!("Home peer joined workspace; hydrating complete content replica.");
     let mut hydrated_namespace = None;
-    let mut last_status = fs::full_replica::FullReplicaStatus::syncing();
+    let mut wait = ReplicaWait::new(&namespace);
     loop {
         // Namespace anti-entropy and signed-record anti-entropy are separate
         // authenticated exchanges. Project the durable record truth before
@@ -1574,17 +1542,16 @@ async fn replica_workspace(
             let mut failed = fs::full_replica::FullReplicaStatus::syncing();
             failed.state = "failed".into();
             failed.error = Some(format!("reconcile signed replica projection: {error}"));
-            let _ = status_tx.send((index, failed.clone())).await;
-            last_status = failed;
-            tokio::time::sleep(Duration::from_secs(1)).await;
+            let _ = status_tx.send((index, failed)).await;
+            wait.retry().await;
             continue;
         }
         let before = replica_namespace_fingerprint(&namespace);
         if hydrated_namespace.as_ref() == Some(&before) {
-            // Keep the proof fresh without re-reading the full content set on
-            // every heartbeat. Any namespace delta below clears this fast path.
-            let _ = status_tx.send((index, last_status.clone())).await;
-            tokio::time::sleep(Duration::from_secs(1)).await;
+            // The proof stands for as long as this process holds its
+            // liveness lock: nothing to restamp. Any namespace delta wakes
+            // the next pass, which withdraws it first.
+            wait.settled().await;
             continue;
         }
         // Withdraw first. A partial or stalled pass must never leave the
@@ -1644,9 +1611,8 @@ async fn replica_workspace(
                 status = fs::full_replica::FullReplicaStatus::syncing();
                 status.state = "failed".into();
                 status.error = Some("home peer has no durable namespace path".into());
-                let _ = status_tx.send((index, status.clone())).await;
-                last_status = status;
-                tokio::time::sleep(Duration::from_secs(1)).await;
+                let _ = status_tx.send((index, status)).await;
+                wait.retry().await;
                 continue;
             };
             // Unchanged heads before and after the save prove it persisted
@@ -1671,11 +1637,69 @@ async fn replica_workspace(
                 }
             }
         }
-        let _ = status_tx.send((index, status.clone())).await;
-        hydrated_namespace = status.full_content_replication.then_some(after);
-        last_status = status;
-        tokio::time::sleep(Duration::from_secs(1)).await;
+        let ready = status.full_content_replication;
+        let _ = status_tx.send((index, status)).await;
+        hydrated_namespace = ready.then_some(after);
+        if ready {
+            wait.settled().await;
+        } else {
+            // Content a peer could not serve yet: try again, backing off,
+            // or at once when the namespace moves.
+            wait.retry().await;
+        }
         let _ = &workspace;
+    }
+}
+
+/// What the home-peer loop sleeps on between passes (TIL-774). A ready
+/// replica waits for the namespace to change; an incomplete or failed pass
+/// is retried after 1 s, doubling to a minute, and at once on a namespace
+/// change. It used to wake every second either way to restamp its proof.
+struct ReplicaWait {
+    changes: tokio::sync::watch::Receiver<()>,
+    retry: Duration,
+}
+
+impl ReplicaWait {
+    const FIRST_RETRY: Duration = Duration::from_secs(1);
+    const MAX_RETRY: Duration = Duration::from_secs(60);
+    /// A ready replica re-projects the signed records this often even with
+    /// no namespace change: a bound for anything that did not announce.
+    const BACKSTOP: Duration = Duration::from_secs(300);
+
+    fn new(namespace: &Arc<Mutex<Namespace>>) -> Self {
+        Self {
+            changes: namespace
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .subscribe_changes(),
+            retry: Self::FIRST_RETRY,
+        }
+    }
+
+    /// After a pass that left the replica ready.
+    async fn settled(&mut self) {
+        self.retry = Self::FIRST_RETRY;
+        self.until_change(Self::BACKSTOP).await;
+    }
+
+    /// After a pass that could not.
+    async fn retry(&mut self) {
+        let delay = self.retry;
+        self.retry = delay.saturating_mul(2).min(Self::MAX_RETRY);
+        self.until_change(delay).await;
+    }
+
+    async fn until_change(&mut self, at_most: Duration) {
+        tokio::select! {
+            changed = self.changes.changed() => {
+                if changed.is_err() {
+                    // The namespace is gone; only the timer is left.
+                    tokio::time::sleep(at_most).await;
+                }
+            }
+            () = tokio::time::sleep(at_most) => {}
+        }
     }
 }
 
@@ -1741,11 +1765,26 @@ async fn serve(
         person: collab_types::Ed25519PublicKey(credentials.user_public_key()),
         device: collab_types::Ed25519PublicKey(credentials.device_public_key()),
     };
-    let (endpoint, lookup) = sync::bind_endpoint_with_key(device.secret.clone()).await?;
+    // The relays wait until something means another party may dial this
+    // mount (TIL-774, `fs::reachability`): each trace of one wakes them.
+    let (endpoint, lookup, reachability) =
+        sync::bind_dormant_endpoint_with_key(device.secret.clone()).await?;
+    if let Some(authority) = share_authority.as_ref()
+        && authority.has_unrevoked_grants()
+    {
+        reachability.wake("a share grant is live");
+    }
     // Files act as the certified person by default; transport authorship and
     // device-specific grants continue to use the endpoint/device key.
     let caps = resolve_acl(&acl_args, credentials.user_public_key())?;
     let acl = caps.as_ref().map(|c| (c.handle(), c.identity()));
+    let _acl_reachability = if let Some(caps) = &caps {
+        reachability
+            .wake_when_acl_admits_others(&caps.handle(), "the capability list names someone else")
+    } else {
+        reachability.wake("the mount enforces no capability list");
+        None
+    };
     let _reload = caps.map(|c| spawn_acl_reload(c, acl_args.acl_reload_secs));
     let named_outbox = cache_dir
         .as_ref()
@@ -1761,9 +1800,14 @@ async fn serve(
         || Ticket::workspace_id_for_topic(*endpoint.id().as_bytes()),
         Ticket::workspace_id,
     );
+    if remote_ticket.is_some() {
+        reachability.wake("this device joined another device's workspace");
+    }
     let store = Arc::new(open_workspace_store(cache_dir.clone(), &data_plane, workspace_id).await?);
     let author = endpoint.id().to_string();
-    let hydrator = Arc::new(Hydrator::new(endpoint.clone(), store.clone()));
+    let hydrator = Arc::new(
+        Hydrator::new(endpoint.clone(), store.clone()).with_reachability(reachability.clone()),
+    );
     if let Some(cache_dir) = cache_dir.as_deref() {
         for peer in load_persisted_content_peers(cache_dir)? {
             hydrator.add_peer(peer.endpoint);
@@ -1793,6 +1837,9 @@ async fn serve(
             None => (Namespace::new(author.clone())?, true),
         },
     };
+    if ns_value.has_synced_with_peers() {
+        reachability.wake("this workspace has synced with a peer before");
+    }
     let namespace = Arc::new(Mutex::new(ns_value));
     let record_materializer = if let Some(records) = record_services.as_mut() {
         let materializer =
@@ -1858,6 +1905,15 @@ async fn serve(
             bootstrap,
         )?;
     }
+    let _authority_reachability = record_services
+        .as_ref()
+        .and_then(|records| records.workspace_authority.as_ref())
+        .and_then(|authority| {
+            reachability.wake_when_acl_admits_others(
+                &authority.handle(),
+                "the workspace authority names someone else",
+            )
+        });
     let record_publisher = record_repository
         .clone()
         .map(|repository| {
@@ -2057,7 +2113,8 @@ async fn serve(
                 vec![issuer_public],
                 Arc::new(ShareManagement::new(Arc::clone(authority))),
                 Arc::clone(repository),
-            )?;
+            )?
+            .with_reachability(reachability.clone());
             if let Some(outbox) = named_outbox.as_ref() {
                 server = server.with_named_delivery_outbox(Arc::clone(outbox));
             }
