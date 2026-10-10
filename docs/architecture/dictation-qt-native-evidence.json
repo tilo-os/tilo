@@ -278,6 +278,99 @@
       "original_sha256": "5151193e16bc9992c5783f9db25e6fd76e1877607aaa98727347a825b95da8ff",
       "portable_file_sha256": "5c41daa6c25e83468f35ca0055628d750b6e3fd60bdb2e6e24c184986613f5ea",
       "portable_reconstructed_stdout_sha256": "5151193e16bc9992c5783f9db25e6fd76e1877607aaa98727347a825b95da8ff"
+    },
+    "line-current-premise-failed-manifest.json": {
+      "original_sha256": "e3a36585c032d1b5021143027f711f3b3d80c085c85d09d4ffb00b8edcca1ff1",
+      "portable_file_sha256": "ef3dbbe3e54859855b09dc36dbfae9d561be05693b62beac3513be1126e0657b",
+      "portable_reconstructed_stdout_sha256": null
+    },
+    "line-current-premise-failed-recorded-inner.py": {
+      "original_sha256": "68a43de5a3119386f8a58cdf90fa85865a3ce87c67bb1bd2ed7eec241d0c5ce3",
+      "portable_file_sha256": "68a43de5a3119386f8a58cdf90fa85865a3ce87c67bb1bd2ed7eec241d0c5ce3",
+      "portable_reconstructed_stdout_sha256": null,
+      "canonical_file": "line-recorded-inner.py"
+    },
+    "line-current-premise-failed-run-de_de-0-r1-receipt.json": {
+      "original_sha256": "0ce302b66140021abb327520920034410d27934226ec50a3250ba39084a20c88",
+      "portable_file_sha256": "34fe59e0881a2ff3879e7da5e54e0b8158630f0012836161a0e1dd5c2b6e727d",
+      "portable_reconstructed_stdout_sha256": null
+    },
+    "line-current-premise-failed-run-de_de-0-r1.log.json": {
+      "original_sha256": "51ffa7f5745ca1662482ed907e0ff110b30acfe143aeb870623f6587920be035",
+      "portable_file_sha256": "6cedcbe86895f99eca4312d697443e51f9677fd76258813b97c087c97e90e966",
+      "portable_reconstructed_stdout_sha256": "7fb641b50a7f559149f1771502fac5599071e94798b73e9d9f30673ba009259a"
+    },
+    "line-current-fixed-manifest.json": {
+      "original_sha256": "e3a36585c032d1b5021143027f711f3b3d80c085c85d09d4ffb00b8edcca1ff1",
+      "portable_file_sha256": "ef3dbbe3e54859855b09dc36dbfae9d561be05693b62beac3513be1126e0657b",
+      "portable_reconstructed_stdout_sha256": null,
+      "canonical_file": "line-current-premise-failed-manifest.json"
+    },
+    "line-current-fixed-recorded-inner.py": {
+      "original_sha256": "60db3aa63c11cff5dfe18eca27f1effd258cf6bf0066b4754613946c2168f55e",
+      "portable_file_sha256": "60db3aa63c11cff5dfe18eca27f1effd258cf6bf0066b4754613946c2168f55e",
+      "portable_reconstructed_stdout_sha256": null
+    },
+    "line-current-fixed-run-de_de-0-r1-receipt.json": {
+      "original_sha256": "3e177498d76d9eb02ebaf99d6f11347f8f38e91bf0f7730bdeb96ea71aa3951c",
+      "portable_file_sha256": "574dcf6910747caa151f2aef2b22b620cf40874b6c7e01c3ea6eb401955932bb",
+      "portable_reconstructed_stdout_sha256": null
+    },
+    "line-current-fixed-run-de_de-0-r1.log.json": {
+      "original_sha256": "238ea525ecb157b5ab65f1fb8cf228ceba0b28974ddd99b452beddaa30d83b9a",
+      "portable_file_sha256": "40f1395cdb3fb49788c57e5db21192a30f4691daab502201e0cdd25fe65d85d0",
+      "portable_reconstructed_stdout_sha256": "238ea525ecb157b5ab65f1fb8cf228ceba0b28974ddd99b452beddaa30d83b9a"
+    },
+    "combo-current-manifest.json": {
+      "original_sha256": "3156df2b58ce87da116394dac1164aff9ec6a8aa335b7bd28096c9a712d491f9",
+      "portable_file_sha256": "28cdd878e16e5555efeceb4342efaa93e9fd2f729d4ef4ccbe2dc3d1cb41a9ad",
+      "portable_reconstructed_stdout_sha256": null
+    },
+    "combo-current-qt-editor.cpp": {
+      "original_sha256": "a6405b05bdc573d9729318ff0c1a1b483db414fe688be8afed9bc0b6303aae32",
+      "portable_file_sha256": "a6405b05bdc573d9729318ff0c1a1b483db414fe688be8afed9bc0b6303aae32",
+      "portable_reconstructed_stdout_sha256": null
+    },
+    "combo-current-compile-receipt.json": {
+      "original_sha256": "2a3bca2e7e7496d1cb3968376899aaaaa5a56e1bb8b307eed7d1c56430ef2e21",
+      "portable_file_sha256": "c708a56e4f27de456b431106f1c12e7605d1abadec3923ac14728378d9e6403d",
+      "portable_reconstructed_stdout_sha256": null
+    },
+    "combo-current-compile.log.json": {
+      "original_sha256": "dc6293708c91708dd1ee0bc909c72aa882e8c6a7983da487a02950057d612e93",
+      "portable_file_sha256": "65c0fa8251c4fd8a718cc2d08775e48610db091df6903ef8d8d9d09ff752762f",
+      "portable_reconstructed_stdout_sha256": "dc6293708c91708dd1ee0bc909c72aa882e8c6a7983da487a02950057d612e93"
+    },
+    "combo-current-recorded-inner.py": {
+      "original_sha256": "041d521defe2c51675ac9e32689fd396f1ae4f19b7faf359471af6f57b3753de",
+      "portable_file_sha256": "041d521defe2c51675ac9e32689fd396f1ae4f19b7faf359471af6f57b3753de",
+      "portable_reconstructed_stdout_sha256": null
+    },
+    "combo-current-run-de_de-0-r1-receipt.json": {
+      "original_sha256": "809f5ff59628cf9d95dece48bdb9ec7e3a716618f41458a255aab30b5fac7b55",
+      "portable_file_sha256": "6f6b7ba3ba920a8e8039426075a80cd57cc4d648b48c9bcee7c85346b935d5a0",
+      "portable_reconstructed_stdout_sha256": null
+    },
+    "combo-current-run-de_de-0-r1.log.json": {
+      "original_sha256": "41eda6912f38b513b3dd2ba3c336b74b47183c3b2556ef1d5aa41a965558c3b0",
+      "portable_file_sha256": "8a332954145fa4b6825b9ff2c79c0ef72bfe729c4ad77e245583cb4cb36ac5e2",
+      "portable_reconstructed_stdout_sha256": "41eda6912f38b513b3dd2ba3c336b74b47183c3b2556ef1d5aa41a965558c3b0"
+    },
+    "line-current-compile-receipt.json": {
+      "original_sha256": "42c6ec2df242fe17908be9c939ca6bfaa65dbdee308442fb0f5a34855a46b571",
+      "portable_file_sha256": "8e8b78533795fb6d9f136faa249af580b0eaaea2bddcad4812065394c78478c1",
+      "portable_reconstructed_stdout_sha256": null
+    },
+    "line-current-prepare.log.json": {
+      "original_sha256": "eb445b7129c859d23e3c5ac7865da8a736d848e73e41167da6064ad207f4725f",
+      "portable_file_sha256": "add998806a90ce4d5d78d89168610bb78d909fdd45d942105ae7e485e11a5f3c",
+      "portable_reconstructed_stdout_sha256": "eb445b7129c859d23e3c5ac7865da8a736d848e73e41167da6064ad207f4725f"
+    },
+    "line-current-qt-editor.cpp": {
+      "original_sha256": "3da536fd4aa220caee836fcb796dfad6a00cf5b2564b33fe593a527ad980e0f3",
+      "portable_file_sha256": "3da536fd4aa220caee836fcb796dfad6a00cf5b2564b33fe593a527ad980e0f3",
+      "portable_reconstructed_stdout_sha256": null,
+      "canonical_file": "privacy-client.cpp"
     }
   },
   "results": {
@@ -881,5 +974,149 @@
       "90779 fast quality repository layout",
       "90778 select repository layout"
     ]
+  },
+  "current_qualification": {
+    "source_head": "cb51d4b11a9ca80e16abd775162677b2bdb4da04",
+    "reason": "Reproduce original combined QLineEdit privacy-premise failure at current production source; replace protocol-active premise with stronger native-field/hint/matching-surface observations, preserving all no-consent/no-recorder/no-worker assertions and adding a post-refusal normal-field control. Expand to a standard editable QComboBox inner QLineEdit.",
+    "original_failure_retained": true,
+    "original_failure_reproduced": {
+      "passed": false,
+      "exit": 1,
+      "recorded_insertion_seconds": 27.60607117100153,
+      "word_errors": 0,
+      "reference_words": 18,
+      "normalized_wer": 0.0,
+      "full_elapsed_seconds": 66.62345362198539,
+      "sampled_peak_memory_bytes": 960274432,
+      "limits": {
+        "cpus": 2,
+        "memory_bytes": 3221225472,
+        "pids": 256,
+        "runtime_seconds": 240
+      },
+      "observed_scope_controls": {
+        "memory.max": "3221225472",
+        "cpu.max": "200000 100000",
+        "pids.max": "256",
+        "memory.swap.max": "0"
+      },
+      "cpu_affinity": [
+        0,
+        1
+      ],
+      "speech_edit_session_assertions_pass": true,
+      "protected_refusal_and_ordinary_recovery_pass": false
+    },
+    "original_failure": "protected Qt field did not advertise native text-input-v3",
+    "line_fixed": {
+      "passed": true,
+      "exit": 0,
+      "recorded_insertion_seconds": 26.137140317005105,
+      "word_errors": 0,
+      "reference_words": 18,
+      "normalized_wer": 0.0,
+      "full_elapsed_seconds": 49.70920933398884,
+      "sampled_peak_memory_bytes": 1069142016,
+      "limits": {
+        "cpus": 2,
+        "memory_bytes": 3221225472,
+        "pids": 256,
+        "runtime_seconds": 240
+      },
+      "observed_scope_controls": {
+        "memory.max": "3221225472",
+        "cpu.max": "200000 100000",
+        "pids.max": "256",
+        "memory.swap.max": "0"
+      },
+      "cpu_affinity": [
+        0,
+        1
+      ],
+      "speech_edit_session_assertions_pass": true,
+      "protected_refusal_and_ordinary_recovery_pass": true
+    },
+    "editable_combo": {
+      "passed": true,
+      "exit": 0,
+      "recorded_insertion_seconds": 27.471765634021722,
+      "word_errors": 0,
+      "reference_words": 18,
+      "normalized_wer": 0.0,
+      "full_elapsed_seconds": 51.939155091007706,
+      "sampled_peak_memory_bytes": 1333760000,
+      "limits": {
+        "cpus": 2,
+        "memory_bytes": 3221225472,
+        "pids": 256,
+        "runtime_seconds": 240
+      },
+      "observed_scope_controls": {
+        "memory.max": "3221225472",
+        "cpu.max": "200000 100000",
+        "pids.max": "256",
+        "memory.swap.max": "0"
+      },
+      "cpu_affinity": [
+        0,
+        1
+      ],
+      "speech_edit_session_assertions_pass": true,
+      "protected_refusal_and_ordinary_recovery_pass": true
+    },
+    "client_scope": "Standard Qt Widgets and an editable QComboBox/QLineEdit composite, no IME or undo overrides; not every custom editor or third-party app.",
+    "protected_hints": {
+      "password": 71,
+      "pin": 65607,
+      "sensitive": 2
+    },
+    "privacy_assertions": [
+      "actual native field FocusIn observed",
+      "exact protected hint integer and ImEnabled query observed",
+      "keyboard, routed keyboard and text-input surface all match the presented native root",
+      "no capture consent offered",
+      "no recorder or worker started",
+      "ordinary field remains eligible afterward, cancel reaps capture and preserves buffer"
+    ],
+    "primary_sources": {
+      "hidden_text_platform_acceptance": "https://github.com/qt/qtbase/blob/v6.11.2/src/gui/kernel/qinputmethod.cpp#L329-L351",
+      "wayland_v3_enable_and_state_commit": "https://github.com/qt/qtbase/blob/v6.11.2/src/plugins/platforms/wayland/qwaylandtextinputv3.cpp#L47-L68",
+      "echo_hints": "https://github.com/qt/qtbase/blob/v6.11.2/src/widgets/widgets/qlineedit.cpp#L510-L522"
+    },
+    "causal_limit": "ImEnabled is not equivalent to active platform input. No causal explanation of each observed inactive protected field is asserted.",
+    "cleanup": {
+      "exact_owned_containers_absent": [
+        "ba6eea97d581bcb454c8544140d4001e4d04e7758101bf18e5cc414fb94718fc",
+        "b8e4bd26f138e2d2da63bdfa0e74f1052f63d1c31ff28eff50ba85d9d2592406",
+        "5e72b82b79fdf6c817be7bc4c17527b113939ae81550a49f99bfda5fde5af425"
+      ],
+      "identity_source": "CgroupPath in each actual qualification receipt",
+      "all_three_verified_absent": true,
+      "workers_recorders_witnesses_namespace_keepers": "full logs assert retirement and reaping"
+    },
+    "archived_inputs": [
+      "line-current-premise-failed-manifest.json",
+      "line-current-premise-failed-recorded-inner.py",
+      "line-current-premise-failed-run-de_de-0-r1-receipt.json",
+      "line-current-premise-failed-run-de_de-0-r1.log.json",
+      "line-current-fixed-manifest.json",
+      "line-current-fixed-recorded-inner.py",
+      "line-current-fixed-run-de_de-0-r1-receipt.json",
+      "line-current-fixed-run-de_de-0-r1.log.json",
+      "combo-current-manifest.json",
+      "combo-current-qt-editor.cpp",
+      "combo-current-compile-receipt.json",
+      "combo-current-compile.log.json",
+      "combo-current-recorded-inner.py",
+      "combo-current-run-de_de-0-r1-receipt.json",
+      "combo-current-run-de_de-0-r1.log.json",
+      "line-current-compile-receipt.json",
+      "line-current-prepare.log.json",
+      "line-current-qt-editor.cpp"
+    ],
+    "model_admission": false,
+    "physical_microphone": false,
+    "new_persistent_grants": false,
+    "deployment": false
   }
 }
