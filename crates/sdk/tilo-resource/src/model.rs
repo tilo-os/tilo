@@ -315,8 +315,43 @@ pub trait Fields: Model {
 /// # Errors
 /// Returns [`ModelError`] located at `key`.
 pub fn read_key<T: Model>(doc: &Doc, obj: &ObjId, key: &str) -> Result<T, ModelError> {
-    match doc.get(obj, key)? {
-        Some((value, id)) => T::load(doc, &value, &id),
+    let slot = get_slot(doc, obj, key)?;
+    load_at(doc, slot.as_ref().map(|(value, id)| (value, id)), key)
+}
+
+/// What `key` of the map `obj` holds, as [`ReadDoc::get`] answers it.
+///
+/// Every lookup and walk of the document here is a function that is not
+/// generic, and the generic ones only call it. A generic function is
+/// compiled again into each app that instantiates it, and Automerge's
+/// generic lookup and op-tree walk with it; these are compiled once, into
+/// the shared runtime every app maps (TIL-765).
+fn get_slot<'doc>(
+    doc: &'doc Doc,
+    obj: &ObjId,
+    key: &str,
+) -> Result<Option<(Value<'doc>, ObjId)>, ModelError> {
+    Ok(doc.get(obj, key)?)
+}
+
+/// What `index` of the list `obj` holds; not generic, as [`get_slot`].
+fn get_item<'doc>(
+    doc: &'doc Doc,
+    obj: &ObjId,
+    index: usize,
+) -> Result<Option<(Value<'doc>, ObjId)>, ModelError> {
+    Ok(doc.get(obj, index)?)
+}
+
+/// `T` read from what a key holds, or [`Model::missing`] when it holds
+/// nothing: the one generic body behind [`read_key`] and [`load_slot`].
+fn load_at<T: Model>(
+    doc: &Doc,
+    slot: Option<(&Value<'_>, &ObjId)>,
+    key: &str,
+) -> Result<T, ModelError> {
+    match slot {
+        Some((value, id)) => T::load(doc, value, id),
         None => T::missing(),
     }
     .map_err(|error| error.at(key))
@@ -334,9 +369,17 @@ pub type MapSlot = Option<(Value<'static>, ObjId)>;
 /// counter with its increments).
 pub fn read_slots<const N: usize>(doc: &Doc, obj: &ObjId, keys: [&str; N]) -> [MapSlot; N] {
     let mut slots = [const { None }; N];
-    let mut missing = N;
+    fill_slots(doc, obj, &keys, &mut slots);
+    slots
+}
+
+/// [`read_slots`]' walk, out of its generic shell so that it is compiled once
+/// into the shared runtime rather than into every app that derives a
+/// [`Model`] with another number of fields (TIL-765).
+fn fill_slots(doc: &Doc, obj: &ObjId, keys: &[&str], slots: &mut [MapSlot]) {
+    let mut missing = keys.len();
     if missing == 0 {
-        return slots;
+        return;
     }
     for item in doc.map_range(obj, ..) {
         let mut matched = false;
@@ -351,7 +394,17 @@ pub fn read_slots<const N: usize>(doc: &Doc, obj: &ObjId, keys: [&str; N]) -> [M
             break;
         }
     }
-    slots
+}
+
+/// Every key of the map `obj` with what it holds, in key order, in one walk
+/// of the map. Not generic, for the reason [`fill_slots`] is not.
+fn map_slots(doc: &Doc, obj: &ObjId) -> Vec<(String, MapSlot)> {
+    doc.map_range(obj, ..)
+        .map(|item| {
+            let slot = Some((item.value.clone().into_value(), item.id()));
+            (item.key.into_owned(), slot)
+        })
+        .collect()
 }
 
 /// `T` read from a slot [`read_slots`] found under `key`, or
@@ -360,11 +413,7 @@ pub fn read_slots<const N: usize>(doc: &Doc, obj: &ObjId, keys: [&str; N]) -> [M
 /// # Errors
 /// Returns [`ModelError`] located at `key`.
 pub fn load_slot<T: Model>(doc: &Doc, slot: MapSlot, key: &str) -> Result<T, ModelError> {
-    match slot {
-        Some((value, id)) => T::load(doc, &value, &id),
-        None => T::missing(),
-    }
-    .map_err(|error| error.at(key))
+    load_at(doc, slot.as_ref().map(|(value, id)| (value, id)), key)
 }
 
 /// Bring `target`, read earlier from `key` of the map `obj`, up to date
@@ -386,7 +435,7 @@ pub fn refresh_key<T: Model>(
             *target = read_key(doc, obj, key)?;
             Ok(())
         }
-        Touch::Below => match doc.get(obj, key)? {
+        Touch::Below => match get_slot(doc, obj, key)? {
             Some((value, id)) => target.refresh(doc, &value, &id, delta),
             None => T::missing().map(|missing| *target = missing),
         }
@@ -791,7 +840,7 @@ impl<T: Model> Model for Vec<T> {
         }
         (0..doc.length(id))
             .map(|index| {
-                match doc.get(id, index)? {
+                match get_item(doc, id, index)? {
                     Some((value, item)) => T::load(doc, &value, &item),
                     None => T::missing(),
                 }
@@ -839,12 +888,11 @@ impl<T: Model> Model for BTreeMap<String, T> {
         if !matches!(value, Value::Object(ObjType::Map)) {
             return Err(ModelError::shape("a map"));
         }
-        // One walk of the map rather than a lookup per key (TIL-758).
-        doc.map_range(id, ..)
-            .map(|item| {
-                let slot = Some((item.value.clone().into_value(), item.id()));
-                load_slot(doc, slot, &item.key).map(|value| (item.key.into_owned(), value))
-            })
+        // One walk of the map rather than a lookup per key (TIL-758), made
+        // outside this generic impl (TIL-765).
+        map_slots(doc, id)
+            .into_iter()
+            .map(|(key, slot)| load_slot(doc, slot, &key).map(|value| (key, value)))
             .collect()
     }
     fn missing() -> Result<Self, ModelError> {
@@ -884,7 +932,7 @@ impl<T: Model> Model for BTreeMap<String, T> {
             return Ok(());
         }
         for key in touched.keys() {
-            match doc.get(id, key)? {
+            match get_slot(doc, id, key)? {
                 None => {
                     self.remove(key);
                 }
