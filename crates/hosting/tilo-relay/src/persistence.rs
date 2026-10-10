@@ -1,5 +1,22 @@
 //! Ordered, bounded state work. The owner awaits publication before dequeuing
 //! its successor; callers only wait on receipts and cannot cancel admitted work.
+//!
+//! # What a commit guarantees after a crash
+//!
+//! An admitted delta is fanned out to other sessions, and a `Commit` is
+//! answered with `Committed`, only after its owner job returned: its retained
+//! record (or pending fallback) and every directory entry leading to it have
+//! been fsynced. So an edit any peer has received, or any author was told is
+//! committed, survives a crash or power loss in retained history, in order.
+//! There is no group commit: no edit waits for another to share a barrier,
+//! and none is published before its own barrier. One edit costs two fsyncs
+//! (the record, then its directory), plus [`State::next_sequence`]'s
+//! reservation renewal at most once per [`SEQUENCE_RESERVATION_NS`] of host
+//! clock per workspace.
+//!
+//! Host order (`seq`, `Committed::seq`) increases strictly across restarts,
+//! even when the clock steps back over one, and resumes at most
+//! [`SEQUENCE_RESERVATION_NS`] ahead of the clock after a restart.
 use crate::store::bounded::Invariant;
 use crate::store::replay::{Step, WorkLimit};
 use crate::{
@@ -15,6 +32,8 @@ use std::{
     },
 };
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc, oneshot};
+#[cfg(test)]
+mod durability_tests;
 mod replay;
 pub(crate) use replay::output_budget;
 pub(crate) use replay::{
@@ -33,8 +52,10 @@ const RECLAIM_INTERVAL: std::time::Duration = std::time::Duration::from_millis(1
 const RECLAIM_RETRY: std::time::Duration = std::time::Duration::from_millis(100);
 /// How far past the sequence it hands out [`State::next_sequence`] reserves
 /// on disk. A restart continues past the reservation, at most this far
-/// ahead of the host clock.
-const SEQUENCE_RESERVATION_NS: u64 = 1_000_000_000;
+/// ahead of the host clock. Sequences follow the clock, so a workspace that
+/// commits steadily renews the reservation once per this interval: at a
+/// second, a typing room paid a renewal every second (TIL-732).
+const SEQUENCE_RESERVATION_NS: u64 = 10_000_000_000;
 /// One blocking-pool task runs a transaction's quanta for up to this long: a
 /// many-quantum transaction then pays a pool round trip per slice instead of
 /// per quantum, and other workspaces still get a worker within a slice.
@@ -156,6 +177,10 @@ pub(crate) fn error(message: impl Into<String>) -> StoreError {
 
 impl State {
     pub(crate) fn next_sequence(&mut self) -> Result<u64, StoreError> {
+        self.next_sequence_at(tilo_clock::unix_now_ns())
+    }
+    /// [`Self::next_sequence`] with the host clock reading `now`.
+    fn next_sequence_at(&mut self, now: u64) -> Result<u64, StoreError> {
         let path = self.store.root().join("state-sequence");
         let previous = match self.sequence {
             Some(previous) => previous,
@@ -172,13 +197,17 @@ impl State {
         let next = previous
             .checked_add(1)
             .ok_or_else(|| error("state sequence exhausted"))?
-            .max(tilo_clock::unix_now_ns());
+            .max(now);
         // Reserve before any data publication, including across restart. The
         // file holds a bound past every sequence handed out, so a burst of
         // commits syncs it once per reservation instead of once per commit.
         if next > self.reserved {
             let reserved = next.saturating_add(SEQUENCE_RESERVATION_NS);
+            // Syncs the file, and after the rename the store root holding it.
             crate::store::atomic_write(&path, &reserved.to_le_bytes())?;
+            // Apple's fsync leaves the drive's cache unflushed; std's
+            // `sync_all` there is F_FULLFSYNC (as `retained::durable_write`).
+            #[cfg(target_vendor = "apple")]
             crate::store::fsync(&std::fs::File::open(self.store.root())?)?;
             self.reserved = reserved;
         }
