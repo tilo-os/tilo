@@ -2011,6 +2011,7 @@ impl DisplayModel {
             return None;
         }
         let layout = self.shared_layout();
+        let mut unknown_number = layout.displays.len().saturating_add(layout.inactive.len());
         let first_local = self
             .device_displays
             .iter()
@@ -2049,7 +2050,13 @@ impl DisplayModel {
                                 .chain(&layout.inactive)
                                 .find(|resolved| resolved.is(&display.device, output))
                         })
-                        .map_or(index + 1, |resolved| resolved.order + 1),
+                        .map_or_else(
+                            || {
+                                unknown_number = unknown_number.saturating_add(1);
+                                unknown_number
+                            },
+                            |resolved| resolved.order.saturating_add(1),
+                        ),
                     placement: Placement::new(
                         display.x,
                         display.y,
