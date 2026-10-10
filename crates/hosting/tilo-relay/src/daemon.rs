@@ -3257,7 +3257,7 @@ mod tests {
             .unwrap()
             .updated_at_ms;
         let an_hour_later = ReplicaProof {
-            path: path.clone(),
+            path,
             clock: Arc::new(tilo_clock::FixedClock(stamped.saturating_add(3_600_000))),
         };
         assert!(
