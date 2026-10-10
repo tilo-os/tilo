@@ -521,7 +521,11 @@ every generic image it publishes out by content before anything consumes it
   one component per RPM package, read from the image's rpmdb, files over 1 MB
   on their own, the rest grouped, packed into at most 128 layers. An unchanged
   component is the same blob in the next build. Whited-out bytes, the base's
-  old kernel and `/sysroot`'s ostree objects are in no layer.
+  old kernel and `/sysroot`'s ostree objects are in no layer. Trees that change
+  on their own schedule get a chunkah run and layers of their own
+  (`os/scripts/rechunk-chunkah.py`, today Proton and the Steam runtime):
+  otherwise their small files share one layer with Tilo's, which change with
+  almost every build.
 - `os/scripts/oci-rechunk.py` takes extended attributes from the raw image's
   layers where chunkah's differ (BuildKit's snapshot of the image, which
   chunkah reads, lacks the base binaries' file capabilities), adds one layer

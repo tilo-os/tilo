@@ -33,7 +33,7 @@ layers (TIL-747). Before that layout is published, this script
    select it; optionally writes it as an OCI archive.
 
     oci-rechunk.py finish --raw registry.tilo.so/tilo/tilo-ci@sha256:... \\
-        --chunked out/image --name registry.tilo.so/tilo/tilo-ci:TAG \\
+        --chunked out/image [--extra out/trees/NAME/image ...] --name registry.tilo.so/tilo/tilo-ci:TAG \\
         [--archive /var/tmp/tilo-image.tar] [--report report.json]
 
 `--raw` is a registry reference or `oci:DIR` (an OCI layout). The manifest
@@ -303,12 +303,7 @@ def repair_xattrs(root: Path, chunked: Tree, repairs: dict[str, tuple[tuple[str,
         manifest["layers"][index], config["rootfs"]["diff_ids"][index], count = rewrite_layer(
             root, manifest["layers"][index], repairs)
         entries += count
-    config_bytes = canonical(config)
-    manifest["config"] = {**manifest["config"], "digest": put(root, config_bytes), "size": len(config_bytes)}
-    manifest_bytes = canonical(manifest)
-    index = json.loads((root / "index.json").read_text(encoding="utf-8"))
-    index["manifests"] = [{**index["manifests"][0], "digest": put(root, manifest_bytes), "size": len(manifest_bytes)}]
-    (root / "index.json").write_bytes(canonical(index))
+    rewrite_image(root, manifest, config)
     return len(affected), entries
 
 
@@ -452,6 +447,42 @@ def put(root: Path, data: bytes) -> str:
     if not path.exists():
         path.write_bytes(data)
     return digest
+
+
+def rewrite_image(root: Path, manifest: dict[str, Any], config: dict[str, Any]) -> None:
+    """Point the layout's one index entry at `manifest` with `config`; blobs nothing names are removed later."""
+    config_bytes = canonical(config)
+    manifest["config"] = {**manifest["config"], "digest": put(root, config_bytes), "size": len(config_bytes)}
+    manifest_bytes = canonical(manifest)
+    index = json.loads((root / "index.json").read_text(encoding="utf-8"))
+    index["manifests"] = [{**index["manifests"][0], "digest": put(root, manifest_bytes), "size": len(manifest_bytes)}]
+    (root / "index.json").write_bytes(canonical(index))
+
+
+def merge_layouts(root: Path, extras: list[Path]) -> int:
+    """Append the layers of each chunkah layout in `extras` to the one at `root`; return how many.
+
+    A tree chunked by a run of its own (os/scripts/rechunk-chunkah.py) shares
+    no file with the main run, only the directories above it.
+    """
+    if not extras:
+        return 0
+    image = image_size.layout_image(root, None)
+    manifest, config = copy.deepcopy(image.manifest), copy.deepcopy(image.config)
+    added = 0
+    for extra in extras:
+        other = image_size.layout_image(extra, None)
+        if other.config.get("architecture") != config.get("architecture"):
+            raise ValueError(f"{extra} is {other.config.get('architecture')}, not {config.get('architecture')}")
+        for item in other.manifest["layers"]:
+            os.replace(image_size.Layout(extra).path(item["digest"]), image_size.Layout(root).path(item["digest"]))
+        manifest["layers"].extend(other.manifest["layers"])
+        config["rootfs"]["diff_ids"].extend(other.config["rootfs"]["diff_ids"])
+        config.setdefault("history", []).extend(
+            entry for entry in other.config.get("history", []) if not entry.get("empty_layer"))
+        added += len(other.manifest["layers"])
+    rewrite_image(root, manifest, config)
+    return added
 
 
 def adopt_config(chunked: dict[str, Any], raw: dict[str, Any], diff_id: str, layers: int) -> dict[str, Any]:
@@ -602,8 +633,13 @@ def main(argv: list[str] | None = None) -> int:
     command.add_argument("--name", required=True, help="the image's full name with its tag")
     command.add_argument("--archive", type=Path, help="also write the finished image as this OCI archive")
     command.add_argument("--report", type=Path, help="write the comparison report as JSON")
+    command.add_argument("--extra", type=Path, action="append", default=[],
+                         help="a tree's own chunkah layout, whose layers join --chunked's (repeatable)")
     args = parser.parse_args(argv)
     try:
+        merged = merge_layouts(args.chunked, args.extra)
+        if merged:
+            print(f"oci-rechunk: {merged} layers from {len(args.extra)} trees of their own", file=sys.stderr)
         print(finish(args.raw, args.chunked, args.name, args.archive, args.report))
     except (OSError, ValueError, KeyError, tarfile.TarError) as error:
         print(f"oci-rechunk: {error}", file=sys.stderr)
