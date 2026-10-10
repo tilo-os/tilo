@@ -1,0 +1,16 @@
+{
+  "description": "The pointing-stick/mouse interface the 83ED touchpad HID device exposes beside the touchpad (hid-over-i2c 0488:1054 Mouse); libinput pairs it with the touchpad in one device group.",
+  "class": "mouse",
+  "name": "hid-over-i2c 0488:1054 Mouse",
+  "bus": 24,
+  "vendor": 1160,
+  "product": 4180,
+  "version": 256,
+  "props": [],
+  "key": [272, 273, 274],
+  "rel": [0, 1, 8, 11],
+  "msc": [4],
+  "led": [],
+  "rep": false,
+  "abs": []
+}

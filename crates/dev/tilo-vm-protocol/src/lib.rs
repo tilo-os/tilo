@@ -23,6 +23,7 @@ pub mod display;
 pub mod input;
 pub mod layer_hash;
 pub mod manifest;
+pub mod profile;
 
 use std::collections::BTreeMap;
 

@@ -22,9 +22,9 @@ use crate::build;
 use crate::ci;
 use crate::cicache;
 use crate::cli::{
-    AddArgs, Builder, Command, CreateArgs, FlightCommand, GamepadCommand, ImageCommand,
-    InputCommand, PenCommand, ScenarioCommand, SeatCommand, SlotAppsCommand, SlotCommand,
-    TouchCommand, UpgradeArgs, VmCommand,
+    AddArgs, Builder, Command, CreateArgs, DeviceCommand, FlightCommand, GamepadCommand,
+    ImageCommand, InputCommand, PenCommand, ScenarioCommand, SeatCommand, SlotAppsCommand,
+    SlotCommand, TouchCommand, TouchpadCommand, UpgradeArgs, VmCommand,
 };
 use crate::config::{self, DirectKernel, Registry, Source, VmEntry, WORKTREE_FILE};
 use crate::context::Worktree;
@@ -5796,6 +5796,29 @@ pub fn input_actions(command: InputCommand) -> Result<Vec<InputAction>, CliError
             pressure,
         },
         InputCommand::Gamepad(command) => gamepad_action(command)?,
+        InputCommand::Hold { combo } => InputAction::KeyDown { combo },
+        InputCommand::Release { combo } => InputAction::KeyUp { combo },
+        InputCommand::Device(DeviceCommand::Plug { profile }) => {
+            InputAction::DevicePlug { profile }
+        }
+        InputCommand::Device(DeviceCommand::Unplug { profile }) => {
+            InputAction::DeviceUnplug { profile }
+        }
+        InputCommand::Touchpad(TouchpadCommand::Tap { fingers }) => {
+            InputAction::TouchpadTap { fingers }
+        }
+        InputCommand::Touchpad(TouchpadCommand::Swipe {
+            dx,
+            dy,
+            fingers,
+            duration,
+        }) => InputAction::TouchpadSwipe {
+            fingers,
+            dx_mm: dx,
+            dy_mm: dy,
+            duration_ms: duration,
+        },
+        InputCommand::Touchpad(TouchpadCommand::Click) => InputAction::TouchpadClick,
     };
     let actions = vec![action];
     tilo_vm_protocol::input::validate(&actions).map_err(CliError::InvalidInput)?;
@@ -5926,6 +5949,20 @@ fn describe_input(action: &InputAction) -> String {
                 from.0, from.1, to.0, to.1
             )
         }
+        InputAction::KeyDown { combo } => format!("holding {combo}"),
+        InputAction::KeyUp { combo } => format!("released {combo}"),
+        InputAction::DevicePlug { profile } => format!("plugged in {profile}"),
+        InputAction::DeviceUnplug { profile } => format!("unplugged {profile}"),
+        InputAction::TouchpadTap { fingers } => {
+            format!("tapped the touchpad with {fingers} finger(s)")
+        }
+        InputAction::TouchpadSwipe {
+            fingers,
+            dx_mm,
+            dy_mm,
+            ..
+        } => format!("moved {fingers} finger(s) {dx_mm},{dy_mm} mm on the touchpad"),
+        InputAction::TouchpadClick => "clicked the touchpad".to_owned(),
         InputAction::GamepadPress { combos } => format!("pressed gamepad {}", combos.join(" ")),
         InputAction::GamepadStick { stick, x, y, .. } => {
             format!("pushed the {stick:?} stick to {x},{y}").to_lowercase()
@@ -7828,6 +7865,54 @@ mod tests {
         let saved = std::fs::read_to_string(path).unwrap();
         assert!(!saved.contains("synthetic-private-input"));
         assert!(saved.contains("--stdin"));
+    }
+
+    #[test]
+    fn device_profile_and_touchpad_commands_become_validated_actions() {
+        let plug = input_actions(InputCommand::Device(DeviceCommand::Plug {
+            profile: "lenovo-83ed-touchpad".into(),
+        }))
+        .unwrap();
+        assert_eq!(
+            plug,
+            [InputAction::DevicePlug {
+                profile: "lenovo-83ed-touchpad".into()
+            }]
+        );
+        let unknown = input_actions(InputCommand::Device(DeviceCommand::Plug {
+            profile: "nope".into(),
+        }));
+        assert!(
+            matches!(unknown, Err(CliError::InvalidInput(m)) if m.contains("lenovo-83ed-keyboard"))
+        );
+        let swipe = input_actions(InputCommand::Touchpad(TouchpadCommand::Swipe {
+            dx: 0,
+            dy: -30,
+            fingers: 2,
+            duration: 300,
+        }))
+        .unwrap();
+        assert_eq!(
+            swipe,
+            [InputAction::TouchpadSwipe {
+                fingers: 2,
+                dx_mm: 0,
+                dy_mm: -30,
+                duration_ms: 300
+            }]
+        );
+        assert!(
+            input_actions(InputCommand::Touchpad(TouchpadCommand::Tap { fingers: 5 })).is_err()
+        );
+        assert_eq!(
+            input_actions(InputCommand::Hold {
+                combo: "shift".into()
+            })
+            .unwrap(),
+            [InputAction::KeyDown {
+                combo: "shift".into()
+            }]
+        );
     }
 
     #[test]
