@@ -503,18 +503,6 @@ thread_local! {
 }
 
 impl ImageStore {
-    /// Install a legacy host factory for thumbnail-sized browser images.
-    ///
-    /// New hosts that also serve document attachments should use
-    /// [`with_host_factory_with_max_dimension`](Self::with_host_factory_with_max_dimension)
-    /// so [`with_max_dimension`](Self::with_max_dimension) retains its bound.
-    pub fn with_host_factory<R>(
-        factory: std::rc::Rc<dyn Fn() -> Self>,
-        construct: impl FnOnce() -> R,
-    ) -> R {
-        Self::with_host_factory_with_max_dimension(std::rc::Rc::new(move |_| factory()), construct)
-    }
-
     /// Construct app caches under a host's asynchronous service while retaining
     /// the requested decoded-image bound and component wake custody.
     pub fn with_host_factory_with_max_dimension<R>(

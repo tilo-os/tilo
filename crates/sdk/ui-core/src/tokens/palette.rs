@@ -309,16 +309,6 @@ impl Palette {
         }
     }
 
-    /// The high-contrast palette of this palette's polarity.
-    #[must_use]
-    pub const fn high_contrast_of(&self) -> Self {
-        if self.dark {
-            Self::high_contrast_dark()
-        } else {
-            Self::high_contrast_light()
-        }
-    }
-
     /// The hue and chroma the neutrals are painted at: the palette's own
     /// when it has a hue, pure grey (chroma 0) until it has one.
     #[must_use]

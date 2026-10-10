@@ -129,10 +129,6 @@ impl RecoveryShareScreen {
         self.acknowledged = false;
     }
 
-    pub fn is_acknowledged(&self) -> bool {
-        self.acknowledged
-    }
-
     pub fn set_acknowledged(&mut self, v: bool) {
         self.acknowledged = v;
     }

@@ -924,9 +924,6 @@ impl CommandPalette {
     pub fn search_filter(&self) -> &SearchFilter {
         &self.search_filter
     }
-    pub fn search_filter_mut(&mut self) -> &mut SearchFilter {
-        &mut self.search_filter
-    }
 
     pub fn push(&mut self, e: CommandEntry) {
         self.entries.push(e);
@@ -963,12 +960,6 @@ impl CommandPalette {
     pub fn set_bypass_fuzzy(&mut self, on: bool) {
         self.bypass_fuzzy = on;
         self.rebuild();
-    }
-
-    /// For hosts rendering their own chip strip — without this, both strips
-    /// paint and the palette looks doubled up.
-    pub fn set_hide_filter_strip(&mut self, on: bool) {
-        self.hide_filter_strip = on;
     }
 
     /// See `Self::host_filter_strip`.

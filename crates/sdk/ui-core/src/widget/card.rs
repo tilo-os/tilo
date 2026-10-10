@@ -773,15 +773,6 @@ impl Actions {
         self.parts.children.insert(index, Box::new(button));
         self
     }
-
-    /// Replace the primary (last) action.
-    #[must_use]
-    pub fn replace_primary(mut self, button: Button) -> Self {
-        if let Some(last) = self.parts.children.last_mut() {
-            *last = Box::new(button);
-        }
-        self
-    }
 }
 
 impl Widget for Actions {

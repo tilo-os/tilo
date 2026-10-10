@@ -623,17 +623,9 @@ impl<L: Widget, R: Widget> ResizableSplit<L, R> {
         &self.left
     }
 
-    pub fn left_mut(&mut self) -> &mut L {
-        &mut self.left
-    }
-
     /// The second (trailing or bottom) pane.
     pub fn right(&self) -> &R {
         &self.right
-    }
-
-    pub fn right_mut(&mut self) -> &mut R {
-        &mut self.right
     }
 
     fn moved(&mut self) {
