@@ -32,6 +32,13 @@ Each adapter reads what a benchmark already prints and emits records through
   one run; repeated runs become the samples of `wakeups.headless_two_apps`
   (the compositor's whole process tree), `.shell` (its own process) and
   `wakeups.frame_loop_ticks.headless_two_apps` (its frame loop's iterations).
+- `framework-open LOG...`: the `FRAMEWORK-OPEN tasks=<n> samples_ms=<a,b,...>
+  allocations=<x> heap_per_task=<y>` lines of
+  `crates/sdk/tilo-app/examples/framework-scaling.rs` (TIL-758), one per list
+  size: opening a framework app over a record holding `n` items, to its first
+  laid-out frame. Each size becomes `render.framework_open.ms.<size>` (every
+  open is a sample), `.allocations.<size>` and `.heap_per_item.<size>` (one
+  sample per run), with sizes written `5k`, `50k`.
 - `hosting-load REPORT_JSON`: the relay load bench's `hosting-load.json`
   (`crates/hosting/tilo-relay/examples/relay_load`). Each KPI it measured
   becomes `<kpi>.n<collaborators>`, one sample per measured minute (fan-out
@@ -46,6 +53,7 @@ Usage:
     python3 tools/perf/adapters.py runtime-sizes --env-json env.json runtime.json >> results.jsonl
     python3 tools/perf/adapters.py workspace-switch --env-json env.json session.log >> results.jsonl
     python3 tools/perf/adapters.py idle-wakeups --env-json env.json run-*.log >> results.jsonl
+    python3 tools/perf/adapters.py framework-open --env-json env.json framework-open.log >> results.jsonl
     python3 tools/perf/adapters.py hosting-load --env-json env.json hosting-load.json >> results.jsonl
 
 An adapter that finds nothing to record fails: a benchmark whose output format
@@ -211,6 +219,41 @@ def idle_wakeups(logs: list[str], env: dict[str, Any]) -> list[record.Record]:
     return [record.from_samples(kpi, "per_s", values, meta=meta, **base) for kpi, values in samples.items()]
 
 
+FRAMEWORK_OPEN_LINE = re.compile(
+    r"^FRAMEWORK-OPEN tasks=(?P<tasks>[0-9]+) samples_ms=(?P<samples>[0-9.]+(?:,[0-9.]+)*) "
+    r"allocations=(?P<allocations>[0-9]+) heap_per_task=(?P<heap>[0-9]+)$")
+
+
+def framework_open_size(tasks: int) -> str:
+    """`5k` for 5000 tasks, `250` for 250: the KPI id's size suffix."""
+    return f"{tasks // 1000}k" if tasks >= 1000 and tasks % 1000 == 0 else str(tasks)
+
+
+def framework_open(logs: list[str], env: dict[str, Any]) -> list[record.Record]:
+    """Records for one or more runs of the framework-scaling example's open."""
+    samples: dict[str, list[float]] = {}
+    units: dict[str, str] = {}
+    for log in logs:
+        lines = [match for line in log.splitlines() if (match := FRAMEWORK_OPEN_LINE.match(line.strip()))]
+        if not lines:
+            raise ValueError("no `FRAMEWORK-OPEN` line: did framework-scaling run to the end?")
+        for line in lines:
+            size = framework_open_size(int(line["tasks"]))
+            measured = {
+                (f"render.framework_open.ms.{size}", "ms"): [float(value) for value in line["samples"].split(",")],
+                (f"render.framework_open.allocations.{size}", "count"): [float(line["allocations"])],
+                (f"render.framework_open.heap_per_item.{size}", "bytes"): [float(line["heap"])],
+            }
+            for (kpi, unit), values in measured.items():
+                samples.setdefault(kpi, []).extend(values)
+                units[kpi] = unit
+    if not logs:
+        raise ValueError("no framework-scaling logs")
+    meta = {**env.get("meta", {}), "runs": str(len(logs))}
+    base = {name: value for name, value in env.items() if name != "meta"}
+    return [record.from_samples(kpi, units[kpi], values, meta=meta, **base) for kpi, values in samples.items()]
+
+
 PRICES = Path(__file__).resolve().parent / "prices.toml"
 # The relay load bench's per-minute KPIs, as `relay_load` names them.
 HOSTING_KPIS = {
@@ -315,6 +358,9 @@ def main(argv: list[str] | None = None) -> int:
     idle = commands.add_parser("idle-wakeups", help="records from idle-wakeup gate logs")
     idle.add_argument("--env-json", required=True, type=Path)
     idle.add_argument("logs", nargs="+", type=Path)
+    opening = commands.add_parser("framework-open", help="records from framework-scaling's FRAMEWORK-OPEN lines")
+    opening.add_argument("--env-json", required=True, type=Path)
+    opening.add_argument("logs", nargs="+", type=Path)
     hosting = commands.add_parser("hosting-load", help="records from the relay load bench's hosting-load.json")
     hosting.add_argument("--env-json", required=True, type=Path)
     hosting.add_argument("--prices", type=Path, default=PRICES)
@@ -338,6 +384,9 @@ def main(argv: list[str] | None = None) -> int:
             records = workspace_switch(samples, env)
         elif args.command == "runtime-sizes":
             records = runtime_sizes(json.loads(args.measurements.read_text(encoding="utf-8")), env)
+        elif args.command == "framework-open":
+            records = framework_open([path.read_text(encoding="utf-8", errors="replace") for path in args.logs],
+                                     env)
         elif args.command == "idle-wakeups":
             records = idle_wakeups([path.read_text(encoding="utf-8", errors="replace") for path in args.logs], env)
         else:

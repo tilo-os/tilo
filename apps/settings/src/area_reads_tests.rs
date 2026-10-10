@@ -63,6 +63,74 @@ fn published(app: &mut TestApp<SettingsShell>) -> (serde_json::Value, serde_json
     (resources, app.agent_surface())
 }
 
+/// Print leaf differences before the full assertion, whose large resource
+/// forest can exceed the CI log's per-line limit.
+fn report_resource_difference(deferred_tree: &serde_json::Value, eager_tree: &serde_json::Value) {
+    fn flatten(
+        value: &serde_json::Value,
+        rows: &mut std::collections::BTreeMap<String, serde_json::Value>,
+    ) {
+        if let Some(id) = value.get("id").and_then(serde_json::Value::as_str) {
+            let mut row = value.clone();
+            row.as_object_mut()
+                .expect("resource outline is an object")
+                .remove("children");
+            rows.insert(id.to_owned(), row);
+        }
+        if let Some(children) = value.get("children").and_then(serde_json::Value::as_array) {
+            for child in children {
+                flatten(child, rows);
+            }
+        }
+    }
+    fn compare(left: &serde_json::Value, right: &serde_json::Value, path: &str) {
+        match (left, right) {
+            (serde_json::Value::Object(a), serde_json::Value::Object(b)) => {
+                for key in a.keys().chain(b.keys().filter(|key| !a.contains_key(*key))) {
+                    compare(
+                        a.get(key).unwrap_or(&serde_json::Value::Null),
+                        b.get(key).unwrap_or(&serde_json::Value::Null),
+                        &format!("{path}/{key}"),
+                    );
+                }
+            }
+            (serde_json::Value::Array(a), serde_json::Value::Array(b)) => {
+                if a.len() != b.len() {
+                    eprintln!("SETTINGS_AREA_DIFF {path}/length {} {}", a.len(), b.len());
+                }
+                for (i, (left, right)) in a.iter().zip(b).enumerate() {
+                    compare(left, right, &format!("{path}/{i}"));
+                }
+            }
+            _ if left != right => eprintln!("SETTINGS_AREA_DIFF {path} {left} {right}"),
+            _ => {}
+        }
+    }
+
+    let mut deferred = std::collections::BTreeMap::new();
+    let mut eager = std::collections::BTreeMap::new();
+    for row in deferred_tree.as_array().expect("resource forest") {
+        flatten(row, &mut deferred);
+    }
+    for row in eager_tree.as_array().expect("resource forest") {
+        flatten(row, &mut eager);
+    }
+    let changes = deferred
+        .keys()
+        .chain(eager.keys())
+        .collect::<std::collections::BTreeSet<_>>();
+    for id in changes {
+        match (deferred.get(id), eager.get(id)) {
+            (Some(left), Some(right)) => compare(left, right, id),
+            (left, right) => eprintln!(
+                "SETTINGS_AREA_ROW_PRESENCE {id} {} {}",
+                left.is_some(),
+                right.is_some()
+            ),
+        }
+    }
+}
+
 /// Every node a screen reader is told about: its role, its name and
 /// whether it accepts input.
 fn controls(app: &mut TestApp<SettingsShell>) -> Vec<(String, Option<String>, bool)> {
@@ -176,6 +244,9 @@ fn a_window_publishes_every_area_a_few_frames_after_its_first() {
     }
     window.settle();
     let settled = published(&mut window);
+    if settled.0 != whole.0 {
+        report_resource_difference(&settled.0, &whole.0);
+    }
     assert_eq!(
         settled.0, whole.0,
         "the resource tree is the one reading first published"
