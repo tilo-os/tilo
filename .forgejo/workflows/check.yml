@@ -99,6 +99,8 @@ jobs:
       workspace_count: ${{ steps.plan.outputs.workspace_count }}
       estimated_cost: ${{ steps.plan.outputs.estimated_cost }}
       shard_count: ${{ steps.plan.outputs.shard_count }}
+      tapp_required: ${{ steps.plan.outputs.tapp_required }}
+      tapp_apps: ${{ steps.plan.outputs.tapp_apps }}
     steps:
       # A pull request merges onto main below, which deepens its shallow
       # checkout as far as the merge needs; a merge cannot work in a blob-less
@@ -802,9 +804,89 @@ jobs:
           read -r -a pins <<< "$PINS"
           ./os/dev/verify-snapshot-pins.sh "${pins[@]}"
 
+  # The tapps of the apps a pull request affects, against their size budgets
+  # (tools/perf/tapp-size-budget/; DEVELOPMENT.md, "App package size").
+  # Release / apps holds every main commit to the same budgets, but only after
+  # the merge, where an app over its budget stops every app from publishing
+  # (TIL-765). The select job picks at most a few affected apps, those closest
+  # to a budget, so a toolkit change does not package the whole collection.
+  # Each architecture packages them exactly as Release / apps does, with its
+  # profile and compiler-cache namespace, so an unchanged runtime is a cache hit.
+  tapps:
+    if: ${{ !cancelled() && needs.builder.result == 'success' && needs.select.result == 'success' && (github.event_name != 'pull_request' || (needs.select.outputs.security_required == 'true' && needs.security.result == 'success') || (needs.select.outputs.security_required == 'false' && needs.security.result == 'skipped')) && needs.select.outputs.tapp_required == 'true' }}
+    needs: [builder, select, security]
+    name: tapps / ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: runner-large
+          - arch: aarch64
+            runner: runner-large-arm64
+    container:
+      image: ${{ needs.builder.outputs.image }}
+    env:
+      CARGO_PROFILE_RELEASE_LTO: thin
+      CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
+      # Release / apps' compiler-cache namespace (its TILO_SCCACHE_KEY_PREFIX,
+      # which tools/ci/sccache.sh turns into these), read by the runner's
+      # sccache server when this job's first compile starts it.
+      SCCACHE_GHA_VERSION: tilo/apps/v2/${{ matrix.arch }}
+      SCCACHE_DIRECT: "false"
+    steps:
+      - name: Checkout exact change
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 1
+
+      - name: Merge onto the tested main
+        uses: ./.forgejo/actions/merge-main
+        with:
+          main: ${{ needs.select.outputs.main }}
+
+      - name: Validate native architecture
+        run: ./os/dev/assert-native-arch.sh '${{ matrix.arch }}'
+
+      - name: Prepare Rust build caches
+        uses: ./.forgejo/actions/prepare-rust-build
+
+      - name: Package the selected tapps
+        env:
+          TILO_RELEASE_APPS: ${{ needs.select.outputs.tapp_apps }}
+        run: |
+          # As Release / apps: every core, bounded by 2 GiB of memory per job.
+          cpus=$(nproc)
+          if read -r quota period 2>/dev/null < /sys/fs/cgroup/cpu.max && [[ $quota != max ]]; then
+            cpus=$(( (quota + period - 1) / period ))
+          fi
+          memory=$(( $(sed -n 's/^MemTotal: *\([0-9]*\) kB$/\1/p' /proc/meminfo) << 10 ))
+          if read -r limit 2>/dev/null < /sys/fs/cgroup/memory.max && [[ $limit =~ ^[0-9]+$ ]]; then
+            (( limit < memory )) && memory=$limit
+          fi
+          jobs=$(( memory / (2 << 30) ))
+          (( jobs > cpus )) && jobs=$cpus
+          (( jobs < 1 )) && jobs=1
+          export CARGO_BUILD_JOBS=$jobs
+          # sccache hashes every CARGO_* variable rustc sees. This workflow's
+          # own (warnings as errors, test-profile debuginfo, colour) are not
+          # Release / apps' and would miss every entry its main builds wrote.
+          unset CARGO_PROFILE_DEV_DEBUG CARGO_PROFILE_TEST_DEBUG CARGO_TERM_COLOR \
+            CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS
+          bash tools/ci/measure.sh "package tapps ${{ matrix.arch }}" -- \
+            bash scripts/ci-run.sh "package-apps.sh ($TILO_RELEASE_APPS)" -- \
+            dist/apps/package-apps.sh
+
+      - name: Selected tapps within their size budget
+        run: >-
+          python3 tools/perf/tapp_size_ratchet.py measure dist/app-release
+          --arch "${{ matrix.arch }}" --summary "$GITHUB_STEP_SUMMARY"
+
   checks:
     if: always()
-    needs: [builder, select, security, test, check, clippy, android, wasm, suites, pins]
+    needs: [builder, select, security, test, check, clippy, android, wasm, suites, pins, tapps]
     runs-on: runner-quality
     timeout-minutes: 10
     container:
@@ -828,6 +910,8 @@ jobs:
           ANDROID_REQUIRED: ${{ needs.select.outputs.android_required }}
           WASM_RESULT: ${{ needs.wasm.result }}
           WASM_REQUIRED: ${{ needs.select.outputs.wasm_required }}
+          TAPPS_RESULT: ${{ needs.tapps.result }}
+          TAPPS_REQUIRED: ${{ needs.select.outputs.tapp_required }}
           EVENT_NAME: ${{ github.event_name }}
           SECURITY_REQUIRED: ${{ needs.select.outputs.security_required }}
           RUST_REQUIRED: ${{ needs.select.outputs.rust_required }}
@@ -879,6 +963,14 @@ jobs:
             false:skipped) ;;
             *)
               echo '::error::Browser crate wasm32 checks failed or applicability is invalid.'
+              exit 1
+              ;;
+          esac
+          case "$TAPPS_REQUIRED:$TAPPS_RESULT" in
+            true:success) ;;
+            false:skipped) ;;
+            *)
+              echo '::error::Affected tapps are over their size budgets, failed to package, or applicability is invalid.'
               exit 1
               ;;
           esac

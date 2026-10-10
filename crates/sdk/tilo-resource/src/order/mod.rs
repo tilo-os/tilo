@@ -29,8 +29,19 @@ fn char_of(value: u8) -> char {
 /// the open ends of the collection. When `low >= high` (two replicas minted
 /// the same key concurrently), the result is after `low`; callers break the
 /// remaining tie by item identity.
+///
+/// Toward an open end the key steps rather than halves the gap (see
+/// [`after`] and [`before`]), so a list appended or prepended to one item
+/// at a time keeps keys a few characters long instead of growing one
+/// character every few items.
 #[must_use]
 pub fn between(low: Option<&str>, high: Option<&str>) -> String {
+    let open_high = high.is_none_or(|high| low.is_some_and(|low| high <= low));
+    match (low, high) {
+        (Some(low), _) if open_high && is_key(low) => return after(low),
+        (None, Some(high)) if is_key(high) => return before(high),
+        _ => {}
+    }
     let low = low.unwrap_or("").as_bytes();
     let mut high = high.map(str::as_bytes).filter(|high| *high > low);
     let mut out = String::new();
@@ -49,6 +60,95 @@ pub fn between(low: Option<&str>, high: Option<&str>) -> String {
             high = None;
         }
         index = index.saturating_add(1);
+    }
+}
+
+const TOP: u8 = BASE - 1;
+
+fn spell(prefix: u8, run: usize, body: &[u8]) -> String {
+    std::iter::repeat_n(prefix, run)
+        .chain(body.iter().copied())
+        .map(char_of)
+        .collect()
+}
+
+/// The next key after `low` with no upper bound.
+///
+/// Halving the gap to the end, as [`between`] does between two keys, adds
+/// a character every few appends: 50,000 appends made keys 8,000
+/// characters long, 208 MB of keys in all (TIL-758). Instead a key is read
+/// as a run of `z`s and a body after it, and the next key adds one to the
+/// body. When the body is used up (its first digit would become `z`), the
+/// run and the body both grow by one: `y` → `z01`, `zyz` → `zz001`. Each
+/// step multiplies the room by 36, so `n` appends need keys of about
+/// `2·log36(n)` characters. A key minted the old way keeps its length.
+fn after(low: &str) -> String {
+    let digits: Vec<u8> = (0..low.len())
+        .map(|index| digit(low.as_bytes(), index))
+        .collect();
+    let run = digits.iter().take_while(|&&value| value == TOP).count();
+    let Some(body) = digits.get(run..).filter(|body| !body.is_empty()) else {
+        // All `z`s: anything longer is after it.
+        return spell(TOP, run, &[1]);
+    };
+    let mut body = body.to_vec();
+    loop {
+        // Add one to the body, carrying.
+        let mut carry = true;
+        for value in body.iter_mut().rev() {
+            if !carry {
+                break;
+            }
+            *value = if *value == TOP {
+                0
+            } else {
+                carry = false;
+                value.saturating_add(1)
+            };
+        }
+        if carry || body.first() == Some(&TOP) {
+            // This run's bodies are used up: one more `z`, one more digit.
+            let mut next = vec![0; body.len()];
+            next.push(1);
+            return spell(TOP, run.saturating_add(1), &next);
+        }
+        // A key never ends in `0`; the next body does not either.
+        if body.last() != Some(&0) {
+            return spell(TOP, run, &body);
+        }
+    }
+}
+
+/// The next key before `high` with no lower bound: [`after`] mirrored, with
+/// a run of `0`s and a body that counts down: `1` → `0zz`, `01z` → `00zzz`.
+fn before(high: &str) -> String {
+    let digits: Vec<u8> = (0..high.len())
+        .map(|index| digit(high.as_bytes(), index))
+        .collect();
+    let run = digits.iter().take_while(|&&value| value == 0).count();
+    let mut body = digits.get(run..).unwrap_or_default().to_vec();
+    loop {
+        // Take one from the body, borrowing.
+        let mut borrow = true;
+        for value in body.iter_mut().rev() {
+            if !borrow {
+                break;
+            }
+            *value = if *value == 0 {
+                TOP
+            } else {
+                borrow = false;
+                value.saturating_sub(1)
+            };
+        }
+        if borrow || body.first().is_none_or(|&first| first == 0) {
+            // This run's bodies are used up: one more `0`, one more digit.
+            let next = vec![TOP; body.len().saturating_add(1)];
+            return spell(0, run.saturating_add(1), &next);
+        }
+        if body.last() != Some(&0) {
+            return spell(0, run, &body);
+        }
     }
 }
 
@@ -118,6 +218,44 @@ mod tests {
                 assert!(!is_key(bad), "{bad:?}");
             }
             assert!(is_key("0001") && is_key("i") && is_key("zz"));
+        }
+    }
+
+    #[test]
+    fn keys_toward_an_open_end_stay_short() {
+        // phase: appends_step_and_grow_logarithmically
+        {
+            assert_eq!(between(Some("i"), None), "j");
+            assert_eq!(between(Some("y"), None), "z01");
+            assert_eq!(between(Some("z0z"), None), "z11");
+            assert_eq!(between(Some("zyz"), None), "zz001");
+            assert_eq!(between(Some("zz"), None), "zz1");
+            let keys = sequence(None, None, 50_000);
+            assert!(keys.windows(2).all(|pair| pair[0] < pair[1]));
+            assert!(keys.iter().all(|key| is_key(key)));
+            let longest = keys.iter().map(String::len).max().unwrap_or_default();
+            assert!(longest <= 7, "{longest}");
+        }
+        // phase: prepends_mirror_appends
+        {
+            assert_eq!(between(None, Some("i")), "h");
+            assert_eq!(between(None, Some("1")), "0zz");
+            assert_eq!(between(None, Some("i1")), "hz");
+            let mut high = between(None, None);
+            for _ in 0..50_000 {
+                let key = between(None, Some(&high));
+                assert!(is_key(&key) && key < high, "{key} < {high}");
+                high = key;
+            }
+            assert!(high.len() <= 7, "{high}");
+        }
+        // phase: a_key_minted_by_halving_keeps_its_length
+        {
+            let old = format!("{}r", "z".repeat(500));
+            let next = between(Some(&old), None);
+            assert!(next > old && next.len() == old.len() && is_key(&next));
+            // A bound at or below `low` is no bound, as before.
+            assert_eq!(between(Some("k"), Some("c")), "l");
         }
     }
 }

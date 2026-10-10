@@ -204,6 +204,19 @@ impl ShareAuthority {
         Ok(true)
     }
 
+    /// Whether any grant is still unrevoked: someone holding its link or
+    /// invitation may dial this device (TIL-774, [`crate::reachability`]).
+    /// Expiry is not consulted; a grant that only lapsed still counts.
+    #[must_use]
+    pub fn has_unrevoked_grants(&self) -> bool {
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .grants
+            .values()
+            .any(|grant| !grant.revoked)
+    }
+
     /// Recheck a named human's live grant for every record request. Device
     /// certification is deliberately a separate transport precondition; this
     /// method accepts the verified human root identity, never a display name.

@@ -697,6 +697,7 @@ impl ChatApp {
             )
         } else {
             row.operation(crate::semantic_read::action::spec(id))
+                .operation(crate::feedback::destination_read::spec(id))
         })
     }
 

@@ -179,6 +179,9 @@ pub struct NotificationsArea {
     prefs: RefCell<Followed<NotificationPrefs>>,
     apps: OnceCell<Vec<InstalledNotificationApp>>,
     sample: bool,
+    /// The installed apps, read off the UI thread after the window's first
+    /// frame ([`Self::start_read`]).
+    read: crate::device_read::DeviceRead<Vec<InstalledNotificationApp>>,
 }
 
 impl NotificationsArea {
@@ -190,6 +193,7 @@ impl NotificationsArea {
             prefs: RefCell::new(cx.follow::<NotificationPrefs>()),
             apps: OnceCell::new(),
             sample: !cx.reaches_devices(),
+            read: crate::device_read::DeviceRead::default(),
         }
     }
 
@@ -197,12 +201,39 @@ impl NotificationsArea {
     /// with a rule left behind.
     fn apps(&self) -> &[InstalledNotificationApp] {
         self.apps.get_or_init(|| {
-            if self.sample {
-                sample_apps()
-            } else {
-                installed_notification_apps(&self.prefs.borrow().get().per_app)
-            }
+            self.read
+                .take()
+                .unwrap_or_else(|| Self::read_apps(self.sample, &self.prefs.borrow().get().per_app))
         })
+    }
+
+    /// The installed apps (every package manifest and desktop entry), or
+    /// the sample a capture lists.
+    fn read_apps(
+        sample: bool,
+        per_app: &BTreeMap<String, AppNotificationRule>,
+    ) -> Vec<InstalledNotificationApp> {
+        if sample {
+            sample_apps()
+        } else {
+            installed_notification_apps(per_app)
+        }
+    }
+
+    /// Read the installed apps off the UI thread; `false` when they have
+    /// been read or are being read.
+    pub(crate) fn start_read(&self) -> bool {
+        if self.is_open() {
+            return false;
+        }
+        let sample = self.sample;
+        let per_app = self.prefs.borrow().get().per_app.clone();
+        self.read.start(move || Self::read_apps(sample, &per_app))
+    }
+
+    /// Whether the read [`Self::start_read`] started has ended.
+    pub(crate) fn read_finished(&self) -> bool {
+        self.read.is_finished()
     }
 
     /// Whether the area has read what its rows show: its pane was shown,
@@ -1076,6 +1107,7 @@ mod tests {
             prefs: RefCell::new(cx.follow::<NotificationPrefs>()),
             apps: OnceCell::from(sample_apps()),
             sample: true,
+            read: crate::device_read::DeviceRead::default(),
         };
         let mut pane = NotificationsPane::new(cx.clone(), &area);
         assert!(pane.shown.apps["so.tilo.chat"].banners.get());

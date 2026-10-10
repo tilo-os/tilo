@@ -174,7 +174,7 @@ impl FrameHarness {
         self.visit_publication_locus(
             self.root.as_ref(),
             &target,
-            &snapshot.resources,
+            snapshot.resources(),
             &mut result,
         );
         if result.len() == 1 {

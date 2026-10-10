@@ -286,20 +286,40 @@ keyed **damage parts** (`ui::scene_parts`): a draw site marks a stretch of
 commands with a key and the bounds those commands can paint, and every
 boundary splits the section's encoded streams into pieces that are compared
 with the previous frame's piece by piece. A changed piece of a part damages
-that part's old and new bounds; a changed piece outside every part, or a
-different set of parts, leaves the frame dense. Parts today: each tile's
-clipped content, each tab pill, the peers' pointers and follow tethers, the
-follow chip and the notification stack. A retained scene carries its parts
-with it (`scene_parts::record` / `scene_parts::append`), so an in-process
-app's own parts (the terminal's rows and cursor) reach the compositor:
-typing or a peer's pointer moving repaints well under 1 % of a 4K output.
+that part's old and new bounds; a changed piece outside every part leaves the
+frame dense. When the parts nested inside a part differ between the frames (a
+menu opened inside an overlay drew a part of its own), the outermost parts
+are compared instead, each as a whole. Parts today: each tile's clipped
+content, each tab pill, the peers' pointers and follow tethers, the follow
+chip, the notification stack, and every overlay above Quick Settings: the
+palette's scrim and its card, the tab menu, the sheets and prompts, and the
+client surfaces floating over the desktop (popups, floating and fullscreen
+windows, the on-screen keyboard). An overlay's part is there whether or not
+the overlay is open, so opening, animating or closing it repaints that
+overlay; an overlay that cannot bound what it paints claims the whole
+desktop. A retained scene carries its parts with it (`scene_parts::record` /
+`scene_parts::append`), so an in-process app's own parts (the terminal's
+rows and cursor) reach the compositor: typing or a peer's pointer moving
+repaints well under 1 % of a 4K output.
 The shell's adaptive Area renderer canonicalizes each tile's segment order
 before coverage accumulation. Dense and retained repairs then round the same
 unchanged geometry to the same pixels despite GPU scheduling. Each successful
 repair settles its overflow counters before the next frame; explicit pinned
 `VELLO_BUMP_BUDGET=upstream` experiments retain Vello's existing exclusion from
 canonical ordering and do not carry this pixel-repeatability guarantee.
-Foreign buffer swaps keep their client-reported damage. Night light and the
+An in-process app also hands over its widget damage, as a window of its own
+would submit it (`App::surface_frame_with_damage`): its scene is a **hinted**
+part (`scene_parts::hinted`) whose hint names the generations it changed
+between and where, and its chrome and the layers over its widgets are
+window-sized parts. A frame compared with the one that painted the generation
+before repaints only that damage (a tooltip repaints its chip); any other
+change to the app (it moved, repainted whole, a frame was skipped) repaints
+its tile. A tile's edge and the tab list's focus ring are parts too. Foreign
+buffer swaps keep their
+client-reported damage, from `wl_surface.damage_buffer` as from
+`wl_surface.damage` (scaled to buffer pixels unless a viewport crops or
+scales the buffer). Strip pans still repaint every pixel of the strip: no
+presenter composites the retained strip layer (`FrameCache`). Night light and the
 colour filters are per-pixel tints drawn into the same scene, so frames under
 them stay sparse while the tint is unchanged; the magnifier and the
 crosshair, which follow the pointer, keep every frame dense.
@@ -409,10 +429,22 @@ frame it appears in:
   upright (a rotated scanout would show the buffer unturned), it has no ICC
   profile (the buffer would skip the calibration the final pass applies),
   the candidate covers exactly this output, it is a
-  client dma-buf (`gpu_frames::client_frame`), the buffer is opaque
-  (`XRGB8888`, the format the output's 8-bit targets have — a legacy flip
-  cannot change formats), the output is SDR and the frame composites no
-  HDR layer (`client_scanout_rejection`).
+  client dma-buf (`gpu_frames::client_frame`), the buffer is opaque and
+  scans out as `XRGB8888` (the format the output's 8-bit targets have — a
+  legacy flip cannot change formats), the output is SDR and the frame
+  composites no HDR layer (`client_scanout_rejection`).
+- An `ARGB8888` buffer counts as opaque when the commit's
+  `wl_surface.set_opaque_region` covers the whole surface — what browsers
+  and GPU toolkits send for an opaque window, since they allocate `ARGB`
+  swapchains regardless. The pre-commit hook judges the region
+  (`compositor::opaque_region::covers`, measuring the surface at its
+  largest so it errs toward compositing) and the verdict travels with the
+  buffer (`foreign::DmabufCommit::opaque`) to `GpuFrame::opaque`. Such a
+  frame is drawn ignoring its alpha on every route, exactly as an `X`
+  format is, and the presenter makes its framebuffer as `XRGB8888`
+  (`client_scanout::scanout_fourcc`): the same bytes, alpha ignored. A
+  partial region — rounded corners, a shadow — or none keeps the buffer
+  composited.
 - KMS is asked before anything changes. The primary plane's `IN_FORMATS`
   must list the buffer's format and modifier; the buffer becomes a
   framebuffer (`ADDFB2` with modifiers) and a `TEST_ONLY` atomic commit
@@ -453,10 +485,48 @@ summary` counts `client_scanout_frames` beside `direct_frames`.
 `TILO_CLIENT_SCANOUT=0` composites every frame, for A/B measurement or a
 driver that misbehaves.
 
-**Not yet:** clients that allocate `ARGB8888` (an opaque region covering the
-surface would let them qualify), linux-dmabuf v4 feedback with a scanout
-tranche (so clients allocate a modifier the plane takes), and windowed
-video on overlay planes, which needs atomic presentation.
+**Telling the client (dma-buf feedback).** Whether a client's buffer can be
+flipped depends on how it was allocated — format, modifier, and whether the
+driver placed it for scanout, which Mesa only does when the compositor's
+linux-dmabuf v4 feedback names a tranche flagged `scanout`. Every surface
+starts on the default feedback (the render node, the formats the compositor
+composites). After each frame is final, the loop hands
+`State::update_scanout_feedback` the frame's candidate with the plane of the
+output it covers (`compositor::scanout_feedback::offer`, the plane from
+`Backend::scanout_plane`). While the candidate is the fullscreen surface and
+its latest buffer is opaque (an 8-bit `X` format, or `ARGB`/`ABGR` with a
+covering opaque region: `ScanoutOpacity`, recorded by the pre-commit hook),
+its feedback gains a tranche flagged `scanout` on the output's KMS device,
+before the default tranche. The tranche lists only what the plane scans out
+*and* the compositor can import (`scanout_tranche`), so a buffer allocated
+from it is still drawn when a popup opens over it. The frame the candidate
+is voided — chrome, a popup, the on-screen keyboard, night light — or the
+buffer turns translucent, the output has no plane, or the client leaves
+fullscreen, the surface is sent the default again; unchanged frames resend
+nothing, and a surface that asks for feedback while offered a plane gets it
+in its first batch (`DmabufHandler::new_surface_feedback`). The feedback only
+steers allocation: each frame's scanout is still the presenter's decision.
+
+The plane comes from the presenter. On every frame whose candidate covers
+an output, `refresh_client_offer` (`backend/drm/mod.rs`) checks the
+output's own facts with `client_scanout_rejection` (every buffer fact
+granted) and, when they allow client scanout, probes the primary plane —
+the probe the first client buffer would have made anyway — and lists the
+client formats and modifiers that scan out as the targets' format
+(`client_scanout::client_formats`: `XRGB8888`, and `ARGB8888` shown as it,
+on `XRGB8888` targets). Changed offers are published per output into
+`ClientPlanes`, which the loop thread reads; a replugged output starts
+without one. The CPU renderer, the readback path, a rotated, calibrated or
+HDR output and `TILO_CLIENT_SCANOUT=0` publish none, so headless and
+lavapipe sessions keep the default feedback everywhere. The importer accepts
+linear buffers only, so the tranche offers linear today.
+
+**Not yet:** windowed video on overlay planes — the presenter flips with
+legacy page flips, and assigning a client buffer to an overlay plane needs
+atomic presentation with a `TEST_ONLY` commit per frame. `ABGR8888` declared
+opaque still composites on `XRGB8888` targets for the same reason (a legacy
+flip cannot change format). Tiled and compressed modifiers in the scanout
+tranche need the importer to accept them first.
 
 **Verifying on hardware.** CI's llvmpipe cannot exercise KMS planes; the
 decision logic is unit-tested (`scanout_candidate`, `client_scanout`, the
@@ -464,7 +534,12 @@ fullscreen phases in `shell::frame`). On a `tilo-vm` slot with a real GPU —
 a `device` target (`tilo-vm vm add`) or a VM with the GPU passed through:
 
 1. `tilo-vm swap shell` from the branch, then play a 4K60 video fullscreen
-   in an opaque client (`mpv --fs`, or `vkcube` made fullscreen).
+   in an opaque client (`mpv --fs`, or `vkcube` made fullscreen). With
+   `WAYLAND_DEBUG=1` the client's log shows a second
+   `zwp_linux_dmabuf_feedback_v1` batch once it is fullscreen, whose first
+   tranche has `tranche_flags 1` (scanout) and the card's `dev_t` as
+   `tranche_target_device`; it gets a batch without it when an overlay
+   appears.
 2. `tilo-vm logs -n 400` shows `client_scanout_status=active`, and the
    phase summaries count `client_scanout_frames` at the refresh rate while
    `direct_frames` stays near zero. `intel_gpu_top` (or `radeontop`) shows

@@ -3,6 +3,10 @@ use automerge::{ObjType, ROOT, transaction::Transactable};
 use ui::feedback::{Destination, Receipt, ReviewedFeedback, Submission};
 
 fn submitted() -> (automerge::AutoCommit, Submission, Resource) {
+    submitted_as("visitor")
+}
+
+fn submitted_as(author: &str) -> (automerge::AutoCommit, Submission, Resource) {
     let mut doc = crate::testing::demo_doc();
     let channel = crate::testing::channels(&doc)
         .into_iter()
@@ -23,7 +27,7 @@ fn submitted() -> (automerge::AutoCommit, Submission, Resource) {
     };
     crate::testing::apply_as(
         &mut doc,
-        "visitor",
+        author,
         crate::testing::submit_feedback(&submission),
     )
     .unwrap();
@@ -431,5 +435,26 @@ fn mounted_feedback_status_reads_attributed_triage_with_view_permission() {
     assert_eq!(
         value["content"]["triage"][2]["update"]["reference"],
         serde_json::to_value(reference).unwrap()
+    );
+}
+
+#[test]
+fn canonical_read_requires_the_exact_attributed_reporter_when_requested() {
+    let author = "a".repeat(64);
+    let (doc, submission, resource) = submitted_as(&author);
+    let request = |author: &str| {
+        serde_json::to_vec(&serde_json::json!({"id": submission.id, "expectedAuthor": author}))
+            .unwrap()
+    };
+    let payload = request(&author);
+    validate(&resource, &payload).unwrap();
+    assert!(project(&doc, &doc.base_heads(), &payload).is_ok());
+    assert_eq!(
+        project(&doc, &doc.base_heads(), &request(&"b".repeat(64))).err(),
+        Some(SemanticReadError::InvalidOwner)
+    );
+    assert_eq!(
+        validate(&resource, &request("visitor")),
+        Err(SemanticReadError::InvalidRequest)
     );
 }

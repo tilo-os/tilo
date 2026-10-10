@@ -5131,7 +5131,7 @@ impl Widget for PdfApp {
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         self.layout_theme = theme.clone();
-        taffy.filling_leaf(node_map, self)
+        taffy.fill_leaf(node_map, self)
     }
 
     #[allow(

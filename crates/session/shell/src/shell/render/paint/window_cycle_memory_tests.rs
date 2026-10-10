@@ -60,9 +60,14 @@ fn paint(bridge: &mut VelloDrmBridge, wallpaper: &ImageData, window: Option<&Ima
 
 /// Queue one shm commit of `id` and wait for the capture worker to publish it.
 fn commit(id: SurfaceId, value: u8) {
+    commit_sized(id, value, WINDOW);
+}
+
+/// [`commit`] of a `size` window.
+fn commit_sized(id: SurfaceId, value: u8, size: (u32, u32)) {
     let before = store().frame_seq(id);
-    let pixels = [value, value, 0x40, 0xFF].repeat((WINDOW.0 * WINDOW.1) as usize);
-    let frame = OwnedShmFrame::argb8888(pixels, WINDOW.0 as usize, WINDOW.1 as usize);
+    let pixels = [value, value, 0x40, 0xFF].repeat((size.0 * size.1) as usize);
+    let frame = OwnedShmFrame::argb8888(pixels, size.0 as usize, size.1 as usize);
     let generation = store()
         .prepare_shm_capture(id, frame)
         .expect("the shm worker runs");
@@ -259,4 +264,120 @@ fn closed_windows_heap_goes_back_to_the_kernel() {
         before > 0 && left_kib <= 2048,
         "{left_kib} KiB the closed windows freed were still resident after the heap trimmer ran"
     );
+}
+
+/// A desktop and window large enough that a window's frames grow the image
+/// atlas well past the bare desktop's.
+const LARGE_DESKTOP: (u32, u32) = (1280, 800);
+const LARGE_WINDOW: (u32, u32) = (1200, 760);
+/// Device memory a closed window may leave allocated, in MiB: an empty
+/// 4 MiB suballocation block the allocator keeps per memory type.
+const DEVICE_SLACK_MIB: u64 = 8;
+/// Frames a desktop draws after a close before it goes idle.
+const CLOSE_PAINTS: u32 = 8;
+
+/// What closed windows' textures touched goes back to the kernel (TIL-731).
+/// On lavapipe, the software rasteriser the dev VM and CI render with,
+/// device memory lives in one memfd that never shrinks: four apps opened
+/// and closed left about 305 MiB allocated to it and mapped by nobody, and
+/// an image atlas grown to 8192 pixels stayed that size because an idle
+/// desktop draws too few frames to shrink it. Now the atlas comes down
+/// within the few frames a close draws, and the trim the close asks for
+/// punches the freed ranges out, so the device holds what the bare desktop
+/// held.
+///
+/// The figure is this device's own memfd, so tests beside this one do not
+/// move it. A GPU keeps no freed memory in a memfd; there the test checks
+/// only that the adapter is not lavapipe.
+#[test]
+fn closed_windows_device_memory_goes_back_to_the_kernel() {
+    let mut bridge = VelloDrmBridge::new(LARGE_DESKTOP.0, LARGE_DESKTOP.1)
+        .expect("the memory gate requires a real wgpu adapter");
+    let device = bridge.target.device.clone();
+    let wallpaper = image(LARGE_DESKTOP.0, LARGE_DESKTOP.1, 0x30);
+    for _ in 0..IDLE_PAINTS {
+        paint(&mut bridge, &wallpaper, None);
+    }
+    if crate::shell::render::software_gpu_memory::device_allocated_bytes(&device).is_none() {
+        let info = bridge.adapter_info().expect("the bridge's adapter");
+        assert_ne!(
+            info.driver, "llvmpipe",
+            "lavapipe without its memfd: Mesa changed how it backs device memory"
+        );
+        eprintln!("{} keeps no freed device memory in a memfd", info.name);
+        return;
+    }
+    // Only the trimmer releases anything below: the bridge registered its
+    // device with it, or the windows' memory stays.
+    let allocated_mib = || {
+        crate::shell::render::software_gpu_memory::device_allocated_bytes(&device)
+            .expect("still lavapipe")
+            >> 20
+    };
+    let trimmed = |what: &str| {
+        crate::shell::heap_trim::request();
+        assert!(
+            crate::shell::heap_trim::settle(Duration::from_secs(30)),
+            "the trimmer never served {what}"
+        );
+    };
+    trimmed("the bare desktop");
+    let bare = allocated_mib();
+    let bare_atlas = bridge.image_cache_stats().atlas_side;
+    let mut peak = bare;
+    let mut after_close = Vec::new();
+    // Trims are at least ten seconds apart, so few cycles.
+    for cycle in 0..3 {
+        let id: SurfaceId = 0x0731_0000 + cycle;
+        store().forget(id);
+        let mut open_atlas = 0;
+        for frame in 0..COMMITS {
+            commit_sized(id, frame.wrapping_mul(23), LARGE_WINDOW);
+            let (window, _) = store().frame_image(id).expect("a published frame draws");
+            paint(&mut bridge, &wallpaper, Some(&window));
+            bridge.after_paint();
+            open_atlas = open_atlas.max(bridge.image_cache_stats().atlas_side);
+        }
+        peak = peak.max(allocated_mib());
+        // The close asks for the trim; the desktop then draws only the few
+        // frames of a close before it goes idle.
+        store().forget(id);
+        for _ in 0..CLOSE_PAINTS {
+            paint(&mut bridge, &wallpaper, None);
+            bridge.after_paint();
+        }
+        let closed = allocated_mib();
+        let closed_atlas = bridge.image_cache_stats().atlas_side;
+        assert!(
+            crate::shell::heap_trim::settle(Duration::from_secs(30)),
+            "the trimmer never served the close"
+        );
+        let after = allocated_mib();
+        eprintln!(
+            "cycle {cycle}: device memfd {bare} MiB bare, {peak} MiB peak, {closed} MiB \
+             once closed, {after} MiB after the trim; atlas {bare_atlas} bare, {open_atlas} \
+             open, {closed_atlas} closed"
+        );
+        assert!(
+            open_atlas > bare_atlas,
+            "the window never grew the atlas, so its shrink proves nothing"
+        );
+        assert_eq!(
+            closed_atlas, bare_atlas,
+            "cycle {cycle}: {CLOSE_PAINTS} frames after the close the atlas had not come down"
+        );
+        after_close.push(after);
+    }
+    assert!(
+        peak >= bare + 16,
+        "the windows touched only {} MiB of device memory, too little to tell a release from none",
+        peak - bare
+    );
+    for (cycle, after) in after_close.into_iter().enumerate() {
+        assert!(
+            after <= bare + DEVICE_SLACK_MIB,
+            "cycle {cycle}: {after} MiB of device memory stayed allocated after the window \
+             closed and the trimmer ran; the bare desktop holds {bare} MiB"
+        );
+    }
 }

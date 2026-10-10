@@ -628,7 +628,7 @@ impl InputCaptureBackend {
         ) {
             return (2, HashMap::new());
         }
-        let allowed = flow::resolve_local(
+        let allowed = flow::resolve(
             &self.ctx,
             auth.caller.clone(),
             CapabilityKind::InputCapture,

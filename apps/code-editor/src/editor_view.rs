@@ -16,6 +16,7 @@
 //! characters (not bytes), matching Automerge Text's char addressing. Multiple
 //! carets are supported; the primary caret drives the status bar and scrolling.
 
+use crate::app::replace_chars;
 use automerge::{AutoCommit, ObjId, ReadDoc};
 use std::collections::HashMap;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -1057,22 +1058,6 @@ impl EditorView {
 
     // ---- editing primitives (all request an action before CRDT mutation) ----
 
-    /// Replace a character range in a local, ephemeral string.  This is only
-    /// used to prepare an action request; it never touches Automerge.
-    fn splice_local(text: &mut String, start: usize, delete: usize, insert: &str) {
-        let chars = text.chars().count();
-        let start = start.min(chars);
-        let end = start.saturating_add(delete).min(chars);
-        let byte_at = |n: usize| {
-            text.char_indices()
-                .nth(n)
-                .map_or_else(|| text.len(), |(byte, _)| byte)
-        };
-        let start_byte = byte_at(start);
-        let end_byte = byte_at(end);
-        text.replace_range(start_byte..end_byte, insert);
-    }
-
     /// Optimistically rebuild the render cache and coalesce the requested
     /// change. The caller is responsible for dispatching it; a refusal calls
     /// `reconcile_from_doc` and puts this cache back on the real document.
@@ -1424,7 +1409,7 @@ impl EditorView {
             .unwrap_or_default();
         let end_of_b = self.char_index(b, self.lines.get(b).map_or(0, |l| l.chars().count()));
         let mut next = self.cached_text.clone();
-        Self::splice_local(&mut next, end_of_b, 0, &format!("\n{block}"));
+        replace_chars(&mut next, end_of_b, 0, &format!("\n{block}"));
         self.request_text_edit(&next);
         if focus_copy {
             self.shift_primary_lines((b - a + 1) as isize);
@@ -1456,7 +1441,7 @@ impl EditorView {
             let to = self.char_index(b, self.lines.get(b).map_or(0, |l| l.chars().count()));
             // Region is "{prev}\n{block}" → swap to "{block}\n{prev}".
             let mut next = self.cached_text.clone();
-            Self::splice_local(&mut next, from, to - from, &format!("{block}\n{prev}"));
+            replace_chars(&mut next, from, to - from, &format!("{block}\n{prev}"));
             self.request_text_edit(&next);
             self.shift_primary_lines(-1);
         } else {
@@ -1473,7 +1458,7 @@ impl EditorView {
             );
             // Region is "{block}\n{next}" → swap to "{next}\n{block}".
             let mut updated = self.cached_text.clone();
-            Self::splice_local(&mut updated, from, to - from, &format!("{next}\n{block}"));
+            replace_chars(&mut updated, from, to - from, &format!("{next}\n{block}"));
             self.request_text_edit(&updated);
             self.shift_primary_lines(1);
         }
@@ -1506,7 +1491,7 @@ impl EditorView {
             )
         };
         let mut next = self.cached_text.clone();
-        Self::splice_local(&mut next, from, to - from, "");
+        replace_chars(&mut next, from, to - from, "");
         self.request_text_edit(&next);
         let target = a.min(self.lines.len().saturating_sub(1));
         self.carets = vec![Caret::at(target, 0)];
@@ -1565,11 +1550,11 @@ impl EditorView {
                         remove += 1;
                     }
                     let at = self.char_index(l, lead);
-                    Self::splice_local(&mut next, at, remove, "");
+                    replace_chars(&mut next, at, remove, "");
                 }
             } else {
                 let at = self.char_index(l, indent);
-                Self::splice_local(&mut next, at, 0, &format!("{token} "));
+                replace_chars(&mut next, at, 0, &format!("{token} "));
             }
         }
         self.request_text_edit(&next);
@@ -1592,7 +1577,7 @@ impl EditorView {
                 continue;
             }
             let at = self.line_start_index(l);
-            Self::splice_local(&mut next, at, 0, &pad);
+            replace_chars(&mut next, at, 0, &pad);
         }
         self.request_text_edit(&next);
         self.clamp_carets();
@@ -1621,7 +1606,7 @@ impl EditorView {
             };
             if remove > 0 {
                 let at = self.line_start_index(l);
-                Self::splice_local(&mut next, at, remove, "");
+                replace_chars(&mut next, at, remove, "");
             }
         }
         self.request_text_edit(&next);

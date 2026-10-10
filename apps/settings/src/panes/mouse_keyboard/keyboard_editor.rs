@@ -301,8 +301,8 @@ fn available(area: &InputArea, profile: &KeyboardProfile, scope: &str) -> Vec<Ca
                 label: t("input-osk-azerty"),
             },
         ]
-    } else if area.catalog_error.is_none() {
-        area.catalog.clone()
+    } else if area.catalog_error().is_none() {
+        area.catalog().to_vec()
     } else {
         Vec::new()
     };
@@ -832,8 +832,7 @@ impl MouseKeyboardPane {
         let profile = self.editor_profile();
         let scope = self.editor.get().scope;
         let area = InputArea {
-            catalog: self.catalog.clone(),
-            catalog_error: self.catalog_error.clone(),
+            catalog: SourceCatalog::ready(self.catalog.clone(), self.catalog_error.clone()),
             live: std::cell::Cell::new(false),
             devices: std::rc::Rc::new(RefCell::new((None, None))),
             editor: self.editor.clone(),

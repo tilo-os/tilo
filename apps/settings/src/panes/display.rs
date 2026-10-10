@@ -730,6 +730,14 @@ impl DisplayArea {
         self.model.get().is_some()
     }
 
+    /// What the host is asked to do for a display move. The host asks on
+    /// every turn of its event loop, the first one before Settings' first
+    /// frame, so asking never reads the displays: a move is only ever
+    /// pending in a model an effect has already read.
+    pub(crate) fn take_host_intent(&self) -> Option<ui::widget::AppHostIntent> {
+        self.model.get()?.borrow_mut().take_host_intent()
+    }
+
     /// One row per connected display and per trusted layout tool.
     pub(crate) fn rows(&self) -> Vec<LiveRow> {
         let model = self.model().borrow();
@@ -1964,6 +1972,8 @@ impl DisplayModel {
         if !self.device_displays.iter().any(|display| !display.local) {
             return None;
         }
+        let layout = self.shared_layout();
+        let mut unknown_number = layout.displays.len().saturating_add(layout.inactive.len());
         let first_local = self
             .device_displays
             .iter()
@@ -1992,7 +2002,23 @@ impl DisplayModel {
                             ),
                         ],
                     ),
-                    number: index + 1,
+                    number: display
+                        .output_id
+                        .as_deref()
+                        .and_then(|output| {
+                            layout
+                                .displays
+                                .iter()
+                                .chain(&layout.inactive)
+                                .find(|resolved| resolved.is(&display.device, output))
+                        })
+                        .map_or_else(
+                            || {
+                                unknown_number = unknown_number.saturating_add(1);
+                                unknown_number
+                            },
+                            |resolved| resolved.order.saturating_add(1),
+                        ),
                     placement: Placement::new(
                         display.x,
                         display.y,
@@ -2776,6 +2802,7 @@ mod tests {
             device: "drag-peer".into(),
             device_label: "Laptop".into(),
             connector: "eDP-1".into(),
+            output_id: None,
             label: "Panel".into(),
             online: true,
             local: false,
@@ -2839,6 +2866,7 @@ mod tests {
                 device: "confirmation-peer".into(),
                 device_label: "Peer".into(),
                 connector: "eDP-1".into(),
+                output_id: None,
                 label: "Panel".into(),
                 online: true,
                 local: false,
@@ -2898,6 +2926,7 @@ mod tests {
             device: "timeout-peer".into(),
             device_label: "Peer".into(),
             connector: "eDP-1".into(),
+            output_id: None,
             label: "Panel".into(),
             online: true,
             local: false,
@@ -2949,6 +2978,7 @@ mod tests {
                     device: "semantic-peer".into(),
                     device_label: "Peer laptop".into(),
                     connector: "eDP-1".into(),
+                    output_id: None,
                     label: "Panel".into(),
                     online: true,
                     local: false,
@@ -4000,6 +4030,7 @@ mod tests {
             device: "certified-peer".into(),
             device_label: "Peer laptop".into(),
             connector: "eDP-1".into(),
+            output_id: None,
             label: "Panel".into(),
             online: false,
             local: false,

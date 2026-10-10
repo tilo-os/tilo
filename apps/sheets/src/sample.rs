@@ -7,9 +7,10 @@
 
 use ui::tilo_resource::{Atom, Id, Invoke};
 
-use crate::model::{CellFormat, Currency, DateStyle, a1_to_addr};
+use crate::model::{CellFormat, a1_to_addr};
 use crate::resource::verbs;
 use crate::workbook::{Cell, ChartKind, Comment, FIRST_SHEET_ID, Sheet, Workbook};
+use tilo_locale::{Currency, DateStyle};
 
 /// The budget sheet's identity: a new workbook's first sheet, which the
 /// sample fills.

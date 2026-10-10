@@ -36,7 +36,7 @@ use vello::kurbo::{Point, Rect};
 use crate::effects::effect;
 use crate::host::{Followed, PaneCx};
 use crate::i18n::{t, t_args};
-use crate::input_sources::{CatalogEntry, installed_catalog};
+use crate::input_sources::CatalogEntry;
 use crate::prefs::InputPrefs;
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
@@ -1335,7 +1335,7 @@ fn inspect_input_sources(
     Ok(serde_json::json!({"active_source": prefs.keyboard_layout,
         "configured_sources": prefs.keyboard_layouts, "page": page, "pages": pages,
         "total": total, "sources": sources, "catalogue_live": area.live,
-        "catalogue_error": area.catalog_error, "add_picker": add_picker}))
+        "catalogue_error": area.catalog_error(), "add_picker": add_picker}))
 }
 
 /// How often the attached-device snapshot is read again, so plugging a
@@ -1345,10 +1345,7 @@ const DEVICE_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs
 /// What the input area keeps for the window: the installed input sources,
 /// and the attached devices as the compositor last reported them.
 pub struct InputArea {
-    catalog: Vec<CatalogEntry>,
-    /// Why the device's layout list could not be read; `catalog` is then a
-    /// short built-in list and says so.
-    catalog_error: Option<String>,
+    catalog: SourceCatalog,
     live: std::cell::Cell<bool>,
     devices: std::rc::Rc<RefCell<(Option<ui::time::Instant>, Option<InputHardwareSnapshot>)>>,
     editor: ui::LocalState<keyboard_editor::EditorState>,
@@ -1363,13 +1360,10 @@ impl InputArea {
         let live = cx.reaches_devices();
         Self {
             catalog: if live {
-                installed_catalog()
+                SourceCatalog::of_device()
             } else {
-                sample_catalog()
+                SourceCatalog::ready(sample_catalog(), None)
             },
-            catalog_error: live
-                .then(crate::input_sources::layout_catalog_error)
-                .flatten(),
             live: std::cell::Cell::new(live),
             devices: std::rc::Rc::new(RefCell::new((
                 None,
@@ -1393,7 +1387,20 @@ impl InputArea {
     }
 
     fn catalog(&self) -> &[CatalogEntry] {
-        &self.catalog
+        self.catalog.entries()
+    }
+
+    /// Why the device's layout list could not be read; the catalogue is
+    /// then a short built-in list and says so.
+    fn catalog_error(&self) -> Option<&str> {
+        self.catalog.error()
+    }
+
+    /// Read this device's input sources off the UI thread, unless they have
+    /// been read: the window does so once its other areas have read, so the
+    /// Mouse & Keyboard pane opens on a catalogue already in.
+    pub(crate) fn prefetch_catalog(&self) {
+        self.catalog.prefetch();
     }
 
     /// The attached devices, read again at most once per
@@ -1446,6 +1453,60 @@ impl InputArea {
                     ),
             )
             .collect()
+    }
+}
+
+/// The input sources an area offers and, when this device's layout list
+/// could not be read, why. A device's are read once, when first asked for
+/// or off the UI thread ([`InputArea::prefetch_catalog`]) — never while the
+/// window opens, which shows no input source on its first page.
+pub(crate) struct SourceCatalog {
+    read: std::cell::OnceCell<(Vec<CatalogEntry>, Option<String>)>,
+    background: crate::device_read::DeviceRead<(Vec<CatalogEntry>, Option<String>)>,
+}
+
+impl SourceCatalog {
+    /// This device's input sources, read when first asked for.
+    fn of_device() -> Self {
+        Self {
+            read: std::cell::OnceCell::new(),
+            background: crate::device_read::DeviceRead::default(),
+        }
+    }
+
+    /// `entries`, already read; `error` says why they stand in for the
+    /// device's own list.
+    pub(crate) fn ready(entries: Vec<CatalogEntry>, error: Option<String>) -> Self {
+        let read = std::cell::OnceCell::new();
+        let _ = read.set((entries, error));
+        Self {
+            read,
+            background: crate::device_read::DeviceRead::default(),
+        }
+    }
+
+    fn read(&self) -> &(Vec<CatalogEntry>, Option<String>) {
+        self.read.get_or_init(|| {
+            self.background
+                .take()
+                .unwrap_or_else(crate::input_sources::read_installed)
+        })
+    }
+
+    pub(crate) fn entries(&self) -> &[CatalogEntry] {
+        &self.read().0
+    }
+
+    pub(crate) fn error(&self) -> Option<&str> {
+        self.read().1.as_deref()
+    }
+
+    /// Start reading the device's catalogue off the UI thread, unless it
+    /// has been read or is being read.
+    fn prefetch(&self) {
+        if self.read.get().is_none() {
+            let _ = self.background.start(crate::input_sources::read_installed);
+        }
     }
 }
 
@@ -1538,7 +1599,7 @@ impl MouseKeyboardPane {
             dictionary_edits: RefCell::new(HashMap::new()),
             last,
             catalog: area.catalog().to_vec(),
-            catalog_error: area.catalog_error.clone(),
+            catalog_error: area.catalog_error().map(str::to_owned),
             sections: InputSections::for_devices(None),
             tablets: Vec::new(),
             pads: Vec::new(),
@@ -2937,8 +2998,7 @@ mod tests {
         let cx = PaneCx::in_file(profile.path().join("settings.json"));
         cx.settings::<InputPrefs>().set(input).unwrap();
         let area = InputArea {
-            catalog,
-            catalog_error: None,
+            catalog: SourceCatalog::ready(catalog, None),
             live: std::cell::Cell::new(false),
             devices: std::rc::Rc::new(RefCell::new((None, None))),
             editor: ui::LocalState::new(keyboard_editor::EditorState {

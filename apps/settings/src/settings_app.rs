@@ -155,6 +155,9 @@ impl SettingsApp {
         let cx = crate::host::PaneCx::detached(ui::storage::AppStorage::for_app(
             <crate::resource::SettingsShell as ui::framework::ResourceApp>::ID,
         ));
+        // A detached app reaches no device, so it probes for no installed
+        // software either: what a host reaches is read when it attaches.
+        let software = panes::accessibility::Software::for_host(&cx);
         Self {
             notifications: panes::notifications::NotificationsArea::new(&cx),
             default_apps: panes::personal_apps::DefaultAppsArea::new(&cx),
@@ -192,7 +195,7 @@ impl SettingsApp {
             shell: None,
             shell_text_scale: 1.0,
             wallpaper_status: ui::LocalState::new(None),
-            software: panes::accessibility::Software::installed(),
+            software,
         }
     }
 
@@ -427,15 +430,17 @@ impl SettingsApp {
         !self.area_reads.deferred() || area.pane == self.selected || (area.is_open)(self)
     }
 
-    /// Read the next area that has not, so the published rows fill in a
-    /// frame at a time after the first. `false` once every area has read,
-    /// from when on every area is published.
-    pub(crate) fn read_next_area(&self) -> bool {
-        let Some(area) = self.area_reads.take_next(self) else {
-            return false;
-        };
-        let _ = (area.rows)(self);
-        true
+    /// Read on after the first frame, so the published rows fill in an area
+    /// at a time: the device reads that block run on the background
+    /// executor ([`crate::effects::AreaReads::step`]). Once every area has
+    /// read, the input sources are read the same way, last, so the Mouse &
+    /// Keyboard pane opens on them.
+    fn read_on(&self) {
+        match self.area_reads.step(self) {
+            crate::effects::Step::Read => self.area_reads.wake(),
+            crate::effects::Step::Waiting => {}
+            crate::effects::Step::Done => self.input.prefetch_catalog(),
+        }
     }
 
     /// Where the last wallpaper request stands.
@@ -810,10 +815,10 @@ impl Widget for SettingsApp {
         self.accounts.poll();
         self.displays.poll();
         self.network.poll();
-        // After the first frame, one more area reads per sync until every
+        // After the first frame, the areas read one at a time until every
         // area's rows are published.
-        if self.area_reads.take_due() && self.read_next_area() {
-            self.area_reads.wake();
+        if self.area_reads.take_due() {
+            self.read_on();
         }
         // A sidebar row opens its pane through the pane row's open effect;
         // only a bare app outside a host selects here. Search is local

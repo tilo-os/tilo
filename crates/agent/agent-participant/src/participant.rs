@@ -26,7 +26,7 @@ use std::time::{Duration, Instant};
 
 use crate::apps::{AppCatalogue, Seed};
 use crate::control::{AgentControl, AgentIdentity};
-use crate::planner::{PlanContext, Planner, Step, StepAction};
+use crate::planner::{PlanContext, Planner, Step, StepAction, written_steps};
 use crate::worker::ConfinedReplica;
 use tilo_actions::ActionOutput;
 use tilo_actions::door::{ActionAddress, ActionDescriptor};
@@ -39,6 +39,7 @@ use tilo_relay_protocol::live::{LiveAnchor, LiveParticipant, LiveRecord, Partici
 use tilo_user_identity::{DeviceCert, RevocationList};
 
 pub mod actions;
+mod planning;
 mod unopened;
 
 pub(crate) use unopened::{SharedDesktop, desktop_route};
@@ -117,7 +118,11 @@ pub struct AgentParticipant {
     room: String,
     workspace_id: u64,
     catalogue: AppCatalogue,
-    planner: Box<dyn Planner>,
+    /// The planner, on a thread of its own.
+    planning: planning::Planning,
+    /// When the plan the agent now carries out was ready, until its first
+    /// step ran.
+    plan_ready_at: Option<Instant>,
     apps: BTreeMap<DocumentRoute, ConfinedReplica>,
     /// Records the agent has not mounted, each merged as it changes.
     unopened: unopened::Unopened,
@@ -159,6 +164,7 @@ impl AgentParticipant {
         if !identity.delegation.permits_workspace(workspace_id) {
             return Err("the agent is not delegated this room".into());
         }
+        let planning = planning::Planning::start(planner, Arc::clone(&control))?;
         let peer = PeerHandle::start(
             PeerConfig {
                 host: config.host,
@@ -183,7 +189,8 @@ impl AgentParticipant {
             room: config.room,
             workspace_id,
             catalogue,
-            planner,
+            planning,
+            plan_ready_at: None,
             apps: BTreeMap::new(),
             unopened,
             live: LiveState::starting_now(),
@@ -229,6 +236,7 @@ impl AgentParticipant {
         // What arrived for the shared desktop is admitted through the
         // isolate in one batch, before any plan reads it.
         self.unopened.settle();
+        self.take_plans();
         if self.left {
             return Next::WhenWoken;
         }
@@ -250,10 +258,16 @@ impl AgentParticipant {
     }
 
     /// When the loop should pump again: at once while a step is ready, else
-    /// at the presence keep-alive, else when woken.
+    /// at the presence keep-alive, else when woken (a plan being made wakes
+    /// the loop when it is ready).
     fn next_pump(&self) -> Next {
         let work = self.running.is_some() || self.control.has_queued();
-        if work && self.ready && self.control.may_act() && !self.keys_pending() {
+        if work
+            && !self.planning.busy()
+            && self.ready
+            && self.control.may_act()
+            && !self.keys_pending()
+        {
             return Next::Now;
         }
         if self.focus.is_none() {
@@ -363,23 +377,18 @@ impl AgentParticipant {
         if !self.ready || !self.control.may_act() || self.keys_pending() {
             return false;
         }
+        if self.planning.busy() {
+            // The planner's thread wakes the loop when the plan is ready.
+            return false;
+        }
         if self.running.is_none() {
             let Some((id, text)) = self.control.begin_next() else {
                 return false;
             };
-            let context = self.plan_context();
-            match self.planner.plan(&text, &context) {
-                Ok(steps) => {
-                    self.running = Some(Running {
-                        id,
-                        steps: steps.into(),
-                        performed: 0,
-                    });
-                }
-                Err(error) => {
-                    self.control.finish(&id, Err(error));
-                    return false;
-                }
+            self.plan(id, &text, false);
+            if self.running.is_none() {
+                // Being planned, or the plan failed.
+                return false;
             }
         }
         let Some(running) = self.running.as_mut() else {
@@ -430,21 +439,12 @@ impl AgentParticipant {
             return false;
         };
         if let StepAction::Continue(rest) = &step.action {
-            let context = self.plan_context();
-            match self.planner.plan(rest, &context) {
-                Ok(steps) => {
-                    if let Some(running) = self.running.as_mut() {
-                        for step in steps.into_iter().rev() {
-                            running.steps.push_front(step);
-                        }
-                    }
-                }
-                Err(error) => {
-                    self.running = None;
-                    self.control.finish(&id, Err(error));
-                }
-            }
+            let rest = rest.clone();
+            self.plan(id, &rest, true);
             return false;
+        }
+        if let Some(ready_at) = self.plan_ready_at.take() {
+            tracing::debug!(after = ?ready_at.elapsed(), "agent: a plan's first step starts");
         }
         let outcome = match self.perform(&step) {
             Performed::Done(outcome) => outcome,
@@ -632,6 +632,83 @@ impl AgentParticipant {
                 }
                 Ok(None) => {}
                 Err(error) => tracing::warn!(%error, "agent: a change was not admitted"),
+            }
+        }
+    }
+
+    /// Plan `text` for task `id` (the rest of it when `continues`). Steps
+    /// written out in the task are taken at once; anything else goes to the
+    /// planner's thread, and the plan is taken when it wakes the loop.
+    fn plan(&mut self, id: String, text: &str, continues: bool) {
+        let context = self.plan_context();
+        if let Some(steps) = written_steps(text, &context) {
+            self.apply_plan(planning::Planned {
+                task: id,
+                continues,
+                steps,
+                ready_at: Instant::now(),
+            });
+            return;
+        }
+        if let Err(error) = self
+            .planning
+            .ask(id.clone(), text.to_owned(), context, continues)
+        {
+            self.apply_plan(planning::Planned {
+                task: id,
+                continues,
+                steps: Err(error),
+                ready_at: Instant::now(),
+            });
+        }
+    }
+
+    /// Take every plan the planner's thread finished.
+    fn take_plans(&mut self) {
+        while let Some(planned) = self.planning.take() {
+            self.apply_plan(planned);
+        }
+    }
+
+    /// Carry out `planned`: a new task's steps, or the rest of the running
+    /// one's. A task cancelled or stopped while it was planned takes none of
+    /// it.
+    fn apply_plan(&mut self, planned: planning::Planned) {
+        let planning::Planned {
+            task,
+            continues,
+            steps,
+            ready_at,
+        } = planned;
+        if !self.control.is_running(&task) {
+            return;
+        }
+        match steps {
+            Ok(steps) if !continues => {
+                self.running = Some(Running {
+                    id: task,
+                    steps: steps.into(),
+                    performed: 0,
+                });
+                self.plan_ready_at = Some(ready_at);
+            }
+            Ok(steps) => {
+                if let Some(running) = self.running.as_mut().filter(|running| running.id == task) {
+                    for step in steps.into_iter().rev() {
+                        running.steps.push_front(step);
+                    }
+                    self.plan_ready_at = Some(ready_at);
+                }
+            }
+            Err(error) => {
+                if self
+                    .running
+                    .as_ref()
+                    .is_some_and(|running| running.id == task)
+                {
+                    self.running = None;
+                }
+                self.control.finish(&task, Err(error));
             }
         }
     }

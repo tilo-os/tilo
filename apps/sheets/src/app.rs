@@ -53,12 +53,11 @@ use crate::fill;
 use crate::formula;
 use crate::grid::{Grid, GridCmd, GridMetrics};
 use crate::infer::infer_entry;
-use crate::model::{
-    Addr, CellFormat, CellValue, Currency, DateStyle, TimeStyle, a1_to_addr, format_value,
-};
+use crate::model::{Addr, CellFormat, CellValue, a1_to_addr, format_value};
 use crate::resource::verbs;
-use crate::settings::{DocSettings, EffectiveLocale, Locale};
+use crate::settings::{DocSettings, EffectiveLocale};
 use crate::workbook::{Cell, ChartKind, ChartSnapshot, CommentThread, Workbook};
+use tilo_locale::{Currency, DateStyle, Locale, TimeStyle};
 
 /// Rows of the sheet-tab context menu, top to bottom.
 const TAB_MENU_ACTIONS: [TabAction; 6] = [
@@ -2595,8 +2594,7 @@ impl Widget for SheetsApp {
         self.text_scale = f64::from(theme.text_scale);
         self.grid.set_text_scale(self.text_scale);
 
-        // `new_leaf` on a freshly created tree never fails.
-        taffy.filling_leaf(node_map, self)
+        taffy.fill_leaf(node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {

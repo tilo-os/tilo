@@ -2810,7 +2810,7 @@ fn flat_index(text: &str, line: usize, col: usize) -> Option<usize> {
 /// Character-addressed replacement used to prepare a text action from editor
 /// UI state. It intentionally operates on an ordinary temporary `String`;
 /// the following action dispatch is the only CRDT mutation path.
-fn replace_chars(text: &mut String, start: usize, delete: usize, replacement: &str) {
+pub(crate) fn replace_chars(text: &mut String, start: usize, delete: usize, replacement: &str) {
     let total = text.chars().count();
     let start = start.min(total);
     let end = start.saturating_add(delete).min(total);

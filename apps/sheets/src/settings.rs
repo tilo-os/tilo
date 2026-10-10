@@ -9,45 +9,10 @@
 //! ([`DocSettings`], stored in the document); [`EffectiveLocale`] is the two
 //! layered.
 
-use serde::{Deserialize, Serialize};
 // `#[derive(Model)]` names the crate as `tilo_resource`.
 use ui::tilo_resource::{self, Model};
 
-use crate::model::{Currency, DateStyle, TimeStyle};
-
-/// Which measurement system the person uses.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
-pub enum Measurement {
-    #[default]
-    Metric,
-    Imperial,
-}
-
-/// The `locale` section of the person's settings. Every field has a sensible
-/// default so a brand-new install needs no file at all.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default)]
-pub struct Locale {
-    pub currency: Currency,
-    pub date_format: DateStyle,
-    pub time_format: TimeStyle,
-    pub measurement: Measurement,
-}
-
-impl ui::storage::SettingsSchema for Locale {
-    const SCOPE: ui::storage::Scope = ui::storage::Scope::Shared("locale");
-}
-
-impl Default for Locale {
-    fn default() -> Self {
-        Self {
-            currency: Currency::USD,
-            date_format: DateStyle::Iso,
-            time_format: TimeStyle::H24,
-            measurement: Measurement::Metric,
-        }
-    }
-}
+use tilo_locale::{Currency, DateStyle, Locale, TimeStyle};
 
 /// Per-document locale overrides. `None` on a field means "inherit the
 /// global default". Stored in the workbook so collaborators share the
@@ -93,6 +58,7 @@ impl Default for EffectiveLocale {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tilo_locale::Measurement;
 
     /// The locale section reads forgivingly and layers under the document.
     #[test]
@@ -122,6 +88,7 @@ mod tests {
                 date_format: DateStyle::Iso,
                 time_format: TimeStyle::H24,
                 measurement: Measurement::Metric,
+                ..Locale::default()
             };
             // Document overrides only the currency.
             let doc = DocSettings {
@@ -141,6 +108,7 @@ mod tests {
                 date_format: DateStyle::Long,
                 time_format: TimeStyle::H12,
                 measurement: Measurement::Imperial,
+                ..Locale::default()
             };
             let eff = EffectiveLocale::resolve(&global, &DocSettings::default());
             assert_eq!(eff.currency, Currency::GBP);

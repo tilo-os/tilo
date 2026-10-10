@@ -156,6 +156,7 @@ impl DrmBackend {
             None,
         );
         report_signal_status(&mut self.inner.scanouts, self.signal_reports.as_ref());
+        publish_client_planes(&mut self.inner.scanouts, &self.inner.dispatch.client_planes);
     }
 }
 
@@ -202,6 +203,8 @@ pub struct DrmPresenter {
     phase_window: PhaseWindow,
     /// Signalling facts learned while presenting, for the loop thread.
     signal_reports: Option<Sender<SignalReport>>,
+    /// What each output offers fullscreen clients, for the loop thread.
+    client_planes: client_scanout::ClientPlanes,
     /// Vblanks of the page flips retired during the current frame, by card and CRTC.
     flip_vblanks: Vec<FlipVblank>,
     /// [`Presenter::display_timing`] of the frame just presented.
@@ -248,6 +251,7 @@ struct PresenterParts {
     present_gate: Option<Arc<Mutex<()>>>,
     profile_phases: bool,
     signal_reports: Option<Sender<SignalReport>>,
+    client_planes: client_scanout::ClientPlanes,
 }
 
 impl DrmPresenter {
@@ -266,6 +270,7 @@ impl DrmPresenter {
             present_gate,
             profile_phases,
             signal_reports,
+            client_planes,
         } = parts;
         Self {
             scanouts,
@@ -283,6 +288,7 @@ impl DrmPresenter {
             frame_phases: None,
             phase_window: PhaseWindow::default(),
             signal_reports,
+            client_planes,
             flip_vblanks: Vec::new(),
             display_timing: crate::shell::present::DisplayTiming::default(),
             paced_queue_depth: usize::from(
@@ -1084,6 +1090,7 @@ impl DrmPresenter {
             let _ = bridge.take_phase_timing();
         }
         report_signal_status(&mut self.scanouts, self.signal_reports.as_ref());
+        publish_client_planes(&mut self.scanouts, &self.client_planes);
         physical
     }
 
@@ -1650,6 +1657,9 @@ fn paint_scanouts(
         // A new renderer has compiled its pipelines and drawn its first frame. The driver's
         // compile scratch is free now, but glibc would keep it (TIL-705).
         crate::shell::heap_trim::request();
+    }
+    if let Some(bridge) = paint.as_mut() {
+        bridge.after_paint();
     }
     sample
 }
@@ -2333,8 +2343,17 @@ fn present_client(
             .note_client_scanout(output, client_scanout::ClientStatus::Idle);
         return None;
     };
+    if candidate.covers(entry.position, view.size) {
+        refresh_client_offer(entry, view, frame);
+    }
     let client = crate::shell::gpu_frames::client_frame(&candidate.image);
     let dmabuf = client.as_ref().and_then(|frame| frame.dmabuf().cloned());
+    let opaque = client.as_ref().is_some_and(|frame| frame.opaque());
+    // An `ARGB` buffer whose client declared it opaque is shown as `XRGB`.
+    let fourcc = dmabuf.as_ref().map(|dmabuf| {
+        use smithay::backend::allocator::Buffer as _;
+        client_scanout::scanout_fourcc(dmabuf.format().code, opaque)
+    });
     let targets = entry.direct_targets.as_ref()?;
     let eligibility = client_scanout::ClientEligibility {
         enabled: client_scanout::client_scanout_enabled(),
@@ -2342,16 +2361,13 @@ fn present_client(
         uncalibrated: entry.color_lut.is_none(),
         covers_output: candidate.covers(entry.position, view.size),
         client_buffer: dmabuf.is_some(),
-        opaque: client.as_ref().is_some_and(|frame| frame.opaque()),
+        opaque,
         sdr: !targets.format().is_hdr() && !entry.hdr_wanted(),
         no_hdr_layers: frame.hdr_layers.is_empty(),
-        same_format: dmabuf.as_ref().is_some_and(|dmabuf| {
-            use smithay::backend::allocator::Buffer as _;
-            dmabuf.format().code == targets.format().fourcc()
-        }),
+        same_format: fourcc == Some(targets.format().fourcc()),
     };
     let refused = client_scanout::client_scanout_rejection(eligibility);
-    let (Some(client), Some(dmabuf), None) = (client, dmabuf, refused) else {
+    let (Some(client), Some(dmabuf), Some(fourcc), None) = (client, dmabuf, fourcc, refused) else {
         let reason = refused.unwrap_or("no client buffer");
         entry.scanout.note_client_scanout(
             output,
@@ -2377,7 +2393,7 @@ fn present_client(
         owe(bridge);
         return Some(DirectOutcome::Deferred);
     }
-    let framebuffer = match entry.scanout.client_framebuffer(&dmabuf) {
+    let framebuffer = match entry.scanout.client_framebuffer(&dmabuf, fourcc) {
         Ok(framebuffer) => framebuffer,
         Err(reason) => {
             entry
@@ -2417,6 +2433,47 @@ fn present_client(
                 .note_client_scanout(output, client_scanout::ClientStatus::Refused(reason));
             None
         }
+    }
+}
+
+/// Refresh what this output offers the fullscreen client covering it, told
+/// to the client through its dma-buf feedback
+/// ([`crate::compositor::scanout_feedback`]): the buffers its primary plane
+/// would scan out, or nothing when the output itself refuses client scanout
+/// whatever the buffer — the same rules [`present_client`] applies, with every
+/// fact about the buffer granted.
+fn refresh_client_offer(
+    entry: &mut ScanoutEntry,
+    view: &paint::OutputView,
+    frame: &ScanoutFrame<'_>,
+) {
+    let target = entry
+        .direct_targets
+        .as_ref()
+        .map(scanout::DirectScanoutTargets::format)
+        .filter(|format| {
+            client_scanout::client_scanout_rejection(client_scanout::ClientEligibility {
+                enabled: client_scanout::client_scanout_enabled(),
+                upright: view.orientation == settings_store::hardware::OutputTransform::Normal,
+                uncalibrated: entry.color_lut.is_none(),
+                covers_output: true,
+                client_buffer: true,
+                opaque: true,
+                sdr: !format.is_hdr() && !entry.hdr_wanted(),
+                no_hdr_layers: frame.hdr_layers.is_empty(),
+                same_format: true,
+            })
+            .is_none()
+        })
+        .map(scanout::ScanoutFormat::fourcc);
+    entry.scanout.offer_client_plane(entry.device_id, target);
+}
+
+/// Hand the loop thread every output's changed offer to fullscreen clients
+/// ([`client_scanout::ClientPlanes`]).
+fn publish_client_planes(scanouts: &mut [ScanoutEntry], planes: &client_scanout::ClientPlanes) {
+    for entry in scanouts {
+        entry.scanout.publish_client_plane(entry.id, planes);
     }
 }
 
@@ -3268,6 +3325,7 @@ impl Backend for DrmBackend {
             profile_phases: std::env::var_os("TILO_DRM_PHASE_TRACE").is_some()
                 || std::env::var_os("TILO_PROFILE_GPU_STAGES").is_some_and(|value| value == "1"),
             signal_reports: self.signal_reports.take(),
+            client_planes: self.inner.dispatch.client_planes.clone(),
         })))
     }
 
@@ -3296,6 +3354,13 @@ impl Backend for DrmBackend {
 
     fn adaptive_sync_active(&self) -> bool {
         self.inner.dispatch.adaptive_sync_engaged()
+    }
+
+    fn scanout_plane(
+        &self,
+        output: OutputId,
+    ) -> Option<Arc<crate::compositor::scanout_feedback::ScanoutPlane>> {
+        self.inner.dispatch.client_planes.get(output)
     }
 
     fn output_hdr(&self, output: OutputId) -> Option<super::OutputHdr> {
@@ -3597,6 +3662,7 @@ mod tests {
             present_gate: Some(Arc::new(Mutex::new(()))),
             profile_phases: false,
             signal_reports: None,
+            client_planes: client_scanout::ClientPlanes::default(),
         });
         assert!(
             presenter.paint.is_none(),
@@ -3628,6 +3694,7 @@ mod tests {
                 present_gate: Some(Arc::new(Mutex::new(()))),
                 profile_phases: false,
                 signal_reports: None,
+                client_planes: client_scanout::ClientPlanes::default(),
             });
             assert!(!presenter.vblank_paced());
             let proof =
@@ -3675,6 +3742,7 @@ mod tests {
                 present_gate: Some(Arc::clone(&gate)),
                 profile_phases: false,
                 signal_reports: None,
+                client_planes: client_scanout::ClientPlanes::default(),
             });
             commands
                 .send(ScanoutCommand::Pause)

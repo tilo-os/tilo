@@ -49,8 +49,13 @@ struct FullReplicaStatusProof {
     filesystem_endpoints: Vec<EndpointAddr>,
 }
 
-/// The headless replica's completeness proof: the status file it keeps
-/// restamping, honoured only while its stamp is recent by `clock`.
+/// The headless replica's completeness proof: the status file it writes,
+/// honoured only while the replica that wrote it is alive. The running
+/// replica holds its liveness lock beside the file
+/// ([`fs::full_replica::replica_is_running`]), which the kernel releases
+/// when it exits however it exits; a stamp recent by `clock` also counts,
+/// for a replica that keeps no lock (TIL-774: the replica used to restamp
+/// the file every second to stay recent).
 #[derive(Clone)]
 struct ReplicaProof {
     path: PathBuf,
@@ -66,7 +71,8 @@ impl ReplicaProof {
                 proof.state == "ready"
                     && proof.full_content_replication
                     && !proof.filesystem_endpoints.is_empty()
-                    && self.clock.now_ms().saturating_sub(proof.updated_at_ms) <= 5_000
+                    && (self.clock.now_ms().saturating_sub(proof.updated_at_ms) <= 5_000
+                        || fs::full_replica::replica_is_running(&self.path))
             })
     }
 }
@@ -825,6 +831,10 @@ impl Relay {
                         cert: identity.device_cert.clone(),
                         key: identity.device_signing_key.clone(),
                         revocations: revocations.clone(),
+                        #[cfg(feature = "agents")]
+                        trust_policy: handler.trust_policy.clone(),
+                        #[cfg(feature = "agents")]
+                        agents: handler.agents.clone(),
                     },
                     cfg.state_root.join("rooms"),
                 )
@@ -835,6 +845,13 @@ impl Relay {
             None
         };
         let mut router = Router::builder(endpoint.clone())
+            .accept(
+                tilo_delivery_protocol::transport_v2::ALPN_CODED_DELTA_V1,
+                RelayProtocol {
+                    protocol: crate::peer::SessionProtocol::CODED_DELTA,
+                    ..handler.clone()
+                },
+            )
             .accept(
                 tilo_delivery_protocol::transport_v2::ALPN_PRESENCE_BATCH_V1,
                 RelayProtocol {
@@ -1450,6 +1467,7 @@ fn validate_additional_alpn(alpn: &[u8]) -> Result<(), RelayError> {
         tilo_delivery_protocol::transport_v2::ALPN_SIGNED_ACTIONS_V1,
         tilo_delivery_protocol::transport_v2::ALPN_COMPACT_STATE_V1,
         tilo_delivery_protocol::transport_v2::ALPN_PRESENCE_BATCH_V1,
+        tilo_delivery_protocol::transport_v2::ALPN_CODED_DELTA_V1,
         DISCOVERY_ALPN,
         MANAGEMENT_ALPN,
         COMPUTE_ALPN,
@@ -3267,6 +3285,40 @@ mod tests {
         assert!(proof_at(stamped.saturating_add(5_001)).is_none());
     }
 
+    /// TIL-774. A replica that holds its liveness lock keeps its ready
+    /// proof without restamping it; the proof lapses the moment the lock
+    /// is released (the replica exited), however old the stamp.
+    #[test]
+    fn a_running_replica_keeps_its_proof_without_restamping_it() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("status.json");
+        let mut status = fs::full_replica::FullReplicaStatus::syncing();
+        status.state = "ready".into();
+        status.full_content_replication = true;
+        status.filesystem_endpoints.push(EndpointAddr::new(
+            iroh::SecretKey::from_bytes(&[7; 32]).public(),
+        ));
+        let alive = fs::full_replica::ReplicaLiveness::hold(&path).unwrap();
+        fs::full_replica::save_status(&path, &status).unwrap();
+        let stamped = fs::full_replica::load_status(&path)
+            .unwrap()
+            .unwrap()
+            .updated_at_ms;
+        let an_hour_later = ReplicaProof {
+            path,
+            clock: Arc::new(tilo_clock::FixedClock(stamped.saturating_add(3_600_000))),
+        };
+        assert!(
+            an_hour_later.current().is_some(),
+            "a live replica's proof must not depend on how recently it was written"
+        );
+        drop(alive);
+        assert!(
+            an_hour_later.current().is_none(),
+            "the proof of a replica that exited must lapse"
+        );
+    }
+
     #[tokio::test]
     #[allow(
         clippy::too_many_lines,
@@ -4012,6 +4064,7 @@ mod tests {
             tilo_delivery_protocol::transport_v2::ALPN_SIGNED_ACTIONS_V1,
             tilo_delivery_protocol::transport_v2::ALPN_COMPACT_STATE_V1,
             tilo_delivery_protocol::transport_v2::ALPN_PRESENCE_BATCH_V1,
+            tilo_delivery_protocol::transport_v2::ALPN_CODED_DELTA_V1,
             DISCOVERY_ALPN,
             MANAGEMENT_ALPN,
             COMPUTE_ALPN,

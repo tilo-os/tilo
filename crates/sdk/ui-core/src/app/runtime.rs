@@ -43,6 +43,9 @@ pub(super) struct LayoutRuntime {
     pub(super) safe_area: crate::scale::SafeArea,
     /// Where the root is placed: the safe area's top-left corner.
     pub(super) content_origin: vello::kurbo::Point,
+    /// How many times the taffy tree was rebuilt: a host comparing two
+    /// frames' widgets needs to know they are still the same ones.
+    pub(super) rebuilds: u64,
 }
 
 impl LayoutRuntime {
@@ -57,6 +60,7 @@ impl LayoutRuntime {
             last_layout_logical: None,
             safe_area: crate::scale::SafeArea::default(),
             content_origin: vello::kurbo::Point::ORIGIN,
+            rebuilds: 0,
         }
     }
 }

@@ -2381,6 +2381,8 @@ fn run_check(args: CheckArgs) -> Result<Value> {
         return Err(failed("app checks failed", json!({"stages": stages})));
     }
 
+    check_runtime_fonts(&mut stages)?;
+
     let format_mode = if args.fix {
         tilo_app_cli::AppFormatMode::Apply
     } else {
@@ -2398,10 +2400,7 @@ fn run_check(args: CheckArgs) -> Result<Value> {
         (
             "test",
             "Rust tests and generated accessibility contract",
-            &|| {
-                tilo_app_cli::native_libs::require_fonts()?;
-                quality.test.execute()
-            },
+            &|| quality.test.execute(),
         ),
         ("surface", "public surface", &|| check_surface(&path)),
         ("certify", "Tilo-native runtime certification", &|| {
@@ -2489,6 +2488,19 @@ fn check_contract(path: &Path, stages: &mut Vec<Value>) -> Result<()> {
             json!({"stages": stages}),
         ));
     }
+    Ok(())
+}
+
+fn check_runtime_fonts(stages: &mut Vec<Value>) -> Result<()> {
+    println!("[check] runtime fonts");
+    if let Err(error) = tilo_app_cli::native_libs::require_fonts() {
+        stages.push(json!({"stage": "fonts", "passed": false}));
+        return Err(error.context(failed(
+            "runtime fonts preflight failed",
+            json!({"stages": stages}),
+        )));
+    }
+    stages.push(json!({"stage": "fonts", "passed": true}));
     Ok(())
 }
 

@@ -962,7 +962,7 @@ impl ResourceSurface<Workbook, SheetsEffect> for SheetsApp {
 
     fn attach(&mut self, cx: SurfaceCx<Workbook>) {
         self.attach_framework(cx.dispatcher(), cx.live());
-        self.follow_locale(cx.settings::<crate::settings::Locale>());
+        self.follow_locale(cx.settings::<tilo_locale::Locale>());
     }
 
     fn stage(&mut self, scenario: Option<&str>) {

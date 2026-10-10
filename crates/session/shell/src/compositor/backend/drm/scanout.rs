@@ -3422,8 +3422,28 @@ impl DrmScanout {
     pub(super) fn client_framebuffer(
         &mut self,
         dmabuf: &smithay::backend::allocator::dmabuf::Dmabuf,
+        fourcc: DrmFourcc,
     ) -> Result<std::sync::Arc<ClientFramebuffer>, String> {
-        self.client_plane.framebuffer(&self.card, self.crtc, dmabuf)
+        self.client_plane
+            .framebuffer(&self.card, self.crtc, dmabuf, fourcc)
+    }
+
+    /// Refresh what this output's primary plane offers a fullscreen client
+    /// in place of `target` framebuffers on the KMS device `device`; `None`
+    /// withdraws the offer ([`super::client_scanout::ClientPlane::offer`]).
+    pub(super) fn offer_client_plane(&mut self, device: u64, target: Option<DrmFourcc>) {
+        self.client_plane
+            .offer(&self.card, self.crtc, device, target);
+    }
+
+    /// Publish this output's offer to fullscreen clients into `planes`, when
+    /// it changed since last published.
+    pub(super) fn publish_client_plane(
+        &mut self,
+        output: OutputId,
+        planes: &super::client_scanout::ClientPlanes,
+    ) {
+        self.client_plane.publish_offer(output, planes);
     }
 
     /// A flip of `dmabuf` failed: composite it from now on.

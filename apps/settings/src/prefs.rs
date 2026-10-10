@@ -1358,7 +1358,7 @@ mod tests {
         store(&path, &AppearancePrefs::default());
         store(&path, &NotificationPrefs::default());
         store(&path, &AccessibilityPrefs::default());
-        store(&path, &crate::region::Locale::default());
+        store(&path, &tilo_locale::Locale::default());
         let document = store(&path, &crate::panes::personal_apps::DefaultApps::default());
         let parsed = settings_store::parse(&document.to_string());
         let missing = settings_store::continuity::unclassified_leaves(&parsed);

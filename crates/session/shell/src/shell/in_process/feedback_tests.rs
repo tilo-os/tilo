@@ -309,7 +309,7 @@ fn native_private_feedback_reopens_approved_outbox_and_reads_actual_canonical_re
     // production controller's later transport refusal after local durability.
     let _approval = call(&mut frame, "submit", &json!({}));
     assert!(frame.wait_until(ui::time::Duration::from_secs(5), |frame| {
-        inputs.in_process().unwrap().borrow().pump_feedback();
+        inputs.in_process().unwrap().borrow_mut().pump_feedback();
         frame
             .inspection_json()
             .unwrap()
@@ -343,7 +343,7 @@ fn native_private_feedback_reopens_approved_outbox_and_reads_actual_canonical_re
     frame.relayout();
     assert!(!frame.inspection_json().unwrap().contains("secret12345"));
     owner.borrow_mut().offline = false;
-    inputs.in_process().unwrap().borrow().pump_feedback();
+    inputs.in_process().unwrap().borrow_mut().pump_feedback();
     call(&mut frame, "retry", &json!({})).unwrap();
     owner.borrow_mut().deliver();
     let submission = owner.borrow().sends.first().unwrap().clone();
@@ -360,7 +360,7 @@ fn native_private_feedback_reopens_approved_outbox_and_reads_actual_canonical_re
     );
     owner.borrow_mut().receipts = true;
     assert!(frame.wait_until(ui::time::Duration::from_secs(5), |frame| {
-        inputs.in_process().unwrap().borrow().pump_feedback();
+        inputs.in_process().unwrap().borrow_mut().pump_feedback();
         frame
             .inspection_json()
             .unwrap()

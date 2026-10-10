@@ -984,7 +984,7 @@ impl Widget for DocumentViewport {
             self.state.pad = f64::from(theme.tokens.spacing.s6);
         }
         self.layout_theme = theme.clone();
-        taffy.filling_leaf(node_map, self)
+        taffy.fill_leaf(node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {

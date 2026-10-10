@@ -1,10 +1,6 @@
-//! The person's **region & formats** — Tilo's per-user locale, the `locale`
-//! section of their settings.
-//!
-//! Many apps need the same answer to "how should I show money / dates /
-//! times / units for this user?". Rather than each app inventing its own
-//! preference file, they all read **one** section of the person's settings,
-//! which the Settings app's "Region & Formats" panel edits:
+//! The person's **region & formats**: the `locale` section of their
+//! settings, which every app follows and the Settings app's "Region &
+//! Formats" panel edits.
 //!
 //! ```json
 //! "locale": {
@@ -15,25 +11,17 @@
 //! }
 //! ```
 //!
-//! The string values are the serde-derived variant names of the enums
-//! below (`"ISO" | "US" | "EU" | "Long"`, `"H24" | "H12"`,
-//! `"Metric" | "Imperial"`, ISO-4217 currency codes). This is the same
-//! shape the Sheets app's `settings::Locale` and the Weather app's unit
-//! toggle read — Settings is the canonical editor, the others are
-//! consumers. Reads are forgiving: a missing section or an unknown value
-//! falls back to the built-in default, key by key, and a write keeps every
-//! key of the section it does not name.
-//!
-//! This is a format contract, not a crate dependency — Settings, Sheets, and
-//! Weather read the *same* section with the *same* keys. The structs here
-//! are the reference implementation; the enum reprs are pinned by the tests
-//! so they can never silently drift from Sheets.
+//! The string values are the serde variant names of the enums below. Reads
+//! are forgiving: a missing section or an unknown value falls back to the
+//! built-in default, key by key.
 
 use serde::{Deserialize, Serialize};
 use ui::tilo_resource;
 
-/// World currency, by ISO-4217 code. The serde repr is the bare variant
-/// name, which equals the ISO code — matching Sheets' `Currency`.
+/// World currency, by ISO-4217 code. Each carries its own symbol,
+/// placement, and conventional number of decimals — `$1,234.50` vs
+/// `1.234,50 €` vs `¥1,235` (yen has no minor unit). The serde repr is the
+/// bare variant name, which equals the ISO code.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, ui::tilo_resource::Model)]
 pub enum Currency {
     #[model(rename = "USD")]
@@ -99,6 +87,33 @@ impl Currency {
         })
     }
 
+    /// Conventional minor-unit digits: 2 for most, 0 for yen.
+    pub fn decimals(self) -> usize {
+        match self {
+            Currency::JPY => 0,
+            _ => 2,
+        }
+    }
+
+    /// Whether the symbol leads the amount (`$5`) or trails it (`5 €`).
+    pub fn symbol_leads(self) -> bool {
+        !matches!(self, Currency::EUR | Currency::CHF)
+    }
+
+    /// Map a bare currency *symbol* (as typed) to a currency. Ambiguous
+    /// symbols (`$`, `¥`) resolve to the most common owner.
+    pub fn from_symbol(sym: &str) -> Option<Currency> {
+        Some(match sym {
+            "$" => Currency::USD,
+            "\u{20AC}" | "EUR" => Currency::EUR,
+            "\u{00A3}" => Currency::GBP,
+            "\u{00A5}" => Currency::JPY,
+            "CHF" => Currency::CHF,
+            "\u{20B9}" => Currency::INR,
+            _ => return None,
+        })
+    }
+
     /// Every currency the picker offers, in display order.
     pub const ALL: [Currency; 9] = [
         Currency::USD,
@@ -113,9 +128,8 @@ impl Currency {
     ];
 }
 
-/// How dates render. The serde names are the exact strings the shared
-/// settings file uses (`ISO`/`US`/`EU`/`Long`), matching Sheets'
-/// `DateStyle` so the two apps read one another's writes byte-for-byte.
+/// How dates render. The serde names are the exact strings the settings
+/// file uses (`ISO`/`US`/`EU`/`Long`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, ui::tilo_resource::Model)]
 pub enum DateStyle {
     /// `2023-03-15`
@@ -165,7 +179,7 @@ impl DateStyle {
     }
 }
 
-/// How times render. serde repr matches Sheets' `TimeStyle`.
+/// How times render.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, ui::tilo_resource::Model)]
 pub enum TimeStyle {
     /// `14:05`
@@ -194,10 +208,8 @@ impl TimeStyle {
     }
 }
 
-/// Measurement system. serde repr matches Sheets' / Weather's `Measurement`.
-#[derive(
-    Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default, ui::tilo_resource::Model,
-)]
+/// Measurement system.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default, ui::tilo_resource::Model)]
 pub enum Measurement {
     #[default]
     Metric,
@@ -290,8 +302,6 @@ impl Default for Locale {
     }
 }
 
-/// The shared global-settings document, locale section.
-/// The person's locale, which every app's toolkit follows.
 impl ui::storage::SettingsSchema for Locale {
     const SCOPE: ui::storage::Scope = ui::storage::Scope::Shared("locale");
 }
@@ -303,8 +313,8 @@ impl Locale {}
 mod tests {
     use super::*;
 
-    /// The section's exact strings are the cross-app contract Sheets reads;
-    /// if serde ever renamed a variant this test would catch the drift.
+    /// The section's exact strings are what every reader parses; renaming a
+    /// variant would silently reset their setting.
     #[test]
     fn the_locale_section_keeps_the_cross_app_shape() {
         let locale = Locale::default();

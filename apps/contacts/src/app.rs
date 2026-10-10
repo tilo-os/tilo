@@ -41,7 +41,7 @@ use ui::widget::{
 use crate::form::EditForm;
 use crate::model::{Contact, ContactId, Labeled, SortKey, group_names_equal};
 use crate::vcard::VCardVersion;
-use crate::view::{Bridge, ContactList, EmptyPane, ListEntry, Request, Shared, queue};
+use crate::view::{Bridge, ContactList, ListEntry, Request, Shared, empty_pane, queue};
 
 mod dialogs;
 mod effects;
@@ -520,11 +520,7 @@ impl ContactsApp {
             .with_id("contacts.shell")
             .sidebar(Box::new(Self::sidebar_list(&[], &destination)))
             .overview(Box::new(ContactList::new(std::rc::Rc::clone(&shared))))
-            .content(Box::new(EmptyPane::new(
-                std::rc::Rc::clone(&shared),
-                "No contact selected",
-                None,
-            )))
+            .content(empty_pane(&shared, "No contact selected", None))
             .overview_header("All contacts", overview_actions(&shared, Vec::new()));
         shell.show(NavPane::Overview);
         Self {
@@ -1354,16 +1350,12 @@ impl ContactsApp {
         let content = self.content_key();
         if self.content_shown.as_ref() != Some(&content) {
             let element: Element = match &content {
-                ContentKey::FirstRun => Box::new(EmptyPane::new(
-                    std::rc::Rc::clone(&self.shared),
+                ContentKey::FirstRun => empty_pane(
+                    &self.shared,
                     "No contacts yet",
                     Some(("New contact", Request::NewContact)),
-                )),
-                ContentKey::Nothing => Box::new(EmptyPane::new(
-                    std::rc::Rc::clone(&self.shared),
-                    "No contact selected",
-                    None,
-                )),
+                ),
+                ContentKey::Nothing => empty_pane(&self.shared, "No contact selected", None),
                 ContentKey::Contact(contact) => {
                     if self.detail_scroll.0 != Some(contact.id) {
                         self.detail_scroll = (Some(contact.id), std::rc::Rc::default());

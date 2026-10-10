@@ -44,11 +44,15 @@ use automerge::{ActorId, AutoCommit, ChangeHash, LoadOptions, OnPartialLoad, ROO
 
 mod doc_writer;
 mod fs_store;
+mod load_hint;
 pub use doc_writer::{DEFAULT_DEBOUNCE, DocOwner, DocWriter, DurabilitySnapshot, StoredLoad};
 pub use fs_store::{FsStore, INSTANCE_VIEWS_DIR};
 
 pub const DOCUMENT_FILE: &str = "state.automerge";
 pub const ACTOR_FILE: &str = "actor";
+/// Beside a large record's document: the change hashes its last full save
+/// listed, so the next load need not rebuild every change (`load_hint`).
+pub const LOAD_HINT_FILE: &str = "state.hashes";
 pub const CANONICAL_GATE: &str = "canonical.lock";
 pub const LOCK_FILE: &str = "writer.lock";
 /// Subdirectory holding one directory per record. See [`DocStore::open_room_record`].
@@ -832,6 +836,19 @@ pub fn decode_canonical(
     recover_partial: bool,
     label: &Path,
 ) -> Result<(AutoCommit, Option<Vec<u8>>), StoreError> {
+    decode_canonical_with(bytes, recover_partial, label, None)
+}
+
+/// [`decode_canonical`] given the hashes of the changes in the document
+/// chunk `bytes` starts with, as its writer listed them (`load_hint`), so
+/// they are not rebuilt and hashed again. Only for bytes this device's own
+/// store wrote and a hint it kept for exactly them; peer input never.
+fn decode_canonical_with(
+    bytes: &[u8],
+    recover_partial: bool,
+    label: &Path,
+    known_hashes: Option<&[ChangeHash]>,
+) -> Result<(AutoCommit, Option<Vec<u8>>), StoreError> {
     if bytes.is_empty() {
         return Err(StoreError::EmptyExistingDocument {
             path: label.to_path_buf(),
@@ -841,21 +858,23 @@ pub fn decode_canonical(
         path: label.to_path_buf(),
         source: Box::new(source),
     };
-    let (mut doc, repair) = match AutoCommit::load_with_options(
-        bytes,
-        LoadOptions::new().on_partial_load(OnPartialLoad::Error),
-    ) {
-        Ok(doc) => (doc, false),
-        Err(error) if !recover_partial => return Err(automerge_error(error)),
-        Err(_) => (
-            AutoCommit::load_with_options(
-                bytes,
-                LoadOptions::new().on_partial_load(OnPartialLoad::Ignore),
-            )
-            .map_err(automerge_error)?,
-            true,
-        ),
+    let options = |partial| {
+        let options = LoadOptions::new().on_partial_load(partial);
+        match known_hashes {
+            Some(hashes) => options.known_change_hashes(hashes),
+            None => options,
+        }
     };
+    let (mut doc, repair) =
+        match AutoCommit::load_with_options(bytes, options(OnPartialLoad::Error)) {
+            Ok(doc) => (doc, false),
+            Err(error) if !recover_partial => return Err(automerge_error(error)),
+            Err(_) => (
+                AutoCommit::load_with_options(bytes, options(OnPartialLoad::Ignore))
+                    .map_err(automerge_error)?,
+                true,
+            ),
+        };
     validate_canonical_schema_of(&doc, label)?;
     let repair = repair.then(|| doc.save());
     Ok((doc, repair))

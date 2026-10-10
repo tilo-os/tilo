@@ -8,6 +8,7 @@ use tilo_actions::{ActionError, Doc};
 use ui::feedback::{Destination, Receipt};
 use ui::tilo_resource::Id;
 
+pub(crate) mod destination_read;
 pub(crate) mod receipt_read;
 pub(crate) mod status_read;
 

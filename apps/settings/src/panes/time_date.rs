@@ -36,10 +36,10 @@ use winit::event::{ElementState, MouseButton, WindowEvent};
 use crate::effects::effect;
 use crate::host::{Followed, PaneCx};
 use crate::i18n::{t, t_args};
-use crate::region::{Locale, TimeStyle};
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
 use crate::widgets::{caption, card, error_row, rows, setting_row, value_row};
+use tilo_locale::{Locale, TimeStyle};
 use ui::i18n::ArgValue;
 
 #[derive(Clone, Debug, PartialEq, Eq)]

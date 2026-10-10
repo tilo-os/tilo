@@ -15,8 +15,9 @@
 //! (`tilo_test_env::idle`). The gate is how often the whole tree's threads
 //! blocked per second (voluntary context switches, one per wakeup), and its
 //! CPU time; the table also shows preemptions. The table names the process
-//! and thread of every wakeup, and the compositor's own `paint-stats` lines
-//! (`TILO_PAINT_STATS`) say what woke its frame loop and whether it painted.
+//! and thread of every wakeup, and the compositor's own `paint-tick` lines
+//! (`TILO_PAINT_STATS=ticks`) say what woke its frame loop and whether it
+//! painted, one line per iteration inside the window.
 //!
 //! What it does not see: DRM-only services (power, display hotplug, the
 //! rotation sensor), which a headless session does not start, and
@@ -72,9 +73,10 @@ use tilo_identity_ceremony::IdentityRecord;
 /// went from 3.3 to 0.4–0.5/s and the identity client from 2.0 to 0.2/s.
 /// Seven runs alone on a runner then blocked 2.60–3.10/s with the frame loop
 /// parked (runs 92855, 92857, 92945, 92947), and 4.90–5.00/s in the three
-/// whose window held one frame-loop wake: the top bar's minute repaint
-/// (92944, 92946) or a late Terminal repaint (92856), each also waking the
-/// settings reader and the network runtime. A ten-second window holds a
+/// whose window held one frame-loop wake, the top bar's minute repaint
+/// (92944, 92946, 92856), each also waking the settings reader and the
+/// network runtime. (92856's summary line blamed startup's Terminal frames on
+/// that wake; TIL-756 counts per tick.) A ten-second window holds a
 /// minute boundary one run in six, so that is part of the spread: its top
 /// plus a half, 7.5/s.
 const IDLE_WAKEUP_BUDGET: f64 = 7.5;
@@ -85,19 +87,38 @@ const IDLE_WAKEUP_BUDGET: f64 = 7.5;
 /// same seven runs.
 const IDLE_CPU_BUDGET: f64 = 1.5;
 
-/// Most times per second the Terminal's collaboration shovel
+/// Most times per second one collaborating app's shovel
 /// (`ui-collab-shovel`) and the identity service's thread serving it
 /// (`tilo-identity-client`) may wake together. A route that holds no keys
 /// asks for them on a timer backing off from 1 s to 30 s, and is told when
 /// they change; asking once a second cost 5.3/s together (TIL-754, run
-/// 92445); after it they measured 0.60–0.70/s in all seven runs.
+/// 92445); after it the Terminal's measured 0.60–0.70/s in all seven runs.
+///
+/// The budget is per app with a shovel: until TIL-759 the restored Notes
+/// notebook never reached the broker, so only the Terminal had one. With
+/// both connected, CI measured 2.10/s for the two (PR #4197, run 94384).
 const KEY_ASK_BUDGET: f64 = 1.5;
 
 /// Most iterations per second the compositor's frame loop may make while
-/// idle, from its `paint-stats` lines. A loop that wakes on a deadline that
+/// idle, from its `paint-tick` lines. A loop that wakes on a deadline that
 /// never moves spins without blocking, which context switches hardly show.
 /// An idle loop parks: measured 0/s parked, and 946/s in the TIL-696 spin.
+/// Counted from one line per iteration, so only iterations inside the window
+/// (TIL-756).
 const LOOP_TICK_BUDGET: f64 = 1.0;
+
+/// Frames the top bar's clock paints when a wall-clock minute turns: the one
+/// thing an idle desktop's screen should change. A ten-second window holds a
+/// turn about one run in six, and the scheduled lane's longer one always does.
+/// Measured over a 65 s window (run 93205): one tick, woken by the bar's
+/// widget deadline, painting one frame. The `paint-stats` summary that wake
+/// printed said 19/24, startup's Terminal frames, which the old count charged
+/// to the window: 2.4 ticks/s over the pull-request gate's ten seconds.
+const CLOCK_MINUTE_FRAMES: u64 = 1;
+
+/// How late after the minute turns the clock's repaint may land; a turn this
+/// close before the window counts as inside it.
+const CLOCK_REPAINT_LATE: Duration = Duration::from_secs(1);
 
 /// How long the desktop is left alone after both apps are drawn, so startup
 /// work (font caches, record flushes, the first save) is behind it.
@@ -119,6 +140,9 @@ fn window() -> Duration {
 /// this fixture seeds.
 const FIXTURE_RECORD_SCOPE: &str = "00000000-0000-0000-0000-000000000000";
 
+/// How many desktops this process started, so each has its own runtime dir.
+static STARTED: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
 /// A line the compositor printed, with when the test read it.
 type Log = Arc<Mutex<Vec<(Instant, String)>>>;
 
@@ -136,10 +160,12 @@ impl Desktop {
     fn start() -> Self {
         tilo_test_env::require_isolated_desktop();
         // SUN_LEN caps a unix socket path, so the runtime dir stays short.
+        // One per desktop: this module's tests run beside each other.
         let runtime_dir = PathBuf::from(format!(
-            "/run/user/{}/tilo-idle-{}",
+            "/run/user/{}/tilo-idle-{}-{}",
             unsafe { libc::getuid() },
             std::process::id(),
+            STARTED.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
         ));
         let _ = std::fs::remove_dir_all(&runtime_dir);
         std::fs::create_dir_all(&runtime_dir).expect("create the private runtime dir");
@@ -179,7 +205,8 @@ impl Desktop {
             // window either: those are state changes, not idling.
             .env("TILO_IDLE_LOCK_SECS", "0")
             .env("TILO_IDLE_BLANK_SECS", "0")
-            .env("TILO_PAINT_STATS", "1")
+            // A `paint-tick:` line per loop iteration (see `LoopStats`).
+            .env("TILO_PAINT_STATS", "ticks")
             .env("RUST_LOG", "warn")
             .env_remove("WAYLAND_DISPLAY")
             .env_remove("DISPLAY")
@@ -232,16 +259,28 @@ impl Desktop {
             .unwrap_or_default()
     }
 
+    /// Whether the compositor has printed a line containing `needle`.
+    fn logged(&self, needle: &str) -> bool {
+        self.log
+            .lock()
+            .is_ok_and(|log| log.iter().any(|(_, line)| line.contains(needle)))
+    }
+
+    /// The last lines the compositor printed, leaving out its per-iteration
+    /// `paint-tick` lines, which the report summarises.
     fn log_tail(&self) -> String {
         self.log
             .lock()
             .map(|log| {
-                let skip = log.len().saturating_sub(60);
-                log.iter()
-                    .skip(skip)
+                let mut tail: Vec<&str> = log
+                    .iter()
+                    .rev()
                     .map(|(_, line)| line.as_str())
-                    .collect::<Vec<_>>()
-                    .join("\n")
+                    .filter(|line| !line.contains("paint-tick: "))
+                    .take(60)
+                    .collect();
+                tail.reverse();
+                tail.join("\n")
             })
             .unwrap_or_default()
     }
@@ -371,61 +410,87 @@ fn seed_identity(runtime_dir: &Path) -> PathBuf {
     runtime_dir.join("identity-root")
 }
 
-/// What the compositor's own frame loop did, from its `paint-stats` lines.
+/// What the compositor's own frame loop did in the window, from the
+/// `paint-tick:` line it prints on every iteration (`TILO_PAINT_STATS=ticks`).
+///
+/// Its two-second `paint-stats:` summaries cannot say this: a summary counts
+/// every tick since the previous one and is printed only on a tick, so a loop
+/// that parked after startup prints the startup's ticks on its first wake in
+/// the window (run 92856: 25 ticks charged to a window that held one), and
+/// ticks after the window's last summary are never printed inside it.
 struct LoopStats {
-    /// Loop iterations reported by the lines printed in the window.
+    /// Loop iterations that ran in the window.
     ticks: u64,
-    /// Frames painted, from lines whose whole period lies in the window.
+    /// Of those, the ones that painted a frame.
     painted: u64,
     window: Duration,
-    /// Every `paint-stats` line printed in the window.
-    lines: Vec<String>,
+    /// What ended the park before each iteration, busiest first.
+    woke: Tally,
+    /// The same, for the iterations that painted.
+    painted_after: Tally,
+    /// The `paint-stats:` summaries printed in the window, for their causes.
+    summaries: Vec<String>,
+}
+
+/// How many times each wake reason was seen, busiest first.
+#[derive(Default)]
+struct Tally(Vec<(String, u64)>);
+
+impl Tally {
+    fn note(&mut self, reason: &str) {
+        match self.0.iter_mut().find(|(seen, _)| seen == reason) {
+            Some((_, count)) => *count = count.saturating_add(1),
+            None => self.0.push((reason.to_owned(), 1)),
+        }
+        self.0.sort_by_key(|(_, count)| std::cmp::Reverse(*count));
+    }
+}
+
+impl std::fmt::Display for Tally {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let named: Vec<String> = self
+            .0
+            .iter()
+            .map(|(reason, count)| format!("{reason}={count}"))
+            .collect();
+        f.write_str(&named.join(" "))
+    }
 }
 
 impl LoopStats {
-    /// A line covers the time since the one before it and is printed on the
-    /// first iteration two seconds after it, so a loop that never wakes
-    /// prints nothing, which reads as zero. Ticks count from every line
-    /// printed after `since`, so a spin that stops inside the window still
-    /// shows; painted frames only from lines whose whole period lies after
-    /// `since`, so a frame of the settle period is not charged to it.
-    fn after(lines: &[(Instant, String)], since: Instant, window: Duration) -> Self {
+    /// Counts the `paint-tick:` lines in `lines`, which holds only what the
+    /// compositor printed inside the window. Each line is timestamped as the
+    /// test reads it, so a tick is charged to the window it ran in, give or
+    /// take the pipe's latency.
+    fn of(lines: &[(Instant, String)], window: Duration) -> Self {
         let mut stats = Self {
             ticks: 0,
             painted: 0,
             window,
-            lines: Vec::new(),
+            woke: Tally::default(),
+            painted_after: Tally::default(),
+            summaries: Vec::new(),
         };
-        let mut previous: Option<Instant> = None;
-        for (at, line) in lines
-            .iter()
-            .filter(|(_, line)| line.contains("paint-stats:"))
-        {
-            if *at >= since {
-                stats.lines.push(line.clone());
+        for (_, line) in lines {
+            if line.contains("paint-stats:") {
+                stats.summaries.push(line.clone());
+                continue;
             }
-            // `paint-stats: <painted>/<ticks> painted | ...`
-            let Some((painted, ticks)) = line
-                .split("paint-stats: ")
-                .nth(1)
-                .and_then(|rest| rest.split(" painted |").next())
-                .and_then(|counts| counts.split_once('/'))
-                .and_then(|(painted, ticks)| {
-                    Some((
-                        painted.trim().parse::<u64>().ok()?,
-                        ticks.trim().parse::<u64>().ok()?,
-                    ))
-                })
-            else {
+            // `paint-tick: painted=<bool> woke=<reason>`
+            let Some(rest) = line.split("paint-tick: ").nth(1) else {
                 continue;
             };
-            if *at >= since {
-                stats.ticks = stats.ticks.saturating_add(ticks);
+            let field = |name: &str| {
+                rest.split_whitespace()
+                    .find_map(|pair| pair.strip_prefix(name)?.strip_prefix('='))
+            };
+            let woke = field("woke").unwrap_or("?");
+            stats.ticks = stats.ticks.saturating_add(1);
+            stats.woke.note(woke);
+            if field("painted") == Some("true") {
+                stats.painted = stats.painted.saturating_add(1);
+                stats.painted_after.note(woke);
             }
-            if previous.is_some_and(|before| before >= since) {
-                stats.painted = stats.painted.saturating_add(painted);
-            }
-            previous = Some(*at);
         }
         stats
     }
@@ -445,7 +510,9 @@ impl LoopStats {
 /// identity service's per-client thread. Fails if the shovel is not there to
 /// observe: the Terminal opens a route, so a desktop without one did not
 /// measure what this bounds.
-fn key_ask_wakeups(wakeups: &tilo_test_env::idle::Wakeups) -> f64 {
+/// The shovels' and identity clients' wakeups per second, and their budget:
+/// [`KEY_ASK_BUDGET`] for each app whose shovel ran.
+fn key_ask_wakeups(wakeups: &tilo_test_env::idle::Wakeups) -> (f64, f64) {
     // The kernel truncates thread names to 15 bytes.
     const SHOVEL: &str = "ui-collab-shove";
     const IDENTITY_CLIENT: &str = "tilo-identity-c";
@@ -459,7 +526,16 @@ fn key_ask_wakeups(wakeups: &tilo_test_env::idle::Wakeups) -> f64 {
         rows.iter().any(|row| row.thread == SHOVEL),
         "no collaboration shovel ran in the compositor, so the Terminal's route was not measured:\n{wakeups}"
     );
-    wakeups.rate(rows.iter().map(|row| row.voluntary).sum())
+    let shovels: usize = rows
+        .iter()
+        .filter(|row| row.thread == SHOVEL)
+        .map(|row| row.threads)
+        .sum();
+    let budget = KEY_ASK_BUDGET * f64::from(u32::try_from(shovels).unwrap_or(u32::MAX));
+    (
+        wakeups.rate(rows.iter().map(|row| row.voluntary).sum()),
+        budget,
+    )
 }
 
 /// Whether a process named `name` runs in the compositor's tree.
@@ -483,6 +559,39 @@ fn wait_until_gone(desktop: &Desktop, name: &str) {
         assert!(
             Instant::now() < deadline,
             "{name} was still running after the hang bound. Log:\n{}",
+            desktop.log_tail()
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+/// The Notes notebook the session restores publishes its actions where the
+/// palette, search and agents find them. The session mounts its restored
+/// hosted tabs while it builds the desktop, before it binds the
+/// collaboration broker and identity service they connect to; the tab found
+/// no socket, stayed offline and published nothing until it was reopened
+/// (TIL-759).
+#[test]
+fn the_restored_notes_notebook_publishes_its_actions() {
+    let desktop = Desktop::start();
+    desktop.wait_for("the restored Notes notebook", |targets| {
+        targets.iter().any(|name| name == "notes.first_note")
+    });
+    let deadline = tilo_test_env::hang_deadline();
+    loop {
+        let reply = desktop.control(&serde_json::json!({
+            "op": "actions_enumerate", "query": "New note", "detail": "compact", "wait_ms": 5000,
+        }));
+        let published = reply["answer"]["actions"].as_array().is_some_and(|rows| {
+            rows.iter()
+                .any(|row| row["application"] == "so.tilo.notes" && row["operation"] == "new-page")
+        });
+        if published {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the restored Notes tab never published new-page: {reply}\nLog:\n{}",
             desktop.log_tail()
         );
         std::thread::sleep(Duration::from_millis(100));
@@ -523,15 +632,24 @@ fn an_idle_desktop_with_two_apps_stays_within_its_wakeup_budget() {
     }
 
     let measured_from = Instant::now();
+    let wall_from = SystemTime::now();
     let wakeups = tilo_test_env::idle::idle_wakeups(desktop.pid(), Duration::ZERO, window())
         .expect("sample the compositor's process tree");
     let measured_until = Instant::now();
+    let clock_turns = clock_minutes(wall_from, SystemTime::now());
     let in_window: Vec<(Instant, String)> = desktop
         .log_since(measured_from)
         .into_iter()
         .filter(|(at, _)| *at <= measured_until)
         .collect();
-    let frame_loop = LoopStats::after(&in_window, measured_from, wakeups.window);
+    let frame_loop = LoopStats::of(&in_window, wakeups.window);
+    // A parked loop prints nothing in the window, which reads as zero; that
+    // only means something if the loop prints its ticks at all.
+    assert!(
+        desktop.logged("paint-tick: "),
+        "the compositor printed no paint-tick line, so its frame loop was not observed. Log:\n{}",
+        desktop.log_tail()
+    );
     assert!(
         desktop
             .try_control(&serde_json::json!({"op": "list_targets"}))
@@ -540,13 +658,16 @@ fn an_idle_desktop_with_two_apps_stays_within_its_wakeup_budget() {
         desktop.log_tail()
     );
 
-    let key_asks = key_ask_wakeups(&wakeups);
+    let (key_asks, key_ask_budget) = key_ask_wakeups(&wakeups);
     let report = format!(
-        "{wakeups}\nblocked {:.2} times a second; the collaboration shovel and identity client {key_asks:.2}\ncompositor frame loop: {:.1} ticks/s, {} frames painted; its paint-stats in the window:\n  {}",
+        "{wakeups}\nblocked {:.2} times a second; the collaboration shovel and identity client {key_asks:.2}\ncompositor frame loop: {:.1} ticks/s ({} ticks, woken by: {}), {} frames painted (after: {}), {clock_turns} clock minute(s) turned; its paint-stats in the window:\n  {}",
         wakeups.blocking_per_second(),
         frame_loop.ticks_per_second(),
+        frame_loop.ticks,
+        frame_loop.woke,
         frame_loop.painted,
-        frame_loop.lines.join("\n  ")
+        frame_loop.painted_after,
+        frame_loop.summaries.join("\n  ")
     );
     eprintln!("{report}");
     // One machine-readable line for the scheduled lane's adapter
@@ -572,16 +693,30 @@ fn an_idle_desktop_with_two_apps_stays_within_its_wakeup_budget() {
         wakeups.total_cpu_percent(),
     );
     assert!(
-        key_asks <= KEY_ASK_BUDGET,
-        "the Terminal's collaboration shovel and the identity client woke {key_asks:.2} times a second, over {KEY_ASK_BUDGET}/s: is a route asking for its channel keys on a 1 s timer again?\n{report}",
+        key_asks <= key_ask_budget,
+        "the apps' collaboration shovels and the identity client woke {key_asks:.2} times a second, over {key_ask_budget}/s ({KEY_ASK_BUDGET}/s per app): is a route asking for its channel keys on a 1 s timer again?\n{report}",
     );
     assert!(
         frame_loop.ticks_per_second() <= LOOP_TICK_BUDGET,
         "the idle compositor's frame loop ran {:.1} times a second, over its budget of {LOOP_TICK_BUDGET}/s:\n{report}",
         frame_loop.ticks_per_second(),
     );
-    assert_eq!(
-        frame_loop.painted, 0,
-        "the idle desktop kept painting:\n{report}"
+    let clock_frames = clock_turns.saturating_mul(CLOCK_MINUTE_FRAMES);
+    assert!(
+        frame_loop.painted <= clock_frames,
+        "the idle desktop kept painting: {} frames, where the top bar's clock accounts for {clock_frames}:\n{report}",
+        frame_loop.painted,
     );
+}
+
+/// How many wall-clock minutes turned over between `from` and `until`: the
+/// top bar's clock repaints at each. A turn up to [`CLOCK_REPAINT_LATE`]
+/// before `from` counts too, since its repaint can land just inside.
+fn clock_minutes(from: SystemTime, until: SystemTime) -> u64 {
+    let minute = |at: SystemTime| {
+        at.duration_since(SystemTime::UNIX_EPOCH)
+            .map_or(0, |since| since.as_secs() / 60)
+    };
+    let from = from.checked_sub(CLOCK_REPAINT_LATE).unwrap_or(from);
+    minute(until).saturating_sub(minute(from))
 }

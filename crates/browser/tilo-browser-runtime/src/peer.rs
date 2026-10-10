@@ -1270,6 +1270,8 @@ pub fn verify_agent_delegation(
 pub struct WasmPeer {
     id: u32,
     device_key: [u8; 32],
+    reporter_cert: DeviceCert,
+    owner_cert: DeviceCert,
     handle: PeerHandle,
     durable_events: PeerEvents,
     remote_events: PeerEvents,
@@ -1341,6 +1343,8 @@ impl WasmPeer {
             })
         };
         let device_key = config.cert.device_public_key;
+        let reporter_cert = config.cert.clone();
+        let owner_cert = config.host_cert.clone();
         install_identity(&config.cert, config.display_name);
         let handle = PeerHandle::start(
             PeerConfig {
@@ -1373,6 +1377,7 @@ impl WasmPeer {
                         return;
                     };
                     crate::replication::pump(id);
+                    crate::feedback_delivery::pump(id);
                     let current = listeners.borrow().clone();
                     for listener in current {
                         let _ = listener.call0(&JsValue::NULL);
@@ -1383,6 +1388,8 @@ impl WasmPeer {
         Ok(Self {
             id,
             device_key,
+            reporter_cert,
+            owner_cert,
             durable_events: handle.events(),
             remote_events: handle.events(),
             voice_events: handle.events(),
@@ -1391,6 +1398,26 @@ impl WasmPeer {
             listeners,
             replication: RefCell::new(replication),
         })
+    }
+
+    /// Select an existing destination. Admission comes only from the connected
+    /// owner, asynchronously; mount after feedbackStatus reports ready.
+    /// # Errors
+    /// Refuses missing existing membership, record or a repeated configuration.
+    #[wasm_bindgen(js_name = configureFeedback)]
+    pub fn configure_feedback(&self, destination: &str) -> Result<(), JsError> {
+        crate::feedback_delivery::configure(
+            self.id,
+            self.handle.clone(),
+            self.reporter_cert.clone(),
+            self.owner_cert.clone(),
+            serde_json::from_str(destination).map_err(js_error)?,
+        )
+        .map_err(js_error)
+    }
+    #[wasm_bindgen(js_name = feedbackStatus)]
+    pub fn feedback_status(&self) -> String {
+        crate::feedback_delivery::status(self.id)
     }
 
     /// `PeerSnapshot` JSON.

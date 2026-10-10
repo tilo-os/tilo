@@ -147,8 +147,8 @@ pub use group::{ActionGroup, GROUP, GROUP_PARAM};
 pub use keyed::{ById, Identified, ItemStorage, Items, Keyed};
 pub use kind::{Kinds, ResourceKind};
 pub use model::{
-    Atom, Doc, Fields, Json, Model, ModelError, Slot, edit_whole, read_key, refresh_key, write_key,
-    write_key_changed,
+    Atom, Doc, Fields, Json, MapSlot, Model, ModelError, Slot, edit_whole, load_slot, read_key,
+    read_slots, refresh_key, take_slot, write_key, write_key_changed,
 };
 pub use ordered::{Arranged, Ordered};
 pub use path::{Edit, EditOp, Operations, Path, Segment, Settable};

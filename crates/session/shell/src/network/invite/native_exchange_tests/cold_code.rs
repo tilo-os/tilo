@@ -219,6 +219,15 @@ pub(super) fn mount_with_network(
     profile: &Path,
     network: &Arc<crate::shell::network::ShellNetwork>,
 ) -> MountedCode {
+    mount_with_network_and_reads(owner, identity, profile, network, None)
+}
+pub(super) fn mount_with_network_and_reads(
+    owner: &NativeWorkspaceOwner,
+    identity: &HostIdentity,
+    profile: &Path,
+    network: &Arc<crate::shell::network::ShellNetwork>,
+    reads: Option<crate::shell::collab_broker::NativeReadHarnessWrapper>,
+) -> MountedCode {
     use std::{
         cell::{Cell, RefCell},
         os::unix::fs::PermissionsExt as _,
@@ -234,11 +243,12 @@ pub(super) fn mount_with_network(
         .tempdir_in(profile.parent().unwrap())
         .unwrap();
     let socket = runtime.path().join("c.sock");
-    let broker = crate::shell::collab_broker::spawn_native_owner_harness(
+    let broker = crate::shell::collab_broker::spawn_native_owner_harness_with_reads(
         socket.clone(),
         tree,
         vec![identity.device_cert.device_public_key],
         network,
+        reads,
     )
     .unwrap();
     let refusal = connect_manager(&socket, identity, false)

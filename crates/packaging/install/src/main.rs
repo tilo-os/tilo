@@ -2336,6 +2336,12 @@ fn gc(dry_run: bool, grace_secs: u64, max_store_bytes: u64) -> Result<(), Error>
     for path in &report.orphans.removed {
         println!("removed  : {} (named by no package)", path.display());
     }
+    if report.orphans.staging_bytes > 0 {
+        println!(
+            "removed  : {} of staging crashed installs left",
+            human_bytes(report.orphans.staging_bytes)
+        );
+    }
     for (version, bytes) in &runtimes.removed {
         let verb = if dry_run { "would go" } else { "removed " };
         println!("{verb} : runtime {version} ({})", human_bytes(*bytes));
@@ -2346,6 +2352,7 @@ fn gc(dry_run: bool, grace_secs: u64, max_store_bytes: u64) -> Result<(), Error>
             runtime_bundle::gc::Kept::Pinned => "pinned",
             runtime_bundle::gc::Kept::Leased => "installed within the grace period",
             runtime_bundle::gc::Kept::InUse => "a running app has it mounted",
+            runtime_bundle::gc::Kept::Launching => "an app launched on it holds it",
         };
         println!("kept     : runtime {version} ({why})");
     }
@@ -2358,11 +2365,7 @@ fn gc(dry_run: bool, grace_secs: u64, max_store_bytes: u64) -> Result<(), Error>
 /// Never fails the change it follows; says what it freed on stderr, so the
 /// change's own output stays as scripts read it.
 fn collect_after_change() {
-    let request = gc_request(
-        false,
-        runtime_bundle::gc::DEFAULT_GRACE_SECS,
-        package_store::DEFAULT_MAX_STORE_BYTES,
-    );
+    let request = install::gc::Request::after_change(package_store::DEFAULT_MAX_STORE_BYTES);
     match collect_garbage(request) {
         Ok(report) if report.freed_bytes() > 0 || !report.evicted.is_empty() => eprintln!(
             "tilo-install: reclaimed {} ({} runtime build(s), {} app(s) evicted)",

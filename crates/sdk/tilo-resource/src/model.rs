@@ -549,11 +549,121 @@ pub trait Fields: Model {
 /// Returns [`ModelError`] located at `key`.
 #[inline(never)]
 pub fn read_key<T: Model>(doc: &Doc, obj: &ObjId, key: &str) -> Result<T, ModelError> {
-    match doc.get(obj, key)? {
-        Some((value, id)) => T::load(doc, &value, &id),
+    let slot = get_slot(doc, obj, key)?;
+    load_at(doc, slot.as_ref().map(|(value, id)| (value, id)), key)
+}
+
+/// What `key` of the map `obj` holds, as [`ReadDoc::get`] answers it.
+///
+/// Every lookup and walk of the document here is a function that is not
+/// generic, and the generic ones only call it. A generic function is
+/// compiled again into each app that instantiates it, and Automerge's
+/// generic lookup and op-tree walk with it; these are compiled once, into
+/// the shared runtime every app maps (TIL-765).
+#[inline(never)]
+fn get_slot<'doc>(
+    doc: &'doc Doc,
+    obj: &ObjId,
+    key: &str,
+) -> Result<Option<(Value<'doc>, ObjId)>, ModelError> {
+    Ok(doc.get(obj, key)?)
+}
+
+/// What `index` of the list `obj` holds; not generic, as [`get_slot`].
+#[inline(never)]
+fn get_item<'doc>(
+    doc: &'doc Doc,
+    obj: &ObjId,
+    index: usize,
+) -> Result<Option<(Value<'doc>, ObjId)>, ModelError> {
+    Ok(doc.get(obj, index)?)
+}
+
+/// `T` read from what a key holds, or [`Model::missing`] when it holds
+/// nothing: the one generic body behind [`read_key`] and [`load_slot`].
+fn load_at<T: Model>(
+    doc: &Doc,
+    slot: Option<(&Value<'_>, &ObjId)>,
+    key: &str,
+) -> Result<T, ModelError> {
+    match slot {
+        Some((value, id)) => T::load(doc, value, id),
         None => T::missing(),
     }
     .map_err(|error| error.at(key))
+}
+
+/// What a key of a map holds: its current value and the id of the op that
+/// wrote it, as [`ReadDoc::get`] returns them.
+pub type MapSlot = Option<(Value<'static>, ObjId)>;
+
+/// What each of `keys` holds in the map `obj`, read in one ordered walk of
+/// the map instead of one lookup per key: a lookup opens the map anew each
+/// time, and a struct of `N` fields read field by field opens it `N` times.
+/// The walk stops once every key is found. Each slot is exactly what
+/// [`ReadDoc::get`] answers for its key (the winning value of a conflict, a
+/// counter with its increments).
+pub fn read_slots<const N: usize>(doc: &Doc, obj: &ObjId, keys: [&str; N]) -> [MapSlot; N] {
+    let mut slots = [const { None }; N];
+    fill_slots(doc, obj, &keys, &mut slots);
+    slots
+}
+
+/// [`read_slots`]' walk, out of its generic shell so that it is compiled once
+/// into the shared runtime rather than into every app that derives a
+/// [`Model`] with another number of fields (TIL-765).
+#[inline(never)]
+fn fill_slots(doc: &Doc, obj: &ObjId, keys: &[&str], slots: &mut [MapSlot]) {
+    let mut missing = keys.len();
+    if missing == 0 {
+        return;
+    }
+    for item in doc.map_range(obj, ..) {
+        let mut matched = false;
+        for (key, slot) in keys.iter().zip(slots.iter_mut()) {
+            if *key == item.key {
+                *slot = Some((item.value.clone().into_value(), item.id()));
+                missing = missing.saturating_sub(1);
+                matched = true;
+            }
+        }
+        if matched && missing == 0 {
+            break;
+        }
+    }
+}
+
+/// Every key of the map `obj` with what it holds, in key order, in one walk
+/// of the map. Not generic, for the reason [`fill_slots`] is not.
+#[inline(never)]
+fn map_slots(doc: &Doc, obj: &ObjId) -> Vec<(String, MapSlot)> {
+    doc.map_range(obj, ..)
+        .map(|item| {
+            let slot = Some((item.value.clone().into_value(), item.id()));
+            (item.key.into_owned(), slot)
+        })
+        .collect()
+}
+
+/// The slot at `index` of what [`read_slots`] returned, taken out of it, or
+/// an empty slot past its end. Not generic over the number of slots, so the
+/// derived reads share one copy (TIL-765).
+#[must_use]
+#[inline(never)]
+pub fn take_slot(slots: &mut [MapSlot], index: usize) -> MapSlot {
+    slots.get_mut(index).and_then(Option::take)
+}
+
+/// `T` read from a slot [`read_slots`] found under `key`, or
+/// [`Model::missing`]: what [`read_key`] answers for that key.
+///
+/// # Errors
+/// Returns [`ModelError`] located at `key`.
+pub fn load_slot<T: Model>(doc: &Doc, slot: MapSlot, key: &str) -> Result<T, ModelError> {
+    match slot {
+        Some((value, id)) => load_at(doc, Some((&value, &id)), key),
+        None => load_at(doc, None, key),
+    }
 }
 
 /// Bring `target`, read earlier from `key` of the map `obj`, up to date
@@ -576,7 +686,7 @@ pub fn refresh_key<T: Model>(
             *target = read_key(doc, obj, key)?;
             Ok(())
         }
-        Touch::Below => match doc.get(obj, key)? {
+        Touch::Below => match get_slot(doc, obj, key)? {
             Some((value, id)) => target.refresh(doc, &value, &id, delta),
             None => T::missing().map(|missing| *target = missing),
         }
@@ -1451,7 +1561,7 @@ impl<T: Model> Model for Vec<T> {
         }
         (0..doc.length(id))
             .map(|index| {
-                match doc.get(id, index)? {
+                match get_item(doc, id, index)? {
                     Some((value, item)) => T::load(doc, &value, &item),
                     None => T::missing(),
                 }
@@ -1695,8 +1805,11 @@ impl<T: Model> Model for BTreeMap<String, T> {
         if !matches!(value, Value::Object(ObjType::Map)) {
             return Err(ModelError::shape("a map"));
         }
-        doc.keys(id)
-            .map(|key| read_key(doc, id, &key).map(|value| (key, value)))
+        // One walk of the map rather than a lookup per key (TIL-758), made
+        // outside this generic impl (TIL-765).
+        map_slots(doc, id)
+            .into_iter()
+            .map(|(key, slot)| load_slot(doc, slot, &key).map(|value| (key, value)))
             .collect()
     }
     fn missing() -> Result<Self, ModelError> {
@@ -1739,7 +1852,7 @@ impl<T: Model> Model for BTreeMap<String, T> {
             return Ok(());
         }
         for key in touched.keys() {
-            match doc.get(id, key)? {
+            match get_slot(doc, id, key)? {
                 None => {
                     self.remove(key);
                 }

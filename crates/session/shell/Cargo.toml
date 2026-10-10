@@ -141,6 +141,8 @@ tilo-identity-ceremony = { version = "0.1.0", path = "../../collab/tilo-identity
 
 tilo-actions = { path = "../../collab/actions" }
 tilo-action-policy = { path = "../../collab/action-policy" }
+tilo-app = { path = "../../sdk/tilo-app" }
+chat = { path = "../../../apps/chat", default-features = false }
 console-control = { path = "../console-control" }
 tilo-automation = { path = "../../collab/automation" }
 # The record/room-index store. The compositor keeps one document per room
@@ -402,6 +404,10 @@ workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
 signal-hook-registry = "1.4.8"
+# Raw Vulkan for returning the device memory lavapipe freed
+# (`shell::render::software_gpu_memory`); the version wgpu-hal and ui's
+# dmabuf import use, so Vulkan handles pass between them.
+ash = "0.38"
 # Tilo owns the producer side of portal ScreenCast streams.  `pipewire-rs`
 # talks to the session daemon directly; sandboxed apps only receive a remote
 # after the portal has granted a session.

@@ -330,6 +330,19 @@ This gives three deployments without three protocols:
   Clients dial `/6` first and fall back to `/5`; older sessions get the same
   coalesced presence, one frame each. A slot can only supersede the same
   authenticated author's presence, and the host forwards the bytes unchanged.
+- Coded deltas (TIL-755): `tilo-relay/7` (`ALPN_CODED_DELTA_V1`) is `/6` on
+  which the host writes each live zero-signature delta of at most 4 KiB as an
+  `EnvelopeV2::CodedDelta`: ranges copied from the last delta that session
+  received from the same author on the same route (the delta's leading kind
+  and channel bytes) in the same room, and the bytes in between. Two
+  keystrokes of one author repeat their keys, channel, app, cluster and record
+  ids, Automerge actor and signed-op ids, so a keystroke costs the recipient
+  less than half the ~481 B compact frame. The session reader rebuilds the
+  `UnsignedDelta` byte for byte and returns the same `Envelope::Delta`;
+  signatures inside it verify as before, and the host decodes nothing new.
+  Both halves keep at most 64 slots of at most 4 KiB per session. Deltas are
+  never delayed for it. Clients dial `/7` first and fall back to `/6`; older
+  sessions, replays and positions get the frames they always did.
 - Remote actions (v1): versioned JSON `RemoteActionFrame`s (`tilo_actions::remote`).
   A caller follows an invocation with one waiting request at a time —
   `wait_ms` on `Invoke`, or on `Observe` with the `seen` update — which the

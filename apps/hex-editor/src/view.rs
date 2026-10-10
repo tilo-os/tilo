@@ -867,8 +867,7 @@ impl Widget for HexView {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         self.layout_theme = theme.clone();
-        // `new_leaf` on a freshly created tree never fails.
-        taffy.filling_leaf(node_map, self)
+        taffy.fill_leaf(node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {

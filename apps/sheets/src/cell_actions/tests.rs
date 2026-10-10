@@ -129,7 +129,7 @@ fn bold_is_stored_read_back_and_exported_to_xlsx() {
     format(
         &mut book,
         "B2",
-        Some(CellFormat::Currency(crate::model::Currency::USD)),
+        Some(CellFormat::Currency(tilo_locale::Currency::USD)),
         None,
     );
     assert_eq!(read_back(&book, None)["bold"], json!(["A1", "B1"]));

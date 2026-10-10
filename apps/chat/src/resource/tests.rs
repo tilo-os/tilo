@@ -561,6 +561,7 @@ fn a_window_publishes_its_effects_beside_the_chat_verbs() {
         "move-channel",
         "delete-channel",
         "read-messages",
+        "read-feedback-destination",
     ] {
         assert!(
             general.iter().any(|action| action == id),

@@ -1,0 +1,24 @@
+[package]
+name = "tilo-locale"
+version = "0.1.0"
+edition = "2024"
+publish = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "The person's region and formats: currency, date and time styles, measurement system, number style and first day of the week."
+
+[dependencies]
+serde.workspace = true
+ui = { package = "tilo-app", version = "0.1.0", path = "../../sdk/tilo-app" }
+
+[dev-dependencies]
+serde_json.workspace = true
+tempfile.workspace = true
+
+[lints]
+workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# Native workspace feature unification must never reach a web bundle.
+workspace-hack = { version = "0.1" }

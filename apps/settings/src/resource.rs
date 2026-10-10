@@ -105,7 +105,13 @@ impl ResourceApp for SettingsShell {
     const ARGUMENTS: usize = 1;
 
     fn view(cx: &mut ViewCx<Settings>) -> Element {
-        let app = SettingsApp::new();
+        // Private host profiles also own their account stores and mutation journal.
+        let app = match cx.storage().settings_document() {
+            ui::storage::SettingsDocument::Session => SettingsApp::new(),
+            ui::storage::SettingsDocument::File(path) => {
+                SettingsApp::with_config_root(path.parent().unwrap_or(path.as_path()))
+            }
+        };
         // A pane search hit, or an agent's `open`, shows the pane it names.
         cx.on_open(app.opener());
         cx.surface(app)
@@ -148,7 +154,7 @@ impl ResourceApp for SettingsShell {
             .settings::<crate::prefs::NotificationPrefs>()
             .settings::<crate::prefs::AudioPrefs>()
             .settings::<crate::prefs::DisplayPrefs>()
-            .settings::<crate::region::Locale>()
+            .settings::<tilo_locale::Locale>()
             .settings::<crate::continuity::ContinuityPrivacy>()
             .settings::<crate::panes::keyboard_shortcuts::DesktopControls>()
             .settings::<crate::panes::agent_models::AgentProviders>()
@@ -167,7 +173,7 @@ impl ResourceSurface<Settings, SettingsEffect> for SettingsApp {
     fn present(&mut self, _state: &Rc<Settings>) {}
 
     fn take_host_intent(&mut self) -> Option<ui::widget::AppHostIntent> {
-        self.displays().model().borrow_mut().take_host_intent()
+        self.displays().take_host_intent()
     }
 
     fn attach(&mut self, cx: SurfaceCx<Settings>) {
@@ -203,6 +209,52 @@ impl ResourceSurface<Settings, SettingsEffect> for SettingsApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_pane_launch_is_applied_once_and_does_not_leak_to_another_window() {
+        use ui::framework::testing::TestApp;
+
+        let mut app = TestApp::<SettingsShell>::launched(&["settings://updates"])
+            .expect("the actual framework launch");
+        assert_eq!(
+            app.with_widget::<SettingsApp, _>(|settings| settings.selected()),
+            Some(Category::Updates),
+            "the launch link opens its named pane"
+        );
+        app.effect(&SettingsEffect::from(NavigationEffect::OpenPane {
+            pane: "power".into(),
+        }))
+        .expect("the normal public navigation effect");
+        for _ in 0..3 {
+            app.harness().relayout();
+            assert_eq!(
+                app.with_widget::<SettingsApp, _>(|settings| settings.selected()),
+                Some(Category::Power),
+                "later host frames must not replay the consumed Updates launch"
+            );
+        }
+        let mut reopened = app
+            .reopen()
+            .expect("reopen the same profile without arguments");
+        assert_eq!(
+            reopened.with_widget::<SettingsApp, _>(|settings| settings.selected()),
+            Some(Category::DEFAULT),
+            "the previous launch argument is not pending on the reopened window"
+        );
+        let mut other = TestApp::<SettingsShell>::new().expect("another ordinary window");
+        assert_eq!(
+            other.with_widget::<SettingsApp, _>(|settings| settings.selected()),
+            Some(Category::DEFAULT),
+            "a launch belongs to its window, not a global pane mailbox"
+        );
+        let mut invalid = TestApp::<SettingsShell>::launched(&["--shots"])
+            .expect("an argument that is not a Settings link");
+        assert_eq!(
+            invalid.with_widget::<SettingsApp, _>(|settings| settings.selected()),
+            Some(Category::DEFAULT),
+            "the original non-link argument never selects a pane"
+        );
+    }
 
     #[test]
     fn pane_links_preserve_query_and_fragment_compatibility() {

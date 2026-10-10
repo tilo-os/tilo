@@ -22,8 +22,9 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 
 use ui::tilo_resource::{self, Atom, Collection, Edit, EditOp, Grid, Id, Model, Path, Refusal};
 
-use crate::model::{Addr, CellFormat, Currency};
+use crate::model::{Addr, CellFormat};
 use crate::settings::DocSettings;
+use tilo_locale::Currency;
 
 /// The identity of a new workbook's first sheet. The genesis is the same
 /// change on every device, so two people creating the room's workbook before

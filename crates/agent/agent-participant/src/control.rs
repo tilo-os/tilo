@@ -10,7 +10,7 @@
 //! apps. Only devices of the delegating user may steer; an agent may not.
 
 use std::collections::BTreeMap;
-use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError, Weak};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, PoisonError, Weak};
 use std::time::Duration;
 
 use ed25519_dalek::SigningKey;
@@ -110,6 +110,56 @@ struct Changed {
     condvar: Condvar,
 }
 
+/// Raised whenever something [`AgentSupervisor::snapshot`] returns changed,
+/// so the host writes its state when it changes rather than on an interval.
+#[derive(Default)]
+pub(crate) struct SnapshotChanges {
+    generation: Mutex<u64>,
+    condvar: Condvar,
+}
+
+impl SnapshotChanges {
+    fn generation_guard(&self) -> MutexGuard<'_, u64> {
+        self.generation
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Something the snapshot holds changed, or the host is stopping.
+    pub(crate) fn raise(&self) {
+        let mut generation = self.generation_guard();
+        *generation = generation.wrapping_add(1);
+        drop(generation);
+        self.condvar.notify_all();
+    }
+
+    /// The current generation: read it before taking a snapshot, then
+    /// [`Self::wait_past`] it.
+    pub(crate) fn generation(&self) -> u64 {
+        *self.generation_guard()
+    }
+
+    /// Block until the generation moves past `seen` or `timeout` passes
+    /// (`None`: no limit). A change raised after `seen` was read returns at
+    /// once, so none is lost between a write and this wait.
+    pub(crate) fn wait_past(&self, seen: u64, timeout: Option<Duration>) {
+        let generation = self.generation_guard();
+        let woken = match timeout {
+            Some(timeout) => {
+                self.condvar
+                    .wait_timeout_while(generation, timeout, |now| *now == seen)
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .0
+            }
+            None => self
+                .condvar
+                .wait_while(generation, |now| *now == seen)
+                .unwrap_or_else(PoisonError::into_inner),
+        };
+        drop(woken);
+    }
+}
+
 /// One agent's steering state, shared by its participant and the
 /// supervisor.
 pub struct AgentControl {
@@ -119,6 +169,9 @@ pub struct AgentControl {
     /// Who confirms an action the agent's grants leave to the person: the
     /// person's own host, never the agent.
     witness: Mutex<Option<Witness>>,
+    /// The supervisor's signal that its snapshot changed, once the agent
+    /// is one of its agents.
+    reports_to: OnceLock<Arc<SnapshotChanges>>,
 }
 
 /// The person's host an agent asks before an action that asks first
@@ -144,6 +197,7 @@ impl AgentControl {
             }),
             changed: Changed::default(),
             witness: Mutex::new(None),
+            reports_to: OnceLock::new(),
         })
     }
 
@@ -177,6 +231,7 @@ impl AgentControl {
             }),
             changed: Changed::default(),
             witness: Mutex::new(None),
+            reports_to: OnceLock::new(),
         })
     }
 
@@ -189,6 +244,7 @@ impl AgentControl {
     /// Name the room the agent works in.
     pub fn set_room(&self, room: &str) {
         self.state().room = Some(room.to_owned());
+        self.persisted_changed();
     }
 
     /// Whether the agent is done for good: stopped, or its session failed.
@@ -221,11 +277,25 @@ impl AgentControl {
         state.paused = false;
         state.activity = None;
         drop(state);
+        self.persisted_changed();
         self.wake();
     }
 
     fn state(&self) -> MutexGuard<'_, ControlState> {
         self.state.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Tell `changes` whenever what this agent persists changes.
+    pub(crate) fn report_to(&self, changes: &Arc<SnapshotChanges>) {
+        let _ = self.reports_to.set(Arc::clone(changes));
+    }
+
+    /// What this agent persists changed: its status, tasks, conversation,
+    /// activity or room.
+    fn persisted_changed(&self) {
+        if let Some(changes) = self.reports_to.get() {
+            changes.raise();
+        }
     }
 
     /// Wake the agent's loop: its steering, its session or its host
@@ -321,6 +391,7 @@ impl AgentControl {
             error: None,
         });
         drop(state);
+        self.persisted_changed();
         self.wake();
         Ok(id)
     }
@@ -338,6 +409,7 @@ impl AgentControl {
         state.paused = true;
         state.status = AgentStatus::Paused;
         drop(state);
+        self.persisted_changed();
         self.wake();
         Ok(())
     }
@@ -363,6 +435,7 @@ impl AgentControl {
             AgentStatus::Waiting
         };
         drop(state);
+        self.persisted_changed();
         self.wake();
         Ok(())
     }
@@ -380,6 +453,7 @@ impl AgentControl {
         state.paused = false;
         state.activity = None;
         drop(state);
+        self.persisted_changed();
         self.wake();
     }
 
@@ -414,6 +488,7 @@ impl AgentControl {
             }
         }
         drop(state);
+        self.persisted_changed();
         self.wake();
         Ok(())
     }
@@ -443,8 +518,10 @@ impl AgentControl {
     /// The participant joined (`Waiting`) or its session failed.
     pub fn set_status(&self, status: AgentStatus) {
         let mut state = self.state();
-        if state.status != AgentStatus::Stopped && !state.paused {
+        if state.status != AgentStatus::Stopped && !state.paused && state.status != status {
             state.status = status;
+            drop(state);
+            self.persisted_changed();
         }
     }
 
@@ -462,6 +539,7 @@ impl AgentControl {
         let begun = (task.id.clone(), task.text.clone());
         state.status = AgentStatus::Running;
         drop(state);
+        self.persisted_changed();
         Some(begun)
     }
 
@@ -475,8 +553,11 @@ impl AgentControl {
 
     /// Record one action task `id` performed.
     pub fn record_step(&self, id: &str, step: AgentStep) {
-        if let Some(task) = self.state().tasks.iter_mut().find(|task| task.id == id) {
+        let mut state = self.state();
+        if let Some(task) = state.tasks.iter_mut().find(|task| task.id == id) {
             task.steps.push(step);
+            drop(state);
+            self.persisted_changed();
         }
     }
 
@@ -513,11 +594,18 @@ impl AgentControl {
         if !state.paused && state.status != AgentStatus::Stopped {
             state.status = AgentStatus::Waiting;
         }
+        drop(state);
+        self.persisted_changed();
     }
 
     /// What the agent is doing now, as its presence shows it.
     pub fn set_activity(&self, activity: Option<String>) {
-        self.state().activity = activity;
+        let mut state = self.state();
+        if state.activity != activity {
+            state.activity = activity;
+            drop(state);
+            self.persisted_changed();
+        }
     }
 
     /// The agent's current activity line.
@@ -740,6 +828,8 @@ pub struct AgentSupervisor {
     link: Mutex<Option<Arc<dyn AgentHostLink>>>,
     state: Mutex<SupervisorState>,
     ledger: Mutex<InvocationLedger<InvocationState>>,
+    /// Raised whenever [`Self::snapshot`] would return something new.
+    changes: Arc<SnapshotChanges>,
     me: Weak<Self>,
 }
 
@@ -756,12 +846,29 @@ impl AgentSupervisor {
                 agents: BTreeMap::new(),
             }),
             ledger: Mutex::new(InvocationLedger::default()),
+            changes: Arc::default(),
             me: me.clone(),
         })
     }
 
     fn state(&self) -> MutexGuard<'_, SupervisorState> {
         self.state.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// The signal raised whenever [`Self::snapshot`] would return something
+    /// new: a grant or an agent changed.
+    pub(crate) fn changes(&self) -> &Arc<SnapshotChanges> {
+        &self.changes
+    }
+
+    /// When the next approved grant expires (ns since the epoch), if any.
+    pub(crate) fn next_expiry_ns(&self) -> Option<u64> {
+        self.state()
+            .grants
+            .iter()
+            .filter(|grant| grant.state == GrantState::Approved)
+            .map(|grant| grant.proposal.expires_at_ns)
+            .min()
     }
 
     fn ledger(&self) -> MutexGuard<'_, InvocationLedger<InvocationState>> {
@@ -793,6 +900,8 @@ impl AgentSupervisor {
             .grants
             .retain(|grant| grant.id() != identity.delegation.agent_id);
         state.grants.push(Grant::approved(identity));
+        drop(state);
+        self.changes.raise();
     }
 
     /// Ask the user's approver for a new grant as `request` describes.
@@ -869,6 +978,7 @@ impl AgentSupervisor {
         });
         trim_grants(&mut state.grants);
         drop(state);
+        self.changes.raise();
         Ok((id, pairing_code))
     }
 
@@ -876,6 +986,8 @@ impl AgentSupervisor {
         let link = self.link();
         let mut state = self.state();
         Self::answer_grant(&mut state, link.as_deref(), id, outcome);
+        drop(state);
+        self.changes.raise();
     }
 
     fn answer_grant(
@@ -940,6 +1052,7 @@ impl AgentSupervisor {
         grant.settle(to, reason);
         let agent = state.agents.get(id).cloned();
         drop(state);
+        self.changes.raise();
         if let Some(agent) = agent {
             agent.stop();
         }
@@ -1013,6 +1126,7 @@ impl AgentSupervisor {
                 return Err(ControlError::InUse.to_string());
             }
             let control = AgentControl::new(identity.delegation.clone());
+            control.report_to(&self.changes);
             control.set_room(&room);
             control.set_witness(
                 self.link()
@@ -1167,6 +1281,7 @@ impl AgentSupervisor {
                 self.link()
                     .and_then(|link| link.witness(control.delegation())),
             );
+            control.report_to(&self.changes);
             match identity {
                 Some(identity) if !control.ended() => resume.push((identity, control.clone())),
                 Some(_) => {}
@@ -1178,6 +1293,7 @@ impl AgentSupervisor {
         state.grants = grants;
         state.agents = agents;
         drop(state);
+        self.changes.raise();
         resume
     }
 
@@ -1485,7 +1601,7 @@ impl ActionHost for SupervisorHost {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use tilo_actions::remote::{PendingPoll, ReceiptStatus, RemoteActionTarget};
@@ -1493,6 +1609,11 @@ mod tests {
     const ROOM: &str = "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71";
 
     fn identity(root: &SigningKey) -> AgentIdentity {
+        identity_until(root, u64::MAX)
+    }
+
+    /// The `writer` agent of `root`, delegated until `expires_at_ns`.
+    pub(crate) fn identity_until(root: &SigningKey, expires_at_ns: u64) -> AgentIdentity {
         let key = SigningKey::from_bytes(&[9; 32]);
         let device = key.verifying_key().to_bytes();
         let delegation = AgentDelegation::sign(
@@ -1506,7 +1627,7 @@ mod tests {
                 apps: Vec::new(),
             },
             1,
-            u64::MAX,
+            expires_at_ns,
         )
         .unwrap();
         let cert = DeviceCert {

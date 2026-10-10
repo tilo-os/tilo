@@ -436,6 +436,13 @@ impl SessionProtocol {
         framing: tilo_delivery_protocol::transport_v2::StateFraming::Presence,
         signed_actions: true,
     };
+    /// `ALPN_CODED_DELTA_V1`: [`Self::PRESENCE_BATCH`] whose live deltas are
+    /// written coded against the session's previous delta from the same
+    /// author (TIL-755).
+    pub(crate) const CODED_DELTA: Self = Self {
+        framing: tilo_delivery_protocol::transport_v2::StateFraming::CodedDelta,
+        signed_actions: true,
+    };
 }
 
 /// [`run_peer`] over a carrier other than an iroh connection (a browser's
@@ -814,6 +821,9 @@ where
         // This connection's half of its presence slot coding: it sees every
         // batch this writer writes, in order.
         let mut presence_slots = tilo_delivery_protocol::transport_v2::PresenceEncoder::default();
+        // And of its delta slot coding: it sees every coded delta this
+        // writer writes, in order.
+        let mut delta_slots = tilo_delivery_protocol::transport_v2::DeltaEncoder::default();
         loop {
             if active.is_none() {
                 active = reply_rx.try_recv().ok();
@@ -864,7 +874,8 @@ where
                     continue;
                 }
                 if let Some(state) = deferred_state.take() {
-                    write_state_delivery(state, &peer, &session, &mut write).await?;
+                    write_state_delivery(state, &peer, &session, &mut delta_slots, &mut write)
+                        .await?;
                     private_burst = 0;
                     raw_turn = true;
                     continue;
@@ -5123,6 +5134,31 @@ fn encode_charged(
     Ok(frame)
 }
 
+/// A live delta about to be written, charged to its room's live egress: on
+/// `tilo-relay/7` coded against what the session last received from the
+/// same author in the same room (`DeltaEncoder`), otherwise as
+/// [`encode_charged`] writes it. A delta the encoder does not code (signed,
+/// or larger than it keeps) goes whole and changes no slot.
+fn encode_delta_charged(
+    envelope: &Envelope,
+    session: &SessionCtx<'_>,
+    deltas: &mut tilo_delivery_protocol::transport_v2::DeltaEncoder,
+) -> Result<Vec<u8>, postcard::Error> {
+    if session.framing.codes_deltas()
+        && let Some(frame) = deltas.encode(envelope)?
+    {
+        if let Some(room) = envelope.workspace_id() {
+            session.metrics.add_room_egress(
+                room,
+                u64::try_from(frame.len()).unwrap_or(u64::MAX),
+                true,
+            );
+        }
+        return Ok(frame);
+    }
+    encode_charged(envelope, session, true)
+}
+
 /// Presence items one `PresenceBatch` frame carries at most.
 const PRESENCE_BATCH_ITEMS: usize = 64;
 
@@ -5181,6 +5217,7 @@ async fn write_state_delivery<W: tokio::io::AsyncWrite + Unpin>(
     delivery: StateDelivery,
     peer: &AuthenticatedPeer,
     session: &SessionCtx<'_>,
+    deltas: &mut tilo_delivery_protocol::transport_v2::DeltaEncoder,
     write: &mut W,
 ) -> Result<(), PeerError> {
     let Envelope::Delta { workspace_id, .. } = &*delivery.envelope else {
@@ -5236,7 +5273,7 @@ async fn write_state_delivery<W: tokio::io::AsyncWrite + Unpin>(
         tracing::info!(phase="server_delta_wire", workspace_id, authored_at_ns, recipient=%hex::encode(&peer.device_public_key[..4]));
     }
     write
-        .write_all(&encode_charged(&delivery.envelope, session, true)?)
+        .write_all(&encode_delta_charged(&delivery.envelope, session, deltas)?)
         .await?;
     trace_native_publication("written", &delivery.envelope, Some(&peer.device_public_key));
     if let Some(position) = resume_record(session, *workspace_id, [&*delivery.envelope]) {

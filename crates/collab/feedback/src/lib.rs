@@ -43,6 +43,15 @@ pub mod destination {
     pub const SUBMIT_FIELD: &str = "comments";
     /// The report item's action that answers its receipt.
     pub const READ_RECEIPT: &str = "read-feedback-receipt";
+    /// The channel item's read that proves the channel exists as a text
+    /// channel, without joining or creating it.
+    pub const READ_DESTINATION: &str = "read-feedback-destination";
+
+    /// The resource id of the destination's item `id` in `field`.
+    #[must_use]
+    pub fn item(field: &str, id: &str) -> String {
+        format!("{RESOURCE_KIND}/{field}/{id}")
+    }
 }
 
 /// A configured destination. A label or a URL is never routing authority.

@@ -124,6 +124,9 @@ pub struct DefaultAppsArea {
     prefs: RefCell<Followed<DefaultApps>>,
     candidates: OnceCell<Vec<AppCandidate>>,
     sample: bool,
+    /// The installed apps, read off the UI thread after the window's first
+    /// frame ([`Self::start_read`]).
+    read: crate::device_read::DeviceRead<Vec<AppCandidate>>,
 }
 
 impl DefaultAppsArea {
@@ -134,17 +137,40 @@ impl DefaultAppsArea {
             prefs: RefCell::new(cx.follow::<DefaultApps>()),
             candidates: OnceCell::new(),
             sample: !cx.reaches_devices(),
+            read: crate::device_read::DeviceRead::default(),
         }
     }
 
     fn candidates(&self) -> &[AppCandidate] {
         self.candidates.get_or_init(|| {
-            if self.sample {
-                sample_candidates()
-            } else {
-                installed_candidates()
-            }
+            self.read
+                .take()
+                .unwrap_or_else(|| Self::read_candidates(self.sample))
         })
+    }
+
+    /// Every installed app's manifest claims, or the sample a capture lists.
+    fn read_candidates(sample: bool) -> Vec<AppCandidate> {
+        if sample {
+            sample_candidates()
+        } else {
+            installed_candidates()
+        }
+    }
+
+    /// Read the installed apps off the UI thread; `false` when they have
+    /// been read or are being read.
+    pub(crate) fn start_read(&self) -> bool {
+        if self.is_open() {
+            return false;
+        }
+        let sample = self.sample;
+        self.read.start(move || Self::read_candidates(sample))
+    }
+
+    /// Whether the read [`Self::start_read`] started has ended.
+    pub(crate) fn read_finished(&self) -> bool {
+        self.read.is_finished()
     }
 
     /// Whether the area has read what its rows show: its pane was shown,
@@ -555,6 +581,7 @@ mod tests {
                 candidate("so.tilo.b", "pdf"),
             ]),
             sample: true,
+            read: crate::device_read::DeviceRead::default(),
         };
         let pdf = ResourceKind::extension("pdf").unwrap();
         let mut pane = PersonalAppsPane::new(cx.clone(), &area);

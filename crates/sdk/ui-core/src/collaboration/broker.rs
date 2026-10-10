@@ -3139,7 +3139,7 @@ impl CollaborationManager {
     /// [`super::CollaborationState::Connecting`] until the broker
     /// acknowledges the route. For a host showing an app inside its own
     /// process.
-    pub(crate) fn for_route_host_in_background(
+    pub fn for_route_host_in_background(
         connector: HostSessionConnector,
         route: RouteSpec,
         record_kind: Option<String>,
@@ -6912,6 +6912,8 @@ mod tests {
 
     #[cfg(unix)]
     include!("directory_client_tests.rs");
+    #[cfg(unix)]
+    include!("committed_read_deadline_tests.rs");
     use crate::collaboration::{CollaborationState, SignedSendError, SigningIdentity};
 
     fn plain_route_keys() -> SharedRouteKeys {
@@ -6964,6 +6966,10 @@ mod tests {
         received_invocations: usize,
         invocation_execution: Option<Result<bool, String>>,
         committed_recheck_gate: Option<tokio::sync::oneshot::Receiver<()>>,
+        committed_ack_gate: Option<(mpsc::Sender<()>, tokio::sync::oneshot::Receiver<()>)>,
+        committed_private_binding: Option<u64>,
+        committed_ack_failure: Option<String>,
+        committed_ack_reply: Option<runtime_collab::committed_document::Reply>,
         committed_reads: Vec<runtime_collab::committed_document::Request>,
         media_commands: Vec<runtime_collab::native_media::Request>,
         media_active_fixture: bool,
@@ -7534,6 +7540,9 @@ mod tests {
                 let reply = match captures.committed_history_fixture.as_ref() {
                     None => Reply::Legacy,
                     Some(bytes) => match request {
+                        Request::PrivateWindowBinding => Reply::PrivateWindowBinding {
+                            instance: captures.committed_private_binding,
+                        },
                         Request::Open {
                             known_revision: Some(revision),
                         } if revision == current_revision => Reply::Unchanged { revision },
@@ -7546,7 +7555,13 @@ mod tests {
                             token: [3; 16],
                         },
                         Request::Cancel { capture: 1, token } if token == [3; 16] => {
-                            Reply::Cancelled
+                            if let Some(error) = captures.committed_ack_failure.take() {
+                                return Err(capnp::Error::failed(error));
+                            }
+                            captures
+                                .committed_ack_reply
+                                .take()
+                                .unwrap_or(Reply::Cancelled)
                         }
                         _ => {
                             return Err(capnp::Error::failed(
@@ -7557,6 +7572,11 @@ mod tests {
                 };
                 let gate = if matches!(reply, Reply::Unchanged { .. }) {
                     captures.committed_recheck_gate.take()
+                } else if matches!(reply, Reply::Cancelled) {
+                    captures.committed_ack_gate.take().map(|(entered, gate)| {
+                        entered.send(()).unwrap();
+                        gate
+                    })
                 } else {
                     None
                 };

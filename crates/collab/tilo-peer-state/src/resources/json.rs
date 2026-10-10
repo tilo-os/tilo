@@ -1,7 +1,5 @@
 //! Closed governance JSON boundary: explicit nesting, number and
 //! allocation limits before and during decoding.
-pub mod guard;
-
 use super::PeerResourceError;
 
 #[derive(Clone, Copy)]
@@ -19,14 +17,13 @@ impl Schema for crate::state::RedemptionReceipt {}
 /// Decode one governance JSON value within `limits`.
 pub(crate) fn decode<T: Schema>(bytes: &[u8], limits: JsonLimits) -> Result<T, PeerResourceError> {
     lexical_policy(bytes)?;
-    guard::json(
+    super::guard::json(
         bytes,
-        guard::GuardLimits::closed(limits.allocation_bytes, limits.collection_entries),
+        super::OuterLimits {
+            allocation_bytes: limits.allocation_bytes,
+            collection_entries: limits.collection_entries,
+        },
     )
-    .map_err(|error| match error {
-        guard::GuardError::Capacity => PeerResourceError::Capacity,
-        guard::GuardError::Malformed => PeerResourceError::Malformed,
-    })
 }
 
 // Allocation-free refusal policy, not a second JSON grammar/schema decoder.

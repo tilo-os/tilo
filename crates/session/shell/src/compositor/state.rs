@@ -100,10 +100,16 @@ fn shm_regions(rects: &[BufferRect]) -> Vec<crate::compositor::surface_readback:
 
 type BufferRect = smithay::utils::Rectangle<i32, smithay::utils::Buffer>;
 
-/// Keep only unambiguous buffer-coordinate damage. Surface-coordinate
-/// rectangles require viewport/scale conversion; absent or transformed hints
-/// remain whole-buffer damage rather than guessing that conversion.
-fn pending_buffer_rects(attrs: &wl_compositor::SurfaceAttributes) -> Option<Vec<BufferRect>> {
+/// The commit's damage in buffer pixels. Buffer-coordinate rectangles
+/// (`wl_surface.damage_buffer`) are taken as they are. Surface-coordinate
+/// ones (`wl_surface.damage`) cover `buffer_scale` buffer pixels per
+/// surface pixel while no viewport (`viewported`) crops or scales the
+/// buffer; with one, or with a transformed or offset buffer, or no damage,
+/// the whole buffer is damaged rather than guessing the conversion.
+fn pending_buffer_rects(
+    attrs: &wl_compositor::SurfaceAttributes,
+    viewported: bool,
+) -> Option<Vec<BufferRect>> {
     if attrs.buffer_transform
         != smithay::reexports::wayland_server::protocol::wl_output::Transform::Normal
         || attrs
@@ -118,12 +124,166 @@ fn pending_buffer_rects(attrs: &wl_compositor::SurfaceAttributes) -> Option<Vec<
         .damage
         .iter()
         .map(|damage| {
-            let wl_compositor::Damage::Buffer(rect) = damage else {
-                return None;
+            let rect = match damage {
+                wl_compositor::Damage::Buffer(rect) => *rect,
+                wl_compositor::Damage::Surface(rect) if !viewported => {
+                    surface_rect_in_buffer(*rect, attrs.buffer_scale)?
+                }
+                wl_compositor::Damage::Surface(_) => return None,
             };
-            (rect.size.w > 0 && rect.size.h > 0).then_some(*rect)
+            (rect.size.w > 0 && rect.size.h > 0).then_some(rect)
         })
         .collect()
+}
+
+/// Whether the commit's viewport crops or scales the buffer: surface-local
+/// damage then has no plain conversion to buffer pixels.
+fn pending_viewport(states: &wl_compositor::SurfaceData) -> bool {
+    let mut viewport = states
+        .cached_state
+        .get::<smithay::wayland::viewporter::ViewportCachedState>();
+    let pending = viewport.pending();
+    let set = pending.src.is_some() || pending.dst.is_some();
+    drop(viewport);
+    set
+}
+
+/// A surface-local rectangle in the pixels of an untransformed buffer drawn
+/// at `scale` buffer pixels per surface pixel. Clients damage "everything"
+/// as `i32::MAX`-sized rectangles, so the scaling saturates.
+fn surface_rect_in_buffer(
+    rect: smithay::utils::Rectangle<i32, smithay::utils::Logical>,
+    scale: i32,
+) -> Option<BufferRect> {
+    if scale < 1 {
+        return None;
+    }
+    let scaled = |value: i32| value.saturating_mul(scale);
+    Some(BufferRect::new(
+        (scaled(rect.loc.x), scaled(rect.loc.y)).into(),
+        (scaled(rect.size.w), scaled(rect.size.h)).into(),
+    ))
+}
+
+#[cfg(test)]
+mod commit_damage_tests {
+    use super::{BufferRect, pending_buffer_rects, wl_compositor};
+    use smithay::utils::{Logical, Rectangle};
+
+    fn commit(damage: Vec<wl_compositor::Damage>, scale: i32) -> wl_compositor::SurfaceAttributes {
+        let mut attrs = wl_compositor::SurfaceAttributes::default();
+        attrs.damage = damage;
+        attrs.buffer_scale = scale;
+        attrs
+    }
+
+    fn surface(x: i32, y: i32, w: i32, h: i32) -> wl_compositor::Damage {
+        wl_compositor::Damage::Surface(Rectangle::<i32, Logical>::new((x, y).into(), (w, h).into()))
+    }
+
+    fn buffer(x: i32, y: i32, w: i32, h: i32) -> BufferRect {
+        BufferRect::new((x, y).into(), (w, h).into())
+    }
+
+    #[test]
+    fn surface_damage_covers_its_buffer_pixels_at_the_buffer_scale() {
+        let attrs = commit(
+            vec![
+                surface(10, 20, 30, 4),
+                wl_compositor::Damage::Buffer(buffer(1, 2, 3, 4)),
+            ],
+            2,
+        );
+        assert_eq!(
+            pending_buffer_rects(&attrs, false),
+            Some(vec![buffer(20, 40, 60, 8), buffer(1, 2, 3, 4)])
+        );
+    }
+
+    #[test]
+    fn surface_damage_under_a_viewport_damages_the_whole_buffer() {
+        let attrs = commit(vec![surface(10, 20, 30, 4)], 1);
+        assert_eq!(pending_buffer_rects(&attrs, true), None);
+        // Buffer damage needs no conversion, viewport or not.
+        let attrs = commit(vec![wl_compositor::Damage::Buffer(buffer(1, 2, 3, 4))], 1);
+        assert_eq!(
+            pending_buffer_rects(&attrs, true),
+            Some(vec![buffer(1, 2, 3, 4)])
+        );
+    }
+
+    #[test]
+    fn damaging_everything_in_surface_pixels_saturates() {
+        let attrs = commit(vec![surface(0, 0, i32::MAX, i32::MAX)], 2);
+        assert_eq!(
+            pending_buffer_rects(&attrs, false),
+            Some(vec![buffer(0, 0, i32::MAX, i32::MAX)])
+        );
+    }
+}
+
+/// What a commit says about its surface's opacity: the opaque region the
+/// commit applies and how its buffer maps onto the surface.
+struct DeclaredOpacity {
+    region: Option<wl_compositor::RegionAttributes>,
+    scale: i32,
+    transform: smithay::reexports::wayland_server::protocol::wl_output::Transform,
+}
+
+impl DeclaredOpacity {
+    fn of(attrs: &wl_compositor::SurfaceAttributes) -> Self {
+        Self {
+            region: attrs.opaque_region.clone(),
+            scale: attrs.buffer_scale,
+            transform: attrs.buffer_transform,
+        }
+    }
+
+    /// `dmabuf` as the commit attaches it to the surface `states` describe:
+    /// with the surface's colour description, and opaque when the region
+    /// covers the surface it gives under the pending viewport.
+    fn commit(
+        &self,
+        states: &wl_compositor::SurfaceData,
+        dmabuf: Dmabuf,
+    ) -> crate::compositor::foreign::DmabufCommit {
+        let colorimetry = states
+            .data_map
+            .get::<crate::wayland::color_management::ColorManagementSurfaceData>()
+            .and_then(
+                crate::wayland::color_management::ColorManagementSurfaceData::current_colorimetry,
+            )
+            .map(|(colorimetry, _)| colorimetry);
+        let viewport = *states
+            .cached_state
+            .get::<smithay::wayland::viewporter::ViewportCachedState>()
+            .pending();
+        let opaque = self.covers((dmabuf.width(), dmabuf.height()), &viewport);
+        crate::compositor::foreign::DmabufCommit {
+            buffer: dmabuf,
+            colorimetry,
+            opaque,
+        }
+    }
+
+    /// The opaque region covers the whole surface a `buffer` of this size
+    /// gives: the buffer's alpha is padding
+    /// ([`crate::compositor::opaque_region`]).
+    fn covers(
+        &self,
+        buffer: (u32, u32),
+        viewport: &smithay::wayland::viewporter::ViewportCachedState,
+    ) -> bool {
+        crate::compositor::opaque_region::covers(
+            self.region.as_ref(),
+            crate::compositor::opaque_region::surface_extent(
+                buffer,
+                self.scale,
+                self.transform,
+                viewport,
+            ),
+        )
+    }
 }
 
 use smithay::backend::allocator::Fourcc;
@@ -637,6 +797,11 @@ pub struct State {
     /// whose dma-bufs the compositor can actually read. Not advertising is
     /// the honest answer there: Mesa falls back to its `wl_shm` software path instead of offering dmabufs it would have to reject.
     pub dmabuf_global: Option<DmabufGlobal>,
+    /// The feedback each surface gets from [`Self::dmabuf_global`]: the
+    /// default, or a scanout tranche for the fullscreen client a display
+    /// could scan out ([`Self::update_scanout_feedback`]). `None` whenever
+    /// the global is.
+    pub scanout_feedback: Option<crate::compositor::scanout_feedback::ScanoutFeedback>,
     /// The render node handed to clients as
     /// `zwp_linux_dmabuf_feedback_v1.main_device`, or the reason none was —
     /// kept so the boot log, state dump and integration tests read the *decision* rather than re-deriving it.
@@ -1341,7 +1506,8 @@ impl State {
         let output_manager_state = OutputManagerState::new_with_xdg_output::<Self>(&display_handle);
 
         let mut dmabuf_state = DmabufState::new();
-        let (dmabuf_device, dmabuf_global) = Self::init_dmabuf(&display_handle, &mut dmabuf_state);
+        let (dmabuf_device, dmabuf_global, scanout_feedback) =
+            Self::init_dmabuf(&display_handle, &mut dmabuf_state);
 
         // Register a real seat with a pointer device for `apply_remote_input` to inject into; name matches the wayland.rs sibling for consistency.
         let mut seat = seat_state.new_wl_seat(&display_handle, "tilo-desktop");
@@ -1409,6 +1575,7 @@ impl State {
             shm_state,
             dmabuf_state,
             dmabuf_global,
+            scanout_feedback,
             dmabuf_device,
             seat_state,
             text_input_manager_state,
@@ -1528,7 +1695,11 @@ impl State {
     fn init_dmabuf(
         display_handle: &DisplayHandle,
         dmabuf_state: &mut DmabufState,
-    ) -> (Result<RenderNode, ProbeError>, Option<DmabufGlobal>) {
+    ) -> (
+        Result<RenderNode, ProbeError>,
+        Option<DmabufGlobal>,
+        Option<crate::compositor::scanout_feedback::ScanoutFeedback>,
+    ) {
         // `zwp_linux_dmabuf_v1`. Two things have to be right for a GPU client:
         //
         // 1. **A main device.** Mesa dropped `wl_drm`, so
@@ -1559,54 +1730,59 @@ impl State {
         })
         .collect();
         let dmabuf_device = crate::compositor::render_node::probe();
-        let dmabuf_global =
-            match &dmabuf_device {
-                Ok(node) => {
-                    match DmabufFeedbackBuilder::new(node.dev, dmabuf_formats.clone()).build() {
-                        Ok(feedback) => {
-                            // Publish the decision for the import side: buffers clients hand us were allocated on this GPU, so it must read them back.
-                            crate::compositor::render_node::set_advertised(node.path.clone());
-                            crate::compositor::gpu_health::record_dmabuf(Ok(&node.path));
-                            tracing::info!(
-                                target: "shell::compositor::dmabuf",
-                                device = %node.path.display(),
-                                driver = node.driver.as_deref().unwrap_or("<unknown>"),
-                                dev = node.dev,
-                                formats = dmabuf_formats.len(),
-                                "advertising zwp_linux_dmabuf_v1 with feedback"
-                            );
-                            Some(dmabuf_state.create_global_with_default_feedback::<Self>(
-                                display_handle,
-                                &feedback,
-                            ))
-                        }
-                        Err(e) => {
-                            crate::compositor::gpu_health::record_dmabuf(Err(&e.to_string()));
-                            // The format table lives in a sealed memfd; failing to create it means no correct feedback — the broken state this block avoids.
-                            tracing::error!(
-                                target: "shell::compositor::dmabuf",
-                                error = %e,
-                                "could not build dmabuf feedback; not advertising dmabuf — \
-                                 GPU clients will fall back to wl_shm"
-                            );
-                            None
-                        }
+        let mut scanout_feedback = None;
+        let dmabuf_global = match &dmabuf_device {
+            Ok(node) => {
+                match DmabufFeedbackBuilder::new(node.dev, dmabuf_formats.clone()).build() {
+                    Ok(feedback) => {
+                        // Publish the decision for the import side: buffers clients hand us were allocated on this GPU, so it must read them back.
+                        crate::compositor::render_node::set_advertised(node.path.clone());
+                        crate::compositor::gpu_health::record_dmabuf(Ok(&node.path));
+                        tracing::info!(
+                            target: "shell::compositor::dmabuf",
+                            device = %node.path.display(),
+                            driver = node.driver.as_deref().unwrap_or("<unknown>"),
+                            dev = node.dev,
+                            formats = dmabuf_formats.len(),
+                            "advertising zwp_linux_dmabuf_v1 with feedback"
+                        );
+                        let global = dmabuf_state
+                            .create_global_with_default_feedback::<Self>(display_handle, &feedback);
+                        scanout_feedback =
+                            Some(crate::compositor::scanout_feedback::ScanoutFeedback::new(
+                                node.dev,
+                                dmabuf_formats,
+                                feedback,
+                            ));
+                        Some(global)
                     }
-                }
-                Err(e) => {
-                    if !matches!(e, ProbeError::NoRenderNodes | ProbeError::NoRenderer(_)) {
+                    Err(e) => {
                         crate::compositor::gpu_health::record_dmabuf(Err(&e.to_string()));
+                        // The format table lives in a sealed memfd; failing to create it means no correct feedback — the broken state this block avoids.
+                        tracing::error!(
+                            target: "shell::compositor::dmabuf",
+                            error = %e,
+                            "could not build dmabuf feedback; not advertising dmabuf — \
+                             GPU clients will fall back to wl_shm"
+                        );
+                        None
                     }
-                    tracing::warn!(
-                        target: "shell::compositor::dmabuf",
-                        reason = %e,
-                        "not advertising zwp_linux_dmabuf_v1 — GPU clients will render \
-                         through wl_shm (software) instead"
-                    );
-                    None
                 }
-            };
-        (dmabuf_device, dmabuf_global)
+            }
+            Err(e) => {
+                if !matches!(e, ProbeError::NoRenderNodes | ProbeError::NoRenderer(_)) {
+                    crate::compositor::gpu_health::record_dmabuf(Err(&e.to_string()));
+                }
+                tracing::warn!(
+                    target: "shell::compositor::dmabuf",
+                    reason = %e,
+                    "not advertising zwp_linux_dmabuf_v1 — GPU clients will render \
+                     through wl_shm (software) instead"
+                );
+                None
+            }
+        };
+        (dmabuf_device, dmabuf_global, scanout_feedback)
     }
 
     /// Add a keyboard device to `seat` from the persisted XKB settings,
@@ -4084,6 +4260,33 @@ impl State {
             .committed(surface, surface_id, pixels);
     }
 
+    /// Tell the fullscreen client what the display can scan out, after each
+    /// frame is built: `offer` is the frame's scanout candidate with the
+    /// plane of the output it covers ([`crate::compositor::scanout_feedback::offer`]).
+    /// The fullscreen surface gets a scanout tranche while it is that
+    /// candidate and its buffer is opaque; on the frame it stops being
+    /// either — covered by chrome or a popup, translucent, out of
+    /// fullscreen — it gets the default feedback back. Without a dmabuf
+    /// global, or without a plane, every surface keeps the default.
+    pub fn update_scanout_feedback(
+        &mut self,
+        offer: Option<crate::compositor::scanout_feedback::ScanoutOffer>,
+    ) {
+        let Some(feedback) = self.scanout_feedback.as_mut() else {
+            return;
+        };
+        let offered = offer.and_then(|offer| {
+            let target = self
+                .fullscreen_target
+                .as_ref()
+                .filter(|target| target.surface_id == offer.surface)?;
+            let surface = target.surface.wl_surface();
+            crate::compositor::scanout_feedback::ScanoutOpacity::of(surface)
+                .then(|| (surface.clone(), offer.plane))
+        });
+        feedback.offer(offered.as_ref().map(|(surface, plane)| (surface, plane)));
+    }
+
     fn prepare_pending_foreign_capture(&self, surface: &WlSurface) {
         let surface_id = crate::compositor::state::surface_id(surface);
         // `new_toplevel` registers the protocol surface before adopting it
@@ -4125,27 +4328,21 @@ impl State {
                     return (association, None);
                 }
             };
-            let rects = pending_buffer_rects(attrs.pending());
+            let rects = pending_buffer_rects(attrs.pending(), pending_viewport(states));
+            let declared = DeclaredOpacity::of(attrs.pending());
             drop(attrs);
             let damage = rects.as_deref().map(buffer_damage);
             let regions = rects.as_deref().map(shm_regions);
             let Some(client) = surface.client() else {
                 return (ForeignCommitCapture::Failed, None);
             };
-            if let Ok(dmabuf) = smithay::wayland::dmabuf::get_dmabuf(&buffer).cloned() {
-                let colorimetry = states
-                    .data_map
-                    .get::<crate::wayland::color_management::ColorManagementSurfaceData>()
-                    .and_then(crate::wayland::color_management::ColorManagementSurfaceData::current_colorimetry)
-                    .map(|(colorimetry, _)| colorimetry);
+            let commit = smithay::wayland::dmabuf::get_dmabuf(&buffer)
+                .ok()
+                .map(|dmabuf| declared.commit(states, dmabuf.clone()));
+            crate::compositor::scanout_feedback::ScanoutOpacity::record(states, commit.as_ref());
+            if let Some(commit) = commit {
                 if let Some(capture) = crate::compositor::foreign::store()
-                    .prepare_dmabuf_capture_with_damage(
-                        surface_id,
-                        client,
-                        dmabuf,
-                        colorimetry,
-                        damage,
-                    )
+                    .prepare_dmabuf_capture_with_damage(surface_id, client, commit, damage)
                 {
                     // `with_states` holds Smithay's PrivateSurfaceData mutex.
                     // `add_blocker` takes that same non-reentrant mutex, so it
@@ -4762,6 +4959,18 @@ impl DmabufHandler for State {
             modifier = u64::from(dmabuf.format().modifier),
             "dmabuf imported and accepted"
         );
+    }
+
+    fn new_surface_feedback(
+        &mut self,
+        surface: &WlSurface,
+        _global: &DmabufGlobal,
+    ) -> Option<smithay::wayland::dmabuf::DmabufFeedback> {
+        // A surface offered a plane before it asked for feedback gets the
+        // scanout tranche with its first batch.
+        self.scanout_feedback
+            .as_ref()
+            .and_then(|feedback| feedback.for_new_surface(surface))
     }
 }
 

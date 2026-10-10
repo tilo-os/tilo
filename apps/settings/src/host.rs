@@ -77,7 +77,7 @@ fn sections(cx: &ui::framework::SurfaceCx<Settings>) -> HashMap<TypeId, Box<dyn 
     held::<crate::prefs::NotificationPrefs>(cx, &mut sections);
     held::<crate::prefs::AudioPrefs>(cx, &mut sections);
     held::<crate::prefs::DisplayPrefs>(cx, &mut sections);
-    held::<crate::region::Locale>(cx, &mut sections);
+    held::<tilo_locale::Locale>(cx, &mut sections);
     held::<crate::continuity::ContinuityPrivacy>(cx, &mut sections);
     held::<crate::panes::keyboard_shortcuts::DesktopControls>(cx, &mut sections);
     held::<crate::panes::agent_models::AgentProviders>(cx, &mut sections);

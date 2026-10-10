@@ -275,24 +275,7 @@ impl ContactDirectory {
     /// Every matching person remains a candidate, including a unique match.
     /// Local-part case and provider-specific aliases are never guessed.
     pub fn email_candidates(&self, email: &str) -> Vec<Id> {
-        let Some(email) = canonical_email_hint(email) else {
-            return Vec::new();
-        };
-        let mut candidates = self
-            .people
-            .iter()
-            .filter(|(_, person)| {
-                !person.removed
-                    && person
-                        .emails
-                        .0
-                        .iter()
-                        .any(|value| canonical_email_hint(value).as_ref() == Some(&email))
-            })
-            .map(|(id, _)| id.clone())
-            .collect::<Vec<_>>();
-        candidates.sort_by(|a, b| a.as_str().cmp(b.as_str()));
-        candidates
+        self.candidates(email, |person| &person.emails.0, canonical_email_hint)
     }
     fn associate(
         &mut self,
@@ -447,7 +430,18 @@ impl ContactDirectory {
 
     /// Phone matches always remain candidates, including a unique match.
     pub fn phone_candidates(&self, phone: &str) -> Vec<Id> {
-        let Some(phone) = canonical_phone(phone) else {
+        self.candidates(phone, |person| &person.phones.0, canonical_phone)
+    }
+
+    /// Every live person with a value of `values` that canonicalizes like
+    /// `wanted`, in id order.
+    fn candidates(
+        &self,
+        wanted: &str,
+        values: impl Fn(&Person) -> &Vec<String>,
+        canonical: fn(&str) -> Option<String>,
+    ) -> Vec<Id> {
+        let Some(wanted) = canonical(wanted) else {
             return Vec::new();
         };
         let mut candidates = self
@@ -455,15 +449,13 @@ impl ContactDirectory {
             .iter()
             .filter(|(_, person)| {
                 !person.removed
-                    && person
-                        .phones
-                        .0
+                    && values(person)
                         .iter()
-                        .any(|value| canonical_phone(value).as_ref() == Some(&phone))
+                        .any(|value| canonical(value).as_ref() == Some(&wanted))
             })
             .map(|(id, _)| id.clone())
             .collect::<Vec<_>>();
-        candidates.sort_by(|left, right| left.as_str().cmp(right.as_str()));
+        candidates.sort_by(|a, b| a.as_str().cmp(b.as_str()));
         candidates
     }
 }

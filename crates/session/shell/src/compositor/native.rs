@@ -8638,6 +8638,12 @@ pub fn run() {
     // Point `ui`'s clipboard at the compositor's selection mirror — everything
     // hosted here isn't a Wayland client, so without this they'd share no buffer.
     crate::compositor::selection::install_host_services(state.selection_store());
+    // Building the desktop mounts the hosted tabs it restores, which connect
+    // to the collaboration broker and identity service bound below: they
+    // wait for them rather than find no socket and stay offline.
+    crate::shell::in_process::set_session_services(
+        crate::shell::in_process::SessionServices::Starting,
+    );
     let mut frame_builder = FrameBuilder::with_handle_and_records(
         tree_handle.clone(),
         enable_peer_sync,
@@ -8816,6 +8822,12 @@ pub fn run() {
         }
     }
     let identity_broker = spawn_session_identity_broker(&frame_builder.chrome_handle());
+    // Onboarding defers the broker; its start below says so then.
+    if !deferred_peer_sync && !deferred_local_broker {
+        crate::shell::in_process::set_session_services(
+            crate::shell::in_process::SessionServices::Listening,
+        );
+    }
     // Settings can request a small, typed set of contextual tools through a
     // connected descriptor. The shell owns package resolution and launching;
     // failure only removes the advanced handoff, never core Settings controls.
@@ -9105,6 +9117,7 @@ pub fn run() {
             apps.bind_messaging_record_wake(Arc::clone(&session_wake));
             if let Some(network) = peer_sync.as_ref() {
                 apps.bind_private_messages_network(network);
+                apps.bind_feedback_network(Arc::clone(network));
             }
         }
     });
@@ -9484,6 +9497,13 @@ pub fn run() {
     let mut watched_for_host = false;
     // Optional paint-rate diagnostics (`TILO_PAINT_STATS=1`).
     let paint_stats = std::env::var("TILO_PAINT_STATS").is_ok();
+    // `TILO_PAINT_STATS=ticks` also prints a `paint-tick:` line on every
+    // iteration, so a reader can tell when each one ran: a summary covers
+    // everything since the previous one, which may lie long before the
+    // period the reader measures (the idle gate counts only its window).
+    let paint_ticks = std::env::var("TILO_PAINT_STATS").is_ok_and(|value| value.trim() == "ticks");
+    // What ended the park before this iteration, for `paint-tick:`.
+    let mut last_wake: &'static str = "start";
     // Slow iterations are exceptional and always worth preserving in the
     // session flight record: a compositor that stops pumping input for 100 ms
     // is already visibly broken. `TILO_LOOP_TIMING` additionally enables the
@@ -12119,7 +12139,9 @@ pub fn run() {
                         net.set_wake(Arc::clone(&session_wake));
                         frame_builder.with_chrome(|chrome| {
                             if let Some(apps) = chrome.hosted_inputs.in_process() {
-                                apps.borrow_mut().bind_private_messages_network(net);
+                                let mut apps = apps.borrow_mut();
+                                apps.bind_private_messages_network(net);
+                                apps.bind_feedback_network(Arc::clone(net));
                             }
                         });
                     }
@@ -12132,6 +12154,9 @@ pub fn run() {
             };
             collab_broker =
                 spawn_session_collab_broker(&frame_builder.chrome_handle(), peer_sync.as_ref());
+            crate::shell::in_process::set_session_services(
+                crate::shell::in_process::SessionServices::Listening,
+            );
             if let Some(broker) = collab_broker.as_ref() {
                 local_session_lifecycle = Some(install_native_session_lifecycle(
                     broker,
@@ -12354,6 +12379,9 @@ pub fn run() {
         // vs idled and why, confirming the loop actually idles without guessing.
         if paint_stats {
             frames_total = frames_total.saturating_add(1);
+            if paint_ticks {
+                eprintln!("paint-tick: painted={should_paint} woke={last_wake}");
+            }
             if should_paint {
                 frames_painted = frames_painted.saturating_add(1);
                 if had_backend_events {
@@ -12841,6 +12869,14 @@ pub fn run() {
                 crate::compositor::screen_dim::paint_overlay(&mut frame_paint.scene, rect, alpha);
                 frame_paint.force_full();
             }
+            // The scene is final: whatever was appended above has voided the
+            // candidate if it covers it. The fullscreen client learns what
+            // the display would scan out, or that it no longer would.
+            state.update_scanout_feedback(crate::compositor::scanout_feedback::offer(
+                frame_paint.scanout_candidate(),
+                backend.outputs(),
+                |output| backend.scanout_plane(output),
+            ));
             let feedback_output = (backend.outputs().len() == 1)
                 .then(|| {
                     backend
@@ -13358,6 +13394,7 @@ pub fn run() {
         metrics.mark_wake(wake);
         if paint_stats {
             wakes_seen.note(wake);
+            last_wake = wake;
             if wake == "widget" && widget_wake_owner.is_none() {
                 widget_wake_owner = Some(frame_builder.wake_deadline_owners().join(","));
             }

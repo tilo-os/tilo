@@ -18,6 +18,11 @@
 //!   snapshot and signs a [`CoverageStatement`] naming the entries it
 //!   contains, and the host removes exactly those.
 //!
+//! Admission authenticates the device that sent a delta, not the document
+//! signature inside it, so compaction verifies every entry it relies on
+//! itself, once per process for the same bytes ([`verified`] holds the
+//! trust argument).
+//!
 //! The host's snapshot is retained, never fanned out: connected devices
 //! already hold its content. Its certificate is retained beside it, so a
 //! replay carries it first (certificate lineages lead a replay) and a native
@@ -29,10 +34,14 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use automerge::{AutoCommit, ChangeHash};
-use collab_types::{DocumentFrame, DocumentMutation, DocumentMutationKind};
+use collab_types::{DocumentMutation, DocumentMutationKind};
 use tilo_automerge::ApplyIncoming as _;
 use tilo_peer_state::NeighbourMsg;
 use tilo_relay_protocol::compaction::{CoverageStatement, entry_id, snapshot_heads, verify};
+
+mod verified;
+
+use verified::{Checked, Piece, Signatures};
 
 use crate::coedit::CoeditPayload;
 use crate::store::compaction::{ChannelEntry, SnapshotWrite, file_digest};
@@ -59,6 +68,79 @@ const POLL: Duration = Duration::from_millis(250);
 /// How long a request waits for a volunteer that holds every delivery.
 const CATCH_UP: Duration = Duration::from_secs(10);
 const CATCH_UP_POLL: Duration = Duration::from_millis(20);
+
+/// Document-envelope signatures the compactor verified in this process.
+static SIGNATURE_CHECKS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// Thread CPU time compaction spent in this process: reading a channel,
+/// deciding, folding and writing.
+static CPU_NS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Document-envelope signatures compaction verified in this process: what
+/// the hosting bench divides by edits.
+#[must_use]
+pub fn signature_checks() -> u64 {
+    SIGNATURE_CHECKS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+#[cfg(test)]
+thread_local! {
+    /// [`SIGNATURE_CHECKS`] of this thread only: tests run in parallel.
+    static THREAD_SIGNATURE_CHECKS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+fn count_signature_check() {
+    SIGNATURE_CHECKS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    #[cfg(test)]
+    THREAD_SIGNATURE_CHECKS.with(|checks| checks.set(checks.get().saturating_add(1)));
+}
+
+#[cfg(test)]
+fn thread_signature_checks() -> u64 {
+    THREAD_SIGNATURE_CHECKS.with(std::cell::Cell::get)
+}
+
+/// Thread CPU nanoseconds compaction spent in this process (0 where the
+/// platform has no per-thread clock).
+#[must_use]
+pub fn cpu_ns() -> u64 {
+    CPU_NS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+#[cfg(unix)]
+fn thread_cpu_ns() -> Option<u64> {
+    let mut time = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    // SAFETY: `time` is a valid, writable timespec for the duration of the
+    // call; an unsupported clock reports an error instead of writing.
+    let status = unsafe { libc::clock_gettime(libc::CLOCK_THREAD_CPUTIME_ID, &raw mut time) };
+    if status != 0 {
+        return None;
+    }
+    u64::try_from(time.tv_sec)
+        .ok()?
+        .checked_mul(1_000_000_000)?
+        .checked_add(u64::try_from(time.tv_nsec).ok()?)
+}
+
+#[cfg(not(unix))]
+const fn thread_cpu_ns() -> Option<u64> {
+    None
+}
+
+/// Run `work` on this thread and count its CPU time in [`cpu_ns`].
+fn on_cpu<T>(work: impl FnOnce() -> T) -> T {
+    let start = thread_cpu_ns();
+    let out = work();
+    if let (Some(start), Some(end)) = (start, thread_cpu_ns()) {
+        CPU_NS.fetch_add(
+            end.saturating_sub(start),
+            std::sync::atomic::Ordering::Relaxed,
+        );
+    }
+    out
+}
 
 #[derive(Default)]
 struct Growth {
@@ -95,6 +177,8 @@ struct Inner {
     hold: Mutex<Duration>,
     /// Channels whose last fold ran before they went quiet.
     forced: Mutex<HashSet<ChannelKey>>,
+    /// Entry bodies per channel whose signature verified in this process.
+    signatures: Mutex<HashMap<ChannelKey, Signatures>>,
 }
 
 /// A retained document delta, as [`Compactor::note`] counts it.
@@ -146,6 +230,7 @@ impl Compactor {
             folding: std::sync::atomic::AtomicU64::new(0),
             hold: Mutex::new(Duration::ZERO),
             forced: Mutex::default(),
+            signatures: Mutex::default(),
         }))
     }
 
@@ -261,28 +346,33 @@ impl Compactor {
         if store.shell_authority().is_some() {
             return Ok(());
         }
-        let entries = tokio::task::spawn_blocking(move || store.channel_entries(&channel))
-            .await
-            .map_err(|error| error.to_string())?
-            .map_err(|error| error.to_string())?;
         let known = lock(&self.0.member_snapshots)
             .get(&(workspace_id, channel))
             .cloned()
             .unwrap_or_default();
-        let sealed = sealed_tail(&entries, &known);
+        // One round at a time (`jobs`), so the channel's record is taken out
+        // for the round and put back after it.
+        let mut signatures = lock(&self.0.signatures)
+            .remove(&(workspace_id, channel))
+            .unwrap_or_default();
         let key = self.0.key.clone();
-        let plan = tokio::task::spawn_blocking(move || {
-            if !compaction_due(&entries, min_tail) {
-                return None;
-            }
-            fold(&entries).and_then(|folded| {
-                let frames =
-                    document_frames(&key, workspace_id, &folded.route, &folded.snapshot).ok()?;
-                Some((folded, frames))
-            })
+        let (signatures, planned) = tokio::task::spawn_blocking(move || {
+            let planned = on_cpu(|| {
+                let entries = store.channel_entries(&channel)?;
+                Ok::<_, crate::store::StoreError>(plan(
+                    &entries,
+                    &mut signatures,
+                    &known,
+                    min_tail,
+                    |route, snapshot| document_frames(&key, workspace_id, route, snapshot).ok(),
+                ))
+            });
+            (signatures, planned)
         })
         .await
         .map_err(|error| error.to_string())?;
+        lock(&self.0.signatures).insert((workspace_id, channel), signatures);
+        let (sealed, plan) = planned.map_err(|error| error.to_string())?;
         if let Some((folded, frames)) = plan {
             self.0
                 .folding
@@ -536,7 +626,7 @@ async fn owner_run<T: Send + 'static>(
         .submit_prepared_wait(
             4096,
             async { Ok(()) },
-            move |state, ()| operation(&state.store),
+            move |state, ()| on_cpu(|| operation(&state.store)),
             |result| async { result },
         )
         .await
@@ -584,50 +674,35 @@ pub struct Route {
     pub record_id: String,
 }
 
-/// What one entry carries, as far as the host can read it.
-enum Piece {
-    Whole(DocumentMutation),
-    Segment(collab_types::DocumentSegment),
-    Sealed,
-    Opaque,
-}
+/// What one round decided: the route of a sealed tail to ask a member for,
+/// and the fold with its signed frames.
+type Plan = (Option<Route>, Option<(Folded, Vec<Vec<u8>>)>);
 
-fn decode_entry(entry: &ChannelEntry) -> (Option<Route>, Piece) {
-    let Ok(NeighbourMsg::AppDocument {
-        app_id,
-        cluster_id,
-        record_id,
-        envelope,
-        ..
-    }) = postcard::from_bytes::<NeighbourMsg>(&entry.body)
-    else {
-        return (None, Piece::Opaque);
-    };
-    let route = Route {
-        app_id,
-        cluster_id,
-        record_id,
-    };
-    let artifact =
-        collab_types::document_artifact_id(&route.app_id, &route.cluster_id, &route.record_id);
-    // The checks a receiving device applies before it merges anything: the
-    // signature verifies, the signer is the device the host authenticated,
-    // and the envelope names this route.
-    if collab_types::verify_op(&envelope).is_err()
-        || *envelope.author.as_bytes() != entry.author
-        || envelope.artifact != artifact
-    {
-        return (Some(route), Piece::Opaque);
-    }
-    if envelope.encryption.is_some() {
-        return (Some(route), Piece::Sealed);
-    }
-    let piece = match DocumentFrame::decode(&envelope.payload) {
-        Ok(DocumentFrame::Whole(mutation)) => Piece::Whole(mutation),
-        Ok(DocumentFrame::Segment(segment)) => Piece::Segment(segment),
-        Err(_) => Piece::Opaque,
-    };
-    (Some(route), piece)
+/// One round over a channel's `entries`: check each once, then find a
+/// sealed tail to ask a member for and, when due, fold the readable part
+/// and sign it with `sign`.
+fn plan(
+    entries: &[ChannelEntry],
+    signatures: &mut Signatures,
+    known: &HashSet<[u8; 32]>,
+    min_tail: usize,
+    sign: impl FnOnce(&Route, &[u8]) -> Option<Vec<Vec<u8>>>,
+) -> Plan {
+    let checked: Vec<Checked<'_>> = entries
+        .iter()
+        .map(|entry| signatures.check(entry))
+        .collect();
+    signatures.end_round();
+    let sealed = sealed_tail(&checked, known);
+    let readable = units(checked);
+    let folded = compaction_due(entries, &readable, min_tail)
+        .then(|| fold(entries, &readable))
+        .flatten()
+        .and_then(|folded| {
+            let signed = sign(&folded.route, &folded.snapshot)?;
+            Some((folded, signed))
+        });
+    (sealed, folded)
 }
 
 /// A channel's content in units the host can reason about: a whole
@@ -643,12 +718,21 @@ struct Unit {
 /// segments themselves.
 type Transfers = BTreeMap<([u8; 32], [u8; 32]), (Vec<usize>, Vec<collab_types::DocumentSegment>)>;
 
-fn units(entries: &[ChannelEntry]) -> (Vec<Unit>, Option<Route>) {
+/// A channel's checked entries as units, and the route they name.
+struct Readable {
+    units: Vec<Unit>,
+    route: Option<Route>,
+}
+
+/// Group checked entries (in the order of the entries they were checked
+/// from) into units.
+fn units(checked: Vec<Checked<'_>>) -> Readable {
     let mut units = Vec::new();
     let mut route: Option<Route> = None;
     let mut transfers: Transfers = BTreeMap::new();
-    for (index, entry) in entries.iter().enumerate() {
-        let (named, piece) = decode_entry(entry);
+    for (index, checked) in checked.into_iter().enumerate() {
+        let author = checked.entry().author;
+        let (named, piece) = checked.into_parts();
         // One channel is one route; a frame naming another is not read.
         let piece = match (&route, named) {
             (_, None) => piece,
@@ -665,8 +749,7 @@ fn units(entries: &[ChannelEntry]) -> (Vec<Unit>, Option<Route>) {
                 mutation: Some(mutation),
             }),
             Piece::Segment(segment) => {
-                let (holders, segments) =
-                    transfers.entry((entry.author, segment.digest)).or_default();
+                let (holders, segments) = transfers.entry((author, segment.digest)).or_default();
                 holders.push(index);
                 segments.push(segment);
             }
@@ -682,7 +765,7 @@ fn units(entries: &[ChannelEntry]) -> (Vec<Unit>, Option<Route>) {
             mutation: reassemble(digest, segments),
         });
     }
-    (units, route)
+    Readable { units, route }
 }
 
 fn reassemble(
@@ -768,8 +851,8 @@ fn unit_bytes(entries: &[ChannelEntry], unit: &Unit) -> usize {
 /// Whether the readable part of a channel outgrew its snapshots, within
 /// what the host folds: `min_tail` entries, or [`COMPACT_TAIL_BYTES`] that
 /// are at least half the snapshots' size.
-fn compaction_due(entries: &[ChannelEntry], min_tail: usize) -> bool {
-    let (units, _) = units(entries);
+fn compaction_due(entries: &[ChannelEntry], readable: &Readable, min_tail: usize) -> bool {
+    let units = &readable.units;
     let (mut snapshot, mut tail, mut tail_entries) = (0usize, 0usize, 0usize);
     for unit in units.iter().filter(|unit| unit.mutation.is_some()) {
         let bytes = unit_bytes(entries, unit);
@@ -792,16 +875,17 @@ fn compaction_due(entries: &[ChannelEntry], min_tail: usize) -> bool {
 
 /// A sealed tail the host should ask a member to compact: the route, when
 /// enough sealed entries arrived after the last member snapshot.
-fn sealed_tail(entries: &[ChannelEntry], known: &HashSet<[u8; 32]>) -> Option<Route> {
+fn sealed_tail(checked: &[Checked<'_>], known: &HashSet<[u8; 32]>) -> Option<Route> {
     let (mut count, mut bytes, mut route) = (0usize, 0usize, None);
-    for entry in entries {
-        if let (Some(named), Piece::Sealed) = decode_entry(entry) {
+    for checked in checked {
+        let entry = checked.entry();
+        if let (Some(named), true) = (checked.route(), checked.is_sealed()) {
             if known.contains(&entry_id(&entry.body)) {
                 continue;
             }
             count = count.saturating_add(1);
             bytes = bytes.saturating_add(entry.len);
-            route.get_or_insert(named);
+            route.get_or_insert_with(|| named.clone());
         }
     }
     (count >= COMPACT_TAIL_ENTRIES || bytes >= COMPACT_TAIL_BYTES)
@@ -820,12 +904,12 @@ pub(crate) struct Folded {
 /// Fold every readable unit of `entries` into one document. Units that
 /// depend on content the host cannot read stay out of it, and only entries
 /// whose every unit the document contains, by change hash, are removed.
-fn fold(entries: &[ChannelEntry]) -> Option<Folded> {
-    let (units, route) = units(entries);
-    let route = route?;
+fn fold(entries: &[ChannelEntry], readable: &Readable) -> Option<Folded> {
+    let units = &readable.units;
+    let route = readable.route.clone()?;
     let mut snapshots: Vec<&Vec<u8>> = Vec::new();
     let mut changes: Vec<u8> = Vec::new();
-    for unit in &units {
+    for unit in units {
         match &unit.mutation {
             Some(DocumentMutation::Snapshot(bytes)) => snapshots.push(bytes),
             Some(DocumentMutation::Incremental(bytes)) => changes.extend_from_slice(bytes),

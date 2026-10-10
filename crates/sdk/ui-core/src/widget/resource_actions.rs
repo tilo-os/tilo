@@ -8,13 +8,12 @@ use crate::widget::{AppModel, ModelPath};
 use std::collections::HashMap;
 
 use crate::automerge::{AutoCommit, ObjId};
-use crate::kurbo::{Affine, Point, Rect};
+use crate::kurbo::Rect;
 use crate::taffy::{NodeId, TaffyTree};
 use crate::tilo_actions::{
     ActionBinding, ActionBindingError, ActionContract, ActionOutput, ActionParam, ActionSpec,
     EncodedAction, ExecutionMode, OperationKind, ParamType, Resource, ResultSpec,
 };
-use crate::vello::Scene;
 use crate::widget::{ResourceOperation, ResourceOperationStart, TaffyTreeExt, Widget};
 
 /// Shared effect-operation type used by the one-resource app host.
@@ -363,55 +362,7 @@ impl Widget for ResourceActionHost {
         taffy.widget_node(style, &[child], node_map, self)
     }
 
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = crate::widget::layout_rect(taffy, node, origin);
-        if let Ok(children) = taffy.children(node)
-            && let Some(child) = children.first()
-        {
-            self.root
-                .apply_layout(taffy, *child, Point::new(self.rect.x0, self.rect.y0));
-        }
-    }
-
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut crate::text_render::TextRenderer,
-        theme: &crate::Theme,
-        presence: &crate::presence::PresenceCtx,
-    ) {
-        self.root
-            .draw(scene, transform, text_renderer, theme, presence);
-    }
-
-    fn handle_event(
-        &mut self,
-        event: &crate::winit::event::WindowEvent,
-        ctx: &mut crate::widget::EventCtx<'_>,
-    ) {
-        let node_id = ctx
-            .taffy
-            .children(ctx.node_id)
-            .ok()
-            .and_then(|children| children.first().copied())
-            .unwrap_or(ctx.node_id);
-        let path = ctx.path;
-        self.root
-            .handle_event(event, &mut ctx.reborrow(path, node_id));
-    }
-
-    fn children(&self) -> Vec<&dyn Widget> {
-        vec![self.root.as_ref()]
-    }
-
-    fn for_each_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) {
-        visitor(self.root.as_ref());
-    }
-
-    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        vec![self.root.as_mut()]
-    }
+    crate::forward_to_child!(root, rect);
 
     fn is_focusable(&self) -> bool {
         self.root.is_focusable()
@@ -547,10 +498,6 @@ impl Widget for ResourceActionHost {
 
     fn name(&self) -> &'static str {
         "ResourceActionHost"
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.rect
     }
 }
 

@@ -514,7 +514,7 @@ impl Widget for ConflictPicker {
         self.keep_pad = 2.0 * f64::from(theme.tokens.spacing.s3);
         // Sized by the host: expands to fill whatever rect the parent
         // assigns — typical use is a centered modal, e.g. 720×360.
-        taffy.filling_leaf(node_map, self)
+        taffy.fill_leaf(node_map, self)
     }
 
     /// The keep button's label is measured here, during layout, so the

@@ -291,6 +291,17 @@ impl VmDelegate for SessionVmDelegate {
             .map_err(windows_vm::AgentError::Transport)?
             .launch(request)
     }
+
+    fn launch_with_portal_file(
+        &self,
+        request: VmRouteRequest<'_>,
+        source: File,
+        access: windows_vm::PortalDocumentAccess,
+    ) -> Result<windows_vm::RunningRemoteApp, windows_vm::LaunchError> {
+        self.get()
+            .map_err(windows_vm::AgentError::Transport)?
+            .launch_with_portal_file(request, source, access)
+    }
 }
 
 fn spawn_entry_registry_refresh(
@@ -528,6 +539,46 @@ mod tests {
         ) -> Result<windows_vm::RunningRemoteApp, windows_vm::LaunchError> {
             Err(windows_vm::AgentError::Unavailable.into())
         }
+
+        fn launch_with_portal_file(
+            &self,
+            _request: VmRouteRequest<'_>,
+            _source: File,
+            _access: windows_vm::PortalDocumentAccess,
+        ) -> Result<windows_vm::RunningRemoteApp, windows_vm::LaunchError> {
+            Err(windows_vm::LaunchError::CapabilityBroker(
+                "recorded portal launch".to_string(),
+            ))
+        }
+    }
+
+    #[test]
+    fn session_vm_delegate_forwards_portal_file_launch() {
+        let delegate = SessionVmDelegate {
+            live: Mutex::new(Some(Arc::new(RecordingVmDelegate {
+                calls: AtomicU8::new(0),
+            }) as Arc<dyn VmDelegate>)),
+        };
+        let request = VmRouteRequest {
+            route: compat_service::RouteKind::Vm,
+            app_id: "app",
+            workspace_id: "workspace",
+            published_application_id: "application",
+            capabilities: &[],
+            resolved_capabilities: &launcher::capabilities::CapabilityPlan::empty(),
+        };
+
+        let Err(error) = delegate.launch_with_portal_file(
+            request,
+            File::open("/dev/null").unwrap(),
+            windows_vm::PortalDocumentAccess::ReadOnly,
+        ) else {
+            panic!("the recording delegate refuses every launch");
+        };
+        assert!(
+            error.to_string().contains("recorded portal launch"),
+            "{error}"
+        );
     }
 
     #[test]

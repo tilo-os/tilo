@@ -16,13 +16,13 @@ use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::{
-    EmptyState, EmptyStateContent, Interaction, ListRowFace, PressOutcome, RowLeading,
-    ScrollMetrics, Scrollbar, Widget, badge_column_width,
+    EmptyState, EmptyStateContent, Interaction, ListRowFace, RowLeading, ScrollRegion, Widget,
+    badge_column_width,
 };
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
+use vello::kurbo::{Affine, Point, Rect, Vec2};
 use vello::peniko::{BlendMode, Fill};
-use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
+use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use crate::app::{Action, Core, Shared};
@@ -31,13 +31,11 @@ use crate::model::{Selection, SmartFolder, Snippet, SnippetId};
 /// What the list painted last frame, for hit-testing and scrolling.
 pub(crate) struct ListState {
     pub(crate) rect: Rect,
-    pub(crate) scroll: f64,
+    pub(crate) scroller: ScrollRegion,
     /// Scroll the open snippet's row into view on the next paint.
     pub(crate) reveal: bool,
-    content: f64,
-    /// One row's height: a wheel line scrolls by it.
+    /// One row's height: Page Up and Down step by the rows that fit.
     line: f64,
-    bar: Scrollbar,
     pub(crate) hits: Vec<(Rect, Action)>,
     /// Each row's leading column and the snippet it shows, for tooltips.
     rows: Vec<(Rect, Rect, SnippetId)>,
@@ -51,11 +49,9 @@ impl Default for ListState {
     fn default() -> Self {
         Self {
             rect: Rect::ZERO,
-            scroll: 0.0,
+            scroller: ScrollRegion::vertical(),
             reveal: true,
-            content: 0.0,
             line: 0.0,
-            bar: Scrollbar::vertical(),
             hits: Vec::new(),
             rows: Vec::new(),
             pressed: None,
@@ -65,10 +61,6 @@ impl Default for ListState {
 }
 
 impl ListState {
-    fn metrics(&self) -> ScrollMetrics {
-        ScrollMetrics::new(self.content, self.rect.height(), self.scroll)
-    }
-
     /// Scroll row `index` of rows `heights` tall into view. Scrolling down
     /// stops at the first row that keeps it in view, so the list starts on
     /// a whole row.
@@ -83,25 +75,18 @@ impl ListState {
             .collect();
         let top = tops.get(index).copied().unwrap_or(inset);
         let bottom = top + heights.get(index).copied().unwrap_or_default();
-        if top - inset < self.scroll {
-            self.scroll = top - inset;
-        } else if bottom + inset > self.scroll + self.rect.height() {
+        let scroll = self.scroller.offset().y;
+        if top - inset < scroll {
+            self.scroller.set_offset(Vec2::new(0.0, top - inset));
+        } else if bottom + inset > scroll + self.rect.height() {
             let least = bottom + inset - self.rect.height();
-            self.scroll = tops
+            let whole = tops
                 .iter()
                 .map(|row_top| row_top - inset)
                 .find(|scroll| *scroll >= least)
                 .unwrap_or(least);
+            self.scroller.set_offset(Vec2::new(0.0, whole));
         }
-    }
-
-    fn track(&self, theme_gutter: f64) -> Rect {
-        Rect::new(
-            self.rect.x1 - theme_gutter,
-            self.rect.y0,
-            self.rect.x1,
-            self.rect.y1,
-        )
     }
 }
 
@@ -175,11 +160,12 @@ impl Core {
         // A list that changes size keeps the open snippet in view.
         let resized = self.list.rect.size() != area.size();
         self.list.rect = area;
+        self.list.scroller.set_viewport(area, theme);
         if area.width() <= 0.0 || area.height() <= 0.0 {
             return;
         }
         if self.visible.is_empty() {
-            self.list.content = 0.0;
+            self.list.scroller.set_content_size(0.0, 0.0);
             self.paint_list_empty(scene, t, text, theme, area);
             return;
         }
@@ -189,7 +175,6 @@ impl Core {
         // column's title starts; a row's outer rect is that edge grown by
         // the lift's bleed.
         let edge = ui::chrome::column_gutter(theme) - ui::chrome::row_bleed(theme);
-        let gutter = f64::from(theme.tokens.metrics.scrollbar_gutter);
         let column = self.badge_column(text, theme);
 
         // The rows read the presented library, which this frame keeps alive.
@@ -209,7 +194,9 @@ impl Core {
             })
             .collect();
         self.list.line = heights.first().copied().unwrap_or_default();
-        self.list.content = heights.iter().sum::<f64>() + inset * 2.0;
+        self.list
+            .scroller
+            .set_content_size(area.width(), heights.iter().sum::<f64>() + inset * 2.0);
         if (std::mem::take(&mut self.list.reveal) || resized)
             && let Some(index) = snippets
                 .iter()
@@ -217,12 +204,12 @@ impl Core {
         {
             self.list.reveal_row(&heights, index, inset);
         }
-        let overflows = self.list.metrics().overflows();
-        let max = (self.list.content - area.height()).max(0.0);
-        self.list.scroll = self.list.scroll.clamp(0.0, max);
-
-        let x1 = area.x1 - edge.max(if overflows { gutter } else { 0.0 });
-        let mut y = area.y0 + inset - self.list.scroll;
+        let x1 = if self.list.scroller.overflows_vertically() {
+            self.list.scroller.content_rect().x1
+        } else {
+            area.x1 - edge
+        };
+        let mut y = area.y0 + inset - self.list.scroller.offset().y;
         scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, t, &area);
         for (i, ((id, snippet), meta)) in snippets.iter().zip(&metas).enumerate() {
             let h = heights.get(i).copied().unwrap_or_default();
@@ -255,17 +242,7 @@ impl Core {
                 .push((shown, Action::OpenSnippet(id.clone())));
         }
         scene.pop_layer();
-
-        if overflows {
-            self.list.bar.draw(
-                scene,
-                t,
-                self.list.track(gutter),
-                self.list.metrics(),
-                theme,
-                false,
-            );
-        }
+        self.list.scroller.paint_bars(scene, t, theme);
     }
 
     /// The list's zero state: one sentence saying what would fill the
@@ -340,15 +317,19 @@ impl Core {
         true
     }
 
-    /// Route `event` to the list. Returns whether the list used it.
+    /// Route `event` to the list, marking it handled when the list used it.
     pub(crate) fn list_event(
         &mut self,
         event: &WindowEvent,
         ctx: &mut ui::widget::EventCtx<'_>,
-        gutter: f64,
-    ) -> bool {
-        let area = self.list.rect;
-        let inside = area.contains(self.pointer);
+        theme: &Theme,
+    ) {
+        // The scroll region takes the wheel, touchpad gestures and its bar.
+        self.list.scroller.handle_event(event, ctx, theme);
+        if *ctx.handled {
+            return;
+        }
+        let inside = self.list.rect.contains(self.pointer);
         let row_at = |list: &ListState, point: Point| {
             list.hits
                 .iter()
@@ -359,7 +340,7 @@ impl Core {
                     _ => None,
                 })
         };
-        match event {
+        let used = match event {
             WindowEvent::KeyboardInput { event: key, .. }
                 if self.list.focused && key.state == ElementState::Pressed =>
             {
@@ -367,45 +348,11 @@ impl Core {
                 !(modifiers.control_key() || modifiers.super_key() || modifiers.alt_key())
                     && self.list_key(&key.logical_key)
             }
-            WindowEvent::CursorMoved { .. } => {
-                let track = self.list.track(gutter);
-                let metrics = self.list.metrics();
-                if let Some(offset) = self.list.bar.drag_to(track, metrics, self.pointer) {
-                    self.list.scroll = offset;
-                    return true;
-                }
-                self.list.bar.update_hover(track, metrics, self.pointer);
-                false
-            }
-            WindowEvent::MouseWheel { delta, .. } if inside => {
-                let dy = match delta {
-                    MouseScrollDelta::LineDelta(_, y) => f64::from(*y) * self.list.line,
-                    MouseScrollDelta::PixelDelta(p) => p.y / ctx.scale_factor,
-                };
-                let max = (self.list.content - area.height()).max(0.0);
-                self.list.scroll = (self.list.scroll - dy).clamp(0.0, max);
-                true
-            }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
                 ..
             } if inside => {
-                let metrics = self.list.metrics();
-                if metrics.overflows() {
-                    match self
-                        .list
-                        .bar
-                        .press(self.list.track(gutter), metrics, self.pointer)
-                    {
-                        PressOutcome::Thumb => return true,
-                        PressOutcome::Page(offset) => {
-                            self.list.scroll = offset;
-                            return true;
-                        }
-                        PressOutcome::Miss => {}
-                    }
-                }
                 self.list.pressed = row_at(&self.list, self.pointer);
                 if self.list.pressed.is_some() {
                     self.body.control_mut().set_focused(false);
@@ -418,18 +365,19 @@ impl Core {
                 button: MouseButton::Left,
                 ..
             } => {
-                let released = self.list.bar.release();
                 let pressed = self.list.pressed.take();
                 if let Some(id) = &pressed
                     && inside
                     && row_at(&self.list, self.pointer).as_ref() == Some(id)
                 {
                     self.apply(Action::OpenSnippet(id.clone()));
-                    return true;
                 }
-                released || pressed.is_some()
+                pressed.is_some()
             }
             _ => false,
+        };
+        if used {
+            *ctx.handled = true;
         }
     }
 
@@ -487,7 +435,9 @@ impl Core {
 pub(crate) struct ListPane {
     core: Shared,
     rect: Rect,
-    gutter: f64,
+    /// The theme of the last layout, for the scroll region's lanes, steps
+    /// and fade.
+    theme: Theme,
 }
 
 impl ListPane {
@@ -495,7 +445,7 @@ impl ListPane {
         Self {
             core: std::rc::Rc::clone(core),
             rect: Rect::ZERO,
-            gutter: 0.0,
+            theme: Theme::dark(),
         }
     }
 }
@@ -509,7 +459,7 @@ impl Widget for ListPane {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        self.gutter = f64::from(theme.tokens.metrics.scrollbar_gutter);
+        self.theme = theme.clone();
         crate::draw::fill_leaf(taffy, node_map, self)
     }
 
@@ -531,9 +481,7 @@ impl Widget for ListPane {
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
-        if self.core.borrow_mut().list_event(event, ctx, self.gutter) {
-            *ctx.handled = true;
-        }
+        self.core.borrow_mut().list_event(event, ctx, &self.theme);
     }
 
     fn is_focusable(&self) -> bool {
@@ -598,7 +546,20 @@ impl Widget for ListPane {
 
     fn wants_pointer_capture(&self) -> bool {
         let core = self.core.borrow();
-        core.list.bar.is_dragging() || core.list.pressed.is_some()
+        core.list.scroller.is_dragging() || core.list.pressed.is_some()
+    }
+
+    fn needs_animation_frame(&self) -> bool {
+        self.core
+            .try_borrow()
+            .is_ok_and(|core| core.list.scroller.needs_animation_frame(&self.theme))
+    }
+
+    fn next_wake_deadline(&self) -> Option<ui::time::Instant> {
+        self.core
+            .try_borrow()
+            .ok()
+            .and_then(|core| core.list.scroller.next_wake_deadline(&self.theme))
     }
 
     fn name(&self) -> &'static str {

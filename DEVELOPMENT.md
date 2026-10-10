@@ -346,14 +346,22 @@ downloads, per architecture. The KPI targets are a median of at most 2 MB, a
 p90 of at most 4 MB and a max of at most 6 MB (decimal). Each app has its own
 budget in `tools/perf/tapp-size-budget/budget.toml`, set at its measured size
 plus 1 % headroom, rounded up to 64 KiB. `tools/perf/tapp_size_ratchet.py`
-enforces the budgets in three places:
+enforces the budgets in four places:
 
+- **CI / affected packages** (`tapps / <arch>`, pull requests only) packages
+  the tapps of up to eight apps the change affects, on x86_64 and aarch64,
+  and holds each to its budget. `tools/ci/select.sh` picks them with
+  `tapp_size_ratchet.py select`: apps of the default collection, those
+  closest to a budget in the registry first, so a toolkit change measures the
+  apps it pushes over first without packaging the whole collection. It
+  packages as Release / apps does, from the same compiler cache. A change
+  that affects no app runs no such job.
 - **Release / apps** (`Shipped tapps within their size budget`) measures each
   tapp it has just packaged and signed, which is the affected apps only. It
   fails when an app is over its budget or has none, so nothing is published.
-  Pull requests do not package tapps. To measure a branch before merging,
-  dispatch Release / apps on it with `apps=<dir>`, the one architecture you
-  need, and publish off.
+  To measure apps the pull request job did not pick, dispatch Release / apps
+  on the branch with `apps=<dir>`, the architecture you need, and publish
+  off.
 - **Perf / scheduled** (footprint group, nightly) holds every published app to
   its budget. It also holds the apps' median, p90 and max to the fleet
   ceilings: the KPI targets, or an interim ceiling where the fleet does not
@@ -506,6 +514,58 @@ measures main's newest image for both architectures and records
   numbers under `docs/benchmarks/`. The KPI targets (3.5 GB compressed, 7 GB of content for
   x86_64) are written beside the ceilings. Windows compatibility is most of
   the gap; TIL-711 moves it to a downloaded system extension.
+
+### Content-based layers (rechunking)
+
+An update downloads every layer whose digest the device does not have. A
+Containerfile layer is a new blob whenever its instruction runs again, so
+with one layer per instruction an update between two commits that changed one
+app pulled about 78 % of the image (TIL-747). Release / OS therefore re-lays
+every generic image it publishes out by content before anything consumes it
+("Rechunk the image", `os/dev/rechunk-image.sh`):
+
+- `os/Containerfile.rechunk` runs [chunkah](https://github.com/coreos/chunkah)
+  (built offline from its checksum-pinned release) over the raw image's root:
+  one component per RPM package, read from the image's rpmdb, files over 1 MB
+  on their own, the rest grouped, packed into at most 128 layers. An unchanged
+  component is the same blob in the next build. Whited-out bytes, the base's
+  old kernel and `/sysroot`'s ostree objects are in no layer. Trees that change
+  on their own schedule get a chunkah run and layers of their own
+  (`os/scripts/rechunk-chunkah.py`, today Proton and the Steam runtime):
+  otherwise their small files share one layer with Tilo's, which change with
+  almost every build.
+- `os/scripts/oci-rechunk.py` takes extended attributes from the raw image's
+  layers where chunkah's differ (BuildKit's snapshot of the image, which
+  chunkah reads, lacks the base binaries' file capabilities), adds one layer
+  with every directory's exact metadata (chunkah caps a directory's time per
+  layer; fontconfig's cache needs font directories' times unchanged), gives
+  the result the raw image's config,
+  and refuses it unless every path matches the raw image: type, mode, owner,
+  xattrs, bytes, symlink target. Only file times may be lower (capped at the
+  package's build time, or for files no package owns at an epoch that moves
+  with the base and the RPM snapshot only), `/sysroot`'s contents are gone,
+  and a hard-link group may be split across layers.
+- The dev lane pushes the rechunked image as `tilo-ci:<ref>-<sha7>-<arch>`
+  and the raw one beside it as `…-<arch>-layered`; a release rechunks its
+  archive, and its independent rebuild's, before the install gate seals it.
+  The repository variable `TILO_RECHUNK=0` turns it off without a commit.
+
+Local images (`os/dev/build-image.sh`, `tilo-vm vm upgrade --from local`) keep
+their Containerfile layers: podman's layer cache is what makes those rebuilds
+cheap, and tilo-vm sends the VM only the blobs it lacks either way.
+
+`--update-from OLD` measures an update: the compressed layers the image has
+and OLD does not. `--update-only` reads only the two manifests:
+
+```bash
+python3 tools/perf/image_size.py --image registry.tilo.so/tilo/tilo-ci:main-<new>-x86_64 \
+  --update-from registry.tilo.so/tilo/tilo-ci:main-<old>-x86_64 --update-only
+```
+
+An update between two commits that change one app downloads 215 MB of the
+rechunked x86_64 image (5 %), where the layered image re-sent 3.69 GB (78 %)
+(`docs/benchmarks/os-image-size-2026-10-10-rechunk.md`). Most of the 215 MB
+is app packages that come out of every build with new bytes.
 
 ## Fast checks before assembly
 

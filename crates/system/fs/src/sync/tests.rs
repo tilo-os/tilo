@@ -4616,9 +4616,23 @@ async fn idle_workspace_cost_measurement() {
     tokio::time::sleep(settle).await;
     eprintln!("MEASURE window begins");
     let before = direct_bytes_sent(&[&host_ep, &device_ep]);
+    // Per-thread wakeups of this process (both nodes) over the window, on
+    // Linux, where /proc has them (TIL-750).
+    let threads_before = tilo_test_env::idle::sample_process(std::process::id());
     tokio::time::sleep(window).await;
     let sent = direct_bytes_sent(&[&host_ep, &device_ep]) - before;
     eprintln!("MEASURE window ends");
+    match threads_before.and_then(|threads_before| {
+        let threads_after = tilo_test_env::idle::sample_process(std::process::id())?;
+        Ok(tilo_test_env::idle::Wakeups::between(
+            threads_before,
+            threads_after,
+            window,
+        ))
+    }) {
+        Ok(wakeups) => eprintln!("MEASURE {wakeups}"),
+        Err(error) => eprintln!("MEASURE no per-thread wakeups here: {error}"),
+    }
     let per_device_minute = |bytes: u64| bytes * 60 / window.as_secs().max(1) / 2;
     eprintln!(
         "MEASURE idle over {} s: both endpoints sent {sent} B, floor {floor} B; \

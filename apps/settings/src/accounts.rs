@@ -1140,6 +1140,58 @@ mod tests {
     use super::*;
 
     #[test]
+    fn fresh_profiles_do_not_take_in_another_profiles_browser_identity() {
+        use ui::framework::testing::TestApp;
+
+        let mut before = TestApp::<crate::resource::SettingsShell>::new().unwrap();
+        let key = "ef".repeat(32);
+        let origin = "https://isolated-profile.example";
+        let id = format!("settings.browser-identity:tilo-identity:{key}@{origin}");
+        assert!(
+            before
+                .actions()
+                .unwrap()
+                .iter()
+                .all(|action| action.address.resource != id)
+        );
+
+        let mut publisher = TestApp::<crate::resource::SettingsShell>::for_person(&key).unwrap();
+        let record = publisher
+            .person::<accounts::person::PersonAccounts>()
+            .unwrap();
+        let directory = tempfile::tempdir().unwrap();
+        AccountRoot::at(directory.path())
+            .with_person(record)
+            .publish_browser_identity(key, origin.into(), "Private profile".into())
+            .unwrap();
+        publisher.settle();
+        assert!(
+            publisher
+                .actions()
+                .unwrap()
+                .iter()
+                .any(|action| action.address.resource == id)
+        );
+
+        let mut after = TestApp::<crate::resource::SettingsShell>::new().unwrap();
+        assert!(
+            after
+                .actions()
+                .unwrap()
+                .iter()
+                .all(|action| action.address.resource != id),
+            "a fresh profile must not import another profile's browser identity through the session account file"
+        );
+        assert!(
+            before
+                .actions()
+                .unwrap()
+                .iter()
+                .all(|action| action.address.resource != id)
+        );
+    }
+
+    #[test]
     fn browser_identity_publication_is_a_settings_owned_personal_record_action() {
         use accounts::person::PersonAccounts;
         let root_key = "ab".repeat(32);

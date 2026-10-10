@@ -440,6 +440,12 @@ fn derive_named(input: &DeriveInput, fields: &syn::FieldsNamed) -> syn::Result<T
         .collect();
 
     let mut reads = Vec::new();
+    // Every stored field is read in one walk of the map (`read_slots`), then
+    // loaded in declaration order, each taking its slot out of the one array
+    // through the non-generic `take_slot`. A local per slot would make every
+    // field's `?` drop each slot after it, and an iterator over the array is
+    // generic code of its own in every app.
+    let mut slot_keys: Vec<String> = Vec::new();
     let mut missing = Vec::new();
     let mut writes = Vec::new();
     let mut changed_writes = Vec::new();
@@ -533,7 +539,12 @@ fn derive_named(input: &DeriveInput, fields: &syn::FieldsNamed) -> syn::Result<T
             // A `String` written whole, last writer winning: an id or a
             // name two people setting at once must not interleave.
             let atom = quote!(#krate::Atom);
-            reads.push(quote!(#ident: #krate::read_key::<#atom>(doc, obj, #key)?.0));
+            let slot = {
+                let index = proc_macro2::Literal::usize_unsuffixed(slot_keys.len());
+                slot_keys.push(key.clone());
+                quote!(#krate::take_slot(&mut __slots, #index))
+            };
+            reads.push(quote!(#ident: #krate::load_slot::<#atom>(doc, #slot, #key)?.0));
             missing.push(quote!(
                 #ident: <#atom as #krate::Model>::missing().map_err(|error| error.at(#key))?.0
             ));
@@ -559,8 +570,13 @@ fn derive_named(input: &DeriveInput, fields: &syn::FieldsNamed) -> syn::Result<T
                 refreshed?;
             });
         } else if options.whole {
+            let slot = {
+                let index = proc_macro2::Literal::usize_unsuffixed(slot_keys.len());
+                slot_keys.push(key.clone());
+                quote!(#krate::take_slot(&mut __slots, #index))
+            };
             reads.push(quote!(#ident: {
-                let mut value = #krate::read_key::<#ty>(doc, obj, #key)?;
+                let mut value = #krate::load_slot::<#ty>(doc, #slot, #key)?;
                 #krate::Model::read_whole(&mut value, doc).map_err(|error| error.at(#key))?;
                 value
             }));
@@ -577,7 +593,12 @@ fn derive_named(input: &DeriveInput, fields: &syn::FieldsNamed) -> syn::Result<T
             ));
             same.push(quote!(#krate::Model::stores_as(&self.#ident, &before.#ident)));
         } else {
-            reads.push(quote!(#ident: #krate::read_key::<#ty>(doc, obj, #key)?));
+            let slot = {
+                let index = proc_macro2::Literal::usize_unsuffixed(slot_keys.len());
+                slot_keys.push(key.clone());
+                quote!(#krate::take_slot(&mut __slots, #index))
+            };
+            reads.push(quote!(#ident: #krate::load_slot::<#ty>(doc, #slot, #key)?));
             missing.push(quote!(
                 #ident: <#ty as #krate::Model>::missing().map_err(|error| error.at(#key))?
             ));
@@ -752,6 +773,11 @@ fn derive_named(input: &DeriveInput, fields: &syn::FieldsNamed) -> syn::Result<T
                 <Self as #krate::Fields>::item_collections(self)
             }
         }
+    };
+    let slots = if slot_keys.is_empty() {
+        quote!()
+    } else {
+        quote!(let mut __slots = #krate::read_slots(doc, obj, [#(#slot_keys),*]);)
     };
     let item_collections = if collections.is_empty() {
         quote!()
@@ -1110,6 +1136,7 @@ fn derive_named(input: &DeriveInput, fields: &syn::FieldsNamed) -> syn::Result<T
                 obj: &#krate::__private::ObjId,
             ) -> ::core::result::Result<Self, #krate::ModelError> {
                 let _ = (&doc, &obj);
+                #slots
                 ::core::result::Result::Ok(Self { #(#reads,)* })
             }
             #[inline(never)]

@@ -5,6 +5,8 @@ use crate::shell::network::ShellNetwork;
 use cold_code::{APP, BODY, FILE, LocalSurface, MountedCode};
 use sha2::{Digest as _, Sha256};
 
+#[path = "mounted_code/acknowledgement_recovery.rs"]
+mod acknowledgement_recovery;
 #[path = "mounted_code/blocked_read.rs"]
 mod blocked_read;
 #[path = "mounted_code/read_recovery.rs"]
@@ -51,6 +53,7 @@ pub(super) enum Journey {
     BlockedRead,
     ReadRecovery,
     Run,
+    AcknowledgementRecovery,
 }
 
 pub(super) struct Context<'a> {
@@ -72,10 +75,18 @@ struct Mounted {
     code: MountedCode,
     network: Arc<ShellNetwork>,
     actor: tokio::task::JoinHandle<()>,
+    acknowledgement_gate: Option<Arc<acknowledgement_recovery::Gate>>,
 }
 
 impl Mounted {
     async fn new(device: &Device, profile: &std::path::Path) -> Self {
+        Self::new_with_acknowledgement_gate(device, profile, None).await
+    }
+    async fn new_with_acknowledgement_gate(
+        device: &Device,
+        profile: &std::path::Path,
+        acknowledgement_gate: Option<Arc<acknowledgement_recovery::Gate>>,
+    ) -> Self {
         let (commands, actor) = Actor::spawn_reporting_addrs(
             device.endpoint.clone(),
             iroh::address_lookup::memory::MemoryLookup::new(),
@@ -110,12 +121,20 @@ impl Mounted {
             ))
             .await
             .unwrap();
-        let code =
-            cold_code::mount_with_network(&device.owner, &device.identity, profile, &network);
+        let code = cold_code::mount_with_network_and_reads(
+            &device.owner,
+            &device.identity,
+            profile,
+            &network,
+            acknowledgement_gate
+                .as_ref()
+                .map(acknowledgement_recovery::Gate::wrapper),
+        );
         Self {
             code,
             network,
             actor,
+            acknowledgement_gate,
         }
     }
 
@@ -169,6 +188,7 @@ impl Mounted {
             code,
             network,
             actor,
+            acknowledgement_gate: _,
         } = self;
         drop(code);
         async move {
@@ -216,9 +236,11 @@ pub(super) async fn run(
             &context.directory.path().join("mounted-first-profile"),
         )
         .await,
-        Mounted::new(
+        Mounted::new_with_acknowledgement_gate(
             &second,
             &context.directory.path().join("mounted-second-profile"),
+            matches!(context.journey, Journey::AcknowledgementRecovery)
+                .then(|| acknowledgement_recovery::Gate::new(&second.owner)),
         )
         .await,
     ];
@@ -307,6 +329,9 @@ async fn edit_and_converge(
     // A second fresh edit proves the receiving root remains connected after
     // its first remote merge; no app remount or record-graph copy occurs.
     let edited_again = format!("{edited}// second mounted device edits\n");
+    if let Some(gate) = &mounted[1].acknowledgement_gate {
+        gate.arm(&edited_again);
+    }
     mounted[1].invoke("replace-text", Some(&edited_again));
     drive(
         context,
@@ -318,6 +343,9 @@ async fn edit_and_converge(
         2,
     )
     .await;
+    if let Some(gate) = &mounted[1].acknowledgement_gate {
+        gate.assert_observed();
+    }
 }
 
 fn report_owner_phases(stage: &str, mounted: &[Mounted]) {

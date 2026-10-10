@@ -327,6 +327,24 @@ impl WorkspaceAcl {
             .collect()
     }
 
+    /// Whether anyone but the mount itself may be named here: a direct
+    /// entry for an identity no binding answers for, or a capability whose
+    /// subject is not the bound actor (another person, a role, a token, a
+    /// room the mount does not prove). The shipped list, which grants the
+    /// mount's own principal, names nobody else: then only the mount's own
+    /// identity (the person's other devices) can be admitted, never another
+    /// party (TIL-774, [`crate::reachability`]).
+    #[must_use]
+    pub fn names_others(&self) -> bool {
+        let own: HashSet<IdentityKey> = self.bindings.iter().map(|b| b.identity).collect();
+        self.entries.iter().any(|e| !own.contains(&e.identity))
+            || self.bindings.iter().any(|b| {
+                b.caps
+                    .iter()
+                    .any(|cap| !cap.subject.matches_actor(&b.actor))
+            })
+    }
+
     /// Does `identity` hold `access` on `path`? Fail-closed: `true` only if
     /// a direct entry whose prefix covers `path` grants it, or a bound
     /// capability list decides `Allow`. Path containment is

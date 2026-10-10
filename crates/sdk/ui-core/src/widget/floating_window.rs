@@ -793,7 +793,7 @@ impl<C: Widget + 'static> Widget for FloatingWindow<C> {
     ) -> NodeId {
         self.layout_theme = theme.clone();
         // Occupies the whole viewport so it can clamp + paint anywhere.
-        taffy.filling_leaf(node_map, self)
+        taffy.fill_leaf(node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
@@ -1634,7 +1634,7 @@ mod tests {
             _t: &Theme,
             node_map: &mut HashMap<NodeId, *mut dyn Widget>,
         ) -> NodeId {
-            taffy.filling_leaf(node_map, self)
+            taffy.fill_leaf(node_map, self)
         }
         fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
             let l = taffy.layout(node).copied().unwrap_or_default();
