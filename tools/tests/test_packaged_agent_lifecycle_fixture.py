@@ -824,6 +824,71 @@ class FixtureFailureDiagnosticsTests(unittest.TestCase):
 
 
 class PresentedEditorTargetTests(unittest.TestCase):
+    def test_pre_float_baseline_waits_for_exact_caret_focus_and_refuses_reacquire_mutation(self):
+        for changed, false_field in (({"draft_matches": False}, "content_matches"),
+                                     ({"caret": 0}, "caret_equal"),
+                                     ({"selection": None}, "selection_equal"),
+                                     ({"accessibility_focused": False}, "accessibility_focus_equal")):
+            final_reads = []
+            access = {"bus": "owned", "process": 42, "composer": "/editor", "drag": "/float"}
+
+            def editor(_access, expected, **_kwargs):
+                final = expected.endswith("!")
+                width = 1 if final or expected.endswith("👍") else 5
+                exact = {"draft_matches": True, "caret": len(expected) - width,
+                         "selection": [len(expected) - width, len(expected)],
+                         "accessibility_focused": True}
+                if not final:
+                    return exact
+                final_reads.append(expected)
+                if len(final_reads) == 1:
+                    return {**exact, "caret": len(expected)}
+                if len(final_reads) == 2:
+                    return {**exact, "accessibility_focused": False}
+                if len(final_reads) == 3:
+                    return exact
+                return {**exact, **changed, "private": "PRIVATE-CANARY"}
+
+            def observe(_label, predicate, _process):
+                for _ in range(4):
+                    result = predicate()
+                    if result:
+                        return result
+                self.fail("the actual production observer did not reach its expected state")
+
+            with self.subTest(changed=changed), tempfile.TemporaryDirectory() as directory, ExitStack() as stack:
+                output = pathlib.Path(directory)
+                stack.enter_context(patch.object(PROOF, "wait_for", side_effect=observe))
+                stack.enter_context(patch.object(PROOF, "agent_conversation_accessibility", return_value=access))
+                stack.enter_context(patch.object(PROOF, "presented_primary_frame", return_value={"frame_seq": 1}))
+                stack.enter_context(patch.object(PROOF, "presented_content_geometry", return_value={}))
+                for name in ("physically_click_editor", "require_chat_keyboard_focus_after_click", "require_ok"):
+                    stack.enter_context(patch.object(PROOF, name))
+                stack.enter_context(patch.object(PROOF, "editor_accessibility_focus", return_value=True))
+                stack.enter_context(patch.object(PROOF, "private_editor_value_matches", return_value=True))
+                stack.enter_context(patch.object(PROOF, "private_editor_observation", side_effect=editor))
+                selection = stack.enter_context(patch.object(
+                    PROOF, "wait_for_private_selection", wraps=PROOF.wait_for_private_selection))
+                controls = stack.enter_context(patch.object(PROOF, "call", return_value={"ok": {}}))
+                with self.assertRaisesRegex(RuntimeError, "refreshing Float changed private editor state"):
+                    PROOF.native_float_return("socket", "room", "record", output, "1600x900", None)
+                self.assertEqual(len(final_reads), 4)
+                final_selection = selection.call_args_list[-1]
+                draft = final_selection.args[2]
+                self.assertEqual(final_selection.kwargs,
+                                 {"expected_caret": len(draft) - 1, "require_focused": True})
+                self.assertEqual(final_selection.args[3], [len(draft) - 1, len(draft)])
+                receipt = json.loads((output / "float-reacquire-editor-continuity.json").read_text())
+                self.assertEqual(set(receipt), {"content_matches", "caret_equal", "selection_equal",
+                    "accessibility_focus_equal", "accessibility_focused_before",
+                    "accessibility_focused_after", "private_content_recorded"})
+                self.assertTrue(all(type(value) is bool for value in receipt.values()))
+                self.assertIs(receipt[false_field], False)
+                self.assertIs(receipt["private_content_recorded"], False)
+                self.assertNotIn(draft, json.dumps(receipt))
+                self.assertNotIn("PRIVATE-CANARY", json.dumps(receipt))
+                self.assertFalse(any(entry.args[1].get("op") == "drag" for entry in controls.call_args_list))
+
     def test_managed_profile_availability_observes_only_exact_fixed_public_state(self):
         windows = [{"address": "owned", "bus": ":1.1", "root": "/workspace"}]
 

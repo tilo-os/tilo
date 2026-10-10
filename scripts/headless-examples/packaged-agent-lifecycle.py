@@ -2612,7 +2612,7 @@ def native_float_return(socket, room, record, output, size, process):
         require_ok(call(socket, {"op": "key", "key": "ArrowLeft"}))
     before = wait_for_private_selection(
         socket, access, draft, [len(draft) - 1, len(draft)], process, output,
-        require_focused=True)
+        expected_caret=len(draft) - 1, require_focused=True)
     if before["selection"] != [len(draft) - 1, len(draft)]:
         raise RuntimeError("the IME result could not be selected through physical input")
     if before["accessibility_focused"] is not True:
@@ -2628,7 +2628,8 @@ def native_float_return(socket, room, record, output, size, process):
              lambda: private_editor_value_matches(access, draft), process)
     physical_chord(socket, "ArrowLeft", shift=True)
     before = wait_for_private_selection(
-        socket, access, draft, [len(draft) - 1, len(draft)], process, output)
+        socket, access, draft, [len(draft) - 1, len(draft)], process, output,
+        expected_caret=len(draft) - 1, require_focused=True)
     require_ok(call(socket, {"op": "snapshot", "path": str(output / f"before-float-{size}.png")}))
     # Editing publishes fresh AccessKit transactions. Resolve the current
     # drag handle beside the same editor instead of using a retained node.
@@ -2637,7 +2638,12 @@ def native_float_return(socket, room, record, output, size, process):
         lambda: agent_conversation_accessibility("Tide"),
         process,
     )
-    if private_editor_observation(access, draft) != before:
+    refreshed = private_editor_observation(access, draft)
+    if refreshed != before:
+        (output / "float-reacquire-editor-continuity.json").write_text(json.dumps({
+            **closed_editor_continuity(before, refreshed),
+            "private_content_recorded": False,
+        }, indent=2) + "\n")
         raise RuntimeError("refreshing Float changed private editor state")
     primary = presented_primary_frame(call(socket, {"op": "foreign_frames"}), "so.tilo.chat")
     if primary is None:
