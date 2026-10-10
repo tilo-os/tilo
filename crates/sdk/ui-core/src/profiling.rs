@@ -19,6 +19,8 @@
 //! waiting, and presence overlays. Waiting is wall time, not active CPU work;
 //! none of these fields measure GPU completion or display presentation.
 
+#[cfg(test)]
+pub(crate) mod frame_probe;
 pub(crate) mod resource_trace;
 
 use crate::time::{Duration, Instant};

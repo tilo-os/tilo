@@ -1051,12 +1051,20 @@ impl Widget for RichTextLine {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
+        #[cfg(test)]
+        let attributes_probe = crate::profiling::frame_probe::span("line_attributes");
         self.prepare_attributes(theme);
         self.sync_wrapped_spans(theme);
+        #[cfg(test)]
+        drop(attributes_probe);
+        #[cfg(test)]
+        let input_probe = crate::profiling::frame_probe::span("text_input_draw");
         // TextInput owns glyph shaping and painting. This wrapper supplies
         // attributes and draws only mark decorations that are not glyphs.
         self.inner
             .draw(scene, transform, text_renderer, theme, presence);
+        #[cfg(test)]
+        drop(input_probe);
 
         if self.marks.is_empty() && self.transient_colors.is_empty() {
             return;
