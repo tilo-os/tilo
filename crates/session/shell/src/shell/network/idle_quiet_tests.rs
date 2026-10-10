@@ -34,27 +34,33 @@ const FRAME: Duration = Duration::from_millis(100);
 const SETTLE: Duration = Duration::from_secs(10);
 /// The idle stretch measured.
 const IDLE: Duration = Duration::from_secs(60);
-/// Most context switches per second the two desktops' own threads (their
-/// network actors, endpoints and drains; not the thread driving their frame
-/// loops) may make while idle, together.
+/// Most times per second the two desktops' own threads (their network
+/// actors, endpoints and drains; not the thread driving their frame loops)
+/// may block while idle, together.
 ///
-/// Measured 9.9/s, 10.5/s and 11.6/s on CI (focused runs 89705, 89410,
-/// 89703) while gossip swept its caches every second; 6.9/s, 7.0/s and
-/// 7.5/s on the builder (11.9/s before) once it sweeps every 10 s. What
-/// remains is the two network runtimes' workers (`tilo-net-rt-*`) over both
-/// desktops, mostly the transport's 5 s keep-alives, everything else under
-/// 0.1/s.
+/// Counted as voluntary switches, one per wakeup, as the lone gate is
+/// (TIL-749): preemptions measure the runner. Counting both, this gate failed
+/// the shell shard at 15.45 to 17.31/s against 15/s while its threads
+/// blocked about 12.8 times a second (forge #4035), and nightly run 91200
+/// measured 15.68/s, 3.63 of it preemptions.
 ///
-/// The gate runs in the pull-request shell shard, which measures more than a
-/// focused runner on the same code: 15.18 to 16.80/s across five PRs before
-/// the sweep change, the extra being voluntary switches, not preemptions
-/// (TIL-690, `docs/benchmarks/idle-wakeups-2026-10-09.md`). The sweep change
-/// removes about 4.9/s, so the shard's p95 is now near 11.9/s; the budget is
-/// that plus a quarter. Lower it with each fix that removes a waker (TIL-702).
-const IDLE_WAKEUP_BUDGET: f64 = 15.0;
+/// Measured blocking on CI (focused, TIL-752): main `f744af88ad` 6.12 to
+/// 6.98/s (runs 92709-92713); with the upkeep tick and the gossip sweep
+/// armed only while there are peers, which this pair has, 5.84 to 7.17/s
+/// (runs 92724, 92787-92796). What remains is the two network runtimes'
+/// workers over both desktops: the transport's 5 s keep-alives, the 5 s
+/// upkeep tick and the 10 s sweep both desktops keep while linked.
+///
+/// Where the gate runs, loaded, its threads block more than when focused:
+/// nightly's 12.05/s against about 10/s focused on the same code before
+/// TIL-702 (TIL-690, `docs/benchmarks/idle-wakeups-2026-10-09.md`). The
+/// focused p95, 7.2/s, a third more for that, plus a quarter: 12/s.
+const IDLE_WAKEUP_BUDGET: f64 = 12.0;
 /// Most CPU the two desktops' own threads may use while idle, in percent of
-/// one core. PROVISIONAL, set from measurement below.
-const IDLE_CPU_BUDGET: f64 = 2.0;
+/// one core: 600 ms over [`IDLE`]. The wakeup count leaves out preemptions,
+/// so this is what still catches a thread that spins without blocking.
+/// Measured 0.2 to 0.3 % focused (TIL-752) and 0.5 % in nightly run 91200.
+const IDLE_CPU_BUDGET: f64 = 1.0;
 
 /// How long a lone desktop runs after it starts before it is measured, so
 /// its endpoint and its room's topic are up, and how long it is measured.
@@ -63,18 +69,28 @@ const LONE_IDLE: Duration = Duration::from_secs(20);
 /// Most times per second a lone desktop's own threads may wake while idle:
 /// one room of its own, no peer, and no frame loop driving it, as on a
 /// desktop nobody touches, whose compositor never ticks the network
-/// (TIL-702's target, under 2/s).
+/// (TIL-702).
 ///
 /// Measured on CI (focused, loopback): 2.79/s while gossip swept the room's
 /// topic every second (run 91402), 0.95/s and 1.05/s once it sweeps every
-/// 10 s (runs 91459, 91528). The rest is the 5 s upkeep tick and the sweep.
+/// 10 s (runs 91459, 91528), 0.90 to 1.05/s on main `f744af88ad` (runs
+/// 92709-92713). Most of that was the 5 s upkeep tick and the sweeps of the
+/// desktop's three topics, neither of which runs now while there is no peer
+/// (TIL-752): 0.30 to 0.45/s (runs 92724, 92787-92796, 92833), 0.25 to
+/// 0.40/s of it `tilo-net-rt`. A tracing probe (run 92833) names what is
+/// left: two iroh timers that run whatever Tilo does, netwatch's 15 s
+/// wall-clock check and the socket's 20-26 s re-STUN tick, which with no
+/// relays does nothing. In that run the two cost a worker eight switches;
+/// tokio's timer wheel, which wakes at each level a far timer cascades
+/// through, would account for most of them (not verified). The test
+/// thread's own `/proc` read is 0.05/s. The p95, 0.45/s, plus a quarter.
 ///
 /// Counted as voluntary switches, one per wakeup, because preemptions
 /// measure the runner: a loaded pull-request shard (run 92351, its cgroup at
 /// `memory.max` 2832 times) preempted the same two `tilo-net-rt` workers
 /// 1.35 times a second on top of the 0.95 times they blocked, and failed the
 /// gate at 2.30/s with nothing in the session changed (TIL-749).
-const LONE_WAKEUP_BUDGET: f64 = 2.0;
+const LONE_WAKEUP_BUDGET: f64 = 0.6;
 /// Most CPU a lone idle desktop's threads may use, in percent of one core:
 /// 100 ms over [`LONE_IDLE`]. The wakeup count leaves out preemptions, so
 /// this is what still catches a thread that spins without blocking. Measured

@@ -65,6 +65,9 @@ const DEPARTURE_GRACE: Duration = Duration::from_secs(5);
 /// [`PEER_TIMEOUT`], and beats every 5 s itself, so three missed beats and
 /// one more mean it is gone. A topic of current builds only is silent.
 const LEGACY_PEER_WINDOW: Duration = Duration::from_secs(20);
+/// How often each workspace host session is asked for a fresh checkpoint
+/// ([`ActorState::run_host_checkpoint_tick`]); armed only while there is a
+/// host session to ask.
 const HOST_CHECKPOINT_INTERVAL: Duration = Duration::from_secs(600);
 const MAX_GOSSIP_MESSAGE_BYTES: usize = 64 * 1024 * 1024;
 const MAX_SURFACE_FRAME_BYTES: usize = 64 * 1024 * 1024;
@@ -3899,10 +3902,8 @@ async fn run(
         compat_beats: 0,
         pending_remote_actions: PendingRemoteActions::default(),
     };
-    let mut host_checkpoint = tokio::time::interval(HOST_CHECKPOINT_INTERVAL);
-    host_checkpoint.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-    host_checkpoint.tick().await;
     let mut upkeep = None;
+    let mut host_checkpoint = None;
 
     loop {
         // Evict when the soonest membership lapses, not on a polling tick:
@@ -3911,6 +3912,11 @@ async fn run(
         // Upkeep every `heartbeat_interval` while there is someone to keep
         // up with; a desktop alone with its rooms never wakes for it.
         upkeep = next_upkeep(upkeep, state.needs_upkeep(), heartbeat_interval);
+        host_checkpoint = next_upkeep(
+            host_checkpoint,
+            !state.host_sessions.is_empty(),
+            HOST_CHECKPOINT_INTERVAL,
+        );
         tokio::select! {
             biased;
             input = input_rx.recv() => {
@@ -3933,7 +3939,10 @@ async fn run(
                 upkeep = None;
                 state.run_heartbeat_tick().await;
             }
-            _ = host_checkpoint.tick() => state.run_host_checkpoint_tick().await,
+            () = sleep_until_lapse(host_checkpoint) => {
+                host_checkpoint = None;
+                state.run_host_checkpoint_tick().await;
+            }
         }
     }
 
