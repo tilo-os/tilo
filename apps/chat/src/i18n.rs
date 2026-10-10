@@ -117,6 +117,8 @@ mod tests {
             "chat-thread-back",
             "chat-thread-close",
             "chat-thread-replies",
+            "chat-navigation-show",
+            "chat-navigation-hide",
             "chat-agent-kind",
             "chat-agents-section",
             "chat-agent-message-placeholder",

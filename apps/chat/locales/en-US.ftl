@@ -105,6 +105,8 @@ chat-identity-in-voice = In voice
 
 chat-resource-copy-link = Copy resource link
 chat-resource-open-link = Open resource in browser
+chat-navigation-show = Show conversation navigation
+chat-navigation-hide = Hide conversation navigation
 chat-agent-kind = Agent
 chat-agents-section = Agents
 chat-agent-message-placeholder = Message { $name }

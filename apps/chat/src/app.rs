@@ -4653,9 +4653,15 @@ impl ChatApp {
                         false,
                     ),
                     Hit::Search => ("Search Chat".into(), Role::Button, false),
-                    Hit::ToggleLeftFlap => {
-                        ("Show conversation navigation".into(), Role::Button, false)
-                    }
+                    Hit::ToggleLeftFlap => (
+                        if self.left_flap_open() {
+                            crate::i18n::t("chat-navigation-hide")
+                        } else {
+                            crate::i18n::t("chat-navigation-show")
+                        },
+                        Role::Button,
+                        false,
+                    ),
                     Hit::ToggleRightFlap => ("Show people or thread".into(), Role::Button, false),
                     Hit::OpenThread(_) => ("Open message thread".into(), Role::Button, false),
                     Hit::CloseThread => (crate::i18n::t("chat-thread-close"), Role::Button, false),

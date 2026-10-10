@@ -8952,6 +8952,34 @@ mod tests {
             );
         }
 
+        // Phase: conversation_navigation_names_the_effect_of_activation.
+        {
+            let (mut app, mut doc) = app_with_doc();
+            app.stage_view("narrow");
+            render_frame(&mut app, 390.0, 844.0);
+            let target = Hit::ToggleLeftFlap.semantic_id();
+            let navigation_name = |app: &ChatApp| {
+                ui::Widget::accessibility(app)
+                    .expect("Chat has a semantic root")
+                    .children
+                    .into_iter()
+                    .find(|node| node.action_target.as_deref() == Some(target.as_str()))
+                    .and_then(|node| node.name)
+                    .expect("the painted navigation toggle is semantic")
+            };
+            assert_eq!(navigation_name(&app), "Show conversation navigation");
+            assert!(ui::Widget::perform_semantic_action(
+                &mut app,
+                &target,
+                &ui::a11y::Action::Activate,
+                &mut ui::widget::Edits::lend(&mut doc),
+                &automerge::ROOT,
+            ));
+            render_frame(&mut app, 390.0, 844.0);
+            assert!(app.left_flap_open());
+            assert_eq!(navigation_name(&app), "Hide conversation navigation");
+        }
+
         // Phase: semantic_text_inputs_accept_focus_value_and_selection_without_sending.
         {
             let (mut app, mut doc) = app_with_doc();
