@@ -329,7 +329,7 @@ features = [
   "music/audio", "music/live", "video-player/decode",
   "camera/live-capture", "tube/live", "tube/media", "tube/grayjay-sync",
   "mail/live", "disks/live", "video-editor/decode",
-  "video-editor/gst",
+  "video-editor/gst", "typst-editor/runtime-engine",
 ]
 layer = "direct"
 files = [

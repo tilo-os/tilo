@@ -146,12 +146,14 @@ mod fonts {
         }
     }
 
-    #[cfg(feature = "thin")]
+    /// Parsed inside the engine library, so this executable never retains
+    /// the font table.
+    #[cfg(feature = "runtime-engine")]
     fn embedded() -> Vec<Font> {
-        runtime_dylib::typst_fonts()
+        tilo_typst_engine::typst_fonts()
     }
 
-    #[cfg(not(feature = "thin"))]
+    #[cfg(not(feature = "runtime-engine"))]
     fn embedded() -> Vec<Font> {
         tilo_typst_fonts::embedded()
             .into_iter()
