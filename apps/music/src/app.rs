@@ -3818,16 +3818,17 @@ impl MusicApp {
     }
 
     /// Complete a background resource invocation only after decoded PCM has
-    /// reached the real sink.  The resolver merely gives the pipeline a URL;
-    /// it is not evidence that audio playback started.
+    /// reached the real sink and the decoder confirms Playing. A sink callback
+    /// can precede `GStreamer`'s asynchronous state transition; neither URL
+    /// resolution nor those first frames alone confirm settled playback.
     #[cfg(feature = "audio")]
     fn settle_resource_stream_after_rendered_frames(&mut self, rendered_frames: u64) {
         if let Some((invocation, _, frames_before, _)) = self.resource_stream_invocation
+            && self.audio.is_playing_confirmed()
             && (rendered_frames > frames_before
                 || (rendered_frames > 0
                     && self.resource_stream_resume.is_some()
-                    && self.resource_stream_resume == self.pb.current
-                    && self.audio.is_playing_confirmed()))
+                    && self.resource_stream_resume == self.pb.current))
         {
             self.resource_stream_invocation = None;
             self.resource_stream_resume = None;
