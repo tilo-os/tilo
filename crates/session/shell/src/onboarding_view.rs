@@ -3971,7 +3971,7 @@ mod tests {
     use std::sync::atomic::AtomicBool;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use tempfile::TempDir;
-    use ui::widget::identity_flow::{IdentityRecord, SerializableIdentity};
+    use tilo_identity_ceremony::{IdentityRecord, SerializableIdentity};
     use winit::event::Modifiers;
 
     fn view() -> (OnboardingView, Arc<AtomicUsize>) {
