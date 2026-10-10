@@ -41,14 +41,35 @@ pub fn publish_screensaver_state(active: bool) {
 }
 
 #[derive(Clone, Default)]
+#[cfg_attr(
+    not(target_os = "linux"),
+    expect(
+        dead_code,
+        reason = "the authenticated Linux portal adapter consumes this shared model; retain its complete cross-host shape"
+    )
+)]
 pub struct InhibitMonitorHandle(Arc<Mutex<HashSet<String>>>);
 
 pub struct InhibitBackend {
     #[cfg(target_os = "linux")]
     ctx: PortalContext,
+    #[cfg_attr(
+        not(target_os = "linux"),
+        expect(
+            dead_code,
+            reason = "the authenticated Linux portal adapter consumes this shared model; retain its complete cross-host shape"
+        )
+    )]
     registry: InhibitRegistry,
     holds: Arc<Mutex<HashMap<String, InhibitToken>>>,
     monitors: InhibitMonitorHandle,
+    #[cfg_attr(
+        not(target_os = "linux"),
+        expect(
+            dead_code,
+            reason = "the authenticated Linux portal adapter consumes this shared model; retain its complete cross-host shape"
+        )
+    )]
     lifecycle: PortalLifecycle,
 }
 impl InhibitBackend {

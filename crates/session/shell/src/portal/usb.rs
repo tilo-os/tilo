@@ -54,6 +54,13 @@ impl UsbBackend {
 struct RequestedDevice {
     id: String,
     writable: bool,
+    #[cfg_attr(
+        not(target_os = "linux"),
+        expect(
+            dead_code,
+            reason = "the authenticated Linux portal adapter consumes this shared model; retain its complete cross-host shape"
+        )
+    )]
     label: Option<String>,
 }
 

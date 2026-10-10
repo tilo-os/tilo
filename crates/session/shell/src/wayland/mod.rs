@@ -8,6 +8,6 @@
 //! hosts our hand-rolled `wayland_server::{GlobalDispatch, Dispatch}`
 //! implementations.
 
-#[cfg(target_os = "linux")]
+#[cfg(any(test, target_os = "linux"))]
 pub mod color_management;
 pub mod edid;

@@ -56,7 +56,7 @@ pub mod app_chooser;
 pub mod appearance;
 #[cfg(target_os = "linux")]
 pub mod auth;
-#[cfg(target_os = "linux")]
+#[cfg(any(test, target_os = "linux"))]
 pub mod background;
 #[cfg(any(test, target_os = "linux"))]
 pub mod camera;
@@ -71,9 +71,9 @@ pub mod email;
 pub mod file_chooser;
 pub mod file_picker_spawner;
 pub mod global_shortcuts;
-#[cfg(target_os = "linux")]
+#[cfg(any(test, target_os = "linux"))]
 pub mod inhibit;
-#[cfg(target_os = "linux")]
+#[cfg(any(test, target_os = "linux"))]
 pub mod input_capture;
 #[cfg(target_os = "linux")]
 pub(crate) mod interface_dispatch;
@@ -86,9 +86,9 @@ pub mod notification;
 pub mod permission_store;
 pub mod picker_queue;
 pub mod print;
-#[cfg(target_os = "linux")]
+#[cfg(any(test, target_os = "linux"))]
 pub mod remote_desktop;
-#[cfg(target_os = "linux")]
+#[cfg(any(test, target_os = "linux"))]
 pub mod screencast;
 pub mod screencast_pipewire;
 #[cfg(target_os = "linux")]
@@ -98,7 +98,7 @@ pub mod screenshot;
 #[cfg(any(test, target_os = "linux"))]
 pub mod secret;
 pub mod settings;
-#[cfg(target_os = "linux")]
+#[cfg(any(test, target_os = "linux"))]
 pub mod usb;
 #[cfg(any(test, target_os = "linux"))]
 pub mod wallpaper;
