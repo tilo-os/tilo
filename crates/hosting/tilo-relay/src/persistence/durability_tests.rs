@@ -188,9 +188,10 @@ fn a_killed_writer_loses_no_acknowledged_edit() {
     let mut acked = Vec::new();
     for line in BufReader::new(child.stdout.take().unwrap()).lines() {
         let line = line.unwrap();
+        // libtest prints the test's name on the line its first output joins.
         let Some((index, sequence)) = line
-            .strip_prefix(ACKED)
-            .and_then(|rest| rest.split_once(' '))
+            .split_once(ACKED)
+            .and_then(|(_, rest)| rest.split_once(' '))
         else {
             continue;
         };
