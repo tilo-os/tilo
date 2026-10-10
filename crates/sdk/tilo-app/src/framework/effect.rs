@@ -270,22 +270,114 @@ type Then<R, H> = Box<dyn FnOnce(&mut H, Box<dyn Any + Send>, &mut EffectCx<R, H
 /// time the job is, `Some` once it arrived.
 type Source = Box<dyn FnMut() -> Option<Box<dyn Any + Send>>>;
 
-/// A job a handler or a completion started, not yet tracked.
-struct Started<R: Resource, H> {
+/// What a job reports and how it is stopped: the same for every resource,
+/// so one copy of it serves them all.
+struct JobCore {
     events: Receiver<JobEvent>,
-    then: Option<Then<R, H>>,
     cancelled: Arc<AtomicBool>,
     task: Option<ui_core::rt::JoinHandle<()>>,
     source: Option<Source>,
+    sequence: u64,
     custody: Option<ResourceInvocationScope>,
 }
 
-impl<R: Resource, H> Started<R, H> {
+impl JobCore {
     fn stop(self) {
         self.cancelled.store(true, Ordering::Release);
         if let Some(task) = self.task {
             task.abort();
         }
+    }
+
+    /// The next thing the job reports, if it reported anything.
+    fn next(&mut self) -> Option<Next> {
+        if let Some(error) = self
+            .custody
+            .as_ref()
+            .and_then(|custody| custody.check().err())
+        {
+            return Some(Next::Failed(failure(error)));
+        }
+        let answered = self.source.as_mut().and_then(|source| source());
+        let event = match answered.map_or_else(
+            || self.events.try_recv(),
+            |value| Ok(JobEvent::Finished(value)),
+        ) {
+            Ok(event) => event,
+            Err(TryRecvError::Empty) => return None,
+            Err(TryRecvError::Disconnected) => {
+                return Some(Next::Failed(failure(
+                    "the effect ended without an answer".into(),
+                )));
+            }
+        };
+        if let Some(error) = self
+            .custody
+            .as_ref()
+            .and_then(|custody| custody.check().err())
+        {
+            return Some(Next::Failed(failure(error)));
+        }
+        Some(match event {
+            JobEvent::Failed(error) => Next::Failed(error),
+            JobEvent::Progress {
+                phase,
+                completed,
+                total,
+            } => {
+                self.sequence = self.sequence.saturating_add(1);
+                Next::Progress(Polled::Progress {
+                    sequence: self.sequence,
+                    phase,
+                    completed,
+                    total,
+                })
+            }
+            JobEvent::Finished(value) => Next::Finished(value),
+        })
+    }
+}
+
+/// What [`JobCore::next`] found.
+enum Next {
+    Progress(Polled),
+    /// The job failed or lost its custody: it is over.
+    Failed(ActionFailure),
+    Finished(Box<dyn Any + Send>),
+}
+
+/// The answer a job without a completion of its own gave.
+fn answered(value: Box<dyn Any + Send>) -> Polled {
+    Polled::Finished(Some(
+        match value.downcast::<Result<ActionOutput, ActionFailure>>() {
+            Ok(result) => *result,
+            Err(_) => Err(failure("the effect answered with another type".into())),
+        },
+    ))
+}
+
+/// What a completion's answer, with the job it may have chained, comes to.
+fn completed(answer: EffectAnswer, chained: bool) -> Option<Result<ActionOutput, ActionFailure>> {
+    match answer {
+        Ok(Effected::Pending) if chained => None,
+        Ok(Effected::Pending) => Some(Err(failure(
+            "the effect's completion answered later but started no job".into(),
+        ))),
+        Ok(Effected::Done(output)) => Some(Ok(output)),
+        Err(error) => Some(Err(failure(error))),
+    }
+}
+
+/// A job a handler or a completion started: what it reports, and the
+/// completion that runs with what it finished with.
+struct Started<R: Resource, H> {
+    core: JobCore,
+    then: Option<Then<R, H>>,
+}
+
+impl<R: Resource, H> Started<R, H> {
+    fn stop(self) {
+        self.core.stop();
     }
 }
 
@@ -490,12 +582,15 @@ impl<R: Resource, H: 'static> EffectCx<R, H> {
             custody: self.worker_custody.clone(),
         };
         if let Some(previous) = self.started.replace(Started {
-            events: receiver,
+            core: JobCore {
+                events: receiver,
+                cancelled: Arc::clone(&cancelled),
+                task: None,
+                source: None,
+                sequence: 0,
+                custody: self.custody.clone(),
+            },
             then,
-            cancelled: Arc::clone(&cancelled),
-            task: None,
-            source: None,
-            custody: self.custody.clone(),
         }) {
             tracing::warn!("an effect started a second job; the first one is stopped");
             previous.stop();
@@ -542,7 +637,7 @@ impl<R: Resource, H: 'static> EffectCx<R, H> {
             }
         });
         if let Some(started) = self.started.as_mut() {
-            started.task = Some(task);
+            started.core.task = Some(task);
         }
         Effected::Pending
     }
@@ -566,7 +661,7 @@ impl<R: Resource, H: 'static> EffectCx<R, H> {
             }
         });
         if let Some(started) = self.started.as_mut() {
-            started.task = Some(task);
+            started.core.task = Some(task);
         }
         Effected::Pending
     }
@@ -643,7 +738,7 @@ impl<R: Resource, H: 'static> EffectCx<R, H> {
     ) -> Effected {
         let (progress, _) = self.track(Some(Self::then(then)));
         if let Some(started) = self.started.as_mut() {
-            started.source = Some(Box::new(move || {
+            started.core.source = Some(Box::new(move || {
                 // The job's own channel stays open while it waits here.
                 let _waiting = &progress;
                 match receiver.try_recv() {
@@ -761,7 +856,7 @@ impl<R: Resource, H: 'static> EffectCx<R, H> {
         let asked = Asked(opener.open(arguments));
         let (progress, _) = self.track(Some(Self::then(then)));
         if let Some(started) = self.started.as_mut() {
-            started.source = Some(Box::new(move || {
+            started.core.source = Some(Box::new(move || {
                 // The job's own channel stays open while it waits here.
                 let _waiting = &progress;
                 asked
@@ -919,34 +1014,42 @@ impl<R: Resource, H: 'static> OwnedJobs<R, H> {
         }
         for key in self.running.keys() {
             while let Some(polled) = self.running.poll(&key, host, &env, None) {
-                let result = match polled {
-                    Polled::Progress {
+                if !self.jobs.queue.borrow_mut().note(&key, polled) {
+                    break;
+                }
+            }
+        }
+    }
+}
+
+impl JobQueue {
+    /// Note what the job `key` reported; whether to poll it again.
+    fn note(&mut self, key: &str, polled: Polled) -> bool {
+        match polled {
+            Polled::Progress {
+                phase,
+                completed,
+                total,
+                ..
+            } => {
+                self.progress.insert(
+                    key.to_owned(),
+                    JobProgress {
                         phase,
                         completed,
                         total,
-                        ..
-                    } => {
-                        self.jobs.queue.borrow_mut().progress.insert(
-                            key.clone(),
-                            JobProgress {
-                                phase,
-                                completed,
-                                total,
-                            },
-                        );
-                        continue;
-                    }
-                    Polled::Finished(result) => result,
-                };
-                if let Some(result) = result {
-                    if let Err(error) = result {
-                        tracing::warn!(error = %error.message, kind = R::KIND, %key, "a job failed");
-                    }
-                    let mut queue = self.jobs.queue.borrow_mut();
-                    queue.running.remove(&key);
-                    queue.progress.remove(&key);
+                    },
+                );
+                true
+            }
+            Polled::Finished(None) => false,
+            Polled::Finished(Some(result)) => {
+                if let Err(error) = result {
+                    tracing::warn!(error = %error.message, %key, "a job failed");
                 }
-                break;
+                self.running.remove(key);
+                self.progress.remove(key);
+                false
             }
         }
     }
@@ -1026,40 +1129,6 @@ pub(crate) fn published_specs<E: Effect>(statuses: &[EffectStatus]) -> Vec<Actio
         .collect()
 }
 
-/// A tracked job.
-struct Job<R: Resource, H> {
-    events: Receiver<JobEvent>,
-    then: Option<Then<R, H>>,
-    cancelled: Arc<AtomicBool>,
-    task: Option<ui_core::rt::JoinHandle<()>>,
-    source: Option<Source>,
-    sequence: u64,
-    custody: Option<ResourceInvocationScope>,
-}
-
-impl<R: Resource, H> From<Started<R, H>> for Job<R, H> {
-    fn from(started: Started<R, H>) -> Self {
-        Self {
-            events: started.events,
-            then: started.then,
-            cancelled: started.cancelled,
-            task: started.task,
-            source: started.source,
-            sequence: 0,
-            custody: started.custody,
-        }
-    }
-}
-
-impl<R: Resource, H> Job<R, H> {
-    fn stop(self) {
-        self.cancelled.store(true, Ordering::Release);
-        if let Some(task) = self.task {
-            task.abort();
-        }
-    }
-}
-
 /// What a job reported when polled.
 enum Polled {
     Progress {
@@ -1074,7 +1143,7 @@ enum Polled {
 
 /// The jobs one handler runs, keyed by what they answer.
 pub(crate) struct Running<R: Resource, H, K = InvocationId> {
-    running: HashMap<K, Job<R, H>>,
+    running: HashMap<K, Started<R, H>>,
 }
 
 impl<R: Resource, H, K> Default for Running<R, H, K> {
@@ -1095,7 +1164,7 @@ impl<R: Resource, H, K> Drop for Running<R, H, K> {
 
 impl<R: Resource, H: 'static, K: Eq + Hash + Clone> Running<R, H, K> {
     fn insert(&mut self, key: K, started: Started<R, H>) {
-        if let Some(previous) = self.running.insert(key, started.into()) {
+        if let Some(previous) = self.running.insert(key, started) {
             previous.stop();
         }
     }
@@ -1110,7 +1179,7 @@ impl<R: Resource, H: 'static, K: Eq + Hash + Clone> Running<R, H, K> {
 
     /// Stop the job answering `key`; its result, if it comes, is dropped.
     fn cancel(&mut self, key: &K) -> bool {
-        self.running.remove(key).map(Job::stop).is_some()
+        self.running.remove(key).map(Started::stop).is_some()
     }
 
     /// The next thing the job `key` reports, running its completion on this
@@ -1122,102 +1191,40 @@ impl<R: Resource, H: 'static, K: Eq + Hash + Clone> Running<R, H, K> {
         env: &EffectEnv<R>,
         invocation: Option<InvocationId>,
     ) -> Option<Polled> {
-        if let Some(error) = self
-            .running
-            .get(key)
-            .and_then(|job| job.custody.as_ref())
-            .and_then(|custody| custody.check().err())
-        {
-            self.cancel(key);
-            return Some(Polled::Finished(Some(Err(failure(error)))));
-        }
-        let job = self.running.get_mut(key)?;
-        let answered = job.source.as_mut().and_then(|source| source());
-        let event = match answered.map_or_else(
-            || job.events.try_recv(),
-            |value| Ok(JobEvent::Finished(value)),
-        ) {
-            Ok(event) => event,
-            Err(TryRecvError::Empty) => return None,
-            Err(TryRecvError::Disconnected) => {
-                self.running.remove(key);
-                return Some(Polled::Finished(Some(Err(failure(
-                    "the effect ended without an answer".into(),
-                )))));
-            }
-        };
-        if let Some(error) = job
-            .custody
-            .as_ref()
-            .and_then(|custody| custody.check().err())
-        {
-            self.cancel(key);
-            return Some(Polled::Finished(Some(Err(failure(error)))));
-        }
-        let value = match event {
-            JobEvent::Failed(error) => {
+        let value = match self.running.get_mut(key)?.core.next()? {
+            Next::Progress(progress) => return Some(progress),
+            Next::Failed(error) => {
                 self.cancel(key);
                 return Some(Polled::Finished(Some(Err(error))));
             }
-            JobEvent::Progress {
-                phase,
-                completed,
-                total,
-            } => {
-                job.sequence = job.sequence.saturating_add(1);
-                return Some(Polled::Progress {
-                    sequence: job.sequence,
-                    phase,
-                    completed,
-                    total,
-                });
-            }
-            JobEvent::Finished(value) => value,
+            Next::Finished(value) => value,
         };
         let job = self.running.remove(key)?;
         let Some(then) = job.then else {
-            let answered = match value.downcast::<Result<ActionOutput, ActionFailure>>() {
-                Ok(result) => *result,
-                Err(_) => Err(failure("the effect answered with another type".into())),
-            };
-            return Some(Polled::Finished(Some(answered)));
+            return Some(answered(value));
         };
-        let mut cx = match EffectCx::new(env.clone(), invocation).with_custody(job.custody.clone())
-        {
+        let custody = job.core.custody;
+        let mut cx = match EffectCx::new(env.clone(), invocation).with_custody(custody.clone()) {
             Ok(cx) => cx,
             Err(error) => return Some(Polled::Finished(Some(Err(failure(error))))),
         };
         let answer = {
             let _acting = ActingFor::enter(invocation);
-            match &job.custody {
+            match &custody {
                 Some(custody) => custody
                     .with_effect(|| then(host, value, &mut cx))
                     .and_then(|answer| custody.check().map(|()| answer)),
                 None => then(host, value, &mut cx),
             }
         };
-        Some(match (answer, cx.started.take()) {
-            (Ok(Effected::Pending), Some(next)) => {
-                self.insert(key.clone(), next);
-                Polled::Finished(None)
-            }
-            (Ok(Effected::Pending), None) => Polled::Finished(Some(Err(failure(
-                "the effect's completion answered later but started no job".into(),
-            )))),
-            (answer, next) => {
-                if let Some(next) = next {
-                    next.stop();
-                }
-                Polled::Finished(Some(
-                    answer
-                        .map(|answer| match answer {
-                            Effected::Done(output) => output,
-                            Effected::Pending => ActionOutput::default(),
-                        })
-                        .map_err(failure),
-                ))
-            }
-        })
+        let next = cx.started.take();
+        let chained = matches!(answer, Ok(Effected::Pending)) && next.is_some();
+        match next {
+            Some(next) if chained => self.insert(key.clone(), next),
+            Some(next) => next.stop(),
+            None => {}
+        }
+        Some(Polled::Finished(completed(answer, chained)))
     }
 }
 
@@ -1530,18 +1537,37 @@ struct OutboxDrain<R: Resource, T, O> {
     /// The revision the drain last looked at.
     revision: u64,
     /// Settlements to write in the next settle pass, shared with the root.
-    settling: Settling<R>,
+    settling: Settling,
 }
 
 /// One outbox entry's settlement, written in the settle pass of the frame
 /// that learned it: the settle edit, and the invocation that waits for it
 /// with what to tell it once the edit is in the document.
-struct Settlement<R: Resource> {
-    action: R::Action,
+struct Settlement {
+    apply: ApplySettlement,
     waiting: Option<(causal::Group, Result<ActionOutput, ActionFailure>)>,
 }
 
-type Settling<R> = Rc<RefCell<Vec<Settlement<R>>>>;
+type Settling = Rc<RefCell<Vec<Settlement>>>;
+type ApplySettlement =
+    Box<dyn FnOnce(&mut ui_core::widget::Edits<'_>) -> Result<(), tilo_actions::ActionError>>;
+
+/// Write the settlements in `settling`, then tell the invocations waiting on
+/// them how they settled.
+fn apply_settlements(settling: &Settling, edits: &mut ui_core::widget::Edits<'_>) {
+    let settling = std::mem::take(&mut *settling.borrow_mut());
+    for Settlement { apply, waiting } in settling {
+        let applied = apply(edits);
+        if let Some((group, told)) = waiting {
+            group.borrow_mut().finished(match applied {
+                Ok(()) => told,
+                Err(error) => Err(failure(error.to_string())),
+            });
+        } else if let Err(error) = applied {
+            tracing::warn!(%error, "an outbox settlement was refused");
+        }
+    }
+}
 
 /// How a handler's answer settles its entry: a [`Settled`] it answered
 /// ([`Effected::settled`]), the result `O` it answered, or nothing to report
@@ -1583,8 +1609,9 @@ where
                 };
                 // The settlement is in the document before whoever waits on
                 // the entry hears it settled: their next request sees it.
+                let dispatch = self.env.dispatch.clone();
                 self.settling.borrow_mut().push(Settlement {
-                    action,
+                    apply: Box::new(move |edits| dispatch.apply_now(edits, &action)),
                     waiting: group.map(|group| (group, told)),
                 });
                 true
@@ -1738,7 +1765,7 @@ struct Inner<R: Resource> {
     /// drains look again although the document did not move.
     outside_changed: Rc<Cell<bool>>,
     /// Outbox settlements waiting for the settle pass.
-    settling: Settling<R>,
+    settling: Settling,
 }
 
 /// Every effect handler and projection drain of one live resource root, and
@@ -1975,21 +2002,8 @@ impl<R: Resource> Effects<R> {
     /// tell the invocations waiting on them how they settled.
     #[inline(never)]
     pub(crate) fn apply_settlements(&self, edits: &mut ui_core::widget::Edits<'_>) {
-        let Some(env) = &self.env else {
-            return;
-        };
-        let settling = std::mem::take(&mut *self.inner.borrow().settling.borrow_mut());
-        for Settlement { action, waiting } in settling {
-            let applied = env.dispatch.apply_now(edits, &action);
-            if let Some((group, told)) = waiting {
-                group.borrow_mut().finished(match applied {
-                    Ok(()) => told,
-                    Err(error) => Err(failure(error.to_string())),
-                });
-            } else if let Err(error) = applied {
-                tracing::warn!(%error, kind = R::KIND, "an outbox settlement was refused");
-            }
-        }
+        let settling = Rc::clone(&self.inner.borrow().settling);
+        apply_settlements(&settling, edits);
     }
 
     /// Settle finished projection jobs, then start what the document at
