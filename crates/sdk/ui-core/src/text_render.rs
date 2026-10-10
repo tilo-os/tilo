@@ -229,24 +229,6 @@ pub fn configured_font_system() -> FontSystem {
 static SYSTEM_FONT_DATABASE: std::sync::OnceLock<(String, cosmic_text::fontdb::Database)> =
     std::sync::OnceLock::new();
 
-/// The toolkit's color emoji face for engines that load their own fonts, as
-/// font data and face index.
-///
-/// The toolkit sets text in its font catalog, so this is the catalog's Noto
-/// Color Emoji face rather than whatever the machine has installed. `None`
-/// only when no emoji face is loaded at all.
-#[must_use]
-pub fn bundled_emoji_face() -> Option<(Vec<u8>, u32)> {
-    let system = configured_font_system();
-    let database = system.db();
-    let face = database.faces().find(|face| {
-        face.families
-            .iter()
-            .any(|(name, _)| name == "Noto Color Emoji")
-    })?;
-    database.with_face_data(face.id, |data, index| (data.to_vec(), index))
-}
-
 pub(crate) fn balance_buffer(buffer: &mut Buffer, font_system: &mut FontSystem, max_width: f32) {
     if max_width <= 0.0 {
         return;
@@ -1032,13 +1014,6 @@ impl TextStyle {
     #[must_use]
     pub fn with_hyphenator(mut self, hyphenator: Arc<dyn Hyphenator>) -> Self {
         self.hyphenation = Hyphenation::Custom(hyphenator);
-        self
-    }
-
-    /// Disable discretionary hyphenation while retaining the rest of a style.
-    #[must_use]
-    pub fn without_hyphenation(mut self) -> Self {
-        self.hyphenation = Hyphenation::None;
         self
     }
 

@@ -141,10 +141,6 @@ impl Heatmap {
         self.height = height.max(100.0);
         self
     }
-    pub fn set_cells(&mut self, cells: Vec<HeatmapCell>) {
-        self.cells = cells;
-        self.hovered = None;
-    }
     pub fn take_activated(&mut self) -> Option<String> {
         self.activated.take()
     }

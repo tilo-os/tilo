@@ -358,14 +358,6 @@ impl Text {
         self
     }
 
-    /// Force a remeasure/repaint after mutating engine state through a shared
-    /// owner whose revision cannot be observed automatically.
-    pub fn invalidate_layout_engine(&mut self) {
-        self.dirty = true;
-        self.layout_dirty = true;
-        self.prepared_input = None;
-    }
-
     fn observe_engine_revision(&mut self) {
         let Some(engine) = self.layout_engine.as_deref() else {
             return;

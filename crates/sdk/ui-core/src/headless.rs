@@ -1404,14 +1404,6 @@ impl FrameHarness {
         self.continue_pending_history_control_checked(token, false)
     }
 
-    /// Continue after the caller explicitly confirmed this exact current item.
-    pub fn confirm_pending_history_control(
-        &mut self,
-        token: &crate::history_mode::pending_controls::ContinuationToken,
-    ) -> Option<crate::history_mode::pending_controls::PendingControlStatus> {
-        self.continue_pending_history_control_checked(token, true)
-    }
-
     /// Cancel one exact retained control without dispatching it.
     pub fn cancel_pending_history_control(
         &mut self,
@@ -2465,12 +2457,6 @@ impl FrameHarness {
         self.render_png_on(out, self.theme.tokens.colors.surfaces.content);
     }
 
-    /// [`FrameHarness::render_png`] over a transparent background, for a
-    /// capture composited onto something else afterwards.
-    pub fn render_png_transparent(&self, out: &std::path::Path) {
-        self.render_png_on(out, vello::peniko::Color::TRANSPARENT);
-    }
-
     /// Rasterise the most recently laid-out frame over the window ground, as
     /// tightly packed RGBA8 rows `viewport.0` pixels wide. Empty in a browser
     /// page, which cannot read a frame back synchronously.
@@ -2579,13 +2565,6 @@ impl FrameHarness {
     pub fn records(&self) -> Option<&crate::record::RecordSet> {
         self.drain_component_wakes();
         self.records.as_ref()
-    }
-
-    /// The record the root widget names, if any. Read before installing a
-    /// record set so an app that does not use records is left alone.
-    pub fn root_record_intent(&self) -> Option<crate::record::RecordCheckout> {
-        self.drain_component_wakes();
-        crate::record::capability::record_intent(self.root.as_ref())
     }
 
     /// Deliver a trusted shell operation through the mounted app adapter.
@@ -8687,34 +8666,6 @@ fn parse_key(spec: &str) -> Key {
 // there is nothing yet to unwind. Threading a `Result` through instead
 // would mean every one of the ~15 call sites across `apps/*` duplicates
 // this same exit, for no behavioural change.
-#[allow(
-    clippy::exit,
-    reason = "arg-parsing entry point mirrors a CLI flag parser: fails fast before any window/Drop state exists, exactly like the callers already do via `std::process::exit(tilo_ui::headless::run(..))`"
-)]
-pub fn spec_from_args(args: &[String]) -> Option<Spec> {
-    let raw = value_arg(args, "--headless-drive")?;
-    match parse_spec(&raw) {
-        Ok(spec) => Some(spec),
-        Err(e) => {
-            eprintln!("--headless-drive: {e}");
-            std::process::exit(2);
-        }
-    }
-}
-
-fn value_arg(args: &[String], flag: &str) -> Option<String> {
-    let mut it = args.iter().skip(1);
-    let eq = format!("{flag}=");
-    while let Some(a) = it.next() {
-        if a == flag {
-            return it.next().cloned();
-        }
-        if let Some(rest) = a.strip_prefix(&eq) {
-            return Some(rest.to_string());
-        }
-    }
-    None
-}
 
 /// Parse the `--headless-drive` payload.
 ///

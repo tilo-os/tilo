@@ -160,10 +160,6 @@ impl FunnelChart {
         self.height = height.max(150.0);
         self
     }
-    pub fn set_stages(&mut self, stages: Vec<FunnelStage>) {
-        self.stages = stages;
-        self.hovered = None;
-    }
     pub fn take_activated(&mut self) -> Option<String> {
         self.activated.take()
     }

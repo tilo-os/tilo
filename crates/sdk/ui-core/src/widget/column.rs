@@ -201,16 +201,6 @@ impl Column {
         self.cache_present = false;
     }
 
-    /// Extra padding on the left, on top of the default
-    /// `spacing.s6` inset. Used to displace a workspace area to the
-    /// right of an absolutely-positioned sidebar without shifting the
-    /// surrounding chrome.
-    #[must_use]
-    pub fn with_extra_left_padding(mut self, px: f32) -> Self {
-        self.extra_left_padding = px;
-        self
-    }
-
     /// Extra padding on top, e.g. to reserve room for a floating
     /// affordance the column doesn't own (the responsive shell's Back
     /// chip painted over the detail pane's top-left corner).
@@ -269,12 +259,6 @@ impl Column {
     pub fn set_gap(&mut self, px: f32) {
         self.gap_override = Some(px);
         self.rhythm = None;
-    }
-
-    /// Update the inter-child rhythm before the next layout pass.
-    pub fn set_rhythm(&mut self, rhythm: Rhythm) {
-        self.rhythm = Some(rhythm);
-        self.gap_override = None;
     }
 
     /// Switch from `height: percent(1.0)` to `flex_grow: 1 + flex_basis: 0`.

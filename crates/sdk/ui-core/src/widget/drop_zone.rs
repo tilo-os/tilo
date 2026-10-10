@@ -277,10 +277,6 @@ impl DropZone {
         }
     }
 
-    pub fn is_drag_over(&self) -> bool {
-        self.drag_over
-    }
-
     fn face(&self) -> DropZoneFace<'_> {
         let mut face = DropZoneFace::new(&self.title)
             .icon(self.icon)

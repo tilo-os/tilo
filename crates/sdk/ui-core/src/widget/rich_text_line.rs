@@ -554,27 +554,6 @@ impl RichTextLine {
             .byte_at_point(Point::new(x, self.inner.get_rect().center().y))
     }
 
-    /// Prefers [`Mark::Link`] over other kinds so link hit-tests still
-    /// find the link even if the text is also bold.
-    pub fn mark_at_byte(&self, byte: usize) -> Option<&Mark> {
-        let mut link_hit: Option<&Mark> = None;
-        let mut any_hit: Option<&Mark> = None;
-        for s in &self.marks {
-            if s.range.start <= byte && byte < s.range.end {
-                if matches!(
-                    s.mark,
-                    Mark::Link(_) | Mark::Transclusion(_) | Mark::ExternalLink(_)
-                ) {
-                    link_hit = Some(&s.mark);
-                }
-                if any_hit.is_none() {
-                    any_hit = Some(&s.mark);
-                }
-            }
-        }
-        link_hit.or(any_hit)
-    }
-
     #[doc(hidden)]
     pub fn inner_mut(&mut self) -> &mut TextInput {
         &mut self.inner
@@ -1322,12 +1301,6 @@ pub(crate) fn diff_splice(old: &str, new: &str) -> (usize, usize, usize) {
     let removed = o_rest.saturating_sub(suffix);
     let inserted = n_rest.saturating_sub(suffix);
     (prefix, inserted, removed)
-}
-
-/// Re-exported so callers don't have to depend on the `marks` module
-/// directly.
-pub fn segments_of(text_len: usize, marks: &[MarkSpan]) -> Vec<MarkSegment> {
-    marks::segments_for(text_len, marks)
 }
 
 /// Pulled out as a free function so the chip-sizing math is

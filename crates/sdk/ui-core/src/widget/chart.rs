@@ -277,12 +277,6 @@ impl TrendStyle {
     };
 
     #[must_use]
-    pub fn with_line_width(mut self, width: f64) -> Self {
-        self.line_width = width;
-        self
-    }
-
-    #[must_use]
     pub fn with_fill(mut self, fill: TrendFill) -> Self {
         self.fill = fill;
         self
@@ -291,12 +285,6 @@ impl TrendStyle {
     #[must_use]
     pub fn with_curve(mut self, curve: TrendCurve) -> Self {
         self.curve = curve;
-        self
-    }
-
-    #[must_use]
-    pub fn with_baseline_overhang(mut self, overhang: f64) -> Self {
-        self.baseline_overhang = overhang;
         self
     }
 
@@ -785,12 +773,6 @@ impl ChartStyle {
     #[must_use]
     pub fn without_header(mut self) -> Self {
         self.header = false;
-        self
-    }
-
-    #[must_use]
-    pub fn with_title_weight(mut self, weight: TextWeight) -> Self {
-        self.title_weight = weight;
         self
     }
 }

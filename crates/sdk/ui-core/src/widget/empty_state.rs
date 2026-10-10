@@ -613,15 +613,6 @@ impl EmptyState {
         self
     }
 
-    /// An illustration the app paints into the slot above the title (twice
-    /// the icon's size), from theme values. It is the first thing shed when
-    /// the pane is short.
-    #[must_use]
-    pub fn with_illustration(mut self, paint: impl Fn(&mut PaintCtx<'_>, Rect) + 'static) -> Self {
-        self.illustration = Some(Box::new(paint));
-        self
-    }
-
     /// One sentence under the title, in secondary ink.
     #[must_use]
     pub fn with_message(mut self, message: impl Into<String>) -> Self {
