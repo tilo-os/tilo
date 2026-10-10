@@ -87,7 +87,6 @@ const LAB_SOURCES: &[&str] = &[
     "conflict_picker.rs",
     "dashboard.rs",
     "gallery.rs",
-    "identity_flow_demo.rs",
     "responsive_gallery.rs",
     "widget_showcase.rs",
 ];
