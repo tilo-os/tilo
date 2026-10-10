@@ -153,10 +153,13 @@ impl Desktop {
     fn start() -> Self {
         tilo_test_env::require_isolated_desktop();
         // SUN_LEN caps a unix socket path, so the runtime dir stays short.
+        // One per desktop: this module's tests run beside each other.
+        static STARTED: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
         let runtime_dir = PathBuf::from(format!(
-            "/run/user/{}/tilo-idle-{}",
+            "/run/user/{}/tilo-idle-{}-{}",
             unsafe { libc::getuid() },
             std::process::id(),
+            STARTED.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
         ));
         let _ = std::fs::remove_dir_all(&runtime_dir);
         std::fs::create_dir_all(&runtime_dir).expect("create the private runtime dir");
@@ -539,6 +542,39 @@ fn wait_until_gone(desktop: &Desktop, name: &str) {
         assert!(
             Instant::now() < deadline,
             "{name} was still running after the hang bound. Log:\n{}",
+            desktop.log_tail()
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+/// The Notes notebook the session restores publishes its actions where the
+/// palette, search and agents find them. The session mounts its restored
+/// hosted tabs while it builds the desktop, before it binds the
+/// collaboration broker and identity service they connect to; the tab found
+/// no socket, stayed offline and published nothing until it was reopened
+/// (TIL-759).
+#[test]
+fn the_restored_notes_notebook_publishes_its_actions() {
+    let desktop = Desktop::start();
+    desktop.wait_for("the restored Notes notebook", |targets| {
+        targets.iter().any(|name| name == "notes.first_note")
+    });
+    let deadline = tilo_test_env::hang_deadline();
+    loop {
+        let reply = desktop.control(&serde_json::json!({
+            "op": "actions_enumerate", "query": "New note", "detail": "compact", "wait_ms": 5000,
+        }));
+        let published = reply["answer"]["actions"].as_array().is_some_and(|rows| {
+            rows.iter()
+                .any(|row| row["application"] == "so.tilo.notes" && row["operation"] == "new-page")
+        });
+        if published {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the restored Notes tab never published new-page: {reply}\nLog:\n{}",
             desktop.log_tail()
         );
         std::thread::sleep(Duration::from_millis(100));
