@@ -2088,7 +2088,7 @@ impl FrameBuilder {
             .flatten();
         let damage_regions = self
             .with_backdrop_damage(damage_regions, &backdrop_surfaces)
-            .map(without_contained_regions);
+            .map(|regions| without_contained_regions(&regions));
         // A backdrop-dependent section is never independently composited.
         let separable = backdrop_surfaces.is_empty()
             && hdr_layers.is_empty()
@@ -8005,12 +8005,17 @@ mod retained_tests;
 /// `regions` without any region another one contains (the first of two
 /// equal ones stays): the same pixels, rasterised once. A changed card's
 /// old and new bounds and the blurred surface on it often nest.
-fn without_contained_regions(regions: Vec<FineDamageRect>) -> Vec<FineDamageRect> {
+fn without_contained_regions(regions: &[FineDamageRect]) -> Vec<FineDamageRect> {
+    let rect = |region: &FineDamageRect| {
+        Rect::new(
+            f64::from(region.x),
+            f64::from(region.y),
+            f64::from(region.x) + f64::from(region.width),
+            f64::from(region.y) + f64::from(region.height),
+        )
+    };
     let contains = |outer: &FineDamageRect, inner: &FineDamageRect| {
-        outer.x <= inner.x
-            && outer.y <= inner.y
-            && outer.x.saturating_add(outer.width) >= inner.x.saturating_add(inner.width)
-            && outer.y.saturating_add(outer.height) >= inner.y.saturating_add(inner.height)
+        rect(outer).union(rect(inner)) == rect(outer)
     };
     regions
         .iter()
