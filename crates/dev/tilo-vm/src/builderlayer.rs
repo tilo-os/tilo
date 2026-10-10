@@ -190,6 +190,16 @@ pub(crate) fn pack_with_source(
         ));
     }
     let facts = build::first_elf(&tree).unwrap_or_default();
+    eprintln!(
+        "native layer facts: component={} target={:?} toolchain={:?} source_digest={:?}",
+        component.name,
+        facts.target,
+        facts
+            .toolchain
+            .as_deref()
+            .map(|value| value.chars().take(160).collect::<String>()),
+        source_digest,
+    );
     let packed = Packed {
         component: component.name,
         binary,
