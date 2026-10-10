@@ -284,6 +284,13 @@ impl WorkspaceAuthority for NativeWorkspaceAuthority {
             name.into()
         })
     }
+    /// A tree write that changes policy announces as its guard is released;
+    /// the fleet and registry announce on save and through the identity
+    /// directory's watch; the native owner announces each publication
+    /// (`tilo_identity_host::policy_change`).
+    fn announces_policy_changes(&self) -> bool {
+        true
+    }
 }
 impl LegacyWorkspaceProjection for NativeWorkspaceAuthority {
     fn record_effect(
