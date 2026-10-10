@@ -4105,6 +4105,29 @@ impl BlockEditor {
         self.edit_pending = true;
     }
 
+    /// Where the caret is in the document, for a host that keeps it in
+    /// view while editing: the focused block's caret, never an open
+    /// overlay's field (the slash menu, a link popover, find), whose own
+    /// rect says nothing about where the person is writing.
+    pub fn document_caret_rect(&self) -> Option<Rect> {
+        let block = self.blocks.get(self.focused?)?;
+        if self
+            .image_attachments
+            .get(&block.id)
+            .is_some_and(|image| !image.editing)
+        {
+            return None;
+        }
+        if let Some(rect) = self
+            .table_editors
+            .get(&block.id)
+            .and_then(super::block_editor_table::DocumentTable::projected_ime_rect)
+        {
+            return Some(rect);
+        }
+        Widget::ime_cursor_rect(&block.line)
+    }
+
     /// So the host can avoid stealing focus from the popover.
     pub fn slash_menu_visible(&self) -> bool {
         self.slash_menu.is_visible()
@@ -8749,22 +8772,7 @@ impl Widget for BlockEditor {
         if self.slash_menu.is_visible() {
             return Widget::ime_cursor_rect(&self.slash_menu);
         }
-        let block = self.blocks.get(self.focused?)?;
-        if self
-            .image_attachments
-            .get(&block.id)
-            .is_some_and(|image| !image.editing)
-        {
-            return None;
-        }
-        if let Some(rect) = self
-            .table_editors
-            .get(&block.id)
-            .and_then(super::block_editor_table::DocumentTable::projected_ime_rect)
-        {
-            return Some(rect);
-        }
-        Widget::ime_cursor_rect(&block.line)
+        self.document_caret_rect()
     }
 
     fn ime_edit_fingerprint(&self, key: &[u8; 32]) -> Option<[u8; 32]> {
