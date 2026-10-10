@@ -449,6 +449,9 @@ def main() -> int:
         if ctx is not None and ctx.facts.get("session_recovered_after"):
             # The checks after which the harness restarted a session left locked.
             meta["session_recovered_after"] = ctx.facts["session_recovered_after"]
+        if ctx is not None and ctx.facts.get("dialog_recovered_after"):
+            # The checks that left a dialog open, what it was, and how the harness closed it.
+            meta["dialog_recovered_after"] = ctx.facts["dialog_recovered_after"]
         if not args.keep:
             try:
                 vm.vm_cmd("stop", vm_name, timeout=300, check=False)
