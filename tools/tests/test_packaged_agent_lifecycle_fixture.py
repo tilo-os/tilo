@@ -147,6 +147,50 @@ class CurrentChatControlTests(unittest.TestCase):
             self.observe(reply="malformed-private-identity")
 
 
+class CurrentChatCategoryTests(unittest.TestCase):
+    def observe(self, role="(uint32 62,)", actions="([('click',)],)",
+                current="(<'Collapse Lifecycle proof'>,)", duplicate=False):
+        client = PROOF.atspi.AtspiClient("owned-address", "owned-chat")
+        tree = {"/category": "(<'Collapse Lifecycle proof'>,)"}
+        if duplicate:
+            tree["/duplicate"] = tree["/category"]
+
+        def wire(_path, method, *_args, **_kwargs):
+            if method == "org.a11y.atspi.Accessible.GetRole":
+                return role
+            if method == "org.a11y.atspi.Action.GetActions":
+                return actions
+            raise AssertionError(method)
+
+        route = {"bus": "owned-chat", "process": 42, "window": "/window"}
+        with patch.object(PROOF, "chat_accessibility_windows", return_value=[
+                ("owned-chat", 42, client, "/window")]) as windows, \
+                patch.object(PROOF, "accessible_subtree", return_value=tree), \
+                patch.object(client, "call", side_effect=wire) as calls, \
+                patch.object(client, "property", return_value=current):
+            result = PROOF.chat_category_accessibility("Lifecycle proof", owned_route=route)
+            windows.assert_called_once_with(route)
+            self.assertFalse(any("DoAction" in entry.args[1] for entry in calls.call_args_list))
+            return result
+
+    def test_actual_toggle_button_wire_role_is_required_for_owned_category(self):
+        self.assertEqual(self.observe(), {"bus": "owned-chat", "window": "/window",
+                                         "control": "/category", "label": "Collapse Lifecycle proof"})
+        for role in ("(uint32 43,)", "(uint32 29,)", "(uint32 66,)", "malformed role"):
+            with self.subTest(role=role):
+                self.assertIsNone(self.observe(role=role))
+
+    def test_toggle_requires_click_and_current_exact_name(self):
+        self.assertIsNone(self.observe(actions="(@a(sss) [],)"))
+        self.assertIsNone(self.observe(current="(<'Collapse Other category'>,)"))
+        with self.assertRaisesRegex(RuntimeError, "category identity is unobservable"):
+            self.observe(current="private malformed reply")
+
+    def test_duplicate_current_owned_category_toggles_fail_closed(self):
+        with self.assertRaisesRegex(RuntimeError, "duplicate exact category toggles"):
+            self.observe(duplicate=True)
+
+
 class NativeChatPublicationTests(unittest.TestCase):
     @staticmethod
     def creator():

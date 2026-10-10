@@ -46,6 +46,7 @@ import atspi_external_client as atspi
 AT_SPI_ROLE_HEADING = 83
 AT_SPI_ROLE_TAB = 37
 AT_SPI_ROLE_BUTTON = 43
+AT_SPI_ROLE_TOGGLE_BUTTON = 62
 # atspi_common::State::Enabled is ordinal 8 in the two-word state set.
 AT_SPI_ENABLED_STATE_BIT = 1 << 8
 
@@ -637,7 +638,7 @@ def chat_category_accessibility(label, *, owned_route=None):
             for name in names:
                 for path in client.named(tree, name):
                     if owned_route is not None:
-                        if client.role(path) != AT_SPI_ROLE_BUTTON:
+                        if client.role(path) != AT_SPI_ROLE_TOGGLE_BUTTON:
                             continue
                         actions = client.call(
                             path, "org.a11y.atspi.Action.GetActions", check=False
