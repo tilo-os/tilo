@@ -40,7 +40,7 @@ mod host_services;
 #[cfg(target_arch = "wasm32")]
 #[allow(
     dead_code,
-    reason = "LIVE_V1 helpers for the desktop_host path; module is wired for snapshot/apply exports while that host is not yet linked into the page runtime"
+    reason = "LIVE_V1 helpers the page runtime's snapshot/apply exports do not all reach yet"
 )]
 mod live_view;
 #[cfg(target_arch = "wasm32")]
