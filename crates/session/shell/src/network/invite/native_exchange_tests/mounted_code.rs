@@ -78,6 +78,10 @@ impl Mounted {
         );
         drop(unused_commands);
         network.cmd_tx = commands;
+        // Resource actions reach the governor through the network runtime;
+        // without one the first invocation is refused and the app's
+        // collaboration fails closed for the rest of the journey (#4001).
+        crate::shell::network::with_test_runtime(&mut network);
         let network = Arc::new(network);
         let room = RoomId::parse(tilo_joined_room::testing::ROOM).unwrap();
         network
