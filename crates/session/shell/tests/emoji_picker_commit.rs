@@ -28,6 +28,7 @@ use shell::shell::overlay_host::ShellOverlayHost;
 use smithay::reexports::calloop::EventLoop;
 use smithay::reexports::wayland_server::Display;
 use taffy::{NodeId, TaffyTree};
+use ui::widget::Widget;
 use wayland_client::protocol::{wl_compositor, wl_keyboard, wl_seat, wl_surface};
 use wayland_client::{Connection, Dispatch, EventQueue, Proxy, QueueHandle, delegate_noop};
 use wayland_protocols::wp::text_input::zv3::client::{
@@ -37,6 +38,7 @@ use wayland_protocols::xdg::shell::client::{xdg_surface, xdg_toplevel, xdg_wm_ba
 use wayland_protocols_misc::zwp_input_method_v2::client::{
     zwp_input_method_manager_v2, zwp_input_method_v2,
 };
+use winit::event::{ElementState, Modifiers, WindowEvent};
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 use winit::platform::wayland::private_text_input_protocol::{
     tilo_text_input_manager_v1, tilo_text_input_v1,
