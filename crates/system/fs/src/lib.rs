@@ -57,6 +57,8 @@ pub mod named_share_delivery;
 pub mod namespace;
 #[cfg(feature = "filesystem")]
 pub mod namespace_binding;
+#[cfg(feature = "filesystem")]
+pub mod namespace_persist;
 #[cfg(all(feature = "filesystem", target_os = "linux"))]
 pub mod native;
 #[cfg(feature = "filesystem")]
