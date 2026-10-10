@@ -155,6 +155,30 @@ mod tests {
         );
     }
 
+    // The workspace's policy, re-checked on the steward's own (simulated)
+    // interval: the process-wide announcements and expiry timers run on
+    // the real clock, which the pumps below outrun, so they are not what
+    // decides when the grant ends here.
+    struct Polled(crate::shell::channel_policy::WorkspaceChannelDirectory);
+    impl crate::shell::channel_encryption::ChannelDirectory for Polled {
+        fn governs(&self, room: crate::shell::state::RoomId) -> bool {
+            self.0.governs(room)
+        }
+        fn steward_of(
+            &self,
+            room: crate::shell::state::RoomId,
+        ) -> Option<collab_types::Ed25519PublicKey> {
+            self.0.steward_of(room)
+        }
+        fn allowed_devices(
+            &self,
+            room: crate::shell::state::RoomId,
+            now: u64,
+        ) -> std::collections::BTreeSet<collab_types::Ed25519PublicKey> {
+            self.0.allowed_devices(room, now)
+        }
+    }
+
     /// A cloud agent run is granted temporary membership, joins, reads the
     /// channel's history and new content, then its grant expires: the
     /// steward removes it, the keys rotate, and what is written afterwards
@@ -214,10 +238,10 @@ mod tests {
         let mut steward = open(
             OWNER,
             steward_dir.path(),
-            Box::new(WorkspaceChannelDirectory::new(
+            Box::new(Polled(WorkspaceChannelDirectory::new(
                 tree.clone(),
                 Box::new(|_| Vec::new()),
-            )),
+            ))),
         );
         let mut service = open(
             SERVICE,

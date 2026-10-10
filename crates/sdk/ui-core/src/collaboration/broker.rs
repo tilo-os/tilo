@@ -5632,6 +5632,10 @@ async fn certified_channel_keys(
     .unwrap_or_default()
 }
 
+/// The log target of every round of key questions an endpoint starts: what
+/// tells an idle desktop that keeps asking from one that asks as it backs off.
+const KEY_ROUNDS: &str = "tilo::collab::key_rounds";
+
 /// Start a round of key questions for the routes `round` names. A certified
 /// service is asked off this thread and the round is
 /// returned to be awaited alongside the loop; a host's asynchronous service
@@ -5647,6 +5651,7 @@ async fn refresh_keys(
     round: &KeyRound,
 ) -> Option<KeyFetch> {
     let LocalSdkDocumentSigner::Inherited(SdkDocumentSigner::Certified(identity)) = signer else {
+        tracing::debug!(target: KEY_ROUNDS, "collab: asking the host for channel keys");
         refresh_all_route_keys(routes, signer, inbound_tx, round).await;
         return None;
     };
@@ -5662,6 +5667,11 @@ async fn refresh_keys(
     if queries.is_empty() {
         return None;
     }
+    tracing::debug!(
+        target: KEY_ROUNDS,
+        routes = queries.len(),
+        "collab: asking the identity service for channel keys"
+    );
     Some(Box::pin(certified_channel_keys(
         std::sync::Arc::clone(identity),
         queries,

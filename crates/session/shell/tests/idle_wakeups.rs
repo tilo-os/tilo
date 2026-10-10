@@ -85,13 +85,14 @@ const IDLE_WAKEUP_BUDGET: f64 = 7.5;
 /// same seven runs.
 const IDLE_CPU_BUDGET: f64 = 1.5;
 
-/// Most times per second the Terminal's collaboration shovel
-/// (`ui-collab-shovel`) and the identity service's thread serving it
-/// (`tilo-identity-client`) may wake together. A route that holds no keys
-/// asks for them on a timer backing off from 1 s to 30 s, and is told when
-/// they change; asking once a second cost 5.3/s together (TIL-754, run
-/// 92445); after it they measured 0.60–0.70/s in all seven runs.
-const KEY_ASK_BUDGET: f64 = 1.5;
+/// Most rounds of channel-key questions per second the idle desktop's
+/// in-process apps may start. A route that holds no keys asks on a timer
+/// backing off from 1 s to 30 s, and is told when they change: from the
+/// settle period on, a 10 s window holds at most three rounds of that
+/// backoff, however many routes ask in each and however loaded the machine
+/// is. Asking on a 1 s timer, the regression this catches (5.3 wakeups/s
+/// together, TIL-754), is ten.
+const KEY_ROUND_BUDGET: f64 = 0.35;
 
 /// Most iterations per second the compositor's frame loop may make while
 /// idle, from its `paint-stats` lines. A loop that wakes on a deadline that
@@ -180,7 +181,9 @@ impl Desktop {
             .env("TILO_IDLE_LOCK_SECS", "0")
             .env("TILO_IDLE_BLANK_SECS", "0")
             .env("TILO_PAINT_STATS", "1")
-            .env("RUST_LOG", "warn")
+            // Every round of channel-key questions is logged, so the gate counts
+            // the rounds the shovel starts, not how often contention woke it.
+            .env("RUST_LOG", "warn,tilo::collab::key_rounds=debug")
             .env_remove("WAYLAND_DISPLAY")
             .env_remove("DISPLAY")
             .stdout(Stdio::piped())
@@ -442,9 +445,10 @@ impl LoopStats {
 
 /// How often the threads that ask for and answer a route's channel keys
 /// blocked, per second: the in-process apps' collaboration shovel and the
-/// identity service's per-client thread. Fails if the shovel is not there to
-/// observe: the Terminal opens a route, so a desktop without one did not
-/// measure what this bounds.
+/// identity service's per-client thread. Reported beside the rounds, as what
+/// they cost. Fails if the shovel is not there to observe: the Terminal
+/// opens a route, so a desktop without one did not measure what the rounds
+/// bound.
 fn key_ask_wakeups(wakeups: &tilo_test_env::idle::Wakeups) -> f64 {
     // The kernel truncates thread names to 15 bytes.
     const SHOVEL: &str = "ui-collab-shove";
@@ -460,6 +464,14 @@ fn key_ask_wakeups(wakeups: &tilo_test_env::idle::Wakeups) -> f64 {
         "no collaboration shovel ran in the compositor, so the Terminal's route was not measured:\n{wakeups}"
     );
     wakeups.rate(rows.iter().map(|row| row.voluntary).sum())
+}
+
+/// The rounds of channel-key questions the desktop logged in `lines`.
+fn key_rounds(lines: &[(Instant, String)]) -> usize {
+    lines
+        .iter()
+        .filter(|(_, line)| line.contains("channel keys") && line.contains("collab: asking"))
+        .count()
 }
 
 /// Whether a process named `name` runs in the compositor's tree.
@@ -541,8 +553,11 @@ fn an_idle_desktop_with_two_apps_stays_within_its_wakeup_budget() {
     );
 
     let key_asks = key_ask_wakeups(&wakeups);
+    let rounds = key_rounds(&in_window);
+    let rounds_per_second =
+        f64::from(u32::try_from(rounds).unwrap_or(u32::MAX)) / wakeups.window.as_secs_f64();
     let report = format!(
-        "{wakeups}\nblocked {:.2} times a second; the collaboration shovel and identity client {key_asks:.2}\ncompositor frame loop: {:.1} ticks/s, {} frames painted; its paint-stats in the window:\n  {}",
+        "{wakeups}\nblocked {:.2} times a second; the collaboration shovel and identity client {key_asks:.2}, in {rounds} rounds of channel-key questions\ncompositor frame loop: {:.1} ticks/s, {} frames painted; its paint-stats in the window:\n  {}",
         wakeups.blocking_per_second(),
         frame_loop.ticks_per_second(),
         frame_loop.painted,
@@ -572,8 +587,8 @@ fn an_idle_desktop_with_two_apps_stays_within_its_wakeup_budget() {
         wakeups.total_cpu_percent(),
     );
     assert!(
-        key_asks <= KEY_ASK_BUDGET,
-        "the Terminal's collaboration shovel and the identity client woke {key_asks:.2} times a second, over {KEY_ASK_BUDGET}/s: is a route asking for its channel keys on a 1 s timer again?\n{report}",
+        rounds_per_second <= KEY_ROUND_BUDGET,
+        "the in-process apps asked for channel keys {rounds_per_second:.2} times a second, over {KEY_ROUND_BUDGET}/s: is a route asking on a 1 s timer again?\n{report}",
     );
     assert!(
         frame_loop.ticks_per_second() <= LOOP_TICK_BUDGET,
