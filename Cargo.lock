@@ -10631,7 +10631,6 @@ dependencies = [
  "tempfile",
  "tilo-actions",
  "tilo-app",
- "tilo-automerge",
  "tilo-automerge-fork",
  "tilo-history",
  "tilo-input-context",
