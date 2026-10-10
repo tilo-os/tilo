@@ -12554,15 +12554,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "registry-web-bindgen"
-version = "0.1.0"
-dependencies = [
- "registry-web",
- "serde_json",
- "wasm-bindgen",
-]
-
-[[package]]
 name = "reis"
 version = "0.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
