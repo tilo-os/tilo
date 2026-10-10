@@ -448,29 +448,6 @@ impl NativeRedrawReasons {
             || (!session_locked && self.keepalive)
             || (session_locked && (self.lock_clock || self.lock_animation || self.lock_osd))
     }
-
-    /// The edges that hold, as bits of [`super::metrics::REDRAW_REASONS`].
-    fn bits(self, session_locked: bool) -> u32 {
-        [
-            self.force,
-            self.backend_event,
-            self.visible_input,
-            self.session,
-            self.revision,
-            !session_locked && self.hidden_desktop_animation,
-            !session_locked && self.apps,
-            !session_locked && self.peers,
-            !session_locked && self.presentation,
-            !session_locked && self.capture,
-            session_locked && self.lock_clock,
-            session_locked && self.lock_animation,
-            session_locked && self.lock_osd,
-            !session_locked && self.keepalive,
-        ]
-        .into_iter()
-        .enumerate()
-        .fold(0, |bits, (bit, held)| bits | (u32::from(held) << bit))
-    }
 }
 
 /// An animation's resting frame is owed after its demand clears. The last
@@ -9471,9 +9448,6 @@ pub fn run() {
     let (mut cause_session, mut cause_keepalive) = (0u32, 0u32);
     let mut animation_sources_seen = crate::shell::frame::AnimationDemand::default();
     let mut animating_content_leaves: Vec<String> = Vec::new();
-    // Widgets that asked for a still frame (no animation running): what
-    // repaints an idle desktop.
-    let mut redraw_content_leaves: Vec<String> = Vec::new();
     let mut wakes_seen = WakeTally::default();
     let mut widget_wake_owner: Option<String> = None;
     // Test-control commands are intentionally serviced after this tick's
@@ -12170,7 +12144,7 @@ pub fn run() {
         }
         // Is there anything new to show? This redraw gating lets a static desktop
         // idle at near-zero CPU, orthogonal to *when* a frame may show (the clock's job below).
-        let redraw_reasons = NativeRedrawReasons {
+        let content_changed = NativeRedrawReasons {
             force: force_first_paint,
             backend_event: had_backend_events,
             visible_input: visible_input_changed,
@@ -12204,8 +12178,8 @@ pub fn run() {
             )
             .is_some_and(|deadline| iter_t0 >= deadline),
             lock_osd: lock_screen::lock_osd_frame_due(frame_builder.chrome().osd, iter_t0),
-        };
-        let content_changed = redraw_reasons.content_changed(session.is_locked());
+        }
+        .content_changed(session.is_locked());
         // May a frame be shown yet? Off-cadence wakeups (protocol traffic,
         // test-control, input) would submit inside a discarded interval; first frame is exempt.
         let cadence_due = force_first_paint || frame_clock.due(iter_t0);
@@ -12228,12 +12202,6 @@ pub fn run() {
             metrics.mark_backpressured();
         }
         let should_paint = content_changed && cadence_due && pipe_ready;
-        if should_paint && metrics.is_enabled() {
-            metrics.mark_redraw(
-                redraw_reasons.bits(session.is_locked()),
-                frame_builder.host().last_update_sources(),
-            );
-        }
         animation_settle.after_tick(still_moving, should_paint);
         // If content became dirty off-cadence, keep cadence in the next park;
         // otherwise the event edge has already been consumed and a long idle
@@ -12283,13 +12251,6 @@ pub fn run() {
                 {
                     cause_keepalive = cause_keepalive.saturating_add(1);
                 }
-                if !session.is_locked()
-                    && !animating
-                    && frame_builder.host().last_update_sources() & 1 != 0
-                    && redraw_content_leaves.is_empty()
-                {
-                    redraw_content_leaves = frame_builder.content_redrawing_leaves();
-                }
             }
             if stats_since.elapsed() >= Duration::from_secs(2) {
                 let animation_host_labels =
@@ -12327,12 +12288,10 @@ pub fn run() {
                 cause_session = 0;
                 cause_keepalive = 0;
                 eprintln!(
-                    "paint-stats: wakes {} | widget-deadline owner {:?} | still redraw {:?}",
+                    "paint-stats: wakes {} | widget-deadline owner {:?}",
                     wakes_seen.take_summary(),
                     widget_wake_owner.take().unwrap_or_default(),
-                    redraw_content_leaves.join(","),
                 );
-                redraw_content_leaves.clear();
                 animation_sources_seen = crate::shell::frame::AnimationDemand::default();
                 animating_content_leaves.clear();
                 stats_since = Instant::now();
@@ -14309,12 +14268,6 @@ mod tests {
             },
         ] {
             assert!(!hidden.content_changed(true));
-            assert_eq!(
-                hidden.bits(true),
-                0,
-                "hidden work must not be attributed to a lock frame"
-            );
-            assert_ne!(hidden.bits(false), 0);
             assert!(
                 hidden.content_changed(false),
                 "unlocked redraw behaviour must remain unchanged"
@@ -14340,7 +14293,6 @@ mod tests {
             },
         ] {
             assert!(visible_lock_edge.content_changed(true));
-            assert_ne!(visible_lock_edge.bits(true), 0);
         }
         // Phase `due_lock_animation_waits_for_cadence_or_presenter_instead_of_spinning`.
         {
