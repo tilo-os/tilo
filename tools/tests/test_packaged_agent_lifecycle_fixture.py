@@ -203,6 +203,7 @@ class AuthenticatedAgentNavigationTests(unittest.TestCase):
             tree["/duplicate"] = "TIDE, AGENT" if lowercase else "Tide, agent"
         if missing:
             tree.pop("/reed")
+        raw_tree = {path: f"(<'{name}'>,)" for path, name in tree.items()}
         rects = {path: (10, 20 + index * 30, 120, 24)
                  for index, path in enumerate(tree)}
         if zero_extent:
@@ -213,17 +214,12 @@ class AuthenticatedAgentNavigationTests(unittest.TestCase):
         if zero_window:
             window_rect = (0, 0, 0, 0)
 
-        def named(current, label):
-            return [path for path, name in current.items() if name == label]
-
         def extent(path, *_args):
             return window_rect if path == "/window" else rects[path]
 
         with patch.object(PROOF.atspi, "atspi_address", return_value="owned-address"), \
                 patch.object(PROOF.atspi, "AtspiClient", return_value=client), \
-                patch.object(PROOF, "accessible_subtree", return_value=tree), \
-                patch.object(PROOF, "decoded_accessible_names", return_value=tree), \
-                patch.object(client, "named", side_effect=named), \
+                patch.object(PROOF, "accessible_subtree", return_value=raw_tree), \
                 patch.object(client, "role", return_value=(
                     31 if wrong_role else 32  # AT-SPI wire roles: LIST / LIST_ITEM.
                 )), \

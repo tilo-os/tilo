@@ -711,7 +711,7 @@ def visible_authenticated_agent_navigation(access, names):
         for name in names:
             display_label = f"{name}, agent"
             label = f"{name.casefold()}, agent"
-            matches = [path for path in client.named(folded, label)
+            matches = [path for path, current in folded.items() if current == label
                        if client.role(path) == AT_SPI_ROLE_LIST_ITEM]
             if len(matches) > 1:
                 raise RuntimeError(
