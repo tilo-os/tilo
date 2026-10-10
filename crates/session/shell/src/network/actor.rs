@@ -2612,6 +2612,19 @@ impl ActorState {
         }
     }
 
+    fn joined_gossip_peer(&mut self, ws: WorkspaceId, peer: EndpointId) -> (NetEvent, bool) {
+        let (membership_epoch, fresh) = self.touch_or_mint_membership(ws, peer);
+        self.set_link(ws, peer, true);
+        (
+            NetEvent::PeerJoined {
+                ws,
+                peer,
+                membership_epoch,
+            },
+            fresh,
+        )
+    }
+
     /// [`InternalEvent::Topic`] arm of [`Self::handle_internal`], split out
     /// to keep that dispatcher short.
     async fn handle_topic_event(&mut self, ws: WorkspaceId, event: GossipEvent) {
@@ -2629,16 +2642,9 @@ impl ActorState {
         let mut joined_anew = None;
         let event = match event {
             GossipEvent::NeighborUp(peer) => {
-                let (membership_epoch, fresh) = self.touch_or_mint_membership(ws, peer);
-                if fresh {
-                    joined_anew = Some(peer);
-                }
-                self.set_link(ws, peer, true);
-                Some(NetEvent::PeerJoined {
-                    ws,
-                    peer,
-                    membership_epoch,
-                })
+                let (joined, fresh) = self.joined_gossip_peer(ws, peer);
+                joined_anew = fresh.then_some(peer);
+                Some(joined)
             }
             GossipEvent::NeighborDown(peer) => {
                 // Gossip does not attach a connection incarnation to a down
