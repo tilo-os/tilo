@@ -433,7 +433,7 @@ impl Tally {
             Some((_, count)) => *count = count.saturating_add(1),
             None => self.0.push((reason.to_owned(), 1)),
         }
-        self.0.sort_by(|a, b| b.1.cmp(&a.1));
+        self.0.sort_by_key(|(_, count)| std::cmp::Reverse(*count));
     }
 }
 
