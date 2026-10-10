@@ -283,17 +283,44 @@ def _resident(c: dict) -> float:
     return round(c["anon_mb"] + c["shmem_mb"] + c["kernel_mb"], 1)
 
 
-def guest_breakdown(kib: dict) -> dict:
-    """/proc/meminfo -> the guest's used memory split into anon, shmem, kernel and the
-    rest (reserve and the page cache MemAvailable does not count as available)."""
+def reserve_mib(table: dict, mib: dict) -> dict:
+    """What MemAvailable withholds from free memory and cache, as si_mem_available() does:
+    the zones' reserve (each zone's high watermark plus its largest lowmem protection,
+    capped at its managed pages: totalreserve_pages) and, of the file LRU and reclaimable
+    kernel memory, min(half, the zones' low watermarks summed) each."""
+    zones, page = table.get("zones") or {}, table.get("page_size")
+    if not zones or not page:
+        raise core.Unobservable("/proc/zoneinfo or the page size could not be read")
+    to_mib = page / 2**20
+    reserve = sum(min(z["protection"] + z["high"], z["managed"]) for z in zones.values()) * to_mib
+    low = sum(z["low"] for z in zones.values()) * to_mib
+    missing = [k for k in ("Active(file)", "Inactive(file)", "KReclaimable") if k not in mib]
+    if missing:
+        raise core.Unobservable(f"/proc/meminfo did not name {', '.join(missing)}")
+    cache = mib["Active(file)"] + mib["Inactive(file)"]
+    withheld = min(cache / 2, low) + min(mib["KReclaimable"] / 2, low)
+    return {"zones_mib": round(reserve, 1), "withheld_cache_mib": round(withheld, 1),
+            "low_watermarks_mib": round(low, 1)}
+
+
+def guest_breakdown(table: dict) -> dict:
+    """/proc/meminfo and /proc/zoneinfo -> the guest's used memory (MemTotal less
+    MemAvailable) split into anon, shmem, kernel, the reserve MemAvailable withholds, and
+    what is left: pages a driver or the kernel took that no meminfo counter names (the
+    VM's DRM buffers among them)."""
+    kib = table["meminfo_kib"]
     missing = [k for k in GUEST_FIELDS if k not in kib]
     if missing:
         raise core.Unobservable(f"/proc/meminfo did not name {', '.join(missing)}")
     mib = {k: round(v / 1024, 1) for k, v in kib.items()}
     used = round(mib["MemTotal"] - mib["MemAvailable"], 1)
     kernel = round(sum(mib[k] for k in GUEST_KERNEL) + mib.get("SecPageTables", 0.0), 1)
+    reserve = reserve_mib(table, mib)
+    held = reserve["zones_mib"] + reserve["withheld_cache_mib"]
     return {"used_mib": used, "anon_mib": mib["AnonPages"], "shmem_mib": mib["Shmem"],
-            "kernel_mib": kernel, "other_mib": round(used - mib["AnonPages"] - mib["Shmem"] - kernel, 1),
+            "kernel_mib": kernel, "reserve_mib": round(held, 1),
+            "untracked_mib": round(used - mib["AnonPages"] - mib["Shmem"] - kernel - held, 1),
+            "reserve_parts_mib": reserve,
             "kernel_parts_mib": {k: mib.get(k) for k in GUEST_KERNEL + ("SecPageTables",)},
             "meminfo_mib": mib}
 
@@ -304,7 +331,8 @@ def footprint_of(table: dict, slot_uid: int) -> dict:
     Every cgroup a process runs in is charged where its memory controller is (itself, or
     the nearest ancestor with one); each charge point lands in one bucket. A bucket's
     `resident_mib` is its anon + shmem + kernel: what it holds that is not reclaimable
-    cache. Every process is listed by PSS, all users, largest first."""
+    cache. Every process is listed, all users, by its anonymous RSS, largest first: with
+    no PSS on Tilo's kernel, that is the memory a process holds alone."""
     procs, cgroups = table["procs"], table["cgroups"]
     slot = {p["pid"]: p for p in procs.values() if p["uid"] == slot_uid}
     shell = slot.get(compositor_pid(slot))
@@ -339,10 +367,10 @@ def footprint_of(table: dict, slot_uid: int) -> dict:
         point = (cgroups.get(p["cgroup"]) or {}).get("charged_at")
         rows.append({"pid": p["pid"], "comm": p["comm"], "uid": p["uid"],
                      "bucket": point_bucket.get(point), "app": p["app"], "cgroup": p["cgroup"],
-                     **{k: p[k] for k in ("pss_mb", "pss_anon_mb", "pss_shmem_mb", "rss_mb",
-                                          "anon_rss_mb", "shmem_rss_mb")}})
-    rows.sort(key=lambda r: -(r["pss_mb"] or 0))
-    guest = guest_breakdown(table["meminfo_kib"])
+                     **{k: p[k] for k in ("anon_rss_mb", "shmem_rss_mb", "file_rss_mb", "rss_mb",
+                                          "swap_mb")}})
+    rows.sort(key=lambda r: -(r["anon_rss_mb"] or 0))
+    guest = guest_breakdown(table)
     vm_only = round(sum(buckets[b]["resident_mib"] for b in VM_ONLY), 1)
     attributed = sum(b["resident_mib"] for b in buckets.values())
     return {
@@ -366,11 +394,11 @@ def footprint(ctx) -> dict:
 
 
 def top_by_comm(rows: list[dict], n: int = 10) -> list[tuple[str, float]]:
-    """PSS summed per process name, the `n` largest: `fs` runs three times, each small."""
+    """Anonymous RSS summed per process name, the `n` largest: `fs` runs three times."""
     sums: dict[str, float] = {}
     for r in rows:
-        if r["pss_mb"] is not None:
-            sums[r["comm"]] = sums.get(r["comm"], 0.0) + r["pss_mb"]
+        if r["anon_rss_mb"] is not None:
+            sums[r["comm"]] = sums.get(r["comm"], 0.0) + r["anon_rss_mb"]
     return sorted(((c, round(v, 1)) for c, v in sums.items()), key=lambda t: -t[1])[:n]
 
 
@@ -380,16 +408,17 @@ def kpi_word(name: str) -> str:
 
 
 def record_footprint(ctx, fp: dict, ram_mib: float, variant: str = "") -> None:
-    """`idle.ram_mib.{anon,shmem,kernel,harness,installed}`, `memory.idle_mib.<bucket>` and
-    the largest processes' PSS as `memory.idle_pss_mib.<process>`; `variant` is a suffix.
+    """`idle.ram_mib.{anon,shmem,kernel,reserve,untracked,harness,installed}`,
+    `memory.idle_mib.<bucket>` and the largest processes' anonymous RSS as
+    `memory.idle_anon_mib.<process>`; `variant` is a suffix.
 
     `installed` is `idle.ram_mib` less what only a dev VM runs (seat0's greeter, the dev
     image's services, the harness's ssh), counted as anon + shmem + kernel so that
     reclaimable cache, which `idle.ram_mib` leaves out, is never subtracted."""
     suffix = f".{variant}" if variant else ""
     g = fp["guest"]
-    for part in ("anon", "shmem", "kernel"):
-        ctx.record(f"idle.ram_mib.{part}{suffix}", "MiB", [g[f"{part}_mib"]], what=f"guest /proc/meminfo {part}")
+    for part in ("anon", "shmem", "kernel", "reserve", "untracked"):
+        ctx.record(f"idle.ram_mib.{part}{suffix}", "MiB", [g[f"{part}_mib"]], what=f"guest {part} (resources.py guest_breakdown)")
     ctx.record(f"idle.ram_mib.harness{suffix}", "MiB", [fp["vm_only_mib"]],
                what="anon+shmem+kernel of the dev VM's greeter and harness cgroups")
     ctx.record(f"idle.ram_mib.installed{suffix}", "MiB", [round(ram_mib - fp["vm_only_mib"], 1)],
@@ -399,8 +428,9 @@ def record_footprint(ctx, fp: dict, ram_mib: float, variant: str = "") -> None:
                    what="anon+shmem+kernel of the bucket's cgroups")
     ctx.record(f"memory.idle_mib.unattributed{suffix}", "MiB", [fp["unattributed_mib"]],
                what="guest anon+shmem+kernel that no process's cgroup is charged")
-    for comm, pss in top_by_comm(fp["processes"]):
-        ctx.record(f"memory.idle_pss_mib.{kpi_word(comm)}{suffix}", "MiB", [pss], what="PSS summed per process name")
+    for comm, anon in top_by_comm(fp["processes"]):
+        ctx.record(f"memory.idle_anon_mib.{kpi_word(comm)}{suffix}", "MiB", [anon],
+                   what="anonymous RSS summed per process name")
 
 
 def write_footprint(ctx, name: str, fp: dict, ram_mib: float, variant: str = "") -> None:
@@ -544,10 +574,10 @@ def idle_empty(ctx, res):
 
 def _footprint_summary(fp: dict, ram_mib: float) -> dict:
     return {"used": ram_mib, "installed": round(ram_mib - fp["vm_only_mib"], 1),
-            **{k: fp["guest"][f"{k}_mib"] for k in ("anon", "shmem", "kernel", "other")},
+            **{k: fp["guest"][f"{k}_mib"] for k in ("anon", "shmem", "kernel", "reserve", "untracked")},
             "buckets": {name: b["resident_mib"] for name, b in fp["buckets"].items()},
             "unattributed": fp["unattributed_mib"],
-            "top_pss": top_by_comm(fp["processes"])}
+            "top_anon": top_by_comm(fp["processes"])}
 
 
 @check("R02", AREA, "Idle with Terminal, Files, Settings and Notes open")

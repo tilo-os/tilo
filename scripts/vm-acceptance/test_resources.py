@@ -24,11 +24,10 @@ GREETER_CG = "/user.slice/user-974.slice/session-c1.scope"
 UDEV = "/system.slice/systemd-udevd.service"
 
 
-def proc(pid, ppid, uid, comm, cgroup, pss, anon=0, app="-"):
-    """A `P` line: RSS is PSS plus a little shared; shmem and PSS splits follow."""
-    kib = pss * 1024
-    return "\t".join(map(str, ("P", pid, ppid, uid, comm, kib + 2048, anon * 1024, 512,
-                               kib, anon * 1024, 256, app, cgroup)))
+def proc(pid, ppid, uid, comm, cgroup, rss, anon=0, app="-"):
+    """A `P` line in MiB: RSS is anon, 512 KiB of shmem and the rest file; no swap."""
+    return "\t".join(map(str, ("P", pid, ppid, uid, comm, rss * 1024, anon * 1024,
+                               max(rss - anon, 0) * 1024, 512, 0, app, cgroup)))
 
 
 def cgroup(path, anon, file=0, shmem=0, kernel=1, at=None):
@@ -37,11 +36,16 @@ def cgroup(path, anon, file=0, shmem=0, kernel=1, at=None):
     return "\t".join(["C", path, at or path] + [str(v * MIB) for v in values])
 
 
+# Managed pages, low and high watermarks, largest lowmem protection; 4 KiB pages.
+ZONES = ("Z 0,DMA 3840 10 12 3000", "Z 0,DMA32 700000 3000 4000 1500", "Z 0,Normal 400000 2000 2600 0")
+
+
 def dump(meminfo=None, extra=()):
     mem = {"MemTotal": 4509084, "MemAvailable": 3207004, "AnonPages": 600 * 1024,
            "Shmem": 420 * 1024, "SUnreclaim": 60 * 1024, "KernelStack": 12 * 1024,
            "PageTables": 20 * 1024, "SecPageTables": 0, "VmallocUsed": 30 * 1024,
-           "Percpu": 8 * 1024, "Cached": 900 * 1024, "HugePages_Total": 0}
+           "Percpu": 8 * 1024, "Cached": 900 * 1024, "HugePages_Total": 0,
+           "Active(file)": 500 * 1024, "Inactive(file)": 300 * 1024, "KReclaimable": 40 * 1024}
     if meminfo is not None:
         mem = meminfo(mem)
     lines = [
@@ -89,6 +93,8 @@ def dump(meminfo=None, extra=()):
         cgroup("/user.slice/user-1001.slice/user@1001.service/session.slice/wireplumber.service", 6),
         cgroup(f"{APPS}/app-tilo-so.tilo.notes-6000.scope", 111, file=55, shmem=20, kernel=4),
         *(f"M {k}: {v}" + (" kB" if not k.startswith("Huge") else "") for k, v in mem.items()),
+        *ZONES,
+        "PS 4096",
         "G 974",
         "T 61440 /run",
         "T 1024 /tmp",
@@ -113,11 +119,14 @@ class Recorder:
 
 
 class Parse(unittest.TestCase):
-    def test_every_process_carries_its_pss_split_and_every_cgroup_its_charge_point(self):
+    def test_every_process_carries_its_rss_split_and_every_cgroup_its_charge_point(self):
         table = core.parse_processes(dump())
         greeter = table["procs"][1291]
-        self.assertEqual((greeter["pss_mb"], greeter["pss_anon_mb"], greeter["pss_shmem_mb"]),
-                         (210.0, 145.0, 0.2))
+        self.assertEqual((greeter["rss_mb"], greeter["anon_rss_mb"], greeter["file_rss_mb"],
+                          greeter["shmem_rss_mb"], greeter["swap_mb"]), (210.0, 145.0, 65.0, 0.5, 0.0))
+        self.assertEqual(table["zones"]["0,DMA32"], {"managed": 700000, "low": 3000, "high": 4000,
+                                                     "protection": 1500})
+        self.assertEqual(table["page_size"], 4096)
         self.assertEqual(table["procs"][6001]["app"], "so.tilo.notes")
         self.assertEqual(table["cgroups"][f"{UDEV}/udev"]["charged_at"], UDEV)
         self.assertIsNone(table["cgroups"][f"{UDEV}/udev"]["memory_mb"])
@@ -128,10 +137,13 @@ class Parse(unittest.TestCase):
         self.assertEqual(table["tmpfs"][0], {"mount": "/run", "used_mib": 60.0})
 
     def test_the_script_prints_what_the_parser_reads(self):
-        # The production script names every field the parser expects, in its order.
-        for needle in ("RssShmem", "Pss_Anon", "Pss_Shmem", "smaps_rollup", "id -u greetd",
-                       "df -kP -t tmpfs", "anon file shmem file_mapped kernel sock"):
+        # The production script names every field the parser expects. It reads no smaps:
+        # Tilo's kernel has none (CONFIG_PROC_PAGE_MONITOR=n).
+        for needle in ("RssAnon", "RssFile", "RssShmem", "VmSwap", "/proc/zoneinfo", "protection:",
+                       "getconf PAGESIZE", "id -u greetd", "df -kP -t tmpfs",
+                       "anon file shmem file_mapped kernel sock"):
             self.assertIn(needle, core.PROCESSES)
+        self.assertNotIn("smaps", core.PROCESSES)
 
 
 class Footprint(unittest.TestCase):
@@ -182,21 +194,33 @@ class Footprint(unittest.TestCase):
                                     cgroup("/system.slice/tilo-device-admin.service", 7, file=400))
         self.assertEqual(footprint(more_cache)["vm_only_mib"], 358.0)
 
-    def test_the_guest_splits_into_anon_shmem_and_kernel(self):
+    def test_the_guest_splits_into_anon_shmem_kernel_and_reserve(self):
         g = footprint()["guest"]
         self.assertEqual((g["anon_mib"], g["shmem_mib"], g["kernel_mib"]), (600.0, 420.0, 130.0))
         self.assertEqual(g["used_mib"], round((4509084 - 3207004) / 1024, 1))
-        self.assertEqual(g["other_mib"], round(g["used_mib"] - 1150.0, 1))
+        # Zones: min(3000 + 12, 3840) + min(1500 + 4000, 700000) + min(0 + 2600, 400000)
+        # pages; low watermarks 5010 pages, which caps both halves MemAvailable withholds.
+        parts = g["reserve_parts_mib"]
+        self.assertEqual(parts["zones_mib"], round(11112 * 4096 / MIB, 1))
+        self.assertEqual(parts["withheld_cache_mib"], round(2 * 5010 * 4096 / MIB, 1))
+        self.assertEqual(g["reserve_mib"], round(parts["zones_mib"] + parts["withheld_cache_mib"], 1))
+        self.assertEqual(g["untracked_mib"], round(g["used_mib"] - 1150.0 - g["reserve_mib"], 1))
+
+    def test_a_dump_without_zones_is_unobservable(self):
+        text = "\n".join(line for line in dump().splitlines() if not line.startswith("Z "))
+        with self.assertRaises(core.Unobservable):
+            footprint(text)
 
     def test_records_are_valid_kpis_in_one_unit(self):
         ctx = Recorder()
         resources.record_footprint(ctx, footprint(), 1272, "four_apps")
         for kpi in ("idle.ram_mib.anon.four_apps", "idle.ram_mib.shmem.four_apps", "idle.ram_mib.kernel.four_apps",
+                    "idle.ram_mib.reserve.four_apps", "idle.ram_mib.untracked.four_apps",
                     "memory.idle_mib.greeter.four_apps", "memory.idle_mib.compositor.four_apps",
-                    "memory.idle_mib.unattributed.four_apps", "memory.idle_pss_mib.shell.four_apps",
-                    "memory.idle_pss_mib.tilo-greeter.four_apps"):
+                    "memory.idle_mib.unattributed.four_apps", "memory.idle_anon_mib.shell.four_apps",
+                    "memory.idle_anon_mib.tilo-greeter.four_apps"):
             self.assertIn(kpi, ctx.records)
-        self.assertEqual(ctx.records["memory.idle_pss_mib.shell.four_apps"], [420.0])
+        self.assertEqual(ctx.records["memory.idle_anon_mib.shell.four_apps"], [345.0])
         self.assertEqual(resources.kpi_word("(sd-pam)"), "sd-pam")
 
     def test_missing_shmem_field_is_unobservable(self):
@@ -211,6 +235,26 @@ class Footprint(unittest.TestCase):
                                            str(25 * MIB), str(18 * MIB), str(7 * MIB), "0", "0", "-", "0"]))
         with self.assertRaises(core.Unobservable):
             footprint(broken)
+
+
+class ShellMemory(unittest.TestCase):
+    def ctx(self, text):
+        class Vm:
+            def root_exec(self, script):
+                assert "pid=42" in script
+                return text
+
+        class Ctx:
+            vm = Vm()
+        return Ctx()
+
+    def test_without_the_page_monitor_the_status_is_the_evidence(self):
+        m = core.shell_memory(self.ctx("S VmRSS: 600000\nS RssAnon: 256000\nPAGE-MONITOR no\n"), 42)
+        self.assertEqual((m["anon_rss_mib"], m["page_monitor"], m["top_anon_mappings"]), (250.0, False, []))
+
+    def test_with_the_page_monitor_an_unread_rollup_is_unobservable(self):
+        with self.assertRaises(core.Unobservable):
+            core.shell_memory(self.ctx("S VmRSS: 600000\nS RssAnon: 256000\n"), 42)
 
 
 class Growth(unittest.TestCase):
