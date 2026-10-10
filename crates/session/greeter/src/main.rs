@@ -7,8 +7,9 @@
 //         cage -s -- /usr/bin/tilo-greeter
 //     The event-loop proxy is captured via `run_with_setup` so the
 //     background auth worker can pump prompts/results back into the UI.
-//   * `--shots <PATH> [--scenario <name>] [--viewport <WIDTH>x<HEIGHT>]`
-//     — render one login-card state
+//   * `--shots <PATH> [--scenario <name>] [--direction split|poster]` plus
+//     the standard capture options (`--viewport`, `--text-scale`, `--theme`,
+//     …, see `ui::launch::LaunchArgs`) — render one login-card state
 //     into a PNG at `<PATH>` and exit. No window, no event loop. Headless
 //     snapshot for CI / visual inspection (identical output to the live
 //     binary). Scenarios: `form`, `hint`, `error`, `authenticating`,
@@ -18,9 +19,7 @@
 //     `personal-service-down` and `personal-passcode-expired`, and
 //     `personal-sessions` with a second session installed,
 //     `personal-repeated-error`, and `accounts` for a machine with several
-//     accounts. Defaults to
-//     `form`. `TILO_SHOTS_THEME=light|dark|high-contrast` selects the review
-//     palette.
+//     accounts. Defaults to `form`.
 
 #![cfg_attr(
     test,
@@ -36,7 +35,6 @@ use std::sync::{Arc, OnceLock};
 use greeter::GreeterApp;
 use greeter::greeter_app::AuthScenario;
 use ui::app::UserEvent;
-use ui::widget::Widget;
 use winit::event_loop::EventLoopProxy;
 
 /// Default offscreen viewport for `--shots`.
@@ -44,8 +42,8 @@ const DEFAULT_SHOTS_VIEWPORT: (u32, u32) = (1280, 800);
 
 /// # Errors
 ///
-/// Returns an error if `--shots` rendering fails (see
-/// [`render_shot_to_png`]); the live event-loop path does not return.
+/// Returns an error for a malformed command line or an unknown `--scenario`;
+/// the live event-loop path does not return.
 pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     tilo_startup_metrics::init();
     let _startup_metrics = tilo_startup_metrics::ScopedDumper;
@@ -53,23 +51,35 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     let _detached = ui::wake::WakeScope::enter_detached();
     tracing_subscriber::fmt::init();
 
-    let args: Vec<String> = std::env::args().collect();
-    if let Some(out) = parse_shots_arg(&args) {
-        let scenario = parse_scenario_arg(&args).unwrap_or(AuthScenario::Form);
-        let viewport = parse_viewport_arg(&args).unwrap_or(DEFAULT_SHOTS_VIEWPORT);
-        let text_scale = parse_text_scale_arg(&args);
+    let args = ui::launch::LaunchArgs::from_env(&["--direction"])?;
+    if let Some(out) = &args.shots {
+        let scenario = match args.scenario.as_deref() {
+            None => AuthScenario::Form,
+            Some(name) => {
+                scenario_named(name).ok_or_else(|| format!("unknown --scenario {name:?}"))?
+            }
+        };
         let mut widget = GreeterApp::for_shot(scenario);
-        match arg_value(&args, "--direction") {
+        match args.value("--direction") {
             Some("split") => widget.set_direction(greeter::greeter_app::Direction::Split),
             Some("poster") => widget.set_direction(greeter::greeter_app::Direction::Poster),
             _ => {}
         }
-        let credentials = shot_credentials(scenario);
-        if let Some((username, password)) = credentials {
+        if let Some((username, password)) = shot_credentials(scenario) {
             widget.seed_shot_username(username);
             widget.seed_shot_password(password);
         }
-        render_shot_to_png(Box::new(widget), viewport, text_scale, &out);
+        ui::clock::freeze_for_capture();
+        let viewport = args.viewport.unwrap_or(DEFAULT_SHOTS_VIEWPORT);
+        let mut frame = ui::headless::FrameHarness::new_with_theme(
+            ui::State::new(),
+            Box::new(widget),
+            viewport,
+            ui::launch::shot_theme(&args),
+        );
+        frame.settle_for_capture(ui::launch::CAPTURE_SETTLE_BOUND);
+        frame.render_png(out);
+        println!("tilo-greeter: wrote shot to {}", out.display());
         return Ok(());
     }
 
@@ -116,95 +126,17 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// Start the console endpoints that exist here: the greeter user's private
 /// runtime socket, and the virtio port only a hypervisor can attach.
 fn serve_console(console: &console_control::ConsoleServer, proxy: EventLoopProxy<UserEvent>) {
-    let proxy = std::sync::Mutex::new(proxy);
     let waker: console_control::server::Waker = Arc::new(move || {
-        if let Ok(proxy) = proxy.lock() {
-            let _ = proxy.send_event(UserEvent::External(
-                greeter::greeter_app::CONSOLE_WAKE.to_owned(),
-            ));
-        }
+        let _ = proxy.send_event(UserEvent::External(
+            greeter::greeter_app::CONSOLE_WAKE.to_owned(),
+        ));
     });
-    let endpoints = console_control::Endpoint::discover(greeter::greeter_app::CONSOLE_PROVIDER);
-    let failed = console.serve_all(&endpoints, &waker);
-    for endpoint in &endpoints {
-        if let Some((_, error)) = failed.iter().find(|(candidate, _)| candidate == endpoint) {
-            tracing::warn!(?endpoint, %error, "greeter console endpoint unavailable");
-        } else {
-            tracing::info!(?endpoint, "greeter console listening");
-        }
-    }
+    console.serve_discovered(greeter::greeter_app::CONSOLE_PROVIDER, &waker);
 }
 
-/// Returns the optional logical-pixel viewport supplied to the headless
-/// renderer. Malformed or zero-sized values are ignored, preserving the
-/// stable default used by existing visual baselines.
-fn parse_viewport_arg(args: &[String]) -> Option<(u32, u32)> {
-    let mut iter = args.iter().skip(1);
-    let raw = loop {
-        let arg = iter.next()?;
-        if arg == "--viewport" {
-            break iter.next()?.as_str();
-        }
-        if let Some(rest) = arg.strip_prefix("--viewport=") {
-            break rest;
-        }
-    };
-    let (width, height) = raw.split_once(['x', 'X'])?;
-    let viewport = (width.parse().ok()?, height.parse().ok()?);
-    (viewport.0 > 0 && viewport.1 > 0).then_some(viewport)
-}
-
-fn parse_text_scale_arg(args: &[String]) -> Option<f32> {
-    let mut iter = args.iter().skip(1);
-    let raw = loop {
-        let arg = iter.next()?;
-        if arg == "--text-scale" {
-            break iter.next()?.as_str();
-        }
-        if let Some(rest) = arg.strip_prefix("--text-scale=") {
-            break rest;
-        }
-    };
-    let scale: f32 = raw.parse().ok()?;
-    (scale.is_finite() && (0.75..=2.0).contains(&scale)).then_some(scale)
-}
-
-/// The value after `flag` (`--flag value`), if present.
-fn arg_value<'a>(args: &'a [String], flag: &str) -> Option<&'a str> {
-    let mut iter = args.iter().skip(1);
-    iter.find(|arg| *arg == flag)?;
-    iter.next().map(String::as_str)
-}
-
-/// Returns `Some(path)` if `--shots <path>` (or `--shots=<path>`) appears
-/// in `args`, otherwise `None`.
-fn parse_shots_arg(args: &[String]) -> Option<std::path::PathBuf> {
-    let mut iter = args.iter().skip(1);
-    while let Some(arg) = iter.next() {
-        if arg == "--shots" {
-            return iter.next().map(std::path::PathBuf::from);
-        }
-        if let Some(rest) = arg.strip_prefix("--shots=") {
-            return Some(std::path::PathBuf::from(rest));
-        }
-    }
-    None
-}
-
-/// Returns the `--scenario <name>` (or `--scenario=<name>`) login-card
-/// state for a shot, if present and recognised.
-fn parse_scenario_arg(args: &[String]) -> Option<AuthScenario> {
-    let mut iter = args.iter().skip(1);
-    let raw = loop {
-        let arg = iter.next()?;
-        if arg == "--scenario" {
-            break iter.next()?.clone();
-        }
-        if let Some(rest) = arg.strip_prefix("--scenario=") {
-            break rest.to_string();
-        }
-    };
-    match raw.as_str() {
+/// The login-card state a `--scenario` name captures.
+fn scenario_named(name: &str) -> Option<AuthScenario> {
+    match name {
         "form" => Some(AuthScenario::Form),
         "error" => Some(AuthScenario::Error),
         "authenticating" => Some(AuthScenario::Authenticating),
@@ -273,99 +205,23 @@ fn shot_credentials(scenario: AuthScenario) -> Option<(&'static str, &'static st
     }
 }
 
-/// Run one offscreen frame against `widget` at `viewport` and write the
-/// resulting RGBA to `out` as a PNG.
-///
-/// The caller seeds representative credentials through `GreeterApp`'s view
-/// state and process-local passcode buffer, never the document. The headless
-/// harness runs the live App's per-frame sync, so children composed inside
-/// `build_layout` (the `TextInputs`) pull their values before they paint.
-fn render_shot_to_png(
-    widget: Box<dyn Widget>,
-    viewport: (u32, u32),
-    text_scale: Option<f32>,
-    out: &std::path::Path,
-) {
-    let theme = ui::launch::capture_theme(text_scale);
-    // `--theme` names the palette on hosts that do not pass the environment
-    // through to the renderer.
-    let args: Vec<String> = std::env::args().collect();
-    let theme = match arg_value(&args, "--theme").and_then(ui::theme::Theme::named) {
-        Some(named) => match text_scale {
-            Some(scale) => named.with_text_scale(scale),
-            None => named,
-        },
-        None => theme,
-    };
-    let state = ui::State::new();
-    // The same bounded sync/layout/paint lifecycle as the live host handles
-    // responsive composition and applies accessibility scaling to text too.
-    let frame = ui::headless::FrameHarness::new_with_theme(state, widget, viewport, theme);
-    frame.render_png(out);
-    println!("tilo-greeter: wrote shot to {}", out.display());
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn args(values: &[&str]) -> Vec<String> {
-        values.iter().map(|value| (*value).to_string()).collect()
-    }
-
     #[test]
-    fn cli_arguments_are_bounded_and_additive() {
-        // Phase `viewport_accepts_separate_and_equals_forms`.
-        {
-            assert_eq!(
-                parse_viewport_arg(&args(&["tilo-greeter", "--viewport", "640x480"])),
-                Some((640, 480))
-            );
-            assert_eq!(
-                parse_viewport_arg(&args(&["tilo-greeter", "--viewport=360X640"])),
-                Some((360, 640))
-            );
-        }
-        // Phase `viewport_rejects_malformed_or_empty_dimensions`.
-        {
-            for raw in ["", "640", "x480", "640x", "0x480", "640x0", "-1x480"] {
-                assert_eq!(
-                    parse_viewport_arg(&args(&["tilo-greeter", "--viewport", raw])),
-                    None,
-                    "accepted malformed viewport {raw:?}"
-                );
-            }
-        }
-        // Phase `shot_text_scale_accepts_only_bounded_finite_values`.
-        {
-            assert_eq!(
-                parse_text_scale_arg(&args(&["tilo-greeter", "--text-scale=1.3"])),
-                Some(1.3)
-            );
-            for value in ["NaN", "0.5", "2.1", "not-a-number"] {
-                assert_eq!(
-                    parse_text_scale_arg(&args(&["tilo-greeter", "--text-scale", value])),
-                    None
-                );
-            }
-        }
-        // Phase `personal_transient_scenarios_are_additive_cli_options`.
-        {
-            for (name, expected) in [
-                ("personal-error", AuthScenario::PersonalError),
-                (
-                    "personal-authenticating",
-                    AuthScenario::PersonalAuthenticating,
-                ),
-                ("personal-caps", AuthScenario::PersonalCapsLock),
-                ("personal-hint", AuthScenario::PersonalHint),
-                ("personal-starting", AuthScenario::PersonalStarting),
-            ] {
-                assert_eq!(
-                    parse_scenario_arg(&args(&["tilo-greeter", "--scenario", name])),
-                    Some(expected)
-                );
-            }
+    fn personal_transient_scenarios_are_capturable() {
+        for (name, expected) in [
+            ("personal-error", AuthScenario::PersonalError),
+            (
+                "personal-authenticating",
+                AuthScenario::PersonalAuthenticating,
+            ),
+            ("personal-caps", AuthScenario::PersonalCapsLock),
+            ("personal-hint", AuthScenario::PersonalHint),
+            ("personal-starting", AuthScenario::PersonalStarting),
+        ] {
+            assert_eq!(scenario_named(name), Some(expected));
         }
     }
 

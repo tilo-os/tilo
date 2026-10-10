@@ -181,6 +181,13 @@ pub fn fatal(message: impl std::fmt::Display) -> ! {
     std::process::exit(1);
 }
 
+/// The capture theme every `--shots` honours (`TILO_SHOTS_THEME`,
+/// `TILO_SHOTS_TEXT_SCALE`, …). An unknown theme name is fatal, never a
+/// silent dark shot.
+pub fn shot_theme() -> tilo_ui::theme::Theme {
+    tilo_ui::launch::shot_theme_from_env().unwrap_or_else(|error| fatal(error))
+}
+
 #[allow(
     clippy::exit,
     reason = "dispatch is the shared entry point every example's fn main calls directly; \
