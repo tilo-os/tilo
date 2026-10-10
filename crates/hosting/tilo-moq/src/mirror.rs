@@ -7,11 +7,11 @@
 //! before the transport is torn down, whatever the client does.
 
 use std::collections::{HashMap, VecDeque};
-use std::task::Poll;
 use std::time::Duration;
 
 use crate::Task;
 use crate::carrier::{OriginTask, origin_config};
+use crate::relay::{Next, next};
 
 /// Groups copied concurrently per mirrored track; a newer group evicts the
 /// oldest instead of queueing behind it.
@@ -106,31 +106,6 @@ async fn track(input: moq_net::broadcast::Consumer, request: moq_net::track::Req
     };
     let output = request.accept(reader.info().clone());
     copy(&mut reader, output).await;
-}
-
-enum Next {
-    Datagram(moq_net::Datagram),
-    Group(Box<moq_net::group::Consumer>),
-    End,
-}
-
-async fn next(track: &mut moq_net::track::Subscriber) -> Next {
-    moq_net::kio::wait(|waiter| {
-        if let Poll::Ready(datagram) = track.poll_recv_datagram(waiter) {
-            return Poll::Ready(match datagram {
-                Ok(Some(datagram)) => Next::Datagram(datagram),
-                _ => Next::End,
-            });
-        }
-        if let Poll::Ready(group) = track.poll_recv_group(waiter) {
-            return Poll::Ready(match group {
-                Ok(Some(group)) => Next::Group(Box::new(group)),
-                _ => Next::End,
-            });
-        }
-        Poll::Pending
-    })
-    .await
 }
 
 async fn copy(input: &mut moq_net::track::Subscriber, mut output: moq_net::track::Producer) {

@@ -628,13 +628,13 @@ impl Drop for LoopbackRelay {
 }
 
 /// The next datagram or group of a subscribed track.
-enum Next {
+pub(crate) enum Next {
     Datagram(moq_net::Datagram),
     Group(Box<moq_net::group::Consumer>),
     End,
 }
 
-async fn next(track: &mut moq_net::track::Subscriber) -> Next {
+pub(crate) async fn next(track: &mut moq_net::track::Subscriber) -> Next {
     moq_net::kio::wait(|waiter| {
         if let Poll::Ready(datagram) = track.poll_recv_datagram(waiter) {
             return Poll::Ready(match datagram {

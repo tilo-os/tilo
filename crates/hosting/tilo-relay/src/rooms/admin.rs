@@ -161,19 +161,12 @@ impl RoomAdminProtocol {
 
 impl ProtocolHandler for RoomAdminProtocol {
     async fn accept(&self, connection: iroh::endpoint::Connection) -> Result<(), AcceptError> {
-        let _permit = self.exchanges.clone().try_acquire_owned().map_err(|_| {
-            AcceptError::from_err(std::io::Error::other(
-                "room administration concurrency limit reached",
-            ))
-        })?;
-        n0_future::time::timeout(EXCHANGE_TIMEOUT, self.exchange(&connection))
-            .await
-            .map_err(|_| {
-                AcceptError::from_err(std::io::Error::new(
-                    std::io::ErrorKind::TimedOut,
-                    "room administration timed out",
-                ))
-            })?
-            .map_err(|error| AcceptError::from_err(std::io::Error::other(error.to_string())))
+        crate::workspace_join::bounded_accept(
+            &self.exchanges,
+            EXCHANGE_TIMEOUT,
+            "room administration",
+            self.exchange(&connection),
+        )
+        .await
     }
 }

@@ -4,6 +4,7 @@ use collab_types::caps::{
     decide_capability,
 };
 use collab_types::role::Role as CapRole;
+use tilo_desktop_model::grants::{bounded_receipt_text, redact_receipt_context};
 use tilo_desktop_model::{UserId, Workspace, WorkspaceEffectReceipt};
 pub trait WorkspacePolicy {
     fn grant_capability(&mut self, cap: CapOverride) -> String;
@@ -35,28 +36,10 @@ impl WorkspacePolicy for Workspace {
         Workspace::grant_capability(self, cap)
     }
     fn revoke_capability(&mut self, id: &str) -> bool {
-        let before = self.capabilities.len();
-        self.capabilities.retain(|c| c.id != id);
-        self.capabilities.len() != before
+        Workspace::revoke_capability(self, id)
     }
     fn set_owner(&mut self, user: impl Into<UserId>) {
-        let user = user.into();
-        let owner_capability_id = format!("owner-{}", self.id.raw());
-        // The owner capability has a stable id because the replicated map is
-        // keyed by capability id.  Remove its previous in-memory value before
-        // changing the subject: `grant_capability` deliberately merges only
-        // identical subjects, and would otherwise leave the former owner with
-        // a second local Admin grant until the next document rebuild.
-        self.revoke_capability(&owner_capability_id);
-        self.owner = Some(user.clone());
-        self.grant_capability(
-            CapOverride::membership(
-                Subject::Principal(Principal::Person(user)),
-                self.room.to_string(),
-                Verb::Admin,
-            )
-            .with_id(owner_capability_id),
-        );
+        Workspace::set_owner(self, user);
     }
     fn decide(&self, actor: &Actor, resource: &ResourceRef, verb: Verb) -> CapDecision {
         self.decide_at(actor, resource, verb, tilo_clock::unix_now())
@@ -210,44 +193,6 @@ impl WorkspacePolicy for Workspace {
             .collect()
     }
 }
-fn bounded_receipt_text(value: &str, max: usize) -> String {
-    value
-        .chars()
-        .filter(|character| !character.is_control())
-        .take(max)
-        .collect::<String>()
-        .trim()
-        .to_string()
-}
-
-fn redact_receipt_context(context: &mut tilo_actions::ActionContext) {
-    context.action_label = bounded_receipt_text(&context.action_label, 200);
-    if let Some(app) = &mut context.app {
-        app.id = bounded_receipt_text(&app.id, 160);
-        app.label = bounded_receipt_text(&app.label, 160);
-    }
-    if let Some(resource) = &mut context.resource {
-        resource.id = bounded_receipt_text(&resource.id, 512);
-        resource.kind = bounded_receipt_text(&resource.kind, 160);
-        resource.label = bounded_receipt_text(&resource.label, 200);
-    }
-    context.purpose = context
-        .purpose
-        .as_deref()
-        .map(|value| bounded_receipt_text(value, 512))
-        .filter(|value| !value.is_empty());
-    if let Some(group) = &mut context.group {
-        group.id = bounded_receipt_text(&group.id, 160);
-        group.label = bounded_receipt_text(&group.label, 200);
-        group.kind = bounded_receipt_text(&group.kind, 160);
-    }
-    context.facets.truncate(32);
-    for facet in &mut context.facets {
-        facet.key = bounded_receipt_text(&facet.key, 96);
-        facet.value = bounded_receipt_text(&facet.value, 160);
-    }
-}
-
 /// Construct the same bounded public receipt for native and standalone owners.
 /// No invocation arguments, output, streamed items or private failure text enter it.
 pub fn redacted_effect_receipt(

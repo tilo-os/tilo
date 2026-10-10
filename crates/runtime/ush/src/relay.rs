@@ -195,16 +195,22 @@ pub fn needs_asking(peers: &[RelayPeer], now_ms: u64) -> bool {
 /// Where `tilo-relay-offers` is: `$TILO_RELAY_OFFERS_BIN`, the installed
 /// location, then `PATH`.
 pub fn offers_binary() -> Option<PathBuf> {
-    if let Some(explicit) = std::env::var_os("TILO_RELAY_OFFERS_BIN") {
+    helper_binary("TILO_RELAY_OFFERS_BIN", "tilo-relay-offers")
+}
+
+/// Where the helper `name` is: `$override_var`, `/usr/libexec/<name>`, then
+/// `PATH`.
+fn helper_binary(override_var: &str, name: &str) -> Option<PathBuf> {
+    if let Some(explicit) = std::env::var_os(override_var) {
         return Some(PathBuf::from(explicit));
     }
-    let installed = PathBuf::from("/usr/libexec/tilo-relay-offers");
+    let installed = Path::new("/usr/libexec").join(name);
     if installed.exists() {
         return Some(installed);
     }
     let path = std::env::var_os("PATH")?;
     std::env::split_paths(&path)
-        .map(|dir| dir.join("tilo-relay-offers"))
+        .map(|dir| dir.join(name))
         .find(|candidate| candidate.is_file())
 }
 
@@ -265,17 +271,7 @@ pub fn ask_relays_again(identity: &IdentityPaths) {
 /// Where `tilo-relay-environment` is: `$TILO_RELAY_ENVIRONMENT_BIN`, the
 /// installed location, then `PATH`.
 pub fn bridge_binary() -> Option<PathBuf> {
-    if let Some(explicit) = std::env::var_os("TILO_RELAY_ENVIRONMENT_BIN") {
-        return Some(PathBuf::from(explicit));
-    }
-    let installed = PathBuf::from("/usr/libexec/tilo-relay-environment");
-    if installed.exists() {
-        return Some(installed);
-    }
-    let path = std::env::var_os("PATH")?;
-    std::env::split_paths(&path)
-        .map(|dir| dir.join("tilo-relay-environment"))
-        .find(|candidate| candidate.is_file())
+    helper_binary("TILO_RELAY_ENVIRONMENT_BIN", "tilo-relay-environment")
 }
 
 /// A relay session to open from a record, or to re-attach to.
