@@ -209,25 +209,16 @@ pub(crate) fn refresh_bound_controls(
                      widget: &mut dyn crate::widget::AppWidget,
                      _: &tilo_actions::ActionRegistry| {
         let owner = crate::history_mode::HistoryOwner::component(binding.clone());
-        let tile_doors = tile_doors
-            .iter()
-            .filter(|(enclosing, _)| enclosing.same_owner(&owner))
-            .flat_map(|(_, doors)| doors.iter().cloned());
-        let resources = snapshots
-            .iter()
-            .filter(|snapshot| snapshot.binding.same_component(binding))
-            .flat_map(|snapshot| snapshot.resources.iter().cloned())
-            .filter_map(|resource| filter_resource(binding, resource))
-            .collect::<Vec<_>>();
-        let mut allowed: std::collections::HashSet<_> = tilo_actions::door::survey(&resources)
-            .into_iter()
-            .filter(|descriptor| descriptor.contract.availability.is_available())
-            .map(|descriptor| descriptor.address)
-            .collect();
         // A component's host — its window or the shell — opens search.
-        allowed.insert(crate::search::search_address());
-        allowed.extend(host_doors.iter().cloned());
-        allowed.extend(tile_doors);
+        let mut doors = host_doors.clone();
+        doors.insert(crate::search::search_address());
+        doors.extend(
+            tile_doors
+                .iter()
+                .filter(|(enclosing, _)| enclosing.same_owner(&owner))
+                .flat_map(|(_, doors)| doors.iter().cloned()),
+        );
+        let allowed = component_controls_allowed(binding, snapshots, doors);
         crate::widget::controls::refresh_control_action_availability(widget, &allowed);
         None
     };
@@ -236,6 +227,56 @@ pub(crate) fn refresh_bound_controls(
         found: false,
         visit: &mut visit,
     })
+}
+
+/// The addresses a component's controls may run: every available action of
+/// its own published resources that its permissions admit, and `doors`, what
+/// its host answers. Derived from the tree once per snapshot rather than on
+/// every frame: a cached snapshot is handed to every frame until the
+/// component's declarations change, and copying, filtering and surveying a
+/// list of thousands of resources each frame made a keystroke cost grow with
+/// the list (TIL-761).
+fn component_controls_allowed(
+    binding: &CallbackBinding,
+    snapshots: &[BoundResourceSnapshot],
+    doors: std::collections::HashSet<tilo_actions::ActionAddress>,
+) -> Rc<std::collections::HashSet<tilo_actions::ActionAddress>> {
+    let mut owned = snapshots
+        .iter()
+        .filter(|snapshot| snapshot.binding.same_component(binding));
+    let only = match (owned.next(), owned.next()) {
+        (Some(only), None) => Some(only),
+        _ => None,
+    };
+    let permissions = binding.permissions.borrow().directory_witness().ok();
+    if let (Some(snapshot), Some(permissions)) = (only, &permissions)
+        && let Some(memo) = snapshot.controls.borrow().as_ref()
+        && memo
+            .resources
+            .upgrade()
+            .is_some_and(|resources| Rc::ptr_eq(&resources, &snapshot.resources))
+        && memo.permissions == *permissions
+        && memo.doors == doors
+    {
+        return Rc::clone(&memo.allowed);
+    }
+    let mut allowed = doors.clone();
+    for snapshot in snapshots
+        .iter()
+        .filter(|snapshot| snapshot.binding.same_component(binding))
+    {
+        insert_available_permitted(binding, &snapshot.resources, &mut allowed);
+    }
+    let allowed = Rc::new(allowed);
+    if let (Some(snapshot), Some(permissions)) = (only, permissions) {
+        *snapshot.controls.borrow_mut() = Some(ControlAvailability {
+            resources: Rc::downgrade(&snapshot.resources),
+            permissions,
+            doors,
+            allowed: Rc::clone(&allowed),
+        });
+    }
+    allowed
 }
 
 /// A component's control intent, with the effect invocation it continues
@@ -446,10 +487,42 @@ pub(crate) fn poll_resource_operation(
     result.unwrap_or(Err(BoundDispatchError::ClosedLifetime))
 }
 
+/// One bound component's published resources.
+///
+/// `resources` is shared: a cached snapshot hands every frame's consumer the
+/// same tree rather than a copy of it, and consumers that derive something
+/// from the whole tree (the controls' available addresses, the accessibility
+/// tree's resource nodes) keep what they derived for as long as the snapshot
+/// they derived it from is the one they are handed (TIL-761).
 #[derive(Clone)]
 pub(crate) struct BoundResourceSnapshot {
     pub(crate) binding: CallbackBinding,
-    pub(crate) resources: Vec<tilo_actions::Resource>,
+    pub(crate) resources: Rc<Vec<tilo_actions::Resource>>,
+    /// The component controls' allowed addresses last derived from
+    /// `resources`, shared by every copy of this snapshot.
+    controls: Rc<RefCell<Option<ControlAvailability>>>,
+}
+
+impl BoundResourceSnapshot {
+    fn new(binding: CallbackBinding, resources: Vec<tilo_actions::Resource>) -> Self {
+        Self {
+            binding,
+            resources: Rc::new(resources),
+            controls: Rc::default(),
+        }
+    }
+}
+
+/// What [`refresh_bound_controls`] derived from one snapshot's tree, and
+/// everything that derivation read: reusable exactly while the snapshot holds
+/// the same tree (a `Weak` to it: [`Rc::make_mut`] detaches weak pointers, so
+/// an edited tree never matches), the component's permissions are the same
+/// and the host offers the same doors.
+struct ControlAvailability {
+    resources: std::rc::Weak<Vec<tilo_actions::Resource>>,
+    permissions: crate::permissions::DirectoryPermissionWitness,
+    doors: std::collections::HashSet<tilo_actions::ActionAddress>,
+    allowed: Rc<std::collections::HashSet<tilo_actions::ActionAddress>>,
 }
 
 /// Reserved transport namespace. Domain resources never contain this rewrite.
@@ -1097,10 +1170,7 @@ pub(crate) fn discover_cached_bound_resources(
                 if binding.permissions.borrow().directory_witness()? != permissions {
                     return Err("owner policy changed while filtering resources".into());
                 }
-                let snapshot = BoundResourceSnapshot {
-                    binding: binding.clone(),
-                    resources,
-                };
+                let snapshot = BoundResourceSnapshot::new(binding.clone(), resources);
                 let mut entries = cache.0.borrow_mut();
                 entries.retain(|entry| {
                     !entry.snapshot.binding.closing.get()
@@ -1238,33 +1308,67 @@ pub(crate) fn filter_resource(
     mut resource: tilo_actions::Resource,
 ) -> Option<tilo_actions::Resource> {
     let resource_id = resource.id.as_str().to_owned();
-    resource.actions.retain(|action| {
-        use crate::permissions::Verb;
-        use tilo_actions::PermissionRequirement as Requirement;
-        let verb = match action.contract.permission {
-            Requirement::None => return true,
-            Requirement::Read => Verb::Read,
-            Requirement::Comment => Verb::Comment,
-            Requirement::Write => Verb::Write,
-            Requirement::Invite => Verb::Invite,
-            Requirement::Admin => Verb::Admin,
-        };
-        binding
-            .permissions
-            .borrow()
-            .check(&crate::permissions::PermissionScope::action(
-                &binding.app_id,
-                &resource_id,
-                &action.id,
-                verb,
-            ))
-    });
+    resource
+        .actions
+        .retain(|action| binding_permits(binding, &resource_id, action));
     resource.children = resource
         .children
         .into_iter()
         .filter_map(|child| filter_resource(binding, child))
         .collect();
     (!resource.actions.is_empty() || !resource.children.is_empty()).then_some(resource)
+}
+
+/// Whether `binding`'s permissions admit `action` on `resource_id`: the
+/// check [`filter_resource`] keeps an action by.
+fn binding_permits(
+    binding: &CallbackBinding,
+    resource_id: &str,
+    action: &tilo_actions::ActionSpec,
+) -> bool {
+    use crate::permissions::Verb;
+    use tilo_actions::PermissionRequirement as Requirement;
+    let verb = match action.contract.permission {
+        Requirement::None => return true,
+        Requirement::Read => Verb::Read,
+        Requirement::Comment => Verb::Comment,
+        Requirement::Write => Verb::Write,
+        Requirement::Invite => Verb::Invite,
+        Requirement::Admin => Verb::Admin,
+    };
+    binding
+        .permissions
+        .borrow()
+        .check(&crate::permissions::PermissionScope::action(
+            &binding.app_id,
+            resource_id,
+            &action.id,
+            verb,
+        ))
+}
+
+/// Add to `allowed` the address of every available action in `resources`
+/// that `binding` permits: what [`tilo_actions::door::survey`] lists as
+/// available in the trees [`filter_resource`] keeps, read in place rather
+/// than through a filtered copy and a descriptor per action.
+fn insert_available_permitted(
+    binding: &CallbackBinding,
+    resources: &[tilo_actions::Resource],
+    allowed: &mut std::collections::HashSet<tilo_actions::ActionAddress>,
+) {
+    for resource in resources {
+        for action in &resource.actions {
+            if action.contract.availability.is_available()
+                && binding_permits(binding, resource.id.as_str(), action)
+            {
+                allowed.insert(tilo_actions::ActionAddress::new(
+                    resource.id.as_str(),
+                    &action.id,
+                ));
+            }
+        }
+        insert_available_permitted(binding, &resource.children, allowed);
+    }
 }
 
 /// Read-only traversal releases each checked document borrow before descending
@@ -1328,12 +1432,9 @@ fn discover_bound_resources_with_filter(
                     .iter_mut()
                     .find(|snapshot| snapshot.binding.same_component(binding))
                 {
-                    snapshot.resources.extend(resources);
+                    Rc::make_mut(&mut snapshot.resources).extend(resources);
                 } else {
-                    snapshots.push(BoundResourceSnapshot {
-                        binding: binding.clone(),
-                        resources,
-                    });
+                    snapshots.push(BoundResourceSnapshot::new(binding.clone(), resources));
                 }
             }
         }
@@ -1770,8 +1871,7 @@ fn resources_for_control_target(
             // Empty and unauthorized declarations still claim their identity.
             // Check the complete owner forest before presentation filtering.
             unique_control_spec(&snapshot.resources, address)?;
-            Ok(snapshot
-                .resources
+            Ok(Rc::unwrap_or_clone(snapshot.resources)
                 .into_iter()
                 .filter_map(|resource| filter_resource(&snapshot.binding, resource))
                 .collect())
