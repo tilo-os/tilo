@@ -228,5 +228,6 @@ pub fn install(bytes: &[u8], root: &str, archive_hash: &str) -> Result<String, S
     Ok(checked.root)
 }
 
-#[cfg(all(test, feature = "service"))]
+#[cfg(test)]
+#[cfg(feature = "service")]
 mod tests;
