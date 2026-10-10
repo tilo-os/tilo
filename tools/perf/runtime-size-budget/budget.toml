@@ -54,15 +54,17 @@ needed_absent = ["libgst", "libglib-2.0", "libgobject-2.0", "libgio-2.0"]
 # before TIL-713 landed: x86_64 232303952 -> 204813024 bytes and 7663616 ->
 # 6873088 bytes of relocation-dirtied memory per app process (Release / apps
 # 90662 against 90776); aarch64 213053464 -> 188160992 bytes and 7380992 ->
-# 6615040 (90371 against 90511).
+# 6615040 (90371 against 90511). Both together, Release / apps 90940:
+# 204606408 / 188035240 bytes, 6868992 / 6598656 bytes dirtied per process,
+# 10049 / 10076 symbol relocations.
 [runtime.x86_64]
 bytes = 206897152
 relocation_bytes = 393216
 relocated_bytes = 6946816
-symbol_relocations = 11776
+symbol_relocations = 10176
 
 [runtime.aarch64]
 bytes = 190054400
 relocation_bytes = 393216
 relocated_bytes = 6684672
-symbol_relocations = 11776
+symbol_relocations = 10240
