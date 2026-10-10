@@ -101,12 +101,14 @@
     "line-failed-recorded-outer.py": {
       "original_sha256": "dc9cd3f223503d9329c00f4db1bdb2bdcc5b5021caa4f1839e4d1f64bed4086d",
       "portable_file_sha256": "dc9cd3f223503d9329c00f4db1bdb2bdcc5b5021caa4f1839e4d1f64bed4086d",
-      "portable_reconstructed_stdout_sha256": null
+      "portable_reconstructed_stdout_sha256": null,
+      "canonical_file": "recorded-outer.py"
     },
     "line-failed-recorded-run.py": {
       "original_sha256": "deeab2c48e280c394ec629d5f4a7da13d1e62d3221d9a64119f76bbc37305525",
       "portable_file_sha256": "deeab2c48e280c394ec629d5f4a7da13d1e62d3221d9a64119f76bbc37305525",
-      "portable_reconstructed_stdout_sha256": null
+      "portable_reconstructed_stdout_sha256": null,
+      "canonical_file": "recorded-run.py"
     },
     "line-recorded-inner.py": {
       "original_sha256": "68a43de5a3119386f8a58cdf90fa85865a3ce87c67bb1bd2ed7eec241d0c5ce3",
@@ -116,17 +118,20 @@
     "line-recorded-outer.py": {
       "original_sha256": "dc9cd3f223503d9329c00f4db1bdb2bdcc5b5021caa4f1839e4d1f64bed4086d",
       "portable_file_sha256": "dc9cd3f223503d9329c00f4db1bdb2bdcc5b5021caa4f1839e4d1f64bed4086d",
-      "portable_reconstructed_stdout_sha256": null
+      "portable_reconstructed_stdout_sha256": null,
+      "canonical_file": "recorded-outer.py"
     },
     "line-recorded-run.py": {
       "original_sha256": "deeab2c48e280c394ec629d5f4a7da13d1e62d3221d9a64119f76bbc37305525",
       "portable_file_sha256": "deeab2c48e280c394ec629d5f4a7da13d1e62d3221d9a64119f76bbc37305525",
-      "portable_reconstructed_stdout_sha256": null
+      "portable_reconstructed_stdout_sha256": null,
+      "canonical_file": "recorded-run.py"
     },
     "line-protected-active-failed-manifest.json": {
       "original_sha256": "04260e635407507c911454272d0ddc7d4bf9c53c5b74549e474142d3b1437ab5",
       "portable_file_sha256": "586879fc50b284fb74eb44f56b0f3832bad87e61ab05e8950d19f3aeeba74c1e",
-      "portable_reconstructed_stdout_sha256": null
+      "portable_reconstructed_stdout_sha256": null,
+      "canonical_file": "line-selection-failed-manifest.json"
     },
     "line-protected-active-failed-run-de_de-0-r1-receipt.json": {
       "original_sha256": "f0ec62b151e1679652aaa5ccf583d751d150d6fd5e019c63c8cc58e131f9ba79",
@@ -166,7 +171,8 @@
     "privacy-compile.log.json": {
       "original_sha256": "f693ebabf7dfa8cb691fc864bb347bf6077974d5d0944fffc24cb27d24dcb0cc",
       "portable_file_sha256": "0ac813331a524f9f32f983930dce5d2dc165688875a4deca1bb35719c59c8db5",
-      "portable_reconstructed_stdout_sha256": "f693ebabf7dfa8cb691fc864bb347bf6077974d5d0944fffc24cb27d24dcb0cc"
+      "portable_reconstructed_stdout_sha256": "f693ebabf7dfa8cb691fc864bb347bf6077974d5d0944fffc24cb27d24dcb0cc",
+      "canonical_file": "fields-compile.log.json"
     },
     "privacy-recorded-inner.py": {
       "original_sha256": "ae0f8aeedf317c3dafa71146fac8cb9dc29eee829e4c82e46239900d670f2cdd",
@@ -176,12 +182,14 @@
     "privacy-recorded-outer.py": {
       "original_sha256": "dc9cd3f223503d9329c00f4db1bdb2bdcc5b5021caa4f1839e4d1f64bed4086d",
       "portable_file_sha256": "dc9cd3f223503d9329c00f4db1bdb2bdcc5b5021caa4f1839e4d1f64bed4086d",
-      "portable_reconstructed_stdout_sha256": null
+      "portable_reconstructed_stdout_sha256": null,
+      "canonical_file": "recorded-outer.py"
     },
     "privacy-recorded-run.py": {
       "original_sha256": "deeab2c48e280c394ec629d5f4a7da13d1e62d3221d9a64119f76bbc37305525",
       "portable_file_sha256": "deeab2c48e280c394ec629d5f4a7da13d1e62d3221d9a64119f76bbc37305525",
-      "portable_reconstructed_stdout_sha256": null
+      "portable_reconstructed_stdout_sha256": null,
+      "canonical_file": "recorded-run.py"
     },
     "dictation-qt-cleanup-check.log.json": {
       "original_sha256": "dc9f994c298318416c38325ee9d487f83bf86f0fa06624cccbb91907bfb2f64b",
@@ -196,7 +204,8 @@
     "featherpad-identity-failed-manifest.json": {
       "original_sha256": "255a1cd9bd23bdf6588b5a102f91ad551de05f3880a71363d79d72fa7d7ec33e",
       "portable_file_sha256": "699bbe8d850c0b057d95cfef3475aa5bd0d706c756cbaeff283649081c8729b4",
-      "portable_reconstructed_stdout_sha256": null
+      "portable_reconstructed_stdout_sha256": null,
+      "canonical_file": "featherpad-manifest.json"
     },
     "featherpad-identity-failed-run-de_de-0-r1-receipt.json": {
       "original_sha256": "48fc62100f7f47fdec5f8267cf628f2a2d058183354aba4e89cda189abc135ad",
@@ -216,12 +225,14 @@
     "featherpad-identity-failed-recorded-outer.py": {
       "original_sha256": "653440e08b989fadc8dfa704033cebb4f4274949f5332794fdc243db5a475e03",
       "portable_file_sha256": "653440e08b989fadc8dfa704033cebb4f4274949f5332794fdc243db5a475e03",
-      "portable_reconstructed_stdout_sha256": null
+      "portable_reconstructed_stdout_sha256": null,
+      "canonical_file": "featherpad-recorded-outer.py"
     },
     "featherpad-identity-failed-recorded-run.py": {
       "original_sha256": "18e75b16d8d6a4403cb7a96a1f3f451cb59657cdf34dacbb954984e825f3eebd",
       "portable_file_sha256": "18e75b16d8d6a4403cb7a96a1f3f451cb59657cdf34dacbb954984e825f3eebd",
-      "portable_reconstructed_stdout_sha256": null
+      "portable_reconstructed_stdout_sha256": null,
+      "canonical_file": "featherpad-recorded-run.py"
     },
     "featherpad-manifest.json": {
       "original_sha256": "255a1cd9bd23bdf6588b5a102f91ad551de05f3880a71363d79d72fa7d7ec33e",
@@ -860,5 +871,14 @@
     "identity_source": "Full qualification receipts retain exact container ID inside CgroupPath.",
     "first_diagnostic": "CID files had already been removed by podman --rm; original missing-file diagnostic retained.",
     "second_diagnostic": "All five exact IDs return podman container exists exit 1; no global process/container scan."
+  },
+  "canonical_fixture_policy": {
+    "source": "Current-main tools/policy/check_repository_layout.py, duplicate_fixture_violations",
+    "rule": "One canonical tracked file for byte-identical fixture content.",
+    "representation": "Every historical archive name and original/portable hash is retained; canonical_file redirects only identical payloads. No fixture headers or assertions are changed to evade detection.",
+    "ci_failures_addressed": [
+      "90779 fast quality repository layout",
+      "90778 select repository layout"
+    ]
   }
 }

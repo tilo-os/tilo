@@ -32,3 +32,9 @@ original stdout, portable reconstructed stdout and archive file hashes.
 
 See [the qualification ledger](../../../../docs/architecture/dictation-qt-native-evidence.json)
 and [analysis](../../../../docs/architecture/dictation-qt-native-evidence.md).
+
+Byte-identical manifests, drivers and compile outputs share one canonical file.
+The ledger retains each historical archive name, its original and portable hashes,
+and an explicit `canonical_file` reference. Reconstruct a historical run by
+resolving that reference; distinct receipts and failed inner drivers remain
+separate. This follows the current repository fixture-layout contract.
