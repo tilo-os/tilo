@@ -42,6 +42,10 @@ BUDGETS = {
     "idle_shell_cpu_pct": 1.0, "idle_frames": 2, "idle_user_cpu_pct": 3.0,
     "idle_apps_shell_cpu_pct": 1.5, "idle_apps_frames": 2, "idle_apps_user_cpu_pct": 5.0,
     "idle_loop_ticks_per_s": 2.0,
+    # On a software-rendered VM the compositor's CPU is judged without its CPU rasteriser's
+    # threads, whose work a GPU does on a real desktop (TIL-739). With no frame painted in
+    # the window those threads have nothing to do and must stay idle.
+    "idle_software_raster_cpu_pct": 0.1,
     # Terminal's shell runtime with its shell running and nothing typed (R02, TIL-701):
     # every `tilo-ush` process summed, CPU and context switches of all their threads.
     # Measured 0.13% and 10.6-10.8/s (runs 91443, 91444), every wakeup the guest's

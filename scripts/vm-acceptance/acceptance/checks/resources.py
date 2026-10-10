@@ -147,6 +147,19 @@ def thread_groups(rows: list[dict]) -> list[dict]:
     return sorted(groups.values(), key=lambda g: (-g["cpu_pct"], -g["ctxt_switches_per_s"]))
 
 
+# The compositor's threads that its GPU driver started. The compositor names the thread that
+# opens the device `tilo-gpu-driver` while it does, so threads the driver starts then take that
+# name (shell present.rs DRIVER_THREAD_NAME, TIL-739); Mesa's CPU rasteriser names its rasteriser
+# threads `llvmpipe-N` itself. On a GPU these threads hardly run. On lavapipe they are the
+# rasteriser: its unnamed compute-shader pool runs every Vello stage of every frame.
+GPU_DRIVER_GROUPS = ("llvmpipe", "tilo-gpu-driver")
+
+
+def gpu_driver_cpu_pct(groups: list[dict]) -> float:
+    """CPU of the compositor's GPU-driver thread groups (GPU_DRIVER_GROUPS)."""
+    return round(sum(g["cpu_pct"] for g in groups if g["name"] in GPU_DRIVER_GROUPS), 2)
+
+
 def describe_threads(groups: list[dict], n: int = 4) -> str:
     """The busiest thread groups for a failure message: `tilo-net 1.9%, llvmpipe×6 0.8%`."""
     return ", ".join(f"{g['name']}{'×' + str(g['threads']) if g['threads'] > 1 else ''} {g['cpu_pct']}%"
@@ -167,6 +180,7 @@ def summarize(sample: dict, seconds: int) -> dict:
     pid = compositor_pid(a)
     shell = next((p for p in procs if p["pid"] == pid), None)
     threads = thread_rows(sample, pid, seconds) if shell else None
+    groups = threads and thread_groups(threads["threads"])
     # The busiest other processes' threads too: a session service or an app's runtime
     # (Terminal's tilo-ush) is as much an idle cost as the compositor. The raw rows keep
     # each thread's index and whether it started inside the window, which tell a pool
@@ -191,7 +205,8 @@ def summarize(sample: dict, seconds: int) -> dict:
         "shell_wakeups_per_s": shell and shell["ctxt_switches_per_s"],
         "shell_threads_wakeups_per_s": threads and threads["wakeups_per_s"],
         "shell_exited_threads_cpu_pct": threads and threads["exited_cpu_pct"],
-        "shell_thread_groups": threads and thread_groups(threads["threads"]),
+        "shell_thread_groups": groups,
+        "shell_gpu_driver_cpu_pct": None if groups is None else gpu_driver_cpu_pct(groups),
         "shell_threads": threads and threads["threads"],
         "user_cpu_pct_total": round(sum(p["cpu_pct"] for p in procs), 2),
         "guest_cpu_pct": guest,
@@ -500,6 +515,10 @@ def _record_idle(ctx, m: dict, ram_mib: int, variant: str = "") -> None:
     ctx.record(f"idle.session_cpu_pct{suffix}", "percent", [m["user_cpu_pct_total"]], **window)
     ctx.record(f"idle.ram_mib{suffix}", "MiB", [ram_mib], what="guest MemTotal - MemAvailable")
     if not variant:
+        # The part of idle.shell_cpu_pct on the GPU driver's threads: on lavapipe, the
+        # window's frames rasterised (TIL-739).
+        ctx.record("idle.gpu_driver_cpu_pct", "percent", [m["shell_gpu_driver_cpu_pct"]],
+                   frames=m["frames_painted"], software=software_renderer(ctx), **window)
         # Context switches of the compositor's main thread, its loop: each is a wakeup or
         # a preemption.
         ctx.record("idle.wakeups_per_s.shell", "per_s", [m["shell_wakeups_per_s"]], **window)
@@ -550,17 +569,38 @@ def _open_several(ctx):
     return [app for app in groups if app not in closed]
 
 
-def _budget_problems(m, budgets, prefix):
+def software_renderer(ctx) -> bool:
+    """Whether the VM renders on a CPU rasteriser (lavapipe), from run.py's renderer line, as
+    records.renderer reads it (which raises on a line it cannot name; this only asks one thing)."""
+    return (ctx.facts.get("renderer") or "").lower().startswith("software")
+
+
+def _budget_problems(m, budgets, prefix, software=False):
+    """The idle window against its budgets.
+
+    On a software renderer (`software`) the compositor's CPU is judged without its CPU
+    rasteriser's threads (TIL-739). On a real desktop a GPU does the work of the frames the
+    budget allows, a few milliseconds of it, while lavapipe spends ~0.4 s of CPU on each. The
+    frames stay gated, and a rasteriser that runs with no frame painted fails."""
     problems = []
     if m["shell_cpu_pct"] is None:
         raise core.Unobservable("no `shell` process of the slot user found")
-    if m["shell_cpu_pct"] > budgets[f"{prefix}_shell_cpu_pct"]:
-        busiest = [describe_threads(m["shell_thread_groups"] or [])]
+    raster = (m["shell_gpu_driver_cpu_pct"] or 0.0) if software else 0.0
+    own = round(m["shell_cpu_pct"] - raster, 2)
+    if own > budgets[f"{prefix}_shell_cpu_pct"]:
+        groups = [g for g in m["shell_thread_groups"] or []
+                  if not software or g["name"] not in GPU_DRIVER_GROUPS]
+        busiest = [describe_threads(groups)]
         if m["shell_exited_threads_cpu_pct"]:
             busiest.append(f"exited threads {m['shell_exited_threads_cpu_pct']}%")
-        problems.append(f"compositor CPU {m['shell_cpu_pct']}% > {budgets[f'{prefix}_shell_cpu_pct']}% "
+        what = (f"compositor CPU less its software rasteriser's {raster}% is {own}%" if software
+                else f"compositor CPU {own}%")
+        problems.append(f"{what} > {budgets[f'{prefix}_shell_cpu_pct']}% "
                         f"({', '.join(filter(None, busiest)) or 'no thread named'}; "
                         f"session age {m['session_age_s']} s)")
+    if software and m["frames_painted"] == 0 and raster > budgets["idle_software_raster_cpu_pct"]:
+        problems.append(f"software rasteriser CPU {raster}% with no frame painted > "
+                        f"{budgets['idle_software_raster_cpu_pct']}%")
     if m["frames_painted"] > budgets[f"{prefix}_frames"]:
         problems.append(f"{m['frames_painted']} frames painted while idle > {budgets[f'{prefix}_frames']}")
     if m["shell_loop_ticks_per_s"] > budgets["idle_loop_ticks_per_s"]:
@@ -613,7 +653,7 @@ def idle_empty(ctx, res):
     ctx.write("R01-idle-empty.json", json.dumps(m, indent=1))
     if m["shell_cpu_pct"] is not None:
         _record_idle(ctx, m, m["guest_ram_used_mib"])
-    problems = _budget_problems(m, ctx.config["budgets"], "idle")
+    problems = _budget_problems(m, ctx.config["budgets"], "idle", software_renderer(ctx))
     # The compositor's own memory with no window open: R03's figure less this one is
     # what four windows cost.
     try:
@@ -656,7 +696,7 @@ def idle_apps(ctx, res):
     if m["shell_cpu_pct"] is not None and len(opened) == 4:
         _record_idle(ctx, m, m["guest_ram_used_mib"], "four_apps")
     ctx.facts["apps_open_for_memory"] = opened
-    problems = _budget_problems(m, ctx.config["budgets"], "idle_apps")
+    problems = _budget_problems(m, ctx.config["budgets"], "idle_apps", software_renderer(ctx))
     if "so.tilo.terminal" in opened:
         problems += _ush_idle(ctx, res, m, ctx.config["budgets"])
     try:
