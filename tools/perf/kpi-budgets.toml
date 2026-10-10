@@ -236,11 +236,11 @@ source = "TIL-604: shared runtime budget targets"
 
 [kpi."footprint.image.compressed_bytes.x86_64"]
 unit = "bytes"
-max = 4519000000.0
+max = 4520000000.0
 enforce = true
 p50_tolerance = 1.05
 p99_tolerance = 1.05
-source = "TIL-609: 5,168,289,107 B with the font and botocore fixes, plus 5 %; TIL-733: -366,607,328 B (one package layer, no second initramfs); TIL-736: -40,963,819 B (identical files hard-linked); TIL-735: -44,785,493 B (env-runtime from host files); TIL-747: -457,179,751 B (content-based layers); KPI target 3.5 GB"
+source = "TIL-609: 5,168,289,107 B with the font and botocore fixes, plus 5 %; TIL-733: -366,607,328 B (one package layer, no second initramfs); TIL-736: -40,963,819 B (identical files hard-linked); TIL-735: -44,785,493 B (env-runtime from host files); TIL-747: -456,868,541 B (content-based layers); KPI target 3.5 GB"
 
 [kpi."footprint.image.unique_content_bytes.x86_64"]
 unit = "bytes"
@@ -252,11 +252,11 @@ source = "TIL-609: 10,909,686,891 B with the font and botocore fixes, plus 5 %; 
 
 [kpi."footprint.image.compressed_bytes.aarch64"]
 unit = "bytes"
-max = 3726000000.0
+max = 3727000000.0
 enforce = true
 p50_tolerance = 1.05
 p99_tolerance = 1.05
-source = "TIL-609: 4,304,306,967 B on db91126b44, plus 5 %; TIL-733: -363,422,293 B; TIL-747: -429,006,937 B (content-based layers)"
+source = "TIL-609: 4,304,306,967 B on db91126b44, plus 5 %; TIL-733: -363,422,293 B; TIL-747: -428,950,281 B (content-based layers)"
 
 [kpi."footprint.image.unique_content_bytes.aarch64"]
 unit = "bytes"
