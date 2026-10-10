@@ -73,9 +73,14 @@ class FakeNotesDesktop:
                                                       "required": True}]},
                 {"provider": "actions", "id": "navigation.axis.disable", "title": "Axis off"}]
         for page, note in self.pages.items():
+            # As the desktop lists a bound resource: its id hex-encoded.
+            rows.append({"provider": "app-actions", "id": f"{NOTES}\x1fpage:{page}\x1fopen",
+                         "title": "Open note", "subtitle": note["title"], "application": NOTES,
+                         "resource": bound(f"notes.page:{page}"), "operation": "open",
+                         "params": []})
             rows.append({"provider": "app-actions", "id": f"{NOTES}\x1fpage/{page}/body\x1fappend",
                          "title": "Append paragraph", "subtitle": note["title"],
-                         "application": NOTES, "resource": f"notebook/page/{page}/body",
+                         "application": NOTES, "resource": bound(f"notes.notebook/page/{page}/body"),
                          "operation": "append-paragraph" if self.publish_body else "bold",
                          "params": [{"name": "text", "type": "text", "required": True}]})
             for paragraph in note["body"]:
@@ -125,6 +130,10 @@ class FakeNotesDesktop:
         if self.unsettled:
             state = "running"
         return {"answer": {"receipt": {"update": {"state": state}}}}
+
+
+def bound(resource):
+    return f"tilo-ui-bound:v1:room:record:{resource.encode().hex()}"
 
 
 def arguments(**overrides):
