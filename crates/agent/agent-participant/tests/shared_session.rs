@@ -93,7 +93,6 @@ impl tilo_agent_participant::Planner for GatedPlanner {
         task: &str,
         context: &tilo_agent_participant::PlanContext,
     ) -> Result<Vec<tilo_agent_participant::Step>, String> {
-        use tilo_agent_participant::Planner as _;
         if task != "gated" {
             return DirectPlanner.plan(task, context);
         }
