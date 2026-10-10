@@ -13049,7 +13049,6 @@ dependencies = [
  "async-imap",
  "chrono-tz",
  "collab-types",
- "comemo",
  "desktop-policy",
  "mime_guess",
  "os-actions",
@@ -13078,12 +13077,6 @@ dependencies = [
  "tilo-ui",
  "tilo-user-identity",
  "tilo-wet-media",
- "tiny-skia",
- "typst",
- "typst-assets",
- "typst-layout",
- "typst-pdf",
- "typst-render",
  "vte",
  "workspace-hack",
  "xattr",
@@ -18275,6 +18268,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-typst-engine"
+version = "0.1.0"
+dependencies = [
+ "comemo",
+ "runtime-dylib",
+ "typst",
+ "typst-assets",
+ "typst-layout",
+ "typst-pdf",
+ "typst-render",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-typst-fonts"
 version = "0.1.0"
 dependencies = [
@@ -19449,6 +19456,7 @@ dependencies = [
  "tilo-app",
  "tilo-automerge-fork",
  "tilo-files",
+ "tilo-typst-engine",
  "tilo-typst-fonts",
  "tilo-vello",
  "tilo-winit",
@@ -22260,7 +22268,6 @@ dependencies = [
  "tracing-core",
  "tracing-subscriber",
  "ttf-parser",
- "typst-assets",
  "unic-langid",
  "unic-langid-impl",
  "unicode-bidi",
