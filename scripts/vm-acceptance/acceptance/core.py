@@ -520,14 +520,30 @@ def save_thumb(src: Path, dst: Path, width: int = 1600) -> Path:
 
 # -- processes, the app each belongs to, and its cgroup --------------------------
 
-# Read as root: the compositor is not dumpable. One line per process with its parent,
-# owner, RSS, anonymous RSS, cgroup and, for `tilo-launcher`, the `--app-id` it runs;
-# then one line per cgroup seen with memory.current and the memory.stat anon/file split.
+# Read as root: the compositor is not dumpable, and every user's processes count. One
+# line per process with its parent, owner, RSS split into anon, file and shmem, swap, its
+# cgroup and, for `tilo-launcher`, the `--app-id` it runs. (Tilo's kernel is built
+# without CONFIG_PROC_PAGE_MONITOR, so there is no smaps or smaps_rollup and no PSS: a
+# process's own memory is its RssAnon; shmem and file pages are shared and are counted
+# once, per cgroup, below.) Then one line per cgroup seen, and per ancestor a cgroup
+# without a memory controller of its own is charged to, with memory.current and
+# memory.stat's anon, file (which holds shmem), shmem, file_mapped, kernel and sock.
+# Then the whole of /proc/meminfo, every zone's managed pages, low and high watermarks
+# and largest lowmem protection (which make up the reserve MemAvailable withholds), the
+# page size, greetd's uid (whose slice is the seat0 greeter) and each tmpfs's use.
 PROCESSES = r'''
+STAT='{v[$1] = $2} END {n = split("anon file shmem file_mapped kernel sock", k, " "); s = ""
+      for (i = 1; i <= n; i++) s = s "\t" ((k[i] in v) ? v[k[i]] : "-"); print substr(s, 2)}'
+charged_at() {
+  at=$1
+  while [ -n "$at" ] && [ ! -r "/sys/fs/cgroup$at/memory.current" ]; do at=${at%/*}; done
+  printf '%s\n' "${at:--}"
+}
 cgs=""
 for d in /proc/[0-9]*; do
-  st=$(awk '/^PPid:/ {p=$2} /^Uid:/ {u=$2} /^VmRSS:/ {r=$2} /^RssAnon:/ {a=$2}
-            END {if (r) print p, u, r, a+0}' $d/status 2>/dev/null)
+  st=$(awk '/^PPid:/ {p=$2} /^Uid:/ {u=$2} /^VmRSS:/ {r=$2} /^RssAnon:/ {a=$2} /^RssFile:/ {f=$2}
+            /^RssShmem:/ {s=$2} /^VmSwap:/ {w=$2}
+            END {if (r) print p, u, r, a+0, f+0, s+0, w+0}' $d/status 2>/dev/null)
   [ -n "$st" ] || continue
   comm=$(tr ' \t' '__' 2>/dev/null < $d/comm)
   cg=$(sed -n "s/^0:://p" 2>/dev/null < $d/cgroup)
@@ -535,21 +551,33 @@ for d in /proc/[0-9]*; do
   [ "$comm" = tilo-launcher ] && \
     app=$(tr '\0' '\n' 2>/dev/null < $d/cmdline | awk 'p {print; exit} $0 == "--app-id" {p = 1}')
   set -- $st
-  printf 'P\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "${d#/proc/}" "$1" "$2" "$comm" "$3" "$4" "${app:--}" "$cg"
-  cgs="$cgs$cg
+  printf 'P\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "${d#/proc/}" "$1" "$2" "$comm" \
+    "$3" "$4" "$5" "$6" "$7" "${app:--}" "$cg"
+  [ -z "$cg" ] || cgs="$cgs$cg
 "
 done
-printf '%s' "$cgs" | sort -u | while IFS= read -r cg; do
+{ printf '%s' "$cgs"; printf '%s' "$cgs" | sort -u | while IFS= read -r cg; do charged_at "$cg"; done; } \
+  | grep -v '^-$' | sort -u | while IFS= read -r cg; do
   f="/sys/fs/cgroup$cg"
   if [ -r "$f/memory.current" ]; then
-    printf 'C\t%s\t%s\t%s\n' "$cg" "$(cat "$f/memory.current")" \
-      "$(awk '$1 == "anon" {a=$2} $1 == "file" {f=$2} END {print a+0 "\t" f+0}' "$f/memory.stat")"
+    printf 'C\t%s\t%s\t%s\t%s\n' "$cg" "$cg" "$(cat "$f/memory.current")" "$(awk "$STAT" "$f/memory.stat")"
   else
-    printf 'C\t%s\t-\t-\t-\n' "$cg"
+    printf 'C\t%s\t%s\t-\t-\t-\t-\t-\t-\t-\n' "$cg" "$(charged_at "$cg")"
   fi
 done
-awk '/MemTotal|MemAvailable/ {print "M", $1, $2}' /proc/meminfo
+awk '{print "M", $1, $2}' /proc/meminfo
+awk 'function out() {if (z != "") print "Z", z, managed + 0, low + 0, high + 0, prot + 0}
+     /^Node/ {out(); z = $2 $4; managed = low = high = prot = 0}
+     $1 == "managed" {managed = $2} $1 == "low" {low = $2} $1 == "high" {high = $2}
+     $1 == "protection:" {gsub(/[(),]/, " "); for (i = 2; i <= NF; i++) if ($i + 0 > prot) prot = $i + 0}
+     END {out()}' /proc/zoneinfo
+echo "PS $(getconf PAGESIZE)"
+echo "G $(id -u greetd 2>/dev/null || echo -)"
+df -kP -t tmpfs 2>/dev/null | awk 'NR > 1 {print "T", $3, $6}'
 '''
+
+# The memory.stat fields of a `C` line, after memory.current.
+CGROUP_STAT = ("anon", "file", "shmem", "file_mapped", "kernel", "sock")
 
 
 def _mb(kib_or_bytes: str, unit: int) -> float | None:
@@ -557,29 +585,46 @@ def _mb(kib_or_bytes: str, unit: int) -> float | None:
 
 
 def parse_processes(text: str) -> dict:
-    """`PROCESSES` output -> {"procs": {pid: ...}, "cgroups": {path: ...}, "meminfo_mb": {...}}.
+    """`PROCESSES` output -> {"procs": {pid: ...}, "cgroups": {path: ...}, "meminfo_mb",
+    "meminfo_kib", "zones", "page_size", "greeter_uid", "tmpfs"}.
 
     Each process carries `app`: the `--app-id` of the nearest `tilo-launcher` at or above it,
-    so an app is its launcher's whole process tree, whatever its processes are called."""
-    procs, cgroups, mem = {}, {}, {}
+    so an app is its launcher's whole process tree, whatever its processes are called. Each
+    cgroup carries `charged_at`: itself, or the nearest ancestor with a memory controller,
+    where its memory is charged (None: nowhere the dump could read)."""
+    procs, cgroups, kib, zones, tmpfs, greeter, page = {}, {}, {}, {}, [], None, None
     for line in text.splitlines():
         f = line.split("\t")
-        if f[0] == "P" and len(f) == 9 and f[1].isdigit():
+        if f[0] == "P" and len(f) == 12 and f[1].isdigit():
             procs[int(f[1])] = {"pid": int(f[1]), "ppid": int(f[2]), "uid": int(f[3]), "comm": f[4],
                                 "rss_mb": _mb(f[5], 1024), "anon_rss_mb": _mb(f[6], 1024),
-                                "launches": None if f[7] == "-" else f[7], "cgroup": f[8]}
-        elif f[0] == "C" and len(f) == 5:
-            cgroups[f[1]] = {"memory_mb": _mb(f[2], 1), "anon_mb": _mb(f[3], 1), "file_mb": _mb(f[4], 1)}
-        elif line.startswith("M "):
-            _, key, kib = line.split()[:3]
-            mem[key.rstrip(":")] = int(kib) // 1024
+                                "file_rss_mb": _mb(f[7], 1024), "shmem_rss_mb": _mb(f[8], 1024),
+                                "swap_mb": _mb(f[9], 1024),
+                                "launches": None if f[10] == "-" else f[10], "cgroup": f[11]}
+        elif f[0] == "C" and len(f) == 4 + len(CGROUP_STAT):
+            cgroups[f[1]] = {"charged_at": None if f[2] == "-" else f[2], "memory_mb": _mb(f[3], 1),
+                             **{f"{k}_mb": _mb(v, 1) for k, v in zip(CGROUP_STAT, f[4:])}}
+        else:
+            w = line.split()
+            if len(w) >= 3 and w[0] == "M" and w[2].isdigit():
+                kib[w[1].rstrip(":")] = int(w[2])
+            elif len(w) == 6 and w[0] == "Z" and all(v.isdigit() for v in w[2:]):
+                zones[w[1]] = dict(zip(("managed", "low", "high", "protection"), map(int, w[2:])))
+            elif len(w) == 2 and w[0] == "PS" and w[1].isdigit():
+                page = int(w[1])
+            elif len(w) == 2 and w[0] == "G" and w[1].isdigit():
+                greeter = int(w[1])
+            elif len(w) >= 3 and w[0] == "T" and w[1].isdigit():
+                tmpfs.append({"mount": " ".join(w[2:]), "used_mib": round(int(w[1]) / 1024, 1)})
     for p in procs.values():
         cur, seen = p, set()
         while cur and cur["launches"] is None and cur["pid"] not in seen:
             seen.add(cur["pid"])
             cur = procs.get(cur["ppid"])
         p["app"] = cur["launches"] if cur else None
-    return {"procs": procs, "cgroups": cgroups, "meminfo_mb": mem}
+    return {"procs": procs, "cgroups": cgroups, "meminfo_kib": kib,
+            "meminfo_mb": {k: v // 1024 for k, v in kib.items()}, "zones": zones, "page_size": page,
+            "greeter_uid": greeter, "tmpfs": sorted(tmpfs, key=lambda t: -t["used_mib"])}
 
 
 def processes(ctx) -> dict:
@@ -589,10 +634,13 @@ def processes(ctx) -> dict:
 # Read as root, for one process (the compositor): what its anonymous memory is. Its
 # status lines, its smaps_rollup (Anonymous, Pss_Anon, Rss, ...), and its 20 largest
 # mappings by Anonymous kB: one `[heap]` or a run of 64 MiB-aligned `[anon]` regions
-# (glibc arenas) reads differently from one GPU buffer that doubled.
+# (glibc arenas) reads differently from one GPU buffer that doubled. Tilo's own kernel
+# has no smaps (CONFIG_PROC_PAGE_MONITOR=n, os/kernel/config-fragments/tilo.config), so
+# there only the status lines exist.
 SHELL_MEMORY = r'''
 pid=__PID__
 awk '/^(VmRSS|RssAnon|RssFile|RssShmem|VmSwap|Threads):/ {print "S", $1, $2}' /proc/$pid/status
+[ -d /proc/$pid ] && [ ! -e /proc/$pid/smaps_rollup ] && echo "PAGE-MONITOR no" && exit 0
 awk 'NR > 1 && $3 == "kB" {print "R", $1, $2}' /proc/$pid/smaps_rollup
 awk '/^[0-9a-f]+-[0-9a-f]+ / {range = $1; name = "[anon]"; if (NF >= 6) {name = $6; for (i = 7; i <= NF; i++) name = name " " $i}}
      /^Anonymous:/ && $2 > 0 {print "A", $2, range, name}' /proc/$pid/smaps | sort -k2,2nr | head -n 20
@@ -613,8 +661,11 @@ def parse_shell_memory(text: str) -> dict:
 
 def shell_memory(ctx, pid: int) -> dict:
     """The compositor's memory breakdown; Unobservable when its anonymous RSS cannot be read."""
-    m = parse_shell_memory(ctx.vm.root_exec(SHELL_MEMORY.replace("__PID__", str(int(pid)))))
-    if "RssAnon" not in m["status_kib"] or "Anonymous" not in m["smaps_rollup_kib"]:
+    text = ctx.vm.root_exec(SHELL_MEMORY.replace("__PID__", str(int(pid))))
+    m = parse_shell_memory(text)
+    # A kernel without the page monitor has no smaps to read: only its status is evidence.
+    m["page_monitor"] = "PAGE-MONITOR no" not in text
+    if "RssAnon" not in m["status_kib"] or (m["page_monitor"] and "Anonymous" not in m["smaps_rollup_kib"]):
         raise Unobservable(f"the compositor's (pid {pid}) status and smaps_rollup could not be read")
     m["pid"] = pid
     m["anon_rss_mib"] = round(m["status_kib"]["RssAnon"] / 1024, 1)
