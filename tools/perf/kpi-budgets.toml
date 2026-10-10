@@ -565,6 +565,28 @@ max = 20.0
 min_delta = 1.0
 source = "os/tests/boot_performance_gate.sh budget under KVM (KPI document target: 10 s on the reference laptop)"
 
+# Userspace start to greetd active, and the greeter's sign-in request to a desktop that
+# has presented its first frame and answers its control socket (TIL-767). Boot to a usable
+# session is boot.to_greeter_s plus the person's typing plus session.sign_in_again.usable_s.
+# The KPI document has no sign-in target yet: these ceilings are run.py's VM budgets.
+[kpi."boot.userspace_to_greeter_s"]
+unit = "s"
+max = 10.0
+min_delta = 0.3
+source = "run.py userspace_to_greeter_s (R06), KVM guest"
+
+[kpi."session.sign_in_first.usable_s"]
+unit = "s"
+max = 10.0
+min_delta = 0.5
+source = "run.py sign_in_first_usable_s (R08): the account's first sign-in, cold caches, lavapipe"
+
+[kpi."session.sign_in_again.usable_s"]
+unit = "s"
+max = 10.0
+min_delta = 0.3
+source = "run.py sign_in_again_usable_s (R08): a later sign-in after signing out, lavapipe"
+
 [kpi."idle.shell_cpu_pct"]
 unit = "percent"
 max = 1.0

@@ -301,7 +301,9 @@ class FirstFrameBudgetTests(unittest.TestCase):
         ids = {c.id for c in run.core.REGISTRY}
         self.assertLessEqual({"A14", "R05"}, ids)
         self.assertLess(run.ORDER.index("A14"), run.ORDER.index("R02"))
-        self.assertEqual(run.ORDER[-2:], ["R05", "P03"])
+        # R05 reads the adapter line of every app the run opened; R08 opens none in the slot
+        # (it signs seat0's greeter in), so only it and P03 may follow R05.
+        self.assertEqual(run.ORDER[-3:], ["R05", "R08", "P03"])
         self.assertEqual(sorted(run.ORDER), sorted(ids - set(run.DE_PASS)))
 
 
