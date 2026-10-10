@@ -59,9 +59,7 @@ pub use host_fs::trash::{is_trash_dir, trash_dir};
 /// Ensure the trash files directory exists, so opening an empty trash shows an
 /// empty listing rather than a "no such directory" error. Returns the dir.
 pub fn ensure_trash_dir() -> Option<PathBuf> {
-    let d = trash_dir()?;
-    let _ = std::fs::create_dir_all(&d);
-    Some(d)
+    host_fs::trash::ensure_trash_dir().ok()
 }
 
 /// Snapshot the names currently visible in the home Trash.
@@ -233,6 +231,8 @@ pub fn delete_to_trash(paths: &[PathBuf]) -> Result<(), String> {
     if paths.is_empty() {
         return Ok(());
     }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    host_fs::trash::ensure_trash_dir().map_err(|error| error.to_string())?;
     trash::delete_all(paths).map_err(|e| e.to_string())
 }
 
@@ -986,6 +986,102 @@ fn copy_capability_entry(
 mod tests {
     use super::*;
     use std::fs;
+
+    #[cfg(unix)]
+    #[test]
+    fn opening_empty_trash_creates_owner_only_directories() {
+        use std::os::unix::fs::MetadataExt as _;
+        let _home = tilo_test_env::TestHome::new().expect("private test home");
+        let files = ensure_trash_dir().expect("opening empty Trash");
+        let trash = files.parent().expect("Trash root");
+        let owner = fs::metadata(trash.parent().expect("data directory"))
+            .expect("data metadata")
+            .uid();
+        let info = trash.join("info");
+        for directory in [trash, files.as_path(), info.as_path()] {
+            let metadata = fs::symlink_metadata(directory).expect("created Trash directory");
+            assert!(metadata.is_dir());
+            assert_eq!(metadata.uid(), owner);
+            assert_eq!(metadata.mode() & 0o777, 0o700, "{}", directory.display());
+        }
+        assert_eq!(ensure_trash_dir().as_deref(), Some(files.as_path()));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn opening_trash_does_not_rewrite_existing_directory_permissions() {
+        use std::os::unix::fs::MetadataExt as _;
+        let _home = tilo_test_env::TestHome::new().expect("private test home");
+        let files = trash_dir().expect("test Trash path");
+        fs::create_dir_all(&files).expect("existing nonprivate Trash fixture");
+        let trash = files.parent().expect("Trash root");
+        for directory in [trash, files.as_path()] {
+            host_fs::set_mode(directory, 0o755).expect("explicit nonprivate fixture");
+        }
+        assert!(
+            ensure_trash_dir().is_none(),
+            "nonprivate Trash must be refused"
+        );
+        #[cfg(not(target_os = "macos"))]
+        {
+            let source = trash.parent().expect("data directory").join("notes.txt");
+            fs::write(&source, b"keep private contents").expect("refused deletion source");
+            let error = delete_to_trash(std::slice::from_ref(&source))
+                .expect_err("deletion must refuse nonprivate Trash");
+            assert!(error.contains("not a private directory owned by this user"));
+            assert_eq!(
+                fs::read(&source).expect("source retained"),
+                b"keep private contents"
+            );
+            assert_eq!(
+                fs::read_dir(&files)
+                    .expect("no published private contents")
+                    .count(),
+                0
+            );
+        }
+        for directory in [trash, files.as_path()] {
+            assert_eq!(
+                fs::symlink_metadata(directory)
+                    .expect("untouched fixture")
+                    .mode()
+                    & 0o777,
+                0o755
+            );
+        }
+    }
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    #[test]
+    fn legacy_delete_creates_owner_only_trash_metadata_and_payload_directories() {
+        use std::os::unix::fs::MetadataExt as _;
+        let home = tilo_test_env::TestHome::new().expect("private test home");
+        let source = home.home().join("notes.txt");
+        fs::write(&source, b"private notes").expect("source contents");
+        delete_to_trash(std::slice::from_ref(&source)).expect("production legacy delete");
+        assert!(!source.exists());
+        for directory in ["Trash", "Trash/files", "Trash/info"] {
+            let path = home.data().join(directory);
+            let metadata = fs::symlink_metadata(&path).expect("created Trash directory");
+            assert!(metadata.is_dir());
+            assert_eq!(metadata.mode() & 0o777, 0o700, "{}", path.display());
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn opening_trash_refuses_a_symlink_without_populating_its_target() {
+        let home = tilo_test_env::TestHome::new().expect("private test home");
+        let outside = tempfile::tempdir().expect("unrelated directory");
+        host_fs::symlink(outside.path(), &home.data().join("Trash")).expect("symlink fixture");
+        assert!(ensure_trash_dir().is_none());
+        assert_eq!(
+            fs::read_dir(outside.path())
+                .expect("untouched target")
+                .count(),
+            0
+        );
+    }
 
     type TestHook<'a> = Box<dyn FnMut(&Path) -> std::io::Result<()> + 'a>;
 
