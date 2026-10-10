@@ -2521,6 +2521,7 @@ dependencies = [
  "tilo-actions",
  "tilo-paths",
  "tilo-test-env",
+ "tracing",
  "workspace-hack",
 ]
 
