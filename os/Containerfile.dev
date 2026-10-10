@@ -149,6 +149,32 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
     sh /run/tilo-dev/os/scripts/install-dev-toolchain.sh packages openssh-server rsync
 RUN ldconfig
 
+# ---- The tilo-dev-tools sysext tree -------------------------------------------
+# The Rust toolchain (about 680 MB) and the test GUI clients (about 600 MB,
+# two thirds Chromium) as a separate /usr overlay instead of base content:
+#
+#     podman build -f os/Containerfile.dev --target dev-tools-sysext \
+#         --build-arg ... -o type=tar,dest=tilo-dev-tools.tar .
+#
+# The tar is a layer tilo-vm imports (crates/dev/tilo-vmd/src/layers.rs accepts
+# only usr/ and opt/, and writes the extension-release itself). It is computed
+# on dev-toolchain, so it holds exactly the packages the clients add to what
+# the base already has. The `dev` stage below still installs both into the
+# base image until tilo-vm installs this layer on the VMs that need it and
+# os/scripts/finalize-dev-image.py stops requiring rustc in the base.
+FROM dev-toolchain AS dev-tools-tree
+ARG RUST_TOOLCHAIN_IMAGE
+ARG SOURCE_DATE_EPOCH=0
+ARG RPMS_REF
+RUN --mount=type=bind,from=rust-toolchain,source=/usr/local/rustup/toolchains,target=/run/tilo-rust-toolchains,ro \
+    --mount=type=bind,from=rpms,source=/repo,target=/repo \
+    --mount=type=bind,from=dev-inputs,source=/tilo,target=/run/tilo-dev \
+    --mount=type=bind,from=dev-build-clock,source=/build-clock.so,target=/run/tilo-build-clock.so \
+    sh /run/tilo-dev/os/scripts/install-dev-toolchain.sh tools-tree /out-tools
+
+FROM scratch AS dev-tools-sysext
+COPY --from=dev-tools-tree /out-tools/ /
+
 # ---- The toolchain the dev binaries compile with ------------------------------
 # BASE_REF with the same Rust release and builder packages: what os/Containerfile's
 # builder-base links the production binaries against, from the same snapshot.
