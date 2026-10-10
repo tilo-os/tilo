@@ -45,7 +45,7 @@ prefix, missing
 OUT_DIR, failed OUT_DIR canonicalization, and both symlink directions. Run it with:
 
 ```sh
-rcargo --no-fallback test --locked -p tilo-messaging-protocol --test generated_descriptor -j2
+$CARGO test --locked -p tilo-messaging-protocol --test generated_descriptor -j2
 ```
 
 All original upstream assertions are retained. Cargo 1.97 panics when directly
