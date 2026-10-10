@@ -12,7 +12,7 @@ use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::widget::InputHint;
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
+use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::{BlendMode, Fill};
 
 use crate::shell::i18n::{t, t_args};
@@ -232,7 +232,7 @@ impl PadMap {
             center.x + width / 2.0,
             center.y + height / 2.0,
         );
-        draw_card(scene, transform, card, theme);
+        ui::chrome::shell::paint_panel(scene, transform, card, theme, 1.0);
         let colors = &theme.tokens.colors;
         let text_w = Some(f64_to_f32(card.width() - metrics.inset * 2.0));
         text_renderer.draw_text_weighted(
@@ -612,28 +612,6 @@ fn draw_row(
 /// The shared keycap's height, as `InputHint` sizes it.
 fn cap_height(theme: &Theme) -> f64 {
     28.0_f64.max(f64::from(theme.tokens.typography.size(TextRole::Caption)) + 8.0)
-}
-
-fn draw_card(scene: &mut Scene, transform: Affine, rect: Rect, theme: &Theme) {
-    // The same Panel material as the OSD and every floating panel (HIG
-    // §9.1/§9.2).
-    let radius = ui::chrome::ChromeRole::Panel.radius(theme, rect.height());
-    ui::chrome::shell::panel_shadow(scene, transform, rect, radius, theme, 1.0);
-    let body = RoundedRect::from_rect(rect, radius);
-    scene.fill(
-        Fill::NonZero,
-        transform,
-        ui::chrome::shell::panel_ground(theme),
-        None,
-        &body,
-    );
-    scene.stroke(
-        &Stroke::new(1.0),
-        transform,
-        ui::chrome::shell::panel_border(theme),
-        None,
-        &body,
-    );
 }
 
 #[allow(

@@ -569,23 +569,7 @@ impl PowerMenu {
         // Panel role (HIG §9.1/§9.2): the flyout is the same material as
         // every other Panel — `panel_ground` at the Panel radius, with the
         // derived Panel border — rather than a ramp slot and a literal 24.
-        let panel_radius = ui::chrome::ChromeRole::Panel.radius(theme, panel.height());
-        let card = RoundedRect::from_rect(panel, panel_radius);
-        ui::chrome::shell::panel_shadow(scene, transform, panel, panel_radius, theme, 1.0);
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            ui::chrome::shell::panel_ground(theme),
-            None,
-            &card,
-        );
-        scene.stroke(
-            &vello::kurbo::Stroke::new(1.0),
-            transform,
-            ui::chrome::shell::panel_border(theme),
-            None,
-            &card,
-        );
+        ui::chrome::shell::paint_panel(scene, transform, panel, theme, 1.0);
         // Theme-resolved sizes, painted once: `draw` has reset the renderer
         // for this pass.
         let title_style = theme.text(TextRole::Heading);
