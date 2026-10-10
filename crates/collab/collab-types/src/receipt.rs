@@ -78,6 +78,10 @@ pub enum ReceiptRefusal {
     /// The claim names a unit its action may not write.
     #[error("{action} may not write the unit {unit}")]
     OutsideFootprint { action: String, unit: String },
+    /// The op names another app surface than the one its record's identity
+    /// names, and is not the change that names a new one.
+    #[error("the op names another app surface than its record's")]
+    OtherSurface,
     /// A change names no action.
     #[error("a change names no action: {0}")]
     Unnamed(String),
@@ -126,6 +130,7 @@ pub fn claim_node(
             resource.action("field-edit")
         }
         ClaimedAction::Framework(FrameworkChange::Transfer) => resource.action("move"),
+        ClaimedAction::Framework(FrameworkChange::Upgrade) => resource.action("upgrade"),
         // A run marker only names steps already decided one by one.
         ClaimedAction::Framework(FrameworkChange::Run) => resource.action("checkpoint"),
         // A group is decided member by member; its own node is the record.
@@ -366,6 +371,25 @@ pub fn decide_op(
     surfaces: &Surfaces,
     allows: &dyn Fn(&TreePath, ActionKind) -> bool,
 ) -> Result<Receipt, ReceiptRefusal> {
+    decide_op_pinned(op, record, kind, held, None, surfaces, allows)
+}
+
+/// [`decide_op`] for a record whose identity names `pinned`, the surface
+/// its changes are decided against: an op naming another surface is
+/// refused unless it is the change that names a new one for the record
+/// ([`FrameworkChange::Upgrade`]).
+///
+/// # Errors
+/// The first [`ReceiptRefusal`].
+pub fn decide_op_pinned(
+    op: &crate::op::SignedOp,
+    record: &Record<'_>,
+    kind: Option<&str>,
+    held: Option<&automerge::Automerge>,
+    pinned: Option<[u8; 32]>,
+    surfaces: &Surfaces,
+    allows: &dyn Fn(&TreePath, ActionKind) -> bool,
+) -> Result<Receipt, ReceiptRefusal> {
     use tilo_action_policy::roles;
     let governed = |action: &str| {
         let node = roles::governance_action(record.room, action);
@@ -426,6 +450,14 @@ pub fn decide_op(
                 })
                 .collect::<Result<Vec<_>, _>>()?;
             let hashes: Vec<[u8; 32]> = changes.iter().map(|change| change.hash().0).collect();
+            if let Some(pinned) = pinned
+                && op.surface != Some(pinned)
+                && !claims
+                    .iter()
+                    .any(|claim| claim.action == ClaimedAction::Framework(FrameworkChange::Upgrade))
+            {
+                return Err(ReceiptRefusal::OtherSurface);
+            }
             let surface = surface_for(&claims);
             check_claims(
                 &claims,

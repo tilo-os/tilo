@@ -144,7 +144,7 @@ pub use peer::{PeerPresence, PeerPresencePayload};
 pub use person_room::{is_person_room, person_room, person_room_of};
 pub use receipt::{
     Receipt, ReceiptRefusal, ReceiptSurface, Record, SurfaceSource, Surfaces, check_claims,
-    claim_node, decide_op, record_node,
+    claim_node, decide_op, decide_op_pinned, record_node,
 };
 pub use redaction::{
     MAX_REDACTION_REASON_BYTES, OpId, RedactRequest, RedactedMarker, RedactionError,

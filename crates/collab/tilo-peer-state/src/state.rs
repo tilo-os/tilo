@@ -364,6 +364,15 @@ fn held_units(doc: &crate::cached_document::CachedDocument) -> Option<automerge:
     collab_types::units::has_units(&**doc).then(|| AutoCommit::clone(doc).document().clone())
 }
 
+/// The surface a record document's identity names (`tilo:record.surface`).
+fn record_surface(doc: &impl automerge::ReadDoc) -> Option<[u8; 32]> {
+    let (_, meta) = doc.get(automerge::ROOT, "tilo:record").ok()??;
+    match doc.get(&meta, "surface").ok()?? {
+        (automerge::Value::Scalar(hash), _) => hex::decode(hash.as_str()?).ok()?.try_into().ok(),
+        _ => None,
+    }
+}
+
 fn record_kind(doc: &impl automerge::ReadDoc) -> Option<String> {
     let (_, meta) = doc.get(automerge::ROOT, "tilo:record").ok()??;
     match doc.get(&meta, "kind").ok()?? {
@@ -1604,8 +1613,9 @@ impl StatePeer {
             .then(|| self.core.documents.get(&route))
             .flatten();
         let kind = document.and_then(|document| record_kind(&*document.doc));
+        let pinned = document.and_then(|document| record_surface(&*document.doc));
         let held = document.and_then(|document| held_units(&document.doc));
-        let decided = collab_types::decide_op(
+        let decided = collab_types::decide_op_pinned(
             envelope,
             &collab_types::Record {
                 room: &self.core.room,
@@ -1614,6 +1624,7 @@ impl StatePeer {
             },
             kind.as_deref(),
             held.as_ref(),
+            pinned,
             &self.surfaces,
             &|node, kind| member.allows(node, kind, authorization_time),
         );

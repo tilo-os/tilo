@@ -22,6 +22,8 @@ const ROOM: &str = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const APP: &str = "test.app";
 const RECORD: &str = "tab:1";
 const KIND: &str = "test";
+/// The surface the test record's identity names.
+const PINNED: [u8; 32] = [7; 32];
 
 /// The test app's surface: `comment` sits under the comments, writes the
 /// record and the comment it names; every field offers edits, each
@@ -108,6 +110,10 @@ fn room_with(role: MemberRole) -> (StatePeer, SigningKey, DeviceCert) {
     record.insert(&index, 0, "comments/*").unwrap();
     record.put_object(ROOT, "comments", ObjType::Map).unwrap();
     record.put(ROOT, "value", "seed").unwrap();
+    let meta = record
+        .put_object(ROOT, "tilo:record", ObjType::Map)
+        .unwrap();
+    record.put(&meta, "surface", hex::encode(PINNED)).unwrap();
     record.commit_with(
         CommitOptions::default()
             .with_message(tilo_actions::FrameworkChange::Genesis.change_message()),
@@ -233,7 +239,8 @@ fn guest_write(
         collab_types::OpKind::Change,
         now(),
         1,
-    );
+    )
+    .with_surface(Some(PINNED));
     collab_types::sign_op(&mut envelope, key).unwrap();
     NeighbourMsg::AppDocument {
         peer: crate::peer_handle(author.as_bytes()),
@@ -381,4 +388,78 @@ fn a_change_whose_app_surface_has_not_arrived_is_held_until_it_has() {
     peer.set_surfaces(Surfaces::from_source(Arc::new(Source(true))));
     receive(&mut peer, &guest, edited).expect("decided once the surface is here");
     assert_eq!(value(&peer), "\"x\"");
+}
+
+/// An op naming another surface than its record's identity is refused, but
+/// the change naming a newer one for the record is decided as an upgrade.
+#[test]
+fn an_op_naming_another_surface_than_its_record_is_refused() {
+    let (mut peer, key, guest) = room_with(MemberRole::Editor);
+    let resurfaced = |message: NeighbourMsg| {
+        let NeighbourMsg::AppDocument {
+            peer: handle,
+            app_id,
+            cluster_id,
+            record_id,
+            mut envelope,
+        } = message
+        else {
+            panic!("a document write")
+        };
+        envelope.surface = Some([8; 32]);
+        collab_types::sign_op(&mut envelope, &key).unwrap();
+        NeighbourMsg::AppDocument {
+            peer: handle,
+            app_id,
+            cluster_id,
+            record_id,
+            envelope,
+        }
+    };
+    let edited = guest_write(
+        &peer,
+        &key,
+        |doc| doc.put(ROOT, "value", "x").unwrap(),
+        edit_value(),
+        None,
+    );
+    let refused = receive(&mut peer.clone(), &guest, resurfaced(edited)).unwrap_err();
+    assert!(refused.contains("another app surface"), "{refused}");
+
+    let mut doc = AutoCommit::load(&peer.document(APP, RECORD).unwrap()).unwrap();
+    doc.set_actor(automerge::ActorId::from(
+        key.verifying_key().to_bytes().to_vec(),
+    ));
+    let heads = doc.get_heads();
+    let meta = doc.get(ROOT, "tilo:record").unwrap().unwrap().1;
+    doc.put(&meta, "surface", hex::encode([8; 32])).unwrap();
+    doc.commit_with(
+        CommitOptions::default()
+            .with_message(tilo_actions::FrameworkChange::Upgrade.change_message()),
+    );
+    let mutation = collab_types::DocumentMutation::Incremental(doc.save_after(&heads));
+    let author = collab_types::Ed25519PublicKey::from_bytes(key.verifying_key().to_bytes());
+    let mut envelope = collab_types::SignedOp::new_unsigned(
+        mutation.encode().unwrap(),
+        collab_types::document_artifact_id(APP, ROOM, RECORD),
+        author,
+        collab_types::document_attestation_id(APP, ROOM, RECORD),
+        collab_types::OpKind::Change,
+        now(),
+        2,
+    )
+    .with_surface(Some([8; 32]));
+    collab_types::sign_op(&mut envelope, &key).unwrap();
+    receive(
+        &mut peer,
+        &guest,
+        NeighbourMsg::AppDocument {
+            peer: crate::peer_handle(author.as_bytes()),
+            app_id: APP.into(),
+            cluster_id: ROOM.into(),
+            record_id: RECORD.into(),
+            envelope: Box::new(envelope),
+        },
+    )
+    .expect("an editor names the newer surface");
 }

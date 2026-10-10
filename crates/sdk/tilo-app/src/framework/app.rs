@@ -364,6 +364,7 @@ pub fn definition<A: ResourceApp>() -> &'static ApplicationDefinition {
             A::ID,
             <A::Resource as Resource>::COMMITTED_SURFACE,
         );
+        ui_core::app_surface::register_kind(<A::Resource as Resource>::KIND, A::ID);
         definition_of::<A>()
     })
 }

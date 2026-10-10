@@ -680,6 +680,14 @@ pub fn init_scoped(
     let stamped = stamp_scoped(doc, id, kind, home, room);
     if alone && stamped && doc.pending_ops() != 0 {
         commit_genesis(doc);
+    } else if alone && stamped && stamp_surface(doc).is_some() {
+        // The app's package opens a record its surface did not name yet (a
+        // newer package, or a record from before records named one): its
+        // surface decides the record's changes from here on.
+        doc.commit_with(
+            automerge::transaction::CommitOptions::default()
+                .with_message(tilo_actions::FrameworkChange::Upgrade.change_message()),
+        );
     }
     stamped
 }
@@ -739,10 +747,31 @@ fn stamp_scoped(
 /// Commit what a brand-new record starts with (its identity, references and
 /// first content) as its genesis, which names itself as such.
 fn commit_genesis(doc: &mut AutoCommit) {
+    let _ = stamp_surface(doc);
     doc.commit_with(
         automerge::transaction::CommitOptions::default()
             .with_message(tilo_actions::FrameworkChange::Genesis.change_message()),
     );
+}
+
+/// The key of the record identity naming the surface its changes are
+/// decided against: the content hash of its app package's `surface.toml`.
+pub const SURFACE: &str = "surface";
+
+/// Name, in the record's identity, the surface of its app running here.
+/// `Some(true)` when it replaced another app surface, `Some(false)` when it
+/// named the first, `None` when nothing changed.
+fn stamp_surface(doc: &mut AutoCommit) -> Option<bool> {
+    let m = meta_ro(doc)?;
+    let kind = str_at(doc, &m, "kind")?;
+    let hash = hex::encode(crate::app_surface::hash_of_kind(&kind)?);
+    match str_at(doc, &m, SURFACE) {
+        Some(named) if named == hash => None,
+        named => {
+            doc.put(&m, SURFACE, hash).ok()?;
+            Some(named.is_some())
+        }
+    }
 }
 
 /// The identity stamped into `doc`, if it holds a record.

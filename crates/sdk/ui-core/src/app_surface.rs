@@ -49,6 +49,26 @@ pub fn register_launched(app_id: &str, hash: [u8; 32]) {
     }
 }
 
+fn kinds() -> &'static Mutex<BTreeMap<String, String>> {
+    static KINDS: OnceLock<Mutex<BTreeMap<String, String>>> = OnceLock::new();
+    KINDS.get_or_init(Mutex::default)
+}
+
+/// Records of kind `kind` belong to the app `app_id`.
+pub fn register_kind(kind: &str, app_id: &str) {
+    if let Ok(mut kinds) = kinds().lock() {
+        kinds.insert(kind.to_owned(), app_id.to_owned());
+    }
+}
+
+/// The hash of the surface the changes to a record of kind `kind` are
+/// decided against: its app's.
+#[must_use]
+pub fn hash_of_kind(kind: &str) -> Option<[u8; 32]> {
+    let app = kinds().lock().ok()?.get(kind)?.clone();
+    hash_of(&app)
+}
+
 /// The hash of the surface `app_id`'s changes are decided against.
 #[must_use]
 pub fn hash_of(app_id: &str) -> Option<[u8; 32]> {

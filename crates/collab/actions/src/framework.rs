@@ -25,6 +25,9 @@ pub enum FrameworkChange {
     Structure,
     /// The record leaving its room for another, or arriving in one.
     Transfer,
+    /// A newer package of the record's app now decides its changes: the
+    /// record's identity names that package's surface.
+    Upgrade,
     /// A marker recording one instruction that changed several records as
     /// one run in the record's history. It carries no content and is
     /// decided as a checkpoint.
@@ -45,6 +48,7 @@ impl FrameworkChange {
             Self::Structure => "structure",
             Self::Transfer => "transfer",
             Self::Run => "run",
+            Self::Upgrade => "upgrade",
             Self::Native => "native",
         };
         format!("{FRAMEWORK_MESSAGE_PREFIX}{name}")
@@ -59,6 +63,7 @@ impl FrameworkChange {
             "structure" => Self::Structure,
             "transfer" => Self::Transfer,
             "run" => Self::Run,
+            "upgrade" => Self::Upgrade,
             "native" => Self::Native,
             _ => return None,
         })
@@ -76,6 +81,7 @@ mod tests {
             FrameworkChange::Migrate,
             FrameworkChange::Structure,
             FrameworkChange::Transfer,
+            FrameworkChange::Upgrade,
             FrameworkChange::Run,
             FrameworkChange::Native,
         ] {
