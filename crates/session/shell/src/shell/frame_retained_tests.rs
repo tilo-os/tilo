@@ -1772,7 +1772,10 @@ fn hovering_a_tab_repaints_that_tab_not_the_output() {
 // TIL-744: overlays, in-process app widgets and tooltips repaint what they
 // change, not the output or the tile.
 
-const THEMES: [(&str, fn() -> Theme); 3] = [
+/// A theme by name.
+type ThemeCase = (&'static str, fn() -> Theme);
+
+const THEMES: [ThemeCase; 3] = [
     ("dark", Theme::dark),
     ("light", Theme::light),
     ("high contrast", Theme::high_contrast),
@@ -1941,8 +1944,8 @@ fn embedded_damage(frame: &FrameBuilder) -> String {
 /// The pixels a frame rasterises: the area of its damage rects (overlap
 /// counted twice, which only overstates), or the whole output when dense.
 fn raster_pixels(paint: &FramePaint) -> u64 {
-    paint.damage_regions.as_deref().map_or(
-        u64::from(NATIVE_WIDTH) * u64::from(NATIVE_HEIGHT),
+    paint.damage_regions.as_deref().map_or_else(
+        || u64::from(NATIVE_WIDTH) * u64::from(NATIVE_HEIGHT),
         |damage| {
             damage
                 .iter()
@@ -1990,13 +1993,12 @@ fn assert_change_repaints_under(
             part_refusals(previous.as_ref(), frame)
         )
     });
-    if !(pixels > 0 && pixels * 100 < output * max_percent) {
-        panic!(
-            "{label}: must repaint under {max_percent}% of a 4K output, not {pixels} px: {damage:?}; {}; {}",
-            part_refusals(previous.as_ref(), frame),
-            embedded_damage(frame)
-        );
-    }
+    assert!(
+        pixels > 0 && pixels * 100 < output * max_percent,
+        "{label}: must repaint under {max_percent}% of a 4K output, not {pixels} px: {damage:?}; {}; {}",
+        part_refusals(previous.as_ref(), frame),
+        embedded_damage(frame)
+    );
     paint_retained_and_compare(&mut retained, &mut dense, &changed, label);
     // Damage over half the output renders whole, as the presenter does.
     assert!(
@@ -2048,7 +2050,7 @@ fn nested_damage_regions_are_rasterised_once() {
     let blur = region(120, 120, 200, 100);
     let elsewhere = region(900, 0, 10, 10);
     assert_eq!(
-        without_contained_regions(vec![card, grown, blur, elsewhere, grown]),
+        without_contained_regions(&[card, grown, blur, elsewhere, grown]),
         vec![grown, elsewhere]
     );
 }
@@ -2127,7 +2129,7 @@ fn settle_notes(frame: &mut FrameBuilder) {
 /// `read` the Notes surface fully on screen, with its app's rect.
 #[cfg(target_os = "linux")]
 fn with_notes_on_screen<R>(
-    frame: &mut FrameBuilder,
+    frame: &FrameBuilder,
     read: impl FnOnce(Rect, &mut notes::NotesApp) -> R,
 ) -> R {
     let screen = Rect::new(0.0, 0.0, frame.viewport.0, frame.viewport.1);
@@ -2148,7 +2150,7 @@ fn with_notes_on_screen<R>(
             notes::NotesShell,
             notes::NotesApp,
         >(app.component_root_mut()?)?;
-        Some((rect, notes as *mut notes::NotesApp))
+        Some((rect, std::ptr::from_mut(notes)))
     });
     let Some((rect, notes)) = found else {
         panic!("no Notes surface on screen; embedded apps at {seen:?}");

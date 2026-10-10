@@ -136,6 +136,18 @@ fn pending_buffer_rects(
         .collect()
 }
 
+/// Whether the commit's viewport crops or scales the buffer: surface-local
+/// damage then has no plain conversion to buffer pixels.
+fn pending_viewport(states: &wl_compositor::SurfaceData) -> bool {
+    let mut viewport = states
+        .cached_state
+        .get::<smithay::wayland::viewporter::ViewportCachedState>();
+    let pending = viewport.pending();
+    let set = pending.src.is_some() || pending.dst.is_some();
+    drop(viewport);
+    set
+}
+
 /// A surface-local rectangle in the pixels of an untransformed buffer drawn
 /// at `scale` buffer pixels per surface pixel. Clients damage "everything"
 /// as `i32::MAX`-sized rectangles, so the scaling saturates.
@@ -4189,15 +4201,7 @@ impl State {
             return;
         }
         let (association, capture) = wl_compositor::with_states(surface, |states| {
-            // A viewport crops or scales the buffer: surface-local damage
-            // then has no plain conversion to buffer pixels.
-            let viewported = {
-                let mut viewport = states
-                    .cached_state
-                    .get::<smithay::wayland::viewporter::ViewportCachedState>();
-                let pending = viewport.pending();
-                pending.src.is_some() || pending.dst.is_some()
-            };
+            let viewported = pending_viewport(states);
             let mut attrs = states
                 .cached_state
                 .get::<wl_compositor::SurfaceAttributes>();
