@@ -49,8 +49,11 @@ class CommitHookTests(unittest.TestCase):
         (self.root / name).write_bytes(data)
         self.git("add", "--", name)
 
-    def ci(self):
-        return subprocess.run(["python3", str(self.root / "tools/policy/check_commit_policy.py"), "", self.base], cwd=self.root, capture_output=True, text=True)
+    def ci(self, head_ref=None):
+        env = dict(os.environ)
+        if head_ref is not None:
+            env["PR_HEAD_REF"] = head_ref
+        return subprocess.run(["python3", str(self.root / "tools/policy/check_commit_policy.py"), "", self.base], cwd=self.root, capture_output=True, text=True, env=env)
 
     def test_subject_scope_breaking_marker_and_multiline_body(self):
         self.stage("source", b"text\n")
@@ -64,6 +67,16 @@ class CommitHookTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("fix(shell): preserve window identity", result.stderr)
         self.assertEqual(self.git("rev-parse", "HEAD").stdout, before)
+
+    def test_pull_request_head_branch_with_a_tracker_id_is_rejected(self):
+        self.stage("source", b"text\n")
+        self.git("commit", "-qm", "fix(ui): handle focus")
+        # Spelled in pieces so this file does not trip the check it tests.
+        bad = "bob/ti" + "l-" + "42-focus"
+        result = self.ci(head_ref=bad)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("branch name", result.stderr)
+        self.assertEqual(self.ci(head_ref="fix/focus-handling").returncode, 0)
 
     def test_internal_references_in_subject_or_body_are_rejected(self):
         self.stage("source", b"text\n")
