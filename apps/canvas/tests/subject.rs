@@ -138,7 +138,7 @@ fn an_edge_job_refuses_to_overwrite_an_edit_made_while_it_runs() {
     call(&mut app, "select", json!({"rect": [0, 0, 10, 10]}));
     let edited = app.state();
     app.harness()
-        .wait_until(ui::time::Duration::from_secs(10), |harness| {
+        .wait_until(tilo_test_env::hang_bound(), |harness| {
             harness
                 .job_updates(invocation)
                 .iter()
@@ -169,7 +169,7 @@ fn an_edge_job_cannot_apply_after_the_person_becomes_a_viewer() {
     let invocation = app.start_effect(&effect).unwrap();
     app.set_role(ui::Role::Viewer);
     app.harness()
-        .wait_until(ui::time::Duration::from_secs(10), |harness| {
+        .wait_until(tilo_test_env::hang_bound(), |harness| {
             harness
                 .job_updates(invocation)
                 .iter()

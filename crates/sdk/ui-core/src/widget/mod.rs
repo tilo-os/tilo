@@ -165,6 +165,18 @@ pub fn layout_rect(
     placed(&taffy.layout(node).copied().unwrap_or_default(), origin)
 }
 
+/// Let `node` share its row's main axis with its siblings by `grow`: it
+/// grows and shrinks from a zero basis instead of keeping its own width.
+pub fn share_row(taffy: &mut TaffyTree<()>, node: NodeId, grow: f32) {
+    if let Ok(mut style) = taffy.style(node).cloned() {
+        style.flex_grow = grow;
+        style.flex_shrink = 1.0;
+        style.flex_basis = taffy::style::Dimension::length(0.0);
+        style.size.width = taffy::style::Dimension::auto();
+        let _ = taffy.set_style(node, style);
+    }
+}
+
 /// What a gated, presence-publishing widget draws over itself once drawn:
 /// the denied-permission scrim, then the focus ring of the first peer on it.
 pub(crate) fn draw_gate_and_peer_focus(
@@ -2654,6 +2666,23 @@ pub trait TaffyTreeExt {
         let node = self.leaf_node(style);
         node_map.insert(node, std::ptr::from_mut(widget));
         node
+    }
+
+    /// [`Self::widget_leaf`] for a widget that fills its parent: the whole
+    /// of a page or canvas widget's `build_layout`.
+    fn filling_leaf(
+        &mut self,
+        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+        widget: &mut (dyn Widget + 'static),
+    ) -> NodeId {
+        let style = taffy::Style {
+            size: taffy::Size {
+                width: taffy::Dimension::percent(1.0),
+                height: taffy::Dimension::percent(1.0),
+            },
+            ..Default::default()
+        };
+        self.widget_leaf(style, node_map, widget)
     }
 
     /// Insert a parent node over `children` for `widget` and register it in

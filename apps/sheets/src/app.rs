@@ -20,7 +20,7 @@ use ui::widget::{AppModel, Edits, ModelPath};
 
 use automerge::ObjId;
 use std::rc::Rc;
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use taffy::{NodeId, TaffyTree};
 use ui::tilo_resource::{Atom, Id, Invoke};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};
@@ -2596,14 +2596,7 @@ impl Widget for SheetsApp {
         self.grid.set_text_scale(self.text_scale);
 
         // `new_leaf` on a freshly created tree never fails.
-        let style = Style {
-            size: Size {
-                width: Dimension::percent(1.0),
-                height: Dimension::percent(1.0),
-            },
-            ..Default::default()
-        };
-        taffy.widget_leaf(style, node_map, self)
+        taffy.filling_leaf(node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {

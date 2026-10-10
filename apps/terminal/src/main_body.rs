@@ -21,7 +21,7 @@ use std::io::{Read, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, sync_channel};
 use std::sync::{Arc, Mutex};
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use taffy::{NodeId, TaffyTree};
 use tilo_content::ContentStore;
 use ui::collaboration::PresencePayload;
 use ui::icons::Icon;
@@ -2968,14 +2968,7 @@ impl Widget for TerminalWidget {
         // `TaffyTreeExt` doc comment in `ui::widget::mod`), and
         // `Widget::build_layout` returns a bare `NodeId` across every
         // implementor, so there is nowhere to surface a theoretical error.
-        let style = Style {
-            size: Size {
-                width: Dimension::percent(1.0),
-                height: Dimension::percent(1.0),
-            },
-            ..Default::default()
-        };
-        taffy.widget_leaf(style, node_map, self)
+        taffy.filling_leaf(node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree, node: NodeId, origin: Point) {

@@ -105,7 +105,7 @@ fn a_look_job_keeps_its_snapshot_while_another_edit_is_applied() {
     app.call("set-artwork", json!({"ground_colour": "#0000ff"}))
         .unwrap();
     app.harness()
-        .wait_until(ui::time::Duration::from_secs(10), |harness| {
+        .wait_until(tilo_test_env::hang_bound(), |harness| {
             harness
                 .job_updates(invocation)
                 .iter()
@@ -521,15 +521,8 @@ fn the_canvas_decodes_a_picture_in_the_background_and_a_look_waits_for_it() {
     canvas.pictures.read_from(app.content());
     assert_eq!(canvas.pictures.size(src), None, "a frame does not wait");
     assert!(canvas.pictures.decoding());
-    let mut ready = None;
-    for _ in 0..500 {
-        ready = canvas.pictures.size(src);
-        if ready.is_some() {
-            break;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(10));
-    }
-    assert_eq!(ready, Some((200, 100)));
+    let ready = tilo_test_env::wait_for("the picture to decode", || canvas.pictures.size(src));
+    assert_eq!(ready, (200, 100));
     assert!(!canvas.pictures.decoding());
     let mut look = Renderer::default();
     look.pictures.read_from(app.content());

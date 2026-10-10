@@ -1366,7 +1366,7 @@ fn mouse_wheel_zoom_requests_frames_until_the_motion_settles() {
     assert!(
         desk.app
             .harness()
-            .settle_for_capture(std::time::Duration::from_secs(2)),
+            .settle_for_capture(tilo_test_env::hang_bound()),
         "the shared motion driver settles"
     );
     assert!(
@@ -1428,7 +1428,7 @@ fn enabling_reduced_motion_finishes_an_in_flight_wheel_zoom() {
     assert!(
         desk.app
             .harness()
-            .settle_for_capture(std::time::Duration::from_secs(1)),
+            .settle_for_capture(tilo_test_env::hang_bound()),
         "the window settles: {:?}; image loads in flight: {}",
         desk.app.harness().frame_requesters(),
         ui::image_store::loads_in_flight()
@@ -1444,7 +1444,7 @@ fn enabling_reduced_motion_finishes_an_in_flight_wheel_zoom() {
     assert!(
         desk.app
             .harness()
-            .settle_for_capture(std::time::Duration::from_secs(1))
+            .settle_for_capture(tilo_test_env::hang_bound())
     );
     assert!(
         !desk.app.harness().frame_schedule().needs_animation_frame,

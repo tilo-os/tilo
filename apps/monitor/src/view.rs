@@ -475,26 +475,6 @@ fn empty_state(kind: Placeholder) -> EmptyState {
     }
 }
 
-/// `node` grown or shrunk along a band's main axis.
-fn flexed(taffy: &mut TaffyTree<()>, node: NodeId, grow: f32) {
-    if let Ok(mut style) = taffy.style(node).cloned() {
-        style.flex_grow = grow;
-        style.flex_shrink = 1.0;
-        style.flex_basis = length(0.0_f32);
-        style.size.width = Dimension::auto();
-        let _ = taffy.set_style(node, style);
-    }
-}
-
-fn origin_of(taffy: &TaffyTree<()>, node: NodeId, parent: Point) -> Point {
-    taffy.layout(node).map_or(parent, |layout| {
-        Point::new(
-            parent.x + f64::from(layout.location.x),
-            parent.y + f64::from(layout.location.y),
-        )
-    })
-}
-
 fn rect_of(taffy: &TaffyTree<()>, node: NodeId, origin: Point) -> Rect {
     taffy
         .layout(node)
@@ -782,7 +762,7 @@ impl ProcessesPane {
         let (direction, align) = if compact {
             (taffy::FlexDirection::Column, taffy::AlignItems::Stretch)
         } else {
-            flexed(taffy, field, 1.0);
+            ui::widget::share_row(taffy, field, 1.0);
             (taffy::FlexDirection::Row, taffy::AlignItems::Center)
         };
         let band = taffy.parent_node(
@@ -941,7 +921,7 @@ impl Widget for ProcessesPane {
             summary.apply_layout(taffy, node, inner);
         }
         if let Some(band) = self.nodes.band {
-            let band_origin = origin_of(taffy, band, inner);
+            let band_origin = ui::widget::layout_rect(taffy, band, inner).origin();
             if let Some(field) = self.nodes.field {
                 self.field.apply_layout(taffy, field, band_origin);
             }
@@ -950,7 +930,7 @@ impl Widget for ProcessesPane {
             }
         }
         if let (Some(body), Some(child)) = (self.nodes.body, self.nodes.body_child) {
-            let body_origin = origin_of(taffy, body, inner);
+            let body_origin = ui::widget::layout_rect(taffy, body, inner).origin();
             let available = rect_of(taffy, body, inner).height();
             self.body_mut().apply_layout(taffy, child, body_origin);
             if self.placeholder.is_none() {

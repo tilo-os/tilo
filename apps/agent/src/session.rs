@@ -1683,14 +1683,32 @@ impl Session {
     /// Whenever a turn's own I/O fails — see [`Self::run`] — or an edit
     /// could not be published.
     pub fn run_until(&mut self, deadline: Instant) -> Result<bool> {
+        self.run_while(|| true, deadline)
+    }
+
+    /// [`Self::run_until`], also stopping as soon as `keep_going` says so:
+    /// a host that knows when the run's work has landed ends it then.
+    ///
+    /// The deadline bounds the turns the run takes, never what it already
+    /// sent: a publication in flight is waited for by its own receipt, so a
+    /// reply written just before the deadline is never cut off half-sent.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::run_until`].
+    pub fn run_while(
+        &mut self,
+        mut keep_going: impl FnMut() -> bool,
+        deadline: Instant,
+    ) -> Result<bool> {
         let mut acted = false;
-        while ui::time::now() < deadline {
+        while ui::time::now() < deadline && keep_going() {
             acted |= self.step(Duration::from_millis(50))?;
             if acted && self.cfg.once {
                 break;
             }
         }
-        self.link.complete_publications(Some(deadline))?;
+        self.link.complete_publications(None)?;
         self.link.flush_documents()?;
         Ok(acted)
     }

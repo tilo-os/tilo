@@ -112,6 +112,28 @@ fn scenario_resources(doc: &AutoCommit, outcome: OwnerOutcome) -> Vec<tilo_actio
     resources
 }
 
+/// Whether each of the `requests` summons has exactly one reply by the
+/// agent, in the state `outcome` leaves it.
+fn durable(chat: &AutoCommit, requests: usize, outcome: OwnerOutcome) -> bool {
+    let messages = chat::projection::read(chat).message_rows("c_general");
+    (1..=requests).all(|number| {
+        let parent = format!("request-{number}");
+        let mut replies = messages.iter().filter(|message| {
+            message.author == "scribe" && message.parent.as_deref() == Some(&parent)
+        });
+        replies.next().is_some_and(|message| {
+            message.work.as_ref().is_some_and(|work| match outcome {
+                OwnerOutcome::Complete => work.finished(),
+                // The run ends saying it could not confirm what happened.
+                OwnerOutcome::Disconnect | OwnerOutcome::CancelAfterMutation => {
+                    !matches!(&work.state, AgentWorkState::Waiting { .. })
+                        && message.text.contains("unconfirmed")
+                }
+            })
+        }) && replies.next().is_none()
+    })
+}
+
 #[allow(
     clippy::fn_params_excessive_bools,
     clippy::too_many_lines,
@@ -216,13 +238,25 @@ fn scenario_outcome(
         typed_peer::publish_actions(&mut owner, WP, &scenario_resources(&document, outcome));
         let mut cfg = config(socket.clone());
         cfg.once = requests == 1;
+        // A run that is to answer goes on until its answer has landed in
+        // the chat (what this test watches for), bounded only against a
+        // hang; one that must not answer gets a quiet window to prove it.
+        let answers = !restart && expected_reply;
+        let landed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let stop = std::sync::Arc::clone(&landed);
         let (tx, rx) = std::sync::mpsc::channel();
         let runner = std::thread::spawn(move || {
             let mut s = Session::connect(cfg).unwrap();
             tx.send(()).unwrap();
-            s.run_until(ui::time::now() + Duration::from_secs(3))
+            let bound = if answers {
+                tilo_test_env::hang_deadline()
+            } else {
+                ui::time::now() + Duration::from_secs(3)
+            };
+            s.run_while(|| !stop.load(std::sync::atomic::Ordering::Acquire), bound)
                 .unwrap()
         });
+        let expected_requests = requests.max(1);
         rx.recv_timeout(tilo_test_env::hang_bound()).unwrap();
         if owner_released {
             send(
@@ -236,7 +270,11 @@ fn scenario_outcome(
             &CollabRequest::document_snapshot(chat.save()),
         )
         .unwrap();
-        let deadline = ui::time::now() + Duration::from_secs(4);
+        let deadline = if answers {
+            tilo_test_env::hang_deadline()
+        } else {
+            ui::time::now() + Duration::from_secs(4)
+        };
         while ui::time::now() < deadline && !runner.is_finished() {
             if owner_online && let Some(event) = owner.recv().unwrap() {
                 match event {
@@ -245,6 +283,15 @@ fn scenario_outcome(
                         payload: ui::collaboration::PresencePayload::Arrived,
                         ..
                     } if id == WP && owner_released => {
+                        send(
+                            &mut owner,
+                            &CollabRequest::document_snapshot(document.save()),
+                        )
+                        .unwrap();
+                    }
+                    // The agent asks for the owner's document; the owner
+                    // answers once it holds it.
+                    CollabEvent::DocumentSnapshotRequested { .. } if owner_released => {
                         send(
                             &mut owner,
                             &CollabRequest::document_snapshot(document.save()),
@@ -317,6 +364,9 @@ fn scenario_outcome(
                         observed.push(w);
                     }
                 }
+                if answers && durable(&chat, expected_requests, outcome) {
+                    landed.store(true, std::sync::atomic::Ordering::Release);
+                }
             }
             if !owner_released
                 && observed
@@ -337,13 +387,13 @@ fn scenario_outcome(
             }
         }
         let acted = runner.join().unwrap();
-        let drain = ui::time::now()
-            + if !restart && expected_reply {
-                Duration::from_secs(4)
-            } else {
-                Duration::from_millis(250)
-            };
-        let expected_requests = requests.max(1);
+        // An answer is waited for until it has replicated (bounded only
+        // against a hang); otherwise a short drain shows nothing more came.
+        let drain = if answers {
+            tilo_test_env::hang_deadline()
+        } else {
+            ui::time::now() + Duration::from_millis(250)
+        };
         let mut durable_reply = false;
         while ui::time::now() < drain {
             if let Some(event) = chat_peer.recv().unwrap()
@@ -357,21 +407,7 @@ fn scenario_outcome(
                     }
                 }
             }
-            let messages = chat::projection::read(&chat).message_rows("c_general");
-            durable_reply = (1..=expected_requests).all(|number| {
-                let parent = format!("request-{number}");
-                let mut replies = messages.iter().filter(|message| {
-                    message.author == "scribe" && message.parent.as_deref() == Some(&parent)
-                });
-                replies.next().is_some_and(|message| {
-                    message.work.as_ref().is_some_and(|work| match outcome {
-                        OwnerOutcome::Complete => work.finished(),
-                        OwnerOutcome::Disconnect | OwnerOutcome::CancelAfterMutation => {
-                            !matches!(&work.state, AgentWorkState::Waiting { .. })
-                        }
-                    })
-                }) && replies.next().is_none()
-            });
+            durable_reply = durable(&chat, expected_requests, outcome);
             if !restart && expected_reply && durable_reply {
                 break;
             }
