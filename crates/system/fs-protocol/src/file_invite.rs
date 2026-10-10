@@ -129,15 +129,6 @@ impl BearerFileInvite {
         }
         Ok(Self { token, secret })
     }
-
-    /// Decode and verify a copied link at the current system time.
-    ///
-    /// # Errors
-    ///
-    /// Returns the same validation errors as [`Self::decode_link_at`].
-    pub fn decode_link(link: &str) -> Result<Self, FileInviteError> {
-        Self::decode_link_at(link, tilo_clock::unix_now_ms())
-    }
 }
 
 #[derive(Serialize)]
@@ -187,15 +178,6 @@ impl FileInviteV1 {
             return Err(FileInviteError::InvalidRedemptionLimit);
         }
         Ok(())
-    }
-
-    /// Verify this invite at the current system time.
-    ///
-    /// # Errors
-    ///
-    /// Returns the same validation errors as [`Self::verify_at`].
-    pub fn verify_now(&self) -> Result<(), FileInviteError> {
-        self.verify_at(tilo_clock::unix_now_ms())
     }
 
     /// Verify an unrestricted bearer invite and its presented secret.

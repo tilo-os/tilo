@@ -856,16 +856,6 @@ impl<K: BufferIdentity, V: Clone> ImportCache<K, V> {
 static IMPORTS: Mutex<ImportCache<smithay::backend::allocator::dmabuf::WeakDmabuf, wgpu::Texture>> =
     Mutex::new(ImportCache::new());
 
-/// Vulkan imports of client buffers since the process started. A steady
-/// client adds one per buffer it owns, not one per commit.
-#[cfg(target_os = "linux")]
-pub fn buffer_imports() -> u64 {
-    IMPORTS
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .imports
-}
-
 /// Import a client's single-plane 8-bit RGB dma-buf on the presenting device,
 /// or reuse its import from an earlier commit, as a frame drawn straight from
 /// it. Nothing is copied or submitted here.

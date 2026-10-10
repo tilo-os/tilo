@@ -1259,21 +1259,6 @@ pub fn append_paragraph(view: &ParticipantView, doc: &AutoCommit, text: &str) ->
     Ok((vec![super::append_paragraph_action(text)], next))
 }
 
-/// Paste an already-built rich fragment (the widget's own clipboard) over
-/// the selection or at the caret, exactly like [`paste`] after conversion.
-#[allow(
-    dead_code,
-    reason = "no caller yet: the widget's rich-clipboard paste still builds its paste_fragment_action directly"
-)]
-pub(crate) fn paste_blocks(
-    view: &ParticipantView,
-    doc: &AutoCommit,
-    blocks: Vec<ClipBlock>,
-) -> EditResult {
-    let r = resolve(view, doc)?;
-    Ok(PasteTarget::new(&r).build(blocks))
-}
-
 /// Replace one misspelled body word with a suggestion (`SpliceText`). A caret
 /// or anchor after the word in the same block moves with the text.
 ///

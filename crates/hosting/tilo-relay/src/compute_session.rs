@@ -665,19 +665,6 @@ impl ComputeClient {
         self.connection.clone()
     }
 
-    /// Wait for the relay to open a stream to this device (an environment
-    /// session or a legacy launch routed to this worker).
-    ///
-    /// # Errors
-    ///
-    /// Returns an error once the connection is gone.
-    pub async fn accept_stream(&self) -> Result<(SendStream, RecvStream), ComputeSessionError> {
-        self.connection
-            .accept_bi()
-            .await
-            .map_err(|error| ComputeSessionError::Connection(error.to_string()))
-    }
-
     /// Send one bounded typed compute envelope.
     ///
     /// # Errors

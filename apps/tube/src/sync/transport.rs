@@ -168,25 +168,9 @@ impl DeviceKey {
         })
     }
 
-    /// Restore from a stored base64 keypair.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when either stored value is not valid base64.
-    pub fn from_base64(private_b64: &str, public_b64: &str) -> SyncResult<Self> {
-        Ok(DeviceKey {
-            private: Zeroizing::new(b64_decode(private_b64)?),
-            public: b64_decode(public_b64)?,
-        })
-    }
-
     /// Our public key in Grayjay's base64 form (the value a peer pairs against).
     pub fn public_base64(&self) -> String {
         b64_encode(&self.public)
-    }
-
-    pub fn private_base64(&self) -> String {
-        b64_encode(self.private.as_slice())
     }
 }
 

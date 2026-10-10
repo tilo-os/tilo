@@ -224,16 +224,6 @@ impl LiveState {
         })
         .encode()
     }
-
-    /// Encode the end of this device's previews for `record`.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the record violates the wire bounds.
-    pub fn end_preview(&mut self, record: LiveRecord) -> Result<Vec<u8>, LiveWireError> {
-        self.preview_seq.remove(&record);
-        LiveFrame::Ops(OpsFrame::End { record }).encode()
-    }
 }
 
 #[cfg(test)]

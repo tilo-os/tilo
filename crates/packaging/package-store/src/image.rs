@@ -207,13 +207,6 @@ impl ImageTrust {
         self
     }
 
-    /// Replace the trusted attestors.
-    #[must_use]
-    pub fn with_attestors(mut self, attestors: &TrustedAttestors) -> Self {
-        self.attestors = attestors.as_slice().to_vec();
-        self
-    }
-
     /// Replace the revocation list.
     #[must_use]
     pub fn with_revoked(mut self, revoked: RevocationList) -> Self {

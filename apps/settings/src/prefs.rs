@@ -742,16 +742,6 @@ impl AppearancePrefs {
         }
     }
 
-    /// Whether the mode shows the dark theme right now: always for `dark`,
-    /// never for `light`, by the schedule for `automatic`.
-    pub fn is_dark_now(&self) -> bool {
-        match self.mode.as_str() {
-            "light" => false,
-            "automatic" => self.schedule().is_night(ui::theme::local_moment()),
-            _ => true,
-        }
-    }
-
     /// The theme document the current mode shows, with the density over it.
     pub fn user_document(&self) -> Option<ui::theme::ThemeDocument> {
         // Import the former preset field without discarding new paired-theme data.
@@ -807,12 +797,6 @@ impl AppearancePrefs {
             ..self.clone()
         };
         unset.resolve_theme().tokens.typography.distinct_letters
-    }
-
-    /// Record `on` as the person's choice: no choice when it is what the
-    /// typeface does anyway, so a later Hyperlegible theme still turns it on.
-    pub fn choose_distinct_letters(&mut self, on: bool) {
-        self.distinct_letters = (on != self.distinct_letters_by_face()).then_some(on);
     }
 
     /// The chosen theme before the accessibility comforts.

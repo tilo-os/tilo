@@ -56,8 +56,9 @@ def runtime_raise(metric: str = "bytes", added: int = 65536, arch: str = "x86_64
 
 
 def elf(rela: list[tuple[int, int]] = (), relr: list[int] = (), needed: list[str] = (),
-        machine: int = 62, padding: int = 0) -> bytes:
-    """A minimal 64-bit LE ELF file: section headers, .dynamic, .rela.dyn, .relr.dyn and `padding` of .text."""
+        machine: int = 62, padding: int = 0, lazy: list[str] = ()) -> bytes:
+    """A minimal 64-bit LE ELF file: section headers, .dynamic, .rela.dyn, .relr.dyn, `padding` of .text
+    and the libraries tools/ci/runtime-dylib-lazy-link.py records as loaded on first use."""
     dynstr = b"\0" + b"".join(name.encode() + b"\0" for name in needed)
     offsets, cursor = [], 1
     for name in needed:
@@ -67,12 +68,14 @@ def elf(rela: list[tuple[int, int]] = (), relr: list[int] = (), needed: list[str
     rela_body = b"".join(struct.pack("<QQq", offset, kind, 0) for offset, kind in rela)
     relr_body = b"".join(struct.pack("<Q", entry) for entry in relr)
     text = b"\xcc" * padding
-    names = [b"", b".shstrtab", b".dynstr", b".dynamic", b".rela.dyn", b".relr.dyn", b".text"]
+    lazy_body = b"".join(name.encode() + b"\0" for name in lazy) + b"\0"
+    names = [b"", b".shstrtab", b".dynstr", b".dynamic", b".rela.dyn", b".relr.dyn", b".text",
+             ratchet.LAZY_SECTION.encode()]
     shstrtab = b"\0".join(names) + b"\0"
     name_offsets = [shstrtab.index(name + b"\0") if name else 0 for name in names]
-    bodies = [b"", shstrtab, dynstr, dynamic, rela_body, relr_body, text]
-    kinds = [0, 3, 3, ratchet.SHT_DYNAMIC, ratchet.SHT_RELA, ratchet.SHT_RELR, 1]
-    links = [0, 0, 0, 2, 0, 0, 0]
+    bodies = [b"", shstrtab, dynstr, dynamic, rela_body, relr_body, text, lazy_body if lazy else b""]
+    kinds = [0, 3, 3, ratchet.SHT_DYNAMIC, ratchet.SHT_RELA, ratchet.SHT_RELR, 1, 1]
+    links = [0, 0, 0, 2, 0, 0, 0, 0]
     data = bytearray(64)
     placed = []
     for body in bodies:
@@ -127,6 +130,11 @@ class ReadElf(Scratch):
         stats = ratchet.read_elf(self.path(elf(rela=[(0x1000, 1027), (0x1008, 1025)], machine=183)))
         self.assertEqual((stats.arch, stats.symbol_relocations), ("aarch64", 1))
 
+    def test_the_libraries_loaded_on_first_use_are_read(self):
+        stats = ratchet.read_elf(self.path(elf(lazy=["libgstreamer-1.0.so.0", "libglib-2.0.so.0"])))
+        self.assertEqual(stats.lazy_needed, ["libgstreamer-1.0.so.0", "libglib-2.0.so.0"])
+        self.assertEqual(ratchet.read_elf(self.path(elf())).lazy_needed, [])
+
     def test_a_file_that_is_not_elf_fails(self):
         with self.assertRaises(ValueError):
             ratchet.read_elf(self.path(b"#!/bin/sh\n"))
@@ -137,14 +145,20 @@ class ReadElf(Scratch):
 
 
 class Measure(Scratch):
-    def test_a_runtime_within_its_budgets_passes_and_reports_media_libraries(self):
-        dylib = elf(needed=["libglib-2.0.so.0", "libc.so.6"], padding=100_000)
+    def test_a_runtime_within_its_budgets_passes_and_reports_lazy_libraries(self):
+        dylib = elf(needed=["libc.so.6"], padding=100_000, lazy=["libglib-2.0.so.0"])
         status, lines, stats = ratchet.measure(self.path(dylib), budget(), "x86_64")
         self.assertEqual(status, 0, lines)
         self.assertTrue(any("within its budget of 131072; KPI target 150000000" in line for line in lines), lines)
-        self.assertIn("runtime x86_64: every app loads libglib-2.0.so.0; KPI target: none of libgst, "
-                      "libglib-2.0 (TIL-604)", lines)
+        self.assertIn("runtime x86_64: loaded on first media use: libglib-2.0.so.0", lines)
         self.assertEqual(stats.metrics()["symbol_relocations"], 0)
+
+    def test_a_media_library_every_app_loads_fails(self):
+        dylib = elf(needed=["libglib-2.0.so.0", "libc.so.6"], padding=100_000)
+        status, lines, _ = ratchet.measure(self.path(dylib), budget(), "x86_64")
+        self.assertEqual(status, 1)
+        self.assertTrue(any(line.startswith("error: runtime x86_64: every app loads libglib-2.0.so.0; none of "
+                                            "libgst, libglib-2.0 may be DT_NEEDED") for line in lines), lines)
 
     def test_over_a_budget_fails_and_names_the_raise(self):
         path = self.path(elf(padding=131072))
@@ -178,6 +192,61 @@ class Measure(Scratch):
                                            "x86_64")
         self.assertEqual(status, 1)
         self.assertTrue(any("symbol_relocations: 0 and no budget" in line for line in lines), lines)
+
+
+class Closure(Scratch):
+    """What the loader maps at exec for the runtime and for an app that plays no media."""
+
+    def tree(self, files: dict[str, bytes]) -> pathlib.Path:
+        directory = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: subprocess.run(["rm", "-rf", str(directory)], check=False))
+        for name, body in files.items():
+            (directory / name).write_bytes(body)
+        return directory
+
+    def test_a_runtime_and_an_app_without_media_libraries_pass(self):
+        runtime = self.tree({"libruntime_dylib.so": elf(needed=["libstd-1.so", "libc.so.6"],
+                                                         lazy=["libgstreamer-1.0.so.0"],
+                                                         rela=[(0x1000, R_X86_64_RELATIVE)]),
+                             "libstd-1.so": elf(needed=["libc.so.6"]),
+                             "calculator": elf(needed=["libruntime_dylib.so", "libstd-1.so", "libc.so.6"])})
+        system = self.tree({"libc.so.6": elf(rela=[(0x2000, R_X86_64_RELATIVE), (0x9000, R_X86_64_GLOB_DAT)]),
+                            "libgstreamer-1.0.so.0": elf()})
+        status, lines, _ = ratchet.measure(runtime / "libruntime_dylib.so", budget(), "x86_64",
+                                           [runtime / "calculator"], [system])
+        self.assertEqual(status, 0, lines)
+        self.assertIn("libruntime_dylib.so: 3 objects at exec, relocations write 3 pages across them: "
+                      "libruntime_dylib.so libstd-1.so libc.so.6", lines)
+        self.assertIn("calculator: 4 objects at exec, relocations write 3 pages across them: "
+                      "calculator libruntime_dylib.so libstd-1.so libc.so.6", lines)
+
+    def test_a_media_library_in_an_apps_closure_fails_with_its_chain(self):
+        runtime = self.tree({"libruntime_dylib.so": elf(needed=["libc.so.6"]),
+                             "notes": elf(needed=["libruntime_dylib.so", "libbridge.so"]),
+                             "libbridge.so": elf(needed=["libgstreamer-1.0.so.0"])})
+        system = self.tree({"libc.so.6": elf(), "libgstreamer-1.0.so.0": elf()})
+        status, lines, _ = ratchet.measure(runtime / "libruntime_dylib.so", budget(), "x86_64",
+                                           [runtime / "notes"], [system])
+        self.assertEqual(status, 1)
+        self.assertIn("error: notes loads libgstreamer-1.0.so.0 at exec (libgstreamer-1.0.so.0 <- "
+                      "libbridge.so <- notes); none of libgst, libglib-2.0 may be (TIL-713)", lines)
+
+    def test_a_library_that_cannot_be_found_fails(self):
+        runtime = self.tree({"libruntime_dylib.so": elf(needed=["libc.so.6", "libmissing.so"])})
+        system = self.tree({"libc.so.6": elf()})
+        status, lines, _ = ratchet.measure(runtime / "libruntime_dylib.so", budget(), "x86_64", [], [system])
+        self.assertEqual(status, 1)
+        self.assertTrue(any("cannot find libmissing.so (needed by libruntime_dylib.so)" in line
+                            for line in lines), lines)
+        self.assertIn("no app of apps_without_media was built; checked what every app loads with the runtime",
+                      lines)
+
+    def test_a_library_for_another_machine_is_not_the_one_loaded(self):
+        runtime = self.tree({"libruntime_dylib.so": elf(needed=["libc.so.6"])})
+        wrong = self.tree({"libc.so.6": elf(machine=183)})
+        right = self.tree({"libc.so.6": elf()})
+        status, lines, _ = ratchet.measure(runtime / "libruntime_dylib.so", budget(), "x86_64", [], [wrong, right])
+        self.assertEqual(status, 0, lines)
 
 
 def collection(entries: dict[str, bytes]) -> bytes:
@@ -312,6 +381,13 @@ class Check(unittest.TestCase):
         self.assertIn("headroom raised", problems)
         self.assertIn("KPI target bytes raised; targets only decrease", problems)
         self.assertIn("[targets] needed_absent lost an entry; targets only tighten", problems)
+
+    def test_apps_without_media_only_grow(self):
+        before = budget('apps_without_media = ["calculator", "notes"]\n' + TEXT)
+        self.assertEqual(ratchet.check(before, budget('apps_without_media = ["calculator", "notes", "totp"]\n'
+                                                      + TEXT)), [])
+        self.assertIn("apps_without_media lost an entry; targets only tighten",
+                      ratchet.check(before, budget('apps_without_media = ["notes"]\n' + TEXT)))
 
     def test_every_architecture_has_every_metric(self):
         problems = ratchet.check(None, budget(HEADER + RUNTIME.split("[runtime.aarch64]")[0]))

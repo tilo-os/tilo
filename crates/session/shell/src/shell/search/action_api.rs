@@ -477,24 +477,6 @@ impl SelectedAction<'_> {
         self.invoke_bound(doc, root, chrome, &bound)
     }
 
-    /// Begin an invocation without fabricating success for a remote action
-    /// whose current authority is still being checked. Agents can retain and
-    /// poll the returned ticket just as the visual palette does.
-    ///
-    /// # Errors
-    ///
-    /// Returns an argument-binding or provider refusal error; callers must
-    /// poll a pending disposition rather than treating it as success.
-    pub fn invoke_disposition(
-        &self,
-        doc: &mut ui::widget::Edits<'_>,
-        root: &ObjId,
-        chrome: &Chrome,
-        args: impl IntoIterator<Item = (String, ArgValue)>,
-    ) -> Result<InvocationDisposition, ActionError> {
-        self.invoke(doc, root, chrome, args)
-    }
-
     /// Invoke from the canonical JSON object used by control sockets and MCP.
     /// Unlike lossy JSON-to-enum guessing, binding consults each declared
     /// parameter, preserving resource/date-time/secret semantics and nested or
