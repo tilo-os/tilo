@@ -1993,9 +1993,11 @@ jobs:
       # re-lays the image out by RPM package and large file with chunkah
       # (os/Containerfile.rechunk): an unchanged component is the same blob
       # in the next build, and whited-out bytes and /sysroot's ostree objects
-      # are in no layer. os/scripts/oci-rechunk.py refuses the result unless
-      # every path is the raw image's, with its type, mode, owner, xattrs,
-      # bytes and directory times. Everything below consumes the rechunked
+      # are in no layer. os/scripts/oci-rechunk.py takes xattrs (file
+      # capabilities, which BuildKit's snapshot of the image lacks) and
+      # directory times from the raw image's layers, and refuses the result
+      # unless every path is the raw image's, with its type, mode, owner,
+      # xattrs and bytes. Everything below consumes the rechunked
       # image: the dev lane's tilo-ci series name, or the archive in place
       # (before the builder is cleared, and its own rechunk after the
       # independent rebuild). The install gate then seals the rechunked tree.
