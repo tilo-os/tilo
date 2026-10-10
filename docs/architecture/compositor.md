@@ -318,8 +318,17 @@ its tile. A tile's edge and the tab list's focus ring are parts too. Foreign
 buffer swaps keep their
 client-reported damage, from `wl_surface.damage_buffer` as from
 `wl_surface.damage` (scaled to buffer pixels unless a viewport crops or
-scales the buffer). Strip pans still repaint every pixel of the strip: no
-presenter composites the retained strip layer (`FrameCache`). Night light and the
+scales the buffer). A strip pan moves pixels instead of repainting them:
+while a strip pans, the producer draws the desktop as three layers
+(`FramePaint::cache`: what is behind the windows, the strips in canvas
+coordinates, the chrome above), pans land on whole pixels, and the DRM GPU
+presenter keeps each layer in a texture of the output's size
+(`render/strip_layers.rs`). A pure pan copies the part of each strip still on
+screen to where it moved, rasterises only the columns it uncovered, and
+composites the moved strip from the three textures; a layer is rasterised
+again only when its scene changes. Frames at rest keep the screen-space damage
+above, and a scaled, rotated, calibrated, HDR, blurred or multi-display output
+renders the scene as before. Night light and the
 colour filters are per-pixel tints drawn into the same scene, so frames under
 them stay sparse while the tint is unchanged; the magnifier and the
 crosshair, which follow the pointer, keep every frame dense.
