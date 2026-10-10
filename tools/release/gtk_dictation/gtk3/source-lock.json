@@ -20,10 +20,11 @@
   },
   "base_files": {
     "gtk/gtkentry.c": "7b32d2169f8d8ed032a13be0395a98061af009ce82d2a5012ae5025549e16080",
-    "gtk/meson.build": "a21f9f798159b043ae49163ad21b1115c1d6b5ebe02a3bebbeeeee836f22e9a5"
+    "gtk/meson.build": "a21f9f798159b043ae49163ad21b1115c1d6b5ebe02a3bebbeeeee836f22e9a5",
+    "gtk/a11y/gtkentryaccessible.c": "1f198a9fb0c59de9ff2702a73e724333a4078139cf66f659de569a33ca1d34db"
   },
   "patches": {
-    "0001-stock-entry-native-history.patch": "97ef715772f122f8b1d8170b9f4428576e388529b03c864472973cfce4c036e9"
+    "0001-stock-entry-native-history.patch": "7b73dd68ea20246a996dc0d9e01b7c9404e3f8209981ac9c6237d9feaddf9e7a"
   },
   "production_ready": false
 }

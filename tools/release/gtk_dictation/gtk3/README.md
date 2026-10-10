@@ -30,10 +30,21 @@ Undo/Redo use the same GtkEditable path and restore the original selection.
 History is limited to 100 levels. Programmatic full-value replacement, buffer replacement, unowned buffer edits and
 sensitive-purpose/visibility transitions clear retained history.
 
-An owner must explicitly set the native GObject `enable-undo` property. It is
-false by default; only exact GtkEntry with exact GtkEntryBuffer is eligible.
+An owner must explicitly register a nonempty `history-owner` string (at most
+128 bytes) and set the native GObject `enable-undo` property. These properties
+are application-owned configuration, not identity authentication or a permission
+grant. No focus event or accessibility query registers an owner. Undo is false
+by default; only exact GtkEntry with exact GtkEntryBuffer is eligible.
 Derived widgets/buffers keep their own history and are not automatically adapted.
-`can-undo`/`can-redo` expose native status. Native `undo`/`redo` action signals
+`history-registered` reports the supported owner contract; `history-available`
+and `can-undo`/`can-redo` enforce native editable, visible, sensitive, focused,
+non-PASSWORD/non-PIN admission. Attached custom Undo/Redo handlers are refused.
+The existing GtkEntryAccessible AtkAction retains activate index 0 and exposes
+Undo index 1 and Redo index 2 only for a supported registered owner. Invocation
+rechecks availability and possible history, then emits the same native signal.
+ATK attributes `tilo-history-registered`, `tilo-history-available`, `tilo-can-undo`
+and `tilo-can-redo` report booleans; they disclose no text or owner identifier.
+History notifications use the existing ATK visible-data-changed signal. Native `undo`/`redo` action signals
 have keyboard bindings; these are ordinary entry history, not dictation history.
 The candidate **does not** add a Tilo semantic bridge or permission bypass.
 
@@ -84,10 +95,11 @@ property. It adds no input method or private Undo implementation.
 4. Exercise custom edit handlers, nested/reentrant mutations, intercepted Undo
    signals, and destruction during commit. No generic atomicity guarantee for
    these callbacks has been proved. Stock-only type checks do not identify custom
-   handlers attached to a stock instance. An explicitly registered history owner
-   adapter or further native guarding is required before qualifying those cases.
+   handlers attached to a stock instance. The registration contract now exists, but
+   callback atomicity and runtime signal collisions still require qualification.
 5. Validate public native action/status accessibility in the intended runtime;
-   this candidate's GObject signals alone do not prove the full system semantic
+   the new ATK actions and properties require real runtime observation and do
+   not by themselves prove the full system semantic
    Undo journey. No synthetic-key-only result establishes that guarantee.
 
 A guest OS library change does not cover Flatpak-owned GTK runtimes. Deliver only
