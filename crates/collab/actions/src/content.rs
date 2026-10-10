@@ -4,7 +4,8 @@
 //! so a receiver can replay it. An action whose payload is larger than the
 //! history budget (a paste with images inline) still records it: each long
 //! text or byte run of its payload is kept in the content store
-//! (`tilo-content`) and the recorded payload names it by its BLAKE3 hash.
+//! the host lends ([`keep_content_in`]) and the recorded payload names it by
+//! its BLAKE3 hash.
 //! A receiver resolves those names from its content store before it
 //! replays; until the content arrives the change is held, as a change whose
 //! app surface has not arrived is.
@@ -14,8 +15,9 @@
 //! array or object (a long list of small parts: a pasted book's
 //! paragraphs) it stands for.
 
+use std::collections::BTreeMap;
+
 use serde_json::{Map, Value};
-use tilo_content::ContentInputs;
 
 use crate::{ActionError, EncodedAction};
 
@@ -35,7 +37,64 @@ const JSON: &str = "json";
 #[error("the recorded action names content {0} that is not here yet")]
 pub struct MissingContent(pub String);
 
-type ContentSink = Box<dyn Fn(ContentInputs)>;
+/// The parts of recorded actions kept as content, by their address (BLAKE3,
+/// lower-case hex), for the host's content store.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ContentParts {
+    entries: BTreeMap<String, Vec<u8>>,
+}
+
+impl ContentParts {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Keep `bytes`, returning their address. The same bytes kept twice are
+    /// kept once.
+    pub fn add(&mut self, bytes: impl Into<Vec<u8>>) -> String {
+        let bytes = bytes.into();
+        let hash = blake3::hash(&bytes).to_hex().to_string();
+        self.entries.entry(hash.clone()).or_insert(bytes);
+        hash
+    }
+
+    #[must_use]
+    pub fn get(&self, hash: &str) -> Option<&[u8]> {
+        self.entries.get(hash).map(Vec::as_slice)
+    }
+
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+}
+
+impl IntoIterator for ContentParts {
+    type Item = (String, Vec<u8>);
+    type IntoIter = std::collections::btree_map::IntoIter<String, Vec<u8>>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.entries.into_iter()
+    }
+}
+
+/// Whether `hash` has the shape of a content address (64 hex digits).
+fn valid_hash(hash: &str) -> bool {
+    hash.len() == 64 && hash.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+/// Whether `bytes` are the content `hash` (lower-case) names.
+fn verify(hash: &str, bytes: &[u8]) -> bool {
+    blake3::hash(bytes).to_hex().as_str() == hash
+}
+
+type ContentSink = Box<dyn Fn(ContentParts)>;
 type ContentRead = Box<dyn Fn(&str) -> Option<Vec<u8>>>;
 
 thread_local! {
@@ -48,7 +107,7 @@ thread_local! {
 /// `read`, so recorded actions replay wherever their content reaches. The
 /// host sets both once per thread that runs actions.
 pub fn keep_content_in(
-    keep: impl Fn(ContentInputs) + 'static,
+    keep: impl Fn(ContentParts) + 'static,
     read: impl Fn(&str) -> Option<Vec<u8>> + 'static,
 ) {
     SINK.with(|current| *current.borrow_mut() = Some(Box::new(keep)));
@@ -84,13 +143,13 @@ impl EncodedAction {
     pub fn with_content_parts(
         &self,
         threshold: usize,
-    ) -> Result<(Self, ContentInputs), ActionError> {
+    ) -> Result<(Self, ContentParts), ActionError> {
         let mut value: Value =
             serde_json::from_slice(&self.payload).map_err(|source| ActionError::Decode {
                 type_id: self.type_id.clone(),
                 source,
             })?;
-        let mut content = ContentInputs::new();
+        let mut content = ContentParts::new();
         // The payload's own shape stays inline; only its parts are kept.
         match &mut value {
             Value::Object(object) => {
@@ -178,7 +237,7 @@ fn reserved() -> ActionError {
 fn externalize(
     value: &mut Value,
     threshold: usize,
-    content: &mut ContentInputs,
+    content: &mut ContentParts,
 ) -> Result<(), ActionError> {
     match value {
         Value::String(text) if text.len() >= threshold => {
@@ -227,7 +286,7 @@ fn referenced(object: &Map<String, Value>) -> Option<(&str, &str)> {
     }
     let hash = object.get(CONTENT_REFERENCE_KEY)?.as_str()?;
     let kind = object.get(AS)?.as_str()?;
-    (tilo_content::valid_hash(hash) && matches!(kind, TEXT | BYTES | JSON)).then_some((hash, kind))
+    (valid_hash(hash) && matches!(kind, TEXT | BYTES | JSON)).then_some((hash, kind))
 }
 
 fn collect(value: &Value, hashes: &mut Vec<String>) {
@@ -250,7 +309,7 @@ fn internalize(
             if let Some((hash, kind)) = referenced(object) {
                 let missing = || MissingContent(hash.to_owned());
                 let bytes = read(hash)
-                    .filter(|bytes| tilo_content::verify(&hash.to_ascii_lowercase(), bytes))
+                    .filter(|bytes| verify(&hash.to_ascii_lowercase(), bytes))
                     .ok_or_else(missing)?;
                 *value = match kind {
                     TEXT => Value::String(String::from_utf8(bytes).map_err(|_| missing())?),

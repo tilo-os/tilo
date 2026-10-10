@@ -56,7 +56,7 @@ impl ActionEnvelope {
     ///
     /// # Errors
     /// A payload that is not JSON.
-    pub fn recorded_content(&self) -> Result<tilo_content::ContentInputs, crate::ActionError> {
+    pub fn recorded_content(&self) -> Result<crate::content::ContentParts, crate::ActionError> {
         let named = self
             .context
             .as_ref()
@@ -64,12 +64,12 @@ impl ActionEnvelope {
             .map(EncodedAction::content_parts)
             .unwrap_or_default();
         if named.is_empty() {
-            return Ok(tilo_content::ContentInputs::new());
+            return Ok(crate::content::ContentParts::new());
         }
         let (_, content) = self
             .action
             .with_content_parts(crate::content::CONTENT_PART_THRESHOLD)?;
-        let mut kept = tilo_content::ContentInputs::new();
+        let mut kept = crate::content::ContentParts::new();
         for hash in &named {
             if let Some(bytes) = content.get(hash) {
                 kept.add(bytes.to_vec());
