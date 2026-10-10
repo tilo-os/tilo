@@ -92,7 +92,7 @@ title = "Playback watched together, by video"
 type = "BTreeMap<String, SharedTransport>"
 
 [[resources.verbs]]
-description = "Create shared playlist.  A playlist everyone in the room sees."
+description = "A playlist everyone in the room sees."
 id = "create-playlist"
 kind = "undoable"
 label = "Create shared playlist"
@@ -102,11 +102,10 @@ name = "name"
 required = true
 
 [resources.verbs.params.schema]
-description = "Playlist name"
 type = "string"
 
 [[resources.verbs]]
-description = "Delete playlist.  Its videos go with it."
+description = "Its videos go with it."
 destructive = true
 id = "delete-playlist"
 kind = "undoable"
@@ -117,11 +116,9 @@ name = "playlist"
 required = true
 
 [resources.verbs.params.schema]
-description = "Playlist"
 type = "string"
 
 [[resources.verbs]]
-description = "Add media to playlist."
 id = "add-to-playlist"
 kind = "undoable"
 label = "Add media to playlist"
@@ -131,7 +128,6 @@ name = "playlist"
 required = true
 
 [resources.verbs.params.schema]
-description = "Playlist"
 type = "string"
 
 [[resources.verbs.params]]
@@ -139,7 +135,6 @@ name = "media_ref"
 required = true
 
 [resources.verbs.params.schema]
-description = "Opaque shareable media identity; never a device path"
 type = "string"
 
 [[resources.verbs.params]]
@@ -147,11 +142,10 @@ name = "title"
 required = true
 
 [resources.verbs.params.schema]
-description = "Media title"
 type = "string"
 
 [[resources.verbs]]
-description = "Add to Watch later.  Adds a video to the shared Watch later playlist, making the playlist when there is none; a video already on it stays where it is."
+description = "Adds a video to the shared Watch later playlist, making the playlist when there is none; a video already on it stays where it is."
 id = "add-to-watch-later"
 kind = "undoable"
 label = "Add to Watch later"
@@ -161,7 +155,6 @@ name = "media_ref"
 required = true
 
 [resources.verbs.params.schema]
-description = "Opaque shareable media identity; never a device path"
 type = "string"
 
 [[resources.verbs.params]]
@@ -169,11 +162,10 @@ name = "title"
 required = true
 
 [resources.verbs.params.schema]
-description = "Media title"
 type = "string"
 
 [[resources.verbs]]
-description = "Add timestamp annotation.  A review note at a time in a shared video; without a note it is a bookmark."
+description = "A review note at a time in a shared video; without a note it is a bookmark."
 id = "add-annotation"
 kind = "undoable"
 label = "Add timestamp annotation"
@@ -183,7 +175,6 @@ name = "media_ref"
 required = true
 
 [resources.verbs.params.schema]
-description = "Opaque shareable media identity; never a device path"
 type = "string"
 
 [[resources.verbs.params]]
@@ -191,7 +182,6 @@ name = "time_ms"
 required = true
 
 [resources.verbs.params.schema]
-description = "Absolute timestamp in milliseconds"
 minimum = 0
 type = "integer"
 
@@ -200,14 +190,12 @@ name = "text"
 required = false
 
 [resources.verbs.params.schema]
-description = "Annotation text; omit for a bookmark"
 type = [
     "string",
     "null",
 ]
 
 [[resources.verbs]]
-description = "Delete annotation."
 destructive = true
 id = "delete-annotation"
 kind = "undoable"
@@ -218,11 +206,10 @@ name = "annotation"
 required = true
 
 [resources.verbs.params.schema]
-description = "Annotation"
 type = "string"
 
 [[resources.verbs]]
-description = "Say where playback stands.  Everyone watching the video follows. Not an undo step: playing, pausing and seeking are not edits. The library remembers the playback of the last few videos."
+description = "Everyone watching the video follows. Not an undo step: playing, pausing and seeking are not edits. The library remembers the playback of the last few videos."
 id = "set-transport"
 kind = "undoable"
 label = "Say where playback stands"
@@ -232,7 +219,6 @@ name = "media_ref"
 required = true
 
 [resources.verbs.params.schema]
-description = "Opaque shareable media identity; never a device path"
 type = "string"
 
 [[resources.verbs.params]]
@@ -240,7 +226,6 @@ name = "playing"
 required = true
 
 [resources.verbs.params.schema]
-description = "Whether it plays"
 type = "boolean"
 
 [[resources.verbs.params]]
@@ -248,7 +233,6 @@ name = "position_ms"
 required = true
 
 [resources.verbs.params.schema]
-description = "The playhead in milliseconds"
 minimum = 0
 type = "integer"
 
@@ -257,7 +241,6 @@ name = "rate"
 required = true
 
 [resources.verbs.params.schema]
-description = "Playback speed from 0.25 to 4"
 type = "number"
 
 [[resources.verbs.params]]
@@ -265,6 +248,5 @@ name = "epoch_ms"
 required = true
 
 [resources.verbs.params.schema]
-description = "Unix milliseconds at which the playhead held"
 minimum = 0
 type = "integer"

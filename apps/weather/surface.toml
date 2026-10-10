@@ -72,7 +72,7 @@ title = "The id of the default place; empty for the first"
 type = "Atom"
 
 [[resources.verbs]]
-description = "Save a place to follow.  A place already saved near the same coordinates is kept, not saved twice."
+description = "A place already saved near the same coordinates is kept, not saved twice."
 id = "save-location"
 kind = "undoable"
 label = "Save a place to follow"
@@ -83,7 +83,7 @@ required = true
 
 [resources.verbs.params.schema]
 additionalProperties = false
-description = "The place"
+description = "A place to save, as found by the search or named by an agent."
 required = [
     "name",
     "country",
@@ -134,14 +134,12 @@ name = "make_default"
 required = false
 
 [resources.verbs.params.schema]
-description = "Show it first from now on"
 type = [
     "boolean",
     "null",
 ]
 
 [[resources.verbs]]
-description = "Use as default location."
 id = "use-as-default"
 kind = "undoable"
 label = "Use as default location"
@@ -151,11 +149,9 @@ name = "place"
 required = true
 
 [resources.verbs.params.schema]
-description = "Place"
 type = "string"
 
 [[resources.verbs]]
-description = "Move to top."
 id = "move-to-top"
 kind = "undoable"
 label = "Move to top"
@@ -165,11 +161,9 @@ name = "place"
 required = true
 
 [resources.verbs.params.schema]
-description = "Place"
 type = "string"
 
 [[resources.verbs]]
-description = "Remove location."
 destructive = true
 id = "remove"
 kind = "undoable"
@@ -180,5 +174,4 @@ name = "place"
 required = true
 
 [resources.verbs.params.schema]
-description = "Place"
 type = "string"

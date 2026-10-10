@@ -38,14 +38,12 @@ title = "The configured zones, by zone name"
 type = "BTreeMap<String, StoredZone>"
 
 [[resources.verbs]]
-description = "Start firewall."
 id = "start"
 kind = "undoable"
 label = "Start firewall"
 params = []
 
 [[resources.verbs]]
-description = "Stop firewall."
 destructive = true
 id = "stop"
 kind = "undoable"
@@ -53,7 +51,6 @@ label = "Stop firewall"
 params = []
 
 [[resources.verbs]]
-description = "Enter panic mode: drop all traffic in and out."
 destructive = true
 id = "enter-panic-mode"
 kind = "undoable"
@@ -61,14 +58,12 @@ label = "Enter panic mode: drop all traffic in and out"
 params = []
 
 [[resources.verbs]]
-description = "Exit panic mode."
 id = "exit-panic-mode"
 kind = "undoable"
 label = "Exit panic mode"
 params = []
 
 [[resources.verbs]]
-description = "Delete a rule from a zone."
 id = "delete-rule"
 kind = "undoable"
 label = "Delete a rule from a zone"
@@ -78,7 +73,7 @@ name = "zone"
 required = true
 
 [resources.verbs.params.schema]
-description = "The zone"
+description = "The nine stock firewalld zones. `Public` is the conventional default."
 enum = [
     "drop",
     "block",
@@ -97,11 +92,9 @@ name = "rule"
 required = true
 
 [resources.verbs.params.schema]
-description = "The rule's id"
 type = "string"
 
 [[resources.verbs]]
-description = "Take in the configuration firewalld reported on a device."
 id = "import"
 kind = "undoable"
 label = "Take in the configuration firewalld reported on a device"
@@ -111,4 +104,3 @@ name = "config"
 required = true
 
 [resources.verbs.params.schema]
-description = "The configuration, as firewalld reported it"

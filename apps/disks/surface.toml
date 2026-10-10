@@ -15,7 +15,7 @@ title = "Drive serial number to the name the person gave it. A name is written"
 type = "BTreeMap<String, Atom>"
 
 [[resources.verbs]]
-description = "Name a drive, or forget its name.  The name follows the drive to every device it is plugged into."
+description = "The name follows the drive to every device it is plugged into."
 id = "name-drive"
 kind = "undoable"
 label = "Name a drive, or forget its name"
@@ -25,7 +25,6 @@ name = "serial"
 required = true
 
 [resources.verbs.params.schema]
-description = "The drive's serial number"
 type = "string"
 
 [[resources.verbs.params]]
@@ -33,7 +32,6 @@ name = "name"
 required = false
 
 [resources.verbs.params.schema]
-description = "The name to show; none or blank forgets it"
 type = [
     "string",
     "null",

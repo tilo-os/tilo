@@ -226,7 +226,6 @@ title = "Time format"
 type = "Option<TimeStyle>"
 
 [[resources.verbs]]
-description = "Add a sheet."
 id = "new-sheet"
 kind = "undoable"
 label = "Add a sheet"
@@ -236,7 +235,6 @@ name = "name"
 required = false
 
 [resources.verbs.params.schema]
-description = "The new sheet's name; the next free SheetN when none"
 type = [
     "string",
     "null",
@@ -247,14 +245,12 @@ name = "after"
 required = false
 
 [resources.verbs.params.schema]
-description = "The sheet it goes after; the end when none"
 type = [
     "string",
     "null",
 ]
 
 [[resources.verbs]]
-description = "Duplicate a sheet."
 id = "duplicate-sheet"
 kind = "undoable"
 label = "Duplicate a sheet"
@@ -264,11 +260,9 @@ name = "sheet"
 required = true
 
 [resources.verbs.params.schema]
-description = "Sheet"
 type = "string"
 
 [[resources.verbs]]
-description = "Delete a sheet, with its comments."
 destructive = true
 id = "delete-sheet"
 kind = "undoable"
@@ -283,11 +277,9 @@ name = "sheet"
 required = true
 
 [resources.verbs.params.schema]
-description = "Sheet"
 type = "string"
 
 [[resources.verbs]]
-description = "Set cells from a start cell, row by row."
 id = "set-cells"
 kind = "undoable"
 label = "Set cells from a start cell, row by row"
@@ -297,7 +289,6 @@ name = "sheet"
 required = true
 
 [resources.verbs.params.schema]
-description = "Sheet"
 type = "string"
 
 [[resources.verbs.params]]
@@ -305,7 +296,6 @@ name = "start"
 required = true
 
 [resources.verbs.params.schema]
-description = "Top-left cell, e.g. A1"
 type = "string"
 
 [[resources.verbs.params]]
@@ -313,7 +303,6 @@ name = "rows"
 required = true
 
 [resources.verbs.params.schema]
-description = 'Rows of values written rightward and down from start; "=…" is a formula, "" clears, null skips'
 type = "array"
 
 [resources.verbs.params.schema.items]
@@ -322,7 +311,6 @@ type = "array"
 [resources.verbs.params.schema.items.items]
 
 [[resources.verbs]]
-description = "Write cells: values, formulas, formats and bold."
 id = "write-cells"
 kind = "undoable"
 label = "Write cells: values, formulas, formats and bold"
@@ -332,7 +320,6 @@ name = "sheet"
 required = true
 
 [resources.verbs.params.schema]
-description = "Sheet"
 type = "string"
 
 [[resources.verbs.params]]
@@ -340,7 +327,6 @@ name = "cells"
 required = true
 
 [resources.verbs.params.schema]
-description = "The cells to write; what a cell leaves out stays as it is"
 type = "array"
 
 [resources.verbs.params.schema.items]
@@ -375,7 +361,6 @@ type = [
 ]
 
 [[resources.verbs]]
-description = "Format cells."
 id = "format-cells"
 kind = "undoable"
 label = "Format cells"
@@ -385,7 +370,6 @@ name = "sheet"
 required = true
 
 [resources.verbs.params.schema]
-description = "Sheet"
 type = "string"
 
 [[resources.verbs.params]]
@@ -393,7 +377,6 @@ name = "range"
 required = true
 
 [resources.verbs.params.schema]
-description = "Cell or range, e.g. A1:D1"
 type = "string"
 
 [[resources.verbs.params]]
@@ -401,7 +384,7 @@ name = "format"
 required = false
 
 [resources.verbs.params.schema]
-description = "Number format"
+description = "general, number, currency, percent, date, time, boolean or text; currency:EUR, date:US, time:H12 name a style"
 type = [
     "string",
     "null",
@@ -412,14 +395,12 @@ name = "bold"
 required = false
 
 [resources.verbs.params.schema]
-description = "Bold text on or off"
 type = [
     "boolean",
     "null",
 ]
 
 [[resources.verbs]]
-description = "Sort rows by a column."
 id = "sort-rows"
 kind = "undoable"
 label = "Sort rows by a column"
@@ -429,7 +410,6 @@ name = "sheet"
 required = true
 
 [resources.verbs.params.schema]
-description = "Sheet"
 type = "string"
 
 [[resources.verbs.params]]
@@ -437,7 +417,6 @@ name = "range"
 required = true
 
 [resources.verbs.params.schema]
-description = "Rows to reorder, e.g. A2:C9 (leave the header out)"
 type = "string"
 
 [[resources.verbs.params]]
@@ -445,7 +424,6 @@ name = "by"
 required = true
 
 [resources.verbs.params.schema]
-description = "Column letter to sort by, e.g. C"
 type = "string"
 
 [[resources.verbs.params]]
@@ -453,14 +431,12 @@ name = "descending"
 required = false
 
 [resources.verbs.params.schema]
-description = "Largest first; smallest first when none"
 type = [
     "boolean",
     "null",
 ]
 
 [[resources.verbs]]
-description = "Insert rows above a row."
 id = "insert-rows"
 kind = "undoable"
 label = "Insert rows above a row"
@@ -470,7 +446,6 @@ name = "sheet"
 required = true
 
 [resources.verbs.params.schema]
-description = "Sheet"
 type = "string"
 
 [[resources.verbs.params]]
@@ -478,7 +453,6 @@ name = "at"
 required = true
 
 [resources.verbs.params.schema]
-description = "Row number as shown (1-based) the new rows go above"
 maximum = 4294967295
 minimum = 0
 type = "integer"
@@ -488,7 +462,6 @@ name = "count"
 required = false
 
 [resources.verbs.params.schema]
-description = "How many rows; one when none"
 maximum = 4294967295
 minimum = 0
 type = [
@@ -497,7 +470,6 @@ type = [
 ]
 
 [[resources.verbs]]
-description = "Delete rows."
 destructive = true
 id = "delete-rows"
 kind = "undoable"
@@ -512,7 +484,6 @@ name = "sheet"
 required = true
 
 [resources.verbs.params.schema]
-description = "Sheet"
 type = "string"
 
 [[resources.verbs.params]]
@@ -520,7 +491,6 @@ name = "rows"
 required = true
 
 [resources.verbs.params.schema]
-description = "Row numbers as shown (1-based) to delete; rows below move up"
 type = "array"
 
 [resources.verbs.params.schema.items]
@@ -529,7 +499,6 @@ minimum = 0
 type = "integer"
 
 [[resources.verbs]]
-description = "Insert columns left of a column."
 id = "insert-columns"
 kind = "undoable"
 label = "Insert columns left of a column"
@@ -539,7 +508,6 @@ name = "sheet"
 required = true
 
 [resources.verbs.params.schema]
-description = "Sheet"
 type = "string"
 
 [[resources.verbs.params]]
@@ -547,7 +515,6 @@ name = "at"
 required = true
 
 [resources.verbs.params.schema]
-description = "Column letter the new columns go left of, e.g. C"
 type = "string"
 
 [[resources.verbs.params]]
@@ -555,7 +522,6 @@ name = "count"
 required = false
 
 [resources.verbs.params.schema]
-description = "How many columns; one when none"
 maximum = 4294967295
 minimum = 0
 type = [
@@ -564,7 +530,6 @@ type = [
 ]
 
 [[resources.verbs]]
-description = "Delete columns."
 destructive = true
 id = "delete-columns"
 kind = "undoable"
@@ -579,7 +544,6 @@ name = "sheet"
 required = true
 
 [resources.verbs.params.schema]
-description = "Sheet"
 type = "string"
 
 [[resources.verbs.params]]
@@ -587,14 +551,13 @@ name = "columns"
 required = true
 
 [resources.verbs.params.schema]
-description = 'Column letters to delete, e.g. ["C"]; columns right of them move left'
 type = "array"
 
 [resources.verbs.params.schema.items]
 type = "string"
 
 [[resources.verbs]]
-description = "Import sheets.  Adds the sheets of a file as new sheets, in one step; into a new, still blank workbook they replace its empty first sheet."
+description = "Adds the sheets of a file as new sheets, in one step; into a new, still blank workbook they replace its empty first sheet."
 id = "import-sheets"
 kind = "undoable"
 label = "Import sheets"
@@ -604,7 +567,6 @@ name = "sheets"
 required = true
 
 [resources.verbs.params.schema]
-description = "The sheets, each with its name and cells"
 type = "array"
 
 [resources.verbs.params.schema.items]
@@ -658,14 +620,12 @@ name = "source"
 required = false
 
 [resources.verbs.params.schema]
-description = "The file they come from, which opening again reveals"
 type = [
     "string",
     "null",
 ]
 
 [[resources.verbs]]
-description = "Chart a range."
 id = "add-chart"
 kind = "undoable"
 label = "Chart a range"
@@ -675,7 +635,6 @@ name = "sheet"
 required = true
 
 [resources.verbs.params.schema]
-description = "Sheet"
 type = "string"
 
 [[resources.verbs.params]]
@@ -683,7 +642,6 @@ name = "range"
 required = true
 
 [resources.verbs.params.schema]
-description = "The cells to chart, e.g. B2:D6"
 type = "string"
 
 [[resources.verbs.params]]
@@ -691,7 +649,6 @@ name = "kind"
 required = true
 
 [resources.verbs.params.schema]
-description = "Chart type"
 enum = [
     "column",
     "line",
@@ -703,11 +660,9 @@ name = "title"
 required = true
 
 [resources.verbs.params.schema]
-description = "Title"
 type = "string"
 
 [[resources.verbs]]
-description = "Edit a chart: its title, and its type and cells when given."
 id = "edit-chart"
 kind = "undoable"
 label = "Edit a chart: its title, and its type and cells when given"
@@ -717,7 +672,6 @@ name = "sheet"
 required = true
 
 [resources.verbs.params.schema]
-description = "Sheet"
 type = "string"
 
 [[resources.verbs.params]]
@@ -725,7 +679,6 @@ name = "chart"
 required = true
 
 [resources.verbs.params.schema]
-description = "The chart"
 type = "string"
 
 [[resources.verbs.params]]
@@ -733,15 +686,11 @@ name = "title"
 required = true
 
 [resources.verbs.params.schema]
-description = "Title"
 type = "string"
 
 [[resources.verbs.params]]
 name = "kind"
 required = false
-
-[resources.verbs.params.schema]
-description = "Chart type; none keeps it"
 
 [[resources.verbs.params.schema.oneOf]]
 type = "null"
@@ -758,7 +707,7 @@ name = "range"
 required = false
 
 [resources.verbs.params.schema]
-description = "The cells to chart, e.g. B2:D6; none keeps them"
+description = "A cell or a range of cells, e.g. B3 or B2:D6"
 pattern = "^[A-Za-z]+[0-9]+(:[A-Za-z]+[0-9]+)?$"
 type = [
     "string",
@@ -766,7 +715,6 @@ type = [
 ]
 
 [[resources.verbs]]
-description = "Delete a chart."
 destructive = true
 id = "delete-chart"
 kind = "undoable"
@@ -777,7 +725,6 @@ name = "sheet"
 required = true
 
 [resources.verbs.params.schema]
-description = "Sheet"
 type = "string"
 
 [[resources.verbs.params]]
@@ -785,11 +732,9 @@ name = "chart"
 required = true
 
 [resources.verbs.params.schema]
-description = "The chart"
 type = "string"
 
 [[resources.verbs]]
-description = "Comment on cells."
 id = "comment"
 kind = "undoable"
 label = "Comment on cells"
@@ -803,7 +748,6 @@ name = "sheet"
 required = true
 
 [resources.verbs.params.schema]
-description = "Sheet"
 type = "string"
 
 [[resources.verbs.params]]
@@ -811,7 +755,6 @@ name = "range"
 required = true
 
 [resources.verbs.params.schema]
-description = "The cells it is about, e.g. B2:E2"
 type = "string"
 
 [[resources.verbs.params]]
@@ -819,11 +762,9 @@ name = "text"
 required = true
 
 [resources.verbs.params.schema]
-description = "Comment"
 type = "string"
 
 [[resources.verbs]]
-description = "Reply to a comment."
 id = "reply"
 kind = "undoable"
 label = "Reply to a comment"
@@ -837,7 +778,6 @@ name = "comment"
 required = true
 
 [resources.verbs.params.schema]
-description = "Comment"
 type = "string"
 
 [[resources.verbs.params]]
@@ -845,11 +785,9 @@ name = "text"
 required = true
 
 [resources.verbs.params.schema]
-description = "Reply"
 type = "string"
 
 [[resources.verbs]]
-description = "Edit a comment's text."
 id = "edit-comment"
 kind = "undoable"
 label = "Edit a comment's text"
@@ -863,7 +801,6 @@ name = "comment"
 required = true
 
 [resources.verbs.params.schema]
-description = "Comment"
 type = "string"
 
 [[resources.verbs.params]]
@@ -871,11 +808,9 @@ name = "body"
 required = true
 
 [resources.verbs.params.schema]
-description = "Comment"
 type = "string"
 
 [[resources.verbs]]
-description = "Delete a comment."
 destructive = true
 id = "delete-comment"
 kind = "undoable"
@@ -890,5 +825,4 @@ name = "comment"
 required = true
 
 [resources.verbs.params.schema]
-description = "Comment"
 type = "string"

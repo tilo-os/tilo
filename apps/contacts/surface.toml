@@ -229,7 +229,7 @@ title = "The contacts deleted from the book. A deleted contact's id never"
 type = "Set<ContactId>"
 
 [[resources.verbs]]
-description = "New contact.  A contact with a typed full name: its first word is the first name, the rest the last name."
+description = "A contact with a typed full name: its first word is the first name, the rest the last name."
 id = "new-contact"
 kind = "undoable"
 label = "New contact"
@@ -239,11 +239,10 @@ name = "name"
 required = true
 
 [resources.verbs.params.schema]
-description = "Full name"
 type = "string"
 
 [[resources.verbs]]
-description = "Add contacts.  Whole cards, written in the form or imported, added as one change. Each id is new to the book: neither a contact's nor a deleted contact's."
+description = "Whole cards, written in the form or imported, added as one change. Each id is new to the book: neither a contact's nor a deleted contact's."
 id = "add-contacts"
 kind = "undoable"
 label = "Add contacts"
@@ -253,7 +252,6 @@ name = "contacts"
 required = true
 
 [resources.verbs.params.schema]
-description = "The contacts"
 type = "array"
 
 [resources.verbs.params.schema.items]
@@ -492,7 +490,6 @@ description = "Website"
 type = "string"
 
 [[resources.verbs]]
-description = "Delete contact."
 destructive = true
 id = "delete-contact"
 kind = "undoable"
@@ -503,11 +500,10 @@ name = "contact"
 required = true
 
 [resources.verbs.params.schema]
-description = "Contact"
 type = "string"
 
 [[resources.verbs]]
-description = "Merge contacts.  Merges another contact into this one and deletes it. Every phone number, email address, postal address and group of either is kept; a field both fill keeps this contact's value unless it is named to be taken from the other."
+description = "Merges another contact into this one and deletes it. Every phone number, email address, postal address and group of either is kept; a field both fill keeps this contact's value unless it is named to be taken from the other."
 destructive = true
 id = "merge-contacts"
 kind = "undoable"
@@ -518,7 +514,6 @@ name = "contact"
 required = true
 
 [resources.verbs.params.schema]
-description = "Contact"
 type = "string"
 
 [[resources.verbs.params]]
@@ -526,7 +521,6 @@ name = "source"
 required = true
 
 [resources.verbs.params.schema]
-description = "The contact merged into it and deleted"
 format = "uuid"
 type = "string"
 
@@ -535,7 +529,6 @@ name = "take_from_source"
 required = true
 
 [resources.verbs.params.schema]
-description = "The fields to take from the merged contact: First, Last, Organization, Title, Website, Birthday, Notes"
 type = "array"
 
 [resources.verbs.params.schema.items]
@@ -635,7 +628,7 @@ title = "Retained tombstone; the association id must never be reassigned"
 type = "bool"
 
 [[resources.verbs]]
-description = "Update the label of a Contacts identity, without merging similar names or reviving an identity that was deleted."
+description = "or reviving an identity that was deleted."
 id = "project-contact"
 kind = "undoable"
 label = "Update the label of a Contacts identity, without merging similar names"
@@ -645,7 +638,6 @@ name = "person"
 required = true
 
 [resources.verbs.params.schema]
-description = "Person"
 type = "string"
 
 [[resources.verbs.params]]
@@ -653,11 +645,10 @@ name = "label"
 required = true
 
 [resources.verbs.params.schema]
-description = "Label"
 type = "string"
 
 [[resources.verbs]]
-description = "Tombstone a removed Contacts identity. Delayed projections cannot recreate it and its endpoints cannot be used for sending."
+description = "recreate it and its endpoints cannot be used for sending."
 id = "remove-contact"
 kind = "undoable"
 label = "Tombstone a removed Contacts identity. Delayed projections cannot"
@@ -667,11 +658,10 @@ name = "person"
 required = true
 
 [resources.verbs.params.schema]
-description = "Person"
 type = "string"
 
 [[resources.verbs]]
-description = "Explicitly confirm that this service recipient belongs to this person. An uncertain candidate never becomes an association merely by appearing in a contact search or having a matching name/phone number."
+description = "An uncertain candidate never becomes an association merely by appearing in a contact search or having a matching name/phone number."
 destructive = true
 id = "confirm-endpoint"
 kind = "undoable"
@@ -682,7 +672,6 @@ name = "person"
 required = true
 
 [resources.verbs.params.schema]
-description = "Person"
 type = "string"
 
 [[resources.verbs.params]]
@@ -690,7 +679,6 @@ name = "endpoint"
 required = true
 
 [resources.verbs.params.schema]
-description = "Endpoint"
 type = "string"
 
 [[resources.verbs.params]]
@@ -698,7 +686,6 @@ name = "service"
 required = true
 
 [resources.verbs.params.schema]
-description = "Service"
 type = "string"
 
 [[resources.verbs.params]]
@@ -706,11 +693,10 @@ name = "recipient"
 required = true
 
 [resources.verbs.params.schema]
-description = "Recipient"
 type = "string"
 
 [[resources.verbs]]
-description = "Confirm the exact provider-scoped account and observed identity revision. This is an address-book decision, not cryptographic proof or permission."
+description = "This is an address-book decision, not cryptographic proof or permission."
 destructive = true
 id = "confirm-account"
 kind = "undoable"
@@ -721,7 +707,6 @@ name = "person"
 required = true
 
 [resources.verbs.params.schema]
-description = "Person"
 type = "string"
 
 [[resources.verbs.params]]
@@ -729,7 +714,6 @@ name = "endpoint"
 required = true
 
 [resources.verbs.params.schema]
-description = "Endpoint"
 type = "string"
 
 [[resources.verbs.params]]
@@ -737,7 +721,6 @@ name = "service"
 required = true
 
 [resources.verbs.params.schema]
-description = "Service"
 type = "string"
 
 [[resources.verbs.params]]
@@ -745,7 +728,6 @@ name = "scope"
 required = true
 
 [resources.verbs.params.schema]
-description = "Scope"
 type = "string"
 
 [[resources.verbs.params]]
@@ -753,7 +735,6 @@ name = "recipient"
 required = true
 
 [resources.verbs.params.schema]
-description = "Recipient"
 type = "string"
 
 [[resources.verbs.params]]
@@ -761,11 +742,9 @@ name = "revision"
 required = true
 
 [resources.verbs.params.schema]
-description = "Revision"
 type = "string"
 
 [[resources.verbs]]
-description = "Replace an address after review, clearing unavailable identity evidence."
 destructive = true
 id = "replace-endpoint"
 kind = "undoable"
@@ -776,7 +755,6 @@ name = "person"
 required = true
 
 [resources.verbs.params.schema]
-description = "Person"
 type = "string"
 
 [[resources.verbs.params]]
@@ -784,7 +762,6 @@ name = "previous"
 required = true
 
 [resources.verbs.params.schema]
-description = "Previous"
 type = "string"
 
 [[resources.verbs.params]]
@@ -792,7 +769,6 @@ name = "endpoint"
 required = true
 
 [resources.verbs.params.schema]
-description = "Endpoint"
 type = "string"
 
 [[resources.verbs.params]]
@@ -800,7 +776,6 @@ name = "service"
 required = true
 
 [resources.verbs.params.schema]
-description = "Service"
 type = "string"
 
 [[resources.verbs.params]]
@@ -808,11 +783,9 @@ name = "recipient"
 required = true
 
 [resources.verbs.params.schema]
-description = "Recipient"
 type = "string"
 
 [[resources.verbs]]
-description = "Replace a reviewed association atomically, retaining the old tombstone."
 destructive = true
 id = "replace-account"
 kind = "undoable"
@@ -823,7 +796,6 @@ name = "person"
 required = true
 
 [resources.verbs.params.schema]
-description = "Person"
 type = "string"
 
 [[resources.verbs.params]]
@@ -831,7 +803,6 @@ name = "previous"
 required = true
 
 [resources.verbs.params.schema]
-description = "Previous"
 type = "string"
 
 [[resources.verbs.params]]
@@ -839,7 +810,6 @@ name = "endpoint"
 required = true
 
 [resources.verbs.params.schema]
-description = "Endpoint"
 type = "string"
 
 [[resources.verbs.params]]
@@ -847,7 +817,6 @@ name = "service"
 required = true
 
 [resources.verbs.params.schema]
-description = "Service"
 type = "string"
 
 [[resources.verbs.params]]
@@ -855,7 +824,6 @@ name = "scope"
 required = true
 
 [resources.verbs.params.schema]
-description = "Scope"
 type = "string"
 
 [[resources.verbs.params]]
@@ -863,7 +831,6 @@ name = "recipient"
 required = true
 
 [resources.verbs.params.schema]
-description = "Recipient"
 type = "string"
 
 [[resources.verbs.params]]
@@ -871,11 +838,9 @@ name = "revision"
 required = true
 
 [resources.verbs.params.schema]
-description = "Revision"
 type = "string"
 
 [[resources.verbs]]
-description = "Project phone hints from Contacts. These can suggest candidates only."
 id = "project-phones"
 kind = "undoable"
 label = "Project phone hints from Contacts. These can suggest candidates only"
@@ -885,7 +850,6 @@ name = "person"
 required = true
 
 [resources.verbs.params.schema]
-description = "Person"
 type = "string"
 
 [[resources.verbs.params]]
@@ -893,14 +857,12 @@ name = "phones"
 required = true
 
 [resources.verbs.params.schema]
-description = "Phones"
 type = "array"
 
 [resources.verbs.params.schema.items]
 type = "string"
 
 [[resources.verbs]]
-description = "Project mailbox hints without creating any service association."
 id = "project-emails"
 kind = "undoable"
 label = "Project mailbox hints without creating any service association"
@@ -910,7 +872,6 @@ name = "person"
 required = true
 
 [resources.verbs.params.schema]
-description = "Person"
 type = "string"
 
 [[resources.verbs.params]]
@@ -918,14 +879,13 @@ name = "emails"
 required = true
 
 [resources.verbs.params.schema]
-description = "Emails"
 type = "array"
 
 [resources.verbs.params.schema.items]
 type = "string"
 
 [[resources.verbs]]
-description = "Project many Contacts identities as one change: each person's label, phone and mailbox hints as [`Self::project_contact`], [`Self::project_phones`] and [`Self::project_emails`] would, and each of `removed` tombstoned as [`Self::remove_contact`] would. A large import costs one change instead of three per person."
+description = "phone and mailbox hints as [`Self::project_contact`], [`Self::project_phones`] and [`Self::project_emails`] would, and each of `removed` tombstoned as [`Self::remove_contact`] would. A large import costs one change instead of three per person."
 id = "project-contacts"
 kind = "undoable"
 label = "Project many Contacts identities as one change: each person's label,"
@@ -935,7 +895,6 @@ name = "people"
 required = true
 
 [resources.verbs.params.schema]
-description = "People"
 type = "array"
 
 [resources.verbs.params.schema.items]
@@ -973,14 +932,12 @@ name = "removed"
 required = true
 
 [resources.verbs.params.schema]
-description = "Removed"
 type = "array"
 
 [resources.verbs.params.schema.items]
 type = "string"
 
 [[resources.verbs]]
-description = "Remove a reviewed association. No implicit transfer to another person."
 destructive = true
 id = "forget-endpoint"
 kind = "undoable"
@@ -991,7 +948,6 @@ name = "person"
 required = true
 
 [resources.verbs.params.schema]
-description = "Person"
 type = "string"
 
 [[resources.verbs.params]]
@@ -999,5 +955,4 @@ name = "endpoint"
 required = true
 
 [resources.verbs.params.schema]
-description = "Endpoint"
 type = "string"

@@ -65,7 +65,6 @@ title = "The device that ran it, as its host names it"
 type = "String"
 
 [[resources.verbs]]
-description = "Record a finished measurement."
 id = "record"
 kind = "undoable"
 label = "Record a finished measurement"
@@ -75,7 +74,6 @@ name = "ping"
 required = true
 
 [resources.verbs.params.schema]
-description = "Round trip in milliseconds"
 type = "number"
 
 [[resources.verbs.params]]
@@ -83,7 +81,6 @@ name = "jitter"
 required = true
 
 [resources.verbs.params.schema]
-description = "Round-trip variation in milliseconds"
 type = "number"
 
 [[resources.verbs.params]]
@@ -91,7 +88,6 @@ name = "download"
 required = true
 
 [resources.verbs.params.schema]
-description = "Download speed in megabits per second"
 type = "number"
 
 [[resources.verbs.params]]
@@ -99,7 +95,6 @@ name = "upload"
 required = true
 
 [resources.verbs.params.schema]
-description = "Upload speed in megabits per second"
 type = "number"
 
 [[resources.verbs.params]]
@@ -107,7 +102,6 @@ name = "server"
 required = true
 
 [resources.verbs.params.schema]
-description = "The server that answered"
 type = "string"
 
 [[resources.verbs.params]]
@@ -115,11 +109,9 @@ name = "device"
 required = true
 
 [resources.verbs.params.schema]
-description = "The device that ran it"
 type = "string"
 
 [[resources.verbs]]
-description = "Forget every measurement."
 destructive = true
 id = "clear"
 kind = "undoable"

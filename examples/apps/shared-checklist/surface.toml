@@ -37,7 +37,6 @@ title = "A register: concurrent toggles settle on one value"
 type = "bool"
 
 [[resources.verbs]]
-description = "Add an item."
 id = "add"
 kind = "undoable"
 label = "Add an item"
@@ -47,11 +46,9 @@ name = "title"
 required = true
 
 [resources.verbs.params.schema]
-description = "Title of the new item"
 type = "string"
 
 [[resources.verbs]]
-description = "Remove every checked item, as one undo step."
 destructive = true
 id = "clear-done"
 kind = "undoable"

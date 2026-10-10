@@ -60,7 +60,7 @@ title = "Reply"
 type = "String"
 
 [[resources.verbs]]
-description = "Reply to a comment.  Visible to everyone sharing this library. The same reply twice to one comment is kept once, so a retried reply is not posted again."
+description = "Visible to everyone sharing this library. The same reply twice to one comment is kept once, so a retried reply is not posted again."
 id = "reply-to-comment"
 kind = "undoable"
 label = "Reply to a comment"
@@ -70,7 +70,6 @@ name = "comment"
 required = true
 
 [resources.verbs.params.schema]
-description = "The comment's id: its row id after `tube.comment:`"
 type = "string"
 
 [[resources.verbs.params]]
@@ -78,11 +77,9 @@ name = "text"
 required = true
 
 [resources.verbs.params.schema]
-description = "The reply"
 type = "string"
 
 [[resources.verbs]]
-description = "Retract a reply."
 id = "retract"
 kind = "undoable"
 label = "Retract a reply"
@@ -92,5 +89,73 @@ name = "reply"
 required = true
 
 [resources.verbs.params.schema]
-description = "Reply"
 type = "string"
+
+[[resources]]
+kind = "tube.watch-history"
+label = "Watch history"
+person = true
+version = 1
+
+[[resources.fields]]
+owner = "watch-history"
+path = "watched"
+stored = "value"
+title = "Watched"
+type = "BTreeMap<String, u64>"
+
+[[resources.verbs]]
+id = "record"
+kind = "undoable"
+label = "The video was watched at `at_ms`: it moves to the front"
+
+[[resources.verbs.params]]
+name = "video"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "at_ms"
+required = true
+
+[resources.verbs.params.schema]
+minimum = 0
+type = "integer"
+
+[[resources.verbs]]
+description = "watched there; one already in the history keeps its place."
+id = "import"
+kind = "undoable"
+label = "Videos another device watched: each takes its place by when it was"
+
+[[resources.verbs.params]]
+name = "watched"
+required = true
+
+[resources.verbs.params.schema]
+type = "array"
+
+[resources.verbs.params.schema.items]
+maxItems = 2
+minItems = 2
+type = "array"
+
+[[resources.verbs]]
+id = "forget"
+kind = "undoable"
+label = "Remove from history"
+
+[[resources.verbs.params]]
+name = "video"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs]]
+id = "clear"
+kind = "undoable"
+label = "Clear watch history"
+params = []

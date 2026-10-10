@@ -22,7 +22,6 @@ title = "Body"
 type = "String"
 
 [[resources.verbs]]
-description = "Clear the document."
 destructive = true
 id = "clear"
 kind = "undoable"

@@ -1790,7 +1790,7 @@ title = "Corner radius"
 type = "f64"
 
 [[resources.verbs]]
-description = "Add slide  A new slide after `after` (last when none), its title and body text boxes holding `title` and `body` when given. A `title` layout makes a cover slide."
+description = "A new slide after `after` (last when none), its title and body text boxes holding `title` and `body` when given. A `title` layout makes a cover slide."
 id = "add-slide"
 kind = "undoable"
 label = "Add slide"
@@ -1800,7 +1800,6 @@ name = "title"
 required = false
 
 [resources.verbs.params.schema]
-description = "Title"
 type = [
     "string",
     "null",
@@ -1811,7 +1810,6 @@ name = "body"
 required = false
 
 [resources.verbs.params.schema]
-description = "Body, a paragraph per line"
 type = [
     "string",
     "null",
@@ -1820,9 +1818,6 @@ type = [
 [[resources.verbs.params]]
 name = "layout"
 required = false
-
-[resources.verbs.params.schema]
-description = "Layout"
 
 [[resources.verbs.params.schema.oneOf]]
 type = "null"
@@ -1842,14 +1837,13 @@ name = "after"
 required = false
 
 [resources.verbs.params.schema]
-description = "The slide it goes after; last when none"
 type = [
     "string",
     "null",
 ]
 
 [[resources.verbs]]
-description = "Insert slide  The slide `slide`, whole, at position `at` (counting from 0): the window's new and pasted slides, under the ids they carry."
+description = "The slide `slide`, whole, at position `at` (counting from 0): the window's new and pasted slides, under the ids they carry."
 id = "insert-slide"
 kind = "undoable"
 label = "Insert slide"
@@ -1859,7 +1853,6 @@ name = "at"
 required = true
 
 [resources.verbs.params.schema]
-description = "Position, counting from 0"
 minimum = 0
 type = "integer"
 
@@ -1869,7 +1862,7 @@ required = true
 
 [resources.verbs.params.schema]
 additionalProperties = false
-description = "The slide"
+description = "A slide as a verb carries it whole."
 required = [
     "id",
     "layout",
@@ -2088,7 +2081,7 @@ type = "string"
 type = "string"
 
 [[resources.verbs]]
-description = "Duplicate slide  A copy of the slide, right after it."
+description = "A copy of the slide, right after it."
 id = "duplicate-slide"
 kind = "undoable"
 label = "Duplicate slide"
@@ -2098,11 +2091,9 @@ name = "slide"
 required = true
 
 [resources.verbs.params.schema]
-description = "Slide"
 type = "string"
 
 [[resources.verbs]]
-description = "Delete slide"
 destructive = true
 id = "delete-slide"
 kind = "undoable"
@@ -2113,11 +2104,10 @@ name = "slide"
 required = true
 
 [resources.verbs.params.schema]
-description = "Slide"
 type = "string"
 
 [[resources.verbs]]
-description = "Move slide  Put the slide at `position`, counting from 0 for the first slide."
+description = "Put the slide at `position`, counting from 0 for the first slide."
 id = "move-slide"
 kind = "undoable"
 label = "Move slide"
@@ -2127,7 +2117,6 @@ name = "slide"
 required = true
 
 [resources.verbs.params.schema]
-description = "Slide"
 type = "string"
 
 [[resources.verbs.params]]
@@ -2135,12 +2124,11 @@ name = "position"
 required = true
 
 [resources.verbs.params.schema]
-description = "Where the slide ends up, counting from 0"
 minimum = 0
 type = "integer"
 
 [[resources.verbs]]
-description = "Set slide text  Replace the words of the slide's title (its first text box) and/or body (its second) as plain text, a paragraph per line, keeping their place and style."
+description = "Replace the words of the slide's title (its first text box) and/or body (its second) as plain text, a paragraph per line, keeping their place and style."
 id = "set-text"
 kind = "undoable"
 label = "Set slide text"
@@ -2150,7 +2138,6 @@ name = "slide"
 required = true
 
 [resources.verbs.params.schema]
-description = "Slide"
 type = "string"
 
 [[resources.verbs.params]]
@@ -2158,7 +2145,6 @@ name = "title"
 required = false
 
 [resources.verbs.params.schema]
-description = "New title"
 type = [
     "string",
     "null",
@@ -2169,14 +2155,13 @@ name = "body"
 required = false
 
 [resources.verbs.params.schema]
-description = "New body, a paragraph per line"
 type = [
     "string",
     "null",
 ]
 
 [[resources.verbs]]
-description = "Add element  A text box, shape, line or picture on the slide, above everything on it, styled as its kind is unless `element` names a style."
+description = "A text box, shape, line or picture on the slide, above everything on it, styled as its kind is unless `element` names a style."
 id = "add-element"
 kind = "undoable"
 label = "Add element"
@@ -2186,7 +2171,6 @@ name = "slide"
 required = true
 
 [resources.verbs.params.schema]
-description = "Slide"
 type = "string"
 
 [[resources.verbs.params]]
@@ -2195,7 +2179,7 @@ required = true
 
 [resources.verbs.params.schema]
 additionalProperties = false
-description = "What to add, where, and any style"
+description = "An element an agent adds: its kind and place, its words or picture, and any style other than its kind's."
 required = [
     "kind",
     "x",
@@ -2318,7 +2302,7 @@ description = "Top edge, in slide units (the slide is 720 high)."
 type = "number"
 
 [[resources.verbs]]
-description = "Insert element  The element `element`, whole, above everything on the slide: the window's pasted and new elements, under the ids they carry."
+description = "The element `element`, whole, above everything on the slide: the window's pasted and new elements, under the ids they carry."
 id = "insert-element"
 kind = "undoable"
 label = "Insert element"
@@ -2328,7 +2312,6 @@ name = "slide"
 required = true
 
 [resources.verbs.params.schema]
-description = "Slide"
 type = "string"
 
 [[resources.verbs.params]]
@@ -2337,7 +2320,7 @@ required = true
 
 [resources.verbs.params.schema]
 additionalProperties = false
-description = "The element"
+description = "An element as a verb carries it whole: the window's paste, a slide's copy, a file's import. `blocks` are a text box's words as written."
 required = [
     "id",
     "kind",
@@ -2507,7 +2490,6 @@ type = "number"
 type = "number"
 
 [[resources.verbs]]
-description = "Delete element"
 destructive = true
 id = "delete-element"
 kind = "undoable"
@@ -2518,7 +2500,6 @@ name = "slide"
 required = true
 
 [resources.verbs.params.schema]
-description = "Slide"
 type = "string"
 
 [[resources.verbs.params]]
@@ -2526,11 +2507,9 @@ name = "element"
 required = true
 
 [resources.verbs.params.schema]
-description = "Element"
 type = "string"
 
 [[resources.verbs]]
-description = "Bring to front"
 id = "bring-to-front"
 kind = "undoable"
 label = "Bring to front"
@@ -2540,7 +2519,6 @@ name = "slide"
 required = true
 
 [resources.verbs.params.schema]
-description = "Slide"
 type = "string"
 
 [[resources.verbs.params]]
@@ -2548,11 +2526,9 @@ name = "element"
 required = true
 
 [resources.verbs.params.schema]
-description = "Element"
 type = "string"
 
 [[resources.verbs]]
-description = "Send to back"
 id = "send-to-back"
 kind = "undoable"
 label = "Send to back"
@@ -2562,7 +2538,6 @@ name = "slide"
 required = true
 
 [resources.verbs.params.schema]
-description = "Slide"
 type = "string"
 
 [[resources.verbs.params]]
@@ -2570,11 +2545,10 @@ name = "element"
 required = true
 
 [resources.verbs.params.schema]
-description = "Element"
 type = "string"
 
 [[resources.verbs]]
-description = "Replace deck  Replace the whole deck — its title, theme and every slide — with another: a presentation file opened into it."
+description = "Replace the whole deck — its title, theme and every slide — with another: a presentation file opened into it."
 id = "replace-deck"
 kind = "undoable"
 label = "Replace deck"
@@ -2584,7 +2558,6 @@ name = "title"
 required = true
 
 [resources.verbs.params.schema]
-description = "Title"
 type = "string"
 
 [[resources.verbs.params]]
@@ -2592,7 +2565,7 @@ name = "palette"
 required = true
 
 [resources.verbs.params.schema]
-description = "Theme"
+description = "Named accent palettes a deck can adopt. Every colour is still pulled from the OS `Theme` so the deck respects the system look — the palette only chooses *which* token drives the accent."
 enum = [
     "indigo",
     "emerald",
@@ -2607,7 +2580,6 @@ name = "slides"
 required = true
 
 [resources.verbs.params.schema]
-description = "Slides, in order"
 type = "array"
 
 [resources.verbs.params.schema.items]

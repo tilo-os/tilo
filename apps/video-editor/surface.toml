@@ -760,7 +760,6 @@ title = "Optional free-text note"
 type = "String"
 
 [[resources.verbs]]
-description = "Set the frame size."
 id = "set-frame-size"
 kind = "undoable"
 label = "Set the frame size"
@@ -770,7 +769,6 @@ name = "width"
 required = true
 
 [resources.verbs.params.schema]
-description = "Frame width in pixels; clamped to 16..8192 and rounded even"
 maximum = 4294967295
 minimum = 0
 type = "integer"
@@ -780,13 +778,11 @@ name = "height"
 required = true
 
 [resources.verbs.params.schema]
-description = "Frame height in pixels; clamped to 16..8192 and rounded even"
 maximum = 4294967295
 minimum = 0
 type = "integer"
 
 [[resources.verbs]]
-description = "Set the frame rate."
 id = "set-frame-rate"
 kind = "undoable"
 label = "Set the frame rate"
@@ -796,11 +792,9 @@ name = "fps"
 required = true
 
 [resources.verbs.params.schema]
-description = "Frames per second; clamped to 1..240"
 type = "number"
 
 [[resources.verbs]]
-description = "Set the render range."
 id = "set-render-range"
 kind = "undoable"
 label = "Set the render range"
@@ -810,7 +804,6 @@ name = "start"
 required = true
 
 [resources.verbs.params.schema]
-description = "Seconds where a render begins"
 type = "number"
 
 [[resources.verbs.params]]
@@ -818,11 +811,9 @@ name = "end"
 required = true
 
 [resources.verbs.params.schema]
-description = "Seconds where it ends; later than the start"
 type = "number"
 
 [[resources.verbs]]
-description = "Mark where a render begins."
 id = "mark-in"
 kind = "undoable"
 label = "Mark where a render begins"
@@ -832,11 +823,9 @@ name = "at"
 required = true
 
 [resources.verbs.params.schema]
-description = "Seconds on the timeline"
 type = "number"
 
 [[resources.verbs]]
-description = "Mark where a render ends."
 id = "mark-out"
 kind = "undoable"
 label = "Mark where a render ends"
@@ -846,18 +835,15 @@ name = "at"
 required = true
 
 [resources.verbs.params.schema]
-description = "Seconds on the timeline"
 type = "number"
 
 [[resources.verbs]]
-description = "Clear the in and out marks."
 id = "clear-marks"
 kind = "undoable"
 label = "Clear the in and out marks"
 params = []
 
 [[resources.verbs]]
-description = "Add a title."
 id = "add-title"
 kind = "undoable"
 label = "Add a title"
@@ -867,11 +853,9 @@ name = "text"
 required = true
 
 [resources.verbs.params.schema]
-description = "The words the title shows; empty reads as “Title”"
 type = "string"
 
 [[resources.verbs]]
-description = "Add a timeline marker."
 id = "add-marker"
 kind = "undoable"
 label = "Add a timeline marker"
@@ -881,7 +865,6 @@ name = "at"
 required = true
 
 [resources.verbs.params.schema]
-description = "Seconds from the start"
 type = "number"
 
 [[resources.verbs.params]]
@@ -889,11 +872,9 @@ name = "name"
 required = true
 
 [resources.verbs.params.schema]
-description = "Marker name; empty reads as “Marker”"
 type = "string"
 
 [[resources.verbs]]
-description = "Remove a timeline marker."
 destructive = true
 id = "remove-marker"
 kind = "undoable"
@@ -904,11 +885,9 @@ name = "marker"
 required = true
 
 [resources.verbs.params.schema]
-description = "Marker"
 type = "string"
 
 [[resources.verbs]]
-description = "Add an empty track."
 id = "add-track"
 kind = "undoable"
 label = "Add an empty track"
@@ -918,7 +897,7 @@ name = "kind"
 required = true
 
 [resources.verbs.params.schema]
-description = "Video or audio"
+description = "A track is a horizontal lane. Video lanes stack above audio lanes; `index` orders within a kind (V1 below V2, A1 above A2)."
 enum = [
     "Video",
     "Audio",
@@ -926,7 +905,6 @@ enum = [
 type = "string"
 
 [[resources.verbs]]
-description = "Put a track's gain and pan back to unity and centre."
 id = "reset-mix"
 kind = "undoable"
 label = "Put a track's gain and pan back to unity and centre"
@@ -936,11 +914,9 @@ name = "track"
 required = true
 
 [resources.verbs.params.schema]
-description = "Track"
 type = "string"
 
 [[resources.verbs]]
-description = "Bring every lane named down by the same amount, keeping the balance."
 id = "trim-lanes"
 kind = "undoable"
 label = "Bring every lane named down by the same amount, keeping the balance"
@@ -950,7 +926,6 @@ name = "tracks"
 required = true
 
 [resources.verbs.params.schema]
-description = "The tracks to bring down"
 type = "array"
 
 [resources.verbs.params.schema.items]
@@ -961,7 +936,6 @@ name = "db"
 required = true
 
 [resources.verbs.params.schema]
-description = "Decibels to bring each down by"
 type = "number"
 
 [[resources.verbs.params]]
@@ -969,11 +943,9 @@ name = "headroom"
 required = true
 
 [resources.verbs.params.schema]
-description = "Decibels to leave below full scale besides; 0 lands the measured peak exactly at full scale"
 type = "number"
 
 [[resources.verbs]]
-description = "Delete a track and its clips."
 destructive = true
 id = "delete-track"
 kind = "undoable"
@@ -984,11 +956,9 @@ name = "track"
 required = true
 
 [resources.verbs.params.schema]
-description = "Track"
 type = "string"
 
 [[resources.verbs]]
-description = "Place a source on a track."
 id = "place-clip"
 kind = "undoable"
 label = "Place a source on a track"
@@ -998,7 +968,6 @@ name = "media"
 required = true
 
 [resources.verbs.params.schema]
-description = "Media"
 type = "string"
 
 [[resources.verbs.params]]
@@ -1006,7 +975,6 @@ name = "track"
 required = true
 
 [resources.verbs.params.schema]
-description = "The track to place it on"
 type = "string"
 
 [[resources.verbs.params]]
@@ -1014,11 +982,9 @@ name = "start"
 required = true
 
 [resources.verbs.params.schema]
-description = "Seconds from the start"
 type = "number"
 
 [[resources.verbs]]
-description = "Delete a source and every clip of it."
 destructive = true
 id = "delete-media"
 kind = "undoable"
@@ -1029,11 +995,9 @@ name = "media"
 required = true
 
 [resources.verbs.params.schema]
-description = "Media"
 type = "string"
 
 [[resources.verbs]]
-description = "Use a source's frame size and rate for the project."
 id = "use-as-project-format"
 kind = "undoable"
 label = "Use a source's frame size and rate for the project"
@@ -1043,11 +1007,9 @@ name = "media"
 required = true
 
 [resources.verbs.params.schema]
-description = "Media"
 type = "string"
 
 [[resources.verbs]]
-description = "Delete a clip and the clips linked to it."
 destructive = true
 id = "delete"
 kind = "undoable"
@@ -1058,11 +1020,9 @@ name = "clip"
 required = true
 
 [resources.verbs.params.schema]
-description = "Clip"
 type = "string"
 
 [[resources.verbs]]
-description = "Delete a clip and close the gap it leaves."
 destructive = true
 id = "ripple-delete"
 kind = "undoable"
@@ -1073,11 +1033,9 @@ name = "clip"
 required = true
 
 [resources.verbs.params.schema]
-description = "Clip"
 type = "string"
 
 [[resources.verbs]]
-description = "Cut a clip and its linked clips in two."
 id = "split-clip"
 kind = "undoable"
 label = "Cut a clip and its linked clips in two"
@@ -1087,7 +1045,6 @@ name = "clip"
 required = true
 
 [resources.verbs.params.schema]
-description = "Clip"
 type = "string"
 
 [[resources.verbs.params]]
@@ -1095,11 +1052,9 @@ name = "at"
 required = true
 
 [resources.verbs.params.schema]
-description = "Seconds on the timeline where it is cut"
 type = "number"
 
 [[resources.verbs]]
-description = "Move a clip's start, and its linked clips', to a time."
 id = "trim-in-clip"
 kind = "undoable"
 label = "Move a clip's start, and its linked clips', to a time"
@@ -1109,7 +1064,6 @@ name = "clip"
 required = true
 
 [resources.verbs.params.schema]
-description = "Clip"
 type = "string"
 
 [[resources.verbs.params]]
@@ -1117,11 +1071,9 @@ name = "at"
 required = true
 
 [resources.verbs.params.schema]
-description = "Seconds on the timeline the clip starts at"
 type = "number"
 
 [[resources.verbs]]
-description = "Move a clip's end, and its linked clips', to a time."
 id = "trim-out-clip"
 kind = "undoable"
 label = "Move a clip's end, and its linked clips', to a time"
@@ -1131,7 +1083,6 @@ name = "clip"
 required = true
 
 [resources.verbs.params.schema]
-description = "Clip"
 type = "string"
 
 [[resources.verbs.params]]
@@ -1139,11 +1090,9 @@ name = "at"
 required = true
 
 [resources.verbs.params.schema]
-description = "Seconds on the timeline the clip ends at"
 type = "number"
 
 [[resources.verbs]]
-description = "Set a clip's playback speed."
 id = "set-speed"
 kind = "undoable"
 label = "Set a clip's playback speed"
@@ -1153,7 +1102,6 @@ name = "clip"
 required = true
 
 [resources.verbs.params.schema]
-description = "Clip"
 type = "string"
 
 [[resources.verbs.params]]
@@ -1161,11 +1109,9 @@ name = "rate"
 required = true
 
 [resources.verbs.params.schema]
-description = "Playback rate: 1 is normal, 0.5 half speed, 2 double"
 type = "number"
 
 [[resources.verbs]]
-description = "Play a clip backwards, or forwards again."
 id = "toggle-reverse"
 kind = "undoable"
 label = "Play a clip backwards, or forwards again"
@@ -1175,11 +1121,9 @@ name = "clip"
 required = true
 
 [resources.verbs.params.schema]
-description = "Clip"
 type = "string"
 
 [[resources.verbs]]
-description = "Play a clip at normal speed."
 id = "reset-speed"
 kind = "undoable"
 label = "Play a clip at normal speed"
@@ -1189,11 +1133,9 @@ name = "clip"
 required = true
 
 [resources.verbs.params.schema]
-description = "Clip"
 type = "string"
 
 [[resources.verbs]]
-description = "Set one of a clip's animatable values where it plays at a time."
 id = "set-param"
 kind = "undoable"
 label = "Set one of a clip's animatable values where it plays at a time"
@@ -1203,7 +1145,6 @@ name = "clip"
 required = true
 
 [resources.verbs.params.schema]
-description = "Clip"
 type = "string"
 
 [[resources.verbs.params]]
@@ -1211,7 +1152,7 @@ name = "param"
 required = true
 
 [resources.verbs.params.schema]
-description = "What to set"
+description = "An animatable value by name; `effect:<id>` is the strength of the clip's effect with that id"
 examples = [
     "opacity",
     "volume",
@@ -1242,7 +1183,6 @@ name = "at"
 required = true
 
 [resources.verbs.params.schema]
-description = "Seconds on the timeline; a keyframed value is keyed there"
 type = "number"
 
 [[resources.verbs.params]]
@@ -1250,11 +1190,9 @@ name = "value"
 required = true
 
 [resources.verbs.params.schema]
-description = "The value"
 type = "number"
 
 [[resources.verbs]]
-description = "Add an effect to a clip."
 id = "add-effect"
 kind = "undoable"
 label = "Add an effect to a clip"
@@ -1264,7 +1202,6 @@ name = "clip"
 required = true
 
 [resources.verbs.params.schema]
-description = "Clip"
 type = "string"
 
 [[resources.verbs.params]]
@@ -1272,7 +1209,7 @@ name = "effect"
 required = true
 
 [resources.verbs.params.schema]
-description = "The effect"
+description = "The kinds of stackable effect a clip can carry. Each transforms the graded colour; the preview and the (gated) export apply them in list order."
 enum = [
     "Grayscale",
     "Sepia",
@@ -1284,7 +1221,6 @@ enum = [
 type = "string"
 
 [[resources.verbs]]
-description = "Remove an effect from a clip."
 destructive = true
 id = "remove-effect"
 kind = "undoable"
@@ -1295,7 +1231,6 @@ name = "clip"
 required = true
 
 [resources.verbs.params.schema]
-description = "Clip"
 type = "string"
 
 [[resources.verbs.params]]
@@ -1303,11 +1238,9 @@ name = "effect"
 required = true
 
 [resources.verbs.params.schema]
-description = "The effect's id"
 type = "string"
 
 [[resources.verbs]]
-description = "Move an effect up or down a clip's stack."
 id = "move-effect"
 kind = "undoable"
 label = "Move an effect up or down a clip's stack"
@@ -1317,7 +1250,6 @@ name = "clip"
 required = true
 
 [resources.verbs.params.schema]
-description = "Clip"
 type = "string"
 
 [[resources.verbs.params]]
@@ -1325,7 +1257,6 @@ name = "effect"
 required = true
 
 [resources.verbs.params.schema]
-description = "The effect's id"
 type = "string"
 
 [[resources.verbs.params]]
@@ -1333,11 +1264,9 @@ name = "up"
 required = true
 
 [resources.verbs.params.schema]
-description = "Towards the top of the stack"
 type = "boolean"
 
 [[resources.verbs]]
-description = "Set how strongly one of a clip's effects applies."
 id = "set-effect-amount"
 kind = "undoable"
 label = "Set how strongly one of a clip's effects applies"
@@ -1347,7 +1276,6 @@ name = "clip"
 required = true
 
 [resources.verbs.params.schema]
-description = "Clip"
 type = "string"
 
 [[resources.verbs.params]]
@@ -1355,7 +1283,6 @@ name = "effect"
 required = true
 
 [resources.verbs.params.schema]
-description = "The effect's id"
 type = "string"
 
 [[resources.verbs.params]]
@@ -1363,11 +1290,9 @@ name = "amount"
 required = true
 
 [resources.verbs.params.schema]
-description = "Strength from 0 to 1"
 type = "number"
 
 [[resources.verbs]]
-description = "Remove every effect from a clip."
 destructive = true
 id = "clear-effects"
 kind = "undoable"
@@ -1378,11 +1303,9 @@ name = "clip"
 required = true
 
 [resources.verbs.params.schema]
-description = "Clip"
 type = "string"
 
 [[resources.verbs]]
-description = "Stop a clip's linked clips following its edits."
 id = "unlink"
 kind = "undoable"
 label = "Stop a clip's linked clips following its edits"
@@ -1392,11 +1315,9 @@ name = "clip"
 required = true
 
 [resources.verbs.params.schema]
-description = "Clip"
 type = "string"
 
 [[resources.verbs]]
-description = "Split a clip's sound off onto an audio clip linked to it."
 id = "link-audio"
 kind = "undoable"
 label = "Split a clip's sound off onto an audio clip linked to it"
@@ -1406,11 +1327,9 @@ name = "clip"
 required = true
 
 [resources.verbs.params.schema]
-description = "Clip"
 type = "string"
 
 [[resources.verbs]]
-description = "Link a clip with another, so they move, trim and re-time together."
 id = "link-with"
 kind = "undoable"
 label = "Link a clip with another, so they move, trim and re-time together"
@@ -1420,7 +1339,6 @@ name = "clip"
 required = true
 
 [resources.verbs.params.schema]
-description = "Clip"
 type = "string"
 
 [[resources.verbs.params]]
@@ -1428,5 +1346,4 @@ name = "other"
 required = true
 
 [resources.verbs.params.schema]
-description = "The clip to link it with"
 type = "string"

@@ -271,7 +271,7 @@ title = "Enroll as a new device: certify a new device under the setup"
 type = "bool"
 
 [[resources.verbs]]
-description = "Review an image to write.  The image reviewed before it moves to the front of the recent ones."
+description = "The image reviewed before it moves to the front of the recent ones."
 id = "select-source"
 kind = "undoable"
 label = "Review an image to write"
@@ -282,7 +282,7 @@ required = true
 
 [resources.verbs.params.schema]
 additionalProperties = false
-description = "The reviewed image"
+description = "A selected image source with the metadata we can show without reading the whole file (name, on-disk size, volume label / image type)."
 required = [
     "kind",
     "path",
@@ -355,7 +355,6 @@ minimum = 0
 type = "integer"
 
 [[resources.verbs]]
-description = "Clear the reviewed image; the images reviewed before it stay."
 id = "clear-source"
 kind = "undoable"
 label = "Clear the reviewed image; the images reviewed before it stay"

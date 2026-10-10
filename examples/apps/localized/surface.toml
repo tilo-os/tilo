@@ -22,14 +22,12 @@ title = "Books"
 type = "u32"
 
 [[resources.verbs]]
-description = "Put a book on the shelf."
 id = "add-book"
 kind = "undoable"
 label = "Put a book on the shelf"
 params = []
 
 [[resources.verbs]]
-description = "Take a book off the shelf."
 id = "remove-book"
 kind = "undoable"
 label = "Take a book off the shelf"

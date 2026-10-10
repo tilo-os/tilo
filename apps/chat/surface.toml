@@ -432,7 +432,7 @@ title = "Update"
 type = "Json<Option<crate::feedback::TriageUpdate>>"
 
 [[resources.verbs]]
-description = "Start the chat.  Its creator and their first workspace: the one the host names, or a starter workspace with `#general` and a voice lounge."
+description = "Its creator and their first workspace: the one the host names, or a starter workspace with `#general` and a voice lounge."
 id = "begin-chat"
 kind = "undoable"
 label = "Start the chat"
@@ -442,7 +442,6 @@ name = "workspace"
 required = false
 
 [resources.verbs.params.schema]
-description = "The workspace the host admitted; none for a starter workspace"
 type = [
     "string",
     "null",
@@ -453,7 +452,6 @@ name = "workspace_name"
 required = false
 
 [resources.verbs.params.schema]
-description = "The workspace's name"
 type = [
     "string",
     "null",
@@ -464,7 +462,6 @@ name = "name"
 required = true
 
 [resources.verbs.params.schema]
-description = "Your name"
 type = "string"
 
 [[resources.verbs.params]]
@@ -472,7 +469,6 @@ name = "initials"
 required = true
 
 [resources.verbs.params.schema]
-description = "Your initials"
 type = "string"
 
 [[resources.verbs.params]]
@@ -480,13 +476,12 @@ name = "color"
 required = true
 
 [resources.verbs.params.schema]
-description = "Your colour"
 maximum = 4294967295
 minimum = 0
 type = "integer"
 
 [[resources.verbs]]
-description = "Introduce yourself.  How you show in the room: your name, initials and colour, and that you are here."
+description = "How you show in the room: your name, initials and colour, and that you are here."
 id = "introduce"
 kind = "undoable"
 label = "Introduce yourself"
@@ -496,7 +491,6 @@ name = "name"
 required = true
 
 [resources.verbs.params.schema]
-description = "Your name"
 type = "string"
 
 [[resources.verbs.params]]
@@ -504,7 +498,6 @@ name = "initials"
 required = true
 
 [resources.verbs.params.schema]
-description = "Your initials"
 type = "string"
 
 [[resources.verbs.params]]
@@ -512,13 +505,12 @@ name = "color"
 required = true
 
 [resources.verbs.params.schema]
-description = "Your colour"
 maximum = 4294967295
 minimum = 0
 type = "integer"
 
 [[resources.verbs]]
-description = "Name an agent.  The name every member shows for an agent task."
+description = "The name every member shows for an agent task."
 id = "name-agent"
 kind = "undoable"
 label = "Name an agent"
@@ -528,7 +520,6 @@ name = "participant"
 required = true
 
 [resources.verbs.params.schema]
-description = "Participant"
 type = "string"
 
 [[resources.verbs.params]]
@@ -536,11 +527,10 @@ name = "name"
 required = true
 
 [resources.verbs.params.schema]
-description = "Name"
 type = "string"
 
 [[resources.verbs]]
-description = "Create a workspace.  With `#general` to talk in and `Lounge` to call in."
+description = "With `#general` to talk in and `Lounge` to call in."
 id = "create-workspace"
 kind = "undoable"
 label = "Create a workspace"
@@ -550,11 +540,9 @@ name = "name"
 required = true
 
 [resources.verbs.params.schema]
-description = "Workspace name"
 type = "string"
 
 [[resources.verbs]]
-description = "New category."
 id = "create-category"
 kind = "undoable"
 label = "New category"
@@ -564,7 +552,6 @@ name = "workspace"
 required = true
 
 [resources.verbs.params.schema]
-description = "Workspace"
 type = "string"
 
 [[resources.verbs.params]]
@@ -572,11 +559,9 @@ name = "name"
 required = true
 
 [resources.verbs.params.schema]
-description = "Category name"
 type = "string"
 
 [[resources.verbs]]
-description = "New channel."
 id = "create-channel"
 kind = "undoable"
 label = "New channel"
@@ -586,7 +571,6 @@ name = "workspace"
 required = true
 
 [resources.verbs.params.schema]
-description = "Workspace"
 type = "string"
 
 [[resources.verbs.params]]
@@ -594,7 +578,6 @@ name = "name"
 required = true
 
 [resources.verbs.params.schema]
-description = "Channel name"
 type = "string"
 
 [[resources.verbs.params]]
@@ -602,7 +585,6 @@ name = "category"
 required = false
 
 [resources.verbs.params.schema]
-description = "The category to list it under; none for uncategorised"
 type = [
     "string",
     "null",
@@ -613,7 +595,7 @@ name = "kind"
 required = false
 
 [resources.verbs.params.schema]
-description = "text for a conversation, voice for a call; text when absent"
+description = "A text channel holds a conversation; a voice channel holds a call."
 
 [[resources.verbs.params.schema.oneOf]]
 type = "null"
@@ -626,7 +608,7 @@ enum = [
 type = "string"
 
 [[resources.verbs]]
-description = "Delete category.  Its channels stay, uncategorised."
+description = "Its channels stay, uncategorised."
 destructive = true
 id = "delete-category"
 kind = "undoable"
@@ -637,11 +619,10 @@ name = "category"
 required = true
 
 [resources.verbs.params.schema]
-description = "Category"
 type = "string"
 
 [[resources.verbs]]
-description = "Move a channel.  One place up or down among the channels of its category."
+description = "One place up or down among the channels of its category."
 id = "move-channel"
 kind = "undoable"
 label = "Move a channel"
@@ -651,7 +632,6 @@ name = "channel"
 required = true
 
 [resources.verbs.params.schema]
-description = "Channel"
 type = "string"
 
 [[resources.verbs.params]]
@@ -659,11 +639,10 @@ name = "up"
 required = true
 
 [resources.verbs.params.schema]
-description = "Up"
 type = "boolean"
 
 [[resources.verbs]]
-description = "Delete channel.  With its messages and drafts."
+description = "With its messages and drafts."
 destructive = true
 id = "delete-channel"
 kind = "undoable"
@@ -674,11 +653,10 @@ name = "channel"
 required = true
 
 [resources.verbs.params.schema]
-description = "Channel"
 type = "string"
 
 [[resources.verbs]]
-description = "Start a draft.  The empty draft a composer writes in, made once: a thread's the first time someone answers in it."
+description = "The empty draft a composer writes in, made once: a thread's the first time someone answers in it."
 id = "start-draft"
 kind = "undoable"
 label = "Start a draft"
@@ -688,11 +666,10 @@ name = "key"
 required = true
 
 [resources.verbs.params.schema]
-description = "The channel, or the channel and thread, it is written in"
 type = "string"
 
 [[resources.verbs]]
-description = "Post a message.  `@Name` of a member becomes a mention of them."
+description = "`@Name` of a member becomes a mention of them."
 id = "post"
 kind = "undoable"
 label = "Post a message"
@@ -702,7 +679,6 @@ name = "channel"
 required = true
 
 [resources.verbs.params.schema]
-description = "Channel"
 type = "string"
 
 [[resources.verbs.params]]
@@ -710,7 +686,6 @@ name = "text"
 required = true
 
 [resources.verbs.params.schema]
-description = "The message; @Name mentions a member"
 type = "string"
 
 [[resources.verbs.params]]
@@ -718,7 +693,6 @@ name = "parent"
 required = false
 
 [resources.verbs.params.schema]
-description = "The message it answers in a thread"
 type = [
     "string",
     "null",
@@ -729,7 +703,6 @@ name = "body"
 required = false
 
 [resources.verbs.params.schema]
-description = "Its paragraphs as written, with their formatting"
 type = [
     "array",
     "null",
@@ -831,7 +804,7 @@ required = false
 
 [resources.verbs.params.schema]
 additionalProperties = false
-description = "A file, image or video another action put in the store"
+description = "An attachment, as `post` takes it: content another action put in the store, by its hash."
 required = [
     "kind",
     "name",
@@ -868,7 +841,7 @@ minimum = 0
 type = "integer"
 
 [[resources.verbs]]
-description = "Share live resource.  Post the address of something, with words about it; whoever opens it still needs their own access to it."
+description = "Post the address of something, with words about it; whoever opens it still needs their own access to it."
 id = "share-resource"
 kind = "undoable"
 label = "Share live resource"
@@ -878,7 +851,6 @@ name = "channel"
 required = true
 
 [resources.verbs.params.schema]
-description = "Channel"
 type = "string"
 
 [[resources.verbs.params]]
@@ -887,7 +859,7 @@ required = true
 
 [resources.verbs.params.schema]
 additionalProperties = false
-description = "The thing: its kind, id, label and part"
+description = "A shared thing's address, as `share-resource` takes it."
 required = [
     "kind",
     "id",
@@ -937,7 +909,6 @@ name = "text"
 required = false
 
 [resources.verbs.params.schema]
-description = "Words accompanying it"
 type = [
     "string",
     "null",
@@ -948,14 +919,13 @@ name = "source_provider"
 required = false
 
 [resources.verbs.params.schema]
-description = "The record it lives in; needed to open or copy a link to it"
 type = [
     "string",
     "null",
 ]
 
 [[resources.verbs]]
-description = "Edit message.  Its earlier text is kept in its history."
+description = "Its earlier text is kept in its history."
 id = "edit-message"
 kind = "undoable"
 label = "Edit message"
@@ -965,7 +935,6 @@ name = "message"
 required = true
 
 [resources.verbs.params.schema]
-description = "Message"
 type = "string"
 
 [[resources.verbs.params]]
@@ -973,7 +942,6 @@ name = "text"
 required = true
 
 [resources.verbs.params.schema]
-description = "Text"
 type = "string"
 
 [[resources.verbs.params]]
@@ -981,7 +949,6 @@ name = "body"
 required = false
 
 [resources.verbs.params.schema]
-description = "Body"
 type = [
     "array",
     "null",
@@ -1078,7 +1045,6 @@ type = [
 type = "string"
 
 [[resources.verbs]]
-description = "Delete message."
 destructive = true
 id = "delete-message"
 kind = "undoable"
@@ -1089,11 +1055,10 @@ name = "message"
 required = true
 
 [resources.verbs.params.schema]
-description = "Message"
 type = "string"
 
 [[resources.verbs]]
-description = "React.  Your reaction with an emoji."
+description = "Your reaction with an emoji."
 id = "react"
 kind = "undoable"
 label = "React"
@@ -1103,7 +1068,6 @@ name = "message"
 required = true
 
 [resources.verbs.params.schema]
-description = "Message"
 type = "string"
 
 [[resources.verbs.params]]
@@ -1111,11 +1075,9 @@ name = "emoji"
 required = true
 
 [resources.verbs.params.schema]
-description = "Emoji"
 type = "string"
 
 [[resources.verbs]]
-description = "Take back a reaction."
 id = "unreact"
 kind = "undoable"
 label = "Take back a reaction"
@@ -1125,7 +1087,6 @@ name = "message"
 required = true
 
 [resources.verbs.params.schema]
-description = "Message"
 type = "string"
 
 [[resources.verbs.params]]
@@ -1133,11 +1094,10 @@ name = "emoji"
 required = true
 
 [resources.verbs.params.schema]
-description = "Emoji"
 type = "string"
 
 [[resources.verbs]]
-description = "Mark as read.  Everything in the channel so far, for you."
+description = "Everything in the channel so far, for you."
 id = "mark-read"
 kind = "undoable"
 label = "Mark as read"
@@ -1147,7 +1107,6 @@ name = "channel"
 required = true
 
 [resources.verbs.params.schema]
-description = "Channel"
 type = "string"
 
 [[resources.verbs.params]]
@@ -1155,7 +1114,6 @@ name = "seen"
 required = false
 
 [resources.verbs.params.schema]
-description = "How many of its top-level messages you saw; all when absent"
 maximum = 4294967295
 minimum = 0
 type = [
@@ -1164,7 +1122,7 @@ type = [
 ]
 
 [[resources.verbs]]
-description = "Record agent work.  An agent's account of what it is doing with the message that summoned it, kept on its reply to that message: the reply is made the first time, and `say` gives it its words once, while it has none."
+description = "An agent's account of what it is doing with the message that summoned it, kept on its reply to that message: the reply is made the first time, and `say` gives it its words once, while it has none."
 id = "record-work"
 kind = "undoable"
 label = "Record agent work"
@@ -1174,7 +1132,6 @@ name = "message"
 required = true
 
 [resources.verbs.params.schema]
-description = "Message"
 type = "string"
 
 [[resources.verbs.params]]
@@ -1183,7 +1140,7 @@ required = true
 
 [resources.verbs.params.schema]
 additionalProperties = false
-description = "Where the work is, what was done and why"
+description = "What an agent records of its work, as a verb takes it."
 required = ["state"]
 type = "object"
 
@@ -1270,14 +1227,13 @@ name = "say"
 required = false
 
 [resources.verbs.params.schema]
-description = "The reply's words, when it has none yet"
 type = [
     "string",
     "null",
 ]
 
 [[resources.verbs]]
-description = "Submit feedback.  A reviewed report, posted in the channel and kept with its triage."
+description = "A reviewed report, posted in the channel and kept with its triage."
 field = "comments"
 id = "submit-feedback"
 kind = "undoable"
@@ -1288,7 +1244,6 @@ name = "channel"
 required = true
 
 [resources.verbs.params.schema]
-description = "Channel"
 type = "string"
 
 [[resources.verbs.params]]
@@ -1296,10 +1251,9 @@ name = "submission"
 required = true
 
 [resources.verbs.params.schema]
-description = "The reviewed submission"
 
 [[resources.verbs]]
-description = "Triage feedback.  Investigating, resolved, reopened, a duplicate of another report or tracked by a task."
+description = "Investigating, resolved, reopened, a duplicate of another report or tracked by a task."
 id = "triage"
 kind = "undoable"
 label = "Triage feedback"
@@ -1309,7 +1263,6 @@ name = "report"
 required = true
 
 [resources.verbs.params.schema]
-description = "Report"
 type = "string"
 
 [[resources.verbs.params]]
@@ -1317,4 +1270,3 @@ name = "update"
 required = true
 
 [resources.verbs.params.schema]
-description = "investigating, resolved, reopen, duplicate or task"

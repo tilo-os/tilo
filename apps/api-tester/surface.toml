@@ -451,14 +451,12 @@ title = "When it completed, in milliseconds since the Unix epoch"
 type = "i64"
 
 [[resources.verbs]]
-description = "Start a new request in the builder."
 id = "new-request"
 kind = "undoable"
 label = "Start a new request in the builder"
 params = []
 
 [[resources.verbs]]
-description = "Create a collection."
 id = "new-collection"
 kind = "undoable"
 label = "Create a collection"
@@ -468,11 +466,9 @@ name = "name"
 required = true
 
 [resources.verbs.params.schema]
-description = "Collection name"
 type = "string"
 
 [[resources.verbs]]
-description = "Delete a collection and the requests it holds."
 destructive = true
 id = "delete-collection"
 kind = "undoable"
@@ -483,11 +479,9 @@ name = "collection"
 required = true
 
 [resources.verbs.params.schema]
-description = "Collection"
 type = "string"
 
 [[resources.verbs]]
-description = "Add a new request to a collection."
 id = "add-request"
 kind = "undoable"
 label = "Add a new request to a collection"
@@ -497,7 +491,6 @@ name = "collection"
 required = true
 
 [resources.verbs.params.schema]
-description = "Collection"
 type = "string"
 
 [[resources.verbs.params]]
@@ -505,11 +498,10 @@ name = "name"
 required = true
 
 [resources.verbs.params.schema]
-description = "Request name"
 type = "string"
 
 [[resources.verbs]]
-description = "Save the request in the builder to a collection.  A request the builder opened from that collection is saved over; otherwise it is added, and the builder holds the saved request."
+description = "A request the builder opened from that collection is saved over; otherwise it is added, and the builder holds the saved request."
 id = "save-request"
 kind = "undoable"
 label = "Save the request in the builder to a collection"
@@ -519,7 +511,6 @@ name = "collection"
 required = true
 
 [resources.verbs.params.schema]
-description = "Collection"
 type = "string"
 
 [[resources.verbs.params]]
@@ -527,14 +518,12 @@ name = "name"
 required = false
 
 [resources.verbs.params.schema]
-description = "Request name; the builder's when none"
 type = [
     "string",
     "null",
 ]
 
 [[resources.verbs]]
-description = "Open a saved request in the builder."
 id = "open-request"
 kind = "undoable"
 label = "Open a saved request in the builder"
@@ -544,7 +533,6 @@ name = "collection"
 required = true
 
 [resources.verbs.params.schema]
-description = "Collection"
 type = "string"
 
 [[resources.verbs.params]]
@@ -552,11 +540,9 @@ name = "request"
 required = true
 
 [resources.verbs.params.schema]
-description = "Id of the saved request"
 type = "string"
 
 [[resources.verbs]]
-description = "Delete a saved request."
 destructive = true
 id = "delete-request"
 kind = "undoable"
@@ -567,7 +553,6 @@ name = "collection"
 required = true
 
 [resources.verbs.params.schema]
-description = "Collection"
 type = "string"
 
 [[resources.verbs.params]]
@@ -575,11 +560,9 @@ name = "request"
 required = true
 
 [resources.verbs.params.schema]
-description = "Id of the saved request"
 type = "string"
 
 [[resources.verbs]]
-description = "Create an environment."
 id = "new-environment"
 kind = "undoable"
 label = "Create an environment"
@@ -589,11 +572,9 @@ name = "name"
 required = true
 
 [resources.verbs.params.schema]
-description = "Environment name"
 type = "string"
 
 [[resources.verbs]]
-description = "Delete an environment and its variables."
 destructive = true
 id = "delete-environment"
 kind = "undoable"
@@ -604,11 +585,9 @@ name = "environment"
 required = true
 
 [resources.verbs.params.schema]
-description = "Environment"
 type = "string"
 
 [[resources.verbs]]
-description = "Use an environment's variables in what is sent."
 id = "use-environment"
 kind = "undoable"
 label = "Use an environment's variables in what is sent"
@@ -618,11 +597,10 @@ name = "environment"
 required = true
 
 [resources.verbs.params.schema]
-description = "Environment"
 type = "string"
 
 [[resources.verbs]]
-description = "Add a variable to an environment.  A secret variable's value is set on each device, never here."
+description = "A secret variable's value is set on each device, never here."
 id = "add-variable"
 kind = "undoable"
 label = "Add a variable to an environment"
@@ -632,7 +610,6 @@ name = "environment"
 required = true
 
 [resources.verbs.params.schema]
-description = "Environment"
 type = "string"
 
 [[resources.verbs.params]]
@@ -640,7 +617,6 @@ name = "key"
 required = true
 
 [resources.verbs.params.schema]
-description = "Variable key"
 type = "string"
 
 [[resources.verbs.params]]
@@ -648,7 +624,6 @@ name = "value"
 required = false
 
 [resources.verbs.params.schema]
-description = "Its value; none for a secret"
 type = [
     "string",
     "null",
@@ -659,14 +634,12 @@ name = "secret"
 required = false
 
 [resources.verbs.params.schema]
-description = "Whether the value is a credential kept on each device"
 type = [
     "boolean",
     "null",
 ]
 
 [[resources.verbs]]
-description = "Open a sent request again in the builder, as a new request."
 id = "open-sent"
 kind = "undoable"
 label = "Open a sent request again in the builder, as a new request"
@@ -676,11 +649,9 @@ name = "sent"
 required = true
 
 [resources.verbs.params.schema]
-description = "Sent"
 type = "string"
 
 [[resources.verbs]]
-description = "Record a request that was sent."
 id = "record-sent"
 kind = "undoable"
 label = "Record a request that was sent"
@@ -690,7 +661,6 @@ name = "method"
 required = true
 
 [resources.verbs.params.schema]
-description = "The HTTP method"
 type = "string"
 
 [[resources.verbs.params]]
@@ -698,7 +668,6 @@ name = "url"
 required = true
 
 [resources.verbs.params.schema]
-description = "The URL as sent"
 type = "string"
 
 [[resources.verbs.params]]
@@ -706,7 +675,6 @@ name = "status"
 required = true
 
 [resources.verbs.params.schema]
-description = "The response status"
 maximum = 65535
 minimum = 0
 type = "integer"
@@ -716,6 +684,5 @@ name = "duration_ms"
 required = true
 
 [resources.verbs.params.schema]
-description = "The round-trip time in milliseconds"
 minimum = 0
 type = "integer"

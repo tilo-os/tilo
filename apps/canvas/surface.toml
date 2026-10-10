@@ -255,7 +255,7 @@ title = "Selection"
 type = "Option<Selection>"
 
 [[resources.verbs]]
-description = "Paint strokes.  Paint brush strokes on a layer in one step. On an oil or watercolour layer the medium simulates real paint; on a plain layer the brush preset draws them: pen for clean line art (pressure swells the line), pencil or charcoal to shade (pressure sets darkness; charcoal catches the paper), marker for flat see-through tone, airbrush for soft glows, calligraphy for lettering. brush eraser (no colour) clears paint under it on its layer; remove-marks along takes whole strokes. Each stroke: points [[x,y] or [x,y,pressure]], size, colour (#rrggbb or pigment:<name>). Answers the new ids. One stroke can be many: forks grows a branch or bare tree; dabs scatters foliage, flowers or (with `dab_length`, angle -90) grass; hatch shades the area its points enclose. Work like a painter, looking close after each passage: big shapes first; then forms in a few values (dark mass, middle, lit side); small lights and accents last."
+description = "Paint brush strokes on a layer in one step. On an oil or watercolour layer the medium simulates real paint; on a plain layer the brush preset draws them: pen for clean line art (pressure swells the line), pencil or charcoal to shade (pressure sets darkness; charcoal catches the paper), marker for flat see-through tone, airbrush for soft glows, calligraphy for lettering. brush eraser (no colour) clears paint under it on its layer; remove-marks along takes whole strokes. Each stroke: points [[x,y] or [x,y,pressure]], size, colour (#rrggbb or pigment:<name>). Answers the new ids. One stroke can be many: forks grows a branch or bare tree; dabs scatters foliage, flowers or (with `dab_length`, angle -90) grass; hatch shades the area its points enclose. Work like a painter, looking close after each passage: big shapes first; then forms in a few values (dark mass, middle, lit side); small lights and accents last."
 id = "paint"
 kind = "undoable"
 label = "Paint strokes"
@@ -265,7 +265,6 @@ name = "layer"
 required = false
 
 [resources.verbs.params.schema]
-description = "The layer to paint on; the top layer when absent."
 type = [
     "string",
     "null",
@@ -409,14 +408,13 @@ name = "group"
 required = false
 
 [resources.verbs.params.schema]
-description = "Put them in this group, to edit or remove them as one."
 type = [
     "string",
     "null",
 ]
 
 [[resources.verbs]]
-description = "Draw shapes.  Draw shapes on a layer in one step: rect, ellipse, polygon, line, path (SVG d), text, stroke or image (src: a file path, content address or data: URI; a unit per pixel unless sized), each with fill, gradient, stroke and opacity. Answers the new ids; or give your own. On a painted layer filled shapes are laid in with the brush: paint a building or small figure as filled planes (lit and shadow side) with a small brush, not as many strokes."
+description = "Draw shapes on a layer in one step: rect, ellipse, polygon, line, path (SVG d), text, stroke or image (src: a file path, content address or data: URI; a unit per pixel unless sized), each with fill, gradient, stroke and opacity. Answers the new ids; or give your own. On a painted layer filled shapes are laid in with the brush: paint a building or small figure as filled planes (lit and shadow side) with a small brush, not as many strokes."
 id = "draw"
 kind = "undoable"
 label = "Draw shapes"
@@ -426,7 +424,6 @@ name = "layer"
 required = false
 
 [resources.verbs.params.schema]
-description = "The layer to draw on; the top layer when absent."
 type = [
     "string",
     "null",
@@ -1014,7 +1011,7 @@ type = [
 ]
 
 [[resources.verbs]]
-description = "Edit marks.  Change marks by id: colours, opacity, name, `move_by` [dx,dy], scale, rotate and flip about their centre, or move them to another layer. Strokes: re-brush (brush, size, params), smooth, simplify, extend, split at a point, merge. Pictures: crop, straighten, adjust (exposure, white balance, …; look to judge)."
+description = "Change marks by id: colours, opacity, name, `move_by` [dx,dy], scale, rotate and flip about their centre, or move them to another layer. Strokes: re-brush (brush, size, params), smooth, simplify, extend, split at a point, merge. Pictures: crop, straighten, adjust (exposure, white balance, …; look to judge)."
 id = "edit-marks"
 kind = "undoable"
 label = "Edit marks"
@@ -1024,7 +1021,6 @@ name = "pixelated"
 required = false
 
 [resources.verbs.params.schema]
-description = "Images: preserve hard pixel edges when enlarged."
 type = [
     "boolean",
     "null",
@@ -1035,7 +1031,6 @@ name = "ids"
 required = true
 
 [resources.verbs.params.schema]
-description = "Marks, or groups (all their members)."
 type = "array"
 
 [resources.verbs.params.schema.items]
@@ -1056,7 +1051,6 @@ name = "shape"
 required = false
 
 [resources.verbs.params.schema]
-description = "Replace the geometry: a shape as `draw` takes it (e.g. a path's new `d`)."
 type = [
     "object",
     "null",
@@ -1067,7 +1061,6 @@ name = "dash"
 required = false
 
 [resources.verbs.params.schema]
-description = "`[]` removes dashes."
 type = [
     "array",
     "null",
@@ -1111,7 +1104,6 @@ name = "shadow"
 required = false
 
 [resources.verbs.params.schema]
-description = "As draw's; zero offset and blur removes it."
 type = [
     "object",
     "null",
@@ -1122,7 +1114,6 @@ name = "inner_shadow"
 required = false
 
 [resources.verbs.params.schema]
-description = "As draw's; zero offset and blur removes it."
 type = [
     "object",
     "null",
@@ -1133,7 +1124,6 @@ name = "grain"
 required = false
 
 [resources.verbs.params.schema]
-description = "0 removes it."
 type = [
     "number",
     "null",
@@ -1144,7 +1134,6 @@ name = "feather"
 required = false
 
 [resources.verbs.params.schema]
-description = "0 removes it."
 type = [
     "number",
     "null",
@@ -1155,7 +1144,6 @@ name = "group"
 required = false
 
 [resources.verbs.params.schema]
-description = "Put into this group (`a/b` nests b in a); empty takes out of any."
 type = [
     "string",
     "null",
@@ -1166,7 +1154,6 @@ name = "clip"
 required = false
 
 [resources.verbs.params.schema]
-description = "Cut to this mark's or group's shape, `selection` or an area's SVG path data; empty uncuts."
 type = [
     "string",
     "null",
@@ -1177,7 +1164,6 @@ name = "fill"
 required = false
 
 [resources.verbs.params.schema]
-description = "A colour (replacing a gradient), or `none`."
 type = [
     "string",
     "null",
@@ -1188,7 +1174,6 @@ name = "gradient"
 required = false
 
 [resources.verbs.params.schema]
-description = "As draw's."
 type = [
     "object",
     "null",
@@ -1199,7 +1184,6 @@ name = "stroke"
 required = false
 
 [resources.verbs.params.schema]
-description = "A colour, or `none`."
 type = [
     "string",
     "null",
@@ -1230,7 +1214,6 @@ name = "brush"
 required = false
 
 [resources.verbs.params.schema]
-description = "A stroke's brush preset (see paint)."
 type = [
     "string",
     "null",
@@ -1241,7 +1224,6 @@ name = "size"
 required = false
 
 [resources.verbs.params.schema]
-description = "A stroke's width."
 type = [
     "number",
     "null",
@@ -1252,7 +1234,6 @@ name = "brush_size"
 required = false
 
 [resources.verbs.params.schema]
-description = "Painted layers: the brush size a filled shape is laid in with."
 type = [
     "number",
     "null",
@@ -1293,7 +1274,6 @@ name = "move_by"
 required = false
 
 [resources.verbs.params.schema]
-description = "Move by `[dx, dy]` units."
 maxItems = 2
 minItems = 2
 type = [
@@ -1309,7 +1289,6 @@ name = "scale"
 required = false
 
 [resources.verbs.params.schema]
-description = "Scale about each mark's or group's centre."
 type = [
     "number",
     "null",
@@ -1320,7 +1299,6 @@ name = "rotate"
 required = false
 
 [resources.verbs.params.schema]
-description = "Degrees clockwise about each centre."
 type = [
     "number",
     "null",
@@ -1331,7 +1309,6 @@ name = "layer"
 required = false
 
 [resources.verbs.params.schema]
-description = "Move the marks onto this layer, on top."
 type = [
     "string",
     "null",
@@ -1342,7 +1319,6 @@ name = "transform"
 required = false
 
 [resources.verbs.params.schema]
-description = "An affine `[a, b, c, d, e, f]` in artwork units applied after the rest, to all the marks as one: a stretch or turn about any point."
 maxItems = 6
 minItems = 6
 type = [
@@ -1358,7 +1334,6 @@ name = "flip"
 required = false
 
 [resources.verbs.params.schema]
-description = "`horizontal` or `vertical`: mirror about each centre."
 type = [
     "string",
     "null",
@@ -1369,7 +1344,6 @@ name = "crop"
 required = false
 
 [resources.verbs.params.schema]
-description = "Images: fractions `[x, y, w, h]` of the picture to show (it stays put); `[]` all of it."
 type = [
     "array",
     "null",
@@ -1383,7 +1357,6 @@ name = "straighten"
 required = false
 
 [resources.verbs.params.schema]
-description = "Images: degrees, -45 to 45, to level it."
 type = [
     "number",
     "null",
@@ -1395,7 +1368,6 @@ required = false
 
 [resources.verbs.params.schema]
 additionalProperties = false
-description = "Colour and tone; given steps replace, `{}` clears."
 type = [
     "object",
     "null",
@@ -1513,7 +1485,6 @@ name = "smooth"
 required = false
 
 [resources.verbs.params.schema]
-description = "Strokes: take the wobble out of their paths, 0..=1."
 type = [
     "number",
     "null",
@@ -1524,7 +1495,6 @@ name = "simplify"
 required = false
 
 [resources.verbs.params.schema]
-description = "Strokes: drop points within this many units of the line."
 type = [
     "number",
     "null",
@@ -1535,7 +1505,6 @@ name = "extend"
 required = false
 
 [resources.verbs.params.schema]
-description = "A stroke: continue it through these points, from the end they start nearer."
 type = [
     "array",
     "null",
@@ -1552,7 +1521,6 @@ name = "split"
 required = false
 
 [resources.verbs.params.schema]
-description = "A stroke: cut it in two at the point nearest x, y; the far part gets a new id."
 maxItems = 2
 minItems = 2
 type = [
@@ -1568,14 +1536,13 @@ name = "merge"
 required = false
 
 [resources.verbs.params.schema]
-description = "Strokes: join them, in the order named, into the first."
 type = [
     "boolean",
     "null",
 ]
 
 [[resources.verbs]]
-description = "Remove marks.  Remove marks by id, every mark of a layer, or the strokes a path along crosses."
+description = "Remove marks by id, every mark of a layer, or the strokes a path along crosses."
 id = "remove-marks"
 kind = "undoable"
 label = "Remove marks"
@@ -1595,7 +1562,6 @@ name = "layer"
 required = false
 
 [resources.verbs.params.schema]
-description = "Remove every mark on this layer (with along: only its strokes)."
 type = [
     "string",
     "null",
@@ -1606,7 +1572,6 @@ name = "along"
 required = false
 
 [resources.verbs.params.schema]
-description = "Remove the brush strokes this path `[[x, y], …]` crosses, as a stroke eraser does."
 type = [
     "array",
     "null",
@@ -1621,7 +1586,7 @@ type = "array"
 type = "number"
 
 [[resources.verbs]]
-description = "Arrange marks.  Bring marks to the front or back of their layer, one step forward or backward, or directly above or below another mark or group."
+description = "Bring marks to the front or back of their layer, one step forward or backward, or directly above or below another mark or group."
 id = "arrange"
 kind = "undoable"
 label = "Arrange marks"
@@ -1641,7 +1606,6 @@ name = "to"
 required = true
 
 [resources.verbs.params.schema]
-description = "`front`, `back`, `forward`, `backward`, or `above`/`below` the mark or group `of`."
 type = "string"
 
 [[resources.verbs.params]]
@@ -1649,14 +1613,13 @@ name = "of"
 required = false
 
 [resources.verbs.params.schema]
-description = "The mark or group `above` and `below` are relative to."
 type = [
     "string",
     "null",
 ]
 
 [[resources.verbs]]
-description = "Add layer.  Add a layer on top (or above another). Give it a medium (see media) to paint in oil or watercolour; without one it holds crisp vector art."
+description = "Add a layer on top (or above another). Give it a medium (see media) to paint in oil or watercolour; without one it holds crisp vector art."
 id = "add-layer"
 kind = "undoable"
 label = "Add layer"
@@ -1666,7 +1629,6 @@ name = "id"
 required = false
 
 [resources.verbs.params.schema]
-description = "An id to address the layer by (`sky`); one is made when absent."
 type = [
     "string",
     "null",
@@ -1684,7 +1646,6 @@ name = "medium"
 required = false
 
 [resources.verbs.params.schema]
-description = "A medium id (`oil`, `watercolour`, … see `media`) to paint this layer's marks with; absent or empty for plain vector art."
 type = [
     "string",
     "null",
@@ -1695,7 +1656,6 @@ name = "opacity"
 required = false
 
 [resources.verbs.params.schema]
-description = "`0..=1`."
 type = [
     "number",
     "null",
@@ -1706,7 +1666,6 @@ name = "above"
 required = false
 
 [resources.verbs.params.schema]
-description = "Put the new layer directly above this layer instead of on top."
 type = [
     "string",
     "null",
@@ -1717,14 +1676,13 @@ name = "texture"
 required = false
 
 [resources.verbs.params.schema]
-description = "`0..=1`: let the ground's tooth show through the layer's marks."
 type = [
     "number",
     "null",
 ]
 
 [[resources.verbs]]
-description = "Edit layer.  Rename or place a layer in an organisational folder (group; empty removes it), change its medium, opacity, visibility, lock or adjustments (grading all its marks), or move it to the front, back, forward or backward."
+description = "Rename or place a layer in an organisational folder (group; empty removes it), change its medium, opacity, visibility, lock or adjustments (grading all its marks), or move it to the front, back, forward or backward."
 id = "edit-layer"
 kind = "undoable"
 label = "Edit layer"
@@ -1751,7 +1709,6 @@ name = "group"
 required = false
 
 [resources.verbs.params.schema]
-description = "Organisational folder name; empty removes the layer from its folder. Consecutive members are presented together without changing stacking."
 type = [
     "string",
     "null",
@@ -1762,7 +1719,6 @@ name = "medium"
 required = false
 
 [resources.verbs.params.schema]
-description = "A medium id, or empty for plain vector art."
 type = [
     "string",
     "null",
@@ -1793,7 +1749,6 @@ name = "locked"
 required = false
 
 [resources.verbs.params.schema]
-description = "Locked marks are not picked by the pointer."
 type = [
     "boolean",
     "null",
@@ -1804,7 +1759,6 @@ name = "to"
 required = false
 
 [resources.verbs.params.schema]
-description = "`front`, `back`, `forward` or `backward` among the layers."
 type = [
     "string",
     "null",
@@ -1815,7 +1769,6 @@ name = "texture"
 required = false
 
 [resources.verbs.params.schema]
-description = "`0..=1`: let the ground's tooth show through the layer's marks."
 type = [
     "number",
     "null",
@@ -1826,7 +1779,6 @@ name = "adjust"
 required = false
 
 [resources.verbs.params.schema]
-description = "Colour and tone of all on it, as `edit-marks` adjust; `{}` clears."
 type = [
     "object",
     "null",
@@ -1837,7 +1789,6 @@ name = "mask"
 required = false
 
 [resources.verbs.params.schema]
-description = "`reveal`, `hide` or `remove`: a mask layer `<id>-mask` to paint greys on, white shows, black hides; `unlink` keeps it put as the layer's marks move (`link` again)."
 type = [
     "string",
     "null",
@@ -1848,7 +1799,6 @@ name = "invert"
 required = false
 
 [resources.verbs.params.schema]
-description = "Invert the mask."
 type = [
     "boolean",
     "null",
@@ -1859,14 +1809,13 @@ name = "clip"
 required = false
 
 [resources.verbs.params.schema]
-description = "Clip to the layer below."
 type = [
     "boolean",
     "null",
 ]
 
 [[resources.verbs]]
-description = "Remove layer.  Remove a layer and every mark on it."
+description = "Remove a layer and every mark on it."
 id = "remove-layer"
 kind = "undoable"
 label = "Remove layer"
@@ -1879,7 +1828,7 @@ required = true
 type = "string"
 
 [[resources.verbs]]
-description = "Set artwork.  Set the title, size (units) or ground: texture (smooth, paper, cold-press, rough, linen, panel) and colour; or crop the artwork to a region or to what a mark shows (fit)."
+description = "Set the title, size (units) or ground: texture (smooth, paper, cold-press, rough, linen, panel) and colour; or crop the artwork to a region or to what a mark shows (fit)."
 id = "set-artwork"
 kind = "undoable"
 label = "Set artwork"
@@ -1899,7 +1848,6 @@ name = "width"
 required = false
 
 [resources.verbs.params.schema]
-description = "Width in units, 16 to 8192."
 type = [
     "number",
     "null",
@@ -1910,7 +1858,6 @@ name = "height"
 required = false
 
 [resources.verbs.params.schema]
-description = "Height in units, 16 to 8192."
 type = [
     "number",
     "null",
@@ -1921,7 +1868,6 @@ name = "texture"
 required = false
 
 [resources.verbs.params.schema]
-description = "`smooth`, `paper`, `cold-press`, `rough`, `linen` or `panel`."
 type = [
     "string",
     "null",
@@ -1932,7 +1878,6 @@ name = "ground_colour"
 required = false
 
 [resources.verbs.params.schema]
-description = "Ground colour, `#rrggbb`."
 type = [
     "string",
     "null",
@@ -1943,7 +1888,6 @@ name = "crop"
 required = false
 
 [resources.verbs.params.schema]
-description = "Crop to `[x, y, width, height]`; marks move with it."
 maxItems = 4
 minItems = 4
 type = [
@@ -1959,14 +1903,13 @@ name = "fit"
 required = false
 
 [resources.verbs.params.schema]
-description = "Crop to what this mark or group shows."
 type = [
     "string",
     "null",
 ]
 
 [[resources.verbs]]
-description = "Save medium.  Save a medium preset in the artwork: an engine (oil or watercolour) with parameters, a ground and a pigment palette. Layers can then use its id."
+description = "Save a medium preset in the artwork: an engine (oil or watercolour) with parameters, a ground and a pigment palette. Layers can then use its id."
 id = "save-medium"
 kind = "undoable"
 label = "Save medium"
@@ -1977,7 +1920,6 @@ required = true
 
 [resources.verbs.params.schema]
 additionalProperties = false
-description = "A medium: one of the built-in engines with its parameters, a suggested ground and a palette. Saving one makes it part of the artwork, shared with everyone who opens it."
 required = [
     "id",
     "label",
@@ -2039,7 +1981,7 @@ description = "Engine parameters by id; `media` lists each engine's parameters a
 type = "object"
 
 [[resources.verbs]]
-description = "Remove medium.  Remove a medium saved in this artwork."
+description = "Remove a medium saved in this artwork."
 id = "remove-medium"
 kind = "undoable"
 label = "Remove medium"
@@ -2052,7 +1994,7 @@ required = true
 type = "string"
 
 [[resources.verbs]]
-description = "Align marks.  Align marks or groups to an edge or centre line, and/or distribute them with equal gaps, within their own extent, the artwork or another mark."
+description = "Align marks or groups to an edge or centre line, and/or distribute them with equal gaps, within their own extent, the artwork or another mark."
 id = "align"
 kind = "undoable"
 label = "Align marks"
@@ -2062,7 +2004,6 @@ name = "ids"
 required = true
 
 [resources.verbs.params.schema]
-description = "Marks or groups."
 type = "array"
 
 [resources.verbs.params.schema.items]
@@ -2073,7 +2014,6 @@ name = "edge"
 required = false
 
 [resources.verbs.params.schema]
-description = "`left`, `center`, `right`, `top`, `middle` or `bottom`."
 type = [
     "string",
     "null",
@@ -2084,7 +2024,6 @@ name = "distribute"
 required = false
 
 [resources.verbs.params.schema]
-description = "`horizontal` or `vertical`: equal gaps."
 type = [
     "string",
     "null",
@@ -2095,14 +2034,13 @@ name = "to"
 required = false
 
 [resources.verbs.params.schema]
-description = "`artwork` or a mark/group id; else their extent."
 type = [
     "string",
     "null",
 ]
 
 [[resources.verbs]]
-description = "Set reference.  Set the reference picture to recreate or trace: shown over the artwork at its opacity, seen by look (reference: false hides it) and compare; never exported."
+description = "Set the reference picture to recreate or trace: shown over the artwork at its opacity, seen by look (reference: false hides it) and compare; never exported."
 id = "set-reference"
 kind = "undoable"
 label = "Set reference"
@@ -2112,7 +2050,6 @@ name = "image"
 required = false
 
 [resources.verbs.params.schema]
-description = "A PNG or JPEG: an absolute file path, a content address, or the picture itself as `data:image/png;base64,…`."
 type = [
     "string",
     "null",
@@ -2123,7 +2060,6 @@ name = "frame"
 required = false
 
 [resources.verbs.params.schema]
-description = "`[x, y, width, height]`; fitted to the artwork when absent."
 maxItems = 4
 minItems = 4
 type = [
@@ -2139,7 +2075,6 @@ name = "opacity"
 required = false
 
 [resources.verbs.params.schema]
-description = "`0..=1` (default 0.5)."
 type = [
     "number",
     "null",
@@ -2160,14 +2095,13 @@ name = "remove"
 required = false
 
 [resources.verbs.params.schema]
-description = "Remove the reference."
 type = [
     "boolean",
     "null",
 ]
 
 [[resources.verbs]]
-description = "Import SVG.  Import an SVG (markup, file path or content address) as one draw of path and text marks in a group: fills, gradients, outlines, opacity, blends and clip paths."
+description = "Import an SVG (markup, file path or content address) as one draw of path and text marks in a group: fills, gradients, outlines, opacity, blends and clip paths."
 id = "import-svg"
 kind = "undoable"
 label = "Import SVG"
@@ -2177,7 +2111,6 @@ name = "svg"
 required = true
 
 [resources.verbs.params.schema]
-description = "SVG markup, an absolute path to a `.svg`, or a content address."
 type = "string"
 
 [[resources.verbs.params]]
@@ -2185,7 +2118,6 @@ name = "layer"
 required = false
 
 [resources.verbs.params.schema]
-description = "The layer to draw on; the top layer when absent."
 type = [
     "string",
     "null",
@@ -2196,7 +2128,6 @@ name = "group"
 required = false
 
 [resources.verbs.params.schema]
-description = "The group the marks join (one is made when absent)."
 type = [
     "string",
     "null",
@@ -2207,7 +2138,6 @@ name = "fit"
 required = false
 
 [resources.verbs.params.schema]
-description = "Fit into `[x, y, width, height]`, aspect kept; own size otherwise."
 maxItems = 4
 minItems = 4
 type = [
@@ -2219,7 +2149,7 @@ type = [
 type = "number"
 
 [[resources.verbs]]
-description = "Open picture.  Open a PNG, JPEG or WebP as a new artwork the size of the picture (a unit per pixel), the picture its first mark, `picture`. Replaces what the artwork held (undo brings it back)."
+description = "Open a PNG, JPEG or WebP as a new artwork the size of the picture (a unit per pixel), the picture its first mark, `picture`. Replaces what the artwork held (undo brings it back)."
 id = "open"
 kind = "undoable"
 label = "Open picture"
@@ -2229,7 +2159,6 @@ name = "path"
 required = true
 
 [resources.verbs.params.schema]
-description = "A PNG, JPEG or WebP: an absolute path, a content address or a data: URI."
 type = "string"
 
 [[resources.verbs.params]]
@@ -2237,14 +2166,13 @@ name = "title"
 required = false
 
 [resources.verbs.params.schema]
-description = "The new artwork's title; the file's name when absent."
 type = [
     "string",
     "null",
 ]
 
 [[resources.verbs]]
-description = "New artwork.  Start a blank artwork (one undo away). size: screen, a4, letter, square, poster, icon (landscape turns it). start: paper, white, watercolour, oil, panel, dark."
+description = "Start a blank artwork (one undo away). size: screen, a4, letter, square, poster, icon (landscape turns it). start: paper, white, watercolour, oil, panel, dark."
 id = "new-artwork"
 kind = "undoable"
 label = "New artwork"
@@ -2264,7 +2192,6 @@ name = "size"
 required = false
 
 [resources.verbs.params.schema]
-description = "A size preset; `width` and `height` override it."
 type = [
     "string",
     "null",
@@ -2275,7 +2202,6 @@ name = "landscape"
 required = false
 
 [resources.verbs.params.schema]
-description = "Turn the size on its side."
 type = [
     "boolean",
     "null",
@@ -2286,7 +2212,6 @@ name = "width"
 required = false
 
 [resources.verbs.params.schema]
-description = "Width in units, 16 to 8192."
 type = [
     "number",
     "null",
@@ -2297,7 +2222,6 @@ name = "height"
 required = false
 
 [resources.verbs.params.schema]
-description = "Height in units, 16 to 8192."
 type = [
     "number",
     "null",
@@ -2308,7 +2232,6 @@ name = "start"
 required = false
 
 [resources.verbs.params.schema]
-description = "A ground and first medium; the fields below override it."
 type = [
     "string",
     "null",
@@ -2329,7 +2252,6 @@ name = "ground_colour"
 required = false
 
 [resources.verbs.params.schema]
-description = "Ground colour, `#rrggbb`."
 type = [
     "string",
     "null",
@@ -2340,14 +2262,13 @@ name = "medium"
 required = false
 
 [resources.verbs.params.schema]
-description = "The first layer's medium; empty for plain."
 type = [
     "string",
     "null",
 ]
 
 [[resources.verbs]]
-description = "Open artwork.  Replace the artwork with a saved .artwork file (path, content address or JSON), one undo away."
+description = "Replace the artwork with a saved .artwork file (path, content address or JSON), one undo away."
 id = "open-artwork"
 kind = "undoable"
 label = "Open artwork"
@@ -2357,11 +2278,10 @@ name = "file"
 required = true
 
 [resources.verbs.params.schema]
-description = "A `.artwork` path, a content address, or the file's JSON."
 type = "string"
 
 [[resources.verbs]]
-description = 'Select area.  Select an area: shapes, marks, magic wand (at) or colour; add, subtract, intersect, grow, feather, invert. For subject or edge refinement invoke find-area (a background job). Then use-selection, or clip: "selection" in paint or draw. Bucket fill: select at, use-selection fill. Cut-out: subject, use-selection mask. look outlines it'
+description = 'Select an area: shapes, marks, magic wand (at) or colour; add, subtract, intersect, grow, feather, invert. For subject or edge refinement invoke find-area (a background job). Then use-selection, or clip: "selection" in paint or draw. Bucket fill: select at, use-selection fill. Cut-out: subject, use-selection mask. look outlines it'
 id = "select"
 kind = "undoable"
 label = "Select area"
@@ -2371,7 +2291,6 @@ name = "rect"
 required = false
 
 [resources.verbs.params.schema]
-description = "`[x, y, w, h]`."
 maxItems = 4
 minItems = 4
 type = [
@@ -2387,7 +2306,6 @@ name = "ellipse"
 required = false
 
 [resources.verbs.params.schema]
-description = "In `[x, y, w, h]`."
 maxItems = 4
 minItems = 4
 type = [
@@ -2403,7 +2321,6 @@ name = "points"
 required = false
 
 [resources.verbs.params.schema]
-description = "Lasso `[[x, y], …]`."
 type = [
     "array",
     "null",
@@ -2422,7 +2339,6 @@ name = "d"
 required = false
 
 [resources.verbs.params.schema]
-description = "SVG path data."
 type = [
     "string",
     "null",
@@ -2433,7 +2349,6 @@ name = "marks"
 required = false
 
 [resources.verbs.params.schema]
-description = "Marks or groups."
 type = [
     "array",
     "null",
@@ -2447,7 +2362,6 @@ name = "at"
 required = false
 
 [resources.verbs.params.schema]
-description = "Magic wand `[x, y]`: like colour touching it."
 maxItems = 2
 minItems = 2
 type = [
@@ -2463,7 +2377,6 @@ name = "subject"
 required = false
 
 [resources.verbs.params.schema]
-description = "The photo's main subject, found on-device (with at: the object there)."
 type = [
     "boolean",
     "null",
@@ -2474,7 +2387,6 @@ name = "refine"
 required = false
 
 [resources.verbs.params.schema]
-description = "Units: fit the edge to the picture, soft for fur (subject: 6px)."
 type = [
     "number",
     "null",
@@ -2486,7 +2398,6 @@ required = false
 
 [resources.verbs.params.schema]
 additionalProperties = false
-description = "Set by subject/refine."
 required = [
     "src",
     "rect",
@@ -2513,7 +2424,6 @@ name = "colour"
 required = false
 
 [resources.verbs.params.schema]
-description = "`#rrggbb`, everywhere."
 type = [
     "string",
     "null",
@@ -2524,7 +2434,6 @@ name = "tolerance"
 required = false
 
 [resources.verbs.params.schema]
-description = "0..1, default 0.15."
 type = [
     "number",
     "null",
@@ -2535,7 +2444,6 @@ name = "layer"
 required = false
 
 [resources.verbs.params.schema]
-description = "at or colour: on this layer alone, not as all show."
 type = [
     "string",
     "null",
@@ -2546,7 +2454,6 @@ name = "mode"
 required = false
 
 [resources.verbs.params.schema]
-description = "`replace`, `add`, `subtract`, `intersect` or `none` (deselect)."
 type = [
     "string",
     "null",
@@ -2557,7 +2464,6 @@ name = "feather"
 required = false
 
 [resources.verbs.params.schema]
-description = "Units."
 type = [
     "number",
     "null",
@@ -2568,7 +2474,6 @@ name = "grow"
 required = false
 
 [resources.verbs.params.schema]
-description = "Units, after invert; negative shrinks."
 type = [
     "number",
     "null",
@@ -2585,7 +2490,7 @@ type = [
 ]
 
 [[resources.verbs]]
-description = "Use selection.  Fill or stroke the selection as a mark on a layer, mask the layer to it, or clear it from the layer (by its mask, a layer of grey marks)."
+description = "Fill or stroke the selection as a mark on a layer, mask the layer to it, or clear it from the layer (by its mask, a layer of grey marks)."
 id = "use-selection"
 kind = "undoable"
 label = "Use selection"
@@ -2595,7 +2500,6 @@ name = "do"
 required = true
 
 [resources.verbs.params.schema]
-description = "`fill`, `stroke`, `mask` or `clear`."
 type = "string"
 
 [[resources.verbs.params]]
@@ -2623,7 +2527,6 @@ name = "width"
 required = false
 
 [resources.verbs.params.schema]
-description = "Stroke width (2)."
 type = [
     "number",
     "null",
@@ -2634,7 +2537,6 @@ name = "id"
 required = false
 
 [resources.verbs.params.schema]
-description = "The new mark's."
 type = [
     "string",
     "null",
@@ -2645,7 +2547,6 @@ name = "defringe"
 required = false
 
 [resources.verbs.params.schema]
-description = "mask/clear by a refined edge: clean the old background out of the pictures' edge (default true)."
 type = [
     "boolean",
     "null",
@@ -2656,7 +2557,6 @@ name = "cleaned"
 required = false
 
 [resources.verbs.params.schema]
-description = "Set by defringe."
 type = [
     "array",
     "null",
@@ -2671,7 +2571,7 @@ type = "array"
 type = "string"
 
 [[resources.verbs]]
-description = "Combine shapes.  Combine shapes into one path mark, in the bottom one's place and style."
+description = "Combine shapes into one path mark, in the bottom one's place and style."
 id = "combine"
 kind = "undoable"
 label = "Combine shapes"
@@ -2681,7 +2581,6 @@ name = "ids"
 required = true
 
 [resources.verbs.params.schema]
-description = "Marks or groups."
 type = "array"
 
 [resources.verbs.params.schema.items]
@@ -2692,5 +2591,4 @@ name = "op"
 required = true
 
 [resources.verbs.params.schema]
-description = "`union`, `subtract` (from the bottom one), `intersect` or `exclude`."
 type = "string"

@@ -15,7 +15,6 @@ title = "Recently opened activity ids, newest first"
 type = "Vec<u64>"
 
 [[resources.verbs]]
-description = "Open an activity."
 id = "open-activity"
 kind = "undoable"
 label = "Open an activity"
@@ -25,6 +24,5 @@ name = "id"
 required = true
 
 [resources.verbs.params.schema]
-description = "Stable activity id"
 minimum = 0
 type = "integer"

@@ -75,7 +75,7 @@ title = "Shown"
 type = "bool"
 
 [[resources.verbs]]
-description = "Add an evaluated calculation to the front of the history, keeping the newest [`HISTORY_CAP`]."
+description = "newest [`HISTORY_CAP`]."
 id = "commit-history"
 kind = "undoable"
 label = "Add an evaluated calculation to the front of the history, keeping the"
@@ -85,7 +85,6 @@ name = "expr"
 required = true
 
 [resources.verbs.params.schema]
-description = "Calculation"
 type = "string"
 
 [[resources.verbs.params]]
@@ -93,11 +92,9 @@ name = "result"
 required = true
 
 [resources.verbs.params.schema]
-description = "Result"
 type = "string"
 
 [[resources.verbs]]
-description = "Remove one calculation from the history."
 destructive = true
 id = "delete-history-entry"
 kind = "undoable"
@@ -108,11 +105,9 @@ name = "entry"
 required = true
 
 [resources.verbs.params.schema]
-description = "Entry"
 type = "string"
 
 [[resources.verbs]]
-description = "Remove every history entry."
 destructive = true
 id = "clear-history"
 kind = "undoable"
@@ -120,7 +115,6 @@ label = "Remove every history entry"
 params = []
 
 [[resources.verbs]]
-description = "Add a 2D y = f(x) curve."
 id = "add-function"
 kind = "undoable"
 label = "Add a 2D y = f(x) curve"
@@ -130,11 +124,9 @@ name = "formula"
 required = true
 
 [resources.verbs.params.schema]
-description = "Formula"
 type = "string"
 
 [[resources.verbs]]
-description = "Add a 3D z = f(x, y) surface."
 id = "add-surface"
 kind = "undoable"
 label = "Add a 3D z = f(x, y) surface"
@@ -144,11 +136,9 @@ name = "formula"
 required = true
 
 [resources.verbs.params.schema]
-description = "Formula"
 type = "string"
 
 [[resources.verbs]]
-description = "Remove a function from the graph."
 destructive = true
 id = "delete-function"
 kind = "undoable"
@@ -159,11 +149,9 @@ name = "function"
 required = true
 
 [resources.verbs.params.schema]
-description = "Function"
 type = "string"
 
 [[resources.verbs]]
-description = "Remove a surface from the graph."
 destructive = true
 id = "delete-surface"
 kind = "undoable"
@@ -174,5 +162,4 @@ name = "surface"
 required = true
 
 [resources.verbs.params.schema]
-description = "Surface"
 type = "string"

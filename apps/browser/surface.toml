@@ -74,7 +74,6 @@ title = "Sites without tracker protection, by exact origin"
 type = "Set<String>"
 
 [[resources.verbs]]
-description = "Bookmark a page."
 id = "add-bookmark"
 kind = "undoable"
 label = "Bookmark a page"
@@ -84,7 +83,6 @@ name = "url"
 required = true
 
 [resources.verbs.params.schema]
-description = "The page's absolute http(s) address"
 type = "string"
 
 [[resources.verbs.params]]
@@ -92,14 +90,12 @@ name = "title"
 required = false
 
 [resources.verbs.params.schema]
-description = "Its title; the address when none"
 type = [
     "string",
     "null",
 ]
 
 [[resources.verbs]]
-description = "Remove a bookmark."
 id = "remove-bookmark"
 kind = "undoable"
 label = "Remove a bookmark"
@@ -109,11 +105,9 @@ name = "bookmark"
 required = true
 
 [resources.verbs.params.schema]
-description = "Bookmark"
 type = "string"
 
 [[resources.verbs]]
-description = "Turn tracker protection on or off for a site."
 id = "set-site-protection"
 kind = "undoable"
 label = "Turn tracker protection on or off for a site"
@@ -123,7 +117,6 @@ name = "origin"
 required = true
 
 [resources.verbs.params.schema]
-description = "The site's address or exact origin, such as https://example.org"
 type = "string"
 
 [[resources.verbs.params]]
@@ -131,5 +124,156 @@ name = "enabled"
 required = true
 
 [resources.verbs.params.schema]
-description = "Whether tracker protection is on for the site"
 type = "boolean"
+
+[[resources]]
+kind = "browser.browsing-history"
+label = "Browsing history"
+person = true
+version = 1
+
+[[resources.fields]]
+owner = "browsing-history"
+path = "visits"
+readonly = true
+stored = "value"
+title = "Visited pages, by URL. Only visiting and forgetting change them"
+type = "BTreeMap<String, Visit>"
+
+[[resources.verbs]]
+description = "Recording a visit is the browser keeping its history, not an edit of the person's to take back."
+id = "visit"
+kind = "undoable"
+label = "Record a visit to a page"
+
+[[resources.verbs.params]]
+name = "url"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "title"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "at"
+required = true
+
+[resources.verbs.params.schema]
+minimum = 0
+type = "integer"
+
+[[resources.verbs]]
+id = "forget"
+kind = "undoable"
+label = "Forget one page"
+
+[[resources.verbs.params]]
+name = "url"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs]]
+id = "clear-history"
+kind = "undoable"
+label = "Forget every page"
+params = []
+
+[[resources]]
+kind = "browser.address-book"
+label = "Address book"
+person = true
+verbs = []
+version = 1
+
+[[resources.fields]]
+owner = "address-book"
+path = "enabled"
+stored = "value"
+title = "Address autofill"
+type = "bool"
+
+[[resources.fields]]
+owner = "address-book"
+path = "profiles"
+stored = "keyed"
+title = "Saved addresses, by id"
+type = "Keyed<AddressProfile>"
+
+[[resources.fields]]
+owner = "address-profile"
+path = "profiles.*.id"
+stored = "value"
+title = "The profile's id: letters, digits, `-` and `_`"
+type = "String"
+
+[[resources.fields]]
+label = true
+owner = "address-profile"
+path = "profiles.*.label"
+stored = "value"
+title = "Label"
+type = "String"
+
+[[resources.fields]]
+owner = "address-profile"
+path = "profiles.*.full_name"
+stored = "value"
+title = "Full name"
+type = "String"
+
+[[resources.fields]]
+owner = "address-profile"
+path = "profiles.*.given_name"
+stored = "value"
+title = "Given name"
+type = "String"
+
+[[resources.fields]]
+owner = "address-profile"
+path = "profiles.*.family_name"
+stored = "value"
+title = "Family name"
+type = "String"
+
+[[resources.fields]]
+owner = "address-profile"
+path = "profiles.*.street"
+stored = "value"
+title = "Street"
+type = "String"
+
+[[resources.fields]]
+owner = "address-profile"
+path = "profiles.*.city"
+stored = "value"
+title = "City"
+type = "String"
+
+[[resources.fields]]
+owner = "address-profile"
+path = "profiles.*.region"
+stored = "value"
+title = "Region"
+type = "String"
+
+[[resources.fields]]
+owner = "address-profile"
+path = "profiles.*.postal_code"
+stored = "value"
+title = "Postal code"
+type = "String"
+
+[[resources.fields]]
+owner = "address-profile"
+path = "profiles.*.country"
+stored = "value"
+title = "Country"
+type = "String"

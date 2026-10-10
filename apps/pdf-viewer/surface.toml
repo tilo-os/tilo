@@ -311,7 +311,7 @@ title = "Where taken-over annotations came from, by record id"
 type = "BTreeMap<String, AdoptedEntry>"
 
 [[resources.verbs]]
-description = "Make the page plan.  The pages of the opened file, in their order, the first time a record meets it. Page ids are deterministic, so two people opening the same file agree."
+description = "The pages of the opened file, in their order, the first time a record meets it. Page ids are deterministic, so two people opening the same file agree."
 id = "start-page-plan"
 kind = "undoable"
 label = "Make the page plan"
@@ -321,12 +321,11 @@ name = "pages"
 required = true
 
 [resources.verbs.params.schema]
-description = "How many pages the PDF has"
 minimum = 0
 type = "integer"
 
 [[resources.verbs]]
-description = "Pin the source.  Names the PDF bytes the markup is made against by their content. The first pin of a record wins: it never re-targets its markup."
+description = "Names the PDF bytes the markup is made against by their content. The first pin of a record wins: it never re-targets its markup."
 id = "pin-source"
 kind = "undoable"
 label = "Pin the source"
@@ -336,7 +335,6 @@ name = "hash"
 required = true
 
 [resources.verbs.params.schema]
-description = "The content hash of the PDF bytes"
 type = "string"
 
 [[resources.verbs.params]]
@@ -344,7 +342,6 @@ name = "len"
 required = true
 
 [resources.verbs.params.schema]
-description = "How many bytes they are"
 minimum = 0
 type = "integer"
 
@@ -353,11 +350,10 @@ name = "name"
 required = true
 
 [resources.verbs.params.schema]
-description = "The file's name"
 type = "string"
 
 [[resources.verbs]]
-description = "Take over the PDF's own markup.  The highlights, notes and their replies, free text, ink and form values the source bytes already carry become records like any other, once per source. Their ids derive from the source, so two people taking it over at once agree."
+description = "The highlights, notes and their replies, free text, ink and form values the source bytes already carry become records like any other, once per source. Their ids derive from the source, so two people taking it over at once agree."
 id = "adopt-existing"
 kind = "undoable"
 label = "Take over the PDF's own markup"
@@ -371,7 +367,6 @@ name = "source"
 required = true
 
 [resources.verbs.params.schema]
-description = "The content hash of the source the markup is in"
 type = "string"
 
 [[resources.verbs.params]]
@@ -380,7 +375,7 @@ required = true
 
 [resources.verbs.params.schema]
 additionalProperties = false
-description = "The markup it carries"
+description = "The markup a PDF already carries, as a record takes it over."
 required = [
     "annotations",
     "comments",
@@ -684,7 +679,7 @@ type = "string"
 type = "object"
 
 [[resources.verbs]]
-description = "Import pages.  Pages of other PDFs or pictures, by content, after a page (first when none is named). Their bytes are in the content store, never here."
+description = "Pages of other PDFs or pictures, by content, after a page (first when none is named). Their bytes are in the content store, never here."
 id = "import-pages"
 kind = "undoable"
 label = "Import pages"
@@ -698,7 +693,6 @@ name = "after"
 required = false
 
 [resources.verbs.params.schema]
-description = "The page they go after; the start when none"
 type = [
     "string",
     "null",
@@ -709,7 +703,6 @@ name = "pages"
 required = true
 
 [resources.verbs.params.schema]
-description = "The pages, each with the id it is addressed by"
 type = "array"
 
 [resources.verbs.params.schema.items]
@@ -770,7 +763,7 @@ minimum = 0
 type = "integer"
 
 [[resources.verbs]]
-description = "Duplicate page.  Another occurrence of the page right after it. Markup stays with the page it was made on."
+description = "Another occurrence of the page right after it. Markup stays with the page it was made on."
 id = "duplicate-page"
 kind = "undoable"
 label = "Duplicate page"
@@ -780,7 +773,6 @@ name = "page"
 required = true
 
 [resources.verbs.params.schema]
-description = "Page"
 type = "string"
 
 [[resources.verbs.params]]
@@ -788,14 +780,13 @@ name = "copy"
 required = false
 
 [resources.verbs.params.schema]
-description = "The id the copy is addressed by; a new one when none"
 type = [
     "string",
     "null",
 ]
 
 [[resources.verbs]]
-description = "Delete page.  Its markup stays in the record, hidden, and comes back with the page. The last page is never deleted."
+description = "Its markup stays in the record, hidden, and comes back with the page. The last page is never deleted."
 id = "delete-page"
 kind = "undoable"
 label = "Delete page"
@@ -805,11 +796,10 @@ name = "page"
 required = true
 
 [resources.verbs.params.schema]
-description = "Page"
 type = "string"
 
 [[resources.verbs]]
-description = "Move page.  After another page, or to the start."
+description = "After another page, or to the start."
 id = "move-page"
 kind = "undoable"
 label = "Move page"
@@ -819,7 +809,6 @@ name = "page"
 required = true
 
 [resources.verbs.params.schema]
-description = "Page"
 type = "string"
 
 [[resources.verbs.params]]
@@ -827,14 +816,13 @@ name = "after"
 required = false
 
 [resources.verbs.params.schema]
-description = "The page it goes after; the start when none"
 type = [
     "string",
     "null",
 ]
 
 [[resources.verbs]]
-description = "Rotate page.  A quarter turn clockwise."
+description = "A quarter turn clockwise."
 id = "rotate-page"
 kind = "undoable"
 label = "Rotate page"
@@ -844,11 +832,10 @@ name = "page"
 required = true
 
 [resources.verbs.params.schema]
-description = "Page"
 type = "string"
 
 [[resources.verbs]]
-description = "Add annotation.  Text markup, ink, a note or free text on a page, signed by whoever adds it."
+description = "Text markup, ink, a note or free text on a page, signed by whoever adds it."
 id = "add-annotation"
 kind = "undoable"
 label = "Add annotation"
@@ -863,7 +850,7 @@ required = true
 
 [resources.verbs.params.schema]
 additionalProperties = false
-description = "The annotation"
+description = "An annotation someone makes."
 required = [
     "id",
     "page_id",
@@ -1059,7 +1046,7 @@ enum = [
 type = "string"
 
 [[resources.verbs]]
-description = "Delete annotation.  The comments pinned to it go with it, so a deleted note leaves no thread behind."
+description = "The comments pinned to it go with it, so a deleted note leaves no thread behind."
 id = "delete-annotation"
 kind = "undoable"
 label = "Delete annotation"
@@ -1073,11 +1060,10 @@ name = "annotation"
 required = true
 
 [resources.verbs.params.schema]
-description = "Annotation"
 type = "string"
 
 [[resources.verbs]]
-description = "Add note.  A sticky note on a page and the comment thread pinned to it, signed by whoever adds it."
+description = "A sticky note on a page and the comment thread pinned to it, signed by whoever adds it."
 id = "create-note"
 kind = "undoable"
 label = "Add note"
@@ -1092,7 +1078,7 @@ required = true
 
 [resources.verbs.params.schema]
 additionalProperties = false
-description = "The note"
+description = "A sticky note someone makes: a note on the page and the comment thread pinned to it."
 required = [
     "annotation",
     "comment",
@@ -1140,7 +1126,7 @@ type = "number"
 type = "number"
 
 [[resources.verbs]]
-description = "Add a note at the top of a page.  A sticky note with this text, where a reader looks first; for the palette, keyboard users and agents."
+description = "A sticky note with this text, where a reader looks first; for the palette, keyboard users and agents."
 id = "add-note"
 kind = "undoable"
 label = "Add a note at the top of a page"
@@ -1154,7 +1140,6 @@ name = "text"
 required = true
 
 [resources.verbs.params.schema]
-description = "What the note says"
 type = "string"
 
 [[resources.verbs.params]]
@@ -1162,7 +1147,6 @@ name = "page"
 required = false
 
 [resources.verbs.params.schema]
-description = "Page (1 when omitted)"
 minimum = 0
 type = [
     "integer",
@@ -1170,7 +1154,7 @@ type = [
 ]
 
 [[resources.verbs]]
-description = "Add comment.  Free on a page, or about an annotation, signed by whoever writes it."
+description = "Free on a page, or about an annotation, signed by whoever writes it."
 field = "comments"
 id = "add-comment"
 kind = "undoable"
@@ -1186,7 +1170,7 @@ required = true
 
 [resources.verbs.params.schema]
 additionalProperties = false
-description = "The comment"
+description = "A comment someone writes: free on a page, or on an annotation."
 required = [
     "id",
     "text",
@@ -1310,7 +1294,7 @@ description = "What it says, as plain text."
 type = "string"
 
 [[resources.verbs]]
-description = "Reply.  Adds an answer to the thread, signed by whoever writes it."
+description = "Adds an answer to the thread, signed by whoever writes it."
 field = "comments"
 id = "reply"
 kind = "undoable"
@@ -1325,7 +1309,6 @@ name = "comment"
 required = true
 
 [resources.verbs.params.schema]
-description = "Comment"
 type = "string"
 
 [[resources.verbs.params]]
@@ -1333,7 +1316,6 @@ name = "text"
 required = true
 
 [resources.verbs.params.schema]
-description = "What it says"
 type = "string"
 
 [[resources.verbs.params]]
@@ -1341,7 +1323,6 @@ name = "id"
 required = false
 
 [resources.verbs.params.schema]
-description = "The id the reply is addressed by; a new one when none"
 type = [
     "string",
     "null",
@@ -1352,7 +1333,6 @@ name = "rich"
 required = false
 
 [resources.verbs.params.schema]
-description = "Its paragraphs as written; none for plain text"
 type = [
     "array",
     "null",
@@ -1449,7 +1429,7 @@ type = [
 type = "string"
 
 [[resources.verbs]]
-description = "Delete comment.  A comment pinning a sticky note takes the note with it."
+description = "A comment pinning a sticky note takes the note with it."
 id = "delete-comment"
 kind = "undoable"
 label = "Delete comment"
@@ -1463,11 +1443,10 @@ name = "comment"
 required = true
 
 [resources.verbs.params.schema]
-description = "Comment"
 type = "string"
 
 [[resources.verbs]]
-description = "Sign.  Places a signature on a page."
+description = "Places a signature on a page."
 id = "add-signature"
 kind = "undoable"
 label = "Sign"
@@ -1478,7 +1457,7 @@ required = true
 
 [resources.verbs.params.schema]
 additionalProperties = false
-description = "The signature"
+description = "A signature someone places."
 required = [
     "id",
     "page_id",
@@ -1575,7 +1554,7 @@ enum = [
 type = "string"
 
 [[resources.verbs]]
-description = "Sign with a typed name.  A typed signature dated today, where a page is signed: for the palette, keyboard users and agents."
+description = "A typed signature dated today, where a page is signed: for the palette, keyboard users and agents."
 id = "add-typed-signature"
 kind = "undoable"
 label = "Sign with a typed name"
@@ -1585,7 +1564,6 @@ name = "signer"
 required = false
 
 [resources.verbs.params.schema]
-description = "The name signed; your own when omitted"
 type = [
     "string",
     "null",
@@ -1596,7 +1574,6 @@ name = "page"
 required = false
 
 [resources.verbs.params.schema]
-description = "Page (1 when omitted)"
 minimum = 0
 type = [
     "integer",
@@ -1604,7 +1581,6 @@ type = [
 ]
 
 [[resources.verbs]]
-description = "Delete signature."
 id = "delete-signature"
 kind = "undoable"
 label = "Delete signature"
@@ -1618,7 +1594,6 @@ name = "signature"
 required = true
 
 [resources.verbs.params.schema]
-description = "Signature"
 type = "string"
 
 [[resources]]
@@ -1642,7 +1617,7 @@ title = "The drawn signature, polylines in normalised `[0,1]²` pad space;"
 type = "Json<Vec<Vec<(f64, f64)>>>"
 
 [[resources.verbs]]
-description = "Sign as  Signs as `name` from now on."
+description = "Signs as `name` from now on."
 id = "set-signer"
 kind = "undoable"
 label = "Sign as"
@@ -1652,11 +1627,10 @@ name = "name"
 required = true
 
 [resources.verbs.params.schema]
-description = "The name to sign as"
 type = "string"
 
 [[resources.verbs]]
-description = "Draw signature  Replaces the drawn signature; no strokes clears it."
+description = "Replaces the drawn signature; no strokes clears it."
 id = "set-strokes"
 kind = "undoable"
 label = "Draw signature"
@@ -1666,7 +1640,6 @@ name = "strokes"
 required = true
 
 [resources.verbs.params.schema]
-description = "Polylines in the unit square, each a list of x, y points"
 type = "array"
 
 [resources.verbs.params.schema.items]

@@ -182,7 +182,7 @@ title = "Photographs"
 type = "Set<String>"
 
 [[resources.verbs]]
-description = "Import photograph.  Adds a photograph already kept in the content store. A photograph the library already has keeps what it was given."
+description = "Adds a photograph already kept in the content store. A photograph the library already has keeps what it was given."
 id = "import-photo"
 kind = "undoable"
 label = "Import photograph"
@@ -193,7 +193,7 @@ required = true
 
 [resources.verbs.params.schema]
 additionalProperties = false
-description = "The photograph: its name, size in pixels and content hash"
+description = "The photograph currently open: its portable identity and dimensions. Deliberately carries no bytes. The document names the original by content hash; the bytes live in the app's content store (`tilo-content`) and the pixels are decoded beside the document, never written into the CRDT: an oversized change is dropped by the sync transport and freezes every peer's replica at the change before it."
 required = [
     "name",
     "path",
@@ -233,7 +233,6 @@ name = "captured_at"
 required = false
 
 [resources.verbs.params.schema]
-description = "When it was taken, as its file says"
 type = [
     "string",
     "null",
@@ -245,7 +244,7 @@ required = false
 
 [resources.verbs.params.schema]
 additionalProperties = false
-description = "Where it was taken, as its file says"
+description = "A deliberately small, explicitly shared location attached to one photo. Coordinates are useful for browsing a personal library, but are sensitive: this is never inferred from an IP address, uploaded for reverse geocoding, or copied from a machine-local file path.  A location reaches the shared document only through `SetPhotoLocation`; clearing it removes the complete shared record.  The label is a collaborator-visible convenience, not an authority over the coordinates."
 required = [
     "latitude",
     "longitude",
@@ -284,7 +283,7 @@ description = "`user`, `map`, `exif`, or `device`.  `map` records a deliberate p
 type = "string"
 
 [[resources.verbs]]
-description = "Read again from its file.  Refreshes what can be re-read from the original without overwriting deliberate organization. A capture time fills an empty one only; a location read from the file replaces only another read from a file."
+description = "Refreshes what can be re-read from the original without overwriting deliberate organization. A capture time fills an empty one only; a location read from the file replaces only another read from a file."
 id = "refresh-imported-metadata"
 kind = "undoable"
 label = "Read again from its file"
@@ -294,7 +293,6 @@ name = "photo"
 required = true
 
 [resources.verbs.params.schema]
-description = "Photo"
 type = "string"
 
 [[resources.verbs.params]]
@@ -302,7 +300,6 @@ name = "captured_at"
 required = false
 
 [resources.verbs.params.schema]
-description = "When it was taken, as its file says"
 type = [
     "string",
     "null",
@@ -314,7 +311,7 @@ required = false
 
 [resources.verbs.params.schema]
 additionalProperties = false
-description = "Where it was taken, as its file says"
+description = "A deliberately small, explicitly shared location attached to one photo. Coordinates are useful for browsing a personal library, but are sensitive: this is never inferred from an IP address, uploaded for reverse geocoding, or copied from a machine-local file path.  A location reaches the shared document only through `SetPhotoLocation`; clearing it removes the complete shared record.  The label is a collaborator-visible convenience, not an authority over the coordinates."
 required = [
     "latitude",
     "longitude",
@@ -353,7 +350,7 @@ description = "`user`, `map`, `exif`, or `device`.  `map` records a deliberate p
 type = "string"
 
 [[resources.verbs]]
-description = "Remove from library.  Removes the photograph and every album's mention of it."
+description = "Removes the photograph and every album's mention of it."
 destructive = true
 id = "remove-photo"
 kind = "undoable"
@@ -364,11 +361,10 @@ name = "photo"
 required = true
 
 [resources.verbs.params.schema]
-description = "Photo"
 type = "string"
 
 [[resources.verbs]]
-description = "Rotate right.  Turns the photograph a quarter turn clockwise."
+description = "Turns the photograph a quarter turn clockwise."
 id = "rotate-right"
 kind = "undoable"
 label = "Rotate right"
@@ -378,11 +374,10 @@ name = "photo"
 required = true
 
 [resources.verbs.params.schema]
-description = "Photo"
 type = "string"
 
 [[resources.verbs]]
-description = "Rotate left.  Turns the photograph a quarter turn anticlockwise."
+description = "Turns the photograph a quarter turn anticlockwise."
 id = "rotate-left"
 kind = "undoable"
 label = "Rotate left"
@@ -392,11 +387,10 @@ name = "photo"
 required = true
 
 [resources.verbs.params.schema]
-description = "Photo"
 type = "string"
 
 [[resources.verbs]]
-description = "Crop.  Keeps a region of what is shown now, turned as it is."
+description = "Keeps a region of what is shown now, turned as it is."
 id = "crop"
 kind = "undoable"
 label = "Crop"
@@ -406,7 +400,6 @@ name = "photo"
 required = true
 
 [resources.verbs.params.schema]
-description = "Photo"
 type = "string"
 
 [[resources.verbs.params]]
@@ -415,7 +408,7 @@ required = true
 
 [resources.verbs.params.schema]
 additionalProperties = false
-description = "The region kept, in normalized coordinates (0 to 1) of the photograph as shown"
+description = "A rectangle in normalized `0..1` coordinates of the image it applies to. Normalized rather than pixels so a crop survives the source being replaced by a different resolution of the same photograph, and so the value means the same thing to a peer that has not fetched the bytes yet."
 required = [
     "x",
     "y",
@@ -445,7 +438,7 @@ minimum = 0
 type = "number"
 
 [[resources.verbs]]
-description = "Share analysis.  Merges one analyzer's bounded result into what the photograph already shares. Text recognition and image analysis are independent: completing either keeps the other."
+description = "Merges one analyzer's bounded result into what the photograph already shares. Text recognition and image analysis are independent: completing either keeps the other."
 id = "merge-image-analysis"
 kind = "undoable"
 label = "Share analysis"
@@ -455,7 +448,6 @@ name = "photo"
 required = true
 
 [resources.verbs.params.schema]
-description = "Photo"
 type = "string"
 
 [[resources.verbs.params]]
@@ -464,7 +456,7 @@ required = true
 
 [resources.verbs.params.schema]
 additionalProperties = false
-description = "What the analyzer found, with its provenance"
+description = "Bounded, explainable intelligence derived on a device from a photograph. This record contains no pixels, embeddings, face geometry, machine-local file names, or opaque model output.  A local analysis is private until a user or trusted caller explicitly publishes it through `SetImageAnalysis`."
 type = "object"
 
 [resources.verbs.params.schema.properties.description]
@@ -595,7 +587,7 @@ description = "`local-ocr`, `local-vision`, `local-description` (legacy), or `us
 type = "string"
 
 [[resources.verbs]]
-description = "Set person membership.  The person is carried by exactly these photographs. An empty list removes the person."
+description = "The person is carried by exactly these photographs. An empty list removes the person."
 id = "set-person-membership"
 kind = "undoable"
 label = "Set person membership"
@@ -605,7 +597,6 @@ name = "person"
 required = true
 
 [resources.verbs.params.schema]
-description = "The person's name"
 type = "string"
 
 [[resources.verbs.params]]
@@ -613,14 +604,13 @@ name = "photos"
 required = true
 
 [resources.verbs.params.schema]
-description = "Every photograph showing them, by id"
 type = "array"
 
 [resources.verbs.params.schema.items]
 type = "string"
 
 [[resources.verbs]]
-description = "Rename person.  Renames the person, or merges them into another person by that name."
+description = "Renames the person, or merges them into another person by that name."
 id = "rename-person"
 kind = "undoable"
 label = "Rename person"
@@ -630,7 +620,6 @@ name = "person"
 required = true
 
 [resources.verbs.params.schema]
-description = "The person's name"
 type = "string"
 
 [[resources.verbs.params]]
@@ -638,11 +627,10 @@ name = "to"
 required = true
 
 [resources.verbs.params.schema]
-description = "Their new name"
 type = "string"
 
 [[resources.verbs]]
-description = "Remove person.  Their name comes off every photograph. No photograph is removed."
+description = "Their name comes off every photograph. No photograph is removed."
 destructive = true
 id = "remove-person"
 kind = "undoable"
@@ -653,11 +641,10 @@ name = "person"
 required = true
 
 [resources.verbs.params.schema]
-description = "The person's name"
 type = "string"
 
 [[resources.verbs]]
-description = "Remove album.  Its photographs stay in the library."
+description = "Its photographs stay in the library."
 destructive = true
 id = "remove-album"
 kind = "undoable"
@@ -668,5 +655,4 @@ name = "album"
 required = true
 
 [resources.verbs.params.schema]
-description = "Album"
 type = "string"

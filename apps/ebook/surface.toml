@@ -1992,7 +1992,6 @@ title = "The logical annotation this row belongs to. A multi-paragraph"
 type = "Uuid"
 
 [[resources.verbs]]
-description = "Put a book on the shelf, or refresh the row it has."
 id = "shelve"
 kind = "undoable"
 label = "Put a book on the shelf, or refresh the row it has"
@@ -2002,7 +2001,6 @@ name = "book"
 required = true
 
 [resources.verbs.params.schema]
-description = "The book's id: book: and the start of its content hash"
 type = "string"
 
 [[resources.verbs.params]]
@@ -2010,7 +2008,6 @@ name = "title"
 required = true
 
 [resources.verbs.params.schema]
-description = "Title"
 type = "string"
 
 [[resources.verbs.params]]
@@ -2018,7 +2015,6 @@ name = "author"
 required = true
 
 [resources.verbs.params.schema]
-description = "Author"
 type = "string"
 
 [[resources.verbs.params]]
@@ -2026,7 +2022,6 @@ name = "subject"
 required = true
 
 [resources.verbs.params.schema]
-description = "Subject"
 type = "string"
 
 [[resources.verbs.params]]
@@ -2034,7 +2029,6 @@ name = "shared"
 required = true
 
 [resources.verbs.params.schema]
-description = "Whether a copy is in the shared workspace"
 type = "boolean"
 
 [[resources.verbs.params]]
@@ -2043,7 +2037,7 @@ required = false
 
 [resources.verbs.params.schema]
 additionalProperties = false
-description = "The book's bytes, when a content store keeps them"
+description = "Bytes a content store keeps for a book."
 required = [
     "hash",
     "size",
@@ -2063,7 +2057,7 @@ minimum = 0
 type = "integer"
 
 [[resources.verbs]]
-description = "A book found in a folder the reader watches joins the shelf: content from outside, which syncs like any row but is nobody's undo step."
+description = "from outside, which syncs like any row but is nobody's undo step."
 id = "shelve-found"
 kind = "undoable"
 label = "A book found in a folder the reader watches joins the shelf: content"
@@ -2073,7 +2067,6 @@ name = "book"
 required = true
 
 [resources.verbs.params.schema]
-description = "The book's id: book: and the start of its content hash"
 type = "string"
 
 [[resources.verbs.params]]
@@ -2081,7 +2074,6 @@ name = "title"
 required = true
 
 [resources.verbs.params.schema]
-description = "Title"
 type = "string"
 
 [[resources.verbs.params]]
@@ -2089,7 +2081,6 @@ name = "author"
 required = true
 
 [resources.verbs.params.schema]
-description = "Author"
 type = "string"
 
 [[resources.verbs.params]]
@@ -2097,11 +2088,10 @@ name = "subject"
 required = true
 
 [resources.verbs.params.schema]
-description = "Subject"
 type = "string"
 
 [[resources.verbs]]
-description = "Remove from library  Takes the book off the shelf. Where the reader was and what they marked in it stay, so adding it again brings them back."
+description = "Takes the book off the shelf. Where the reader was and what they marked in it stay, so adding it again brings them back."
 destructive = true
 id = "remove-from-library"
 kind = "undoable"
@@ -2116,11 +2106,9 @@ name = "book"
 required = true
 
 [resources.verbs.params.schema]
-description = "The book's id"
 type = "string"
 
 [[resources.verbs]]
-description = "Record where the reader is in a book."
 id = "record-progress"
 kind = "undoable"
 label = "Record where the reader is in a book"
@@ -2130,7 +2118,6 @@ name = "book"
 required = true
 
 [resources.verbs.params.schema]
-description = "The book's id"
 type = "string"
 
 [[resources.verbs.params]]
@@ -2138,7 +2125,6 @@ name = "chapter"
 required = true
 
 [resources.verbs.params.schema]
-description = "Chapter, counted from 0"
 minimum = 0
 type = "integer"
 
@@ -2147,7 +2133,6 @@ name = "block"
 required = true
 
 [resources.verbs.params.schema]
-description = "First paragraph on screen, counted from 0 in the chapter"
 minimum = 0
 type = "integer"
 
@@ -2156,7 +2141,6 @@ name = "fraction"
 required = true
 
 [resources.verbs.params.schema]
-description = "How far through the whole book, from 0 to 1"
 type = "number"
 
 [[resources.verbs.params]]
@@ -2164,11 +2148,10 @@ name = "opened"
 required = true
 
 [resources.verbs.params.schema]
-description = "Whether the book was just opened"
 type = "boolean"
 
 [[resources.verbs]]
-description = "Add note  Adds a note to a passage of a book."
+description = "Adds a note to a passage of a book."
 id = "add-note"
 kind = "undoable"
 label = "Add note"
@@ -2183,7 +2166,7 @@ required = true
 
 [resources.verbs.params.schema]
 additionalProperties = false
-description = "The passage"
+description = "A passage of a book: the characters of `block` of `chapter` from `start` to `end`."
 required = [
     "book",
     "chapter",
@@ -2227,7 +2210,7 @@ name = "color"
 required = true
 
 [resources.verbs.params.schema]
-description = "Colour"
+description = "Highlight palette. Kept as a small enum (rather than raw RGB) so the colour stays semantic and the OS theme can map it to on-brand swatches. The reader resolves each to a concrete `Color` at draw time."
 enum = [
     "yellow",
     "green",
@@ -2242,11 +2225,10 @@ name = "text"
 required = true
 
 [resources.verbs.params.schema]
-description = "The note's text"
 type = "string"
 
 [[resources.verbs]]
-description = "Add comment  Comments on a highlight."
+description = "Comments on a highlight."
 id = "add-comment"
 kind = "undoable"
 label = "Add comment"
@@ -2260,7 +2242,6 @@ name = "highlight"
 required = true
 
 [resources.verbs.params.schema]
-description = "The highlight: the id of one of its pieces or its group"
 format = "uuid"
 type = "string"
 
@@ -2269,11 +2250,10 @@ name = "text"
 required = true
 
 [resources.verbs.params.schema]
-description = "The comment"
 type = "string"
 
 [[resources.verbs]]
-description = "Toggle bookmark  Bookmarks a paragraph, or removes its bookmark."
+description = "Bookmarks a paragraph, or removes its bookmark."
 id = "toggle-bookmark"
 kind = "undoable"
 label = "Toggle bookmark"
@@ -2287,7 +2267,6 @@ name = "book"
 required = true
 
 [resources.verbs.params.schema]
-description = "The book's id"
 type = "string"
 
 [[resources.verbs.params]]
@@ -2295,7 +2274,6 @@ name = "chapter"
 required = true
 
 [resources.verbs.params.schema]
-description = "Chapter, counted from 0"
 minimum = 0
 type = "integer"
 
@@ -2304,7 +2282,6 @@ name = "block"
 required = true
 
 [resources.verbs.params.schema]
-description = "Paragraph, counted from 0 in the chapter"
 minimum = 0
 type = "integer"
 
@@ -2313,11 +2290,10 @@ name = "excerpt"
 required = true
 
 [resources.verbs.params.schema]
-description = "The paragraph's opening words"
 type = "string"
 
 [[resources.verbs]]
-description = "Highlight  Highlights a passage, one piece per paragraph, replacing the highlights it overlaps; with no pieces it only removes them."
+description = "Highlights a passage, one piece per paragraph, replacing the highlights it overlaps; with no pieces it only removes them."
 id = "highlight"
 kind = "undoable"
 label = "Highlight"
@@ -2331,7 +2307,6 @@ name = "book"
 required = true
 
 [resources.verbs.params.schema]
-description = "The book's id"
 type = "string"
 
 [[resources.verbs.params]]
@@ -2339,7 +2314,6 @@ name = "chapter"
 required = true
 
 [resources.verbs.params.schema]
-description = "Chapter, counted from 0"
 minimum = 0
 type = "integer"
 
@@ -2348,7 +2322,7 @@ name = "color"
 required = true
 
 [resources.verbs.params.schema]
-description = "Colour"
+description = "Highlight palette. Kept as a small enum (rather than raw RGB) so the colour stays semantic and the OS theme can map it to on-brand swatches. The reader resolves each to a concrete `Color` at draw time."
 enum = [
     "yellow",
     "green",
@@ -2363,7 +2337,6 @@ name = "replacing"
 required = true
 
 [resources.verbs.params.schema]
-description = "Highlights the new one replaces, by their groups"
 type = "array"
 
 [resources.verbs.params.schema.items]
@@ -2375,7 +2348,6 @@ name = "pieces"
 required = true
 
 [resources.verbs.params.schema]
-description = "The paragraphs' pieces of the passage"
 type = "array"
 
 [resources.verbs.params.schema.items]
@@ -2409,7 +2381,7 @@ minimum = 0
 type = "integer"
 
 [[resources.verbs]]
-description = "Change colour  Recolours a highlight, its pieces and its comments together."
+description = "Recolours a highlight, its pieces and its comments together."
 id = "change-color"
 kind = "undoable"
 label = "Change colour"
@@ -2423,7 +2395,6 @@ name = "highlight"
 required = true
 
 [resources.verbs.params.schema]
-description = "The highlight: the id of one of its pieces or its group"
 format = "uuid"
 type = "string"
 
@@ -2432,7 +2403,7 @@ name = "color"
 required = true
 
 [resources.verbs.params.schema]
-description = "Colour"
+description = "Highlight palette. Kept as a small enum (rather than raw RGB) so the colour stays semantic and the OS theme can map it to on-brand swatches. The reader resolves each to a concrete `Color` at draw time."
 enum = [
     "yellow",
     "green",
@@ -2443,7 +2414,7 @@ enum = [
 type = "string"
 
 [[resources.verbs]]
-description = "Delete highlight  Deletes a highlight with every comment on it."
+description = "Deletes a highlight with every comment on it."
 id = "delete-highlight"
 kind = "undoable"
 label = "Delete highlight"
@@ -2457,12 +2428,11 @@ name = "highlight"
 required = true
 
 [resources.verbs.params.schema]
-description = "The highlight: the id of one of its pieces or its group"
 format = "uuid"
 type = "string"
 
 [[resources.verbs]]
-description = "Delete  Deletes a bookmark, a note or a comment."
+description = "Deletes a bookmark, a note or a comment."
 id = "delete-annotation"
 kind = "undoable"
 label = "Delete"
@@ -2476,12 +2446,10 @@ name = "annotation"
 required = true
 
 [resources.verbs.params.schema]
-description = "The bookmark's, note's or comment's id"
 format = "uuid"
 type = "string"
 
 [[resources.verbs]]
-description = "Remove font"
 destructive = true
 id = "remove-font"
 kind = "undoable"
@@ -2492,11 +2460,9 @@ name = "font"
 required = true
 
 [resources.verbs.params.schema]
-description = "The font's id"
 type = "string"
 
 [[resources.verbs]]
-description = "Delete scheme"
 destructive = true
 id = "delete-scheme"
 kind = "undoable"
@@ -2511,5 +2477,4 @@ name = "scheme"
 required = true
 
 [resources.verbs.params.schema]
-description = "The colour scheme's id"
 type = "string"

@@ -36,7 +36,6 @@ title = "Text to find in messages, units or identifiers"
 type = "String"
 
 [[resources.verbs]]
-description = "Clear every journal filter."
 id = "clear-filters"
 kind = "undoable"
 label = "Clear every journal filter"

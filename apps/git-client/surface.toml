@@ -23,7 +23,7 @@ title = "Shared history"
 type = "SharedRepo"
 
 [[resources.verbs]]
-description = "Record what the repository on disk holds now  Its branches, history, remotes and identity, for collaborators and past versions. Read from the repository, nobody's edit."
+description = "Its branches, history, remotes and identity, for collaborators and past versions. Read from the repository, nobody's edit."
 id = "record-repository"
 kind = "undoable"
 label = "Record what the repository on disk holds now"
@@ -34,7 +34,7 @@ required = true
 
 [resources.verbs.params.schema]
 additionalProperties = false
-description = "The repository's branches, history, remotes and identity"
+description = "Branches, history, remotes and identity collaborators share. No staged / unstaged / untracked lists — those are live working-tree status."
 required = [
     "name",
     "head",

@@ -88,7 +88,7 @@ title = "The camera that took it"
 type = "Facing"
 
 [[resources.verbs]]
-description = "Hand off a capture.  The capture taken last, whose verified bytes are in the content store, becomes the one Camera offers to open in Photos or Video Player."
+description = "The capture taken last, whose verified bytes are in the content store, becomes the one Camera offers to open in Photos or Video Player."
 id = "register-capture"
 kind = "undoable"
 label = "Hand off a capture"
@@ -99,7 +99,7 @@ required = true
 
 [resources.verbs.params.schema]
 additionalProperties = false
-description = "The capture"
+description = "Portable capture metadata. The pixels live under `media_id` in the app's content store, verified on read; the record holds no path."
 required = [
     "id",
     "media_id",
@@ -163,7 +163,7 @@ minimum = 0
 type = "integer"
 
 [[resources.verbs]]
-description = "Record a scanned code.  It goes to the front of the history; the same code scanned again moves there rather than repeating."
+description = "It goes to the front of the history; the same code scanned again moves there rather than repeating."
 id = "record-scan"
 kind = "undoable"
 label = "Record a scanned code"
@@ -173,5 +173,4 @@ name = "raw"
 required = true
 
 [resources.verbs.params.schema]
-description = "What the code said"
 type = "string"

@@ -80,7 +80,7 @@ title = "Pinned"
 type = "bool"
 
 [[resources.verbs]]
-description = "Save a new connection to another machine. It signs in the protocol's first way; its authentication and group are field edits."
+description = "protocol's first way; its authentication and group are field edits."
 id = "add-connection"
 kind = "undoable"
 label = "Save a new connection to another machine. It signs in the"
@@ -90,7 +90,6 @@ name = "name"
 required = true
 
 [resources.verbs.params.schema]
-description = "Name"
 type = "string"
 
 [[resources.verbs.params]]
@@ -98,7 +97,6 @@ name = "host"
 required = true
 
 [resources.verbs.params.schema]
-description = "Host, or a Tilo endpoint id"
 type = "string"
 
 [[resources.verbs.params]]
@@ -106,7 +104,7 @@ name = "kind"
 required = true
 
 [resources.verbs.params.schema]
-description = "ssh, vnc or tilo"
+description = "The transport / protocol a connection speaks. RDP remains a variant so saved, older connection profiles can round-trip without data loss. Tilo device control is backed by the shell's authenticated workspace transport and is available for new profiles."
 
 [[resources.verbs.params.schema.oneOf]]
 const = "ssh"
@@ -133,7 +131,6 @@ name = "port"
 required = false
 
 [resources.verbs.params.schema]
-description = "Port; the protocol's own when none"
 maximum = 65535
 minimum = 0
 type = [
@@ -146,14 +143,12 @@ name = "user"
 required = false
 
 [resources.verbs.params.schema]
-description = "User"
 type = [
     "string",
     "null",
 ]
 
 [[resources.verbs]]
-description = "Remove a saved connection from every device."
 destructive = true
 id = "delete-connection"
 kind = "undoable"
@@ -164,11 +159,10 @@ name = "connection"
 required = true
 
 [resources.verbs.params.schema]
-description = "Connection"
 type = "string"
 
 [[resources.verbs]]
-description = "Record that a session to the connection was opened at `at_ms` (milliseconds since the Unix epoch). The later of two concurrent records wins on every replica; nobody takes it back."
+description = "(milliseconds since the Unix epoch). The later of two concurrent records wins on every replica; nobody takes it back."
 id = "mark-used"
 kind = "undoable"
 label = "Record that a session to the connection was opened at `at_ms`"
@@ -178,7 +172,6 @@ name = "connection"
 required = true
 
 [resources.verbs.params.schema]
-description = "Connection"
 type = "string"
 
 [[resources.verbs.params]]
@@ -186,5 +179,4 @@ name = "at_ms"
 required = true
 
 [resources.verbs.params.schema]
-description = "When the session was opened, in milliseconds since the Unix epoch"
 type = "integer"

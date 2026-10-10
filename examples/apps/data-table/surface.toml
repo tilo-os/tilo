@@ -15,7 +15,6 @@ title = "Recently opened row ids, newest first"
 type = "Vec<u64>"
 
 [[resources.verbs]]
-description = "Open a row."
 id = "open-row"
 kind = "undoable"
 label = "Open a row"
@@ -25,6 +24,5 @@ name = "id"
 required = true
 
 [resources.verbs.params.schema]
-description = "Stable row id"
 minimum = 0
 type = "integer"

@@ -57,7 +57,7 @@ title = "Command"
 type = "String"
 
 [[resources.verbs]]
-description = "Clear new container  Empty every field of the new-container draft."
+description = "Empty every field of the new-container draft."
 id = "clear-create"
 kind = "undoable"
 label = "Clear new container"

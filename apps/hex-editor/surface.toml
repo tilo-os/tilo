@@ -100,7 +100,7 @@ minimum = 0
 type = "integer"
 
 [[resources.verbs]]
-description = "Load a file's bytes.  The bytes come from outside: loading them syncs to everyone, but no undo takes them back. Unchanged bytes of the same file change nothing."
+description = "The bytes come from outside: loading them syncs to everyone, but no undo takes them back. Unchanged bytes of the same file change nothing."
 id = "load"
 kind = "undoable"
 label = "Load a file's bytes"
@@ -110,7 +110,6 @@ name = "name"
 required = true
 
 [resources.verbs.params.schema]
-description = "The file's name"
 type = "string"
 
 [[resources.verbs.params]]
@@ -118,11 +117,10 @@ name = "bytes"
 required = true
 
 [resources.verbs.params.schema]
-description = "The file's bytes"
+description = "hexadecimal bytes, e.g. `de ad be ef`"
 type = "string"
 
 [[resources.verbs]]
-description = "Insert bytes before an offset, growing the buffer."
 id = "insert-bytes"
 kind = "undoable"
 label = "Insert bytes before an offset, growing the buffer"
@@ -132,7 +130,6 @@ name = "offset"
 required = true
 
 [resources.verbs.params.schema]
-description = "Byte offset, from 0"
 minimum = 0
 type = "integer"
 
@@ -141,11 +138,10 @@ name = "bytes"
 required = true
 
 [resources.verbs.params.schema]
-description = "Hexadecimal bytes, e.g. `de ad be ef`"
+description = "hexadecimal bytes, e.g. `de ad be ef`"
 type = "string"
 
 [[resources.verbs]]
-description = "Replace the bytes at an offset in place."
 id = "overwrite-bytes"
 kind = "undoable"
 label = "Replace the bytes at an offset in place"
@@ -155,7 +151,6 @@ name = "offset"
 required = true
 
 [resources.verbs.params.schema]
-description = "Byte offset, from 0"
 minimum = 0
 type = "integer"
 
@@ -164,11 +159,10 @@ name = "bytes"
 required = true
 
 [resources.verbs.params.schema]
-description = "Hexadecimal bytes, e.g. `de ad be ef`"
+description = "hexadecimal bytes, e.g. `de ad be ef`"
 type = "string"
 
 [[resources.verbs]]
-description = "Remove bytes starting at an offset."
 destructive = true
 id = "delete-bytes"
 kind = "undoable"
@@ -179,7 +173,6 @@ name = "offset"
 required = true
 
 [resources.verbs.params.schema]
-description = "Byte offset, from 0"
 minimum = 0
 type = "integer"
 
@@ -188,6 +181,5 @@ name = "len"
 required = true
 
 [resources.verbs.params.schema]
-description = "How many bytes"
 minimum = 0
 type = "integer"

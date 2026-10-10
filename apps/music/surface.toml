@@ -139,7 +139,6 @@ title = "Followed artists, by artist id"
 type = "Set<ArtistId>"
 
 [[resources.verbs]]
-description = "Create a new playlist."
 id = "create-playlist"
 kind = "undoable"
 label = "Create a new playlist"
@@ -149,7 +148,6 @@ name = "name"
 required = true
 
 [resources.verbs.params.schema]
-description = "Playlist name; blank for New playlist"
 type = "string"
 
 [[resources.verbs.params]]
@@ -157,14 +155,12 @@ name = "track"
 required = false
 
 [resources.verbs.params.schema]
-description = "A song of the library to put in it first"
 type = [
     "string",
     "null",
 ]
 
 [[resources.verbs]]
-description = "Delete a playlist."
 destructive = true
 id = "delete-playlist"
 kind = "undoable"
@@ -175,11 +171,10 @@ name = "playlist"
 required = true
 
 [resources.verbs.params.schema]
-description = "Playlist"
 type = "string"
 
 [[resources.verbs]]
-description = "Add a song to the library.  A catalogue song, with its album and artist, so it stays playable, likeable and listable on every device. What the library holds already is kept as it is. Content from outside the library: nobody's undo step takes it back."
+description = "A catalogue song, with its album and artist, so it stays playable, likeable and listable on every device. What the library holds already is kept as it is. Content from outside the library: nobody's undo step takes it back."
 id = "import-track"
 kind = "undoable"
 label = "Add a song to the library"
@@ -190,7 +185,7 @@ required = true
 
 [resources.verbs.params.schema]
 additionalProperties = false
-description = "The song with its own album and artist"
+description = "A track from the streaming catalogue (a search hit, a chart entry, an album page) with the album and artist it belongs to: what the library imports once the track is played."
 required = [
     "track",
     "album",

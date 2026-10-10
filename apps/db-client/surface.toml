@@ -94,7 +94,7 @@ title = "SQL: the query buffer, edited a splice at a time"
 type = "String"
 
 [[resources.verbs]]
-description = "Add connection  Save a connection profile; its password stays on each device. A network engine connects on its default port until the port is edited."
+description = "Save a connection profile; its password stays on each device. A network engine connects on its default port until the port is edited."
 id = "add-connection"
 kind = "undoable"
 label = "Add connection"
@@ -104,7 +104,6 @@ name = "name"
 required = true
 
 [resources.verbs.params.schema]
-description = "Connection name"
 type = "string"
 
 [[resources.verbs.params]]
@@ -112,7 +111,6 @@ name = "engine"
 required = true
 
 [resources.verbs.params.schema]
-description = "Database engine: sqlite, postgres or mysql"
 type = "string"
 
 [[resources.verbs.params]]
@@ -120,7 +118,6 @@ name = "location"
 required = false
 
 [resources.verbs.params.schema]
-description = "Server host, or the SQLite file"
 type = [
     "string",
     "null",
@@ -131,7 +128,6 @@ name = "database"
 required = false
 
 [resources.verbs.params.schema]
-description = "Database name"
 type = [
     "string",
     "null",
@@ -142,14 +138,12 @@ name = "user"
 required = false
 
 [resources.verbs.params.schema]
-description = "User name"
 type = [
     "string",
     "null",
 ]
 
 [[resources.verbs]]
-description = "Remove saved connection"
 destructive = true
 id = "remove-connection"
 kind = "undoable"
@@ -160,11 +154,10 @@ name = "connection"
 required = true
 
 [resources.verbs.params.schema]
-description = "Connection"
 type = "string"
 
 [[resources.verbs]]
-description = "Save query  Save SQL under a name: the SQL given, or the query being written."
+description = "Save SQL under a name: the SQL given, or the query being written."
 id = "save-query"
 kind = "undoable"
 label = "Save query"
@@ -174,7 +167,6 @@ name = "name"
 required = true
 
 [resources.verbs.params.schema]
-description = "Query name"
 type = "string"
 
 [[resources.verbs.params]]
@@ -182,14 +174,12 @@ name = "sql"
 required = false
 
 [resources.verbs.params.schema]
-description = "SQL; the query being written when none"
 type = [
     "string",
     "null",
 ]
 
 [[resources.verbs]]
-description = "Remove saved query"
 destructive = true
 id = "remove-query"
 kind = "undoable"
@@ -200,5 +190,4 @@ name = "query"
 required = true
 
 [resources.verbs.params.schema]
-description = "Query"
 type = "string"

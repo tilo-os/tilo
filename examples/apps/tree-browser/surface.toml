@@ -36,7 +36,6 @@ title = "Shared"
 type = "bool"
 
 [[resources.verbs]]
-description = "Share a section."
 id = "share"
 kind = "undoable"
 label = "Share a section"
@@ -46,6 +45,5 @@ name = "id"
 required = true
 
 [resources.verbs.params.schema]
-description = "Stable section id"
 minimum = 0
 type = "integer"

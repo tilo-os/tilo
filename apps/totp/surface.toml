@@ -58,7 +58,6 @@ title = "Colour"
 type = "u8"
 
 [[resources.verbs]]
-description = "Move an account one place up."
 id = "move-up"
 kind = "undoable"
 label = "Move an account one place up"
@@ -68,11 +67,9 @@ name = "account"
 required = true
 
 [resources.verbs.params.schema]
-description = "Account"
 type = "string"
 
 [[resources.verbs]]
-description = "Move an account one place down."
 id = "move-down"
 kind = "undoable"
 label = "Move an account one place down"
@@ -82,11 +79,9 @@ name = "account"
 required = true
 
 [resources.verbs.params.schema]
-description = "Account"
 type = "string"
 
 [[resources.verbs]]
-description = "Delete an account and forget its secret on every device."
 destructive = true
 id = "delete"
 kind = "undoable"
@@ -97,5 +92,4 @@ name = "account"
 required = true
 
 [resources.verbs.params.schema]
-description = "Account"
 type = "string"

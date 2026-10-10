@@ -92,7 +92,7 @@ title = "Connections between operator ports"
 type = "Set<Connection>"
 
 [[resources.verbs]]
-description = "Import analytical report.  Import reported storage evidence; does not authenticate the model or validate chip performance. The same report imported twice is kept once."
+description = "Import reported storage evidence; does not authenticate the model or validate chip performance. The same report imported twice is kept once."
 id = "import-report"
 kind = "undoable"
 label = "Import analytical report"
@@ -102,11 +102,9 @@ name = "json"
 required = true
 
 [resources.verbs.params.schema]
-description = "Complete analytical storage report JSON"
 type = "string"
 
 [[resources.verbs]]
-description = "Remove report."
 id = "remove-report"
 kind = "undoable"
 label = "Remove report"
@@ -116,11 +114,10 @@ name = "report"
 required = true
 
 [resources.verbs.params.schema]
-description = "Content identity of the report"
 type = "string"
 
 [[resources.verbs]]
-description = "Import hardware verification receipt.  Import reported engineering evidence; does not authenticate artifacts or establish model quality, silicon measurements, or manufacturability."
+description = "Import reported engineering evidence; does not authenticate artifacts or establish model quality, silicon measurements, or manufacturability."
 id = "import-verification"
 kind = "undoable"
 label = "Import hardware verification receipt"
@@ -130,11 +127,9 @@ name = "json"
 required = true
 
 [resources.verbs.params.schema]
-description = "Complete immutable hardware verification receipt JSON"
 type = "string"
 
 [[resources.verbs]]
-description = "Remove verification receipt."
 id = "remove-verification"
 kind = "undoable"
 label = "Remove verification receipt"
@@ -144,11 +139,10 @@ name = "report"
 required = true
 
 [resources.verbs.params.schema]
-description = "Shared receipt content identity"
 type = "string"
 
 [[resources.verbs]]
-description = "Add operator.  Edit a structural operator design; does not execute or qualify a netlist. Adding the same node twice keeps it once."
+description = "Edit a structural operator design; does not execute or qualify a netlist. Adding the same node twice keeps it once."
 id = "add-node"
 kind = "undoable"
 label = "Add operator"
@@ -158,7 +152,6 @@ name = "node"
 required = true
 
 [resources.verbs.params.schema]
-description = "Stable node identity"
 type = "string"
 
 [[resources.verbs.params]]
@@ -166,7 +159,6 @@ name = "kind"
 required = true
 
 [resources.verbs.params.schema]
-description = "Operator kind"
 enum = [
     "input",
     "gate_input",
@@ -187,7 +179,6 @@ name = "shape"
 required = true
 
 [resources.verbs.params.schema]
-description = "F32 tensor shape, up to four positive dimensions; its last axis is the normalization width"
 type = "array"
 
 [resources.verbs.params.schema.items]
@@ -200,7 +191,6 @@ name = "output_width"
 required = false
 
 [resources.verbs.params.schema]
-description = "Required for matrix weights and linear projection; structural output width"
 maximum = 4294967295
 minimum = 0
 type = [
@@ -213,7 +203,6 @@ name = "x"
 required = true
 
 [resources.verbs.params.schema]
-description = "Horizontal position"
 maximum = 65535
 minimum = 0
 type = "integer"
@@ -223,13 +212,12 @@ name = "y"
 required = true
 
 [resources.verbs.params.schema]
-description = "Vertical position"
 maximum = 65535
 minimum = 0
 type = "integer"
 
 [[resources.verbs]]
-description = "Set operator input shape.  Its last axis sets the normalization width."
+description = "Its last axis sets the normalization width."
 id = "set-shape"
 kind = "undoable"
 label = "Set operator input shape"
@@ -239,7 +227,6 @@ name = "node"
 required = true
 
 [resources.verbs.params.schema]
-description = "Operator node identity"
 type = "string"
 
 [[resources.verbs.params]]
@@ -247,7 +234,6 @@ name = "shape"
 required = true
 
 [resources.verbs.params.schema]
-description = "Up to four positive input dimensions"
 type = "array"
 
 [resources.verbs.params.schema.items]
@@ -256,7 +242,7 @@ minimum = 0
 type = "integer"
 
 [[resources.verbs]]
-description = "Remove operator.  Its connections go with it."
+description = "Its connections go with it."
 id = "remove-node"
 kind = "undoable"
 label = "Remove operator"
@@ -266,11 +252,9 @@ name = "node"
 required = true
 
 [resources.verbs.params.schema]
-description = "Node identity"
 type = "string"
 
 [[resources.verbs]]
-description = "Connect operator ports."
 id = "connect"
 kind = "undoable"
 label = "Connect operator ports"
@@ -280,7 +264,6 @@ name = "from_node"
 required = true
 
 [resources.verbs.params.schema]
-description = "Source node"
 type = "string"
 
 [[resources.verbs.params]]
@@ -288,7 +271,6 @@ name = "from_port"
 required = true
 
 [resources.verbs.params.schema]
-description = "Output port"
 type = "string"
 
 [[resources.verbs.params]]
@@ -296,7 +278,6 @@ name = "to_node"
 required = true
 
 [resources.verbs.params.schema]
-description = "Destination node"
 type = "string"
 
 [[resources.verbs.params]]
@@ -304,11 +285,9 @@ name = "to_port"
 required = true
 
 [resources.verbs.params.schema]
-description = "Input port"
 type = "string"
 
 [[resources.verbs]]
-description = "Disconnect input."
 id = "disconnect"
 kind = "undoable"
 label = "Disconnect input"
@@ -318,7 +297,6 @@ name = "node"
 required = true
 
 [resources.verbs.params.schema]
-description = "Destination node"
 type = "string"
 
 [[resources.verbs.params]]
@@ -326,5 +304,4 @@ name = "port"
 required = true
 
 [resources.verbs.params.schema]
-description = "Input port"
 type = "string"

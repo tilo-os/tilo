@@ -151,7 +151,7 @@ title = '"Always distinguish similar letters": I, l, 1 and 0, O set apart in'
 type = "Option<bool>"
 
 [[resources.verbs]]
-description = "Set the theme every app draws with; Automatic is light by day and dark by night."
+description = "dark by night."
 id = "choose-theme"
 kind = "undoable"
 label = "Set the theme every app draws with; Automatic is light by day and"
@@ -161,7 +161,6 @@ name = "theme"
 required = true
 
 [resources.verbs.params.schema]
-description = "The theme: Automatic, Dark, Light, Dark graphite, Dark cool or Dark soft"
 type = "string"
 
 [[resources]]
@@ -591,7 +590,7 @@ std::collections::BTreeMap<String, settings_store::hardware ::
 TabletConfig>"""
 
 [[resources.verbs]]
-description = "Set how fast held keys repeat, from slow (0) to fast (1); an exact delay and rate taken from another system no longer apply."
+description = "delay and rate taken from another system no longer apply."
 id = "set-key-repeat"
 kind = "undoable"
 label = "Set how fast held keys repeat, from slow (0) to fast (1); an exact"
@@ -601,7 +600,6 @@ name = "rate"
 required = true
 
 [resources.verbs.params.schema]
-description = "From 0 (slow) to 1 (fast)"
 type = "number"
 
 [[resources]]
@@ -864,7 +862,6 @@ name = "app"
 required = true
 
 [resources.verbs.params.schema]
-description = "The app's id"
 type = "string"
 
 [[resources.verbs.params]]
@@ -872,7 +869,6 @@ name = "duration"
 required = true
 
 [resources.verbs.params.schema]
-description = "For how long: Not muted, For 1 hour, For 8 hours or For 24 hours"
 type = "string"
 
 [[resources]]
@@ -1209,7 +1205,6 @@ name = "on"
 required = true
 
 [resources.verbs.params.schema]
-description = "On"
 type = "boolean"
 
 [[resources.verbs]]
@@ -1223,7 +1218,6 @@ name = "capability"
 required = true
 
 [resources.verbs.params.schema]
-description = "The kind, by its key: clipboard, notifications, wifi_settings, media, display_input, file_transfer, realtime_sessions, typed_gamepad or app_continuations"
 type = "string"
 
 [[resources.verbs.params]]
@@ -1231,7 +1225,6 @@ name = "on"
 required = true
 
 [resources.verbs.params.schema]
-description = "On"
 type = "boolean"
 
 [[resources]]
@@ -1401,7 +1394,7 @@ title = "The active account id per type; a type without one uses its first"
 type = "BTreeMap<String, String>"
 
 [[resources.verbs]]
-description = "Publish this signed-in identity's public browser connection metadata. This changes the Settings account record only; it creates no credential, certificate, room membership or content key. Republishing preserves a person's disabled choice and chosen account name.  # Errors Refuses malformed public metadata or an occupied identity account id."
+description = "This changes the Settings account record only; it creates no credential, certificate, room membership or content key. Republishing preserves a person's disabled choice and chosen account name.  # Errors Refuses malformed public metadata or an occupied identity account id."
 id = "publish-browser-identity"
 kind = "undoable"
 label = "Publish this signed-in identity's public browser connection metadata"
@@ -1411,7 +1404,6 @@ name = "root"
 required = true
 
 [resources.verbs.params.schema]
-description = "Root"
 type = "string"
 
 [[resources.verbs.params]]
@@ -1419,7 +1411,6 @@ name = "origin"
 required = true
 
 [resources.verbs.params.schema]
-description = "Origin"
 type = "string"
 
 [[resources.verbs.params]]
@@ -1427,11 +1418,9 @@ name = "display_name"
 required = true
 
 [resources.verbs.params.schema]
-description = "Display name"
 type = "string"
 
 [[resources.verbs]]
-description = "Save an account: add it, or replace the one with its id."
 id = "save-account"
 kind = "undoable"
 label = "Save an account: add it, or replace the one with its id"
@@ -1441,7 +1430,6 @@ name = "id"
 required = true
 
 [resources.verbs.params.schema]
-description = "The account's id, which its secret is kept under"
 type = "string"
 
 [[resources.verbs.params]]
@@ -1449,7 +1437,6 @@ name = "type_id"
 required = true
 
 [resources.verbs.params.schema]
-description = "The kind of account, such as email or caldav"
 type = "string"
 
 [[resources.verbs.params]]
@@ -1457,7 +1444,6 @@ name = "display_name"
 required = true
 
 [resources.verbs.params.schema]
-description = "The name shown for it"
 type = "string"
 
 [[resources.verbs.params]]
@@ -1465,14 +1451,12 @@ name = "config"
 required = true
 
 [resources.verbs.params.schema]
-description = "Its connection settings, without any secret"
 
 [[resources.verbs.params]]
 name = "enabled"
 required = true
 
 [resources.verbs.params.schema]
-description = "Whether it is in use"
 type = "boolean"
 
 [[resources.verbs.params]]
@@ -1480,13 +1464,12 @@ name = "tint"
 required = true
 
 [resources.verbs.params.schema]
-description = "Avatar tint"
 maximum = 255
 minimum = 0
 type = "integer"
 
 [[resources.verbs]]
-description = "Publish a reviewed new Signal identity without replacing another account. Names are labels; a configured own ACI requires its existing relinking path. This is public metadata, never a credential or grant. # Errors Refuses malformed identities, duplicate scopes or an occupied account ID."
+description = "account. Names are labels; a configured own ACI requires its existing relinking path. This is public metadata, never a credential or grant. # Errors Refuses malformed identities, duplicate scopes or an occupied account ID."
 id = "publish-signal-account"
 kind = "undoable"
 label = "Publish a reviewed new Signal identity without replacing another"
@@ -1496,7 +1479,6 @@ name = "id"
 required = true
 
 [resources.verbs.params.schema]
-description = "Id"
 type = "string"
 
 [[resources.verbs.params]]
@@ -1504,7 +1486,6 @@ name = "display_name"
 required = true
 
 [resources.verbs.params.schema]
-description = "Display name"
 type = "string"
 
 [[resources.verbs.params]]
@@ -1512,7 +1493,6 @@ name = "aci"
 required = true
 
 [resources.verbs.params.schema]
-description = "Aci"
 type = "string"
 
 [[resources.verbs.params]]
@@ -1520,12 +1500,11 @@ name = "generation"
 required = true
 
 [resources.verbs.params.schema]
-description = "Generation"
 minimum = 0
 type = "integer"
 
 [[resources.verbs]]
-description = "Publish a protected native SIM account. The scope is an opaque identity; modem paths, phone numbers and SIM identifiers stay in private custody. # Errors Refuses malformed identities, duplicate accounts or an invalid name/generation."
+description = "modem paths, phone numbers and SIM identifiers stay in private custody. # Errors Refuses malformed identities, duplicate accounts or an invalid name/generation."
 id = "publish-sms-account"
 kind = "undoable"
 label = "Publish a protected native SIM account. The scope is an opaque identity;"
@@ -1535,7 +1514,6 @@ name = "id"
 required = true
 
 [resources.verbs.params.schema]
-description = "Id"
 type = "string"
 
 [[resources.verbs.params]]
@@ -1543,7 +1521,6 @@ name = "display_name"
 required = true
 
 [resources.verbs.params.schema]
-description = "Display name"
 type = "string"
 
 [[resources.verbs.params]]
@@ -1551,7 +1528,6 @@ name = "scope"
 required = true
 
 [resources.verbs.params.schema]
-description = "Scope"
 type = "string"
 
 [[resources.verbs.params]]
@@ -1559,12 +1535,46 @@ name = "generation"
 required = true
 
 [resources.verbs.params.schema]
-description = "Generation"
 minimum = 0
 type = "integer"
 
 [[resources.verbs]]
-description = "Publish the original personal Tilo sender with an opaque private scope. Neither workspace membership nor a label authorizes this account. # Errors Refuses malformed identities, duplicate accounts or an invalid name/generation."
+description = "profile. The caller retains provider proof and credential authority; this record contains no credential, pairing payload or messaging state. # Errors Refuses invalid self identity, generation, name or an occupied account."
+id = "publish-whatsapp-account"
+kind = "undoable"
+label = "Publish the explicitly reviewed self identity of one native `WhatsApp`"
+
+[[resources.verbs.params]]
+name = "id"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "display_name"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "jid"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "generation"
+required = true
+
+[resources.verbs.params.schema]
+minimum = 0
+type = "integer"
+
+[[resources.verbs]]
+description = "Neither workspace membership nor a label authorizes this account. # Errors Refuses malformed identities, duplicate accounts or an invalid name/generation."
 id = "publish-tilo-account"
 kind = "undoable"
 label = "Publish the original personal Tilo sender with an opaque private scope"
@@ -1574,7 +1584,6 @@ name = "id"
 required = true
 
 [resources.verbs.params.schema]
-description = "Id"
 type = "string"
 
 [[resources.verbs.params]]
@@ -1582,7 +1591,6 @@ name = "display_name"
 required = true
 
 [resources.verbs.params.schema]
-description = "Display name"
 type = "string"
 
 [[resources.verbs.params]]
@@ -1590,7 +1598,6 @@ name = "scope"
 required = true
 
 [resources.verbs.params.schema]
-description = "Scope"
 type = "string"
 
 [[resources.verbs.params]]
@@ -1598,12 +1605,10 @@ name = "generation"
 required = true
 
 [resources.verbs.params.schema]
-description = "Generation"
 minimum = 0
 type = "integer"
 
 [[resources.verbs]]
-description = "Remove account."
 id = "remove-account"
 kind = "undoable"
 label = "Remove account"
@@ -1613,11 +1618,9 @@ name = "account"
 required = true
 
 [resources.verbs.params.schema]
-description = "Account"
 type = "string"
 
 [[resources.verbs]]
-description = "Use an account for its type."
 id = "set-active-account"
 kind = "undoable"
 label = "Use an account for its type"
@@ -1627,5 +1630,4 @@ name = "account"
 required = true
 
 [resources.verbs.params.schema]
-description = "Account"
 type = "string"

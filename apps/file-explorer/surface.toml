@@ -41,7 +41,6 @@ name = "place"
 required = true
 
 [resources.verbs.params.schema]
-description = "Folder path on this device, or a stored place such as xdg:documents"
 type = "string"
 
 [[resources.verbs.params]]
@@ -49,7 +48,6 @@ name = "at"
 required = false
 
 [resources.verbs.params.schema]
-description = "Position among the Favourites, from 0; the end when none"
 minimum = 0
 type = [
     "integer",
@@ -67,11 +65,9 @@ name = "place"
 required = true
 
 [resources.verbs.params.schema]
-description = "Folder path on this device, or a stored place such as xdg:documents"
 type = "string"
 
 [[resources.verbs]]
-description = "Create a folder."
 id = "new-folder"
 kind = "outside"
 label = "Create a folder"
@@ -81,7 +77,6 @@ name = "device"
 required = true
 
 [resources.verbs.params.schema]
-description = "The device whose files change"
 type = "string"
 
 [[resources.verbs.params]]
@@ -89,7 +84,6 @@ name = "parent"
 required = true
 
 [resources.verbs.params.schema]
-description = "Absolute path of the folder to create it in"
 type = "string"
 
 [[resources.verbs.params]]
@@ -97,11 +91,9 @@ name = "name"
 required = true
 
 [resources.verbs.params.schema]
-description = "Name of the new folder"
 type = "string"
 
 [[resources.verbs]]
-description = "Rename an entry."
 id = "rename"
 kind = "outside"
 label = "Rename an entry"
@@ -111,7 +103,6 @@ name = "device"
 required = true
 
 [resources.verbs.params.schema]
-description = "The device whose files change"
 type = "string"
 
 [[resources.verbs.params]]
@@ -119,7 +110,6 @@ name = "folder"
 required = true
 
 [resources.verbs.params.schema]
-description = "Absolute path of the folder holding the entry"
 type = "string"
 
 [[resources.verbs.params]]
@@ -127,7 +117,6 @@ name = "entry"
 required = true
 
 [resources.verbs.params.schema]
-description = "The entry: its name in the folder, or its absolute path"
 type = "string"
 
 [[resources.verbs.params]]
@@ -135,7 +124,6 @@ name = "name"
 required = true
 
 [resources.verbs.params.schema]
-description = "The new name"
 type = "string"
 
 [[resources.verbs]]
@@ -149,7 +137,6 @@ name = "device"
 required = true
 
 [resources.verbs.params.schema]
-description = "The device whose files change"
 type = "string"
 
 [[resources.verbs.params]]
@@ -157,7 +144,6 @@ name = "folder"
 required = true
 
 [resources.verbs.params.schema]
-description = "Absolute path of the folder holding the entries"
 type = "string"
 
 [[resources.verbs.params]]
@@ -165,7 +151,6 @@ name = "entries"
 required = true
 
 [resources.verbs.params.schema]
-description = "The entries: names in the folder, or absolute paths"
 type = "array"
 
 [resources.verbs.params.schema.items]
@@ -182,7 +167,6 @@ name = "device"
 required = true
 
 [resources.verbs.params.schema]
-description = "The device whose files change"
 type = "string"
 
 [[resources.verbs.params]]
@@ -190,7 +174,6 @@ name = "from"
 required = true
 
 [resources.verbs.params.schema]
-description = "Absolute path of the folder holding the entries"
 type = "string"
 
 [[resources.verbs.params]]
@@ -198,7 +181,6 @@ name = "entries"
 required = true
 
 [resources.verbs.params.schema]
-description = "The entries: names in that folder, or absolute paths"
 type = "array"
 
 [resources.verbs.params.schema.items]
@@ -209,7 +191,6 @@ name = "to"
 required = true
 
 [resources.verbs.params.schema]
-description = "Absolute path of the destination folder"
 type = "string"
 
 [[resources.verbs.params]]
@@ -217,14 +198,13 @@ name = "create"
 required = false
 
 [resources.verbs.params.schema]
-description = "Create the destination folder when it does not exist (the default)"
 type = [
     "boolean",
     "null",
 ]
 
 [[resources.verbs]]
-description = "Copy entries into a folder; a copy whose name is taken gets a free one."
+description = "one."
 id = "copy-into"
 kind = "outside"
 label = "Copy entries into a folder; a copy whose name is taken gets a free"
@@ -234,7 +214,6 @@ name = "device"
 required = true
 
 [resources.verbs.params.schema]
-description = "The device whose files change"
 type = "string"
 
 [[resources.verbs.params]]
@@ -242,7 +221,6 @@ name = "from"
 required = true
 
 [resources.verbs.params.schema]
-description = "Absolute path of the folder holding the entries"
 type = "string"
 
 [[resources.verbs.params]]
@@ -250,7 +228,6 @@ name = "entries"
 required = true
 
 [resources.verbs.params.schema]
-description = "The entries: names in that folder, or absolute paths"
 type = "array"
 
 [resources.verbs.params.schema.items]
@@ -261,7 +238,6 @@ name = "to"
 required = true
 
 [resources.verbs.params.schema]
-description = "Absolute path of the destination folder"
 type = "string"
 
 [[resources.verbs]]
@@ -275,7 +251,6 @@ name = "device"
 required = true
 
 [resources.verbs.params.schema]
-description = "The receiving device"
 type = "string"
 
 [[resources.verbs.params]]
@@ -284,7 +259,7 @@ required = true
 
 [resources.verbs.params.schema]
 additionalProperties = false
-description = "The host's receipt of the transfer; grants no authority"
+description = "What the native host reports of a transfer it carried out. Settled metadata only: it grants no authority."
 required = [
     "operation",
     "completed",
@@ -322,7 +297,6 @@ name = "device"
 required = true
 
 [resources.verbs.params.schema]
-description = "The receiving device"
 type = "string"
 
 [[resources.verbs.params]]
@@ -331,7 +305,7 @@ required = true
 
 [resources.verbs.params.schema]
 additionalProperties = false
-description = "The host's receipt of the restore; grants no authority"
+description = "What the native host reports of a transfer it carried out. Settled metadata only: it grants no authority."
 required = [
     "operation",
     "completed",
@@ -359,7 +333,7 @@ type = "string"
 type = "boolean"
 
 [[resources.verbs]]
-description = "Take back a filesystem change: the device that made it compensates what it recorded, in reverse order."
+description = "what it recorded, in reverse order."
 id = "revert"
 kind = "outside"
 label = "Take back a filesystem change: the device that made it compensates"
@@ -369,5 +343,4 @@ name = "op"
 required = true
 
 [resources.verbs.params.schema]
-description = "Op"
 type = "string"

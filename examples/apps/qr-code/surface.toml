@@ -15,7 +15,6 @@ title = "Payload"
 type = "String"
 
 [[resources.verbs]]
-description = "Clear the payload."
 id = "clear"
 kind = "undoable"
 label = "Clear the payload"

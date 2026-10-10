@@ -29,7 +29,6 @@ title = "Name"
 type = "String"
 
 [[resources.verbs]]
-description = "Create a project from the draft."
 id = "create"
 kind = "undoable"
 label = "Create a project from the draft"

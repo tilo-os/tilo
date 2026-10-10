@@ -109,7 +109,6 @@ title = "Sides taken"
 type = "BTreeMap<String, HunkChoice>"
 
 [[resources.verbs]]
-description = "Compare two texts."
 id = "open-comparison"
 kind = "undoable"
 label = "Compare two texts"
@@ -119,7 +118,6 @@ name = "left_label"
 required = true
 
 [resources.verbs.params.schema]
-description = "Name of the left side"
 type = "string"
 
 [[resources.verbs.params]]
@@ -127,7 +125,6 @@ name = "left"
 required = true
 
 [resources.verbs.params.schema]
-description = "The left text"
 type = "string"
 
 [[resources.verbs.params]]
@@ -135,7 +132,6 @@ name = "right_label"
 required = true
 
 [resources.verbs.params.schema]
-description = "Name of the right side"
 type = "string"
 
 [[resources.verbs.params]]
@@ -143,11 +139,10 @@ name = "right"
 required = true
 
 [resources.verbs.params.schema]
-description = "The right text"
 type = "string"
 
 [[resources.verbs]]
-description = "Merge three texts.  The merged result starts with no side taken, and no side is recorded."
+description = "The merged result starts with no side taken, and no side is recorded."
 id = "open-merge"
 kind = "undoable"
 label = "Merge three texts"
@@ -157,7 +152,6 @@ name = "base_label"
 required = true
 
 [resources.verbs.params.schema]
-description = "Name of the common base"
 type = "string"
 
 [[resources.verbs.params]]
@@ -165,7 +159,6 @@ name = "base"
 required = true
 
 [resources.verbs.params.schema]
-description = "The common base text"
 type = "string"
 
 [[resources.verbs.params]]
@@ -173,7 +166,6 @@ name = "ours_label"
 required = true
 
 [resources.verbs.params.schema]
-description = "Name of our side"
 type = "string"
 
 [[resources.verbs.params]]
@@ -181,7 +173,6 @@ name = "ours"
 required = true
 
 [resources.verbs.params.schema]
-description = "Our text"
 type = "string"
 
 [[resources.verbs.params]]
@@ -189,7 +180,6 @@ name = "theirs_label"
 required = true
 
 [resources.verbs.params.schema]
-description = "Name of their side"
 type = "string"
 
 [[resources.verbs.params]]
@@ -197,11 +187,9 @@ name = "theirs"
 required = true
 
 [resources.verbs.params.schema]
-description = "Their text"
 type = "string"
 
 [[resources.verbs]]
-description = "Take ours for a change."
 id = "take-ours"
 kind = "undoable"
 label = "Take ours for a change"
@@ -211,12 +199,10 @@ name = "hunk"
 required = true
 
 [resources.verbs.params.schema]
-description = "The change's hunk"
 minimum = 0
 type = "integer"
 
 [[resources.verbs]]
-description = "Take theirs for a change."
 id = "take-theirs"
 kind = "undoable"
 label = "Take theirs for a change"
@@ -226,12 +212,10 @@ name = "hunk"
 required = true
 
 [resources.verbs.params.schema]
-description = "The change's hunk"
 minimum = 0
 type = "integer"
 
 [[resources.verbs]]
-description = "Take both sides for a change."
 id = "take-both"
 kind = "undoable"
 label = "Take both sides for a change"
@@ -241,12 +225,10 @@ name = "hunk"
 required = true
 
 [resources.verbs.params.schema]
-description = "The change's hunk"
 minimum = 0
 type = "integer"
 
 [[resources.verbs]]
-description = "Resolve a change with custom text."
 id = "resolve"
 kind = "undoable"
 label = "Resolve a change with custom text"
@@ -256,7 +238,6 @@ name = "hunk"
 required = true
 
 [resources.verbs.params.schema]
-description = "The change's hunk"
 minimum = 0
 type = "integer"
 
@@ -265,5 +246,4 @@ name = "text"
 required = true
 
 [resources.verbs.params.schema]
-description = "The resolved line(s)"
 type = "string"

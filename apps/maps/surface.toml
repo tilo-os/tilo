@@ -112,7 +112,7 @@ title = "The transit journeys accepted last"
 type = "ActivePlan"
 
 [[resources.verbs]]
-description = "Accept places.  Places a search or the map found become places of the shared map; one already known is updated and keeps being saved."
+description = "Places a search or the map found become places of the shared map; one already known is updated and keeps being saved."
 id = "accept-places"
 kind = "undoable"
 label = "Accept places"
@@ -122,7 +122,6 @@ name = "places"
 required = true
 
 [resources.verbs.params.schema]
-description = "The places"
 type = "array"
 
 [resources.verbs.params.schema.items]
@@ -187,7 +186,7 @@ description = "Saved"
 type = "boolean"
 
 [[resources.verbs]]
-description = "Search maps.  Remembers the search in the shared history; each window looks it up on its own."
+description = "Remembers the search in the shared history; each window looks it up on its own."
 id = "commit-search"
 kind = "undoable"
 label = "Search maps"
@@ -197,18 +196,16 @@ name = "query"
 required = true
 
 [resources.verbs.params.schema]
-description = "What was searched"
 type = "string"
 
 [[resources.verbs]]
-description = "Clear recent searches."
 id = "clear-recents"
 kind = "undoable"
 label = "Clear recent searches"
 params = []
 
 [[resources.verbs]]
-description = "Accept a route.  The road route a planner answered, with its endpoints."
+description = "The road route a planner answered, with its endpoints."
 id = "accept-route"
 kind = "undoable"
 label = "Accept a route"
@@ -219,7 +216,7 @@ required = true
 
 [resources.verbs.params.schema]
 additionalProperties = false
-description = "The route"
+description = "A computed road route between two points."
 required = [
     "mode",
     "distance_m",
@@ -339,7 +336,7 @@ required = false
 
 [resources.verbs.params.schema]
 additionalProperties = false
-description = "Where it starts"
+description = "A WGS-84 geographic coordinate (degrees)."
 required = [
     "lat",
     "lon",
@@ -360,7 +357,6 @@ name = "origin_name"
 required = true
 
 [resources.verbs.params.schema]
-description = "What the start is called"
 type = "string"
 
 [[resources.verbs.params]]
@@ -369,7 +365,7 @@ required = false
 
 [resources.verbs.params.schema]
 additionalProperties = false
-description = "Where it ends"
+description = "A WGS-84 geographic coordinate (degrees)."
 required = [
     "lat",
     "lon",
@@ -390,7 +386,6 @@ name = "dest_name"
 required = true
 
 [resources.verbs.params.schema]
-description = "What the end is called"
 type = "string"
 
 [[resources.verbs.params]]
@@ -398,7 +393,7 @@ name = "mode"
 required = true
 
 [resources.verbs.params.schema]
-description = "How it travels"
+description = "Travel mode for the directions engine. `Car`/`Bike`/`Foot` route on roads (OSRM); `Transit` plans a public-transport journey (MOTIS) instead — it is a mode of Directions, not a separate surface."
 enum = [
     "car",
     "transit",
@@ -408,14 +403,13 @@ enum = [
 type = "string"
 
 [[resources.verbs]]
-description = "Clear route."
 id = "clear-route"
 kind = "undoable"
 label = "Clear route"
 params = []
 
 [[resources.verbs]]
-description = "Accept transit journeys.  The journeys a transit planner answered, with their endpoints."
+description = "The journeys a transit planner answered, with their endpoints."
 id = "accept-transit"
 kind = "undoable"
 label = "Accept transit journeys"
@@ -425,7 +419,6 @@ name = "transit"
 required = true
 
 [resources.verbs.params.schema]
-description = "The journeys"
 type = "array"
 
 [resources.verbs.params.schema.items]
@@ -564,7 +557,7 @@ required = false
 
 [resources.verbs.params.schema]
 additionalProperties = false
-description = "Where they start"
+description = "A WGS-84 geographic coordinate (degrees)."
 required = [
     "lat",
     "lon",
@@ -585,7 +578,6 @@ name = "origin_name"
 required = true
 
 [resources.verbs.params.schema]
-description = "What the start is called"
 type = "string"
 
 [[resources.verbs.params]]
@@ -594,7 +586,7 @@ required = false
 
 [resources.verbs.params.schema]
 additionalProperties = false
-description = "Where they end"
+description = "A WGS-84 geographic coordinate (degrees)."
 required = [
     "lat",
     "lon",
@@ -615,11 +607,9 @@ name = "dest_name"
 required = true
 
 [resources.verbs.params.schema]
-description = "What the end is called"
 type = "string"
 
 [[resources.verbs]]
-description = "Clear transit options."
 id = "clear-transit"
 kind = "undoable"
 label = "Clear transit options"

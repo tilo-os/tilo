@@ -73,7 +73,6 @@ title = """How often it was copied: drives "Most used" and the row's usage"""
 type = "Counter"
 
 [[resources.verbs]]
-description = "Create a snippet."
 id = "new-snippet"
 kind = "undoable"
 label = "Create a snippet"
@@ -83,7 +82,6 @@ name = "title"
 required = true
 
 [resources.verbs.params.schema]
-description = "Title"
 type = "string"
 
 [[resources.verbs.params]]
@@ -91,14 +89,12 @@ name = "folder"
 required = false
 
 [resources.verbs.params.schema]
-description = "Folder to file it under; none for All snippets"
 type = [
     "string",
     "null",
 ]
 
 [[resources.verbs]]
-description = "Duplicate a snippet."
 id = "duplicate"
 kind = "undoable"
 label = "Duplicate a snippet"
@@ -108,7 +104,6 @@ name = "snippet"
 required = true
 
 [resources.verbs.params.schema]
-description = "Snippet"
 type = "string"
 
 [[resources.verbs.params]]
@@ -116,14 +111,12 @@ name = "title"
 required = false
 
 [resources.verbs.params.schema]
-description = "Title of the copy; the original's when none"
 type = [
     "string",
     "null",
 ]
 
 [[resources.verbs]]
-description = "Delete a snippet."
 destructive = true
 id = "delete"
 kind = "undoable"
@@ -134,11 +127,9 @@ name = "snippet"
 required = true
 
 [resources.verbs.params.schema]
-description = "Snippet"
 type = "string"
 
 [[resources.verbs]]
-description = "Record a use of a snippet."
 id = "record-use"
 kind = "undoable"
 label = "Record a use of a snippet"
@@ -148,11 +139,9 @@ name = "snippet"
 required = true
 
 [resources.verbs.params.schema]
-description = "Snippet"
 type = "string"
 
 [[resources.verbs]]
-description = "Rename a folder."
 id = "rename-folder"
 kind = "undoable"
 label = "Rename a folder"
@@ -162,7 +151,6 @@ name = "folder"
 required = true
 
 [resources.verbs.params.schema]
-description = "Folder"
 type = "string"
 
 [[resources.verbs.params]]
@@ -170,11 +158,9 @@ name = "to"
 required = true
 
 [resources.verbs.params.schema]
-description = "New name"
 type = "string"
 
 [[resources.verbs]]
-description = "Rename a tag."
 id = "rename-tag"
 kind = "undoable"
 label = "Rename a tag"
@@ -184,7 +170,6 @@ name = "tag"
 required = true
 
 [resources.verbs.params.schema]
-description = "Tag"
 type = "string"
 
 [[resources.verbs.params]]
@@ -192,11 +177,9 @@ name = "to"
 required = true
 
 [resources.verbs.params.schema]
-description = "New name"
 type = "string"
 
 [[resources.verbs]]
-description = "Remove a tag from every snippet."
 id = "remove-tag"
 kind = "undoable"
 label = "Remove a tag from every snippet"
@@ -206,5 +189,4 @@ name = "tag"
 required = true
 
 [resources.verbs.params.schema]
-description = "Tag"
 type = "string"

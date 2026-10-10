@@ -1833,7 +1833,7 @@ title = "What servers still have to be told: flags, moves and deletes the"
 type = "Outbox<ServerUpdate>"
 
 [[resources.verbs]]
-description = "Mark messages read  Marks messages read or unread together."
+description = "Marks messages read or unread together."
 id = "mark-read"
 kind = "outside"
 label = "Mark messages read"
@@ -1843,7 +1843,6 @@ name = "messages"
 required = true
 
 [resources.verbs.params.schema]
-description = "Ids of the messages"
 type = "array"
 
 [resources.verbs.params.schema.items]
@@ -1854,11 +1853,10 @@ name = "read"
 required = true
 
 [resources.verbs.params.schema]
-description = "Read, or unread"
 type = "boolean"
 
 [[resources.verbs]]
-description = "Archive messages  Moves messages to the Archive together."
+description = "Moves messages to the Archive together."
 id = "archive"
 kind = "outside"
 label = "Archive messages"
@@ -1868,14 +1866,13 @@ name = "messages"
 required = true
 
 [resources.verbs.params.schema]
-description = "Ids of the messages"
 type = "array"
 
 [resources.verbs.params.schema.items]
 type = "string"
 
 [[resources.verbs]]
-description = "Move messages to Trash  Moves messages to the Trash together, from where they can still be brought back."
+description = "Moves messages to the Trash together, from where they can still be brought back."
 id = "trash"
 kind = "outside"
 label = "Move messages to Trash"
@@ -1885,14 +1882,13 @@ name = "messages"
 required = true
 
 [resources.verbs.params.schema]
-description = "Ids of the messages"
 type = "array"
 
 [resources.verbs.params.schema.items]
 type = "string"
 
 [[resources.verbs]]
-description = "Move messages  Moves messages to one folder together."
+description = "Moves messages to one folder together."
 id = "move-messages"
 kind = "outside"
 label = "Move messages"
@@ -1902,7 +1898,6 @@ name = "messages"
 required = true
 
 [resources.verbs.params.schema]
-description = "Ids of the messages"
 type = "array"
 
 [resources.verbs.params.schema.items]
@@ -1913,7 +1908,7 @@ name = "to"
 required = true
 
 [resources.verbs.params.schema]
-description = "The folder"
+description = "The canonical system folders every account has. We keep them as an enum (rather than free-form strings) so routing — archive/delete/move — is total and exhaustively checked by the compiler."
 
 [[resources.verbs.params.schema.oneOf]]
 const = "inbox"
@@ -1945,7 +1940,7 @@ description = "Spam / junk."
 type = "string"
 
 [[resources.verbs]]
-description = "Delete permanently  Deletes messages already in the Trash for good: all of them, or none when one is no longer there."
+description = "Deletes messages already in the Trash for good: all of them, or none when one is no longer there."
 destructive = true
 id = "purge"
 kind = "outside"
@@ -1956,14 +1951,13 @@ name = "messages"
 required = true
 
 [resources.verbs.params.schema]
-description = "Ids of the messages, every one in the Trash"
 type = "array"
 
 [resources.verbs.params.schema.items]
 type = "string"
 
 [[resources.verbs]]
-description = "Messages fetched or found: each joins the mailbox with the flags its source reports, and a fetched one records what its server holds. What the mailbox already says wins, except where the server changed since it last reported (another mail client read the message)."
+description = "source reports, and a fetched one records what its server holds. What the mailbox already says wins, except where the server changed since it last reported (another mail client read the message)."
 id = "ingest"
 kind = "outside"
 label = "Messages fetched or found: each joins the mailbox with the flags its"
@@ -1973,7 +1967,6 @@ name = "messages"
 required = true
 
 [resources.verbs.params.schema]
-description = "The messages, with what their source reports"
 type = "array"
 
 [resources.verbs.params.schema.items]
@@ -2016,7 +2009,6 @@ type = [
 ]
 
 [[resources.verbs]]
-description = "A mail server confirmed it holds what `update` asked of it."
 id = "server-applied"
 kind = "outside"
 label = "A mail server confirmed it holds what `update` asked of it"
@@ -2026,7 +2018,7 @@ name = "update"
 required = true
 
 [resources.verbs.params.schema]
-description = "What the server was told"
+description = "One change a mail server still has to be told about, as `Mail::server_updates` finds it and the mailbox queues it: the message, where it lives on the server, and what to do there."
 
 [[resources.verbs.params.schema.oneOf]]
 additionalProperties = false
@@ -2241,7 +2233,7 @@ type = "string"
 type = "string"
 
 [[resources.verbs]]
-description = "Start the body of the draft afresh: a blank message, a reply's quote, a reopened draft."
+description = "a reopened draft."
 id = "start-draft-body"
 kind = "outside"
 label = "Start the body of the draft afresh: a blank message, a reply's quote,"
@@ -2251,7 +2243,6 @@ name = "text"
 required = true
 
 [resources.verbs.params.schema]
-description = "Its text, a paragraph per line; a line starting with > is quoted"
 type = "string"
 
 [[resources.verbs.params]]
@@ -2259,14 +2250,13 @@ name = "html"
 required = false
 
 [resources.verbs.params.schema]
-description = "Its HTML, when it starts formatted"
 type = [
     "string",
     "null",
 ]
 
 [[resources.verbs]]
-description = "Save draft  Saves the message being written as the draft: who it goes to, what it says and carries, keeping the body being written."
+description = "Saves the message being written as the draft: who it goes to, what it says and carries, keeping the body being written."
 id = "save-draft"
 kind = "outside"
 label = "Save draft"
@@ -2277,7 +2267,7 @@ required = true
 
 [resources.verbs.params.schema]
 additionalProperties = false
-description = "The message as written"
+description = "A message as written: who it goes to, what it says, what it carries."
 required = [
     "to",
     "cc",
@@ -2361,7 +2351,6 @@ type = "string"
 type = "string"
 
 [[resources.verbs]]
-description = "Discard draft"
 destructive = true
 id = "discard-draft"
 kind = "outside"
@@ -2369,7 +2358,7 @@ label = "Discard draft"
 params = []
 
 [[resources.verbs]]
-description = "Send message  Puts the message in the outbox; a device that holds the account delivers it. Until then, undo takes it back unsent."
+description = "Puts the message in the outbox; a device that holds the account delivers it. Until then, undo takes it back unsent."
 destructive = true
 id = "send-message"
 kind = "outside"
@@ -2380,7 +2369,6 @@ name = "account"
 required = true
 
 [resources.verbs.params.schema]
-description = "The address it is sent from: one of the mailbox's accounts"
 type = "string"
 
 [[resources.verbs.params]]
@@ -2389,7 +2377,7 @@ required = true
 
 [resources.verbs.params.schema]
 additionalProperties = false
-description = "The message"
+description = "A message as written: who it goes to, what it says, what it carries."
 required = [
     "to",
     "cc",
@@ -2477,14 +2465,13 @@ name = "in_reply_to"
 required = false
 
 [resources.verbs.params.schema]
-description = "Id of the message it answers"
 type = [
     "string",
     "null",
 ]
 
 [[resources.verbs]]
-description = "Cancel sending  Takes a message out of the outbox unsent: one still waiting, or one its server refused."
+description = "Takes a message out of the outbox unsent: one still waiting, or one its server refused."
 id = "cancel-send"
 kind = "outside"
 label = "Cancel sending"
@@ -2494,7 +2481,6 @@ name = "id"
 required = true
 
 [resources.verbs.params.schema]
-description = "The outbox message"
 type = "string"
 
 [[resources]]
@@ -2581,7 +2567,7 @@ title = "Retained tombstone; the association id must never be reassigned"
 type = "bool"
 
 [[resources.verbs]]
-description = "Update the label of a Contacts identity, without merging similar names or reviving an identity that was deleted."
+description = "or reviving an identity that was deleted."
 id = "project-contact"
 kind = "undoable"
 label = "Update the label of a Contacts identity, without merging similar names"
@@ -2591,7 +2577,6 @@ name = "person"
 required = true
 
 [resources.verbs.params.schema]
-description = "Person"
 type = "string"
 
 [[resources.verbs.params]]
@@ -2599,11 +2584,10 @@ name = "label"
 required = true
 
 [resources.verbs.params.schema]
-description = "Label"
 type = "string"
 
 [[resources.verbs]]
-description = "Tombstone a removed Contacts identity. Delayed projections cannot recreate it and its endpoints cannot be used for sending."
+description = "recreate it and its endpoints cannot be used for sending."
 id = "remove-contact"
 kind = "undoable"
 label = "Tombstone a removed Contacts identity. Delayed projections cannot"
@@ -2613,11 +2597,10 @@ name = "person"
 required = true
 
 [resources.verbs.params.schema]
-description = "Person"
 type = "string"
 
 [[resources.verbs]]
-description = "Explicitly confirm that this service recipient belongs to this person. An uncertain candidate never becomes an association merely by appearing in a contact search or having a matching name/phone number."
+description = "An uncertain candidate never becomes an association merely by appearing in a contact search or having a matching name/phone number."
 destructive = true
 id = "confirm-endpoint"
 kind = "undoable"
@@ -2628,7 +2611,6 @@ name = "person"
 required = true
 
 [resources.verbs.params.schema]
-description = "Person"
 type = "string"
 
 [[resources.verbs.params]]
@@ -2636,7 +2618,6 @@ name = "endpoint"
 required = true
 
 [resources.verbs.params.schema]
-description = "Endpoint"
 type = "string"
 
 [[resources.verbs.params]]
@@ -2644,7 +2625,6 @@ name = "service"
 required = true
 
 [resources.verbs.params.schema]
-description = "Service"
 type = "string"
 
 [[resources.verbs.params]]
@@ -2652,11 +2632,10 @@ name = "recipient"
 required = true
 
 [resources.verbs.params.schema]
-description = "Recipient"
 type = "string"
 
 [[resources.verbs]]
-description = "Confirm the exact provider-scoped account and observed identity revision. This is an address-book decision, not cryptographic proof or permission."
+description = "This is an address-book decision, not cryptographic proof or permission."
 destructive = true
 id = "confirm-account"
 kind = "undoable"
@@ -2667,7 +2646,6 @@ name = "person"
 required = true
 
 [resources.verbs.params.schema]
-description = "Person"
 type = "string"
 
 [[resources.verbs.params]]
@@ -2675,7 +2653,6 @@ name = "endpoint"
 required = true
 
 [resources.verbs.params.schema]
-description = "Endpoint"
 type = "string"
 
 [[resources.verbs.params]]
@@ -2683,7 +2660,6 @@ name = "service"
 required = true
 
 [resources.verbs.params.schema]
-description = "Service"
 type = "string"
 
 [[resources.verbs.params]]
@@ -2691,7 +2667,6 @@ name = "scope"
 required = true
 
 [resources.verbs.params.schema]
-description = "Scope"
 type = "string"
 
 [[resources.verbs.params]]
@@ -2699,7 +2674,6 @@ name = "recipient"
 required = true
 
 [resources.verbs.params.schema]
-description = "Recipient"
 type = "string"
 
 [[resources.verbs.params]]
@@ -2707,11 +2681,9 @@ name = "revision"
 required = true
 
 [resources.verbs.params.schema]
-description = "Revision"
 type = "string"
 
 [[resources.verbs]]
-description = "Replace an address after review, clearing unavailable identity evidence."
 destructive = true
 id = "replace-endpoint"
 kind = "undoable"
@@ -2722,7 +2694,6 @@ name = "person"
 required = true
 
 [resources.verbs.params.schema]
-description = "Person"
 type = "string"
 
 [[resources.verbs.params]]
@@ -2730,7 +2701,6 @@ name = "previous"
 required = true
 
 [resources.verbs.params.schema]
-description = "Previous"
 type = "string"
 
 [[resources.verbs.params]]
@@ -2738,7 +2708,6 @@ name = "endpoint"
 required = true
 
 [resources.verbs.params.schema]
-description = "Endpoint"
 type = "string"
 
 [[resources.verbs.params]]
@@ -2746,7 +2715,6 @@ name = "service"
 required = true
 
 [resources.verbs.params.schema]
-description = "Service"
 type = "string"
 
 [[resources.verbs.params]]
@@ -2754,11 +2722,9 @@ name = "recipient"
 required = true
 
 [resources.verbs.params.schema]
-description = "Recipient"
 type = "string"
 
 [[resources.verbs]]
-description = "Replace a reviewed association atomically, retaining the old tombstone."
 destructive = true
 id = "replace-account"
 kind = "undoable"
@@ -2769,7 +2735,6 @@ name = "person"
 required = true
 
 [resources.verbs.params.schema]
-description = "Person"
 type = "string"
 
 [[resources.verbs.params]]
@@ -2777,7 +2742,6 @@ name = "previous"
 required = true
 
 [resources.verbs.params.schema]
-description = "Previous"
 type = "string"
 
 [[resources.verbs.params]]
@@ -2785,7 +2749,6 @@ name = "endpoint"
 required = true
 
 [resources.verbs.params.schema]
-description = "Endpoint"
 type = "string"
 
 [[resources.verbs.params]]
@@ -2793,7 +2756,6 @@ name = "service"
 required = true
 
 [resources.verbs.params.schema]
-description = "Service"
 type = "string"
 
 [[resources.verbs.params]]
@@ -2801,7 +2763,6 @@ name = "scope"
 required = true
 
 [resources.verbs.params.schema]
-description = "Scope"
 type = "string"
 
 [[resources.verbs.params]]
@@ -2809,7 +2770,6 @@ name = "recipient"
 required = true
 
 [resources.verbs.params.schema]
-description = "Recipient"
 type = "string"
 
 [[resources.verbs.params]]
@@ -2817,11 +2777,9 @@ name = "revision"
 required = true
 
 [resources.verbs.params.schema]
-description = "Revision"
 type = "string"
 
 [[resources.verbs]]
-description = "Project phone hints from Contacts. These can suggest candidates only."
 id = "project-phones"
 kind = "undoable"
 label = "Project phone hints from Contacts. These can suggest candidates only"
@@ -2831,7 +2789,6 @@ name = "person"
 required = true
 
 [resources.verbs.params.schema]
-description = "Person"
 type = "string"
 
 [[resources.verbs.params]]
@@ -2839,14 +2796,12 @@ name = "phones"
 required = true
 
 [resources.verbs.params.schema]
-description = "Phones"
 type = "array"
 
 [resources.verbs.params.schema.items]
 type = "string"
 
 [[resources.verbs]]
-description = "Project mailbox hints without creating any service association."
 id = "project-emails"
 kind = "undoable"
 label = "Project mailbox hints without creating any service association"
@@ -2856,7 +2811,6 @@ name = "person"
 required = true
 
 [resources.verbs.params.schema]
-description = "Person"
 type = "string"
 
 [[resources.verbs.params]]
@@ -2864,14 +2818,65 @@ name = "emails"
 required = true
 
 [resources.verbs.params.schema]
-description = "Emails"
 type = "array"
 
 [resources.verbs.params.schema.items]
 type = "string"
 
 [[resources.verbs]]
-description = "Remove a reviewed association. No implicit transfer to another person."
+description = "phone and mailbox hints as [`Self::project_contact`], [`Self::project_phones`] and [`Self::project_emails`] would, and each of `removed` tombstoned as [`Self::remove_contact`] would. A large import costs one change instead of three per person."
+id = "project-contacts"
+kind = "undoable"
+label = "Project many Contacts identities as one change: each person's label,"
+
+[[resources.verbs.params]]
+name = "people"
+required = true
+
+[resources.verbs.params.schema]
+type = "array"
+
+[resources.verbs.params.schema.items]
+additionalProperties = false
+description = "One Contacts identity as Contacts projects it: its label and the phone and mailbox hints it holds."
+required = [
+    "person",
+    "label",
+    "phones",
+    "emails",
+]
+type = "object"
+
+[resources.verbs.params.schema.items.properties.emails]
+type = "array"
+
+[resources.verbs.params.schema.items.properties.emails.items]
+type = "string"
+
+[resources.verbs.params.schema.items.properties.label]
+type = "string"
+
+[resources.verbs.params.schema.items.properties.person]
+description = "The Contacts UUID."
+type = "string"
+
+[resources.verbs.params.schema.items.properties.phones]
+type = "array"
+
+[resources.verbs.params.schema.items.properties.phones.items]
+type = "string"
+
+[[resources.verbs.params]]
+name = "removed"
+required = true
+
+[resources.verbs.params.schema]
+type = "array"
+
+[resources.verbs.params.schema.items]
+type = "string"
+
+[[resources.verbs]]
 destructive = true
 id = "forget-endpoint"
 kind = "undoable"
@@ -2882,7 +2887,6 @@ name = "person"
 required = true
 
 [resources.verbs.params.schema]
-description = "Person"
 type = "string"
 
 [[resources.verbs.params]]
@@ -2890,7 +2894,6 @@ name = "endpoint"
 required = true
 
 [resources.verbs.params.schema]
-description = "Endpoint"
 type = "string"
 
 [[resources]]
@@ -2949,7 +2952,7 @@ title = "The active account id per type; a type without one uses its first"
 type = "BTreeMap<String, String>"
 
 [[resources.verbs]]
-description = "Publish this signed-in identity's public browser connection metadata. This changes the Settings account record only; it creates no credential, certificate, room membership or content key. Republishing preserves a person's disabled choice and chosen account name.  # Errors Refuses malformed public metadata or an occupied identity account id."
+description = "This changes the Settings account record only; it creates no credential, certificate, room membership or content key. Republishing preserves a person's disabled choice and chosen account name.  # Errors Refuses malformed public metadata or an occupied identity account id."
 id = "publish-browser-identity"
 kind = "undoable"
 label = "Publish this signed-in identity's public browser connection metadata"
@@ -2959,7 +2962,6 @@ name = "root"
 required = true
 
 [resources.verbs.params.schema]
-description = "Root"
 type = "string"
 
 [[resources.verbs.params]]
@@ -2967,7 +2969,6 @@ name = "origin"
 required = true
 
 [resources.verbs.params.schema]
-description = "Origin"
 type = "string"
 
 [[resources.verbs.params]]
@@ -2975,11 +2976,9 @@ name = "display_name"
 required = true
 
 [resources.verbs.params.schema]
-description = "Display name"
 type = "string"
 
 [[resources.verbs]]
-description = "Save an account: add it, or replace the one with its id."
 id = "save-account"
 kind = "undoable"
 label = "Save an account: add it, or replace the one with its id"
@@ -2989,7 +2988,6 @@ name = "id"
 required = true
 
 [resources.verbs.params.schema]
-description = "The account's id, which its secret is kept under"
 type = "string"
 
 [[resources.verbs.params]]
@@ -2997,7 +2995,6 @@ name = "type_id"
 required = true
 
 [resources.verbs.params.schema]
-description = "The kind of account, such as email or caldav"
 type = "string"
 
 [[resources.verbs.params]]
@@ -3005,7 +3002,6 @@ name = "display_name"
 required = true
 
 [resources.verbs.params.schema]
-description = "The name shown for it"
 type = "string"
 
 [[resources.verbs.params]]
@@ -3013,14 +3009,12 @@ name = "config"
 required = true
 
 [resources.verbs.params.schema]
-description = "Its connection settings, without any secret"
 
 [[resources.verbs.params]]
 name = "enabled"
 required = true
 
 [resources.verbs.params.schema]
-description = "Whether it is in use"
 type = "boolean"
 
 [[resources.verbs.params]]
@@ -3028,13 +3022,12 @@ name = "tint"
 required = true
 
 [resources.verbs.params.schema]
-description = "Avatar tint"
 maximum = 255
 minimum = 0
 type = "integer"
 
 [[resources.verbs]]
-description = "Publish a reviewed new Signal identity without replacing another account. Names are labels; a configured own ACI requires its existing relinking path. This is public metadata, never a credential or grant. # Errors Refuses malformed identities, duplicate scopes or an occupied account ID."
+description = "account. Names are labels; a configured own ACI requires its existing relinking path. This is public metadata, never a credential or grant. # Errors Refuses malformed identities, duplicate scopes or an occupied account ID."
 id = "publish-signal-account"
 kind = "undoable"
 label = "Publish a reviewed new Signal identity without replacing another"
@@ -3044,7 +3037,6 @@ name = "id"
 required = true
 
 [resources.verbs.params.schema]
-description = "Id"
 type = "string"
 
 [[resources.verbs.params]]
@@ -3052,7 +3044,6 @@ name = "display_name"
 required = true
 
 [resources.verbs.params.schema]
-description = "Display name"
 type = "string"
 
 [[resources.verbs.params]]
@@ -3060,7 +3051,6 @@ name = "aci"
 required = true
 
 [resources.verbs.params.schema]
-description = "Aci"
 type = "string"
 
 [[resources.verbs.params]]
@@ -3068,12 +3058,11 @@ name = "generation"
 required = true
 
 [resources.verbs.params.schema]
-description = "Generation"
 minimum = 0
 type = "integer"
 
 [[resources.verbs]]
-description = "Publish a protected native SIM account. The scope is an opaque identity; modem paths, phone numbers and SIM identifiers stay in private custody. # Errors Refuses malformed identities, duplicate accounts or an invalid name/generation."
+description = "modem paths, phone numbers and SIM identifiers stay in private custody. # Errors Refuses malformed identities, duplicate accounts or an invalid name/generation."
 id = "publish-sms-account"
 kind = "undoable"
 label = "Publish a protected native SIM account. The scope is an opaque identity;"
@@ -3083,7 +3072,6 @@ name = "id"
 required = true
 
 [resources.verbs.params.schema]
-description = "Id"
 type = "string"
 
 [[resources.verbs.params]]
@@ -3091,7 +3079,6 @@ name = "display_name"
 required = true
 
 [resources.verbs.params.schema]
-description = "Display name"
 type = "string"
 
 [[resources.verbs.params]]
@@ -3099,7 +3086,6 @@ name = "scope"
 required = true
 
 [resources.verbs.params.schema]
-description = "Scope"
 type = "string"
 
 [[resources.verbs.params]]
@@ -3107,12 +3093,46 @@ name = "generation"
 required = true
 
 [resources.verbs.params.schema]
-description = "Generation"
 minimum = 0
 type = "integer"
 
 [[resources.verbs]]
-description = "Publish the original personal Tilo sender with an opaque private scope. Neither workspace membership nor a label authorizes this account. # Errors Refuses malformed identities, duplicate accounts or an invalid name/generation."
+description = "profile. The caller retains provider proof and credential authority; this record contains no credential, pairing payload or messaging state. # Errors Refuses invalid self identity, generation, name or an occupied account."
+id = "publish-whatsapp-account"
+kind = "undoable"
+label = "Publish the explicitly reviewed self identity of one native `WhatsApp`"
+
+[[resources.verbs.params]]
+name = "id"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "display_name"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "jid"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "generation"
+required = true
+
+[resources.verbs.params.schema]
+minimum = 0
+type = "integer"
+
+[[resources.verbs]]
+description = "Neither workspace membership nor a label authorizes this account. # Errors Refuses malformed identities, duplicate accounts or an invalid name/generation."
 id = "publish-tilo-account"
 kind = "undoable"
 label = "Publish the original personal Tilo sender with an opaque private scope"
@@ -3122,7 +3142,6 @@ name = "id"
 required = true
 
 [resources.verbs.params.schema]
-description = "Id"
 type = "string"
 
 [[resources.verbs.params]]
@@ -3130,7 +3149,6 @@ name = "display_name"
 required = true
 
 [resources.verbs.params.schema]
-description = "Display name"
 type = "string"
 
 [[resources.verbs.params]]
@@ -3138,7 +3156,6 @@ name = "scope"
 required = true
 
 [resources.verbs.params.schema]
-description = "Scope"
 type = "string"
 
 [[resources.verbs.params]]
@@ -3146,12 +3163,10 @@ name = "generation"
 required = true
 
 [resources.verbs.params.schema]
-description = "Generation"
 minimum = 0
 type = "integer"
 
 [[resources.verbs]]
-description = "Remove account."
 id = "remove-account"
 kind = "undoable"
 label = "Remove account"
@@ -3161,11 +3176,9 @@ name = "account"
 required = true
 
 [resources.verbs.params.schema]
-description = "Account"
 type = "string"
 
 [[resources.verbs]]
-description = "Use an account for its type."
 id = "set-active-account"
 kind = "undoable"
 label = "Use an account for its type"
@@ -3175,5 +3188,4 @@ name = "account"
 required = true
 
 [resources.verbs.params.schema]
-description = "Account"
 type = "string"

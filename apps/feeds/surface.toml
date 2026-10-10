@@ -169,7 +169,7 @@ title = "Tags"
 type = "Set<String>"
 
 [[resources.verbs]]
-description = "Add a subscription.  Subscribes to a feed's address. It is titled with its address until a refresh brings its real title and articles."
+description = "Subscribes to a feed's address. It is titled with its address until a refresh brings its real title and articles."
 id = "add-subscription"
 kind = "undoable"
 label = "Add a subscription"
@@ -179,7 +179,6 @@ name = "url"
 required = true
 
 [resources.verbs.params.schema]
-description = "Feed URL"
 type = "string"
 
 [[resources.verbs.params]]
@@ -187,14 +186,13 @@ name = "folder"
 required = false
 
 [resources.verbs.params.schema]
-description = "The folder to file it in; none for the top of the sidebar"
 type = [
     "string",
     "null",
 ]
 
 [[resources.verbs]]
-description = "Unsubscribe.  Removes the subscription and every article it brought in."
+description = "Removes the subscription and every article it brought in."
 destructive = true
 id = "unsubscribe"
 kind = "undoable"
@@ -205,11 +203,9 @@ name = "feed"
 required = true
 
 [resources.verbs.params.schema]
-description = "Feed"
 type = "string"
 
 [[resources.verbs]]
-description = "Mark all of a subscription's articles as read."
 id = "mark-feed-read"
 kind = "undoable"
 label = "Mark all of a subscription's articles as read"
@@ -219,18 +215,15 @@ name = "feed"
 required = true
 
 [resources.verbs.params.schema]
-description = "Feed"
 type = "string"
 
 [[resources.verbs]]
-description = "Mark all articles as read."
 id = "mark-everything-read"
 kind = "undoable"
 label = "Mark all articles as read"
 params = []
 
 [[resources.verbs]]
-description = "New folder."
 id = "new-folder"
 kind = "undoable"
 label = "New folder"
@@ -240,11 +233,10 @@ name = "name"
 required = true
 
 [resources.verbs.params.schema]
-description = "Name"
 type = "string"
 
 [[resources.verbs]]
-description = "Delete folder.  Its subscriptions stay, at the top of the sidebar."
+description = "Its subscriptions stay, at the top of the sidebar."
 destructive = true
 id = "delete-folder"
 kind = "undoable"
@@ -255,11 +247,10 @@ name = "folder"
 required = true
 
 [resources.verbs.params.schema]
-description = "Folder"
 type = "string"
 
 [[resources.verbs]]
-description = "Subscribe to what an OPML file lists.  Every address the library does not have yet, in the folders the file names (made where missing): one step, which one undo takes back."
+description = "Every address the library does not have yet, in the folders the file names (made where missing): one step, which one undo takes back."
 id = "import-subscriptions"
 kind = "undoable"
 label = "Subscribe to what an OPML file lists"
@@ -269,7 +260,6 @@ name = "outlines"
 required = true
 
 [resources.verbs.params.schema]
-description = "The subscriptions the file lists"
 type = "array"
 
 [resources.verbs.params.schema.items]
@@ -300,7 +290,7 @@ description = "The feed's address."
 type = "string"
 
 [[resources.verbs]]
-description = "Bring in what a refresh fetched for one subscription.  The articles it does not hold yet, its title as the feed names itself, and the certificate a Gemini server presented the first time. Content from the feed, not anyone's edit: no undo takes it back."
+description = "The articles it does not hold yet, its title as the feed names itself, and the certificate a Gemini server presented the first time. Content from the feed, not anyone's edit: no undo takes it back."
 id = "refreshed"
 kind = "undoable"
 label = "Bring in what a refresh fetched for one subscription"
@@ -310,7 +300,6 @@ name = "articles"
 required = true
 
 [resources.verbs.params.schema]
-description = "The articles it lists"
 type = "array"
 
 [resources.verbs.params.schema.items]
@@ -376,7 +365,6 @@ name = "feed"
 required = true
 
 [resources.verbs.params.schema]
-description = "The subscription"
 type = "string"
 
 [[resources.verbs.params]]
@@ -384,7 +372,6 @@ name = "title"
 required = false
 
 [resources.verbs.params.schema]
-description = "The title the feed gives itself"
 type = [
     "string",
     "null",
@@ -395,7 +382,6 @@ name = "certificate_pin"
 required = false
 
 [resources.verbs.params.schema]
-description = "The certificate a Gemini server presented"
 type = [
     "string",
     "null",

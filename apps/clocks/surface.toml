@@ -151,7 +151,6 @@ title = "Laps ms"
 type = "Vec<u64>"
 
 [[resources.verbs]]
-description = "Add a city."
 id = "add-world-clock"
 kind = "undoable"
 label = "Add a city"
@@ -161,7 +160,6 @@ name = "city"
 required = true
 
 [resources.verbs.params.schema]
-description = "City name"
 type = "string"
 
 [[resources.verbs.params]]
@@ -169,11 +167,9 @@ name = "timezone"
 required = true
 
 [resources.verbs.params.schema]
-description = "IANA time zone, such as Asia/Tokyo"
 type = "string"
 
 [[resources.verbs]]
-description = "Remove city."
 id = "remove-world-clock"
 kind = "undoable"
 label = "Remove city"
@@ -183,11 +179,9 @@ name = "world_clock"
 required = true
 
 [resources.verbs.params.schema]
-description = "World clock"
 type = "string"
 
 [[resources.verbs]]
-description = "Add an alarm."
 id = "add-alarm"
 kind = "undoable"
 label = "Add an alarm"
@@ -197,7 +191,6 @@ name = "label"
 required = true
 
 [resources.verbs.params.schema]
-description = "What the alarm is for"
 type = "string"
 
 [[resources.verbs.params]]
@@ -205,7 +198,6 @@ name = "hour"
 required = true
 
 [resources.verbs.params.schema]
-description = "Hour, 0 to 23"
 maximum = 255
 minimum = 0
 type = "integer"
@@ -215,7 +207,6 @@ name = "minute"
 required = true
 
 [resources.verbs.params.schema]
-description = "Minute, 0 to 59"
 maximum = 255
 minimum = 0
 type = "integer"
@@ -225,7 +216,6 @@ name = "weekdays"
 required = true
 
 [resources.verbs.params.schema]
-description = "Weekdays it repeats on (Mon … Sun); none rings once"
 type = "array"
 
 [resources.verbs.params.schema.items]
@@ -242,7 +232,6 @@ enum = [
 type = "string"
 
 [[resources.verbs]]
-description = "Turn an alarm on or off."
 id = "set-alarm-enabled"
 kind = "undoable"
 label = "Turn an alarm on or off"
@@ -252,7 +241,6 @@ name = "alarm"
 required = true
 
 [resources.verbs.params.schema]
-description = "Alarm"
 type = "string"
 
 [[resources.verbs.params]]
@@ -260,11 +248,9 @@ name = "enabled"
 required = true
 
 [resources.verbs.params.schema]
-description = "On"
 type = "boolean"
 
 [[resources.verbs]]
-description = "Remove alarm."
 id = "remove-alarm"
 kind = "undoable"
 label = "Remove alarm"
@@ -274,11 +260,9 @@ name = "alarm"
 required = true
 
 [resources.verbs.params.schema]
-description = "Alarm"
 type = "string"
 
 [[resources.verbs]]
-description = "Start a timer."
 id = "add-timer"
 kind = "undoable"
 label = "Start a timer"
@@ -288,7 +272,6 @@ name = "label"
 required = true
 
 [resources.verbs.params.schema]
-description = "What the timer is for"
 type = "string"
 
 [[resources.verbs.params]]
@@ -296,12 +279,10 @@ name = "seconds"
 required = true
 
 [resources.verbs.params.schema]
-description = "Duration in seconds"
 minimum = 0
 type = "integer"
 
 [[resources.verbs]]
-description = "Pause timer."
 id = "pause-timer"
 kind = "undoable"
 label = "Pause timer"
@@ -311,11 +292,9 @@ name = "timer"
 required = true
 
 [resources.verbs.params.schema]
-description = "Timer"
 type = "string"
 
 [[resources.verbs]]
-description = "Resume timer. A finished timer starts over."
 id = "resume-timer"
 kind = "undoable"
 label = "Resume timer. A finished timer starts over"
@@ -325,11 +304,9 @@ name = "timer"
 required = true
 
 [resources.verbs.params.schema]
-description = "Timer"
 type = "string"
 
 [[resources.verbs]]
-description = "Add one minute."
 id = "add-minute"
 kind = "undoable"
 label = "Add one minute"
@@ -339,11 +316,9 @@ name = "timer"
 required = true
 
 [resources.verbs.params.schema]
-description = "Timer"
 type = "string"
 
 [[resources.verbs]]
-description = "Remove timer."
 id = "remove-timer"
 kind = "undoable"
 label = "Remove timer"
@@ -353,32 +328,27 @@ name = "timer"
 required = true
 
 [resources.verbs.params.schema]
-description = "Timer"
 type = "string"
 
 [[resources.verbs]]
-description = "Start the stopwatch."
 id = "start-stopwatch"
 kind = "undoable"
 label = "Start the stopwatch"
 params = []
 
 [[resources.verbs]]
-description = "Pause the stopwatch."
 id = "pause-stopwatch"
 kind = "undoable"
 label = "Pause the stopwatch"
 params = []
 
 [[resources.verbs]]
-description = "Record lap."
 id = "lap"
 kind = "undoable"
 label = "Record lap"
 params = []
 
 [[resources.verbs]]
-description = "Reset the stopwatch."
 id = "reset-stopwatch"
 kind = "undoable"
 label = "Reset the stopwatch"

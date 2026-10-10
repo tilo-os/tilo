@@ -304,7 +304,6 @@ title = "Tint opacity"
 type = "f64"
 
 [[resources.verbs]]
-description = "Start a theme from a preset or from one of your themes."
 id = "new-theme"
 kind = "undoable"
 label = "Start a theme from a preset or from one of your themes"
@@ -314,7 +313,6 @@ name = "id"
 required = true
 
 [resources.verbs.params.schema]
-description = "Id for the new theme"
 type = "string"
 
 [[resources.verbs.params]]
@@ -322,12 +320,10 @@ name = "base"
 required = true
 
 [resources.verbs.params.schema]
-description = "The preset or theme to start from"
 examples = ["dark-graphite"]
 type = "string"
 
 [[resources.verbs]]
-description = "Reset the editable properties to the graphite preset, preserving its name."
 id = "reset"
 kind = "undoable"
 label = "Reset the editable properties to the graphite preset, preserving its name"
@@ -337,11 +333,9 @@ name = "theme"
 required = true
 
 [resources.verbs.params.schema]
-description = "Theme"
 type = "string"
 
 [[resources.verbs]]
-description = "Delete a theme."
 destructive = true
 id = "delete"
 kind = "undoable"
@@ -352,11 +346,10 @@ name = "theme"
 required = true
 
 [resources.verbs.params.schema]
-description = "Theme"
 type = "string"
 
 [[resources.verbs]]
-description = "Switch a theme between dark (ink light on its surfaces) and light. The ladder flips to the stock ladder of that polarity, keeping hue and chroma."
+description = "The ladder flips to the stock ladder of that polarity, keeping hue and chroma."
 id = "switch-polarity"
 kind = "undoable"
 label = "Switch a theme between dark (ink light on its surfaces) and light"
@@ -366,7 +359,6 @@ name = "theme"
 required = true
 
 [resources.verbs.params.schema]
-description = "Theme"
 type = "string"
 
 [[resources.verbs.params]]
@@ -374,5 +366,4 @@ name = "dark"
 required = true
 
 [resources.verbs.params.schema]
-description = "Whether the theme is dark"
 type = "boolean"

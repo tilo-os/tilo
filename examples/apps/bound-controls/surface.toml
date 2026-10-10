@@ -43,7 +43,6 @@ title = "A code rather than prose, so it is an `Atom`: written whole, last"
 type = "Atom"
 
 [[resources.verbs]]
-description = "Restore every preference to its default."
 id = "reset"
 kind = "undoable"
 label = "Restore every preference to its default"

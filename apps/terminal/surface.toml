@@ -133,7 +133,7 @@ title = "Commands asked to run"
 type = "Outbox<RunRequest, RunAnswer>"
 
 [[resources.verbs]]
-description = "Run a command line in the session.  Types it into the session's shell, on the device that runs the session, and answers with the run once it ends."
+description = "Types it into the session's shell, on the device that runs the session, and answers with the run once it ends."
 id = "run"
 kind = "outside"
 label = "Run a command line in the session"
@@ -143,11 +143,9 @@ name = "command"
 required = true
 
 [resources.verbs.params.schema]
-description = "The command line, as typed at the prompt"
 type = "string"
 
 [[resources.verbs]]
-description = "Run a run's command line again."
 id = "rerun"
 kind = "outside"
 label = "Run a run's command line again"
@@ -157,11 +155,9 @@ name = "runs"
 required = true
 
 [resources.verbs.params.schema]
-description = "Runs"
 type = "string"
 
 [[resources.verbs]]
-description = "Run one test of a run again, the way its tool runs one test."
 id = "rerun-test"
 kind = "outside"
 label = "Run one test of a run again, the way its tool runs one test"
@@ -171,7 +167,6 @@ name = "runs"
 required = true
 
 [resources.verbs.params.schema]
-description = "Runs"
 type = "string"
 
 [[resources.verbs.params]]
@@ -179,11 +174,9 @@ name = "test"
 required = true
 
 [resources.verbs.params.schema]
-description = "The test's name, as the run reported it"
 type = "string"
 
 [[resources.verbs]]
-description = "Record a run that ended."
 id = "record-run"
 kind = "undoable"
 label = "Record a run that ended"
@@ -230,7 +223,6 @@ name = "output"
 required = false
 
 [resources.verbs.params.schema]
-description = "The content hash of the raw output (lower-case hex), when it printed anything."
 type = [
     "string",
     "null",
@@ -327,7 +319,6 @@ name = "request"
 required = false
 
 [resources.verbs.params.schema]
-description = "The request it carried out, if `run` asked for it."
 type = [
     "string",
     "null",
@@ -338,11 +329,9 @@ name = "run"
 required = true
 
 [resources.verbs.params.schema]
-description = "The id the run takes: the request's when one asked for it, so its answer names the run."
 type = "string"
 
 [[resources.verbs]]
-description = "Record where the session runs."
 id = "record-target"
 kind = "undoable"
 label = "Record where the session runs"
@@ -352,11 +341,9 @@ name = "target"
 required = true
 
 [resources.verbs.params.schema]
-description = "An encoded session target"
 type = "string"
 
 [[resources.verbs]]
-description = "Record the relay session this session re-attaches to, or forget it."
 id = "record-relay-session"
 kind = "undoable"
 label = "Record the relay session this session re-attaches to, or forget it"
@@ -366,14 +353,12 @@ name = "session"
 required = false
 
 [resources.verbs.params.schema]
-description = "The relay session's id; none to forget it"
 type = [
     "string",
     "null",
 ]
 
 [[resources.verbs]]
-description = "Scope presence to a new process's pane."
 id = "claim-pane"
 kind = "undoable"
 label = "Scope presence to a new process's pane"
@@ -383,7 +368,6 @@ name = "pane"
 required = true
 
 [resources.verbs.params.schema]
-description = "The pane's id"
 type = "string"
 
 [[resources]]
@@ -458,7 +442,7 @@ title = "The run, an item of the session's `runs`"
 type = "Id"
 
 [[resources.verbs]]
-description = "Remember a run a session recorded.  The terminal keeping the person's history, not an edit of theirs to take back."
+description = "The terminal keeping the person's history, not an edit of theirs to take back."
 id = "remember"
 kind = "undoable"
 label = "Remember a run a session recorded"
