@@ -1964,7 +1964,6 @@ input-map-inspect-key = Physische Taste untersuchen
 input-map-inspection-unavailable = Die aktuellen Zeichen dieser physischen Taste sind nicht verfügbar. Aktiviere das Einstellungsfenster oder wähle eine Layout-Vorschau.
 input-map-current-symbols = Aktuelle Zeichen
 
-settings-appearance-text-scale = Textskalierung
 
 a11y-dictation-language = Diktatsprache
 a11y-dictation-language-desc = Wähle eine Sprache, um die Erkennung zu verbessern und die Wartezeit zu verkürzen. Die automatische Erkennung deckt weitere unterstützte Sprachen ab. Diktieren nutzt dein Systemmikrofon aus den Klangeinstellungen und fragt vor jeder Aufnahme.

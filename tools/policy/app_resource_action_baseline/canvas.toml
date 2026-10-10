@@ -1,5 +1,0 @@
-[ratchets.hand_resource_impl]
-"apps/canvas/src/resource.rs" = 1
-
-[ratchets.action_decl_new]
-"apps/canvas/src/resource.rs" = 10

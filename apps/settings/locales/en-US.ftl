@@ -1964,8 +1964,6 @@ input-map-inspect-key = Inspect a physical key
 input-map-inspection-unavailable = This physical key’s current symbols are unavailable. Focus Settings or choose a layout preview.
 input-map-current-symbols = Current symbols
 
-settings-appearance-text-scale = Text scale
-
 a11y-dictation-language = Dictation language
 a11y-dictation-language-desc = Choose a language to improve recognition and reduce waiting. Automatic detection covers other supported languages. Dictation uses your system microphone from Sound settings and asks before each recording.
 dictation-language-auto = Automatic detection
