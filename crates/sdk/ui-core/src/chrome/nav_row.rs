@@ -444,7 +444,7 @@ pub fn nav_rail_item_height(
 
 /// The run a rail caption is set in, inside a tile `width` wide.
 fn rail_caption_width(theme: &Theme, width: f64) -> f64 {
-    (width - 4.0 * f64::from(theme.tokens.spacing.s1)).max(0.0)
+    (width - 2.0 * f64::from(theme.tokens.spacing.s1)).max(0.0)
 }
 
 /// A rail caption broken into at most two lines of `max_w`: at a space
@@ -814,8 +814,12 @@ fn rail_layout(theme: &Theme, face: &NavRowFace<'_>) -> NavRowLayout {
         check: None,
         icon: Some(icon),
         badge: None,
-        label_x0: selection.x0 + s1,
-        label_x1: selection.x1 - s1,
+        // The selection already contributes the rail's `s1` inset on each
+        // edge. A second caption inset made short destinations unreadable at
+        // enlarged text (`Channels` became `Cha- / nn…`) even though the
+        // selection still had room for the complete two-line label.
+        label_x0: selection.x0,
+        label_x1: selection.x1,
         label_top: icon.y1 + s1,
         secondary_top: None,
         level: None,

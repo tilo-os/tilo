@@ -17,8 +17,8 @@ use ui::TextKind;
 use ui::Widget;
 use ui::agent_identity::{AgentIdentityStyle, draw_agent_identity_mark};
 use ui::chrome::{
-    self, NavCount, NavRowFace, NavSectionFace, SelectionState, nav_rail_row_height,
-    nav_row_height, nav_row_layout, nav_section_height, nav_section_layout,
+    self, NavCount, NavRowFace, NavSectionFace, SelectionState, nav_item_height,
+    nav_rail_item_height, nav_row_height, nav_row_layout, nav_section_height, nav_section_layout,
 };
 use ui::format::bytes as format_bytes;
 use ui::icons::Icon;
@@ -642,9 +642,9 @@ impl ChatApp {
         if rail.width() <= 0.5 {
             return;
         }
-        let row_h = nav_rail_row_height(theme);
         let mut y = rail.y0;
         let unread: u32 = self.channels.iter().map(|channel| channel.unread).sum();
+        let row_h = nav_rail_item_height(theme, tr, "Inbox", rail.width());
         let inbox = Rect::new(rail.x0, y, rail.x1, y + row_h);
         let mut face = NavRowFace::new(inbox, "Inbox")
             .rail()
@@ -664,6 +664,7 @@ impl ChatApp {
         // One contextual destination: the channels of the Tilo workspace
         // that owns this Chat instance. Other workspaces are in Inbox.
         if self.workspaces.iter().any(|ws| ws.id == self.context_ws) {
+            let row_h = nav_rail_item_height(theme, tr, "Channels", rail.width());
             let row = Rect::new(rail.x0, y, rail.x1, y + row_h);
             let face = NavRowFace::new(row, "Channels")
                 .rail()
@@ -896,7 +897,7 @@ impl ChatApp {
             &NavSectionFace::new(header, &crate::i18n::t("chat-agents-section")),
         );
         y += section_h;
-        let row_h = nav_row_height(theme);
+        let row_h = nav_item_height(theme, true, false);
         let kind = crate::i18n::t("chat-agent-kind");
         for agent in &self.room_agents {
             if y + row_h > side.y1 {

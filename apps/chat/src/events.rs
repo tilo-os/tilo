@@ -8417,6 +8417,122 @@ mod tests {
         );
     }
 
+    fn navigation_hit_rect(app: &ChatApp, expected: &Hit) -> vello::kurbo::Rect {
+        let target = expected.semantic_id();
+        app.hits
+            .iter()
+            .find_map(|(rect, hit)| (hit.semantic_id() == target).then_some(*rect))
+            .unwrap_or_else(|| panic!("the production frame paints {expected:?}"))
+    }
+
+    fn navigation_access_node<'a>(
+        node: &'a ui::a11y::AccessNode,
+        target: &str,
+    ) -> Option<&'a ui::a11y::AccessNode> {
+        (node.action_target.as_deref() == Some(target))
+            .then_some(node)
+            .or_else(|| {
+                node.children
+                    .iter()
+                    .find_map(|child| navigation_access_node(child, target))
+            })
+    }
+
+    fn native_navigation_frame(width: f64, height: f64, theme: &ui::Theme) -> ChatApp {
+        // Use the genuine empty native-workspace shape. The rich demo fixture
+        // fills compact navigation with sample channels before Agents, so it
+        // cannot observe the Agent rows whose geometry this regression proves.
+        let mut doc = AutoCommit::new();
+        ChatDoc::seed_workspace(
+            &mut doc,
+            "ws_home",
+            "Shared browser workspace",
+            "u_alice",
+            "Alice",
+            "AL",
+            0,
+        )
+        .expect("native Chat workspace");
+        let mut app = ChatApp::new_ephemeral();
+        app.reload(&doc);
+        app.room_agents = vec!["reed".into(), "tide".into()];
+        app.room_names.insert("agent:reed".into(), "reed".into());
+        app.room_names.insert("agent:tide".into(), "tide".into());
+        render_frame_with_theme(&mut app, width, height, theme);
+        app.left_flap.snap(true);
+        render_frame_with_theme(&mut app, width, height, theme);
+        app
+    }
+
+    #[test]
+    fn hc200_navigation_rows_reserve_wrapped_and_secondary_text() {
+        let theme = ui::theme::Theme::high_contrast().with_text_scale(2.0);
+        for (width, height) in [(1600.0, 900.0), (800.0, 600.0)] {
+            let app = native_navigation_frame(width, height, &theme);
+
+            let inbox = navigation_hit_rect(&app, &Hit::Inbox);
+            let channels = navigation_hit_rect(&app, &Hit::CurrentContext);
+            let rail = app.rail_rect();
+            let mut text = ui::text_render::TextRenderer::new();
+            text.set_text_scale(theme.text_scale);
+            assert!(
+                (inbox.height()
+                    - ui::chrome::nav_rail_item_height(&theme, &mut text, "Inbox", rail.width(),))
+                .abs()
+                    < 0.5
+            );
+            assert!(
+                (channels.height()
+                    - ui::chrome::nav_rail_item_height(
+                        &theme,
+                        &mut text,
+                        "Channels",
+                        rail.width(),
+                    ))
+                .abs()
+                    < 0.5
+            );
+            assert!((inbox.y1 - channels.y0).abs() < 0.5);
+            let channel_face = ui::chrome::NavRowFace::new(channels, "Channels").rail();
+            let channel_layout = ui::chrome::nav_row_layout(&theme, &mut text, &channel_face);
+            let caption_width = channel_layout.label_x1 - channel_layout.label_x0;
+            assert!(
+                (caption_width - (rail.width() - 2.0 * f64::from(theme.tokens.spacing.s1))).abs()
+                    < 0.5
+            );
+            let channel_lines =
+                ui::chrome::rail_caption_lines(&theme, &mut text, "Channels", caption_width);
+            assert_eq!(channel_lines.len(), 2);
+            assert!(channel_lines.iter().all(|line| !line.contains('\u{2026}')));
+            assert_eq!(channel_lines.concat().replace('-', ""), "Channels");
+
+            let reed = navigation_hit_rect(&app, &Hit::Agent("reed".into()));
+            let tide = navigation_hit_rect(&app, &Hit::Agent("tide".into()));
+            let stacked = ui::chrome::nav_item_height(&theme, true, false);
+            assert!((reed.height() - stacked).abs() < 0.5);
+            assert!((tide.height() - stacked).abs() < 0.5);
+            assert!((reed.y1 - tide.y0).abs() < 0.5);
+            let text_block = f64::from(theme.text(ui::tokens::TextRole::Body).line_height_px())
+                + f64::from(theme.text(ui::tokens::TextRole::Caption).line_height_px())
+                + 2.0 * f64::from(theme.tokens.spacing.s2);
+            assert!(text_block <= reed.height());
+
+            let access = app.accessibility().expect("Chat accessibility tree");
+            for (hit, rect) in [
+                (Hit::Inbox, inbox),
+                (Hit::CurrentContext, channels),
+                (Hit::Agent("reed".into()), reed),
+                (Hit::Agent("tide".into()), tide),
+            ] {
+                let target = hit.semantic_id();
+                let bounds = navigation_access_node(&access, &target)
+                    .and_then(|node| node.bounds)
+                    .unwrap_or_else(|| panic!("{target} keeps its painted accessible bounds"));
+                assert_eq!(bounds.to_rect(), rect);
+            }
+        }
+    }
+
     #[test]
     fn the_attached_call_window_rests_below_the_header_row() {
         for (w, h) in [(1280.0, 800.0), (800.0, 600.0)] {

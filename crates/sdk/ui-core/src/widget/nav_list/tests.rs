@@ -823,6 +823,29 @@ fn rail_captions_wrap_before_they_elide() {
         }
     }
     assert!(broken > 0, "the word is too wide for a narrow rail");
+
+    // At enlarged text the caption uses the selection's already-inset run;
+    // it does not spend that inset twice and turn a short destination into an
+    // elided fragment.
+    let hc = Theme::high_contrast().with_text_scale(2.0);
+    let mut hc_text = crate::text_render::TextRenderer::new();
+    hc_text.set_text_scale(hc.text_scale);
+    let row = Rect::new(0.0, 0.0, 76.0, 120.0);
+    let face = crate::chrome::NavRowFace::new(row, "Channels").rail();
+    let layout = crate::chrome::nav_row_layout(&hc, &mut hc_text, &face);
+    let lines = crate::chrome::rail_caption_lines(
+        &hc,
+        &mut hc_text,
+        "Channels",
+        layout.label_x1 - layout.label_x0,
+    );
+    assert_eq!(
+        layout.label_x1 - layout.label_x0,
+        row.width() - 2.0 * f64::from(hc.tokens.spacing.s1)
+    );
+    assert_eq!(lines.len(), 2);
+    assert!(lines.iter().all(|line| !line.contains('\u{2026}')));
+    assert_eq!(lines.concat().replace('-', ""), "Channels");
 }
 
 /// Sections handed over before the first layout stand at the navigation

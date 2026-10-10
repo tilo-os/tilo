@@ -37,9 +37,37 @@ const AGENT_MARKER_CONTINUITY: Duration = Duration::from_secs(8);
 const EXPIRY_EPSILON: Duration = Duration::from_nanos(1);
 const MAX_VISIBLE_CARDS: usize = 3;
 const CARD_WIDTH: f64 = 300.0;
-const CARD_HEIGHT: f64 = 52.0;
-const CARD_GAP: f64 = 6.0;
-const CARD_MARGIN: f64 = 12.0;
+
+#[derive(Clone, Copy, Debug)]
+struct InteractionCardMetrics {
+    height: f64,
+    gap: f64,
+    margin: f64,
+    content_inset: f64,
+    line_height: f64,
+    first_line_top: f64,
+    second_line_top: f64,
+}
+
+impl InteractionCardMetrics {
+    fn for_theme(theme: &Theme) -> Self {
+        let spacing = &theme.tokens.spacing;
+        let content_inset = f64::from(spacing.s2);
+        let line_height = f64::from(theme.text(TextRole::Caption).line_height_px());
+        let line_gap = f64::from(spacing.rhythm.tight);
+        let first_line_top = content_inset;
+        let second_line_top = first_line_top + line_height + line_gap;
+        Self {
+            height: (second_line_top + line_height + content_inset).ceil(),
+            gap: f64::from(spacing.rhythm.related),
+            margin: f64::from(spacing.s3),
+            content_inset,
+            line_height,
+            first_line_top,
+            second_line_top,
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
 pub(super) struct InteractionPresenceEntry {
@@ -718,8 +746,9 @@ impl PresenceCtx {
         &self,
         viewport: Rect,
         now: Instant,
+        theme: &Theme,
     ) -> Vec<InteractionCardPlacement> {
-        self.interaction_card_layout_excluding(viewport, now, &[])
+        self.interaction_card_layout_excluding(viewport, now, theme, &[])
     }
 
     /// Lay out fallback cards without duplicating invocations whose exact
@@ -728,29 +757,31 @@ impl PresenceCtx {
         &self,
         viewport: Rect,
         now: Instant,
+        theme: &Theme,
         resolved: &[InvocationId],
     ) -> Vec<InteractionCardPlacement> {
         let entries = self.visible_entries_excluding(now, resolved);
         if entries.is_empty() || viewport.width() < 96.0 || viewport.height() < 32.0 {
             return Vec::new();
         }
-        let vertical_room = (viewport.height() - CARD_MARGIN * 2.0).max(0.0);
-        let fit = ((vertical_room + CARD_GAP) / (CARD_HEIGHT + CARD_GAP)).floor() as usize;
+        let metrics = InteractionCardMetrics::for_theme(theme);
+        let vertical_room = (viewport.height() - metrics.margin * 2.0).max(0.0);
+        let fit = ((vertical_room + metrics.gap) / (metrics.height + metrics.gap)).floor() as usize;
         let visible = entries.len().min(MAX_VISIBLE_CARDS).min(fit);
         if visible == 0 {
             return Vec::new();
         }
-        let width = CARD_WIDTH.min((viewport.width() - CARD_MARGIN * 2.0).max(80.0));
+        let width = CARD_WIDTH.min((viewport.width() - metrics.margin * 2.0).max(80.0));
         let mut out = Vec::with_capacity(visible);
         for (index, entry) in entries.iter().copied().take(visible).enumerate() {
-            let y = viewport.y0 + CARD_MARGIN + index as f64 * (CARD_HEIGHT + CARD_GAP);
+            let y = viewport.y0 + metrics.margin + index as f64 * (metrics.height + metrics.gap);
             out.push(InteractionCardPlacement {
                 invocation: entry.interaction.invocation,
                 rect: Rect::new(
-                    viewport.x1 - CARD_MARGIN - width,
+                    viewport.x1 - metrics.margin - width,
                     y,
-                    viewport.x1 - CARD_MARGIN,
-                    y + CARD_HEIGHT,
+                    viewport.x1 - metrics.margin,
+                    y + metrics.height,
                 ),
                 additional: if index + 1 == visible {
                     entries.len().saturating_sub(visible)
@@ -775,7 +806,7 @@ impl PresenceCtx {
         resolved: &[InvocationId],
     ) {
         let entries = self.visible_entries_excluding(now, resolved);
-        let placements = self.interaction_card_layout_excluding(viewport, now, resolved);
+        let placements = self.interaction_card_layout_excluding(viewport, now, theme, resolved);
         for (entry, placement) in entries.iter().zip(&placements) {
             self.draw_interaction_card(scene, transform, text_renderer, theme, entry, placement);
         }
@@ -809,19 +840,20 @@ impl PresenceCtx {
         if entries.is_empty() || viewport.width() < 96.0 || viewport.height() < 32.0 {
             return;
         }
-        let vertical_room = (viewport.height() - CARD_MARGIN * 2.0).max(0.0);
-        let fit = ((vertical_room + CARD_GAP) / (CARD_HEIGHT + CARD_GAP)).floor() as usize;
+        let metrics = InteractionCardMetrics::for_theme(theme);
+        let vertical_room = (viewport.height() - metrics.margin * 2.0).max(0.0);
+        let fit = ((vertical_room + metrics.gap) / (metrics.height + metrics.gap)).floor() as usize;
         let visible = entries.len().min(MAX_VISIBLE_CARDS).min(fit);
-        let width = CARD_WIDTH.min((viewport.width() - CARD_MARGIN * 2.0).max(80.0));
+        let width = CARD_WIDTH.min((viewport.width() - metrics.margin * 2.0).max(80.0));
         for (index, entry) in entries.iter().take(visible).enumerate() {
-            let y = viewport.y0 + CARD_MARGIN + index as f64 * (CARD_HEIGHT + CARD_GAP);
+            let y = viewport.y0 + metrics.margin + index as f64 * (metrics.height + metrics.gap);
             let placement = InteractionCardPlacement {
                 invocation: entry.interaction.invocation,
                 rect: Rect::new(
-                    viewport.x1 - CARD_MARGIN - width,
+                    viewport.x1 - metrics.margin - width,
                     y,
-                    viewport.x1 - CARD_MARGIN,
-                    y + CARD_HEIGHT,
+                    viewport.x1 - metrics.margin,
+                    y + metrics.height,
                 ),
                 additional: if index + 1 == visible {
                     entries.len().saturating_sub(visible)
@@ -893,6 +925,7 @@ impl PresenceCtx {
     ) {
         let interaction = &entry.interaction;
         let rect = placement.rect;
+        let metrics = InteractionCardMetrics::for_theme(theme);
         let shape = RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.control));
         scene.fill(
             Fill::NonZero,
@@ -910,11 +943,19 @@ impl PresenceCtx {
             Stroke::new(1.5)
         };
         scene.stroke(&stroke, transform, phase_color, None, &shape);
-        let bar = Rect::new(rect.x0, rect.y0 + 7.0, rect.x0 + 3.0, rect.y1 - 7.0);
+        let bar = Rect::new(
+            rect.x0,
+            rect.y0 + metrics.content_inset,
+            rect.x0 + 3.0,
+            rect.y1 - metrics.content_inset,
+        );
         scene.fill(Fill::NonZero, transform, phase_color, None, &bar);
 
         let is_agent = interaction.actor.kind == InteractionActorKind::Agent;
-        let glyph_center = Point::new(rect.x0 + 15.0, rect.y0 + 16.0);
+        let glyph_center = Point::new(
+            rect.x0 + 15.0,
+            rect.y0 + metrics.first_line_top + metrics.line_height / 2.0,
+        );
         let glyph_outline = theme.on_surface(actor_color).ink;
         if is_agent {
             crate::agent_identity::draw_agent_identity_mark(
@@ -937,7 +978,7 @@ impl PresenceCtx {
             scene,
             &first,
             theme.tokens.colors.text_primary,
-            transform * Affine::translate((rect.x0 + 27.0, rect.y0 + 8.0)),
+            transform * Affine::translate((rect.x0 + 27.0, rect.y0 + metrics.first_line_top)),
             None,
             &style.clone().with_weight(TextWeight::Medium),
         );
@@ -957,7 +998,7 @@ impl PresenceCtx {
             scene,
             &detail,
             theme.tokens.colors.text_dim,
-            transform * Affine::translate((rect.x0 + 12.0, rect.y0 + 29.0)),
+            transform * Affine::translate((rect.x0 + 12.0, rect.y0 + metrics.second_line_top)),
             None,
             &style,
         );
@@ -1776,22 +1817,58 @@ mod tests {
             assert!(presence.selections.is_empty());
             assert!(presence.remote_cursors.is_empty());
         }
-        // phase: fallback_cards_do_not_overlap_and_fold_excess_activity
-        {
-            let at = crate::time::now();
-            let mut presence = PresenceCtx::empty();
-            for id in 1..=5 {
-                presence
-                    .apply_interaction_at(interaction(id, 1, InteractionPhase::Applying), at)
-                    .unwrap();
-            }
-            let cards = presence.interaction_card_layout(Rect::new(0.0, 0.0, 800.0, 600.0), at);
-            assert_eq!(cards.len(), 3);
-            assert_eq!(cards[2].additional, 2);
-            for pair in cards.windows(2) {
-                assert!(pair[0].rect.intersect(pair[1].rect).is_zero_area());
+    }
+
+    #[test]
+    fn fallback_cards_fit_scaled_typography_and_fold_excess_activity() {
+        let at = crate::time::now();
+        let mut presence = PresenceCtx::empty();
+        for id in 1..=5 {
+            presence
+                .apply_interaction_at(interaction(id, 1, InteractionPhase::Applying), at)
+                .unwrap();
+        }
+        let light = Theme::light();
+        let enlarged = Theme::high_contrast().with_text_scale(2.0);
+        assert!(
+            InteractionCardMetrics::for_theme(&enlarged).height
+                > InteractionCardMetrics::for_theme(&Theme::high_contrast()).height,
+            "the receipt must grow with the configured text scale"
+        );
+        for theme in [&light, &enlarged] {
+            let metrics = InteractionCardMetrics::for_theme(theme);
+            assert!(
+                metrics.first_line_top + metrics.line_height <= metrics.second_line_top,
+                "the actor and detail line boxes must not overlap"
+            );
+            assert!(
+                metrics.second_line_top + metrics.line_height + metrics.content_inset
+                    <= metrics.height,
+                "both caption lines and the lower inset must fit the card"
+            );
+            for viewport in [
+                Rect::new(0.0, 0.0, 1_600.0, 900.0),
+                Rect::new(0.0, 0.0, 800.0, 600.0),
+            ] {
+                let cards = presence.interaction_card_layout(viewport, at, theme);
+                assert_eq!(cards.len(), 3);
+                assert_eq!(cards[2].additional, 2);
+                assert!(cards.iter().all(|card| {
+                    (card.rect.height() - metrics.height).abs() < f64::EPSILON
+                        && card.rect.y1 <= viewport.y1 - metrics.margin
+                }));
+                for pair in cards.windows(2) {
+                    assert!(pair[0].rect.intersect(pair[1].rect).is_zero_area());
+                    assert!((pair[1].rect.y0 - pair[0].rect.y1 - metrics.gap).abs() < f64::EPSILON);
+                }
             }
         }
+        assert!(
+            presence
+                .interaction_card_layout(Rect::new(0.0, 0.0, 800.0, 40.0), at, &enlarged,)
+                .is_empty(),
+            "a viewport shorter than one complete card must not clip one in"
+        );
     }
 
     #[test]
@@ -2060,6 +2137,7 @@ mod tests {
         let cards = presence.interaction_card_layout_excluding(
             Rect::new(0.0, 0.0, 800.0, 600.0),
             at,
+            &Theme::light(),
             &[resolved.invocation],
         );
         assert_eq!(cards.len(), 1);
