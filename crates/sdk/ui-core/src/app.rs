@@ -2485,6 +2485,8 @@ impl App {
         // replacement control at the same id still receives set_focus(true).
         self.focused_node = None;
         self.layout.rebuilds = self.layout.rebuilds.wrapping_add(1);
+        // Fresh controls have not seen where the pointer is.
+        self.input.pointer_replay.mark_unsettled();
         self.layout.taffy = TaffyTree::new();
         self.component_close_reports.extend(
             crate::component_lifecycle::take_component_close_reports(self.root_widget.as_mut()),

@@ -112,12 +112,6 @@ struct AppHandler {
     /// Synthetic mouse events must retain touch modality rather than making
     /// the host immediately classify them as a fine pointer.
     dispatching_touch_pointer: bool,
-    /// Where the pointer last moved over the primary window, until it left.
-    last_pointer: Option<PhysicalPosition<f64>>,
-    /// The widgets moved or were rebuilt since the pointer last moved: a
-    /// control now under a still pointer has never seen it arrive, so a
-    /// press there replays the position first instead of being lost.
-    pointer_unsettled: bool,
     /// Per-window state handed to the next in-place reload. Keyed by the
     /// window id that stays for the life of the process.
     dev_window_state: std::collections::HashMap<String, Vec<u8>>,
@@ -2130,7 +2124,11 @@ impl AppHandler {
         };
         mark_first_frame("first-frame-layout-done");
         full_redraw_required |= structure_rebuilt || geometry_changed;
-        self.pointer_unsettled |= structure_rebuilt || geometry_changed;
+        if geometry_changed {
+            // A rebuild marks it in `rebuild_structure`; a moved control
+            // under a still pointer has not seen it either.
+            app.input.pointer_replay.mark_unsettled();
+        }
         // Read before `draw_frame_content` drains widget dirty flags via
         // `mark_drawn`. Clean compositor/exposure redraws do not invalidate
         // independent native floating surfaces.
@@ -2465,51 +2463,6 @@ impl AppHandler {
 
 impl AppHandler {
     /// `UserEvent` injection keeps the ordinary window dispatch after admission.
-    /// Before a press on the primary window, the pointer's last position
-    /// once more when the widgets moved or were rebuilt since it moved:
-    /// controls learn they are under the pointer from its moves, and one
-    /// swapped in under a still pointer would otherwise drop the click.
-    fn replay_unsettled_pointer(
-        &mut self,
-        event_loop: &ActiveEventLoop,
-        window_id: WindowId,
-        event: &WindowEvent,
-    ) {
-        if self
-            .window
-            .as_ref()
-            .is_none_or(|window| window.id() != window_id)
-        {
-            return;
-        }
-        match event {
-            WindowEvent::CursorMoved { position, .. } => {
-                self.last_pointer = Some(*position);
-                self.pointer_unsettled = false;
-            }
-            WindowEvent::CursorLeft { .. } => self.last_pointer = None,
-            WindowEvent::MouseInput {
-                device_id,
-                state: ElementState::Pressed,
-                ..
-            } if self.pointer_unsettled => {
-                self.pointer_unsettled = false;
-                if let Some(position) = self.last_pointer {
-                    self.route_window_event(
-                        event_loop,
-                        window_id,
-                        WindowEvent::CursorMoved {
-                            device_id: *device_id,
-                            position,
-                        },
-                        native_input_isolation::EventOrigin::Platform,
-                    );
-                }
-            }
-            _ => {}
-        }
-    }
-
     fn injected_window_event(
         &mut self,
         event_loop: &ActiveEventLoop,
@@ -3131,7 +3084,6 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             None
         };
         self.note_host_appearance_event(&event);
-        self.replay_unsettled_pointer(event_loop, window_id, &event);
         self.route_window_event(
             event_loop,
             window_id,
@@ -3997,8 +3949,6 @@ impl App {
             floating_destination_present_frames: std::collections::HashMap::new(),
             touch_pointer: crate::interaction::TouchPointerEmulator::default(),
             dispatching_touch_pointer: false,
-            last_pointer: None,
-            pointer_unsettled: false,
             native_scenario,
             native_input_ids: Vec::new(),
             physical_input_trace: std::env::var("TILO_PROFILE_PRESENTATION")
