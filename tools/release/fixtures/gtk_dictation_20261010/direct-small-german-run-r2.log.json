@@ -1,0 +1,18 @@
+{
+  "format": "lossless escaped UTF-8 stdout lines",
+  "lines": [
+    "{\"complete\": true, \"exit\": 0, \"elapsed_seconds\": 25.07870460601407}\n",
+    "CPU_AFFINITY [0, 1]\n",
+    "OUTER_PRIVATE_CAPABILITIES CapEff:\t00000000800405fb\n",
+    "PRIVATE_IMAGE_USER_MAP          0          0          1\n",
+    "     65534      65534          1\n",
+    "\n",
+    "DIRECT_PROFILE {\"case\": \"de_de-0\", \"language\": \"auto\", \"ready_seconds\": 0.25503352499799803, \"final_seconds\": 10.853717356018024, \"audio_bytes\": 574080, \"reply\": {\"kind\": \"done\", \"sequence\": 11, \"text\": \"F\\u00fcr die besten Aussichten auf Hongkong sollten sie die Insel verlassen und zum gegen\\u00fcberliegenden Ufer von Kowloon fahren.\"}, \"worker_sampled_status_peak_bytes\": {\"VmHWM\": 368070656, \"VmRSS\": 368070656, \"RssAnon\": 359866368, \"RssFile\": 8204288, \"RssShmem\": 0}, \"sampling_errors\": [], \"model_runtime_same_process\": true}\n",
+    "DIRECT_PROFILE {\"case\": \"de_de-0\", \"language\": \"de\", \"ready_seconds\": 0.31109018699498847, \"final_seconds\": 6.09522192197619, \"audio_bytes\": 574080, \"reply\": {\"kind\": \"done\", \"sequence\": 11, \"text\": \"F\\u00fcr die besten Aussichten auf Hongkong sollten sie die Insel verlassen und zum gegen\\u00fcberliegenden Ufer von Kowloon fahren.\"}, \"worker_sampled_status_peak_bytes\": {\"VmHWM\": 368168960, \"VmRSS\": 368168960, \"RssAnon\": 359866368, \"RssFile\": 8302592, \"RssShmem\": 0}, \"sampling_errors\": [], \"model_runtime_same_process\": true}\n",
+    "DIRECT_PROFILE_COMPLETE\n",
+    "OUTER_JOURNEY {\"exit\": 0, \"elapsed_seconds\": 17.703, \"model_sha256\": \"ae85e4a935d7a567bd102fe55afc16bb595bdb618e11b2fc7591bc08120411bb\", \"audio_sha256\": \"cc46d12f9faf44a694e709c8bcf04028e686e6b4c1deefe3ac6dbd821a970630\", \"ephemeral\": true}\n",
+    "PASS ephemeral model witness removed; no installed store/catalogue changed\n",
+    "PASS private mapped-image namespace keeper reaped\n",
+    "\n"
+  ]
+}
