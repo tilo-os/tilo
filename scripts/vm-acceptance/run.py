@@ -44,11 +44,10 @@ BUDGETS = {
     "idle_loop_ticks_per_s": 2.0,
     # Terminal's shell runtime with its shell running and nothing typed (R02, TIL-701):
     # every `tilo-ush` process summed, CPU and context switches of all their threads.
-    # Measured 0.13% and 10.6-10.8/s (runs 91443, 91444), every wakeup the guest's
-    # egress DNS stub looking at its stop flag (two threads, 200 ms each). The
-    # wakeup ceiling holds that until the stub waits on its sockets; the KPI's
-    # target is 5/s (tools/perf/kpi-budgets.toml).
-    "idle_apps_ush_cpu_pct": 1.0, "idle_apps_ush_wakeups_per_s": 12.0,
+    # Measured 0.0% and 0.0/s (run 91757) once the egress DNS stub's threads block
+    # on their sockets (TIL-737); before, its 200 ms stop-flag polls were all
+    # 10.7/s (run 91741). 1/s is 30 wakeups in the 30 s window.
+    "idle_apps_ush_cpu_pct": 1.0, "idle_apps_ush_wakeups_per_s": 1.0,
     # Memory. An app is budgeted by its own cgroup (memory.current, and its anon share);
     # processes and the compositor by anonymous RSS, the memory they hold privately.
     "app_memory_mb": 400, "app_anon_mb": 250,
