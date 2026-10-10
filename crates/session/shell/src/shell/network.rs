@@ -7548,6 +7548,19 @@ pub(crate) fn native_read_network_for_test(
     (network, commands)
 }
 
+/// Give a fixture network the worker runtime a spawned one owns, so governor
+/// invocations are answered instead of refused as "the network is not running".
+#[cfg(test)]
+pub(crate) fn with_test_runtime(network: &mut ShellNetwork) {
+    network.runtime = Some(
+        tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .expect("fixture network runtime"),
+    );
+}
+
 impl crate::shell::remote_action_link::RemoteActionLink for ShellNetwork {
     fn request(
         &self,
