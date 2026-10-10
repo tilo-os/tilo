@@ -8,6 +8,7 @@ repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 . "$repo/tools/desktop-isolation.sh"
 tilo_test_isolate "$@"
 python3 "$repo/os/tests/flight_recorder_test.py"
+unset GNOME_KEYRING_CONTROL
 wrapper="$repo/os/usr/libexec/tilo-session"
 target="$repo/os/usr/lib/systemd/user/tilo-graphical-session.target"
 selinux_policy="$repo/os/usr/share/tilo/selinux/tilo-base.cil"
@@ -20,6 +21,9 @@ shell_main="$repo/crates/session/shell/src/linux_main.rs"
 grep -Fqx 'readonly DBUS_UPDATE=/usr/bin/dbus-update-activation-environment' "$wrapper"
 grep -Fqx '"$DBUS_UPDATE" --systemd XDG_CURRENT_DESKTOP XDG_SESSION_TYPE' "$wrapper"
 grep -Fqx '"$SYSTEMCTL" --user import-environment XDG_CURRENT_DESKTOP XDG_SESSION_TYPE' "$wrapper"
+# The PAM-started keyring daemon's control socket reaches D-Bus activation, so
+# no second keyring daemon is spawned.
+grep -Fqx '  "$DBUS_UPDATE" --systemd GNOME_KEYRING_CONTROL' "$wrapper"
 
 grep -Fqx 'Requires=graphical-session-pre.target graphical-session.target' "$target"
 grep -Fqx 'After=graphical-session-pre.target' "$target"
