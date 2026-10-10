@@ -103,6 +103,30 @@ renderer; frame-timing checks gated to real display hardware report that. The re
 job summary, and the job fails unless every check passes.
 
 
+### Agent door (M01-M04) and input fidelity (I01-I07)
+
+M01-M04 (`checks/agent.py`) run `guest/mcp_client.py` in the guest, as Claude Code would run
+`tilo-runtime-mcp --connect`: the person's consent is answered through the control socket's
+`permission-prompts` actions, `tilo_list_apps` must list the desktop's live apps (Notes is
+open), a Notes `new-page` is read back through the desktop, and refusals must reach the agent
+as `isError` / a JSON-RPC error. Until the image serves `$XDG_RUNTIME_DIR/tilo-session/agent.sock`
+(fix/agent-door) they report **xfail** with that reason: an expected failure does not fail the
+run (`core.ExpectedFailure`), is listed in the report, and becomes an ordinary check when the
+socket appears.
+
+I01-I07 (`checks/input_devices.py`) plug uinput devices copied from the Lenovo Yoga Slim 7x
+(`os/hardware/profiles/lenovo-83ed/input/*.json`: I2C bus, 048D:8987 keyboard, 0488:1054
+touchpad; `tilo-vm input device plug lenovo-83ed-keyboard`) and check German keysyms,
+layout state over hotplug, no stuck modifiers after a lock, and touchpad tap/click/scroll and
+disable-while-typing. I05-I07 are `calibrating`: their observables come from the compositor's
+code and have not yet been seen in a CI run, so a failure is **xfail** (with its reason) until
+the marker is removed. hwdb `KEYBOARD_KEY_` remaps need the real driver and are not covered.
+Capture a new profile from a device's `/sys/class/input/eventN/device/capabilities/*` and HID
+report descriptor (see `crates/dev/tilo-vm-protocol/src/profile.rs`).
+
+Pull requests touching the input path, tilo-vm(d), the profiles or the agent door run only
+these areas (`ci_select.py`).
+
 ### Startup and GPU (A14, R05)
 
 A14 opens Files before anything else in the run does and times it from the app's own
