@@ -179,7 +179,7 @@ fn spawn_fs(
 ) -> MountProcess {
     std::fs::create_dir_all(cache).unwrap();
     std::fs::set_permissions(cache, std::os::unix::fs::PermissionsExt::from_mode(0o700)).unwrap();
-    let authority_sockets = cache.join("authority-sockets");
+    let authority_sockets = authority_sockets(cache);
     std::fs::create_dir_all(&authority_sockets).unwrap();
     let mut command = Command::new(binary);
     command
@@ -210,6 +210,17 @@ fn spawn_fs(
         logs,
         mount: mount.into(),
     }
+}
+
+/// The authority socket directory of the daemon caching in `cache`: a short
+/// sibling, because the socket path (this directory plus
+/// `workspace-authority-<uuid>.sock`) must stay under `SUN_LEN` wherever the
+/// temporary directory is.
+fn authority_sockets(cache: &Path) -> PathBuf {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    cache.hash(&mut hasher);
+    cache.with_file_name(format!("s{:04x}", hasher.finish() & 0xffff))
 }
 
 fn export_home_peer_bundle(
@@ -248,7 +259,7 @@ fn publish_authority(binary: &Path, identity: &Path, workspace_cache: &Path, acl
         .env(fs::identity::IDENTITY_ROOT_ENV, identity)
         .env(
             "TILO_AUTHORITY_SOCKET_DIR",
-            workspace_cache.join("authority-sockets"),
+            authority_sockets(workspace_cache),
         )
         .args(["publish-authority", "--acl", acl.to_str().unwrap()])
         .status()
