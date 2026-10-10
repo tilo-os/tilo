@@ -813,6 +813,19 @@ def terminal_probe(ctx, name: str) -> list[str]:
 # import synced once per file (TIL-708; runs 90460, 90980 and 90397, 90249).
 TERMINAL_SHELL_S = 45
 
+# Performance is a separate verdict from eventual readiness. The batched
+# import measured 7.5–21 s in runs 90460/90980; 30 s allows nine seconds of
+# load headroom but rejects the old 39.6 s baseline and 40–46 s imports.
+TERMINAL_SHELL_PERFORMANCE_S = 30
+
+
+def assert_terminal_shell_performance(seconds: float | None) -> None:
+    expect(seconds is not None, "Terminal shell readiness was not observed")
+    expect(seconds < TERMINAL_SHELL_PERFORMANCE_S,
+           f"Terminal shell startup took {seconds} s; performance requires "
+           f"less than {TERMINAL_SHELL_PERFORMANCE_S} s (readiness timeout is "
+           f"{TERMINAL_SHELL_S} s)")
+
 # Terminal's shells are not the app's processes: each runs in a guest the
 # `tilo-ush` user service starts, so they are found in its cgroup.
 _USH_SHELLS = ('cg=$(systemctl --user show -p ControlGroup --value tilo-ush.service 2>/dev/null); '
