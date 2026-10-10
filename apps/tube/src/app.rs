@@ -758,10 +758,16 @@ impl TubeApp {
 
     /// Supply a deterministic catalogue in a hosted test without changing its
     /// dispatcher, effect admission, or shared library. Live launch stays empty.
+    ///
+    /// A live window has already spawned its fetch worker on its first frame.
+    /// Retire it with the live catalogue: its startup notes, its status and
+    /// the feed it fetched would otherwise land whenever the network answers,
+    /// rebuild the staged page and drop a click made in between.
     pub fn stage_model_for_test(&mut self, model: TubeModel) {
         self.search_query.set(model.search_query.clone());
         self.model = model;
         self.online = false;
+        self.worker = None;
         self.shell_stale = true;
     }
 
@@ -1512,7 +1518,9 @@ impl TubeApp {
         self.navigate_to(Route::Watch(id.clone()));
         self.model.playhead = 0.0;
         self.model.playing = true;
-        self.request(Request::Branding(id.clone()));
+        // SponsorBlock, DeArrow and dislikes come from the network, so an
+        // offline window (a capture, a staged test) asks for none of them.
+        self.request_live(Request::Branding(id.clone()));
         // Fetch the uploader's real avatar + subscriber count when we only hold a
         // name stub (feed/search items don't carry the channel's avatar or subs),
         // so the watch-page channel row shows a real photo + count rather than an
@@ -2461,6 +2469,27 @@ mod tests {
             .borrow_mut()
             .set_engine(media::MediaEngine::new_synthesized());
         (app, doc)
+    }
+
+    #[test]
+    fn a_staged_catalogue_retires_the_live_worker_and_fetches_nothing() {
+        // A live window has spawned its fetch worker by its first frame.
+        let mut app = TubeApp::new().online();
+        app.worker = Some(Worker::spawn());
+        app.stage_model_for_test(crate::sample::model());
+        assert!(
+            app.worker.is_none(),
+            "a staged catalogue must not keep the live worker, whose late results rebuild the page"
+        );
+        app.open_video("vid_rust_async".into());
+        assert!(
+            matches!(&app.model.route, Route::Watch(id) if id == "vid_rust_async"),
+            "the staged watch page opens"
+        );
+        assert!(
+            app.worker.is_none(),
+            "an offline watch page asks the network for no SponsorBlock or DeArrow branding"
+        );
     }
 
     #[test]
