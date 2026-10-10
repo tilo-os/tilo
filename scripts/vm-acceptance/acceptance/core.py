@@ -88,6 +88,7 @@ def run_check(ctx, chk: Check) -> Result:
         (ctx.out / "errors").mkdir(exist_ok=True)
         (ctx.out / "errors" / f"{chk.id}.txt").write_text(traceback.format_exc())
     leave_unlocked(ctx, chk, res)
+    leave_no_dialog(ctx, chk, res)
     res.seconds = round(time.monotonic() - started, 2)
     ctx.current = None
     return res
@@ -117,6 +118,108 @@ def leave_unlocked(ctx, chk: Check, res: Result) -> None:
                                        f"{exc.reason()}")
         return
     res.detail = _join(res.detail, f"{LEFT_LOCKED}; the harness restarted the slot session")
+
+
+LEFT_OPEN = "left a dialog open"
+
+# Escape presses before the harness gives up on closing what a check left open: the
+# Invite composer's review step takes two (review, then the composer), a stack of
+# surfaces one each.
+DISMISS_ESCAPES = 4
+
+# Shell surfaces the state dump reports under `input_capture`, beside `overlays`.
+_CAPTURING = (("onboarding", "first-login onboarding"),
+              ("shortcut_help", "the shortcut help"),
+              ("projection", "the projection picker"))
+
+
+def open_surfaces(state: dict) -> list[str]:
+    """Every modal, overlay, prompt or dialog the state dump shows open, by name.
+
+    Each of these takes the keyboard from the window behind it (the compositor's
+    `chrome_captures_input`), so one left open by a check receives the next check's typing:
+    run 89618's A01 typed its Terminal command into the Invite composer W20 had opened.
+    `input_capture.chrome` is that same predicate, so it catches a capturing surface the
+    dump has no field of its own for; pointer hover over a maximized window's controls
+    (`maximized_controls`) is part of it too, and is not a dialog."""
+    chrome = state.get("chrome") or {}
+    found = [f"the {name.replace('_', ' ')} overlay"
+             for name, on in (chrome.get("overlays") or {}).items() if on]
+    if (chrome.get("palette") or {}).get("visible"):
+        found.append("search")
+    if (chrome.get("window_switcher") or {}).get("open"):
+        found.append("the window switcher")
+    peer = chrome.get("peer_sync") or {}
+    if peer.get("invite_name") is not None:
+        found.append("the Invite someone composer")
+    elif peer.get("invite_token") is not None:
+        found.append("an invite card showing a live token")
+    if peer.get("connect_input") is not None:
+        found.append("the Join card")
+    portal = chrome.get("portal_dialog")
+    if portal:
+        kind = portal.get("kind") if isinstance(portal, dict) else None
+        found.append(f"a portal dialog ({kind})" if kind else "a portal dialog")
+    if chrome.get("pending_grants_count"):
+        found.append("a permission prompt")
+    if chrome.get("editing_workspace_name") is not None:
+        found.append("the workspace-name editor")
+    capture = chrome.get("input_capture") or {}
+    found += [label for key, label in _CAPTURING if capture.get(key)]
+    # The power menu is an inner surface the overlays already name.
+    if capture.get("inner_surface") and not (chrome.get("overlays") or {}).get("power_menu"):
+        found.append("a modal shell surface (screenshot markup or capture)")
+    if not found and capture.get("chrome") and not capture.get("maximized_controls"):
+        found.append("a shell surface that captures input")
+    return found
+
+
+def dismiss_surfaces(ctx) -> str:
+    """Close whatever `open_surfaces` reports, the way a person cancels: Escape, re-reading
+    the dump after each press. Escape on a prompt answers it as dismissed (deny), never
+    confirmed. Still open after that, restart the slot's session: a fresh compositor opens
+    with none of them. Returns how it went; never raises."""
+    for _ in range(DISMISS_ESCAPES):
+        try:
+            ctx.vm.key("Escape")
+            time.sleep(0.6)
+            if not open_surfaces(ctx.state()):
+                return "the harness closed it with Escape"
+        except (VmError, KeyError, TypeError):
+            break
+    try:
+        ctx.vm.restart_session()
+    except VmError as exc:
+        return f"Escape did not close it, and restarting the slot session failed: {exc.reason()}"
+    try:
+        still = open_surfaces(ctx.state())
+    except (VmError, KeyError, TypeError):
+        still = []
+    if still:
+        return f"Escape did not close it, and after a slot session restart {', '.join(still)} is still open"
+    return "Escape did not close it; the harness restarted the slot session"
+
+
+def leave_no_dialog(ctx, chk: Check, res: Result) -> None:
+    """No check may hand the next one a desktop with a modal, overlay, prompt or dialog
+    open: it takes the keyboard, and the next check's input lands in it instead of in its
+    subject. A check that ends with any `open_surfaces` fails ("left a dialog open"), however
+    it ended, and the harness closes them before the next check. Runs after
+    `leave_unlocked`, which owns a locked session."""
+    try:
+        state = ctx.state()
+        if state["chrome"].get("session_locked"):
+            return
+        left = open_surfaces(state)
+    except (VmError, KeyError, TypeError):
+        return  # no state to read: the next check that needs one reports why
+    if not left:
+        return
+    res.status = "fail"
+    route = dismiss_surfaces(ctx)
+    ctx.facts.setdefault("dialog_recovered_after", []).append(
+        {"check": chk.id, "open": left, "route": route})
+    res.detail = _join(res.detail, f"{LEFT_OPEN} ({', '.join(left)}); {route}")
 
 
 def _join(a: str, b: str) -> str:

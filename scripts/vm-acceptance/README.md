@@ -254,6 +254,20 @@ on purpose, unlocks in a `finally` the way a person would (the passcode on the r
 keyboard), falls back to the restart, and records the route in its `unlock_recovery` metric.
 Nothing goes around the lock. The guard is unit-tested in `test_lock_guard.py`.
 
+For the same reason no check may leave a modal, overlay, prompt or dialog open: each takes
+the keyboard from the window behind it, and the next check's typing lands in it (run 89618's
+A01 typed its Terminal command into the Invite composer W20's first touch had opened on the
+launchpad). After the lock guard, `run_check` reads the state dump again (`core.open_surfaces`:
+the `overlays`, search, the window switcher, the Invite composer and Join card in `peer_sync`,
+`portal_dialog`, pending permission prompts, the workspace-name editor, the `input_capture`
+surfaces, and any other surface for which `input_capture.chrome` says the shell holds input,
+pointer hover over a maximized window's controls aside). A check that ended with one open
+fails ("left a dialog open (…)"), and the harness closes it the way a person cancels: Escape,
+then a slot session restart if Escape does not do it. Nothing is ever confirmed to clean up. The
+report's `dialog_recovered_after` lists each such check, what was open and how it was closed.
+`ctx.reset()` dismisses the same surfaces. A touch that is not itself under test lands where it
+activates nothing (W20 picks a point on no launchpad card). Unit-tested in `test_dialog_guard.py`.
+
 Budgets live in `run.py` (`BUDGETS`). The German pass (U03, U04, S03) runs after the
 English one: the shell takes its language from the session's environment, so the run
 sets the system locale the way the installer seeds it (`localectl set-locale
