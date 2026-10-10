@@ -191,10 +191,10 @@ mod tests {
     use super::*;
 
     const SANDBOX: &str = "\
-612 590 0:31 /var/home/ada/.local/share/tilo-runtime/2026.07+native.ab /run/tilo-runtime/2026.07+native.ab ro,nosuid master:1 - btrfs /dev/vda3 rw
-613 590 0:31 /var/home/ada/.local/share/tilo-runtime/2026.07+native.ab/lib/fonts /usr/share/fonts/tilo ro - btrfs /dev/vda3 rw
-614 590 0:31 /var/home/ada/.local/share/tilo-apps/pkgs/7f7f /usr/share/tilo-apps/so.tilo.notes ro - btrfs /dev/vda3 rw
-615 590 0:31 /var/home/ada/My\\040Files /home/ada/My\\040Files rw - btrfs /dev/vda3 rw
+612 590 0:31 /var/home/you/.local/share/tilo-runtime/2026.07+native.ab /run/tilo-runtime/2026.07+native.ab ro,nosuid master:1 - btrfs /dev/vda3 rw
+613 590 0:31 /var/home/you/.local/share/tilo-runtime/2026.07+native.ab/lib/fonts /usr/share/fonts/tilo ro - btrfs /dev/vda3 rw
+614 590 0:31 /var/home/you/.local/share/tilo-apps/pkgs/7f7f /usr/share/tilo-apps/so.tilo.notes ro - btrfs /dev/vda3 rw
+615 590 0:31 /var/home/you/My\\040Files /home/you/My\\040Files rw - btrfs /dev/vda3 rw
 ";
 
     #[test]
@@ -203,16 +203,16 @@ mod tests {
         mounts.add_mountinfo(SANDBOX);
         // The home seen by this process may differ by a prefix.
         assert!(mounts.holds(Path::new(
-            "/home/ada/.local/share/tilo-runtime/2026.07+native.ab"
+            "/home/you/.local/share/tilo-runtime/2026.07+native.ab"
         )));
         assert!(mounts.holds(Path::new("/srv/tilo-apps/pkgs/7f7f")));
         assert!(!mounts.holds(Path::new(
-            "/home/ada/.local/share/tilo-runtime/2026.07+native.cd"
+            "/home/you/.local/share/tilo-runtime/2026.07+native.cd"
         )));
-        assert!(!mounts.holds(Path::new("/home/ada/.local/share/tilo-apps/pkgs/8e8e")));
+        assert!(!mounts.holds(Path::new("/home/you/.local/share/tilo-apps/pkgs/8e8e")));
         assert!(mounts.has_mount_point(Path::new("/run/tilo-runtime/2026.07+native.ab")));
         assert!(
-            mounts.holds(Path::new("/var/home/ada/My Files")),
+            mounts.holds(Path::new("/var/home/you/My Files")),
             "escapes are undone"
         );
     }
@@ -221,12 +221,12 @@ mod tests {
     fn a_renamed_tree_is_found_under_its_new_name() {
         let mut mounts = Mounts::default();
         mounts.add_mountinfo(
-            "700 1 0:31 /home/ada/.local/share/tilo-runtime/.trash/v1.42.7 /run/tilo-runtime/v1 ro - ext4 /dev/sda1 rw\n",
+            "700 1 0:31 /home/you/.local/share/tilo-runtime/.trash/v1.42.7 /run/tilo-runtime/v1 ro - ext4 /dev/sda1 rw\n",
         );
         assert!(mounts.holds(Path::new(
-            "/home/ada/.local/share/tilo-runtime/.trash/v1.42.7"
+            "/home/you/.local/share/tilo-runtime/.trash/v1.42.7"
         )));
-        assert!(!mounts.holds(Path::new("/home/ada/.local/share/tilo-runtime/v1")));
+        assert!(!mounts.holds(Path::new("/home/you/.local/share/tilo-runtime/v1")));
         assert!(mounts.has_mount_point(Path::new("/run/tilo-runtime/v1")));
     }
 

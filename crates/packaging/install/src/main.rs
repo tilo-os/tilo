@@ -2438,9 +2438,17 @@ fn main() {
             | Cmd::Uninstall { dry_run: false, .. }
     );
     // An install holds collection off while it runs, so the runtime it
-    // checked for (or is fetching) cannot be collected under it.
+    // checked for cannot be collected under it. Without a bundle root there
+    // is nothing to collect, and an app with no runtime creates none; a
+    // runtime install takes the lock itself.
     let collection_held_off = matches!(cli.cmd, Cmd::Install { .. } | Cmd::Update { .. })
-        .then(|| runtime_bundles().ok()?.install_lock().ok())
+        .then(|| {
+            let bundles = runtime_bundles().ok()?;
+            bundles
+                .path()
+                .is_dir()
+                .then(|| bundles.install_lock().ok())?
+        })
         .flatten();
     let result = dispatch(cli.cmd);
     drop(collection_held_off);
