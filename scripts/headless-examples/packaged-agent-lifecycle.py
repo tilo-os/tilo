@@ -1622,10 +1622,22 @@ def agent_write_restricted_accessibility(agent_name, expected, *, observation=No
                 tree = (accessible_subtree(client, window, atspi.APP_TREE_NODE_LIMIT)
                         if observation is None else accessible_subtree(
                             client, window, atspi.APP_TREE_NODE_LIMIT, observation=observation))
-                headings = client.named(
+                heading_candidates = client.named(
                     {path: name.casefold() for path, name in tree.items()},
                     f"{agent_name.casefold()}, agent",
                 )
+                headings = []
+                for path in heading_candidates:
+                    try:
+                        role = client.role(path)
+                    except atspi.GateError:
+                        permission_count(observation, "at_unobservable")
+                        raise RuntimeError("restricted Agent heading role is unobservable") from None
+                    if role is None or role == 0:
+                        permission_count(observation, "at_unobservable")
+                        raise RuntimeError("restricted Agent heading role is unobservable")
+                    if role == AT_SPI_ROLE_HEADING:
+                        headings.append(path)
                 notices = client.named(
                     tree, "You cannot send messages in this conversation."
                 )

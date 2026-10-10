@@ -484,7 +484,10 @@ class PermissionSnapshotTests(unittest.TestCase):
 
 class RestrictedQueueRoleTests(unittest.TestCase):
     def observe(self, role, *, revoked=False, editable=False, forbidden=None, queue_button=False,
-                observation=None):
+                observation=None, heading_options=None):
+        heading_options = heading_options or {}
+        heading_role = heading_options.get("heading_role", "(uint32 83,)")
+        roster_role = heading_options.get("roster_role", "(uint32 31,)")
         client = PROOF.atspi.AtspiClient("address", "owned")
         notice = ("This agent is no longer available here. Your draft is kept on this device."
                   if revoked else "You cannot send messages in this conversation.")
@@ -495,11 +498,23 @@ class RestrictedQueueRoleTests(unittest.TestCase):
             tree["/mutable"] = f"(<'{forbidden}'>,)"
         if queue_button:
             tree["/queue-button"] = "(<'Queue task'>,)"
+        if heading_options.get("roster", False):
+            tree["/roster"] = "(<'Tide, agent'>,)"
+        if heading_options.get("second_heading", False):
+            tree["/second-heading"] = "(<'Tide, agent'>,)"
 
         def wire_call(path, method, *args, **kwargs):
             if method == "org.a11y.atspi.Accessible.GetChildren":
                 return "['/window']"
             if method == "org.a11y.atspi.Accessible.GetRole":
+                if path in {"/heading", "/second-heading"}:
+                    if isinstance(heading_role, Exception):
+                        raise heading_role
+                    return heading_role
+                if path == "/roster":
+                    if isinstance(roster_role, Exception):
+                        raise roster_role
+                    return roster_role
                 if path == "/queue-button":
                     return "(uint32 43,)"
                 if isinstance(role, Exception):
@@ -528,6 +543,29 @@ class RestrictedQueueRoleTests(unittest.TestCase):
         self.assertEqual(observed["editable_composers"], 0)
         self.assertNotIn("PRIVATE-DRAFT", json.dumps(observed))
         self.assertIsNone(self.observe("(uint32 37,)", revoked=True))
+
+    def test_same_named_roster_item_is_not_a_conversation_heading(self):
+        observation = {}
+        observed = self.observe("(uint32 37,)", heading_options={"roster": True},
+                                observation=observation)
+        self.assertTrue(observed["notice_present"])
+        self.assertEqual(observation["headings"], 1)
+        self.assertEqual(observation["window_observations"][0]["heading_count"], 1)
+        self.assertIsNone(self.observe("(uint32 37,)", heading_options={
+            "roster": True, "second_heading": True}))
+
+    def test_unobservable_heading_role_refuses_without_ignoring_the_subject(self):
+        for role in ("()", "(uint32 0,)", "('83',)",
+                     PROOF.atspi.GateError("PRIVATE heading failure")):
+            for field in ("heading_role", "roster_role"):
+                observation = {}
+                with self.subTest(role=role, field=field), self.assertRaisesRegex(
+                        RuntimeError, "heading role is unobservable") as refused:
+                    self.observe("(uint32 37,)", observation=observation,
+                                 heading_options={"roster": True, field: role})
+                self.assertNotIn("PRIVATE", str(refused.exception))
+                self.assertEqual(observation["at_unobservable"], 1)
+                self.assertFalse(observation["window_observations"][0]["observable"])
 
     def test_queue_send_button_and_other_mutating_controls_stay_forbidden(self):
         self.assertIsNone(self.observe("(uint32 43,)"))
@@ -1380,6 +1418,14 @@ class PresentedEditorTargetTests(unittest.TestCase):
 
     def test_read_only_and_restricted_views_cannot_hide_serialized_mutable_controls(self):
         client = PROOF.atspi.AtspiClient("address", "owned")
+
+        def wire_call(path, method, *args, **kwargs):
+            if method == "org.a11y.atspi.Accessible.GetChildren":
+                return "['/window']"
+            if method == "org.a11y.atspi.Accessible.GetRole":
+                return "(uint32 83,)" if path == "/heading" else "(uint32 43,)"
+            raise AssertionError("unexpected accessibility wire method")
+
         revoked = "This agent is no longer available here. Your draft is kept on this device."
         restricted = "You cannot send messages in this conversation."
         for mode, notice in (("revoked", revoked), ("restricted", restricted)):
@@ -1395,9 +1441,8 @@ class PresentedEditorTargetTests(unittest.TestCase):
                         patch.object(PROOF.atspi, "bus_pids", return_value={"owned": 7}), \
                         patch.object(PROOF.atspi, "app_process", return_value=7), \
                         patch.object(PROOF, "process_program", return_value="chat"), \
-                        patch.object(client, "call", return_value="['/window']"), \
+                        patch.object(client, "call", side_effect=wire_call), \
                         patch.object(client, "interfaces", return_value="([],)"), \
-                        patch.object(client, "role", return_value=PROOF.AT_SPI_ROLE_BUTTON), \
                         patch.object(PROOF, "accessible_subtree", return_value=tree):
                     result = PROOF.agent_read_only_accessibility("Tide", detached=True) \
                         if mode == "revoked" else PROOF.agent_write_restricted_accessibility(
@@ -1412,7 +1457,7 @@ class PresentedEditorTargetTests(unittest.TestCase):
                     patch.object(PROOF.atspi, "bus_pids", return_value={"owned": 7}), \
                     patch.object(PROOF.atspi, "app_process", return_value=7), \
                     patch.object(PROOF, "process_program", return_value="chat"), \
-                    patch.object(client, "call", return_value="['/window']"), \
+                    patch.object(client, "call", side_effect=wire_call), \
                     patch.object(PROOF, "accessible_subtree", return_value={**base, "/bad": "bare name"}):
                 with self.assertRaisesRegex(RuntimeError, "node name is unobservable"):
                     if mode == "revoked":
