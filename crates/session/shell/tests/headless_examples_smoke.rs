@@ -47,6 +47,11 @@ fn shell_binary() -> PathBuf {
 }
 
 fn run_script(script_name: &str) -> std::process::Output {
+    run_script_with(script_name, &[])
+}
+
+/// `script_name` with extra environment, for proofs that need more than the compositor.
+fn run_script_with(script_name: &str, env: &[(&str, PathBuf)]) -> std::process::Output {
     tilo_test_env::require_isolated_desktop();
     let script = repo_root()
         .join("scripts")
@@ -55,6 +60,7 @@ fn run_script(script_name: &str) -> std::process::Output {
     Command::new("python3")
         .arg(&script)
         .env("TILO_SHELL_BINARY", shell_binary())
+        .envs(env.iter().map(|(key, value)| (*key, value)))
         .current_dir(repo_root())
         .output()
         .expect("spawn python3")
@@ -107,5 +113,41 @@ fn library_demo_writes_two_pngs_via_tilo_client() {
         stdout.contains("chrome.overlays = "),
         "library-demo.py should print chrome.overlays from state_dump (proves \
          the response shape is still {{state: {{chrome: ...}}}}); got: {stdout}"
+    );
+}
+
+/// A model drives a live compositor over MCP: initialize, tools, lazy resources, an
+/// invocation read back independently, and a refusal that arrives as `isError`.
+#[test]
+#[ignore = "spawns a real headless compositor; opt in with --ignored"]
+fn mcp_live_proof_drives_a_compositor_over_mcp() {
+    let out = run_script_with(
+        "mcp-live-proof.py",
+        &[(
+            "TILO_CONTROL_BINARY",
+            PathBuf::from(env!("CARGO_BIN_EXE_tilo-control")),
+        )],
+    );
+    assert!(
+        out.status.success(),
+        "mcp-live-proof.py failed: stdout={}\nstderr={}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+/// Two agents share one machine without colliding on pixels or keys. The compositor
+/// must be built with `--features agent-control` (the nightly lane builds it so) and the
+/// terminal app must already be built (`TILO_TERMINAL_BINARY`, else `target/debug/terminal`).
+#[cfg(feature = "agent-control")]
+#[test]
+#[ignore = "spawns a real headless compositor and a terminal; opt in with --ignored"]
+fn agent_seats_proof_keeps_two_agents_apart() {
+    let out = run_script("agent-seats-proof.py");
+    assert!(
+        out.status.success(),
+        "agent-seats-proof.py failed: stdout={}\nstderr={}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
     );
 }
