@@ -4201,7 +4201,6 @@ impl State {
             return;
         }
         let (association, capture) = wl_compositor::with_states(surface, |states| {
-            let viewported = pending_viewport(states);
             let mut attrs = states
                 .cached_state
                 .get::<wl_compositor::SurfaceAttributes>();
@@ -4222,7 +4221,7 @@ impl State {
                     return (association, None);
                 }
             };
-            let rects = pending_buffer_rects(attrs.pending(), viewported);
+            let rects = pending_buffer_rects(attrs.pending(), pending_viewport(states));
             drop(attrs);
             let damage = rects.as_deref().map(buffer_damage);
             let regions = rects.as_deref().map(shm_regions);
