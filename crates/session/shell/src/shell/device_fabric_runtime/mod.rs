@@ -10,6 +10,8 @@ mod receive_recovery;
 mod remote_capture;
 mod spatial_cleanup;
 mod spatial_protocol;
+#[cfg(test)]
+mod spatial_revocation_tests;
 mod window_views;
 
 pub use window_views::{WindowViewer, publish_window_views, window_viewers};
@@ -1923,6 +1925,16 @@ impl DeviceFabricRuntime {
         {
             tracing::warn!(%error, "could not refresh per-device Wi-Fi credential envelopes");
         }
+    }
+
+    #[cfg(test)]
+    pub(super) fn enforce_policy_for_test(
+        &mut self,
+        network: &ShellNetwork,
+        selection: &SharedSelection,
+        policy: ContinuityPolicySnapshot,
+    ) {
+        self.enforce_policy(network, selection, policy);
     }
 
     fn enforce_policy(
@@ -7230,6 +7242,41 @@ pub(super) fn flush_spatial_input(network: &ShellNetwork) {
         if cleanup && let Ok(mut spatial) = spatial_input_state().lock() {
             spatial.cleanup.delivered(&input);
         }
+    }
+}
+
+/// One causal native-seat phase. Releases precede every surviving input in a
+/// frame, so an old lease's barrier cannot erase a replacement lease's edge.
+pub(crate) enum SpatialInputBatch {
+    Releases(Vec<crate::shell::personal_continuity::DeviceId>),
+    Inputs(
+        Vec<(
+            crate::shell::personal_continuity::DeviceId,
+            FabricInputEvent,
+        )>,
+    ),
+}
+
+/// Take release barriers and admitted input under one state lock. Revocation
+/// already discards its old queued edges; fresh authority can enqueue afterward.
+pub(crate) fn take_spatial_input_batches() -> [SpatialInputBatch; 2] {
+    spatial_input_state().lock().map_or_else(
+        |_| {
+            [
+                SpatialInputBatch::Releases(Vec::new()),
+                SpatialInputBatch::Inputs(Vec::new()),
+            ]
+        },
+        |mut spatial| spatial.take_native_batches(),
+    )
+}
+
+impl SpatialInputState {
+    fn take_native_batches(&mut self) -> [SpatialInputBatch; 2] {
+        [
+            SpatialInputBatch::Releases(self.release_controllers.drain(..).collect()),
+            SpatialInputBatch::Inputs(self.inbound.drain(..).collect()),
+        ]
     }
 }
 
