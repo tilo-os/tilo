@@ -535,6 +535,11 @@ class PresentedEditorTargetTests(unittest.TestCase):
             self.assertEqual(PROOF.wait_for_conversation_control_focus(
                 owner, pathlib.Path(directory), None, detached=False, control="drag"), current)
             read.assert_called_with({"bus": "owned", "composer": "/current"})
+            receipt = json.loads((pathlib.Path(directory) / "keyboard-float-control-focus.json").read_text())
+            self.assertFalse(receipt["last"]["requested_control_matches_current"])
+            self.assertTrue(receipt["last"]["control_focused"])
+            self.assertNotIn("/current", json.dumps(receipt))
+            self.assertNotIn('"owned"', json.dumps(receipt))
         for changed in ({"process": 8}, {"drag": None}, {"detached": True}):
             with tempfile.TemporaryDirectory() as directory, \
                     patch.object(PROOF, "agent_conversation_accessibility", return_value={**current, **changed}), \
@@ -5123,7 +5128,7 @@ class PresentedEditorTargetTests(unittest.TestCase):
             client = constructor.return_value
             client.property.return_value = "(<'Message composer'>,)"
             for value, expected in (("nihao", "baseline_matches"), ("nihao你好", "chinese_matches"),
-                                    ("nihaonihao", "direct_latin_matches"), ("", "empty"),
+                                    ("nihaonihao", "direct_latin_matches"), ("nihao ", "literal_space_matches"), ("", "empty"),
                                     ("PRIVATE-CANARY", "other")):
                 client.call.return_value = repr((value,))
                 observed = PROOF.closed_return_editor_observation(access, "nihao", "nihao你好", True)
@@ -5149,6 +5154,66 @@ class PresentedEditorTargetTests(unittest.TestCase):
         guard = source.index('"Return committed or deactivated the live Rime preedit"')
         self.assertLess(receipt, guard)
         self.assertIn("private_editor_value_matches(returned_access, committed_before)", source[receipt:guard])
+
+    def test_float_focus_native_diagnostics_do_not_replace_actual_control_focus(self):
+        owner = {"process": 7, "bus": "PRIVATE", "agent": "Tide", "detached": False, "drag": "/old"}
+        current = {**owner, "drag": "/fresh"}
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(PROOF, "agent_conversation_accessibility", return_value=current), \
+                patch.object(PROOF, "_editor_accessibility_focus", side_effect=[False, True]) as focus, \
+                patch.object(PROOF, "closed_native_custody_observation", return_value={"observable": False}) as custody, \
+                patch.object(PROOF.time, "sleep"):
+            self.assertEqual(PROOF.wait_for_conversation_control_focus(
+                owner, pathlib.Path(directory), None, detached=False, control="drag", socket="socket"), current)
+            receipt = json.loads((pathlib.Path(directory) / "keyboard-float-control-focus.json").read_text())
+        self.assertEqual(focus.call_count, 2)
+        self.assertEqual(custody.call_count, 2)
+        self.assertFalse(receipt["initial"]["control_focused"])
+        self.assertTrue(receipt["last"]["control_focused"])
+        self.assertEqual(receipt["last"]["native_custody"], {"observable": False})
+        self.assertNotIn("PRIVATE", json.dumps(receipt))
+
+    def test_return_space_diagnostics_keep_cached_and_fresh_subjects_separate(self):
+        owner = {"agent": "Tide", "process": 7, "bus": "PRIVATE-BUS", "composer": "PRIVATE-CACHED"}
+        fresh = {**owner, "composer": "PRIVATE-FRESH"}
+        with patch.object(PROOF, "agent_conversation_accessibility", return_value=fresh), \
+                patch.object(PROOF, "closed_return_editor_observation", side_effect=[
+                    {"unknown_object": True}, {"chinese_matches": True}]) as classify:
+            result = PROOF.closed_return_space_content_observation(owner, "PRIVATE-BASELINE", "PRIVATE-COMMIT")
+        self.assertTrue(result["cached"]["unknown_object"])
+        self.assertTrue(result["fresh"]["chinese_matches"])
+        self.assertIs(classify.call_args_list[0].args[0], owner)
+        self.assertIs(classify.call_args_list[1].args[0], fresh)
+        self.assertNotIn("PRIVATE", json.dumps(result))
+        self.assertEqual(owner["composer"], "PRIVATE-CACHED")
+        source = inspect.getsource(PROOF.native_ime_float_return)
+        before = source.index('retain_space_observation("before_space")')
+        after = source.index('retain_space_observation("after_space")', before)
+        self.assertEqual(source[before:after].count('{"op": "key", "key": "Space"}'), 1)
+        self.assertIn("private_editor_value_matches(returned_access, committed_after)", source[after:])
+        self.assertIn('current.get("input_source_surface_id") is not None', source[after:])
+
+    def test_native_custody_diagnostics_bind_exact_witness_and_export_only_closed_fields(self):
+        primary = {"app_id": "so.tilo.chat", "surface_id": 7, "keyboard_focused": False,
+                   "presented": True, "pixels_ready": True, "capture_pending": False}
+        child = {"app_id": "so.tilo.chat", "surface_id": 11, "floating_id": "PRIVATE-ID",
+                 "keyboard_focused": True, "suspended": True, "transferring": True,
+                 "last_error": "PRIVATE-ERROR", "input_source_surface_id": 7}
+        response = {"answer": {"frames": [primary, child, {**child, "surface_id": 99}]}}
+        with patch.object(PROOF, "call", return_value=response):
+            observed = PROOF.closed_native_custody_observation("socket", primary, child)
+            ambiguous = PROOF.closed_native_custody_observation("socket")
+        self.assertTrue(observed["observable"])
+        self.assertEqual(observed["child_count"], 1)
+        self.assertTrue(observed["child_transferring"])
+        self.assertTrue(observed["child_error_present"])
+        self.assertFalse(observed["child_ordinary_route"])
+        self.assertFalse(observed["primary_keyboard_focused"])
+        self.assertEqual(ambiguous["child_count"], 2)
+        self.assertFalse(ambiguous["child_observable"])
+        self.assertNotIn("PRIVATE", json.dumps(observed))
+        with patch.object(PROOF, "call", side_effect=RuntimeError("PRIVATE-ERROR")):
+            self.assertEqual(PROOF.closed_native_custody_observation("socket"), {"observable": False})
 
     def test_pending_return_wait_accepts_only_live_exact_transfer_then_strict_proxy(self):
         primary = {"app_id": "so.tilo.chat", "surface_id": 7, "frame_seq": 30,

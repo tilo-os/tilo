@@ -1293,7 +1293,7 @@ def closed_return_editor_observation(access, before, after, same_chat):
     """Classify a private editor in memory; export neither text nor transport errors."""
     observed = dict.fromkeys(("editor_observed", "same_chat_process", "composer_name_matches",
                               "transport_success", "unknown_object", "unparseable",
-                              "baseline_matches", "chinese_matches", "direct_latin_matches",
+                              "baseline_matches", "chinese_matches", "direct_latin_matches", "literal_space_matches",
                               "empty", "other"), False)
     observed["character_count"] = None
     if access is None:
@@ -1313,8 +1313,9 @@ def closed_return_editor_observation(access, before, after, same_chat):
                 "baseline_matches": value == before,
                 "chinese_matches": value == after,
                 "direct_latin_matches": value == before + "nihao",
+                "literal_space_matches": value == before + " ",
                 "empty": value == "",
-                "other": value not in (before, after, before + "nihao", ""),
+                "other": value not in (before, after, before + "nihao", before + " ", ""),
                 "character_count": len(value),
             })
     except atspi.GateError as error:
@@ -1483,13 +1484,57 @@ def current_owned_conversation_accessibility(owner):
     return current
 
 
-def wait_for_conversation_control_focus(owner, output, process, *, detached=True, control="control"):
+def closed_native_custody_observation(socket, primary=None, child=None):
+    """Observe raw custody without exporting identities or deciding readiness."""
+    sample = {"observable": False}
+    try:
+        rows = [row for row in foreign_frames(call(socket, {"op": "foreign_frames"}))
+                if row.get("app_id") == "so.tilo.chat"]
+        sample["observable"] = True
+        for label, witness in (("primary", primary), ("child", child)):
+            candidates = [row for row in rows
+                          if (row.get("floating_id") is None) == (label == "primary")]
+            if witness is not None:
+                candidates = [row for row in candidates
+                              if row.get("surface_id") == native_surface_id(witness)
+                              and row.get("floating_id") == witness.get("floating_id")]
+            sample[label + "_count"] = min(len(candidates), 64)
+            row = candidates[0] if len(candidates) == 1 else None
+            sample[label + "_observable"] = row is not None
+            for field in ("keyboard_focused", "presented", "pixels_ready", "capture_pending",
+                          "suspended", "transferring"):
+                sample[label + "_" + field] = row.get(field) \
+                    if row is not None and type(row.get(field)) is bool else None
+            sample[label + "_error_present"] = row.get("last_error") is not None if row is not None else None
+            sample[label + "_ordinary_route"] = row.get("input_route") is None \
+                and row.get("input_source_surface_id") is None if row is not None else None
+    except Exception:
+        sample["observable"] = False
+    return sample
+
+
+def closed_return_space_content_observation(owner, before, after):
+    """Observe cached and fresh text classes, never refreshing the asserted subject."""
+    observed = {}
+    for label in ("cached", "fresh"):
+        try:
+            current = owner if label == "cached" else agent_conversation_accessibility(owner["agent"])
+            observed[label] = closed_return_editor_observation(
+                current, before, after, current is not None
+                and all(current.get(field) == owner.get(field) for field in ("process", "bus", "agent")))
+        except Exception:
+            observed[label] = {"editor_observed": False, "diagnostic_unobservable": True}
+    return observed
+
+
+def wait_for_conversation_control_focus(owner, output, process, *, detached=True, control="control", socket=None):
     """Observe, without repairing focus, the current exact owned handoff control."""
     evidence = {"observation_count": 0, "initial": None, "last": None}
 
     def observe():
         sample = {"accessibility_observable": False, "same_owned_route": False,
-                  "known_stale_object": False, "control_focused": False}
+                  "known_stale_object": False, "control_focused": False,
+                  "requested_control_matches_current": None, "requested_window_matches_current": None}
         evidence["observation_count"] += 1
         try:
             if owner.get("detached") is not detached:
@@ -1498,6 +1543,9 @@ def wait_for_conversation_control_focus(owner, output, process, *, detached=True
             if current is None:
                 return None
             sample["accessibility_observable"] = True
+            sample["requested_control_matches_current"] = current.get(control) == owner.get(control)
+            sample["requested_window_matches_current"] = current.get("window") == owner.get("window") \
+                if isinstance(current.get("window"), str) and isinstance(owner.get("window"), str) else None
             sample["same_owned_route"] = all(current.get(field) == owner.get(field)
                 for field in ("process", "bus", "agent", "detached")) \
                 and current.get("detached") is detached
@@ -1516,6 +1564,8 @@ def wait_for_conversation_control_focus(owner, output, process, *, detached=True
             sample["known_stale_object"] = True
             return None
         finally:
+            if socket is not None:
+                sample["native_custody"] = closed_native_custody_observation(socket)
             if evidence["initial"] is None:
                 evidence["initial"] = sample.copy()
             evidence["last"] = sample
@@ -2495,7 +2545,7 @@ def native_float_return(socket, room, record, output, size, process):
     access = wait_for("current attached keyboard Float control",
                       lambda: current_owned_conversation_accessibility(access), process)
     focus_agent_conversation_control(access, access["drag"], "Float")
-    access = wait_for_conversation_control_focus(access, output, process, detached=False, control="drag")
+    access = wait_for_conversation_control_focus(access, output, process, detached=False, control="drag", socket=socket)
     require_ok(call(socket, {"op": "key", "key": "Enter"}))
     keyboard_frame = wait_for_keyboard_float_presentation(socket, output, frame, primary, process)
     keyboard_access = wait_for(
@@ -3185,19 +3235,48 @@ def native_ime_float_return(socket, output, size, process, fcitx_identity, env):
         output / f"ime-preedit-returned-{size}.png"
     )}))
 
+    space_evidence = {"before_space": None, "after_space": None,
+                      "observation_count": 0, "initial": None, "last": None}
+
+    def retain_space_observation(phase):
+        # The pre-event seat is read last; the post-event seat is read first.
+        # These are observations only, never a refreshed assertion subject.
+        sample = {}
+        if phase != "before_space":
+            sample["atomic_seat"] = closed_atomic_input_method_observation(socket)
+        sample.update(closed_return_space_content_observation(
+            returned_access, committed_before, committed_after))
+        sample["native_custody"] = closed_native_custody_observation(socket, returned, frame)
+        if phase == "before_space":
+            sample["atomic_seat"] = closed_atomic_input_method_observation(socket)
+        if phase == "commit_poll":
+            space_evidence["observation_count"] += 1
+            if space_evidence["initial"] is None:
+                space_evidence["initial"] = sample.copy()
+            space_evidence["last"] = sample
+        else:
+            space_evidence[phase] = sample
+        (output / "ime-returned-space-observations.json").write_text(
+            json.dumps(space_evidence, indent=2) + "\n")
+
+    retain_space_observation("before_space")
     require_ok(call(socket, {"op": "key", "key": "Space"}))
+    retain_space_observation("after_space")
 
     def returned_committed_frame():
-        current = current_same_primary_presentation(
-            call(socket, {"op": "foreign_frames"}), returned
-        )
-        if current is None or not private_editor_value_matches(returned_access, committed_after):
-            return None
-        if current.get("input_route") is not None \
-                or current.get("input_source_surface_id") is not None:
-            return None
-        return current if current["keyboard_focused"] is True \
-            and chat_text_input_active(socket) else None
+        try:
+            current = current_same_primary_presentation(
+                call(socket, {"op": "foreign_frames"}), returned
+            )
+            if current is None or not private_editor_value_matches(returned_access, committed_after):
+                return None
+            if current.get("input_route") is not None \
+                    or current.get("input_source_surface_id") is not None:
+                return None
+            return current if current["keyboard_focused"] is True \
+                and chat_text_input_active(socket) else None
+        finally:
+            retain_space_observation("commit_poll")
 
     returned = wait_for(
         "Rime's exact post-Return commit and primary seat",
@@ -3221,7 +3300,7 @@ def native_ime_float_return(socket, output, size, process, fcitx_identity, env):
         lambda: current_owned_conversation_accessibility(returned_access), process)
     focus_agent_conversation_control(returned_access, returned_access["drag"], "Float")
     returned_access = wait_for_conversation_control_focus(
-        returned_access, output, process, detached=False, control="drag")
+        returned_access, output, process, detached=False, control="drag", socket=socket)
     require_ok(call(socket, {"op": "key", "key": "Enter"}))
     keyboard_frame = wait_for(
         "keyboard-activated Rime proof Float",
