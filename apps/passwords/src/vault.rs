@@ -12,7 +12,7 @@ use std::rc::Rc;
 
 use accounts::{CredentialGrant, GeneratedPasswordPolicy, SecretId, SecretItem, SecretItemKind};
 use ui::widget::NavPane;
-use vello::kurbo::{Point, Rect};
+use vello::kurbo::{Point, Rect, Vec2};
 use zeroize::Zeroizing;
 
 use crate::actions::PasswordsEffect;
@@ -350,17 +350,14 @@ pub(crate) fn origins_match(item: &SecretItem, candidate: &str) -> bool {
 /// scrolling and accessibility.
 pub(crate) struct ListState {
     pub(crate) rect: Rect,
-    pub(crate) scroll: f64,
+    pub(crate) scroller: ui::widget::ScrollRegion,
     /// Scroll the open item into view on the next paint.
     pub(crate) reveal: bool,
-    pub(crate) content: f64,
-    pub(crate) line: f64,
     /// Each row's rect and item.
     pub(crate) rows: Vec<(Rect, SecretId)>,
     /// The favorite toggle of each row that shows one: the favorites, and
     /// the row under the pointer.
     pub(crate) stars: Vec<(Rect, SecretId)>,
-    pub(crate) bar: ui::widget::Scrollbar,
     pub(crate) empty_action: Option<Rect>,
 }
 
@@ -368,13 +365,10 @@ impl Default for ListState {
     fn default() -> Self {
         Self {
             rect: Rect::ZERO,
-            scroll: 0.0,
+            scroller: ui::widget::ScrollRegion::vertical(),
             reveal: true,
-            content: 0.0,
-            line: 0.0,
             rows: Vec::new(),
             stars: Vec::new(),
-            bar: ui::widget::Scrollbar::vertical(),
             empty_action: None,
         }
     }
@@ -613,7 +607,7 @@ impl Core {
     pub(crate) fn select_filter(&mut self, filter: VaultFilter) {
         self.filter = filter;
         self.screen = Screen::Vault;
-        self.list.scroll = 0.0;
+        self.list.scroller.set_offset(Vec2::ZERO);
         self.select_first_visible();
         self.show_pane = Some(NavPane::Overview);
         self.touch();
