@@ -592,6 +592,15 @@ max = 1.0
 min_delta = 1.0
 source = "compositor anon must return after an app closes (TIL-694)"
 
+# Per-user runtime builds on disk after R03 closed its apps (TIL-748, TIL-753).
+# Collection after every change keeps the builds installed apps run on, plus one
+# installed within the last hour; at ~205 MB a build on x86_64, two builds.
+[kpi."disk.runtime_mib.per_user"]
+unit = "MiB"
+max = 450.0
+min_delta = 16.0
+source = "vm-acceptance R03: du of the slot user's $XDG_DATA_HOME/tilo-runtime"
+
 [kpi."memory.session_mib"]
 unit = "MiB"
 max = 2500.0
