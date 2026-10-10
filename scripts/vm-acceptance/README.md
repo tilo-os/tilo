@@ -81,6 +81,19 @@ fails unless every requested swap is the layer its slot runs; the report's heade
 the swaps. A base more than 20 commits behind `ref` gets a warning at the top of the
 summary: everything not swapped is the base's code.
 
+For a composed ref containing `tilo-vm swap-artifact`, integration can opt into
+`prebuilt_cohort=true` when dispatching an `apps+runtime` swap. The existing native
+CI identity builds full signed layers with the maintained packer, including
+matching launcher, install and shell prerequisites. Pinned same-run artifact
+actions transfer only layers, inventories and the v1 manifest. Its expected SHA256
+comes from the producer step output; the consumer checks source, immutable builder,
+workflow API run ID/attempt, architecture and component completeness before VM
+creation. The CLI verifies and imports through the normal signed cohort path.
+The acceptance user needs no remote builder credentials. Any artifact error fails
+without a build fallback; slot readback and P01 still describe installed layers.
+The default workflow and local host/remote swap behavior remain available when
+artifact mode is absent. Only integration dispatches the qualification run.
+
 The VM is a libvirt session VM, the way `tilo-vm` runs on a laptop: the job installs
 libvirt's QEMU driver, passt, OVMF and Pillow (pixel checks), and runs `run.py` as an
 unprivileged user (root cannot hand passt its socket in a session). The runners have no
