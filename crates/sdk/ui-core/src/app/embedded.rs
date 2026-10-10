@@ -266,6 +266,37 @@ impl Widget for EmbeddedApp {
         );
     }
 
+    /// A due wake deadline is serviced here, on the host's pump, as a window
+    /// of the app's own services it after its redraw is skipped: the app's
+    /// model runs (which samples a record still being written again) and
+    /// nothing is drawn unless that showed something new. Only `draw` ran the
+    /// app before, so a deadline that came due after its last frame stayed in
+    /// the past, and a host that does not paint for a due deadline woke for it
+    /// at once on every park.
+    fn update(
+        &mut self,
+        _state: &crate::widget::AppModel,
+        _path: &crate::widget::ModelPath,
+    ) -> bool {
+        let due = self
+            .app
+            .root_widget
+            .next_wake_deadline()
+            .is_some_and(|deadline| deadline <= crate::time::now());
+        if !due {
+            return false;
+        }
+        self.app.pump_hosted_model();
+        // A durability that changed in this pass is shown by the next frame,
+        // which rebuilds for it as it would had the frame sampled it itself.
+        self.app.layout.structure_dirty |= self.app.root_widget.take_structure_dirty();
+        let visible = self.app.unsettled() || self.app.root_widget.needs_animation_frame();
+        if visible {
+            self.wants_frame.set(true);
+        }
+        visible
+    }
+
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         self.entering_backwards = ctx.modifiers.state().shift_key();
         let local = self.local_event(event, ctx.scale_factor);
@@ -657,7 +688,7 @@ fn semantic_target(
 mod theme_repaint_tests {
     use super::*;
 
-    fn layout(tile: &mut EmbeddedApp, theme: &Theme) {
+    pub(super) fn layout(tile: &mut EmbeddedApp, theme: &Theme) {
         let mut taffy = TaffyTree::new();
         let node = tile.build_layout(&mut taffy, theme, &mut HashMap::new());
         taffy
@@ -672,7 +703,7 @@ mod theme_repaint_tests {
         tile.apply_layout(&taffy, node, Point::ZERO);
     }
 
-    fn paint(tile: &mut EmbeddedApp, theme: &Theme) -> Vec<u32> {
+    pub(super) fn paint(tile: &mut EmbeddedApp, theme: &Theme) -> Vec<u32> {
         let mut scene = Scene::new();
         tile.draw(
             &mut scene,
@@ -724,5 +755,145 @@ mod theme_repaint_tests {
             );
             previous = current;
         }
+    }
+}
+
+/// TIL-696: a tile whose record was still being written at its last frame
+/// left a wake deadline that only its next `draw` moved, so a compositor that
+/// does not paint for a due deadline woke for it on every park.
+#[cfg(test)]
+mod saving_record_wake_tests {
+    use super::theme_repaint_tests::{layout, paint};
+    use super::*;
+    use crate::application::{LaunchTarget, RestoreInput};
+    use crate::application_test_support::{
+        ProbeHost, runner_inputs, runner_permissions, runner_probe_definition,
+    };
+    use crate::record::RecordSaveStatus;
+
+    fn bound(tile: &mut EmbeddedApp) -> &mut crate::application::AppComponent {
+        &mut tile
+            .app
+            .root_widget
+            .as_any_mut()
+            .and_then(|root| root.downcast_mut::<crate::widget::BoundAppWidget>())
+            .expect("the tile shows a component")
+            .component
+    }
+
+    fn sampled(tile: &mut EmbeddedApp) -> Option<RecordSaveStatus> {
+        bound(tile).sampled_record_save().cloned()
+    }
+
+    /// The host's per-tick pump, as `TileHost` runs it for a tile that keeps
+    /// its own record.
+    fn pump(tile: &mut EmbeddedApp) -> bool {
+        let model = automerge::AutoCommit::new();
+        tile.sync(&model, &automerge::ROOT);
+        tile.update(&model, &automerge::ROOT)
+    }
+
+    /// What the frame the user last saw sampled: the app's sync, which reads
+    /// the record's durability, with the record's edit not yet written.
+    fn sample(tile: &mut EmbeddedApp) {
+        let app = &mut tile.app;
+        app.root_widget.sync(&app.state.doc, &app.state.root);
+    }
+
+    fn settle(tile: &mut EmbeddedApp, theme: &Theme) {
+        for _ in 0..8 {
+            layout(tile, theme);
+            paint(tile, theme);
+            if !tile.needs_redraw() {
+                return;
+            }
+        }
+        panic!("the tile must come to rest");
+    }
+
+    fn due(tile: &EmbeddedApp, now: crate::time::Instant) -> bool {
+        tile.next_wake_deadline()
+            .is_some_and(|deadline| deadline <= now)
+    }
+
+    #[test]
+    fn a_record_saving_at_the_last_frame_is_resampled_by_the_pump_not_a_paint() {
+        let host = ProbeHost::new();
+        let component = runner_probe_definition()
+            .instantiate(
+                host.prepare_with_permissions(
+                    runner_probe_definition(),
+                    11,
+                    &LaunchTarget::New,
+                    runner_permissions(),
+                )
+                .unwrap(),
+                LaunchTarget::New,
+                RestoreInput::None,
+            )
+            .unwrap();
+        let binding = component.callback_binding();
+        let id = binding.checkout.id.clone();
+        let app = App::from_component(component, runner_inputs()).unwrap();
+        let mut tile = EmbeddedApp::new(app, |_| {}).unwrap();
+        let theme = Theme::dark();
+        settle(&mut tile, &theme);
+
+        // An edit the writer has not taken yet: the frame samples "Saving".
+        binding
+            .records
+            .with(&id, |doc| {
+                automerge::transaction::Transactable::put(doc, automerge::ROOT, "til-696", 1_u64)
+                    .unwrap();
+            })
+            .unwrap();
+        sample(&mut tile);
+        assert_eq!(sampled(&mut tile), Some(RecordSaveStatus::Saving));
+        assert!(tile.next_wake_deadline().is_some());
+
+        // Still being written when the deadline comes due: the pump samples
+        // it again and the deadline moves on. Nothing changed on screen, so
+        // no frame is asked for.
+        bound(&mut tile).age_record_save_sample();
+        assert!(due(&tile, crate::time::now()));
+        assert!(
+            !pump(&mut tile),
+            "a resample that changed nothing paints nothing"
+        );
+        assert!(!tile.needs_redraw());
+        assert_eq!(sampled(&mut tile), Some(RecordSaveStatus::Saving));
+        assert!(
+            !due(&tile, crate::time::now()),
+            "the resample re-arms the deadline from itself"
+        );
+
+        // The writer finishes off the event loop and wakes nobody: the stale
+        // deadline is all that is left of the save.
+        binding.records.try_flush_record(&id).unwrap();
+        binding.records.await_submitted(&id).unwrap();
+        assert_eq!(
+            binding.records.save_status(&id).unwrap(),
+            RecordSaveStatus::Saved
+        );
+        bound(&mut tile).age_record_save_sample();
+        let now = crate::time::now();
+        assert!(due(&tile, now));
+
+        // The pump, with no draw, finds it saved: the deadline is gone and one
+        // frame shows the change.
+        assert!(pump(&mut tile), "the finished save is shown");
+        assert_eq!(sampled(&mut tile), Some(RecordSaveStatus::Saved));
+        assert_eq!(tile.next_wake_deadline(), None);
+        assert!(tile.needs_redraw());
+        settle(&mut tile, &theme);
+
+        // And the loop goes quiet: no deadline, no frame, however often the
+        // host pumps.
+        for _ in 0..100 {
+            assert!(!pump(&mut tile));
+        }
+        assert_eq!(tile.next_wake_deadline(), None);
+        assert!(!tile.needs_redraw());
+        tile.app.close_components();
     }
 }

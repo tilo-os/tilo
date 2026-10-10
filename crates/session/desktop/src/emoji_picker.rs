@@ -1234,23 +1234,7 @@ impl EmojiPicker {
         let type_scale = &theme.tokens.typography;
         let g = self.geometry.clone();
 
-        let radius = ui::chrome::ChromeRole::Panel.radius(theme, g.card.height());
-        ui::chrome::shell::panel_shadow(scene, transform, g.card, radius, theme, 1.0);
-        let card_shape = RoundedRect::from_rect(g.card, radius);
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            ui::chrome::shell::panel_ground(theme),
-            None,
-            &card_shape,
-        );
-        scene.stroke(
-            &vello::kurbo::Stroke::new(1.0),
-            transform,
-            ui::chrome::shell::panel_border(theme),
-            None,
-            &card_shape,
-        );
+        ui::chrome::shell::paint_panel(scene, transform, g.card, theme, 1.0);
 
         self.search
             .draw(scene, transform, text_renderer, theme, presence);

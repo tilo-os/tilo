@@ -10,6 +10,9 @@ mod receive_recovery;
 mod remote_capture;
 mod spatial_cleanup;
 mod spatial_protocol;
+#[cfg(test)]
+mod spatial_revocation_tests;
+mod spatial_withdrawal;
 mod window_views;
 
 pub use window_views::{WindowViewer, publish_window_views, window_viewers};
@@ -866,6 +869,7 @@ struct OutboundSpatialInput {
 struct SpatialInputState {
     protocol: spatial_protocol::SpatialProtocol,
     cleanup: spatial_cleanup::SpatialCleanup,
+    withdrawals: spatial_withdrawal::SpatialWithdrawals,
     /// Permissions this device issued and must enforce on inbound input.
     issued: BTreeMap<[u8; 16], InputLease>,
     automatic_issued: BTreeMap<crate::shell::personal_continuity::DeviceId, [u8; 16]>,
@@ -1803,6 +1807,7 @@ impl DeviceFabricRuntime {
         if policy.permits(ContinuityCapability::Media) {
             self.retry_waiting_media(network);
         }
+        spatial_withdrawal::flush(network);
         if policy.permits(ContinuityCapability::DisplayInput) {
             flush_spatial_input(network);
         }
@@ -1923,6 +1928,16 @@ impl DeviceFabricRuntime {
         {
             tracing::warn!(%error, "could not refresh per-device Wi-Fi credential envelopes");
         }
+    }
+
+    #[cfg(test)]
+    pub(super) fn enforce_policy_for_test(
+        &mut self,
+        network: &ShellNetwork,
+        selection: &SharedSelection,
+        policy: ContinuityPolicySnapshot,
+    ) {
+        self.enforce_policy(network, selection, policy);
     }
 
     fn enforce_policy(
@@ -4015,15 +4030,7 @@ fn apply_spatial_action(
             }
         }
         PersonalFabricAction::InputLeaseRevoked { nonce } => {
-            spatial
-                .received
-                .retain(|device, lease| device != &source || lease.nonce != nonce);
-            if !spatial.received.contains_key(&source) {
-                spatial.received_routes.remove(&source);
-            }
-            spatial
-                .outbound
-                .retain(|input| input.target != source || input.lease_nonce != nonce);
+            spatial.accept_spatial_withdrawal(route, target, nonce);
         }
         action @ (PersonalFabricAction::SpatialInputProtocol { .. }
         | PersonalFabricAction::SpatialInputSequenced { .. }) => {
@@ -6920,10 +6927,16 @@ fn grant_input_control_automatic(
     {
         return Ok(());
     }
-    let renew = spatial_input_state()
-        .lock()
-        .map_err(|_| "spatial input state is unavailable".to_string())?
-        .automatic_needs_grant(controller, unix_now_ms());
+    let Some(route) = network.current_personal_route(controller) else {
+        return Ok(());
+    };
+    let renew = {
+        let spatial = spatial_input_state()
+            .lock()
+            .map_err(|_| "spatial input state is unavailable".to_string())?;
+        !spatial.automatic_route_withdrawn(&route)
+            && spatial.automatic_needs_grant(controller, unix_now_ms())
+    };
     if renew {
         grant_input_control_inner(network, controller, true)?;
     }
@@ -7002,6 +7015,9 @@ fn grant_input_control_inner(
         spatial.issued_routes.insert(nonce, route);
         spatial.issued.insert(nonce, lease.clone());
         spatial.automatic_issued.remove(controller);
+        if !automatic {
+            spatial.resume_controller_explicitly(controller);
+        }
         if automatic {
             spatial.automatic_issued.insert(controller.clone(), nonce);
         }
@@ -7199,6 +7215,7 @@ pub fn queue_spatial_input_cleanup_bound(
 }
 
 pub(super) fn flush_spatial_input(network: &ShellNetwork) {
+    spatial_withdrawal::flush(network);
     spatial_protocol::probe(network);
     for _ in 0..MAX_SPATIAL_INPUT_FLUSH_PER_FRAME {
         let prepared = spatial_input_state().lock().ok().and_then(|mut spatial| {
@@ -7230,6 +7247,41 @@ pub(super) fn flush_spatial_input(network: &ShellNetwork) {
         if cleanup && let Ok(mut spatial) = spatial_input_state().lock() {
             spatial.cleanup.delivered(&input);
         }
+    }
+}
+
+/// One causal native-seat phase. Releases precede every surviving input in a
+/// frame, so an old lease's barrier cannot erase a replacement lease's edge.
+pub(crate) enum SpatialInputBatch {
+    Releases(Vec<crate::shell::personal_continuity::DeviceId>),
+    Inputs(
+        Vec<(
+            crate::shell::personal_continuity::DeviceId,
+            FabricInputEvent,
+        )>,
+    ),
+}
+
+/// Take release barriers and admitted input under one state lock. Revocation
+/// already discards its old queued edges; fresh authority can enqueue afterward.
+pub(crate) fn take_spatial_input_batches() -> [SpatialInputBatch; 2] {
+    spatial_input_state().lock().map_or_else(
+        |_| {
+            [
+                SpatialInputBatch::Releases(Vec::new()),
+                SpatialInputBatch::Inputs(Vec::new()),
+            ]
+        },
+        |mut spatial| spatial.take_native_batches(),
+    )
+}
+
+impl SpatialInputState {
+    fn take_native_batches(&mut self) -> [SpatialInputBatch; 2] {
+        [
+            SpatialInputBatch::Releases(self.release_controllers.drain(..).collect()),
+            SpatialInputBatch::Inputs(self.inbound.drain(..).collect()),
+        ]
     }
 }
 
@@ -7369,6 +7421,14 @@ pub fn observed_device_displays(
                         device: snapshot.owner.as_str().to_owned(),
                         device_label: snapshot.presence.label.clone(),
                         connector: output.connector.clone(),
+                        output_id: fabric
+                            .display_outputs(&snapshot.owner)
+                            .and_then(|observations| {
+                                observations
+                                    .iter()
+                                    .find(|observed| observed.connector == output.connector)
+                            })
+                            .map(|observed| observed.output.id.clone()),
                         label: output.label.clone(),
                         online: snapshot.presence.online,
                         local: local == Some(&snapshot.owner),
@@ -8154,6 +8214,7 @@ fn secure_nonce() -> Option<[u8; 16]> {
 
 fn tear_down_spatial_input(network: &ShellNetwork) {
     if let Ok(mut spatial) = spatial_input_state().lock() {
+        spatial.queue_controller_withdrawals();
         let issued = spatial.issued.values().cloned().collect::<Vec<_>>();
         for lease in issued {
             let _ = network.send_personal_fabric_action(
@@ -8176,6 +8237,7 @@ fn tear_down_spatial_input(network: &ShellNetwork) {
         spatial.inbound.clear();
         spatial.retain_spatial_protocol();
     }
+    spatial_withdrawal::flush(network);
 }
 
 fn tear_down_nearby_transfers(network: &ShellNetwork) {

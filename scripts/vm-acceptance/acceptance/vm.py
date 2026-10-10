@@ -38,6 +38,24 @@ def first_json(text: str):
     raise VmError(f"no JSON in output: {text[:400]!r}")
 
 
+def command_failure(stdout: str, stderr: str) -> str:
+    """Prefer the CLI's structured error over build progress on stderr."""
+    decoder = json.JSONDecoder()
+    for stream in (stdout, stderr):
+        offset = 0
+        for line in stream.splitlines(keepends=True):
+            if line.lstrip().startswith("{"):
+                try:
+                    value, _ = decoder.raw_decode(stream[offset:].lstrip())
+                except json.JSONDecodeError:
+                    pass
+                else:
+                    if isinstance(value, dict) and isinstance(value.get("error"), str):
+                        return value["error"].strip()
+            offset += len(line)
+    return (stderr or stdout).strip()
+
+
 class TiloVm:
     def __init__(self, binary: str, vm: str, slot: str, log: Path):
         self.binary = binary
@@ -61,7 +79,7 @@ class TiloVm:
         self._log(cmd, proc.returncode, time.monotonic() - started,
                   proc.stdout, proc.stderr)
         if check and proc.returncode != 0:
-            said = (proc.stderr or proc.stdout).strip()
+            said = command_failure(proc.stdout, proc.stderr)
             if len(said) > 1200:
                 said = said[:300] + " […] " + said[-900:]
             raise VmError(f"`tilo-vm {shlex.join(args)[:200]}` exited {proc.returncode}: {said}")

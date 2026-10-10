@@ -1,12 +1,5 @@
 //! Private native construction custody. It borrows the existing SDK worker;
 //! neither an environment value nor a data capture is a positive authority.
-#![cfg_attr(
-    not(feature = "native"),
-    allow(
-        dead_code,
-        reason = "construction custody is driven by the native launcher; portable hosts use only the initial-read bridge"
-    )
-)]
 #[cfg(feature = "broker-transport")]
 use super::{
     Backend, BridgeState, BrokerTransport, QueuedSdkCommand, SdkCommand, enqueue_sdk_command,
@@ -20,15 +13,18 @@ struct Construction {
     manager: RefCell<Option<CollaborationManager>>,
     bridge: Option<InitialReadBridge>,
     primary: RefCell<Option<CommittedDocument>>,
+    #[cfg(feature = "broker-transport")]
     creation: RefCell<std::collections::BTreeMap<String, CreationCapture>>,
     failure: RefCell<Option<String>>,
     transferring: Cell<bool>,
     component_scope: RefCell<Option<crate::wake::WakeScope>>,
 }
+#[cfg(feature = "broker-transport")]
 struct CreationCapture {
     read: CommittedDocument,
     claimed: bool,
 }
+#[cfg(feature = "broker-transport")]
 impl CreationCapture {
     fn new(read: CommittedDocument) -> Self {
         Self {
@@ -74,6 +70,7 @@ pub(crate) fn component_history_read_for_test(
     )
 }
 impl NativeConstruction {
+    #[cfg(feature = "native")]
     pub(crate) fn enter(manager: CollaborationManager) -> Result<Self, String> {
         Self::enter_inner(manager, None, true)
     }
@@ -102,20 +99,22 @@ impl NativeConstruction {
             None
         };
         #[cfg(feature = "broker-transport")]
-        let creation = primary
-            .as_ref()
-            .filter(|read| read.creation_workspace().is_some())
-            .cloned();
-        #[cfg(not(feature = "broker-transport"))]
-        let creation = None;
-        let mut creations = std::collections::BTreeMap::new();
-        if let (Some(read), Some(bridge)) = (creation, bridge.as_ref()) {
-            creations.insert(bridge.route.channel_id(), CreationCapture::new(read));
-        }
+        let creations = {
+            let creation = primary
+                .as_ref()
+                .filter(|read| read.creation_workspace().is_some())
+                .cloned();
+            let mut creations = std::collections::BTreeMap::new();
+            if let (Some(read), Some(bridge)) = (creation, bridge.as_ref()) {
+                creations.insert(bridge.route.channel_id(), CreationCapture::new(read));
+            }
+            creations
+        };
         let state = Rc::new(Construction {
             manager: RefCell::new(Some(manager)),
             bridge,
             primary: RefCell::new(primary),
+            #[cfg(feature = "broker-transport")]
             creation: RefCell::new(creations),
             failure: RefCell::new(None),
             transferring: Cell::new(false),
@@ -225,6 +224,7 @@ impl NativeConstruction {
 /// Retains only an actual original creation capture, never a restore heuristic.
 pub(crate) struct RecordInitialization {
     read: CommittedDocument,
+    #[cfg(feature = "broker-transport")]
     bridge: InitialReadBridge,
     checkout: crate::record::RecordCheckout,
 }
@@ -334,6 +334,7 @@ pub(crate) fn check_current() -> Result<(), String> {
     }
     Ok(())
 }
+#[cfg(feature = "native")]
 pub(crate) fn ensure_unoccupied() -> Result<(), String> {
     if current().is_some() {
         let error = "nested native launch cannot replace the prepared worker";

@@ -1252,20 +1252,6 @@ fn transient_color(theme: &Theme, kind: TokenKind) -> vello::peniko::Color {
     theme.tokens.syntax.color(kind)
 }
 
-/// Composes `transform` with a translation by `(dx, dy)`. `kurbo::Affine`'s
-/// `Mul` impl trips `arithmetic_side_effects` like any operator overload,
-/// but composing two f64-based affine transforms cannot meaningfully
-/// overflow — same reasoning clippy already exempts bare `f64` arithmetic
-/// for.
-#[allow(
-    dead_code,
-    clippy::arithmetic_side_effects,
-    reason = "feature-gated rendering helper; Affine::mul cannot meaningfully overflow"
-)]
-fn translated(transform: Affine, dx: f64, dy: f64) -> Affine {
-    transform * Affine::translate((dx, dy))
-}
-
 /// Clamps to the end. Converts Automerge marks (char-indexed) to the byte
 /// offsets `pixel_x_for_byte` uses.
 fn char_to_byte(text: &str, char_idx: usize) -> usize {

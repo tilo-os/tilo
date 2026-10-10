@@ -345,8 +345,16 @@ fn legacy_dictionary_owner() -> Option<[u8; 32]> {
 
 fn session_host_view(
     session: std::sync::Arc<settings_store::SessionSettings>,
+    copy_watched: bool,
 ) -> std::sync::Arc<dyn settings_store::SettingsSource> {
-    match session.host_view() {
+    // With the copy watched, its watch takes other processes' writes in and
+    // the view sleeps between reads; without it the view looks on a timer.
+    let view = if copy_watched {
+        session.host_view()
+    } else {
+        session.host_view_polling_copy(settings_store::live::POLL_INTERVAL)
+    };
+    match view {
         Ok(source) => source,
         Err(error) => {
             tracing::warn!(%error, "settings read view unavailable; using synchronous records");
@@ -367,7 +375,7 @@ fn install_session_settings() {
             // Another process writing the copy (Settings, a CLI) is taken in
             // as it lands, which wakes every app following its settings.
             let taken_in = std::sync::Arc::downgrade(&session);
-            match settings_store::watch::watch_settings_at(&copy, move || {
+            let copy_watched = match settings_store::watch::watch_settings_at(&copy, move || {
                 if let Some(session) = taken_in.upgrade() {
                     session.refresh();
                 }
@@ -375,14 +383,19 @@ fn install_session_settings() {
                 Ok(watch) => {
                     static COPY_WATCH: std::sync::OnceLock<settings_store::watch::SettingsWatch> =
                         std::sync::OnceLock::new();
-                    let _ = COPY_WATCH.set(watch);
+                    // Only the first session's watch is kept; a later one
+                    // would be dropped here and watch nothing.
+                    COPY_WATCH.set(watch).is_ok()
                 }
-                Err(error) => tracing::warn!(
-                    %error,
-                    "settings copy watch unavailable; other processes' writes reach apps when the session next reads"
-                ),
-            }
-            let source = session_host_view(session);
+                Err(error) => {
+                    tracing::warn!(
+                        %error,
+                        "settings copy watch unavailable; other processes' writes reach apps within a second"
+                    );
+                    false
+                }
+            };
+            let source = session_host_view(session, copy_watched);
             let dictionary_root = copy.parent().map(|root| root.join("personal-dictionary"));
             let source = match dictionary_root
                 .and_then(|root| settings_store::personal_dictionary::Service::new(root).ok())

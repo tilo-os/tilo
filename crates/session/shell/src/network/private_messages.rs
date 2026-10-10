@@ -109,11 +109,22 @@ impl Registry {
 pub struct Transport {
     endpoint: Endpoint,
     registry: Registry,
+    reachability: super::Reachability,
 }
 impl Transport {
-    pub(crate) fn new(endpoint: Endpoint, registry: Registry) -> Self {
-        Self { endpoint, registry }
+    pub(crate) fn new(
+        endpoint: Endpoint,
+        registry: Registry,
+        reachability: super::Reachability,
+    ) -> Self {
+        Self {
+            endpoint,
+            registry,
+            reachability,
+        }
     }
+    /// Bind the account that receives this device's private texts. Its
+    /// contacts dial this device, so a bound account makes it reachable.
     pub(crate) fn bind(&self, account: &Arc<dyn Account>) -> Result<(), SendError> {
         let certificate = account.certificate()?;
         verify(
@@ -121,7 +132,9 @@ impl Transport {
             self.endpoint.id(),
             certificate.cert.user_public_key,
         )?;
-        self.registry.bind(account)
+        self.registry.bind(account)?;
+        self.reachability.wake("a Messages account receives texts");
+        Ok(())
     }
     /// The caller pins both recipient root and device from the selected route.
     /// A timeout is uncertain and must never cause an automatic resend.

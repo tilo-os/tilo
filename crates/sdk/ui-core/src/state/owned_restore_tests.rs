@@ -110,9 +110,8 @@ fn owned_legacy_restores_are_exact_guarded_and_roll_back_only_owned_writes() {
             .restore_prepared_owned(&admission(&authority), &plan)
             .unwrap();
         assert!(receipt.changed);
-        assert_eq!(receipt.before, before);
         assert_eq!(receipt.after, state.doc.base_heads());
-        assert_eq!(receipt.history_revision, revision + 1);
+        assert_eq!(state.history_revision(), revision + 1);
         assert_eq!(state.doc.get_changes(&[]).len(), count + 1);
         let entry = state.peek_last_undo().unwrap();
         assert_eq!(entry.before, before);
@@ -215,7 +214,7 @@ fn owned_legacy_restores_are_exact_guarded_and_roll_back_only_owned_writes() {
             .restore_prepared_owned(&admission(&authority), &noop)
             .unwrap();
         assert!(!receipt.changed);
-        assert_eq!(receipt.before, receipt.after);
+        assert_eq!(receipt.after, current);
         assert_eq!(snapshot(&state), before);
         let plan =
             prepare_content_restore(&state.doc, &SCHEMA, &current, plan.target_heads()).unwrap();
