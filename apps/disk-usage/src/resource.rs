@@ -271,13 +271,18 @@ mod tests {
             assert!(surface.contains(published), "{published}: {surface}");
         }
 
+        let versions = app.versions().len();
         let answer = app.effect(&analyze(&folder)).unwrap();
         let answer = answer.value.unwrap();
         assert_eq!(answer["path"], folder.to_string_lossy().as_ref());
         assert!(answer["bytes"].as_u64().unwrap() >= 4096, "{answer}");
         app.settle();
         assert_eq!(recent(&app), std::slice::from_ref(&folder));
-        assert!(app.versions().len() <= 1, "a remembered folder is no edit");
+        assert_eq!(
+            app.versions().len(),
+            versions,
+            "a remembered folder is no edit"
+        );
         let frame = app.harness().inspection_json().unwrap();
         assert!(frame.contains("photos"), "{frame}");
 
