@@ -520,14 +520,31 @@ def save_thumb(src: Path, dst: Path, width: int = 1600) -> Path:
 
 # -- processes, the app each belongs to, and its cgroup --------------------------
 
-# Read as root: the compositor is not dumpable. One line per process with its parent,
-# owner, RSS, anonymous RSS, cgroup and, for `tilo-launcher`, the `--app-id` it runs;
-# then one line per cgroup seen with memory.current and the memory.stat anon/file split.
+# Read as root: the compositor is not dumpable, and every user's processes count. One
+# line per process with its parent, owner, RSS, anonymous and shmem RSS, its PSS split
+# from smaps_rollup (what it costs once shared pages are divided among their mappers),
+# its cgroup and, for `tilo-launcher`, the `--app-id` it runs. Then one line per cgroup
+# seen, and per ancestor a cgroup without a memory controller of its own is charged to,
+# with memory.current and memory.stat's anon, file (which holds shmem), shmem,
+# file_mapped, kernel and sock. Then the whole of /proc/meminfo, greetd's uid (whose
+# slice is the seat0 greeter) and each tmpfs's use: shmem that no process need map.
 PROCESSES = r'''
+STAT='{v[$1] = $2} END {n = split("anon file shmem file_mapped kernel sock", k, " "); s = ""
+      for (i = 1; i <= n; i++) s = s "\t" ((k[i] in v) ? v[k[i]] : "-"); print substr(s, 2)}'
+charged_at() {
+  at=$1
+  while [ -n "$at" ] && [ ! -r "/sys/fs/cgroup$at/memory.current" ]; do at=${at%/*}; done
+  printf '%s\n' "${at:--}"
+}
 cgs=""
 for d in /proc/[0-9]*; do
-  st=$(awk '/^PPid:/ {p=$2} /^Uid:/ {u=$2} /^VmRSS:/ {r=$2} /^RssAnon:/ {a=$2}
-            END {if (r) print p, u, r, a+0}' $d/status 2>/dev/null)
+  # status and smaps_rollup name their fields apart (VmRSS/RssAnon vs Pss/Pss_Anon), so
+  # one stream holds both; a process gone by the second read only lacks its PSS.
+  st=$(cat $d/status $d/smaps_rollup 2>/dev/null | awk '/^PPid:/ {p=$2} /^Uid:/ {u=$2}
+         /^VmRSS:/ {r=$2} /^RssAnon:/ {a=$2} /^RssShmem:/ {s=$2} /^Pss:/ {ps=$2} /^Pss_Anon:/ {pa=$2}
+         /^Pss_Shmem:/ {ph=$2}
+         END {if (r) print p, u, r, a+0, s+0, (ps == "" ? "-" : ps), (pa == "" ? "-" : pa),
+                           (ph == "" ? "-" : ph)}')
   [ -n "$st" ] || continue
   comm=$(tr ' \t' '__' 2>/dev/null < $d/comm)
   cg=$(sed -n "s/^0:://p" 2>/dev/null < $d/cgroup)
@@ -535,21 +552,27 @@ for d in /proc/[0-9]*; do
   [ "$comm" = tilo-launcher ] && \
     app=$(tr '\0' '\n' 2>/dev/null < $d/cmdline | awk 'p {print; exit} $0 == "--app-id" {p = 1}')
   set -- $st
-  printf 'P\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "${d#/proc/}" "$1" "$2" "$comm" "$3" "$4" "${app:--}" "$cg"
-  cgs="$cgs$cg
+  printf 'P\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "${d#/proc/}" "$1" "$2" "$comm" \
+    "$3" "$4" "$5" "$6" "$7" "$8" "${app:--}" "$cg"
+  [ -z "$cg" ] || cgs="$cgs$cg
 "
 done
-printf '%s' "$cgs" | sort -u | while IFS= read -r cg; do
+{ printf '%s' "$cgs"; printf '%s' "$cgs" | sort -u | while IFS= read -r cg; do charged_at "$cg"; done; } \
+  | grep -v '^-$' | sort -u | while IFS= read -r cg; do
   f="/sys/fs/cgroup$cg"
   if [ -r "$f/memory.current" ]; then
-    printf 'C\t%s\t%s\t%s\n' "$cg" "$(cat "$f/memory.current")" \
-      "$(awk '$1 == "anon" {a=$2} $1 == "file" {f=$2} END {print a+0 "\t" f+0}' "$f/memory.stat")"
+    printf 'C\t%s\t%s\t%s\t%s\n' "$cg" "$cg" "$(cat "$f/memory.current")" "$(awk "$STAT" "$f/memory.stat")"
   else
-    printf 'C\t%s\t-\t-\t-\n' "$cg"
+    printf 'C\t%s\t%s\t-\t-\t-\t-\t-\t-\t-\n' "$cg" "$(charged_at "$cg")"
   fi
 done
-awk '/MemTotal|MemAvailable/ {print "M", $1, $2}' /proc/meminfo
+awk '{print "M", $1, $2}' /proc/meminfo
+echo "G $(id -u greetd 2>/dev/null || echo -)"
+df -kP -t tmpfs 2>/dev/null | awk 'NR > 1 {print "T", $3, $6}'
 '''
+
+# The memory.stat fields of a `C` line, after memory.current.
+CGROUP_STAT = ("anon", "file", "shmem", "file_mapped", "kernel", "sock")
 
 
 def _mb(kib_or_bytes: str, unit: int) -> float | None:
@@ -557,29 +580,42 @@ def _mb(kib_or_bytes: str, unit: int) -> float | None:
 
 
 def parse_processes(text: str) -> dict:
-    """`PROCESSES` output -> {"procs": {pid: ...}, "cgroups": {path: ...}, "meminfo_mb": {...}}.
+    """`PROCESSES` output -> {"procs": {pid: ...}, "cgroups": {path: ...}, "meminfo_mb",
+    "meminfo_kib", "greeter_uid", "tmpfs"}.
 
     Each process carries `app`: the `--app-id` of the nearest `tilo-launcher` at or above it,
-    so an app is its launcher's whole process tree, whatever its processes are called."""
-    procs, cgroups, mem = {}, {}, {}
+    so an app is its launcher's whole process tree, whatever its processes are called. Each
+    cgroup carries `charged_at`: itself, or the nearest ancestor with a memory controller,
+    where its memory is charged (None: nowhere the dump could read)."""
+    procs, cgroups, kib, tmpfs, greeter = {}, {}, {}, [], None
     for line in text.splitlines():
         f = line.split("\t")
-        if f[0] == "P" and len(f) == 9 and f[1].isdigit():
+        if f[0] == "P" and len(f) == 13 and f[1].isdigit():
             procs[int(f[1])] = {"pid": int(f[1]), "ppid": int(f[2]), "uid": int(f[3]), "comm": f[4],
                                 "rss_mb": _mb(f[5], 1024), "anon_rss_mb": _mb(f[6], 1024),
-                                "launches": None if f[7] == "-" else f[7], "cgroup": f[8]}
-        elif f[0] == "C" and len(f) == 5:
-            cgroups[f[1]] = {"memory_mb": _mb(f[2], 1), "anon_mb": _mb(f[3], 1), "file_mb": _mb(f[4], 1)}
-        elif line.startswith("M "):
-            _, key, kib = line.split()[:3]
-            mem[key.rstrip(":")] = int(kib) // 1024
+                                "shmem_rss_mb": _mb(f[7], 1024), "pss_mb": _mb(f[8], 1024),
+                                "pss_anon_mb": _mb(f[9], 1024), "pss_shmem_mb": _mb(f[10], 1024),
+                                "launches": None if f[11] == "-" else f[11], "cgroup": f[12]}
+        elif f[0] == "C" and len(f) == 4 + len(CGROUP_STAT):
+            cgroups[f[1]] = {"charged_at": None if f[2] == "-" else f[2], "memory_mb": _mb(f[3], 1),
+                             **{f"{k}_mb": _mb(v, 1) for k, v in zip(CGROUP_STAT, f[4:])}}
+        else:
+            w = line.split()
+            if len(w) >= 3 and w[0] == "M" and w[2].isdigit():
+                kib[w[1].rstrip(":")] = int(w[2])
+            elif len(w) == 2 and w[0] == "G" and w[1].isdigit():
+                greeter = int(w[1])
+            elif len(w) >= 3 and w[0] == "T" and w[1].isdigit():
+                tmpfs.append({"mount": " ".join(w[2:]), "used_mib": round(int(w[1]) / 1024, 1)})
     for p in procs.values():
         cur, seen = p, set()
         while cur and cur["launches"] is None and cur["pid"] not in seen:
             seen.add(cur["pid"])
             cur = procs.get(cur["ppid"])
         p["app"] = cur["launches"] if cur else None
-    return {"procs": procs, "cgroups": cgroups, "meminfo_mb": mem}
+    return {"procs": procs, "cgroups": cgroups, "meminfo_kib": kib,
+            "meminfo_mb": {k: v // 1024 for k, v in kib.items()}, "greeter_uid": greeter,
+            "tmpfs": sorted(tmpfs, key=lambda t: -t["used_mib"])}
 
 
 def processes(ctx) -> dict:
