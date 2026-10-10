@@ -40,6 +40,9 @@ class SeedEnvRuntimeTest(unittest.TestCase):
         write(self.host / "usr/lib64/libcurl.so.4", b"host's build!")
         write(tree / "etc/os-release", b"NAME=Fedora\n")
         write(self.host / "etc/os-release", b"NAME=Fedora\n")
+        # Identical, but the host keeps it from users: a session could not import it.
+        write(tree / "usr/libexec/private-helper", b"helper")
+        write(self.host / "usr/libexec/private-helper", b"helper", 0o700)
         write(packages / APP / "usr/lib64/libc.so.6", b"libc" * 1000)
         self.whole = base / "whole"
         shutil.copytree(self.store, self.whole, symlinks=True)
@@ -59,7 +62,8 @@ class SeedEnvRuntimeTest(unittest.TestCase):
         self.assertEqual(self.listing()[1][2], seed.sha256(self.host / "usr/lib64/libc.so.6"))
         self.assertFalse((tree / "usr/lib64/libc.so.6").exists())
         # Different bytes, no host twin, and /etc (mutable on a device) stay.
-        for kept in ("usr/lib64/libcurl.so.4", "usr/bin/runtime-only", "etc/os-release"):
+        for kept in ("usr/lib64/libcurl.so.4", "usr/bin/runtime-only", "etc/os-release",
+                     "usr/libexec/private-helper"):
             self.assertTrue((tree / kept).is_file(), kept)
         # Only env-runtimes are seeded; an app keeps its whole payload.
         self.assertTrue((self.store / "pkgs" / APP / "usr/lib64/libc.so.6").is_file())
