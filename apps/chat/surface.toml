@@ -1278,6 +1278,7 @@ type = [
 
 [[resources.verbs]]
 description = "Submit feedback.  A reviewed report, posted in the channel and kept with its triage."
+field = "comments"
 id = "submit-feedback"
 kind = "undoable"
 label = "Submit feedback"

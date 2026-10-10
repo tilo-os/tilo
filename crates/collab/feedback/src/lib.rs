@@ -38,6 +38,9 @@ pub mod destination {
     pub const REPORTS: &str = "feedback";
     /// The channel item's action that files a report.
     pub const SUBMIT: &str = "submit-feedback";
+    /// The field filing a report sits under: it is a comment, so whoever may
+    /// comment may file one.
+    pub const SUBMIT_FIELD: &str = "comments";
     /// The report item's action that answers its receipt.
     pub const READ_RECEIPT: &str = "read-feedback-receipt";
 }

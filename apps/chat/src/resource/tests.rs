@@ -745,3 +745,57 @@ fn every_scenario_stages_through_the_resource_and_its_surface() {
     let draft = composer.read_document(|doc| crate::projection::draft_text(doc, "c_crit"));
     assert!(draft.contains("Enter sends"), "{draft:?}");
 }
+
+/// Filing feedback is commenting: a commenter files a report through the
+/// app's own door, a viewer cannot.
+#[test]
+fn a_commenter_files_feedback_and_a_viewer_cannot() {
+    let submission = |app: &TestApp<ChatShell>| {
+        let channel = app
+            .state()
+            .channels
+            .iter()
+            .find(|(_, channel)| channel.kind == crate::model::ChannelKind::Text)
+            .map(|(id, channel)| {
+                (
+                    id.as_str().to_owned(),
+                    channel.workspace.as_str().to_owned(),
+                )
+            })
+            .expect("the chat has a text channel");
+        ui::feedback::Submission {
+            id: "0123456789abcdef0123456789abcdef".into(),
+            destination: ui::feedback::Destination {
+                room: channel.1,
+                provider: "fixture-chat".into(),
+                channel: channel.0,
+            },
+            feedback: ui::feedback::ReviewedFeedback {
+                text: "The page loses my position".into(),
+                context: Vec::new(),
+                screenshot: None,
+            },
+        }
+    };
+    let mut commenter = TestApp::<ChatShell>::with_role(ui::permissions::Role::Commenter).unwrap();
+    let filed = submission(&commenter);
+    commenter
+        .invoke(crate::testing::submit_feedback(&filed))
+        .expect("a commenter files feedback");
+    assert!(
+        commenter
+            .state()
+            .feedback
+            .iter()
+            .any(|(id, _)| id.as_str() == filed.id)
+    );
+
+    let mut viewer = TestApp::<ChatShell>::with_role(ui::permissions::Role::Viewer).unwrap();
+    let refused = submission(&viewer);
+    assert!(
+        viewer
+            .invoke(crate::testing::submit_feedback(&refused))
+            .is_err(),
+        "a viewer may not file feedback"
+    );
+}

@@ -71,6 +71,7 @@ impl Enrollment {
         let submit = chat_action(
             destination::CHANNELS,
             &self.destination.channel,
+            Some(destination::SUBMIT_FIELD),
             destination::SUBMIT,
         );
         if permissions.answer(&submit, ActionKind::Read) != Answer::Allow {
@@ -86,6 +87,7 @@ impl Enrollment {
         let submit = chat_action(
             destination::CHANNELS,
             &self.destination.channel,
+            Some(destination::SUBMIT_FIELD),
             destination::SUBMIT,
         );
         if permissions.answer(&submit, ActionKind::Undoable) != Answer::Allow {
@@ -99,6 +101,7 @@ impl Enrollment {
         let read = chat_action(
             destination::REPORTS,
             &submission.id,
+            None,
             destination::READ_RECEIPT,
         );
         if permissions.answer(&read, ActionKind::Read) != Answer::Allow {
@@ -126,12 +129,15 @@ fn chat_item(field: &str, id: &str) -> String {
     format!("{}/{field}/{id}", destination::RESOURCE_KIND)
 }
 
-/// The node of `action` on the destination's item `id` in `field`.
-fn chat_action(field: &str, id: &str, action: &str) -> TreePath {
-    ui::permissions::action_node(
+/// The node of `action` on the destination's item `id` in `field`, below
+/// the field `under` it writes, if any.
+fn chat_action(field: &str, id: &str, under: Option<&str>, action: &str) -> TreePath {
+    tilo_actions::action_node(
+        &TreePath::root(),
         destination::PACKAGE,
         &format!("{}.{field}", destination::RESOURCE_KIND),
         &chat_item(field, id),
+        under,
         action,
     )
 }

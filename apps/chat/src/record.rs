@@ -1346,7 +1346,8 @@ impl Chat {
     /// Submit feedback.
     ///
     /// A reviewed report, posted in the channel and kept with its triage.
-    #[action(item = channels)]
+    // Filing a report is commenting: whoever may comment in the room may.
+    #[action(item = channels, field = "comments")]
     pub fn submit_feedback(
         &mut self,
         cx: &mut ActionCx,

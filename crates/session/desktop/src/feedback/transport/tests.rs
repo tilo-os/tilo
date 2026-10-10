@@ -47,7 +47,12 @@ fn submit_grant(kinds: KindSet, answer: Answer) -> policy::Grant {
     policy::Grant::new(
         "feedback-submit",
         policy::Subject::person(hex::encode([12; 32])),
-        TreePath::room(ROOM).join(&chat_action("channels", "feedback", "submit-feedback")),
+        TreePath::room(ROOM).join(&chat_action(
+            "channels",
+            "feedback",
+            Some(destination::SUBMIT_FIELD),
+            "submit-feedback",
+        )),
         kinds,
         answer,
         policy::Subject::person(hex::encode([11; 32])),
@@ -550,14 +555,19 @@ fn unsigned_wrong_owner_and_wrong_destination_acknowledgments_are_refused() {
 }
 
 #[test]
-fn startup_refuses_missing_role_splice_without_write_and_replacement() {
+fn startup_admits_a_commenter_and_refuses_a_viewer_a_stranger_and_replacement() {
     let mut missing = enrollment();
     missing.permissions = no_member(&hex::encode([12; 32]));
     assert!(missing.authorize().is_err());
+    // Filing feedback is commenting: a commenter files, a viewer cannot.
     let mut commenter = enrollment();
     commenter.permissions =
-        PermissionContext::member_of(ROOM, hex::encode([12; 32]), Role::Commenter);
-    assert!(commenter.authorize().is_err()); // actual Splice still needs Write
+        PermissionContext::member_of(ROOM, hex::encode([12; 32]), Role::Commenter).at_unix_time(0);
+    assert!(commenter.authorize().is_ok());
+    let mut viewer = enrollment();
+    viewer.permissions =
+        PermissionContext::member_of(ROOM, hex::encode([12; 32]), Role::Viewer).at_unix_time(0);
+    assert!(viewer.authorize().is_err());
     let mut other_room = enrollment();
     other_room.destination.room = "other".into();
     assert!(other_room.authorize().is_err());
