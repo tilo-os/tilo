@@ -179,3 +179,63 @@ macro_rules! forward_to_composed {
         }
     };
 }
+
+/// The [`Widget`] methods a wrapper that keeps one child [`Element`] in
+/// `self.$child` — laid out as the only child of its own node, whose box it
+/// stores in `self.$rect` — forwards to it unchanged: placement, painting,
+/// events, child walks and its box.
+#[macro_export]
+macro_rules! forward_to_child {
+    ($child:ident, $rect:ident) => {
+        fn apply_layout(
+            &mut self,
+            taffy: &$crate::taffy::TaffyTree<()>,
+            node: $crate::taffy::NodeId,
+            origin: $crate::kurbo::Point,
+        ) {
+            self.$rect = $crate::widget::layout_rect(taffy, node, origin);
+            if let Ok(child) = taffy.child_at_index(node, 0) {
+                self.$child.apply_layout(taffy, child, self.$rect.origin());
+            }
+        }
+
+        fn draw(
+            &mut self,
+            scene: &mut $crate::vello::Scene,
+            transform: $crate::kurbo::Affine,
+            text_renderer: &mut $crate::text_render::TextRenderer,
+            theme: &$crate::theme::Theme,
+            presence: &$crate::presence::PresenceCtx,
+        ) {
+            self.$child
+                .draw(scene, transform, text_renderer, theme, presence);
+        }
+
+        fn handle_event(
+            &mut self,
+            event: &$crate::winit::event::WindowEvent,
+            ctx: &mut $crate::widget::EventCtx<'_>,
+        ) {
+            if let Ok(child) = ctx.taffy.child_at_index(ctx.node_id, 0) {
+                self.$child
+                    .handle_event(event, &mut ctx.reborrow(ctx.path, child));
+            }
+        }
+
+        fn children(&self) -> Vec<&dyn $crate::widget::Widget> {
+            vec![self.$child.as_ref()]
+        }
+
+        fn for_each_child(&self, visitor: &mut dyn FnMut(&dyn $crate::widget::Widget)) {
+            visitor(self.$child.as_ref());
+        }
+
+        fn children_mut(&mut self) -> Vec<&mut (dyn $crate::widget::Widget + '_)> {
+            vec![self.$child.as_mut()]
+        }
+
+        fn get_rect(&self) -> $crate::kurbo::Rect {
+            self.$rect
+        }
+    };
+}
