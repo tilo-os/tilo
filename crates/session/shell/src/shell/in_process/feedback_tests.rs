@@ -8,6 +8,86 @@ use ui::headless::FrameHarness;
 const ROOM: &str = "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71";
 const AUTHOR: &str = "feedback-fixture-person";
 
+fn authenticated_startup() -> tilo_desktop::feedback::transport::Startup {
+    use tilo_desktop::feedback::transport::{Enrollment, NoCapture, SessionTransport, Startup};
+    let device = ed25519_dalek::SigningKey::from_bytes(&[42; 32])
+        .verifying_key()
+        .to_bytes();
+    let admission = Enrollment {
+        destination: Destination {
+            room: ROOM.into(),
+            provider: "record:so.tilo.chat:".into(),
+            channel: "feedback".into(),
+        },
+        owner: tilo_actions::remote::Caller::authenticated([11; 32], device).in_room(ROOM),
+        reporter: tilo_actions::remote::Caller::authenticated([12; 32], device).in_room(ROOM),
+        permissions: PermissionContext::from_capabilities(
+            Actor::person(Some(Role::Owner), hex::encode([12; 32])).in_room(ROOM),
+            vec![],
+        )
+        .at_unix_time(0),
+        publication: ui::permissions::Verb::Write,
+    };
+    let current = admission.clone();
+    Startup::new(
+        admission,
+        Box::new(SessionTransport::new(
+            Box::new(move || Ok(current.clone())),
+            Box::new(|_, _| Ok(())),
+            Box::new(|_| Ok(None)),
+        )),
+        Box::new(NoCapture),
+    )
+    .unwrap()
+}
+
+#[test]
+fn authenticated_startup_binds_only_its_profile_person_and_mounts_private_review() {
+    let root = tempfile::tempdir().unwrap();
+    let mut wrong = InProcessApps::at(&root.path().join("wrong"), "another-person").unwrap();
+    let reporter = authenticated_startup().reporter().clone();
+    assert!(matches!(
+        wrong.install_feedback_startup(&reporter, authenticated_startup()),
+        Err(LaunchError::BindingMismatch)
+    ));
+    assert!(wrong.feedback.is_none());
+    let mut apps =
+        InProcessApps::at(&root.path().join("reporter"), &hex::encode([12; 32])).unwrap();
+    let wrong_device = tilo_actions::remote::Caller::authenticated(
+        [12; 32],
+        ed25519_dalek::SigningKey::from_bytes(&[43; 32])
+            .verifying_key()
+            .to_bytes(),
+    )
+    .in_room(ROOM);
+    assert!(matches!(
+        apps.install_feedback_startup(&wrong_device, authenticated_startup()),
+        Err(LaunchError::BindingMismatch)
+    ));
+    assert!(apps.feedback.is_none());
+    apps.install_feedback_startup(&reporter, authenticated_startup())
+        .unwrap();
+    apps.store.flush(None).unwrap();
+    assert!(
+        apps.install_feedback_startup(&reporter, authenticated_startup())
+            .is_err()
+    );
+    let inputs =
+        crate::shell::hosted_inputs::HostedTileInputs::for_host_directory(root.path(), apps)
+            .unwrap();
+    let mut frame = mount(&inputs);
+    frame.relayout();
+    assert!(frame.capture_protected());
+    call(
+        &mut frame,
+        "describe",
+        &json!({"issue":"The book lost my position"}),
+    )
+    .unwrap();
+    call(&mut frame, "review", &json!({})).unwrap();
+    assert!(frame.capture_protected());
+}
+
 struct DestinationOwner {
     frame: FrameHarness,
     records: ui::record::RecordStore,

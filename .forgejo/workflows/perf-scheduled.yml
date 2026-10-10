@@ -16,13 +16,21 @@ name: Perf / scheduled
 # One job per benchmark group, each uploading its records as the artifact
 # perf-<group>; a group must produce records whenever it is selected, or the
 # comparison fails it as missing.
+#
+# `mode: ab` is the same-job A/B lane (TIL-738; DEVELOPMENT.md, "Proving a
+# performance change"): instead of the nightly jobs, one `ab` job per selected
+# group builds ab_base and ab_candidate in one checkout and runs that group's
+# benchmark on both, alternating, ab_rounds times on one runner, through
+# tools/perf/ab.py. It reports a paired verdict per KPI and writes nothing to
+# the store. Manual dispatch only, like every run of this workflow outside the
+# nightly schedule.
 on:
   schedule:
     - cron: "15 1 * * *"
   workflow_dispatch:
     inputs:
       kpis:
-        description: "Comma-separated KPI groups to run (fs, footprint, agent, latency, render, wakeups, hosting); empty runs all."
+        description: "Comma-separated KPI groups to run (fs, footprint (app and OS image sizes), agent, latency, render, wakeups, hosting); empty runs all."
         required: false
         default: ""
       accept:
@@ -37,11 +45,30 @@ on:
         description: "Gate test: the factor applied to every percentile (1.25 is a 25 % regression)."
         required: false
         default: "1.0"
+      mode:
+        description: "scheduled: measure this commit against the store. ab: build ab_base and ab_candidate and run the kpis groups (required) interleaved in one job per group, for a paired verdict."
+        type: choice
+        options: [scheduled, ab]
+        default: scheduled
+      ab_base:
+        description: "A/B: the base ref or commit."
+        required: false
+        default: "origin/main"
+      ab_candidate:
+        description: "A/B: the candidate ref or commit; empty is the dispatched commit."
+        required: false
+        default: ""
+      ab_rounds:
+        description: "A/B: rounds, each running both sides (at least 6 for a 95 % interval)."
+        required: false
+        default: "8"
 
 concurrency:
   # compare.py reads the store's state and then appends to it; two runs at
-  # once could both miss the other's pending regression.
-  group: perf-scheduled
+  # once could both miss the other's pending regression. An A/B run never
+  # touches the store, so it takes a group of its own and never queues behind
+  # the nightly.
+  group: perf-${{ github.event.inputs.mode == 'ab' && format('ab-{0}', github.run_id) || 'scheduled' }}
   cancel-in-progress: false
 
 jobs:
@@ -51,6 +78,8 @@ jobs:
     container:
       image: registry.tilo.so/tilo/ci-fast@sha256:ecfe2c2abf7a48d9d00d71083aba6b7b9dfc11bc9de63b87e3144522daf6d97c
     outputs:
+      mode: ${{ steps.select.outputs.mode }}
+      ab_groups: ${{ steps.select.outputs.ab_groups }}
       groups: ${{ steps.select.outputs.groups }}
       fs: ${{ steps.select.outputs.fs }}
       footprint: ${{ steps.select.outputs.footprint }}
@@ -64,9 +93,31 @@ jobs:
         id: select
         env:
           KPIS: ${{ github.event.inputs.kpis }}
+          MODE: ${{ github.event.inputs.mode }}
+          AB_ROUNDS: ${{ github.event.inputs.ab_rounds }}
         run: |
           set -euo pipefail
           known=(fs footprint agent latency render wakeups hosting)
+          mode=${MODE:-scheduled}
+          echo "mode=$mode" >> "$GITHUB_OUTPUT"
+          if [[ $mode == ab ]]; then
+            # tools/perf/ab.py GROUPS: every group that measures a build of
+            # the repository (footprint measures published artifacts).
+            ab_known=(fs agent latency render wakeups hosting)
+            [[ -n ${KPIS:-} ]] || { echo "::error::mode ab needs kpis: one or more of ${ab_known[*]}"; exit 1; }
+            [[ ${AB_ROUNDS:-} =~ ^[0-9]+$ && $AB_ROUNDS -ge 6 ]] || { echo "::error::ab_rounds must be a number of at least 6"; exit 1; }
+            IFS=, read -r -a selected <<< "$KPIS"
+            for group in "${selected[@]}"; do
+              [[ " ${ab_known[*]} " == *" $group "* ]] || { echo "::error::group '$group' has no A/B (A/B groups: ${ab_known[*]})"; exit 1; }
+            done
+            printf 'ab_groups=[%s]\n' "$(printf '"%s",' "${selected[@]}" | sed 's/,$//')" >> "$GITHUB_OUTPUT"
+            echo "groups=" >> "$GITHUB_OUTPUT"
+            for group in "${known[@]}"; do echo "$group=false" >> "$GITHUB_OUTPUT"; done
+            exit 0
+          fi
+          # A placeholder, not an empty list: the skipped `ab` job's matrix is
+          # still expanded, and an empty matrix is an error.
+          echo 'ab_groups=["none"]' >> "$GITHUB_OUTPUT"
           IFS=, read -r -a selected <<< "${KPIS:-$(IFS=,; echo "${known[*]}")}"
           for group in "${selected[@]}"; do
             [[ " ${known[*]} " == *" $group "* ]] || { echo "::error::unknown KPI group '$group' (known: ${known[*]})"; exit 1; }
@@ -261,6 +312,52 @@ jobs:
         if: always()
         with:
           name: perf-footprint
+          path: perf/
+          if-no-files-found: warn
+
+  # OS image size (TIL-609): main's newest production-layout image per
+  # architecture, the tilo-ci base that tilo-vm:main-ci names, streamed from
+  # the registry and replayed layer by layer through tools/perf/image_size.py.
+  # Compressed layer bytes (a full pull), unique content (what composefs holds
+  # after install) and redundant payload (bytes the layers ship twice). Byte
+  # counts: runner-independent, so `runner` is none. The ceilings and the 5 %
+  # growth rule are in tools/perf/kpi-budgets.toml (DEVELOPMENT.md, "OS image
+  # size"). The full breakdown is the job's summary and the image-size
+  # artifact.
+  footprint-image:
+    needs: plan
+    if: needs.plan.outputs.footprint == 'true'
+    runs-on: runner-quality
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [x86_64, aarch64]
+    container:
+      image: registry.tilo.so/tilo/ci-fast@sha256:ecfe2c2abf7a48d9d00d71083aba6b7b9dfc11bc9de63b87e3144522daf6d97c
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+          sparse-checkout: tools/perf
+          sparse-checkout-cone-mode: false
+
+      - name: Measure main's newest image
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          mkdir -p perf
+          python3 tools/perf/image_size.py --dev-base registry.tilo.so/tilo/tilo-vm:main-ci \
+            --arch "$ARCH" --records perf/image-$ARCH.jsonl --runner none \
+            --json perf/image-size-$ARCH.json --markdown perf/image-size-$ARCH.md > /dev/null
+          cat "perf/image-size-$ARCH.md" >> "$GITHUB_STEP_SUMMARY"
+          cat "perf/image-$ARCH.jsonl"
+
+      - uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
+        if: always()
+        with:
+          name: perf-footprint-image-${{ matrix.arch }}
           path: perf/
           if-no-files-found: warn
 
@@ -499,9 +596,75 @@ jobs:
           path: perf/
           if-no-files-found: warn
 
+  # The same-job A/B lane (TIL-738): one leg per selected group, each on one
+  # `runner` for its whole length, so both sides see the same machine. The
+  # Cargo environment is the union of the nightly group jobs' (release with
+  # thin LTO; debug without debug info), so the builds reuse their compiler
+  # cache. Both sides build in this one checkout and target directory, one
+  # after the other (tools/perf/ab.py), never in two worktrees. The verdicts
+  # are the job summary; records, ab-result.json and run logs are the
+  # artifact perf-ab-<group>.
+  ab:
+    needs: [plan, builder]
+    if: needs.plan.outputs.mode == 'ab'
+    runs-on: runner
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        group: ${{ fromJSON(needs.plan.outputs.ab_groups) }}
+    container:
+      image: ${{ needs.builder.outputs.image }}
+    env:
+      CARGO_BUILD_JOBS: "8"
+      CARGO_INCREMENTAL: "0"
+      CARGO_PROFILE_DEV_DEBUG: "0"
+      CARGO_PROFILE_TEST_DEBUG: "0"
+      CARGO_TERM_COLOR: never
+      CARGO_PROFILE_RELEASE_LTO: thin
+      CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
+      WGPU_BACKEND: vulkan
+      VK_DRIVER_FILES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
+      WGPU_ADAPTER_NAME: llvmpipe
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+          # Both sides' commits, and origin/main for the default base.
+          fetch-depth: 0
+
+      - name: Prepare Rust build caches
+        uses: ./.forgejo/actions/prepare-rust-build
+
+      - name: Build both sides and run them interleaved
+        env:
+          GROUP: ${{ matrix.group }}
+          BASE: ${{ github.event.inputs.ab_base }}
+          CANDIDATE: ${{ github.event.inputs.ab_candidate }}
+          ROUNDS: ${{ github.event.inputs.ab_rounds }}
+        run: |
+          set -euo pipefail
+          ./os/dev/assert-native-arch.sh x86_64
+          git config --global --add safe.directory "$PWD"
+          python3 tools/perf/ab.py run --groups "$GROUP" --base "${BASE:-origin/main}" \
+            --candidate "${CANDIDATE:-$GITHUB_SHA}" --rounds "$ROUNDS" --out perf-ab \
+            --virtualization kvm --runner runner --summary "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
+        if: always()
+        with:
+          name: perf-ab-${{ matrix.group }}
+          path: |
+            perf-ab/*.jsonl
+            perf-ab/*.json
+            perf-ab/*.md
+            perf-ab/logs/
+            perf-ab/runs/
+          if-no-files-found: warn
+
   compare:
-    needs: [plan, fs, footprint, agent, latency, render, wakeups, hosting]
-    if: ${{ always() && needs.plan.result == 'success' }}
+    needs: [plan, fs, footprint, footprint-image, agent, latency, render, wakeups, hosting]
+    if: ${{ always() && needs.plan.result == 'success' && needs.plan.outputs.mode != 'ab' }}
     runs-on: runner-quality
     timeout-minutes: 15
     container:
@@ -527,6 +690,7 @@ jobs:
           FACTOR: ${{ github.event.inputs.synthetic_factor }}
           FS_RESULT: ${{ needs.fs.result }}
           FOOTPRINT_RESULT: ${{ needs.footprint.result }}
+          FOOTPRINT_IMAGE_RESULT: ${{ needs.footprint-image.result }}
           AGENT_RESULT: ${{ needs.agent.result }}
           LATENCY_RESULT: ${{ needs.latency.result }}
           RENDER_RESULT: ${{ needs.render.result }}
@@ -538,7 +702,7 @@ jobs:
           shopt -s nullglob
           owner=${GITHUB_REPOSITORY%%/*}
           status=0
-          for job in "fs:$FS_RESULT" "footprint:$FOOTPRINT_RESULT" "agent:$AGENT_RESULT" "latency:$LATENCY_RESULT" "render:$RENDER_RESULT" "wakeups:$WAKEUPS_RESULT" "hosting:$HOSTING_RESULT"; do
+          for job in "fs:$FS_RESULT" "footprint:$FOOTPRINT_RESULT" "footprint-image:$FOOTPRINT_IMAGE_RESULT" "agent:$AGENT_RESULT" "latency:$LATENCY_RESULT" "render:$RENDER_RESULT" "wakeups:$WAKEUPS_RESULT" "hosting:$HOSTING_RESULT"; do
             case ${job#*:} in
               success|skipped) ;;
               *) echo "::error::benchmark job ${job%%:*} ended ${job#*:}"; status=1 ;;

@@ -1328,16 +1328,6 @@ impl BlockEditor {
         line.max(self.handle_gutter(theme))
     }
 
-    /// Size the text by the document alone: body and heading sizes as
-    /// given, not grown with the reader's text scale. For content that is
-    /// laid out at its own size and scaled as a whole (a slide's text box,
-    /// drawn into a thumbnail or the presentation).
-    #[must_use]
-    pub fn with_content_sizing(mut self, content_sized: bool) -> Self {
-        self.content_sized = content_sized;
-        self
-    }
-
     /// Show or hide the drag handle beside each block. A composer or a
     /// read-only row has none: its blocks are not rearranged by dragging.
     #[must_use]
@@ -1642,120 +1632,6 @@ impl BlockEditor {
         Ok(())
     }
 
-    /// Refresh an owner's ordered projection while retaining Text-bound carets
-    /// and selections on surviving blocks. No durable state is written.
-    /// # Errors
-    /// Refuses malformed records before replacing any retained editor state.
-    #[expect(
-        clippy::indexing_slicing,
-        reason = "focus and remapped positions are validated against the freshly installed projection"
-    )]
-    pub fn sync_existing_block_objects(
-        &mut self,
-        state: &mut AutoCommit,
-        objects: &[ObjId],
-    ) -> Result<(), crate::view::ThawError> {
-        let unchanged = objects.len() == self.blocks.len()
-            && objects.iter().zip(&self.blocks).all(|(object, block)| {
-                read_block_id(state, object).as_deref() == Some(block.id.as_str())
-                    && read_nesting(state, object).is_ok_and(|depth| depth == block.nesting)
-                    && read_code_group(state, object).is_ok_and(|group| group == block.code_group)
-                    && state
-                        .get(object, "kind")
-                        .ok()
-                        .flatten()
-                        .is_some_and(|(value, _)| {
-                            value.as_str() == Some(kind_to_str(&block.kind).as_str())
-                        })
-                    && state
-                        .get(object, "text")
-                        .ok()
-                        .flatten()
-                        .is_some_and(|(value, text)| {
-                            value == Value::Object(ObjType::Text)
-                                && block.line.bound_obj().as_ref() == Some(&text)
-                        })
-            });
-        if unchanged || (objects.is_empty() && self.canonical_empty) {
-            for block in &mut self.blocks {
-                block.line.sync(state, &automerge::ROOT);
-            }
-            self.blocks_list = None;
-            return Ok(());
-        }
-        // Validate the whole replacement before moving any retained widgets.
-        let mut projection = Self::new();
-        projection.set_local_author(self.local_author.clone());
-        projection.bind_existing_block_objects(state, objects)?;
-        let old_ids = self
-            .blocks
-            .iter()
-            .map(|block| block.id.clone())
-            .collect::<Vec<_>>();
-        let old_focus = self.focused;
-        let focused_id = self.focused.and_then(|index| old_ids.get(index)).cloned();
-        let mut retained = std::mem::take(&mut self.blocks)
-            .into_iter()
-            .map(|block| (block.id.clone(), block))
-            .collect::<HashMap<_, _>>();
-        for block in &mut projection.blocks {
-            if let Some(old) = retained.remove(&block.id) {
-                if old.kind == block.kind
-                    && old.code_group == block.code_group
-                    && old.nesting == block.nesting
-                    && old.line.bound_obj() == block.line.bound_obj()
-                {
-                    *block = old;
-                    block.line.sync(state, &automerge::ROOT);
-                } else {
-                    block.line.set_cursor_pos(old.line.cursor_pos());
-                    block.line.set_focus(old.line.is_focused());
-                }
-            }
-        }
-        self.blocks = projection.blocks;
-        self.focused = focused_id
-            .and_then(|id| self.blocks.iter().position(|block| block.id == id))
-            .or_else(|| old_focus.map(|index| index.min(self.blocks.len().saturating_sub(1))));
-        if self.is_focused
-            && let Some(index) = self.focused
-        {
-            self.blocks[index].line.set_focus(true);
-        }
-        let remap = |position: DocumentPosition| {
-            let id = old_ids.get(position.block)?;
-            let index = self.blocks.iter().position(|block| &block.id == id)?;
-            Some(DocumentPosition {
-                block: index,
-                byte: self.blocks[index].text().floor_char_boundary(position.byte),
-            })
-        };
-        self.document_selection = self.document_selection.and_then(|selection| {
-            Some(DocumentSelection {
-                anchor: remap(selection.anchor)?,
-                cursor: remap(selection.cursor)?,
-            })
-        });
-        self.cross_block_drag_start = None;
-        self.cross_block_drag_touched = None;
-        self.kbd_sel_anchor = None;
-        self.formula_preview_rects.clear();
-        self.table_preview_rects.clear();
-        self.formula_chrome.clear();
-        self.visual_formulas.clear();
-        self.visual_formula_focus = None;
-        self.canonical_existing = true;
-        self.canonical_empty = objects.is_empty();
-        self.blocks_list = None;
-        self.structure_dirty = true;
-        self.dirty = true;
-        Ok(())
-    }
-
-    pub fn has_object_projection(&self) -> bool {
-        self.canonical_existing && self.blocks_list.is_none()
-    }
-
     /// Preserves focus + caret across the rebuild so a remote edit
     /// elsewhere doesn't yank the local caret.
     #[expect(
@@ -1836,15 +1712,6 @@ impl BlockEditor {
                 b.line.set_cursor_pos(c);
             }
         }
-    }
-
-    /// `RichTextLine::set_text` deliberately doesn't flip dirty (it's
-    /// not a user edit); tests use this to simulate one.
-    pub fn force_dirty_for_test(&mut self) {
-        self.edit_pending = true;
-        self.commit_pending = true;
-        self.dirty = true;
-        self.structure_dirty = true;
     }
 
     pub fn focused_index(&self) -> Option<usize> {
@@ -4180,13 +4047,6 @@ impl BlockEditor {
     #[doc(hidden)]
     pub fn slash_menu(&self) -> &SlashMenu {
         &self.slash_menu
-    }
-
-    /// Used by the integration test that pre-positions the menu rather
-    /// than driving the `/` keystroke through the full event chain.
-    #[doc(hidden)]
-    pub fn slash_menu_mut(&mut self) -> &mut SlashMenu {
-        &mut self.slash_menu
     }
 
     /// Mirrors what the `/` keystroke does internally.
@@ -7898,6 +7758,8 @@ impl Widget for BlockEditor {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
+        #[cfg(test)]
+        let setup_probe = crate::profiling::frame_probe::span("block_setup");
         let incoming = std::mem::take(scene);
         let track_paragraphs = !self.blocks.is_empty()
             && !self.has_open_popup()
@@ -8072,6 +7934,10 @@ impl Widget for BlockEditor {
 
         let outside_prefix = track_paragraphs.then(|| std::mem::take(ctx.scene));
         let mut dragged_scene: Option<(Scene, Rect)> = None;
+        #[cfg(test)]
+        drop(setup_probe);
+        #[cfg(test)]
+        let blocks_probe = crate::profiling::frame_probe::span("block_paint");
         for (idx, b) in self.blocks.iter_mut().enumerate() {
             if !painted[idx] {
                 continue;
@@ -8253,6 +8119,10 @@ impl Widget for BlockEditor {
                 }
             }
         }
+        #[cfg(test)]
+        drop(blocks_probe);
+        #[cfg(test)]
+        let suffix_probe = crate::profiling::frame_probe::span("block_suffix");
         if let (Some(_), Some((preview, bounds))) = (active_drag, dragged_scene) {
             // Clamp against the actual preview, not the full-width text row:
             // short paragraphs must still follow horizontal pointer movement.
@@ -8436,7 +8306,11 @@ impl Widget for BlockEditor {
         // Link hit geometry depends on the shaped positions produced by this
         // frame's block draw. Refreshing it before that draw made first-frame
         // style, scale, and BiDi changes unclickable.
+        #[cfg(test)]
+        let links_probe = crate::profiling::frame_probe::span("block_link_hits");
         self.refresh_live_link_hits(theme);
+        #[cfg(test)]
+        drop(links_probe);
         if let Some(prefix) = outside_prefix {
             let suffix = std::mem::take(scene);
             let mut outside = prefix.clone();
@@ -8460,6 +8334,8 @@ impl Widget for BlockEditor {
         }
         let own = std::mem::replace(scene, incoming);
         scene.append(&own, None);
+        #[cfg(test)]
+        drop(suffix_probe);
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {

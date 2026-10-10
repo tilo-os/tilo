@@ -93,10 +93,6 @@ pub struct WorkspaceMeta {
 /// workspace off its desktop; the rest of the key is the device's hex key.
 const KEPT_OFF_PREFIX: &str = "kept_off:";
 
-fn hex_key(device: &[u8; 32]) -> String {
-    hex::encode(device)
-}
-
 /// A signed, incremental directory delta. Produced by
 /// [`WorkspaceDirectory::sync_incremental`] and consumed by
 /// [`WorkspaceDirectory::apply_incremental`].
@@ -418,11 +414,7 @@ impl WorkspaceDirectory {
     }
 
     fn device_key(device: &[u8; 32]) -> String {
-        use std::fmt::Write as _;
-        device.iter().fold(String::from("d:"), |mut key, byte| {
-            let _ = write!(key, "{byte:02x}");
-            key
-        })
+        format!("d:{}", hex::encode(device))
     }
 
     fn read_text(&self, obj: &ObjId, key: &str) -> Option<String> {
@@ -486,7 +478,7 @@ impl WorkspaceDirectory {
         kept_off: bool,
     ) -> Result<(), DirectoryError> {
         let obj = self.ensure_workspace_obj(id)?;
-        let key = format!("{KEPT_OFF_PREFIX}{}", hex_key(&device));
+        let key = format!("{KEPT_OFF_PREFIX}{}", hex::encode(device));
         let present = matches!(self.doc.get(&obj, key.as_str()), Ok(Some(_)));
         let written = match (kept_off, present) {
             (true, false) => self.doc.put(&obj, key.as_str(), true),

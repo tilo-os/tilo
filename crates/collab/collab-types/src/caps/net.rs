@@ -89,11 +89,6 @@ impl HostPattern {
         &self.name
     }
 
-    /// Whether names under [`Self::name`] are covered too.
-    pub fn covers_subdomains(&self) -> bool {
-        self.subdomains
-    }
-
     /// Does this pattern cover `host` (lower-case, no trailing dot — see
     /// [`NetHostPattern::covers`] for one that normalises)?
     pub fn covers(&self, host: &str) -> bool {

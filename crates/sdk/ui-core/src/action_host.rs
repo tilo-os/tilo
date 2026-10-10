@@ -286,14 +286,6 @@ impl ActionHost {
     pub fn last_dispatched(&self) -> Option<&EncodedAction> {
         self.last_dispatched.as_ref()
     }
-
-    /// Drop any recorded dispatch without applying a new action. Used when an
-    /// outside-consequence path deliberately emits no collaborative write
-    /// (e.g. VPN local credential setup) so observers do not confuse a prior
-    /// seed publish with this operation.
-    pub fn clear_last_dispatched(&mut self) {
-        self.last_dispatched = None;
-    }
 }
 
 #[cfg(test)]

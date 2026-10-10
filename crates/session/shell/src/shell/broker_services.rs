@@ -17,6 +17,7 @@ pub(crate) use file_clipboard::test_support::TestTransferPause;
 mod native_effect_tests;
 mod nearby_transfer;
 mod resource_views;
+mod task_execution;
 pub use nearby_transfer::NativeNearbyTransfer;
 use std::sync::Arc;
 use tilo_action_broker::services::{
@@ -283,6 +284,13 @@ impl WorkspaceAuthority for NativeWorkspaceAuthority {
             name.push(".invocations");
             name.into()
         })
+    }
+    /// A tree write that changes policy announces as its guard is released;
+    /// the fleet and registry announce on save and through the identity
+    /// directory's watch; the native owner announces each publication
+    /// (`tilo_identity_host::policy_change`).
+    fn announces_policy_changes(&self) -> bool {
+        true
     }
 }
 impl LegacyWorkspaceProjection for NativeWorkspaceAuthority {
@@ -1494,30 +1502,56 @@ impl tilo_action_broker::peer_actions::CertificateAuthority for NativeCertificat
         tilo_identity_host::certificates::authorize_join(&room.to_string(), cert)
     }
 }
+fn native_document_reads(
+    tree: &WorkspaceTreeHandle,
+    network: Option<Arc<super::network::ShellNetwork>>,
+) -> Arc<dyn NativeDocumentReads> {
+    Arc::new(NativeOwnerCommitService::new(tree.clone(), network))
+}
+
+fn native_workspace_memberships(
+    tree: &WorkspaceTreeHandle,
+    network: Option<Arc<super::network::ShellNetwork>>,
+) -> Arc<dyn tilo_action_broker::services::WorkspaceMemberships> {
+    Arc::new(NativeOwnerCommitService::new(tree.clone(), network))
+}
+
+fn native_task_execution(
+    tree: &WorkspaceTreeHandle,
+    network: Option<Arc<super::network::ShellNetwork>>,
+) -> Arc<dyn tilo_action_broker::services::WorkspaceTaskExecution> {
+    Arc::new(NativeOwnerCommitService::new(tree.clone(), network))
+}
+
+fn native_resource_views(
+    membership: Option<&WorkspaceTreeHandle>,
+    network: Option<&Arc<super::network::ShellNetwork>>,
+) -> Option<Arc<dyn tilo_action_broker::services::NativeResourceViews>> {
+    membership.zip(network).map(|(tree, network)| {
+        Arc::new(resource_views::NativeResourceViews {
+            owner: Arc::new(NativeOwnerCommitService::new(
+                tree.clone(),
+                Some(network.clone()),
+            )),
+            network: network.clone(),
+        }) as Arc<dyn tilo_action_broker::services::NativeResourceViews>
+    })
+}
+
 pub fn native_services(
     membership: Option<WorkspaceTreeHandle>,
     network: Option<Arc<super::network::ShellNetwork>>,
 ) -> HostServices {
-    let committed_documents = membership.as_ref().map(|tree| {
-        Arc::new(NativeOwnerCommitService::new(tree.clone(), network.clone()))
-            as Arc<dyn NativeDocumentReads>
-    });
-    let workspace_memberships = membership.as_ref().map(|tree| {
-        Arc::new(NativeOwnerCommitService::new(tree.clone(), network.clone()))
-            as Arc<dyn tilo_action_broker::services::WorkspaceMemberships>
-    });
-    let resource_views = membership
+    let committed_documents = membership
         .as_ref()
-        .zip(network.as_ref())
-        .map(|(tree, network)| {
-            Arc::new(resource_views::NativeResourceViews {
-                owner: Arc::new(NativeOwnerCommitService::new(
-                    tree.clone(),
-                    Some(network.clone()),
-                )),
-                network: network.clone(),
-            }) as Arc<dyn tilo_action_broker::services::NativeResourceViews>
-        });
+        .map(|tree| native_document_reads(tree, network.clone()));
+    let workspace_memberships = membership
+        .as_ref()
+        .map(|tree| native_workspace_memberships(tree, network.clone()));
+    let task_execution = membership
+        .as_ref()
+        .map(|tree| native_task_execution(tree, network.clone()));
+    let resource_views = native_resource_views(membership.as_ref(), network.as_ref());
     let governance = membership.as_ref().map(|tree| {
         Arc::new(NativeWorkspaceGovernance(tree.clone(), network.clone()))
             as Arc<dyn WorkspaceGovernanceServices>
@@ -1567,6 +1601,7 @@ pub fn native_services(
         app_action_grants,
         committed_documents,
         workspace_memberships,
+        task_execution,
         resource_views,
         desktop_commands: None,
         native_certificates: Some(Arc::new(NativeCertificates::default())),

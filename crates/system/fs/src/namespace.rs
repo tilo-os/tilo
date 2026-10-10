@@ -38,6 +38,14 @@ pub const MAX_LIVE_RECORD_BLOB_SCAN: usize = 100_000;
 /// Most peer devices a namespace remembers sync progress with. An exchange
 /// with a device beyond it starts from a full sync, as a first one does.
 const MAX_PEER_SYNC_STATES: usize = 1024;
+/// The persisted form of the sync progress ([`Namespace::encode_peer_sync_states`]):
+/// this tag, which names its version, then the entry count (`u32` LE), then
+/// per entry the device key (32 bytes), the encoded state's length (`u32`
+/// LE) and the state; then a BLAKE3 hash of everything before it.
+const PEER_SYNC_STATES_TAG: &[u8; 8] = b"TFPSYNC1";
+/// The longest encoded sync state one entry may hold: a state is the agreed
+/// heads, 32 bytes each, and a document rarely has more than a few heads.
+const MAX_PEER_SYNC_STATE_BYTES: usize = 64 * 1024;
 
 mod changesets;
 mod leases;
@@ -384,6 +392,9 @@ pub struct Namespace {
     /// [`automerge::sync::State`]. Without them every exchange would start
     /// by summarising the document's whole history.
     peer_sync_states: HashMap<[u8; 32], Vec<u8>>,
+    /// Moves on whenever `peer_sync_states` changes, so a persister writes
+    /// them only then ([`Self::encode_peer_sync_states`]).
+    peer_sync_generation: u64,
     /// Bytes of every sync message this namespace generated.
     #[cfg(test)]
     sync_bytes_generated: usize,
@@ -423,6 +434,53 @@ fn next_verified_generation() -> u64 {
 pub struct NamespaceChangeToken {
     heads: Vec<automerge::ChangeHash>,
     verified_generation: u64,
+}
+
+/// The entries of a [`Namespace::encode_peer_sync_states`] encoding, or why
+/// `bytes` is not exactly one.
+fn decode_peer_sync_states(bytes: &[u8]) -> anyhow::Result<HashMap<[u8; 32], Vec<u8>>> {
+    use anyhow::{Context, bail, ensure};
+    let (body, checksum) = bytes
+        .split_last_chunk::<32>()
+        .context("truncated sync progress")?;
+    ensure!(
+        blake3::hash(body).as_bytes() == checksum,
+        "damaged sync progress: checksum mismatch"
+    );
+    let rest = body
+        .strip_prefix(PEER_SYNC_STATES_TAG)
+        .context("not sync progress of this version")?;
+    let (count, mut rest) = rest
+        .split_first_chunk::<4>()
+        .context("truncated sync progress")?;
+    let count = usize::try_from(u32::from_le_bytes(*count))?;
+    ensure!(
+        count <= MAX_PEER_SYNC_STATES,
+        "sync progress names {count} peers"
+    );
+    let mut entries = HashMap::with_capacity(count);
+    for _ in 0..count {
+        let (peer, after) = rest
+            .split_first_chunk::<32>()
+            .context("truncated sync progress")?;
+        let (len, after) = after
+            .split_first_chunk::<4>()
+            .context("truncated sync progress")?;
+        let len = usize::try_from(u32::from_le_bytes(*len))?;
+        ensure!(
+            len <= MAX_PEER_SYNC_STATE_BYTES,
+            "a sync state of {len} bytes"
+        );
+        ensure!(after.len() >= len, "truncated sync progress");
+        let (state, after) = after.split_at(len);
+        automerge::sync::State::decode(state).context("undecodable sync state")?;
+        if entries.insert(*peer, state.to_vec()).is_some() {
+            bail!("sync progress names a peer twice");
+        }
+        rest = after;
+    }
+    ensure!(rest.is_empty(), "trailing bytes after sync progress");
+    Ok(entries)
 }
 
 fn hash_to_hex(h: &Hash) -> String {
@@ -516,6 +574,7 @@ impl Namespace {
             resolved_heads: None,
             incremental_batch: None,
             peer_sync_states: HashMap::new(),
+            peer_sync_generation: 0,
             #[cfg(test)]
             sync_bytes_generated: 0,
             #[cfg(test)]
@@ -584,6 +643,7 @@ impl Namespace {
             resolved_heads: None,
             incremental_batch: None,
             peer_sync_states: HashMap::new(),
+            peer_sync_generation: 0,
             #[cfg(test)]
             sync_bytes_generated: 0,
             #[cfg(test)]
@@ -910,7 +970,90 @@ impl Namespace {
         {
             self.peer_sync_states.remove(&evicted);
         }
-        self.peer_sync_states.insert(peer, state.encode());
+        let encoded = state.encode();
+        if self.peer_sync_states.get(&peer) != Some(&encoded) {
+            self.peer_sync_states.insert(peer, encoded);
+            self.peer_sync_generation = self.peer_sync_generation.wrapping_add(1);
+        }
+    }
+
+    /// Whether the last exchange completed with the device `peer` left both
+    /// sides holding exactly this document's current heads: nothing here is
+    /// new to that peer since. Says nothing about what the peer has that
+    /// this document lacks.
+    pub fn in_sync_with(&mut self, peer: &[u8; 32]) -> bool {
+        let Some(state) = self
+            .peer_sync_states
+            .get(peer)
+            .and_then(|encoded| automerge::sync::State::decode(encoded).ok())
+        else {
+            return false;
+        };
+        let mut agreed = state.shared_heads;
+        let mut heads = self.doc.get_heads();
+        agreed.sort_unstable();
+        heads.sort_unstable();
+        agreed == heads
+    }
+
+    /// Moves on whenever the remembered sync progress changes.
+    #[must_use]
+    pub const fn peer_sync_generation(&self) -> u64 {
+        self.peer_sync_generation
+    }
+
+    /// The sync progress with every peer device, to persist beside the
+    /// document so a restart resumes rather than starting each exchange
+    /// over ([`Self::restore_peer_sync_states`]).
+    #[must_use]
+    pub fn encode_peer_sync_states(&self) -> Vec<u8> {
+        let mut entries: Vec<_> = self.peer_sync_states.iter().collect();
+        entries.sort_unstable_by_key(|(peer, _)| **peer);
+        let mut out = Vec::new();
+        out.extend_from_slice(PEER_SYNC_STATES_TAG);
+        out.extend_from_slice(
+            &u32::try_from(entries.len())
+                .unwrap_or(u32::MAX)
+                .to_le_bytes(),
+        );
+        for (peer, state) in entries {
+            out.extend_from_slice(peer);
+            out.extend_from_slice(&u32::try_from(state.len()).unwrap_or(u32::MAX).to_le_bytes());
+            out.extend_from_slice(state);
+        }
+        let checksum = blake3::hash(&out);
+        out.extend_from_slice(checksum.as_bytes());
+        out
+    }
+
+    /// Takes back sync progress [`Self::encode_peer_sync_states`] wrote,
+    /// replacing any held, and returns how many peers it resumes with.
+    /// Persisted progress is a hint, never trusted: bytes that are not
+    /// exactly such an encoding are refused whole and nothing changes, and
+    /// a peer whose agreed heads this document does not hold (a document
+    /// restored from an older copy, or another workspace's) is dropped, so
+    /// its next exchange is a full sync. A peer that lost what it agreed to
+    /// is caught by Automerge itself, as in [`Self::begin_sync_with`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error, and keeps the progress held, if `bytes` is
+    /// truncated, damaged, of another version or beyond the bounds.
+    pub fn restore_peer_sync_states(&mut self, bytes: &[u8]) -> anyhow::Result<usize> {
+        let decoded = decode_peer_sync_states(bytes)?;
+        self.peer_sync_states = decoded
+            .into_iter()
+            .filter(|(_, encoded)| {
+                automerge::sync::State::decode(encoded).is_ok_and(|state| {
+                    state
+                        .shared_heads
+                        .iter()
+                        .all(|hash| self.doc.get_change_meta_by_hash(hash).is_some())
+                })
+            })
+            .collect();
+        self.peer_sync_generation = self.peer_sync_generation.wrapping_add(1);
+        Ok(self.peer_sync_states.len())
     }
 
     pub fn sync_generate(&mut self, state: &mut automerge::sync::State) -> Option<Vec<u8>> {
@@ -2963,19 +3106,6 @@ impl Namespace {
             .is_some()
     }
 
-    pub fn document_blocks(&self, ino: u64) -> Vec<String> {
-        let Some(id) = self.ino_to_id.get(&ino) else {
-            return Vec::new();
-        };
-        let Some(root) = self.document_root(id) else {
-            return Vec::new();
-        };
-        match tilo_doc::model::open(&self.doc, &root) {
-            Ok(c) => tilo_doc::model::blocks_in_order(&self.doc, &c),
-            Err(_) => Vec::new(),
-        }
-    }
-
     pub fn document_block_text(&self, ino: u64, block_id: &str) -> Option<String> {
         let id = self.ino_to_id.get(&ino)?;
         let root = self.document_root(id)?;
@@ -4815,6 +4945,169 @@ mod tests {
             ns.finish_sync_with(key, &state);
         }
         assert_eq!(ns.peer_sync_states.len(), MAX_PEER_SYNC_STATES);
+    }
+
+    /// A namespace of `changes` changes, one file per hundred.
+    fn with_history(author: &str, changes: u64) -> Namespace {
+        let mut ns = Namespace::new(author).unwrap();
+        let mut file = ROOT_INO;
+        for change in 0..changes {
+            if change.is_multiple_of(100) {
+                file = ns
+                    .create_file(ROOT_INO, format!("file-{change}"), None, 0, change)
+                    .unwrap();
+            } else {
+                let content = Hash::new(change.to_le_bytes());
+                assert!(ns.set_content(file, Some(&content), change, change));
+            }
+            ns.heads();
+        }
+        ns
+    }
+
+    /// TIL-745. Sync progress persisted beside the document survives a
+    /// restart of either side: the first exchange after it summarises only
+    /// the heads, not the whole history, and still carries every change.
+    #[test]
+    fn persisted_sync_progress_resumes_after_a_restart() {
+        let mut host = with_history("host", 2_000);
+        let mut device = Namespace::from_bytes("device", &host.save()).unwrap();
+        let full = exchange(&mut device, &mut host);
+        assert!(full > 2_000, "first contact is a full sync ({full} B)");
+        assert!(device.in_sync_with(&SERVER) && host.in_sync_with(&CLIENT));
+
+        // An idle exchange leaves the progress, and so the persisted bytes, alone.
+        let generation = (device.peer_sync_generation(), host.peer_sync_generation());
+        exchange(&mut device, &mut host);
+        assert_eq!(
+            (device.peer_sync_generation(), host.peer_sync_generation()),
+            generation,
+            "an idle exchange rewrote the progress"
+        );
+
+        let (device_bytes, device_progress) = (device.save(), device.encode_peer_sync_states());
+        let (host_bytes, host_progress) = (host.save(), host.encode_peer_sync_states());
+        let mut device = Namespace::from_bytes("device", &device_bytes).unwrap();
+        let mut host = Namespace::from_bytes("host", &host_bytes).unwrap();
+        assert!(
+            !device.in_sync_with(&SERVER),
+            "nothing remembered before restoring"
+        );
+        assert_eq!(
+            device.restore_peer_sync_states(&device_progress).unwrap(),
+            1
+        );
+        assert_eq!(host.restore_peer_sync_states(&host_progress).unwrap(), 1);
+        assert!(device.in_sync_with(&SERVER) && host.in_sync_with(&CLIENT));
+        let resumed = exchange(&mut device, &mut host);
+        assert!(
+            resumed < 512,
+            "a restarted exchange resumed ({resumed} B, full {full} B)"
+        );
+
+        host.create_file(ROOT_INO, "from-host", Some(&h(1)), 1, 1)
+            .unwrap();
+        assert!(!host.in_sync_with(&CLIENT), "a change is new to the peer");
+        device
+            .create_file(ROOT_INO, "from-device", Some(&h(2)), 1, 1)
+            .unwrap();
+        exchange(&mut device, &mut host);
+        assert!(device.lookup(ROOT_INO, "from-host").is_some());
+        assert!(host.lookup(ROOT_INO, "from-device").is_some());
+        assert!(converged(&mut device, &mut host));
+    }
+
+    /// TIL-745. Persisted progress is never trusted: damaged bytes are
+    /// refused whole and leave what is held alone; progress naming heads the
+    /// document does not hold (another workspace's, or written after the
+    /// copy the document was restored from) falls back to a full sync; older
+    /// progress resumes from further back. No change is lost either way.
+    #[test]
+    fn corrupt_or_stale_persisted_sync_progress_falls_back_to_a_full_sync() {
+        let mut host = with_history("host", 1_000);
+        let mut device = Namespace::from_bytes("device", &host.save()).unwrap();
+        exchange(&mut device, &mut host);
+        let older_device = device.save();
+        let older_progress = device.encode_peer_sync_states();
+        host.create_file(ROOT_INO, "second", Some(&h(1)), 1, 1)
+            .unwrap();
+        exchange(&mut device, &mut host);
+        let progress = device.encode_peer_sync_states();
+
+        // Phase `damaged_bytes_are_refused_whole`.
+        let mut flipped = progress.clone();
+        flipped[PEER_SYNC_STATES_TAG.len() + 10] ^= 1;
+        let mut other_version = progress.clone();
+        other_version[7] = b'2';
+        let mut trailing = progress[..progress.len() - 32].to_vec();
+        trailing.push(0);
+        trailing.extend_from_slice(blake3::hash(&trailing).as_bytes());
+        let mut too_many = PEER_SYNC_STATES_TAG.to_vec();
+        too_many.extend_from_slice(&u32::MAX.to_le_bytes());
+        too_many.extend_from_slice(blake3::hash(&too_many.clone()).as_bytes());
+        let mut twice = PEER_SYNC_STATES_TAG.to_vec();
+        twice.extend_from_slice(&2_u32.to_le_bytes());
+        let state = automerge::sync::State::new().encode();
+        for _ in 0..2 {
+            twice.extend_from_slice(&SERVER);
+            twice.extend_from_slice(&u32::try_from(state.len()).unwrap().to_le_bytes());
+            twice.extend_from_slice(&state);
+        }
+        twice.extend_from_slice(blake3::hash(&twice.clone()).as_bytes());
+        for (what, bytes) in [
+            ("empty", Vec::new()),
+            ("truncated", progress[..progress.len() - 1].to_vec()),
+            ("bit-flipped", flipped),
+            ("another version", other_version),
+            ("trailing bytes", trailing),
+            ("beyond the peer bound", too_many),
+            ("a peer twice", twice),
+        ] {
+            let mut copy = Namespace::from_bytes("device", &device.save()).unwrap();
+            copy.restore_peer_sync_states(&progress).unwrap();
+            assert!(
+                copy.restore_peer_sync_states(&bytes).is_err(),
+                "{what} progress was accepted"
+            );
+            assert!(
+                copy.in_sync_with(&SERVER),
+                "{what} progress replaced what was held"
+            );
+        }
+
+        // Phase `progress_newer_than_the_restored_document_is_dropped`.
+        let mut restored = Namespace::from_bytes("device", &older_device).unwrap();
+        assert_eq!(
+            restored.restore_peer_sync_states(&progress).unwrap(),
+            0,
+            "heads the restored document lacks were resumed from"
+        );
+        let full = exchange(&mut restored, &mut host);
+        assert!(full > 1_000, "the fallback is a full sync ({full} B)");
+        assert!(restored.lookup(ROOT_INO, "second").is_some());
+        assert!(converged(&mut restored, &mut host));
+
+        // Phase `another_workspaces_progress_is_dropped`.
+        let mut stranger = with_history("stranger", 10);
+        assert_eq!(stranger.restore_peer_sync_states(&progress).unwrap(), 0);
+        assert!(!stranger.in_sync_with(&SERVER));
+
+        // Phase `older_progress_resumes_from_further_back`.
+        let mut device = Namespace::from_bytes("device", &device.save()).unwrap();
+        assert_eq!(device.restore_peer_sync_states(&older_progress).unwrap(), 1);
+        assert!(
+            !device.in_sync_with(&SERVER),
+            "older progress is not in sync"
+        );
+        host.create_file(ROOT_INO, "third", Some(&h(2)), 1, 2)
+            .unwrap();
+        device
+            .create_file(ROOT_INO, "from-device", Some(&h(3)), 1, 2)
+            .unwrap();
+        exchange(&mut device, &mut host);
+        assert!(device.lookup(ROOT_INO, "third").is_some());
+        assert!(host.lookup(ROOT_INO, "from-device").is_some());
+        assert!(converged(&mut device, &mut host));
     }
 
     // test-only helper to merge using a fresh loaded copy

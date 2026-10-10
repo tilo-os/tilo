@@ -164,15 +164,6 @@ impl RangeChart {
         self.axis_title = title.into();
         self
     }
-    #[must_use]
-    pub fn format_values(mut self, formatter: impl Fn(f64) -> String + 'static) -> Self {
-        self.formatter = Some(Box::new(formatter));
-        self
-    }
-    pub fn set_bars(&mut self, bars: Vec<RangeBar>) {
-        self.bars = bars;
-        self.hovered = None;
-    }
     pub fn take_activated(&mut self) -> Option<String> {
         self.activated.take()
     }
@@ -566,22 +557,15 @@ impl Widget for RangeChart {
         _state: &mut crate::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
-        if !matches!(action, crate::a11y::Action::Activate) {
-            return false;
-        }
-        let Some(key) = keys.last() else {
+        let Some(id) = crate::widget::chart_navigation::activated_id(
+            action,
+            keys,
+            self.bars.iter().map(|b| &b.id),
+        ) else {
             return false;
         };
-        if let Some(bar) = self
-            .bars
-            .iter()
-            .find(|b| crate::a11y::hash_key(&b.id) == *key)
-        {
-            self.activated = Some(bar.id.clone());
-            true
-        } else {
-            false
-        }
+        self.activated = Some(id.clone());
+        true
     }
     fn name(&self) -> &'static str {
         "RangeChart"

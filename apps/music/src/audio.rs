@@ -57,31 +57,20 @@ mod pipeline_controls;
 /// worker to finish, so repeated load/stop never creates parallel initializers.
 struct Initialization<T> {
     result: Option<std::sync::mpsc::Receiver<Result<T, String>>>,
-    #[cfg_attr(
-        not(feature = "audio"),
-        allow(
-            dead_code,
-            reason = "only the GStreamer backend initializes on a worker"
-        )
-    )]
+    #[cfg(any(feature = "audio", test))]
     finished: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl<T> Initialization<T> {
     /// A job that already finished on the caller's thread: a backend that
     /// needs no native initialization (the page's media element).
-    #[cfg_attr(
-        feature = "audio",
-        allow(
-            dead_code,
-            reason = "the GStreamer build always initializes on a worker"
-        )
-    )]
+    #[cfg(not(feature = "audio"))]
     fn ready(result: Result<T, String>) -> Self {
         let (sender, receiver) = std::sync::mpsc::channel();
         let _ = sender.send(result);
         Self {
             result: Some(receiver),
+            #[cfg(test)]
             finished: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
         }
     }
@@ -100,26 +89,14 @@ impl<T> Initialization<T> {
         self.result = None;
     }
 
-    #[cfg_attr(
-        not(feature = "audio"),
-        allow(
-            dead_code,
-            reason = "only the GStreamer backend initializes on a worker"
-        )
-    )]
+    #[cfg(any(feature = "audio", test))]
     fn canceled_and_finished(&self) -> bool {
         self.result.is_none() && self.finished.load(std::sync::atomic::Ordering::Acquire)
     }
 }
 
 impl<T: Send + 'static> Initialization<T> {
-    #[cfg_attr(
-        not(feature = "audio"),
-        allow(
-            dead_code,
-            reason = "only the GStreamer backend initializes on a worker"
-        )
-    )]
+    #[cfg(any(feature = "audio", test))]
     fn spawn(initialize: impl FnOnce() -> Result<T, String> + Send + 'static) -> Self {
         let (sender, receiver) = std::sync::mpsc::channel();
         let finished = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -197,10 +174,7 @@ pub struct CapturedPcm {
 pub struct PcmCapture(std::sync::Arc<(std::sync::Mutex<CapturedPcm>, std::sync::Condvar)>);
 
 impl PcmCapture {
-    #[cfg_attr(
-        not(feature = "audio"),
-        allow(dead_code, reason = "only the native sink records")
-    )]
+    #[cfg(feature = "audio")]
     fn record(&self, bytes: &[u8]) {
         let (state, changed) = &*self.0;
         let mut pcm = state
@@ -218,10 +192,7 @@ impl PcmCapture {
         changed.notify_all();
     }
 
-    #[cfg_attr(
-        not(feature = "audio"),
-        allow(dead_code, reason = "only the native sink renders")
-    )]
+    #[cfg(feature = "audio")]
     fn note_rendered(&self) {
         let (state, changed) = &*self.0;
         state
@@ -374,12 +345,6 @@ impl AudioEngine {
         }
         #[cfg(not(feature = "spotify-native"))]
         let _ = uri;
-    }
-
-    pub fn uses_spotify(&self) -> bool {
-        self.current_uri
-            .as_ref()
-            .is_some_and(|uri| uri.starts_with("spotify:track:"))
     }
 
     pub fn take_spotify_transition(&mut self) -> Option<String> {
@@ -637,10 +602,7 @@ impl AudioEngine {
     }
 
     /// A settled PLAYING state, excluding a pipeline merely transitioning there.
-    #[cfg_attr(
-        not(feature = "audio"),
-        allow(dead_code, reason = "only the GStreamer backend confirms playback")
-    )]
+    #[cfg(feature = "audio")]
     pub(crate) fn is_playing_confirmed(&self) -> bool {
         #[cfg(feature = "spotify-native")]
         if let Some(native) = &self.native {
@@ -1053,7 +1015,6 @@ impl AudioBackend {
     #[cfg_attr(
         not(feature = "audio"),
         allow(
-            dead_code,
             clippy::unnecessary_wraps,
             reason = "the silent build never starts a backend"
         )
@@ -1459,32 +1420,21 @@ impl AudioBackend {
         }
     }
 
-    #[cfg_attr(
-        not(feature = "audio"),
-        allow(dead_code, reason = "only the GStreamer backend confirms playback")
-    )]
+    #[cfg(feature = "audio")]
     fn is_playing_confirmed(&self) -> bool {
-        #[cfg(feature = "audio")]
-        {
-            use gstreamer::prelude::*;
-            self.current_uri.is_some()
-                && self
-                    .inner
-                    .controls
-                    .as_ref()
-                    .is_none_or(pipeline_controls::Controls::ready)
-                && !self.reached_eos()
-                && !self
-                    .inner
-                    .errored
-                    .load(std::sync::atomic::Ordering::Relaxed)
-                && self.inner.playbin.state(gstreamer::ClockTime::ZERO).1
-                    == gstreamer::State::Playing
-        }
-        #[cfg(not(feature = "audio"))]
-        {
-            self.is_playing_real() && !self.inner.eos
-        }
+        use gstreamer::prelude::*;
+        self.current_uri.is_some()
+            && self
+                .inner
+                .controls
+                .as_ref()
+                .is_none_or(pipeline_controls::Controls::ready)
+            && !self.reached_eos()
+            && !self
+                .inner
+                .errored
+                .load(std::sync::atomic::Ordering::Relaxed)
+            && self.inner.playbin.state(gstreamer::ClockTime::ZERO).1 == gstreamer::State::Playing
     }
 
     /// Service the `GStreamer` bus (non-blocking): drain pending messages so they

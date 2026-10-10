@@ -194,6 +194,50 @@ pub(crate) fn draw_gate_and_peer_focus(
     }
 }
 
+/// The whole `draw_with_presence` of a gated, presence-publishing leaf:
+/// culled off-viewport, drawn, then overlaid by [`draw_gate_and_peer_focus`].
+pub(crate) fn draw_gated_leaf(
+    widget: &mut (impl Widget + ?Sized),
+    scene: &mut Scene,
+    transform: Affine,
+    text_renderer: &mut TextRenderer,
+    theme: &Theme,
+    presence: &PresenceCtx,
+    permissions: &crate::permissions::PermissionContext,
+) {
+    if presence.should_cull(widget.get_rect()) {
+        return;
+    }
+    widget.draw(scene, transform, text_renderer, theme, presence);
+    draw_gate_and_peer_focus(widget, scene, transform, theme, presence, permissions);
+}
+
+/// Hand `event` to the widgets a virtualizing container has mounted: the
+/// first one holding pointer capture gets it alone, otherwise each laid-out
+/// widget sees it, topmost first, until one handles it.
+pub(crate) fn route_to_mounted<T>(
+    mounted: &mut [T],
+    parts: fn(&mut T) -> (&mut Element, Option<NodeId>),
+    event: &WindowEvent,
+    ctx: &mut EventCtx<'_>,
+) {
+    if let Some((widget, Some(node))) = mounted
+        .iter_mut()
+        .map(parts)
+        .find(|(widget, _)| widget.wants_pointer_capture())
+    {
+        widget.handle_event(event, &mut ctx.reborrow(ctx.path, node));
+        return;
+    }
+    for (widget, node) in mounted.iter_mut().rev().map(parts) {
+        let Some(node) = node else { continue };
+        widget.handle_event(event, &mut ctx.reborrow(ctx.path, node));
+        if *ctx.handled {
+            break;
+        }
+    }
+}
+
 /// Collect resources from every retained widget without requiring container
 /// authors to remember to forward their children's declarations. Resource
 /// ownership stays local to the widget that implements it; composition is a
@@ -873,7 +917,7 @@ thread_local! {
 /// that opens a nested menu. The host keeps the published resource tree
 /// across bare pointer motion, so such a widget must call this or the tree
 /// agents and assistive technology read would go stale. Clicks, keys and
-/// any handled event already republish.
+/// handled events outside the explicit view-only scroll contract republish.
 pub fn note_resource_presentation_changed() {
     RESOURCE_PRESENTATION_EPOCH.with(|epoch| epoch.set(epoch.get().wrapping_add(1)));
 }
@@ -993,6 +1037,15 @@ pub trait Widget {
         _path: &ModelPath,
     ) -> Option<serde_json::Value> {
         None
+    }
+
+    /// Opt in only when this wheel event changes scroll geometry and nothing
+    /// else: no document edit, focus/selection, action availability, resource
+    /// declaration, pending command or work that requires `sync`. The runner
+    /// still lays out, paints and refreshes accessibility geometry. Unknown
+    /// handlers stay on the full synchronization/publication path.
+    fn view_only_scroll(&self, _event: &WindowEvent) -> bool {
+        false
     }
 
     /// Explicit app-owned region; never search secondary children implicitly.

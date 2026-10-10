@@ -36,6 +36,20 @@ class CatalogTest(unittest.TestCase):
                     self.assertTrue((dest / f"{cut}.otf").is_file(), cut)
                 staged = fc.selected(fc.manifest(dest), "product")
                 self.assertTrue(all(f["license_spdx"] in fc.STANDALONE_LICENSES for f in staged))
+        with self.subTest(phase='an OS catalog linked to the product catalog shares its inodes'):
+            with tempfile.TemporaryDirectory() as tmp:
+                product, os_fonts, linked = Path(tmp) / "product", Path(tmp) / "os", Path(tmp) / "linked"
+                fc.stage(source, product, "product")
+                fc.stage(source, os_fonts, "os")
+                fc.link(product, linked, "os", extra=os_fonts)
+                self.assertEqual(fc.verify(linked, "os"), (36, 54891768))
+                face = "NotoSansMath-Regular.ttf"
+                self.assertEqual((linked / face).stat().st_ino, (product / face).stat().st_ino)
+                # The OS-only face is not in the product catalog: copied, not linked.
+                self.assertNotEqual((linked / "NewCM10-Regular.otf").stat().st_ino,
+                                    (os_fonts / "NewCM10-Regular.otf").stat().st_ino)
+                with self.assertRaisesRegex(ValueError, "missing.*NewCM10-Regular"):
+                    fc.link(product, Path(tmp) / "no-extra", "os")
         with self.subTest(phase='corruption is not substituted'):
             with tempfile.TemporaryDirectory() as tmp:
                 dest = Path(tmp) / "fonts"

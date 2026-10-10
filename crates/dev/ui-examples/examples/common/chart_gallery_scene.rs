@@ -28,7 +28,7 @@ pub fn build(theme: &Theme) -> Box<dyn Widget> {
 
 #[allow(
     dead_code,
-    reason = "used by the screenshot registry, not the live gallery binary"
+    reason = "ui-shots renders the inspected variant; ui-lab includes this file for the plain scene only"
 )]
 pub fn build_inspected(theme: &Theme) -> Box<dyn Widget> {
     build_scene(theme, true)

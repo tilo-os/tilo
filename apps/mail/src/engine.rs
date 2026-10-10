@@ -182,21 +182,6 @@ impl EngineRequest {
             Self::OAuthAuthorize { .. } => EngineRequestKind::OAuthAuthorize,
         }
     }
-
-    /// The account this request targets, for the connect/fetch dedupe + error
-    /// context. Empty for requests without a single account (OAuth carries its
-    /// own id).
-    pub fn account_email(&self) -> String {
-        match self {
-            EngineRequest::Connect { account, .. }
-            | EngineRequest::Fetch { account, .. }
-            | EngineRequest::StoreFlag { account, .. }
-            | EngineRequest::Move { account, .. }
-            | EngineRequest::Purge { account, .. }
-            | EngineRequest::Send { account, .. } => account.email.clone(),
-            EngineRequest::OAuthAuthorize { account_id, .. } => account_id.clone(),
-        }
-    }
 }
 
 /// The operation class of a completed engine request.  Kept deliberately

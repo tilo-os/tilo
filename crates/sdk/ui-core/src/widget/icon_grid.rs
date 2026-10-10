@@ -117,12 +117,6 @@ impl IconGrid {
         self
     }
 
-    #[must_use]
-    pub fn with_icon_size(mut self, px: f64) -> Self {
-        self.icon_px = px.max(4.0);
-        self
-    }
-
     /// Host owns the selection across frames.
     pub fn set_selection(&mut self, sel: SelectionModel) {
         self.selection = sel;

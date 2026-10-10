@@ -237,6 +237,11 @@ impl Session {
             let tree = self.images.tree(&id).map_err(anyhow::Error::msg)?;
             images.push((format!("{label} {id}"), tree));
         }
+        if !self.images.is_local(&runtime) {
+            // Stderr is the session's terminal: the person sees why there is
+            // no prompt yet, instead of a pane that only echoes their keys.
+            eprintln!("ush: preparing this environment's runtime for its first use…");
+        }
         let tree = self.images.tree(&runtime).map_err(anyhow::Error::msg)?;
         images.push((
             format!("runtime {} {runtime}", environment.runtime.release),
@@ -950,18 +955,28 @@ fn serve_guest_session(
         relay_session: None,
         editor_protocol: editor.as_ref().map(|_| runtime_portal::editor::VERSION),
     };
-    if let Some((app, _)) = &editor {
+    let handed = if let Some((app, _)) = &editor {
         use std::os::fd::AsFd;
-        let mut bytes = serde_json::to_vec(&response)?;
-        bytes.push(b'\n');
-        runtime_portal::fd_transport::send_with_fds(
-            writer.as_raw_fd(),
-            &bytes,
-            &[master.as_raw_fd(), app.as_fd().as_raw_fd()],
-        )?;
+        serde_json::to_vec(&response)
+            .map_err(anyhow::Error::from)
+            .and_then(|mut bytes| {
+                bytes.push(b'\n');
+                runtime_portal::fd_transport::send_with_fds(
+                    writer.as_raw_fd(),
+                    &bytes,
+                    &[master.as_raw_fd(), app.as_fd().as_raw_fd()],
+                )
+                .map_err(anyhow::Error::from)
+            })
     } else {
-        reply(writer, &response, Some(master.as_raw_fd()))?;
-    }
+        reply(writer, &response, Some(master.as_raw_fd()))
+    };
+    let child = accept_session_handoff(handed, child).inspect_err(|_| {
+        AuditLog::at(store.audit_dir()).append(
+            &crate::audit::AuditRecord::new(&id, &record, "close-session", true)
+                .because("terminal gone before the session was handed over"),
+        );
+    })?;
     drop(editor);
     // Hold the master open until the app has it: closing before the descriptor
     // is received would hand over a dead terminal.
@@ -1003,15 +1018,16 @@ fn refused_unbuildable(
 
 /// Why the environment `record` (`None`: the default) cannot be built on
 /// this device: the answer for the app and the reason in words. `None` when
-/// it resolves — the default environment is made here on first use, as the
-/// guest would make it.
+/// it resolves. Nothing is written: the session makes the default
+/// environment on its first use, so this answer — which Terminal waits for
+/// with a short deadline — never includes a durable record write.
 pub fn unbuildable(
     store: &Store,
     record: Option<&str>,
     images: &dyn Images,
 ) -> Option<(ServeResponse, String)> {
-    match Records::at(store.records_root()).resolve(record, images) {
-        Ok(_) => None,
+    match Records::at(store.records_root()).resolvable(record, images) {
+        Ok(()) => None,
         Err(crate::records::RecordError::NoRuntime(why)) => {
             let reason = format!("no environment can be built on this device: {why}");
             Some((
@@ -1187,7 +1203,7 @@ fn serve_host(
     ));
     let child = spawn_on_pty(crate::host::host_command(&account, term, command), &slave)?;
     drop(slave);
-    reply(
+    let handed = reply(
         writer,
         &ServeResponse::Session {
             session: id.clone(),
@@ -1196,7 +1212,13 @@ fn serve_host(
             editor_protocol: None,
         },
         Some(master.as_raw_fd()),
-    )?;
+    );
+    let child = accept_session_handoff(handed, child).inspect_err(|_| {
+        AuditLog::at(store.audit_dir()).append(
+            &crate::audit::AuditRecord::new(&id, "host", "close-session", true)
+                .because("terminal gone before the session was handed over"),
+        );
+    })?;
     drop(master);
     let termination = finish_session(stream, child);
     AuditLog::at(store.audit_dir()).append(
@@ -1293,7 +1315,7 @@ fn serve_relay(
         "open-relay-session",
         true,
     ));
-    reply(
+    let handed = reply(
         writer,
         &ServeResponse::Session {
             session: id.clone(),
@@ -1302,7 +1324,13 @@ fn serve_relay(
             editor_protocol: None,
         },
         Some(master.as_raw_fd()),
-    )?;
+    );
+    let child = accept_session_handoff(handed, child).inspect_err(|_| {
+        AuditLog::at(store.audit_dir()).append(
+            &crate::audit::AuditRecord::new(&id, &key, "close-relay-session", true)
+                .because("terminal gone before the session was handed over"),
+        );
+    })?;
     drop(master);
     adopt_relay_tools(status, store.records_root().to_path_buf());
     let termination = finish_session(stream, child);
@@ -1421,6 +1449,23 @@ fn adopt_relay_tools(mut status: crate::relay::StatusReader, records_root: PathB
             }
         }
     });
+}
+
+/// A spawned local guest, host shell or relay bridge belongs to the
+/// supervisor until its descriptor reply is delivered. An abandoned open
+/// must not leave a running child or a zombie behind.
+fn accept_session_handoff(
+    handed: anyhow::Result<()>,
+    mut child: std::process::Child,
+) -> anyhow::Result<std::process::Child> {
+    match handed {
+        Ok(()) => Ok(child),
+        Err(error) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            Err(error)
+        }
+    }
 }
 
 /// Wait for whichever side of a served session ends first and tear the
@@ -1693,6 +1738,76 @@ mod tests {
             child.kill().expect("stop guest");
             let _ = child.wait();
         }
+    }
+
+    #[test]
+    fn cancelling_a_terminal_connection_kills_and_reaps_its_guest_with_clones_open() {
+        let (supervisor, terminal) = UnixStream::pair().expect("socket pair");
+        let _reader_clone = terminal.try_clone().expect("reader lifetime clone");
+        let child = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .expect("spawn guest");
+        let pid = libc::pid_t::try_from(child.id()).expect("guest pid");
+        terminal
+            .shutdown(std::net::Shutdown::Both)
+            .expect("cancel pending or accepted session");
+        let termination = finish_session(&supervisor, child);
+        assert!(
+            termination.starts_with("terminal closed; exit"),
+            "{termination}"
+        );
+        // SAFETY: waitpid writes only to this local status; WNOHANG cannot block.
+        let mut status = 0;
+        assert_eq!(
+            unsafe { libc::waitpid(pid, &raw mut status, libc::WNOHANG) },
+            -1,
+            "production teardown must reap the child, not leave a zombie"
+        );
+        assert_eq!(
+            std::io::Error::last_os_error().raw_os_error(),
+            Some(libc::ECHILD)
+        );
+    }
+
+    #[test]
+    fn failed_descriptor_handoff_kills_and_reaps_the_unclaimed_child() {
+        let (mut supervisor, terminal) = UnixStream::pair().expect("socket pair");
+        terminal
+            .shutdown(std::net::Shutdown::Both)
+            .expect("cancel before reply");
+        let (master, _slave) = open_pty(80, 24).expect("PTY");
+        let child = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .expect("spawn guest or bridge");
+        let pid = libc::pid_t::try_from(child.id()).expect("child pid");
+        let handed = reply(
+            &mut supervisor,
+            &ServeResponse::Session {
+                session: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
+                environment: "default".into(),
+                relay_session: None,
+                editor_protocol: None,
+            },
+            Some(master.as_raw_fd()),
+        );
+        assert!(
+            handed.is_err(),
+            "the cancelled terminal cannot accept a descriptor"
+        );
+        assert!(accept_session_handoff(handed, child).is_err());
+        // SAFETY: waitpid writes only to this local status; WNOHANG cannot block.
+        let mut status = 0;
+        assert_eq!(
+            unsafe { libc::waitpid(pid, &raw mut status, libc::WNOHANG) },
+            -1,
+            "the production failed-handoff path must reap the child"
+        );
+        assert_eq!(
+            std::io::Error::last_os_error().raw_os_error(),
+            Some(libc::ECHILD)
+        );
     }
 
     fn open(target: Target) -> ServeRequest {

@@ -321,10 +321,11 @@ jobs:
       - name: Platform crates' browser modules (node --test)
         run: node --test crates/platform/*/web/*.test.mjs
       - name: Build tilo-app
-        run: cargo build --locked -p tilo-app-cli --bin tilo-app
+        run: bash tools/ci/measure.sh "SDK web tool build" -- cargo build --locked -p tilo-app-cli --bin tilo-app
       - name: Desktop bundle (dev profile)
         run: |
-          target/debug/tilo-app build --target web --bundle desktop apps/calculator
+          bash tools/ci/measure.sh "SDK dev desktop bundle build" -- \
+            target/debug/tilo-app build --target web --bundle desktop apps/calculator
       - name: Headless Chromium for Testing
         run: |
           # Chrome's shared-library dependencies; present on current builders.
@@ -387,7 +388,8 @@ jobs:
           mkdir -p "$RUNNER_TEMP/web-shots"
           # Independent browsers keep each probe foregrounded while using
           # the existing job CPU/memory budget. Every app and timing stays.
-          SHOTS_DIR="$RUNNER_TEMP/web-shots" node crates/browser/tilo-web-desktop/scripts/smoke.mjs \
+          SHOTS_DIR="$RUNNER_TEMP/web-shots" bash tools/ci/measure.sh "SDK app mount tests" -- \
+            node crates/browser/tilo-web-desktop/scripts/smoke.mjs \
             http://127.0.0.1:7878 "${apps[@]}" desktop
       - uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
         if: always()
@@ -427,10 +429,11 @@ jobs:
             cargo install --locked wasm-bindgen-cli --version "$WASM_BINDGEN_VERSION"
           fi
       - name: Build tilo-app
-        run: cargo build --locked -p tilo-app-cli --bin tilo-app
+        run: bash tools/ci/measure.sh "SDK release web tool build" -- cargo build --locked -p tilo-app-cli --bin tilo-app
       - name: Release desktop bundle within its size budget
         run: |
-          target/debug/tilo-app build --target web --bundle desktop --release apps/calculator
+          bash tools/ci/measure.sh "SDK release desktop bundle build" -- \
+            target/debug/tilo-app build --target web --bundle desktop --release apps/calculator
           python3 tools/web/wasm_size_ratchet.py measure desktop target/tilo-app/web/calculator/bundle
       - name: Stage exact release private image worker
         run: |

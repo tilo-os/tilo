@@ -931,10 +931,7 @@ impl Widget for CategoryChart {
         _state: &mut crate::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
-        if !matches!(action, crate::a11y::Action::Activate) {
-            return false;
-        }
-        let Some(key) = key_path.last() else {
+        let Some(key) = crate::widget::chart_navigation::activated_key(action, key_path) else {
             return false;
         };
         if self.style.show_legend
@@ -943,7 +940,7 @@ impl Widget for CategoryChart {
         {
             for series in &self.series {
                 let target = format!("legend:{}", series.id);
-                if crate::a11y::hash_key(&target) == *key {
+                if crate::a11y::hash_key(&target) == key {
                     return self.toggle_series(&series.id.clone());
                 }
             }
@@ -954,7 +951,7 @@ impl Widget for CategoryChart {
             }
             for category in &self.categories {
                 let target = format!("{}:{}", series.id, category.id);
-                if crate::a11y::hash_key(&target) == *key {
+                if crate::a11y::hash_key(&target) == key {
                     self.activated = Some((series.id.clone(), category.id.clone()));
                     return true;
                 }

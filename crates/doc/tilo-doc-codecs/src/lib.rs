@@ -162,11 +162,6 @@ pub fn sheet_provider_for_ext(ext: &str) -> Option<Box<dyn SheetProvider>> {
 /// Spreadsheet formats the platform opens as a workbook resource, whatever this build compiles.
 pub const SHEET_EXTENSIONS: &[&str] = &["xlsx", "ods"];
 
-/// Whether `ext` names a spreadsheet format the platform opens as a workbook resource.
-pub fn is_supported_sheet_ext(ext: &str) -> bool {
-    SHEET_EXTENSIONS.iter().any(|e| e.eq_ignore_ascii_case(ext))
-}
-
 /// Document formats the platform opens as an editable rich-text resource — the OS source of
 /// truth for "this file is an editable document", independent of which codecs a given binary
 /// compiles (a file manager asks this without linking any of them).

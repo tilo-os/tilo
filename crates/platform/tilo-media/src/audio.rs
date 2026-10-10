@@ -142,10 +142,6 @@ impl AudioGraph {
     pub fn sink_by_description(&self, desc: &str) -> Option<&AudioDevice> {
         self.sinks.iter().find(|d| d.description == desc)
     }
-    /// A source by human description.
-    pub fn source_by_description(&self, desc: &str) -> Option<&AudioDevice> {
-        self.sources.iter().find(|d| d.description == desc)
-    }
 
     /// A stable, cheap fingerprint of the graph's *topology* — the set of
     /// devices (by name) and streams (by id+app) present — deliberately
@@ -809,11 +805,6 @@ impl AudioEnumerator for RealEnumerator {
 /// Convenience: enumerate the live graph once via [`RealEnumerator`].
 pub fn enumerate() -> AudioGraph {
     RealEnumerator.enumerate()
-}
-
-/// Shorthand for the boxed enumerator the settings pane holds.
-pub fn real_enumerator() -> Arc<dyn AudioEnumerator> {
-    Arc::new(RealEnumerator)
 }
 
 /// Shorthand for the boxed control the settings pane holds.

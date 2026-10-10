@@ -1860,9 +1860,6 @@ impl TabBar {
         let t = self.tabs.remove(from);
         self.tabs.insert(to, t);
     }
-    pub fn take_drag(&mut self) -> Option<DragPayload> {
-        self.pending_drag.take()
-    }
     /// Abandon a pending or lifted tab without turning its release into a drop.
     pub fn cancel_drag(&mut self) -> bool {
         if self.press_origin.is_none() && self.pending_drag.is_none() {

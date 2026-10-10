@@ -981,15 +981,6 @@ pub fn set_annotation_color_action(id: &str, color: Swatch) -> PdfViewerAction {
     }
 }
 
-pub fn set_annotation_position_action(id: &str, x: f64, y: f64) -> PdfViewerAction {
-    PdfViewerAction::SetAnnotationPosition {
-        id: id.to_string(),
-        x,
-        y,
-        user_space: false,
-    }
-}
-
 /// Move a note to a point in its page's PDF user space.
 pub fn set_annotation_position_user_action(id: &str, x: f64, y: f64) -> PdfViewerAction {
     PdfViewerAction::SetAnnotationPosition {

@@ -900,6 +900,15 @@ pub(crate) struct BoundOwnerMark {
     document: Option<(Vec<automerge::ChangeHash>, usize)>,
 }
 
+#[cfg(feature = "native")]
+impl BoundOwnerMark {
+    pub(crate) fn is_committed(&self) -> bool {
+        self.document
+            .as_ref()
+            .is_some_and(|(_, pending)| *pending == 0)
+    }
+}
+
 /// Every live bound owner under `root`, once each, in tree order.
 #[cfg(feature = "native")]
 pub(crate) fn bound_owner_marks(root: &dyn Widget, outer: &AutoCommit) -> Vec<BoundOwnerMark> {
@@ -2414,24 +2423,12 @@ pub struct CallbackBinding {
     /// intents by the shell that presents search.
     pub(crate) search_requests:
         Rc<RefCell<std::collections::VecDeque<crate::search::SearchRequest>>>,
-    #[allow(
-        dead_code,
-        reason = "binding retains original authority for the following typed-action provenance task"
-    )]
     pub(crate) instance_id: crate::application::InstanceId,
     pub(crate) app_id: String,
     pub(crate) records: RecordStore,
     pub(crate) checkout: RecordCheckout,
     pub(crate) permissions: Rc<RefCell<PermissionContext>>,
-    #[allow(
-        dead_code,
-        reason = "binding retains original authority for the following typed-action provenance task"
-    )]
     pub(crate) author: UserId,
-    #[allow(
-        dead_code,
-        reason = "binding retains original authority for the following typed-action provenance task"
-    )]
     pub(crate) operation_context: tilo_actions::ActionContext,
     /// Edits commit as the author's own writer on the record
     /// ([`crate::application::HostContext::write_as_author`]).
@@ -3379,41 +3376,6 @@ impl Drop for ActiveEntry {
     fn drop(&mut self) {
         ACTIVE.with_borrow_mut(|active| *active = None);
     }
-}
-
-pub(crate) fn with_owned_record_action<R>(
-    records: &RecordStore,
-    checkout: &RecordCheckout,
-    instance_id: crate::application::InstanceId,
-    app_id: &str,
-    author: UserId,
-    context: tilo_actions::ActionContext,
-    callback: impl FnOnce(&mut AutoCommit, &ObjId) -> R,
-) -> Result<R, BoundDispatchError> {
-    let scope = crate::wake::WakeScope::new();
-    let owner = Rc::new(());
-    let binding = CallbackBinding {
-        lifetime: scope.handle(),
-        closing: Rc::new(Cell::new(false)),
-        registry_owner: Rc::downgrade(&owner),
-        lifetime_id: uuid::Uuid::new_v4(),
-        control_domain: crate::control_custody::WeakControlDomain::default(),
-        queued_controls: Rc::new(RefCell::new(std::collections::VecDeque::new())),
-        search_requests: Rc::default(),
-        instance_id,
-        app_id: app_id.to_string(),
-        records: records.clone(),
-        checkout: checkout.clone(),
-        permissions: Rc::new(RefCell::new(PermissionContext::permissive())),
-        author,
-        operation_context: context,
-        writes_as_author: false,
-    };
-    let mut outer_witness = AutoCommit::new();
-    binding.with_document(&mut outer_witness, |document, root| {
-        let value = callback(document, root);
-        binding.finish_action_boundary(document).map(|()| value)
-    })?
 }
 
 impl CallbackBinding {
@@ -4415,6 +4377,7 @@ mod owned_restore_tests;
 
 /// Remote delivery is not a local action. A physical or logical edit must be
 /// finished by its existing owner; the network queue never commits it.
+#[cfg(all(feature = "native", any(test, feature = "test-support")))]
 pub(crate) fn can_merge_remote_owned_document(
     store: &RecordStore,
     checkout: &RecordCheckout,

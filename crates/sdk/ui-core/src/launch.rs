@@ -163,13 +163,6 @@ impl LaunchArgs {
 
 /// How the standard lifecycle launches one application definition: its
 /// component host, capture scenarios, commands and accepted arguments.
-#[cfg_attr(
-    not(feature = "native"),
-    allow(
-        dead_code,
-        reason = "some fields are read only by the native event-loop runner"
-    )
-)]
 #[derive(Clone)]
 pub struct LaunchSpec {
     definition: &'static crate::application::ApplicationDefinition,
@@ -607,12 +600,6 @@ impl LaunchRecovery {
 
     fn here(&self) -> bool {
         std::thread::current().id() == self.owner
-    }
-
-    /// Whether the owners are reachable from this thread.
-    #[must_use]
-    pub fn is_reachable(&self) -> bool {
-        self.here()
     }
 
     /// How many close reports this recovery carries, on any thread.
@@ -1178,15 +1165,6 @@ pub const MAX_SHOT_DEVICE_SCALE: u32 = 4;
 /// `--distinct-letters` for the capture this process writes: every capture
 /// theme ([`shot_theme`], [`capture_theme`], [`shot_theme_from_env`]) takes it.
 static CAPTURE_DISTINCT_LETTERS: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-
-/// What this process's capture set "Always distinguish similar letters" to
-/// (`--distinct-letters`), `None` outside a capture or without the flag: a
-/// pane that shows the setting's own control renders it as the person's
-/// choice, so the control matches the text around it.
-#[must_use]
-pub fn capture_distinct_letters() -> Option<bool> {
-    CAPTURE_DISTINCT_LETTERS.get().copied()
-}
 
 /// Pin "Always distinguish similar letters" on a capture theme when the
 /// capture asked for it (`--distinct-letters`).

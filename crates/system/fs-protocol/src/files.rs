@@ -513,14 +513,6 @@ pub enum FileMutationParticipantRole {
     RestoreContent,
 }
 
-/// Source compatibility for the original replacement-rename transaction API.
-///
-/// The transaction model now spans separately validated schema versions, so
-/// new code must use [`FileMutationParticipantRole`] instead of implying that
-/// every role is valid in schema version 1.
-#[deprecated(note = "use FileMutationParticipantRole with the manifest schema gate")]
-pub type FileMutationParticipantRoleV1 = FileMutationParticipantRole;
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub enum ConflictMergeCodecV1 {
@@ -540,9 +532,6 @@ pub struct FileMutationParticipant {
     pub proposed_content_revision: Option<ContentRevisionV1>,
     pub projection_hash: ContentHash,
 }
-
-#[deprecated(note = "use FileMutationParticipant with the manifest schema gate")]
-pub type FileMutationParticipantV1 = FileMutationParticipant;
 
 #[derive(Serialize)]
 #[serde(deny_unknown_fields)]
@@ -703,10 +692,6 @@ pub enum FileMutationOperation {
     },
 }
 
-/// Source compatibility for callers of the original schema-1 API.
-#[deprecated(note = "use FileMutationOperation with the manifest schema gate")]
-pub type FileMutationOperationV1 = FileMutationOperation;
-
 /// Canonical manifest signed once and copied unchanged into every prepare.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -720,9 +705,6 @@ pub struct FileMutationTransactionManifest {
     /// Strictly sorted by stable record ID, with no duplicates.
     pub participants: Vec<FileMutationParticipant>,
 }
-
-#[deprecated(note = "use FileMutationTransactionManifest")]
-pub type FileMutationTransactionManifestV1 = FileMutationTransactionManifest;
 
 #[derive(Serialize)]
 #[serde(deny_unknown_fields)]
@@ -982,9 +964,6 @@ pub struct FileMutationTransaction {
     pub signature: Signature,
 }
 
-#[deprecated(note = "use FileMutationTransaction")]
-pub type FileMutationTransactionV1 = FileMutationTransaction;
-
 impl FileMutationTransaction {
     fn signing_view(&self) -> TransactionSigningView<'_> {
         TransactionSigningView {
@@ -1202,9 +1181,6 @@ pub struct HistoryControlRequestV1 {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "operation", deny_unknown_fields)]
 pub enum HistoryControlOperationV1 {
-    Restore {
-        version_id: FileVersionId,
-    },
     /// Resolve one open first-class conflict by appending a separately signed
     /// immutable result version. `version_id` is the exact conflict member
     /// whose bytes become the result; even `KeepCurrent` names it explicitly so

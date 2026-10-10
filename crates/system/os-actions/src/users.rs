@@ -204,39 +204,6 @@ pub fn automatic_login(username: &str) -> Result<bool, String> {
     })
 }
 
-/// Change `username`'s display ("full") name.
-///
-/// # Errors
-///
-/// Returns an error message if `username` or `real_name` fails validation, or
-/// `AccountsService` refuses the request.
-pub fn set_real_name(username: &str, real_name: &str) -> Result<(), String> {
-    validate_username(username)?;
-    let real_name = validate_real_name(real_name)?.to_string();
-    block(call_user(username, "SetRealName", &real_name))
-}
-
-/// Set `username`'s account icon to the image at `path`.
-///
-/// # Errors
-///
-/// Returns an error message if `username` fails validation, `path` cannot be read, is not a
-/// regular file, is larger than 5 MB, cannot be canonicalised, or `AccountsService` refuses the
-/// request.
-pub fn set_avatar(username: &str, path: &std::path::Path) -> Result<(), String> {
-    validate_username(username)?;
-    let meta =
-        std::fs::symlink_metadata(path).map_err(|e| format!("cannot read avatar image: {e}"))?;
-    if !meta.file_type().is_file() || meta.len() > 5 * 1024 * 1024 {
-        return Err("avatar must be a regular image file no larger than 5 MB".into());
-    }
-    let path = path
-        .canonicalize()
-        .map_err(|e| format!("cannot resolve avatar image: {e}"))?;
-    let value = path.to_string_lossy().to_string();
-    block(call_user(username, "SetIconFile", &value))
-}
-
 /// Set `username`'s login password. `password` is zeroized in place before returning,
 /// regardless of outcome.
 ///

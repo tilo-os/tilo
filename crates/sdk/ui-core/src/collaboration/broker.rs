@@ -21,9 +21,9 @@ use super::{
     ActionDirectoryRequest, Backend, BrokerActionCatalogueWire, BrokerActionDescriptor,
     BrokerActionSurface, CollabEvent, CollabRequest, CollabTransport, CollaborationManager,
     Collaborator, DocumentMutation, DocumentPublicationError, DocumentPublicationReceipt,
-    ExportedAction, ExportedInput, HostDocumentCommitter, PresenceKey, PresencePayload,
-    PrimaryRouteState, RouteSpec, SignedOp, TransportCommand, TransportError, TransportStatus,
-    Uuid, auto_hello_env, mpsc, presence_handle_env,
+    ExportedAction, ExportedInput, PresenceKey, PresencePayload, PrimaryRouteState, RouteSpec,
+    SignedOp, TransportCommand, TransportError, TransportStatus, Uuid, auto_hello_env, mpsc,
+    presence_handle_env,
 };
 
 // Worker-owned Cloud facilities: committed-document reads, the paged
@@ -1465,6 +1465,16 @@ fn event_diagnostics(event: &CollabEvent) -> (&'static str, Option<usize>) {
             }
             "TaskRunCancellation"
         }
+        CollabEvent::TaskRunReportResult { result, .. } => {
+            if let Err(error) = result {
+                meter.string_capacity(error);
+            }
+            "TaskRunReportResult"
+        }
+        CollabEvent::TaskRunControl { control, .. } => {
+            serialized_bytes(control, &mut meter);
+            "TaskRunControl"
+        }
         CollabEvent::WorkspaceControl { event, .. } => {
             workspace_control_event_bytes(event, &mut meter);
             "WorkspaceControl"
@@ -2244,42 +2254,19 @@ struct SdkJoinIdentity {
 #[derive(Clone)]
 pub struct CertifiedEndpointIdentity {
     presentation: Vec<u8>,
-    signer: EndpointDocumentSigner,
-}
-
-#[derive(Clone)]
-enum EndpointDocumentSigner {
-    Device(ed25519_dalek::SigningKey),
-    Host(std::sync::Arc<dyn HostDocumentCommitter>),
+    device_key: ed25519_dalek::SigningKey,
 }
 
 impl CertifiedEndpointIdentity {
     pub fn new(presentation: Vec<u8>, device_key: ed25519_dalek::SigningKey) -> Self {
         Self {
             presentation,
-            signer: EndpointDocumentSigner::Device(device_key),
-        }
-    }
-
-    /// Explicit owner-bound host publication. The host retains signing custody;
-    /// this hook must return only after the exact document is durably committed.
-    pub fn with_host_documents(
-        presentation: Vec<u8>,
-        documents: std::sync::Arc<dyn HostDocumentCommitter>,
-    ) -> Self {
-        Self {
-            presentation,
-            signer: EndpointDocumentSigner::Host(documents),
+            device_key,
         }
     }
 
     fn document_signer(&self) -> SdkDocumentSigner {
-        match &self.signer {
-            EndpointDocumentSigner::Host(host) => SdkDocumentSigner::Host(host.clone()),
-            EndpointDocumentSigner::Device(key) => {
-                SdkDocumentSigner::Harness(Box::new(key.clone()))
-            }
-        }
+        SdkDocumentSigner::Harness(Box::new(self.device_key.clone()))
     }
 }
 
@@ -2427,7 +2414,6 @@ impl SdkCertifiedIdentity for runtime_identity::SigningIdentity {
     )
 )]
 enum SdkDocumentSigner {
-    Host(std::sync::Arc<dyn HostDocumentCommitter>),
     /// Shared so the identity service can be asked off the shovel thread.
     Certified(std::sync::Arc<dyn SdkCertifiedIdentity>),
     /// Explicit-FD harnesses have no launcher identity service. Their
@@ -3778,14 +3764,11 @@ async fn drive_shovel(
     let media_routes = native_media::Routes::default();
     let _media_worker = native_media::start(media_rx, media_routes.clone());
     // Every route of a certified endpoint is an encrypted channel whose keys
-    // come from the identity service. A harness has no such service, and an
-    // inherited host signer commits cleartext through its host owner, so
-    // both stay plaintext.
+    // come from the identity service. A harness has no such service, so it
+    // stays plaintext.
     let asks_channel_keys = !matches!(
         signer,
-        LocalSdkDocumentSigner::Inherited(
-            SdkDocumentSigner::Harness(_) | SdkDocumentSigner::Host(_)
-        )
+        LocalSdkDocumentSigner::Inherited(SdkDocumentSigner::Harness(_))
     );
     // When to ask for keys: see `KeySchedule`. Each encrypted route follows
     // its channel's changes and marks itself on `key_signals`.
@@ -5116,54 +5099,6 @@ async fn send_document_mutation(
                     .publication_failed("original document contributors", error, true)
             })?;
     }
-    if let LocalSdkDocumentSigner::Inherited(SdkDocumentSigner::Host(host)) = signer {
-        // The standalone owner admits cleartext state. Never bypass an MLS
-        // requirement or produce a signed cleartext replacement for ciphertext.
-        if !route
-            .encryption
-            .lock()
-            .is_ok_and(|encryption| matches!(encryption.keys, super::route_keys::Keys::Plain))
-        {
-            return Err(inbound.state.publication_failed(
-                "host document encryption unavailable",
-                "cleartext commit refused",
-                true,
-            ));
-        }
-        let committed_custody = authorization.clone();
-        let commit = match authorization {
-            Some(authorization) => host.commit_scoped(&route.spec, mutation, authorization),
-            None => host.commit(&route.spec, mutation),
-        };
-        let result = commit.await.and_then(|op| {
-            if let Some(authorization) = &committed_custody {
-                authorization.check_committed_operation(&route.spec, &op)?;
-            }
-            postcard::to_stdvec(&op).map_err(|e| e.to_string())
-        });
-        match result {
-            Ok(bytes) => {
-                if let Err(error) = route.channel.send(&bytes).await {
-                    tracing::warn!(%error, "collab: precommitted host document handoff failed; outcome unknown");
-                    return Err(inbound.state.publication_failed(
-                        "host document receipt handoff",
-                        error,
-                        true,
-                    ));
-                }
-                if let Some(authorization) = &committed_custody {
-                    authorization.acknowledge_committed();
-                }
-            }
-            Err(error) => {
-                tracing::warn!(%error, "collab: host document commit failed; outcome unknown");
-                return Err(inbound
-                    .state
-                    .publication_failed("host document commit", error, true));
-            }
-        }
-        return Ok(());
-    }
     if authorization.is_some() {
         return Err(inbound.state.publication_failed(
             "scoped document evaluator unavailable",
@@ -5261,15 +5196,6 @@ async fn try_send_frame(
         };
     let now = crate::time::wall();
     let author = match signer {
-        // Host-signed documents commit through the host owner before this
-        // frame path; an inherited host signer cannot sign a frame here.
-        LocalSdkDocumentSigner::Inherited(SdkDocumentSigner::Host(_)) => {
-            return FrameSend::Failed(state.publication_failed(
-                "document signing or encoding",
-                "inherited host signer cannot sign a document frame",
-                true,
-            ));
-        }
         LocalSdkDocumentSigner::Inherited(SdkDocumentSigner::Certified(identity)) => {
             identity.signing_public_key()
         }
@@ -5315,15 +5241,6 @@ async fn try_send_frame(
         }
     };
     let signature = match signer {
-        // Host-signed documents commit through the host owner before this
-        // frame path; an inherited host signer cannot sign a frame here.
-        LocalSdkDocumentSigner::Inherited(SdkDocumentSigner::Host(_)) => {
-            return FrameSend::Failed(state.publication_failed(
-                "document signing or encoding",
-                "inherited host signer cannot sign a document frame",
-                true,
-            ));
-        }
         LocalSdkDocumentSigner::Inherited(SdkDocumentSigner::Certified(identity)) => match identity
             .sign_collaboration_op(&workspace_id, &route.spec.app_id, record_id, &unsigned_op)
         {
@@ -5489,9 +5406,7 @@ async fn refresh_route_keys(route: &SdkRoute, signer: &mut LocalSdkDocumentSigne
                 .channel_keys(&workspace_id, &route.spec.app_id, record_id, generation)
                 .await
         }
-        LocalSdkDocumentSigner::Inherited(
-            SdkDocumentSigner::Harness(_) | SdkDocumentSigner::Host(_),
-        ) => return false,
+        LocalSdkDocumentSigner::Inherited(SdkDocumentSigner::Harness(_)) => return false,
     };
     update_route_keys(route, answered_keys(reply, generation), generation)
 }
@@ -6564,11 +6479,20 @@ async fn dispatch_sdk_request(
             let _ = inbound_tx.send_durable(CollabEvent::EnrolledTaskReply { request_id, result });
         }
         CollabRequest::ReportTaskRun {
+            request_id,
             run_id,
             lease,
             update,
         } => {
-            if let Err(error) = route.channel.report_task_run(run_id, &lease, &update).await {
+            let result = route
+                .channel
+                .report_task_run(run_id, &lease, &update)
+                .await
+                .map_err(|error| error.to_string());
+            if let Some(request_id) = request_id {
+                let _ = inbound_tx
+                    .send_durable(CollabEvent::TaskRunReportResult { request_id, result });
+            } else if let Err(error) = result {
                 tracing::warn!(%error, run_id, "collab: reporting task run update failed");
             }
         }
@@ -6627,9 +6551,18 @@ async fn dispatch_sdk_request(
         } => {
             let result = route
                 .channel
-                .task_run_cancelled(run_id, &lease)
+                .task_run_status(run_id, &lease)
                 .await
-                .map_err(|error| error.to_string());
+                .map_err(|error| error.to_string())
+                .map(|status| {
+                    if let Some(control) = status.control {
+                        let _ = inbound_tx.send_durable(CollabEvent::TaskRunControl {
+                            request_id,
+                            control,
+                        });
+                    }
+                    status.cancelled
+                });
             let _ =
                 inbound_tx.send_durable(CollabEvent::TaskRunCancellation { request_id, result });
         }
@@ -6846,13 +6779,8 @@ mod tests {
     }
 
     #[cfg(unix)]
-    include!("invocation_custody_tests.rs");
-
-    #[cfg(unix)]
     include!("directory_client_tests.rs");
-    use crate::collaboration::{
-        CollaborationState, HostDocumentCommit, SignedSendError, SigningIdentity,
-    };
+    use crate::collaboration::{CollaborationState, SignedSendError, SigningIdentity};
 
     fn plain_route_keys() -> SharedRouteKeys {
         std::sync::Arc::new(std::sync::Mutex::new(
