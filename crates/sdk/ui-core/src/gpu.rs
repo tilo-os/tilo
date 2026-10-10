@@ -302,37 +302,25 @@ impl RenderContext {
         }
     }
 
-    /// Make the instance again with the fallback backends, once, while
-    /// nothing has come from the first: no device was opened on it and no
-    /// surface was made from it, so nothing of it can meet the new one.
-    fn fall_back(&mut self) -> bool {
-        if !self.devices.is_empty() {
-            return false;
-        }
-        let Some(backends) = self.fallback.take() else {
-            return false;
-        };
-        tilo_startup_metrics::mark("gpu-instance-fallback");
-        self.instance = create_instance(backends, &self.backend_options);
-        true
-    }
-
-    /// Before a surface is made from `instance`: if it may still be replaced
-    /// and offers no adapter, replace it now rather than after a surface of
-    /// it exists. Free once a device is open or nothing is left to fall back to.
+    /// Before the first device or surface comes from `instance`: if it may
+    /// still be replaced and offers no adapter at all, make it again with the
+    /// fallback backends, once. Nothing of the first instance exists yet, so
+    /// nothing of it can meet the new one; afterwards the instance stays.
+    /// Free once settled.
     async fn settle_backends(&mut self) {
-        if self.fallback.is_some()
-            && self.devices.is_empty()
+        let Some(fallback) = self.fallback.take() else {
+            return;
+        };
+        if self.devices.is_empty()
             && self
                 .instance
                 .enumerate_adapters(wgpu::Backends::all())
                 .await
                 .is_empty()
         {
-            self.fall_back();
+            tilo_startup_metrics::mark("gpu-instance-fallback");
+            self.instance = create_instance(fallback, &self.backend_options);
         }
-        // A surface of this instance is about to exist: it stays.
-        self.fallback = None;
     }
 
     /// Index of a device that can present to `compatible_surface`, opening one
@@ -355,20 +343,14 @@ impl RenderContext {
 
     async fn new_device(&mut self, compatible_surface: Option<&Surface<'_>>) -> Option<usize> {
         tilo_startup_metrics::mark("gpu-adapter-request-start");
-        let requested =
+        // The first device decides the instance for good. Asked first, not
+        // after a failed request: with `WGPU_ADAPTER_NAME` set, wgpu panics
+        // on an instance that offers no adapter instead of failing.
+        self.settle_backends().await;
+        let adapter =
             wgpu::util::initialize_adapter_from_env_or_default(&self.instance, compatible_surface)
-                .await;
-        let adapter = match requested {
-            Ok(adapter) => adapter,
-            // A surface ties the request to this instance; without one, an
-            // instance that offers nothing is made again on the fallback.
-            Err(_) if compatible_surface.is_none() && self.fall_back() => {
-                wgpu::util::initialize_adapter_from_env_or_default(&self.instance, None)
-                    .await
-                    .ok()?
-            }
-            Err(_) => return None,
-        };
+                .await
+                .ok()?;
         tilo_startup_metrics::mark("gpu-adapter-request-done");
         if compatible_surface.is_some() {
             tilo_startup_metrics::mark("gpu-adapter-report-start");
@@ -723,19 +705,18 @@ mod tests {
             context.fallback.is_none(),
             "an instance is only ever made again once"
         );
-        assert!(
-            !context.fall_back(),
-            "a context with a device never replaces its instance"
-        );
 
-        let mut without = RenderContext::with_backends(BackendChoice {
-            primary: Backends::empty(),
-            fallback: None,
+        // An instance that offers an adapter is kept: falling back here
+        // would leave this context with no backend at all.
+        let mut kept = RenderContext::with_backends(BackendChoice {
+            primary: Backends::all(),
+            fallback: Some(Backends::empty()),
         });
         assert!(
-            pollster::block_on(without.device(None)).is_none(),
-            "no fallback, no adapter: no device, and no panic"
+            pollster::block_on(kept.device(None)).is_some(),
+            "an instance with an adapter is never replaced"
         );
+        assert!(kept.fallback.is_none());
     }
     use crate::offscreen::shared_gpu;
     use wgpu::DeviceType;
