@@ -601,22 +601,34 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
     }
 
     /// One row per item of a collection, kept in collection order. A row is
-    /// built once per item and retained while the item exists, so focus and
-    /// caret inside it survive other items changing. Inside a scroll view
-    /// only the rows near what it shows are mounted, and only theirs follow
-    /// each change; a row out of view catches up as it scrolls back in, so
-    /// a change costs the rows shown however long the list. A row's context menu
-    /// (right-click, the Menu key or Shift+F10) offers the actions the
-    /// resource publishes on its item, with the item already bound.
+    /// built when it is first shown and retained while the item exists, so
+    /// focus and caret inside it survive other items changing, and opening
+    /// a list builds the rows it shows however long it is. Inside a scroll
+    /// view only the rows near what it shows are mounted, and only theirs
+    /// follow each change; a row out of view catches up as it scrolls back
+    /// in, so a change costs the rows shown however long the list. A row's
+    /// context menu (right-click, the Menu key or Shift+F10) offers the
+    /// actions the resource publishes on its item, with the item already
+    /// bound.
+    ///
+    /// Offer what acts on one item as an action of the resource that takes
+    /// the item (published on every item, shown or not). A row view that
+    /// binds declarations or effects of its own makes the list build every
+    /// row, since each is then published.
     pub fn each<I: 'static>(
         &self,
-        items: fn(&T) -> &Collection<I>,
+        items: impl Fn(&T) -> &Collection<I> + 'static,
         row: impl Fn(&mut ViewCx<R, I>) -> Element + 'static,
     ) -> Each<R> {
+        let items: Rc<dyn Fn(&T) -> &Collection<I>> = Rc::new(items);
         let focus = Rc::clone(&self.focus);
+        let collection = Rc::clone(&items);
         let ids: super::each::Ids<R> = Box::new(move |state, visit| match (focus)(state) {
-            Some(value) => visit(&mut items(value).ids()),
-            None => visit(&mut std::iter::empty()),
+            Some(value) => {
+                let items = collection(value);
+                visit(Some(items.membership()), &mut items.ids());
+            }
+            None => visit(None, &mut std::iter::empty()),
         });
         let parent_focus = Rc::clone(&self.focus);
         let live = self.live.clone();
@@ -636,6 +648,7 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
             ids,
             Box::new(move |id: &Id, alive: &Rc<()>, updaters: &Updaters<R>| {
                 let parent = Rc::clone(&parent_focus);
+                let items = Rc::clone(&items);
                 let key = id.clone();
                 // Where the item stood last time: a row reads its item
                 // without scanning the collection.
