@@ -874,14 +874,14 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
             )
             .await,
         );
-        let released = Instant::now();
+        let sent_at = Instant::now();
         release_plan.send(gated_edit(text)).unwrap();
         agent.run_until(Some(Instant::now() + Duration::from_millis(500)), |_| false);
         assert!(
             plan_ready
                 .lock()
                 .unwrap()
-                .is_some_and(|ready| ready >= released),
+                .is_some_and(|ready| ready >= sent_at),
             "the late plan for {withdraw} was not made"
         );
         tokio::time::sleep(Duration::from_millis(200)).await;
