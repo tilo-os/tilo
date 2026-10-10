@@ -15,6 +15,7 @@ thread_local! {
     pub(crate) static OWNED_DOCUMENT_CLONES: Cell<usize> = const { Cell::new(0) };
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) enum OwnedDocumentPublication {
     Unchanged,
     Unfinished,
@@ -222,6 +223,7 @@ impl HistoryOwner {
         }
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn prepare_publication(
         &self,
         outer: &AutoCommit,
@@ -335,6 +337,7 @@ mod publication_tests {
 }
 
 impl HistoryOwner {
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn same_document(&self, other: &Self) -> bool {
         let (a, ac) = self.store_checkout();
         let (b, bc) = other.store_checkout();
@@ -374,6 +377,7 @@ impl HistoryOwner {
             }
         }
     }
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn merge_remote(
         &self,
         mutation: &collab_types::DocumentMutation,

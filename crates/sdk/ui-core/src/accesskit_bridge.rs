@@ -678,6 +678,7 @@ pub(crate) fn native_tree_update(update: TreeUpdate) -> TreeUpdate {
     }
 }
 /// Host traversal retaining the originating component through every callback.
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn build_tree_update_with_resources_bound<S: BuildHasher>(
     root: &dyn Widget,
     node_map: &HashMap<TaffyNodeId, *mut dyn Widget, S>,

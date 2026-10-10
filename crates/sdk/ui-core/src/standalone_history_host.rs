@@ -90,6 +90,7 @@ impl From<HistoryError> for HistoryHostError {
 #[derive(Clone, Copy)]
 pub(crate) struct HostHistoryLayout {
     pub root: NodeId,
+    #[cfg(not(target_arch = "wasm32"))]
     pub app: NodeId,
     /// The in-window History button, on hosts with no native chrome.
     pub toolbar: Option<NodeId>,
@@ -345,6 +346,7 @@ impl StandaloneHistoryHost {
         clippy::expect_used,
         reason = "fixed nullary Search action exists in the local host resource"
     )]
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn enable_search(&mut self, platform: crate::platform::PlatformConventions) {
         if !self.search_enabled && self.toolbar.is_some() {
             let binding =
@@ -363,6 +365,7 @@ impl StandaloneHistoryHost {
         }
         self.search_enabled = true;
     }
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn search_mut(&mut self) -> Option<&mut Button> {
         self.search.as_mut()
     }
@@ -746,6 +749,7 @@ impl StandaloneHistoryHost {
     /// receives only an immutable widget reference, so this projection cannot
     /// replace the app root or run its lifecycle. Node maps contain pointers to
     /// the actual app/chrome widgets, NEVER to this stack-local projection.
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn with_presentation<R>(
         &mut self,
         context: &HistoryReadContext<'_>,
@@ -844,6 +848,7 @@ impl StandaloneHistoryHost {
         self.is_open().then_some(&mut self.pane)
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn session(
         &mut self,
         context: &HistoryReadContext<'_>,
@@ -975,6 +980,7 @@ impl StandaloneHistoryHost {
         );
         HostHistoryLayout {
             root,
+            #[cfg(not(target_arch = "wasm32"))]
             app,
             toolbar,
             search,

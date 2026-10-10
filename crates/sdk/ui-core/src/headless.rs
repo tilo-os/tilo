@@ -2506,6 +2506,7 @@ impl FrameHarness {
     /// Panics when a capture's device scale makes the frame larger than
     /// Vello renders in one pass (256 bins of 256 x 256 px): it would drop
     /// the bins past that and write a frame with holes.
+    #[cfg(not(target_arch = "wasm32"))]
     fn device_size(&self) -> (u32, u32) {
         let scale = crate::offscreen::capture_device_scale();
         let size = (
@@ -5898,7 +5899,9 @@ impl FrameHarness {
                 invoker,
                 context: Some(context),
                 refused: None,
+                #[cfg(not(target_arch = "wasm32"))]
                 outstanding: std::collections::HashSet::new(),
+                #[cfg(not(target_arch = "wasm32"))]
                 deferred: None,
             }
         });
@@ -6316,6 +6319,7 @@ impl FrameHarness {
             address: request.address.clone(),
             arguments: match &request.arguments {
                 crate::bound_dispatch::ControlContinuationArguments::Json(json) => json.clone(),
+                #[cfg(not(target_arch = "wasm32"))]
                 _ => serde_json::Map::new(),
             },
         };

@@ -62,11 +62,13 @@ pub(crate) struct RestoreReview {
 
 impl RestoreReview {
     /// The committed heads of the version being restored.
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn target_heads(&self) -> &[ChangeHash] {
         &self.target_heads
     }
 
     /// The live frontier the review was taken against, sorted.
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn reviewed_live_heads(&self) -> &[ChangeHash] {
         &self.reviewed_live_heads
     }
@@ -326,6 +328,7 @@ impl StandaloneHistory {
         &self.selection
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn comparison(&self) -> Option<&HistoryComparison> {
         self.comparison.as_ref()
     }
@@ -421,6 +424,7 @@ impl StandaloneHistory {
     /// admission as [`Self::review_restore`], but against the live frontier
     /// the caller says it reviewed. [`Self::validate_restore`] refuses it
     /// unless the document is still at that frontier.
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn review_restore_against(
         &mut self,
         context: &HistoryReadContext<'_>,

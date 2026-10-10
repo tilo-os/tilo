@@ -93,6 +93,7 @@ mod portable_committed {
         ) -> Result<T, String> {
             match self.never {}
         }
+        #[cfg(not(target_arch = "wasm32"))]
         pub(crate) fn is_current(&self) -> bool {
             match self.never {}
         }
@@ -551,13 +552,7 @@ pub struct BrokerActionInput {
 }
 
 #[derive(serde::Deserialize)]
-#[cfg_attr(
-    not(feature = "broker-transport"),
-    allow(
-        dead_code,
-        reason = "only the broker transport decodes the catalogue wire"
-    )
-)]
+#[cfg(feature = "broker-transport")]
 pub(crate) struct BrokerActionCatalogueWire {
     pub(crate) surfaces: Vec<BrokerActionSurface>,
 }
@@ -1194,6 +1189,7 @@ impl CollaborationManager {
         clippy::needless_pass_by_ref_mut,
         reason = "keeps the broker-transport signature, which switches the live route"
     )]
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn switch_native_record(
         &mut self,
         _checkout: &crate::record::RecordCheckout,
@@ -1201,6 +1197,7 @@ impl CollaborationManager {
         Err("native document routes need the broker transport".into())
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn has_native_committed_primary(&self) -> bool {
         match (&self.backend, &self.primary_route.accepted) {
             (Backend::Transport(transport), Some(route)) => {
@@ -1211,6 +1208,7 @@ impl CollaborationManager {
     }
 
     /// Join through the existing worker; never take the inherited RPC fd twice.
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn prepare_native_record(
         &mut self,
         checkout: &crate::record::RecordCheckout,
@@ -1257,6 +1255,7 @@ impl CollaborationManager {
         )
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn require_document_authorization(&mut self) {
         self.primary_route.required_document_custody = true;
     }
@@ -1344,6 +1343,7 @@ impl CollaborationManager {
 
     /// The primary route most recently announced by a `Hello`, acknowledged
     /// or not.
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn requested_primary_route(&self) -> Option<&RouteSpec> {
         match self.backend {
             Backend::Disabled(_) => None,
@@ -1359,10 +1359,12 @@ impl CollaborationManager {
 
     /// True when connected to a live broker — used by the
     /// event loop to keep ticking so the stream drains promptly.
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn primary_route(&self) -> Option<&PrimaryRouteWitness> {
         self.primary_route.current(self.is_connected())
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn private_window_instance(&self) -> Option<u64> {
         let witness = self.primary_route()?;
         let Backend::Transport(transport) = &self.backend else {
@@ -1578,6 +1580,7 @@ impl CollaborationManager {
 
     /// Drain requests issued by the transport's `ActionDirectory` server.
     /// This must be called by [`crate::app::App`] on its owner thread.
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn take_action_directory_requests(&mut self) -> Vec<ActionDirectoryRequest> {
         let mut requests = Vec::new();
         if let Backend::Transport(transport) = &mut self.backend {
@@ -1653,6 +1656,7 @@ impl CollaborationManager {
 
     /// Whether the actual route's original document history has been applied.
     /// This is the same transport gate used before document publication.
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn document_route_ready(&self, route: Option<&RouteSpec>) -> bool {
         let channel = route.map(RouteSpec::channel_id);
         !self.awaiting_primary
@@ -1770,6 +1774,7 @@ impl CollaborationManager {
         Ok(result?)
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn document_publication_failed(&self) -> bool {
         matches!(&self.backend, Backend::Transport(transport) if transport.document_publication_failed())
     }
@@ -1783,6 +1788,7 @@ impl CollaborationManager {
 
     /// Whether the broker refused or failed an action-surface publication
     /// since the last call; the caller must republish its surface.
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn take_action_surface_failed(&mut self) -> bool {
         match &mut self.backend {
             Backend::Transport(transport) => transport.take_action_surface_failed(),
@@ -1790,6 +1796,7 @@ impl CollaborationManager {
         }
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn stop_after_publication_failure(&mut self) {
         if let Backend::Transport(transport) = &self.backend {
             transport.fail_closed("pre-terminal document publication; outcome unknown");
@@ -1802,12 +1809,14 @@ impl CollaborationManager {
         self.primary_route.accepted = None;
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn set_document_owner_routes(&mut self, routes: Vec<RouteSpec>) {
         if let Backend::Transport(transport) = &mut self.backend {
             transport.set_document_owner_routes(routes);
         }
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn finish_event_batch(&mut self) {
         if let Backend::Transport(transport) = &mut self.backend {
             transport.finish_event_batch();

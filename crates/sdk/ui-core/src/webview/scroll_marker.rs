@@ -1,6 +1,7 @@
 //! Benchmark-only visual acknowledgement from the controlled scroll fixture.
 //! The marker is 32 four-pixel cells at the page's physical top-left: magic,
 //! signed wheel delta (big endian), then an XOR check byte. No page text is read.
+#[cfg(not(target_arch = "wasm32"))]
 pub(super) fn decode(rgba: &[u8], width: u32, height: u32) -> Option<i16> {
     if width < 128 || height < 4 {
         return None;

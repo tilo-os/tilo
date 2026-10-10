@@ -51,13 +51,6 @@
     reason = "migration stack lint debt is scoped to this target"
 )]
 #![cfg_attr(
-    target_arch = "wasm32",
-    allow(
-        dead_code,
-        reason = "the browser build omits the native App runner, broker transport and offscreen renderer, which are the only callers of much shared plumbing"
-    )
-)]
-#![cfg_attr(
     test,
     allow(
         clippy::disallowed_methods,
@@ -123,7 +116,7 @@ extern crate self as tilo_ui;
 #[cfg(test)]
 #[allow(
     dead_code,
-    reason = "shared support is compiled by library and integration tests whose consumers intentionally use different subsets"
+    reason = "the integration tests share this file and use the probe helpers the unit tests do not"
 )]
 #[path = "../tests/support/application.rs"]
 pub(crate) mod application_test_support;
