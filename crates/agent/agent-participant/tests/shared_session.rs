@@ -11,7 +11,9 @@
 //! opens the browser's record and edits it through the app's own action;
 //! the browser receives the durable change in host order and sees the agent
 //! on the record; the agent sees the browser's cursor; pause, resume and
-//! stop hold, release and end the agent.
+//! stop hold, release and end the agent. Between pumps the agent's loop
+//! sleeps until something changes, and a plan of local steps runs back to
+//! back.
 
 #![allow(
     clippy::significant_drop_tightening,
@@ -36,6 +38,11 @@ mod steward;
 mod support;
 
 mod common;
+
+// Agents hold each record in a confined app worker (this binary, started
+// again), whose changes are admitted through the Automerge isolate.
+tilo_agent_participant::app_worker!();
+tilo_automerge_isolate::test_worker!();
 
 use std::path::Path;
 use std::sync::Arc;
@@ -187,6 +194,7 @@ async fn call(
         context: None,
         confirmation: None,
         revision: None,
+        wait_ms: None,
     }))
     .encode()
     .unwrap();
@@ -275,9 +283,8 @@ async fn receive_until(
     }
 }
 
-fn body(app: &Replica) -> String {
-    app.read(|doc| serde_json::to_string(&automerge::AutoSerde::from(doc)).unwrap())
-        .unwrap()
+fn body(app: &impl common::Body) -> String {
+    app.body()
 }
 
 /// Open a sealed live frame with `peer`'s channel keys.
@@ -653,6 +660,64 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
         &mut page,
         agent_cert.device_public_key,
         "Second draft",
+    )
+    .await;
+
+    // 9. Idle, the agent's loop sleeps until something changes: no pump on
+    // an interval, only its presence keep-alive while it shows on a record
+    // (a loop on a 20 ms interval pumped 50 times a second).
+    let idle = agent.run_until(Some(Instant::now() + Duration::from_secs(1)), |_| false);
+    eprintln!("idle for a second: {idle:?}");
+    assert!(
+        idle.pumps <= 10,
+        "an idle agent pumped {} times in a second",
+        idle.pumps
+    );
+
+    // 10. A plan of local steps runs back to back: the loop never waits
+    // between them (a loop on a 20 ms interval took one step per pump).
+    let steps: Vec<serde_json::Value> = (1..=10)
+        .map(|n| {
+            serde_json::json!({
+                "app": SCRATCHPAD,
+                "record": route.record,
+                "resource": "scratchpad.note",
+                "action": "edit",
+                "arguments": {"text": format!("Step {n} of ten")},
+            })
+        })
+        .collect();
+    let ten = control
+        .message(&serde_json::Value::Array(steps).to_string())
+        .unwrap();
+    let ended = |id: &str| {
+        control
+            .info()
+            .tasks
+            .into_iter()
+            .find(|task| task.id == id)
+            .filter(|task| !matches!(task.state, TaskState::Queued | TaskState::Running))
+    };
+    let started = Instant::now();
+    let run = agent.run_until(Some(Instant::now() + Duration::from_secs(20)), |_| {
+        ended(&ten).is_some()
+    });
+    let took = started.elapsed();
+    eprintln!("ten local steps: {run:?} in {took:?}");
+    let task = ended(&ten).expect("the ten-step task ended");
+    assert_eq!(task.state, TaskState::Completed, "{task:?}");
+    assert_eq!(task.steps.len(), 10);
+    assert_eq!(
+        run.waits, 0,
+        "the loop waited between local steps: {run:?} in {took:?}"
+    );
+    receive_until(
+        &mut agent,
+        &browser_events,
+        &route,
+        &mut page,
+        agent_cert.device_public_key,
+        "Step 10 of ten",
     )
     .await;
     completed(

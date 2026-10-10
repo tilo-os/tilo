@@ -289,6 +289,7 @@ fn assert_changed_custody_refused(joined: &Joined, room: RoomId, actor: &str) {
         fanout: Arc::clone(&joined.fanout),
         sessions: Mutex::new(BTreeMap::new()),
         governance: Mutex::new(Vec::new()),
+        governance_wake: joined.governance_wake(),
         keys: joined.keys.clone(),
         content: std::sync::OnceLock::new(),
         requesters: content::Requesters::default(),
@@ -407,6 +408,7 @@ fn assert_runtime_admission_revoked(joined: &Arc<Joined>, room: RoomId, actor: &
         context: None,
         confirmation: None,
         revision: None,
+        wait_ms: None,
     };
     let PendingPoll::Ready(Ok(_receipt)) = host.invoke(&owner, request.clone()).poll_ready() else {
         panic!("the synthetic app must accept the invocation");

@@ -2496,22 +2496,11 @@ mod tests {
         app.apply_layout(&taffy, node, Point::ZERO);
         set_focus_by_id(app, focused);
 
-        let mut handled = false;
-        let mut focus_target = None;
-        app.handle_event(
-            event,
-            &mut ui::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &winit::event::Modifiers::default(),
-                state: ui::widget::Edits::lend(state),
-                path: &automerge::ROOT,
-                handled: &mut handled,
-                focus_target: &mut focus_target,
-                node_id: node,
-                taffy: &taffy,
-            },
-        );
-        handled
+        ui::testing::Dispatch::new()
+            .doc(state)
+            .layout(&taffy, node)
+            .send(app, event)
+            .handled
     }
 
     /// How a widget identifies itself in a tree dump: its `test_id` when it
@@ -2678,21 +2667,10 @@ mod tests {
         }
 
         fn deliver(&self, app: &mut GreeterApp, doc: &mut AutoCommit, event: &WindowEvent) {
-            let mut handled = false;
-            let mut focus_target = None;
-            app.handle_event(
-                event,
-                &mut ui::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &winit::event::Modifiers::default(),
-                    state: ui::widget::Edits::lend(doc),
-                    path: &automerge::ROOT,
-                    handled: &mut handled,
-                    focus_target: &mut focus_target,
-                    node_id: self.node,
-                    taffy: &self.taffy,
-                },
-            );
+            ui::testing::Dispatch::new()
+                .doc(doc)
+                .layout(&self.taffy, self.node)
+                .send(app, event);
         }
     }
 

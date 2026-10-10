@@ -538,9 +538,7 @@ mod tests {
     use tilo_actions::{ActionInput, LocalTransport, OperationKind};
 
     fn registry() -> ActionRegistry {
-        let mut r = ActionRegistry::new();
-        register(&mut r);
-        r
+        ActionRegistry::with(register)
     }
 
     fn prompted_encode(spec: &ActionSpec, arg: &str) -> EncodedAction {

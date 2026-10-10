@@ -32,11 +32,7 @@
 #![cfg_attr(
     test,
     allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
         clippy::string_slice,
-        clippy::panic,
         clippy::unreachable,
         reason = "in a test these are the assertion, not a hazard"
     )
@@ -53,7 +49,8 @@ use sha2::{Digest as _, Sha256};
 pub mod client;
 #[cfg(any(test, feature = "fake"))]
 pub mod fake;
-#[cfg(all(test, feature = "client"))]
+#[cfg(test)]
+#[cfg(feature = "client")]
 mod flow_tests;
 pub mod loopback;
 

@@ -398,12 +398,6 @@ impl WeatherApp {
         Self::assemble(core)
     }
 
-    /// The id of the currently selected city, if any. Lets a test observe where
-    /// a search activation navigated.
-    pub fn selected_city(&self) -> Option<crate::model::LocationId> {
-        self.core.borrow().model.selected_location().map(|l| l.id)
-    }
-
     /// Spawn the worker (idempotent) and queue the initial forecast refresh
     /// for every saved location. No-op for the offline capture/test path.
     fn ensure_service(&mut self) {
@@ -750,14 +744,7 @@ mod interaction_tests {
     };
     use winit::keyboard::{Key, NamedKey, SmolStr};
 
-    /// the same trick the ui/shell and sibling-app test harnesses use.
-    fn key_event(logical_key: Key, text: Option<&str>) -> WindowEvent {
-        ui::synthetic_input::keyboard_input(ui::synthetic_input::key_event(
-            logical_key,
-            text.map(SmolStr::new),
-            ElementState::Pressed,
-        ))
-    }
+    use ui::synthetic_input::key_press;
 
     struct Harness {
         app: Framed<WeatherApp>,
@@ -857,7 +844,7 @@ mod interaction_tests {
         }
 
         fn key(&mut self, logical_key: Key, text: Option<&str>) {
-            self.dispatch(&key_event(logical_key, text));
+            self.dispatch(&key_press(logical_key, text));
         }
 
         /// Centre-y of the saved-place row at `i`, from the live list.

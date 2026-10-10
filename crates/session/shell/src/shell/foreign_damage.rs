@@ -91,6 +91,7 @@ pub(crate) fn unique_uses<const N: usize>(scenes: [&Scene; N], images: &[DrawnIm
 
 /// Normalize only proven foreign image replacements in a comparison copy.
 /// The scene submitted to Vello retains its new identities and new pixels.
+#[cfg(test)]
 pub(crate) fn image_only_damage(
     previous: &Scene,
     current: &Scene,
@@ -100,6 +101,19 @@ pub(crate) fn image_only_damage(
     if previous.encoding_eq(current) {
         return Some(Vec::new());
     }
+    let (normalized, damage) = normalize_images(current, old_images, new_images)?;
+    previous.encoding_eq(&normalized).then_some(damage)
+}
+
+/// A comparison copy of `current` with each proven foreign image replacement
+/// put back to the image it replaced, and the damage of those replacements.
+/// The copy equals the previous frame's scene exactly when the replacements
+/// are all that changed; `None` when the images cannot be paired up.
+pub(crate) fn normalize_images(
+    current: &Scene,
+    old_images: &[DrawnImage],
+    new_images: &[DrawnImage],
+) -> Option<(Scene, Vec<Rect>)> {
     if old_images.len() != new_images.len() {
         return None;
     }
@@ -180,7 +194,7 @@ pub(crate) fn image_only_damage(
             image.data = old.image.data.clone();
         }
     }
-    previous.encoding_eq(&normalized).then_some(damage)
+    Some((normalized, damage))
 }
 
 #[cfg(test)]

@@ -638,12 +638,6 @@ impl PageJumpPalette {
             }
         }
     }
-
-    /// Page-id getter for tests that don't want to fish through
-    /// `take_selection`.
-    pub fn highlighted_id(&self) -> Option<Uuid> {
-        self.highlighted().map(|e| e.id)
-    }
 }
 
 impl Widget for PageJumpPalette {
@@ -782,16 +776,10 @@ impl Widget for PageJumpPalette {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use winit::event::ElementState;
+
     use winit::keyboard::SmolStr;
 
-    fn key_press(logical_key: Key, text: Option<&str>) -> WindowEvent {
-        crate::synthetic_input::keyboard_input(crate::synthetic_input::key_event(
-            logical_key,
-            text.map(SmolStr::new),
-            ElementState::Pressed,
-        ))
-    }
+    use crate::synthetic_input::key_press;
 
     fn char_press(c: &str) -> WindowEvent {
         key_press(Key::Character(SmolStr::new(c)), Some(c))

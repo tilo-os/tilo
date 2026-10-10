@@ -292,8 +292,13 @@ impl App {
         {
             tracing::warn!(%error, "legacy control availability refused");
         }
+        // A first page's control availability took 246 ms in Settings; the
+        // startup file names the stage (TIL-691). Startup-only: this runs on
+        // every rebuild.
+        tilo_startup_metrics::startup_mark("actions-legacy-done");
         let trace = self.trace_resource_stage(Stage::BoundDiscovery);
         let history_door = self.refresh_history_controls();
+        tilo_startup_metrics::startup_mark("actions-history-done");
         let snapshots = crate::bound_dispatch::discover_cached_bound_resources(
             self.root_widget.as_ref(),
             &self.state.doc,
@@ -302,6 +307,7 @@ impl App {
         )
         .unwrap_or_default();
         trace.finish(CacheResult::NotObserved);
+        tilo_startup_metrics::startup_mark("actions-bound-discovery-done");
         let trace = self.trace_resource_stage(Stage::BoundControlProjection);
         let _ = crate::bound_dispatch::refresh_bound_controls(
             self.root_widget.as_mut(),
@@ -309,6 +315,7 @@ impl App {
             &history_door,
         );
         trace.finish(CacheResult::NotApplicable);
+        tilo_startup_metrics::startup_mark("actions-bound-projection-done");
         // Only ActionEmitter controls consume this address projection. Semantic,
         // document and legacy controls still use their normal invocation doors.
         // Recheck presence: widget-local changes can add/remove emitters.
@@ -318,6 +325,7 @@ impl App {
             return;
         }
         let cache_key = self.ensure_local_control_cache();
+        tilo_startup_metrics::startup_mark("actions-local-cache-done");
         let trace = self.trace_resource_stage(Stage::ControlCache);
         if self.actions.last_control_availability.as_ref() == Some(&cache_key) {
             trace.finish(CacheResult::Hit);
@@ -1600,9 +1608,16 @@ impl App {
         // No revision asks for the directory as it is now: a caller that
         // names an action it already knows (an agent's) chose it from no
         // page, and reading the revision first would cost it a round trip.
+        // The answer names the revision it resolved against either way, so
+        // the broker binds the admission to it and a host refuses to run
+        // the action once the directory moved on.
         if !revision.is_empty() && revision != current {
             return runtime_collab::ActionDirectoryResolution::StaleRevision;
         }
+        let found = |row| runtime_collab::ActionDirectoryResolution::Found {
+            row: Box::new(row),
+            revision: Some(current.clone()),
+        };
         if let Some(row) = self
             .actions
             .action_directory_snapshot
@@ -1613,15 +1628,13 @@ impl App {
                     .get(&tilo_actions::ActionAddress::new(resource_id, action_id))
             })
         {
-            return runtime_collab::ActionDirectoryResolution::Found(Box::new(row.clone()));
+            return found(row.clone());
         }
         let resource = self.resolve_publication_resource(resource_id, action_id);
         resource
             .as_ref()
             .and_then(|resource| Self::directory_action_row(resource, action_id))
-            .map_or(runtime_collab::ActionDirectoryResolution::NotFound, |row| {
-                runtime_collab::ActionDirectoryResolution::Found(Box::new(row))
-            })
+            .map_or(runtime_collab::ActionDirectoryResolution::NotFound, found)
     }
 
     fn published_action_directory_page(
@@ -1659,7 +1672,11 @@ impl App {
         for request in self.collaboration.manager.take_action_directory_requests() {
             match request {
                 ActionDirectoryRequest::Query { query, reply } => {
-                    let _ = reply.send(self.published_action_directory_page(query));
+                    // A cancelled caller never receives this page. Do not consume
+                    // its one-use continuation before admitting a live response.
+                    if !reply.is_closed() {
+                        let _ = reply.send(self.published_action_directory_page(query));
+                    }
                 }
                 ActionDirectoryRequest::Resolve {
                     revision,
@@ -2075,6 +2092,7 @@ impl App {
                 context: None,
                 confirmation: Self::broker_confirmation(confirmation_evidence),
                 revision: None,
+                wait_ms: None,
             },
         );
         Ok(crate::widget::ResourceOperationStart::Accepted)
@@ -2725,6 +2743,7 @@ impl App {
                 context: None,
                 confirmation: None,
                 revision: None,
+                wait_ms: None,
             };
             self.actions
                 .broker_requests
@@ -3560,6 +3579,7 @@ impl App {
             context,
             confirmation: None,
             revision: None,
+            wait_ms: None,
         };
         self.actions
             .broker_requests

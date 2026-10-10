@@ -206,7 +206,21 @@ plaintext path.
   delivery and never lose or reorder it.
 - **Endpoints.** An app asks the workspace identity service for its route's
   keys (`Request::ChannelKeys`) and gets `ChannelContentKeys`: content
-  keys, and no MLS secret. It refreshes every second. While the device waits
+  keys, and no MLS secret. It does not ask again on a timer: each route
+  keeps one `channelKeysChanged` call pending at the broker, which resolves
+  the moment the channel service records a change to that channel (a commit
+  the steward made, or a frame that reached this member), and the endpoint
+  asks for keys then. Every policy change above becomes such a commit
+  within the steward's reconcile interval, so a removed or revoked device's
+  apps stop holding the channel's keys within about a second plus the
+  commit's delivery to that device; the broker's epoch gate and the identity
+  service's per-signature trust check stop it publishing at once. A route
+  also asks when ciphertext arrives that its keys can't open, and when the
+  broker refuses an edit. A route still waiting for access is asked on a
+  timer as well (1 s, backing off to 30 s; admission itself is pushed), and
+  a broker without `channelKeysChanged` gets the old one-second refresh of
+  every route. The identity service serves its trust check from the
+  identity files' stamps while they are unchanged. While the device waits
   for access, the SDK holds edits and incoming ciphertext on the device and
   reports `ChannelAccessState::WaitingForAccess` through
   `CollabEvent::ChannelAccess` and `App::channel_access()`. Once keys arrive

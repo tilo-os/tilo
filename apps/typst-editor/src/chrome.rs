@@ -382,10 +382,6 @@ impl Chrome {
         self.toolbar.open_overflow();
     }
 
-    pub fn toolbar_has_overflow(&self) -> bool {
-        self.toolbar.has_overflow()
-    }
-
     /// Every control, in tree order: the layout tree, event routing and
     /// accessibility all follow it.
     pub fn children(&self) -> Vec<&dyn Widget> {

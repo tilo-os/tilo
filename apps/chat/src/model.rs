@@ -367,12 +367,6 @@ impl Message {
     pub fn mentions_user(&self, user: &str) -> bool {
         self.mentions.iter().any(|m| m.user == user)
     }
-
-    /// Every participant this message refers to, in the order they appear.
-    /// Duplicates are kept: two mentions of one person are two references.
-    pub fn mentioned_ids(&self) -> impl Iterator<Item = &str> {
-        self.mentions.iter().map(|m| m.user.as_str())
-    }
 }
 
 /// What an agent in this room has done with a message addressed to it.

@@ -1856,16 +1856,6 @@ impl TopBarChrome {
         TextWeight::Semibold
     }
 
-    /// Distinct from the bold values so the strip is scannable without
-    /// every label shouting.
-    pub fn system_monitor_label_text_weight(&self) -> TextWeight {
-        TextWeight::Semibold
-    }
-
-    pub fn system_monitor_value_text_weight(&self) -> TextWeight {
-        TextWeight::Bold
-    }
-
     /// Routes through the theme's semantic colours rather than a
     /// literal hex, so the cue tracks the theme under high-contrast.
     pub fn metric_label_color(&self, theme: &Theme, k: MetricKind) -> Color {
@@ -6038,25 +6028,7 @@ mod tests {
     }
 
     fn dispatch_topbar_event(bar: &mut TopBarChrome, event: &WindowEvent) -> bool {
-        let mut taffy = TaffyTree::new();
-        let node = taffy.new_leaf(Style::default()).expect("test leaf");
-        let mut state = AutoCommit::new();
-        let mut handled = false;
-        let mut focus = None;
-        bar.handle_event(
-            event,
-            &mut ui::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &winit::event::Modifiers::default(),
-                state: ui::widget::Edits::lend(&mut state),
-                path: &automerge::ROOT,
-                handled: &mut handled,
-                focus_target: &mut focus,
-                node_id: node,
-                taffy: &taffy,
-            },
-        );
-        handled
+        ui::testing::dispatch(bar, event)
     }
 
     #[test]

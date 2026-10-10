@@ -21,11 +21,9 @@ path = "src/lib.rs"
 # no compositor dependency. See `src/lib.rs` for the wire contract.
 
 [dependencies]
-tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
 getrandom.workspace = true
 web-time = { version = "1", features = ["serde"] }
 ed25519-dalek = { workspace = true, features = ["serde", "rand_core"] }
-rand.workspace = true
 serde.workspace = true
 serde_bytes.workspace = true
 postcard = { workspace = true, features = ["alloc"] }
@@ -39,7 +37,6 @@ thiserror.workspace = true
 # `caps::net::EgressPolicy::from_grants` names the grants it ignores.
 tracing.workspace = true
 uuid.workspace = true
-wire-frame = { version = "0.1.0", path = "../../system/wire-frame" }
 
 [dev-dependencies]
 serde_json.workspace = true

@@ -505,6 +505,7 @@ impl Door {
                 context: None,
                 confirmation: None,
                 revision: None,
+                wait_ms: None,
             },
         ))?;
         Ok((invocation, receipt.status))
@@ -935,22 +936,11 @@ fn press(
         event,
         is_synthetic: false,
     };
-    let mut doc = AutoCommit::new();
-    let mut handled = false;
-    let mut focus = None;
-    host.handle_event(
-        &event,
-        &mut ui::widget::EventCtx {
-            scale_factor: 1.0,
-            modifiers: &winit::event::Modifiers::from(modifiers),
-            state: ui::widget::Edits::lend(&mut doc),
-            path: &automerge::ROOT,
-            handled: &mut handled,
-            focus_target: &mut focus,
-            node_id: child,
-            taffy: &taffy,
-        },
-    );
+    let handled = ui::testing::Dispatch::new()
+        .modifiers(modifiers)
+        .layout(&taffy, child)
+        .send(host, &event)
+        .handled;
     assert!(handled, "the shell took the chord");
 }
 
@@ -1460,6 +1450,7 @@ impl AppConnection {
                 context: None,
                 confirmation: None,
                 revision: None,
+                wait_ms: None,
             }),
             |message| {
                 matches!(
@@ -1927,6 +1918,7 @@ fn always_allowing_records_a_grant_that_asks_no_more_until_revoked() {
                     context: None,
                     confirmation,
                     revision: None,
+                    wait_ms: None,
                 },
             ),
         )

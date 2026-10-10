@@ -392,6 +392,7 @@ use crate::compositor::switch_control::{SwitchAction, SwitchControlRuntime};
 use crate::compositor::control_invocation::{
     ControlInvocation, ControlInvocationPoll, InvocationProgress,
 };
+use crate::compositor::control_listing::{HeldListing, ListingStamp, ListingWait};
 use crate::compositor::state::{ClientState, State};
 use crate::compositor::test_control::{
     self, ControlState, KeyTag, NamedKeyTag, PlannedAction, PointerButtonKind, TouchPhaseKind,
@@ -2276,62 +2277,11 @@ fn publish_wayland_display(socket_name: &std::ffi::OsStr) -> Option<UnlinkOnDrop
 /// with the launcher's `--workspace-id`.
 pub const WORKSPACE_ID_FILE: &str = "workspace-id";
 
-/// [`WORKSPACE_ID_FILE`], kept naming the active workspace's room.
-struct PublishedRoom {
-    path: PathBuf,
-    room: Option<String>,
-}
-
-impl PublishedRoom {
-    /// Beside the published Wayland display; `None` where that has no place.
-    fn new() -> Option<Self> {
-        let display = session_display_path(std::env::var_os("XDG_RUNTIME_DIR"))?;
-        Some(Self {
-            path: display.with_file_name(WORKSPACE_ID_FILE),
-            room: None,
-        })
-    }
-
-    /// Write the active workspace's room when it changed; remove the file
-    /// while no workspace is active.
-    fn follow(&mut self, frame_builder: &FrameBuilder) {
-        let room = frame_builder
-            .chrome()
-            .tree()
-            .desktop
-            .active_workspace()
-            .map(|workspace| workspace.room.to_string());
-        if room == self.room {
-            return;
-        }
-        let written = match &room {
-            Some(room) => {
-                tilo_files::native::atomic::write_with_mode(&self.path, room.as_bytes(), 0o600)
-                    .map_err(|error| error.to_string())
-            }
-            None => match std::fs::remove_file(&self.path) {
-                Ok(()) => Ok(()),
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-                Err(error) => Err(error.to_string()),
-            },
-        };
-        match written {
-            Ok(()) => self.room = room,
-            Err(error) => {
-                tracing::warn!(%error, path = %self.path.display(), "session room not published");
-                // Not retried every frame: the next workspace change tries again.
-                self.room = room;
-            }
-        }
-    }
-}
-
-impl Drop for PublishedRoom {
-    fn drop(&mut self) {
-        if self.room.is_some() {
-            let _ = std::fs::remove_file(&self.path);
-        }
-    }
+/// [`WORKSPACE_ID_FILE`] beside the published Wayland display, written off
+/// this thread; `None` where the display has no place.
+fn published_room() -> Option<crate::compositor::published_room::PublishedRoom> {
+    let display = session_display_path(std::env::var_os("XDG_RUNTIME_DIR"))?;
+    crate::compositor::published_room::PublishedRoom::at(display.with_file_name(WORKSPACE_ID_FILE))
 }
 
 /// Env var naming the compositor's privileged Wayland socket, exported to
@@ -2379,6 +2329,9 @@ struct TestControlConn {
     closed: bool,
     /// An `actions_invoke` answered once it is admitted, or once it settles.
     pending_invocation: Option<ControlInvocation>,
+    /// An `actions_enumerate` with `wait_ms`, answered once its listing
+    /// settles; nothing after it on this connection is read until then.
+    pending_listing: Option<HeldListing>,
     /// A `snapshot` answered once its file is complete.
     pending_snapshot: Option<(SnapshotOutcome, test_control::Response)>,
     output: Vec<u8>,
@@ -2418,8 +2371,27 @@ impl InvocationProgress for FrameInvocationProgress<'_> {
 fn control_invocation_deadline(conns: &[TestControlConn], now: Instant) -> Option<Instant> {
     conns
         .iter()
-        .filter_map(|conn| conn.pending_invocation.as_ref()?.recheck_at(now))
+        .filter_map(|conn| {
+            let invocation = conn
+                .pending_invocation
+                .as_ref()
+                .and_then(|pending| pending.recheck_at(now));
+            let listing = conn
+                .pending_listing
+                .as_ref()
+                .and_then(|held| held.recheck_at(now));
+            invocation.into_iter().chain(listing).min()
+        })
         .min()
+}
+
+/// The action surface as a held listing compares it: what woke the loop,
+/// and the broker's invocation and publication generations.
+fn listing_stamp(frame_builder: &FrameBuilder) -> ListingStamp {
+    ListingStamp {
+        progress: crate::shell::search::invocation_wake::progress(),
+        broker: frame_builder.host().app_action_generation(),
+    }
 }
 
 impl TestControlConn {
@@ -2444,6 +2416,7 @@ impl TestControlConn {
             wake: None,
             closed: false,
             pending_invocation: None,
+            pending_listing: None,
             pending_snapshot: None,
             output: Vec::new(),
             output_offset: 0,
@@ -2583,29 +2556,28 @@ impl FrameBuilderControlState<'_> {
         let chrome_handle = self.fb.chrome_handle();
         // The borrow lives only for the closure; `ActionCatalog` owns its results
         // outright, so the catalogue outlives the guards it was built through.
-        let catalog = with_action_gate(&chrome_handle, |chrome, gate| {
-            self.fb.host().action_catalog_query(
-                &crate::shell::search::QueryArgs {
-                    needle: query,
-                    scope: crate::shell::chrome_state::SearchScope::All,
-                    active_provider_id: None,
-                    wanted_kinds: &[],
-                    chrome,
-                    doc,
-                    doc_root: root,
-                },
-                gate,
-                include_programmatic,
-            )
+        let (catalog, complete) = with_action_gate(&chrome_handle, |chrome, gate| {
+            let args = crate::shell::search::QueryArgs {
+                needle: query,
+                scope: crate::shell::chrome_state::SearchScope::All,
+                active_provider_id: None,
+                wanted_kinds: &[],
+                chrome,
+                doc,
+                doc_root: root,
+            };
+            let catalog = self
+                .fb
+                .host()
+                .action_catalog_query(&args, gate, include_programmatic);
+            // Read after the query, which may itself have started the work
+            // that leaves the listing incomplete.
+            (catalog, self.fb.host().action_listing_complete(&args))
         })
         .map_err(test_control::ActionRefusal::listing_failed)?;
+        let fingerprint = test_control::listing_fingerprint(catalog.addresses());
         let window = page
-            .map(|page| {
-                page.window(
-                    catalog.len(),
-                    test_control::listing_fingerprint(catalog.addresses()),
-                )
-            })
+            .map(|page| page.window(catalog.len(), fingerprint))
             .transpose()?;
         let compact = page.is_some_and(|page| !page.detail.is_full());
         let rows = window
@@ -2650,6 +2622,13 @@ impl FrameBuilderControlState<'_> {
         if let Some(window) = window {
             window.describe(&mut answer);
         }
+        // Which listing this is — the identity its cursors are cut from — and
+        // whether it is final. `truncated` says this page is not all of the
+        // listing; `complete: false` says the listing itself is not all there
+        // yet: an index build or an app's directory page that would add to it
+        // is still on its way. `wait_ms` waits for that.
+        answer.insert("revision".into(), format!("{fingerprint:016x}").into());
+        answer.insert("complete".into(), complete.into());
         Ok(serde_json::Value::Object(answer))
     }
 }
@@ -4684,6 +4663,15 @@ fn pump_pending_test_control_conn(
             ),
         };
     }
+    if conn.pending_listing.is_some() {
+        // Held until the action surface moves or its wait runs out; only
+        // `pump_test_control_conn`, which reads the listing, runs it again.
+        if conn.peer_disconnected() {
+            conn.closed = true;
+            return PendingConnectionProgress::Closed;
+        }
+        return PendingConnectionProgress::Waiting;
+    }
     let Some(pending) = conn.pending_invocation.take() else {
         return PendingConnectionProgress::Idle;
     };
@@ -5221,6 +5209,13 @@ fn pump_test_control_conn(
     // next frame must reflect; starts the input-latency measurement instrumentation uses.
     let mut injected_input = false;
     loop {
+        // A held listing runs again, before anything after it on this
+        // connection is read, once the action surface moved or its wait ran
+        // out.
+        let stamp = listing_stamp(frame_builder);
+        let mut rerun = conn
+            .pending_listing
+            .take_if(|held| held.due(Instant::now(), stamp));
         let mut jobs = FrameInvocationProgress {
             fb: &*frame_builder,
             ctx: &mut *ctx,
@@ -5234,15 +5229,26 @@ fn pump_test_control_conn(
             PendingConnectionProgress::Idle | PendingConnectionProgress::WroteResponse => {}
         }
         let mut line = zeroize::Zeroizing::new(String::new());
-        match conn
-            .input
-            .read(&mut conn.reader, &mut line, TEST_CONTROL_MAX_LINE_BYTES)
-        {
+        let read = match rerun.as_ref() {
+            Some(held) => {
+                line.push_str(&held.line);
+                Ok(Some(()))
+            }
+            None => conn
+                .input
+                .read(&mut conn.reader, &mut line, TEST_CONTROL_MAX_LINE_BYTES),
+        };
+        match read {
             Ok(None) => {
                 conn.closed = true;
                 return injected_input;
             }
             Ok(Some(())) => {
+                // A listing that waits: armed, and the action surface read,
+                // before the listing is — a change landing while it is read
+                // still counts.
+                let held_by = rerun.take().map(|held| held.settle_by);
+                let mut listing_wait: Option<ListingWait> = None;
                 // Only this request's own dispatch may hand its execution a resolution.
                 *ctx.resolved_invocation.get_mut() = None;
                 let mut scope: Option<AgentScope> = None;
@@ -5330,6 +5336,12 @@ fn pump_test_control_conn(
                             }
                         }
                         settle_for = super::control_invocation::settle_window(&request.command);
+                        listing_wait = ListingWait::begin(
+                            &request.command,
+                            held_by,
+                            listing_stamp(frame_builder),
+                            || frame_builder.host().next_listing_change(),
+                        );
                         match agent {
                             Some(_)
                                 if session.is_locked()
@@ -5474,7 +5486,18 @@ fn pump_test_control_conn(
                                 Err(answer) => answer,
                             }
                         }
-                        (None, None) => resp,
+                        (None, None) => match listing_wait {
+                            Some(wait) => match wait.settle(resp, &line) {
+                                Ok(answer) => answer,
+                                // Held until the listing settles: the top of
+                                // the loop runs it again once something moved.
+                                Err(held) => {
+                                    conn.pending_listing = Some(held);
+                                    continue;
+                                }
+                            },
+                            None => resp,
+                        },
                     },
                 };
                 match queue_test_control_response(conn, &resp) {
@@ -8528,6 +8551,7 @@ pub fn run() {
             frame_builder.enable_onboarding(identity_dir);
         }
     }
+    frame_builder.follow_settings(live_settings.clone());
     frame_builder.enable_configured_theme();
     let mut capture_executor = CaptureExecutor::default();
     let floating_surface_service = match FloatingSurfaceService::start() {
@@ -8940,7 +8964,7 @@ pub fn run() {
         }
     });
     let chooser_attended = Arc::new(AtomicBool::new(false));
-    let mut published_room = PublishedRoom::new();
+    let mut published_room = published_room();
     let chooser_service = start_chooser_service(
         portal_backend.as_ref(),
         Arc::clone(&chooser_attended),
@@ -9450,6 +9474,13 @@ pub fn run() {
             let keys = crate::compositor::key_latency::tracker().frames_retired(serial, shown_at);
             for sample in keys {
                 eprintln!("{sample}");
+            }
+            if let Some(switch) = frame_builder
+                .host_mut()
+                .workspace_switch_latency_mut()
+                .frames_retired(serial, shown_at)
+            {
+                eprintln!("{switch}");
             }
             if serial > frame_clock_retired_serial {
                 // A vblank-paced presenter re-anchors the grid on the vblank,
@@ -10460,7 +10491,14 @@ pub fn run() {
         session_changed |= post_codec_pack_notices(&mut frame_builder);
         run_autostart_once(&frame_builder);
         if let Some(published) = published_room.as_mut() {
-            published.follow(&frame_builder);
+            published.follow(
+                frame_builder
+                    .chrome()
+                    .tree()
+                    .desktop
+                    .active_workspace()
+                    .map(|workspace| workspace.room.to_string()),
+            );
         }
 
         // Keyboard releases are latency-sensitive protocol traffic: an Xwayland
@@ -10764,7 +10802,7 @@ pub fn run() {
                 } else {
                     tracing::info!(target: "tilo::power", "idle threshold reached: requesting suspend");
                     sleep_lock_was_locked = session.is_locked();
-                    power_bridge.request_suspend();
+                    power_bridge.request_idle_suspend();
                 }
             } else {
                 apply_session_transition(
@@ -12284,7 +12322,6 @@ pub fn run() {
             let scene_cpu = metrics.cpu_snapshot();
             // When locked, paint the compositor-owned lock overlay instead of the chrome — app content is never submitted while locked.
             let retained_damage_supported = backend.supports_retained_scene_damage();
-            frame_builder.set_workspace_clip_supported(backend.supports_workspace_clip());
             frame_builder.set_session_locked(session.is_locked());
             let (scene_width, scene_height) = frame_builder.scene_size();
             foreign::store().begin_presentation_frame(Rect::new(
@@ -12733,6 +12770,24 @@ pub fn run() {
                 };
                 for sample in presented {
                     eprintln!("{sample}");
+                }
+            }
+            // A synchronous presenter has shown the frame already; an
+            // asynchronous one dates it when it retires that serial. A lost
+            // render thread queued nothing.
+            if !async_present || submitted_serial.is_some() {
+                let holding = frame_builder.host().workspace_switch_holding();
+                if let Some(switch) = frame_builder
+                    .host_mut()
+                    .workspace_switch_latency_mut()
+                    .frame_queued(
+                        submitted_serial,
+                        submit_done,
+                        frame_clock.interval(),
+                        holding,
+                    )
+                {
+                    eprintln!("{switch}");
                 }
             }
             // An asynchronous presenter advances the cadence only when its
@@ -15550,6 +15605,237 @@ mod tests {
                     .as_u64()
                     .expect("real broker invocation id"),
                 0
+            );
+        });
+    }
+
+    /// The answer on `reader`, if the connection has given one.
+    fn socket_answer(reader: &mut BufReader<UnixStream>) -> Option<test_control::Response> {
+        use std::io::BufRead as _;
+        match reader.fill_buf() {
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => None,
+            Ok([]) => panic!("socket disconnected while waiting"),
+            Ok(_) => Some(socket_response(reader)),
+            Err(error) => panic!("reading the answer: {error}"),
+        }
+    }
+
+    /// `wait_ms` on a listing holds it until it is complete — the app's
+    /// directory page in, the index built — and answers it in that one
+    /// request; with `after_revision`, until it differs. A job read with
+    /// `wait_ms` answers once the job has settled.
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one fixture walks a listing, a changed listing and a job read in order"
+    )]
+    fn waited_listings_and_job_reads_answer_once_settled() {
+        use std::io::Write as _;
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        tokio::task::LocalSet::new().block_on(&runtime, async {
+            let mut fixture = ControlFixture::new();
+            let mut directory =
+                crate::shell::collab_broker_capnp::tests::local_directory_fixture_with_membership(
+                    fixture.frame_builder.chrome().tree_handle(),
+                );
+            attach_directory_fixture(&mut fixture.frame_builder, &directory);
+            let (wake, woken) = loop_wake(&fixture.event_loop);
+            let _installed = crate::shell::search::invocation_wake::install(wake);
+            let (mut conn, mut writer, mut reader) = control_client();
+
+            // Unwaited, a cold listing says it is incomplete rather than
+            // passing for the whole answer.
+            writer
+                .write_all(b"{\"op\":\"actions_enumerate\",\"query\":\"open atlas\"}\n")
+                .expect("cold listing");
+            fixture.pump(&mut conn);
+            let test_control::Response::Answer(cold) = socket_response(&mut reader) else {
+                panic!("an unwaited listing answers at once");
+            };
+            assert_eq!(
+                cold["complete"], false,
+                "the directory page is owed: {cold}"
+            );
+            assert!(cold["revision"].is_string());
+            assert!(
+                cold.get("settled").is_none(),
+                "only a waited answer settles"
+            );
+
+            // Waited, the same listing is held until it is complete, and the
+            // app's action is in its one answer.
+            writer
+                .write_all(
+                    b"{\"op\":\"actions_enumerate\",\"query\":\"open atlas\",\"wait_ms\":30000}\n",
+                )
+                .expect("waited listing");
+            fixture.pump(&mut conn);
+            assert_socket_pending(&mut reader);
+            assert!(conn.pending_listing.is_some(), "held, not answered");
+            let deadline = Instant::now()
+                .checked_add(tilo_test_env::hang_bound())
+                .expect("a representable deadline");
+            let listing = loop {
+                woken.set(false);
+                crate::shell::collab_broker_capnp::tests::drain_directory_bridge(&directory).await;
+                // What it waits for wakes the loop by itself: the page, the
+                // index build.
+                assert!(
+                    park_until_woken(
+                        &mut fixture.event_loop,
+                        &mut fixture.state,
+                        &woken,
+                        Duration::from_secs(10),
+                    ),
+                    "the held listing's progress never woke the loop"
+                );
+                fixture.pump(&mut conn);
+                if let Some(answer) = socket_answer(&mut reader) {
+                    break answer;
+                }
+                assert!(Instant::now() < deadline, "the listing never settled");
+            };
+            let test_control::Response::Answer(listing) = listing else {
+                panic!("a waited listing answers with the listing");
+            };
+            assert_eq!(listing["complete"], true, "{listing}");
+            assert_eq!(listing["settled"], true, "{listing}");
+            let action_id = listing["actions"]
+                .as_array()
+                .expect("actions array")
+                .iter()
+                .find(|row| row["provider"] == "app-actions" && row["title"] == "Open Atlas")
+                .and_then(|row| row["id"].as_str())
+                .expect("the directory's action, without asking again")
+                .to_string();
+
+            // A wait past this revision settles only on a different listing;
+            // one that runs out first answers unsettled with the same one.
+            // (Other sources settle on their own clocks, so either may happen;
+            // each must be truthful.)
+            let past = serde_json::json!({
+                "op": "actions_enumerate", "query": "open atlas", "wait_ms": 40,
+                "after_revision": listing["revision"],
+            });
+            writer
+                .write_all(format!("{past}\n").as_bytes())
+                .expect("listing past a revision");
+            let deadline = Instant::now()
+                .checked_add(tilo_test_env::hang_bound())
+                .expect("a representable deadline");
+            let next = loop {
+                fixture.pump(&mut conn);
+                if let Some(answer) = socket_answer(&mut reader) {
+                    break answer;
+                }
+                assert!(Instant::now() < deadline, "the wait never ran out");
+                // Its deadline is the loop's park deadline.
+                let park = control_invocation_deadline(std::slice::from_ref(&conn), Instant::now())
+                    .expect("a held listing has a deadline");
+                fixture
+                    .event_loop
+                    .dispatch(
+                        Some(park.saturating_duration_since(Instant::now())),
+                        &mut fixture.state,
+                    )
+                    .expect("dispatch");
+            };
+            let test_control::Response::Answer(next) = next else {
+                panic!("a wait past a revision answers with a listing");
+            };
+            if next["settled"] == true {
+                assert_ne!(next["revision"], listing["revision"], "{next}");
+            } else {
+                assert_eq!(next["settled"], false, "{next}");
+                assert_eq!(next["revision"], listing["revision"], "{next}");
+            }
+
+            // A job read with `wait_ms` is held until the job settles.
+            let invoke = serde_json::json!({
+                "op": "actions_invoke", "provider": "app-actions", "id": action_id,
+            });
+            writer
+                .write_all(format!("{invoke}\n").as_bytes())
+                .expect("invoke");
+            fixture.pump(&mut conn);
+            let deadline = Instant::now()
+                .checked_add(tilo_test_env::hang_bound())
+                .expect("a representable deadline");
+            let admitted = loop {
+                crate::shell::collab_broker_capnp::tests::drain_directory_bridge(&directory).await;
+                fixture.pump(&mut conn);
+                if let Some(answer) = socket_answer(&mut reader) {
+                    break answer;
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "the invocation was never admitted"
+                );
+            };
+            let test_control::Response::Answer(admitted) = admitted else {
+                panic!("the admission receipt answers the invocation");
+            };
+            let job = admitted["receipt"]["broker_invocation_id"]
+                .as_u64()
+                .expect("a broker job");
+            let (delivered, invocation) = directory
+                .take_invocation_identity()
+                .expect("the app received the invocation");
+            assert_eq!(delivered, job);
+
+            let status = serde_json::json!({
+                "op": "actions_status", "invocation_id": job, "wait_ms": 30_000,
+            });
+            writer
+                .write_all(format!("{status}\n").as_bytes())
+                .expect("waited job read");
+            fixture.pump(&mut conn);
+            assert_socket_pending(&mut reader);
+            woken.set(false);
+            directory
+                .complete_invocation(
+                    job,
+                    &tilo_actions::InvocationUpdate::Succeeded {
+                        invocation,
+                        output: tilo_actions::ActionOutput::default(),
+                    },
+                )
+                .await
+                .expect("the app reports its result");
+            // The job settling wakes the parked loop by itself. An earlier
+            // wake still queued (the index, a directory page) may end a park
+            // first; each pump then answers only once the job has settled.
+            let deadline = Instant::now()
+                .checked_add(tilo_test_env::hang_bound())
+                .expect("a representable deadline");
+            let settled = loop {
+                assert!(
+                    park_until_woken(
+                        &mut fixture.event_loop,
+                        &mut fixture.state,
+                        &woken,
+                        Duration::from_secs(10),
+                    ),
+                    "the settled job never woke the loop"
+                );
+                woken.set(false);
+                fixture.pump(&mut conn);
+                if let Some(answer) = socket_answer(&mut reader) {
+                    break answer;
+                }
+                assert!(Instant::now() < deadline, "the job read never settled");
+            };
+            let test_control::Response::Answer(settled) = settled else {
+                panic!("the settled job answers the read");
+            };
+            assert_eq!(settled["receipt"]["broker_invocation_id"], job);
+            assert_eq!(
+                settled["receipt"]["update"]["state"], "succeeded",
+                "{settled}"
             );
         });
     }

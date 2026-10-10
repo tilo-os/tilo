@@ -33,8 +33,32 @@ pub use working_profile::NativeSignalWorkingProfile;
 pub(super) mod sms;
 mod sms_first;
 pub mod whatsapp;
+mod whatsapp_first;
 pub use activation::NativeSignalActivation;
 pub use enrollment::{NativeSignalEnrollment, NativeVerifiedSignalEnrollment};
+
+/// Hand an enrollment owner loop the request `request` builds around its
+/// reply channel, and wait up to `timeout` for the answer. A full or closed
+/// queue answers [`SendError::Unavailable`].
+fn ask_owner<R, T: Send + 'static>(
+    sender: &std::sync::mpsc::SyncSender<R>,
+    wake: &crate::session_runtime::Wake,
+    timeout: std::time::Duration,
+    request: impl FnOnce(tokio::sync::oneshot::Sender<Result<T, SendError>>) -> R,
+) -> std::pin::Pin<Box<dyn Future<Output = Result<T, SendError>> + Send>> {
+    let (reply, receiver) = tokio::sync::oneshot::channel();
+    let submitted = sender.try_send(request(reply)).is_ok();
+    wake();
+    Box::pin(async move {
+        if !submitted {
+            return Err(SendError::Unavailable);
+        }
+        tokio::time::timeout(timeout, receiver)
+            .await
+            .map_err(|_| SendError::Unavailable)?
+            .map_err(|_| SendError::Unavailable)?
+    })
+}
 
 /// Signed personal admission bound to the actual native cryptographic custody
 /// and the host profile's separate SDK device identifier. Neither identifier
@@ -243,6 +267,16 @@ impl NativeAccountCustody for NativeSignalAccount {
         &self.gate.startup.identity.owner
     }
 }
+/// Creates or opens a sealed Signal profile under a key and grant.
+type UnsealProfile = fn(
+    &std::path::Path,
+    Owner,
+    secret_vault::VaultKey,
+    Arc<dyn AccountAuthority>,
+) -> Result<
+    tilo_messaging_protocol::signal_profile::EncryptedSignalProfile,
+    tilo_messaging_protocol::signal_profile::ProfileError,
+>;
 impl NativeSignalAccount {
     /// Create a first sealed profile under the original approved account key.
     /// Existing profiles are refused; neither grant nor provider is created.
@@ -252,21 +286,10 @@ impl NativeSignalAccount {
         &self,
         root: &std::path::Path,
     ) -> Result<tilo_messaging_protocol::signal_profile::EncryptedSignalProfile, SendError> {
-        self.gate.check()?;
-        if !root.is_absolute() {
-            return Err(SendError::Unavailable);
-        }
-        let key = self.gate.startup.credential.profile_key()?;
-        let profile =
-            tilo_messaging_protocol::signal_profile::EncryptedSignalProfile::create_with_key(
-                root,
-                self.gate.startup.identity.owner.clone(),
-                key,
-                self.gate.clone(),
-            )
-            .map_err(|_| SendError::Unavailable)?;
-        self.gate.check()?;
-        Ok(profile)
+        self.sealed_profile(
+            root,
+            tilo_messaging_protocol::signal_profile::EncryptedSignalProfile::create_with_key,
+        )
     }
     /// Open this original account's sealed profile using only its existing
     /// system-custodied, scope-bound credential. This does not start a provider
@@ -277,19 +300,30 @@ impl NativeSignalAccount {
         &self,
         root: &std::path::Path,
     ) -> Result<tilo_messaging_protocol::signal_profile::EncryptedSignalProfile, SendError> {
+        self.sealed_profile(
+            root,
+            tilo_messaging_protocol::signal_profile::EncryptedSignalProfile::open_with_key,
+        )
+    }
+    /// Run `unseal` on `root` with this account's owner, profile key and
+    /// grant, checking the grant both before and after.
+    fn sealed_profile(
+        &self,
+        root: &std::path::Path,
+        unseal: UnsealProfile,
+    ) -> Result<tilo_messaging_protocol::signal_profile::EncryptedSignalProfile, SendError> {
         self.gate.check()?;
         if !root.is_absolute() {
             return Err(SendError::Unavailable);
         }
         let key = self.gate.startup.credential.profile_key()?;
-        let profile =
-            tilo_messaging_protocol::signal_profile::EncryptedSignalProfile::open_with_key(
-                root,
-                self.gate.startup.identity.owner.clone(),
-                key,
-                self.gate.clone(),
-            )
-            .map_err(|_| SendError::Unavailable)?;
+        let profile = unseal(
+            root,
+            self.gate.startup.identity.owner.clone(),
+            key,
+            self.gate.clone(),
+        )
+        .map_err(|_| SendError::Unavailable)?;
         self.gate.check()?;
         Ok(profile)
     }

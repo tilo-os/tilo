@@ -101,6 +101,18 @@ pub trait WorkspaceAuthority: Send + Sync {
     fn legacy_journal_root(&self) -> Option<std::path::PathBuf> {
         None
     }
+
+    /// Whether every write to what the broker's membership and context
+    /// checks read on this host is announced through
+    /// [`tilo_identity_host::policy_change`]: this tree, the device fleet and
+    /// identity registry behind the installed certificate authority, and the
+    /// owner's task store. The broker then re-checks on those announcements
+    /// and at the next capability or certificate expiry. `false` (the
+    /// default) keeps the one-second re-check: a host that does not announce
+    /// a revocation must not have it go unenforced.
+    fn announces_policy_changes(&self) -> bool {
+        false
+    }
 }
 
 const UNANSWERED: &str = "workspace authority did not answer";
@@ -1040,4 +1052,8 @@ pub struct HostServices {
     /// record's route (`offerBlob`, `wantBlob`, `subscribeBlobs`). Without
     /// it apps' content stays in their own process.
     pub record_content: Option<Arc<crate::record_content::RouteContent>>,
+    /// This device's channel encryption service, which tells each route's
+    /// endpoint when its channel keys changed (`channelKeysChanged`).
+    /// Without it endpoints ask the identity service on a timer.
+    pub channel_keys: Option<crate::channel_encryption::ChannelKeyProvider>,
 }

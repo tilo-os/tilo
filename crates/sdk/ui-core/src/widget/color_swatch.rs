@@ -651,6 +651,7 @@ impl Widget for ColorSwatchPicker {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testing::dispatch;
     use automerge::AutoCommit;
 
     fn rgb(r: u8, g: u8, b: u8) -> Color {
@@ -682,37 +683,7 @@ mod tests {
         w.apply_layout(&taffy, node, Point::ZERO);
     }
 
-    fn dispatch(w: &mut dyn Widget, e: &WindowEvent) -> bool {
-        let mut taffy = TaffyTree::<()>::new();
-        let node = taffy.leaf_node(Style::default());
-        let mut handled = false;
-        let mut ft = None;
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        w.handle_event(
-            e,
-            &mut crate::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &winit::event::Modifiers::default(),
-                state: crate::widget::Edits::lend(&mut doc),
-                path: &root,
-                handled: &mut handled,
-                focus_target: &mut ft,
-                node_id: node,
-                taffy: &taffy,
-            },
-        );
-        handled
-    }
-
-    fn named_press(key: NamedKey) -> WindowEvent {
-        let event = crate::synthetic_input::key_event(Key::Named(key), None, ElementState::Pressed);
-        WindowEvent::KeyboardInput {
-            device_id: winit::event::DeviceId::dummy(),
-            event,
-            is_synthetic: false,
-        }
-    }
+    use crate::synthetic_input::named_key;
 
     #[test]
     fn a_sampled_grid_tells_each_choice_and_paints_its_samples() {
@@ -825,9 +796,9 @@ mod tests {
         assert_eq!(picker.take_choice(), Some(2));
 
         Widget::set_focus(&mut picker, true);
-        assert!(dispatch(&mut picker, &named_press(NamedKey::Home)));
-        assert!(dispatch(&mut picker, &named_press(NamedKey::ArrowRight)));
-        assert!(dispatch(&mut picker, &named_press(NamedKey::Space)));
+        assert!(dispatch(&mut picker, &named_key(NamedKey::Home)));
+        assert!(dispatch(&mut picker, &named_key(NamedKey::ArrowRight)));
+        assert!(dispatch(&mut picker, &named_key(NamedKey::Space)));
         assert_eq!(picker.take_choice(), Some(1));
 
         assert!(Widget::perform_semantic_action(

@@ -218,13 +218,6 @@ impl HeaderRowFace {
         self
     }
 
-    /// A row without the hairline under it (a sidebar's row, a drawer's).
-    #[must_use]
-    pub fn without_rule(mut self) -> Self {
-        self.rule = Rect::ZERO;
-        self
-    }
-
     /// Start the title at the shell buttons' inset instead of the content
     /// gutter (a sidebar's title lines up with its rows, not with content).
     #[must_use]

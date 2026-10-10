@@ -372,16 +372,6 @@ impl ClipboardBackend {
             }
         }
     }
-    #[cfg(target_os = "linux")]
-    pub fn with_remote_desktop(
-        remote: super::remote_desktop::RemoteDesktopSessionHandle,
-        broker: ClipboardBrokerHandle,
-    ) -> Self {
-        Self::with_session_providers(
-            vec![ClipboardSessionProviderHandle::new(Arc::new(remote))],
-            broker,
-        )
-    }
     fn owner(hdr: &zbus::message::Header<'_>) -> zbus::fdo::Result<OwnedUniqueName> {
         hdr.sender()
             .cloned()
@@ -397,34 +387,36 @@ impl ClipboardBackend {
         session: &ObjectPath<'_>,
         owner: &OwnedUniqueName,
     ) -> zbus::fdo::Result<()> {
-        self.providers
-            .iter()
-            .any(|provider| {
-                provider
-                    .0
-                    .request_clipboard(&session.to_string(), owner.as_str())
-            })
-            .then_some(())
-            .ok_or_else(|| {
-                zbus::fdo::Error::AccessDenied(
-                    "clipboard must be requested by this remote session before Start".into(),
-                )
-            })
+        self.any_provider(
+            session,
+            owner,
+            |provider, session, owner| provider.request_clipboard(session, owner),
+            "clipboard must be requested by this remote session before Start",
+        )
     }
     fn active(&self, session: &ObjectPath<'_>, owner: &OwnedUniqueName) -> zbus::fdo::Result<()> {
+        self.any_provider(
+            session,
+            owner,
+            |provider, session, owner| provider.clipboard_active(session, owner),
+            "clipboard is not active for this owned session",
+        )
+    }
+    /// Succeed when some provider `grants` the clipboard to `owner`'s
+    /// `session`; refuse with `refusal` otherwise.
+    fn any_provider(
+        &self,
+        session: &ObjectPath<'_>,
+        owner: &OwnedUniqueName,
+        grants: fn(&dyn ClipboardSessionProvider, &str, &str) -> bool,
+        refusal: &str,
+    ) -> zbus::fdo::Result<()> {
+        let session = session.to_string();
         self.providers
             .iter()
-            .any(|provider| {
-                provider
-                    .0
-                    .clipboard_active(&session.to_string(), owner.as_str())
-            })
+            .any(|provider| grants(&*provider.0, &session, owner.as_str()))
             .then_some(())
-            .ok_or_else(|| {
-                zbus::fdo::Error::AccessDenied(
-                    "clipboard is not active for this owned session".into(),
-                )
-            })
+            .ok_or_else(|| zbus::fdo::Error::AccessDenied(refusal.into()))
     }
     fn available(&self) -> zbus::fdo::Result<()> {
         self.broker.available().then_some(()).ok_or_else(|| {

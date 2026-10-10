@@ -1349,25 +1349,6 @@ fn set_role_with(
     Ok(())
 }
 
-/// Delay this device's playout of an inbound route by `trim_ns` beyond the
-/// group latency, the per-member offset acoustic calibration measures. A
-/// change under 20 ms is absorbed by resampling, without a gap.
-///
-/// # Errors
-///
-/// Returns a message when the route is no longer active or not playing.
-pub fn set_trim(session_id: [u8; 16], trim_ns: i64) -> Result<(), String> {
-    let state = state().lock().unwrap_or_else(PoisonError::into_inner);
-    let playback = state
-        .inbound
-        .get(&session_id)
-        .and_then(|route| route.playback.as_ref())
-        .ok_or_else(|| crate::shell::i18n::t("remote-audio-error-route-inactive"))?;
-    playback.shared.lock().playout.set_trim_ns(trim_ns);
-    drop(state);
-    Ok(())
-}
-
 fn tap_for(
     state: &Mutex<RemoteAudioState>,
     source: GroupRouteSource,

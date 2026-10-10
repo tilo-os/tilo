@@ -36,6 +36,8 @@ mod invoker;
 #[path = "collab_broker_capnp/native_effect_recovery_tests.rs"]
 mod native_effect_recovery_tests;
 mod native_media;
+#[cfg(test)]
+mod policy_turn_tests;
 #[cfg(target_os = "linux")]
 mod process_binding;
 mod published_invocation;
@@ -878,13 +880,16 @@ fn verify_join_presentation(
     }
     let proof = <[u8; 64]>::try_from(presentation.proof.as_slice())
         .map_err(|_| "collaboration join proof must be 64 bytes".to_string())?;
-    VerifyingKey::from_bytes(&cert.device_public_key)
-        .map_err(|_| "device certificate contains an invalid device key".to_string())?
-        .verify(
-            &runtime_identity::collaboration_join_signing_bytes(&presentation.workspace_id),
-            &Signature::from_bytes(&proof),
-        )
-        .map_err(|_| "collaboration join proof was signed by an unknown device".to_string())?;
+    let room = presentation.workspace_id.as_str();
+    admission_memo::join_proof_verified(&cert.device_public_key, room, &proof, || {
+        VerifyingKey::from_bytes(&cert.device_public_key)
+            .map_err(|_| "device certificate contains an invalid device key".to_string())?
+            .verify(
+                &runtime_identity::collaboration_join_signing_bytes(room),
+                &Signature::from_bytes(&proof),
+            )
+            .map_err(|_| "collaboration join proof was signed by an unknown device".to_string())
+    })?;
     // Without an authority to ask who governs the room, every foreign device
     // is held to the cap; the caller refines this where it has one.
     Ok(VerifiedJoinIdentity::of(&cert, cert.capabilities.foreign))
@@ -1572,6 +1577,7 @@ impl PendingInvocation {
 
 // Remote-action host: the broker as a `tilo_actions::remote::ActionHost`.
 mod action_host;
+mod admission_memo;
 mod app_consent;
 mod launchable;
 mod local_action_host;
@@ -1632,6 +1638,8 @@ impl CapnpBrokerState {
         if uuid::Uuid::parse_str(room).is_err() || presentation.len() > 16 * 1024 {
             return Err("invalid certified invocation caller".into());
         }
+        #[cfg(test)]
+        admission_memo::count_verification();
         let admitted = verify_join_identity(
             &CrdtRoute::cluster(room),
             presentation,
@@ -1687,6 +1695,9 @@ impl CapnpBrokerState {
         caller: &VerifiedActionCaller,
     ) -> Result<AdmittedJoinIdentity, String> {
         self.checked_policy_time(caller.policy_time.as_ref())?;
+        if let Some(admitted) = admission_memo::admitted_now(caller) {
+            return Ok(admitted);
+        }
         let current = if let Some(evidence) = &caller.network {
             self.verify_network_action_caller_with_policy_time(
                 evidence,
@@ -2445,15 +2456,18 @@ impl ActionDirectoryRequestQueue {
         tokio::sync::oneshot::Receiver<ActionDirectoryBridgeReply>,
         ActionDirectoryBridgeError,
     > {
-        if validate_directory_target_input(
-            &target.cluster_id,
-            &target.revision,
-            &target.address.resource,
-            &target.address.action,
-            argument.as_deref(),
-            confirmation.as_ref(),
-        )
-        .is_err()
+        // A start names the revision its target was chosen at: the
+        // admission is bound to it, never to the directory as it is now.
+        if target.revision.is_empty()
+            || validate_directory_target_input(
+                &target.cluster_id,
+                &target.revision,
+                &target.address.resource,
+                &target.address.action,
+                argument.as_deref(),
+                confirmation.as_ref(),
+            )
+            .is_err()
         {
             return Err(ActionDirectoryBridgeError::InvalidRequest);
         }
@@ -2712,7 +2726,9 @@ struct InvocationInputs<'a> {
     context: Option<tilo_actions::ActionContext>,
 }
 /// Who an admission is held for and where it came from: genuine durable
-/// caller evidence, the directory revision the target was chosen at, a
+/// caller evidence, the directory revision the target was admitted at (the
+/// one the caller chose it at or, when it named none, the one its owner
+/// resolved it against; `None` only for an action no directory resolved), a
 /// private owner and original caller, the original policy time a retained
 /// invocation keeps, and a task-owned durable identity. Each call site names
 /// every field, so no custody input is filled implicitly.
@@ -4127,15 +4143,36 @@ impl CapnpBrokerState {
         let decoded = runtime_collab::decode_action_directory_resolution(resolution)
             .map_err(|error| error.to_string())?;
         match decoded {
-            runtime_collab::ActionDirectoryResolution::Found(row)
-                if row.resource == resource
-                    && row.action.as_deref() == Some(action)
-                    && permits_directory_row(self, cluster_id, actor, &registered.app_id, &row)
-                        .map_err(|error| error.to_string())? =>
+            runtime_collab::ActionDirectoryResolution::Found {
+                row,
+                revision: resolved,
+            } if row.resource == resource
+                && row.action.as_deref() == Some(action)
+                && permits_directory_row(self, cluster_id, actor, &registered.app_id, &row)
+                    .map_err(|error| error.to_string())? =>
             {
-                Ok(runtime_collab::ActionDirectoryResolution::Found(row))
+                // A named revision is the one resolved; only an empty one
+                // takes the owner's word for which revision it read, and
+                // only in the shape a caller could have named itself.
+                let resolved = if revision.is_empty() {
+                    resolved.filter(|resolved| {
+                        validate_directory_identifier(
+                            resolved,
+                            "resolved revision",
+                            DIRECTORY_MAX_QUERY_REVISION_BYTES,
+                            true,
+                        )
+                        .is_ok()
+                    })
+                } else {
+                    Some(revision.to_owned())
+                };
+                Ok(runtime_collab::ActionDirectoryResolution::Found {
+                    row,
+                    revision: resolved,
+                })
             }
-            runtime_collab::ActionDirectoryResolution::Found(_) => {
+            runtime_collab::ActionDirectoryResolution::Found { .. } => {
                 Ok(runtime_collab::ActionDirectoryResolution::NotFound)
             }
             other => Ok(other),
@@ -4164,6 +4201,9 @@ impl CapnpBrokerState {
             address: tilo_actions::ActionAddress { resource, action },
         } = target;
         let peer_id = *peer_id;
+        if revision.is_empty() {
+            return Err(ActionDirectoryBridgeError::InvalidRequest);
+        }
         validate_directory_target_input(
             cluster_id,
             revision,
@@ -4188,7 +4228,7 @@ impl CapnpBrokerState {
             )
             .await
             .map_err(|_| ActionDirectoryBridgeError::Unavailable)?;
-        let runtime_collab::ActionDirectoryResolution::Found(row) = resolved else {
+        let runtime_collab::ActionDirectoryResolution::Found { row, .. } = resolved else {
             return Err(match resolved {
                 runtime_collab::ActionDirectoryResolution::StaleRevision => {
                     ActionDirectoryBridgeError::StaleRevision
@@ -5181,6 +5221,12 @@ impl CapnpBrokerState {
     /// so far counts as seen.
     pub(crate) fn invocation_changes(&self) -> tokio::sync::watch::Receiver<u64> {
         self.invocation_generation.subscribe()
+    }
+
+    /// A receiver that sees every later published-surface change; what it
+    /// has seen so far counts as seen.
+    pub(crate) fn surface_changes(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.surface_changes.subscribe()
     }
 
     /// Read one current receipt without surveying or disclosing another
@@ -6317,6 +6363,7 @@ impl CapnpBrokerState {
                 permissions: Vec::new(),
             });
         }
+        let certified = native.is_some();
         if let Ok(mut m) = self.channels.lock() {
             m.entry(channel_id.to_owned())
                 .or_insert_with(ChannelSubscribers::default)
@@ -6327,6 +6374,11 @@ impl CapnpBrokerState {
                     native,
                     private_alias: false,
                 });
+        }
+        if certified {
+            // A new admitted session brings its own certificate expiry: the
+            // policy turn re-checks, and from then on wakes at that expiry.
+            tilo_identity_host::policy_change::announce();
         }
         rx
     }
@@ -6543,6 +6595,99 @@ impl CapnpBrokerState {
             }
         }
         Ok(())
+    }
+
+    /// Re-check every membership surface and native context subscriber
+    /// (TIL-707), and register with
+    /// [`tilo_identity_host::policy_change::wake_at`] the first instant at
+    /// which a time-bound input they read (a capability's expiry, a
+    /// subscriber certificate's validity) changes the answer. Returns whether
+    /// the next re-check must come on the one-second clock instead of on an
+    /// announcement: an input nothing announces, or a check that failed.
+    fn refresh_policy_surfaces(self: &Arc<Self>) -> bool {
+        if self.services.workspace_memberships.is_none() || self.membership.is_none() {
+            // No membership surface, and no native context subscriber can
+            // be admitted: nothing here changes with policy.
+            return false;
+        }
+        // Sampled before anything is read: an expiry between this sample
+        // and a read is registered as well, so none is skipped.
+        let before = self.policy_now_ns();
+        let mut clocked = false;
+        if let Err(error) = self.refresh_workspace_membership_services() {
+            tracing::debug!(%error, "native membership surface could not be refreshed");
+            clocked = true;
+        }
+        if let Err(error) = self.refresh_workspace_context_services() {
+            tracing::debug!(%error, "native membership context could not be refreshed");
+            clocked = true;
+        }
+        let announced = self
+            .membership
+            .as_ref()
+            .is_some_and(|membership| membership.announces_policy_changes())
+            && tilo_identity_host::policy_change::timers_reliable();
+        let Ok(before) = before else {
+            return true;
+        };
+        if clocked || !announced {
+            return true;
+        }
+        let Ok((next, reads_fleet)) = self.next_policy_change(before) else {
+            return true;
+        };
+        if reads_fleet && !tilo_identity_host::policy_change::identity_files_watched() {
+            // Another process may revoke a device in the fleet file; without
+            // its watch, the fleet is re-read every second as before.
+            return true;
+        }
+        if let Some(at) = next {
+            let Ok(policy_now) = self.policy_now_ns() else {
+                return true;
+            };
+            tilo_identity_host::policy_change::wake_at(crate::policy_schedule::wall_instant(
+                at,
+                policy_now,
+                tilo_clock::unix_now_ns(),
+            ));
+        }
+        false
+    }
+
+    /// The first policy instant (Unix nanoseconds) after `after` at which a
+    /// membership surface or a native context subscriber can be answered
+    /// differently with nothing written, and whether a subscriber's
+    /// revalidation reads the device fleet.
+    fn next_policy_change(&self, after: u64) -> Result<(Option<u64>, bool), String> {
+        let capabilities = match self.membership.as_ref() {
+            Some(membership) => membership
+                .decide_in_tree(|tree| tree.next_capability_expiry_after(after / 1_000_000_000))?
+                .map(|seconds| seconds.saturating_mul(1_000_000_000)),
+            None => None,
+        };
+        let fleet_authority = self.certificate_authority.get().is_some();
+        let mut reads_fleet = false;
+        let certificates = self
+            .channels
+            .lock()
+            .map_err(|_| "native context subscriptions unavailable")?
+            .values()
+            .flat_map(|subscribers| subscribers.context.iter())
+            .filter_map(|subscriber| subscriber.native.as_ref()?.admitted.certificate.as_ref())
+            .filter_map(|certificate| {
+                reads_fleet |= fleet_authority;
+                // Not yet valid until issued; no longer valid once expired.
+                [Some(certificate.issued_at_ns), certificate.expires_at_ns]
+                    .into_iter()
+                    .flatten()
+                    .filter(|at| *at > after)
+                    .min()
+            })
+            .min();
+        Ok((
+            capabilities.into_iter().chain(certificates).min(),
+            reads_fleet,
+        ))
     }
 
     /// Ask one local subscriber of every record channel in `cluster_id` for
@@ -7249,6 +7394,44 @@ impl blob_stream::Server for BlobStreamServer {
 }
 
 impl channel_handle::Server for CapnpChannelHandle {
+    /// Resolves once this route's own channel changed since `after`. The
+    /// channel is derived from the admitted route, so an app follows only
+    /// its own records' channels, and learns nothing but that one changed.
+    fn channel_keys_changed(
+        self: Rc<Self>,
+        params: channel_handle::ChannelKeysChangedParams,
+        mut results: channel_handle::ChannelKeysChangedResults,
+    ) -> Promise<(), capnp::Error> {
+        let route = self.route();
+        if let Err(error) = self
+            .state
+            .revalidate_admission(&route, &self.verified_identity)
+        {
+            return Promise::err(error);
+        }
+        if route.app_id.is_empty() || route.cluster_id.is_empty() {
+            return Promise::err(capnp::Error::failed(
+                "channel keys belong to a certified app route".into(),
+            ));
+        }
+        let Some(keys) = self.state.services.channel_keys.clone() else {
+            return Promise::err(capnp::Error::unimplemented(
+                "this host has no channel service to follow".into(),
+            ));
+        };
+        let after = match params.get() {
+            Ok(params) => params.get_after(),
+            Err(error) => return Promise::err(error),
+        };
+        let channel =
+            collab_types::document_channel_id(&route.app_id, &route.cluster_id, &route.record_id);
+        Promise::from_future(async move {
+            let change = keys.channel_changed(channel, after).await;
+            results.get().set_change(change);
+            Ok(())
+        })
+    }
+
     fn approved_check(
         self: Rc<Self>,
         params: channel_handle::ApprovedCheckParams,
@@ -11425,6 +11608,23 @@ impl CapnpBrokerState {
     }
 }
 
+/// When the broker's turn must wake with nothing arriving: the earlier of
+/// its next policy re-check and its next invocation expiry, and never while
+/// neither is due.
+fn broker_turn_deadline(
+    recheck: Option<std::time::Instant>,
+    invocation: Option<std::time::Instant>,
+) -> Option<std::time::Instant> {
+    recheck.into_iter().chain(invocation).min()
+}
+
+/// Sleep until `deadline`; only polled while there is one.
+async fn sleep_until(deadline: Option<std::time::Instant>) {
+    if let Some(deadline) = deadline {
+        tokio::time::sleep_until(tokio::time::Instant::from_std(deadline)).await;
+    }
+}
+
 /// One run of the broker thread: start the broker's own services, then
 /// accept and drive connections until asked to quit.
 #[expect(
@@ -11475,18 +11675,22 @@ async fn serve_broker_thread(
             return;
         }
     };
-    let mut next_membership_refresh = std::time::Instant::now();
+    // Membership surfaces and native context subscribers are re-checked when
+    // an input announces a change or a registered expiry comes due, not on a
+    // clock (TIL-707). The watch wakes this turn for the first announcement
+    // after it is armed; the schedule coalesces the rest.
+    let policy_turn = Arc::new(tokio::sync::Notify::new());
+    let policy_watch = {
+        let turn = Arc::clone(&policy_turn);
+        tilo_identity_host::policy_change::Watch::new(move || turn.notify_one())
+    };
+    let mut policy = crate::policy_schedule::PolicySchedule::default();
     loop {
-        if std::time::Instant::now() >= next_membership_refresh {
-            if let Err(error) = state.refresh_workspace_membership_services() {
-                tracing::debug!(%error, "native membership surface could not be refreshed");
-            }
-            if let Err(error) = state.refresh_workspace_context_services() {
-                tracing::debug!(%error, "native membership context could not be refreshed");
-            }
-            next_membership_refresh = std::time::Instant::now()
-                .checked_add(Duration::from_secs(1))
-                .unwrap_or_else(std::time::Instant::now);
+        let now = std::time::Instant::now();
+        let epoch = tilo_identity_host::policy_change::epoch();
+        if policy.due(now, epoch).is_some_and(|due| due <= now) {
+            let clocked = state.refresh_policy_surfaces();
+            policy.checked(now, epoch, clocked);
         }
         #[cfg(test)]
         {
@@ -11536,19 +11740,23 @@ async fn serve_broker_thread(
         if quit.load(Ordering::Relaxed) {
             break;
         }
-        let deadline = state.next_invocation_deadline();
-        // The loop is also the broker's turn: in-process door
-        // calls and connected apps progress on it. Cap it at the
-        // old cadence, and sooner when an invocation is about to
-        // expire. `local_turn` wakes it immediately for queued work.
-        let tick = deadline
-            .map_or(Duration::from_millis(100), |deadline| {
-                deadline.saturating_duration_since(std::time::Instant::now())
-            })
-            .min(Duration::from_millis(100));
+        // Sleep until something here is due: the next policy re-check, or an
+        // invocation about to expire. Everything else the turn handles wakes
+        // it at once: queued directory work, in-process door calls and quit
+        // through `local_turn`, admitted workers through `worker_admitted`,
+        // policy announcements through `policy_turn`; connected apps run as
+        // tasks of this LocalSet.
+        let now = std::time::Instant::now();
+        let mut recheck = policy.due(now, tilo_identity_host::policy_change::epoch());
+        if recheck.is_none() && policy_watch.arm() != policy.epoch() {
+            // Announced between the check above and arming: nothing will
+            // wake the turn for it.
+            recheck = Some(now);
+        }
+        let deadline = broker_turn_deadline(recheck, state.next_invocation_deadline());
         let stream = tokio::select! {
             biased;
-            () = tokio::time::sleep(tick) => {
+            () = sleep_until(deadline), if deadline.is_some() => {
                 // Expiration must not depend on a caller polling
                 // status: completion waiters deserve a terminal
                 // answer even after an app goes silent.
@@ -11558,6 +11766,7 @@ async fn serve_broker_thread(
             conn = listener.accept() => conn,
             () = state.local_turn.notified() => continue,
             () = state.worker_admitted.notified() => continue,
+            () = policy_turn.notified() => continue,
         };
         let (stream, _) = match stream {
             Ok(s) => s,
@@ -11677,7 +11886,7 @@ async fn has_collab_launch_marker(stream: &tokio::net::UnixStream) -> Result<boo
         match stream.try_io(tokio::io::Interest::READABLE, || {
             peek_launch_marker(stream, &mut partial)
         }) {
-            Ok(marker) => return Ok(marker == collab_types::local_transport::COLLAB_LAUNCH_MAGIC),
+            Ok(marker) => return Ok(marker == launcher::services::COLLAB_LAUNCH_MAGIC),
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                 if partial {
                     if ready.is_read_closed() {
@@ -11710,8 +11919,8 @@ async fn has_collab_launch_marker(stream: &tokio::net::UnixStream) -> Result<boo
 fn peek_launch_marker(
     stream: &tokio::net::UnixStream,
     partial: &mut bool,
-) -> std::io::Result<[u8; collab_types::local_transport::COLLAB_LAUNCH_MAGIC.len()]> {
-    let mut marker = [0_u8; collab_types::local_transport::COLLAB_LAUNCH_MAGIC.len()];
+) -> std::io::Result<[u8; launcher::services::COLLAB_LAUNCH_MAGIC.len()]> {
+    let mut marker = [0_u8; launcher::services::COLLAB_LAUNCH_MAGIC.len()];
     // SAFETY: `marker` is a writable fixed-size buffer and `stream` owns
     // the live socket for this entire call. MSG_PEEK leaves the Cap'n
     // Proto header untouched for legacy/raw clients.
@@ -11782,7 +11991,7 @@ async fn authenticate_launcher_handoff(
         "pid {pid} launching {} in room {}",
         handoff.app_id, handoff.workspace_id
     );
-    if handoff.protocol != collab_types::local_transport::COLLAB_LAUNCH_PROTOCOL_VERSION
+    if handoff.protocol != launcher::services::COLLAB_LAUNCH_PROTOCOL_VERSION
         || handoff.app_id.trim().is_empty()
         || handoff.workspace_id.trim().is_empty()
     {
@@ -11883,13 +12092,13 @@ async fn read_launcher_handoff(
     // record. Unsupported kernels keep ordinary collaboration available.
     let media_process = native_media::PeerProcess::from_socket(stream);
 
-    let mut marker = [0_u8; collab_types::local_transport::COLLAB_LAUNCH_MAGIC.len()];
+    let mut marker = [0_u8; launcher::services::COLLAB_LAUNCH_MAGIC.len()];
     stream.read_exact(&mut marker).await.map_err(|error| {
         capnp::Error::failed(format!(
             "could not read collaboration launch marker: {error}"
         ))
     })?;
-    if marker != collab_types::local_transport::COLLAB_LAUNCH_MAGIC {
+    if marker != launcher::services::COLLAB_LAUNCH_MAGIC {
         return Err(capnp::Error::failed(
             "collaboration launch marker changed while being read".into(),
         ));
@@ -12389,16 +12598,13 @@ pub mod tests {
         // What tilo-launcher writes before handing the descriptor to the app.
         let mut stream = std::os::unix::net::UnixStream::connect(&socket).expect("connect");
         let handoff = serde_json::to_vec(&serde_json::json!({
-            "protocol": collab_types::local_transport::COLLAB_LAUNCH_PROTOCOL_VERSION,
+            "protocol": launcher::services::COLLAB_LAUNCH_PROTOCOL_VERSION,
             "app_id": "so.tilo.calculator",
             "workspace_id": "5ba25f73-87c5-447f-a5a6-880dc4249a81",
         }))
         .expect("handoff json");
-        std::io::Write::write_all(
-            &mut stream,
-            &collab_types::local_transport::COLLAB_LAUNCH_MAGIC,
-        )
-        .expect("marker");
+        std::io::Write::write_all(&mut stream, &launcher::services::COLLAB_LAUNCH_MAGIC)
+            .expect("marker");
         std::io::Write::write_all(
             &mut stream,
             &launcher::services::COLLAB_LAUNCH_FRAMING
@@ -12454,13 +12660,13 @@ pub mod tests {
     #[cfg(test)]
     fn launcher_handoff_bytes(app_id: &str, room: &str) -> (Vec<u8>, Vec<u8>) {
         let handoff = serde_json::to_vec(&serde_json::json!({
-            "protocol": collab_types::local_transport::COLLAB_LAUNCH_PROTOCOL_VERSION,
+            "protocol": launcher::services::COLLAB_LAUNCH_PROTOCOL_VERSION,
             "app_id": app_id,
             "workspace_id": room,
         }))
         .expect("handoff json");
         (
-            collab_types::local_transport::COLLAB_LAUNCH_MAGIC.to_vec(),
+            launcher::services::COLLAB_LAUNCH_MAGIC.to_vec(),
             launcher::services::COLLAB_LAUNCH_FRAMING
                 .encode(&handoff)
                 .expect("framed handoff"),
@@ -12551,7 +12757,7 @@ pub mod tests {
     #[tokio::test]
     async fn a_launch_marker_in_pieces_wakes_on_its_bytes() {
         use tokio::io::AsyncWriteExt as _;
-        let marker = collab_types::local_transport::COLLAB_LAUNCH_MAGIC;
+        let marker = launcher::services::COLLAB_LAUNCH_MAGIC;
         let (head, tail) = marker.split_at(marker.len() / 2);
         let pause = LAUNCH_MARKER_COMPLETION / 6;
 
@@ -13243,6 +13449,8 @@ pub mod tests {
                         &state.row(),
                     )
                     .expect("test directory row encodes");
+                    // As a current owner does: the revision it resolved at.
+                    out.set_resolved_revision(state.revision.as_str());
                 }
                 DirectoryResolveMode::Stale => out.set_stale_revision(()),
                 DirectoryResolveMode::NotFound => out.set_not_found(()),
@@ -13930,6 +14138,7 @@ pub mod tests {
                     confirmation: None,
                     revision: Some("directory-r1".into()),
                     on_behalf_of: None,
+                    wait_ms: None,
                 };
                 let mut pending = fixture.state.action_invoke(&caller, None, None, &request);
                 let admitted = tokio::time::timeout(Duration::from_secs(2), async {
@@ -14042,6 +14251,7 @@ pub mod tests {
                 },
                 argument: InvokeArgument::None, context: None, confirmation: None,
                 revision: None, on_behalf_of: None,
+                wait_ms: None,
             };
             let mut pending = fixture.state.action_invoke(&caller, None, None, &request);
             let PendingPoll::Ready(Ok(receipt)) = pending.poll_ready() else {

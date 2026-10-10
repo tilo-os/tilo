@@ -434,43 +434,6 @@ pub fn remove_device(device: [u8; 32]) -> Result<(), String> {
     Ok(())
 }
 
-/// Turn auto-approval for `device` on (with the boot chains the owner
-/// accepts) or off (no chains). The person's root signs the setting.
-///
-/// # Errors
-///
-/// Returns an error when this device cannot sign for the identity.
-pub fn set_auto_approval(
-    device: [u8; 32],
-    accepted_boot_chains: Vec<[u8; 32]>,
-) -> Result<(), String> {
-    let (identity_id, user) = with_service(|service| {
-        service.custody.as_ref().map(|custody| {
-            (
-                custody.identity_id.clone(),
-                *custody.fleet.user_public_key(),
-            )
-        })
-    })
-    .flatten()
-    .ok_or_else(|| crate::shell::i18n::t("device-unlock-error-no-identity"))?;
-    let mut setting = AutoApproval::unsigned(
-        user,
-        device,
-        accepted_boot_chains,
-        tilo_clock::unix_now_ns(),
-    );
-    let digest = setting
-        .digest()
-        .ok_or_else(|| crate::shell::i18n::t("device-unlock-error-no-identity"))?;
-    let signature = crate::device_fleet::DeviceFleetStore::from_env()
-        .and_then(|store| store.sign_unlock_setting(&identity_id, &digest))
-        .map_err(|error| error.to_string())?;
-    setting.signature = signature.to_vec();
-    with_service(|service| service.settings_outbox.push(setting));
-    Ok(())
-}
-
 /// Certify the boot key of `request` for this device, seal its sibling half
 /// to the person's secret-sync key, and queue the enrolment for this
 /// device's fabric snapshot.

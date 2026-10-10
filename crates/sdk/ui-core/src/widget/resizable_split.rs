@@ -623,17 +623,9 @@ impl<L: Widget, R: Widget> ResizableSplit<L, R> {
         &self.left
     }
 
-    pub fn left_mut(&mut self) -> &mut L {
-        &mut self.left
-    }
-
     /// The second (trailing or bottom) pane.
     pub fn right(&self) -> &R {
         &self.right
-    }
-
-    pub fn right_mut(&mut self) -> &mut R {
-        &mut self.right
     }
 
     fn moved(&mut self) {
@@ -1114,6 +1106,7 @@ impl<L: Widget + 'static, R: Widget + 'static> crate::permissions::capability::P
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testing::Dispatch;
     use automerge::AutoCommit;
 
     /// Bare-minimum `Widget` for use as a `ResizableSplit` child in tests.
@@ -1217,28 +1210,11 @@ mod tests {
         split.apply_layout(tree, node, Point::ZERO);
     }
 
-    fn cursor_moved(x: f64, y: f64) -> WindowEvent {
-        WindowEvent::CursorMoved {
-            device_id: winit::event::DeviceId::dummy(),
-            position: winit::dpi::PhysicalPosition::new(x, y),
-        }
-    }
+    use crate::synthetic_input::cursor_moved;
 
-    fn mouse_press() -> WindowEvent {
-        WindowEvent::MouseInput {
-            device_id: winit::event::DeviceId::dummy(),
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        }
-    }
+    use crate::synthetic_input::mouse_press;
 
-    fn mouse_release() -> WindowEvent {
-        WindowEvent::MouseInput {
-            device_id: winit::event::DeviceId::dummy(),
-            state: ElementState::Released,
-            button: MouseButton::Left,
-        }
-    }
+    use crate::synthetic_input::mouse_release;
 
     fn dispatch<L: Widget + 'static, R: Widget + 'static>(
         s: &mut ResizableSplit<L, R>,
@@ -1246,23 +1222,7 @@ mod tests {
         node: NodeId,
         event: &WindowEvent,
     ) {
-        let mut handled = false;
-        let mut focus_target = None;
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        s.handle_event(
-            event,
-            &mut crate::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &winit::event::Modifiers::default(),
-                state: crate::widget::Edits::lend(&mut doc),
-                path: &root,
-                handled: &mut handled,
-                focus_target: &mut focus_target,
-                node_id: node,
-                taffy: tree,
-            },
-        );
+        Dispatch::new().layout(tree, node).send(s, event);
     }
 
     fn split(orientation: SplitOrientation) -> ResizableSplit<TestLeaf, TestLeaf> {

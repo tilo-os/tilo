@@ -101,12 +101,7 @@ pub struct LineSpans {
     pub carry: HlState,
 }
 
-impl LineSpans {
-    /// No carry — for a line-local highlighter.
-    pub fn line_local(spans: Vec<Span>) -> Self {
-        Self { spans, carry: 0 }
-    }
-}
+impl LineSpans {}
 
 /// A pluggable, per-line source tokenizer. The [`CodeEditor`] owns rendering,
 /// caret, and selection; a `Highlighter` owns *only* the language lexing —
@@ -1210,12 +1205,13 @@ mod tests {
         highlighter_colours_segments_from_the_theme();
     }
 
+    use crate::testing::Dispatch;
     use automerge::AutoCommit;
-    use taffy::{Style, TaffyTree};
+    use taffy::TaffyTree;
     use vello::Scene;
     use vello::kurbo::Affine;
     use winit::event::{ElementState, Modifiers, WindowEvent};
-    use winit::keyboard::{Key, NamedKey};
+    use winit::keyboard::NamedKey;
 
     fn mods(ctrl: bool, shift: bool) -> Modifiers {
         use winit::keyboard::ModifiersState;
@@ -1229,41 +1225,12 @@ mod tests {
         Modifiers::from(s)
     }
 
-    fn char_event(s: &str) -> WindowEvent {
-        crate::synthetic_input::keyboard_input(crate::synthetic_input::key_event(
-            Key::Character(winit::keyboard::SmolStr::new(s)),
-            Some(winit::keyboard::SmolStr::new(s)),
-            ElementState::Pressed,
-        ))
-    }
+    use crate::synthetic_input::char_key;
 
-    fn named_event(k: NamedKey) -> WindowEvent {
-        crate::synthetic_input::keyboard_input(crate::synthetic_input::key_event(
-            Key::Named(k),
-            None,
-            ElementState::Pressed,
-        ))
-    }
+    use crate::synthetic_input::named_key;
 
     fn drive(ed: &mut CodeEditor, doc: &mut AutoCommit, ev: &WindowEvent, m: Modifiers) -> bool {
-        let mut handled = false;
-        let mut focus_target = None;
-        let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let node = taffy.leaf_node(Style::default());
-        ed.handle_event(
-            ev,
-            &mut crate::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &m,
-                state: crate::widget::Edits::lend(doc),
-                path: &automerge::ROOT,
-                handled: &mut handled,
-                focus_target: &mut focus_target,
-                node_id: node,
-                taffy: &taffy,
-            },
-        );
-        handled
+        Dispatch::new().doc(doc).modifiers(m).send(ed, ev).handled
     }
 
     fn draw_once(ed: &mut CodeEditor, theme: &Theme) {
@@ -1316,12 +1283,7 @@ mod tests {
             ed.set_rect(Rect::new(0.0, 0.0, 400.0, 200.0));
             let mut doc = AutoCommit::new();
             for ch in ["f", "n", " ", "x"] {
-                assert!(drive(
-                    &mut ed,
-                    &mut doc,
-                    &char_event(ch),
-                    mods(false, false)
-                ));
+                assert!(drive(&mut ed, &mut doc, &char_key(ch), mods(false, false)));
             }
             assert_eq!(ed.value(), "fn x");
             assert_eq!(ed.cursor_pos(), 4);
@@ -1359,15 +1321,15 @@ mod tests {
             let mut doc = AutoCommit::new();
             {
                 let ch = "a";
-                drive(&mut ed, &mut doc, &char_event(ch), mods(false, false));
+                drive(&mut ed, &mut doc, &char_key(ch), mods(false, false));
             }
             drive(
                 &mut ed,
                 &mut doc,
-                &named_event(NamedKey::Enter),
+                &named_key(NamedKey::Enter),
                 mods(false, false),
             );
-            drive(&mut ed, &mut doc, &char_event("b"), mods(false, false));
+            drive(&mut ed, &mut doc, &char_key("b"), mods(false, false));
             assert_eq!(ed.value(), "a\nb");
             assert_eq!(
                 ed.line_count(),
@@ -1384,16 +1346,16 @@ mod tests {
             assert!(drive(
                 &mut ed,
                 &mut doc,
-                &named_event(NamedKey::Tab),
+                &named_key(NamedKey::Tab),
                 mods(false, false)
             ));
-            drive(&mut ed, &mut doc, &char_event("x"), mods(false, false));
+            drive(&mut ed, &mut doc, &char_key("x"), mods(false, false));
             assert_eq!(ed.value(), "    x", "Tab inserts four spaces");
             // Shift+Tab removes one indent level.
             assert!(drive(
                 &mut ed,
                 &mut doc,
-                &named_event(NamedKey::Tab),
+                &named_key(NamedKey::Tab),
                 mods(false, true)
             ));
             assert_eq!(
@@ -1416,23 +1378,13 @@ mod tests {
             ed.set_focused(true);
             ed.set_rect(Rect::new(0.0, 0.0, 400.0, 200.0));
             let mut doc = AutoCommit::new();
-            assert!(drive(
-                &mut ed,
-                &mut doc,
-                &char_event("a"),
-                mods(true, false)
-            ));
+            assert!(drive(&mut ed, &mut doc, &char_key("a"), mods(true, false)));
             assert_eq!(
                 ed.inner().selection_range_public(),
                 Some((0, 3)),
                 "Ctrl+A selects the whole buffer on the real path",
             );
-            assert!(drive(
-                &mut ed,
-                &mut doc,
-                &char_event("x"),
-                mods(true, false)
-            ));
+            assert!(drive(&mut ed, &mut doc, &char_key("x"), mods(true, false)));
             assert_eq!(
                 ed.value(),
                 "",
@@ -1448,13 +1400,13 @@ mod tests {
             drive(
                 &mut ed,
                 &mut doc,
-                &named_event(NamedKey::Home),
+                &named_key(NamedKey::Home),
                 mods(false, false),
             );
             drive(
                 &mut ed,
                 &mut doc,
-                &named_event(NamedKey::ArrowRight),
+                &named_key(NamedKey::ArrowRight),
                 mods(true, true),
             );
             let sel = ed
@@ -1645,6 +1597,7 @@ mod tests {
 #[cfg(test)]
 mod document_tests {
     use super::*;
+    use crate::testing::dispatch;
     #[test]
     fn dictation_target_is_editable_source_and_refuses_read_only_or_blurred_input() {
         let mut editor = CodeEditor::local();
@@ -1659,7 +1612,7 @@ mod document_tests {
         let stamp = Widget::ime_edit_fingerprint(&editor, &key).unwrap();
         editor.select_all();
         assert_ne!(Widget::ime_edit_fingerprint(&editor, &key), Some(stamp));
-        send(
+        dispatch(
             &mut editor,
             &WindowEvent::Ime(winit::event::Ime::Commit("日本語 café".into())),
         );
@@ -1667,7 +1620,7 @@ mod document_tests {
         editor.set_read_only(true);
         assert!(Widget::ime_purpose(&editor).is_none());
         assert!(Widget::ime_edit_fingerprint(&editor, &key).is_none());
-        send(
+        dispatch(
             &mut editor,
             &WindowEvent::Ime(winit::event::Ime::Commit("refused".into())),
         );
@@ -1690,26 +1643,6 @@ mod document_tests {
         ))
     }
 
-    fn send(editor: &mut CodeEditor, event: &WindowEvent) -> bool {
-        let mut taffy = TaffyTree::<()>::new();
-        let node = taffy.leaf_node(Style::default());
-        let mut handled = false;
-        editor.handle_event(
-            event,
-            &mut crate::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &winit::event::Modifiers::default(),
-                state: crate::widget::Edits::lend(&mut automerge::AutoCommit::new()),
-                path: &automerge::ROOT,
-                handled: &mut handled,
-                focus_target: &mut None,
-                node_id: node,
-                taffy: &taffy,
-            },
-        );
-        handled
-    }
-
     #[test]
     fn a_read_only_editor_selects_but_never_edits() {
         let mut editor = CodeEditor::local()
@@ -1719,15 +1652,15 @@ mod document_tests {
         editor.set_text("{\n  \"ok\": true\n}\n");
         editor.set_focused(true);
         editor.set_rect(Rect::new(0.0, 0.0, 400.0, 200.0));
-        send(
+        dispatch(
             &mut editor,
             &key_event(Key::Character("x".into()), Some("x")),
         );
-        send(
+        dispatch(
             &mut editor,
             &key_event(Key::Named(NamedKey::Backspace), None),
         );
-        send(&mut editor, &key_event(Key::Named(NamedKey::Enter), None));
+        dispatch(&mut editor, &key_event(Key::Named(NamedKey::Enter), None));
         assert_eq!(editor.value(), "{\n  \"ok\": true\n}\n", "nothing edits it");
         editor.select_all();
         assert!(editor.selection().is_some(), "it still selects");

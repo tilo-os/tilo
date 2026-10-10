@@ -269,21 +269,6 @@ impl DatePicker {
         self.set_rect(rect);
     }
 
-    /// Report an externally laid-out picker hit without mutating selection.
-    /// Canvas hosts can translate it into their own typed action envelope.
-    pub fn hit_test_external(&self, point: Point) -> Option<ExternalDatePickerHit> {
-        if self.prev_button_rect.contains(point) {
-            return Some(ExternalDatePickerHit::PreviousMonth);
-        }
-        if self.next_button_rect.contains(point) {
-            return Some(ExternalDatePickerHit::NextMonth);
-        }
-        self.day_rects
-            .iter()
-            .find(|(_, rect)| rect.contains(point))
-            .map(|(date, _)| ExternalDatePickerHit::Date(*date))
-    }
-
     /// Hit regions for an embedded host's existing retained hit map. The
     /// regions are derived by the same shared layout code used for drawing.
     pub fn hit_regions_external(&self) -> Vec<(ExternalDatePickerHit, Rect)> {
@@ -831,16 +816,11 @@ fn day_disc(cell: Rect) -> vello::kurbo::Circle {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testing::Dispatch;
     use automerge::AutoCommit;
     use std::cell::RefCell;
     use std::rc::Rc;
     use taffy::prelude::TaffyMaxContent;
-    use winit::dpi::PhysicalPosition;
-    use winit::event::MouseButton;
-
-    fn modifiers() -> winit::event::Modifiers {
-        winit::event::Modifiers::default()
-    }
 
     #[test]
     fn date_picker_month_navigation_and_selection() {
@@ -886,38 +866,9 @@ mod tests {
                 .expect("June 7 2024 cell exists in the visible grid");
 
             let pt = cell.center();
-            let mut handled = false;
-            let mut focus_target: Option<NodeId> = None;
-            let mods = modifiers();
-            let mut doc = AutoCommit::new();
-            let root = automerge::ROOT;
-
-            dp.handle_event(
-                &cursor_moved(pt.x, pt.y),
-                &mut crate::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &mods,
-                    state: crate::widget::Edits::lend(&mut doc),
-                    path: &root,
-                    handled: &mut handled,
-                    focus_target: &mut focus_target,
-                    node_id: node,
-                    taffy: &taffy,
-                },
-            );
-            dp.handle_event(
-                &mouse_pressed(),
-                &mut crate::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &mods,
-                    state: crate::widget::Edits::lend(&mut doc),
-                    path: &root,
-                    handled: &mut handled,
-                    focus_target: &mut focus_target,
-                    node_id: node,
-                    taffy: &taffy,
-                },
-            );
+            let mut at_node = Dispatch::new().layout(&taffy, node);
+            at_node.send(&mut dp, &cursor_moved(pt.x, pt.y));
+            at_node.send(&mut dp, &mouse_press());
 
             assert_eq!(dp.selected(), target);
             assert_eq!(*captured.borrow(), Some(target));
@@ -1018,20 +969,9 @@ mod tests {
         focused_date_picker_paints_a_focus_ring();
     }
 
-    fn cursor_moved(x: f64, y: f64) -> WindowEvent {
-        WindowEvent::CursorMoved {
-            device_id: winit::event::DeviceId::dummy(),
-            position: PhysicalPosition::new(x, y),
-        }
-    }
+    use crate::synthetic_input::cursor_moved;
 
-    fn mouse_pressed() -> WindowEvent {
-        WindowEvent::MouseInput {
-            device_id: winit::event::DeviceId::dummy(),
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        }
-    }
+    use crate::synthetic_input::mouse_press;
 
     #[test]
     fn date_picker_semantics_and_shared_state_track_selection() {

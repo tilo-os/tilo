@@ -51,6 +51,28 @@ pub(crate) fn mix8(a: Color, b: Color, t: f32) -> Color {
     Color::from_rgb8(l(a.r(), b.r()), l(a.g(), b.g()), l(a.b(), b.b()))
 }
 
+/// [`mix8`] interpolated in `f64`, the precision charts compute their value
+/// ramps in.
+pub(crate) fn mix8_f64(a: Color, b: Color, amount: f64) -> Color {
+    let amount = amount.clamp(0.0, 1.0);
+    let channel = |start: u8, end: u8| {
+        let value = f64::from(start) + (f64::from(end) - f64::from(start)) * amount;
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "interpolated u8 channels are clamped by their endpoints"
+        )]
+        {
+            value.round() as u8
+        }
+    };
+    Color::from_rgb8(
+        channel(a.r(), b.r()),
+        channel(a.g(), b.g()),
+        channel(a.b(), b.b()),
+    )
+}
+
 /// Composites `over` onto an opaque `ground`: a token's own RGBA says
 /// nothing about how it reads (`white/20` differs over black vs white), so
 /// every derivation below measures the composite, never the token.

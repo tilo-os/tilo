@@ -634,60 +634,21 @@ impl crate::widget::controls::ActionControls for EditableLabel {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testing::Dispatch;
     use automerge::AutoCommit;
     use winit::event::Modifiers;
 
     fn drive(el: &mut EditableLabel, doc: &mut AutoCommit, ev: &WindowEvent, m: Modifiers) -> bool {
-        let mut handled = false;
-        let mut focus_target = None;
-        let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let node = taffy.leaf_node(Style::default());
-        el.handle_event(
-            ev,
-            &mut crate::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &m,
-                state: crate::widget::Edits::lend(doc),
-                path: &automerge::ROOT,
-                handled: &mut handled,
-                focus_target: &mut focus_target,
-                node_id: node,
-                taffy: &taffy,
-            },
-        );
-        handled
+        Dispatch::new().doc(doc).modifiers(m).send(el, ev).handled
     }
 
-    fn char_key(s: &str) -> WindowEvent {
-        crate::synthetic_input::keyboard_input(crate::synthetic_input::key_event(
-            Key::Character(winit::keyboard::SmolStr::new(s)),
-            Some(winit::keyboard::SmolStr::new(s)),
-            ElementState::Pressed,
-        ))
-    }
+    use crate::synthetic_input::char_key;
 
-    fn named_key(k: NamedKey) -> WindowEvent {
-        crate::synthetic_input::keyboard_input(crate::synthetic_input::key_event(
-            Key::Named(k),
-            None,
-            ElementState::Pressed,
-        ))
-    }
+    use crate::synthetic_input::named_key;
 
-    fn mouse_move(x: f64, y: f64) -> WindowEvent {
-        WindowEvent::CursorMoved {
-            device_id: winit::event::DeviceId::dummy(),
-            position: winit::dpi::PhysicalPosition::new(x, y),
-        }
-    }
+    use crate::synthetic_input::cursor_moved;
 
-    fn left_press() -> WindowEvent {
-        WindowEvent::MouseInput {
-            device_id: winit::event::DeviceId::dummy(),
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        }
-    }
+    use crate::synthetic_input::mouse_press;
 
     fn no_mods() -> Modifiers {
         Modifiers::default()
@@ -715,8 +676,8 @@ mod tests {
             assert!(el.is_editing(), "still editing until a commit trigger");
 
             // Move the pointer well outside the field, then press — a click away.
-            drive(&mut el, &mut doc, &mouse_move(500.0, 500.0), no_mods());
-            let consumed = drive(&mut el, &mut doc, &left_press(), no_mods());
+            drive(&mut el, &mut doc, &cursor_moved(500.0, 500.0), no_mods());
+            let consumed = drive(&mut el, &mut doc, &mouse_press(), no_mods());
 
             assert!(!el.is_editing(), "click outside ends the edit");
             assert_eq!(el.value(), "New", "blur committed the typed value");

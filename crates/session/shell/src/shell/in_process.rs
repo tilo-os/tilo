@@ -1287,6 +1287,7 @@ mod tests {
                     context: None,
                     confirmation: None,
                     revision: Some(listed.revision),
+                    wait_ms: None,
                 },
             );
             let mut outcome = None;

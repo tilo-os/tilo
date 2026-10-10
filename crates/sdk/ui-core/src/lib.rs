@@ -95,10 +95,7 @@
 #![cfg_attr(
     test,
     allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
         clippy::string_slice,
-        clippy::panic,
         clippy::unreachable,
         clippy::float_cmp,
         reason = "in a test these are the assertion, not a hazard"
@@ -252,6 +249,7 @@ pub mod resources;
 pub mod retained_present;
 pub mod richtext;
 pub mod scale;
+pub mod scene_parts;
 pub mod screen_reader;
 pub mod search;
 pub mod secret_paint;

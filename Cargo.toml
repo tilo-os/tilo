@@ -218,7 +218,6 @@ members = [
     "crates/packaging/registry-server",
     "crates/packaging/registry-types",
     "crates/packaging/registry-web",
-    "crates/packaging/registry-web-bindgen",
     "crates/packaging/runtime-bundle",
     "crates/packaging/runtime-update",
 
@@ -318,6 +317,7 @@ members = [
     "crates/system/durable-store",
     "crates/system/fs",
     "crates/system/fs-content",
+    "crates/system/fs-protocol",
     "crates/system/fs-native",
     "crates/system/host-fs",
     "crates/system/host-info",

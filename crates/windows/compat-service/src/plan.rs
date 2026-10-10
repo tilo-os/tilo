@@ -492,12 +492,6 @@ impl<'a, R: RuntimeRegistry> SandboxPlanner<'a, R> {
         })
     }
 
-    #[must_use]
-    pub fn with_icd_search(mut self, search: IcdSearch) -> Self {
-        self.icd_search = search;
-        self
-    }
-
     #[allow(
         clippy::too_many_lines,
         reason = "the ordered namespace plan is kept together so later arguments cannot weaken earlier policy"

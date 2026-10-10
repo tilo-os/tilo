@@ -61,6 +61,13 @@ uploads="$temp/tilo-runtime-uploads-$arch.tsv"
 while IFS= read -r object; do
   printf '%s\t%s\n' "$object" "$PACKAGE_API/$artifact/$VERSION/${object##*/}" >> "$uploads"
 done < <(find "$dir" -maxdepth 1 -type f | sort)
+# The thin package's compressed twin, which clients fetch first. It stays out
+# of $dir, whose files `entry --objects` reads as the payload objects. The
+# registry writes the payload objects' twins itself when it stores them.
+twin="$temp/tilo-runtime-twin-$arch/${tapp##*/}.zst"
+mkdir -p "${twin%/*}"
+"$REGISTRY_CLI" compress -o "$twin" "$tapp"
+printf '%s\t%s\n' "$twin" "$PACKAGE_API/$artifact/$VERSION/${twin##*/}" >> "$uploads"
 TILO_PACKAGE_UPLOAD_WORKERS=8 "$here/../upload_immutable_packages.sh" "$uploads"
 
 for attempt in 1 2 3; do

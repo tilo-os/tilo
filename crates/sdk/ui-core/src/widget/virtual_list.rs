@@ -169,10 +169,6 @@ where
         &self.items
     }
 
-    pub fn item_mut(&mut self, index: usize) -> Option<&mut T> {
-        self.items.get_mut(index)
-    }
-
     /// # Errors
     ///
     /// Returns [`DuplicateListKey`] when `key` already exists.
@@ -1113,29 +1109,6 @@ impl<M: ListModel> VirtualList<M> {
         self.viewport.offset().to_bits() != before.to_bits()
     }
 
-    fn route_to_children(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
-        if let Some(row) = self
-            .mounted
-            .iter_mut()
-            .find(|row| row.widget.wants_pointer_capture())
-            && let Some(node) = row.node
-        {
-            row.widget
-                .handle_event(event, &mut ctx.reborrow(ctx.path, node));
-            return;
-        }
-        for row in self.mounted.iter_mut().rev() {
-            let Some(node) = row.node else {
-                continue;
-            };
-            row.widget
-                .handle_event(event, &mut ctx.reborrow(ctx.path, node));
-            if *ctx.handled {
-                break;
-            }
-        }
-    }
-
     fn handle_scrollbar_event(&mut self, event: &WindowEvent, scale_factor: f64) -> bool {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
@@ -1493,7 +1466,12 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
             return;
         }
         if !self.drag_scroll.is_tracking() && !self.reorder.is_tracking() {
-            self.route_to_children(event, ctx);
+            crate::widget::route_to_mounted(
+                &mut self.mounted,
+                |mounted| (&mut mounted.widget, mounted.node),
+                event,
+                ctx,
+            );
         }
         if *ctx.handled {
             return;
@@ -1845,9 +1823,10 @@ mod tests {
     use std::rc::Rc;
     use winit::event::MouseScrollDelta;
 
+    use crate::testing::Dispatch;
     use taffy::AvailableSpace;
     use winit::dpi::PhysicalPosition;
-    use winit::event::{DeviceId, Modifiers};
+    use winit::event::DeviceId;
 
     struct HugeList {
         count: usize,
@@ -2100,23 +2079,10 @@ mod tests {
         taffy: &TaffyTree<()>,
         node: NodeId,
     ) -> bool {
-        let mut doc = AutoCommit::new();
-        let mut handled = false;
-        let mut focus = None;
-        list.handle_event(
-            event,
-            &mut crate::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &Modifiers::default(),
-                state: crate::widget::Edits::lend(&mut doc),
-                path: &automerge::ROOT,
-                handled: &mut handled,
-                focus_target: &mut focus,
-                node_id: node,
-                taffy,
-            },
-        );
-        handled
+        Dispatch::new()
+            .layout(taffy, node)
+            .send(list, event)
+            .handled
     }
 
     #[test]

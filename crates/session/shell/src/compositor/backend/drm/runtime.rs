@@ -2055,10 +2055,7 @@ impl DrmDispatchState {
 
     /// Perform one step of the pause/resume sequence the session state machine asked for.
     fn with_presentations_quiesced<T>(gate: Option<&Arc<Mutex<()>>>, f: impl FnOnce() -> T) -> T {
-        let _present_guard = gate.map(|gate| {
-            gate.lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-        });
+        let _quiesced = super::quiesce_presentations(gate);
         f()
     }
 
@@ -2463,7 +2460,7 @@ impl DrmDispatchState {
             dy_unaccel: dy,
             time_usec: crate::shell::network::fabric_monotonic_us(),
         });
-        self.push(BackendEvent::Input(cursor_moved_event(x, y)));
+        self.push(BackendEvent::Input(cursor_moved(x, y)));
     }
 
     fn push_mouse_keys_button(&mut self, edge: ButtonEdge) {
@@ -3366,7 +3363,7 @@ impl DrmDispatchState {
                 let requested = (event.x_transformed(w.max(1)), event.y_transformed(h.max(1)));
                 self.set_pointer_logical(layout::clamp_to_outputs(&placements, requested));
                 let (x, y) = self.confine_pointer(previous);
-                self.push(BackendEvent::Input(cursor_moved_event(x, y)));
+                self.push(BackendEvent::Input(cursor_moved(x, y)));
             }
             // Relative motion (mouse): accumulate in logical pixels, clamp to
             // the logical outputs, then present in the scene.
@@ -3387,7 +3384,7 @@ impl DrmDispatchState {
                 let previous = self.pointer;
                 self.move_pointer_by((event.delta_x(), event.delta_y()));
                 let (x, y) = self.confine_pointer(previous);
-                self.push(BackendEvent::Input(cursor_moved_event(x, y)));
+                self.push(BackendEvent::Input(cursor_moved(x, y)));
             }
             InputEvent::PointerButton { event } => {
                 if let Some(button) = map_mouse_button(event.button()) {
@@ -4253,7 +4250,7 @@ impl DrmRuntime {
         let dispatch = &mut self.dispatch;
         dispatch.set_pointer_scene((x, y));
         let (x, y) = dispatch.pointer;
-        dispatch.push(BackendEvent::Input(cursor_moved_event(x, y)));
+        dispatch.push(BackendEvent::Input(cursor_moved(x, y)));
     }
 
     pub fn cancel_touch(&mut self) {
@@ -5011,14 +5008,7 @@ where
     )
 }
 
-/// Build a `WindowEvent::CursorMoved` for the compositor's input wire. the host path never inspects
-/// it (mirrors `native::execute_planned_action`).
-fn cursor_moved_event(x: f64, y: f64) -> WindowEvent {
-    WindowEvent::CursorMoved {
-        device_id: winit::event::DeviceId::dummy(),
-        position: PhysicalPosition::new(x, y),
-    }
-}
+use ui::synthetic_input::cursor_moved;
 
 /// Build a `WindowEvent::Touch` for the shell's direct-touch arena.
 fn touch_input_event(slot: u32, x: f64, y: f64, phase: TouchPhase) -> WindowEvent {
@@ -6465,7 +6455,7 @@ mod tests {
 
             // The runtime feeds these exact values to both delivery paths.
             let touch = TiloTouchEvent::Motion { slot: 4, x, y };
-            let pointer = cursor_moved_event(x, y);
+            let pointer = cursor_moved(x, y);
             assert_eq!(
                 touch,
                 TiloTouchEvent::Motion {

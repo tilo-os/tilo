@@ -23,11 +23,7 @@
 #![cfg_attr(
     test,
     allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
         clippy::string_slice,
-        clippy::panic,
         clippy::unreachable,
         reason = "in a test these are the assertion, not a hazard"
     )
@@ -165,11 +161,6 @@ fn os_interfaces() -> Option<&'static registry_types::ProvidedInterfaces> {
     PROVIDED
         .get_or_init(package_store::interfaces::system_interfaces)
         .as_ref()
-}
-
-/// Whether this OS serves every system interface `version` requires.
-pub fn serves_interfaces(version: &registry_types::RegistryVersion) -> bool {
-    os_interfaces().is_none_or(|provided| provided.meets_wire(&version.target.interfaces))
 }
 
 /// [`installable_versions`] on an OS serving `provided`: a version that

@@ -81,12 +81,7 @@ fn sample(pressure: f64, eraser: bool) -> WindowEvent {
     }
 }
 
-fn moved(x: f64, y: f64) -> WindowEvent {
-    WindowEvent::CursorMoved {
-        device_id: DeviceId::dummy(),
-        position: winit::dpi::PhysicalPosition::new(x, y),
-    }
-}
+use crate::synthetic_input::cursor_moved;
 
 fn button(state: ElementState) -> WindowEvent {
     WindowEvent::MouseInput {
@@ -122,11 +117,11 @@ fn a_widget_reads_the_pen_behind_each_pointer_event_and_none_for_a_mouse() {
     // A stroke: hover in, touch down harder and harder, lift.
     for event in [
         sample(0.0, false),
-        moved(40.0, 50.0),
+        cursor_moved(40.0, 50.0),
         sample(0.3, false),
         button(ElementState::Pressed),
         sample(0.8, false),
-        moved(60.0, 70.0),
+        cursor_moved(60.0, 70.0),
         sample(0.0, false),
         button(ElementState::Released),
     ] {
@@ -134,8 +129,8 @@ fn a_widget_reads_the_pen_behind_each_pointer_event_and_none_for_a_mouse() {
     }
     // The eraser end, then the mouse again.
     frame.send_host_event(&sample(0.5, true));
-    frame.send(&moved(80.0, 90.0));
-    frame.send_host_event(&moved(100.0, 110.0));
+    frame.send(&cursor_moved(80.0, 90.0));
+    frame.send_host_event(&cursor_moved(100.0, 110.0));
     frame.send_host_event(&button(ElementState::Pressed));
 
     assert_eq!(

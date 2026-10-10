@@ -25,14 +25,19 @@ const RECHECK: Duration = Duration::from_secs(1);
 /// How often one poll reads a job that keeps changing while it is read.
 const MAX_READS: usize = 4;
 
-/// How long `command` asks its reply to wait for the invocation to settle.
-/// Only an invocation run here can be followed; one sent to an enrolled
-/// device answers once it is queued.
+/// How long `command` asks its reply to wait for the invocation to settle:
+/// an `actions_invoke`, or an `actions_status` read of a job, with
+/// `wait_ms`. Only an invocation run here can be followed; one sent to an
+/// enrolled device answers once it is queued.
 pub(crate) fn settle_window(command: &test_control::Command) -> Option<Duration> {
     match command {
         test_control::Command::ActionsInvoke {
             wait_ms: Some(wait_ms),
             device: None,
+            ..
+        }
+        | test_control::Command::ActionsStatus {
+            wait_ms: Some(wait_ms),
             ..
         } => Some(Duration::from_millis(*wait_ms).min(MAX_SETTLE_WAIT)),
         _ => None,
@@ -336,6 +341,20 @@ mod tests {
             Some(MAX_SETTLE_WAIT)
         );
         assert_eq!(settle_window(&invoke(Some(250), Some("device"))), None);
+        // A job read waits the same way, through the same bound.
+        let status = |wait_ms| test_control::Command::ActionsStatus {
+            invocation_id: 7,
+            wait_ms,
+        };
+        assert_eq!(settle_window(&status(None)), None);
+        assert_eq!(
+            settle_window(&status(Some(40))),
+            Some(Duration::from_millis(40))
+        );
+        assert_eq!(
+            settle_window(&status(Some(u64::MAX))),
+            Some(MAX_SETTLE_WAIT)
+        );
     }
 
     #[test]

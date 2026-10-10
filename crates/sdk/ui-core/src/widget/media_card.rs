@@ -938,15 +938,6 @@ impl MediaCard {
         self
     }
 
-    /// The creator's decoded picture; otherwise their shared avatar shows initials.
-    #[must_use]
-    pub fn creator_image(mut self, image: peniko::ImageData) -> Self {
-        if let Some(creator) = &mut self.creator {
-            creator.image = Some(image);
-        }
-        self
-    }
-
     /// Load a creator picture from the same cache used by the retained Avatar.
     #[must_use]
     pub fn creator_image_url(mut self, store: ImageStore, url: impl Into<String>) -> Self {

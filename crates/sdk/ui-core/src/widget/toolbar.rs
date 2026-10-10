@@ -3022,22 +3022,7 @@ mod lifecycle_tests {
     }
 
     fn dispatch(tb: &mut Toolbar, event: WindowEvent) -> bool {
-        let mut tree = TaffyTree::new();
-        let node = tree.leaf_node(Style::default());
-        let mut handled = false;
-        tb.handle_event(
-            &event,
-            &mut crate::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &Default::default(),
-                state: crate::widget::Edits::lend(&mut AutoCommit::new()),
-                path: &automerge::ROOT,
-                handled: &mut handled,
-                focus_target: &mut None,
-                node_id: node,
-                taffy: &tree,
-            },
-        );
+        let handled = crate::testing::dispatch(tb, &event);
         drain_native_controls(tb);
         handled
     }
@@ -3481,19 +3466,9 @@ mod lifecycle_tests {
                 ));
                 drain_native_controls(&mut host);
                 let send = |host: &mut crate::widget::Row, event: WindowEvent| {
-                    host.handle_event(
-                        &event,
-                        &mut crate::widget::EventCtx {
-                            scale_factor: 1.0,
-                            modifiers: &Default::default(),
-                            state: crate::widget::Edits::lend(&mut AutoCommit::new()),
-                            path: &automerge::ROOT,
-                            handled: &mut false,
-                            focus_target: &mut None,
-                            node_id: node,
-                            taffy: &tree,
-                        },
-                    );
+                    crate::testing::Dispatch::new()
+                        .layout(&tree, node)
+                        .send(host, &event);
                 };
                 let mouse_event = |button, state| WindowEvent::MouseInput {
                     device_id: winit::event::DeviceId::dummy(),
@@ -3606,7 +3581,7 @@ mod lifecycle_tests {
 mod command_state_tests {
     use super::*;
     use crate::icons::Icon;
-    use automerge::AutoCommit;
+    use crate::testing::dispatch;
     use std::cell::Cell;
     use std::rc::Rc;
     use winit::event::DeviceId;
@@ -3614,26 +3589,6 @@ mod command_state_tests {
     fn lay(tb: &mut Toolbar, width: f64) {
         let mut text = TextRenderer::new();
         tb.lay_out_in(Rect::new(0.0, 0.0, width, 40.0), &mut text, &Theme::dark());
-    }
-
-    fn dispatch(tb: &mut Toolbar, event: &WindowEvent) -> bool {
-        let mut tree = TaffyTree::new();
-        let node = tree.leaf_node(Style::default());
-        let mut handled = false;
-        tb.handle_event(
-            event,
-            &mut crate::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &Default::default(),
-                state: crate::widget::Edits::lend(&mut AutoCommit::new()),
-                path: &automerge::ROOT,
-                handled: &mut handled,
-                focus_target: &mut None,
-                node_id: node,
-                taffy: &tree,
-            },
-        );
-        handled
     }
 
     fn click(tb: &mut Toolbar, p: Point) {

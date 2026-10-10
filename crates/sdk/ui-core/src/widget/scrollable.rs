@@ -103,7 +103,6 @@ pub struct Scrollable {
     vx: f32,
     vy: f32,
     decay: f32,
-    sticky_header_height: f32,
     /// Pins the outer viewport to an exact height instead of `percent(1.0)`,
     /// which resolves against nothing (viewport collapses to zero) when the
     /// parent has no definite height. See [`Scrollable::fill_parent_height`]
@@ -225,7 +224,6 @@ impl Scrollable {
             vx: 0.0,
             vy: 0.0,
             decay: 0.92,
-            sticky_header_height: 0.0,
             fixed_height: None,
             max_height: None,
             fill_parent_height: false,
@@ -308,11 +306,6 @@ impl Scrollable {
         self
     }
 
-    #[must_use]
-    pub fn with_sticky_header(mut self, h: f32) -> Self {
-        self.sticky_header_height = h;
-        self
-    }
     /// The bar still auto-hides per-axis whenever content fits regardless
     /// of this flag; `false` suppresses it unconditionally.
     #[must_use]
@@ -341,12 +334,6 @@ impl Scrollable {
     #[must_use]
     pub fn always_visible(mut self) -> Self {
         self.overlay = false;
-        self
-    }
-
-    #[must_use]
-    pub fn with_overlay(mut self, overlay: bool) -> Self {
-        self.overlay = overlay;
         self
     }
 
@@ -1540,16 +1527,18 @@ impl Widget for Scrollable {
             self.content_h = cl.content_size.height.max(cl.size.height);
             self.clamp();
         }
+        // Content placed below knows what this view shows of it
+        // (`widget::layout_clip`), so a long collection lays out only that.
+        let clip = self.content_viewport_rect();
         if let Some(c) = &mut self.child {
             if let Some(child_node) = self.child_node {
-                c.apply_layout(
-                    taffy,
-                    child_node,
-                    Point::new(
-                        self.rect.x0 - f64::from(self.offset_x),
-                        self.rect.y0 - f64::from(self.offset_y),
-                    ),
+                let origin = Point::new(
+                    self.rect.x0 - f64::from(self.offset_x),
+                    self.rect.y0 - f64::from(self.offset_y),
                 );
+                crate::widget::with_layout_clip(clip, || {
+                    c.apply_layout(taffy, child_node, origin);
+                });
                 let cl = taffy.layout(child_node).copied().unwrap_or_default();
                 if c.child_clip_rect().is_some() {
                     self.content_w = cl.size.width;
@@ -1601,15 +1590,15 @@ impl Widget for Scrollable {
                         px(rect.width()),
                         px(rect.height()),
                     );
+                    let clip = self.content_viewport_rect();
                     if let (Some(child), Some(node)) = (&mut self.child, self.child_node) {
-                        child.apply_layout(
-                            taffy,
-                            node,
-                            Point::new(
-                                self.rect.x0 - f64::from(self.offset_x),
-                                self.rect.y0 - f64::from(self.offset_y),
-                            ),
+                        let origin = Point::new(
+                            self.rect.x0 - f64::from(self.offset_x),
+                            self.rect.y0 - f64::from(self.offset_y),
                         );
+                        crate::widget::with_layout_clip(clip, || {
+                            child.apply_layout(taffy, node, origin);
+                        });
                     }
                 }
             }
@@ -2018,6 +2007,7 @@ impl crate::widget::controls::ActionControls for Scrollable {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testing::{Dispatch, dispatch};
     use crate::widget::scrollbar::{BAR_FADE_MS as FADE_MS, BAR_HOLD_MS as VISIBLE_HOLD_MS};
     use automerge::AutoCommit;
 
@@ -2029,41 +2019,13 @@ mod tests {
         s
     }
 
-    fn cursor_moved(x: f64, y: f64) -> WindowEvent {
-        WindowEvent::CursorMoved {
-            device_id: winit::event::DeviceId::dummy(),
-            position: winit::dpi::PhysicalPosition::new(x, y),
-        }
-    }
+    use crate::synthetic_input::cursor_moved;
     fn mouse(state: ElementState) -> WindowEvent {
         WindowEvent::MouseInput {
             device_id: winit::event::DeviceId::dummy(),
             state,
             button: MouseButton::Left,
         }
-    }
-
-    fn dispatch(s: &mut Scrollable, event: &WindowEvent) -> bool {
-        let mut tree = TaffyTree::<()>::new();
-        let node = tree.leaf_node(Style::default());
-        let mut handled = false;
-        let mut focus_target = None;
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        s.handle_event(
-            event,
-            &mut crate::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &winit::event::Modifiers::default(),
-                state: crate::widget::Edits::lend(&mut doc),
-                path: &root,
-                handled: &mut handled,
-                focus_target: &mut focus_target,
-                node_id: node,
-                taffy: &tree,
-            },
-        );
-        handled
     }
 
     struct EventSpy {
@@ -2138,6 +2100,92 @@ mod tests {
         fn reveal_descendant(&mut self, target: *const dyn Widget) -> bool {
             std::ptr::addr_eq(std::ptr::from_ref::<dyn Widget>(self), target)
         }
+    }
+
+    /// Records the layout clip it is placed under.
+    struct ClipSpy {
+        rect: Rect,
+        clip: Rc<Cell<Option<Rect>>>,
+    }
+
+    impl Widget for ClipSpy {
+        fn build_layout(
+            &mut self,
+            taffy: &mut TaffyTree<()>,
+            _theme: &Theme,
+            node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+        ) -> NodeId {
+            let style = Style {
+                size: Size {
+                    width: Dimension::length(200.0),
+                    height: Dimension::length(2000.0),
+                },
+                ..Default::default()
+            };
+            taffy.widget_leaf(style, node_map, self)
+        }
+
+        fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+            self.rect = crate::widget::layout_rect(taffy, node, origin);
+            self.clip.set(crate::widget::layout_clip());
+        }
+
+        fn draw(
+            &mut self,
+            _scene: &mut Scene,
+            _transform: Affine,
+            _text_renderer: &mut TextRenderer,
+            _theme: &Theme,
+            _presence: &PresenceCtx,
+        ) {
+        }
+
+        fn name(&self) -> &'static str {
+            "ClipSpy"
+        }
+
+        fn get_rect(&self) -> Rect {
+            self.rect
+        }
+    }
+
+    #[test]
+    fn content_is_placed_under_the_viewport_as_its_layout_clip() {
+        let clip = Rc::new(Cell::new(None));
+        let mut scroll = Scrollable::new_vertical().with_child(Box::new(ClipSpy {
+            rect: Rect::ZERO,
+            clip: clip.clone(),
+        }));
+        let mut taffy = TaffyTree::new();
+        let mut nodes = HashMap::new();
+        let node = scroll.build_layout(&mut taffy, &Theme::dark(), &mut nodes);
+        taffy
+            .compute_layout(
+                node,
+                Size {
+                    width: taffy::AvailableSpace::Definite(400.0),
+                    height: taffy::AvailableSpace::Definite(300.0),
+                },
+            )
+            .unwrap();
+        assert_eq!(crate::widget::layout_clip(), None);
+        scroll.apply_layout(&taffy, node, Point::new(10.0, 20.0));
+        assert_eq!(clip.get(), Some(scroll.content_viewport_rect()));
+        assert_eq!(
+            crate::widget::layout_clip(),
+            None,
+            "the clip ends with the content's placement"
+        );
+
+        // A view inside another narrows to what both show.
+        let outer = Rect::new(0.0, 0.0, 400.0, 100.0);
+        crate::widget::with_layout_clip(outer, || {
+            scroll.apply_layout(&taffy, node, Point::new(10.0, 20.0));
+        });
+        assert_eq!(
+            clip.get(),
+            Some(scroll.content_viewport_rect().intersect(outer))
+        );
     }
 
     #[test]
@@ -2329,20 +2377,7 @@ mod tests {
             .get_rect()
             .center();
         assert!(scroll.content_viewport_rect().contains(at));
-        let mut doc = AutoCommit::new();
-        let mut handled = false;
-        let mut focus = None;
-        let modifiers = winit::event::Modifiers::default();
-        let mut ctx = crate::widget::EventCtx {
-            scale_factor: 1.0,
-            modifiers: &modifiers,
-            state: crate::widget::Edits::lend(&mut doc),
-            path: &automerge::ROOT,
-            handled: &mut handled,
-            focus_target: &mut focus,
-            node_id: node,
-            taffy: &tree,
-        };
+        let mut sender = Dispatch::new().layout(&tree, node);
         for event in [
             cursor_moved(at.x, at.y),
             WindowEvent::CursorLeft {
@@ -2352,8 +2387,7 @@ mod tests {
             mouse(ElementState::Pressed),
             mouse(ElementState::Released),
         ] {
-            *ctx.handled = false;
-            scroll.handle_event(&event, &mut ctx);
+            sender.send(&mut scroll, &event);
         }
         assert_eq!(opened.get(), Some(true), "the real disclosure must open");
         assert!(scroll.child.as_ref().unwrap().children().len() > 1);
@@ -2410,7 +2444,8 @@ mod tests {
             let field = scroll.child.as_ref().unwrap().children()[0]
                 .get_rect()
                 .center();
-            dispatch_measured(&mut scroll, &tree, node, &cursor_moved(field.x, field.y));
+            let mut measured = Dispatch::new().layout(&tree, node);
+            measured.send(&mut scroll, &cursor_moved(field.x, field.y));
             scroll.set_offset_y(scroll.max_offset_y());
             scroll.apply_layout(&tree, node, Point::ZERO);
             assert!(
@@ -2422,52 +2457,27 @@ mod tests {
                 .center();
             assert!(scroll.content_viewport_rect().contains(at));
             assert!(
-                !dispatch_measured(&mut scroll, &tree, node, &cursor_moved(at.x, at.y)),
+                !measured
+                    .send(&mut scroll, &cursor_moved(at.x, at.y))
+                    .handled,
                 "hover transitions do not consume motion intended for a sibling"
             );
-            assert!(dispatch_measured(
-                &mut scroll,
-                &tree,
-                node,
-                &mouse(ElementState::Pressed)
-            ));
-            assert!(dispatch_measured(
-                &mut scroll,
-                &tree,
-                node,
-                &mouse(ElementState::Released)
-            ));
+            assert!(
+                measured
+                    .send(&mut scroll, &mouse(ElementState::Pressed))
+                    .handled
+            );
+            assert!(
+                measured
+                    .send(&mut scroll, &mouse(ElementState::Released))
+                    .handled
+            );
             assert_eq!(
                 opened.get(),
                 Some(true),
                 "the real scrolled disclosure opens at scale {scale}"
             );
         }
-    }
-
-    fn dispatch_measured(
-        s: &mut Scrollable,
-        tree: &TaffyTree<()>,
-        node: NodeId,
-        event: &WindowEvent,
-    ) -> bool {
-        let mut handled = false;
-        let mut focus = None;
-        let mut doc = AutoCommit::new();
-        s.handle_event(
-            event,
-            &mut crate::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &winit::event::Modifiers::default(),
-                state: crate::widget::Edits::lend(&mut doc),
-                path: &automerge::ROOT,
-                handled: &mut handled,
-                focus_target: &mut focus,
-                node_id: node,
-                taffy: tree,
-            },
-        );
-        handled
     }
 
     #[test]
@@ -2518,24 +2528,13 @@ mod tests {
                 .unwrap();
             scroll.apply_layout(&taffy, node, Point::ZERO);
 
-            let mut doc = AutoCommit::new();
-            let root = automerge::ROOT;
+            let mut sender = Dispatch::new().layout(&taffy, node);
             let mut focus_target = None;
             for event in [cursor_moved(40.0, 90.0), mouse(ElementState::Pressed)] {
-                let mut handled = false;
-                scroll.handle_event(
-                    &event,
-                    &mut crate::widget::EventCtx {
-                        scale_factor: 1.0,
-                        modifiers: &winit::event::Modifiers::default(),
-                        state: crate::widget::Edits::lend(&mut doc),
-                        path: &root,
-                        handled: &mut handled,
-                        focus_target: &mut focus_target,
-                        node_id: node,
-                        taffy: &taffy,
-                    },
-                );
+                focus_target = sender
+                    .send(&mut scroll, &event)
+                    .focus_target
+                    .or(focus_target);
             }
             assert_eq!(
                 pointer_events.get(),
@@ -2553,20 +2552,10 @@ mod tests {
             );
 
             for event in [cursor_moved(40.0, 70.0), mouse(ElementState::Pressed)] {
-                let mut handled = false;
-                scroll.handle_event(
-                    &event,
-                    &mut crate::widget::EventCtx {
-                        scale_factor: 1.0,
-                        modifiers: &winit::event::Modifiers::default(),
-                        state: crate::widget::Edits::lend(&mut doc),
-                        path: &root,
-                        handled: &mut handled,
-                        focus_target: &mut focus_target,
-                        node_id: node,
-                        taffy: &taffy,
-                    },
-                );
+                focus_target = sender
+                    .send(&mut scroll, &event)
+                    .focus_target
+                    .or(focus_target);
             }
             assert_eq!(
                 pointer_events.get(),
@@ -2936,7 +2925,7 @@ mod tests {
             assert!(s.is_focused());
 
             assert!(
-                dispatch(&mut s, &key(NamedKey::PageDown)),
+                dispatch(&mut s, &named_key(NamedKey::PageDown)),
                 "PageDown handled"
             );
             let page = 300.0 * PAGE_FRACTION;
@@ -2946,25 +2935,28 @@ mod tests {
                 s.offset_y()
             );
 
-            assert!(dispatch(&mut s, &key(NamedKey::End)), "End handled");
+            assert!(dispatch(&mut s, &named_key(NamedKey::End)), "End handled");
             assert!(
                 (s.offset_y() - 900.0).abs() < 1e-3,
                 "End → bottom, got {}",
                 s.offset_y()
             );
 
-            assert!(dispatch(&mut s, &key(NamedKey::PageUp)), "PageUp handled");
+            assert!(
+                dispatch(&mut s, &named_key(NamedKey::PageUp)),
+                "PageUp handled"
+            );
             assert!(
                 (s.offset_y() - (900.0 - page)).abs() < 0.5,
                 "PageUp from bottom, got {}",
                 s.offset_y()
             );
 
-            assert!(dispatch(&mut s, &key(NamedKey::Home)), "Home handled");
+            assert!(dispatch(&mut s, &named_key(NamedKey::Home)), "Home handled");
             assert_eq!(s.offset_y(), 0.0, "Home → top");
 
             assert!(
-                dispatch(&mut s, &key(NamedKey::ArrowDown)),
+                dispatch(&mut s, &named_key(NamedKey::ArrowDown)),
                 "ArrowDown handled"
             );
             assert!(
@@ -2979,7 +2971,7 @@ mod tests {
             let mut s = vertical(1200.0);
             assert!(!s.is_focused());
             assert!(
-                !dispatch(&mut s, &key(NamedKey::PageDown)),
+                !dispatch(&mut s, &named_key(NamedKey::PageDown)),
                 "unfocused key not handled"
             );
             assert_eq!(s.offset_y(), 0.0, "unfocused container does not scroll");
@@ -3011,7 +3003,13 @@ mod tests {
                 delta: MouseScrollDelta::LineDelta(0.0, -1.0), // a plain vertical wheel
                 phase: winit::event::TouchPhase::Moved,
             };
-            assert!(dispatch_mods(&mut s, &wheel, shift), "shift+wheel handled");
+            assert!(
+                Dispatch::new()
+                    .modifiers(shift)
+                    .send(&mut s, &wheel)
+                    .handled,
+                "shift+wheel handled"
+            );
             assert!(
                 s.offset_x() > 0.0,
                 "shift+wheel scrolls X, got x={}",
@@ -3496,40 +3494,7 @@ mod tests {
         s
     }
 
-    fn key(named: NamedKey) -> WindowEvent {
-        crate::synthetic_input::keyboard_input(crate::synthetic_input::key_event(
-            Key::Named(named),
-            None,
-            ElementState::Pressed,
-        ))
-    }
-
-    fn dispatch_mods(
-        s: &mut Scrollable,
-        event: &WindowEvent,
-        mods: winit::event::Modifiers,
-    ) -> bool {
-        let mut tree = TaffyTree::<()>::new();
-        let node = tree.leaf_node(Style::default());
-        let mut handled = false;
-        let mut focus_target = None;
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        s.handle_event(
-            event,
-            &mut crate::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &mods,
-                state: crate::widget::Edits::lend(&mut doc),
-                path: &root,
-                handled: &mut handled,
-                focus_target: &mut focus_target,
-                node_id: node,
-                taffy: &tree,
-            },
-        );
-        handled
-    }
+    use crate::synthetic_input::named_key;
 
     #[test]
     fn overlay_bar_fades_with_activity_and_damages_its_last_frame() {
