@@ -14,6 +14,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use ui::icons::Icon;
 use ui::widget::toggle_group::Segment;
 use ui::widget::{
     Button, ButtonRole, Column, Container, Decorator, Density, Element, Field, Form, FormSection,
@@ -68,6 +69,17 @@ pub(crate) enum SetupRequest {
 
 type Requests = Rc<RefCell<Vec<SetupRequest>>>;
 
+/// What the address has told the sheet about its provider.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) enum ProviderStatus {
+    #[default]
+    Idle,
+    /// The servers are being looked up.
+    Finding,
+    /// The provider and the incoming server found for the address.
+    Found { name: String, server: String },
+}
+
 /// What the sheet shows. Clones share the same values.
 #[derive(Clone)]
 pub(crate) struct SetupFields {
@@ -85,6 +97,7 @@ pub(crate) struct SetupFields {
     /// Whether the server rows are shown. The servers are found from the
     /// address, so they stay out of the way until they need attention.
     advanced: LocalState<bool>,
+    provider_status: LocalState<ProviderStatus>,
 }
 
 impl SetupFields {
@@ -112,6 +125,17 @@ impl SetupFields {
             error: LocalState::new(None),
             field_errors: LocalState::new(Vec::new()),
             advanced: LocalState::new(false),
+            provider_status: LocalState::new(ProviderStatus::Idle),
+        }
+    }
+
+    pub(crate) fn provider_status(&self) -> ProviderStatus {
+        self.provider_status.with(Clone::clone)
+    }
+
+    pub(crate) fn set_provider_status(&self, status: ProviderStatus) {
+        if self.provider_status.with(|current| *current != status) {
+            self.provider_status.set(status);
         }
     }
 
@@ -196,10 +220,9 @@ impl SetupFields {
     }
 
     pub(crate) fn set_field_errors(&self, errors: Vec<(&'static str, String)>) {
-        if errors
-            .iter()
-            .any(|(key, _)| key.starts_with("imap") || key.starts_with("smtp"))
-        {
+        if errors.iter().any(|(key, _)| {
+            key.starts_with("imap") || key.starts_with("smtp") || *key == "username"
+        }) {
             self.set_advanced(true);
         }
         if self.field_errors.with(|current| *current != errors) {
@@ -252,6 +275,7 @@ struct Shape {
     error: Option<String>,
     field_errors: Vec<(&'static str, String)>,
     advanced: bool,
+    provider_status: ProviderStatus,
 }
 
 impl Shape {
@@ -262,6 +286,7 @@ impl Shape {
             error: fields.error(),
             field_errors: fields.field_errors(),
             advanced: fields.advanced(),
+            provider_status: fields.provider_status(),
         }
     }
 
@@ -406,6 +431,16 @@ fn status_line(message: &str) -> Element {
     )
 }
 
+/// What the address has told the sheet, under the address: the provider
+/// found, or that its servers are being looked up.
+fn provider_help(status: &ProviderStatus) -> Option<String> {
+    match status {
+        ProviderStatus::Idle => None,
+        ProviderStatus::Finding => Some(crate::i18n::t("mail-setup-finding-provider")),
+        ProviderStatus::Found { name, server } => Some(format!("{name} · {server}")),
+    }
+}
+
 /// The switch that shows or hides the server rows.
 fn advanced_switch(fields: &SetupFields, open: bool) -> Element {
     let fields = fields.clone();
@@ -416,7 +451,11 @@ fn advanced_switch(fields: &SetupFields, open: bool) -> Element {
                 &crate::i18n::t("mail-setup-advanced"),
             )
             .role(ButtonRole::Plain)
-            .toggled(open)
+            .with_icon(if open {
+                Icon::ChevronDown
+            } else {
+                Icon::ChevronRight
+            })
             .on_effect(move || fields.set_advanced(!fields.advanced())),
         )),
     )
@@ -424,11 +463,25 @@ fn advanced_switch(fields: &SetupFields, open: bool) -> Element {
 
 fn form(fields: &SetupFields, requests: &Requests, editing: bool, shape: &Shape) -> Element {
     let label = crate::i18n::t;
-    let mut account = FormSection::untitled()
-        .field(with_error(
-            Field::new(label("mail-setup-label-email"), input(fields, EMAIL)),
-            shape.error_for(&["email"]),
-        ))
+    // What a person gives: the address and how to sign in. The servers are
+    // found from the address.
+    let mut email = Field::new(label("mail-setup-label-email"), input(fields, EMAIL));
+    if let Some(help) = provider_help(&shape.provider_status) {
+        email = email.with_help(help);
+    }
+    let mut account = FormSection::untitled().field(with_error(email, shape.error_for(&["email"])));
+    account = match shape.auth {
+        AuthMethod::Password => account.field(Field::new(
+            label("mail-setup-label-password"),
+            input(fields, PASSWORD),
+        )),
+        AuthMethod::OAuth => account.field(Field::custom(
+            label("mail-setup-label-account"),
+            browser_sign_in(fields, requests),
+        )),
+    };
+    account = account.control_row(advanced_switch(fields, shape.advanced));
+    let servers = FormSection::untitled()
         .field(Field::new(
             label("mail-setup-label-display-name"),
             input(fields, DISPLAY_NAME),
@@ -440,19 +493,7 @@ fn form(fields: &SetupFields, requests: &Requests, editing: bool, shape: &Shape)
         .field(Field::new(
             label("mail-setup-label-sign-in"),
             sign_in_choice(fields),
-        ));
-    account = match shape.auth {
-        AuthMethod::Password => account.field(Field::new(
-            label("mail-setup-label-password"),
-            input(fields, PASSWORD),
-        )),
-        AuthMethod::OAuth => account.field(Field::custom(
-            label("mail-setup-auth-oauth"),
-            browser_sign_in(fields, requests),
-        )),
-    };
-    account = account.control_row(advanced_switch(fields, shape.advanced));
-    let servers = FormSection::untitled()
+        ))
         .field(with_error(
             Field::custom(
                 label("mail-setup-label-imap-host"),

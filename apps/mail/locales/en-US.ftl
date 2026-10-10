@@ -13,6 +13,7 @@ mail-setup-label-password = Password
 mail-setup-label-imap-host = Incoming server
 mail-setup-label-smtp-host = Outgoing server
 mail-setup-label-sign-in = Sign in with
+mail-setup-label-account = Account
 mail-setup-auth-password = Password
 mail-setup-auth-oauth = Browser
 # { $provider } is the provider's own name (Gmail, Outlook, …).

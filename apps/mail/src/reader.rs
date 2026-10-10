@@ -357,9 +357,6 @@ pub struct MessageReader {
     /// Whether remote images are loaded for the open message: the person
     /// allowed them for its sender.
     html_load_remote: bool,
-    /// The senders (lower-case addresses) whose remote images the person
-    /// allowed, until Mail closes.
-    remote_senders: std::collections::HashSet<String>,
     /// The open message's sender.
     html_sender: String,
     html_view_rect: Option<Rect>,
@@ -388,7 +385,6 @@ impl MessageReader {
             html_style: None,
             html_shown_id: None,
             html_load_remote: false,
-            remote_senders: std::collections::HashSet::new(),
             html_sender: String::new(),
             html_view_rect: None,
             body: None,
@@ -696,7 +692,7 @@ impl MessageReader {
         match (webview_rect, head_html) {
             (Some(rect), Some(html)) => {
                 if self.html_shown_id != Some(head_id) {
-                    self.html_load_remote = self.remote_senders.contains(&head_sender);
+                    self.html_load_remote = shared.borrow().remote_senders.contains(&head_sender);
                     self.html_sender = head_sender;
                     self.html_shown_id = Some(head_id);
                 }
@@ -720,11 +716,13 @@ impl MessageReader {
     fn press(&mut self, point: Point) -> bool {
         if self.remote_button.is_some_and(|rect| rect.contains(point)) {
             self.html_load_remote = !self.html_load_remote;
+            let mut state = self.shared.borrow_mut();
             if self.html_load_remote {
-                self.remote_senders.insert(self.html_sender.clone());
+                state.remote_senders.insert(self.html_sender.clone());
             } else {
-                self.remote_senders.remove(&self.html_sender);
+                state.remote_senders.remove(&self.html_sender);
             }
+            drop(state);
             // Reload with the new policy on the next draw.
             self.html_key = None;
             self.dirty = true;
@@ -1040,6 +1038,13 @@ mod tests {
         assert!(reader.press(button.center()));
         draw(&mut reader);
         assert_eq!(reader.html_loaded_key(), Some((id, false)));
+        assert!(
+            shared
+                .borrow()
+                .remote_senders
+                .contains("hello@fieldnotes.example"),
+            "the permission is the person's preference, not the reader's memory"
+        );
 
         // A plain message skips the webview; the allowed sender stays allowed.
         let plain = message_from(&shared, "lena@fischer.example");

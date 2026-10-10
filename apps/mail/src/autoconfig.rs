@@ -163,6 +163,17 @@ pub enum KnownProvider {
 }
 
 impl KnownProvider {
+    /// The provider's own name.
+    pub fn name(self) -> &'static str {
+        match self {
+            KnownProvider::Google => "Google",
+            KnownProvider::Microsoft => "Microsoft",
+            KnownProvider::Yahoo => "Yahoo",
+            KnownProvider::Fastmail => "Fastmail",
+            KnownProvider::ICloud => "iCloud",
+        }
+    }
+
     /// The connection settings for this provider. OAuth is required for Google
     /// and Microsoft; the others accept an app-password.
     pub fn autoconfig(self) -> Autoconfig {
