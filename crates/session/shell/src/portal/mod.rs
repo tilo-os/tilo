@@ -1333,7 +1333,7 @@ pub async fn serve_with_inhibit_and_clipboard(
     }
 
     Ok(ServerHandle {
-        connection,
+        _connection: connection,
         owns_name,
     })
 }
@@ -1341,11 +1341,9 @@ pub async fn serve_with_inhibit_and_clipboard(
 /// RAII handle keeping the portal D-Bus connection alive; drop releases the bus name and tears down the object server.
 #[cfg(target_os = "linux")]
 pub struct ServerHandle {
-    #[allow(
-        dead_code,
-        reason = "never read on purpose: holding the Connection keeps the bus name and object server alive until drop"
-    )]
-    connection: zbus::Connection,
+    /// Never read: holding the connection keeps the bus name and object
+    /// server alive until drop.
+    _connection: zbus::Connection,
     owns_name: bool,
 }
 

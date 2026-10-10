@@ -29,6 +29,16 @@ def job(name: str) -> str:
 
 
 class AppSdkWorkflow(unittest.TestCase):
+    def test_linux_selection_does_not_change_browser_or_manual_gates(self) -> None:
+        self.assertIn("needs.builder.outputs.linux_affected == 'true'", job('linux'))
+        for name in ('web', 'web-size'):
+            self.assertIn("needs.builder.outputs.affected == 'true'", job(name))
+            self.assertNotIn('linux_affected', job(name))
+        builder = job('builder')
+        self.assertIn('linux_affected: ${{ steps.affected.outputs.linux_affected }}', builder)
+        self.assertIn('echo linux_affected=true >> "$GITHUB_OUTPUT"', builder)
+        self.assertIn('--lane linux --github-output "$GITHUB_OUTPUT"', builder)
+
     def test_pull_requests_and_pushes_share_one_path_list(self) -> None:
         def paths(event: str) -> list[str]:
             body = re.search(rf"^  {event}:\n((?:    .*\n)*)", TRIGGERS, re.M).group(1)

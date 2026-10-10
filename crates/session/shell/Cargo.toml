@@ -137,6 +137,7 @@ percent-encoding.workspace = true
 quick-xml.workspace = true
 
 ui = { package = "tilo-ui", path = "../../sdk/ui-core", features = ["dmabuf-import"] }
+tilo-identity-ceremony = { version = "0.1.0", path = "../../collab/tilo-identity-ceremony" }
 
 tilo-actions = { path = "../../collab/actions" }
 tilo-action-policy = { path = "../../collab/action-policy" }

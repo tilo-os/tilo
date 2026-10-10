@@ -128,6 +128,26 @@ pub struct Collection<T> {
     /// Each id's position, built on the first lookup after the order
     /// changed, so finding an item by id is constant time.
     index: Index,
+    membership: Membership,
+}
+
+/// Which ids a [`Collection`] holds, in which order, as one value to
+/// compare: two collections (or one collection at two times) with the same
+/// membership hold the same ids in the same order. A list view keeps it to
+/// tell that a change left its rows as they were without comparing every
+/// id. Different memberships say nothing: the ids may still be the same.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct Membership(u64);
+
+impl Membership {
+    /// The membership of every empty collection never changed since.
+    const EMPTY: Self = Self(0);
+
+    /// A membership no collection had before.
+    fn fresh() -> Self {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        Self(NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
+    }
 }
 
 #[derive(Clone, Default)]
@@ -202,6 +222,7 @@ impl<T> Default for Collection<T> {
         Self {
             items: Vec::new(),
             index: Index::default(),
+            membership: Membership::EMPTY,
         }
     }
 }
@@ -218,6 +239,17 @@ impl<T> Collection<T> {
 
     pub fn is_empty(&self) -> bool {
         self.items.is_empty()
+    }
+
+    /// Which ids the collection holds, in which order ([`Membership`]).
+    /// Editing an item keeps it; adding, removing or moving one changes it.
+    pub fn membership(&self) -> Membership {
+        self.membership
+    }
+
+    /// The ids or their order may have changed.
+    fn moved(&mut self) {
+        self.membership = Membership::fresh();
     }
 
     /// Items in collection order.
@@ -288,6 +320,7 @@ impl<T> Collection<T> {
         self.items.push(Entry::new(id.clone(), item));
         let position = self.items.len().saturating_sub(1);
         self.index.appended(&id, position);
+        self.moved();
         id
     }
 
@@ -298,12 +331,14 @@ impl<T> Collection<T> {
         let index = index.min(self.items.len());
         self.items.insert(index, Entry::new(id.clone(), item));
         self.index.reset();
+        self.moved();
         id
     }
 
     pub fn remove(&mut self, id: &Id) -> Option<T> {
         let index = self.position(id)?;
         self.index.reset();
+        self.moved();
         Some(self.items.remove(index).item)
     }
 
@@ -317,12 +352,18 @@ impl<T> Collection<T> {
         let index = index.min(self.items.len());
         self.items.insert(index, entry);
         self.index.reset();
+        self.moved();
         true
     }
 
     pub fn retain(&mut self, mut keep: impl FnMut(&Id, &T) -> bool) {
+        let before = self.items.len();
         self.items.retain(|entry| keep(&entry.id, &entry.item));
-        self.index.reset();
+        // Retaining only removes: the same length is the same ids.
+        if self.items.len() != before {
+            self.index.reset();
+            self.moved();
+        }
     }
 
     pub fn sort_by(&mut self, mut compare: impl FnMut(&T, &T) -> std::cmp::Ordering) {
@@ -331,6 +372,7 @@ impl<T> Collection<T> {
             entry.key = None;
         }
         self.index.reset();
+        self.moved();
     }
 }
 
@@ -926,6 +968,7 @@ impl<T: Model> Model for Collection<T> {
             Ok(())
         })?;
         Ok(Self {
+            membership: Membership::fresh(),
             items,
             index: Index::default(),
         })
@@ -956,6 +999,7 @@ impl<T: Model> Model for Collection<T> {
                     if let Some(position) = position {
                         self.items.remove(position);
                         self.index.reset();
+                        self.moved();
                     }
                 }
                 // Something inside an item already read: its order key, its value.
@@ -985,11 +1029,13 @@ impl<T: Model> Model for Collection<T> {
                     } else {
                         self.items.push(fresh);
                         self.index.reset();
+                        self.moved();
                     }
                     reorder = true;
                 }
             }
         }
+        // A moved order key or a new entry: sorting may move items.
         if reorder {
             let order = stored_order(
                 &self
@@ -1004,6 +1050,7 @@ impl<T: Model> Model for Collection<T> {
                 .filter_map(|at| slots.get_mut(at).and_then(Option::take))
                 .collect();
             self.index.reset();
+            self.moved();
         }
         Ok(())
     }

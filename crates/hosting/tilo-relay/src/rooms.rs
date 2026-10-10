@@ -582,10 +582,6 @@ impl Rooms {
 
     /// The current role of `device` only when room Write permission is allowed,
     /// including live capability restrictions; `None` otherwise.
-    #[cfg_attr(
-        not(feature = "web"),
-        allow(dead_code, reason = "read by the web listener")
-    )]
     pub(crate) async fn legacy_writer_role(
         &self,
         room: &str,

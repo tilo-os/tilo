@@ -27,9 +27,7 @@ use tilo_ui::offscreen::OffscreenRenderer;
 use tilo_ui::permissions::PermissionContext;
 use tilo_ui::text_render::TextRenderer;
 use tilo_ui::widget::{ActivityTimeline, Column, HistoryScrubber};
-use tilo_ui::{
-    App, AuthorDirectory, HistoryAuthor, HistorySource, PresenceCtx, State, Theme, Widget,
-};
+use tilo_ui::{App, AuthorDirectory, HistoryAuthor, HistorySource, PresenceCtx, State, Widget};
 use vello::Scene;
 use vello::kurbo::{Affine, Point};
 
@@ -198,10 +196,7 @@ pub fn run(args: &[String]) {
 fn render_shot(mut widget: Box<dyn Widget>, viewport: (u32, u32), out: &Path) {
     let (w, h) = viewport;
     let state = State::new();
-    let theme = std::env::var("TILO_SHOTS_THEME")
-        .ok()
-        .and_then(|name| Theme::named(&name))
-        .unwrap_or_else(Theme::dark);
+    let theme = crate::registry::shot_theme();
     let presence = PresenceCtx::empty();
     let permission = PermissionContext::permissive();
     let mut tr = TextRenderer::new();

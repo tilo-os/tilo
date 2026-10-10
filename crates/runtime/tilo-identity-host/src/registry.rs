@@ -562,7 +562,7 @@ fn short_fingerprint(hex: &str) -> String {
 mod tests {
     use super::*;
     use threshold_identity::ThresholdIdentity;
-    use ui::widget::identity_flow::IdentityRecord;
+    use tilo_identity_ceremony::IdentityRecord;
 
     fn record(name: &str, seed: u8) -> IdentityRecord {
         let identity = ThresholdIdentity::from_single_device_seed(&[seed; 32]);

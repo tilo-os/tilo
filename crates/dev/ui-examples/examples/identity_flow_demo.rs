@@ -30,10 +30,11 @@ use std::os::unix::fs::PermissionsExt;
 use collab_types::{ChannelId, Role, generate_keypair};
 use getrandom::{SysRng, rand_core::UnwrapErr};
 use threshold_identity::ThresholdIdentity;
-use tilo_ui::widget::identity_flow::{
-    IdentityFlow, IdentityFlowError, IdentityFlowScreen, IdentityRecord, IdentityStore,
-    InviteEnvelope, MemoryIdentityStore, mint_invite,
+use tilo_identity_ceremony::{
+    IdentityFlowError, IdentityRecord, IdentityStore, InviteEnvelope, MemoryIdentityStore,
+    mint_invite,
 };
+use tilo_ui::widget::identity_flow::{IdentityFlow, IdentityFlowScreen};
 use tilo_ui::{App, State};
 
 fn parse_screen_arg(name: &str) -> Option<IdentityFlowScreen> {

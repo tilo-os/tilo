@@ -88,13 +88,10 @@ impl Drop for EntryRegistryRefresh {
 }
 
 pub struct WindowsCompatHandle {
-    #[allow(
-        dead_code,
-        reason = "dropping it closes the authenticated session service"
-    )]
-    service: CompatSessionHandle,
-    #[allow(dead_code, reason = "dropping it cancels and joins registry refresh")]
-    registry_refresh: EntryRegistryRefresh,
+    /// Dropping it closes the authenticated session service.
+    _service: CompatSessionHandle,
+    /// Dropping it cancels and joins registry refresh.
+    _registry_refresh: EntryRegistryRefresh,
 }
 
 struct SessionPresentationLauncher {
@@ -419,8 +416,8 @@ pub fn spawn(tree: WorkspaceTreeHandle) -> Result<WindowsCompatHandle, String> {
     )
     .map_err(|error| error.to_string())?;
     Ok(WindowsCompatHandle {
-        service,
-        registry_refresh,
+        _service: service,
+        _registry_refresh: registry_refresh,
     })
 }
 

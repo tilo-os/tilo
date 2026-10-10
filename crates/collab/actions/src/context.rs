@@ -693,7 +693,7 @@ pub const MAX_PARTICIPANT_ID_BYTES: usize = 128;
 /// One participant in a shared record: a person's window or an agent task.
 /// Each participant owns its own view state (caret, selection, Find), and the
 /// app builds that participant's resource tree from it
-/// ([`crate::ResourceProvider::resources_for`]).
+/// (the toolkit's `PublishesResources::resources_for`).
 ///
 /// Opaque, non-empty, ASCII-printable and at most
 /// [`MAX_PARTICIPANT_ID_BYTES`] bytes. It is a routing key for view state,

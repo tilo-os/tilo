@@ -589,7 +589,7 @@ mod tests {
     fn firstboot_identity_bytes(display_name: &str, avatar_color: [u8; 3]) -> (Vec<u8>, [u8; 32]) {
         let identity =
             threshold_identity::ThresholdIdentity::from_single_device_seed(&FIXTURE_SEED);
-        let record = crate::widget::identity_flow::IdentityRecord::from_threshold_identity(
+        let record = tilo_identity_ceremony::IdentityRecord::from_threshold_identity(
             &identity,
             display_name,
             avatar_color,
@@ -642,7 +642,7 @@ mod tests {
         //
         // The record is minted by the writer `shell::firstboot` calls. This schema
         // is declared twice on purpose
-        // (`tilo_ui::widget::identity_flow::IdentityRecord` serialises it,
+        // (`tilo_identity_ceremony::IdentityRecord` serialises it,
         // `runtime_identity` re-declares it rather than depending on `ui`), so
         // so the fixture checks that the reader accepts the writer's output.
         {

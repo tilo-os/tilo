@@ -3185,10 +3185,7 @@ pub mod qr;
 pub mod resource_actions;
 pub use conflict_banner::ConflictBanner;
 pub use conflict_picker::{ConflictPicker, PickerOutcome};
-pub use identity_flow::{
-    IdentityFlow, IdentityFlowScreen, IdentityRecord, IdentityStore, InviteEnvelope, InviteExpiry,
-    MemoryIdentityStore, PairingHandshake, PairingPayload, ScreenOutcome,
-};
+pub use identity_flow::{IdentityFlow, IdentityFlowScreen, ScreenOutcome};
 pub use merge_strategy::{
     Alternative, ConcurrentOp, ConflictKind, ConflictResolver, MergeStrategy, surface_banner,
 };

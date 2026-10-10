@@ -7,7 +7,10 @@
 //! ([`tilo_app::App::surface_input`]), with how many publications those moves
 //! ran. Bare pointer motion must not republish (TIL-628). It also prints the
 //! sync pass per frame while typing into the draft and while scrolling the
-//! list, which must stay flat as the list grows (TIL-621).
+//! list, which must stay flat as the list grows (TIL-621), and what opening
+//! the window over a record that already holds the list costs: the time to
+//! its first laid-out frame, the allocations that took, and the heap the
+//! open window holds per task.
 //!
 //! ```text
 //! cargo run --release -p tilo-app --features test-support \
@@ -17,7 +20,8 @@
 //! With `TILO_PROFILE_RESOURCES=1` each move's resource work is printed to
 //! stderr as `input_carry` stages (see `docs/app-performance.md`).
 
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::alloc::{GlobalAlloc, Layout, System};
+use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 
 use tilo_app::framework::profiling::observe;
 use tilo_app::framework::testing::drive_live_window;
@@ -36,6 +40,40 @@ static CATALOG: EmbeddedCatalog = EmbeddedCatalog::new(
     )],
     "scaling-draft",
 );
+
+/// The system allocator, counting allocations and the bytes held.
+struct Counting;
+
+static ALLOCATIONS: AtomicUsize = AtomicUsize::new(0);
+static HELD: AtomicUsize = AtomicUsize::new(0);
+
+// SAFETY: every call forwards to the system allocator unchanged; the
+// counters are plain atomics.
+unsafe impl GlobalAlloc for Counting {
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        ALLOCATIONS.fetch_add(1, Ordering::Relaxed);
+        HELD.fetch_add(layout.size(), Ordering::Relaxed);
+        // SAFETY: the caller's contract is passed on unchanged.
+        unsafe { System.alloc(layout) }
+    }
+
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        HELD.fetch_sub(layout.size(), Ordering::Relaxed);
+        // SAFETY: the caller's contract is passed on unchanged.
+        unsafe { System.dealloc(ptr, layout) }
+    }
+
+    unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+        ALLOCATIONS.fetch_add(1, Ordering::Relaxed);
+        HELD.fetch_add(new_size, Ordering::Relaxed);
+        HELD.fetch_sub(layout.size(), Ordering::Relaxed);
+        // SAFETY: the caller's contract is passed on unchanged.
+        unsafe { System.realloc(ptr, layout, new_size) }
+    }
+}
+
+#[global_allocator]
+static ALLOCATOR: Counting = Counting;
 
 /// How many tasks the next window's record starts with.
 static TASKS: AtomicU32 = AtomicU32::new(0);
@@ -172,10 +210,10 @@ fn publication(tasks: u32) -> Result<(f64, usize), Box<dyn std::error::Error>> {
     Ok((median(samples), published))
 }
 
-/// The sync pass per frame, p50 in ms, while typing into the draft (each
-/// key a change to the resource) and while scrolling the list (no change).
-/// Both should stay flat however many tasks the list holds.
-fn sync_per_frame(tasks: u32) -> Result<(f64, f64), Box<dyn std::error::Error>> {
+/// The sync pass and the whole frame, p50 in ms, while typing into the
+/// draft (each key a change to the resource) and while scrolling the list
+/// (no change). They should stay flat however many tasks the list holds.
+fn per_frame(tasks: u32) -> Result<[(f64, f64); 2], Box<dyn std::error::Error>> {
     use tilo_app::profiling::{PerfScenario, PerfStep, run_scenario};
     let mut app = checklist(tasks)?;
     app.harness()
@@ -190,7 +228,8 @@ fn sync_per_frame(tasks: u32) -> Result<(f64, f64), Box<dyn std::error::Error>> 
                 steps,
             },
         );
-        std::time::Duration::from_micros(report.sync.p50_us).as_secs_f64() * 1e3
+        let ms = |us| std::time::Duration::from_micros(us).as_secs_f64() * 1e3;
+        (ms(report.sync.p50_us), ms(report.total.p50_us))
     };
     let typing = sync(
         &mut app,
@@ -209,7 +248,29 @@ fn sync_per_frame(tasks: u32) -> Result<(f64, f64), Box<dyn std::error::Error>> 
             count: 60,
         }],
     );
-    Ok((typing, scrolling))
+    Ok([typing, scrolling])
+}
+
+/// Opening the window over a record already holding `tasks` tasks, to its
+/// first laid-out frame: p50 in ms, the allocations that took, and the heap
+/// held with only that window open.
+fn open(tasks: u32) -> Result<(f64, usize, usize), Box<dyn std::error::Error>> {
+    TASKS.store(tasks, Ordering::Relaxed);
+    let mut app = checklist(tasks)?;
+    let mut samples = Vec::new();
+    let mut allocations = 0;
+    let mut held = 0;
+    for _ in 0..5 {
+        app.flush()?;
+        let start = Instant::now();
+        let before = ALLOCATIONS.load(Ordering::Relaxed);
+        app = app.reopen()?;
+        app.harness().relayout();
+        allocations = ALLOCATIONS.load(Ordering::Relaxed).saturating_sub(before);
+        samples.push(millis(start));
+        held = HELD.load(Ordering::Relaxed);
+    }
+    Ok((median(samples), allocations, held))
 }
 
 /// p50 of one pointer move over the live window, and how many publications
@@ -255,17 +316,30 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .collect::<Result<Vec<_>, _>>()?;
     println!(
         "tasks  resources  publication p50  pointer move p50  publications in {MOVES} moves  \
-         sync/frame typing p50  sync/frame scrolling p50"
+         typing p50: sync / frame  scrolling p50: sync / frame"
     );
-    for tasks in sizes {
+    // The heap a window over an empty list holds; the rest is per task.
+    let (_, _, empty) = open(0)?;
+    let mut opens = Vec::new();
+    for &tasks in &sizes {
         let (publish_ms, published) = publication(tasks)?;
-        let (typing_ms, scrolling_ms) = sync_per_frame(tasks)?;
+        let [(typing_sync, typing), (scrolling_sync, scrolling)] = per_frame(tasks)?;
         TASKS.store(tasks, Ordering::Relaxed);
         let (move_ms, publications) = drive_live_window::<Scaling, _>(pointer_moves)?;
         println!(
             "{tasks:>5}  {published:>9}  {publish_ms:>12.3} ms  {move_ms:>13.3} ms  \
-             {publications:>27}  {typing_ms:>18.3} ms  {scrolling_ms:>21.3} ms"
+             {publications:>27}  {typing_sync:>8.3} / {typing:>8.3} ms  \
+             {scrolling_sync:>11.3} / {scrolling:>8.3} ms"
         );
+        opens.push((tasks, open(tasks)?));
+    }
+    println!("\ntasks  open to first frame p50  allocations  heap held  heap per task");
+    for (tasks, (open_ms, allocations, held)) in opens {
+        let per_task = held
+            .saturating_sub(empty)
+            .checked_div(usize::try_from(tasks)?)
+            .unwrap_or_default();
+        println!("{tasks:>5}  {open_ms:>20.3} ms  {allocations:>11}  {held:>9}  {per_task:>11} B");
     }
     Ok(())
 }

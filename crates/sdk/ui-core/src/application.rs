@@ -1373,6 +1373,23 @@ impl AppComponent {
         std::mem::take(&mut self.save_status_changed)
     }
 
+    /// The durability last delivered, as sampled.
+    #[cfg(test)]
+    pub(crate) fn sampled_record_save(&self) -> Option<&crate::record::RecordSaveStatus> {
+        self.record_save.as_ref().map(|(status, _)| status)
+    }
+
+    /// Move the last durability sample back past its resample interval, so a
+    /// test reaches the moment its deadline comes due without waiting for it.
+    #[cfg(test)]
+    pub(crate) fn age_record_save_sample(&mut self) {
+        if let Some((_, sampled)) = &mut self.record_save {
+            *sampled = sampled
+                .checked_sub(SAVING_RESAMPLE * 2)
+                .expect("the monotonic clock started before the sample's resample interval");
+        }
+    }
+
     pub fn new(
         context: HostContext,
         mut root: Box<dyn AppWidget>,

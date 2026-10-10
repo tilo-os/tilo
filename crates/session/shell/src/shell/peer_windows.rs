@@ -1219,21 +1219,11 @@ mod tests {
                 "Saved window",
                 "The launch was interrupted.",
             );
-            let theme = std::env::var("TILO_SHOTS_THEME")
-                .ok()
-                .and_then(|name| ui::Theme::named(&name))
-                .unwrap_or_else(ui::Theme::dark)
-                .with_text_scale(
-                    std::env::var("TILO_SHOTS_TEXT_SCALE")
-                        .ok()
-                        .and_then(|scale| scale.parse().ok())
-                        .unwrap_or(1.0),
-                );
             let mut harness = ui::headless::FrameHarness::new_with_theme(
                 ui::State::new(),
                 Box::new(card),
                 (456, 500),
-                theme,
+                ui::launch::shot_theme_from_env().unwrap(),
             );
             harness.key("Tab");
             if input == "keyboard"

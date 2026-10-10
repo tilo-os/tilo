@@ -23,8 +23,8 @@
 //! ## Resources
 //!
 //! An app publishes the tree of [`Resource`]s it currently has open (a
-//! video → its comments; a book → its annotations) via
-//! [`ResourceProvider`]. Each resource exports [`ActionSpec`]s; the
+//! video → its comments; a book → its annotations) through the toolkit's
+//! `PublishesResources`. Each resource exports [`ActionSpec`]s; the
 //! palette lists them, and choosing one
 //! [`dispatch`]es the underlying action.
 //!
@@ -155,7 +155,6 @@ pub use registry::{ActionRegistry, decode_json};
     deprecated,
     reason = "existing app impls still name this trait until they publish through tilo_resource"
 )]
-pub use resource::ResourceProvider;
 pub use resource::{
     ActionBinding, ActionBindingError, ActionInput, ActionSpec, ArgsBuilder, Collects,
     ContinuationArguments, ContinuationEvidence, ContinuationKey, ContinuationQuery,

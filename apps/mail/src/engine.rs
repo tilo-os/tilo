@@ -1118,66 +1118,9 @@ pub mod live {
         use crate::model::{AccountConfig, Addr, AuthMethod, Draft, Folder};
         use crate::transport::build_mime;
 
-        /// A rustls client verifier that accepts the single local test server
-        /// certificate. Signature verification stays real (delegated to the ring
-        /// provider); only the chain-of-trust anchor is bypassed, exactly as any
-        /// local-server test must do for a self-signed cert.
-        #[derive(Debug)]
-        struct AcceptLocalCert(Arc<rustls::crypto::CryptoProvider>);
-
-        impl rustls::client::danger::ServerCertVerifier for AcceptLocalCert {
-            fn verify_server_cert(
-                &self,
-                _end_entity: &rustls::pki_types::CertificateDer<'_>,
-                _intermediates: &[rustls::pki_types::CertificateDer<'_>],
-                _server_name: &rustls::pki_types::ServerName<'_>,
-                _ocsp_response: &[u8],
-                _now: rustls::pki_types::UnixTime,
-            ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
-                Ok(rustls::client::danger::ServerCertVerified::assertion())
-            }
-            fn verify_tls12_signature(
-                &self,
-                message: &[u8],
-                cert: &rustls::pki_types::CertificateDer<'_>,
-                dss: &rustls::DigitallySignedStruct,
-            ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error>
-            {
-                rustls::crypto::verify_tls12_signature(
-                    message,
-                    cert,
-                    dss,
-                    &self.0.signature_verification_algorithms,
-                )
-            }
-            fn verify_tls13_signature(
-                &self,
-                message: &[u8],
-                cert: &rustls::pki_types::CertificateDer<'_>,
-                dss: &rustls::DigitallySignedStruct,
-            ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error>
-            {
-                rustls::crypto::verify_tls13_signature(
-                    message,
-                    cert,
-                    dss,
-                    &self.0.signature_verification_algorithms,
-                )
-            }
-            fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
-                self.0.signature_verification_algorithms.supported_schemes()
-            }
-        }
-
+        /// The mock servers present a fresh self-signed certificate.
         fn accepting_client_config() -> Arc<rustls::ClientConfig> {
-            let provider = Arc::new(rustls::crypto::ring::default_provider());
-            let cfg = rustls::ClientConfig::builder_with_provider(provider.clone())
-                .with_safe_default_protocol_versions()
-                .unwrap()
-                .dangerous()
-                .with_custom_certificate_verifier(Arc::new(AcceptLocalCert(provider)))
-                .with_no_client_auth();
-            Arc::new(cfg)
+            Arc::new(tilo_net::pinned_client_config(|_| true).unwrap())
         }
 
         /// A fresh self-signed cert + rustls server config for the mock servers.

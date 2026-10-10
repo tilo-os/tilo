@@ -41,7 +41,7 @@ tilo-unlock-protocol = { path = "../../collab/tilo-unlock-protocol" }
 tilo-seal = { path = "../../system/tilo-seal" }
 tracing.workspace = true
 # The identity record encoder shared with the interactive identity ceremony.
-ui = { package = "tilo-ui", path = "../../sdk/ui-core" }
+tilo-identity-ceremony = { version = "0.1.0", path = "../../collab/tilo-identity-ceremony" }
 wire-frame = { path = "../../system/wire-frame", features = ["postcard"] }
 workspace-hack = { version = "0.1" }
 

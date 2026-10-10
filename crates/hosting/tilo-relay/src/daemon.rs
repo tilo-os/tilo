@@ -304,10 +304,6 @@ pub struct Relay {
     /// Atomic filesystem completeness proof shared with the headless replica.
     full_replica: ReplicaProof,
     /// What the browser carriers need to serve sessions of this relay.
-    #[cfg_attr(
-        not(feature = "web"),
-        allow(dead_code, reason = "read by the web listener")
-    )]
     web: Box<WebContext>,
     /// Live proof that the owned signed-package compute worker completed all
     /// health checks and still owns its authenticated session.
@@ -325,12 +321,9 @@ pub struct Relay {
 
 /// The relay state the browser carriers serve sessions with.
 #[derive(Clone)]
-#[cfg_attr(
-    not(feature = "web"),
-    allow(dead_code, reason = "read by the web listener")
-)]
 pub(crate) struct WebContext {
     pub(crate) relay: RelayProtocol,
+    #[cfg(feature = "web")]
     pub(crate) certification: crate::certification::CertificationProtocol,
     /// The device of the session beside this node, once named.
     pub(crate) node_session: Arc<std::sync::OnceLock<[u8; 32]>>,
@@ -798,6 +791,7 @@ impl Relay {
         );
         let web = Box::new(WebContext {
             relay: handler.clone(),
+            #[cfg(feature = "web")]
             certification: certification.clone(),
             node_session: Arc::default(),
         });

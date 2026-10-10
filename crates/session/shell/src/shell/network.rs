@@ -522,10 +522,7 @@ enum Reach {
     /// ([`crate::network::reachability`]).
     Internet,
     /// Only this machine's (tests).
-    #[cfg_attr(
-        not(test),
-        allow(dead_code, reason = "tests reach only loopback peers")
-    )]
+    #[cfg(test)]
     Loopback,
     /// Only this machine's, holding relays nobody listens on back the way
     /// [`Self::Internet`] holds back the public ones (tests of the
@@ -1605,6 +1602,7 @@ impl ShellNetwork {
                 iroh::Endpoint::builder(presets::N0).relay_mode(held_back),
                 iroh::endpoint::default_relay_mode().relay_map(),
             ),
+            #[cfg(test)]
             Reach::Loopback => (
                 iroh::Endpoint::builder(presets::Minimal)
                     .relay_mode(iroh::RelayMode::Disabled)

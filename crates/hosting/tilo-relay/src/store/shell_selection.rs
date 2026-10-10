@@ -350,13 +350,7 @@ impl Selection {
             false,
         )
     }
-    #[cfg_attr(
-        not(test),
-        allow(
-            dead_code,
-            reason = "tests exercise cumulative checkpoint selection without projected lineage overrides"
-        )
-    )]
+    #[cfg(test)]
     pub(crate) fn new_batch(
         store: &WorkspaceStore,
         scratch: PathBuf,
