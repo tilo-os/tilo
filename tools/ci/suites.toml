@@ -38,6 +38,10 @@
 # whose read CI never runs, with the reason.
 
 [[covered]]
+suite = "os/tests/image_size_budget.py"
+by = "os/tests/test_image_size_budget.py"
+
+[[covered]]
 suite = "tools/test-assets.py"
 by = "tools/tests/test_test_assets.py"
 
@@ -324,6 +328,14 @@ inputs = ["os/", "crates/session/shell/src/shell/remote_capture/"]
 suites = ["os/tests/remote_capture_image_contract.sh"]
 
 [[group]]
+name = "image-size"
+inputs = [
+  "os/image-size-budget.toml", "os/tests/image_size_budget.py", "tools/perf/image_size.py",
+  ".forgejo/workflows/build-image.yml",
+]
+suites = ["os/tests/test_image_size_budget.py"]
+
+[[group]]
 name = "windows"
 inputs = [
   "os/", "docs/windows-compatibility.md", "crates/packaging/launcher/", "crates/windows/",
@@ -333,6 +345,7 @@ suites = [
   "os/tests/windows_compat_stack.sh",
   "os/tests/windows_presentation_capabilities.sh",
   "os/tests/windows_vm_isolation.sh",
+  "os/tests/test_windows_compat_sysext.py",
 ]
 
 [[group]]
@@ -812,8 +825,16 @@ readers = ["crates/system/system-extension/src/bin/tilo-system-extension-manager
 
 [[cargo]]
 package = "compat-service"
-inputs = ["os/usr/share/tilo/windows/fex-emulator.json", "os/usr/share/tilo/windows/fex-graphics-provider.json"]
+inputs = [
+  "os/usr/share/tilo/windows/fex-emulator.json", "os/usr/share/tilo/windows/fex-graphics-provider.json",
+  "os/Containerfile",
+]
 readers = ["crates/windows/compat-service/src/plan.rs"]
+
+[[cargo]]
+package = "os-actions"
+inputs = ["os/usr/share/tilo/system-extensions/sysext.d/windows-compat.json"]
+readers = ["crates/system/os-actions/src/windows_compat.rs"]
 
 [[cargo]]
 package = "legacy-vm"

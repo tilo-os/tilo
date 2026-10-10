@@ -125,16 +125,30 @@ pub trait RuntimeRegistry: Send + Sync {
     fn resolve(&self, layer: Layer, runner: &Runner) -> Result<RuntimeImage, PlanError>;
 }
 
+/// Paths the Windows compatibility system extension (tilo-windows-compat, see
+/// os/usr/share/tilo/system-extensions/sysext.d/windows-compat.json) overlays
+/// on `/usr`. The base image carries none of them, so a plan that binds one of
+/// them on a device that has not installed Windows support must say so instead
+/// of failing inside bubblewrap on a missing source.
+const PAYLOAD_PATHS: [&str; 3] = [
+    "/usr/lib/tilo/windows-runners",
+    "/usr/bin/FEX",
+    "/usr/share/fex-emu",
+];
+
 #[derive(Clone, Copy, Debug)]
 pub struct SystemRuntimeRegistry {
     /// Where translated (ARM) runtimes learn whether the image includes them.
     provider_manifest: Option<&'static str>,
+    /// Whether to require the on-demand Windows payload to be merged.
+    require_payload: bool,
 }
 
 impl SystemRuntimeRegistry {
     pub const fn new() -> Self {
         Self {
             provider_manifest: Some(PROVIDER_MANIFEST),
+            require_payload: true,
         }
     }
 
@@ -143,6 +157,7 @@ impl SystemRuntimeRegistry {
     pub(crate) const fn assuming_provider() -> Self {
         Self {
             provider_manifest: None,
+            require_payload: false,
         }
     }
 }
@@ -159,7 +174,23 @@ impl RuntimeRegistry for SystemRuntimeRegistry {
         if let (true, Some(manifest)) = (image.translated, self.provider_manifest) {
             require_translated_provider(std::fs::read_to_string(manifest).ok().as_deref())?;
         }
+        if self.require_payload {
+            require_payload(&image, |path| path.exists())?;
+        }
         Ok(image)
+    }
+}
+
+/// The runtime binds the payload only when it is merged. Absent, the person is
+/// told what to install; the launch never starts.
+fn require_payload(image: &RuntimeImage, exists: impl Fn(&Path) -> bool) -> Result<(), PlanError> {
+    let missing = image
+        .host_paths()
+        .any(|path| PAYLOAD_PATHS.iter().any(|prefix| path.starts_with(prefix)) && !exists(path));
+    if missing {
+        Err(PlanError::WindowsSupportNotInstalled)
+    } else {
+        Ok(())
     }
 }
 
@@ -915,6 +946,13 @@ pub enum PlanError {
          Windows provider for ARM. The Windows VM remains available where installed."
     )]
     WindowsProviderNotIncluded,
+    #[error(
+        "Windows support is not installed on this device. It is a separate download of about \
+         3 GB that is only fetched when you ask for it. Install it with \
+         `systemctl start tilo-extension@install:windows-compat.service` (as an administrator), \
+         then launch again. Nothing was started."
+    )]
+    WindowsSupportNotInstalled,
     #[error(transparent)]
     Capsule(#[from] CapsuleError),
     #[error("VM route was sent to the capsule planner")]
@@ -1918,6 +1956,86 @@ mod tests {
                     .bwrap_argv
                     .windows(3)
                     .any(|args| { args == ["--dev-bind", "/dev/ntsync", "/dev/ntsync"] })
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod payload_tests {
+    use super::*;
+
+    fn proton(host: &str) -> RuntimeImage {
+        SystemRuntimeRegistry::resolve_for_host(
+            Layer::Proton,
+            &Runner::new("umu-proton", PINNED_PROTON).unwrap(),
+            host,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn a_device_without_windows_support_gets_an_install_instruction_not_a_failed_bind() {
+        for host in ["x86_64", "aarch64"] {
+            let error = require_payload(&proton(host), |_| false).unwrap_err();
+            assert!(
+                matches!(error, PlanError::WindowsSupportNotInstalled),
+                "{host}"
+            );
+            let message = error.to_string();
+            assert!(message.contains("not installed"), "{message}");
+            assert!(
+                message.contains("tilo-extension@install:windows-compat.service"),
+                "the message names the action: {message}"
+            );
+            assert!(message.contains("Nothing was started"), "{message}");
+        }
+    }
+
+    #[test]
+    fn a_merged_payload_plans_normally() {
+        assert!(require_payload(&proton("x86_64"), |_| true).is_ok());
+        assert!(require_payload(&proton("aarch64"), |_| true).is_ok());
+    }
+
+    #[test]
+    fn only_payload_paths_are_probed_not_the_base_the_image_always_has() {
+        let probed = std::cell::RefCell::new(Vec::new());
+        let _ = require_payload(&proton("aarch64"), |path| {
+            probed.borrow_mut().push(path.to_path_buf());
+            true
+        });
+        let probed = probed.into_inner();
+        assert!(!probed.is_empty());
+        assert!(
+            probed
+                .iter()
+                .all(|path| { PAYLOAD_PATHS.iter().any(|prefix| path.starts_with(prefix)) })
+        );
+        assert!(probed.contains(&PathBuf::from(PROTON_HOST)));
+        assert!(!probed.contains(&PathBuf::from("/usr/bin/bwrap")));
+    }
+
+    #[test]
+    fn production_registry_requires_the_payload_and_test_registry_does_not() {
+        assert!(SystemRuntimeRegistry::new().require_payload);
+        assert!(!SystemRuntimeRegistry::assuming_provider().require_payload);
+    }
+
+    #[test]
+    fn the_payload_paths_are_exactly_what_the_sysext_stage_packs() {
+        let containerfile = include_str!("../../../../os/Containerfile");
+        for packed in [
+            "/tree/usr/lib/tilo/windows-runners/proton/",
+            "/tree/usr/lib/tilo/windows-runners/steam-runtime/",
+            "/payload/usr/lib/tilo/windows-runners",
+        ] {
+            assert!(containerfile.contains(packed), "{packed}");
+        }
+        for host in [PROTON_HOST, STEAM_RUNTIME_HOST, X86_ROOTFS_HOST] {
+            assert!(
+                PAYLOAD_PATHS.iter().any(|prefix| host.starts_with(prefix)),
+                "{host}"
             );
         }
     }

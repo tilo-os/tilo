@@ -1170,7 +1170,7 @@ fn splice_resolved_optional_runtimes(
 /// [`resolve_optional_runtimes`] then [`splice_resolved_optional_runtimes`].
 fn splice_optional_runtimes(
     argv: &mut Vec<String>,
-    manifest: &crate::manifest::ManifestView,
+    manifest: &crate::manifest::MinimalManifest,
     opts: &RunOptions,
 ) -> Result<Vec<String>, RunError> {
     splice_resolved_optional_runtimes(argv, &resolve_optional_runtimes(manifest, opts))

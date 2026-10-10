@@ -64,6 +64,12 @@ HOST_RE = re.compile(r"[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-
 MAX_MANIFEST_BYTES = 1024 * 1024
 MAX_SIGNATURE_BYTES = 4096
 MAX_ARTIFACT_BYTES = 1024 * 1024 * 1024
+# A prebuilt sysext image (format "sysext-raw") is one artifact, and large:
+# the Windows compatibility runtime is a few GiB.
+MAX_RAW_BYTES = 6 * 1024 * 1024 * 1024
+RAW_FORMAT = "sysext-raw"
+RAW_SUFFIX = ".raw"
+FORMATS = ("rpm", RAW_FORMAT)
 MAX_ARTIFACTS = 512
 MAX_TEXT = 300
 HTTP_TIMEOUT = 60
@@ -176,6 +182,10 @@ class Catalogue:
     manifest: str
     hosts: frozenset[str]
     parts: tuple[str, ...]
+    # Display only, never trusted for anything: what the owner is told before
+    # opting in. The manifest's pinned sizes are what is actually enforced.
+    download_bytes: int = 0
+    installed_bytes: int = 0
 
     @staticmethod
     def parse(text: str, ident: str) -> "Catalogue":
@@ -183,7 +193,11 @@ class Catalogue:
             value = json.loads(text)
         except ValueError as error:
             raise PackError(f"catalogue entry {ident} is not JSON") from error
-        expect_keys(value, {"schema", "id", "kind", "manifest", "hosts", "parts"}, set(), "catalogue")
+        expect_keys(value, {"schema", "id", "kind", "manifest", "hosts", "parts"}, {"size"}, "catalogue")
+        size = expect_keys(value.get("size", {}), set(), {"download_bytes", "installed_bytes"}, "catalogue size")
+        for key, number in size.items():
+            if not isinstance(number, int) or isinstance(number, bool) or not 0 < number <= MAX_RAW_BYTES * 4:
+                raise PackError(f"catalogue entry {ident} has an invalid size {key}")
         if value["schema"] != 1 or value["id"] != ident:
             raise PackError(f"catalogue entry {ident} has the wrong schema or id")
         manifest = value["manifest"]
@@ -198,7 +212,8 @@ class Catalogue:
         if (not isinstance(parts, list) or not parts or len(set(parts)) != len(parts)
                 or not all(isinstance(p, str) and ID_RE.fullmatch(p) for p in parts)):
             raise PackError(f"catalogue entry {ident} has invalid parts")
-        return Catalogue(ident, bounded(value["kind"], "kind"), manifest, frozenset(hosts), tuple(parts))
+        return Catalogue(ident, bounded(value["kind"], "kind"), manifest, frozenset(hosts), tuple(parts),
+                         size.get("download_bytes", 0), size.get("installed_bytes", 0))
 
     def manifest_url(self, arch: str, fingerprint: str) -> str:
         return self.manifest.replace("{arch}", arch).replace("{base}", fingerprint)
@@ -221,6 +236,7 @@ class Part:
     message: str
     requires_base: dict[str, str]
     artifacts: tuple[Artifact, ...]
+    format: str = "rpm"
 
 
 @dataclasses.dataclass(frozen=True)
@@ -298,7 +314,8 @@ def parse_manifest(data: bytes, catalogue: Catalogue, base: "Base", *, exact: bo
         if name in seen:
             raise PackError(f"the signed manifest names part {name} twice")
         seen.add(name)
-        if raw["format"] != "rpm":
+        fmt = raw["format"]
+        if fmt not in FORMATS:
             raise PackError(f"part {name} has an unsupported format")
         state = raw["state"]
         if state not in PART_STATES:
@@ -314,6 +331,9 @@ def parse_manifest(data: bytes, catalogue: Catalogue, base: "Base", *, exact: bo
             raise PackError(f"part {name} has an invalid artifact list")
         if (state == "available") != bool(raw_artifacts):
             raise PackError(f"part {name}: only an available part has artifacts")
+        if fmt == RAW_FORMAT and len(raw_artifacts) > 1:
+            raise PackError(f"part {name}: a sysext image part is exactly one artifact")
+        size_limit = MAX_RAW_BYTES if fmt == RAW_FORMAT else MAX_ARTIFACT_BYTES
         for item in raw_artifacts:
             expect_keys(item, {"package", "urls", "size", "sha256", "publisher", "license"}, set(), "artifact")
             package = item["package"]
@@ -323,7 +343,7 @@ def parse_manifest(data: bytes, catalogue: Catalogue, base: "Base", *, exact: bo
             if not isinstance(urls, list) or not urls or len(urls) > 8:
                 raise PackError(f"{package} has no URLs")
             size = item["size"]
-            if not isinstance(size, int) or isinstance(size, bool) or not 0 < size <= MAX_ARTIFACT_BYTES:
+            if not isinstance(size, int) or isinstance(size, bool) or not 0 < size <= size_limit:
                 raise PackError(f"{package} has an invalid size")
             total += size
             sha256 = item["sha256"]
@@ -338,8 +358,8 @@ def parse_manifest(data: bytes, catalogue: Catalogue, base: "Base", *, exact: bo
                 license=bounded(item["license"], "license", 2000),
             ))
         parts.append(Part(name, state, bounded(raw.get("message", ""), "message"),
-                          dict(sorted(requires.items())), tuple(artifacts)))
-    if total > 4 * MAX_ARTIFACT_BYTES:
+                          dict(sorted(requires.items())), tuple(artifacts), fmt))
+    if total > max(4 * MAX_ARTIFACT_BYTES, MAX_RAW_BYTES):
         raise PackError("the signed manifest is larger than any extension may be")
     return Manifest(catalogue.id, revision, {k: v for k, v in pinned.items()}, tuple(parts))
 
@@ -369,6 +389,8 @@ def manifest_part_fits(manifest: "Manifest", part: "Part", base: "Base") -> bool
         return True
     if any(base.installed.get(name) != evr for name, evr in part.requires_base.items()):
         return False
+    if part.format == RAW_FORMAT:
+        return True
     return not any(package_name(a.package) in base.installed for a in part.artifacts)
 
 
@@ -379,6 +401,8 @@ def codec_runtime_complete(part: "Part", base: "Base") -> bool:
     The stub satisfies the SONAME dependency, not the codec capability. Check
     exact-base parts too; authenticity alone does not make them usable.
     """
+    if part.format == RAW_FORMAT:
+        return True
     names = {package_name(a.package) for a in part.artifacts}
     return ("gstreamer1-plugin-openh264" not in names
             or "openh264" in names or "openh264" in base.installed)
@@ -1010,8 +1034,81 @@ def read_record(tree: Path, part: str) -> dict:
     return read_json(record_path(tree, part))
 
 
+def raw_path(layout: Layout, name: str) -> Path:
+    return layout.extensions / f"{name}{RAW_SUFFIX}"
+
+
+def raw_record_path(layout: Layout, name: str) -> Path:
+    # Dot-prefixed, so foreign_extensions and systemd-sysext both ignore it.
+    return layout.extensions / f".{name}.record.json"
+
+
+def live_exists(layout: Layout, name: str) -> bool:
+    return (layout.extensions / name).exists() or raw_path(layout, name).exists()
+
+
+def live_record(layout: Layout, name: str) -> dict:
+    """What a live part (directory or sysext image) was assembled from."""
+    if raw_path(layout, name).exists():
+        return read_json(raw_record_path(layout, name))
+    return read_record(layout.extensions / name, name)
+
+
+def live_remove(layout: Layout, name: str) -> None:
+    shutil.rmtree(layout.extensions / name, ignore_errors=True)
+    for path in (raw_path(layout, name), raw_record_path(layout, name)):
+        with contextlib.suppress(FileNotFoundError):
+            path.unlink()
+
+
+def build_raw_part(layout: Layout, base: Base, manifest: Manifest, part: Part,
+                   files: list[tuple[Artifact, Path]]) -> dict:
+    """Install a prebuilt, manifest-pinned sysext image as <part>.raw.
+
+    The bytes were pinned by the signed manifest and re-hashed by the caller
+    (Store.have); the image is linked (copied across filesystems) beside the
+    live one and renamed over it. systemd-sysext itself refuses an image whose
+    extension-release does not match this OS release and architecture.
+    """
+    (artifact, path), = files
+    layout.extensions.mkdir(parents=True, exist_ok=True)
+    live = raw_path(layout, part.name)
+    staging = layout.extensions / f".{part.name}{RAW_SUFFIX}.new"
+    with contextlib.suppress(FileNotFoundError):
+        staging.unlink()
+    try:
+        try:
+            os.link(path, staging)
+        except OSError:
+            shutil.copyfile(path, staging)
+        os.chmod(staging, 0o644)
+        record = {
+            "schema": 1,
+            "id": manifest.id,
+            "part": part.name,
+            "format": RAW_FORMAT,
+            "revision": manifest.revision,
+            "base": {k: manifest.base[k] for k in ("os_id", "version_id", "architecture", "packages_sha256")},
+            "requires_base": part.requires_base,
+            "packages": [],
+            "artifacts": [{"package": artifact.package, "sha256": artifact.sha256,
+                           "publisher": artifact.publisher, "license": artifact.license}],
+            "relocated": [],
+        }
+        os.replace(staging, live)
+        write_json(raw_record_path(layout, part.name), record, 0o644)
+    except BaseException:
+        with contextlib.suppress(FileNotFoundError):
+            staging.unlink()
+        raise
+    shutil.rmtree(layout.extensions / part.name, ignore_errors=True)
+    return record
+
+
 def build_part(layout: Layout, base: Base, manifest: Manifest, part: Part, files: list[tuple[Artifact, Path]]) -> dict:
     """Assemble a directory sysext next to the live one, then swap it in."""
+    if part.format == RAW_FORMAT:
+        return build_raw_part(layout, base, manifest, part, files)
     if not codec_runtime_complete(part, base):
         raise PackError(OPENH264_WAITING_MESSAGE)
     layout.extensions.mkdir(parents=True, exist_ok=True)
@@ -1102,7 +1199,7 @@ def waiting_for_network(status: Status, installed: bool) -> dict:
 
 
 def installed_parts(layout: Layout, catalogue: Catalogue) -> list[str]:
-    return [name for name in catalogue.parts if (layout.extensions / name).exists()]
+    return [name for name in catalogue.parts if live_exists(layout, name)]
 
 
 def fetch_manifest(layout: Layout, catalogue: Catalogue, base: Base, status: Status) -> tuple[Manifest, bytes, bytes]:
@@ -1236,8 +1333,10 @@ def foreign_extensions(layout: Layout, ours: set[str]) -> list[str]:
         for entry in sorted(directory.iterdir()):
             if entry.name.startswith("."):
                 continue
-            if directory == layout.extensions and entry.name in ours and entry.is_dir() \
-                    and not entry.is_symlink():
+            if directory == layout.extensions and not entry.is_symlink() and (
+                    (entry.name in ours and entry.is_dir())
+                    or (entry.name.endswith(RAW_SUFFIX) and entry.name[:-len(RAW_SUFFIX)] in ours
+                        and entry.is_file())):
                 continue
             found.append(str(entry))
     return found
@@ -1278,26 +1377,25 @@ class Activation:
 def activate_one(layout: Layout, catalogue: Catalogue, base: Base) -> Activation:
     """Rebuild the parts of one extension for the booted base."""
     ident = catalogue.id
-    previous = {name: selection_of(read_record(layout.extensions / name, name)) for name in catalogue.parts}
+    previous = {name: selection_of(live_record(layout, name)) for name in catalogue.parts}
     if not layout.desired(ident).exists():
         for name in catalogue.parts:
-            shutil.rmtree(layout.extensions / name, ignore_errors=True)
+            live_remove(layout, name)
         return Activation({name: "off" for name in catalogue.parts}, any(previous.values()), [], [])
     states: dict[str, str] = {}
     messages: list[str] = []
     errors: list[str] = []
     store = Store(layout, ident)
     for choice in choose_parts(catalogue, base, kept_manifests(layout, catalogue, base)):
-        live = layout.extensions / choice.name
         if choice.part is None or choice.manifest is None:
-            shutil.rmtree(live, ignore_errors=True)
+            live_remove(layout, choice.name)
             states[choice.name] = choice.state
             if choice.message:
                 messages.append(choice.message)
             continue
         missing = [a for a in choice.part.artifacts if not store.have(a)]
         if missing:
-            shutil.rmtree(live, ignore_errors=True)
+            live_remove(layout, choice.name)
             states[choice.name] = "waiting"
             messages.append(UPDATE_MESSAGE)
             continue
@@ -1306,10 +1404,10 @@ def activate_one(layout: Layout, catalogue: Catalogue, base: Base) -> Activation
                        [(a, store.object(a)) for a in choice.part.artifacts])
             states[choice.name] = "enabled"
         except (PackError, OSError) as error:
-            shutil.rmtree(live, ignore_errors=True)
+            live_remove(layout, choice.name)
             states[choice.name] = "waiting"
             errors.append(f"{choice.name}: {error}")
-    current = {name: selection_of(read_record(layout.extensions / name, name)) for name in catalogue.parts}
+    current = {name: selection_of(live_record(layout, name)) for name in catalogue.parts}
     return Activation(states, current != previous, list(dict.fromkeys(messages)), errors)
 
 
@@ -1329,14 +1427,14 @@ def activate(layout: Layout) -> int:
             print(f"tilo-extension: {error}", file=sys.stderr)
     ours = {name for c in catalogues for name in c.parts}
     if not any(layout.desired(c.id).exists() for c in catalogues) \
-            and not any((layout.extensions / name).exists() for name in ours):
+            and not any(live_exists(layout, name) for name in ours):
         return 0
     try:
         base = probe_base(layout)
     except (PackError, OSError, ValueError):
         # Without knowing the base nothing can be shown to fit it: merge none.
         for name in ours:
-            shutil.rmtree(layout.extensions / name, ignore_errors=True)
+            live_remove(layout, name)
         sysext_unmerge(layout)
         raise
     failed = False
@@ -1345,13 +1443,13 @@ def activate(layout: Layout) -> int:
         with locked(layout, catalogue.id):
             outcome[catalogue.id] = activate_one(layout, catalogue, base)
     if any(result.changed for result in outcome.values()) or any(
-            (layout.extensions / name).exists() for name in ours):
+            live_exists(layout, name) for name in ours):
         foreign = foreign_extensions(layout, ours) if sysext_masked() else []
         if foreign:
             # The sealed image merges only what this helper verified; something
             # else in the search path means /var or /etc was written behind it.
             for name in ours:
-                shutil.rmtree(layout.extensions / name, ignore_errors=True)
+                live_remove(layout, name)
             for catalogue in catalogues:
                 if not layout.desired(catalogue.id).exists():
                     continue
@@ -1435,6 +1533,8 @@ def refresh(layout: Layout, ident: str, *, explicit: bool) -> bool:
             for artifact in part.artifacts:
                 if not store.have(artifact):
                     raise PackError(f"{artifact.package} changed after it was verified")
+                if part.format == RAW_FORMAT:
+                    continue
                 header = rpm_header(store.object(artifact))
                 if header["nvra"] != artifact.package:
                     raise PackError(f"{artifact.package}: the file is {header['nvra']}")
@@ -1442,7 +1542,7 @@ def refresh(layout: Layout, ident: str, *, explicit: bool) -> bool:
                     raise PackError(f"{header['nvra']} would replace a package of this system")
         keep_manifest(layout, ident, base, data, signature)
         prune(layout, catalogue, base)
-        current = {name: selection_of(read_record(layout.extensions / name, name)) for name in catalogue.parts}
+        current = {name: selection_of(live_record(layout, name)) for name in catalogue.parts}
         target = {name: None for name in catalogue.parts}
         for part in wanted:
             target[part.name] = (manifest.revision, tuple(sorted(a.sha256 for a in part.artifacts)))
@@ -1488,6 +1588,8 @@ def remove(layout: Layout, ident: str) -> None:
     for name in catalogue.parts:
         for path in (f".{name}.new", f".{name}.old"):
             shutil.rmtree(layout.extensions / path, ignore_errors=True)
+        with contextlib.suppress(FileNotFoundError):
+            (layout.extensions / f".{name}{RAW_SUFFIX}.new").unlink()
     status.write(packages={}, message="", last_error="", revision=None, base=None)
 
 

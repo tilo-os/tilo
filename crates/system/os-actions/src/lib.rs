@@ -62,6 +62,7 @@ mod process;
 pub mod session;
 pub mod time;
 pub mod users;
+pub mod windows_compat;
 
 pub use audio::{
     VolumeState, get_source_state, get_volume, get_volume_state, has_output_device, set_mute,

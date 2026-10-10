@@ -122,19 +122,19 @@ RUN --network=none \
     --mount=type=bind,from=windows-fex-input,source=/,target=/fex,ro \
     --mount=type=bind,from=windows-guest-input,source=/,target=/guest,ro \
     test "$(uname -m)" = aarch64 \
-    && mkdir -p /out/usr/share/tilo/windows /out/usr/lib/tilo/windows-runners \
+    && mkdir -p /out/usr/share/tilo/windows /payload/usr/lib/tilo/windows-runners \
     && python3 /tilo/windows_provider.py validate \
       --fex-ref "$FEX_PAYLOAD_REF" --guest-ref "$WINDOWS_GUEST_REF" \
       --fex-root /fex --guest-root /guest/rootfs \
       --source-pin /tilo/fex-source.env --wine-pin /tilo/wine-source.json \
       > /out/usr/share/tilo/windows/provider.json \
-    && cp -a /fex/usr/. /out/usr/ \
-    && cp -a /guest/rootfs /out/usr/lib/tilo/windows-runners/x86
+    && cp -a /fex/usr/. /payload/usr/ \
+    && cp -a /guest/rootfs /payload/usr/lib/tilo/windows-runners/x86
 
 FROM ${BASE_REF} AS windows-provider-x86_64-1
 COPY os/dev/windows_provider.py /tilo/
 RUN --network=none test "$(uname -m)" = x86_64 \
-    && mkdir -p /out/usr/share/tilo/windows \
+    && mkdir -p /out/usr/share/tilo/windows /payload \
     && python3 /tilo/windows_provider.py inputs --arch x86_64 \
        > /out/usr/share/tilo/windows/provider.json
 
@@ -142,7 +142,7 @@ RUN --network=none test "$(uname -m)" = x86_64 \
 # architecture but aarch64, so an x86_64 build selecting this fails here.
 FROM ${BASE_REF} AS windows-provider-off
 COPY os/dev/windows_provider.py /tilo/
-RUN --network=none mkdir -p /out/usr/share/tilo/windows \
+RUN --network=none mkdir -p /out/usr/share/tilo/windows /payload \
     && python3 /tilo/windows_provider.py absent --arch "$(uname -m)" \
        > /out/usr/share/tilo/windows/provider.json
 FROM windows-provider-off AS windows-provider-aarch64-0
@@ -220,6 +220,32 @@ RUN --mount=type=bind,from=external-assets,source=/,target=/tilo-assets,ro \
     && mkdir -p /out/catalogues/bottles-programs \
     && tar -xzf /tilo-assets/bottles-programs-d1160b8.tar.gz --strip-components=1 -C /out/catalogues/bottles-programs \
     && chmod -R a-w /out/catalogues/bottles-programs
+
+
+# ---- Windows compatibility system extension ------------------------------
+# Everything Windows apps need that is large: the FEX payload and the x86 guest
+# root (ARM), Proton, the Steam runtime and the virtio-win media, about 3.1 GB.
+# It is packed here as tilo-windows-compat.raw, a sysext overlaying those exact
+# /usr paths, and is NOT part of the OS image. build-image.yml exports the
+# `windows-compat-sysext` target, publishes the image next to the signed
+# manifest tools/extensions/sysext_image.py writes, and a device installs it
+# when its owner first enables Windows apps or creates a Windows VM
+# (/usr/share/tilo/system-extensions/sysext.d/windows-compat.json).
+FROM ${BASE_REF} AS windows-compat-sysext-build
+COPY --from=windows-provider /payload/ /tree/
+COPY --from=virtio-win-media /out/virtio-win.iso /tree/usr/share/virtio-win/virtio-win.iso
+COPY --from=virtio-win-media /out/installer/virtio-win-guest-tools.exe /tree/usr/share/virtio-win/installer/virtio-win-guest-tools.exe
+COPY --from=windows-compat-artifacts /out/proton/ /tree/usr/lib/tilo/windows-runners/proton/
+COPY --from=windows-compat-artifacts /out/steam-runtime/ /tree/usr/lib/tilo/windows-runners/steam-runtime/
+COPY --from=windows-provider /out/usr/share/tilo/windows/provider.json /provider.json
+COPY os/dev/windows_provider.py os/dev/build-windows-compat-sysext.sh /tilo/
+# The native FEX binaries are checked against the hashes the provider record
+# pinned, and their dynamic-linker closure against the base plus this payload.
+RUN --network=none python3 /tilo/windows_provider.py host --manifest /provider.json --root /tree \
+    && /tilo/build-windows-compat-sysext.sh /tree /out/tilo-windows-compat.raw > /out/descriptor.json
+
+FROM scratch AS windows-compat-sysext
+COPY --from=windows-compat-sysext-build /out/ /
 
 
 # ---- AirPlay sender ---------------------------------------------------------
@@ -2517,15 +2543,22 @@ COPY --from=extension-files / /
 ARG TILO_WITH_WINDOWS
 LABEL org.tilo.with-windows="${TILO_WITH_WINDOWS}"
 COPY --from=windows-provider /out/usr/ /usr/
+# The payload is validated where it is packed (windows-compat-sysext); this
+# image only checks the record it carries is the one that payload was built from.
 RUN --network=none --mount=type=bind,source=os/dev/windows_provider.py,target=/tilo-windows-provider.py,ro \
-    python3 /tilo-windows-provider.py host --manifest /usr/share/tilo/windows/provider.json
-COPY --from=virtio-win-media /out/virtio-win.iso /usr/share/virtio-win/virtio-win.iso
-COPY --from=virtio-win-media /out/installer/virtio-win-guest-tools.exe /usr/share/virtio-win/installer/virtio-win-guest-tools.exe
-
+    python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); assert d["provider"] in ("none","fex-traditional-wine","native-wine"), d["provider"]' \
+      /usr/share/tilo/windows/provider.json
+# Windows compatibility on demand: the FEX payload, the x86 guest root, Proton,
+# the Steam runtime and the virtio-win media (about 3.1 GB, a quarter of /usr)
+# are NOT in this image. They are the signed system extension built by the
+# windows-compat-sysext stage, which a person installs with an explicit
+# action the first time they enable Windows apps or create a Windows VM
+# (tilo-extension install:windows-compat). It overlays the same /usr paths, so
+# nothing that names them changes. What stays here is small: the UMU launcher,
+# the catalogues, the provider record with the payload's pinned hashes, and the
+# contracts the host needs to explain an absent payload.
 COPY --from=windows-compat-artifacts /out/bin/umu-run /usr/libexec/tilo-umu-run
 COPY --from=windows-compat-artifacts /out/bin/umu_run.py /usr/libexec/umu_run.py
-COPY --from=windows-compat-artifacts /out/proton/ /usr/lib/tilo/windows-runners/proton/
-COPY --from=windows-compat-artifacts /out/steam-runtime/ /usr/lib/tilo/windows-runners/steam-runtime/
 COPY --from=windows-compat-artifacts /out/catalogues/ /usr/share/tilo/windows/catalogues/
 COPY os/usr/share/tilo/windows/fex-emulator.json os/usr/share/tilo/windows/fex-graphics-provider.json /usr/share/tilo/windows/
 # The VM is defined only after an owner supplies installation media. These
