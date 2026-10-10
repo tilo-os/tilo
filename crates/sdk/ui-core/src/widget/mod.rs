@@ -2788,12 +2788,14 @@ mod button;
 pub use button::{Button, ButtonFace, ButtonInteract, ButtonRole, face_colors};
 mod control_size;
 pub use control_size::ControlSize;
+mod bool_control;
 mod checkbox;
 pub use checkbox::{Checkbox, CheckboxFace, CheckboxInteract};
 mod column;
 pub use column::Column;
 mod composition;
 mod composition_parts;
+mod flow;
 mod form;
 mod form_composition;
 mod layout_info;
@@ -2889,6 +2891,8 @@ pub use block_editor::{
     Block, BlockContent, BlockEditOp, BlockEditor, BlockKind, CursorPlacement, DocumentPosition,
     DocumentSelection, EditScope, PresenceKeyFn, TransclusionPreview, legacy_block_id,
 };
+mod filter_menu;
+pub use filter_menu::FilterMenu;
 pub mod slash_menu;
 pub use slash_menu::SlashMenu;
 pub mod link_popover;

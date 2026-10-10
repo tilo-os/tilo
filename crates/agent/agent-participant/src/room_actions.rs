@@ -71,9 +71,13 @@ use tilo_user_identity::RevocationList;
 pub const DEFAULT_ROWS_RECORDS: usize = 12;
 /// Records kept held between requests; the least recently used is dropped.
 const MAX_MOUNTED: usize = 24;
-/// How long a request waits for the service to join a room and open what
-/// the room's steward admitted it to.
+/// How long a request waits for the service to join a room.
 const JOIN_WAIT: Duration = Duration::from_secs(30);
+/// How long a request waits, once the room is joined, for the keys of what
+/// it reads: the record it names, or (once per room) every record whose
+/// keys are on their way. A named record whose keys have not arrived by
+/// then is refused, never acted on half seen.
+const KEYS_WAIT: Duration = Duration::from_secs(10);
 /// Invocations remembered for retries, status and history.
 const REMEMBERED: usize = 1024;
 
@@ -556,6 +560,63 @@ struct RoomState {
     revision: usize,
 }
 
+/// What a request must have opened before it reads the room.
+#[derive(Clone, Copy, Debug)]
+enum Needs<'a> {
+    /// The room joined and nothing sealed: a new record of the room.
+    Joined,
+    /// The room listed: every record whose keys are on their way, waited for
+    /// once per room (the first listing after the join). Later listings show
+    /// what is open and wait for nothing.
+    Room,
+    /// One record's actions listed by name: its keys, waited for once. A
+    /// listing that gave up on them lists what opened and is not held back
+    /// by them again.
+    Read { app_id: &'a str, record: &'a str },
+    /// One record acted on: its keys, every time. Nothing acts on a record
+    /// seen only in part.
+    Act { app_id: &'a str, record: &'a str },
+}
+
+/// What a room's earlier waits for keys gave up on.
+#[derive(Default)]
+struct GaveUp {
+    /// The room's one listing wait is behind it.
+    listed: bool,
+    /// Records a listing by name waited for in vain.
+    records: HashSet<DocumentRoute>,
+}
+
+/// The routes of `workspace_id` in `routes` still sealed for `needs`:
+/// documents that arrived and open only once the member holds their keys.
+fn sealed_for(
+    routes: &BTreeMap<DocumentRoute, tilo_browser_peer::session::RouteStatus>,
+    workspace_id: u64,
+    needs: Needs<'_>,
+    gave_up: &GaveUp,
+) -> Vec<DocumentRoute> {
+    let named = |route: &DocumentRoute, app_id: &str, record: &str| {
+        route.app_id == app_id && route.record == record
+    };
+    routes
+        .iter()
+        .filter(|(route, status)| {
+            status.awaiting_keys > 0
+                && tilo_relay_protocol::room_workspace_id(&route.cluster_id).ok()
+                    == Some(workspace_id)
+                && match needs {
+                    Needs::Joined => false,
+                    Needs::Room => !gave_up.listed,
+                    Needs::Read { app_id, record } => {
+                        named(route, app_id, record) && !gave_up.records.contains(*route)
+                    }
+                    Needs::Act { app_id, record } => named(route, app_id, record),
+                }
+        })
+        .map(|(route, _)| route.clone())
+        .collect()
+}
+
 /// The service's membership of one room.
 struct Room {
     peer: PeerHandle,
@@ -563,6 +624,8 @@ struct Room {
     /// Signalled whenever the session's status or events change.
     wake: Arc<(Mutex<bool>, Condvar)>,
     ready: bool,
+    /// What earlier waits for keys gave up on.
+    gave_up: GaveUp,
     /// Every change the member opened or wrote, in order.
     log: Vec<(DocumentRoute, Change)>,
     /// The shared desktop of the room the log names first, merged as its
@@ -597,6 +660,7 @@ impl Room {
             events,
             wake,
             ready: false,
+            gave_up: GaveUp::default(),
             log: Vec::new(),
             desktop: SharedDesktop::new(),
         })
@@ -635,14 +699,64 @@ impl Room {
         }
     }
 
-    /// Whether a record of the room arrived sealed and opens once the member
-    /// holds its keys.
-    fn keys_pending(&self, workspace_id: u64) -> bool {
-        self.peer.status().routes.iter().any(|(route, status)| {
-            status.awaiting_keys > 0
-                && tilo_relay_protocol::room_workspace_id(&route.cluster_id).ok()
-                    == Some(workspace_id)
-        })
+    /// The records of the room that `needs` reads and that arrived sealed:
+    /// they open once the member holds their keys.
+    fn sealed(&self, workspace_id: u64, needs: Needs<'_>) -> Vec<DocumentRoute> {
+        sealed_for(
+            &self.peer.status().routes,
+            workspace_id,
+            needs,
+            &self.gave_up,
+        )
+    }
+
+    /// Join, then wait for the keys of what `needs` reads. Every wait is
+    /// woken by the session (a key arriving wakes it), never polled.
+    ///
+    /// A record to act on whose keys do not arrive within [`KEYS_WAIT`] is
+    /// refused: nothing acts on a record seen only in part. A listing gives
+    /// up quietly, lists what opened, and does not wait for the same keys
+    /// again.
+    fn wait_for(&mut self, workspace_id: u64, needs: Needs<'_>) -> Result<(), ActionHostError> {
+        let joined = Instant::now()
+            .checked_add(JOIN_WAIT)
+            .unwrap_or_else(Instant::now);
+        self.settle(workspace_id, joined, |room| room.ready);
+        if !self.ready {
+            return Err(ActionHostError::Unavailable {
+                reason: "the host has not joined the room yet".into(),
+            });
+        }
+        let keyed = Instant::now()
+            .checked_add(KEYS_WAIT)
+            .unwrap_or_else(Instant::now);
+        self.settle(workspace_id, keyed, |room| {
+            room.sealed(workspace_id, needs).is_empty()
+        });
+        let sealed = self.sealed(workspace_id, needs);
+        match needs {
+            Needs::Act { app_id, record } if !sealed.is_empty() => {
+                Err(ActionHostError::Unavailable {
+                    reason: format!(
+                        "the host does not hold the keys to {app_id} record {record} yet"
+                    ),
+                })
+            }
+            Needs::Room | Needs::Read { .. } => {
+                if !sealed.is_empty() {
+                    tracing::info!(
+                        records = sealed.len(),
+                        "room actions: listing without what has not opened: its keys have not arrived"
+                    );
+                }
+                if matches!(needs, Needs::Room) {
+                    self.gave_up.listed = true;
+                }
+                self.gave_up.records.extend(sealed);
+                Ok(())
+            }
+            Needs::Joined | Needs::Act { .. } => Ok(()),
+        }
     }
 
     /// Take the session's events until `settled`, or until `deadline`.
@@ -813,9 +927,14 @@ impl Worker {
             .unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// The member's view of `workspace_id`, joining the room first, and
-    /// every change the mounted records have not merged yet.
-    fn refresh(&mut self, workspace_id: u64) -> Result<RoomState, ActionHostError> {
+    /// The member's view of `workspace_id`, joining the room first and
+    /// holding the keys of what `needs` reads, and every change the mounted
+    /// records have not merged yet.
+    fn refresh(
+        &mut self,
+        workspace_id: u64,
+        needs: Needs<'_>,
+    ) -> Result<RoomState, ActionHostError> {
         if !self.rooms.contains_key(&workspace_id) {
             let room = Room::join(&self.member, workspace_id)
                 .map_err(|reason| ActionHostError::Unavailable { reason })?;
@@ -827,17 +946,7 @@ impl Worker {
                 .ok_or_else(|| ActionHostError::Unavailable {
                     reason: "the room was not joined".into(),
                 })?;
-        let deadline = Instant::now()
-            .checked_add(JOIN_WAIT)
-            .unwrap_or_else(Instant::now);
-        room.settle(workspace_id, deadline, |room| {
-            room.ready && !room.keys_pending(workspace_id)
-        });
-        if !room.ready {
-            return Err(ActionHostError::Unavailable {
-                reason: "the host has not joined the room yet".into(),
-            });
-        }
+        room.wait_for(workspace_id, needs)?;
         let mut state = RoomState::default();
         for (position, (route, change)) in room.log.iter().enumerate() {
             state.room.get_or_insert_with(|| route.cluster_id.clone());
@@ -1006,7 +1115,17 @@ impl Worker {
         {
             return Ok(page);
         }
-        let state = self.refresh(workspace_id)?;
+        // A record named by its provider waits for its own keys; a listing
+        // waits for the room's once.
+        let named = query
+            .provider
+            .as_deref()
+            .and_then(|provider| record_of(provider, ""));
+        let needs = named.as_ref().map_or(Needs::Room, |route| Needs::Read {
+            app_id: &route.app_id,
+            record: &route.record,
+        });
+        let state = self.refresh(workspace_id, needs)?;
         let revision = state.revision.to_string();
         let Some(room) = state.room.clone() else {
             return Ok(CataloguePage::from_rows(revision, Vec::new(), query));
@@ -1253,7 +1372,16 @@ impl Worker {
         {
             return Ok(output);
         }
-        let state = self.refresh(workspace_id).map_err(Outcome::Rejected)?;
+        // Acting on a record waits for that record's keys and no other's;
+        // opening an app on a new record needs only the room.
+        let named = record_of(&request.target.provider, "");
+        let needs = named.as_ref().map_or(Needs::Joined, |route| Needs::Act {
+            app_id: &route.app_id,
+            record: &route.record,
+        });
+        let state = self
+            .refresh(workspace_id, needs)
+            .map_err(Outcome::Rejected)?;
         if request
             .revision
             .as_ref()
@@ -1494,4 +1622,102 @@ fn exact_view_query(
         return Err(ActionHostError::UnknownAction);
     }
     Ok((wanted, provider))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{GaveUp, Needs, sealed_for};
+    use std::collections::{BTreeMap, HashSet};
+    use tilo_browser_peer::DocumentRoute;
+    use tilo_browser_peer::session::RouteStatus;
+
+    const ROOM: &str = "6f1c1b62-4f5e-4b8a-9b52-1f8a3f0f3a11";
+    const OTHER_ROOM: &str = "0b7f1d2e-5a6c-4d3b-8e9f-a0b1c2d3e4f5";
+
+    fn route(room: &str, app: &str, record: &str) -> DocumentRoute {
+        DocumentRoute {
+            app_id: app.into(),
+            cluster_id: room.into(),
+            record: record.into(),
+        }
+    }
+
+    fn sealed(awaiting: usize) -> RouteStatus {
+        RouteStatus {
+            awaiting_keys: awaiting,
+            ..RouteStatus::default()
+        }
+    }
+
+    #[test]
+    fn a_request_waits_only_for_the_keys_of_what_it_reads() {
+        let workspace = tilo_relay_protocol::room_workspace_id(ROOM).unwrap();
+        let a = route(ROOM, "so.tilo.sheets", "a");
+        let b = route(ROOM, "so.tilo.sheets", "b");
+        let elsewhere = route(OTHER_ROOM, "so.tilo.sheets", "a");
+        let mut routes = BTreeMap::new();
+        routes.insert(a, sealed(0));
+        routes.insert(b.clone(), sealed(3));
+        routes.insert(elsewhere, sealed(1));
+        let act = |record| Needs::Act {
+            app_id: "so.tilo.sheets",
+            record,
+        };
+        let read = |record| Needs::Read {
+            app_id: "so.tilo.sheets",
+            record,
+        };
+        let fresh = GaveUp::default();
+
+        assert!(
+            sealed_for(&routes, workspace, act("a"), &fresh).is_empty(),
+            "another record's missing keys never hold back this one"
+        );
+        assert!(sealed_for(&routes, workspace, read("a"), &fresh).is_empty());
+        assert_eq!(
+            sealed_for(&routes, workspace, act("b"), &fresh),
+            std::slice::from_ref(&b)
+        );
+        assert_eq!(
+            sealed_for(&routes, workspace, read("b"), &fresh),
+            std::slice::from_ref(&b)
+        );
+        assert!(
+            sealed_for(
+                &routes,
+                workspace,
+                Needs::Act {
+                    app_id: "so.tilo.slides",
+                    record: "b"
+                },
+                &fresh
+            )
+            .is_empty(),
+            "a record is named by its app and id together"
+        );
+        assert_eq!(
+            sealed_for(&routes, workspace, Needs::Room, &fresh),
+            std::slice::from_ref(&b),
+            "the first listing waits for this room's sealed records only"
+        );
+        assert!(sealed_for(&routes, workspace, Needs::Joined, &fresh).is_empty());
+
+        let waited = GaveUp {
+            listed: true,
+            records: HashSet::from([b.clone()]),
+        };
+        assert!(
+            sealed_for(&routes, workspace, Needs::Room, &waited).is_empty(),
+            "later listings wait for nothing"
+        );
+        assert!(
+            sealed_for(&routes, workspace, read("b"), &waited).is_empty(),
+            "a listing waits for the same missing keys once"
+        );
+        assert_eq!(
+            sealed_for(&routes, workspace, act("b"), &waited),
+            [b],
+            "acting on a record always waits for its keys"
+        );
+    }
 }

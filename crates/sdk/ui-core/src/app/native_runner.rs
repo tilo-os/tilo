@@ -2157,8 +2157,13 @@ impl AppHandler {
         // backdrop under the material before the frame renders.
         let backdrop_recording = crate::backdrop::BackdropRecording::begin();
         crate::backdrop::layer_scene(&scene, 0);
-        let (transform, window_rect, t_draw_us, mut top_layer) =
-            draw_frame_content(app, &mut scene, width, height, scale_factor, t_draw_start);
+        let drawn = draw_frame_content(app, &mut scene, width, height, scale_factor, t_draw_start);
+        let (transform, window_rect, t_draw_us) =
+            (drawn.transform, drawn.window_rect, drawn.draw_us);
+        // The tooltip's material blurs what is under it, which repaints this
+        // window in full on the render worker whatever damage says; until it
+        // takes damage there too, a tooltip is a layer like the others here.
+        let mut top_layer = drawn.top_layer.is_some() || drawn.tooltip.is_some();
         #[cfg(target_os = "linux")]
         {
             self.decorations.draw(app, &mut scene, transform);

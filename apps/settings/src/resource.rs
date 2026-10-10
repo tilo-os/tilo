@@ -112,7 +112,14 @@ impl ResourceApp for SettingsShell {
     const ARGUMENTS: usize = 1;
 
     fn view(cx: &mut ViewCx<Settings>) -> Element {
-        cx.surface(SettingsApp::new())
+        // Private host profiles also own their account stores and mutation journal.
+        let app = match cx.storage().settings_document() {
+            ui::storage::SettingsDocument::Session => SettingsApp::new(),
+            ui::storage::SettingsDocument::File(path) => {
+                SettingsApp::with_config_root(path.parent().unwrap_or(path.as_path()))
+            }
+        };
+        cx.surface(app)
     }
 
     /// `settings://models/<id>` opens Agent Models at that model's card and
@@ -147,7 +154,7 @@ impl ResourceSurface<Settings, SettingsEffect> for SettingsApp {
     fn present(&mut self, _state: &Rc<()>) {}
 
     fn take_host_intent(&mut self) -> Option<ui::widget::AppHostIntent> {
-        self.displays().model().borrow_mut().take_host_intent()
+        self.displays().take_host_intent()
     }
 
     fn attach(&mut self, cx: SurfaceCx<Settings>) {
