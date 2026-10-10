@@ -1348,14 +1348,10 @@ fn follow_source_catalog(app_dir: &Path, writes: &mut Vec<PendingWrite>) -> Resu
             Err(_) => return Ok(()),
         },
     };
-    if !registry.starts_with(LOCALE_REGISTRY_HEADER) {
-        return Ok(());
-    }
     let ids = catalog_message_ids(&parse_fluent_catalog(&source)?);
-    if label_key_drift(&registry, &ids).is_ok_and(|drift| drift.is_empty()) {
+    let Some(rewritten) = registry_rewrite(&registry, &ids)? else {
         return Ok(());
-    }
-    let rewritten = locale_registry_source(&parse_locale_registry(&registry)?, &ids);
+    };
     match pending.and_then(|index| writes.get_mut(index)) {
         Some(write) => write.source = rewritten,
         None => writes.push(PendingWrite {
@@ -1377,19 +1373,29 @@ fn registry_key_write(
     let Ok(registry) = std::fs::read_to_string(&registry_path) else {
         return Ok(None);
     };
-    if !registry.starts_with(LOCALE_REGISTRY_HEADER) {
+    let Some(rewritten) = registry_rewrite(&registry, &catalog_message_ids(source))? else {
         return Ok(None);
-    }
-    let ids = catalog_message_ids(source);
-    if label_key_drift(&registry, &ids).is_ok_and(|drift| drift.is_empty()) {
-        return Ok(None);
-    }
-    let locales = parse_locale_registry(&registry)?;
+    };
     Ok(Some(PendingWrite {
-        source: rustfmt_source(&locale_registry_source(&locales, &ids), &registry_path)?,
+        source: rustfmt_source(&rewritten, &registry_path)?,
         path: registry_path,
         description: "locale registry",
     }))
+}
+
+/// A generated locale `registry` rewritten for the source catalog's message
+/// `ids`, when its label keys differ from them. An app-owned registry is
+/// never rewritten.
+fn registry_rewrite(registry: &str, ids: &[String]) -> Result<Option<String>> {
+    if !registry.starts_with(LOCALE_REGISTRY_HEADER)
+        || label_key_drift(registry, ids).is_ok_and(|drift| drift.is_empty())
+    {
+        return Ok(None);
+    }
+    Ok(Some(locale_registry_source(
+        &parse_locale_registry(registry)?,
+        ids,
+    )))
 }
 
 fn parse_editable_fluent(
@@ -1607,16 +1613,6 @@ pub(crate) fn catalog_message_ids(contract: &FluentCatalogContract) -> Vec<Strin
         .collect()
 }
 
-/// The message ids of the app's `locales/en-US.ftl`.
-fn source_message_ids(app_dir: &Path) -> Result<Vec<String>> {
-    let source_path = app_dir.join("locales/en-US.ftl");
-    let source = std::fs::read_to_string(&source_path)
-        .with_context(|| format!("reading source catalog {}", source_path.display()))?;
-    let contract = parse_fluent_catalog(&source)
-        .with_context(|| format!("source catalog {} is invalid", source_path.display()))?;
-    Ok(catalog_message_ids(&contract))
-}
-
 /// The label keys a generated registry declares, by constant name.
 fn registry_label_keys(registry: &str) -> Result<BTreeMap<String, String>> {
     let file = syn::parse_file(registry).context("generated locale registry is not valid Rust")?;
@@ -1679,25 +1675,16 @@ fn label_key_drift(registry: &str, ids: &[String]) -> Result<Vec<String>> {
 /// Returns an error when the source catalog or registry cannot be read or
 /// the rewritten registry cannot be formatted or written.
 pub fn refresh_locale_registry(app_dir: &Path) -> Result<bool> {
-    let registry_path = app_dir.join("src/locales.rs");
-    let Ok(registry) = std::fs::read_to_string(&registry_path) else {
+    let source_path = app_dir.join("locales/en-US.ftl");
+    let Ok(source) = std::fs::read_to_string(&source_path) else {
         return Ok(false);
     };
-    if !registry.starts_with(LOCALE_REGISTRY_HEADER) || !app_dir.join("locales/en-US.ftl").is_file()
-    {
+    let source = parse_fluent_catalog(&source)
+        .with_context(|| format!("source catalog {} is invalid", source_path.display()))?;
+    let Some(write) = registry_key_write(app_dir, &source)? else {
         return Ok(false);
-    }
-    let ids = source_message_ids(app_dir)?;
-    if label_key_drift(&registry, &ids).is_ok_and(|drift| drift.is_empty()) {
-        return Ok(false);
-    }
-    let locales = parse_locale_registry(&registry)?;
-    let source = rustfmt_source(&locale_registry_source(&locales, &ids), &registry_path)?;
-    write_batch(&[PendingWrite {
-        path: registry_path,
-        source,
-        description: "locale registry",
-    }])?;
+    };
+    write_batch(&[write])?;
     Ok(true)
 }
 
