@@ -114,6 +114,13 @@ impl Widget for ColumnSlot {
         "NotesColumn"
     }
 
+    /// It paints nothing, so it never has anything to repaint: the page tree
+    /// and the note drawn where it sits report their own damage. (A leaf's
+    /// default would claim its whole column on every hover in the shell.)
+    fn needs_redraw(&self) -> bool {
+        false
+    }
+
     fn get_rect(&self) -> Rect {
         self.rect
     }
