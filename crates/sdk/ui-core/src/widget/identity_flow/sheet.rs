@@ -30,6 +30,7 @@
 //! inside the body ([`BodyScroll`]) and paint under a clip, so nothing
 //! lands on the action row and nothing becomes unreachable.
 
+use std::borrow::Cow;
 use std::cell::RefCell;
 
 use vello::Scene;
@@ -39,6 +40,7 @@ use winit::event::MouseScrollDelta;
 use winit::keyboard::{Key, NamedKey};
 
 use crate::paint::PaintCtx;
+use crate::presence::PresenceCtx;
 use crate::text_render::{TextKind, TextRenderer, TextStyle};
 use crate::theme::Theme;
 use crate::tokens::TextRole;
@@ -221,6 +223,157 @@ pub(super) fn resolve<P>(
     let placed = scroll.place(sheet.body(), wanted, control_h);
     let (plan, _) = plan(Rows::new(placed), control_h, text_renderer, theme);
     Resolved { sheet, plan }
+}
+
+/// The viewport, body scroll and layout theme every ceremony screen keeps.
+#[derive(Clone, Debug, Default)]
+pub(super) struct SheetFrame {
+    pub rect: Rect,
+    pub scroll: BodyScroll,
+    /// Height of the visible body at the last resolve — what `PageUp` /
+    /// `PageDown` move.
+    pub body_height: f64,
+    /// The theme `build_layout` saw, so `apply_layout` can resolve the rows
+    /// without waiting for a paint.
+    pub layout_theme: Option<Theme>,
+}
+
+impl SheetFrame {
+    /// `PageUp` / `PageDown` over the body; `true` when it scrolled.
+    pub(super) fn key(&mut self, key: &Key) -> bool {
+        self.scroll.key(key, self.body_height)
+    }
+
+    /// A wheel tick over the body; `true` when it scrolled.
+    pub(super) fn wheel(&mut self, delta: &MouseScrollDelta) -> bool {
+        self.scroll.wheel(delta)
+    }
+}
+
+/// A ceremony screen drawn as a sheet. The screen supplies its title,
+/// actions, row plan, hit rects and body paint; [`resolve_screen`],
+/// [`layout_screen`] and [`draw_screen`] run the one geometry pass and the
+/// frame / clipped body / action row paint around them.
+pub(super) trait SheetScreen {
+    type Plan;
+    type Actions: AsRef<[ModalAction<'static>]>;
+    fn frame(&self) -> &SheetFrame;
+    fn frame_mut(&mut self) -> &mut SheetFrame;
+    fn title(&self) -> Cow<'static, str>;
+    fn max_width(&self) -> f64 {
+        FORM_SHEET_WIDTH
+    }
+    fn actions(&self) -> Self::Actions;
+    /// Walk the body rows once over `rows`.
+    fn plan(
+        &self,
+        rows: Rows,
+        control_h: f64,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+    ) -> Self::Plan;
+    /// Where the plan's last row ended.
+    fn bottom(plan: &Self::Plan) -> f64;
+    /// Seat fields and record hit rects, clipped to the visible body, from
+    /// the resolved geometry.
+    fn place(
+        &mut self,
+        resolved: &Resolved<Self::Plan>,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+    );
+    /// Paint the rows inside the body clip.
+    fn paint_body(
+        &mut self,
+        ctx: &mut PaintCtx<'_>,
+        presence: &PresenceCtx,
+        resolved: &Resolved<Self::Plan>,
+    );
+}
+
+/// The one geometry pass for `apply_layout` and `draw`: the rects a screen
+/// paints are the rects it hit-tests.
+pub(super) fn resolve_screen<S: SheetScreen>(
+    screen: &mut S,
+    theme: &Theme,
+    text_renderer: &mut TextRenderer,
+) -> Resolved<S::Plan> {
+    let title = screen.title();
+    let actions = screen.actions();
+    let spec = SheetSpec {
+        title: &title,
+        max_width: screen.max_width(),
+        actions: actions.as_ref(),
+    };
+    let frame = screen.frame();
+    let mut scroll = frame.scroll;
+    let resolved = resolve(
+        frame.rect,
+        &spec,
+        &mut scroll,
+        text_renderer,
+        theme,
+        |rows, control_h, tr, theme| {
+            let plan = screen.plan(rows, control_h, tr, theme);
+            let bottom = S::bottom(&plan);
+            (plan, bottom)
+        },
+    );
+    let frame = screen.frame_mut();
+    frame.scroll = scroll;
+    frame.body_height = resolved.sheet.body().height();
+    screen.place(&resolved, text_renderer, theme);
+    resolved
+}
+
+/// `Widget::apply_layout` for a sheet screen: hit rects are ready before the
+/// first paint and after every state change that reshapes the body.
+pub(super) fn layout_screen<S: SheetScreen>(
+    screen: &mut S,
+    taffy: &taffy::TaffyTree<()>,
+    node: taffy::NodeId,
+    origin: Point,
+) {
+    let frame = screen.frame_mut();
+    frame.rect = crate::widget::layout_rect(taffy, node, origin);
+    if let Some(theme) = frame.layout_theme.clone() {
+        with_layout_renderer(&theme, |tr| {
+            resolve_screen(screen, &theme, tr);
+        });
+    }
+}
+
+/// `Widget::draw` for a sheet screen: frame, the body under its clip, then
+/// the action row. Identity ceremonies, invites and joins are security
+/// surfaces, so every look-alike letter is set apart.
+pub(super) fn draw_screen<S: SheetScreen>(
+    screen: &mut S,
+    scene: &mut Scene,
+    transform: Affine,
+    text_renderer: &mut TextRenderer,
+    theme: &Theme,
+    presence: &PresenceCtx,
+) {
+    text_renderer.security_surface(|text_renderer| {
+        let resolved = resolve_screen(screen, theme, text_renderer);
+        let title = screen.title();
+        let actions = screen.actions();
+        let spec = SheetSpec {
+            title: &title,
+            max_width: screen.max_width(),
+            actions: actions.as_ref(),
+        };
+        let sheet = &resolved.sheet;
+        sheet.paint_frame(scene, transform, text_renderer, theme, &spec);
+        sheet.clip_body(scene, transform);
+        screen.paint_body(
+            &mut PaintCtx::new(scene, transform, text_renderer, theme),
+            presence,
+            &resolved,
+        );
+        scene.pop_layer();
+        sheet.paint_actions(scene, transform, text_renderer, theme, &spec);
+    });
 }
 
 /// Type roles a sheet body uses. Each resolves to one size, weight and ink,
