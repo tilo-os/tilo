@@ -1762,7 +1762,7 @@ pub enum FabricInputEvent {
 }
 
 impl FabricInputEvent {
-    fn validate(self) -> bool {
+    pub(super) fn validate(self) -> bool {
         match self {
             Self::PointerMotion { x, y } => {
                 x.unsigned_abs() <= 1_000_000 && y.unsigned_abs() <= 1_000_000

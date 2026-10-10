@@ -81,6 +81,7 @@ impl SpatialInputState {
             return;
         }
         self.outbound.retain(|input| input.target != source);
+        self.cleanup.forget_target(&source);
         self.protocol.send.remove(&source);
         self.received_routes.insert(source.clone(), route);
         let nonce = lease.nonce;
@@ -214,6 +215,7 @@ impl SpatialInputState {
         })
     }
     pub(super) fn retain_spatial_protocol(&mut self) {
+        self.cleanup.retain(&self.received);
         self.protocol
             .receive
             .retain(|nonce, _| self.issued.contains_key(nonce));

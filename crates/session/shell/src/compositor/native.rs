@@ -5828,29 +5828,54 @@ fn end_spatial_control(
     let Some(session) = active.take() else {
         return;
     };
-    for keycode in session.pressed_keys {
-        let _ = crate::shell::device_fabric_runtime::send_spatial_input_bound(
-            network,
-            &session.target,
-            session.lease_nonce,
-            crate::shell::device_fabric::FabricInputEvent::Key {
+    let events = session
+        .pressed_keys
+        .into_iter()
+        .map(
+            |keycode| crate::shell::device_fabric::FabricInputEvent::Key {
                 keycode,
                 pressed: false,
                 modifiers: 0,
             },
-        );
-    }
-    for button in session.pressed_buttons {
-        let _ = crate::shell::device_fabric_runtime::send_spatial_input_bound(
-            network,
-            &session.target,
-            session.lease_nonce,
+        )
+        .chain(session.pressed_buttons.into_iter().map(|button| {
             crate::shell::device_fabric::FabricInputEvent::PointerButton {
                 button,
                 pressed: false,
-            },
-        );
-    }
+            }
+        }))
+        .collect();
+    let _ = crate::shell::device_fabric_runtime::queue_spatial_input_cleanup_bound(
+        network,
+        &session.target,
+        session.lease_nonce,
+        events,
+    );
+}
+
+#[cfg(test)]
+pub(crate) fn teardown_spatial_control_for_test(
+    network: &crate::shell::network::ShellNetwork,
+    target: crate::shell::personal_continuity::DeviceId,
+    nonce: [u8; 16],
+    held: (
+        std::collections::BTreeSet<u32>,
+        std::collections::BTreeSet<u32>,
+    ),
+) -> bool {
+    let mut active = Some(SpatialControlSession {
+        target,
+        lease_nonce: nonce,
+        output: None,
+        return_edge: crate::shell::device_fabric::DisplayEdge::Right,
+        x: 0.0,
+        y: 0.0,
+        pressed_keys: held.0,
+        pressed_buttons: held.1,
+        nearby_drop: None,
+    });
+    end_spatial_control(network, &mut active);
+    active.is_none()
 }
 
 #[allow(
