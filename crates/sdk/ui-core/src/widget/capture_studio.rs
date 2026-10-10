@@ -381,6 +381,40 @@ impl DragSelection {
     }
 }
 
+/// State of one recording take, from the request until it stops.
+#[derive(Default)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "a take is requested, active, paused and stopping independently"
+)]
+struct RecordingTake {
+    /// A recording was requested, but encoder/output setup has not yet been
+    /// confirmed by the compositor. Acknowledging this state immediately
+    /// prevents a slow start from reading as a missed click without falsely
+    /// claiming that pixels are already being recorded.
+    start_pending: bool,
+    request_started_at: Option<Instant>,
+    active: bool,
+    started_at: Option<Instant>,
+    confirmation_regions: Vec<Rect>,
+    /// Which sides of the physical output the selected virtual source keeps
+    /// going past. This is snapshotted at recorder start so the brief spatial
+    /// confirmation cannot drift if the strip moves underneath it.
+    /// Order: left, top, right, bottom.
+    continuation_edges: [bool; 4],
+    stop_pending: bool,
+    paused: bool,
+    pause_pending: bool,
+    paused_at: Option<Instant>,
+    paused_total: Duration,
+    state_changed_at: Option<Instant>,
+    transition_from_paused: Option<bool>,
+    /// Exact visual-harness phase for pause/resume. Production follows
+    /// `state_changed_at`; PNG renders must not advance it merely
+    /// because GPU readback is slow.
+    state_progress_override: Option<f64>,
+}
+
 #[allow(
     clippy::struct_excessive_bools,
     reason = "independent capture, recording, replay, and receipt states are retained together"
@@ -405,32 +439,9 @@ pub struct CaptureStudio {
     candidates: Vec<CaptureTarget>,
     selected_target: Option<String>,
     pending: Vec<CaptureIntent>,
-    /// A recording was requested, but encoder/output setup has not yet been
-    /// confirmed by the compositor. Acknowledging this state immediately
-    /// prevents a slow start from reading as a missed click without falsely
-    /// claiming that pixels are already being recorded.
-    recording_start_pending: bool,
-    recording_request_started_at: Option<Instant>,
-    recording_active: bool,
-    recording_started_at: Option<Instant>,
+    /// The current take; reset whole whenever one starts or ends.
+    take: RecordingTake,
     recording_scope: String,
-    recording_confirmation_regions: Vec<Rect>,
-    /// Which sides of the physical output the selected virtual source keeps
-    /// going past. This is snapshotted at recorder start so the brief spatial
-    /// confirmation cannot drift if the strip moves underneath it.
-    /// Order: left, top, right, bottom.
-    recording_continuation_edges: [bool; 4],
-    stop_pending: bool,
-    recording_paused: bool,
-    pause_pending: bool,
-    recording_paused_at: Option<Instant>,
-    recording_paused_total: Duration,
-    recording_state_changed_at: Option<Instant>,
-    recording_transition_from_paused: Option<bool>,
-    /// Exact visual-harness phase for pause/resume. Production follows
-    /// `recording_state_changed_at`; PNG renders must not advance it merely
-    /// because GPU readback is slow.
-    recording_state_progress_override: Option<f64>,
     recording_finished_at: Option<Instant>,
     /// Active take duration snapshotted before the live timer is cleared, so
     /// the finish receipt can confirm both successful persistence and length.
@@ -482,21 +493,8 @@ impl Default for CaptureStudio {
             candidates: Vec::new(),
             selected_target: None,
             pending: Vec::new(),
-            recording_start_pending: false,
-            recording_request_started_at: None,
-            recording_active: false,
-            recording_started_at: None,
+            take: RecordingTake::default(),
             recording_scope: String::new(),
-            recording_confirmation_regions: Vec::new(),
-            recording_continuation_edges: [false; 4],
-            stop_pending: false,
-            recording_paused: false,
-            pause_pending: false,
-            recording_paused_at: None,
-            recording_paused_total: Duration::ZERO,
-            recording_state_changed_at: None,
-            recording_transition_from_paused: None,
-            recording_state_progress_override: None,
             recording_finished_at: None,
             recording_finished_duration: Duration::ZERO,
             recording_receipt_progress_override: None,
@@ -536,7 +534,7 @@ impl CaptureStudio {
     }
 
     pub fn open(&mut self) {
-        if self.recording_start_pending {
+        if self.take.start_pending {
             // Repeating the shortcut while encoder setup is in flight must
             // not restore the modal selector over the desktop.
             return;
@@ -550,7 +548,7 @@ impl CaptureStudio {
         self.regions.clear();
         self.region_remove_rects.clear();
         self.drag = None;
-        if self.recording_active {
+        if self.take.active {
             self.mode = CaptureMode::Recording;
         }
     }
@@ -560,7 +558,7 @@ impl CaptureStudio {
     /// chord saves it without reopening modal chrome.
     pub fn open_recording_setup(&mut self) {
         self.open();
-        if !self.recording_active {
+        if !self.take.active {
             self.set_mode(CaptureMode::Recording);
         }
     }
@@ -570,7 +568,7 @@ impl CaptureStudio {
     /// chord lands directly in the region picker with `PiP`-safe defaults.
     pub fn open_pip_setup(&mut self) {
         self.open();
-        if !self.recording_active {
+        if !self.take.active {
             self.set_mode(CaptureMode::Pip);
         }
     }
@@ -777,13 +775,13 @@ impl CaptureStudio {
         self.mode
     }
     pub fn is_recording_active(&self) -> bool {
-        self.recording_active
+        self.take.active
     }
     pub fn is_recording_start_pending(&self) -> bool {
-        self.recording_start_pending
+        self.take.start_pending
     }
     pub fn is_recording_paused(&self) -> bool {
-        self.recording_paused
+        self.take.paused
     }
     pub fn is_replay_active(&self) -> bool {
         self.replay_active
@@ -815,47 +813,28 @@ impl CaptureStudio {
         }
     }
     pub fn set_recording_active(&mut self, active: bool) {
-        if active && !self.recording_active {
-            self.recording_start_pending = false;
-            self.recording_request_started_at = None;
+        if active && !self.take.active {
+            self.take = RecordingTake {
+                started_at: Some(crate::time::now()),
+                confirmation_regions: self.current_recording_regions(),
+                continuation_edges: self.current_recording_continuation_edges(),
+                ..RecordingTake::default()
+            };
+            self.recording_scope = self.recording_scope_label();
             self.recording_finished_at = None;
             self.recording_finished_duration = Duration::ZERO;
-            self.recording_started_at = Some(crate::time::now());
-            self.recording_scope = self.recording_scope_label();
-            self.recording_confirmation_regions = self.current_recording_regions();
-            self.recording_continuation_edges = self.current_recording_continuation_edges();
-            self.stop_pending = false;
-            self.recording_paused = false;
-            self.pause_pending = false;
-            self.recording_paused_at = None;
-            self.recording_paused_total = Duration::ZERO;
-            self.recording_state_changed_at = None;
-            self.recording_transition_from_paused = None;
-            self.recording_state_progress_override = None;
             self.recording_receipt_progress_override = None;
             // The picker has already closed before the compositor starts the
             // encoder. Re-open only as a non-modal status surface.
             self.open = true;
         } else if !active {
-            self.recording_start_pending = false;
-            self.recording_request_started_at = None;
-            self.recording_started_at = None;
-            self.recording_confirmation_regions.clear();
-            self.recording_continuation_edges = [false; 4];
-            self.stop_pending = false;
-            self.recording_paused = false;
-            self.pause_pending = false;
-            self.recording_paused_at = None;
-            self.recording_paused_total = Duration::ZERO;
-            self.recording_state_changed_at = None;
-            self.recording_transition_from_paused = None;
-            self.recording_state_progress_override = None;
+            self.take = RecordingTake::default();
             self.recording_finished_at = None;
             self.recording_finished_duration = Duration::ZERO;
             self.recording_receipt_progress_override = None;
             self.open = false;
         }
-        self.recording_active = active;
+        self.take.active = active;
         if active {
             self.mode = CaptureMode::Recording;
         }
@@ -866,12 +845,12 @@ impl CaptureStudio {
     /// than the animation itself. Production code advances from `Instant`.
     #[doc(hidden)]
     pub fn set_recording_transition_progress(&mut self, permille: u16) {
-        if !self.recording_active {
+        if !self.take.active {
             return;
         }
         let progress = f64::from(permille.min(1_000)) / 1_000.0;
         let offset = RECORDING_HOLD + RECORDING_SETTLE.mul_f64(progress);
-        self.recording_started_at = crate::time::now().checked_sub(offset);
+        self.take.started_at = crate::time::now().checked_sub(offset);
     }
 
     /// Keep the compositor's spatial recording affordance alive just long
@@ -879,24 +858,11 @@ impl CaptureStudio {
     /// Failures deliberately use `set_recording_active(false)` instead, so a
     /// green receipt can never be shown for an incomplete file.
     pub fn set_recording_finished(&mut self) {
-        if !self.recording_active {
+        if !self.take.active {
             return;
         }
         self.recording_finished_duration = self.recording_elapsed();
-        self.recording_active = false;
-        self.recording_start_pending = false;
-        self.recording_request_started_at = None;
-        self.recording_started_at = None;
-        self.recording_confirmation_regions.clear();
-        self.recording_continuation_edges = [false; 4];
-        self.stop_pending = false;
-        self.recording_paused = false;
-        self.pause_pending = false;
-        self.recording_paused_at = None;
-        self.recording_paused_total = Duration::ZERO;
-        self.recording_state_changed_at = None;
-        self.recording_transition_from_paused = None;
-        self.recording_state_progress_override = None;
+        self.take = RecordingTake::default();
         self.recording_finished_at = Some(crate::time::now());
         self.recording_receipt_progress_override = None;
         self.open = true;
@@ -914,7 +880,7 @@ impl CaptureStudio {
         self.replay_started_at = active.then(crate::time::now);
         if active {
             self.open = true;
-        } else if !self.recording_active && self.recording_finished_at.is_none() {
+        } else if !self.take.active && self.recording_finished_at.is_none() {
             self.open = false;
         }
     }
@@ -931,30 +897,30 @@ impl CaptureStudio {
         }
     }
     pub fn set_recording_paused(&mut self, paused: bool) {
-        if !self.recording_active {
+        if !self.take.active {
             return;
         }
-        if paused != self.recording_paused {
+        if paused != self.take.paused {
             let now = crate::time::now();
-            self.recording_transition_from_paused = Some(self.recording_paused);
+            self.take.transition_from_paused = Some(self.take.paused);
             if paused {
-                self.recording_paused_at = Some(now);
-            } else if let Some(paused_at) = self.recording_paused_at.take() {
-                self.recording_paused_total += now.saturating_duration_since(paused_at);
+                self.take.paused_at = Some(now);
+            } else if let Some(paused_at) = self.take.paused_at.take() {
+                self.take.paused_total += now.saturating_duration_since(paused_at);
             }
-            self.recording_paused = paused;
-            self.recording_state_changed_at = Some(now);
-            self.recording_state_progress_override = None;
+            self.take.paused = paused;
+            self.take.state_changed_at = Some(now);
+            self.take.state_progress_override = None;
         }
-        self.pause_pending = false;
+        self.take.pause_pending = false;
     }
 
     /// Freeze the pause/resume crossfade at an exact phase for deterministic
     /// visual review. Live transitions remain elapsed-time driven.
     #[doc(hidden)]
     pub fn set_recording_state_transition_progress(&mut self, permille: u16) {
-        if self.recording_active && self.recording_state_changed_at.is_some() {
-            self.recording_state_progress_override = Some(f64::from(permille.min(1_000)) / 1_000.0);
+        if self.take.active && self.take.state_changed_at.is_some() {
+            self.take.state_progress_override = Some(f64::from(permille.min(1_000)) / 1_000.0);
         }
     }
 
@@ -1008,10 +974,10 @@ impl CaptureStudio {
 
     fn begin_recording_request(&mut self) {
         self.recording_scope = self.recording_scope_label();
-        self.recording_confirmation_regions = self.current_recording_regions();
-        self.recording_continuation_edges = self.current_recording_continuation_edges();
-        self.recording_start_pending = true;
-        self.recording_request_started_at = Some(crate::time::now());
+        self.take.confirmation_regions = self.current_recording_regions();
+        self.take.continuation_edges = self.current_recording_continuation_edges();
+        self.take.start_pending = true;
+        self.take.request_started_at = Some(crate::time::now());
         self.recording_finished_at = None;
         self.open = true;
         self.mode = CaptureMode::Recording;
@@ -1126,7 +1092,7 @@ impl CaptureStudio {
     }
     fn action_rects(&self) -> [Rect; 3] {
         let b = self.bottom_bar();
-        if self.recording_active {
+        if self.take.active {
             let (_, _, stop) = self.recording_indicator_rects();
             return [Rect::ZERO, Rect::ZERO, stop];
         }
@@ -1682,7 +1648,7 @@ impl CaptureStudio {
     }
 
     fn recording_motion(&self) -> f64 {
-        let Some(started) = self.recording_started_at else {
+        let Some(started) = self.take.started_at else {
             return 1.0;
         };
         if started.elapsed() <= RECORDING_HOLD {
@@ -1704,7 +1670,7 @@ impl CaptureStudio {
     /// override is also folded in so deterministic visual playback cannot
     /// leave a stale red perimeter around an already-docked recorder.
     fn recording_scope_confirmation_alpha(&self) -> f32 {
-        let Some(started_at) = self.recording_started_at else {
+        let Some(started_at) = self.take.started_at else {
             return 0.0;
         };
         let elapsed_t = (started_at.elapsed().as_secs_f64()
@@ -1876,22 +1842,20 @@ impl CaptureStudio {
     }
 
     fn recording_elapsed(&self) -> Duration {
-        let Some(started) = self.recording_started_at else {
+        let Some(started) = self.take.started_at else {
             return Duration::ZERO;
         };
         let now = crate::time::now();
-        let current_pause = self
-            .recording_paused_at
-            .map_or(Duration::ZERO, |paused_at| {
-                now.saturating_duration_since(paused_at)
-            });
+        let current_pause = self.take.paused_at.map_or(Duration::ZERO, |paused_at| {
+            now.saturating_duration_since(paused_at)
+        });
         now.saturating_duration_since(started)
-            .saturating_sub(self.recording_paused_total)
+            .saturating_sub(self.take.paused_total)
             .saturating_sub(current_pause)
     }
 
     fn recording_scope_icon(&self) -> Icon {
-        match self.recording_continuation_edges {
+        match self.take.continuation_edges {
             [true, false, false, false] => Icon::ChevronLeft,
             [false, true, false, false] => Icon::ChevronUp,
             [false, false, true, false] => Icon::ChevronRight,
@@ -2047,10 +2011,10 @@ impl CaptureStudio {
     }
 
     fn recording_state_motion(&self) -> f64 {
-        if let Some(progress) = self.recording_state_progress_override {
+        if let Some(progress) = self.take.state_progress_override {
             return progress;
         }
-        let Some(started) = self.recording_state_changed_at else {
+        let Some(started) = self.take.state_changed_at else {
             return 1.0;
         };
         let raw = started.elapsed().as_secs_f64() / RECORDING_STATE_SETTLE.as_secs_f64();
@@ -2233,8 +2197,8 @@ impl CaptureStudio {
     }
 
     fn queue_recording_command(&mut self, command: RecordingCommand) {
-        if self.stop_pending
-            || (self.pause_pending
+        if self.take.stop_pending
+            || (self.take.pause_pending
                 && !matches!(
                     command,
                     RecordingCommand::Stop
@@ -2259,8 +2223,8 @@ impl CaptureStudio {
             screenshot_command: None,
         });
         match command {
-            RecordingCommand::Pause | RecordingCommand::Resume => self.pause_pending = true,
-            RecordingCommand::Stop => self.stop_pending = true,
+            RecordingCommand::Pause | RecordingCommand::Resume => self.take.pause_pending = true,
+            RecordingCommand::Stop => self.take.stop_pending = true,
             RecordingCommand::Start | RecordingCommand::OpenLast | RecordingCommand::RevealLast => {
             }
         }
@@ -2345,9 +2309,9 @@ impl CaptureStudio {
             ));
         }
         let stopping = self.mode == CaptureMode::Recording
-            && self.recording_active
+            && self.take.active
             && destination == CaptureDestination::File;
-        if stopping && self.stop_pending {
+        if stopping && self.take.stop_pending {
             return;
         }
         if stopping {
@@ -2468,15 +2432,15 @@ impl CaptureStudio {
             }
             return;
         }
-        if self.recording_active {
+        if self.take.active {
             let (_, pause, stop) = self.recording_indicator_rects();
-            if !self.stop_pending && !self.pause_pending && pause.contains(p) {
-                self.queue_recording_command(if self.recording_paused {
+            if !self.take.stop_pending && !self.take.pause_pending && pause.contains(p) {
+                self.queue_recording_command(if self.take.paused {
                     RecordingCommand::Resume
                 } else {
                     RecordingCommand::Pause
                 });
-            } else if !self.stop_pending && stop.contains(p) {
+            } else if !self.take.stop_pending && stop.contains(p) {
                 self.commit(CaptureDestination::File);
             }
             return;
@@ -3235,7 +3199,7 @@ impl CaptureStudio {
             return;
         }
         let bounds = self.status_rect();
-        for region in &self.recording_confirmation_regions {
+        for region in &self.take.confirmation_regions {
             let mut visible = region.intersect(bounds);
             if visible.area() <= 1.0 {
                 continue;
@@ -3291,67 +3255,13 @@ impl CaptureStudio {
             .semantic
             .danger
             .with_alpha_factor(0.82 * alpha);
-        let [left, top, right, bottom] = self.recording_continuation_edges;
-        let center = bounds.center();
-        let markers = [
-            (
-                left,
-                Rect::new(
-                    bounds.x0 + 3.0,
-                    center.y - 20.0,
-                    bounds.x0 + 6.0,
-                    center.y + 20.0,
-                ),
-                Rect::from_center_size(Point::new(bounds.x0 + 14.0, center.y), (16.0, 16.0)),
-                Icon::ChevronLeft,
-            ),
-            (
-                top,
-                Rect::new(
-                    center.x - 20.0,
-                    bounds.y0 + 3.0,
-                    center.x + 20.0,
-                    bounds.y0 + 6.0,
-                ),
-                Rect::from_center_size(Point::new(center.x, bounds.y0 + 14.0), (16.0, 16.0)),
-                Icon::ChevronUp,
-            ),
-            (
-                right,
-                Rect::new(
-                    bounds.x1 - 6.0,
-                    center.y - 20.0,
-                    bounds.x1 - 3.0,
-                    center.y + 20.0,
-                ),
-                Rect::from_center_size(Point::new(bounds.x1 - 14.0, center.y), (16.0, 16.0)),
-                Icon::ChevronRight,
-            ),
-            (
-                bottom,
-                Rect::new(
-                    center.x - 20.0,
-                    bounds.y1 - 6.0,
-                    center.x + 20.0,
-                    bounds.y1 - 3.0,
-                ),
-                Rect::from_center_size(Point::new(center.x, bounds.y1 - 14.0), (16.0, 16.0)),
-                Icon::ChevronDown,
-            ),
-        ];
-        for (visible, rail, icon_rect, icon) in markers {
-            if !visible {
-                continue;
-            }
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                accent,
-                None,
-                &RoundedRect::from_rect(rail, 1.5),
-            );
-            icons::draw_icon(scene, transform, icon_rect, icon, accent, 1.8);
-        }
+        Self::draw_continuation_markers(
+            scene,
+            transform,
+            bounds,
+            self.take.continuation_edges,
+            accent,
+        );
     }
 
     /// Immediate, truthful acknowledgement while the compositor creates the
@@ -3443,7 +3353,7 @@ impl CaptureStudio {
 
         // A restrained travelling emphasis across three dots communicates
         // genuine setup work without a spinner dominating this short state.
-        let phase = self.recording_request_started_at.map_or(0.0, |started| {
+        let phase = self.take.request_started_at.map_or(0.0, |started| {
             (started.elapsed().as_secs_f64() / 0.72) % 1.0
         });
         for (index, x) in [pill.x1 - 35.0, pill.x1 - 27.0, pill.x1 - 19.0]
@@ -3496,7 +3406,7 @@ impl CaptureStudio {
             }
             return;
         }
-        if self.recording_start_pending {
+        if self.take.start_pending {
             self.draw_recording_starting(scene, transform, text_renderer, theme);
             return;
         }
@@ -3505,7 +3415,7 @@ impl CaptureStudio {
             self.draw_recording_receipt(scene, transform, text_renderer, theme, finished_at);
             return;
         }
-        if !self.recording_active {
+        if !self.take.active {
             self.reset_docked_content_widths();
             return;
         }
@@ -3547,19 +3457,20 @@ impl CaptureStudio {
                 )
             }
         };
-        let settled_label = if self.stop_pending {
+        let settled_label = if self.take.stop_pending {
             "Saving…".to_string()
-        } else if self.recording_paused {
+        } else if self.take.paused {
             format!("Paused · {}", crate::format::timecode(elapsed))
         } else if self
-            .recording_state_changed_at
+            .take
+            .state_changed_at
             .is_some_and(|at| at.elapsed() < Duration::from_millis(900))
         {
             format!("Resumed · {}", crate::format::timecode(elapsed))
         } else {
             normal_label()
         };
-        let previous_label = self.recording_transition_from_paused.map(|was_paused| {
+        let previous_label = self.take.transition_from_paused.map(|was_paused| {
             if was_paused {
                 format!("Paused · {}", crate::format::timecode(elapsed))
             } else {
@@ -3603,7 +3514,7 @@ impl CaptureStudio {
                 f64::from(stop_label_w),
             );
         }
-        let docking_label = if p < 0.66 && !self.stop_pending && !self.recording_paused {
+        let docking_label = if p < 0.66 && !self.take.stop_pending && !self.take.paused {
             crate::format::timecode(elapsed)
         } else {
             settled_label
@@ -3668,7 +3579,7 @@ impl CaptureStudio {
         let state_in_eased = state_in_raw * state_in_raw * (3.0 - 2.0 * state_in_raw);
         let state_out_alpha = 1.0 - state_out_eased;
         let state_in_alpha = state_in_eased;
-        if p < 0.9 && !self.recording_paused {
+        if p < 0.9 && !self.take.paused {
             scene.fill(
                 Fill::NonZero,
                 transform,
@@ -3708,12 +3619,12 @@ impl CaptureStudio {
             }
         };
         if state_p < 0.999
-            && let Some(was_paused) = self.recording_transition_from_paused
+            && let Some(was_paused) = self.take.transition_from_paused
         {
             draw_state_mark(was_paused, state_out_alpha as f32);
-            draw_state_mark(self.recording_paused, state_in_alpha as f32);
+            draw_state_mark(self.take.paused, state_in_alpha as f32);
         } else {
-            draw_state_mark(self.recording_paused, 1.0);
+            draw_state_mark(self.take.paused, 1.0);
         }
 
         // The explanatory sentence gives way to the compact timer while the
@@ -3773,7 +3684,8 @@ impl CaptureStudio {
         if settled_alpha > 0.01 {
             let scope_icon = self.recording_scope_icon();
             let continues_offscreen = self
-                .recording_continuation_edges
+                .take
+                .continuation_edges
                 .into_iter()
                 .any(|continues| continues);
             icons::draw_icon(
@@ -3844,11 +3756,11 @@ impl CaptureStudio {
         }
 
         let pause_hovered =
-            pause.contains(self.cursor) && !self.pause_pending && !self.stop_pending;
+            pause.contains(self.cursor) && !self.take.pause_pending && !self.take.stop_pending;
         scene.fill(
             Fill::NonZero,
             transform,
-            if self.pause_pending || self.stop_pending {
+            if self.take.pause_pending || self.take.stop_pending {
                 colors.lift(0.35)
             } else if pause_hovered {
                 colors.semantic.info.with_alpha_factor(0.22)
@@ -3858,9 +3770,9 @@ impl CaptureStudio {
             None,
             &RoundedRect::from_rect(pause, pause.height() / 2.0),
         );
-        if !self.stop_pending {
+        if !self.take.stop_pending {
             if state_p < 0.999
-                && let Some(was_paused) = self.recording_transition_from_paused
+                && let Some(was_paused) = self.take.transition_from_paused
             {
                 icons::draw_icon(
                     scene,
@@ -3875,16 +3787,16 @@ impl CaptureStudio {
                 scene,
                 transform,
                 Rect::from_center_size(pause.center(), (12.0, 12.0)),
-                if self.recording_paused {
+                if self.take.paused {
                     Icon::Play
                 } else {
                     Icon::Pause
                 },
-                if self.pause_pending {
+                if self.take.pause_pending {
                     colors
                         .text_dim
                         .with_alpha_factor(0.55 * state_in_alpha as f32)
-                } else if self.recording_paused {
+                } else if self.take.paused {
                     colors
                         .semantic
                         .info
@@ -3896,11 +3808,11 @@ impl CaptureStudio {
             );
         }
 
-        let hovered = stop.contains(self.cursor) && !self.stop_pending;
+        let hovered = stop.contains(self.cursor) && !self.take.stop_pending;
         scene.fill(
             Fill::NonZero,
             transform,
-            if self.stop_pending {
+            if self.take.stop_pending {
                 colors.lift(0.35)
             } else if hovered {
                 colors.semantic.danger.with_alpha_factor(0.24)
@@ -3910,7 +3822,7 @@ impl CaptureStudio {
             None,
             &RoundedRect::from_rect(stop, stop.height() / 2.0),
         );
-        if !self.stop_pending {
+        if !self.take.stop_pending {
             let square = Rect::new(
                 stop.x0 + 9.0,
                 stop.center().y - 3.5,
@@ -4704,8 +4616,8 @@ impl Widget for CaptureStudio {
         _: &PresenceCtx,
     ) {
         if !self.open
-            || self.recording_start_pending
-            || self.recording_active
+            || self.take.start_pending
+            || self.take.active
             || self.replay_active
             || self.screenshot_receipt.is_some()
             || self.recording_finished_at.is_some()
@@ -5237,7 +5149,7 @@ impl Widget for CaptureStudio {
                 continue;
             }
             let active = self.has_capture_source()
-                || (self.mode == CaptureMode::Recording && self.recording_active && i == 2);
+                || (self.mode == CaptureMode::Recording && self.take.active && i == 2);
             let hovered = active && r.contains(self.cursor);
             let emphasized = match self.mode {
                 CaptureMode::Screenshot | CaptureMode::Recording => i == 2,
@@ -5249,7 +5161,7 @@ impl Widget for CaptureStudio {
                 match (self.mode, i) {
                     (CaptureMode::Recording, 1) => "Last 30s",
                     (CaptureMode::Screenshot, _) => "Save",
-                    (CaptureMode::Recording, _) if self.recording_active => "Stop",
+                    (CaptureMode::Recording, _) if self.take.active => "Stop",
                     (CaptureMode::Recording, _) => "Record",
                     (CaptureMode::Pip, _) => "Create PiP",
                 }
@@ -5292,7 +5204,7 @@ impl Widget for CaptureStudio {
             }
             return;
         }
-        if self.recording_start_pending {
+        if self.take.start_pending {
             // Encoder setup status is intentionally non-modal and has no
             // speculative cancel control. Let every event continue to the
             // application beneath it until success or failure is confirmed.
@@ -5393,7 +5305,7 @@ impl Widget for CaptureStudio {
             }
             return;
         }
-        if self.recording_active {
+        if self.take.active {
             match e {
                 WindowEvent::CursorMoved { position, .. } => {
                     self.cursor =
@@ -5507,9 +5419,9 @@ impl Widget for CaptureStudio {
                 "2" => self.set_source_mode(SourceMode::Window),
                 "3" => self.set_source_mode(SourceMode::Display),
                 "4" => self.set_source_mode(SourceMode::Multi),
-                "s" if !self.recording_active => self.set_mode(CaptureMode::Screenshot),
-                "r" if !self.recording_active => self.set_mode(CaptureMode::Recording),
-                "p" if !self.recording_active => self.set_mode(CaptureMode::Pip),
+                "s" if !self.take.active => self.set_mode(CaptureMode::Screenshot),
+                "r" if !self.take.active => self.set_mode(CaptureMode::Recording),
+                "p" if !self.take.active => self.set_mode(CaptureMode::Pip),
                 "t" if self.mode != CaptureMode::Pip => self.cycle_delay(),
                 "c" if self.mode == CaptureMode::Screenshot => {
                     self.commit(CaptureDestination::Clipboard)
@@ -5530,8 +5442,8 @@ impl Widget for CaptureStudio {
     }
     fn modal_capture(&self) -> Option<Rect> {
         (self.open
-            && !self.recording_start_pending
-            && !self.recording_active
+            && !self.take.start_pending
+            && !self.take.active
             && !self.replay_active
             && self.screenshot_receipt.is_none()
             && self.recording_finished_at.is_none()
@@ -5539,8 +5451,8 @@ impl Widget for CaptureStudio {
         .then_some(self.rect)
     }
     fn needs_animation_frame(&self) -> bool {
-        self.recording_start_pending
-            || self.recording_active
+        self.take.start_pending
+            || self.take.active
             || self.replay_active
             || self
                 .screenshot_receipt
@@ -5560,7 +5472,7 @@ impl Widget for CaptureStudio {
         if !self.open {
             return Vec::new();
         }
-        if self.recording_start_pending {
+        if self.take.start_pending {
             return Vec::new();
         }
         if self.replay_active {
@@ -5608,11 +5520,11 @@ impl Widget for CaptureStudio {
                 ("capture.dismiss-recording".into(), dismiss),
             ];
         }
-        if self.recording_active {
+        if self.take.active {
             let (pill, pause, stop) = self.recording_indicator_rects();
             return vec![
                 (
-                    if self.recording_paused {
+                    if self.take.paused {
                         "capture.resume"
                     } else {
                         "capture.pause"
@@ -6220,7 +6132,7 @@ mod tests {
             s.set_extent(CaptureExtent::FullApp);
             s.set_recording_active(true);
 
-            assert_eq!(s.recording_continuation_edges, [true, false, true, true]);
+            assert_eq!(s.take.continuation_edges, [true, false, true, true]);
             assert_eq!(s.recording_scope, "Canvas · app window");
             assert_eq!(s.recording_scope_icon(), Icon::Layers);
         }
@@ -6260,7 +6172,7 @@ mod tests {
             let mut s = CaptureStudio::default();
             s.rect = Rect::new(0., 0., 1200., 800.);
             s.set_recording_active(true);
-            s.recording_started_at = Some(crate::time::now() - Duration::from_secs(42));
+            s.take.started_at = Some(crate::time::now() - Duration::from_secs(42));
             s.set_recording_finished();
 
             assert!(!s.is_recording_active());
@@ -6294,7 +6206,7 @@ mod tests {
             let mut s = CaptureStudio::default();
             s.rect = Rect::new(0., 0., 1000., 700.);
             s.set_recording_active(true);
-            s.recording_started_at = Some(crate::time::now() - Duration::from_secs(10));
+            s.take.started_at = Some(crate::time::now() - Duration::from_secs(10));
 
             let (_, pause, _) = s.recording_indicator_rects_at(1.0);
             s.click(pause.center());
@@ -6703,7 +6615,7 @@ mod tests {
             assert_eq!(s.compact_recording_scope(10), "Notes");
             assert_eq!(s.recording_scope_icon(), Icon::ChevronLeft);
             assert_eq!(
-                s.recording_confirmation_regions,
+                s.take.confirmation_regions,
                 vec![Rect::new(240.0, 120.0, 1_280.0, 820.0)]
             );
             assert_eq!(s.recording_indicator_rects_at(0.0).0.width(), 304.0);
@@ -6713,8 +6625,8 @@ mod tests {
             );
 
             s.set_recording_active(false);
-            assert!(s.recording_confirmation_regions.is_empty());
-            assert_eq!(s.recording_continuation_edges, [false; 4]);
+            assert!(s.take.confirmation_regions.is_empty());
+            assert_eq!(s.take.continuation_edges, [false; 4]);
         }
 
         fn recording_request_is_acknowledged_without_claiming_success_or_blocking_apps() {

@@ -13,6 +13,10 @@ const EVICT_AFTER_GENERATIONS: u64 = 2;
 /// Long enough that one frame without a window (a close animation, a
 /// workspace switch) does not throw the atlas away only to grow it back.
 const SHRINK_AFTER_RESOLVES: u32 = 60;
+/// Resolves after [`ImageCache::shrink_soon`] in which a sparse atlas
+/// shrinks at once: enough for the images that went to age out
+/// ([`EVICT_AFTER_GENERATIONS`]) and the atlas to come down.
+const SHRINK_SOON_RESOLVES: u32 = 16;
 /// The atlas halves only while its residents cover at most `1 / N` of it,
 /// so the halved atlas is at most half full and the next frame's
 /// replacement images still fit without growing straight back.
@@ -76,6 +80,9 @@ pub(crate) struct ImageCache {
     /// Resolves in a row whose residents fit in a fraction of the atlas; see
     /// [`SHRINK_AFTER_RESOLVES`].
     sparse_resolves: u32,
+    /// Resolves left in which a sparse atlas shrinks without waiting for
+    /// [`SHRINK_AFTER_RESOLVES`]; see [`Self::shrink_soon`].
+    shrink_soon_resolves: u32,
     /// Residents evicted over the cache's lifetime.
     evicted_total: u64,
     /// Times the atlas halved.
@@ -114,6 +121,7 @@ impl ImageCache {
             min_size: initial_size,
             max_size,
             sparse_resolves: 0,
+            shrink_soon_resolves: 0,
             evicted_total: 0,
             shrinks_total: 0,
             generation: 0,
@@ -157,13 +165,41 @@ impl ImageCache {
         // Halve here, before this pass looks anything up: every position this
         // pass hands out is then one in the halved atlas. Halving in
         // `finish_resolve` would move images the pass just encoded.
-        if self.sparse_resolves >= SHRINK_AFTER_RESOLVES {
+        let soon = self.shrink_soon_resolves > 0;
+        self.shrink_soon_resolves = self.shrink_soon_resolves.saturating_sub(1);
+        if soon && self.sparse_resolves > 0 {
+            // The caller said the images went for good: come down as far as
+            // the residents allow now, each halving as safe as a slow one.
+            self.sparse_resolves = 0;
+            let area = self.resident_area();
+            loop {
+                let side = self.atlas.size().width;
+                let half = side / 2;
+                if half < self.min_size
+                    || area.saturating_mul(SHRINK_WHEN_AREA_AT_MOST_ONE_IN)
+                        > (side as u64) * (side as u64)
+                    || !self.repack_to_size(half)
+                {
+                    break;
+                }
+                self.shrinks_total = self.shrinks_total.saturating_add(1);
+            }
+        } else if self.sparse_resolves >= SHRINK_AFTER_RESOLVES {
             self.sparse_resolves = 0;
             let half = self.atlas.size().width / 2;
             if half >= self.min_size && self.repack_to_size(half) {
                 self.shrinks_total = self.shrinks_total.saturating_add(1);
             }
         }
+    }
+
+    /// Images went for good (a window closed): for the next
+    /// [`SHRINK_SOON_RESOLVES`] resolves, an atlas far bigger than its
+    /// residents shrinks at once instead of after [`SHRINK_AFTER_RESOLVES`]
+    /// sparse ones. A desktop that goes idle after a close draws too few
+    /// frames to bring a grown atlas down the slow way, and keeps its memory.
+    pub(crate) fn shrink_soon(&mut self) {
+        self.shrink_soon_resolves = SHRINK_SOON_RESOLVES;
     }
 
     pub(crate) fn restart_resolve_pass(&mut self) {
@@ -593,6 +629,48 @@ mod tests {
         assert_eq!(stats.atlas_side, 1024, "{stats:?}");
         assert_eq!(stats.shrinks_total, 2);
         assert_eq!(stats.resident, 1);
+    }
+
+    /// TIL-731: a desktop that goes idle after a close draws only a few
+    /// frames. Told the images went, the atlas comes all the way down in
+    /// those, and a busy atlas still does not.
+    #[test]
+    fn told_images_went_the_atlas_shrinks_within_a_few_resolves() {
+        let mut cache = ImageCache::new_with_sizes(1024, 8192);
+        let wallpaper = image(0, 1920, 1080);
+        let windows: Vec<_> = (1..5).map(|i| image(i, 1800, 1000)).collect();
+        let mut all = vec![&wallpaper];
+        all.extend(windows.iter());
+        pass(&mut cache, &all);
+        let grown = cache.stats().atlas_side;
+        assert!(grown >= 4096, "{:?}", cache.stats());
+        drop(windows);
+
+        cache.shrink_soon();
+        for _ in 0..6 {
+            pass(&mut cache, &[&wallpaper]);
+        }
+        let stats = cache.stats();
+        assert_eq!(
+            stats.atlas_side, 2048,
+            "the wallpaper alone needs 2048: {stats:?}"
+        );
+        assert_eq!(stats.resident, 1);
+
+        // The request runs out: a sparse atlas waits the long way again.
+        let mut cache = ImageCache::new_with_sizes(32, 64);
+        let large = image(1, 40, 40);
+        let small = image(2, 8, 8);
+        pass(&mut cache, &[&large, &small]);
+        cache.shrink_soon();
+        for _ in 0..SHRINK_SOON_RESOLVES {
+            pass(&mut cache, &[&large, &small]);
+        }
+        drop(large);
+        for _ in 0..8 {
+            pass(&mut cache, &[&small]);
+        }
+        assert_eq!(cache.stats().atlas_side, 64, "{:?}", cache.stats());
     }
 
     #[test]

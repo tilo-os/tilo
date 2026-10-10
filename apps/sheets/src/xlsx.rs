@@ -21,7 +21,8 @@ use tilo_doc::{CellInput, CellType, CellView, SheetView, WorkbookSnapshot};
 use tilo_doc_codecs::xlsx::{CellStyle, cell_styles, date_style_refs};
 use tilo_doc_codecs::{ParsedSheet, XlsxCodec};
 
-use crate::model::{CellFormat, CellValue, DateStyle, format_number_general, format_value};
+use crate::model::{CellFormat, CellValue, format_number_general, format_value};
+use tilo_locale::DateStyle;
 
 /// The most grid slots (rows plus the cells of every row, up to its last
 /// populated column) one imported tab may materialise into a [`SheetTable`].
@@ -480,7 +481,7 @@ pub(crate) fn write_file(path: &Path, bytes: &[u8]) -> Result<(), tilo_files::Fs
 
 /// Map our format to an Excel number-format code string.
 fn excel_number_format(fmt: CellFormat) -> Option<&'static str> {
-    use crate::model::Currency;
+    use tilo_locale::Currency;
     Some(match fmt {
         CellFormat::Number => "#,##0.00",
         CellFormat::Percent => "0.00%",
@@ -510,7 +511,7 @@ pub fn display(value: &CellValue, fmt: CellFormat) -> String {
 #[allow(clippy::float_cmp, reason = "tests intentionally assert exact values")]
 mod tests {
     use super::*;
-    use crate::model::Currency;
+    use tilo_locale::Currency;
 
     /// XLSX values/formats, colliding tab names, formulas and formula normalisation.
     #[test]

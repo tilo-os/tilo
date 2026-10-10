@@ -3422,8 +3422,10 @@ impl DrmScanout {
     pub(super) fn client_framebuffer(
         &mut self,
         dmabuf: &smithay::backend::allocator::dmabuf::Dmabuf,
+        fourcc: DrmFourcc,
     ) -> Result<std::sync::Arc<ClientFramebuffer>, String> {
-        self.client_plane.framebuffer(&self.card, self.crtc, dmabuf)
+        self.client_plane
+            .framebuffer(&self.card, self.crtc, dmabuf, fourcc)
     }
 
     /// A flip of `dmabuf` failed: composite it from now on.

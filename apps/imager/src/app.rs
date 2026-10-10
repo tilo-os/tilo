@@ -2979,6 +2979,103 @@ mod tests {
         }
     }
 
+    #[test]
+    fn write_setup_wifi_and_owner_key_stage_without_identity_enrollment() {
+        use tilo_actions::Action as _;
+
+        let (mut app, mut doc) = seeded_app();
+        app.select_target(0);
+        app.goto(Step::Confirm);
+        app.confirm_text = "sdb".into();
+        ImagerAction::SetWifiSsid {
+            value: "studio".into(),
+        }
+        .apply(&mut doc)
+        .unwrap();
+        ImagerAction::SetEnrollLocalIdentity { on: false }
+            .apply(&mut doc)
+            .unwrap();
+        present(&mut app, &doc);
+        app.wifi_psk = "correct-horse".into();
+        let key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA owner@example";
+        app.ssh_public_key = key.into();
+        assert!(!app.profile.enroll_local_identity);
+        let error = app
+            .begin_write("/dev/sdb", "sdb")
+            .expect_err("access staging reaches the disabled writer without enrollment");
+        assert!(
+            error.to_lowercase().contains("disabled") || error.to_lowercase().contains("backend"),
+            "expected the disabled write backend after staging access: {error}"
+        );
+        assert!(app.job_control.is_none());
+        assert_eq!(app.step, Step::Confirm);
+        // The shared Confirm form replaced the old Action summary. It must
+        // still expose the accepted owner key for review on the setup machine.
+        let view = harness(app, doc, (1180, 820));
+        assert!(
+            view.a11y_nodes()
+                .iter()
+                .any(|(_, node)| { node.value() == Some(key) }),
+            "the owner SSH key remains visible in the production Confirm form"
+        );
+    }
+
+    #[test]
+    fn write_setup_missing_wifi_password_is_reported_before_identity_lookup() {
+        use tilo_actions::Action as _;
+
+        let (mut app, mut doc) = seeded_app();
+        app.select_target(0);
+        app.goto(Step::Confirm);
+        app.confirm_text = "sdb".into();
+        ImagerAction::SetWifiSsid {
+            value: "studio".into(),
+        }
+        .apply(&mut doc)
+        .unwrap();
+        ImagerAction::SetEnrollLocalIdentity { on: true }
+            .apply(&mut doc)
+            .unwrap();
+        present(&mut app, &doc);
+        let error = app
+            .begin_write("/dev/sdb", "sdb")
+            .expect_err("Wi-Fi without a password must be refused before enrollment");
+        assert!(error.contains("Wi-Fi password is required"), "{error}");
+        assert!(app.job_control.is_none());
+        assert_eq!(app.step, Step::Confirm);
+    }
+
+    #[test]
+    fn write_setup_uses_the_newly_published_document_without_a_render_frame() {
+        use tilo_actions::Action as _;
+        use ui::tilo_resource::Resource as _;
+
+        let (mut app, mut doc) = seeded_app();
+        app.select_target(0);
+        app.goto(Step::Confirm);
+        app.confirm_text = "sdb".into();
+        assert!(app.profile.wifi_ssid.is_empty());
+        ImagerAction::SetWifiSsid {
+            value: "studio".into(),
+        }
+        .apply(&mut doc)
+        .unwrap();
+        assert!(
+            app.profile.wifi_ssid.is_empty(),
+            "the previous projection is still cached"
+        );
+        // Present the document through the actual ResourceSurface hook. No
+        // layout, draw, animation tick or test-only profile assignment intervenes.
+        app.present_state(&Imager::read(&doc).expect("the updated resource"));
+        let error = app
+            .begin_write("/dev/sdb", "sdb")
+            .expect_err("the newly published network requires its password");
+        assert!(error.contains("Wi-Fi password is required"), "{error}");
+        assert_eq!(app.profile.wifi_ssid, "studio");
+        assert!(app.job_control.is_none());
+        assert_eq!(app.step, Step::Confirm);
+    }
+
     /// Release download job presentation.
     #[test]
     #[allow(

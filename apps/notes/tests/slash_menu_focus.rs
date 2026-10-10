@@ -66,7 +66,7 @@ fn slash_menu_owns_arrow_and_enter_keys() {
                 .main_panel_mut()
                 .editor()
                 .slash_menu()
-                .highlighted_kind()
+                .highlighted()
                 .cloned()),
             Some(BlockKind::Paragraph),
             "the menu starts on the first row"
@@ -84,7 +84,7 @@ fn slash_menu_owns_arrow_and_enter_keys() {
                 .main_panel_mut()
                 .editor()
                 .slash_menu()
-                .highlighted_kind()
+                .highlighted()
                 .cloned()),
             Some(BlockKind::Heading(1)),
             "ArrowDown advances the block-menu highlight"
