@@ -26,6 +26,7 @@
 )]
 
 pub mod catalog;
+pub mod dev_env;
 pub mod integrity;
 pub mod interfaces;
 pub mod layout;
