@@ -4,13 +4,13 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import json
+import re
 from pathlib import Path
 import subprocess
 import tempfile
 import unittest
 from unittest.mock import patch
 
-import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
 SPEC = importlib.util.spec_from_file_location(
@@ -203,26 +203,38 @@ bin = "bin/fixture"
             ("release-apps.yml", "build", "needs.plan.outputs.builder_image", False),
         ):
             with self.subTest(workflow=filename):
-                workflow = yaml.safe_load((ROOT / ".forgejo/workflows" / filename).read_text())
-                steps = workflow["jobs"][job]["steps"]
-                gate = next(s for s in steps if s.get("id") == "tapp-size")
-                self.assertNotIn("continue-on-error", gate)
-                self.assertNotIn("if", gate)
-                self.assertEqual(gate["run"].strip(), 'python3 tools/perf/tapp_size_ratchet.py measure dist/app-release --arch "${{ matrix.arch }}" --summary "$GITHUB_STEP_SUMMARY"')
-                retention = next(s for s in steps if s.get("id") == "tapp-size-evidence")
-                upload = next(s for s in steps if s.get("name") == "Save failed ARM TAPP size evidence")
+                source = (ROOT / '.forgejo/workflows' / filename).read_text()
+                # Use the same dependency-free, indentation-bounded inspection
+                # as test_app_sdk_workflow; fast quality has no PyYAML.
+                jobs = source.split('\njobs:\n', 1)[1]
+                match = re.search(rf'^  {job}:\n((?:    .*\n|\s*\n)*)', jobs, re.M)
+                self.assertIsNotNone(match, job)
+                steps = re.split(r'^      - ', match.group(1), flags=re.M)[1:]
+                gate = next(s for s in steps if '\n        id: tapp-size\n' in s)
+                retention = next(s for s in steps if '\n        id: tapp-size-evidence\n' in s)
+                upload = next(s for s in steps if s.startswith('name: Save failed ARM TAPP size evidence\n'))
+                self.assertNotRegex(gate, r'(?m)^        continue-on-error:')
+                self.assertNotRegex(gate, r'(?m)^        if:')
+                self.assertIn(
+                    '        run: >-\n'
+                    '          python3 tools/perf/tapp_size_ratchet.py measure dist/app-release\n'
+                    '          --arch "${{ matrix.arch }}" --summary "$GITHUB_STEP_SUMMARY"\n', gate)
                 for step in (retention, upload):
-                    self.assertIn("failure()", step["if"])
-                    self.assertIn("steps.tapp-size.outcome == 'failure'", step["if"])
-                    self.assertIn("matrix.arch == 'aarch64'", step["if"])
-                self.assertIn("steps.tapp-size-evidence.outcome == 'success'", upload["if"])
-                self.assertEqual(retention["env"], {"DIAGNOSTIC_BUILDER_IMAGE": "${{ " + builder + " }}"})
-                self.assertIn('--event-source "$GITHUB_SHA"', retention["run"])
-                self.assertEqual('--base-source "${{ needs.select.outputs.main }}"' in retention["run"], base)
-                self.assertEqual(upload["with"]["path"], "target/ci/tapp-size-failure/")
-                self.assertEqual(upload["with"]["retention-days"], 3)
-                self.assertEqual(upload["with"]["if-no-files-found"], "error")
-                self.assertRegex(upload["uses"], r"^actions/upload-artifact@[0-9a-f]{40}$")
+                    condition = re.search(r'^        if: (.+)$', step, re.M)
+                    self.assertIsNotNone(condition)
+                    self.assertIn('failure()', condition.group(1))
+                    self.assertIn("steps.tapp-size.outcome == 'failure'", condition.group(1))
+                    self.assertIn("matrix.arch == 'aarch64'", condition.group(1))
+                self.assertIn("steps.tapp-size-evidence.outcome == 'success'", upload)
+                environment = re.search(r'^        env:\n((?:          .*\n)*)', retention, re.M)
+                self.assertIsNotNone(environment)
+                self.assertEqual(environment.group(1), '          DIAGNOSTIC_BUILDER_IMAGE: ${{ ' + builder + ' }}\n')
+                self.assertIn('--event-source "$GITHUB_SHA"', retention)
+                self.assertEqual('--base-source "${{ needs.select.outputs.main }}"' in retention, base)
+                self.assertIn('          path: target/ci/tapp-size-failure/\n', upload)
+                self.assertIn('          retention-days: 3\n', upload)
+                self.assertIn('          if-no-files-found: error\n', upload)
+                self.assertRegex(upload, r'(?m)^        uses: actions/upload-artifact@[0-9a-f]{40}(?: #.*)?$')
                 self.assertLess(steps.index(gate), steps.index(retention))
                 self.assertLess(steps.index(retention), steps.index(upload))
 
