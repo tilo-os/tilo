@@ -908,7 +908,13 @@ impl TriggerHost {
     /// Show `event` to every source; every firing, in source order.
     pub fn observe(&mut self, event: TriggerEvent<'_>, armed: &[Armed<'_>]) -> Vec<Firing> {
         let clock = Arc::clone(&self.clock);
-        let devices = self.devices.personal_devices();
+        // Only schedules read the device list, and asking for it is a lock plus
+        // a copy of the personal fabric: a keystroke must not pay for it.
+        let devices = if matches!(event, TriggerEvent::Key(_)) {
+            PersonalDevices::default()
+        } else {
+            self.devices.personal_devices()
+        };
         let context = TriggerContext {
             clock: clock.as_ref(),
             devices: &devices,
@@ -1617,5 +1623,30 @@ mod tests {
             folders(std::slice::from_ref(&workspace)).is_empty(),
             "a revoked capability stops the watch"
         );
+    }
+
+    #[test]
+    fn a_key_press_reads_no_device_directory() {
+        struct Counting(std::sync::atomic::AtomicUsize);
+        impl DeviceDirectory for Counting {
+            fn personal_devices(&self) -> PersonalDevices {
+                self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                PersonalDevices::default()
+            }
+        }
+        let clock = Arc::new(ManualClock::new(
+            DateTime::parse_from_rfc3339("2026-09-25T10:00:00Z")
+                .expect("an RFC 3339 instant")
+                .with_timezone(&Utc),
+            FixedOffset::east_opt(0).expect("offset"),
+        ));
+        let counting = Arc::new(Counting(std::sync::atomic::AtomicUsize::new(0)));
+        let mut triggers = TriggerHost::new(clock as Arc<dyn Clock>, None);
+        triggers.set_devices(Arc::clone(&counting) as Arc<dyn DeviceDirectory>);
+        let chord = KeyChord::parse("Ctrl+Alt+J").expect("a chord");
+        triggers.observe(TriggerEvent::Key(&chord), &[]);
+        assert_eq!(counting.0.load(std::sync::atomic::Ordering::Relaxed), 0);
+        triggers.observe(TriggerEvent::Tick, &[]);
+        assert_eq!(counting.0.load(std::sync::atomic::Ordering::Relaxed), 1);
     }
 }
