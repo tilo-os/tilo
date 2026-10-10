@@ -8540,6 +8540,12 @@ pub fn run() {
     // Point `ui`'s clipboard at the compositor's selection mirror — everything
     // hosted here isn't a Wayland client, so without this they'd share no buffer.
     crate::compositor::selection::install_host_services(state.selection_store());
+    // Building the desktop mounts the hosted tabs it restores, which connect
+    // to the collaboration broker and identity service bound below: they
+    // wait for them rather than find no socket and stay offline.
+    crate::shell::in_process::set_session_services(
+        crate::shell::in_process::SessionServices::Starting,
+    );
     let mut frame_builder = FrameBuilder::with_handle_and_records(
         tree_handle.clone(),
         enable_peer_sync,
@@ -8718,6 +8724,12 @@ pub fn run() {
         }
     }
     let identity_broker = spawn_session_identity_broker(&frame_builder.chrome_handle());
+    // Onboarding defers the broker; its start below says so then.
+    if !deferred_peer_sync && !deferred_local_broker {
+        crate::shell::in_process::set_session_services(
+            crate::shell::in_process::SessionServices::Listening,
+        );
+    }
     // Settings can request a small, typed set of contextual tools through a
     // connected descriptor. The shell owns package resolution and launching;
     // failure only removes the advanced handoff, never core Settings controls.
@@ -12041,6 +12053,9 @@ pub fn run() {
             };
             collab_broker =
                 spawn_session_collab_broker(&frame_builder.chrome_handle(), peer_sync.as_ref());
+            crate::shell::in_process::set_session_services(
+                crate::shell::in_process::SessionServices::Listening,
+            );
             if let Some(broker) = collab_broker.as_ref() {
                 local_session_lifecycle = Some(install_native_session_lifecycle(
                     broker,
