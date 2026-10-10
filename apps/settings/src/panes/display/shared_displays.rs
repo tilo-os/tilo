@@ -55,7 +55,7 @@ impl DisplayModel {
         }
     }
 
-    fn shared_layout(&self) -> Layout {
+    pub(super) fn shared_layout(&self) -> Layout {
         let origins = self
             .person_devices
             .iter()
@@ -398,6 +398,122 @@ mod tests {
         }]
     }
 
+    fn names(widget: &dyn ui::widget::Widget, found: &mut Vec<String>) {
+        fn visit(node: &ui::a11y::AccessNode, found: &mut Vec<String>) {
+            if let Some(name) = &node.name {
+                found.push(name.clone());
+            }
+            for child in &node.children {
+                visit(child, found);
+            }
+        }
+        if let Some(node) = widget.accessibility() {
+            visit(&node, found);
+        }
+        for child in widget.children() {
+            names(child, found);
+        }
+    }
+
+    #[test]
+    fn shared_canvas_numbers_follow_resolved_device_output_identity_and_order() {
+        let profile = tempfile::tempdir().unwrap();
+        let mut model =
+            DisplayModel::detached(PaneCx::in_file(profile.path().join("settings.json")));
+        let offline = devices().remove(0);
+        let mut local = offline.clone();
+        local.device = "local-peer".into();
+        local.label = "Local computer".into();
+        local.local = true;
+        local.online = true;
+        model.person_devices = vec![offline.clone(), local.clone()];
+        model.device_displays = [&offline, &local]
+            .into_iter()
+            .map(|device| settings_store::device_displays::DeviceDisplay {
+                device: device.device.clone(),
+                device_label: device.label.clone(),
+                connector: "DP-1".into(),
+                output_id: Some("edid:panel-1".into()),
+                label: "Desk panel".into(),
+                online: device.online,
+                local: device.local,
+                x: if device.local { 0 } else { 1920 },
+                y: 120,
+                width: 960,
+                height: 540,
+                scale_milli: 2000,
+                revision: 1,
+            })
+            .collect();
+        let mut legacy = model.device_displays[0].clone();
+        legacy.device = "legacy-peer".into();
+        legacy.device_label = "Legacy computer".into();
+        legacy.output_id = None;
+        legacy.x = 2880;
+        legacy.revision = 0;
+        model.device_displays.insert(1, legacy);
+        model
+            .apply(&DisplayEffect::OrderSharedDisplay {
+                device: local.device,
+                output: "edid:panel-1".into(),
+                revision: 0,
+                order: 1,
+            })
+            .unwrap();
+        let card = model.build_device_arrangement_card().unwrap();
+        let mut before = Vec::new();
+        names(card.as_ref(), &mut before);
+        assert!(
+            before.iter().any(|name| name.starts_with("Display 2:")
+                && name.contains("Desk computer")
+                && name.contains("Offline")),
+            "Actual accessible names: {before:?}"
+        );
+        assert!(
+            before
+                .iter()
+                .any(|name| name.starts_with("Display 1:") && name.contains("Local computer"))
+        );
+        assert!(
+            before
+                .iter()
+                .any(|name| name.starts_with("Display 3:") && name.contains("Legacy computer")),
+            "unresolved rows must not duplicate a resolved number: {before:?}"
+        );
+        model
+            .apply(&DisplayEffect::OrderSharedDisplay {
+                revision: model.shared_revision(&offline.device, "edid:panel-1"),
+                device: offline.device,
+                output: "edid:panel-1".into(),
+                order: 1,
+            })
+            .unwrap();
+        let mut after = Vec::new();
+        names(
+            model.build_device_arrangement_card().unwrap().as_ref(),
+            &mut after,
+        );
+        assert!(
+            after
+                .iter()
+                .any(|name| name.starts_with("Display 1:") && name.contains("Desk computer"))
+        );
+        assert!(
+            after
+                .iter()
+                .any(|name| name.starts_with("Display 2:") && name.contains("Local computer"))
+        );
+        assert!(
+            after
+                .iter()
+                .any(|name| name.starts_with("Display 3:") && name.contains("Legacy computer"))
+        );
+        assert!(
+            !model.automatic_display_prefs.get().automatic_display_input,
+            "numbering never grants input authority"
+        );
+    }
+
     #[test]
     fn shared_display_offline_edits_preserve_hardware_and_revision_boundaries() {
         let profile = tempfile::tempdir().unwrap();
@@ -504,6 +620,7 @@ mod tests {
                 device: "offline-peer".into(),
                 device_label: "Desk computer".into(),
                 connector: "DP-1".into(),
+                output_id: None,
                 label: "Desk panel".into(),
                 online: true,
                 local: false,

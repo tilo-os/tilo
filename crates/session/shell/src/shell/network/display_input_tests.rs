@@ -737,6 +737,41 @@ fn spatial_revocation_policy_disable_cleans_target_without_delivery_or_new_autho
     drop(fixture);
 }
 
+#[test]
+fn display_canvas_identity_uses_only_current_certified_output_metadata() {
+    let fixture = Fixture::new();
+    Fixture::policy(false);
+    let local = fixture.network.local_device_fabric_identity().unwrap().0;
+    let mut fabric = fixture.network.device_fabric();
+    let expected = fabric.display_outputs(&fixture.controller).unwrap()[0]
+        .output
+        .id
+        .clone();
+    let screens =
+        crate::shell::device_fabric_runtime::observed_device_displays(&fabric, Some(&local));
+    let peer = screens
+        .iter()
+        .find(|screen| screen.device == fixture.controller.as_str())
+        .unwrap();
+    assert_eq!(peer.output_id.as_deref(), Some(expected.as_str()));
+    let mut snapshot = fabric.snapshots().get(&fixture.controller).unwrap().clone();
+    snapshot.presence.stamp.counter = snapshot.presence.stamp.counter.saturating_add(1);
+    snapshot.display.as_mut().unwrap().stamp.counter = snapshot.presence.stamp.counter;
+    fabric.upsert(snapshot).unwrap();
+    assert!(fabric.display_outputs(&fixture.controller).is_none());
+    let screens =
+        crate::shell::device_fabric_runtime::observed_device_displays(&fabric, Some(&local));
+    let peer = screens
+        .iter()
+        .find(|screen| screen.device == fixture.controller.as_str())
+        .unwrap();
+    assert_eq!(
+        peer.output_id, None,
+        "stale metadata must not assign another topology's stable identity"
+    );
+    drop(fixture);
+}
+
 fn receive_controller_lease(fixture: &Fixture) -> InputLease {
     use crate::shell::device_fabric_runtime::handle_spatial_action;
     let local = fixture.network.local_device_fabric_identity().unwrap().0;
