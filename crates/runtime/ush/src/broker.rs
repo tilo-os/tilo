@@ -20,6 +20,7 @@
 //! [`Response::Applied`].
 
 use std::io::{BufRead, BufReader, Read, Write};
+use std::os::fd::{AsRawFd as _, FromRawFd as _, OwnedFd, RawFd};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::os::unix::process::CommandExt as _;
 use std::path::{Path, PathBuf};
@@ -28,6 +29,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use bounded_command::WakeFd;
 use collab_types::caps::Verb;
 use tilo_clock::unix_now;
 use tilo_environment::{Environment, ToolBuilder, host_arch};
@@ -962,7 +964,7 @@ pub struct Broker {
     state: Arc<Mutex<BrokerState>>,
     socket: PathBuf,
     address: SocketAddress,
-    stop: Arc<AtomicBool>,
+    shared: Arc<Shared>,
     thread: Option<std::thread::JoinHandle<()>>,
     connections: Arc<Mutex<Vec<std::thread::JoinHandle<()>>>>,
     /// Anything connected. Only the guest can reach the socket, and its first
@@ -989,35 +991,34 @@ impl Broker {
 
         let state = Arc::new(Mutex::new(state));
         let thread_state = Arc::clone(&state);
-        let stop = Arc::new(AtomicBool::new(false));
-        let thread_stop = Arc::clone(&stop);
+        let shared = Arc::new(Shared::new()?);
+        let thread_shared = Arc::clone(&shared);
         let connections = Arc::new(Mutex::new(Vec::new()));
         let thread_connections = Arc::clone(&connections);
-        let host_mutation_gate = Arc::new(Mutex::new(()));
         let connected = Arc::new(AtomicBool::new(false));
         let thread_connected = Arc::clone(&connected);
         let thread = std::thread::Builder::new()
             .name("tilo-ush-accept".into())
             .spawn(move || {
-                while !thread_stop.load(Ordering::Acquire) {
+                while !thread_shared.stopped() {
                     match listener.accept() {
-                        Ok((stream, _)) if thread_stop.load(Ordering::Acquire) => {
+                        Ok((stream, _)) if thread_shared.stopped() => {
                             drop(stream);
                             break;
                         }
                         Ok((stream, _)) => {
                             thread_connected.store(true, Ordering::Release);
                             let connection_state = Arc::clone(&thread_state);
-                            let connection_stop = Arc::clone(&thread_stop);
-                            let connection_mutation_gate = Arc::clone(&host_mutation_gate);
-                            let handle = std::thread::spawn(move || {
-                                serve_connection(
-                                    stream,
-                                    &connection_state,
-                                    &connection_stop,
-                                    &connection_mutation_gate,
-                                );
-                            });
+                            let connection_shared = Arc::clone(&thread_shared);
+                            // Named, so an idle session's threads can be told apart.
+                            let Ok(handle) = std::thread::Builder::new()
+                                .name("tilo-ush-broker".into())
+                                .spawn(move || {
+                                    serve_connection(stream, &connection_state, &connection_shared);
+                                })
+                            else {
+                                continue;
+                            };
                             if let Ok(mut handles) = thread_connections.lock() {
                                 let mut index = 0;
                                 while index < handles.len() {
@@ -1044,7 +1045,7 @@ impl Broker {
             state,
             socket,
             address,
-            stop,
+            shared,
             thread: Some(thread),
             connections,
             connected,
@@ -1073,7 +1074,8 @@ impl Broker {
 
 impl Drop for Broker {
     fn drop(&mut self) {
-        self.stop.store(true, Ordering::Release);
+        // Wakes every connection, idle or serving a host command, at once.
+        self.shared.stop();
         if let Some(thread) = self.thread.take()
             && UnixStream::connect(&self.address.path).is_ok()
         {
@@ -1095,35 +1097,13 @@ fn restrict_socket(path: &Path) -> std::io::Result<()> {
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
 }
 
-fn serve_connection(
-    stream: UnixStream,
-    state: &Arc<Mutex<BrokerState>>,
-    stop: &Arc<AtomicBool>,
-    host_mutation_gate: &Arc<Mutex<()>>,
-) {
-    let _ = stream.set_read_timeout(Some(Duration::from_millis(100)));
+fn serve_connection(stream: UnixStream, state: &Arc<Mutex<BrokerState>>, shared: &Shared) {
     let Ok(write_half) = stream.try_clone() else {
         return;
     };
     let mut reader = BufReader::new(stream);
     let mut writer = write_half;
-    loop {
-        let mut line = String::new();
-        let read = match reader.read_line(&mut line) {
-            Ok(read) => read,
-            Err(error)
-                if matches!(
-                    error.kind(),
-                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
-                ) && !stop.load(Ordering::Acquire) =>
-            {
-                continue;
-            }
-            Err(_) => break,
-        };
-        if read == 0 {
-            break;
-        }
+    while let Some(line) = next_line(&mut reader, shared) {
         if line.trim().is_empty() {
             continue;
         }
@@ -1140,14 +1120,7 @@ fn serve_connection(
                     .ok()
                     .and_then(|s| host_command_for(&s.host_root, &s.environment.policy(), &req));
                 if let Some(command) = command {
-                    if serve_host_command(
-                        &command,
-                        state,
-                        &mut writer,
-                        &reader,
-                        stop,
-                        host_mutation_gate,
-                    ) {
+                    if serve_host_command(&command, state, &mut writer, shared) {
                         continue;
                     }
                     break;
@@ -1173,58 +1146,180 @@ fn serve_connection(
     }
 }
 
-#[derive(Debug)]
-enum PipeEvent {
-    Data { stderr: bool, data: Vec<u8> },
-    Eof,
+/// What the broker's connections share: whether it is stopping, and the lock
+/// that keeps host updates one at a time.
+///
+/// Every wait of a connection is one `poll(2)` on the descriptors that can end
+/// it (its guest's connection, a command's pipes and exit, `stopping`), so an
+/// idle connection, a silent host command and an update waiting for another
+/// all sleep until something happens.
+struct Shared {
+    stop: AtomicBool,
+    /// Rung once, when the broker stops, and never drained.
+    stopping: WakeFd,
+    host_updates: HostUpdateGate,
 }
 
-fn pipe_reader<R: Read + Send + 'static>(
-    mut pipe: R,
-    stderr: bool,
-    tx: std::sync::mpsc::Sender<PipeEvent>,
-) {
-    std::thread::spawn(move || {
-        let mut buffer = [0_u8; 8192];
-        loop {
-            match pipe.read(&mut buffer) {
-                Ok(0) | Err(_) => break,
-                Ok(n) => {
-                    let Some(data) = buffer.get(..n) else {
-                        break;
-                    };
-                    if tx
-                        .send(PipeEvent::Data {
-                            stderr,
-                            data: data.to_vec(),
-                        })
-                        .is_err()
-                    {
-                        return;
-                    }
-                }
+impl Shared {
+    fn new() -> std::io::Result<Self> {
+        Ok(Self {
+            stop: AtomicBool::new(false),
+            stopping: WakeFd::new()?,
+            host_updates: HostUpdateGate::new()?,
+        })
+    }
+
+    fn stop(&self) {
+        self.stop.store(true, Ordering::Release);
+        self.stopping.ring();
+    }
+
+    fn stopped(&self) -> bool {
+        self.stop.load(Ordering::Acquire)
+    }
+}
+
+/// Keeps host updates one at a time. A waiting update sleeps until the
+/// running one lets go (`released` rings) or its own guest leaves.
+struct HostUpdateGate {
+    lock: Mutex<()>,
+    released: WakeFd,
+}
+
+/// A held [`HostUpdateGate`]; dropping it lets the next update start.
+struct HostUpdateGuard<'a> {
+    held: Option<std::sync::MutexGuard<'a, ()>>,
+    released: &'a WakeFd,
+}
+
+impl Drop for HostUpdateGuard<'_> {
+    fn drop(&mut self) {
+        drop(self.held.take());
+        self.released.ring();
+    }
+}
+
+impl HostUpdateGate {
+    fn new() -> std::io::Result<Self> {
+        Ok(Self {
+            lock: Mutex::new(()),
+            released: WakeFd::new()?,
+        })
+    }
+
+    fn try_acquire(&self) -> Option<HostUpdateGuard<'_>> {
+        let held = match self.lock.try_lock() {
+            Ok(guard) => guard,
+            Err(std::sync::TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
+            Err(std::sync::TryLockError::WouldBlock) => return None,
+        };
+        Some(HostUpdateGuard {
+            held: Some(held),
+            released: &self.released,
+        })
+    }
+}
+
+const fn pollfd(fd: RawFd, events: libc::c_short) -> libc::pollfd {
+    libc::pollfd {
+        fd,
+        events,
+        revents: 0,
+    }
+}
+
+/// One `poll(2)`. A signal returns early with nothing ready; the caller's
+/// loop looks again.
+fn poll_fds(fds: &mut [libc::pollfd], timeout: Option<Duration>) -> std::io::Result<()> {
+    let count = libc::nfds_t::try_from(fds.len()).map_err(std::io::Error::other)?;
+    // Round up, so a timed-out poll means the time really passed.
+    let millis = timeout.map_or(-1, |timeout| {
+        i32::try_from(timeout.as_micros().div_ceil(1000)).unwrap_or(i32::MAX)
+    });
+    // SAFETY: `fds` is a valid, exclusively borrowed array of `count` pollfd
+    // entries for the duration of the call.
+    if unsafe { libc::poll(fds.as_mut_ptr(), count, millis) } >= 0 {
+        return Ok(());
+    }
+    let error = std::io::Error::last_os_error();
+    if error.kind() != std::io::ErrorKind::Interrupted {
+        return Err(error);
+    }
+    for fd in fds {
+        fd.revents = 0;
+    }
+    Ok(())
+}
+
+/// What to wait for on a guest's connection while serving it: its end closing
+/// or being shut for writing (Ctrl-C ends the client). Bytes the guest sends
+/// meanwhile are not among them, so they cannot keep the broker awake.
+const GUEST_GONE: libc::c_short = libc::POLLRDHUP;
+
+/// Whether `revents` of a [`GUEST_GONE`] wait say the guest left, or its
+/// connection failed.
+const fn guest_left(revents: libc::c_short) -> bool {
+    revents & (libc::POLLRDHUP | libc::POLLHUP | libc::POLLERR | libc::POLLNVAL) != 0
+}
+
+/// The guest's next request line, or `None` at its end, on an error or once
+/// the broker stops. Waits in `poll(2)` on the connection and the broker's
+/// stop, never on a timer.
+fn next_line(reader: &mut BufReader<UnixStream>, shared: &Shared) -> Option<String> {
+    let mut line = Vec::new();
+    loop {
+        if reader.buffer().is_empty() {
+            let mut fds = [
+                pollfd(reader.get_ref().as_raw_fd(), libc::POLLIN),
+                pollfd(shared.stopping.fd().as_raw_fd(), libc::POLLIN),
+            ];
+            poll_fds(&mut fds, None).ok()?;
+            let [connection, stopping] = fds;
+            if stopping.revents != 0 || shared.stopped() {
+                return None;
+            }
+            if connection.revents == 0 {
+                continue;
             }
         }
-        let _ = tx.send(PipeEvent::Eof);
-    });
+        let available = match reader.fill_buf() {
+            Ok(available) => available,
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(_) => return None,
+        };
+        if available.is_empty() {
+            // A last line without its newline still counts, as `read_line`
+            // returns it.
+            if line.is_empty() {
+                return None;
+            }
+            return String::from_utf8(line).ok();
+        }
+        let newline = available.iter().position(|byte| *byte == b'\n');
+        let taken = newline.map_or(available.len(), |at| at.saturating_add(1));
+        line.extend_from_slice(available.get(..taken).unwrap_or_default());
+        reader.consume(taken);
+        if newline.is_some() {
+            return String::from_utf8(line).ok();
+        }
+    }
 }
 
-fn peer_disconnected(stream: &UnixStream) -> bool {
-    use std::os::fd::AsRawFd;
-
-    let mut byte = 0_u8;
-    // SAFETY: `byte` is valid for the one-byte non-consuming recv, and the fd
-    // belongs to `stream` for the duration of this call.
-    let result = unsafe {
-        libc::recv(
-            stream.as_raw_fd(),
-            (&raw mut byte).cast(),
-            1,
-            libc::MSG_PEEK | libc::MSG_DONTWAIT,
-        )
-    };
-    result == 0
+/// A descriptor that becomes readable when `child` exits, or `None` where the
+/// kernel has no `pidfd_open`.
+fn exit_fd(child: &Child) -> Option<OwnedFd> {
+    let pid = libc::pid_t::try_from(child.id()).ok()?;
+    // SAFETY: pidfd_open takes a pid and flags and returns a new descriptor or
+    // -1. The child is unreaped, so its pid still names exactly it.
+    let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid, 0) };
+    let fd = RawFd::try_from(fd).ok().filter(|fd| *fd >= 0)?;
+    // SAFETY: the kernel returned a fresh descriptor this call now owns.
+    Some(unsafe { OwnedFd::from_raw_fd(fd) })
 }
+
+/// Without a pidfd, a command whose pipes closed is looked at this often until
+/// it exits. Only kernels older than Linux 5.3 take this path.
+const EXIT_POLL_WITHOUT_PIDFD: Duration = Duration::from_millis(50);
 
 fn stop_child(child: &mut Child) {
     if let Some(group) = i32::try_from(child.id()).ok().and_then(i32::checked_neg) {
@@ -1277,31 +1372,25 @@ fn start_host_command(
 #[derive(Debug)]
 struct Cancelled;
 
-fn cancelled(reader: &UnixStream, stop: &AtomicBool) -> bool {
-    stop.load(Ordering::Acquire) || peer_disconnected(reader)
-}
-
 /// Take the lock that keeps host updates one at a time. A second update
 /// says why it is not starting instead of sitting silent, and gives up when
-/// its guest does.
+/// its guest does. `writer` is the guest's connection.
 fn acquire_host_mutation<'a>(
     command: &HostCommand,
-    gate: &'a Mutex<()>,
+    shared: &'a Shared,
     writer: &mut UnixStream,
-    reader: &UnixStream,
-    stop: &AtomicBool,
-) -> Result<Option<std::sync::MutexGuard<'a, ()>>, Cancelled> {
+) -> Result<Option<HostUpdateGuard<'a>>, Cancelled> {
     if !command.mutating {
         return Ok(None);
     }
+    let gate = &shared.host_updates;
     let mut told = false;
     loop {
-        match gate.try_lock() {
-            Ok(guard) => return Ok(Some(guard)),
-            Err(std::sync::TryLockError::Poisoned(poisoned)) => {
-                return Ok(Some(poisoned.into_inner()));
-            }
-            Err(std::sync::TryLockError::WouldBlock) => {}
+        // Drain before trying: a release racing the try rings again and
+        // wakes the wait below.
+        gate.released.drain();
+        if let Some(guard) = gate.try_acquire() {
+            return Ok(Some(guard));
         }
         if !told {
             told = true;
@@ -1313,10 +1402,18 @@ fn acquire_host_mutation<'a>(
                 return Err(Cancelled);
             }
         }
-        if cancelled(reader, stop) {
+        let mut fds = [
+            pollfd(writer.as_raw_fd(), GUEST_GONE),
+            pollfd(shared.stopping.fd().as_raw_fd(), libc::POLLIN),
+            pollfd(gate.released.fd().as_raw_fd(), libc::POLLIN),
+        ];
+        if poll_fds(&mut fds, None).is_err() {
             return Err(Cancelled);
         }
-        std::thread::sleep(Duration::from_millis(50));
+        let [guest, stopping, _] = fds;
+        if guest_left(guest.revents) || stopping.revents != 0 || shared.stopped() {
+            return Err(Cancelled);
+        }
     }
 }
 
@@ -1375,19 +1472,15 @@ fn past_time_limit(command: &HostCommand, state: &Arc<Mutex<BrokerState>>) -> Re
 }
 
 /// Run a host management command without retaining the state lock,
-/// forwarding its output as it is produced. Returns true when the complete
-/// response reached the guest.
+/// forwarding its output as it is produced. `writer` is the guest's
+/// connection. Returns true when the complete response reached the guest.
 fn serve_host_command(
     command: &HostCommand,
     state: &Arc<Mutex<BrokerState>>,
     writer: &mut UnixStream,
-    reader: &BufReader<UnixStream>,
-    stop: &Arc<AtomicBool>,
-    host_mutation_gate: &Arc<Mutex<()>>,
+    shared: &Shared,
 ) -> bool {
-    let Ok(mutation_guard) =
-        acquire_host_mutation(command, host_mutation_gate, writer, reader.get_ref(), stop)
-    else {
+    let Ok(mutation_guard) = acquire_host_mutation(command, shared, writer) else {
         log_disconnected(state, command);
         return false;
     };
@@ -1397,74 +1490,25 @@ fn serve_host_command(
             return complete_host_command(writer, response, mutation_guard);
         }
     };
-    let deadline = command
-        .time_limit
-        .and_then(|limit| Instant::now().checked_add(limit));
-
-    let (tx, rx) = std::sync::mpsc::channel();
-    let (Some(child_stdout), Some(child_stderr)) = (child.stdout.take(), child.stderr.take())
-    else {
+    let (Some(stdout), Some(stderr)) = (child.stdout.take(), child.stderr.take()) else {
         stop_child(&mut child);
         return false;
     };
-    pipe_reader(child_stdout, false, tx.clone());
-    pipe_reader(child_stderr, true, tx);
-
-    let poll = Duration::from_millis(50);
-    let mut forwarded: usize = 0;
-    let mut open_pipes: usize = 2;
-    let mut last_activity = Instant::now();
-    let code = loop {
-        // Output is complete only once both pipes closed; a helper which
-        // inherited them can outlive the command itself.
-        if open_pipes == 0 {
-            match child.try_wait() {
-                Ok(Some(status)) => break status.code().unwrap_or(1),
-                Ok(None) => {}
-                Err(_) => break 1,
-            }
-        }
-        let event = if open_pipes > 0 {
-            rx.recv_timeout(poll)
-        } else {
-            std::thread::sleep(poll);
-            Err(std::sync::mpsc::RecvTimeoutError::Timeout)
-        };
-        match event {
-            Ok(PipeEvent::Data { stderr, data }) => {
-                let frames = capped_output(command, stderr, &data, &mut forwarded);
-                for frame in &frames {
-                    if !write_frame(writer, frame) {
-                        stop_child(&mut child);
-                        log_disconnected(state, command);
-                        return false;
-                    }
-                }
-                if !frames.is_empty() {
-                    last_activity = Instant::now();
-                }
-            }
-            Ok(PipeEvent::Eof) => open_pipes = open_pipes.saturating_sub(1),
-            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => open_pipes = 0,
-            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
-        }
-        if cancelled(reader.get_ref(), stop) {
+    let pipes = [
+        std::fs::File::from(OwnedFd::from(stdout)),
+        std::fs::File::from(OwnedFd::from(stderr)),
+    ];
+    let (code, forwarded) = match pump_host_command(command, &mut child, pipes, writer, shared) {
+        Pumped::Exited { code, forwarded } => (code, forwarded),
+        Pumped::Disconnected => {
             stop_child(&mut child);
             log_disconnected(state, command);
             return false;
         }
-        if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+        Pumped::TimedOut => {
             stop_child(&mut child);
             let response = past_time_limit(command, state);
             return complete_host_command(writer, response, mutation_guard);
-        }
-        if last_activity.elapsed() >= HEARTBEAT_INTERVAL {
-            if !write_frame(writer, &WireFrame::Heartbeat) {
-                stop_child(&mut child);
-                log_disconnected(state, command);
-                return false;
-            }
-            last_activity = Instant::now();
         }
     };
 
@@ -1487,12 +1531,156 @@ fn serve_host_command(
     complete_host_command(writer, Response::Command { code }, mutation_guard)
 }
 
+/// How serving a running host command ended.
+enum Pumped {
+    /// It exited and closed its output, having printed `forwarded` bytes.
+    Exited { code: i32, forwarded: usize },
+    /// The guest left or the broker is stopping.
+    Disconnected,
+    /// Its time limit passed.
+    TimedOut,
+}
+
+/// A running host command's output on its way to the guest.
+struct HostOutput<'a> {
+    command: &'a HostCommand,
+    /// stdout, then stderr; each `None` once it closed.
+    pipes: [Option<std::fs::File>; 2],
+    /// Bytes the command printed so far, shown or not.
+    forwarded: usize,
+    /// When the guest was last sent something.
+    last_activity: Instant,
+}
+
+impl HostOutput<'_> {
+    fn complete(&self) -> bool {
+        self.pipes.iter().all(Option::is_none)
+    }
+
+    fn fds(&self) -> [RawFd; 2] {
+        self.pipes
+            .each_ref()
+            .map(|pipe| pipe.as_ref().map_or(-1, std::os::fd::AsRawFd::as_raw_fd))
+    }
+
+    /// Forward what the pipes `ready` names hold. False when the guest
+    /// stopped reading.
+    fn forward(&mut self, ready: [bool; 2], writer: &mut UnixStream) -> bool {
+        let mut buffer = [0_u8; 8192];
+        for ((pipe, ready), stderr) in self.pipes.iter_mut().zip(ready).zip([false, true]) {
+            let Some(file) = pipe.as_mut().filter(|_| ready) else {
+                continue;
+            };
+            let read = match file.read(&mut buffer) {
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                Ok(0) | Err(_) => {
+                    *pipe = None;
+                    continue;
+                }
+                Ok(read) => read,
+            };
+            let data = buffer.get(..read).unwrap_or_default();
+            let frames = capped_output(self.command, stderr, data, &mut self.forwarded);
+            for frame in &frames {
+                if !write_frame(writer, frame) {
+                    return false;
+                }
+            }
+            if !frames.is_empty() {
+                self.last_activity = Instant::now();
+            }
+        }
+        true
+    }
+}
+
+/// Forward `child`'s output to the guest until it is complete and the child
+/// has exited. Sleeps in one `poll(2)` on the output pipes, the guest's
+/// connection, the broker's stop and, once the pipes closed, the child's
+/// exit, with the time limit or the next heartbeat as its timeout.
+fn pump_host_command(
+    command: &HostCommand,
+    child: &mut Child,
+    pipes: [std::fs::File; 2],
+    writer: &mut UnixStream,
+    shared: &Shared,
+) -> Pumped {
+    let deadline = command
+        .time_limit
+        .and_then(|limit| Instant::now().checked_add(limit));
+    let exited = exit_fd(child);
+    let mut output = HostOutput {
+        command,
+        pipes: pipes.map(Some),
+        forwarded: 0,
+        last_activity: Instant::now(),
+    };
+    loop {
+        // Output is complete only once both pipes closed; a helper which
+        // inherited them can outlive the command itself.
+        let complete = output.complete();
+        if complete {
+            let forwarded = output.forwarded;
+            match child.try_wait() {
+                Ok(Some(status)) => {
+                    let code = status.code().unwrap_or(1);
+                    return Pumped::Exited { code, forwarded };
+                }
+                Ok(None) => {}
+                Err(_) => return Pumped::Exited { code: 1, forwarded },
+            }
+        }
+        let heartbeat = output
+            .last_activity
+            .checked_add(HEARTBEAT_INTERVAL)
+            .unwrap_or(output.last_activity);
+        let wake_at = deadline.map_or(heartbeat, |deadline| deadline.min(heartbeat));
+        let mut timeout = wake_at.saturating_duration_since(Instant::now());
+        let exit_watch = match (&exited, complete) {
+            (_, false) => -1,
+            (Some(exited), true) => exited.as_raw_fd(),
+            (None, true) => {
+                timeout = timeout.min(EXIT_POLL_WITHOUT_PIDFD);
+                -1
+            }
+        };
+        let [out, err] = output.fds();
+        let mut fds = [
+            pollfd(out, libc::POLLIN),
+            pollfd(err, libc::POLLIN),
+            pollfd(writer.as_raw_fd(), GUEST_GONE),
+            pollfd(shared.stopping.fd().as_raw_fd(), libc::POLLIN),
+            pollfd(exit_watch, libc::POLLIN),
+        ];
+        if poll_fds(&mut fds, Some(timeout)).is_err() {
+            return Pumped::Disconnected;
+        }
+        let [out, err, guest, stopping, _] = fds;
+        if !output.forward([out.revents != 0, err.revents != 0], writer)
+            || guest_left(guest.revents)
+            || stopping.revents != 0
+            || shared.stopped()
+        {
+            return Pumped::Disconnected;
+        }
+        if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+            return Pumped::TimedOut;
+        }
+        if output.last_activity.elapsed() >= HEARTBEAT_INTERVAL {
+            if !write_frame(writer, &WireFrame::Heartbeat) {
+                return Pumped::Disconnected;
+            }
+            output.last_activity = Instant::now();
+        }
+    }
+}
+
 /// The mutation has finished before the guest can observe its completion.
 /// A slow response reader must not retain the host's update serialization gate.
 fn complete_host_command(
     writer: &mut UnixStream,
     response: Response,
-    mutation_guard: Option<std::sync::MutexGuard<'_, ()>>,
+    mutation_guard: Option<HostUpdateGuard<'_>>,
 ) -> bool {
     drop(mutation_guard);
     write_frame(writer, &WireFrame::Complete { response })
@@ -1959,7 +2147,7 @@ mod tests {
             .unwrap()
         };
         let audit = state.lock().unwrap().audit.clone();
-        let gate = Arc::new(Mutex::new(()));
+        let shared = Arc::new(Shared::new().unwrap());
         let (mut writer, peer) = UnixStream::pair().unwrap();
         writer.set_nonblocking(true).unwrap();
         // Fill every remaining byte so the actual Complete write cannot finish.
@@ -1971,17 +2159,9 @@ mod tests {
             }
         }
         writer.set_nonblocking(false).unwrap();
-        let reader = BufReader::new(writer.try_clone().unwrap());
-        let worker_gate = gate.clone();
+        let worker_shared = Arc::clone(&shared);
         let worker = std::thread::spawn(move || {
-            serve_host_command(
-                &command,
-                &state,
-                &mut writer,
-                &reader,
-                &Arc::new(AtomicBool::new(false)),
-                &worker_gate,
-            )
+            serve_host_command(&command, &state, &mut writer, &worker_shared)
         });
         let started = Instant::now();
         let mut completed = false;
@@ -1991,7 +2171,7 @@ mod tests {
                 .read_all()
                 .iter()
                 .any(|record| record.detail.as_deref() == Some("exit 7"));
-            if completed && gate.try_lock().is_ok() {
+            if completed && shared.host_updates.try_acquire().is_some() {
                 released = true;
                 break;
             }
@@ -2137,21 +2317,17 @@ mod tests {
             time_limit: Some(Duration::from_secs(1)),
         };
         let state = Arc::new(Mutex::new(state(dir.path())));
-        let (broker_side, guest_side) = UnixStream::pair().unwrap();
-        let mut writer = broker_side.try_clone().unwrap();
-        let reader = BufReader::new(broker_side);
+        let (mut writer, guest_side) = UnixStream::pair().unwrap();
 
         let started = Instant::now();
         assert!(serve_host_command(
             &command,
             &state,
             &mut writer,
-            &reader,
-            &Arc::new(AtomicBool::new(false)),
-            &Arc::new(Mutex::new(())),
+            &Shared::new().unwrap(),
         ));
         assert!(started.elapsed() >= Duration::from_secs(1));
-        drop((writer, reader));
+        drop(writer);
 
         let frames: Vec<WireFrame> = BufReader::new(guest_side)
             .lines()
@@ -2672,6 +2848,79 @@ mod tests {
             Broker::start(sock.clone(), state(dir.path())).unwrap()
         });
         assert_stays_asleep(&tid, "ush broker accept");
+        drop(broker);
+    }
+
+    #[test]
+    fn an_idle_guest_connection_sleeps_until_the_guest_asks() {
+        let dir = tempfile::tempdir().unwrap();
+        let sock = dir.path().join("broker.sock");
+        let broker = Broker::start(sock.clone(), state(dir.path())).unwrap();
+        let (stream, tid) =
+            spawned_thread("tilo-ush-broker", || UnixStream::connect(&sock).unwrap());
+        assert_stays_asleep(&tid, "ush broker connection");
+        // Still served: a request on the same connection is answered.
+        let mut writer = stream.try_clone().unwrap();
+        writer.write_all(b"{\"op\":\"status\"}\n").unwrap();
+        let mut line = String::new();
+        BufReader::new(stream).read_line(&mut line).unwrap();
+        assert!(
+            matches!(serde_json::from_str(&line), Ok(Response::Status { .. })),
+            "{line}"
+        );
+        // Stopping the broker ends the connection it still holds.
+        drop(broker);
+    }
+
+    #[test]
+    fn a_silent_host_command_and_an_update_waiting_for_it_sleep() {
+        let dir = tempfile::tempdir().unwrap();
+        let events = dir.path().join("events");
+        let release = dir.path().join("release");
+        fake_host_program(
+            dir.path(),
+            "app",
+            &format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$2\" >> '{events}'\n\
+                 if [ \"$2\" = first ]; then while [ ! -e '{release}' ]; do sleep 0.05; done; fi\n",
+                events = events.display(),
+                release = release.display(),
+            ),
+        );
+        let socket = dir.path().join("broker.sock");
+        let broker = Broker::start(socket.clone(), state(dir.path())).unwrap();
+        let ask_update = |package: &str| {
+            let socket = socket.clone();
+            let request = Request::AppUpdate {
+                package: Some(package.into()),
+            };
+            let (tx, rx) = std::sync::mpsc::channel();
+            let asker = std::thread::spawn(move || {
+                ask_streaming(
+                    &socket,
+                    &request,
+                    &mut std::io::sink(),
+                    &mut ChannelWriter(tx),
+                )
+                .unwrap()
+            });
+            (asker, rx)
+        };
+
+        let ((first, _), running) = spawned_thread("tilo-ush-broker", || ask_update("first"));
+        wait_for_file(&events);
+        assert_stays_asleep(&running, "silent host command");
+
+        let ((second, notices), waiting) =
+            spawned_thread("tilo-ush-broker", || ask_update("second"));
+        let notice = notices.recv_timeout(HANG_BOUND).unwrap();
+        assert!(String::from_utf8_lossy(&notice).contains("Waiting for another host update"));
+        assert_stays_asleep(&waiting, "host update waiting for another");
+
+        std::fs::write(&release, b"").unwrap();
+        assert_eq!(first.join().unwrap(), Response::Command { code: 0 });
+        assert_eq!(second.join().unwrap(), Response::Command { code: 0 });
+        assert_eq!(std::fs::read_to_string(&events).unwrap(), "first\nsecond\n");
         drop(broker);
     }
 

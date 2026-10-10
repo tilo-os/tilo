@@ -524,6 +524,23 @@ max = 5.0
 min_delta = 5.0
 source = "KPI document: idle desktop at most 5 wakeups/s (context switches of every compositor thread)"
 
+# Terminal's shell runtime with its shell running and nothing typed (TIL-701): every
+# `tilo-ush` process, CPU and context switches of all their threads, measured once the
+# shell runs so the first session's runtime import is not in the window. Reported:
+# vm-acceptance's R02 gate holds wakeups at 12/s (run.py) while the egress DNS stub
+# still polls its stop flag five times a second per socket.
+[kpi."idle.cpu_pct.tilo-ush.four_apps"]
+unit = "percent"
+max = 1.0
+min_delta = 0.5
+source = "TIL-701: an idle Terminal costs its shell runtime under 1% of a core; run.py idle_apps_ush_cpu_pct"
+
+[kpi."idle.wakeups_per_s.tilo-ush.four_apps"]
+unit = "per_s"
+max = 5.0
+min_delta = 5.0
+source = "KPI document: idle desktop at most 5 wakeups/s (every thread of Terminal's tilo-ush processes)"
+
 [kpi."idle.ram_mib"]
 unit = "MiB"
 max = 1024.0
