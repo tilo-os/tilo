@@ -3,8 +3,9 @@
 
 Three Containerfiles seal an image: os/Containerfile (production),
 os/Containerfile.board and os/Containerfile.dev-installer-base. Each splits the
-kernel out of its rootfs, installs ukify in a throwaway `uki-tools` stage, runs
-os/dev/uki.sh in a `uki` stage and adds the UKI under /boot in `final`. They
+kernel out of its rootfs twice, in a throwaway `kernel` stage the UKI embeds and
+in the shipped `split` rootfs, installs ukify in a throwaway `uki-tools` stage,
+runs os/dev/uki.sh in a `uki` stage and adds the UKI under /boot in `final`. They
 used to be hand-copied, and the copies drifted: a different package list, seal
 inputs one image declared and the others silently defaulted. A change to the
 sealing contract now has to reach all three, so this check fails when:
@@ -14,9 +15,13 @@ sealing contract now has to reach all three, so this check fails when:
     os/dev/uki-tools.packages, the one list of sealing tools;
   * a `uki` stage does not declare the seal inputs (TILO_CFS_DIGEST,
     TILO_SEAL_GENERATION) exactly as os/Containerfile does, or does anything
-    but run os/dev/uki.sh over the split rootfs and its kernel;
-  * a `split` stage does not end in bootc's kernel split, or a `final` stage
-    adds anything to the sealed rootfs beyond the UKI under /boot;
+    but run os/dev/uki.sh over the split rootfs and the `kernel` stage's kernel;
+  * a `kernel` stage does not end in bootc's kernel split of the same root
+    `split` builds on;
+  * a `split` stage does not end in bootc's kernel split, optionally followed by
+    dropping the split-out initramfs the UKI carries (os/Containerfile, TIL-733),
+    or a `final` stage adds anything to the sealed rootfs beyond the UKI under
+    /boot;
   * os/dev/uki-tools.packages is not in the frozen RPM snapshot's package set,
     or a hand-assembled build context (the board's .dockerignore, the dev
     installer workflow's adapter context) lacks a file the stages COPY.
@@ -57,10 +62,13 @@ SEAL_INPUTS = (
 UKI_MOUNTS = (
     "--mount=type=tmpfs,target=/tmp",
     "--mount=type=tmpfs,target=/run",
-    "--mount=type=bind,from=split,source=/kernel,target=/kernel,rw",
+    "--mount=type=bind,from=kernel,source=/kernel,target=/kernel,rw",
 )
 UKI_COMMAND = "bash /usr/local/bin/uki.sh"
 SPLIT_COMMAND = "bootc container split-kernel-and-rootfs --rootfs / --output /kernel"
+# What `split` may do after the split: drop the initramfs the UKI's .initrd
+# section already carries, so the image does not ship it twice (TIL-733).
+SPLIT_DISCARD = "rm /kernel/*/initramfs.img"
 FINAL_UKI = "COPY --from=uki /out/*.efi /boot/EFI/Linux/"
 # What `final` may carry besides the UKI: metadata, never a rootfs change.
 FINAL_METADATA = ("ARG", "LABEL")
@@ -233,17 +241,50 @@ def audit_uki(name: str, stage: Stage) -> list[Finding]:
     return findings
 
 
+def ends_with_split(stage: Stage, discard: bool) -> bool:
+    """The stage's last instruction is a RUN whose last command is the split,
+    or (with `discard`) the split followed by dropping the initramfs."""
+    if not stage.body or stage.body[-1].keyword != "RUN":
+        return False
+    commands = [command.strip() for command in last_command_chain(stage.body[-1])]
+    if commands[-1] == SPLIT_COMMAND:
+        return True
+    return discard and len(commands) >= 2 and commands[-2:] == [SPLIT_COMMAND, SPLIT_DISCARD]
+
+
+def last_command_chain(run: Instruction) -> list[str]:
+    """The `&&`-separated commands of a RUN, past its `--mount` flags."""
+    words = run.text.split()[1:]
+    while words and words[0].startswith("--"):
+        words.pop(0)
+    return " ".join(words).split("&&")
+
+
 def audit_layout(name: str, found: dict[str, Stage]) -> list[Finding]:
     findings: list[Finding] = []
-    split, final = found.get("split"), found.get("final")
+    kernel, split, final = found.get("kernel"), found.get("split"), found.get("final")
+    if kernel is not None:
+        runs = [i for i in kernel.body if i.keyword == "RUN"]
+        if not ends_with_split(kernel, discard=False):
+            line = runs[-1].line if runs else kernel.line
+            findings.append(Finding(
+                f"{name}:{line}", f"the `kernel` stage does not end with `{SPLIT_COMMAND}`",
+                "the UKI embeds the kernel and initramfs this stage splits out of the rootfs",
+                f"make `{SPLIT_COMMAND}` the stage's last command"))
+        if split is not None and kernel.base != split.base:
+            findings.append(Finding(
+                f"{name}:{kernel.line}", f"`kernel` builds FROM {kernel.base}, not {split.base} as `split` does",
+                "the UKI must embed the kernel of the very rootfs it seals",
+                f"use `FROM {split.base} AS kernel`"))
     if split is not None:
         runs = [i for i in split.body if i.keyword == "RUN"]
-        if not split.body or split.body[-1].keyword != "RUN" or last_command(split.body[-1]) != SPLIT_COMMAND:
+        if not ends_with_split(split, discard=True):
             line = runs[-1].line if runs else split.line
             findings.append(Finding(
                 f"{name}:{line}", f"the `split` stage does not end with `{SPLIT_COMMAND}`",
                 "the sealed rootfs is exactly what the split leaves; a later step changes the digest the UKI seals",
-                "run the image's own assertions first and make the split the stage's last command"))
+                "run the image's own assertions first and make the split the stage's last command "
+                f"(optionally followed by `{SPLIT_DISCARD}`)"))
     if final is not None:
         where = f"{name}:{final.line}"
         if final.base != "split":
@@ -305,7 +346,7 @@ def audit(root: Path = REPO) -> list[Finding]:
     parsed = {name: stages((root / name).read_text(encoding="utf-8")) for name in IMAGES}
     reference = parsed[REFERENCE].get("uki-tools")
     for name, found in parsed.items():
-        missing = [stage for stage in ("split", "uki-tools", "uki", "final") if stage not in found]
+        missing = [stage for stage in ("kernel", "split", "uki-tools", "uki", "final") if stage not in found]
         if missing:
             findings.append(Finding(name, f"no {', '.join(missing)} stage",
                                     "every sealed image carries the shared sealing stages",
