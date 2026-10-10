@@ -36,7 +36,7 @@ use std::time::{Duration, Instant, SystemTime};
 
 use getrandom::{SysRng, rand_core::UnwrapErr};
 use threshold_identity::ThresholdIdentity;
-use ui::widget::identity_flow::IdentityRecord;
+use tilo_identity_ceremony::IdentityRecord;
 
 /// Most wakeups per second the idle desktop may cost, across every thread of
 /// the compositor and its children. The product target is 5/s.

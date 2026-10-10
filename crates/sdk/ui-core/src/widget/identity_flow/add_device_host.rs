@@ -32,18 +32,18 @@ use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
+use crate::widget::identity_flow::ScreenOutcome;
 use crate::widget::identity_flow::sheet::{
     Align, BodyScroll, FORM_SHEET_WIDTH, Resolved, Role, Rows, SheetSpec, line_height, paint_cell,
     paint_qr, paint_text, paragraph_height, resolve, screen_style, with_layout_renderer,
 };
-use crate::widget::identity_flow::{
-    IdentityFlowError, PairingHandshake, PairingPayload, ScreenOutcome, derive_pairing_code,
-    format_pairing_code,
-};
-#[cfg(test)]
-use crate::widget::identity_flow::{compute_pairing_mac, derive_pairing_mac_key};
 use crate::widget::modal_dialog::ModalAction;
 use crate::widget::qr::QrWidget;
+use tilo_identity_ceremony::{
+    IdentityFlowError, PairingHandshake, PairingPayload, derive_pairing_code, format_pairing_code,
+};
+#[cfg(test)]
+use tilo_identity_ceremony::{compute_pairing_mac, derive_pairing_mac_key};
 
 const TITLE: &str = "Pair another device";
 const QR_PLACEHOLDER: &str = "The QR code appears once pairing begins";
@@ -253,7 +253,7 @@ impl AddDeviceHostScreen {
             .session
             .as_mut()
             .ok_or_else(|| IdentityFlowError::DecodeFailed("no active handshake".into()))?;
-        let expected = crate::widget::identity_flow::pairing_transcript_mac(
+        let expected = tilo_identity_ceremony::pairing_transcript_mac(
             &s.payload,
             "pairer-to-host",
             &pairer_round1,
@@ -310,7 +310,7 @@ impl AddDeviceHostScreen {
                     .ok_or_else(|| IdentityFlowError::DecodeFailed("session disappeared".into()))?
                     .payload
                     .clone();
-                let tag = crate::widget::identity_flow::pairing_transcript_mac(
+                let tag = tilo_identity_ceremony::pairing_transcript_mac(
                     &payload,
                     "host-to-pairer",
                     &pairer_round1,
@@ -701,7 +701,7 @@ mod tests {
                 .receive_round1(&[payload.initiator_round1().unwrap()])
                 .unwrap();
             let reply = outgoing.get(&1).unwrap().clone();
-            let mac = super::super::pairing_transcript_mac(
+            let mac = tilo_identity_ceremony::pairing_transcript_mac(
                 &payload,
                 "pairer-to-host",
                 &pairer_round1,
@@ -713,7 +713,7 @@ mod tests {
                 .unwrap();
             let expected_key = *outcome.identity.as_ref().unwrap().group_public_key();
             let round2 = outcome.round2_to_pairer.as_ref().unwrap().clone();
-            let tag = super::super::pairing_transcript_mac(
+            let tag = tilo_identity_ceremony::pairing_transcript_mac(
                 &payload,
                 "host-to-pairer",
                 &pairer_round1,

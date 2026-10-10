@@ -30,14 +30,15 @@ use crate::text_selection::clipboard_copy;
 use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
+use crate::widget::identity_flow::ScreenOutcome;
 use crate::widget::identity_flow::sheet::{
     Align, BodyScroll, FORM_SHEET_WIDTH, Resolved, Role, Rows, SheetSpec, line_height, paint_qr,
     paint_segments, paint_text, paragraph_height, resolve, screen_style, segment_rects,
     with_layout_renderer, wrap_chars,
 };
-use crate::widget::identity_flow::{InviteEnvelope, InviteExpiry, ScreenOutcome, mint_invite};
 use crate::widget::modal_dialog::ModalAction;
 use crate::widget::qr::QrWidget;
+use tilo_identity_ceremony::{InviteEnvelope, InviteExpiry, mint_invite};
 
 const EXPIRY_LABEL: &str = "Expires after";
 const LINK_LABEL: &str = "Invite link";
@@ -183,9 +184,9 @@ impl InviteMintScreen {
         inviter_label: impl Into<String>,
         role: ChannelRole,
         now: SystemTime,
-    ) -> Result<&InviteEnvelope, crate::widget::identity_flow::IdentityFlowError> {
+    ) -> Result<&InviteEnvelope, tilo_identity_ceremony::IdentityFlowError> {
         let channel = self.channel.ok_or_else(|| {
-            crate::widget::identity_flow::IdentityFlowError::DecodeFailed("no channel set".into())
+            tilo_identity_ceremony::IdentityFlowError::DecodeFailed("no channel set".into())
         })?;
         let expires_at = self.expiry.resolve(now);
         let env = mint_invite(
@@ -204,7 +205,7 @@ impl InviteMintScreen {
         self.error = None;
         self.clipboard_msg = None;
         self.last_envelope.as_ref().ok_or_else(|| {
-            crate::widget::identity_flow::IdentityFlowError::DecodeFailed(
+            tilo_identity_ceremony::IdentityFlowError::DecodeFailed(
                 "invite envelope was not stored after minting".into(),
             )
         })
@@ -523,7 +524,7 @@ impl Widget for InviteMintScreen {
                 Align::Start,
                 false,
             );
-            let labels: Vec<&str> = EXPIRIES.iter().map(super::InviteExpiry::label).collect();
+            let labels: Vec<&str> = EXPIRIES.iter().map(InviteExpiry::label).collect();
             let hovered = plan
                 .segments
                 .iter()
@@ -624,7 +625,7 @@ mod tests {
                 .unwrap_err();
             assert!(matches!(
                 err,
-                crate::widget::identity_flow::IdentityFlowError::DecodeFailed(_)
+                tilo_identity_ceremony::IdentityFlowError::DecodeFailed(_)
             ));
         }
 

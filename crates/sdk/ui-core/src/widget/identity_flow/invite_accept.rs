@@ -30,16 +30,15 @@ use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
+use crate::widget::identity_flow::ScreenOutcome;
 use crate::widget::identity_flow::sheet::{
     Align, BodyScroll, FORM_SHEET_WIDTH, Resolved, Role, Rows, SheetSpec, edited, field_leaf,
     line_height, paint_text, paragraph_height, place_field, resolve, screen_style,
     with_layout_renderer,
 };
-use crate::widget::identity_flow::{
-    IdentityFlowError, InviteEnvelope, ScreenOutcome, build_attestation_from_invite,
-};
 use crate::widget::modal_dialog::ModalAction;
 use crate::widget::text_input::TextInput;
+use tilo_identity_ceremony::{IdentityFlowError, InviteEnvelope, build_attestation_from_invite};
 
 const TITLE: &str = "Accept channel invite";
 const LINK_LABEL: &str = "Invite link";
@@ -606,7 +605,7 @@ mod tests {
     use taffy::Size;
 
     fn fixture_url(now: SystemTime) -> String {
-        use crate::widget::identity_flow::mint_invite;
+        use tilo_identity_ceremony::mint_invite;
         let (sk, pk) = generate_keypair();
         let env = mint_invite(
             ChannelId::new(),
