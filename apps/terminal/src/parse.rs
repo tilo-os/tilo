@@ -20,7 +20,7 @@ pub fn tool_of(command: &str) -> &'static str {
         .skip_while(|word| word.contains('=') && !word.starts_with('-'))
         .collect();
     match (words.first().copied(), words.get(1).copied()) {
-        (Some("cargo" | "rcargo"), _) => "cargo",
+        (Some("cargo"), _) => "cargo",
         (Some("rustc"), _) => "rustc",
         (Some("git"), Some("status")) => "git-status",
         _ => "",

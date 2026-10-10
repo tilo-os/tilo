@@ -879,6 +879,12 @@ readers = [
 ]
 
 [[cargo]]
+package = "collab-types"
+# Every app's committed surface must parse as a receiver reads it.
+inputs = ["apps/*/surface.toml"]
+readers = ["crates/collab/collab-types/src/surface.rs"]
+
+[[cargo]]
 package = "format-host"
 inputs = ["docs/app-model/formats.md"]
 readers = ["crates/doc/format-host/tests/integration.rs"]
