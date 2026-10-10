@@ -1,0 +1,39 @@
+2026-10-10T12:04:03.6246568Z error: redundant clone
+2026-10-10T12:04:03.6247580Z     --> crates/session/shell/src/shell/search/providers/live_app_actions.rs:3707:84
+2026-10-10T12:04:03.6247836Z      |
+2026-10-10T12:04:03.6248114Z 3707 |             let provider = LiveAppActionsProvider::new_with_fixture_identity(broker.clone());
+2026-10-10T12:04:03.6248366Z      |                                                                                    ^^^^^^^^ help: remove this
+2026-10-10T12:04:03.6248564Z      |
+2026-10-10T12:04:03.6248735Z note: this value is dropped without further use
+2026-10-10T12:04:03.6248926Z     --> crates/session/shell/src/shell/search/providers/live_app_actions.rs:3707:78
+2026-10-10T12:04:03.6249084Z      |
+2026-10-10T12:04:03.6249335Z 3707 |             let provider = LiveAppActionsProvider::new_with_fixture_identity(broker.clone());
+2026-10-10T12:04:03.6249610Z      |                                                                              ^^^^^^
+2026-10-10T12:04:03.6250267Z      = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#redundant_clone
+2026-10-10T12:04:03.6250652Z      = note: requested on the command line with `-D clippy::redundant-clone`
+2026-10-10T12:04:03.6250986Z error: redundant clone
+2026-10-10T12:04:03.6251285Z     --> crates/session/shell/src/shell/search/providers/live_app_actions.rs:3813:80
+2026-10-10T12:04:03.6251541Z      |
+2026-10-10T12:04:03.6251770Z 3813 |         let provider = LiveAppActionsProvider::new_with_fixture_identity(broker.clone());
+2026-10-10T12:04:03.6251932Z      |                                                                                ^^^^^^^^ help: remove this
+2026-10-10T12:04:03.6252214Z      |
+2026-10-10T12:04:03.6252407Z note: this value is dropped without further use
+2026-10-10T12:04:03.6252689Z     --> crates/session/shell/src/shell/search/providers/live_app_actions.rs:3813:74
+2026-10-10T12:04:03.6252975Z      |
+2026-10-10T12:04:03.6253200Z 3813 |         let provider = LiveAppActionsProvider::new_with_fixture_identity(broker.clone());
+2026-10-10T12:04:03.6253461Z      |                                                                          ^^^^^^
+2026-10-10T12:04:03.6253729Z      = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#redundant_clone
+2026-10-10T12:04:03.6253889Z error: redundant clone
+2026-10-10T12:04:03.6253889Z error: redundant clone
+2026-10-10T12:04:03.6254034Z     --> crates/session/shell/src/shell/search/providers/live_app_actions.rs:4767:84
+2026-10-10T12:04:03.6254209Z      |
+2026-10-10T12:04:03.6254376Z 4767 |             let provider = LiveAppActionsProvider::new_with_fixture_identity(broker.clone());
+2026-10-10T12:04:03.6254529Z      |                                                                                    ^^^^^^^^ help: remove this
+2026-10-10T12:04:03.6254699Z      |
+2026-10-10T12:04:03.6254960Z note: this value is dropped without further use
+2026-10-10T12:04:03.6255192Z     --> crates/session/shell/src/shell/search/providers/live_app_actions.rs:4767:78
+2026-10-10T12:04:03.6255395Z      |
+2026-10-10T12:04:03.6255545Z 4767 |             let provider = LiveAppActionsProvider::new_with_fixture_identity(broker.clone());
+2026-10-10T12:04:03.6255710Z      |                                                                              ^^^^^^
+2026-10-10T12:04:03.6255934Z      = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#redundant_clone
+2026-10-10T12:04:03.6776713Z CI_CGROUP_MEMORY_BEFORE={"cgroup": "/sys/fs/cgroup", "identity": [24, 10054], "memory.current": "661217280", "memory.events": {"high": 0, "low": 0, "max": 0, "oom": 0, "oom_group_kill": 0, "oom_kill": 0}, "memory.max": "23622320128", "memory.peak": "975462400"}

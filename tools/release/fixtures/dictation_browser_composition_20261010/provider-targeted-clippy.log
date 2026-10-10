@@ -1,0 +1,764 @@
+${REMOTE_CARGO}: seeding new builder worktree from /tmp/tilo-ci-browser-video-cache…
+${REMOTE_CARGO}: removed 310 build unit(s) built from another worktree's sources; they are rebuilt here
+${REMOTE_CARGO}: seeded builder worktree (reflink) in 3.2s
+${REMOTE_CARGO}: syncing 11139 files (full comparison; new, seeded or changed builder worktree)…
+${REMOTE_CARGO}: synced sources in 12.5s
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Checking serde_core v1.0.228
+   Compiling serde v1.0.228
+    Checking smallvec v1.15.1
+    Checking portable-atomic v1.13.1
+    Checking bitflags v2.11.0
+    Checking once_cell v1.21.4
+    Checking thiserror v2.0.21
+    Checking parking_lot_core v0.9.12
+    Checking bytes v1.12.1
+    Checking parking_lot v0.12.5
+   Compiling indexmap v2.14.0
+    Checking zerovec v0.11.8
+    Checking tracing-core v0.1.36
+    Checking tinystr v0.8.4
+    Checking heapless v0.7.17
+    Checking tokio v1.53.2
+    Checking cobs v0.3.0
+    Checking postcard v1.1.3
+    Checking tracing v0.1.44
+    Checking litemap v0.8.1
+   Compiling ring v0.17.14
+    Checking icu_locale_core v2.3.0
+    Checking zerotrie v0.2.5
+    Checking icu_provider v2.3.1
+    Checking potential_utf v0.1.4
+    Checking rustix v1.1.4
+   Compiling toml_edit v0.23.10+spec-1.0.0
+   Compiling rustversion v1.0.22
+   Compiling proc-macro-crate v3.4.0
+   Compiling serde_spanned v1.1.1
+   Compiling toml_datetime v1.1.1+spec-1.1.0
+   Compiling toml v1.0.6+spec-1.1.0
+    Checking icu_collections v2.3.0
+    Checking serde_json v1.0.151
+   Compiling rustls v0.23.45
+    Checking icu_normalizer v2.3.0
+    Checking deranged v0.5.6
+    Checking icu_properties v2.3.0
+    Checking time v0.3.47
+    Checking idna_adapter v1.2.1
+    Checking idna v1.1.0
+    Checking url v2.5.8
+   Compiling quick-xml v0.41.0
+    Checking kurbo v0.13.1
+    Checking tokio-util v0.7.18
+    Checking curve25519-dalek v5.0.0
+   Compiling zvariant_utils v3.4.0
+    Checking rustls-webpki v0.103.15
+   Compiling unic-langid-impl v0.9.6
+    Checking http v1.4.0
+   Compiling unic-langid-macros-impl v0.9.6
+    Checking png v0.18.1
+   Compiling zvariant_derive v5.12.0
+   Compiling wayland-scanner v0.31.11
+    Checking uuid v1.26.0
+    Checking futures-executor v0.3.32
+    Checking wayland-sys v0.31.11
+    Checking ipnet v2.12.0
+   Compiling hashbrown v0.15.5
+   Compiling enumflags2 v0.7.12
+   Compiling zvariant v5.12.0
+    Checking icu_locale_fallback v2.3.0
+   Compiling zbus_names v4.3.2
+   Compiling wayland-backend v0.3.15 (${OWNED_WORKTREE}/vendor/wayland-backend)
+   Compiling zstd-sys v2.0.16+zstd.1.5.7
+    Checking unic-langid-macros v0.9.6
+   Compiling buffa v0.9.2
+    Checking serdect v0.4.3
+    Checking ed25519 v3.0.0
+    Checking unic-langid v0.9.6
+    Checking futures v0.3.32
+   Compiling tempfile v3.27.0
+    Checking hayro-syntax v0.7.2
+    Checking ed25519-dalek v3.0.0
+    Checking h2 v0.4.19
+    Checking tokio-rustls v0.26.4
+    Checking serde_bytes v0.11.19
+   Compiling zstd-safe v7.2.4
+   Compiling zbus_macros v5.16.0
+    Checking http-body v1.0.1
+    Checking rustls-native-certs v0.8.3 (${OWNED_WORKTREE}/crates/system/tilo-native-certs)
+    Checking rustybuzz v0.20.1
+    Checking peniko v0.6.1
+    Checking image v0.25.10
+    Checking wayland-client v0.31.14
+    Checking chrono v0.4.45
+    Checking svgtypes v0.16.1
+    Checking hyper v1.8.1
+    Checking usvg v0.47.0
+    Checking plist v1.10.0
+    Checking wayland-server v0.31.13
+    Checking prefix-trie v0.8.4
+    Checking bincode v1.3.3
+    Checking syntect v5.3.0
+    Checking hickory-proto v0.26.1
+    Checking wayland-protocols v0.32.12
+    Checking hyper-util v0.1.20
+    Checking rustls-platform-verifier v0.7.1
+    Checking http-body-util v0.1.3
+    Checking wasmparser v0.239.0
+    Checking tokio-stream v0.1.18
+    Checking wasmi v1.1.0
+   Compiling crunchy v0.2.4
+   Compiling hax-lib v0.3.7
+    Checking x25519-dalek v3.0.0
+   Compiling spirv v0.4.0+sdk-1.4.341.0
+    Checking typst-assets v0.15.1
+    Checking smol_str v0.3.6
+   Compiling naga v29.0.3
+    Checking rustix v0.38.44
+   Compiling tantivy-common v0.7.0
+   Compiling bitpacking v0.9.3
+    Checking async-compression v0.4.39
+    Checking tower v0.5.3
+   Compiling ssh-encoding v0.3.0
+    Checking arc-swap v1.9.2
+    Checking tower-http v0.6.8
+    Checking zbus v5.16.0
+    Checking hyper-rustls v0.27.7
+    Checking icu_segmenter v2.3.0
+   Compiling zstd v0.13.3
+   Compiling tantivy-bitpacker v0.6.0
+    Checking hayro-interpret v0.7.0
+   Compiling libcrux-secrets v0.0.6
+    Checking vello_common v0.0.8
+    Checking tiny-skia v0.12.0
+    Checking serde_urlencoded v0.7.1
+    Checking tokio-websockets v0.13.3
+   Compiling tantivy-stacker v0.3.0
+    Checking reqwest v0.13.4
+   Compiling ssh-cipher v0.3.0
+   Compiling nix v0.31.3
+    Checking vello_cpu v0.0.8
+   Compiling libcrux-traits v0.0.8
+   Compiling tantivy-sstable v0.3.0
+   Compiling libcrux-intrinsics v0.0.8
+    Checking wayland-protocols-wlr v0.3.10
+    Checking wayland-protocols-misc v0.3.10
+    Checking tls_codec v0.5.0
+   Compiling tantivy-columnar v0.3.0
+   Compiling tungstenite v0.28.0
+   Compiling libcrux-sha3 v0.0.10
+   Compiling ssh-key v0.7.0-rc.11
+    Checking hayro v0.7.1
+   Compiling russh-cryptovec v0.62.0
+   Compiling fs4 v0.8.4
+   Compiling flatbuffers v25.12.19
+   Compiling yasna v0.5.2
+   Compiling russh-util v0.52.0
+   Compiling lru v0.12.5
+   Compiling gethostname v1.1.0
+   Compiling generic-array v1.4.5
+   Compiling tantivy-tokenizer-api v0.3.0
+   Compiling rust-stemmers v1.2.0
+   Compiling sketches-ddsketch v0.2.2
+   Compiling tantivy v0.22.1
+   Compiling russh v0.63.3
+   Compiling x11rb v0.13.2
+   Compiling adblock v0.12.1
+   Compiling tracing-subscriber v0.3.22
+   Compiling rcgen v0.14.7
+   Compiling resvg v0.47.0
+   Compiling rqrr v0.10.1
+   Compiling harfrust v0.5.2
+   Compiling hpke-rs v0.7.0
+   Compiling ashpd v0.13.13
+   Compiling tokio-tungstenite v0.28.0
+   Compiling workspace-hack v0.1.0 (${OWNED_WORKTREE}/crates/workspace-hack)
+    Checking x-wing v0.1.0
+    Checking hpke-rs-rust-crypto v0.7.0
+    Checking tracing-log v0.2.0
+    Checking tilo-clock v0.1.0 (${OWNED_WORKTREE}/crates/platform/tilo-clock)
+   Compiling blake3 v1.8.5
+    Checking tilo-platform-caps v0.1.0 (${OWNED_WORKTREE}/crates/platform/tilo-platform-caps)
+    Checking tilo-paths v0.1.0 (${OWNED_WORKTREE}/crates/platform/tilo-paths)
+    Checking inotify v0.11.2
+    Checking tilo-advisory-lock v0.1.0 (${OWNED_WORKTREE}/crates/system/advisory-lock)
+    Checking notify-types v2.1.0
+    Checking tilo-rt v0.1.0 (${OWNED_WORKTREE}/crates/platform/tilo-rt)
+    Checking notify v8.2.0
+    Checking tilo-files v0.1.0 (${OWNED_WORKTREE}/crates/platform/tilo-files)
+   Compiling target-lexicon v0.13.5
+    Checking hexane v1.0.0-alpha.5
+    Checking wire-frame v0.1.0 (${OWNED_WORKTREE}/crates/system/wire-frame)
+   Compiling cfg-expr v0.20.8
+    Checking tilo-automerge-fork v0.12.0 (${OWNED_WORKTREE}/vendor/automerge)
+   Compiling version-compare v0.2.1
+   Compiling system-deps v7.0.8
+    Checking capnp-rpc v0.26.1
+    Checking runtime-portal v0.1.0 (${OWNED_WORKTREE}/crates/runtime/runtime-portal)
+    Checking fs-set-times v0.20.3
+    Checking rustix-linux-procfs v0.1.1
+    Checking cap-primitives v3.4.6
+    Checking cap-std v3.4.6
+   Compiling runtime-fs v0.1.0 (${OWNED_WORKTREE}/crates/runtime/runtime-fs)
+    Checking tilo-automerge v0.1.0 (${OWNED_WORKTREE}/crates/doc/tilo-automerge)
+    Checking tilo-actions v0.1.0 (${OWNED_WORKTREE}/crates/collab/actions)
+    Checking tilo-seal v0.1.0 (${OWNED_WORKTREE}/crates/system/tilo-seal)
+    Checking bounded-command v0.1.0 (${OWNED_WORKTREE}/crates/system/bounded-command)
+    Checking collab-types v0.1.0 (${OWNED_WORKTREE}/crates/collab/collab-types)
+    Checking rustls-platform-verifier v0.6.2
+    Checking tilo-net v0.1.0 (${OWNED_WORKTREE}/crates/platform/tilo-net)
+    Checking tilo-content v0.1.0 (${OWNED_WORKTREE}/crates/system/content)
+   Compiling tilo-resource-macros v0.1.0 (${OWNED_WORKTREE}/crates/sdk/tilo-resource-macros)
+    Checking n0-future v0.3.2
+   Compiling num_enum_derive v0.7.5
+    Checking num_enum v0.7.5
+    Checking noq-udp v1.1.0
+    Checking iroh-base v1.0.3
+    Checking tilo-resource v0.1.0 (${OWNED_WORKTREE}/crates/sdk/tilo-resource)
+    Checking cloud-source v0.1.0 (${OWNED_WORKTREE}/crates/system/cloud-source)
+    Checking netlink-sys v0.8.8
+    Checking moka v0.12.15
+    Checking netlink-packet-route v0.31.0
+    Checking hickory-net v0.26.1
+    Checking landlock v0.4.5
+    Checking hickory-resolver v0.26.1
+    Checking tilo-sandbox-core v0.1.0 (${OWNED_WORKTREE}/crates/system/sandbox-core)
+    Checking noq-proto v1.1.0
+    Checking netdev v0.45.0
+    Checking ref-cast v1.0.25
+    Checking iroh-metrics v1.0.1
+    Checking netlink-proto v0.12.0
+    Checking n0-watcher v1.0.0
+    Checking tilo-secrets v0.1.0 (${OWNED_WORKTREE}/crates/platform/tilo-secrets)
+    Checking settings-store v0.1.0 (${OWNED_WORKTREE}/crates/system/settings-store)
+    Checking attohttpc v0.30.1
+    Checking xattr v1.6.1
+    Checking simple-dns v0.11.3
+    Checking iroh-dns v1.0.3
+    Checking igd-next v0.17.1
+    Checking netwatch v0.19.1
+    Checking noq v1.1.0
+    Checking serdect v0.2.0
+    Checking frost-core v3.0.0
+    Checking tar v0.4.46
+    Checking iroh-relay v1.0.3
+    Checking portmapper v0.19.1
+    Checking private-fs v0.1.0 (${OWNED_WORKTREE}/crates/system/private-fs)
+    Checking backon v1.6.0
+    Checking tilo-secret-vault v0.1.0 (${OWNED_WORKTREE}/crates/system/secret-vault)
+    Checking iroh v1.0.3
+    Checking frost-rerandomized v3.0.0
+    Checking write-fonts v0.48.1
+    Checking pdf-writer v0.15.0
+    Checking subsetter v0.2.6
+    Checking frost-ed25519 v3.0.0
+    Checking accounts v0.1.0 (${OWNED_WORKTREE}/crates/system/accounts)
+    Checking bip39 v2.2.2
+    Checking zip v8.6.0
+    Checking threshold-identity v0.1.0 (${OWNED_WORKTREE}/crates/collab/threshold-identity)
+   Compiling genawaiter-proc-macro v0.99.1 (${OWNED_WORKTREE}/vendor/genawaiter-proc-macro)
+    Checking inplace-vec-builder v0.1.1
+    Checking piston-float v1.0.1
+   Compiling tilo-font-catalog v0.1.0 (${OWNED_WORKTREE}/crates/sdk/font-catalog)
+   Compiling pdfium-render v0.8.37
+    Checking genawaiter v0.99.1
+    Checking vecmath v1.0.0
+    Checking range-collections v0.4.6
+    Checking irpc v0.17.0
+    Checking bounded-zip v0.1.0 (${OWNED_WORKTREE}/crates/doc/bounded-zip)
+    Checking tilo-doc v0.1.0 (${OWNED_WORKTREE}/crates/doc/tilo-doc)
+    Checking tilo-user-identity v0.1.0 (${OWNED_WORKTREE}/crates/collab/tilo-user-identity)
+    Checking registry-types v0.1.0 (${OWNED_WORKTREE}/crates/packaging/registry-types)
+    Checking iroh-io v0.6.2
+    Checking utf16string v0.2.0
+   Compiling tilo-doc-codecs v0.1.0 (${OWNED_WORKTREE}/crates/doc/tilo-doc-codecs)
+   Compiling tilo-pdf v0.1.0 (${OWNED_WORKTREE}/crates/platform/tilo-pdf)
+    Checking bao-tree v0.16.0
+    Checking tilo-app-package v0.1.0 (${OWNED_WORKTREE}/crates/packaging/tilo-app-package)
+    Checking pulldown-cmark v0.12.2
+   Compiling mime_guess v2.0.5
+    Checking iroh-util v0.6.0
+    Checking tilo-power-mgmt v0.1.0 (${OWNED_WORKTREE}/crates/system/power)
+    Checking tilo-sandbox v0.1.0 (${OWNED_WORKTREE}/crates/platform/tilo-sandbox)
+    Checking iroh-tickets v1.0.0
+   Compiling glib-sys v0.21.5
+    Checking tilo-nm v0.1.0 (${OWNED_WORKTREE}/crates/system/tilo-nm)
+   Compiling nested_enum_utils v0.2.3
+    Checking reflink-copy v0.1.28
+   Compiling glob v0.3.3
+    Checking iroh-blobs v0.103.0
+   Compiling clang-sys v1.8.1
+    Checking futures-concurrency v7.7.1
+    Checking fs-content v0.1.0 (${OWNED_WORKTREE}/crates/system/fs-content)
+    Checking tilo-dav v0.1.0 (${OWNED_WORKTREE}/crates/system/tilo-dav)
+   Compiling gobject-sys v0.21.5
+   Compiling tilo-fs v0.1.0 (${OWNED_WORKTREE}/crates/system/fs)
+    Checking cloud-source-dav v0.1.0 (${OWNED_WORKTREE}/crates/system/cloud-source-dav)
+    Checking fuser v0.18.0
+    Checking tilo-thumbnail v0.1.0 (${OWNED_WORKTREE}/crates/media/thumbnail)
+    Checking cloud-source-icloud v0.1.0 (${OWNED_WORKTREE}/crates/system/cloud-source-icloud)
+    Checking fs-native v0.1.0 (${OWNED_WORKTREE}/crates/system/fs-native)
+    Checking iroh-gossip v0.101.0
+    Checking tilo-automerge-isolate v0.1.0 (${OWNED_WORKTREE}/crates/doc/tilo-automerge-isolate)
+    Checking cloud-source-gdrive v0.1.0 (${OWNED_WORKTREE}/crates/system/cloud-source-gdrive)
+    Checking cloud-source-onedrive v0.1.0 (${OWNED_WORKTREE}/crates/system/cloud-source-onedrive)
+    Checking cloud-source-dropbox v0.1.0 (${OWNED_WORKTREE}/crates/system/cloud-source-dropbox)
+    Checking fs-protocol v0.1.0 (${OWNED_WORKTREE}/crates/system/fs-protocol)
+   Compiling bindgen v0.72.1
+   Compiling gstreamer-sys v0.24.5
+   Compiling annotate-snippets v0.11.5
+   Compiling cexpr v0.6.0
+    Checking polling v3.11.0
+    Checking calloop v0.14.4
+   Compiling gio-sys v0.21.5
+   Compiling gstreamer-base-sys v0.24.5
+    Checking xkeysym v0.2.1
+   Compiling libspa-sys v0.10.1 (${OWNED_WORKTREE}/vendor/libspa-sys)
+    Checking xkbcommon v0.8.0
+   Compiling glib-macros v0.21.5
+    Checking two-face v0.4.5
+   Compiling quick-xml v0.39.4
+   Compiling smithay-client-toolkit v0.20.0
+   Compiling pastey v0.2.3
+    Checking option-operations v0.6.1
+    Checking wayland-cursor v0.31.12
+   Compiling zbus_xml v5.1.1
+    Checking glib v0.21.5
+    Checking wayland-csd-frame v0.3.0
+    Checking calloop-wayland-source v0.4.1
+    Checking kstring v2.0.2
+    Checking wayland-protocols-experimental v20250721.0.1
+    Checking num-rational v0.4.2
+    Checking muldiv v1.0.1
+    Checking gstreamer v0.24.5
+   Compiling zbus-lockstep v0.5.2
+   Compiling gstreamer-video-sys v0.24.5
+   Compiling gstreamer-app-sys v0.24.5
+    Checking wgpu-types v29.0.3
+   Compiling wgpu-hal v29.0.3 (${OWNED_WORKTREE}/vendor/wgpu-hal)
+    Checking gpu-descriptor-types v0.2.0
+    Checking atomic_refcell v0.1.13
+    Checking gpu-allocator v0.28.0
+    Checking gstreamer-base v0.24.5
+    Checking gpu-descriptor v0.3.2
+    Checking wgpu-naga-bridge v29.0.3
+   Compiling zbus-lockstep-macros v0.5.2
+    Checking package-store v0.1.0 (${OWNED_WORKTREE}/crates/packaging/package-store)
+   Compiling pipewire-sys v0.10.1
+    Checking runtime-identity v0.1.0 (${OWNED_WORKTREE}/crates/runtime/runtime-identity)
+   Compiling libspa v0.10.1
+    Checking tilo-startup-metrics v0.1.0 (${OWNED_WORKTREE}/crates/system/tilo-startup-metrics)
+    Checking desktop-policy v0.1.0 (${OWNED_WORKTREE}/crates/system/desktop-policy)
+    Checking atspi-common v0.13.0 (https://code.tilo.so/tilo/atspi.git?rev=9183f58d2e18e7c7cd76a1436f7fedc3ada015c2#9183f58d)
+    Checking openmls_traits v0.6.0
+   Compiling tilo-winit v0.30.13 (${OWNED_WORKTREE}/vendor/winit)
+    Checking nom v8.0.0
+    Checking cookie-factory v0.3.3
+    Checking gstreamer-app v0.24.5
+    Checking gstreamer-video v0.24.5
+    Checking wgpu-core-deps-windows-linux-android v29.0.3
+    Checking x11-dl v2.21.0
+    Checking ahash v0.8.12
+    Checking sctk-adwaita v0.11.1
+    Checking xkbcommon-dl v0.4.2
+    Checking tilo-automation v0.1.0 (${OWNED_WORKTREE}/crates/collab/automation)
+    Checking wayland-protocols-plasma v0.3.10
+    Checking accesskit v0.25.0 (https://code.tilo.so/tilo/accesskit.git?rev=a76088c4c36c03de8109ded02bd42a305fb1d569#a76088c4)
+   Compiling wgpu v29.0.3 (${OWNED_WORKTREE}/vendor/wgpu)
+    Checking is-docker v0.2.0
+   Compiling tilo-media v0.1.0 (${OWNED_WORKTREE}/crates/platform/tilo-media)
+    Checking tilo-desktop-model v0.1.0 (${OWNED_WORKTREE}/crates/session/desktop-model)
+    Checking is-wsl v0.4.0
+    Checking read-fonts v0.41.0
+    Checking accesskit_consumer v0.39.0 (https://code.tilo.so/tilo/accesskit.git?rev=a76088c4c36c03de8109ded02bd42a305fb1d569#a76088c4)
+    Checking wgpu-core v29.0.3
+    Checking pipewire v0.10.1
+    Checking atspi-proxies v0.13.0 (https://code.tilo.so/tilo/atspi.git?rev=9183f58d2e18e7c7cd76a1436f7fedc3ada015c2#9183f58d)
+    Checking durable-store v0.1.0 (${OWNED_WORKTREE}/crates/system/durable-store)
+    Checking tilo-test-env v0.1.0 (${OWNED_WORKTREE}/crates/dev/test-env)
+   Compiling strum_macros v0.26.4
+   Compiling tilo-vello-shaders v0.9.0 (${OWNED_WORKTREE}/vendor/vello_shaders)
+    Checking tilo-vello-encoding v0.9.0 (${OWNED_WORKTREE}/vendor/vello_encoding)
+    Checking ssip-client v0.10.2
+    Checking open v5.3.5
+    Checking intl-memoizer v0.5.3
+    Checking atspi v0.29.0 (https://code.tilo.so/tilo/atspi.git?rev=9183f58d2e18e7c7cd76a1436f7fedc3ada015c2#9183f58d)
+    Checking accesskit_atspi_common v0.20.0 (https://code.tilo.so/tilo/accesskit.git?rev=a76088c4c36c03de8109ded02bd42a305fb1d569#a76088c4)
+    Checking skrifa v0.44.0
+    Checking openmls_memory_storage v0.6.0
+    Checking smithay-clipboard v0.7.3
+    Checking tilo-cli-kit v0.1.0 (${OWNED_WORKTREE}/crates/runtime/cli)
+    Checking tilo-search v0.1.0 (${OWNED_WORKTREE}/crates/sdk/search)
+    Checking arboard v3.6.1
+    Checking fluent-langneg v0.13.1
+    Checking intl_pluralrules v7.0.2
+   Compiling openmls_serialization_helpers v0.1.0
+    Checking fluent-syntax v0.12.0
+   Compiling runtime-collab v0.1.0 (${OWNED_WORKTREE}/crates/runtime/runtime-collab)
+   Compiling tilo-host v0.1.0 (${OWNED_WORKTREE}/crates/sdk/tilo-host)
+    Checking swash v0.2.10
+    Checking fluent-bundle v0.16.0
+    Checking openmls v0.9.0
+    Checking tilo-clipboard v0.1.0 (${OWNED_WORKTREE}/crates/platform/tilo-clipboard)
+    Checking tilo-app-state v0.1.0 (${OWNED_WORKTREE}/crates/system/app-state)
+    Checking openmls_rust_crypto v0.6.0
+    Checking accesskit_unix v0.23.0 (https://code.tilo.so/tilo/accesskit.git?rev=a76088c4c36c03de8109ded02bd42a305fb1d569#a76088c4)
+    Checking tilo-dialogs v0.1.0 (${OWNED_WORKTREE}/crates/platform/tilo-dialogs)
+    Checking tilo-tts v0.1.0 (${OWNED_WORKTREE}/crates/system/tts)
+    Checking openmls_basic_credential v0.6.0
+    Checking tilo-location v0.1.0 (${OWNED_WORKTREE}/crates/platform/tilo-location)
+    Checking tilo-notify v0.1.0 (${OWNED_WORKTREE}/crates/platform/tilo-notify)
+    Checking futures-intrusive v0.5.0
+   Compiling tilo-ui v0.1.0 (${OWNED_WORKTREE}/crates/sdk/ui-core)
+    Checking cosmic-text v0.19.0 (${OWNED_WORKTREE}/vendor/cosmic-text)
+    Checking tilo-spellcheck v0.1.0 (${OWNED_WORKTREE}/crates/text/spellcheck)
+    Checking tilo-vello v0.9.0 (${OWNED_WORKTREE}/vendor/vello)
+    Checking channel-crypto v0.1.0 (${OWNED_WORKTREE}/crates/collab/channel-crypto)
+    Checking tilo-accesskit-winit v0.34.0 (${OWNED_WORKTREE}/vendor/accesskit_winit)
+    Checking fluent v0.17.0
+    Checking tilo-presentation v0.1.0 (${OWNED_WORKTREE}/crates/platform/tilo-presentation)
+    Checking tilo-process v0.1.0 (${OWNED_WORKTREE}/crates/platform/tilo-process)
+    Checking tilo-host-search v0.1.0 (${OWNED_WORKTREE}/crates/platform/tilo-host-search)
+    Checking tilo-image-codec v0.1.0 (${OWNED_WORKTREE}/crates/platform/tilo-image-codec)
+    Checking tilo-ui-graph v0.1.0 (${OWNED_WORKTREE}/crates/dev/ui-graph)
+    Checking tilo-appearance v0.1.0 (${OWNED_WORKTREE}/crates/platform/tilo-appearance)
+    Checking tilo-headless-schema v0.1.0 (${OWNED_WORKTREE}/crates/dev/headless-schema)
+    Checking tilo-paint-stream v0.1.0 (${OWNED_WORKTREE}/crates/browser/paint-stream)
+    Checking tilo-feedback-review v0.1.0 (${OWNED_WORKTREE}/crates/collab/feedback-review)
+   Compiling tilo-app v0.1.0 (${OWNED_WORKTREE}/crates/sdk/tilo-app)
+    Checking tilo-feedback v0.1.0 (${OWNED_WORKTREE}/crates/collab/feedback)
+   Compiling icu_locale_data v2.3.0
+   Compiling strsim v0.11.1
+   Compiling ident_case v1.0.1
+   Compiling prettyplease v0.2.37
+   Compiling icu_collator_data v2.3.0
+    Checking icu_locale v2.3.1
+   Compiling strum_macros v0.27.2
+    Checking serde_spanned v0.6.9
+    Checking toml_datetime v0.6.11
+   Compiling enum-ordinalize-derive v4.4.1
+   Compiling comemo-macros v0.5.1
+    Checking ciborium-io v0.2.2
+   Compiling typst-utils v0.15.1
+    Checking toml_write v0.1.2
+    Checking rten-base v0.27.0
+    Checking unscanny v0.1.0
+    Checking mutate_once v0.1.2
+   Compiling typeid v1.0.3
+    Checking kamadak-exif v0.6.1
+    Checking toml_edit v0.22.27
+    Checking ciborium-ll v0.2.2
+    Checking comemo v0.5.1
+    Checking enum-ordinalize v4.4.1
+    Checking strum v0.27.2
+   Compiling buffa-descriptor v0.9.2
+    Checking serde_path_to_error v0.1.20
+    Checking quick-xml v0.38.4
+    Checking roman-numerals-rs v3.1.0
+   Compiling palette v0.7.6
+   Compiling rust_decimal v1.42.1
+    Checking chinese-variant v1.1.6
+    Checking thin-vec v0.2.19
+    Checking unsafe-libyaml v0.2.11
+   Compiling codex v0.3.0
+    Checking unicode-math-class v0.1.0
+   Compiling by_address v1.2.1
+   Compiling palette_derive v0.7.6
+    Checking serde_yaml v0.9.34+deprecated
+    Checking chinese-number v0.7.8
+    Checking biblatex v0.12.0
+    Checking citationberg v0.7.0
+   Compiling buffa-codegen v0.9.2
+    Checking icu_collator v2.3.1
+    Checking ciborium v0.2.2
+    Checking toml v0.8.23
+    Checking rten-parallel v0.27.0
+    Checking tilo-relay-protocol v0.1.0 (${OWNED_WORKTREE}/crates/hosting/tilo-relay-protocol)
+    Checking typst-timing v0.15.1
+    Checking approx v0.5.1
+    Checking csv-core v0.1.13
+    Checking ecow v0.2.6
+    Checking fast-srgb8 v1.0.0
+    Checking typst-syntax v0.15.1
+    Checking csv v1.4.0
+    Checking rten-tensor v0.27.0
+    Checking hayagriva v0.10.1
+   Compiling buffa-build v0.9.2
+    Checking tilo-document v0.1.0 (${OWNED_WORKTREE}/crates/doc/tilo-document)
+   Compiling typst-macros v0.15.1
+    Checking lipsum v0.9.1
+   Compiling launcher v0.1.0 (${OWNED_WORKTREE}/crates/packaging/launcher)
+    Checking glidesort v0.1.2
+    Checking typed-arena v2.0.2
+    Checking rten-simd v0.27.0
+    Checking az v1.3.0
+    Checking typst-library v0.15.1
+    Checking runtime-bundle v0.1.0 (${OWNED_WORKTREE}/crates/packaging/runtime-bundle)
+    Checking tilo-desktop-entry v0.1.0 (${OWNED_WORKTREE}/crates/system/desktop-entry)
+    Checking rten-gemm v0.27.0
+    Checking rten-vecmath v0.27.0
+    Checking rten-shape-inference v0.27.0
+    Checking neighbour-wire v0.1.0 (${OWNED_WORKTREE}/crates/collab/neighbour-wire)
+    Checking agent-provider-config v0.1.0 (${OWNED_WORKTREE}/crates/agent/provider-config)
+    Checking icu_provider_blob v2.3.0
+   Compiling local-model-service v0.1.0 (${OWNED_WORKTREE}/crates/agent/local-model-service)
+    Checking rten-onnx v0.27.0
+    Checking rten v0.27.0
+    Checking typst-layout v0.15.1
+   Compiling waproto v0.7.0
+    Checking tilo-relay-client v0.1.0 (${OWNED_WORKTREE}/crates/hosting/tilo-relay-client)
+    Checking system-extension v0.1.0 (${OWNED_WORKTREE}/crates/system/system-extension)
+    Checking rusticata-macros v4.1.0
+   Compiling ar_archive_writer v0.5.3
+    Checking x509-cert v0.2.5
+   Compiling asn1-rs-derive v0.6.0
+   Compiling asn1-rs-impl v0.2.0
+    Checking asn1-rs v0.7.1
+    Checking cms v0.2.3
+   Compiling psm v0.1.31
+    Checking tilo-runner-native v0.1.0 (${OWNED_WORKTREE}/crates/sdk/runner-native)
+    Checking tilo-rich-text v0.1.0 (${OWNED_WORKTREE}/crates/sdk/tilo-rich-text)
+    Checking tilo-segment v0.1.0 (${OWNED_WORKTREE}/crates/media/segment)
+   Compiling darling_core v0.23.0
+   Compiling darling_core v0.24.1
+    Checking crypto-primes v0.7.2
+   Compiling wacore-binary v0.7.0
+   Compiling emoji v0.1.0 (${OWNED_WORKTREE}/crates/text/emoji)
+    Checking pkcs1 v0.8.0-rc.4
+    Checking fastbloom v0.17.0
+    Checking castaway v0.2.4
+    Checking mcf v0.6.0
+    Checking password-hash v0.6.1
+   Compiling oid-registry v0.8.1
+   Compiling prettyplease v0.3.0
+    Checking sha-crypt v0.6.0
+    Checking compact_str v0.10.0
+    Checking quinn-proto v0.11.18
+    Checking rsa v0.10.0-rc.18
+   Compiling darling_macro v0.24.1
+   Compiling darling_macro v0.23.0
+    Checking tilo-model-gateway v0.1.0 (${OWNED_WORKTREE}/crates/agent/model-gateway)
+    Checking authenticode v0.6.0
+    Checking quinn-udp v0.5.14
+    Checking tilo-peer-state v0.1.0 (${OWNED_WORKTREE}/crates/collab/tilo-peer-state)
+    Checking sfv v0.15.0
+    Checking tilo-contact-directory v0.1.0 (${OWNED_WORKTREE}/crates/platform/tilo-contact-directory)
+    Checking hayro-svg v0.7.0
+    Checking async-lock v3.4.2
+    Checking web-transport-trait v0.4.0
+   Compiling stacker v0.1.24
+    Checking kio v0.6.0
+   Compiling wacore-derive v0.7.0
+   Compiling khronos_api v3.1.0
+   Compiling icu_calendar_data v2.3.0
+   Compiling cfg_aliases v0.1.1
+   Compiling drm-sys v0.8.0
+   Compiling nix v0.28.0
+    Checking wacore-libsignal v0.7.0
+    Checking typst-svg v0.15.1
+    Checking web-transport-proto v0.6.2 (${OWNED_WORKTREE}/vendor/web-transport-proto)
+    Checking quinn v0.11.9
+    Checking tilo-crypto v0.1.0 (${OWNED_WORKTREE}/crates/system/tilo-crypto)
+    Checking tilo-delivery-protocol v0.1.0 (${OWNED_WORKTREE}/crates/hosting/tilo-delivery-protocol)
+   Compiling darling v0.24.1
+   Compiling darling v0.23.0
+    Checking der-parser v10.0.0
+    Checking tilo-environment v0.1.0 (${OWNED_WORKTREE}/crates/runtime/environment)
+    Checking tilo-doc-pdf v0.1.0 (${OWNED_WORKTREE}/crates/doc/tilo-doc-pdf)
+    Checking hayro-write v0.7.0
+    Checking tilo-libvirt-domain v0.1.0 (${OWNED_WORKTREE}/crates/system/libvirt-domain)
+    Checking tilo-bluez v0.1.0 (${OWNED_WORKTREE}/crates/system/tilo-bluez)
+    Checking phf_shared v0.12.1
+    Checking web-async v0.1.5
+   Compiling libudev-sys v0.1.4
+    Checking moq-pattern v0.1.0
+   Compiling icu_time_data v2.3.0
+   Compiling drm-fourcc v2.2.0
+   Compiling chrono-tz v0.10.4
+   Compiling io-lifetimes v1.0.11
+   Compiling icu_decimal_data v2.3.0
+   Compiling icu_plurals_data v2.3.0
+    Checking linux-raw-sys v0.6.5
+    Checking xmp-writer v0.3.3
+    Checking krilla v0.8.2
+    Checking os-actions v0.1.0 (${OWNED_WORKTREE}/crates/system/os-actions)
+    Checking moq-net v0.3.3
+    Checking phf v0.12.1
+    Checking tilo-relay-session v0.1.0 (${OWNED_WORKTREE}/crates/hosting/tilo-relay-session)
+   Compiling bon-macros v3.10.2
+   Compiling serde_with_macros v3.21.0
+    Checking web-transport-quinn v0.12.1 (${OWNED_WORKTREE}/vendor/web-transport-quinn)
+    Checking typst-html v0.15.1
+    Checking tilo-messaging v0.1.0 (${OWNED_WORKTREE}/crates/platform/tilo-messaging)
+   Compiling wacore v0.7.0
+    Checking tilo-reference v0.1.0 (${OWNED_WORKTREE}/crates/collab/reference)
+    Checking tilo-ocr v0.1.0 (${OWNED_WORKTREE}/crates/media/ocr)
+    Checking tilo-unlock-protocol v0.1.0 (${OWNED_WORKTREE}/crates/collab/tilo-unlock-protocol)
+   Compiling prost-derive v0.14.4
+    Checking calendrical_calculations v0.2.4
+    Checking fixed_decimal v0.7.2
+   Compiling libseat-sys v0.2.0
+   Compiling acto v0.8.2
+    Checking i_float v5.0.0
+    Checking serde-big-array v0.5.1
+   Compiling notes v0.1.0 (${OWNED_WORKTREE}/apps/notes)
+   Compiling xml-rs v0.8.28
+   Compiling input-sys v1.18.0
+   Compiling icu_datetime_data v2.3.0
+   Compiling tilo-capture v0.1.0 (${OWNED_WORKTREE}/crates/platform/tilo-capture)
+    Checking ixdtf v0.6.6
+   Compiling gbm-sys v0.4.0
+    Checking icu_calendar v2.3.0
+   Compiling gl_generator v0.14.0
+    Checking wacore-appstate v0.7.0
+    Checking i_shape v5.0.0
+    Checking tilo-identity-host v0.1.0 (${OWNED_WORKTREE}/crates/runtime/tilo-identity-host)
+    Checking prost v0.14.4
+    Checking tilo-moq v0.1.0 (${OWNED_WORKTREE}/crates/hosting/tilo-moq)
+    Checking typst-realize v0.15.1
+    Checking bon v3.10.2
+    Checking typst-eval v0.15.1
+    Checking serde_with v3.21.0
+    Checking krilla-svg v0.8.1
+    Checking drm-ffi v0.9.0
+    Checking word-processor v0.1.0 (${OWNED_WORKTREE}/apps/word-processor)
+    Checking x509-parser v0.17.0
+    Checking wacore-noise v0.7.0
+    Checking tilo-vision v0.1.0 (${OWNED_WORKTREE}/crates/media/vision)
+    Checking tilo-egress v0.1.0 (${OWNED_WORKTREE}/crates/runtime/egress)
+    Checking legacy-agent-protocol v0.1.0 (${OWNED_WORKTREE}/crates/runtime/legacy-agent-protocol)
+    Checking pim-lines v0.1.0 (${OWNED_WORKTREE}/crates/text/pim-lines)
+    Checking filedescriptor v0.8.3
+    Checking pixglyph v0.6.1
+    Checking flume v0.12.0
+    Checking socket-pktinfo v0.4.1
+   Compiling fcast-sender-sdk v0.3.0 (${OWNED_WORKTREE}/vendor/fcast-sender-sdk)
+    Checking mediatype v0.21.0
+    Checking serial2 v0.2.37
+    Checking if-addrs v0.15.0
+   Compiling ebook v0.1.0 (${OWNED_WORKTREE}/apps/ebook)
+    Checking shell-words v1.1.1
+   Compiling libseat v0.2.4
+    Checking infer v0.19.0
+    Checking smol_str v0.1.24
+   Compiling pdf-viewer v0.1.0 (${OWNED_WORKTREE}/apps/pdf-viewer)
+    Checking urlencoding v2.1.3
+   Compiling cgmath v0.18.0
+   Compiling video-editor v0.1.0 (${OWNED_WORKTREE}/apps/video-editor)
+   Compiling cap-fs-ext v3.4.6
+    Checking i_key_sort v0.11.0
+    Checking i_tree v0.19.0
+   Compiling video-player v0.1.0 (${OWNED_WORKTREE}/apps/video-player)
+    Checking i_overlay v9.0.0
+    Checking vello_common v0.3.0
+    Checking trash v5.2.6
+    Checking typst-pdf v0.15.1
+    Checking portable-pty v0.9.0
+    Checking mdns-sd v0.20.3
+    Checking feed-rs v2.4.0
+    Checking typst-render v0.15.1
+    Checking legacy-vm v0.1.0 (${OWNED_WORKTREE}/crates/runtime/legacy-vm)
+    Checking env-tools v0.1.0 (${OWNED_WORKTREE}/crates/runtime/env-tools)
+    Checking photos v0.1.0 (${OWNED_WORKTREE}/apps/photos)
+    Checking fcast-protocol v0.2.0
+    Checking drm v0.14.1
+    Checking icu_plurals v2.3.0
+    Checking udev v0.9.3
+    Checking icu_decimal v2.3.0
+    Checking icu_time v2.3.0
+    Checking typst v0.15.1
+    Checking google-cast-protocol v0.1.0 (${OWNED_WORKTREE}/vendor/google-cast-protocol)
+   Compiling smithay v0.7.0
+    Checking chat v0.1.0 (${OWNED_WORKTREE}/apps/chat)
+    Checking messages v0.1.0 (${OWNED_WORKTREE}/apps/messages)
+    Checking x509-parser v0.18.1
+    Checking tilo-subject v0.1.0 (${OWNED_WORKTREE}/crates/platform/tilo-subject)
+    Checking passwords v0.1.0 (${OWNED_WORKTREE}/apps/passwords)
+    Checking tilo-desktop-search v0.1.0 (${OWNED_WORKTREE}/crates/session/desktop-search)
+    Checking tilo-oci-images v0.1.0 (${OWNED_WORKTREE}/crates/packaging/oci-images)
+    Checking clap_complete v4.6.9
+    Checking tilo-wet-media v0.1.0 (${OWNED_WORKTREE}/crates/media/wet-media)
+    Checking tilo-typst-fonts v0.1.0 (${OWNED_WORKTREE}/crates/platform/tilo-typst-fonts)
+    Checking greetd_ipc v0.10.3
+    Checking icu_pattern v0.5.0
+    Checking vte v0.15.0
+    Checking approx v0.4.0
+   Compiling app-host v0.1.0 (${OWNED_WORKTREE}/crates/packaging/app-host)
+    Checking similar v2.7.0
+    Checking canvas v0.1.0 (${OWNED_WORKTREE}/apps/canvas)
+    Checking diffmerge v0.1.0 (${OWNED_WORKTREE}/apps/diffmerge)
+    Checking terminal v0.2.1 (${OWNED_WORKTREE}/apps/terminal)
+    Checking icu_datetime v2.3.0
+    Checking vello_cpu v0.3.0
+    Checking greetd-client v0.1.0 (${OWNED_WORKTREE}/crates/session/greetd-client)
+    Checking typst-editor v0.1.0 (${OWNED_WORKTREE}/apps/typst-editor)
+    Checking app-cli v0.1.0 (${OWNED_WORKTREE}/crates/packaging/app-cli)
+    Checking tilo-desktop-surface v0.1.0 (${OWNED_WORKTREE}/crates/session/desktop-surface)
+    Checking ush v0.1.0 (${OWNED_WORKTREE}/crates/runtime/ush)
+    Checking agent v0.1.0 (${OWNED_WORKTREE}/apps/agent)
+    Checking gbm v0.18.0
+    Checking camera v0.1.0 (${OWNED_WORKTREE}/apps/camera)
+    Checking input v0.9.1
+    Checking whatsapp-rust v0.7.0
+    Checking feeds v0.1.0 (${OWNED_WORKTREE}/apps/feeds)
+    Checking swarm-discovery v0.6.3
+    Checking host-fs v0.1.0 (${OWNED_WORKTREE}/crates/system/host-fs)
+    Checking calendar v0.1.0 (${OWNED_WORKTREE}/apps/calendar)
+    Checking contacts v0.1.0 (${OWNED_WORKTREE}/apps/contacts)
+    Checking clocks v0.1.0 (${OWNED_WORKTREE}/apps/clocks)
+    Checking tilo-joined-room v0.1.0 (${OWNED_WORKTREE}/crates/collab/tilo-joined-room)
+    Checking tilo-action-broker v0.1.0 (${OWNED_WORKTREE}/crates/collab/tilo-action-broker)
+    Checking windows-vm v0.1.0 (${OWNED_WORKTREE}/crates/windows/windows-vm)
+    Checking slides v0.1.0 (${OWNED_WORKTREE}/apps/slides)
+    Checking totp v0.1.0 (${OWNED_WORKTREE}/apps/totp)
+    Checking maps v0.1.0 (${OWNED_WORKTREE}/apps/maps)
+    Checking shortcuts v0.1.0 (${OWNED_WORKTREE}/apps/shortcuts)
+    Checking hex-editor v0.1.0 (${OWNED_WORKTREE}/apps/hex-editor)
+    Checking calculator v0.1.0 (${OWNED_WORKTREE}/apps/calculator)
+    Checking speed-test v0.1.0 (${OWNED_WORKTREE}/apps/speed-test)
+    Checking tube v0.1.0 (${OWNED_WORKTREE}/apps/tube)
+    Checking weather v0.1.0 (${OWNED_WORKTREE}/apps/weather)
+    Checking scratchpad v0.1.0 (${OWNED_WORKTREE}/apps/scratchpad)
+    Checking themes v0.1.0 (${OWNED_WORKTREE}/apps/themes)
+    Checking chip-design v0.1.0 (${OWNED_WORKTREE}/apps/chip-design)
+    Checking api-tester v0.1.0 (${OWNED_WORKTREE}/apps/api-tester)
+    Checking snippets v0.1.0 (${OWNED_WORKTREE}/apps/snippets)
+    Checking music v0.1.0 (${OWNED_WORKTREE}/apps/music)
+    Checking sheets v0.1.0 (${OWNED_WORKTREE}/apps/sheets)
+    Checking tilo-browser-peer v0.1.0 (${OWNED_WORKTREE}/crates/browser/tilo-browser-peer)
+    Checking tilo-installed-apps v0.1.0 (${OWNED_WORKTREE}/crates/packaging/installed-apps)
+    Checking tilo-os-search v0.1.0 (${OWNED_WORKTREE}/crates/runtime/os-search)
+    Checking app-registry v0.1.0 (${OWNED_WORKTREE}/crates/packaging/app-registry)
+    Checking console-control v0.1.0 (${OWNED_WORKTREE}/crates/session/console-control)
+    Checking compat-catalogue v0.1.0 (${OWNED_WORKTREE}/crates/windows/compat-catalogue)
+    Checking host-info v0.1.0 (${OWNED_WORKTREE}/crates/system/host-info)
+   Compiling store v0.1.2 (${OWNED_WORKTREE}/apps/store)
+    Checking appendlist v1.4.0
+    Checking atomic_float v1.1.0
+    Checking sdd v3.0.10
+    Checking scc v2.4.0
+    Checking browser v0.1.0 (${OWNED_WORKTREE}/apps/browser)
+    Checking compat-service v0.1.0 (${OWNED_WORKTREE}/crates/windows/compat-service)
+    Checking tilo-runtime v0.1.0 (${OWNED_WORKTREE}/crates/runtime/tilo-runtime)
+    Checking tilo-agent-participant v0.1.0 (${OWNED_WORKTREE}/crates/agent/agent-participant)
+    Checking file-explorer v0.2.0 (${OWNED_WORKTREE}/apps/file-explorer)
+    Checking iroh-mdns-address-lookup v0.5.0
+    Checking tilo-messaging-protocol v0.1.0 (${OWNED_WORKTREE}/crates/system/messaging-protocol)
+    Checking tilo-projector v0.1.0 (${OWNED_WORKTREE}/crates/system/projector)
+    Checking tilo-desktop v0.1.0 (${OWNED_WORKTREE}/crates/session/desktop)
+    Checking tilo-cpu-raster v0.1.0 (${OWNED_WORKTREE}/crates/sdk/tilo-cpu-raster)
+    Checking code-editor v0.1.0 (${OWNED_WORKTREE}/apps/code-editor)
+    Checking tilo-callstream v0.1.0 (${OWNED_WORKTREE}/crates/collab/tilo-callstream)
+    Checking reis v0.7.1
+    Checking tilo-lockdown-policy v0.1.0 (${OWNED_WORKTREE}/crates/session/tilo-lockdown-policy)
+    Checking tilo-control v0.1.0 (${OWNED_WORKTREE}/crates/session/control-cli)
+    Checking sysinfo v0.32.1
+   Compiling serial_test_derive v3.4.0
+    Checking qcms v0.3.0
+    Checking serial_test v3.4.0
+    Checking tilo-relay v0.1.0 (${OWNED_WORKTREE}/crates/hosting/tilo-relay)
+    Checking greeter v0.1.0 (${OWNED_WORKTREE}/crates/session/greeter)
+    Checking collab-fixtures v0.1.0 (${OWNED_WORKTREE}/crates/collab/collab-fixtures)
+    Checking tilo-copy-lint v0.1.0 (${OWNED_WORKTREE}/crates/dev/copy-lint)
+    Checking shell v0.1.0 (${OWNED_WORKTREE}/crates/session/shell)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 5m 33s

@@ -1,0 +1,7 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.81s
+info: using target runner `${OWNED_WORKTREE}/tools/cargo-runner.sh` defined by `target.cfg(all(target_arch = "x86_64", target_os = "linux")).runner` within `${OWNED_WORKTREE}/.cargo/config.toml`
+────────────
+ Nextest run ID 5e9df8f3-2f15-4014-979d-5a9b09aeec5b with nextest profile: ci
+    Starting 1 test across 1 binary (2496 tests skipped)
+────────────
+     Summary [   0.065s] 1 test run: 1 passed, 2496 skipped

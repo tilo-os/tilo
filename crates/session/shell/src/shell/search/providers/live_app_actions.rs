@@ -3704,7 +3704,7 @@ mod tests {
                 record_id: "root".into(),
             };
             broker.replace_action_directory_roots_for_test(vec![root]);
-            let provider = LiveAppActionsProvider::new_with_fixture_identity(broker.clone());
+            let provider = LiveAppActionsProvider::new_with_fixture_identity(broker);
             let row = |label: &str, action: &str| CatalogueRow {
                 provider: "9".into(),
                 app_id: "so.tilo.remote".into(),
@@ -3810,7 +3810,7 @@ mod tests {
             record_id: "root".into(),
         };
         broker.replace_action_directory_roots_for_test(vec![root]);
-        let provider = LiveAppActionsProvider::new_with_fixture_identity(broker.clone());
+        let provider = LiveAppActionsProvider::new_with_fixture_identity(broker);
         let mut descriptor = exported("Read page content", "read");
         descriptor
             .contract
@@ -4764,7 +4764,7 @@ mod tests {
                 record_id: "library".into(),
             };
             broker.replace_action_directory_roots_for_test(vec![root]);
-            let provider = LiveAppActionsProvider::new_with_fixture_identity(broker.clone());
+            let provider = LiveAppActionsProvider::new_with_fixture_identity(broker);
             provider.directory_pages.borrow_mut().insert(
                 (9, actor, "book".into(), Vec::new()),
                 page(

@@ -250,5 +250,214 @@
       "apps/browser/chromium/tests/composition_observer.mjs": "f01872948c50a7777cf7ccf215566a5c5b535d65ff78956d66df7141f5c95985",
       "tools/tests/test_browser_composition_observer.py": "6dd983fd026bba1b22e330df695eae21abe3ff802b792d7edc22c9b70a844647"
     }
+  },
+  "provider_fixture_lint_repair": {
+    "failed_source_head": "89a1ccc2b9025dd58d2088b2a32b7cf6306059b0",
+    "failed_run": 93151,
+    "failed_clippy_job": 11,
+    "reported_lines": [
+      3707,
+      3813,
+      4767
+    ],
+    "source_path": "crates/session/shell/src/shell/search/providers/live_app_actions.rs",
+    "baseline_sha256": "f59b0d9a85db3b1f310734664563603f9dd800ea4b732088095f19ad1cda6886",
+    "candidate_sha256": "5064767f582855f30bc513ae6eb147c352f021159cf2ec4bd3d73e812413dbbb",
+    "production_behavior_changed": false,
+    "original_test_assertions_changed": false,
+    "actual_selected_tests_pass": 3,
+    "selection_note": "Nextest executes one named case per invocation; 2496 unrelated library cases are filtered out, not reported as selected passes. The validation-only test flag refusal occurred before execution and is preserved. A controller expecting Cargo summary format was corrected to recognize the actual Nextest 1-selected/1-passed report without rerunning the completed case.",
+    "validation": {
+      "source_sha256": "5064767f582855f30bc513ae6eb147c352f021159cf2ec4bd3d73e812413dbbb",
+      "source_path": "crates/session/shell/src/shell/search/providers/live_app_actions.rs",
+      "records": [
+        {
+          "name": "strict-all-target-clippy",
+          "command": [
+            "${REMOTE_CARGO}",
+            "--no-fallback",
+            "--no-fetch",
+            "clippy",
+            "--locked",
+            "-j2",
+            "-p",
+            "shell",
+            "--all-targets",
+            "--keep-going",
+            "--",
+            "-D",
+            "warnings"
+          ],
+          "exit": 0,
+          "seconds": 284.0180560600129,
+          "sha256": "2ebf2118a793f085c7f2dcb04197529d498d93193ac0068401ed98686f110438",
+          "canonical_log": "tools/release/fixtures/dictation_browser_composition_20261010/provider-strict-all-target-clippy.log",
+          "raw_log": "dictation-provider-strict-all-target-clippy.log"
+        },
+        {
+          "name": "test-invocation-rejected-before-execution",
+          "command": [
+            "${REMOTE_CARGO}",
+            "--no-fallback",
+            "--no-fetch",
+            "test",
+            "--locked",
+            "-j2",
+            "-p",
+            "shell",
+            "--lib",
+            "remote_action_pages_never_repeat_and_cursors_are_self_contained"
+          ],
+          "exit": 2,
+          "seconds": 0.0034756020177155733,
+          "sha256": "ae93bdb5511690b96a9b34f1b5c26c30e26aa6bc86d0ebb6c4d2ad81db4c96ce",
+          "canonical_log": "tools/release/fixtures/dictation_browser_composition_20261010/provider-test-invocation-rejected-before-execution.log",
+          "raw_log": "dictation-provider-test-argument-refusal.log"
+        },
+        {
+          "name": "remote_action_pages_never_repeat_and_cursors_are_self_contained",
+          "command": [
+            "${REMOTE_CARGO}",
+            "--no-fallback",
+            "test",
+            "--locked",
+            "-j2",
+            "-p",
+            "shell",
+            "--lib",
+            "remote_action_pages_never_repeat_and_cursors_are_self_contained"
+          ],
+          "exit": 0,
+          "seconds": 247.42594548000488,
+          "sha256": "7b5fbde94662ec7f2aa1682bb1416b6e782ae29e0328d6a1bd8727e64ae74557",
+          "executed_tests": 1,
+          "filtered_out_tests": 2496,
+          "runner": "nextest",
+          "result": "PASS",
+          "canonical_log": "tools/release/fixtures/dictation_browser_composition_20261010/provider-remote_action_pages_never_repeat_and_cursors_are_self_contained.log",
+          "raw_log": "dictation-provider-remote_action_pages_never_repeat_and_cursors_are_self_contained.log"
+        },
+        {
+          "name": "programmatic_directory_actions_resolve_without_entering_palette_search",
+          "command": [
+            "${REMOTE_CARGO}",
+            "--no-fallback",
+            "test",
+            "--locked",
+            "-j2",
+            "-p",
+            "shell",
+            "--lib",
+            "programmatic_directory_actions_resolve_without_entering_palette_search"
+          ],
+          "exit": 0,
+          "seconds": 60.4548118779785,
+          "sha256": "58f1ab66124995008d9eebc60103cf0aa4adf97ddb4202405f479cff78e94bdd",
+          "executed_tests": 1,
+          "runner": "nextest",
+          "filtered_out_tests": 2496,
+          "canonical_log": "tools/release/fixtures/dictation_browser_composition_20261010/provider-programmatic_directory_actions_resolve_without_entering_palette_search.log",
+          "raw_log": "dictation-provider-programmatic_directory_actions_resolve_without_entering_palette_search.log"
+        },
+        {
+          "name": "live_actions_follow_the_authenticated_resource_room_and_scope",
+          "command": [
+            "${REMOTE_CARGO}",
+            "--no-fallback",
+            "test",
+            "--locked",
+            "-j2",
+            "-p",
+            "shell",
+            "--lib",
+            "live_actions_follow_the_authenticated_resource_room_and_scope"
+          ],
+          "exit": 0,
+          "seconds": 2.8118557080160826,
+          "sha256": "386b4a8543682d172dabd1e84d006b254141dff36377344df578c7ac1ef6f0f5",
+          "executed_tests": 1,
+          "runner": "nextest",
+          "filtered_out_tests": 2496,
+          "canonical_log": "tools/release/fixtures/dictation_browser_composition_20261010/provider-live_actions_follow_the_authenticated_resource_room_and_scope.log",
+          "raw_log": "dictation-provider-live_actions_follow_the_authenticated_resource_room_and_scope.log"
+        },
+        {
+          "name": "shell-tests-check",
+          "command": [
+            "${REMOTE_CARGO}",
+            "--no-fallback",
+            "--no-fetch",
+            "check",
+            "--locked",
+            "-j2",
+            "-p",
+            "shell",
+            "--tests"
+          ],
+          "exit": 0,
+          "seconds": 147.27913078694837,
+          "sha256": "b02d5a4492bbfecdddb912bf7e3a111ef9881f0183a7bb4b1a02d9c7cc59900e",
+          "canonical_log": "tools/release/fixtures/dictation_browser_composition_20261010/provider-shell-tests-check.log",
+          "raw_log": "dictation-provider-shell-tests-check.log"
+        }
+      ]
+    },
+    "portable_manifest": [
+      {
+        "path": "tools/release/fixtures/dictation_browser_composition_20261010/provider-strict-all-target-clippy.log",
+        "raw_sha256": "2ebf2118a793f085c7f2dcb04197529d498d93193ac0068401ed98686f110438",
+        "canonical_sha256": "da52f4141d365b7ac8195a608edce16eb049b729717a379fc7e5ec40a4daba44"
+      },
+      {
+        "path": "tools/release/fixtures/dictation_browser_composition_20261010/provider-test-invocation-rejected-before-execution.log",
+        "raw_sha256": "ae93bdb5511690b96a9b34f1b5c26c30e26aa6bc86d0ebb6c4d2ad81db4c96ce",
+        "canonical_sha256": "6c310f2567cfd25615e45c6dc7816e2576246630d85d7a081cc1acd0c748a88d"
+      },
+      {
+        "path": "tools/release/fixtures/dictation_browser_composition_20261010/provider-remote_action_pages_never_repeat_and_cursors_are_self_contained.log",
+        "raw_sha256": "7b5fbde94662ec7f2aa1682bb1416b6e782ae29e0328d6a1bd8727e64ae74557",
+        "canonical_sha256": "26f91439f8a76fc2043a0bed4f7aeb94949176cc57e073c17bcaff193d7119c0"
+      },
+      {
+        "path": "tools/release/fixtures/dictation_browser_composition_20261010/provider-programmatic_directory_actions_resolve_without_entering_palette_search.log",
+        "raw_sha256": "58f1ab66124995008d9eebc60103cf0aa4adf97ddb4202405f479cff78e94bdd",
+        "canonical_sha256": "ede677ade317b907d0776b81c4cdab6020662c6210b3e40db9516816ecc45f34"
+      },
+      {
+        "path": "tools/release/fixtures/dictation_browser_composition_20261010/provider-live_actions_follow_the_authenticated_resource_room_and_scope.log",
+        "raw_sha256": "386b4a8543682d172dabd1e84d006b254141dff36377344df578c7ac1ef6f0f5",
+        "canonical_sha256": "8087d5a76fa2a2c8094d8fc723a20710960a82a3fb61096cb5a2ce7dd54e4200"
+      },
+      {
+        "path": "tools/release/fixtures/dictation_browser_composition_20261010/provider-shell-tests-check.log",
+        "raw_sha256": "b02d5a4492bbfecdddb912bf7e3a111ef9881f0183a7bb4b1a02d9c7cc59900e",
+        "canonical_sha256": "fa0ac9ad6bc20780bc040852a3f3f6191d2ff9766a6a8cd43f13b6affe85a4c2"
+      },
+      {
+        "path": "tools/release/fixtures/dictation_browser_composition_20261010/provider-targeted-clippy.log",
+        "raw_sha256": "240b69ea60a859ddacc212e751a167ffb7c3b6da0973aba1b920020360d66fbb",
+        "canonical_sha256": "5366556303fd38c5c14da662c47deb7f312b61664ccb1e0e07768df5403b11c3"
+      },
+      {
+        "path": "tools/release/fixtures/dictation_browser_composition_20261010/provider-original-ci-clone-diagnostics.log",
+        "raw_sha256": "21a73200a353a00f102f2807214ea2057d51a4e8a1bc50b867a4d5e65b10bbfe",
+        "canonical_sha256": "21a73200a353a00f102f2807214ea2057d51a4e8a1bc50b867a4d5e65b10bbfe"
+      }
+    ],
+    "prior_quality_head": "89a1ccc2b9025dd58d2088b2a32b7cf6306059b0",
+    "prior_quality_status": "success",
+    "prior_quality_url": "/tilo/tilo/actions/runs/93152/jobs/0",
+    "idle_failure": {
+      "run": 93151,
+      "job": 8,
+      "reported_wakeups_per_second": 15.42,
+      "limit": 15,
+      "reported_app_messages": 0,
+      "reported_repaints": 0,
+      "existing_owner_via_integrator": true,
+      "threshold_changed": false,
+      "manually_retried": false,
+      "causal_resolution_claimed": false
+    }
   }
 }

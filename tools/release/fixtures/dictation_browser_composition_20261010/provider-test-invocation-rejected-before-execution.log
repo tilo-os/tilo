@@ -1,0 +1,3 @@
+${REMOTE_CARGO}: `--no-fetch` applies to build/check/clippy/rustc validation; use `--on-builder run` to run remotely
+usage: ${REMOTE_CARGO} [--diff] [--fallback] [--no-fallback] [--verbose]... [--on-builder] [--no-fetch] [--fetch PATH]... [--version] <cargo-subcommand> [cargo args...]
+(`${REMOTE_CARGO} --help` for more)
