@@ -356,7 +356,6 @@ mod native {
         }
     }
     /// The per-user cache directory that holds `tilo-internal-install`.
-    #[cfg(not(test))]
     pub(in crate::setup) fn cache_base() -> Result<std::path::PathBuf> {
         if let Some(cache) = tilo_paths::env_dir("XDG_CACHE_HOME") {
             Ok(cache)
@@ -371,11 +370,16 @@ mod native {
         manifest: String,
     }
     impl CacheRoot {
-        #[cfg(not(test))]
+        #[cfg_attr(
+            test,
+            expect(
+                dead_code,
+                reason = "coordinator tests use the deterministic fixture platform"
+            )
+        )]
         pub(in crate::setup) fn acquire(selected: &SelectedManifest) -> Result<Self> {
             Self::acquire_at(&cache_base()?, selected)
         }
-        #[cfg(not(test))]
         fn acquire_at(cache: &Path, selected: &SelectedManifest) -> Result<Self> {
             let parts = raw_components(cache.as_os_str().as_bytes())?;
             let root = File::open("/").map_err(io)?;
@@ -1169,7 +1173,13 @@ mod native {
 
         /// Verify once at actual consumption, then retain native guards through
         /// the callback, including its error path. Restore the original cursor.
-        #[cfg(not(test))]
+        #[cfg_attr(
+            test,
+            expect(
+                dead_code,
+                reason = "coordinator tests use the deterministic fixture platform"
+            )
+        )]
         pub(in crate::setup) fn with_verified_reader<T>(
             &mut self,
             cancel: &AtomicBool,
