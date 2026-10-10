@@ -11,6 +11,8 @@ pub mod golden_path;
 pub mod incremental;
 #[path = "kinds.rs"]
 pub mod kinds;
+#[path = "one_pass_reads.rs"]
+pub mod one_pass_reads;
 #[path = "schema.rs"]
 pub mod schema;
 #[path = "shape.rs"]

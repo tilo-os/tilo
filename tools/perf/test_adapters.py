@@ -233,6 +233,50 @@ class IdleWakeups(unittest.TestCase):
         self.assertEqual(nightly, set(adapters.IDLE_WAKEUPS_KPIS.values()))
 
 
+SCALING = ROOT / "crates/sdk/tilo-app/examples/framework-scaling.rs"
+
+
+def scaling_log(scale: float) -> str:
+    """framework-scaling's `open` output: the table, then one line per size."""
+    return "\n".join([
+        "tasks  open to first frame p50  allocations  heap held  heap per task",
+        f" 5000  {130 * scale:>20.3} ms      1707519   24677386         4698 B",
+        "",
+        f"FRAMEWORK-OPEN tasks=5000 samples_ms={130 * scale:.3f},{140 * scale:.3f},{120 * scale:.3f} "
+        "allocations=1707519 heap_per_task=4698",
+        f"FRAMEWORK-OPEN tasks=50000 samples_ms={1300 * scale:.3f},{1400 * scale:.3f} "
+        "allocations=16556849 heap_per_task=4454",
+    ])
+
+
+class FrameworkOpen(unittest.TestCase):
+    def test_every_open_is_a_sample_and_counts_are_per_run(self):
+        records = {item.kpi: item for item in adapters.framework_open([scaling_log(1.0), scaling_log(1.1)], ENV)}
+        opening = records["render.framework_open.ms.50k"]
+        self.assertEqual((opening.unit, opening.n, opening.max), ("ms", 4, 1540.0))
+        allocations = records["render.framework_open.allocations.5k"]
+        self.assertEqual((allocations.unit, allocations.n, allocations.p50), ("count", 2, 1707519.0))
+        self.assertEqual(records["render.framework_open.heap_per_item.50k"].unit, "bytes")
+        self.assertEqual(records["render.framework_open.ms.5k"].meta, {"runs": "2"})
+
+    def test_a_run_without_its_lines_fails(self):
+        with self.assertRaisesRegex(ValueError, "FRAMEWORK-OPEN"):
+            adapters.framework_open([scaling_log(1.0), "tasks  open to first frame p50"], ENV)
+
+    def test_the_fields_are_the_examples(self):
+        """The example prints the line the adapter reads."""
+        source = SCALING.read_text()
+        printed = source[source.index('"FRAMEWORK-OPEN'):]
+        for field in ("tasks", "samples_ms", "allocations", "heap_per_task"):
+            self.assertIn(f"{field}={{", printed)
+
+    def test_every_nightly_size_has_a_budget(self):
+        budgets = compare.load_budgets(compare.BUDGETS)
+        budgeted = {kpi for kpi in budgets.kpis if kpi.startswith("render.framework_open.")}
+        produced = {item.kpi for item in adapters.framework_open([scaling_log(1.0)], ENV)}
+        self.assertEqual(budgeted, produced)
+
+
 LOAD_BENCH = ROOT / "crates/hosting/tilo-relay/examples/relay_load/main.rs"
 
 
