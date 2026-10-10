@@ -46,15 +46,18 @@ needed_absent = ["libgst", "libglib-2.0", "libgobject-2.0", "libgio-2.0"]
 # Measured by Release / apps 90216 (x86_64) and 90299 (aarch64) with packed
 # relocations and -Bsymbolic-functions (TIL-604). The published runtime before
 # them (so.tilo.runtime 0.1.90033) was 241944696 / 223411008 bytes, with
-# 10.1 MB of relocation tables and 62k symbol relocations on each.
+# 10.1 MB of relocation tables and 62k symbol relocations on each. Symbol
+# relocations then fell with GLib and GStreamer loaded on first use (TIL-713,
+# Release / apps 90457 against 90458): 13558 -> 11970 (x86_64) and
+# 13571 -> 11983 (aarch64).
 [runtime.x86_64]
 bytes = 234618880
 relocation_bytes = 458752
 relocated_bytes = 7798784
-symbol_relocations = 13696
+symbol_relocations = 12096
 
 [runtime.aarch64]
 bytes = 215089152
 relocation_bytes = 458752
 relocated_bytes = 7471104
-symbol_relocations = 13760
+symbol_relocations = 12160
