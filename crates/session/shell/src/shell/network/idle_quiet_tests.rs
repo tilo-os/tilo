@@ -82,13 +82,24 @@ fn device(
     root: &SigningKey,
     capabilities: DeviceCapabilities,
 ) -> Arc<ShellNetwork> {
+    device_reaching(tree, dir, root, capabilities, Reach::Loopback)
+}
+
+/// [`device`] reaching peers as `reach` says.
+pub(super) fn device_reaching(
+    tree: WorkspaceTreeHandle,
+    dir: &std::path::Path,
+    root: &SigningKey,
+    capabilities: DeviceCapabilities,
+    reach: Reach,
+) -> Arc<ShellNetwork> {
     let root = root.clone();
     Arc::new(
         ShellNetwork::spawn_with(
             tree,
             &dir.join("device-private/keypair.bin"),
             &dir.join("peer-sync"),
-            Reach::Loopback,
+            reach,
             move |secret, _| {
                 let key = SigningKey::from_bytes(&secret.to_bytes());
                 let mut cert = DeviceCert {
@@ -392,7 +403,9 @@ fn a_converged_idle_pair_exchanges_no_messages_and_repaints_nothing_for_a_minute
 
 /// A desktop alone with a room of its own, as most are, wakes nothing while
 /// nobody uses it: no peer to keep alive, nothing to sync, and its
-/// compositor parked, so not even a frame tick reaches the network.
+/// compositor parked, so not even a frame tick reaches the network. Its
+/// relays wait the way an installed desktop's do (TIL-740): nobody could
+/// dial it, so it neither probes them nor holds a home relay open.
 #[test]
 #[serial_test::serial]
 fn a_lone_idle_desktop_keeps_its_network_runtime_asleep() {
@@ -410,11 +423,12 @@ fn a_lone_idle_desktop_keeps_its_network_runtime_asleep() {
     let workspace = tree.append_empty_workspace("Home");
     tree.adopt_ownerless_workspaces(&person);
     tree.desktop.active = workspace;
-    let net = device(
+    let net = device_reaching(
         tree.shared(),
         &dir.path().join("lone"),
         &root,
         DeviceCapabilities::primary(),
+        Reach::LoopbackHoldingRelays(super::reachability_tests::unused_relays()),
     );
     assert!(net.join_default_workspace());
     let deadline = Instant::now()
@@ -437,6 +451,10 @@ fn a_lone_idle_desktop_keeps_its_network_runtime_asleep() {
         wakeups.per_second() <= LONE_WAKEUP_BUDGET,
         "a lone idle desktop woke {:.2} times a second, over {LONE_WAKEUP_BUDGET}/s:\n{wakeups}",
         wakeups.per_second(),
+    );
+    assert!(
+        net.reachability.is_dormant(),
+        "a desktop nobody could dial started its relays"
     );
     drop(net);
 }
