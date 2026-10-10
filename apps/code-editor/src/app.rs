@@ -2848,6 +2848,7 @@ impl Widget for CodeApp {
             },
             "inactive_source_bytes": inactive_source_bytes,
             "editor_focused": self.editor.is_focused(),
+            "editor_bound": self.editor.is_bound(),
             "caret_line": caret_line,
             "caret_column": caret_column,
             "caret_count": self.editor.caret_count(),

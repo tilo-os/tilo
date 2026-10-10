@@ -341,12 +341,133 @@ impl ui::app::AppSurface for LocalSurface {
     fn set_cursor(&self, _: ui::winit::window::CursorIcon) {}
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct CodeOpenReadiness {
+    observed: bool,
+    buffer_selected: bool,
+    body_present: bool,
+    editor: CodeEditorReadiness,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct CodeEditorReadiness {
+    bound: bool,
+    ready: bool,
+    geometry: CodeGeometryReadiness,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct CodeGeometryReadiness {
+    root_positive: bool,
+    editor_positive: bool,
+}
+
+impl CodeOpenReadiness {
+    fn observe(snapshot: Option<&serde_json::Value>) -> Self {
+        let Some(snapshot) = snapshot.filter(|snapshot| snapshot.is_object()) else {
+            return Self::default();
+        };
+        let Some(buffer) = snapshot.get("buffer_id") else {
+            return Self::default();
+        };
+        if !(buffer.is_null() || buffer.is_string())
+            || snapshot["editor_bound"].as_bool().is_none()
+            || snapshot["ready"].as_bool().is_none()
+        {
+            return Self::default();
+        }
+        Self {
+            observed: true,
+            buffer_selected: snapshot["buffer_id"] == FILE,
+            body_present: snapshot["body_bytes"].as_u64().is_some(),
+            editor: CodeEditorReadiness {
+                bound: snapshot["editor_bound"].as_bool() == Some(true),
+                ready: snapshot["ready"].as_bool() == Some(true),
+                geometry: CodeGeometryReadiness {
+                    root_positive: positive_geometry(&snapshot["root_rect"]),
+                    editor_positive: positive_geometry(&snapshot["editor_rect"]),
+                },
+            },
+        }
+    }
+}
+
+fn positive_geometry(value: &serde_json::Value) -> bool {
+    let Some(rect) = value.as_array().filter(|rect| rect.len() == 4) else {
+        return false;
+    };
+    let coordinates = rect
+        .iter()
+        .map(serde_json::Value::as_f64)
+        .collect::<Option<Vec<_>>>();
+    coordinates.is_some_and(|coordinates| {
+        let [x0, y0, x1, y1] = coordinates.as_slice() else {
+            return false;
+        };
+        coordinates.iter().all(|coordinate| coordinate.is_finite()) && x1 > x0 && y1 > y0
+    })
+}
+
+#[derive(Debug)]
+struct CodeOpenTrace {
+    cold_before_invoke: bool,
+    last: CodeOpenReadiness,
+    ever_selected: bool,
+    ever_bound: bool,
+    changes_logged: u8,
+}
+
+impl CodeOpenTrace {
+    fn new(before: CodeOpenReadiness) -> Self {
+        let trace = Self {
+            cold_before_invoke: before.observed && !before.buffer_selected,
+            last: before,
+            ever_selected: before.buffer_selected,
+            ever_bound: before.editor.bound,
+            changes_logged: 0,
+        };
+        eprintln!("native-code-open before {trace:?}");
+        trace
+    }
+
+    fn observe(&mut self, observation: CodeOpenReadiness) {
+        self.ever_selected |= observation.buffer_selected;
+        self.ever_bound |= observation.editor.bound;
+        if self.last != observation {
+            self.last = observation;
+            if self.changes_logged < 16 {
+                self.changes_logged += 1;
+                eprintln!("native-code-open changed {self:?}");
+            }
+        }
+    }
+}
+
+impl Drop for CodeOpenTrace {
+    fn drop(&mut self) {
+        // Also retain the last closed observation when the unchanged hang
+        // bound unwinds. Never print the source snapshot or its identifiers.
+        eprintln!("native-code-open final {self:?}");
+    }
+}
+
 /// Exercise the same resource door used by accessibility and automation.
 fn open_semantic_resource(app: &mut ui::App) {
     use tilo_resource::Effect as _;
     let mut scene = ui::vello::Scene::new();
     app.surface_frame(&LocalSurface, &mut scene);
     app.refresh_semantic_tree();
+    let before =
+        CodeOpenReadiness::observe(app.controlled_native_input_snapshot_for_test().as_ref());
+    let mut observation = CodeOpenTrace::new(before);
+    assert!(
+        before.observed,
+        "the cold original Code root must be observable"
+    );
+    assert!(
+        !before.buffer_selected,
+        "the original Code root must be cold before Open"
+    );
     let effect = code_editor::CodeEditorEffect::Open { file: FILE.into() };
     let action = effect.id();
     let node = app
@@ -364,7 +485,9 @@ fn open_semantic_resource(app: &mut ui::App) {
         "native Code open effect to finish on the original worker",
         || {
             app.surface_frame(&LocalSurface, &mut scene);
-            app.controlled_native_input_snapshot_for_test()
+            let snapshot = app.controlled_native_input_snapshot_for_test();
+            observation.observe(CodeOpenReadiness::observe(snapshot.as_ref()));
+            snapshot
                 .is_some_and(|snapshot| snapshot["buffer_id"] == FILE && snapshot["ready"] == true)
         },
     );
@@ -378,6 +501,54 @@ fn open_semantic_resource(app: &mut ui::App) {
         snapshot["ready"], true,
         "native local rendering must bind the admitted resource"
     );
+}
+
+#[test]
+fn native_code_open_observation_refuses_unobservable_or_malformed_geometry() {
+    assert_eq!(
+        CodeOpenReadiness::observe(None),
+        CodeOpenReadiness::default()
+    );
+    assert_eq!(
+        CodeOpenReadiness::observe(Some(&serde_json::Value::Null)),
+        CodeOpenReadiness::default()
+    );
+    for geometry in [
+        serde_json::json!([0, 0, 1]),
+        serde_json::json!([0, 0, "private", 1]),
+        serde_json::json!([1, 0, 0, 1]),
+    ] {
+        assert!(!positive_geometry(&geometry));
+    }
+    assert!(positive_geometry(&serde_json::json!([0, 0, 1, 1])));
+}
+
+#[test]
+fn native_code_open_observation_retains_execution_even_after_presentation_resets() {
+    let mut trace = CodeOpenTrace::new(CodeOpenReadiness {
+        observed: true,
+        ..Default::default()
+    });
+    let opened = CodeOpenReadiness::observe(Some(&serde_json::json!({
+        "buffer_id": FILE, "body_bytes": 0, "editor_bound": true,
+        "root_rect": [0, 0, 1, 1], "editor_rect": [0, 0, 1, 1], "ready": true,
+        "body_hash": "private-content-hash", "private": "private-editor-content"
+    })));
+    assert!(opened.observed && opened.buffer_selected && opened.body_present);
+    assert!(opened.editor.bound && opened.editor.ready);
+    assert!(opened.editor.geometry.root_positive && opened.editor.geometry.editor_positive);
+    for _ in 0..20 {
+        trace.observe(opened);
+        trace.observe(CodeOpenReadiness::default());
+    }
+    assert_eq!(trace.changes_logged, 16);
+    trace.observe(CodeOpenReadiness::default());
+    assert!(trace.cold_before_invoke);
+    assert!(trace.ever_selected && trace.ever_bound);
+    let closed = format!("{trace:?}");
+    assert!(!closed.contains(FILE));
+    assert!(!closed.contains("private"));
+    assert!(!closed.contains("rect"));
 }
 
 fn connect_manager(

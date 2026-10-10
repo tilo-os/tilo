@@ -103,7 +103,24 @@ impl super::App {
     /// Read the same state observer used around scheduled native inputs.
     #[cfg(all(feature = "native", any(test, feature = "test-support")))]
     pub fn controlled_native_input_snapshot_for_test(&self) -> Option<serde_json::Value> {
-        self.native_input_snapshot()
+        let mut snapshot = self.native_input_snapshot()?;
+        if let Some(snapshot) = snapshot.as_object_mut() {
+            snapshot.insert(
+                "control_delivery".into(),
+                serde_json::json!({
+                    "pending_control": crate::widget::controls::has_pending_control_invocation(
+                        self.root_widget.as_ref(),
+                    ),
+                    "framework_input": self.framework_input.get(),
+                    "history_ready": self.published_action_history_ready_after_refresh(),
+                    "broker_connected": self.collaboration.manager.is_connected(),
+                    "broker_requests_pending": !self.actions.broker_requests.is_empty(),
+                    "bound_invocations_pending": !self.actions.bound_invocations.is_empty(),
+                    "local_invocations_pending": !self.actions.local_invocations.is_empty(),
+                }),
+            );
+        }
+        Some(snapshot)
     }
 
     /// Independently sample the existing owner and read gates for diagnosis.
