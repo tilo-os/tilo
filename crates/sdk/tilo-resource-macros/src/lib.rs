@@ -37,6 +37,25 @@ fn krate() -> Tokens {
 ///
 /// A struct's `Model::SHAPE` lists its stored fields, so layout-aware services
 /// (History restore) reconcile it field by field.
+/// The app's committed `surface.toml` (the file its package ships), as
+/// `Option<&'static [u8]>`: `Some` with the file's bytes when the crate
+/// that expands it has one at its root, else `None`.
+#[proc_macro]
+pub fn committed_surface(_input: TokenStream) -> TokenStream {
+    let path = std::env::var_os("CARGO_MANIFEST_DIR")
+        .map(std::path::PathBuf::from)
+        .map(|dir| dir.join("surface.toml"))
+        .filter(|path| path.is_file());
+    if let Some(path) = path.and_then(|path| path.to_str().map(str::to_owned)) {
+        quote::quote! {
+            ::core::option::Option::Some(::core::include_bytes!(#path) as &'static [u8])
+        }
+    } else {
+        quote::quote! { ::core::option::Option::<&'static [u8]>::None }
+    }
+    .into()
+}
+
 #[proc_macro_derive(Model, attributes(model))]
 pub fn derive_model(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);

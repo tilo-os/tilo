@@ -615,6 +615,13 @@ impl HostContext {
         // The window's code finds it wherever it runs: an action applying,
         // an action's arguments being built.
         tilo_resource::content::register(&self.wake_scope.handle(), store.clone());
+        // The app's surface is content too: whoever decides its changes
+        // reads it by the hash its ops name.
+        if let Some(bytes) = crate::app_surface::bytes_of(&self.app_id)
+            && let Err(error) = store.put(bytes)
+        {
+            tracing::warn!(%error, "the app's surface could not be kept");
+        }
         // The large parts of the actions this window records, and of those
         // it replays, live here too.
         let keep = store.clone();

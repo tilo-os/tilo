@@ -347,9 +347,10 @@ fn a_granted_action_writing_another_unit_is_refused() {
     assert!(refused.contains("do not name exactly"), "{refused}");
 }
 
-/// Without the app's surface a change is held, never merged on trust.
+/// Without the app's surface a change is held, never merged on trust, and
+/// decided once the surface is here.
 #[test]
-fn a_change_whose_app_surface_has_not_arrived_is_held() {
+fn a_change_whose_app_surface_has_not_arrived_is_held_until_it_has() {
     let (mut peer, key, guest) = room_with(MemberRole::Editor);
     peer.set_surfaces(Surfaces::from_source(Arc::new(Source(false))));
     let edited = guest_write(
@@ -359,17 +360,25 @@ fn a_change_whose_app_surface_has_not_arrived_is_held() {
         edit_value(),
         None,
     );
-    let held = receive(&mut peer, &guest, edited).unwrap_err();
-    assert!(held.contains("held"), "{held}");
-    assert_eq!(
+    let value = |peer: &StatePeer| {
         AutoCommit::load(&peer.document(APP, RECORD).unwrap())
             .unwrap()
             .get(ROOT, "value")
             .unwrap()
             .unwrap()
             .0
-            .to_string(),
-        "\"seed\"",
-        "nothing merged"
-    );
+            .to_string()
+    };
+    let held = peer
+        .receive_from(
+            TransportOrigin::RelayDelta(guest.device_public_key),
+            edited.clone(),
+            now(),
+        )
+        .unwrap();
+    assert!(held.deferred, "kept for later");
+    assert_eq!(value(&peer), "\"seed\"", "nothing merged");
+    peer.set_surfaces(Surfaces::from_source(Arc::new(Source(true))));
+    receive(&mut peer, &guest, edited).expect("decided once the surface is here");
+    assert_eq!(value(&peer), "\"x\"");
 }

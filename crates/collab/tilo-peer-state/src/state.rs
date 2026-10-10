@@ -321,7 +321,16 @@ pub struct StatePeer {
     /// claims; without a source, a change is decided as an edit of its
     /// record. Set by the host, never persisted.
     surfaces: collab_types::Surfaces,
+    /// The app surface each app's changes this peer signs are decided
+    /// against, by app id: what the host launched the app with.
+    app_surfaces: AppSurfaces,
 }
+
+/// The surface hash of an app's package, by app id.
+#[derive(Clone, Default)]
+struct AppSurfaces(Option<std::sync::Arc<SurfaceOf>>);
+
+type SurfaceOf = dyn Fn(&str) -> Option<[u8; 32]> + Send + Sync;
 
 /// The kind a record document's identity names (`tilo:record.kind`).
 /// The record as this peer holds it, when it has units beside itself to
@@ -397,6 +406,7 @@ impl StatePeer {
                 _retention: (),
             },
             surfaces: collab_types::Surfaces::default(),
+            app_surfaces: AppSurfaces::default(),
         })
     }
     /// Add a root-certified viewer to existing governed history. Only the pinned
@@ -1506,6 +1516,15 @@ impl StatePeer {
     fn role(&self, source: &[u8; 32], now: SystemTime) -> Result<Role, String> {
         backend::member::legacy(&self.core, source, now).map_err(err)
     }
+    /// Name, in every op this peer signs for an app, the surface `of`
+    /// returns for it: the content hash of the app's `surface.toml`.
+    pub fn name_app_surfaces(
+        &mut self,
+        of: impl Fn(&str) -> Option<[u8; 32]> + Send + Sync + 'static,
+    ) {
+        self.app_surfaces = AppSurfaces(Some(std::sync::Arc::new(of)));
+    }
+
     /// Decide received changes by their claims against the app surfaces
     /// `surfaces` finds.
     pub fn set_surfaces(&mut self, surfaces: collab_types::Surfaces) {
@@ -1513,7 +1532,8 @@ impl StatePeer {
     }
 
     /// The authority of `source` for the change `envelope` makes on `record`
-    /// of `app_id`, refused when the change is not granted.
+    /// of `app_id`, refused when the change is not granted; `None` while
+    /// the app surface it is decided against is not here.
     fn authorize_document(
         &self,
         source: &[u8; 32],
@@ -1521,7 +1541,7 @@ impl StatePeer {
         record: &str,
         envelope: &SignedOp,
         authorization_time: SystemTime,
-    ) -> Result<MemberAuthority, String> {
+    ) -> Result<Option<MemberAuthority>, String> {
         let member = self.permissions(*source, authorization_time)?;
         let route = Route {
             app: app_id.into(),
@@ -1550,10 +1570,8 @@ impl StatePeer {
             &|node, kind| member.allows(node, kind, authorization_time),
         );
         match decided {
-            Ok(collab_types::Receipt::Admit) => Ok(member),
-            Ok(collab_types::Receipt::Hold) => {
-                Err("document change held: its app surface is not here yet".into())
-            }
+            Ok(collab_types::Receipt::Admit) => Ok(Some(member)),
+            Ok(collab_types::Receipt::Hold) => Ok(None),
             Err(refusal) => Err(format!("document change forbidden: {refusal}")),
         }
     }
@@ -1638,7 +1656,12 @@ impl StatePeer {
         if room != self.core.room || op.author.as_bytes() != &source {
             return Err("transport author or document room mismatch".into());
         }
-        self.authorize_document(&source, app, record, op, now)?;
+        if self
+            .authorize_document(&source, app, record, op, now)?
+            .is_none()
+        {
+            return Err("document change held: its app surface is not here yet".into());
+        }
         collab_types::validate_whole_document_payload_route(app, room, record, op).map_err(err)?;
         collab_types::verify_op(op).map_err(err)?;
         let admission = DocumentAdmission::from_op(room, app, record, op)?;
@@ -2086,8 +2109,22 @@ impl StatePeer {
         } else {
             now
         };
-        let member =
-            self.authorize_document(&source, &app_id, &record_id, &envelope, authorization_time)?;
+        let Some(member) =
+            self.authorize_document(&source, &app_id, &record_id, &envelope, authorization_time)?
+        else {
+            return self.defer(
+                source,
+                NeighbourMsg::AppDocument {
+                    peer,
+                    app_id,
+                    cluster_id,
+                    record_id,
+                    envelope,
+                },
+                retained_replay,
+                MissingPrerequisite::AppSurface,
+            );
+        };
         let payload = collab_types::validate_whole_document_payload_route(
             &app_id,
             &cluster_id,
@@ -2654,7 +2691,8 @@ impl StatePeer {
             OpKind::Change,
             now,
             seq,
-        );
+        )
+        .with_surface(self.app_surfaces.0.as_ref().and_then(|of| of(app)));
         collab_types::sign_op(&mut op, key).map_err(err)?;
         let message = NeighbourMsg::AppDocument {
             peer: peer_handle(author.as_bytes()),
@@ -3398,6 +3436,7 @@ impl StatePeer {
                 _retention: (),
             },
             surfaces: collab_types::Surfaces::default(),
+            app_surfaces: AppSurfaces::default(),
         };
         backend::validate_pending(&peer.core.pending, peer.core.pending_bytes).map_err(err)?;
         peer.core.revocations = backend::restore_revocation_union(

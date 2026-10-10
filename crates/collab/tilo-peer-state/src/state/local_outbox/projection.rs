@@ -347,7 +347,7 @@ impl StatePeer {
             )
             .map_err(err)?;
         }
-        Ok(role)
+        role.ok_or_else(|| "recovery projection held: its app surface is not here yet".into())
     }
 
     fn recovery_validated_channel(

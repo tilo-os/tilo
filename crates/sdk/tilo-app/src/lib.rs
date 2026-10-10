@@ -60,13 +60,27 @@ macro_rules! main {
         fn main() {
             // A browser page mounts the definition itself; its binary is empty.
             #[cfg(not(target_arch = "wasm32"))]
-            $crate::launch::run_or_exit(&$crate::framework::definition_launch_spec($definition()));
+            {
+                $crate::register_committed_surface(
+                    $definition().app_id,
+                    $crate::tilo_resource::committed_surface!(),
+                );
+                $crate::launch::run_or_exit(&$crate::framework::definition_launch_spec(
+                    $definition(),
+                ));
+            }
         }
     };
     ($app:ty) => {
         fn main() {
             #[cfg(not(target_arch = "wasm32"))]
-            $crate::framework::run::<$app>();
+            {
+                $crate::register_committed_surface(
+                    <$app as $crate::framework::ResourceApp>::ID,
+                    $crate::tilo_resource::committed_surface!(),
+                );
+                $crate::framework::run::<$app>();
+            }
         }
     };
 }
@@ -121,9 +135,21 @@ macro_rules! dev_reload_entry {
         /// The app's toolkit definition, which the web build registers.
         #[must_use]
         pub fn definition() -> &'static $crate::prelude::ApplicationDefinition {
+            $crate::register_committed_surface(
+                <$app as $crate::framework::ResourceApp>::ID,
+                $crate::tilo_resource::committed_surface!(),
+            );
             $crate::framework::definition::<$app>()
         }
     };
+}
+
+/// Name the app's committed surface (its `surface.toml`) as the one its
+/// changes are decided against, unless its launcher named another. Called by
+/// [`main!`] and [`dev_reload_entry!`].
+#[doc(hidden)]
+pub fn register_committed_surface(app_id: &str, bytes: Option<&'static [u8]>) {
+    ui_core::app_surface::register_committed(app_id, bytes);
 }
 
 /// The resource layer, re-exported under its own name so `#[resource]` and
