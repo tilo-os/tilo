@@ -91,6 +91,14 @@ impl ActionHost for GatedHost {
         self.stub.invoke(caller, request)
     }
 
+    fn confirm(
+        &self,
+        caller: &Caller,
+        request: &InvokeRequest,
+    ) -> Pending<Result<tilo_actions::remote::Confirmation, ActionHostError>> {
+        self.stub.confirm(caller, request)
+    }
+
     fn observe(&self, caller: &Caller, id: &InvocationId) -> Option<InvocationState> {
         self.observes.fetch_add(1, Ordering::SeqCst);
         if !self.owns(caller, id) {
@@ -700,9 +708,9 @@ fn a_confirmed_action_is_given_the_revision_it_is_confirmed_at() {
     );
 }
 
-/// An exact-phrase contract is answered with the phrase the bridge read at
-/// a revision, and the retry names that revision, so a contract that moved
-/// on since is refused rather than answered with a stale phrase.
+/// An exact-phrase contract is answered by the person on their device, at
+/// the revision the bridge read, and the retry names that revision, so a
+/// contract that moved on since is refused rather than answered stale.
 #[test]
 fn phrase_retry_names_the_revision_it_read() {
     let host = GatedHost {
@@ -728,7 +736,10 @@ fn phrase_retry_names_the_revision_it_read() {
     assert_eq!(started.len(), 1, "{started:?}");
     assert_eq!(
         started[0].confirmation,
-        Some(tilo_actions::remote::Confirmation::Phrase("ERASE".into()))
+        Some(tilo_actions::remote::Confirmation::Witnessed(format!(
+            "person:{}",
+            started[0].invocation.0
+        )))
     );
     assert_eq!(
         started[0].revision.as_deref(),
