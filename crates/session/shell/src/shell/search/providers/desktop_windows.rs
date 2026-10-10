@@ -198,8 +198,9 @@ fn result(row: WindowRow, score: i32) -> SearchResult {
         provider_id: WINDOWS_PROVIDER_ID.into(),
         id: row.id,
         title: row.title,
-        subtitle: Some(row.subtitle),
-        badge: Some(row.badge),
+        subtitle: row.subtitle,
+        // The section header already says Tabs; a badge repeating it is noise.
+        badge: None,
         score,
         params: Vec::new(),
         contract: Some(contract(action)),

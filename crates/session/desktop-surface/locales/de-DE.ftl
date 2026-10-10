@@ -455,8 +455,6 @@ desktop-view-replay-activity = Arbeitsbereich-Aktivität wiedergeben
 
 ## Desktop window search
 search-provider-desktop-windows = Fenster auf dem Desktop
-search-badge-tab = Tab
-search-badge-window-group = Fenstergruppe
 search-window-move-tab = Tab „{ $tab }“ in den Arbeitsbereich „{ $workspace }“ verschieben
 search-window-move-tab-detail = Aus dem Arbeitsbereich „{ $workspace }“
 search-window-copy-tab = Tab „{ $tab }“ in den Arbeitsbereich „{ $workspace }“ kopieren

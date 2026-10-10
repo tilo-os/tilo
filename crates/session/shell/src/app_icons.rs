@@ -289,6 +289,19 @@ pub fn for_tile(tile: &crate::shell::state::TileContent) -> Option<AppImage> {
     }
 }
 
+/// The glyph standing in for a tab's app when it has no artwork: the app's
+/// own symbol for a Tilo app, the generic window for anything else.
+pub fn glyph_for_tile(tile: &crate::shell::state::TileContent) -> ui::icons::Icon {
+    match tile {
+        crate::shell::state::TileContent::LocalApp { app_id, .. }
+        | crate::shell::state::TileContent::PeerWindow { app_id, .. }
+        | crate::shell::state::TileContent::HostedWindow { app_id, .. } => {
+            ui::icons::app_glyph(app_id, None)
+        }
+        _ => ui::icons::Icon::AppWindow,
+    }
+}
+
 /// A named icon for the tray, looked up first under the item's own
 /// `theme_path`, rasterised `device_px` square.
 pub fn tray_raster(name: &str, theme_path: Option<&str>, device_px: u32) -> Option<Raster> {

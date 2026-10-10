@@ -270,15 +270,13 @@ impl HostApplicationsProvider {
             ResourceKind::HostApplication,
             self.id(),
             app.desktop_id.clone(),
-            t_args("search-host-app-open", &[("app", app.name.as_str().into())]),
-            // "Unconfined" is not decoration: this app is about to get
-            // the user's real home directory.
+            app.name.clone(),
+            // "Not sandboxed" is not decoration: this app is about to get
+            // the user's real home directory. The package id is not
+            // information a person can act on.
             Some(t_args(
                 "search-host-app-subtitle",
-                &[
-                    ("source", app.source_display().into()),
-                    ("id", app.desktop_id.as_str().into()),
-                ],
+                &[("source", app.source_display().into())],
             )),
             score,
             move |_doc, _root, chrome: &Chrome| {
@@ -575,7 +573,7 @@ mod tests {
             let p = HostApplicationsProvider::new();
             let out = p.results_against("spot", &[app("com.spotify.Client", "Spotify")], &[]);
             assert_eq!(out.len(), 1);
-            assert_eq!(out[0].title, "Open Spotify");
+            assert_eq!(out[0].title, "Spotify");
             assert_eq!(out[0].id, "com.spotify.Client");
             assert_eq!(out[0].kind, ResourceKind::HostApplication);
         }
@@ -666,7 +664,7 @@ mod tests {
                 &AllVisible,
             );
             if let Some(action) = catalog.select(&target) {
-                assert_eq!(action.title(), "Open Calculator");
+                assert_eq!(action.title(), "Calculator");
                 break;
             }
             assert!(
@@ -747,7 +745,7 @@ mod tests {
         let last = format!("org.fixture.App{:03}", count - 1);
         assert_eq!(
             select(&last).as_deref(),
-            Some(format!("Open App {:03}", count - 1).as_str()),
+            Some(format!("App {:03}", count - 1).as_str()),
             "an app past the first page must still open by its address"
         );
         assert_eq!(
@@ -821,7 +819,7 @@ mod tests {
             },
         );
         assert_eq!(page.results.len(), 1);
-        assert_eq!(page.results[0].title, "Open unique-tail");
+        assert_eq!(page.results[0].title, "unique-tail");
         assert!(page.exhausted, "the rare posting needs one warm inspection");
         assert!(provider.build.borrow().is_none());
     }
@@ -910,7 +908,7 @@ mod tests {
                 max_work: 1,
             },
         );
-        assert_eq!(page.results[0].title, "Open unique-source-tail");
+        assert_eq!(page.results[0].title, "unique-source-tail");
     }
 
     #[test]
@@ -923,11 +921,14 @@ mod tests {
             let subtitle = out[0].subtitle.as_deref().expect("a subtitle");
             assert!(subtitle.contains("Flatpak"), "{subtitle}");
             assert!(
-                subtitle.contains("unconfined"),
+                subtitle.contains("Not sandboxed"),
                 "the user must be able to tell a confined Tilo app from an \
                  unconfined host app without opening anything: {subtitle}"
             );
-            assert!(subtitle.contains("com.spotify.Client"), "{subtitle}");
+            assert!(
+                !subtitle.contains("com.spotify.Client"),
+                "a desktop-file id is not information a person can act on: {subtitle}"
+            );
         }
 
         // Phase `a_system_app_row_names_system_provenance`.
@@ -939,7 +940,7 @@ mod tests {
             };
             let out = p.results_against("terminal", &[system], &[]);
             let subtitle = out[0].subtitle.as_deref().expect("a subtitle");
-            assert!(subtitle.starts_with("System · unconfined host app ·"));
+            assert_eq!(subtitle, "Not sandboxed · System");
         }
 
         // Phase `host_apps_are_a_separate_kind_from_tilo_applications`.
@@ -977,7 +978,6 @@ mod tests {
                     opens_mime_types: Vec::new(),
                     opens_uri_schemes: Vec::new(),
                 }],
-                crate::shell::chrome_state::OpenTarget::Beside,
             );
             assert!(
                 tilo_rows[0].score > host_rows[0].score,

@@ -348,17 +348,6 @@ pub enum OpenTarget {
     Here(u64),
 }
 
-impl OpenTarget {
-    /// Appended to launchable palette rows so a result says where it
-    /// will land before the user commits.
-    pub fn result_hint(self) -> String {
-        match self {
-            OpenTarget::Beside => crate::shell::i18n::t("search-opens-beside"),
-            OpenTarget::Here(_) => crate::shell::i18n::t("search-opens-here"),
-        }
-    }
-}
-
 /// One monitor's brightness control in Quick Settings.
 #[derive(Clone, Debug, PartialEq)]
 pub struct DisplayBrightness {

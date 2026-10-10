@@ -1542,50 +1542,36 @@ impl CommandPalette {
             f64::from(theme.tokens.spacing.s3),
             ground,
         );
-        // Key chips are static hints resting on the panel: no fill, just a
-        // hairline derived against the panel ground (HIG §9.5) — never a
-        // white veneer that is invisible on a light palette, and not a
-        // base-relative lift that reads as a well on a darker ground.
-        let chip_edge = crate::surface::edge_on(ground);
-
+        // Key hints are the shared keycaps in the platform's legends (HIG:
+        // keycaps come from `InputHint`, never hand-drawn or typed as arrows).
         let style = theme.text(TextRole::Caption);
         let dim = colors.text_dim;
         let cy = f64::midpoint(footer.y0, footer.y1);
-        let chip_h = (footer.height() - 12.0).max(13.0);
+        let cap_h = crate::widget::InputHint::keycap_height(theme);
+        let gap = f64::from(theme.tokens.spacing.s1);
+        let group_gap = f64::from(theme.tokens.spacing.s3);
 
-        let mut x = footer.x0 + 6.0;
+        let mut x = footer.x0 + gap;
         let activate = match self.mode {
             PaletteMode::Search => "palette-hint-open",
             PaletteMode::Commands => "palette-hint-run",
         };
-        let hints = [
-            ("\u{2191}\u{2193}", crate::i18n!("palette-hint-navigate")),
-            ("\u{21b5}", crate::i18n!(activate)),
-            ("Esc", crate::i18n!("palette-hint-close")),
+        let hints: [(&[&str], String); 3] = [
+            (&["Up", "Down"], crate::i18n!("palette-hint-navigate")),
+            (&["Enter"], crate::i18n!(activate)),
+            (&["Esc"], crate::i18n!("palette-hint-close")),
         ];
-        for (key, label) in &hints {
-            let (kw, kh) = text_renderer.measure_style(key, None, &style);
-            let chip_w = (f64::from(kw) + 10.0).max(chip_h);
-            let chip_rect = Rect::new(x, cy - chip_h / 2.0, x + chip_w, cy + chip_h / 2.0);
-            scene.stroke(
-                &Stroke::new(1.0),
-                transform,
-                chip_edge,
-                None,
-                &crate::surface::edge_outline(chip_rect, 4.0),
-            );
-            text_renderer.draw_style(
+        let keycaps = crate::keycaps::active();
+        for (keys, label) in &hints {
+            let legends: Vec<String> = keys.iter().map(|key| keycaps.key(key)).collect();
+            x += crate::widget::InputHint::paint_keycap_labels_at(
                 scene,
-                key,
-                dim,
-                transform.pre_translate(Vec2::new(
-                    chip_rect.x0 + (chip_rect.width() - f64::from(kw)) / 2.0,
-                    chip_rect.y0 + (chip_rect.height() - f64::from(kh)) / 2.0,
-                )),
-                None,
-                &style,
-            );
-            x = chip_rect.x1 + 4.0;
+                transform,
+                Point::new(x, cy - cap_h / 2.0),
+                &legends,
+                text_renderer,
+                theme,
+            ) + gap;
             let (lw, lh) = text_renderer.measure_style(label, None, &style);
             text_renderer.draw_style(
                 scene,
@@ -1595,7 +1581,7 @@ impl CommandPalette {
                 None,
                 &style,
             );
-            x += f64::from(lw) + 12.0;
+            x += f64::from(lw) + group_gap;
         }
 
         let n = self.result_total();

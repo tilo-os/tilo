@@ -1252,8 +1252,6 @@ search-scope-workspace = Arbeitsbereich
 search-scope-everywhere = Überall
 
 # Wo eine gestartete App geöffnet wird
-search-opens-beside = Öffnet sich ganz rechts
-search-opens-here = Öffnet sich hier als Tab
 
 # Suchquellen, wie die Aktionen der Sucheinstellungen sie nennen
 search-provider-now-playing = Aktuelle Wiedergabe
@@ -1289,8 +1287,7 @@ search-record-in-another-workspace = In einem anderen Arbeitsbereich
 search-files-no-app = Keine App auf diesem Desktop öffnet .{ $ext }-Dokumente.
 
 # Suche: Host-Apps
-search-host-app-open = { $app } öffnen
-search-host-app-subtitle = { $source } · nicht isolierte Host-App · { $id }
+search-host-app-subtitle = Nicht isoliert · { $source }
 
 # Suche: Aufträge und Ressourcen von App-Aktionen
 search-app-job = Aktionsauftrag { $id }
@@ -1549,20 +1546,10 @@ search-action-device-revoked = Gerät widerrufen
 search-action-device-revoked-body = Der Widerruf wurde mit dem Stammschlüssel signiert und in der Geräteliste dieser Identität vermerkt.
 
 # Suche: Anwendungen
-search-apps-group-start-here = Zum Einstieg
-search-apps-group-everyday = Alltag
-search-apps-group-work = Arbeit
-search-apps-group-media = Medien
-search-apps-group-system-tools = Systemwerkzeuge
-search-apps-group-more-apps = Weitere Apps
-search-apps-group-developer-tools = Entwicklerwerkzeuge
-search-apps-detail-grouped = { $group } · { $detail }
-search-apps-open = { $app } öffnen
-search-apps-open-subtitle = { $target } · { $detail }
-search-apps-shortcut-subtitle = { $target } · Verknüpfung
+search-apps-shortcut-subtitle = Verknüpfung
 search-apps-shortcut-failed = Die Verknüpfung konnte nicht geöffnet werden. Prüfe ihr Ziel und versuche es erneut.
 search-apps-verification-pending = Prüfung durch die Registry ausstehend
-search-apps-store-subtitle = App Store · { $trust } · { $detail }
+search-apps-store-subtitle = { $trust }
 search-apps-view-in-store = { $app } im App Store ansehen
 search-apps-store-failed = App Store für { $app } konnte nicht geöffnet werden
 search-apps-opening = { $app } wird geöffnet
