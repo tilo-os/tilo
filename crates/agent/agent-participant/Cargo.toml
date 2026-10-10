@@ -16,6 +16,8 @@ path = "src/lib.rs"
 ui = { package = "tilo-app", path = "../../sdk/tilo-app" }
 tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
 tilo-actions = { path = "../../collab/actions" }
+# Purpose-specific receipt validation; app projection remains confined.
+tilo-desktop = { path = "../../session/desktop" }
 # `apps/agent`'s model planner: action discovery tools over a catalogue, and
 # the chooser that asks through tilo-model-gateway.
 agent = { path = "../../../apps/agent" }

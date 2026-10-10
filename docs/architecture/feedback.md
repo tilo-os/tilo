@@ -62,7 +62,7 @@ task or granting access to one. The SDK supplies the actual source record stamp;
 a returning participant can read this history after reconnecting. As with the
 receipt projection, the returned JSON alone is not a durability witness.
 
-## Host integration still required
+## Host integration
 
 The SDK provides `feedback_composer::prepare`, a real shared resource component
 with the same semantic actions as its themed, localized controls. It always
@@ -91,8 +91,38 @@ wake pump; their launch configuration cannot supply a destination or adapter.
 Pending private writes schedule a storage wake independently of draft records;
 awaiting a destination receipt does not schedule automatic transport retries.
 An unconfigured entry refuses review/send rather than choosing a public room.
-The production startup still needs to install its authenticated adapter and
-admitted destination; the source acceptance uses isolated private fixtures.
+The relay supplies read-only feedback admission and acknowledgment on its existing
+`RemoteActionFrame` transport. `RelayRecordsLink` carries the existing certified
+caller and governor Read policy into `RoomActions`; it uses
+`Rooms::resource_view_document` and the retained store, never the app worker's
+cache as durability evidence. Selected manifests, files and directory ancestry
+must pass durability barriers. Registered Chat projection runs in a confined
+worker; only the purpose-specific receipt digest reaches the existing owner
+signer. `read-feedback-destination` confirms an existing text channel and
+`read-feedback-receipt` can require the exact attributed reporter root. A
+signed acknowledgment binds the owner, reporter, destination, publication verb,
+submission identity and approved digest. Screenshot receipts remain refused
+until an actual owner content store supplies a durable content witness.
+
+The browser's existing `CertifiedPeer.configureFeedback({room, provider, channel})`
+selects a destination before desktop mounting. `WasmPeer` requests admission from
+its connected host, matches both roots/devices against retained certificates,
+requires actual current role/capabilities, and installs the trusted Rust startup
+custody. The helper waits for this acknowledgment and never joins another room.
+Sending queues the registered ClientLocal action on the existing Chat record and
+uses the peer's ordinary Write publication. It does not invoke a document write
+on the host as another person. Receipt requests are bounded and retries preserve
+the approved submission identity; loss of session admission or stale policy fails
+closed. Description-only capture is the production default.
+
+Live configuration must name the already-authorized room UUID, exact provider
+`record:so.tilo.chat:` and text channel ID, and select the already-certified
+reporter's root/device. These values are not present in the public demo's verified
+configuration. No destination, enrollment or grant is created by this feature.
+Native startup still needs its broker/identity-owned producer to call
+`InProcessApps::install_feedback_startup`; the browser producer does not establish
+native or deployed browser acceptance. Source tests use isolated certified HTTPS
+sessions and real retained storage, including a cold host restart.
 
 A host must supply its existing durable profile store, an admitted
 `Destination { room, provider, channel }`, authenticated action transport,

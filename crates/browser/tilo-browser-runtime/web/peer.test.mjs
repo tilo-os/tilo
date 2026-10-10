@@ -922,3 +922,26 @@ test('leaving, cancelling and timing out pending room admission settle browser n
   await peer.dispose();
   await assert.rejects(leaving, /closed/);
 });
+
+
+test('feedback startup waits for owner admission and never joins another room', async () => {
+  const runtime = fakeRuntime();
+  const peer = await connect(options(runtime, memoryStore(), {live: false, voice: false}));
+  runtime.peer.hasRecord = () => true;
+  let status = 'awaiting authenticated admission';
+  let configured;
+  runtime.peer.configureFeedback = value => { configured = JSON.parse(value); };
+  runtime.peer.feedbackStatus = () => status;
+  const destination = {room: ROOM, provider: 'record:so.tilo.chat:', channel: 'feedback'};
+  const waiting = peer.configureFeedback(destination);
+  await settle();
+  assert.deepEqual(configured, destination);
+  assert.equal(peer.feedbackStatus(), 'awaiting authenticated admission');
+  status = 'ready';
+  runtime.peer.emit();
+  await waiting;
+  assert.equal(runtime.peer.room, ROOM);
+  await assert.rejects(peer.configureFeedback({...destination, room: 'another-room'}), /existing room/);
+  status = 'owner refused current certified admission';
+  await assert.rejects(peer.configureFeedback(destination), /owner refused/);
+});
