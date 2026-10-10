@@ -501,11 +501,6 @@ impl GitClientApp {
     pub fn test_stage_all(&mut self) {
         self.stage_all();
     }
-    /// Drive the production "unstage all" action.
-    #[doc(hidden)]
-    pub fn test_unstage_all(&mut self) {
-        self.unstage_all();
-    }
     /// Set the commit message and drive the production commit action.
     #[doc(hidden)]
     pub fn test_commit(&mut self, message: &str) {
@@ -532,11 +527,6 @@ impl GitClientApp {
     #[doc(hidden)]
     pub fn test_discard_file(&mut self, area: ChangeArea, idx: usize) {
         self.discard_file(area, idx);
-    }
-    /// Drive the production "discard hunk" action for the selected file.
-    #[doc(hidden)]
-    pub fn test_discard_hunk(&mut self, hunk: usize) {
-        self.discard_hunk(hunk);
     }
     /// Whether the app is showing the empty "open a repository" state.
     #[doc(hidden)]

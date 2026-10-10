@@ -559,13 +559,6 @@ pub fn registry_has(name: &str) -> bool {
     gstreamer::ElementFactory::find(name).is_some()
 }
 
-/// The encoder this process would use for `codec`, read from the live registry
-/// under the environment's policy.
-#[cfg(any(gst_decode, gst_encode, gst_realtime))]
-pub fn select_video_from_registry(codec: VideoCodec) -> Selection {
-    select_video(codec, HwEncPolicy::from_env(), registry_has)
-}
-
 #[cfg(test)]
 #[allow(
     clippy::cast_precision_loss,
