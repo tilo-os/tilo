@@ -685,13 +685,24 @@ impl WorkspaceStore {
         // same peer's queue cannot publish each other's half-written bytes —
         // the fixed `.partial` name this used to use could.
         atomic_write(&path, bytes)?;
-        // A live fanout may now rely on this exact fallback. Require directory
-        // durability instead of treating the atomic helper's best effort as a
-        // successful publication barrier.
-        for directory in pending_dir.ancestors().take(3) {
-            fsync(&fs::File::open(directory)?)?;
-        }
+        // A live fanout may now rely on this exact fallback.
+        Self::pending_durable(&pending_dir)?;
         Ok(path)
+    }
+
+    /// Complete the barrier for a file `atomic_write` just published in the
+    /// queue `directory`: it synced `directory` after the rename (Apple
+    /// repeats that with F_FULLFSYNC, as `retained::durable_write` does).
+    /// The queue's two ancestors change only when a queue is first created,
+    /// so they are synced whenever their entries changed since this process
+    /// last synced them.
+    fn pending_durable(directory: &Path) -> Result<(), StoreError> {
+        #[cfg(target_vendor = "apple")]
+        fsync(&fs::File::open(directory)?)?;
+        for ancestor in directory.ancestors().skip(1).take(2) {
+            retained::sync_dir_once(ancestor)?;
+        }
+        Ok(())
     }
 
     pub(crate) fn enqueue_continuity_pending(
@@ -709,9 +720,7 @@ impl WorkspaceStore {
         ));
         continuity::write(self, &path, bytes, receipt)?;
         atomic_write(&path, bytes)?;
-        for directory in directory.ancestors().take(3) {
-            fsync(&fs::File::open(directory)?)?;
-        }
+        Self::pending_durable(&directory)?;
         Ok(path)
     }
 

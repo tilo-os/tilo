@@ -453,10 +453,14 @@ fn sync_once(path: &Path) -> Result<(), StoreError> {
 }
 
 pub(super) fn create_dir(path: &Path) -> Result<(), StoreError> {
-    match fs::create_dir(path) {
-        Ok(()) => {}
-        Err(error) if error.kind() == io::ErrorKind::AlreadyExists && path.is_dir() => {}
-        Err(error) => return Err(error.into()),
+    // Every commit passes here for directories that exist: a stat, rather
+    // than a mkdir that fails with EEXIST and a stat.
+    if !path.is_dir() {
+        match fs::create_dir(path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists && path.is_dir() => {}
+            Err(error) => return Err(error.into()),
+        }
     }
     // Also sync existing directories: a previous attempt may have returned
     // after creation but before the parent directory reached stable storage.
@@ -1298,15 +1302,23 @@ impl WorkspaceStore {
             None => commit_generation(&lineage, &[], None)?,
         };
         let scratch_root = self.root.join("store-work-v1");
-        fs::create_dir_all(&scratch_root)?;
         let scratch = scratch.unwrap_or_else(|| {
             scratch_root.join(format!(
                 "retain-{}",
                 hex::encode(rand::random::<[u8; 16]>())
             ))
         });
-        fs::create_dir(&scratch)?;
-        let sorter = super::bounded::Sorter::new(scratch.join("sort"))?;
+        // Only a checkpoint's ordered pass spills metadata to scratch. A
+        // delta's scan compares sizes and cached digests and its append names
+        // the next ordinal, so it creates no directory to remove afterwards;
+        // a shell selection creates the scratch it needs itself.
+        let sorter = if checkpoint {
+            fs::create_dir_all(&scratch_root)?;
+            fs::create_dir(&scratch)?;
+            super::bounded::Sorter::new(scratch.join("sort"))?
+        } else {
+            super::bounded::Sorter::unspilled(scratch.join("sort"))
+        };
         let phase = RetainPhase::Scan(fs::read_dir(&active)?);
         let key = checkpoint_key(&bytes, self.workspace_id);
         Ok(RetainBuild {
