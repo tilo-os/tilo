@@ -4,7 +4,14 @@ use std::path::PathBuf;
 use std::process::Command;
 
 fn checked(command: &mut Command) -> io::Result<()> {
-    let status = command.status()?;
+    // CMake answers its own parallelism (`--parallel`); a jobserver handed
+    // down from Cargo is not one CMake can use, and some hosts pass
+    // descriptors its configure then reads forever.
+    let status = command
+        .env_remove("MAKEFLAGS")
+        .env_remove("MFLAGS")
+        .env_remove("CARGO_MAKEFLAGS")
+        .status()?;
     if status.success() {
         Ok(())
     } else {
