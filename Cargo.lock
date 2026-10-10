@@ -14066,6 +14066,7 @@ dependencies = [
  "tilo-files",
  "tilo-fs",
  "tilo-keyboard-map",
+ "tilo-locale",
  "tilo-media",
  "tilo-model-gateway",
  "tilo-net",
@@ -14254,6 +14255,7 @@ dependencies = [
  "tilo-doc",
  "tilo-doc-codecs",
  "tilo-files",
+ "tilo-locale",
  "tilo-vello",
  "tilo-winit",
  "uuid",
@@ -17180,6 +17182,17 @@ name = "tilo-libvirt-domain"
 version = "0.1.0"
 dependencies = [
  "quick-xml 0.41.0",
+ "workspace-hack",
+]
+
+[[package]]
+name = "tilo-locale"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tilo-app",
  "workspace-hack",
 ]
 
@@ -20914,6 +20927,7 @@ dependencies = [
  "tilo-automerge",
  "tilo-automerge-fork",
  "tilo-clock",
+ "tilo-locale",
  "tilo-net",
  "tilo-test-env",
  "tilo-vello",
