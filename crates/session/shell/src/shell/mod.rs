@@ -70,6 +70,7 @@ pub mod gpu_frames;
 pub mod hdr_display;
 pub mod hdr_surface;
 pub mod hdr_tonemap;
+pub mod heap_trim;
 pub mod history_narrative;
 pub mod host_apps;
 pub mod host_shell_allow;

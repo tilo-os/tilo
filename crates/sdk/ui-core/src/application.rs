@@ -716,13 +716,6 @@ impl HostContext {
             ));
         self.control_domain.clone()
     }
-    /// Establish presentation scope before constructing a nested component.
-    pub fn inherit_control_custody(
-        &self,
-        parent: &crate::ControlDomain,
-    ) -> Result<(), crate::control_custody::CustodyError> {
-        self.control_domain().attach_to(parent)
-    }
     pub fn record(&self) -> &RecordCheckout {
         &self.record
     }
@@ -1278,21 +1271,6 @@ impl AppComponent {
             })
             .collect::<Result<Vec<_>, _>>()?;
         self.history = Some(HistoryRegistration::new(definition, sources)?);
-        Ok(())
-    }
-    /// Install an explicit multi-owner bundle after the factory has established
-    /// its owners. The destination runner validates the complete settled tree.
-    /// # Errors
-    /// Refuses invalid registrations or a bundle belonging to another application.
-    pub fn register_history(
-        &mut self,
-        registration: crate::history_mode::HistoryRegistration,
-    ) -> Result<(), crate::history_mode::HistoryRegistrationError> {
-        registration.validate()?;
-        if registration.definition.app_id != self.context.app_id {
-            return Err(crate::history_mode::HistoryRegistrationError::ForeignSource);
-        }
-        self.history = Some(registration);
         Ok(())
     }
 

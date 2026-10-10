@@ -1563,7 +1563,6 @@ enum Leading {
         on_toggle: Box<dyn FnMut(bool)>,
     },
     Swatch(Color),
-    Paint(Box<dyn Fn(&mut PaintCtx<'_>, Rect)>),
 }
 
 /// What a retained hover action runs.
@@ -1916,13 +1915,6 @@ impl ListRow {
     #[must_use]
     pub fn swatch(mut self, colour: Color) -> Self {
         self.leading = Some(Leading::Swatch(colour));
-        self
-    }
-
-    /// See [`RowLeading::Paint`].
-    #[must_use]
-    pub fn leading_paint(mut self, painter: impl Fn(&mut PaintCtx<'_>, Rect) + 'static) -> Self {
-        self.leading = Some(Leading::Paint(Box::new(painter)));
         self
     }
 
@@ -2311,7 +2303,6 @@ impl ListRow {
                 ),
                 Leading::Checkbox { checked, .. } => RowLeading::Checkbox { checked: *checked },
                 Leading::Swatch(colour) => RowLeading::Swatch(*colour),
-                Leading::Paint(paint) => RowLeading::Paint(paint.as_ref()),
             });
         }
         if let Some((kind, id)) = &self.status {

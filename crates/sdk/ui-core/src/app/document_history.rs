@@ -330,18 +330,6 @@ impl App {
         self.history_changed(revision, open);
     }
 
-    /// Let History preview a selected version with the app's own root: a
-    /// fresh read-only instance built by `factory`, never the live one.
-    #[must_use]
-    pub fn with_history_preview_root(
-        mut self,
-        factory: impl Fn() -> Result<Box<dyn Widget>, String> + 'static,
-    ) -> Self {
-        self.document_history
-            .set_preview_root(std::rc::Rc::new(factory));
-        self
-    }
-
     /// Build the preview root a selection asked for, inside this app's wake
     /// scope like its live root, and hand it to the History host.
     fn fulfil_history_preview(&mut self) {

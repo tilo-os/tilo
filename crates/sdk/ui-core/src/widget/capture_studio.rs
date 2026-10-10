@@ -979,9 +979,6 @@ impl CaptureStudio {
     pub fn set_extent(&mut self, extent: CaptureExtent) {
         self.extent = extent;
     }
-    pub fn set_pip_layout(&mut self, layout: PipLayout) {
-        self.pip_layout = layout;
-    }
     pub fn set_candidates(&mut self, candidates: Vec<CaptureTarget>) {
         self.candidates = candidates;
         let selection_exists = self

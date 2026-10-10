@@ -486,13 +486,6 @@ impl ActivityTimeline {
         &self.named
     }
 
-    pub fn set_grouping(&mut self, cfg: GroupingConfig) {
-        if self.grouping != cfg {
-            self.grouping = cfg;
-            self.regroup();
-        }
-    }
-
     /// For a streaming producer. Call [`Self::refresh`] after mutating it.
     pub fn entries_mut(&mut self) -> &mut Vec<HistoryEntry> {
         &mut self.entries
@@ -651,12 +644,6 @@ impl ActivityTimeline {
             "No activity matches these filters".to_string(),
             Some(detail),
         )
-    }
-
-    /// `Rect::ZERO` when the filtered-to-nothing empty state is not on
-    /// screen.
-    pub fn clear_filters_chip_rect(&self) -> Rect {
-        self.clear_chip_rect
     }
 
     pub fn author_pill_rect(&self) -> Rect {

@@ -3241,6 +3241,10 @@ impl ForeignFrameStore {
         drop(guard);
         if let Some(mut entry) = forgotten {
             entry.set_gpu(None);
+            drop(entry);
+            // Its frames are gone, and Vello drops the last one from its
+            // atlas a couple of paints later: give that memory back.
+            crate::shell::heap_trim::request();
         }
         crate::shell::gpu_frames::forget_surface(id);
         let mut children = self

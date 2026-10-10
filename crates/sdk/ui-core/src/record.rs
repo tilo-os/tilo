@@ -2283,9 +2283,6 @@ impl RecordStore {
         }
         Ok(())
     }
-    pub(crate) fn from_owner(owner: std::rc::Rc<std::cell::RefCell<RecordSet>>) -> Self {
-        Self(owner)
-    }
 }
 
 type OwnerIndex =

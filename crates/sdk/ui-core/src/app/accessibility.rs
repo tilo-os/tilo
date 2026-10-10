@@ -58,12 +58,6 @@ impl App {
         true
     }
 
-    pub fn a11y_settings(&self) -> crate::a11y::A11ySettings {
-        let mut s = self.accessibility.a11y;
-        s.screen_reader = self.accessibility.screen_reader.is_some();
-        s
-    }
-
     pub fn text_scale(&self) -> f32 {
         self.accessibility.text_scale
     }

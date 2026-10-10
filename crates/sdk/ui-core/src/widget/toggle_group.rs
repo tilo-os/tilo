@@ -766,19 +766,6 @@ impl ToggleGroup {
         self.chosen.as_deref()
     }
 
-    /// Set a multi-select strip's segments from the model. Does not fire
-    /// the change callback.
-    pub fn set_chosen(&mut self, chosen: &[bool]) {
-        if let Some(current) = self.chosen.as_mut()
-            && current.as_slice() != chosen
-        {
-            current.clear();
-            current.extend_from_slice(chosen);
-            current.resize(self.segments.len(), false);
-            self.cache_dirty = true;
-        }
-    }
-
     /// Does **not** fire `on_change`, which is reserved for user-driven
     /// changes. [`NONE_CHOSEN`] clears the choice.
     pub fn set_selected(&mut self, selected: usize) {

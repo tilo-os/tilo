@@ -512,29 +512,6 @@ impl PresenceCtx {
         out
     }
 
-    /// Draw a compact generic fallback for interactions an application has
-    /// not yet projected onto domain geometry. This is an activity rail, not
-    /// a cursor: it never moves focus or implies keyboard/mouse navigation.
-    pub fn draw_interactions(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        viewport: Rect,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        now: Instant,
-    ) {
-        self.draw_interactions_excluding(
-            scene,
-            transform,
-            viewport,
-            text_renderer,
-            theme,
-            now,
-            &[],
-        );
-    }
-
     /// Draw generic activity only for work not already projected onto an
     /// exact locus in this frame.
     pub fn draw_interactions_excluding(

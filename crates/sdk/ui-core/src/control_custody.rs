@@ -17,8 +17,6 @@ use std::{
 use tilo_actions::ControlInvocation;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct ControlProducerId(uuid::Uuid, u64);
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ControlRequestId(uuid::Uuid, u64);
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ControlProducerDiscipline {
@@ -82,7 +80,6 @@ struct DomainState {
     incarnation: uuid::Uuid,
     closed: bool,
     initial_installation: bool,
-    next_producer: u64,
     next_request: u64,
     owner: Option<ControlOwner>,
     parent: WeakControlDomain,
@@ -129,7 +126,6 @@ enum DomainEntry {
     Child(WeakControlDomain),
 }
 struct Producer {
-    id: ControlProducerId,
     discipline: ControlProducerDiscipline,
     pending: VecDeque<(
         ControlRequestId,
@@ -179,7 +175,6 @@ impl ControlDomain {
             incarnation: id,
             closed: false,
             initial_installation: true,
-            next_producer: 1,
             next_request: 1,
             owner: None,
             parent: WeakControlDomain::default(),
@@ -307,22 +302,9 @@ impl ControlDomain {
         }
         child
     }
-    /// # Panics
-    ///
-    /// Panics if this domain has issued `u64::MAX` producer identities.
-    #[expect(
-        clippy::expect_used,
-        reason = "a per-domain u64 producer counter cannot be exhausted; wrapping would reuse an identity"
-    )]
     pub fn producer(&self, discipline: ControlProducerDiscipline) -> ControlOutbox {
         let mut state = self.0.borrow_mut();
-        let id = ControlProducerId(state.id, state.next_producer);
-        state.next_producer = state
-            .next_producer
-            .checked_add(1)
-            .expect("control producer identity exhausted");
         let producer = Rc::new(RefCell::new(Producer {
-            id,
             discipline,
             pending: VecDeque::new(),
         }));
@@ -441,9 +423,6 @@ impl ControlDomain {
     }
 }
 impl ControlOutbox {
-    pub fn producer_id(&self) -> ControlProducerId {
-        self.producer.borrow().id
-    }
     pub fn emit(&self, invocation: ControlInvocation) -> Result<LocalEmission, EmitError> {
         let domain = self.domain.upgrade().ok_or(EmitError::Closed)?;
         if domain.closed() || domain.0.borrow().incarnation != self.owner_incarnation {

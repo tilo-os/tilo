@@ -1646,11 +1646,31 @@ fn bridge_extent(outputs: &[Output], readback: bool) -> (u32, u32) {
 /// [`DrmPresenter::submit`] (post-split, render thread) and
 /// [`DrmBackend::submit_inline`] (inline path, pre-split) — same painting logic,
 /// different owner of the scanouts and the pointer. Nothing else calls it.
+fn paint_scanouts(
+    scanouts: &mut [ScanoutEntry],
+    outputs: &[Output],
+    paint: &mut Option<paint::VelloDrmBridge>,
+    cpu: &mut Option<cpu_present::CpuRenderer>,
+    pointer: (f64, f64),
+    frame: ScanoutFrame<'_>,
+    phase_window: Option<&mut PhaseWindow>,
+) -> PaintScanoutSample {
+    let had_renderer = paint.is_some();
+    let sample = paint_scanouts_with(scanouts, outputs, paint, cpu, pointer, frame, phase_window);
+    if !had_renderer && paint.is_some() {
+        // A new renderer has compiled its pipelines and drawn its first frame. The driver's
+        // compile scratch is free now, but glibc would keep it (TIL-705).
+        crate::shell::heap_trim::request();
+    }
+    sample
+}
+
+/// [`paint_scanouts`]' frame, once the renderer it may create is accounted for.
 #[allow(
     clippy::too_many_lines,
     reason = "one dispatcher keeps bridge lifetime, sparse eligibility, diagnostics, and the single versus multi-output presentation boundaries together"
 )]
-fn paint_scanouts(
+fn paint_scanouts_with(
     scanouts: &mut [ScanoutEntry],
     outputs: &[Output],
     paint: &mut Option<paint::VelloDrmBridge>,
