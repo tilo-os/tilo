@@ -694,6 +694,7 @@ impl<R: Resource> Dispatcher<R> {
             Some(decl) => self.may(&ActionNeed {
                 kind: decl.kind,
                 field: decl.field.map(str::to_owned),
+                privileged: false,
             }),
             None if invoke.is_group() => !self.read_only(),
             None => self.may(&ActionNeed::of(ActionKind::Read)),

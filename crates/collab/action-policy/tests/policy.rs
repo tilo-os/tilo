@@ -1222,3 +1222,52 @@ fn verdicts_explain_themselves() {
     let verdict = Authority::person(room.party(ALICE)).decide(&send(), ActionKind::Outside, &cx());
     assert_eq!(verdict.explain(), "Allowed: the person owns the room.");
 }
+
+#[test]
+fn a_privileged_action_needs_the_persons_own_allow() {
+    let agent = || Subject::agent("ag");
+    let asks = [grant("asks", mail(), KindSet::ALL, Answer::Ask)];
+    let alone = Authority::person(Party::new(vec![alice()], &asks));
+    assert_eq!(
+        alone.decide(&send(), ActionKind::Outside, &cx()).answer,
+        Answer::Ask
+    );
+    // Confirming is no authority the person lacks.
+    assert_eq!(
+        alone
+            .decide(&send(), ActionKind::Outside, &cx())
+            .privileged()
+            .answer,
+        Answer::Deny
+    );
+
+    // A person allowed it still answers their agent's Ask.
+    let allows = [
+        grant("allows", mail(), KindSet::ALL, Answer::Allow),
+        Grant::new(
+            "agent-asks",
+            agent(),
+            mail(),
+            KindSet::ALL,
+            Answer::Ask,
+            alice(),
+        ),
+    ];
+    let delegated = Authority::person(Party::new(vec![alice()], &allows))
+        .bounded_by(Party::new(vec![agent()], &allows));
+    assert_eq!(
+        delegated
+            .decide(&send(), ActionKind::Outside, &cx())
+            .privileged()
+            .answer,
+        Answer::Ask
+    );
+    let allowed = Authority::person(Party::new(vec![alice()], &allows));
+    assert_eq!(
+        allowed
+            .decide(&send(), ActionKind::Outside, &cx())
+            .privileged()
+            .answer,
+        Answer::Allow
+    );
+}

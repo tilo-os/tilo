@@ -191,6 +191,7 @@ pub trait Resource: Sized + 'static {
                 |(kind, field)| ActionNeed {
                     kind,
                     field: field.map(str::to_owned),
+                    privileged: false,
                 },
             )
     }
@@ -1946,6 +1947,7 @@ pub fn need_of<R: Resource>(action: &R::Action) -> ActionNeed {
     ActionNeed {
         kind: R::kind_of(action),
         field: R::field_of(action).map(str::to_owned),
+        privileged: false,
     }
 }
 
@@ -1962,6 +1964,7 @@ pub(crate) fn group_need<R: Resource>(actions: &[R::Action]) -> ActionNeed {
         field: group
             .field
             .filter(|field| need.field.as_ref() == Some(field)),
+        privileged: group.privileged || need.privileged,
     })
 }
 

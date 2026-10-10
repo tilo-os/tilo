@@ -222,7 +222,10 @@ pub(super) fn authorize_action_in(
     );
     // Genuine durable callers revalidate live membership and delegation
     // separately; this is the action's own grant.
-    if !actor.may_in(workspace, &node, need.kind, now) {
+    if !crate::published_authorization::permits(
+        actor.answer_for_in(workspace, &node, need.kind, need.privileged, now),
+        actor.direct(),
+    ) {
         return Err("caller no longer authorized for invocation".into());
     }
     Ok(())
@@ -249,7 +252,7 @@ pub(super) fn admit_action_in(
         need.field.as_deref(),
         action,
     );
-    match actor.answer_in(workspace, &node, need.kind, now) {
+    match actor.answer_for_in(workspace, &node, need.kind, need.privileged, now) {
         tilo_action_policy::Answer::Allow => Ok(false),
         tilo_action_policy::Answer::Ask => Ok(true),
         tilo_action_policy::Answer::Deny => {

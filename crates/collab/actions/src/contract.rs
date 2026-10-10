@@ -112,14 +112,18 @@ fn edit_parts(
 pub const DOCUMENT_READ_TAG: &str = "read:document";
 
 /// What one invocation of an action is, for the grants deciding it: its kind,
-/// and the one field of its resource it writes when it writes only one (a
-/// reply writes the `comments`), which places it below that field in the
-/// tree.
+/// the one field of its resource it writes when it writes only one (a reply
+/// writes the `comments`), which places it below that field in the tree, and
+/// whether it is privileged ([`RiskLevel::Privileged`]): it exercises
+/// authority over the room or others in it, so the person's own grants must
+/// allow it (`tilo_action_policy::Verdict::privileged`).
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ActionNeed {
     pub kind: ActionKind,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub field: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub privileged: bool,
 }
 
 /// The node of the action `action` on the resource `resource` (of kind
@@ -147,7 +151,11 @@ impl ActionNeed {
     /// An action of `kind` on the resource as a whole.
     #[must_use]
     pub const fn of(kind: ActionKind) -> Self {
-        Self { kind, field: None }
+        Self {
+            kind,
+            field: None,
+            privileged: false,
+        }
     }
 
     /// An undoable change of the resource's comments: what someone who may
@@ -157,6 +165,7 @@ impl ActionNeed {
         Self {
             kind: ActionKind::Undoable,
             field: Some(tilo_action_policy::roles::COMMENTS_FIELD.to_owned()),
+            privileged: false,
         }
     }
 }
@@ -325,6 +334,7 @@ impl ActionContract {
         ActionNeed {
             kind: self.kind,
             field: self.field.clone(),
+            privileged: self.risk == RiskLevel::Privileged,
         }
     }
 

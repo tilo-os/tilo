@@ -693,11 +693,27 @@ impl BrokerActor {
         kind: ActionKind,
         now: u64,
     ) -> Answer {
+        self.answer_for_in(workspace, node, kind, false, now)
+    }
+
+    /// [`Self::answer_in`], of a privileged action when `privileged`
+    /// ([`tilo_action_policy::Verdict::privileged`]).
+    pub(crate) fn answer_for_in(
+        &self,
+        workspace: &tilo_desktop_model::Workspace,
+        node: &TreePath,
+        kind: ActionKind,
+        privileged: bool,
+        now: u64,
+    ) -> Answer {
         let bound = roles::foreign_device_bound();
         self.with_authority_in(workspace, &bound, |authority| {
-            authority
-                .decide(node, kind, &tilo_desktop_model::context_at(now))
-                .answer
+            let verdict = authority.decide(node, kind, &tilo_desktop_model::context_at(now));
+            if privileged {
+                verdict.privileged().answer
+            } else {
+                verdict.answer
+            }
         })
     }
 

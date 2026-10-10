@@ -505,13 +505,27 @@ impl PermissionContext {
     }
 
     fn verdict(&self, node: &TreePath, kind: ActionKind) -> Result<(Answer, String), String> {
+        self.verdict_for(node, kind, false)
+    }
+
+    /// [`Self::verdict`], of a privileged action when `privileged`
+    /// ([`policy::Verdict::privileged`]).
+    fn verdict_for(
+        &self,
+        node: &TreePath,
+        kind: ActionKind,
+        privileged: bool,
+    ) -> Result<(Answer, String), String> {
         let now = self.policy_now()?;
         let cx = policy::Context::at(now.unwrap_or(0).saturating_mul(1000));
         let standing = match &self.action_authority {
             Some(authority) if authority.matches(node) => authority.sample_for(self)?.standing,
             _ => self.standing.clone(),
         };
-        let verdict = standing.verdict(&standing.node(node), kind, &cx);
+        let mut verdict = standing.verdict(&standing.node(node), kind, &cx);
+        if privileged {
+            verdict = verdict.privileged();
+        }
         Ok((verdict.answer, verdict.explain()))
     }
 
@@ -576,7 +590,8 @@ impl PermissionContext {
             need.field.as_deref(),
             action_id,
         );
-        self.answer(&node, need.kind)
+        self.verdict_for(&node, need.kind, need.privileged)
+            .map_or(Answer::Deny, |(answer, _)| answer)
     }
 
     /// May the actor take this one invocation of `action` on `resource`,

@@ -176,6 +176,22 @@ pub struct Verdict<'g> {
 }
 
 impl<'g> Verdict<'g> {
+    /// This verdict for a privileged action, one that exercises authority
+    /// over the room or others in it: the person's own grants must allow it.
+    /// Where they only ask, the person's confirmation is no authority they
+    /// lack, so it is refused. A delegation's Ask still asks the person.
+    #[must_use]
+    pub fn privileged(mut self) -> Self {
+        if self
+            .parts
+            .first()
+            .is_some_and(|person| person.answer == Answer::Ask)
+        {
+            self.answer = Answer::Deny;
+        }
+        self
+    }
+
     /// The `Once` grants this verdict relied on. A door that runs the action
     /// revokes them.
     pub fn once_grants(&self) -> impl Iterator<Item = &'g Grant> + '_ {

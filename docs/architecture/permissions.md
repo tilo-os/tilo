@@ -34,6 +34,12 @@ pub struct Grant {
 - **Three answers.** Allow runs. Ask pauses for the person's approval. Deny
   refuses. Ask is witnessed by the host on the person's device, never attested
   by the caller.
+- **Privileged actions need the person's own Allow.** An action marked
+  `privileged` exercises authority over the room or others in it (approving,
+  publishing, trusting). Where the person's own grants only ask, it is refused:
+  their confirmation is no authority they lack. A delegation's Ask on it still
+  asks the person. Every door decides it at the moment it runs, so a person
+  whose access was narrowed cannot carry an earlier decision past the change.
 - **New actions are covered safely.** A grant on a node covers actions an app
   adds later, but only within its kinds: a new Outside action does not slip
   under an "Undoable only" grant.

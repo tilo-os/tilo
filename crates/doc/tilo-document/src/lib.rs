@@ -548,6 +548,7 @@ impl Resource for RichText {
         tilo_actions::ActionNeed {
             kind: tilo_resource::ActionKind::Undoable,
             field: Some(tilo_actions::COMMENTS_FIELD.to_owned()),
+            privileged: false,
         }
     }
 
