@@ -1078,12 +1078,14 @@ mod tests {
             .expect("tests capture decoded audio")
             .clone();
         let until = tilo_test_env::hang_deadline();
-        // A playing source must also be rendering before the caller acts on
-        // it. Unlike a sound server's sink, the capture sink can stall when it
-        // is paused while still completing its switch to PLAYING.
+        // First PCM can arrive before the asynchronous Playing transition.
+        // Keep driving production tick until the active decoder confirms it,
+        // within the original deadline. The capture sink can also stall when
+        // paused while still completing its switch to Playing.
         let rendered_before = capture.snapshot().rendered;
         while app.audio.frames_rendered() == 0
             || app.audio.needs_poll()
+            || (app.pb.playing && !app.audio.is_playing_confirmed())
             || (app.pb.playing && capture.snapshot().rendered == rendered_before)
         {
             app.tick();
