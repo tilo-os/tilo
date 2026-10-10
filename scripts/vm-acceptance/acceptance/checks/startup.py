@@ -25,6 +25,7 @@ from .. import app_startup, core, gpu, records
 from ..core import CheckFailed, Unobservable, check
 from ..vm import wait_until
 from .apps import _close, _lifecycle
+from .resources import shell_anon_mib, slope
 
 FILES = "so.tilo.file-explorer"
 FILES_PROGRAM = "file-explorer"
@@ -361,15 +362,20 @@ def median(values: list[float]) -> float:
     return sorted(values)[(len(values) - 1) // 2]
 
 
-def _app_gone(ctx, app: str) -> bool:
-    return wait_until(lambda: not [p for p in core.processes(ctx)["procs"].values() if p["app"] == app],
-                      EXIT_WAIT_S, 1.0) is not None
+def _app_gone(ctx, app: str) -> dict | None:
+    """The first process table without `app`'s processes, or None if they outlived the wait."""
+    def without_app():
+        table = core.processes(ctx)
+        return None if any(p["app"] == app for p in table["procs"].values()) else table
+
+    return wait_until(without_app, EXIT_WAIT_S, 1.0)
 
 
-def _timed_open(ctx, app: str) -> dict | None:
+def _timed_open(ctx, app: str, shell_anon: list[float] | None = None) -> dict | None:
     """Open `app` from the slot's session as a person's request does, wait for its first
     frame, close every window and wait until its processes are gone. Returns the open's
-    `open_times`, its `open_segments` and the compositor's `launch_latency` fields."""
+    `open_times`, its `open_segments` and the compositor's `launch_latency` fields; appends
+    the compositor's anonymous RSS once the app is gone to `shell_anon`."""
     out = ctx.vm.exec(f'wc -l < "{SESSION_LOG}" 2>/dev/null || echo 0; date +%s%3N; '
                       f"tilo-control actions invoke applications {shlex.quote(app)} >/dev/null",
                       timeout=60)
@@ -389,9 +395,14 @@ def _timed_open(ctx, app: str) -> dict | None:
     # session locks itself on idle a few minutes into the series, as a person's would.
     # The pointer moves between launches, never inside a measured one.
     ctx.vm.input("move", str(next(_NUDGE)), "300")
-    if not _app_gone(ctx, app):
+    table = _app_gone(ctx, app)
+    if not table:
         raise CheckFailed(f"{app}'s processes were still running {EXIT_WAIT_S} s after its window closed, "
                           "so the next open would not start it afresh")
+    if shell_anon is not None:
+        anon = shell_anon_mib(table, ctx.vm.slot_uid())
+        if anon is not None:
+            shell_anon.append(anon)
     return result
 
 
@@ -441,9 +452,12 @@ def warm_opens(ctx, res):
     ctx.reset()
     ctx.vm.input("move", str(next(_NUDGE)), "300")
     problems, unobserved, summary = [], [], {}
+    # The compositor's anonymous RSS after each open has closed, in order: what an open
+    # and close leaves behind in it.
+    shell_anon: list[float] = []
     for app in WARM_APPS:
-        _timed_open(ctx, app)
-        results = [result for result in (_timed_open(ctx, app) for _ in range(launches)) if result]
+        _timed_open(ctx, app, shell_anon)
+        results = [result for result in (_timed_open(ctx, app, shell_anon) for _ in range(launches)) if result]
         opens = [result["open"] for result in results]
         starts = [result["startup"] for result in results]
         short = _short(app)
@@ -484,6 +498,13 @@ def warm_opens(ctx, res):
                                    for app, entry in summary.items()},
                        renderer=ctx.facts.get("renderer"))
     ctx.write("A15-warm-opens.json", json.dumps(summary, indent=1))
+    growth = slope(shell_anon)
+    res.metrics.update(shell_anon_after_close_mib=shell_anon, shell_anon_mib_per_open_close=growth)
+    ctx.record("memory.shell_anon_mib.per_open_close", "MiB", [growth], opens=len(shell_anon),
+               what="least-squares slope of the compositor's anonymous RSS over warm open/close cycles")
+    if growth is None:
+        unobserved.append(f"the compositor's anonymous RSS was read after {len(shell_anon)} closes, "
+                          "too few for its growth per open")
     if problems:
         raise CheckFailed("; ".join(problems + unobserved))
     if unobserved:

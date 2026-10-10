@@ -26,6 +26,7 @@
     reason = "native host runner: the GPU render worker is a dedicated thread"
 )]
 
+mod cpu_raster;
 mod native_gpu_trace;
 
 use std::sync::mpsc::{self, Receiver, SyncSender};
@@ -379,6 +380,15 @@ pub(crate) fn spawn_render_thread_for_window(
                 geometric_capacity,
                 ..DamageCache::default()
             };
+            let mut cpu_raster = (render_cx.devices[surface.dev_id]
+                .adapter
+                .get_info()
+                .device_type
+                == vello::wgpu::DeviceType::Cpu)
+                .then(cpu_raster::CpuCanvas::new);
+            if cpu_raster.is_some() {
+                tracing::info!("tilo-ui: CPU fine rasterization selected for software adapter");
+            }
             let mut target_valid = false;
             let mut bump_recovery = bump_recovery::BumpRecovery::default();
             let mut handoff = native_timing.map(|_| timing::handoff::Recorder::default());
@@ -544,9 +554,12 @@ pub(crate) fn spawn_render_thread_for_window(
                 let outcome = render_one_frame(
                     &render_cx,
                     &surface,
-                    &mut renderer,
-                    &mut damage_cache,
-                    &mut backdrop_blur,
+                    FrameRasterizers {
+                        renderer: &mut renderer,
+                        damage_cache: &mut damage_cache,
+                        backdrop_blur: &mut backdrop_blur,
+                        cpu: cpu_raster.as_mut(),
+                    },
                     FrameContent {
                         scene: &scene,
                         width,
@@ -1161,6 +1174,13 @@ struct FramePresentation<'a> {
     observer: Option<&'a crate::presentation_feedback::Observer>,
 }
 
+struct FrameRasterizers<'a> {
+    renderer: &'a mut Renderer,
+    damage_cache: &'a mut DamageCache,
+    backdrop_blur: &'a mut Option<crate::backdrop::BackdropBlur>,
+    cpu: Option<&'a mut cpu_raster::CpuCanvas>,
+}
+
 #[allow(
     clippy::too_many_lines,
     reason = "one render-thread frame transaction; splitting it would separate acquire/encode/present state and timings"
@@ -1168,12 +1188,16 @@ struct FramePresentation<'a> {
 fn render_one_frame(
     render_cx: &RenderContext,
     surface: &RenderSurface<'static>,
-    renderer: &mut Renderer,
-    damage_cache: &mut DamageCache,
-    backdrop_blur: &mut Option<crate::backdrop::BackdropBlur>,
+    rasterizers: FrameRasterizers<'_>,
     frame: FrameContent<'_>,
     present: FramePresentation<'_>,
 ) -> FrameOutcome {
+    let FrameRasterizers {
+        renderer,
+        damage_cache,
+        backdrop_blur,
+        mut cpu,
+    } = rasterizers;
     let FrameContent {
         scene,
         width,
@@ -1262,20 +1286,33 @@ fn render_one_frame(
                 frame.base_color,
             )
     });
-    let rasterized = rasterize_damage(
-        (&device_handle.device, &device_handle.queue),
-        RetainedTarget {
-            texture: &surface.target_texture,
-            view: &surface.target_view,
-        },
-        renderer,
-        damage_cache,
-        &FrameContent {
-            backdrop: &crate::backdrop::BackdropFrame::default(),
-            full_redraw: frame.full_redraw,
-            ..frame
-        },
-    );
+    let raster_frame = FrameContent {
+        backdrop: &crate::backdrop::BackdropFrame::default(),
+        full_redraw: frame.full_redraw,
+        ..frame
+    };
+    let rasterized = if let Some(canvas) = cpu.as_mut().filter(|_| frame.backdrop.is_empty()) {
+        canvas.rasterize(&raster_frame).inspect(|_| {
+            canvas.upload(&device_handle.queue, &surface.target_texture);
+        })
+    } else {
+        // Backdrop substitutions currently belong to Vello's GPU renderer.
+        // Invalidate retained CPU pixels when that path writes the target.
+        if let Some(canvas) = cpu.as_mut() {
+            canvas.invalidate();
+        }
+        rasterize_damage(
+            (&device_handle.device, &device_handle.queue),
+            RetainedTarget {
+                texture: &surface.target_texture,
+                view: &surface.target_view,
+            },
+            renderer,
+            damage_cache,
+            &raster_frame,
+        )
+        .map_err(|error| error.to_string())
+    };
     if let Some(blur) = backdrop_blur.as_mut() {
         blur.release(renderer);
     }
@@ -2009,6 +2046,42 @@ mod retained_damage_tests {
             damage_regions,
             full_redraw,
         }
+    }
+
+    #[test]
+    fn cpu_raster_damage_upload_matches_full_target_without_vello_fine_raster() {
+        let gpu = crate::offscreen::shared_gpu().expect("GPU context for CPU upload oracle");
+        let (retained, _) = target(&gpu.device);
+        let (oracle, _) = target(&gpu.device);
+        let mut canvas = cpu_raster::CpuCanvas::new();
+        let first = [Item {
+            rect: Rect::new(30.0, 25.0, 75.0, 60.0),
+            color: [220, 60, 30],
+            round: false,
+        }];
+        let mut next = first;
+        next[0].rect = Rect::new(85.0, 25.0, 130.0, 60.0);
+        canvas
+            .rasterize(&content(&scene_of(&first), Color::TRANSPARENT, &[], true))
+            .expect("initial CPU frame");
+        canvas.upload(&gpu.queue, &retained);
+        canvas
+            .rasterize(&content(
+                &scene_of(&next),
+                Color::TRANSPARENT,
+                &[Rect::new(28.0, 23.0, 132.0, 62.0)],
+                false,
+            ))
+            .expect("damaged CPU frame");
+        canvas.upload(&gpu.queue, &retained);
+        let mut full = cpu_raster::CpuCanvas::new();
+        full.rasterize(&content(&scene_of(&next), Color::TRANSPARENT, &[], true))
+            .expect("full CPU oracle");
+        full.upload(&gpu.queue, &oracle);
+        assert_eq!(
+            read(&gpu.device, &gpu.queue, &retained),
+            read(&gpu.device, &gpu.queue, &oracle)
+        );
     }
 
     /// A frame that overflowed Vello's bump buffers was presented without

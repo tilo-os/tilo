@@ -104,10 +104,6 @@ workspace-members = [
     # third-party crates the hack itself depends on (rustls-platform-verifier),
     # so depending on the hack would be a cycle.
     "rustls-native-certs",
-    # registry-web builds for wasm32 and its member dependency with it: the
-    # hack's native features pull mio there
-    "registry-types",
-    "registry-web",
 ]
 # A -sys crate in the hack is linked into runtime-dylib, whose exports carry
 # Rust symbols only. A thin app that monomorphises its safe wrapper (Imager's
