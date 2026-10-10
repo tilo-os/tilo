@@ -69,6 +69,7 @@ hyper-util = { version = "0.1", features = ["tokio"] }
 http-body-util = "0.1"
 tokio-rustls.workspace = true
 rustls.workspace = true
+tilo-net = { path = "../../platform/tilo-net" }
 sha2.workspace = true
 bytes.workspace = true
 tokio = { workspace = true, features = ["full"] }

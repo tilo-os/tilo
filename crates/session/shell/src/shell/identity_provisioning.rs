@@ -3,7 +3,7 @@
 //! trigger, invite-URL parsing, and the session pairing-broker boundary.
 //!
 //! New ceremonies emit schema-1 JSON matching
-//! [`ui::widget::identity_flow::IdentityRecord`] in memory, then the runtime
+//! [`tilo_identity_ceremony::IdentityRecord`] in memory, then the runtime
 //! lifecycle store atomically imports it as public schema-2 metadata backed by
 //! Secret Service or a host-only broker file before the ceremony returns.
 //!
@@ -23,7 +23,7 @@ use std::fs;
 #[cfg(unix)]
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 
-use ui::widget::identity_flow::{
+use tilo_identity_ceremony::{
     IdentityFlowError, IdentityRecord, IdentityStore, InviteEnvelope, PAIRING_FRAMING,
     PairingBrokerRequest, PairingBrokerResponse, PairingHandshake, pairing_io_timeout,
 };
@@ -410,7 +410,7 @@ fn serve_pairing_request(
             PairingBrokerResponse::PairerExchange(
                 authority
                     .take_pairer_exchange(&n)
-                    .map(|(a, b, m)| (a, b, ui::widget::identity_flow::PairingMac::from_bytes(m))),
+                    .map(|(a, b, m)| (a, b, tilo_identity_ceremony::PairingMac::from_bytes(m))),
             )
         }
         PairingBrokerRequest::PutHostRound2(n, value, mac) if matches!(purpose, BrokerPurpose::Pairing(allowed) if n == *allowed) =>
@@ -428,7 +428,7 @@ fn serve_pairing_request(
             PairingBrokerResponse::HostRound2(
                 authority
                     .take_host_round2(&n)
-                    .map(|(r, m)| (r, ui::widget::identity_flow::PairingMac::from_bytes(m))),
+                    .map(|(r, m)| (r, tilo_identity_ceremony::PairingMac::from_bytes(m))),
             )
         }
         PairingBrokerRequest::RedeemInvite(capability) => {
@@ -439,11 +439,10 @@ fn serve_pairing_request(
             // remote bearer supply this timestamp would make an expired
             // capability redeemable simply by replaying an older time.
             let now = tilo_clock::try_unix_now().unwrap_or(u64::MAX);
-            let secret =
-                ui::widget::identity_flow::InviteRedemptionAuthority::at(&**authority_root)
-                    .and_then(|authority| authority.redeem(&capability, now))
-                    .ok()
-                    .map(|secret| secret.to_vec());
+            let secret = tilo_identity_ceremony::InviteRedemptionAuthority::at(&**authority_root)
+                .and_then(|authority| authority.redeem(&capability, now))
+                .ok()
+                .map(|secret| secret.to_vec());
             PairingBrokerResponse::InviteSecret(secret)
         }
         _ => PairingBrokerResponse::Denied,
@@ -882,7 +881,7 @@ pub fn start_configured_invite_broker() -> io::Result<Option<PairingBrokerServer
     if advertised.port() == 0 {
         advertised.set_port(server.endpoint().port());
     }
-    ui::widget::identity_flow::configure_invite_broker(
+    tilo_identity_ceremony::configure_invite_broker(
         advertised.to_string(),
         server.certificate_der().to_vec(),
         invite_authority_root,
@@ -897,7 +896,7 @@ mod tests {
     use getrandom::{SysRng, rand_core::UnwrapErr};
     use std::time::SystemTime;
     use threshold_identity::ThresholdIdentity;
-    use ui::widget::identity_flow::MemoryIdentityStore;
+    use tilo_identity_ceremony::MemoryIdentityStore;
 
     fn fixture_record() -> IdentityRecord {
         let mut rng = UnwrapErr(SysRng);
@@ -1090,7 +1089,7 @@ mod tests {
     fn invite_urls_are_signature_checked() {
         fn parse_invite_url_validates_signature() {
             use collab_types::{ChannelId, Role, generate_keypair};
-            use ui::widget::identity_flow::{
+            use tilo_identity_ceremony::{
                 InviteBrokerLocator, InviteTerms, mint_invite_for_broker,
             };
             let tmp = tempfile::tempdir().expect("tempdir");
@@ -1243,8 +1242,8 @@ mod tests {
             let invite_root = tmp.path().join("invite-redemption-authority");
             let server = PairingBrokerServer::start_invites(authority, &invite_root).unwrap();
             let (owner_secret, owner_public) = collab_types::generate_keypair();
-            let invite = ui::widget::identity_flow::mint_invite_for_broker(
-                ui::widget::identity_flow::InviteTerms {
+            let invite = tilo_identity_ceremony::mint_invite_for_broker(
+                tilo_identity_ceremony::InviteTerms {
                     channel: collab_types::ChannelId::new(),
                     channel_name: "remote".into(),
                     owner_pubkey: owner_public,
@@ -1253,7 +1252,7 @@ mod tests {
                     expires_at: SystemTime::now() + Duration::from_secs(60),
                 },
                 &owner_secret,
-                ui::widget::identity_flow::InviteBrokerLocator {
+                tilo_identity_ceremony::InviteBrokerLocator {
                     endpoint: server.endpoint().to_string(),
                     certificate: server.certificate_der().to_vec(),
                     authority_root: invite_root,
@@ -1261,7 +1260,7 @@ mod tests {
             )
             .unwrap();
             let (_, invitee) = collab_types::generate_keypair();
-            ui::widget::identity_flow::build_attestation_from_invite(
+            tilo_identity_ceremony::build_attestation_from_invite(
                 &invite,
                 invitee,
                 SystemTime::now(),
@@ -1269,7 +1268,7 @@ mod tests {
             .unwrap();
             let (_, replay) = collab_types::generate_keypair();
             assert!(
-                ui::widget::identity_flow::build_attestation_from_invite(
+                tilo_identity_ceremony::build_attestation_from_invite(
                     &invite,
                     replay,
                     SystemTime::now()
@@ -1283,7 +1282,7 @@ mod tests {
             let pairing = pairing_channel_at(tmp.path().join("pairing")).unwrap();
             let invite_root = tmp.path().join("invite-redemption-authority");
             let invite_authority =
-                ui::widget::identity_flow::InviteRedemptionAuthority::at(&invite_root).unwrap();
+                tilo_identity_ceremony::InviteRedemptionAuthority::at(&invite_root).unwrap();
             invite_authority.issue([3; 32], [4; 32], 1).unwrap();
             let server = PairingBrokerServer::start_invites(pairing, invite_root).unwrap();
             let response = PairingHandshake::remote_call(
@@ -1362,8 +1361,8 @@ mod tests {
             let endpoint = first.endpoint();
             let certificate = first.certificate_der().to_vec();
             let (owner_secret, owner_public) = collab_types::generate_keypair();
-            let invite = ui::widget::identity_flow::mint_invite_for_broker(
-                ui::widget::identity_flow::InviteTerms {
+            let invite = tilo_identity_ceremony::mint_invite_for_broker(
+                tilo_identity_ceremony::InviteTerms {
                     channel: collab_types::ChannelId::new(),
                     channel_name: "restart-safe".into(),
                     owner_pubkey: owner_public,
@@ -1372,7 +1371,7 @@ mod tests {
                     expires_at: SystemTime::now() + Duration::from_secs(60),
                 },
                 &owner_secret,
-                ui::widget::identity_flow::InviteBrokerLocator {
+                tilo_identity_ceremony::InviteBrokerLocator {
                     endpoint: endpoint.to_string(),
                     certificate: certificate.clone(),
                     authority_root: tmp.path().join("invite-redemption-authority"),
@@ -1390,7 +1389,7 @@ mod tests {
             .unwrap();
             assert_eq!(restarted.certificate_der(), certificate);
             let (_, invitee) = collab_types::generate_keypair();
-            ui::widget::identity_flow::build_attestation_from_invite(
+            tilo_identity_ceremony::build_attestation_from_invite(
                 &invite,
                 invitee,
                 SystemTime::now(),
@@ -1398,7 +1397,7 @@ mod tests {
             .unwrap();
             let (_, replay) = collab_types::generate_keypair();
             assert!(
-                ui::widget::identity_flow::build_attestation_from_invite(
+                tilo_identity_ceremony::build_attestation_from_invite(
                     &invite,
                     replay,
                     SystemTime::now()
