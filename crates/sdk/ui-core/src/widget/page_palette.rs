@@ -638,12 +638,6 @@ impl PageJumpPalette {
             }
         }
     }
-
-    /// Page-id getter for tests that don't want to fish through
-    /// `take_selection`.
-    pub fn highlighted_id(&self) -> Option<Uuid> {
-        self.highlighted().map(|e| e.id)
-    }
 }
 
 impl Widget for PageJumpPalette {

@@ -663,6 +663,7 @@ pub(crate) fn spawn_render_thread_for_window(
                     if let Some(line) = tilo_startup_metrics::summary_line(&startup_app_name()) {
                         crate::diag!("{line}");
                     }
+                    tilo_startup_metrics::close_startup();
                 }
 
                 // `Scene::reset` clears the encoding without freeing the

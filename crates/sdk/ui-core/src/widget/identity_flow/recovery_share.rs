@@ -11,7 +11,7 @@
 use std::collections::HashMap;
 use std::fmt::Write as _;
 
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use taffy::{NodeId, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, MouseButton, WindowEvent};
@@ -27,7 +27,7 @@ use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 use crate::widget::identity_flow::sheet::{
     Align, BodyScroll, GRID_SHEET_WIDTH, Resolved, Role, Rows, SheetSpec, WordGrid, check_box_rect,
-    paint_check_row, paint_text, paragraph_height, resolve, with_layout_renderer,
+    paint_check_row, paint_text, paragraph_height, resolve, screen_style, with_layout_renderer,
 };
 use crate::widget::identity_flow::{IdentityRecord, ScreenOutcome};
 use crate::widget::modal_dialog::ModalAction;
@@ -127,10 +127,6 @@ impl RecoveryShareScreen {
     pub fn set_mnemonic(&mut self, m: impl Into<String>) {
         self.mnemonic = m.into();
         self.acknowledged = false;
-    }
-
-    pub fn is_acknowledged(&self) -> bool {
-        self.acknowledged
     }
 
     pub fn set_acknowledged(&mut self, v: bool) {
@@ -396,16 +392,7 @@ impl Widget for RecoveryShareScreen {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         self.layout_theme = Some(theme.clone());
-        // The screen owns the viewport, so the sheet centres on the window
-        // rather than inside a fixed box at the origin.
-        let style = Style {
-            size: Size {
-                width: Dimension::percent(1.0),
-                height: Dimension::percent(1.0),
-            },
-            ..Default::default()
-        };
-        taffy.widget_leaf(style, node_map, self)
+        taffy.widget_leaf(screen_style(), node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
@@ -503,6 +490,7 @@ impl Widget for RecoveryShareScreen {
 mod tests {
     use super::*;
     use getrandom::{SysRng, rand_core::UnwrapErr};
+    use taffy::Size;
 
     #[test]
     fn recovery_share_gates_continue_and_never_fakes_words() {

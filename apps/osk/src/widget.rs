@@ -801,11 +801,6 @@ impl OskWidget {
         self.apply_hint_case();
     }
 
-    /// The focused field's content hints.
-    pub fn content_hints(&self) -> u32 {
-        self.hints
-    }
-
     /// Whether the focused field holds a secret: nothing typed there is
     /// composed, suggested from or learned.
     pub fn is_secret_field(&self) -> bool {
@@ -2579,13 +2574,6 @@ impl OskWidget {
 
     fn cursor_drag_active(&self) -> bool {
         self.cursor_drag.as_ref().is_some_and(|d| d.active)
-    }
-
-    /// Show the effective tap targets over the keys (a debug aid).
-    #[must_use]
-    pub fn with_hit_overlay(mut self, on: bool) -> Self {
-        self.hit_overlay = on;
-        self
     }
 
     /// Show or stop showing the effective tap targets over the keys.

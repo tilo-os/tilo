@@ -246,14 +246,6 @@ impl ColorPicker {
         self
     }
 
-    /// Replace the swatch palette (see [`Self::with_swatches`]).
-    pub fn set_swatches(&mut self, swatches: impl IntoIterator<Item = ColorSwatch>) {
-        self.swatches = swatches.into_iter().collect();
-        if self.rect != Rect::ZERO {
-            self.apply_layout_external(self.rect);
-        }
-    }
-
     /// Confirm mode: paint `title` above the picker and *Cancel* / *Done*
     /// below it. Edits stay pending — [`Self::color`] follows them and
     /// [`Self::take_changed`] still reports them for a live preview — while

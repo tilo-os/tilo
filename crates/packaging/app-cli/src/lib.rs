@@ -163,11 +163,6 @@ fn os_interfaces() -> Option<&'static registry_types::ProvidedInterfaces> {
         .as_ref()
 }
 
-/// Whether this OS serves every system interface `version` requires.
-pub fn serves_interfaces(version: &registry_types::RegistryVersion) -> bool {
-    os_interfaces().is_none_or(|provided| provided.meets_wire(&version.target.interfaces))
-}
-
 /// [`installable_versions`] on an OS serving `provided`: a version that
 /// requires an interface version the OS does not serve is not offered, so
 /// an update never takes an app past what its system can run.

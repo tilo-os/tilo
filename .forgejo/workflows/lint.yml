@@ -112,6 +112,14 @@ jobs:
           base='${{ steps.merge.outputs.main }}'
           python3 tools/perf/tapp_size_ratchet.py check-budget --base "${base:-HEAD~1}"
 
+      # The same rule for the shared app runtime's size and load-cost budgets
+      # (tools/perf/runtime-size-budget/; DEVELOPMENT.md, "Runtime size").
+      - name: Runtime size budgets only decrease
+        shell: bash
+        run: |
+          base='${{ steps.merge.outputs.main }}'
+          python3 tools/perf/runtime_size_ratchet.py check-budget --base "${base:-HEAD~1}"
+
       # The lint app developers run locally: an app that adds platform code
       # without moving it into a platform crate or declaring itself native
       # fails here. ci-fast already provides /usr/bin/cc (pinned digest).

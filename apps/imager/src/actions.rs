@@ -187,18 +187,6 @@ pub fn encode(action: &ImagerAction) -> EncodedAction {
     })
 }
 
-/// The install mode the on-screen "persistent" toggle flips to from `current`:
-/// persistent ⇄ live (any other mode, e.g. a disk install, flips to persistent).
-/// The single source of truth shared by the Customize toggle (see [`crate::app`])
-/// and the Ctrl+K resource tree below.
-pub fn toggled_install_mode(current: InstallMode) -> InstallMode {
-    if current == InstallMode::Persistent {
-        InstallMode::Live
-    } else {
-        InstallMode::Persistent
-    }
-}
-
 // ===========================================================================
 // Named actions
 // ===========================================================================

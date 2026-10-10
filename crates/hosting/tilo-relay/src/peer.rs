@@ -55,42 +55,6 @@ pub enum CheckpointPrefixPromotionFaultState {
     Fired,
 }
 
-/// Arm the post-first-promotion fault marker under `root`, clearing any
-/// earlier fired marker.
-///
-/// # Errors
-///
-/// Returns the I/O error when a marker cannot be removed or created.
-#[cfg(feature = "test-support")]
-pub fn arm_checkpoint_prefix_post_first_promotion(root: &std::path::Path) -> std::io::Result<()> {
-    let armed = root.join(CHECKPOINT_PREFIX_FAULT_ARMED);
-    let fired = root.join(CHECKPOINT_PREFIX_FAULT_FIRED);
-    match std::fs::remove_file(fired) {
-        Ok(()) => {}
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => return Err(error),
-    }
-    std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(armed)?
-        .sync_all()
-}
-
-/// Which post-first-promotion fault marker exists under `root`.
-#[cfg(feature = "test-support")]
-pub fn checkpoint_prefix_post_first_promotion_state(
-    root: &std::path::Path,
-) -> CheckpointPrefixPromotionFaultState {
-    if root.join(CHECKPOINT_PREFIX_FAULT_FIRED).is_file() {
-        CheckpointPrefixPromotionFaultState::Fired
-    } else if root.join(CHECKPOINT_PREFIX_FAULT_ARMED).is_file() {
-        CheckpointPrefixPromotionFaultState::Armed
-    } else {
-        CheckpointPrefixPromotionFaultState::Absent
-    }
-}
-
 #[cfg(feature = "test-support")]
 fn checkpoint_prefix_post_first_promotion_fault(
     root: &std::path::Path,

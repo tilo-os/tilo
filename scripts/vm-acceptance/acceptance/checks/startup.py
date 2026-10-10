@@ -168,28 +168,34 @@ def parse_launch_latency(log: str, package: str) -> float | None:
 def open_segments(t0_ms: int, marks: dict | None) -> dict | None:
     """Where one open requested at guest time `t0_ms` spent its time, in ms, as segments
     that add up to the open: `request_to_launcher` (tilo-control, the compositor's
-    dispatch and the launcher's exec), `launcher` (its checks and sandbox preparation, by
-    phase in `launcher_phases`, each the interval ending at that mark), `sandbox_to_main`
-    (bubblewrap, the Landlock shim, the dynamic loader) and `main_to_first_frame` (the
-    app's own start). `exec_to_main` is the end of `sandbox_to_main` from the process's
-    creation, at the kernel's 10 ms resolution. None when the marks hold no first frame or
-    no launcher phases."""
+    dispatch and the launcher's exec), `launcher` (its checks and sandbox preparation, to
+    its `sandbox-argv-ready` mark), `sandbox_to_main` (bubblewrap, the Landlock shim, the
+    dynamic loader) and `main_to_first_frame` (the app's own start). `launcher_phases`
+    holds each mark's interval, ending at that mark, the sandbox shim's
+    `sandbox-entered` (bubblewrap) and `sandbox-exec` (Landlock) among them;
+    `exec_to_main`, from `sandbox-exec` to `main`, is the loader. None when the marks hold
+    no first frame or no launcher phases."""
     if not marks or "first-frame-presented" not in marks["events"]:
         return None
     launcher = marks.get("launcher") or []
     if len(launcher) < 2 or launcher[0][0] != "launcher-start":
         return None
-    start_us, handoff_us = launcher[0][1], launcher[-1][1]
+    at = dict(launcher)
+    start_us = launcher[0][1]
+    handoff_us = at.get("sandbox-argv-ready", launcher[-1][1])
     phases, previous = {}, start_us
     for name, epoch_us in launcher[1:]:
         phases[name] = round((epoch_us - previous) / 1e3, 1)
         previous = epoch_us
+    origin_us = marks["origin_epoch_us"]
     out = {"request_to_launcher": round(start_us / 1e3 - t0_ms, 1),
            "launcher": round((handoff_us - start_us) / 1e3, 1),
-           "sandbox_to_main": round((marks["origin_epoch_us"] - handoff_us) / 1e3, 1),
+           "sandbox_to_main": round((origin_us - handoff_us) / 1e3, 1),
            "main_to_first_frame": round(marks["events"]["first-frame-presented"] * 1e3, 1),
            "launcher_phases": phases}
-    if marks.get("exec_to_main_us") is not None:
+    if "sandbox-exec" in at:
+        out["exec_to_main"] = round((origin_us - at["sandbox-exec"]) / 1e3, 1)
+    elif marks.get("exec_to_main_us") is not None:
         out["exec_to_main"] = round(marks["exec_to_main_us"] / 1e3, 1)
     return out
 

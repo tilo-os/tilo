@@ -99,8 +99,24 @@ network runtime (−10/s) and the rest of the table.
 | fix | thread | before | after | parked desktop, whole tree |
 | -- | -- | --: | --: | --: |
 | TIL-704 | `tilo-audio-output-authority` | 20.1/s (run 89961) | 0.0/s (run 89960) | 31.9/s (run 89960) |
+| TIL-706 | `tilo-collab-drain` | 0.0/s (run 90040) | 0.0/s (run 90187) | unchanged |
 
 TIL-704: the watchdog re-checks an open output's admission every 50 ms as
 before, and blocks on a condition variable while no output is open; `open`
 wakes it. The parked budget becomes 31.9/s plus a quarter, 40/s, once
 TIL-696 lets the gate use it.
+
+TIL-706 split the collaboration broker's 20.8/s by renaming its drain
+thread (`tilo-collab-drain`; the probe's 15-byte names had shown both
+threads as `tilo-collab-bro`). All of it is the capnp service thread,
+`tilo-collab-broker-capnp`: 19.9/s in run 90040 and 19.7/s in run 90187,
+two context switches for each turn of a loop that re-armed a 100 ms tick
+with nothing due. TIL-690 (#3983) removes that tick; with it the thread
+measured 2.3/s (run 90061), its 1 s membership refresh, which TIL-707
+replaces with change signals. The drain was already parked here: this
+desktop holds no encrypted channel. On a session that does, it pumped
+channel governance once a second; it now waits for the governance
+service's own deadline (a steward's 1 s policy re-check, a member's
+backoff, nothing for a member holding its keys), so a member device's
+drain wakes only for frames. The gate cannot see that, so the budget
+does not move for it.

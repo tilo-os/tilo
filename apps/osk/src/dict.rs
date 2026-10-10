@@ -244,12 +244,6 @@ impl Dictionary {
         }
     }
 
-    /// Normalise an arbitrary weight into 0..1 (for callers that already hold
-    /// a weight, e.g. the predictor blending prefix completions).
-    pub fn normalize_weight(&self, weight: u32) -> f32 {
-        weight as f32 / self.max_weight as f32
-    }
-
     /// Iterate every entry whose word starts with `prefix` (case- and
     /// accent-insensitive), in folded lexicographic order. Backed by a binary-search range over the lex
     /// index — no full scan.

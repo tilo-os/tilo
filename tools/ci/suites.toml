@@ -57,6 +57,11 @@ inputs = ["os/scripts/collect-runtime-dependencies.py", "os/scripts/bake-runtime
 suites = ["os/tests/test_runtime_dependency_closure.py"]
 
 [[group]]
+name = "runtime-dylib-lazy-link"
+inputs = ["tools/ci/runtime-dylib-lazy-link.py", "tools/ci/rustc-thin-app-wrapper.sh"]
+suites = ["tools/ci/test_runtime_dylib_lazy_link.py"]
+
+[[group]]
 name = "os"
 inputs = ["os/"]
 suites = [
@@ -446,6 +451,7 @@ suites = [
   "tools/perf/test_adapters.py",
   "tools/perf/test_compare.py",
   "tools/perf/test_record.py",
+  "tools/perf/test_runtime_size_ratchet.py",
   "tools/perf/test_store.py",
   "tools/perf/test_tapp_size_ratchet.py",
 ]

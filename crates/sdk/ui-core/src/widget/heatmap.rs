@@ -15,7 +15,6 @@ use vello::peniko::{Color, Fill};
 use winit::event::WindowEvent;
 
 use crate::a11y::{AccessNode, AccessState, Role};
-use crate::color_compat::ColorCompat;
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
@@ -142,10 +141,6 @@ impl Heatmap {
         self.height = height.max(100.0);
         self
     }
-    pub fn set_cells(&mut self, cells: Vec<HeatmapCell>) {
-        self.cells = cells;
-        self.hovered = None;
-    }
     pub fn take_activated(&mut self) -> Option<String> {
         self.activated.take()
     }
@@ -222,25 +217,6 @@ impl Heatmap {
         } else {
             (min.min(0.0), min.min(0.0) + 1.0)
         }
-    }
-    fn mix(a: Color, b: Color, amount: f64) -> Color {
-        let amount = amount.clamp(0.0, 1.0);
-        let channel = |start: u8, end: u8| {
-            let value = f64::from(start) + (f64::from(end) - f64::from(start)) * amount;
-            #[allow(
-                clippy::cast_possible_truncation,
-                clippy::cast_sign_loss,
-                reason = "interpolated u8 channels are clamped by their endpoints"
-            )]
-            {
-                value.round() as u8
-            }
-        };
-        Color::from_rgb8(
-            channel(a.r(), b.r()),
-            channel(a.g(), b.g()),
-            channel(a.b(), b.b()),
-        )
     }
 }
 
@@ -387,7 +363,7 @@ impl Widget for Heatmap {
                 continue;
             };
             let color = if cell.value.is_finite() {
-                Self::mix(low, high, (cell.value - min) / (max - min))
+                crate::tokens::colors::mix8_f64(low, high, (cell.value - min) / (max - min))
             } else {
                 missing
             };
@@ -501,21 +477,15 @@ impl Widget for Heatmap {
         _state: &mut crate::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
-        if !matches!(action, crate::a11y::Action::Activate) {
-            return false;
-        }
-        let Some(key) = key_path.last() else {
+        let Some(id) = crate::widget::chart_navigation::activated_id(
+            action,
+            key_path,
+            self.cells.iter().map(|cell| &cell.id),
+        ) else {
             return false;
         };
-        if let Some(cell) = self
-            .cells
-            .iter()
-            .find(|cell| crate::a11y::hash_key(&cell.id) == *key)
-        {
-            self.activated = Some(cell.id.clone());
-            return true;
-        }
-        false
+        self.activated = Some(id.clone());
+        true
     }
     fn name(&self) -> &'static str {
         "Heatmap"

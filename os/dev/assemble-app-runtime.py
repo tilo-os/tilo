@@ -7,6 +7,7 @@ source authority, import, activation and the slot lifecycle.
 """
 import argparse
 import hashlib
+import importlib.util
 import os
 from pathlib import Path
 import platform
@@ -124,10 +125,25 @@ def profile_directory(profile):
     return 'debug' if profile == 'dev' else profile
 
 
+def runtime_dependencies():
+    """os/scripts/collect-runtime-dependencies.py, which the release bundles share."""
+    path = Path(__file__).resolve().parents[1] / 'scripts/collect-runtime-dependencies.py'
+    spec = importlib.util.spec_from_file_location('collect_runtime_dependencies', path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def native_dependencies(objects, dependency_env):
-    """Collect the native closure of every ELF before signing its SDK."""
-    paths = set()
-    for binary in objects:
+    """Collect the native closure of every ELF before signing its SDK, with the
+    libraries the toolkit loads on first use (GLib, GStreamer; TIL-713)."""
+    collector = runtime_dependencies()
+    library_dirs = [Path(d) for d in dependency_env.get('LD_LIBRARY_PATH', '').split(':') if d]
+    cache = {}
+    lazy = list(dict.fromkeys(collector.locate(soname, library_dirs, cache)
+                              for binary in objects for soname in collector.lazy_needed(binary)))
+    paths = set(lazy)
+    for binary in [*objects, *lazy]:
         report = run(['ldd', str(binary)], env=dependency_env, capture=True).stdout
         if 'not found' in report:
             raise ValueError(f'{binary} has unresolved native dependencies')

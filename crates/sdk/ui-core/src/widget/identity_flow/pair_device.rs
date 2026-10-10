@@ -26,9 +26,10 @@
 use crate::widget::{AppModel, ModelPath};
 use std::collections::HashMap;
 
+#[cfg(not(target_arch = "wasm32"))]
 use getrandom::{SysRng, rand_core::UnwrapErr};
-use taffy::{Dimension, Display, NodeId, Size, Style, TaffyTree};
-use threshold_identity::{DkgSession, EnrolmentRound1, ThresholdIdentity};
+use taffy::{NodeId, TaffyTree};
+use threshold_identity::ThresholdIdentity;
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
@@ -42,8 +43,8 @@ use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 use crate::widget::identity_flow::sheet::{
     Align, BodyScroll, FORM_SHEET_WIDTH, Resolved, Role, Rows, SheetSpec, code_cell_side, edited,
-    line_height, paint_cell, paint_text, paragraph_height, place_code_cell, place_field, resolve,
-    with_layout_renderer,
+    field_leaf, line_height, paint_cell, paint_text, paragraph_height, place_code_cell,
+    place_field, resolve, screen_style, with_layout_renderer,
 };
 use crate::widget::identity_flow::{
     IdentityFlowError, PairingHandshake, PairingPayload, ScreenOutcome, derive_pairing_code,
@@ -216,22 +217,6 @@ impl PairDeviceScreen {
         Some(acc)
     }
 
-    pub fn set_payload_text(&mut self, payload: impl Into<String>) {
-        let payload = payload.into();
-        if payload.len() > MAX_PAIRING_PAYLOAD_TEXT_BYTES {
-            self.error = Some(PAYLOAD_TOO_LARGE.to_string());
-            return;
-        }
-        self.payload.set_text(&payload);
-        self.payload.set_cursor_pos(payload.len());
-        self.payload_ok = payload;
-        self.error = None;
-    }
-
-    pub fn payload_text(&self) -> &str {
-        self.payload.value()
-    }
-
     /// The cell whose field holds keyboard focus, if any.
     fn focused_cell(&self) -> Option<usize> {
         self.cells.iter().position(Widget::is_focused)
@@ -355,10 +340,6 @@ impl PairDeviceScreen {
 
     pub fn error(&self) -> Option<&str> {
         self.error.as_deref()
-    }
-
-    pub fn is_completed(&self) -> bool {
-        self.completed
     }
 
     /// Sanity check that the typed code matches the payload's derived
@@ -528,19 +509,6 @@ impl PairDeviceScreen {
             let broker = payload.remote_broker()?;
             self.perform_pairing(payload, &broker)
         }
-    }
-
-    /// Companion to `perform_pairing` that *exposes* the round-1 the
-    /// pairer would send, for tests that inspect the wire format.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`IdentityFlowError`] when bootstrapping the device identity or
-    /// beginning its enrolment round fails.
-    pub fn produce_pairer_round1() -> Result<(DkgSession, EnrolmentRound1), IdentityFlowError> {
-        let mut rng = UnwrapErr(SysRng);
-        let mut id = ThresholdIdentity::bootstrap_single_device(&mut rng)?;
-        Ok(id.begin_enrolment(2, 2, 2, &mut rng)?)
     }
 
     // Mirrors `Widget::handle_event`'s parameter list on purpose --
@@ -817,10 +785,7 @@ impl Widget for PairDeviceScreen {
         // present so focus and accessibility walks line up with `children()`.
         let mut leaves = Vec::with_capacity(CODE_LEN.saturating_add(1));
         for i in 0..CODE_LEN {
-            let leaf = taffy.leaf_node(Style {
-                display: Display::None,
-                ..Default::default()
-            });
+            let leaf = field_leaf(taffy);
             if let Some(cell) = self.cells.get_mut(i) {
                 node_map.insert(leaf, std::ptr::from_mut::<dyn Widget>(cell));
             }
@@ -829,23 +794,11 @@ impl Widget for PairDeviceScreen {
             }
             leaves.push(leaf);
         }
-        let payload = taffy.leaf_node(Style {
-            display: Display::None,
-            ..Default::default()
-        });
+        let payload = field_leaf(taffy);
         node_map.insert(payload, std::ptr::from_mut::<dyn Widget>(&mut self.payload));
         self.payload_node = Some(payload);
         leaves.push(payload);
-        // The screen owns the viewport, so the sheet centres on the window
-        // rather than inside a fixed box at the origin.
-        let style = Style {
-            size: Size {
-                width: Dimension::percent(1.0),
-                height: Dimension::percent(1.0),
-            },
-            ..Default::default()
-        };
-        taffy.widget_node(style, &leaves, node_map, self)
+        taffy.widget_node(screen_style(), &leaves, node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {

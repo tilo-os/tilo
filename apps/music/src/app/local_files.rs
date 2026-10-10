@@ -579,6 +579,10 @@ mod tests {
         };
         let status = status.value.unwrap();
         assert_eq!(status["duration_ms"], duration);
+        assert_eq!(
+            status["position_ms"], duration,
+            "actual local EOS must retain its observed end position after decoder teardown"
+        );
         assert_eq!(status["confirmed_playing"], false);
         assert_eq!(status["requested_playing"], false);
         // The self-managed sink retains its actual decoded-buffer history at
