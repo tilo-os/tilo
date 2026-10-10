@@ -1,21 +1,12 @@
-//! A hosted open owns its connection until the UI accepts the answer. Dropping
-//! an attempt shuts it down, so the supervisor cleans up even a late child.
-
-use std::os::unix::net::UnixStream;
-use std::sync::{Arc, Mutex, mpsc};
+//! Hosted opens run away from the UI and retain a cancellable connection.
 
 use crate::target::SessionTarget;
 use crate::{HostedProcessServices, OpenError, Requester, TerminalBackend};
-
-#[derive(Default)]
-struct Lifetime {
-    cancelled: bool,
-    socket: Option<UnixStream>,
-}
+use runtime_portal::pending_connection::PendingResponse;
+use std::sync::{Arc, Mutex, mpsc};
 
 pub(crate) struct PendingOpen {
-    lifetime: Arc<Mutex<Lifetime>>,
-    answer: mpsc::Receiver<Result<TerminalBackend, OpenError>>,
+    answer: PendingResponse<Result<TerminalBackend, OpenError>>,
     pub requester: Requester,
     pub attach: Option<String>,
 }
@@ -28,51 +19,22 @@ impl PendingOpen {
         attach: Option<String>,
         waker: Arc<Mutex<ui::WakeHandle>>,
     ) -> Result<Self, OpenError> {
-        let lifetime = Arc::new(Mutex::new(Lifetime::default()));
-        let worker_lifetime = Arc::clone(&lifetime);
-        let (send, answer) = mpsc::channel();
         let worker_attach = attach.clone();
-        std::thread::Builder::new()
-            .name("tilo-terminal-open".into())
-            .spawn(move || {
-                let result = (|| {
-                    let socket = first
-                        .and_then(|services| services.ush)
-                        .or_else(|| HostedProcessServices::default().ush)
-                        .ok_or_else(|| {
-                            OpenError::NoRuntime(
-                                "the required ush supervisor is not running".into(),
-                            )
-                        })?;
-                    {
-                        let mut guard = worker_lifetime
-                            .lock()
-                            .map_err(|e| OpenError::Failed(e.to_string()))?;
-                        if guard.cancelled {
-                            return Err(OpenError::Failed("session open cancelled".into()));
-                        }
-                        guard.socket = Some(
-                            socket
-                                .try_clone()
-                                .map_err(|e| OpenError::Failed(e.to_string()))?,
-                        );
-                    }
-                    crate::inner::ush_backend_on(
-                        &socket,
-                        &[],
-                        &target,
-                        requester,
-                        worker_attach.as_deref(),
-                    )
-                })();
-                // Sending into a dropped receiver drops any returned PTY and
-                // lifetime capability. A replaced attempt cannot attach here.
-                let _ = send.send(result);
-                crate::inner::request_terminal_wake(&waker);
-            })
-            .map_err(|e| OpenError::Failed(e.to_string()))?;
+        let answer = PendingResponse::start(
+            "tilo-terminal-open",
+            move |cancellation| {
+                HostedProcessServices::open_session(
+                    first,
+                    &target,
+                    requester,
+                    worker_attach.as_deref(),
+                    Some(&cancellation),
+                )
+            },
+            move || crate::inner::request_terminal_wake(&waker),
+        )
+        .map_err(|e| OpenError::Failed(e.to_string()))?;
         Ok(Self {
-            lifetime,
             answer,
             requester,
             attach,
@@ -80,36 +42,22 @@ impl PendingOpen {
     }
 
     pub fn take_answer(&self) -> Option<Result<TerminalBackend, OpenError>> {
-        let result = match self.answer.try_recv() {
-            Ok(result) => result,
-            Err(mpsc::TryRecvError::Empty) => return None,
-            Err(mpsc::TryRecvError::Disconnected) => Err(OpenError::Failed(
+        match self.answer.take_answer() {
+            Ok(result) => Some(result),
+            Err(mpsc::TryRecvError::Empty) => None,
+            Err(mpsc::TryRecvError::Disconnected) => Some(Err(OpenError::Failed(
                 "session open worker ended without an answer".into(),
-            )),
-        };
-        // Transfer lifetime to the backend before dropping this attempt.
-        if let Ok(mut guard) = self.lifetime.lock() {
-            guard.socket = None;
-        }
-        Some(result)
-    }
-}
-
-impl Drop for PendingOpen {
-    fn drop(&mut self) {
-        if let Ok(mut guard) = self.lifetime.lock() {
-            guard.cancelled = true;
-            if let Some(socket) = guard.socket.take() {
-                let _ = socket.shutdown(std::net::Shutdown::Both);
-            }
+            ))),
         }
     }
 }
 
 #[cfg(test)]
+#[cfg(unix)]
 mod tests {
     use super::*;
     use std::io::{BufRead, Read, Write};
+    use std::os::unix::net::UnixStream;
     use std::time::{Duration, Instant};
     use ui::widget::Widget;
 
@@ -343,15 +291,14 @@ mod tests {
         )
         .unwrap();
         handed.recv_timeout(Duration::from_secs(5)).unwrap();
-        // Receive the queued result without the UI's lifetime transfer. This
-        // pins the race after descriptor receipt, rather than relying on scheduling.
-        let backend = pending
-            .answer
-            .recv_timeout(Duration::from_secs(5))
-            .unwrap()
-            .unwrap();
+        // Keep the result queued, with its descriptors received but unaccepted.
+        // Worker completion pins that race without consuming the UI's answer.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !pending.answer.is_finished() {
+            assert!(Instant::now() < deadline, "the answer must be queued");
+            std::thread::yield_now();
+        }
         drop(pending);
-        drop(backend);
         worker.join().unwrap();
     }
 

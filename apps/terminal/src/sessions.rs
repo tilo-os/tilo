@@ -74,7 +74,6 @@ impl std::fmt::Debug for Source {
 /// The tab's session source, target and the places it can run.
 pub struct Sessions {
     source: Source,
-    #[cfg(unix)]
     pending: Option<crate::async_open::PendingOpen>,
     pub state: OpenState,
     /// The target the current (or last attempted) session runs on.
@@ -114,7 +113,6 @@ impl Sessions {
     fn with(source: Source, state: OpenState, recent: RecentTarget) -> Self {
         Self {
             source,
-            #[cfg(unix)]
             pending: None,
             state,
             target: None,
@@ -152,7 +150,6 @@ impl Sessions {
     }
 
     /// A real host grants discovery, without connecting on its UI thread.
-    #[cfg(unix)]
     pub(crate) fn hosted_deferred() -> Self {
         Self::with(
             Source::Hosted { first: None },
@@ -226,6 +223,7 @@ impl Sessions {
                 target,
                 requested_by,
                 relay_session,
+                None,
             ),
             #[cfg(test)]
             Source::Scripted(open) => open(target, requested_by, relay_session),
@@ -240,7 +238,6 @@ impl Sessions {
         attach: Option<&str>,
         waker: std::sync::Arc<std::sync::Mutex<ui::WakeHandle>>,
     ) -> Option<Result<TerminalBackend, OpenError>> {
-        #[cfg(unix)]
         {
             // Cancels any superseded request before consuming another connection.
             self.pending = None;
@@ -266,13 +263,10 @@ impl Sessions {
                 }
             }
         }
-        #[cfg(not(unix))]
-        let _ = waker;
         Some(self.open(target, requester, attach))
     }
 
     pub(crate) fn take_open_answer(&mut self) -> Option<OpenAnswer> {
-        #[cfg(unix)]
         {
             let pending = self.pending.as_ref()?;
             let result = pending.take_answer()?;
@@ -281,8 +275,6 @@ impl Sessions {
             self.pending = None;
             Some((requester, attach, result))
         }
-        #[cfg(not(unix))]
-        None
     }
 
     /// Ask the shell to put the device's own shell to the person, once.
