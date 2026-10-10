@@ -65,6 +65,8 @@ PERMISSION_OBSERVATION_FIELDS = PERMISSION_OBSERVATION_COUNTS + (
     "at_attempted", "at_matched", "queue_control_present", "private_editor_state_matches",
     "read_unique_resource_matches", "read_unique_provider_matches",
     "read_unique_semantic_record_matches",
+    "at_unknown_object", "at_unknown_interface", "at_known_stale_transport",
+    "at_other_transport_failure",
 )
 PERMISSION_WINDOW_COUNTS = (
     "heading_count", "notice_count", "retained_count", "send_message_count",
@@ -7399,6 +7401,35 @@ def same_private_editor_state(left, right):
                for field in ("draft_matches", "caret", "selection"))
 
 
+def restricted_task_editor_sample(custody, draft, observation):
+    """Read one exact Task editor tree; retry only a retired AT transaction."""
+    original, identity = custody
+    try:
+        current = agent_conversation_accessibility(
+            original["agent"], detached=original["detached"], stale_only=True,
+            composer_name="Task instruction composer", observation=observation,
+        )
+        if current is None:
+            return None
+        if any(current.get(field) != original.get(field)
+               for field in ("bus", "process", "window", "composer", "agent", "detached")) \
+                or chat_process_identity(current) != identity:
+            raise RuntimeError("Task restriction changed its owned private editor")
+        observed = private_editor_observation(current, draft)
+        names = accessible_names(current, observation=observation)
+        return current, observed, names
+    except atspi.GateError as error:
+        text = str(error)
+        observation["at_unknown_object"] = "org.freedesktop.DBus.Error.UnknownObject" in text
+        observation["at_unknown_interface"] = "org.freedesktop.DBus.Error.UnknownInterface" in text
+        observation["at_known_stale_transport"] = stale_editor_transport(error)
+        observation["at_other_transport_failure"] = not observation["at_known_stale_transport"]
+        if observation["at_known_stale_transport"]:
+            permission_count(observation, "at_unobservable")
+            return None
+        raise
+
+
 def native_chat_write_downgrade(socket, room, record, person, output, size, process):
     """Restrict only Chat.Write, then require expiry to restore exact state."""
     message_draft = "Keep this Message draft through permission loss"
@@ -7516,14 +7547,14 @@ def native_task_write_downgrade(socket, room, record, person, output, size, proc
                 return None
             sample["at_attempted"] = True
             try:
-                access = agent_conversation_accessibility(
-                    "Tide", composer_name="Task instruction composer", observation=sample)
-                sample["at_matched"] = access is not None
-                if access is None:
+                editor = restricted_task_editor_sample(
+                    (queue_access, initial_identity), queue_draft, sample
+                )
+                sample["at_matched"] = editor is not None
+                if editor is None:
                     return None
-                observed = private_editor_observation(access, queue_draft)
+                access, observed, names = editor
                 permission_count(sample, "retained", int(observed.get("draft_matches") is True))
-                names = accessible_names(access, observation=sample)
                 sample["queue_control_present"] = "Queue task" in names
                 sample["private_editor_state_matches"] = same_private_editor_state(observed, queue_before)
                 if "Queue task" in names:

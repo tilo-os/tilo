@@ -1594,6 +1594,55 @@ class PresentedEditorTargetTests(unittest.TestCase):
             sleep.assert_not_called()
             self.assertEqual(client.call.call_count, len(replies))
 
+    def test_task_restriction_retries_only_a_retired_complete_at_sample(self):
+        access = {"bus": "owned", "window": "/window", "process": 7,
+                  "agent": "Tide", "detached": False, "composer": "/composer"}
+        state = {"draft_matches": True, "caret": 3, "selection": [1, 3]}
+        stale = PROOF.atspi.GateError("org.freedesktop.DBus.Error.UnknownObject retired-node")
+        samples = [{}, {}]
+        with patch.object(PROOF, "agent_conversation_accessibility", return_value=access), \
+                patch.object(PROOF, "chat_process_identity", return_value=(7, "start")), \
+                patch.object(PROOF, "private_editor_observation", return_value=state), \
+                patch.object(PROOF, "accessible_names",
+                             side_effect=[stale, {"Task instruction composer"}]) as names:
+            self.assertIsNone(PROOF.restricted_task_editor_sample(
+                (access, (7, "start")), "PRIVATE", samples[0]))
+            self.assertEqual(PROOF.restricted_task_editor_sample(
+                (access, (7, "start")), "PRIVATE", samples[1]),
+                (access, state, {"Task instruction composer"}))
+        self.assertEqual(names.call_count, 2)
+        self.assertTrue(samples[0]["at_unknown_object"])
+        self.assertTrue(samples[0]["at_known_stale_transport"])
+        self.assertFalse(samples[0]["at_other_transport_failure"])
+        self.assertEqual(samples[0]["at_unobservable"], 1)
+
+    def test_task_restriction_propagates_nonstale_at_failure_and_owner_change(self):
+        access = {"bus": "owned", "window": "/window", "process": 7,
+                  "agent": "Tide", "detached": False, "composer": "/composer"}
+        state = {"draft_matches": True, "caret": 3, "selection": [1, 3]}
+        error = PROOF.atspi.GateError(
+            "org.freedesktop.DBus.Error.UnknownInterface org.a11y.atspi.Accessible")
+        sample = {}
+        with patch.object(PROOF, "agent_conversation_accessibility", return_value=access), \
+                patch.object(PROOF, "chat_process_identity", return_value=(7, "start")), \
+                patch.object(PROOF, "private_editor_observation", return_value=state), \
+                patch.object(PROOF, "accessible_names", side_effect=error), \
+                self.assertRaises(PROOF.atspi.GateError):
+            PROOF.restricted_task_editor_sample(
+                (access, (7, "start")), "PRIVATE", sample)
+        self.assertTrue(sample["at_unknown_interface"])
+        self.assertFalse(sample["at_known_stale_transport"])
+        self.assertTrue(sample["at_other_transport_failure"])
+
+        with patch.object(PROOF, "agent_conversation_accessibility",
+                          return_value={**access, "composer": "/replacement"}), \
+                patch.object(PROOF, "chat_process_identity", return_value=(7, "start")), \
+                patch.object(PROOF, "private_editor_observation") as read, \
+                self.assertRaisesRegex(RuntimeError, "changed its owned private editor"):
+            PROOF.restricted_task_editor_sample(
+                (access, (7, "start")), "PRIVATE", {})
+        read.assert_not_called()
+
     def test_read_only_and_restricted_views_cannot_hide_serialized_mutable_controls(self):
         client = PROOF.atspi.AtspiClient("address", "owned")
 
