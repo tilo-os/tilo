@@ -4903,3 +4903,37 @@ fn playback_failure_does_not_advertise_retry_of_an_at_most_once_invocation() {
     assert!(!error.retryable);
     assert!(error.message.contains("Premium eligibility"));
 }
+
+#[test]
+fn settled_playback_uses_bounded_wakes_instead_of_vsync() {
+    let (mut app, _doc) = app_with_doc();
+    app.pb.playing = true;
+    app.toast = None;
+    app.mark_drawn();
+    let before = app.last_tick;
+    assert!(
+        !app.needs_animation_frame(),
+        "settled playback must leave time for the host output worker"
+    );
+    let deadline = app
+        .next_wake_deadline()
+        .expect("playback still gets polled");
+    assert!(deadline > before && deadline <= before + Duration::from_millis(100));
+    app.last_tick = ui::time::now()
+        .checked_sub(Duration::from_millis(101))
+        .expect("test clock has a preceding playback interval");
+    assert!(
+        app.needs_animation_frame(),
+        "a due playback wake paints its observation"
+    );
+    app.tick();
+    assert!(
+        !app.needs_animation_frame(),
+        "painting rearms the bounded wake"
+    );
+    app.pb.playing = false;
+    assert!(
+        app.next_wake_deadline().is_none(),
+        "stopped playback stays asleep"
+    );
+}
