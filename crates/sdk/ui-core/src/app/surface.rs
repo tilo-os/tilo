@@ -71,6 +71,7 @@ impl App {
         synthesized_touch: bool,
     ) -> bool {
         let _entry = self.enter_wake_scope();
+        self.track_pointer_buttons(&event);
         if matches!(
             &event,
             WindowEvent::KeyboardInput {
@@ -439,7 +440,7 @@ impl App {
         }
 
         if !handled && app.layout.root_node.is_some() {
-            app.refresh_control_action_availability();
+            app.refresh_controls_before_input(&event);
             let scale_factor = window.scale_factor();
             let presentation_was_floating =
                 !app.root_widget.floating_surface_presentations().is_empty();
@@ -453,18 +454,29 @@ impl App {
                     ..
                 }
             );
+            let resources_before = app.resource_input_mark(&event);
             history_handled |= app.presentation_handle_event(
                 event_for_root,
                 scale_factor,
                 &mut handled,
                 &mut focus_target,
             );
-            // Even a document-free interaction may switch which resources a
-            // widget presents. Invalidate once at the mutable tree boundary;
-            // all later consumers in this event/frame share the rebuilt cache.
-            app.invalidate_widget_resource_cache();
             let presentation_is_floating =
                 !app.root_widget.floating_surface_presentations().is_empty();
+            // Even a document-free interaction may switch which resources a
+            // widget presents (a tab, open media, a local mode), so the tree
+            // is dropped once here at the mutable tree boundary and every
+            // later consumer in this event/frame shares the rebuilt one. Bare
+            // hover that changed nothing keeps it: rebuilding the whole tree
+            // per pointer move cost a full publication at the report rate.
+            app.invalidate_resources_after_input(
+                &event,
+                handled
+                    || history_handled
+                    || focus_target.is_some()
+                    || presentation_was_floating != presentation_is_floating,
+                &resources_before,
+            );
             floating_pointer_needs_redraw = matches!(event, WindowEvent::CursorMoved { .. })
                 && (used_desktop_pointer_space
                     || presentation_was_floating != presentation_is_floating);
@@ -789,6 +801,8 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testing::Dispatch;
+    use crate::widget::TaffyTreeExt;
     use std::cell::{Cell, RefCell};
     use std::rc::Rc;
 
@@ -797,6 +811,8 @@ mod tests {
         static PHYSICAL: RefCell<Vec<crate::widget::PhysicalInput>> = const { RefCell::new(Vec::new()) };
 
     }
+
+    include!("native_publication_scroll_tests.rs");
 
     /// Records where it is clicked, in its own logical coordinates.
     struct ClickProbe {
@@ -815,27 +831,18 @@ mod tests {
             _theme: &Theme,
             nodes: &mut HashMap<NodeId, *mut dyn Widget>,
         ) -> NodeId {
-            let node = taffy
-                .new_leaf(taffy::Style {
-                    size: taffy::Size {
-                        width: taffy::Dimension::percent(1.0),
-                        height: taffy::Dimension::percent(1.0),
-                    },
-                    ..taffy::Style::default()
-                })
-                .unwrap();
-            nodes.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-            node
+            let style = taffy::Style {
+                size: taffy::Size {
+                    width: taffy::Dimension::percent(1.0),
+                    height: taffy::Dimension::percent(1.0),
+                },
+                ..taffy::Style::default()
+            };
+            taffy.widget_leaf(style, nodes, self)
         }
         fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
             let layout = taffy.layout(node).unwrap();
-            self.rect = KurboRect::from_origin_size(
-                (
-                    origin.x + f64::from(layout.location.x),
-                    origin.y + f64::from(layout.location.y),
-                ),
-                (f64::from(layout.size.width), f64::from(layout.size.height)),
-            );
+            self.rect = crate::widget::placed(layout, origin);
         }
         fn draw(
             &mut self,
@@ -1232,27 +1239,16 @@ mod tests {
         );
         assert!(!scene.encoding().is_empty(), "the app paints in the host");
 
-        let mut doc = automerge::AutoCommit::new();
         let modifiers = winit::event::Modifiers::default();
-        let mut send = |embedded: &mut super::super::EmbeddedApp,
-                        event: WindowEvent,
-                        modifiers: &winit::event::Modifiers| {
-            let mut handled = false;
-            let mut focus = None;
-            embedded.handle_event(
-                &event,
-                &mut crate::widget::EventCtx {
-                    scale_factor: 2.0,
-                    modifiers,
-                    state: crate::widget::Edits::lend(&mut doc),
-                    path: &automerge::ROOT,
-                    handled: &mut handled,
-                    focus_target: &mut focus,
-                    node_id: node,
-                    taffy: &taffy,
-                },
-            );
-            handled
+        let send = |embedded: &mut super::super::EmbeddedApp,
+                    event: WindowEvent,
+                    modifiers: &winit::event::Modifiers| {
+            Dispatch::new()
+                .scale_factor(2.0)
+                .modifiers(*modifiers)
+                .layout(&taffy, node)
+                .send(embedded, &event)
+                .handled
         };
         let device = winit::event::DeviceId::dummy();
         send(
@@ -1279,7 +1275,7 @@ mod tests {
         );
 
         let control = winit::event::Modifiers::from(winit::keyboard::ModifiersState::CONTROL);
-        let close = crate::synthetic_input::key_event(
+        let close = crate::synthetic_input::key_input(
             &winit::keyboard::Key::Character(winit::keyboard::SmolStr::new("w")),
             ElementState::Pressed,
         );
@@ -1333,25 +1329,16 @@ mod tests {
             embedded.app().focused_control().is_some(),
             "focus entering the app lands on its first control"
         );
-        let mut doc = automerge::AutoCommit::new();
-        let mut handled = false;
-        let mut focus = None;
-        embedded.handle_event(
-            &crate::synthetic_input::key_event(
-                &winit::keyboard::Key::Named(winit::keyboard::NamedKey::Tab),
-                ElementState::Pressed,
-            ),
-            &mut crate::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &winit::event::Modifiers::default(),
-                state: crate::widget::Edits::lend(&mut doc),
-                path: &automerge::ROOT,
-                handled: &mut handled,
-                focus_target: &mut focus,
-                node_id: node,
-                taffy: &taffy,
-            },
-        );
+        let handled = Dispatch::new()
+            .layout(&taffy, node)
+            .send(
+                &mut embedded,
+                &crate::synthetic_input::key_input(
+                    &winit::keyboard::Key::Named(winit::keyboard::NamedKey::Tab),
+                    ElementState::Pressed,
+                ),
+            )
+            .handled;
         assert!(
             !handled && embedded.app().focused_control().is_none(),
             "Tab from the app's last control leaves it for the host"

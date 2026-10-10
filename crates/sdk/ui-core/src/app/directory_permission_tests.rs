@@ -54,7 +54,7 @@ fn directory_permission_fresh_sampler_and_seconds_preserve_actual_bound_revision
         fixture
             .app
             .resolve_action_directory(&revision, &alias, "follow-up"),
-        runtime_collab::ActionDirectoryResolution::Found(_)
+        runtime_collab::ActionDirectoryResolution::Found { .. }
     ));
 }
 
@@ -141,7 +141,7 @@ fn directory_permission_clock_failure_refuses_cached_resolution() {
         fixture
             .app
             .resolve_action_directory(&recovered, &alias, "follow-up"),
-        runtime_collab::ActionDirectoryResolution::Found(_)
+        runtime_collab::ActionDirectoryResolution::Found { .. }
     ));
 }
 
@@ -207,7 +207,7 @@ fn directory_filtered_cache_expired_sole_grant_cannot_republish_old_rows() {
         fixture
             .app
             .resolve_action_directory(&revision, &alias, "follow-up"),
-        runtime_collab::ActionDirectoryResolution::Found(_)
+        runtime_collab::ActionDirectoryResolution::Found { .. }
     ));
 }
 
@@ -250,7 +250,7 @@ fn directory_filtered_cache_expired_restriction_restores_republished_action() {
         fixture
             .app
             .resolve_action_directory(&revision, &alias, "follow-up"),
-        runtime_collab::ActionDirectoryResolution::Found(_)
+        runtime_collab::ActionDirectoryResolution::Found { .. }
     ));
 }
 
@@ -303,7 +303,7 @@ fn hosted_directory_expiry_failure_and_owner_close_never_restore_old_revision() 
             fixture
                 .app
                 .resolve_action_directory(&old, &alias, "follow-up"),
-            runtime_collab::ActionDirectoryResolution::Found(_)
+            runtime_collab::ActionDirectoryResolution::Found { .. }
         ));
     }
 }
@@ -339,7 +339,7 @@ fn directory_permission_action_authority_revoke_invalidates_actual_bound_revisio
         fixture
             .app
             .resolve_action_directory(&revision, &alias, "follow-up"),
-        runtime_collab::ActionDirectoryResolution::Found(_)
+        runtime_collab::ActionDirectoryResolution::Found { .. }
     ));
     *current.lock().unwrap() = None;
     assert!(matches!(

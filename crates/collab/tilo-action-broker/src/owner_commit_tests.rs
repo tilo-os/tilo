@@ -417,6 +417,53 @@ mod owner_commit_tests {
         route: CrdtRoute,
         _fanout: Arc<FanoutState>,
     }
+    #[tokio::test(flavor = "current_thread")]
+    async fn owner_commit_failure_retains_answered_reason_and_cancelled_uncertainty() {
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                for cancelled in [false, true] {
+                    let root = canonical_tempdir();
+                    let mut fixture = owner_fixture_with_receipt_fault(root.path(), 1);
+                    let request = tilo_peer_state::owner_commit::OwnerCommitRequest {
+                        room: fixture.route.cluster_id.clone(),
+                        operation: tilo_peer_state::owner_commit::CommitOperation::Document {
+                            app: fixture.route.app_id.clone(),
+                            record: fixture.route.record_id.clone(),
+                            envelope: Box::new(owner_snapshot(&fixture)),
+                        },
+                    };
+                    let state = fixture.state.clone();
+                    let response = tokio::task::spawn_local(async move {
+                        state.commit_owner_request(request, None).await
+                    });
+                    let pending = tilo_test_env::within(
+                        "owner did not receive the actual commit",
+                        fixture.mailbox.recv(),
+                    )
+                    .await
+                    .unwrap();
+                    if cancelled {
+                        response.abort();
+                        assert!(response.await.unwrap_err().is_cancelled());
+                        assert_eq!(
+                            fixture.state.owner_health().unwrap_err(),
+                            "owner commit interrupted; outcome unknown"
+                        );
+                        drop(pending);
+                    } else {
+                        pending.apply(&mut fixture.owner).unwrap();
+                        let error = response.await.unwrap().unwrap_err();
+                        assert_eq!(
+                            fixture.state.owner_health().unwrap_err(),
+                            format!("owner commit failed: {}", error.extra)
+                        );
+                        assert!(!error.extra.contains("interrupted"));
+                    }
+                }
+            })
+            .await;
+    }
+
     fn owner_fixture(root: &std::path::Path) -> OwnerFixture {
         owner_fixture_with_receipt_fault(root, 0)
     }
@@ -897,7 +944,10 @@ mod owner_commit_tests {
             }
         }
         impl crate::services::WorkspaceAuthority for CurrentOwner {
-            fn snapshot(&self) -> Result<tilo_desktop_model::DesktopTree, String> {
+            fn with_tree(
+                &self,
+                read: &mut dyn FnMut(&tilo_desktop_model::DesktopTree),
+            ) -> Result<(), String> {
                 let guard = self.0.lock().map_err(|_| "owner authority unavailable")?;
                 let peer = guard.as_ref().ok_or("owner authority unavailable")?;
                 let doc = peer
@@ -915,7 +965,8 @@ mod owner_commit_tests {
                 workspace.capabilities = caps;
                 let mut tree = tilo_desktop_model::DesktopTree::default();
                 tree.workspaces.push(workspace);
-                Ok(tree)
+                read(&tree);
+                Ok(())
             }
         }
         struct Published(Arc<AtomicUsize>);
@@ -1383,7 +1434,7 @@ mod owner_commit_tests {
                     assert_eq!(query.unwrap().rows.len(), 1);
                     assert!(matches!(
                         resolve.unwrap(),
-                        runtime_collab::ActionDirectoryResolution::Found(_)
+                        runtime_collab::ActionDirectoryResolution::Found { .. }
                     ));
                 }
                 *authority.certificate.lock().unwrap() = Some(cert.clone());

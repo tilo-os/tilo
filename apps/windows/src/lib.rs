@@ -16,16 +16,6 @@
     clippy::unnecessary_literal_bound,
     reason = "app-local rendering geometry and Widget trait signatures"
 )]
-#![cfg_attr(
-    test,
-    allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
-        clippy::panic,
-        reason = "test assertions"
-    )
-)]
 
 pub mod actions;
 pub mod app;

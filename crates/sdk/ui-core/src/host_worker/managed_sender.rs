@@ -22,5 +22,6 @@ pub use runtime::{
 #[cfg(test)]
 mod tests;
 
-#[cfg(all(test, target_os = "macos"))]
+#[cfg(test)]
+#[cfg(target_os = "macos")]
 pub(crate) use lifecycle::transport_fixture::TransportFixture;

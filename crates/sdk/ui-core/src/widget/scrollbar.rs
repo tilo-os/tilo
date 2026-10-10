@@ -356,13 +356,6 @@ impl Scrollbar {
         self
     }
 
-    /// Override the page fraction (default [`PAGE_FRACTION`]).
-    #[must_use]
-    pub fn with_page_fraction(mut self, frac: f64) -> Self {
-        self.page_fraction = frac;
-        self
-    }
-
     pub fn is_vertical(&self) -> bool {
         self.vertical
     }
@@ -445,43 +438,6 @@ impl Scrollbar {
                 (lane.x1 - margin).max(lane.x0 + margin),
                 lane.y0 + margin + thumb.min(lane.height()),
             )
-        }
-    }
-
-    /// Paint `marks` along `track` for content of `metrics`, under the
-    /// thumb: each a short bar across the track in its tone's ink, at least
-    /// a hairline long, so search hits and changes show where they are.
-    pub fn paint_marks(
-        &self,
-        scene: &mut vello::Scene,
-        transform: vello::kurbo::Affine,
-        track: Rect,
-        metrics: ScrollMetrics,
-        marks: &[TrackMark],
-        theme: &Theme,
-    ) {
-        if metrics.content <= 0.0 {
-            return;
-        }
-        let colors = &theme.tokens.colors;
-        let ground = colors.surfaces.content;
-        let scale = self.axis_len(track) / metrics.content;
-        let lo = self.axis_lo(track);
-        for mark in marks {
-            let start = lo + mark.at.max(0.0) * scale;
-            let len = (mark.len.max(0.0) * scale).max(2.0);
-            let end = (start + len).min(self.axis_hi(track));
-            let rect = if self.vertical {
-                Rect::new(track.x0, start, track.x1, end)
-            } else {
-                Rect::new(start, track.y0, end, track.y1)
-            };
-            let ink = colors.ink_on(
-                ground,
-                mark.tone.colour(theme),
-                crate::tokens::colors::NON_TEXT_MIN_CONTRAST,
-            );
-            scene.fill(vello::peniko::Fill::NonZero, transform, ink, None, &rect);
         }
     }
 

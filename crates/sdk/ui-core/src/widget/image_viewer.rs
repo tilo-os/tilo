@@ -209,7 +209,7 @@ impl Widget for ImageViewer {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let node = taffy.leaf_node(Style {
+        let style = Style {
             size: Size {
                 width: Dimension::percent(1.0),
                 height: Dimension::percent(1.0),
@@ -217,19 +217,12 @@ impl Widget for ImageViewer {
             flex_grow: 1.0,
             flex_shrink: 1.0,
             ..Default::default()
-        });
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
-            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
-        );
+        self.rect = crate::widget::layout_rect(taffy, node, origin);
     }
 
     fn draw(
@@ -350,11 +343,11 @@ impl Widget for ImageViewer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use automerge::AutoCommit;
+    use crate::testing::dispatch;
     use std::sync::Arc;
     use vello::peniko::{Blob, ImageAlphaType, ImageData as Image, ImageFormat as Format};
     use winit::dpi::PhysicalPosition;
-    use winit::event::{ElementState, Modifiers, MouseButton, MouseScrollDelta, WindowEvent};
+    use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 
     /// 16×16 opaque white; the `Arc` inside `Blob` keeps clones zero-copy.
     fn make_image() -> Image {
@@ -389,48 +382,23 @@ mod tests {
             // Bypasses taffy — a real layout pass would need a parent.
             iv.rect = Rect::new(0.0, 0.0, 100.0, 100.0);
 
-            let dev = dummy_device_id();
-            let modifiers = Modifiers::default();
-            let mut state = AutoCommit::new();
-            let root = automerge::ROOT.clone();
-            let mut handled = false;
-            let mut focus = None;
-            let mut taffy = TaffyTree::<()>::new();
-            let node = taffy.leaf_node(Style::DEFAULT);
+            let dev = winit::event::DeviceId::dummy();
 
             // So the wheel handler's `inside` check passes.
-            iv.handle_event(
+            let mut handled = dispatch(
+                &mut iv,
                 &WindowEvent::CursorMoved {
                     device_id: dev,
                     position: PhysicalPosition::new(50.0, 50.0),
                 },
-                &mut crate::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &modifiers,
-                    state: crate::widget::Edits::lend(&mut state),
-                    path: &root,
-                    handled: &mut handled,
-                    focus_target: &mut focus,
-                    node_id: node,
-                    taffy: &taffy,
-                },
             );
 
-            iv.handle_event(
+            handled |= dispatch(
+                &mut iv,
                 &WindowEvent::MouseWheel {
                     device_id: dev,
                     delta: MouseScrollDelta::LineDelta(0.0, 1.0),
                     phase: winit::event::TouchPhase::Moved,
-                },
-                &mut crate::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &modifiers,
-                    state: crate::widget::Edits::lend(&mut state),
-                    path: &root,
-                    handled: &mut handled,
-                    focus_target: &mut focus,
-                    node_id: node,
-                    taffy: &taffy,
                 },
             );
 
@@ -448,47 +416,22 @@ mod tests {
             // through taffy in production.
             iv.rect = Rect::new(0.0, 0.0, 200.0, 200.0);
 
-            let dev = dummy_device_id();
-            let modifiers = Modifiers::default();
-            let mut state = AutoCommit::new();
-            let root = automerge::ROOT.clone();
-            let mut handled = false;
-            let mut focus = None;
-            let mut taffy = TaffyTree::<()>::new();
-            let node = taffy.leaf_node(Style::DEFAULT);
+            let dev = winit::event::DeviceId::dummy();
 
-            iv.handle_event(
+            dispatch(
+                &mut iv,
                 &WindowEvent::CursorMoved {
                     device_id: dev,
                     position: PhysicalPosition::new(50.0, 50.0),
                 },
-                &mut crate::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &modifiers,
-                    state: crate::widget::Edits::lend(&mut state),
-                    path: &root,
-                    handled: &mut handled,
-                    focus_target: &mut focus,
-                    node_id: node,
-                    taffy: &taffy,
-                },
             );
 
-            iv.handle_event(
+            dispatch(
+                &mut iv,
                 &WindowEvent::MouseInput {
                     device_id: dev,
                     state: ElementState::Pressed,
                     button: MouseButton::Left,
-                },
-                &mut crate::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &modifiers,
-                    state: crate::widget::Edits::lend(&mut state),
-                    path: &root,
-                    handled: &mut handled,
-                    focus_target: &mut focus,
-                    node_id: node,
-                    taffy: &taffy,
                 },
             );
             assert!(
@@ -498,38 +441,20 @@ mod tests {
 
             // Move cursor 30px right, 20px down; the magnitude is delta /
             // base_scale (zoom is 1.0, so total_scale == base_scale).
-            iv.handle_event(
+            dispatch(
+                &mut iv,
                 &WindowEvent::CursorMoved {
                     device_id: dev,
                     position: PhysicalPosition::new(80.0, 70.0),
                 },
-                &mut crate::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &modifiers,
-                    state: crate::widget::Edits::lend(&mut state),
-                    path: &root,
-                    handled: &mut handled,
-                    focus_target: &mut focus,
-                    node_id: node,
-                    taffy: &taffy,
-                },
             );
 
-            iv.handle_event(
+            dispatch(
+                &mut iv,
                 &WindowEvent::MouseInput {
                     device_id: dev,
                     state: ElementState::Released,
                     button: MouseButton::Left,
-                },
-                &mut crate::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &modifiers,
-                    state: crate::widget::Edits::lend(&mut state),
-                    path: &root,
-                    handled: &mut handled,
-                    focus_target: &mut focus,
-                    node_id: node,
-                    taffy: &taffy,
                 },
             );
 
@@ -562,15 +487,5 @@ mod tests {
         image_viewer_scroll_up_zooms_in();
         image_viewer_drag_pans();
         image_viewer_fit_resets_zoom_and_pan();
-    }
-
-    /// `DeviceId` has no public constructor; `mem::zeroed` is the
-    /// standard escape hatch other widget tests in this crate use
-    /// (see `group_row.rs`).
-    fn dummy_device_id() -> winit::event::DeviceId {
-        // SAFETY: DeviceId is an opaque wrapper around a platform u64;
-        // a zeroed value is what winit itself uses for the "no device"
-        // sentinel on every backend. No fields require validity.
-        unsafe { std::mem::zeroed() }
     }
 }

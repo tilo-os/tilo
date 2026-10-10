@@ -223,25 +223,6 @@ impl OptimisticQueue {
         self.rebase_from(live, registry, None, confirmed)
     }
 
-    /// Apply transport bytes produced by `AutoCommit::save_incremental` to
-    /// the confirmed baseline, then rebase pending work as above.
-    ///
-    /// # Errors
-    ///
-    /// Returns an Automerge load error or a pending-action replay error. The
-    /// queue and live document remain unchanged on failure.
-    pub fn load_authoritative_incremental(
-        &mut self,
-        live: &mut AutoCommit,
-        bytes: &[u8],
-        registry: &ActionRegistry,
-    ) -> Result<(usize, RebaseBatch), OptimisticError> {
-        let mut confirmed = self.confirmed.clone();
-        let applied = confirmed.load_incoming(bytes)?;
-        let rebase = self.rebase_from(live, registry, None, confirmed)?;
-        Ok((applied, rebase))
-    }
-
     /// Envelopes to resend after reconnect. No local replay occurs: their
     /// optimistic effects are already present in `live`.
     #[must_use]

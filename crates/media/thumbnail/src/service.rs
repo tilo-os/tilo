@@ -371,7 +371,7 @@ impl ThumbnailService {
         {
             return Ok(Self::ephemeral(workers));
         }
-        let dir = xdg_paths::cache_dir().map_or_else(
+        let dir = tilo_paths::cache_dir().map_or_else(
             || std::env::temp_dir().join("tilo-thumbnails"),
             |cache| cache.join("tilo").join("thumbnails"),
         );

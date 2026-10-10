@@ -283,9 +283,12 @@ where
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         let child = self.child.build_layout(taffy, theme, node_map);
-        let node = taffy.parent_node(boundary_style(taffy.style(child).ok()), &[child]);
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        taffy.widget_node(
+            boundary_style(taffy.style(child).ok()),
+            &[child],
+            node_map,
+            self,
+        )
     }
 
     /// A child that left the flow (an absent element, bound text with
@@ -310,13 +313,7 @@ where
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x + layout.size.width),
-            origin.y + f64::from(layout.location.y + layout.size.height),
-        );
+        self.rect = crate::widget::layout_rect(taffy, node, origin);
         if let Ok(children) = taffy.children(node)
             && let Some(child) = children.first()
         {

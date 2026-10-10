@@ -101,6 +101,25 @@ jobs:
       - name: Repository policy suite
         run: bash tools/policy/run.sh
 
+      # Release / apps measures each shipped tapp against its budget; this
+      # text check, which builds nothing, makes every budget change reviewed:
+      # growth needs a raise file and a new app needs a budget.
+      - name: App package size budgets only decrease
+        shell: bash
+        run: |
+          # A pull request compares with the main it was merged onto; a push
+          # to main, with its first parent (the previous main).
+          base='${{ steps.merge.outputs.main }}'
+          python3 tools/perf/tapp_size_ratchet.py check-budget --base "${base:-HEAD~1}"
+
+      # The same rule for the shared app runtime's size and load-cost budgets
+      # (tools/perf/runtime-size-budget/; DEVELOPMENT.md, "Runtime size").
+      - name: Runtime size budgets only decrease
+        shell: bash
+        run: |
+          base='${{ steps.merge.outputs.main }}'
+          python3 tools/perf/runtime_size_ratchet.py check-budget --base "${base:-HEAD~1}"
+
       # The lint app developers run locally: an app that adds platform code
       # without moving it into a platform crate or declaring itself native
       # fails here. ci-fast already provides /usr/bin/cc (pinned digest).

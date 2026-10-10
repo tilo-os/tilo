@@ -120,7 +120,7 @@ pub async fn request_certification(
     connection.close(0u32.into(), b"");
     match reply {
         CertifyReply::Issued { cert, host_cert } => {
-            let now = crate::clock::now_ns();
+            let now = tilo_clock::unix_now_ns();
             verify_issued_cert(
                 &request,
                 &cert,
@@ -187,7 +187,7 @@ impl Approver {
             &ack,
             &user,
             revocations,
-            crate::clock::now_ns(),
+            tilo_clock::unix_now_ns(),
             &client_nonce,
         )?;
         write(

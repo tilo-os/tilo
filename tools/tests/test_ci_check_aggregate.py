@@ -80,11 +80,59 @@ class CheckAggregateTests(unittest.TestCase):
             )
             return result.returncode, summary.read_text() if summary.exists() else ""
 
+    def test_manual_wasm_diagnostic_executes_production_commands_with_bounded_selection(self):
+        diagnostic = (ROOT / ".forgejo/workflows/wasm-check-qualification.yml").read_text()
+        self.assertEqual(section(diagnostic, "on", 0).splitlines()[0], "  workflow_dispatch:")
+        self.assertNotIn("  push:", diagnostic)
+        self.assertNotIn("  pull_request:", diagnostic)
+        self.assertEqual(section(diagnostic, "env", 0).rstrip(), section(self.workflow, "env", 0).rstrip())
+        self.assertEqual(section(diagnostic, "builder", 2).rstrip(), section(self.workflow, "builder", 2).rstrip())
+        original = section(self.workflow, "wasm", 2)
+        job = section(diagnostic, "wasm", 2)
+
+        def scripts(body):
+            result = []
+            lines = body.splitlines()
+            for index, line in enumerate(lines):
+                if line.startswith("        run: "):
+                    value = line.removeprefix("        run: ")
+                    if value == "|":
+                        block = []
+                        for following in lines[index + 1:]:
+                            if following.strip() and not following.startswith("          "):
+                                break
+                            block.append(following.removeprefix("          "))
+                        value = "\n".join(block).rstrip()
+                    result.append(value)
+            return result
+
+        self.assertEqual(scripts(job), scripts(original))
+        names = lambda body: set(re.findall(r"(?m)^      - name: (.+)$", body))
+        self.assertEqual(names(job), names(original) - {"Merge onto the tested main"})
+        self.assertIn("WEB_EXAMPLES: example-counter", job)
+        self.assertIn("image: ${{ needs.builder.outputs.image }}", job)
+        self.assertIn("CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUSTFLAGS: -D warnings", job)
+
+    def test_wasm_qualification_uses_portable_native_without_losing_main_x86(self):
+        job = section(self.workflow, "wasm", 2)
+        self.assertIn("runs-on: ${{ github.event_name == 'push' && 'runner' || 'runner-native-portable' }}", job)
+        self.assertIn("EXPECTED_ARCH: ${{ github.event_name == 'push' && 'x86_64' || runner.arch }}", job)
+        self.assertIn('run: bash tools/ci/assert-native-runner.sh "$EXPECTED_ARCH"', job)
+        self.assertIn('CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUSTFLAGS: -D warnings', job)
+        self.assertIn('cargo check --locked $PACKAGES --target wasm32-unknown-unknown', job)
+        self.assertIn('run: bash tools/ci/check-wasm.sh', job)
+        self.assertIn('bash tools/ci/build-web-examples.sh $WEB_EXAMPLES', job)
+        self.assertIn("timeout-minutes: 90", job)
+        # Native x86/ARM matrices and their warning flags remain independent.
+        for name in ("test", "check", "clippy"):
+            self.assertIn("runs-on: ${{ matrix.runner }}", section(self.workflow, name, 2))
+
     def test_native_admission_observes_security_without_losing_main_results(self):
         # Evaluate the actual workflow predicates. This deliberately supports only
         # the small boolean/comparison grammar used here, rejecting new syntax.
         values = {
             "github.event_name": "pull_request",
+            "github.event.inputs.lanes": "all",
             "needs.builder.result": "success",
             "needs.select.result": "success",
             "needs.security.result": "success",
@@ -143,6 +191,15 @@ class CheckAggregateTests(unittest.TestCase):
                 job = section(sdk, name, 2)
                 self.assertIn("needs: [builder, policy]", job)
                 self.assertTrue(admitted(job))
+                for event in ("pull_request", "push"):
+                    self.assertTrue(admitted(job, **{"github.event_name": event,
+                                                     "github.event.inputs.lanes": "linux"}))
+                for lanes in ("all", "", "linux"):
+                    self.assertEqual(
+                        admitted(job, **{"github.event_name": "workflow_dispatch",
+                                         "github.event.inputs.lanes": lanes}),
+                        name == "linux" or lanes != "linux",
+                    )
                 for status in ("failure", "cancelled", "skipped", "", "running"):
                     self.assertFalse(admitted(job, **{"needs.policy.result": status}))
                     self.assertTrue(admitted(job, **{"github.event_name": "push",

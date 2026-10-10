@@ -97,14 +97,6 @@ impl SettingsSchema for RecentFiles {
     const SCOPE: Scope = Scope::DeviceLocal;
 }
 
-pub fn now_ms() -> u64 {
-    ui::time::wall()
-        .duration_since(ui::time::UNIX_EPOCH)
-        .map_or(0, |elapsed| {
-            u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
-        })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -42,15 +42,6 @@
 //! variants return [`TryLockError::WouldBlock`] at once. There is deliberately
 //! no retry or timeout: a caller that cannot wait uses a `try` variant and
 //! reports the busy owner.
-#![cfg_attr(
-    test,
-    allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::panic,
-        reason = "test assertions exercise real filesystem behavior"
-    )
-)]
 
 use std::fs::{File, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom, Write};
@@ -165,6 +156,21 @@ impl FileLock {
     /// The locked file.
     pub fn file(&self) -> &File {
         &self.file
+    }
+
+    /// Transfers the file without explicitly unlocking its open description.
+    ///
+    /// This is for an executed child validating a lock inherited from its
+    /// parent: dropping a normal guard would unlock the parent's transaction.
+    /// The returned file closes normally; the lock survives while any parent
+    /// descriptor still refers to that same open description. Ordinary lock
+    /// owners should keep the guard so its explicit unlock-on-drop remains.
+    #[cfg(unix)]
+    pub fn into_file_preserving_lock(self) -> File {
+        let guard = std::mem::ManuallyDrop::new(self);
+        // SAFETY: suppressing Drop leaves the file initialized; read transfers
+        // its unique ownership exactly once, without executing the unlock.
+        unsafe { std::ptr::read(&raw const guard.file) }
     }
 
     /// Waits until the lock is converted to `mode`.

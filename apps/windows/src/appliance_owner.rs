@@ -6,7 +6,7 @@
 use std::fs::File;
 use std::process::{Command, Stdio};
 use std::sync::mpsc::{self, Receiver, Sender};
-use ui::time::{Duration, Instant, UNIX_EPOCH};
+use ui::time::{Duration, Instant};
 
 use serde::Deserialize;
 
@@ -61,9 +61,7 @@ pub struct TemporaryEgressLease {
 impl TemporaryEgressLease {
     #[must_use]
     pub fn expiry_label(&self) -> String {
-        let now = ui::time::wall()
-            .duration_since(UNIX_EPOCH)
-            .map_or(0, |duration| duration.as_secs());
+        let now = ui::time::unix_now();
         if self.expires_at_unix <= now {
             "Expired; refreshing status…".into()
         } else {

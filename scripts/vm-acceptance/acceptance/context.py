@@ -5,7 +5,7 @@ from __future__ import annotations
 import time
 from pathlib import Path
 
-from . import core
+from . import core, records
 from .vm import TiloVm, VmError, wait_until
 
 
@@ -17,9 +17,18 @@ class Context:
         self.facts: dict = {}
         self.metrics: dict = {}
         self.current: core.Result | None = None
+        # Performance samples for run.py --records (acceptance/records.py).
+        self.samples: list[dict] = []
         (out / "shots").mkdir(parents=True, exist_ok=True)
 
     # -- evidence ------------------------------------------------------------
+
+    def record(self, kpi: str, unit: str, values, **meta) -> None:
+        """Keep `values` as samples of the performance KPI `kpi`, measured by the
+        running check; a check records before it judges, so a miss is recorded too."""
+        item = records.sample(kpi, unit, values, self.current.id if self.current else None, meta)
+        if item is not None:
+            self.samples.append(item)
 
     def shot(self, name: str) -> Path:
         path = self.out / "shots" / f"{name}.png"

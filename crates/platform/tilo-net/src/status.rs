@@ -35,7 +35,9 @@
 //! Older hosts and ordinary Linux desktops use the standard portal. Its `true`
 //! means metered; `false` stays `None` because `GLib` can collapse unknown
 //! `NetworkManager` metering to false. Host transport loss clears the richer
-//! snapshot. These hints never grant network permission.
+//! snapshot. The native App then stays on portable fallback until a normal
+//! launcher-mediated relaunch supplies a new connection. These hints never
+//! grant network permission.
 
 /// Whether the device has a network path.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -276,7 +278,8 @@ mod imp {
     }
 }
 
-#[cfg(all(test, not(target_family = "wasm")))]
+#[cfg(test)]
+#[cfg(not(target_family = "wasm"))]
 mod tests {
     use super::*;
 

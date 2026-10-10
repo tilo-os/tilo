@@ -250,9 +250,7 @@ mod tests {
     use uuid::Uuid;
 
     fn registry() -> ActionRegistry {
-        let mut r = ActionRegistry::new();
-        register(&mut r);
-        r
+        ActionRegistry::with(register)
     }
 
     /// A document holding the sample fleet.

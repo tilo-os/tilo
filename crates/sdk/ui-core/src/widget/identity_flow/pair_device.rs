@@ -26,9 +26,10 @@
 use crate::widget::{AppModel, ModelPath};
 use std::collections::HashMap;
 
+#[cfg(not(target_arch = "wasm32"))]
 use getrandom::{SysRng, rand_core::UnwrapErr};
 use taffy::{Dimension, Display, NodeId, Size, Style, TaffyTree};
-use threshold_identity::{DkgSession, EnrolmentRound1, ThresholdIdentity};
+use threshold_identity::ThresholdIdentity;
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
@@ -216,22 +217,6 @@ impl PairDeviceScreen {
         Some(acc)
     }
 
-    pub fn set_payload_text(&mut self, payload: impl Into<String>) {
-        let payload = payload.into();
-        if payload.len() > MAX_PAIRING_PAYLOAD_TEXT_BYTES {
-            self.error = Some(PAYLOAD_TOO_LARGE.to_string());
-            return;
-        }
-        self.payload.set_text(&payload);
-        self.payload.set_cursor_pos(payload.len());
-        self.payload_ok = payload;
-        self.error = None;
-    }
-
-    pub fn payload_text(&self) -> &str {
-        self.payload.value()
-    }
-
     /// The cell whose field holds keyboard focus, if any.
     fn focused_cell(&self) -> Option<usize> {
         self.cells.iter().position(Widget::is_focused)
@@ -355,10 +340,6 @@ impl PairDeviceScreen {
 
     pub fn error(&self) -> Option<&str> {
         self.error.as_deref()
-    }
-
-    pub fn is_completed(&self) -> bool {
-        self.completed
     }
 
     /// Sanity check that the typed code matches the payload's derived
@@ -528,19 +509,6 @@ impl PairDeviceScreen {
             let broker = payload.remote_broker()?;
             self.perform_pairing(payload, &broker)
         }
-    }
-
-    /// Companion to `perform_pairing` that *exposes* the round-1 the
-    /// pairer would send, for tests that inspect the wire format.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`IdentityFlowError`] when bootstrapping the device identity or
-    /// beginning its enrolment round fails.
-    pub fn produce_pairer_round1() -> Result<(DkgSession, EnrolmentRound1), IdentityFlowError> {
-        let mut rng = UnwrapErr(SysRng);
-        let mut id = ThresholdIdentity::bootstrap_single_device(&mut rng)?;
-        Ok(id.begin_enrolment(2, 2, 2, &mut rng)?)
     }
 
     // Mirrors `Widget::handle_event`'s parameter list on purpose --
@@ -838,28 +806,18 @@ impl Widget for PairDeviceScreen {
         leaves.push(payload);
         // The screen owns the viewport, so the sheet centres on the window
         // rather than inside a fixed box at the origin.
-        let node = taffy.parent_node(
-            Style {
-                size: Size {
-                    width: Dimension::percent(1.0),
-                    height: Dimension::percent(1.0),
-                },
-                ..Default::default()
+        let style = Style {
+            size: Size {
+                width: Dimension::percent(1.0),
+                height: Dimension::percent(1.0),
             },
-            &leaves,
-        );
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+            ..Default::default()
+        };
+        taffy.widget_node(style, &leaves, node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
-            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
-        );
+        self.rect = crate::widget::layout_rect(taffy, node, origin);
         if let Some(theme) = self.layout_theme.clone() {
             with_layout_renderer(&theme, |tr| {
                 self.resolve(&theme, tr);

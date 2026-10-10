@@ -11,17 +11,6 @@
 //! or view envelopes. Callers decide what a key's bytes mean; the store only
 //! promises ordering, single ownership and honest durability.
 
-#![cfg_attr(
-    test,
-    allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
-        clippy::panic,
-        reason = "in a test these are the assertion, not a hazard"
-    )
-)]
-
 use std::any::Any;
 use std::fmt;
 use std::path::PathBuf;

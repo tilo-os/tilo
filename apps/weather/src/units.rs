@@ -76,11 +76,6 @@ impl Units {
         }
     }
 
-    /// Compact degree glyph for the big readout (no unit letter).
-    pub fn degree_glyph(&self) -> &'static str {
-        "°"
-    }
-
     pub fn wind_suffix(&self) -> &'static str {
         match self.wind {
             WindUnit::Kmh => "km/h",

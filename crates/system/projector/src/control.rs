@@ -31,7 +31,7 @@ pub const CONTROL_SOCKET_NAME: &str = "control.sock";
 pub fn runtime_dir() -> Option<PathBuf> {
     std::env::var_os(RUNTIME_DIR_ENV)
         .map(PathBuf::from)
-        .or_else(|| xdg_paths::xdg::runtime_dir().map(|dir| dir.join("tilo-projector")))
+        .or_else(|| tilo_paths::xdg::runtime_dir().map(|dir| dir.join("tilo-projector")))
 }
 
 /// Where the broker listens for control connections.

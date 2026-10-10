@@ -224,28 +224,19 @@ impl Widget for GradientBar {
         self.grip = f64::from(theme.tokens.spacing.s2);
         // The strip, and below it the lower half of the grips on its edge.
         let height = theme.tokens.metrics.bar_control_height + theme.tokens.spacing.s2;
-        let node = taffy.leaf_node(Style {
+        let style = Style {
             size: taffy::Size {
                 width: taffy::Dimension::percent(1.0),
                 height: taffy::Dimension::length(height),
             },
             flex_shrink: 1.0,
             ..Default::default()
-        });
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).copied().unwrap_or_default();
-        let x = origin.x + f64::from(layout.location.x);
-        let y = origin.y + f64::from(layout.location.y);
-        self.rect = Rect::new(
-            x,
-            y,
-            x + f64::from(layout.size.width),
-            y + f64::from(layout.size.height),
-        );
+        self.rect = ui::widget::layout_rect(taffy, node, origin);
     }
 
     fn draw(

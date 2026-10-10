@@ -19,7 +19,7 @@ use ui::time::{Duration, Instant};
 use ui::widget::{AppModel, ModelPath};
 
 use std::sync::mpsc::{Receiver, TryRecvError};
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use taffy::{NodeId, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, WindowEvent};
@@ -159,9 +159,6 @@ pub struct LogsApp {
     /// Pointer/keyboard controls publish inert resource addresses; the host
     /// re-resolves current availability and permissions before effects run.
     pending_control_invocation: Option<ControlInvocation>,
-    /// One-shot deterministic local view seeding used only by the offscreen
-    /// shot factory.
-    shot_filter: Option<Filter>,
 
     // ---- journal source ----
     /// Whether the journal controls are offered: everywhere but a past
@@ -227,7 +224,6 @@ impl LogsApp {
             reveal_detail: false,
             layout_dirty: true,
             pending_control_invocation: None,
-            shot_filter: None,
             allow_live,
             last_poll: ui::time::now(),
             reads: false,
@@ -242,51 +238,11 @@ impl LogsApp {
         app
     }
 
-    /// Construct a live-capable viewer whose initial read failed. Keeping the
-    /// capability enabled means Refresh remains available as a recovery path;
-    /// the error itself is safe, local-only presentation state.
-    pub fn new_with_source_error(
-        entries: Vec<LogEntry>,
-        allow_live: bool,
-        error: crate::journal::JournalLoadError,
-    ) -> Self {
-        let mut app = Self::with_entries(entries, allow_live);
-        app.source_error = Some(error);
-        app.publish();
-        app
-    }
-
     /// Show the selected entry for a capture: on a narrow window the
     /// inspector is a drawer, which this opens once the window is laid out.
     pub fn shots_show_detail(&mut self) {
         self.reveal_detail = true;
         self.layout_dirty = true;
-    }
-
-    /// Seed an errors-and-worse state for deterministic visual regression
-    /// captures.
-    pub fn shots_filter_errors(&mut self) {
-        self.shot_filter = Some(Filter {
-            min_priority: Priority::Err.level(),
-            ..Filter::default()
-        });
-        self.layout_dirty = true;
-    }
-
-    /// Seed a free-text filter for a capture (`--no-matches` captures the
-    /// state where nothing matches).
-    pub fn shots_search(&mut self, query: &str) {
-        self.shot_filter = Some(Filter {
-            search: query.to_owned(),
-            ..self.shot_filter.take().unwrap_or_default()
-        });
-        self.layout_dirty = true;
-    }
-
-    /// Deterministically capture the empty-source loading state.
-    pub fn shots_show_loading(&mut self) {
-        self.source_loading = true;
-        self.publish();
     }
 
     /// Recompute the distinct-unit and distinct-boot lists from entries.
@@ -742,22 +698,6 @@ fn shell_node(taffy: &TaffyTree<()>, node: NodeId) -> Option<NodeId> {
     taffy.children(node).ok()?.first().copied()
 }
 
-/// Build a single-child parent node that fills the window.
-fn fill_node(taffy: &mut TaffyTree<()>, child: NodeId) -> NodeId {
-    taffy.parent_node(
-        Style {
-            display: taffy::Display::Flex,
-            flex_grow: 1.0,
-            size: Size {
-                width: Dimension::percent(1.0),
-                height: Dimension::percent(1.0),
-            },
-            ..Default::default()
-        },
-        &[child],
-    )
-}
-
 fn export_request() -> PickRequest {
     PickRequest::save("Export filtered logs", "Export", "journal-filtered.jsonl")
         .thread_name("logs-portal-export")
@@ -812,7 +752,7 @@ impl Widget for LogsApp {
             self.show_inspector(self.effective_selected());
         }
         let shell = self.shell.build_layout(taffy, theme, node_map);
-        let node = fill_node(taffy, shell);
+        let node = taffy.fill_node(shell);
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
@@ -821,12 +761,7 @@ impl Widget for LogsApp {
         let Ok(l) = taffy.layout(node) else {
             return;
         };
-        self.rect = Rect::new(
-            origin.x + f64::from(l.location.x),
-            origin.y + f64::from(l.location.y),
-            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
-            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
-        );
+        self.rect = ui::widget::placed(l, origin);
         if let Some(shell) = shell_node(taffy, node) {
             self.shell
                 .apply_layout(taffy, shell, Point::new(self.rect.x0, self.rect.y0));

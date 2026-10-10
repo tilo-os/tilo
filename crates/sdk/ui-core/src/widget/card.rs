@@ -773,15 +773,6 @@ impl Actions {
         self.parts.children.insert(index, Box::new(button));
         self
     }
-
-    /// Replace the primary (last) action.
-    #[must_use]
-    pub fn replace_primary(mut self, button: Button) -> Self {
-        if let Some(last) = self.parts.children.last_mut() {
-            *last = Box::new(button);
-        }
-        self
-    }
 }
 
 impl Widget for Actions {
@@ -986,14 +977,7 @@ impl Widget for CardGrid {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::from_origin_size(
-            (
-                origin.x + f64::from(l.location.x),
-                origin.y + f64::from(l.location.y),
-            ),
-            (f64::from(l.size.width), f64::from(l.size.height)),
-        );
+        self.rect = crate::widget::layout_rect(taffy, node, origin);
         let origin = Point::new(self.rect.x0, self.rect.y0);
         for (card, &child) in self.cards.iter_mut().zip(&self.child_nodes) {
             card.apply_layout(taffy, child, origin);

@@ -404,12 +404,11 @@ impl Widget for CountPill {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         self.metrics = Some(HeaderMetrics::new(theme));
-        let node = taffy.leaf_node(Style {
+        let style = Style {
             flex_shrink: 0.0,
             ..Default::default()
-        });
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
 
     fn measure(
@@ -429,14 +428,7 @@ impl Widget for CountPill {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::from_origin_size(
-            (
-                origin.x + f64::from(l.location.x),
-                origin.y + f64::from(l.location.y),
-            ),
-            (f64::from(l.size.width), f64::from(l.size.height)),
-        );
+        self.rect = crate::widget::layout_rect(taffy, node, origin);
     }
 
     fn draw(
@@ -489,27 +481,19 @@ impl Widget for Chevron {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         let side = theme.tokens.metrics.icon_sm;
-        let node = taffy.leaf_node(Style {
+        let style = Style {
             flex_shrink: 0.0,
             size: Size {
                 width: length(side),
                 height: length(side),
             },
             ..Default::default()
-        });
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::from_origin_size(
-            (
-                origin.x + f64::from(l.location.x),
-                origin.y + f64::from(l.location.y),
-            ),
-            (f64::from(l.size.width), f64::from(l.size.height)),
-        );
+        self.rect = crate::widget::layout_rect(taffy, node, origin);
     }
 
     fn draw(
@@ -1391,7 +1375,7 @@ impl Widget for StatusLine {
         self.style = Some(theme.text(TextRole::Caption));
         self.dot = f64::from(theme.tokens.spacing.s2);
         self.gap = f64::from(theme.tokens.spacing.rhythm.related);
-        let node = taffy.leaf_node(Style {
+        let style = Style {
             size: Size {
                 width: percent(1.0_f32),
                 height: auto(),
@@ -1402,9 +1386,8 @@ impl Widget for StatusLine {
             },
             flex_shrink: 0.0,
             ..Default::default()
-        });
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
 
     fn measure(
@@ -1433,14 +1416,7 @@ impl Widget for StatusLine {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::from_origin_size(
-            (
-                origin.x + f64::from(l.location.x),
-                origin.y + f64::from(l.location.y),
-            ),
-            (f64::from(l.size.width), f64::from(l.size.height)),
-        );
+        self.rect = crate::widget::layout_rect(taffy, node, origin);
     }
 
     fn draw(
@@ -1619,7 +1595,7 @@ impl Widget for ObjectHeader {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         self.metrics = Some(ObjectMetrics::new(theme));
-        let node = taffy.leaf_node(Style {
+        let style = Style {
             size: Size {
                 width: percent(1.0_f32),
                 height: auto(),
@@ -1630,9 +1606,8 @@ impl Widget for ObjectHeader {
             },
             flex_shrink: 0.0,
             ..Default::default()
-        });
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
 
     fn measure(
@@ -1657,14 +1632,7 @@ impl Widget for ObjectHeader {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::from_origin_size(
-            (
-                origin.x + f64::from(l.location.x),
-                origin.y + f64::from(l.location.y),
-            ),
-            (f64::from(l.size.width), f64::from(l.size.height)),
-        );
+        self.rect = crate::widget::layout_rect(taffy, node, origin);
     }
 
     fn draw(

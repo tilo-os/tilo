@@ -102,16 +102,7 @@ fn press(button: MouseButton) -> WindowEvent {
 }
 
 fn key_event(key: Key, text: Option<&str>) -> WindowEvent {
-    // winit's `KeyEventExtra` is crate-private: start from zero and set the
-    // inspected fields, as the toolkit's own widget tests do.
-    let mut ev: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
-    ev.logical_key = key;
-    ev.physical_key =
-        winit::keyboard::PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
-    ev.location = winit::keyboard::KeyLocation::Standard;
-    ev.state = ElementState::Pressed;
-    ev.repeat = false;
-    ev.text = text.map(Into::into);
+    let ev = ui::synthetic_input::key_event(key, text.map(Into::into), ElementState::Pressed);
     WindowEvent::KeyboardInput {
         device_id: synth_device(),
         event: ev,
@@ -134,24 +125,11 @@ fn dispatch_mods(
     event: &WindowEvent,
     mods: winit::event::Modifiers,
 ) -> bool {
-    let mut taffy: TaffyTree<()> = TaffyTree::new();
-    let node = taffy.new_leaf(taffy::Style::default()).unwrap();
-    let mut handled = false;
-    let mut focus_target = None;
-    a.handle_event(
-        event,
-        &mut ui::widget::EventCtx {
-            scale_factor: 1.0,
-            modifiers: &mods,
-            state: ui::widget::Edits::lend(doc),
-            path: &automerge::ROOT,
-            handled: &mut handled,
-            focus_target: &mut focus_target,
-            node_id: node,
-            taffy: &taffy,
-        },
-    );
-    handled
+    ui::testing::Dispatch::new()
+        .modifiers(mods)
+        .doc(doc)
+        .send(a, event)
+        .handled
 }
 
 fn dispatch(a: &mut FeedsApp, doc: &mut AutoCommit, event: &WindowEvent) -> bool {
@@ -279,6 +257,7 @@ fn refresh_runs_off_thread_and_lands_through_the_store() {
             feed_id,
             title: None,
             articles: vec![fresh.clone()],
+            certificate_pin: None,
         })
         .unwrap();
         assert!(a.core_mut().drain_fetches_live());
@@ -312,6 +291,40 @@ fn refresh_runs_off_thread_and_lands_through_the_store() {
         );
     }
 
+    // --- phase: a feed pins the certificate of its first fetch, and only that ---
+    {
+        let mut a = app();
+        let mut doc = synced(&mut a);
+        let (worker, tx) = FetchWorker::for_test();
+        a.core_mut().worker = Some(worker);
+        let feed_id = a.core().store.feeds[0].id;
+        assert_eq!(a.core().store.feeds[0].certificate_pin, None);
+        for presented in ["first", "impostor"] {
+            tx.send(FetchResult::Articles {
+                feed_id,
+                title: None,
+                articles: vec![],
+                certificate_pin: Some(presented.into()),
+            })
+            .unwrap();
+            a.core_mut().drain_fetches_live();
+        }
+        a.core_mut()
+            .flush_doc_writes(&mut ui::widget::Edits::lend(&mut doc));
+        let pinned = |feeds: &[Feed]| {
+            feeds
+                .iter()
+                .find(|f| f.id == feed_id)
+                .and_then(|f| f.certificate_pin.clone())
+        };
+        assert_eq!(pinned(&a.core().store.feeds).as_deref(), Some("first"));
+        assert_eq!(
+            pinned(&FeedsDoc::load(&doc).feeds).as_deref(),
+            Some("first"),
+            "the pin syncs with the subscription"
+        );
+    }
+
     // --- phase: a large batch persists at most FLUSH_BUDGET writes a frame ---
     {
         let mut a = app();
@@ -338,6 +351,7 @@ fn refresh_runs_off_thread_and_lands_through_the_store() {
                 feed_id: *fid,
                 title: None,
                 articles,
+                certificate_pin: None,
             })
             .unwrap();
         }
@@ -375,6 +389,7 @@ fn refresh_runs_off_thread_and_lands_through_the_store() {
                     feed_id: f.id,
                     title: None,
                     articles: vec![],
+                    certificate_pin: None,
                 }
             } else {
                 FetchResult::Failed {

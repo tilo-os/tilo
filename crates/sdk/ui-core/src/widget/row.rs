@@ -338,52 +338,50 @@ impl Widget for Row {
             .map_or(0.0, |size| crate::num::f32_of_f64(size.height(theme)));
         self.resolved = (gap, pad_x, pad_y, min_height);
 
-        let node = taffy.parent_node(
-            Style {
-                display: taffy::Display::Flex,
-                flex_direction: taffy::FlexDirection::Row,
-                flex_wrap: if self.no_wrap {
-                    taffy::FlexWrap::NoWrap
-                } else {
-                    taffy::FlexWrap::Wrap
-                },
-                // Stretch children to the row height when it is a fill-body
-                // row (so the file list spans the available height);
-                // otherwise centre them (toolbar/button rows).
-                align_items: Some(self.align_items_override.unwrap_or(if self.fill_height {
-                    taffy::AlignItems::Stretch
-                } else if self.align_start {
-                    taffy::AlignItems::FlexStart
-                } else {
-                    taffy::AlignItems::Center
-                })),
-                justify_content: self.justify,
-                flex_grow: if self.fill_height { 1.0 } else { 0.0 },
-                flex_shrink: 0.0, // Prevent vertical squashing
-                gap: taffy::Size {
-                    width: length(gap),
-                    height: length(gap),
-                },
-                size: taffy::Size {
-                    width: percent(1.0_f32),
-                    height: taffy::Dimension::auto(),
-                },
-                min_size: taffy::Size {
-                    width: taffy::Dimension::auto(),
-                    height: if self.min_height.is_some() {
-                        length(min_height)
-                    } else {
-                        taffy::Dimension::auto()
-                    },
-                },
-                // Keep optional toolbar padding inside the row's percentage
-                // width instead of growing the parent's content bounds.
-                box_sizing: taffy::BoxSizing::BorderBox,
-                padding: super::layout::insets_xy(pad_x, pad_y),
-                ..Default::default()
+        let style = Style {
+            display: taffy::Display::Flex,
+            flex_direction: taffy::FlexDirection::Row,
+            flex_wrap: if self.no_wrap {
+                taffy::FlexWrap::NoWrap
+            } else {
+                taffy::FlexWrap::Wrap
             },
-            &self.child_nodes,
-        );
+            // Stretch children to the row height when it is a fill-body
+            // row (so the file list spans the available height);
+            // otherwise centre them (toolbar/button rows).
+            align_items: Some(self.align_items_override.unwrap_or(if self.fill_height {
+                taffy::AlignItems::Stretch
+            } else if self.align_start {
+                taffy::AlignItems::FlexStart
+            } else {
+                taffy::AlignItems::Center
+            })),
+            justify_content: self.justify,
+            flex_grow: if self.fill_height { 1.0 } else { 0.0 },
+            flex_shrink: 0.0, // Prevent vertical squashing
+            gap: taffy::Size {
+                width: length(gap),
+                height: length(gap),
+            },
+            size: taffy::Size {
+                width: percent(1.0_f32),
+                height: taffy::Dimension::auto(),
+            },
+            min_size: taffy::Size {
+                width: taffy::Dimension::auto(),
+                height: if self.min_height.is_some() {
+                    length(min_height)
+                } else {
+                    taffy::Dimension::auto()
+                },
+            },
+            // Keep optional toolbar padding inside the row's percentage
+            // width instead of growing the parent's content bounds.
+            box_sizing: taffy::BoxSizing::BorderBox,
+            padding: super::layout::insets_xy(pad_x, pad_y),
+            ..Default::default()
+        };
+        let node = taffy.parent_node(style, &self.child_nodes);
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
@@ -650,25 +648,14 @@ impl Widget for Row {
             }
         }
 
-        if let Some(scope) = crate::permissions::capability::permission_scope(self)
-            && !permissions.check(&scope)
-        {
-            let overlay = crate::tokens::colors::PERMISSION_DENIED_SCRIM;
-            scene.fill(
-                vello::peniko::Fill::NonZero,
-                transform,
-                overlay,
-                None,
-                &self.rect,
-            );
-        }
-
-        if let Some(key) = crate::presence::capability::presence_key(self)
-            && let Some(peers) = presence.here.get(&key)
-            && let Some(user) = peers.first()
-        {
-            presence.draw_peer_focus(scene, theme, user, self.rect);
-        }
+        crate::widget::draw_gate_and_peer_focus(
+            self,
+            scene,
+            transform,
+            theme,
+            presence,
+            permissions,
+        );
     }
 
     fn release_scene_cache(&mut self) {
@@ -683,13 +670,7 @@ impl Widget for Row {
 
 impl crate::presence::capability::PublishesPresence for Row {
     fn presence_key(&self) -> Option<PresenceKey> {
-        if self.presence_path.is_empty() {
-            None
-        } else {
-            Some(PresenceKey::Widget {
-                path: self.presence_path.clone(),
-            })
-        }
+        PresenceKey::widget(&self.presence_path)
     }
 }
 

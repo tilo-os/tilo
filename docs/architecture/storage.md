@@ -85,7 +85,7 @@ The pieces are strong. What is missing is one model and the performance path.
   `FileRecordId`, signed `RecordEnvelopeV1` operations
   (`crates/system/fs/src/record_replication.rs:61-81`), certified device
   authorship, and a signed placement binding `FileBindingV1 {record_id, parent,
-  name, kind, tombstoned}` (`crates/collab/collab-types/src/files.rs:209-220`).
+  name, kind, tombstoned}` (`crates/system/fs-protocol/src/files.rs:209-220`).
 - **Share and authority machinery.** Named and link shares, one-use
   redemption, revocation, exact-version replica receipts, fail-closed eviction
   and multi-record transactions (`docs/collaborative-files-product.md:7-96`).
@@ -120,7 +120,7 @@ The pieces are strong. What is missing is one model and the performance path.
 | App data | 44 of 54 apps keep all state in one Automerge document per `(package, room)`. Snapshots and deltas are capped at 3 MiB (`crates/collab/collab-types/src/op.rs:30-35`), and an oversized delta is dropped after the frontier has advanced (`crates/sdk/ui-core/src/collaboration.rs:3653-3661`). Room discovery is capped at 64 records (`ui-core/src/record.rs:38`). | R5, R8 |
 | Blobs | Two stores. qdoc's `BlobStore` is process-local, capped at 32 MiB per blob / 256 MiB / 8,192 entries (`crates/doc/tilo-doc/src/blobstore.rs:33-40`), and `BlobTransport` has no production implementation (`blobstore.rs:650-664`). The fs daemon has the other store. | R5, R6, R8 |
 | Packages | A third store. `app-host` ingests every blob into its own `FsBlobStore` and eagerly unpacks a second copy (`crates/packaging/app-host/src/install.rs:1-20`, `store.rs:1-12`). `app-fs` (lazy FUSE) has no dependents. | R6, R7 |
-| History | Automerge change graphs for app state, signed versions plus a global JSON file for files, and an audit log on the relay. | R6 |
+| History | Automerge change graphs for app state, and signed versions plus a global JSON file for files. | R6 |
 
 The daemon is correctness- and security-first but performance-naive. The fix
 keeps the record and authority plane and replaces the data path, content
@@ -2053,14 +2053,15 @@ device is clean and does not rewrite the index (tested,
 | `fs` `conflict.rs`, `conflict_merge.rs`, `checked_restore.rs`, `history_read.rs` | conflicts, merge, restore | policy by body type (§11) |
 | `fs` `rich_metadata.rs`, `thumbs.rs`, `smart.rs`, `smart_monitor.rs`, `clock.rs`, `caps_file.rs` | metadata, thumbnails, prediction gates, clock, live ACL file | limits raised; working sets added |
 | `fs` `durable_backup.rs`, `tilo_files::native::atomic` | crash-safe small files | only for security stores |
-| `crates/collab/collab-types` | `SignedOp`, validator, roles, `FileBindingV1`, MLS | `MAX_DOCUMENT_MUTATION_BYTES` stops governing durable state |
+| `crates/collab/collab-types` | `SignedOp`, validator, roles, MLS | `MAX_DOCUMENT_MUTATION_BYTES` stops governing durable state |
+| `crates/system/fs-protocol` | `FileBindingV1`, file records and transactions, share and recipient control | unchanged |
 | `crates/collab/actions`, `channel-crypto`, `tilo-user-identity` | actions, crypto, identity | unchanged |
 | `crates/sdk/ui-core` `state/` (`UndoLog`, `DocumentFrontier`), `history_source/`, `history_mode/`, `action_host.rs` | undo, history UI, action door | a `HistorySource` over all kinds |
 | `ui-core` `application.rs` (`ApplicationDefinition`, `RecordOwners`) | the cleanest custody model | becomes the Record Store client and the only launch path |
 | `crates/packaging/tilo-app-package` | signing, manifest, trust, `Collection` | `Collection` v2 (content ids and modes), thin `.tapp` |
 | `crates/packaging/launcher` | sandbox, binds, per-room app dir | source directory moves to the store volume |
 | `crates/runtime/runtime-fs/src/native.rs` | cap-std granted host directories | unchanged |
-| `crates/hosting/tilo-relay` | host, mesh placement, `ReplicationIntent` | stores content and record operations as a normal replica; push target |
+| `crates/hosting/tilo-relay` | host, device mesh policy, `ReplicationIntent` | stores content and record operations as a normal replica; push target |
 
 ### Merge
 

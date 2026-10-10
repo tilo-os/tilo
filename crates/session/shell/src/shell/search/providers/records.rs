@@ -399,7 +399,7 @@ fn provenance(record: &KnownRecord, here: Option<RoomId>, rooms: &[(RoomId, Stri
 
 /// `~`-shortened path for the subtitle.
 fn display_path(path: &std::path::Path) -> String {
-    if let Some(home) = xdg_paths::home()
+    if let Some(home) = tilo_paths::home()
         && let Ok(rest) = path.strip_prefix(&home)
     {
         return format!("~/{}", rest.display());

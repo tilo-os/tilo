@@ -1,7 +1,6 @@
 //! Unpacked extension inventory and explicit manifest-scoped startup grants.
 //! CEF's Chrome runtime loads approved MV3 packages on the next browser launch.
 
-use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use bounded_zip::{BoundedArchive, ZipError, ZipLimits};
@@ -80,53 +79,6 @@ pub fn extensions_dir() -> PathBuf {
     crate::storage::data_dir()
         .unwrap_or_else(|| std::env::temp_dir().join("tilo-browser"))
         .join("extensions")
-}
-
-/// Download and install an extension package from a web-store URL
-/// (AMO serves `.xpi`, the Chrome store `.crx`).
-///
-/// # Errors
-///
-/// Returns [`ExtensionError::Download`] if the URL can't be fetched or
-/// responds with an error status, or any error [`install_from_bytes`] can
-/// return for the downloaded package.
-pub fn install_from_url(url: &str) -> Result<ExtensionInfo, ExtensionError> {
-    let parsed =
-        url::Url::parse(url).map_err(|error| ExtensionError::Download(error.to_string()))?;
-    if parsed.scheme() != "https" || !parsed.username().is_empty() || parsed.password().is_some() {
-        return Err(ExtensionError::Download(
-            "extension packages require an HTTPS URL without embedded credentials".into(),
-        ));
-    }
-    let client = tilo_net::http::blocking_client()
-        .timeout(std::time::Duration::from_secs(30))
-        .redirect(reqwest::redirect::Policy::limited(5))
-        .build()
-        .map_err(|error| ExtensionError::Download(error.to_string()))?;
-    let response = client
-        .get(parsed)
-        .send()
-        .and_then(reqwest::blocking::Response::error_for_status)
-        .map_err(|error| ExtensionError::Download(error.to_string()))?;
-    if response
-        .content_length()
-        .is_some_and(|length| length > MAX_ARCHIVE_BYTES as u64)
-    {
-        return Err(ExtensionError::Download(
-            "extension package is too large".into(),
-        ));
-    }
-    let mut bytes = Vec::new();
-    response
-        .take((MAX_ARCHIVE_BYTES + 1) as u64)
-        .read_to_end(&mut bytes)
-        .map_err(|error| ExtensionError::Download(error.to_string()))?;
-    if bytes.len() > MAX_ARCHIVE_BYTES {
-        return Err(ExtensionError::Download(
-            "extension package is too large".into(),
-        ));
-    }
-    install_from_bytes(&bytes, &extensions_dir())
 }
 
 /// Unpack an extension archive into `root` and inventory it.

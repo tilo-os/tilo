@@ -218,7 +218,7 @@ fn files_index_dir() -> Result<PathBuf, tilo_search::TantivyError> {
     if let Some(explicit) = std::env::var_os("TILO_FILES_INDEX_DIR") {
         return Ok(PathBuf::from(explicit));
     }
-    let cache = xdg_paths::cache_dir().ok_or_else(|| {
+    let cache = tilo_paths::cache_dir().ok_or_else(|| {
         tilo_search::TantivyError::InvalidArgument("no XDG_CACHE_HOME".to_string())
     })?;
     Ok(cache.join("tilo").join("files-index"))

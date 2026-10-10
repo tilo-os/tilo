@@ -26,7 +26,7 @@ solid surfaces and reduced-motion behavior; no new desktop visual language.
 | Window chrome | DesktopSurface composes toolkit GroupRow/StripView/WindowGroup | Inactive/focused tabs, close/menu states, resizing and shared header controls |
 | Restored app cards | Symbolic LocalApp notices decline scratch-document custody; matching launch failures/timeouts and orphaned exact-tab placements settle without removing saved tabs or record associations. Shared EmptyState recovery controls support keyboard, pointer and the native action door; focused Applications activation reuses the saved window | [Restore-card qualification](evidence/localapp-notice-custody/README.md): original masking, orphaned-opening and missing action-door regressions reproduced; dark/light/high-contrast, 200% text, focus and resize inspected. Exact-record adoption, repeated/stale recovery and Applications reuse pass. Installed repaired-layer acceptance and cold-launch attribution remain |
 | Menus / dialogs | #3110 and #3205 landed: shared ListRowFace/TooltipHost and ContextMenu current-output placement. Exact #3205 merged-main passes three output/capture cases, keyboard, pointer open/dismiss, action parity and shell test compilation; all six capture variants match inspected originals | Additional dialog/long-label/error states and VM hotplug/input coverage remain |
-| Status / quick settings | Top bar already uses some ButtonFace controls; portable drill-in uses shared back face | Status indicators, paging, focus/hover, offline states; no real device effects during evidence capture |
+| Status / quick settings | Top bar already uses some ButtonFace controls; portable drill-in uses shared back face. The coherent People increment adopts shared input, measured controls, navigation row and ScrollRegion | [People qualification](evidence/people-panel/README.md); remaining primary-bar indicators/overflow and narrow Devices/Clipboard summaries, plus installed-device states |
 | Workspace controls | Shared desktop model owns intent/state; workspace rename now paints with FieldFace/TextInput, including shaped selection, horizontal scrolling, idle elision and composed scale geometry; Create-invite uses shared primary ButtonFace and the footer reserves measured Caption space | [Shared name-field qualification](evidence/workspace-name-field/README.md); pointer/keyboard cancel, reopen, Unicode commit, held-submit repeat/release ownership, resize and selection captures; nine desktop/six native cases, compile and Clippy pass. Live workspace/device transitions and header states remain |
 | Window switcher | #3159 landed normally at 6476c63a, conflict repaired: stable live identities, selected-close cancellation, moved-address refresh and stale-pointer guard. Fresh 11 desktop/seven native cases, compile and Clippy pass; six inspected variants | Exact merged-main 11 desktop/seven native cases and shell test compilation passed; live multi-workspace/preview/device coverage remains |
 
@@ -167,3 +167,29 @@ capability-gate tests retain their assertions at release. Follow-label elision
 at 125% text, status-entry controls, broader viewport/paging and installed-device
 acceptance remain open; protected landing and exact merged-main postchecks are
 independent integration gates.
+
+## People status draft lifecycle follow-up
+
+Closing People now ends its status edit lifecycle before hidden input, hidden
+paint or reopen can resurrect the discarded draft. Completed Activity/Invite/
+Join/dismiss actions cancel the edit without publishing it. Existing shared
+EditCore-backed selection, IME, navigation, explicit Enter submission and
+two-step Escape behavior remain intact. [Qualification](evidence/people-status-lifecycle/README.md)
+records four production baseline failures, native journeys and two inspected
+light/dark125 screenshot pairs. The portable component and broader existing
+render suites are unchanged. Status field/control rendering, text scaling,
+viewport/paging and installed-device acceptance remain open.
+
+## Coherent People panel follow-up
+
+The current-main delivery preserves the authored #3736 source and combines the
+remaining People viewport, paging, status-rendering and scaling work. Shared
+ScrollRegion, FieldFace/TextInput, measured ButtonFace/SegmentedFace and
+ListRowFace keep controls reachable, selection accurate, labels legible and
+empty/error/disclosure content in separate measured bands. Native acceptance
+includes repeated paging, stationary-pointer reopen, pointer/semantic scroll,
+Unicode editing, Esc, focus loss, resize cancellation and visible-only scroll
+fade scheduling. [Qualification](evidence/people-panel/README.md) records the
+bounded checklist and production capture matrix. Protected integration and
+exact merged-main postchecks remain independent gates; installed-device and
+the broader remaining rows above stay open.

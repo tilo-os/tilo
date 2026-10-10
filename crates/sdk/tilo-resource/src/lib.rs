@@ -92,21 +92,11 @@
 //! confirmation, so a destructive typed edit is confirmed exactly as a
 //! declared destructive action is.
 
-#![cfg_attr(
-    test,
-    allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
-        clippy::panic,
-        reason = "in a test these are the assertion, not a hazard"
-    )
-)]
-
 // The derives name this crate by its path, here as in an app.
 extern crate self as tilo_resource;
 
 pub mod action;
+mod apply_cache;
 pub mod batch;
 pub mod child;
 pub mod collection;
@@ -140,6 +130,7 @@ pub use kind::{Kinds, ResourceKind};
 pub use low_mutation::{APPLY_LOW, GROUP_LOW};
 pub use model::{
     Atom, Doc, Fields, Json, Model, ModelError, Slot, read_key, refresh_key, write_key,
+    write_key_changed,
 };
 pub use reader::{Demand, Reader, heads_of};
 pub use replica::Replica;
@@ -147,7 +138,7 @@ pub use resource::{
     APPLY, APPLY_PARAM, ActionDecl, BuildAction, NoAction, Place, Resource, ScopeDecl, SearchBody,
     SearchEntry, SearchPiece, SearchRow, SearchRowShape, SearchText, SearchWeight, SharedRecord,
     action_label, bind_declaration, build_action, declaration_spec, encode, origin_now_ms, publish,
-    reset_type_schemas, scope_contains,
+    publish_head, reset_type_schemas, scope_contains,
 };
 pub use schema::JsonSchema;
 pub use shape::{FieldShape, Shape};
@@ -165,6 +156,36 @@ pub mod __private {
         ActionArgs, ActionParam, ChangeKind, OperationKind, ParamType, PermissionRequirement,
         Resource, RiskLevel,
     };
+
+    pub use crate::apply_cache::forget_all;
+
+    /// A record to copy, if its type can be copied: `#[resource]` asks for
+    /// `(&&Snapshot(record)).snapshot()`, which method resolution answers
+    /// with [`SnapshotByClone`] for a `Clone` record and with
+    /// [`SnapshotUnavailable`] otherwise.
+    pub struct Snapshot<'a, T>(pub &'a T);
+
+    /// A copy of a `Clone` record.
+    pub trait SnapshotByClone<T> {
+        fn snapshot(&self) -> Option<T>;
+    }
+
+    impl<T: Clone> SnapshotByClone<T> for &Snapshot<'_, T> {
+        fn snapshot(&self) -> Option<T> {
+            Some(self.0.clone())
+        }
+    }
+
+    /// No copy of a record that cannot be cloned.
+    pub trait SnapshotUnavailable<T> {
+        fn snapshot(&self) -> Option<T>;
+    }
+
+    impl<T> SnapshotUnavailable<T> for Snapshot<'_, T> {
+        fn snapshot(&self) -> Option<T> {
+            None
+        }
+    }
 
     /// The default search entry of a record: all of its text, in one entry.
     pub fn default_search<T: crate::Model>(label: &str, record: &T) -> Vec<crate::SearchEntry> {

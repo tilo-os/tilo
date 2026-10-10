@@ -3104,7 +3104,7 @@ impl Widget for CanvasSurface {
         let least = taffy::Dimension::length(self.metrics.min_pointer_target * 4.0);
         // The room its parent leaves along either axis: in a column under
         // the header it takes the width and the height left over.
-        let node = taffy.leaf_node(Style {
+        let style = Style {
             size: taffy::Size {
                 width: taffy::Dimension::percent(1.0),
                 height: taffy::Dimension::percent(1.0),
@@ -3117,21 +3117,12 @@ impl Widget for CanvasSurface {
                 height: least,
             },
             ..Default::default()
-        });
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).copied().unwrap_or_default();
-        let x = origin.x + f64::from(layout.location.x);
-        let y = origin.y + f64::from(layout.location.y);
-        self.rect = Rect::new(
-            x,
-            y,
-            x + f64::from(layout.size.width),
-            y + f64::from(layout.size.height),
-        );
+        self.rect = ui::widget::layout_rect(taffy, node, origin);
         self.viewport.set_rect(self.rect);
         self.viewport
             .set_content_size(self.art.width, self.art.height);

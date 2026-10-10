@@ -22,6 +22,7 @@ use tilo_messaging::{
 use tokio::sync::oneshot;
 const ORIGIN: &str = "https://signal.org";
 const CAPACITY: usize = 8;
+const ANSWER_TIMEOUT: Duration = Duration::from_secs(90);
 
 type Reply<T> = oneshot::Sender<Result<T, SendError>>;
 enum Request {
@@ -41,53 +42,20 @@ struct Port {
     statuses: Arc<Mutex<BTreeMap<ServiceAccount, Status>>>,
     wake: Wake,
 }
-async fn answer<T>(receiver: oneshot::Receiver<Result<T, SendError>>) -> Result<T, SendError> {
-    tokio::time::timeout(Duration::from_secs(90), receiver)
-        .await
-        .map_err(|_| SendError::Unavailable)?
-        .map_err(|_| SendError::Unavailable)?
-}
 impl EnrollmentHost for Port {
     fn begin(&self, service: String) -> PairingFuture {
-        let (reply, receiver) = oneshot::channel();
-        let submitted = self
-            .requests
-            .try_send(Request::Begin(service, reply))
-            .is_ok();
-        (self.wake)();
-        Box::pin(async move {
-            if !submitted {
-                return Err(SendError::Unavailable);
-            }
-            answer(receiver).await
+        super::ask_owner(&self.requests, &self.wake, ANSWER_TIMEOUT, |reply| {
+            Request::Begin(service, reply)
         })
     }
     fn finish(&self, account: ServiceAccount, attempt: String) -> EnrollmentReviewFuture {
-        let (reply, receiver) = oneshot::channel();
-        let submitted = self
-            .requests
-            .try_send(Request::Finish(account, attempt, reply))
-            .is_ok();
-        (self.wake)();
-        Box::pin(async move {
-            if !submitted {
-                return Err(SendError::Unavailable);
-            }
-            answer(receiver).await
+        super::ask_owner(&self.requests, &self.wake, ANSWER_TIMEOUT, |reply| {
+            Request::Finish(account, attempt, reply)
         })
     }
     fn review(&self, account: ServiceAccount, name: String) -> EnrollmentApprovalFuture {
-        let (reply, receiver) = oneshot::channel();
-        let submitted = self
-            .requests
-            .try_send(Request::Review(account, name, reply))
-            .is_ok();
-        (self.wake)();
-        Box::pin(async move {
-            if !submitted {
-                return Err(SendError::Unavailable);
-            }
-            answer(receiver).await
+        super::ask_owner(&self.requests, &self.wake, ANSWER_TIMEOUT, |reply| {
+            Request::Review(account, name, reply)
         })
     }
     fn phase(&self, account: &ServiceAccount) -> EnrollmentPhase {

@@ -44,16 +44,6 @@
 //! browser's bound comes from where its bytes come from: publications are
 //! signed by the host, which admitted them through its workers first.
 
-#![cfg_attr(
-    test,
-    allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
-        reason = "in a test these are the assertion, not a hazard"
-    )
-)]
-
 mod engine;
 #[cfg(target_os = "linux")]
 mod pool;
@@ -244,24 +234,6 @@ pub fn apply(
 /// A [`Rejected`] reason.
 pub fn load(bytes: &[u8]) -> Result<AutoCommit, Rejected> {
     Isolate::shared().load(bytes)
-}
-
-/// Run the check a browser Web Worker performs for the page: apply
-/// `incoming` to the document saved as `base` (empty for none) in this
-/// process. Only for a process whose crash costs nothing but the check.
-///
-/// # Errors
-///
-/// A [`Rejected`] reason.
-pub fn check_here(
-    base: &[u8],
-    incoming: &[u8],
-    dependencies: Dependencies,
-    limits: &Limits,
-) -> Result<Applied, Rejected> {
-    precheck::check(incoming, limits)?;
-    let mut doc = engine::load(base)?;
-    engine::apply(&mut doc, incoming, dependencies)
 }
 
 /// Outside Linux there are no workers yet, so none of their bounds apply:

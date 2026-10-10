@@ -2,9 +2,9 @@
 //! serialized into the Chat document or treated as microphone consent.
 use std::collections::BTreeMap;
 use ui::{
-    clock::{Duration, Instant},
     collaboration::CollabRequest,
     native_media::{Command, Request, Snapshot, State},
+    time::{Duration, Instant},
 };
 
 pub(crate) struct LocalVoice {
