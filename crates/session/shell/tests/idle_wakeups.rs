@@ -56,16 +56,20 @@ use ui::widget::identity_flow::IdentityRecord;
 /// 89960). With TIL-696 fixed, this drops to that plus a quarter, 40/s.
 ///
 /// TIL-707 parked the collaboration broker's service thread (20.1/s before,
-/// 0.0/s after, run 90830), which comes off that parked figure too; the
-/// spinning budget does not move for it.
-const IDLE_WAKEUP_BUDGET: f64 = 3000.0;
+/// 0.0/s after, run 90830), which comes off that parked figure too.
+///
+/// TIL-696: the frame loop answers a widget deadline once instead of waking
+/// for it until something paints. On the shared builder (debug, llvmpipe)
+/// the spinning desktop measured 3021/s and its loop 1495 ticks/s; parked,
+/// 13.2/s and 0 ticks/s. The budget is that plus a quarter.
+const IDLE_WAKEUP_BUDGET: f64 = 16.5;
 
 /// Most iterations per second the compositor's frame loop may make while
 /// idle, from its `paint-stats` lines. A loop that wakes on a deadline that
 /// never moves spins without blocking, which context switches hardly show.
-/// Measured 0/s parked and 946/s while TIL-696 spins it; an idle loop
-/// parks, so this drops to 1/s when TIL-696 lands.
-const LOOP_TICK_BUDGET: f64 = 1500.0;
+/// Measured 0/s parked, and 946/s (CI) to 1495/s (builder) while TIL-696
+/// spun it; with TIL-696 fixed an idle loop parks.
+const LOOP_TICK_BUDGET: f64 = 1.0;
 
 /// How long the desktop is left alone after both apps are drawn, so startup
 /// work (font caches, record flushes, the first save) is behind it.

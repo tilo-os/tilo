@@ -101,6 +101,14 @@ network runtime (−10/s) and the rest of the table.
 | TIL-704 | `tilo-audio-output-authority` | 20.1/s (run 89961) | 0.0/s (run 89960) | 31.9/s (run 89960) |
 | TIL-706 | `tilo-collab-drain` | 0.0/s (run 90040) | 0.0/s (run 90187) | unchanged |
 | TIL-707 | `tilo-collab-broker-capnp` | 20.1/s (run 90455) | 0.0/s (run 90830) | spinning, see TIL-696 |
+| TIL-696 | `tilo-settings-read` and the frame loop | 2989/s, 1495 ticks/s (builder) | 1.0/s, 0 ticks/s (builder) | 13.2/s (builder) |
+
+TIL-696: a widget may keep an overdue wake deadline until a paint consumes
+it (the Terminal's save status does), while a due deadline alone does not
+paint. The frame loop now answers such a deadline once: one that was already
+due when a tick started no longer wakes the park. Measured on the shared
+builder, since CI had not run it yet: the gates drop to 16.5/s (13.2/s plus a
+quarter) and 1 tick/s.
 
 TIL-704: the watchdog re-checks an open output's admission every 50 ms as
 before, and blocks on a condition variable while no output is open; `open`
