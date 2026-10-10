@@ -358,26 +358,18 @@ fn remove_legacy_media_cache() {
 }
 
 fn try_outbox_entries() -> Vec<crate::shell::nearby_transfer::OutboxEntry> {
-    let Ok(mut guard) = nearby_store_cell().try_lock() else {
-        return Vec::new();
-    };
-    if guard.is_none() {
-        let Some(root) = nearby_transfer_root() else {
-            return Vec::new();
-        };
-        let Ok(store) =
-            crate::shell::nearby_transfer::NearbyTransferStore::open(root, unix_now_ms())
-        else {
-            return Vec::new();
-        };
-        *guard = Some(store);
-    }
-    guard
-        .as_ref()
-        .map_or_else(Vec::new, |store| store.outbox().to_vec())
+    try_nearby_entries(crate::shell::nearby_transfer::NearbyTransferStore::outbox)
 }
 
 fn try_inbox_entries() -> Vec<crate::shell::nearby_transfer::InboxEntry> {
+    try_nearby_entries(crate::shell::nearby_transfer::NearbyTransferStore::inbox)
+}
+
+/// A copy of the store's `entries`, opening the store on first use. A store
+/// that is busy or cannot open reads as empty rather than blocking.
+fn try_nearby_entries<T: Clone>(
+    entries: impl FnOnce(&crate::shell::nearby_transfer::NearbyTransferStore) -> &[T],
+) -> Vec<T> {
     let Ok(mut guard) = nearby_store_cell().try_lock() else {
         return Vec::new();
     };
@@ -394,7 +386,7 @@ fn try_inbox_entries() -> Vec<crate::shell::nearby_transfer::InboxEntry> {
     }
     guard
         .as_ref()
-        .map_or_else(Vec::new, |store| store.inbox().to_vec())
+        .map_or_else(Vec::new, |store| entries(store).to_vec())
 }
 
 struct NearbyStagingResult {

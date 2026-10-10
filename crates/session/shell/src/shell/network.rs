@@ -2448,6 +2448,14 @@ impl ShellNetwork {
             .devices_of(user, tilo_clock::unix_now_ns())
     }
 
+    /// When [`Self::authenticated_devices_of`] next answers differently by
+    /// time alone, after `now_ns`: a certificate expiring or a revocation
+    /// dated ahead taking effect. Its writes are announced
+    /// ([`tilo_identity_host::policy_change`]).
+    pub fn authenticated_devices_next_change(&self, now_ns: u64) -> Option<u64> {
+        self.peer_identities.next_change_after(now_ns)
+    }
+
     /// Shared handle to inbound signed document envelopes.
     pub fn inbound_documents_handle(&self) -> Arc<Mutex<Vec<InboundDocument>>> {
         Arc::clone(&self.inbound_documents)
@@ -7629,6 +7637,19 @@ pub(crate) fn native_read_network_for_test(
     network.local_peer_id = network.keypair.public();
     network.host_identity = Some(identity);
     (network, commands)
+}
+
+/// Give a fixture network the worker runtime a spawned one owns, so governor
+/// invocations are answered instead of refused as "the network is not running".
+#[cfg(test)]
+pub(crate) fn with_test_runtime(network: &mut ShellNetwork) {
+    network.runtime = Some(
+        tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .expect("fixture network runtime"),
+    );
 }
 
 impl crate::shell::remote_action_link::RemoteActionLink for ShellNetwork {

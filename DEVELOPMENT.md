@@ -236,7 +236,7 @@ The records, each with its verdict, are appended to the public generic package
 `tilo-perf-results` (one immutable file per run, a version per UTC month), so
 the current numbers come from there, not from `docs/benchmarks/`. Read them with
 `python3 tools/perf/store.py fetch https://code.tilo.so`. Dispatch inputs:
-`kpis` selects groups (`fs`, `footprint`, `agent`, `latency`, `render`, `wakeups`, `hosting`); `accept` takes this run's values as
+`kpis` selects groups (`fs`, `footprint` (app and OS image sizes), `agent`, `latency`, `render`, `wakeups`, `hosting`); `accept` takes this run's values as
 the new baseline start after an intended change (from main only); and
 `synthetic_series` with `synthetic_factor` multiplies a run's values to prove
 the gate. A 1.25 factor passes as pending in the first run of a series and fails
@@ -357,13 +357,28 @@ its dynamic relocations before `main`. `tools/perf/runtime_size_ratchet.py`
 reads four numbers from the ELF file, per architecture: `bytes`,
 `relocation_bytes` (the relocation tables), `relocated_bytes` (the 4 KiB pages
 those relocations dirty in each app process) and `symbol_relocations` (the
-relocations that need a symbol lookup). It also names any media library the
-runtime makes every app load. The budgets are in
+relocations that need a symbol lookup). The budgets are in
 `tools/perf/runtime-size-budget/budget.toml`, with the same headroom, rounding
-and raise files as the app budgets above:
+and raise files as the app budgets above.
+
+GLib and GStreamer are part of the runtime but not of every app's start:
+`tools/ci/rustc-thin-app-wrapper.sh` links `libruntime_dylib.so` through
+`tools/ci/runtime-dylib-lazy-link.py`, which keeps them out of `DT_NEEDED`,
+serves the runtime's calls into them through hidden trampolines that load them
+on first use, and records their SONAMEs in the `.tilo.lazy_needed` section. The
+runtime bundle tools (`os/scripts/collect-runtime-dependencies.py`,
+`verify-runtime-bundle-closure.sh`) ship and verify those libraries like
+`DT_NEEDED` ones. A library of `[targets] needed_absent` in the runtime's
+`DT_NEEDED`, in what every app loads with it, or in what a built app of
+`apps_without_media` loads at exec fails the build gate; if the runtime starts
+reading a GLib or GStreamer *variable*, the link itself fails, since nothing can
+provide one before the library loads.
 
 - **Release / apps** (`Shared runtime within its size budget`) measures the
-  dylib it has just built.
+  dylib it has just built, and the closures above. Its next steps report the
+  loader's cost for an app without media (statistics, the objects it loads,
+  its private dirty memory) and, when Video Player is built, decode its H.264
+  fixture through the thin runtime.
 - **Perf / scheduled** (footprint group) fetches the newest published
   `so.tilo.runtime` of each architecture, holds it to the budgets and records
   `footprint.runtime.<metric>.<arch>`.
@@ -382,6 +397,55 @@ bytes = 4194304
 ```
 
 When the runtime shrinks, both gates print the lower budget to commit.
+
+## OS image size
+
+Every install downloads the OS image and every update pulls its changed
+layers, so its size is a KPI too (TIL-609). `tools/perf/image_size.py`
+measures one image without a container engine: it streams each layer from
+the registry, checks it against its digest and replays the layers with their
+whiteouts. It reports, in bytes:
+
+- `compressed`: the layer blobs a full pull downloads;
+- `unique_content`: the merged root's regular files with identical files
+  counted once, which is what composefs stores after install. Files that only
+  `/sysroot` names are left out and reported as `undeployed`: the base
+  image's own ostree repository, hard-linked to its `/usr`, which bootc does
+  not deploy. Removing a base package from `/usr` therefore shrinks the
+  installed root but not the pull;
+- `redundant_payload`: bytes the layers carry beyond one copy of each distinct
+  file (the same file in two layers or at two paths, or one a later layer
+  replaced). composefs dedupes these on disk, but every pull still downloads
+  them.
+
+It also breaks the image down by layer (with the instruction that made it),
+by directory, by file and by installed package (from the image's own rpmdb).
+`--why PACKAGE` prints the chain of requires and recommends that pulls a
+package in:
+
+```bash
+python3 tools/perf/image_size.py --dev-base registry.tilo.so/tilo/tilo-vm:main-ci \
+  --arch x86_64 --markdown image.md --json image.json --why python3-botocore
+python3 tools/perf/image_size.py --image registry.tilo.so/tilo/tilo-ci:<ref>-<sha7>-x86_64 --markdown image.md
+```
+
+`--dev-base` measures the production-layout `tilo-ci` image that a dev image
+names as its base. Pull requests that touch the image publish
+`tilo-ci:<ref>-<sha7>-<arch>` (Build / OS dev), so measure a branch with
+`--image` before merging. Perf / scheduled (footprint group, nightly)
+measures main's newest image for both architectures and records
+`footprint.image.{compressed_bytes,unique_content_bytes,redundant_payload_bytes}.<arch>`.
+`tools/perf/kpi-budgets.toml` holds them to two rules:
+
+- **Growth.** More than 5 % above the median of the last five nights fails on
+  the second night running. To land intended growth, dispatch Perf / scheduled
+  on main with `kpis=footprint` and `accept=<KPI ids>` once the image has it.
+- **Ceiling.** Compressed bytes and unique content are held to an enforced
+  ceiling, 5 % over the image TIL-609 measured, so slow creep fails too. It
+  may only be lowered, except by a change that says why in the same pull
+  request. The KPI targets (3.5 GB compressed, 7 GB of content for
+  x86_64) are written beside the ceilings. Windows compatibility is most of
+  the gap; TIL-711 moves it to a downloaded system extension.
 
 ## Fast checks before assembly
 

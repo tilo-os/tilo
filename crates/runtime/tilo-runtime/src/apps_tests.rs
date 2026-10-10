@@ -1,7 +1,6 @@
 use super::*;
 use ed25519_dalek::{Signer as _, SigningKey};
 use package_store::{Catalog, InstalledPackage, Layout};
-use std::fmt::Write as _;
 use tilo_app_package::{BlobHash, Collection, SignedRoot};
 
 const ROOM: &str = "0b7c7a52-6f7e-4a55-9a51-1c2f4b3f7e10";
@@ -126,11 +125,7 @@ fn registry_row(package: &InstalledPackage) -> String {
 }
 
 fn hex_key(key: &SigningKey) -> String {
-    let mut hex = String::new();
-    for byte in key.verifying_key().to_bytes() {
-        write!(hex, "{byte:02x}").unwrap();
-    }
-    hex
+    hex::encode(key.verifying_key().to_bytes())
 }
 
 fn canonical_temp() -> (tempfile::TempDir, PathBuf) {

@@ -853,20 +853,17 @@ impl Widget for SankeyChart {
         _state: &mut crate::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
-        if !matches!(action, crate::a11y::Action::Activate) {
-            return false;
-        }
-        let Some(key) = key_path.last() else {
+        let Some(key) = crate::widget::chart_navigation::activated_key(action, key_path) else {
             return false;
         };
         for node in &self.nodes {
-            if crate::a11y::hash_key(&format!("node:{}", node.id)) == *key {
+            if crate::a11y::hash_key(&format!("node:{}", node.id)) == key {
                 self.activated = Some(SankeySelection::Node(node.id.clone()));
                 return true;
             }
         }
         for link in &self.links {
-            if crate::a11y::hash_key(&format!("link:{}", link.id)) == *key {
+            if crate::a11y::hash_key(&format!("link:{}", link.id)) == key {
                 self.activated = Some(SankeySelection::Link(link.id.clone()));
                 return true;
             }

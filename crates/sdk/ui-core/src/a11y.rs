@@ -510,6 +510,27 @@ pub fn hash_key(value: &impl std::hash::Hash) -> u64 {
     std::hash::Hasher::finish(&h)
 }
 
+/// Every name and value `root` and its descendants expose to assistive
+/// technology, depth first.
+pub fn texts(root: &dyn crate::widget::Widget) -> Vec<String> {
+    fn node(access: &AccessNode, out: &mut Vec<String>) {
+        out.extend(access.name.clone());
+        out.extend(access.value.clone());
+        for child in &access.children {
+            node(child, out);
+        }
+    }
+    fn visit(widget: &dyn crate::widget::Widget, out: &mut Vec<String>) {
+        if let Some(access) = widget.accessibility() {
+            node(&access, out);
+        }
+        widget.for_each_child(&mut |child| visit(child, out));
+    }
+    let mut out = Vec::new();
+    visit(root, &mut out);
+    out
+}
+
 /// Serializable absolute logical-pixel geometry for a synthetic
 /// [`AccessNode`]. This mirrors [`Rect`] without requiring widget authors to
 /// depend on its serialization feature.

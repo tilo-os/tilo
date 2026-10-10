@@ -24,7 +24,12 @@ class RuntimeDependencies(unittest.TestCase):
             'leaf': 'int leaf(void) { return 7; }',
             'bridge': 'extern int leaf(void); int bridge(void) { return leaf(); }',
             'runtime': '#include <stdio.h>\nextern int bridge(void); '
-                       'int toolkit(void) { return puts("fixture") + bridge(); }',
+                       'int toolkit(void) { return puts("fixture") + bridge(); }\n'
+                       # What tools/ci/runtime-dylib-lazy-link.py records (TIL-713).
+                       '__attribute__((used, section(".tilo.lazy_needed"))) '
+                       'static const char lazy_needed[] = "liblazy.so";',
+            'deep': 'int deep(void) { return 3; }',
+            'lazy': 'extern int deep(void); int lazy(void) { return deep(); }',
             'app': '#include <stdio.h>\nextern int bridge(void); '
                    'int main(void) { printf("%d", bridge()); return 0; }',
         }
@@ -34,6 +39,9 @@ class RuntimeDependencies(unittest.TestCase):
             ['cc', '-shared', '-fPIC', 'leaf.c', '-Wl,-soname,libleaf.so', '-o', 'libleaf.so'],
             ['cc', '-shared', '-fPIC', 'bridge.c', '-L.', '-lleaf',
              '-Wl,-soname,libbridge.so', '-o', 'libbridge.so'],
+            ['cc', '-shared', '-fPIC', 'deep.c', '-Wl,-soname,libdeep.so', '-o', 'libdeep.so'],
+            ['cc', '-shared', '-fPIC', 'lazy.c', '-L.', '-ldeep',
+             '-Wl,-soname,liblazy.so', '-o', 'liblazy.so'],
             ['cc', '-shared', '-fPIC', 'runtime.c', '-L.', '-lbridge',
              '-Wl,-rpath-link,.', '-o', 'libruntime_dylib.so'],
             ['cc', 'app.c', '-L.', '-lbridge', '-Wl,-rpath-link,.', '-o', 'app'],
@@ -52,6 +60,20 @@ class RuntimeDependencies(unittest.TestCase):
         self.assertTrue(any(path.name == 'libc.so.6' for path in paths))
         self.assertTrue(any(path.name.startswith('ld-linux') for path in paths))
         self.assertNotIn(self.directory / 'app', paths)
+
+    def test_libraries_loaded_on_first_use_come_with_their_closure(self):
+        runtime = self.directory / 'libruntime_dylib.so'
+        self.assertEqual(COLLECTOR.lazy_needed(runtime), ['liblazy.so'])
+        self.assertEqual(COLLECTOR.lazy_needed(self.directory / 'app'), [])
+        paths = COLLECTOR.collect([runtime], [self.directory])
+        self.assertIn(self.directory / 'liblazy.so', paths)
+        self.assertIn(self.directory / 'libdeep.so', paths)
+        self.assertIn(self.directory / 'libbridge.so', paths)
+
+    def test_an_unresolved_library_loaded_on_first_use_fails(self):
+        (self.directory / 'liblazy.so').unlink()
+        with self.assertRaisesRegex(ValueError, 'loaded on first use is unresolved: liblazy.so'):
+            COLLECTOR.collect([self.directory / 'libruntime_dylib.so'], [self.directory])
 
     def test_unresolved_and_absent_inputs_fail(self):
         (self.directory / 'libleaf.so').unlink()
@@ -93,6 +115,8 @@ elif args[0]=='build':
         includes = [arguments[i + 1] for i, value in enumerate(arguments) if value == '--include']
         self.assertIn(str(self.directory / 'libleaf.so'), includes)
         self.assertIn(str(self.directory / 'libbridge.so'), includes)
+        self.assertIn(str(self.directory / 'liblazy.so'), includes)
+        self.assertIn(str(self.directory / 'libdeep.so'), includes)
         self.assertTrue(any(Path(path).name == 'libc.so.6' for path in includes))
 
     def test_production_bake_never_signs_an_incomplete_closure(self):
