@@ -378,6 +378,87 @@ fn native_person_profile_commands_retain_original_and_survive_owner_publication(
     drop(fixture);
 }
 
+#[test]
+fn native_person_app_read_restriction_preserves_read_in_the_sdk_context() {
+    use collab_types::caps::{CapDecision, ResourceRef, Verb};
+    use tilo_action_broker::services::WorkspaceAuthority;
+
+    let fixture = fixture();
+    let actions = fixture.broker.app_action_broker().unwrap();
+    let room = fixture.room.to_string();
+    let person = tilo_action_broker::collab_broker_capnp::principal_id_for_root(
+        fixture.certificate.user_public_key,
+    );
+    let session = ActionSessionSource::new(actions.clone())
+        .open(&room, Some(&person))
+        .unwrap();
+    let authority =
+        super::NativeWorkspaceAuthority(native_workspace_owner::test_tree_of(&fixture.owner));
+    let open = ResourceRef::Action {
+        app: "so.tilo.chat".into(),
+        resource: "chat.person:tide".into(),
+        action: "open-agent-conversation".into(),
+    };
+    let message = ResourceRef::Action {
+        app: "so.tilo.chat".into(),
+        resource: "chat.person:tide".into(),
+        action: "message".into(),
+    };
+    let before = person_sdk_permissions(&authority.snapshot().unwrap(), &room, &person);
+    assert_eq!(before.decide(&open, Verb::Read), CapDecision::Allow);
+    assert_eq!(before.decide(&message, Verb::Write), CapDecision::Allow);
+
+    invoke_certified_profile_action(
+        &session,
+        &actions,
+        &room,
+        "profile.save",
+        &serde_json::json!({
+            "name": "Native Person Chat read", "rules": [{
+                "scope": {"App": "so.tilo.chat"}, "effect": "Restrict", "verb": "Read"
+            }]
+        }),
+    );
+    invoke_certified_profile_action(
+        &session,
+        &actions,
+        &room,
+        "profile.assign",
+        &serde_json::json!({
+            "profile": "Native Person Chat read", "subject_kind": "person", "subject": person
+        }),
+    );
+
+    let restricted = person_sdk_permissions(&authority.snapshot().unwrap(), &room, &person);
+    assert_eq!(restricted.decide(&open, Verb::Read), CapDecision::Allow);
+    assert_ne!(restricted.decide(&message, Verb::Write), CapDecision::Allow);
+    drop(authority);
+    drop(session);
+    drop(actions);
+    drop(fixture);
+}
+
+fn person_sdk_permissions(
+    tree: &tilo_desktop_model::DesktopTree,
+    room: &str,
+    person: &str,
+) -> ui::permissions::PermissionContext {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let workspace = tree
+        .workspaces
+        .iter()
+        .find(|workspace| workspace.room.to_string() == room)
+        .unwrap();
+    ui::permissions::PermissionContext::from_capabilities(
+        workspace.actor_for_person_at(&person.to_owned(), now),
+        workspace.capabilities.clone(),
+    )
+    .at_unix_time(now)
+}
+
 fn assert_native_profile_original_certificate(fixture: &NativeFixture) {
     use tilo_action_broker::services::LocalPersonServices;
     let tree = native_workspace_owner::test_tree_of(&fixture.owner);

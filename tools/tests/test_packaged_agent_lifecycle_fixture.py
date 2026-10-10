@@ -463,6 +463,33 @@ class PermissionSnapshotTests(unittest.TestCase):
             with self.subTest(pair=pair), patch.object(PROOF, "permission_offer_pair", return_value=pair):
                 self.assertIsNone(PROOF.initial_permission_offer_pair("socket", "room", "record"))
 
+    def test_initial_chat_restriction_requires_exact_read_from_the_same_complete_snapshot(self):
+        message, queue = self.offers()
+        read = {**message, "id": "actual-open", "operation": "open-agent-conversation"}
+        with patch.object(PROOF, "call", return_value=self.page([message, queue, read])) as observe:
+            self.assertEqual(PROOF.initial_permission_offer_pair(
+                "socket", "room", "record", require_message_read=True), (message, queue))
+            observe.assert_called_once()
+        for missing_read in ([], [{**read, "provider": "foreign"}],
+                             [{**read, "resource": "another-opaque-owner"}],
+                             [{**read, "record": "another-record"}],
+                             [{**read, "semantic_identity": {"kind": "chat.agent", "key": "chat.person:other"}}]):
+            with self.subTest(rows=missing_read), patch.object(
+                    PROOF, "call", return_value=self.page([message, queue, *missing_read])):
+                self.assertIsNone(PROOF.initial_permission_offer_pair(
+                    "socket", "room", "record", require_message_read=True))
+        with patch.object(PROOF, "call", return_value=self.page([message, queue, read, read])):
+            with self.assertRaisesRegex(RuntimeError, "ambiguous initial Chat Read"):
+                PROOF.initial_permission_offer_pair("socket", "room", "record", require_message_read=True)
+        for metadata in ({"complete": False}, {"settled": False}):
+            with self.subTest(metadata=metadata), patch.object(
+                    PROOF, "call", return_value=self.page([message, queue, read], **metadata)):
+                self.assertIsNone(PROOF.initial_permission_offer_pair(
+                    "socket", "room", "record", require_message_read=True))
+        source = inspect.getsource(PROOF.native_chat_write_downgrade)
+        self.assertLess(source.index("require_message_read=True"),
+                        source.index("assign_expiring_app_write_restriction("))
+
 
     def test_restriction_proof_requires_the_independent_offer_in_the_same_snapshot(self):
         message, queue = self.offers()

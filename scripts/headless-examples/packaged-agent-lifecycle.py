@@ -4536,7 +4536,7 @@ def native_chat_semantic_publication(socket, room):
     return [{key: row.get(key) for key in fields} for row in rows]
 
 
-def permission_offer_pair(socket, room, record, *, observation=None):
+def permission_offer_pair(socket, room, record, *, observation=None, require_message_read=False):
     """Observe Message and Queue from the same settled authority revision."""
     rows = (permission_actions_snapshot(socket) if observation is None else
             permission_actions_snapshot(socket, observation=observation))
@@ -4551,14 +4551,23 @@ def permission_offer_pair(socket, room, record, *, observation=None):
               and row.get("resource") == "desktop:tasks" and row.get("operation") == "queue"]
     if len(messages) > 1 or len(queues) > 1:
         raise RuntimeError("ambiguous permission proof action")
+    if require_message_read:
+        reads = [row for row in rows if messages and row.get("operation") == "open-agent-conversation"
+                 and all(row.get(field) == messages[0].get(field) for field in (
+                     "provider", "application", "room", "record", "resource", "semantic_identity"))]
+        if len(reads) > 1:
+            raise RuntimeError("ambiguous initial Chat Read permission proof action")
+        if len(reads) != 1:
+            return None
     if observation is not None:
         observation["message_present"] = bool(messages)
         observation["queue_present"] = bool(queues)
     return (messages[0] if messages else None, queues[0] if queues else None)
 
 
-def initial_permission_offer_pair(socket, room, record):
-    pair = permission_offer_pair(socket, room, record)
+def initial_permission_offer_pair(socket, room, record, *, require_message_read=False):
+    pair = (permission_offer_pair(socket, room, record, require_message_read=True)
+            if require_message_read else permission_offer_pair(socket, room, record))
     return pair if pair is not None and all(row is not None for row in pair) else None
 
 
@@ -7271,8 +7280,9 @@ def native_chat_write_downgrade(socket, room, record, person, output, size, proc
     message_before = prepare_private_permission_draft(
         socket, message_access, message_draft, 8, output, process
     )
-    stale_message, opposite = wait_for("fresh independent offers before Chat restriction", lambda:
-                                      initial_permission_offer_pair(socket, room, record), process)
+    stale_message, opposite = wait_for("fresh exact Message, Open Read and Queue offers before Chat restriction", lambda:
+                                      initial_permission_offer_pair(
+                                          socket, room, record, require_message_read=True), process)
     chat_profile = assign_expiring_app_write_restriction(
         socket, room, person, "so.tilo.chat", "Native Chat write restriction", process
     )
