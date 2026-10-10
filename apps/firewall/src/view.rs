@@ -58,18 +58,7 @@ fn action_rank(action: Action) -> u8 {
 }
 
 /// The queue controls write to and the app drains.
-#[derive(Clone, Default)]
-pub(crate) struct Intents(Rc<RefCell<Vec<Intent>>>);
-
-impl Intents {
-    pub(crate) fn push(&self, intent: Intent) {
-        self.0.borrow_mut().push(intent);
-    }
-
-    pub(crate) fn take(&self) -> Vec<Intent> {
-        std::mem::take(&mut *self.0.borrow_mut())
-    }
-}
+pub(crate) type Intents = ui::Intents<Intent>;
 
 /// What a switch on the page turns on or off.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -314,65 +303,13 @@ pub(crate) fn unavailable(detail: Option<&str>, intents: &Intents) -> Element {
         None => EmptyState::new("Firewall service unavailable")
             .with_message("Start firewalld, then try again. No rules were changed."),
     };
-    Box::new(RetryOnAction {
-        state: state
+    Box::new(
+        state
             .with_icon(Icon::Shield)
             .with_action("Try again")
-            .with_action_id("firewall.retry"),
-        intents: intents.clone(),
-    })
-}
-
-/// An empty state whose one action reconnects to firewalld.
-struct RetryOnAction {
-    state: EmptyState,
-    intents: Intents,
-}
-
-impl RetryOnAction {
-    fn forward(&mut self) {
-        if self.state.take_action() {
-            self.intents.push(Intent::Retry);
-        }
-    }
-}
-
-impl Decorator for RetryOnAction {
-    type Inner = EmptyState;
-
-    fn inner(&self) -> &EmptyState {
-        &self.state
-    }
-
-    fn inner_mut(&mut self) -> &mut EmptyState {
-        &mut self.state
-    }
-
-    fn handle_event(
-        &mut self,
-        event: &ui::winit::event::WindowEvent,
-        ctx: &mut ui::widget::EventCtx<'_>,
-    ) {
-        Widget::handle_event(&mut self.state, event, ctx);
-        self.forward();
-    }
-
-    fn update(&mut self, state: &ui::widget::AppModel, path: &ui::widget::ModelPath) -> bool {
-        self.forward();
-        Widget::update(&mut self.state, state, path)
-    }
-
-    fn perform_semantic_action(
-        &mut self,
-        target: &str,
-        action: &ui::a11y::Action,
-        state: &mut ui::widget::Edits<'_>,
-        path: &ui::widget::ModelPath,
-    ) -> bool {
-        let handled = Widget::perform_semantic_action(&mut self.state, target, action, state, path);
-        self.forward();
-        handled
-    }
+            .with_action_id("firewall.retry")
+            .on_effect(intents.sender(Intent::Retry)),
+    )
 }
 
 /// Everything a zone's page shows, borrowed from the app.
