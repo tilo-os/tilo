@@ -859,7 +859,7 @@ pub(crate) fn grant_file_manager_home(
     if package_id != SYSTEM_FILE_MANAGER {
         return false;
     }
-    let Some(home) = xdg_paths::home() else {
+    let Some(home) = tilo_paths::home() else {
         return false;
     };
     let Some(ws) = tree
@@ -1420,12 +1420,12 @@ mod tests {
     use crate::shell::chrome_state::ChromeState;
     use crate::shell::state::{WorkspaceTree, WorkspaceTreeHandle};
     use automerge::AutoCommit;
-    use parking_lot::RwLock;
     use std::path::PathBuf;
     use std::sync::Arc;
 
     fn chrome_rc() -> Chrome {
-        let handle: WorkspaceTreeHandle = Arc::new(RwLock::new(WorkspaceTree::default()));
+        let handle: WorkspaceTreeHandle =
+            crate::shell::state::WorkspaceTreeHandle::new(WorkspaceTree::default());
         ChromeState::new_with_handle(handle)
     }
 
@@ -1458,7 +1458,7 @@ mod tests {
         tree.set_salt_override(crate::shell::state::peer_salt_of(tab_id));
         tree.desktop.active = workspace.id;
         tree.desktop.workspaces = vec![workspace];
-        let handle = Arc::new(RwLock::new(tree));
+        let handle = crate::shell::state::WorkspaceTreeHandle::new(tree);
         let chrome = ChromeState::new_with_handle(handle.clone());
         let provider = ApplicationsProvider::new();
         let rows = provider.results_for(
@@ -1519,7 +1519,7 @@ mod tests {
         tree.desktop.workspaces = vec![workspace];
         tree.remember_local_app_record(tab, 8183);
         let records = tree.local_app_records.clone();
-        let handle = Arc::new(RwLock::new(tree));
+        let handle = crate::shell::state::WorkspaceTreeHandle::new(tree);
         let chrome = ChromeState::new_with_handle(handle.clone());
         let rows = ApplicationsProvider::new().results_for(
             "browser",

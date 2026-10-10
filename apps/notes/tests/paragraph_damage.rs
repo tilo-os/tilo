@@ -3,7 +3,7 @@ use crate::component_support::*;
 use notes::{actions, doc::NotesDoc};
 use std::{cell::RefCell, rc::Rc};
 use ui::{Widget, headless::Driver};
-use vello::kurbo::Rect;
+use vello::{Scene, kurbo::Rect, peniko::Color};
 
 struct DamageWitness {
     inner: Box<dyn Widget>,
@@ -26,16 +26,22 @@ impl ui::widget::Decorator for DamageWitness {
 
 #[test]
 fn canonical_notes_paragraph_input_preserves_outer_component_sparse_gpu_pixels() {
-    paragraph_input(true, "y", "xy");
+    paragraph_input(true, "y", "xy", false);
 }
 
 #[test]
 fn canonical_notes_default_motion_and_word_boundary_preserve_sparse_gpu_pixels() {
-    paragraph_input(false, "y", "xy");
-    paragraph_input(false, "Space", "x ");
+    paragraph_input(false, "y", "xy", false);
+    paragraph_input(false, "Space", "x ", false);
 }
 
-fn paragraph_input(reduce_motion: bool, key: &str, prefix: &str) {
+#[test]
+fn canonical_notes_timestamp_boundary_preserves_sparse_gpu_pixels() {
+    pin_edit_clock(1_790_000_000);
+    paragraph_input(false, "y", "xy", true);
+}
+
+fn paragraph_input(reduce_motion: bool, key: &str, prefix: &str, advance_timestamp: bool) {
     let f = NotebookFixture::rich();
     let body = (0..18)
         .map(|index| format!("Paragraph {index}: an ordinary document line."))
@@ -75,8 +81,17 @@ fn paragraph_input(reduce_motion: bool, key: &str, prefix: &str) {
     // The first edit can change the shared save indicator. The subsequent
     // ordinary edit proves stable app chrome forwards the paragraph damage.
     driver.key("x");
+    let started = ui::time::now();
+    let settled = driver.settle_for_capture(ui::time::Duration::from_secs(2));
+    if !settled {
+        eprintln!(
+            "paragraph-settle-demand key={key:?} reduce_motion={reduce_motion} timestamp={advance_timestamp} elapsed={:?}",
+            started.elapsed(),
+        );
+        report_unsettled_scene(&driver, &f.records, &checkout.id, background);
+    }
     assert!(
-        driver.settle_for_capture(ui::time::Duration::from_secs(2)),
+        settled,
         "ordinary navigation and sidebar transitions settle before stable typing"
     );
     assert!(
@@ -87,7 +102,7 @@ fn paragraph_input(reduce_motion: bool, key: &str, prefix: &str) {
     // A key interaction draws its press and release. Retain the union of
     // actual frame damage; the unchanged release must not erase the press.
     damage.borrow_mut().clear();
-    driver.key(key);
+    type_with_timestamp(&mut driver, key, advance_timestamp);
     let actual = f
         .records
         .read(&checkout.id, |doc| {
@@ -111,19 +126,24 @@ fn paragraph_input(reduce_motion: bool, key: &str, prefix: &str) {
         damage.iter().map(Rect::area).sum::<f64>() < 1200.0 * 900.0 / 2.0,
         "ordinary stable paragraph input must not damage the whole app: {damage:?}"
     );
+    assert_sparse_pixels(&before, driver.scene(), &damage, background);
+    close_driver(&mut driver);
+}
+
+fn assert_sparse_pixels(before: &Scene, after: &Scene, damage: &[Rect], background: Color) {
     let mut retained = ui::offscreen::OffscreenRenderer::new(1200, 900);
     let mut full = ui::offscreen::OffscreenRenderer::new(1200, 900);
-    let old_pixels = retained.render(&before, background);
+    let old_pixels = retained.render(before, background);
     let damage = damage
         .iter()
         .map(|rect| rect.inflate(16.0, 16.0))
         .collect::<Vec<_>>();
-    let work = retained.render_damage_regions_gpu_wait(driver.scene(), background, &damage);
+    let work = retained.render_damage_regions_gpu_wait(after, background, &damage);
     assert!(
         work < 1200 * 900,
         "the outer component must exercise actual sparse rasterization"
     );
-    let expected = full.render(driver.scene(), background);
+    let expected = full.render(after, background);
     assert_ne!(
         old_pixels, expected,
         "ordinary input must change visible note paint"
@@ -133,5 +153,67 @@ fn paragraph_input(reduce_motion: bool, key: &str, prefix: &str) {
         expected,
         "all retained app pixels match the full GPU oracle"
     );
-    close_driver(&mut driver);
+}
+
+fn report_unsettled_scene(
+    driver: &Driver,
+    records: &ui::record::RecordStore,
+    record: &ui::record::RecordId,
+    background: Color,
+) {
+    eprintln!(
+        "paragraph-settle-state schedule={:?} requesters={:?} save={:?} images={}",
+        driver.frame_schedule(),
+        driver.frame_requesters(),
+        records.save_status(record),
+        ui::image_store::loads_in_flight(),
+    );
+    let mut renderer = ui::offscreen::OffscreenRenderer::new(1200, 900);
+    let pixels = renderer.render(driver.scene(), background);
+    let png = ui::png::encode_rgba8(1200, 900, &pixels).unwrap();
+    eprintln!(
+        "paragraph-settle-failed-scene-png {}",
+        serde_json::to_string(&png).unwrap()
+    );
+}
+
+fn pin_edit_clock(seconds: u64) {
+    ui::time::freeze_wall(
+        ui::time::UNIX_EPOCH
+            .checked_add(ui::time::Duration::from_secs(seconds))
+            .unwrap(),
+    );
+}
+
+fn date_captions(driver: &Driver) -> Vec<String> {
+    driver
+        .a11y_nodes()
+        .into_iter()
+        .filter_map(|(_, node)| {
+            node.label()
+                .filter(|label| label.starts_with("Created "))
+                .map(str::to_owned)
+        })
+        .collect()
+}
+
+fn type_with_timestamp(driver: &mut Driver, key: &str, advance_timestamp: bool) {
+    let before = advance_timestamp.then(|| date_captions(driver));
+    if advance_timestamp {
+        // Only wall time advances: the ordinary action stamps a new minute
+        // while the production monotonic animation clock continues running.
+        pin_edit_clock(1_790_000_120);
+    }
+    driver.key(key);
+    if let Some(before) = before {
+        assert!(
+            !before.is_empty(),
+            "the actual note-date caption is observed"
+        );
+        assert_ne!(
+            before,
+            date_captions(driver),
+            "the ordinary edit updates the painted metadata caption"
+        );
+    }
 }

@@ -30,11 +30,11 @@ use std::collections::HashMap;
 use automerge::AutoCommit;
 use settings::SettingsApp;
 use taffy::{NodeId, TaffyTree};
+use ui::testing::Dispatch;
 use ui::text_render::TextRenderer;
 use ui::widget::Widget;
 use vello::kurbo::Point;
-use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, WindowEvent};
-use winit::keyboard::{Key, NativeKeyCode, PhysicalKey, SmolStr};
+use winit::event::{ElementState, MouseButton, WindowEvent};
 
 const W: f32 = 1200.0;
 const H: f32 = 760.0;
@@ -43,23 +43,7 @@ fn root() -> automerge::ObjId {
     automerge::ROOT
 }
 
-/// A printable-character `KeyboardInput`, built the same way `TextInput`'s own
-/// tests do (`KeyEvent` has a `pub(crate)` platform field, so it can't be
-/// struct-literalled — zero it then overwrite the public fields).
-fn char_key_event(s: &str) -> WindowEvent {
-    let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-    ev.logical_key = Key::Character(SmolStr::new(s));
-    ev.physical_key = PhysicalKey::Unidentified(NativeKeyCode::Unidentified);
-    ev.location = winit::keyboard::KeyLocation::Standard;
-    ev.state = ElementState::Pressed;
-    ev.repeat = false;
-    ev.text = Some(SmolStr::new(s));
-    WindowEvent::KeyboardInput {
-        device_id: unsafe { std::mem::zeroed() },
-        event: ev,
-        is_synthetic: false,
-    }
-}
+use ui::synthetic_input::char_key;
 
 /// A faithful stand-in for `ui::App` covering focus + the rebuild-on-filter
 /// cycle. Owns the app, its live taffy tree + node map, and the focus state.
@@ -191,37 +175,28 @@ impl Harness {
     /// production event path, then apply any requested focus target — exactly
     /// what `App`'s window-event handler does at the end of dispatch.
     fn click(&mut self, p: Point) {
-        let mods = Modifiers::default();
         let cursor = WindowEvent::CursorMoved {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             position: winit::dpi::PhysicalPosition::new(p.x, p.y),
         };
         let press = WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             state: ElementState::Pressed,
             button: MouseButton::Left,
         };
         let release = WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             state: ElementState::Released,
             button: MouseButton::Left,
         };
         let mut focus_target = None;
         for ev in [&cursor, &press, &release] {
-            let mut handled = false;
-            self.app.handle_event(
-                ev,
-                &mut ui::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &mods,
-                    state: ui::widget::Edits::lend(&mut self.doc),
-                    path: &root(),
-                    handled: &mut handled,
-                    focus_target: &mut focus_target,
-                    node_id: self.app_node,
-                    taffy: &self.taffy,
-                },
-            );
+            focus_target = Dispatch::new()
+                .doc(&mut self.doc)
+                .layout(&self.taffy, self.app_node)
+                .focus_target(focus_target)
+                .send(&mut *self.app, ev)
+                .focus_target;
         }
         if let Some(id) = focus_target {
             self.set_focused(Some(id));
@@ -232,24 +207,12 @@ impl Harness {
     /// sync + (if the tree changed) the ordinal-preserving rebuild — the same
     /// thing `App` does with `autofocus_on_structure_change` set.
     fn type_char(&mut self, c: &str) {
-        let mods = Modifiers::default();
-        let ev = char_key_event(c);
-        let mut handled = false;
-        let mut focus_target = None;
-        self.app.handle_event(
-            &ev,
-            &mut ui::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &mods,
-                state: ui::widget::Edits::lend(&mut self.doc),
-                path: &root(),
-                handled: &mut handled,
-                focus_target: &mut focus_target,
-                node_id: self.app_node,
-                taffy: &self.taffy,
-            },
-        );
-        if let Some(id) = focus_target {
+        let ev = char_key(c);
+        let sent = Dispatch::new()
+            .doc(&mut self.doc)
+            .layout(&self.taffy, self.app_node)
+            .send(&mut *self.app, &ev);
+        if let Some(id) = sent.focus_target {
             self.set_focused(Some(id));
         }
         // Frame: sync consumes the field's SEARCH_KEY write; a changed query

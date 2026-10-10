@@ -188,32 +188,38 @@ fn edit_with(
     now: SystemTime,
     topic: &str,
 ) -> OwnerCommitRequest {
-    let message = owner
-        .with_current(room, |view| {
-            let mut chat = AutoCommit::load(&view.peer().document(APP, "").unwrap()).unwrap();
-            let before = chat.get_heads();
-            chat.put(ROOT, "topic", topic).unwrap();
-            chat.commit();
-            view.peer().clone().publish_incremental(
-                APP,
-                "",
-                chat.save_after(&before),
-                &member(),
-                now,
-            )
-        })
-        .unwrap();
+    owner
+        .with_current(room, |view| edit_from_view(view, now, topic))
+        .unwrap()
+}
+
+fn edit_from_view(
+    view: &crate::NativeCommittedView,
+    now: SystemTime,
+    topic: &str,
+) -> Result<OwnerCommitRequest, String> {
+    let mut chat = AutoCommit::load(&view.peer().document(APP, "").unwrap()).unwrap();
+    let before = chat.get_heads();
+    chat.put(ROOT, "topic", topic).unwrap();
+    chat.commit();
+    let message = view.peer().clone().publish_incremental(
+        APP,
+        "",
+        chat.save_after(&before),
+        &member(),
+        now,
+    )?;
     let NeighbourMsg::AppDocument { envelope, .. } = message else {
-        panic!("a signed document write")
+        return Err("test edit was not a signed document write".into());
     };
-    OwnerCommitRequest {
+    Ok(OwnerCommitRequest {
         room: ROOM.into(),
         operation: CommitOperation::Document {
             app: APP.into(),
             record: String::new(),
             envelope,
         },
-    }
+    })
 }
 
 #[test]
@@ -579,6 +585,186 @@ fn a_local_write_is_durable_with_its_outgoing_custody_before_its_receipt() {
 }
 
 #[test]
+fn prepared_local_write_uses_current_sequence_after_an_intervening_commit() {
+    let joined = enrolled();
+    let stale = edit_with(&joined.owner, joined.room, joined.now, "stale edit");
+    let first = edit_with(
+        &joined.owner,
+        joined.room,
+        joined.now,
+        "first committed edit",
+    );
+    joined.owner.commit_document(first, joined.now).unwrap();
+    assert_eq!(
+        joined.owner.commit_document(stale, joined.now).unwrap_err(),
+        "signed operation conflicts with exact admitted sequence"
+    );
+
+    let receipt = joined
+        .owner
+        .commit_document_with_current(
+            joined.room,
+            |view| edit_from_view(view, joined.now, "edit from current owner turn"),
+            joined.now,
+        )
+        .unwrap();
+    assert!(receipt.generation > 1);
+    joined
+        .owner
+        .with_current(joined.room, |view| {
+            let chat = AutoCommit::load(&view.peer().document(APP, "").unwrap()).unwrap();
+            assert_eq!(
+                chat.get(ROOT, "topic").unwrap().unwrap().0.as_str(),
+                Some("edit from current owner turn")
+            );
+            Ok(())
+        })
+        .unwrap();
+}
+
+/// Commit one original edit that the governor has not yet admitted, then give
+/// the route a fresh governor checkpoint that does not cover it, so the next
+/// `reconcile_outgoing` signs a recovery projection at the dense `floor + 1`.
+fn with_pending_original(joined: &Enrolled) {
+    let governor_key = SigningKey::from_bytes(&[61; 32]);
+    let mut remote = joined
+        .owner
+        .with_current(joined.room, |view| Ok(view.peer().clone()))
+        .unwrap();
+    let original = edit_with(
+        &joined.owner,
+        joined.room,
+        joined.now,
+        "original awaiting ack",
+    );
+    joined.owner.commit_document(original, joined.now).unwrap();
+    for message in remote
+        .durable_bootstrap_messages(&governor_key, joined.now, 600)
+        .unwrap()
+    {
+        joined
+            .owner
+            .receive(
+                joined.room,
+                TransportOrigin::RelayDelta(governor_key.verifying_key().to_bytes()),
+                message,
+                joined.now,
+            )
+            .unwrap();
+    }
+}
+
+fn projections(joined: &Enrolled) -> usize {
+    joined
+        .owner
+        .with_current(joined.room, |view| {
+            Ok(crate::testing::projection(view)?.len())
+        })
+        .unwrap()
+}
+
+/// A write signed outside the owner turn the way every SDK document signer
+/// signs it: with the process-wide unordered sequence, not `floor + 1`.
+fn unordered_edit(joined: &Enrolled, topic: &str) -> OwnerCommitRequest {
+    use collab_types::{
+        DocumentMutation, Ed25519PublicKey, OpClass, SignedOp, document_artifact_id,
+        document_attestation_id, next_unordered_document_sequence, sign_op,
+    };
+    let changes = joined
+        .owner
+        .with_current(joined.room, |view| {
+            let mut chat = AutoCommit::load(&view.peer().document(APP, "").unwrap()).unwrap();
+            let before = chat.get_heads();
+            chat.put(ROOT, "topic", topic).unwrap();
+            chat.commit();
+            Ok(chat.save_after(&before))
+        })
+        .unwrap();
+    let key = member();
+    let mut envelope = SignedOp::new_unsigned(
+        DocumentMutation::Incremental(changes).encode().unwrap(),
+        document_artifact_id(APP, ROOM, ""),
+        Ed25519PublicKey::from_bytes(key.verifying_key().to_bytes()),
+        document_attestation_id(APP, ROOM, ""),
+        OpClass::Splice,
+        joined.now,
+        next_unordered_document_sequence(joined.now),
+    );
+    sign_op(&mut envelope, &key).unwrap();
+    OwnerCommitRequest {
+        room: ROOM.into(),
+        operation: CommitOperation::Document {
+            app: APP.into(),
+            record: String::new(),
+            envelope: Box::new(envelope),
+        },
+    }
+}
+
+#[test]
+fn dense_snapshot_sequence_is_stale_after_an_intervening_recovery_projection() {
+    let joined = enrolled();
+    with_pending_original(&joined);
+    let dense = edit_with(&joined.owner, joined.room, joined.now, "dense edit");
+    assert_eq!(projections(&joined), 0);
+    joined
+        .owner
+        .reconcile_outgoing(joined.room, &member(), joined.now)
+        .unwrap();
+    assert_eq!(
+        projections(&joined),
+        1,
+        "the owner's own turn must sign a recovery projection at floor + 1"
+    );
+    assert_eq!(
+        joined.owner.commit_document(dense, joined.now).unwrap_err(),
+        "native local document signed sequence is stale"
+    );
+}
+
+#[test]
+fn unordered_sequence_survives_an_intervening_recovery_projection() {
+    let joined = enrolled();
+    with_pending_original(&joined);
+    let request = unordered_edit(&joined, "unordered edit");
+    assert_eq!(projections(&joined), 0);
+    joined
+        .owner
+        .reconcile_outgoing(joined.room, &member(), joined.now)
+        .unwrap();
+    assert_eq!(
+        projections(&joined),
+        1,
+        "the owner's own turn must sign a recovery projection at floor + 1"
+    );
+    joined
+        .owner
+        .commit_document(request.clone(), joined.now)
+        .unwrap();
+    let CommitOperation::Document { envelope, .. } = &request.operation else {
+        panic!("the unordered edit is a document write")
+    };
+    joined
+        .owner
+        .with_current(joined.room, |view| {
+            assert!(
+                view.peer()
+                    .lookup_exact_local_document(APP, "", envelope, joined.now)
+                    .map_err(|error| error.to_string())?
+                    .is_some(),
+                "the caller-signed write must leave exact admission evidence"
+            );
+            let chat = AutoCommit::load(&view.peer().document(APP, "").unwrap()).unwrap();
+            assert_eq!(
+                chat.get(ROOT, "topic").unwrap().unwrap().0.as_str(),
+                Some("unordered edit")
+            );
+            Ok(())
+        })
+        .unwrap();
+}
+
+#[test]
 fn an_uncertain_write_fences_every_room_until_reopened() {
     use tilo_files::native::atomic::test_support::{Checkpoint, with_failure};
     let joined = enrolled();
@@ -739,6 +925,15 @@ fn commit_sealed(
     joined: &Enrolled,
     keys: &channel_crypto::ChannelContentKeys,
 ) -> collab_types::SignedOp {
+    commit_sealed_as(joined, keys, collab_types::ContentRetention::Delta)
+}
+
+/// Commit a write sealed under `keys` with the signed storage class `class`.
+fn commit_sealed_as(
+    joined: &Enrolled,
+    keys: &channel_crypto::ChannelContentKeys,
+    class: collab_types::ContentRetention,
+) -> collab_types::SignedOp {
     let OwnerCommitRequest {
         operation: CommitOperation::Document { mut envelope, .. },
         ..
@@ -747,11 +942,7 @@ fn commit_sealed(
         panic!("a document write")
     };
     let (metadata, sealed) = keys
-        .seal_content(
-            envelope.artifact,
-            collab_types::ContentRetention::Delta,
-            &envelope.payload,
-        )
+        .seal_content(envelope.artifact, class, &envelope.payload)
         .unwrap();
     envelope.payload = sealed;
     envelope.encryption = Some(metadata);
@@ -782,6 +973,73 @@ fn sent(owner: &NativeWorkspaceOwner, room: RoomId, now: SystemTime) -> Vec<Vec<
                 .collect())
         })
         .unwrap()
+}
+
+/// Native publication classifies through the one host classifier browser
+/// peers use, so a sealed checkpoint is a checkpoint to it there too. A
+/// member still never replaces the record's retained checkpoint under its own
+/// relay author: the sealed checkpoint leaves as a delta after it, while a
+/// cleartext snapshot stays a checkpoint the member never releases.
+#[test]
+fn native_sealed_checkpoint_is_classified_like_browser() {
+    use tilo_peer_state::transport::{Retention, retention};
+    let joined = enrolled();
+    let (keys, _) = rotated_channel();
+    let envelope = commit_sealed_as(&joined, &keys, collab_types::ContentRetention::Checkpoint);
+    let [bytes] = sent(&joined.owner, joined.room, joined.now)
+        .try_into()
+        .expect("the committed sealed checkpoint is released");
+    let message: NeighbourMsg = postcard::from_bytes(&bytes).unwrap();
+    let NeighbourMsg::AppDocument { envelope: sent, .. } = &message else {
+        panic!("a document write")
+    };
+    assert_eq!(**sent, envelope);
+
+    let (channel, class) = retention(&message, false).expect("sealed state is retained");
+    assert_eq!(class, Retention::Checkpoint, "the browser peer's class");
+    let (_, recorded, incremental) = crate::publication::metadata(&message).unwrap();
+    assert_eq!(recorded, channel, "the same host channel as a browser peer");
+    assert!(
+        incremental,
+        "a member's sealed checkpoint is published as a delta"
+    );
+    let published = joined
+        .owner
+        .with_outgoing(joined.room, joined.now, |_, outgoing| {
+            Ok(outgoing
+                .entries()
+                .map(|entry| (entry.channel(), entry.retention()))
+                .collect::<Vec<_>>())
+        })
+        .unwrap();
+    assert_eq!(published, [(channel, Retention::Delta)]);
+
+    let mut snapshot = message.clone();
+    let mut single_use = message;
+    if let NeighbourMsg::AppDocument { envelope, .. } = &mut snapshot {
+        envelope.encryption = None;
+        envelope.payload = collab_types::DocumentMutation::Snapshot(vec![1])
+            .encode()
+            .unwrap();
+    }
+    assert_eq!(
+        retention(&snapshot, false).map(|(_, class)| class),
+        Some(Retention::Checkpoint)
+    );
+    assert!(
+        !crate::publication::metadata(&snapshot).unwrap().2,
+        "a cleartext snapshot stays the governor's checkpoint"
+    );
+    if let NeighbourMsg::AppDocument { envelope, .. } = &mut single_use {
+        envelope.encryption = Some(collab_types::EncryptionMetadata::mls_application(
+            0,
+            collab_types::document_channel_id(APP, ROOM, ""),
+        ));
+    }
+    assert!(
+        crate::publication::metadata(&single_use).is_err(),
+        "a single-use MLS message has no retention class"
+    );
 }
 
 #[test]

@@ -1,6 +1,6 @@
 //! Client adapters use the existing bounded collaboration lane. They carry
 //! inert directory inputs; only the real broker admits an invocation.
-use super::{ByteMeter, Duration, SdkRoute};
+use super::{ByteMeter, Duration, SdkRoute, serialized_bytes};
 
 const DIRECTORY_RPC_TIMEOUT: Duration = Duration::from_secs(2);
 /// How long a resolved invocation waits for the broker's admission answer.
@@ -52,13 +52,18 @@ fn row_bytes(row: &runtime_collab::ActionDirectoryRow, meter: &mut ByteMeter) {
         &row.resource,
         &row.resource_kind,
         &row.resource_label,
-        &row.resource_presentation_json,
-        &row.visibility_contract_json,
     ] {
         meter.string_capacity(field);
     }
-    for field in [&row.action, &row.visibility_action].into_iter().flatten() {
-        meter.string_capacity(field);
+    if let Some(presentation) = &row.presentation {
+        serialized_bytes(presentation, meter);
+    }
+    if let Some(action) = &row.action {
+        meter.string_capacity(action);
+    }
+    if let Some(visibility) = &row.visibility {
+        meter.string_capacity(&visibility.action);
+        serialized_bytes(&visibility.contract, meter);
     }
     if let Some(action) = &row.descriptor {
         for field in [
@@ -67,11 +72,13 @@ fn row_bytes(row: &runtime_collab::ActionDirectoryRow, meter: &mut ByteMeter) {
             &action.resource_kind,
             &action.resource_label,
             &action.action_label,
-            &action.operation_kind,
-            &action.params_json,
-            &action.contract_json,
         ] {
             meter.string_capacity(field);
+        }
+        serialized_bytes(&action.params, meter);
+        serialized_bytes(&action.contract, meter);
+        if let Some(view) = &action.view {
+            serialized_bytes(view, meter);
         }
         if let Some(description) = &action.description {
             meter.string_capacity(description);
@@ -104,9 +111,12 @@ pub(super) fn resolution_bytes(
     resolution: &runtime_collab::ActionDirectoryResolution,
     meter: &mut ByteMeter,
 ) {
-    if let runtime_collab::ActionDirectoryResolution::Found(row) = resolution {
+    if let runtime_collab::ActionDirectoryResolution::Found { row, revision } = resolution {
         meter.add(std::mem::size_of::<runtime_collab::ActionDirectoryRow>());
         row_bytes(row, meter);
+        if let Some(revision) = revision {
+            meter.string_capacity(revision);
+        }
     }
 }
 

@@ -41,11 +41,7 @@
 #![cfg_attr(
     test,
     allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
         clippy::string_slice,
-        clippy::panic,
         clippy::unreachable,
         reason = "in a test these are the assertion, not a hazard"
     )
@@ -60,6 +56,7 @@ pub mod appearance;
 pub mod continuity;
 pub mod day_schedule;
 pub mod device_displays;
+pub mod dictation;
 pub mod display_control;
 pub mod display_identify;
 pub mod display_mode;
@@ -70,6 +67,8 @@ pub mod hardware;
 mod key;
 pub mod keyboard_shortcuts;
 pub mod keyboard_sources;
+#[cfg(feature = "watch")]
+pub mod live;
 pub mod magnifier;
 pub mod notification_policy;
 pub mod person_displays;
@@ -551,10 +550,7 @@ mod tests {
         let p = std::env::temp_dir().join(format!(
             "tilo-settings-store-{}-{:?}-{}",
             std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos(),
+            tilo_clock::try_unix_now_ns().unwrap(),
             TMPDIR_SEQUENCE.fetch_add(1, Ordering::Relaxed)
         ));
         std::fs::create_dir_all(&p).unwrap();
@@ -849,7 +845,8 @@ mod tests {
     }
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
+#[cfg(unix)]
 mod parent_durability_tests {
     use super::*;
     use std::{cell::RefCell, rc::Rc};

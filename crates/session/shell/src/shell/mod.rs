@@ -15,6 +15,7 @@ pub mod app_close;
 pub mod app_notice_card;
 pub mod app_tabs;
 pub(crate) mod audio_output;
+pub(crate) mod audio_writer;
 pub mod automation_folders;
 pub mod automation_host;
 pub mod automation_triggers;
@@ -32,13 +33,11 @@ pub mod collab_broker;
 pub mod collab_broker_capnp;
 pub mod collab_core;
 pub mod collab_history;
-pub mod collab_mls_authority;
 pub mod collab_outbound;
 pub mod collab_presence;
 pub mod color_pipeline;
 pub mod continuity_policy;
 pub mod continuity_suggestion;
-pub mod cursor_interp;
 pub mod desktop_backdrop;
 pub(crate) mod desktop_commands;
 #[cfg(target_os = "linux")]
@@ -71,6 +70,7 @@ pub mod gpu_frames;
 pub mod hdr_display;
 pub mod hdr_surface;
 pub mod hdr_tonemap;
+pub mod heap_trim;
 pub mod history_narrative;
 pub mod host_apps;
 pub mod host_shell_allow;
@@ -79,15 +79,19 @@ pub mod i18n;
 pub mod identity_provisioning;
 pub mod in_process;
 pub mod input_policy;
+pub(crate) mod invite_policy;
 pub mod keyboard_shortcuts;
 pub mod launch_gate;
 pub(crate) mod launch_readiness;
 pub mod launcher;
 pub mod live_activities;
 pub mod live_presence;
+pub(crate) mod local_audio_graph;
 mod local_person;
 pub mod magnifier;
 pub mod media_keys;
+pub(crate) mod membership;
+pub mod mls_vault;
 pub mod mpris;
 pub(crate) mod native_media;
 pub(crate) mod native_workspace_owner;
@@ -132,6 +136,7 @@ pub mod remote_use;
 pub mod render;
 pub mod room_activity;
 pub mod room_records;
+pub mod scanout_candidate;
 pub mod screenshot_send;
 pub mod search;
 pub mod service_members;
@@ -597,17 +602,6 @@ pub fn build_tilo_root(tree: &WorkspaceTree) -> Box<dyn Widget> {
     root
 }
 
-/// Lets the caller expose the peer-sync palette commands (`/invite`,
-/// `/connect`) for a network-enabled session. [`build_tilo_root`] keeps
-/// the zero-arg shape so call-sites that don't care don't have to thread it.
-pub fn build_tilo_root_with_options(
-    tree: &WorkspaceTree,
-    enable_peer_sync: bool,
-) -> Box<dyn Widget> {
-    let (host, _chrome) = build_tilo_overlay_host_with_options(tree, enable_peer_sync);
-    Box::new(host) as Box<dyn Widget>
-}
-
 /// Also returns the shared chrome handle, so integration tests can observe
 /// overlay toggles without drilling through the widget tree.
 pub fn build_tilo_root_with_chrome(
@@ -872,7 +866,7 @@ impl file_explorer::open_with::OpenWithRoute for ShellOpenWithRoute {
 }
 
 /// The production entry point: threads the *shared* [`WorkspaceTreeHandle`](crate::shell::state::WorkspaceTreeHandle)
-/// (the same `Arc<RwLock<_>>` the portal's `GrantStoreHandle` and
+/// (the same handle the portal's `GrantStoreHandle` and
 /// peer-sync's `WorkspaceTreeReplica` hold) so chrome mutations land on the
 /// tree other subsystems read from. Reads it once for the initial widget
 /// tree; later rebuilds run `sync_from_tree` on each chrome widget.
@@ -1413,9 +1407,8 @@ mod legacy_files_opener_regressions {
         root: &std::path::Path,
         records: ui::record::RecordStore,
     ) -> chrome_state::Chrome {
-        let tree = std::sync::Arc::new(parking_lot::RwLock::new(
-            state::WorkspaceTree::bootstrap_demo(),
-        ));
+        let tree =
+            crate::shell::state::WorkspaceTreeHandle::new(state::WorkspaceTree::bootstrap_demo());
         let chrome = chrome_state::ChromeState::new_with_handle(tree);
         chrome.borrow_mut().hosted_inputs =
             hosted_inputs::HostedTileInputs::for_host_directory_privately(root)
@@ -1465,4 +1458,15 @@ mod legacy_files_opener_regressions {
             "deferred admission must not replace or mutate an already-open canonical file record"
         );
     }
+}
+
+/// Install immutable trusted project check configuration before session admission.
+///
+/// # Errors
+/// Refuses malformed, ambiguous, non-private or unsupported host definitions.
+#[cfg(target_os = "linux")]
+pub fn install_approved_checks_from_args(
+    arguments: impl IntoIterator<Item = std::ffi::OsString>,
+) -> Result<(), String> {
+    broker_services::approved_checks::install_from_args(arguments)
 }

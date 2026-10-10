@@ -7,9 +7,13 @@
 
 use vello::wgpu;
 
+use settings_store::hardware::OutputTransform;
+
+use super::orientation::shader_code;
 use crate::shell::color_pipeline::{OUTPUT_ENCODE_SHADER_SOURCE, sanitize_sdr_white_nits};
 
-/// Bytes of the shader's `EncodeParams` uniform: one `f32` padded to 16.
+/// Bytes of the shader's `EncodeParams` uniform: SDR white (`f32`) and the output's
+/// orientation (`u32`), padded to 16.
 const PARAMS_BYTES: u64 = 16;
 
 pub struct HdrEncodePipeline {
@@ -98,18 +102,22 @@ impl HdrEncodePipeline {
         self.format
     }
 
-    /// Where SDR white lands, in cd/m². Takes effect with the next
-    /// submission on `queue`.
-    pub fn set_sdr_white(&self, queue: &wgpu::Queue, nits: f32) {
+    /// Where SDR white lands, in cd/m², and how the output is turned against its surface.
+    /// Takes effect with the next submission on `queue`.
+    pub fn set_params(&self, queue: &wgpu::Queue, nits: f32, orientation: OutputTransform) {
         let mut bytes = [0_u8; 16];
         let white = sanitize_sdr_white_nits(nits).to_le_bytes();
         if let Some(slot) = bytes.get_mut(..4) {
             slot.copy_from_slice(&white);
         }
+        if let Some(slot) = bytes.get_mut(4..8) {
+            slot.copy_from_slice(&shader_code(orientation).to_le_bytes());
+        }
         queue.write_buffer(&self.params, 0, &bytes);
     }
 
-    /// Encode all of `source` (the vello target) into `target`.
+    /// Encode all of `source` (the vello target, in scene orientation) into `target`, turned
+    /// by the orientation of [`Self::set_params`].
     pub fn encode(
         &self,
         device: &wgpu::Device,
@@ -227,7 +235,7 @@ mod tests {
         });
         let pipeline = HdrEncodePipeline::new(device, wgpu::TextureFormat::Rgb10a2Unorm);
         assert_eq!(pipeline.format(), wgpu::TextureFormat::Rgb10a2Unorm);
-        pipeline.set_sdr_white(queue, sdr_white);
+        pipeline.set_params(queue, sdr_white, OutputTransform::Normal);
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
         pipeline.encode(
             device,

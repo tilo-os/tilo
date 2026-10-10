@@ -415,25 +415,22 @@ fn action_authority_context(
     person: &UserId,
 ) -> Result<PermissionContext, String> {
     let projection = read_action_authority_projection(source, room, app, person)?;
-    let now = crate::time::wall()
-        .duration_since(crate::time::UNIX_EPOCH)
-        .map_err(|_| "host action policy time is unavailable")?;
-    let now_ms =
-        u64::try_from(now.as_millis()).map_err(|_| "host action policy time is unavailable")?;
+    let now_ms = crate::time::try_unix_now_ms().ok_or("host action policy time is unavailable")?;
     if !projection.is_current_at(now_ms) {
         return Err("host action policy is not current".into());
     }
+    let now_secs = now_ms / 1000;
     let role = tilo_desktop_model::Workspace::role_for_membership_at(
         projection.owner.as_deref(),
         &projection.capabilities,
         &person.0,
-        now.as_secs(),
+        now_secs,
     );
     Ok(PermissionContext::from_capabilities(
         crate::permissions::Actor::person(role, person.0.clone()).in_room(room),
         projection.capabilities,
     )
-    .at_unix_time(now.as_secs()))
+    .at_unix_time(now_secs))
 }
 
 fn read_action_authority_projection(
@@ -1110,10 +1107,7 @@ mod native_process_tests {
         let room = "3f2b1c00-0000-4000-8000-000000000001";
         let app = "so.tilo.store";
         let author = UserId("person-a".into());
-        let now = crate::time::wall()
-            .duration_since(crate::time::UNIX_EPOCH)
-            .unwrap();
-        let now_ms = u64::try_from(now.as_millis()).unwrap();
+        let now_ms = crate::time::try_unix_now_ms().unwrap();
         let original = AppActionAuthorityProjection {
             schema_version: 1,
             room: room.into(),

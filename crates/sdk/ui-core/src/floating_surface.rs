@@ -464,6 +464,9 @@ pub struct FloatingSurfaceServiceClient {
 impl FloatingSurfaceServiceClient {
     /// Discover the optional session service. Outside Tilo (or on an older
     /// shell) this returns `None`; apps retain their ordinary attached UI.
+    /// The inherited descriptor belongs to one app launch. Transport loss is
+    /// terminal for this client; only a fresh launcher-mediated launch supplies
+    /// a new connection. Discovery never opens a privileged host socket.
     #[cfg(feature = "local-daemons")]
     pub fn discover() -> Option<Self> {
         let fd = runtime_portal::service_fd(FLOATING_SURFACE_SERVICE)?;
@@ -1200,12 +1203,6 @@ impl FloatingPlacement {
         self.return_pending = false;
         self.desktop_adopted = false;
         self.desktop_covered = false;
-    }
-
-    /// Convenience for non-drag programmatic adoption.
-    pub fn adopt_desktop_rect(&mut self, rect: Rect) {
-        self.prepare_desktop_rect(rect);
-        self.confirm_desktop_adoption();
     }
 
     pub fn is_handoff_animating(&self) -> bool {

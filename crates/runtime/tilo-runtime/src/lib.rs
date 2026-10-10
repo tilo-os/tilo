@@ -8,17 +8,6 @@
 //! [`RuntimeServices`]. [`standalone::Standalone`] hosts them without the
 //! Tilo desktop, for the `tilo-runtime` executable.
 
-#![cfg_attr(
-    test,
-    allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
-        clippy::panic,
-        reason = "in a test these are the assertion, not a hazard"
-    )
-)]
-
 use std::{
     io,
     path::Path,

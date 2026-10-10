@@ -35,6 +35,9 @@ pub struct DeviceHandle {
     pub device: Device,
     pub queue: Queue,
     loss: DeviceLossMonitor,
+    /// Whether a window surface has been reported to use this adapter: a
+    /// device opened ahead of its window is reported when one first takes it.
+    surface_reported: bool,
     #[cfg(all(windows, feature = "dx12-shader-cache"))]
     shader_cache: Option<crate::dx12_shader_cache::CacheSession>,
 }
@@ -339,6 +342,7 @@ impl RenderContext {
             device,
             queue,
             loss,
+            surface_reported: compatible_surface.is_some(),
             #[cfg(all(windows, feature = "dx12-shader-cache"))]
             shader_cache,
         });
@@ -351,9 +355,16 @@ impl RenderContext {
     ) -> Option<(usize, wgpu::SurfaceCapabilities)> {
         // is_surface_supported performs a complete capabilities query. Reuse
         // its result for configuration when an existing device can present.
-        for (id, handle) in self.devices.iter().enumerate() {
+        for (id, handle) in self.devices.iter_mut().enumerate() {
             let capabilities = surface_capabilities(surface, &handle.adapter);
             if !capabilities.formats.is_empty() {
+                // A device prepared without a surface (the startup renderer)
+                // still names the adapter its first window renders on: GPU
+                // health and the startup gate read that line.
+                if !handle.surface_reported {
+                    handle.surface_reported = true;
+                    report_adapter(&self.instance, &handle.adapter).await;
+                }
                 return Some((id, capabilities));
             }
         }
@@ -480,15 +491,6 @@ impl RenderContext {
         surface.target_view = view;
         surface.config.width = width;
         surface.config.height = height;
-        self.configure_surface(surface);
-    }
-
-    pub fn set_present_mode(
-        &self,
-        surface: &mut RenderSurface<'_>,
-        present_mode: wgpu::PresentMode,
-    ) {
-        surface.config.present_mode = present_mode;
         self.configure_surface(surface);
     }
 

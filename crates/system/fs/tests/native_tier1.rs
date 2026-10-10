@@ -26,7 +26,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::mpsc::{self, Receiver};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use ed25519_dalek::SigningKey;
 use tilo_user_identity::{
@@ -76,15 +76,6 @@ fn stores(test: &str) -> Option<(PathBuf, PathBuf)> {
     Some((PathBuf::from(a), PathBuf::from(b)))
 }
 
-fn now_ns() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos()
-        .try_into()
-        .unwrap_or(u64::MAX)
-}
-
 fn install_identity(root: &Path, person_seed: [u8; 32], device_seed: [u8; 32], primary: bool) {
     let paths = IdentityPaths::under(root);
     paths.ensure_directories().unwrap();
@@ -103,7 +94,9 @@ fn install_identity(root: &Path, person_seed: [u8; 32], device_seed: [u8; 32], p
         } else {
             DeviceCapabilities::member()
         },
-        issued_at_ns: now_ns().saturating_sub(1_000_000_000),
+        issued_at_ns: tilo_clock::try_unix_now_ns()
+            .unwrap()
+            .saturating_sub(1_000_000_000),
         expires_at_ns: None,
         signature: [0; 64],
     };
@@ -688,8 +681,8 @@ fn assert_records_follow_writer_order(pair: &mut Pair, m1: &Path, m2: &Path) {
     // runs from that creation through the rename.
     let history = provenance(&pair.dir.join("host-cache"), "objects/3");
     assert!(
-        history.first() == Some(&collab_types::FileProvenance::Create)
-            && history.contains(&collab_types::FileProvenance::Rename),
+        history.first() == Some(&fs_protocol::FileProvenance::Create)
+            && history.contains(&fs_protocol::FileProvenance::Rename),
         "history follows the renamed record: {history:?}"
     );
     assert!(pair.host.log_count("epoch ") >= 1);
@@ -709,7 +702,7 @@ fn persisted_namespace(cache: &Path) -> fs::Namespace {
 }
 
 /// The provenance of every version of the record at `path`, oldest first.
-fn provenance(cache: &Path, path: &str) -> Vec<collab_types::FileProvenance> {
+fn provenance(cache: &Path, path: &str) -> Vec<fs_protocol::FileProvenance> {
     let ns = persisted_namespace(cache);
     let history = fs::FileHistoryStore::open(cache.join("file-history.json")).unwrap();
     let entry = ns

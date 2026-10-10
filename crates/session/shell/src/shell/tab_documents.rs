@@ -68,9 +68,7 @@ mod tests {
         WindowWidth as StateWidth, Workspace, WorkspaceId, WorkspaceTree, WorkspaceTreeHandle,
     };
     use automerge::{AutoCommit, ReadDoc as _, transaction::Transactable as _};
-    use parking_lot::RwLock;
     use std::collections::HashMap as StdMap;
-    use std::sync::Arc;
     use ui::widget::{TileContent as UiTile, Widget};
 
     const TAB_A: u64 = 11;
@@ -359,7 +357,7 @@ mod tests {
         active_strip.insert(ws_id, strip_id);
         let mut active_group = StdMap::new();
         active_group.insert(strip_id, group_id);
-        Arc::new(RwLock::new(WorkspaceTree {
+        crate::shell::state::WorkspaceTreeHandle::new(WorkspaceTree {
             desktop: crate::shell::state::DesktopTree {
                 workspaces: vec![ws],
                 active: ws_id,
@@ -368,7 +366,7 @@ mod tests {
                 ..Default::default()
             },
             ..WorkspaceTree::default()
-        }))
+        })
     }
 
     /// A store persisting below `data_home` rather than `$XDG_DATA_HOME`,

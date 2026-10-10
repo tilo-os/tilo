@@ -104,6 +104,12 @@ keyboard_library="$keyboard_libdir/libxkbcommon.so.0"
     printf 'default SDK keyboard library is missing: %s\n' "$keyboard_library" >&2
     exit 1
 }
+# Every retained SDK owns the product catalog its apps were compiled against.
+# Prepare verified bytes before signing; checkout cache paths are not available
+# inside an installed app's private namespace.
+runtime_fonts="$out/work/fonts"
+python3 "$repo_root/tools/font-catalog.py" prepare \
+    "$repo_root/crates/sdk/ui-core/assets/fonts" "$runtime_fonts" --scope product
 # Keep the public runtime and publisher key under the root transported by
 # release-apps.yml and consumed by assemble-collection.sh. Private identities
 # stay in work/ (or the caller's external identity files), outside that root.
@@ -112,6 +118,7 @@ OUT_DIR="$out/runtime" RUNTIME_RELEASE="$runtime_release" FROM=/ \
     SOURCE_DATE_EPOCH="$source_epoch" \
     ARCH="$(uname -m)" IDENTITY_JSON="$runtime_identity" \
     BUNDLE_BIN="$release_dir/tilo-runtime-bundle" \
+    FONT_CATALOG_ROOT="$runtime_fonts" \
     EXTRA_LIBS="$runtime_dylib $rust_libstd $keyboard_library" \
     "$repo_root/os/scripts/bake-runtime-bundle.sh"
 # Every app below links this exact runtime build and names it.

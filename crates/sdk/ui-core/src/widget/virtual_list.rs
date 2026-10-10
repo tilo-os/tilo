@@ -169,10 +169,6 @@ where
         &self.items
     }
 
-    pub fn item_mut(&mut self, index: usize) -> Option<&mut T> {
-        self.items.get_mut(index)
-    }
-
     /// # Errors
     ///
     /// Returns [`DuplicateListKey`] when `key` already exists.
@@ -1113,29 +1109,6 @@ impl<M: ListModel> VirtualList<M> {
         self.viewport.offset().to_bits() != before.to_bits()
     }
 
-    fn route_to_children(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
-        if let Some(row) = self
-            .mounted
-            .iter_mut()
-            .find(|row| row.widget.wants_pointer_capture())
-            && let Some(node) = row.node
-        {
-            row.widget
-                .handle_event(event, &mut ctx.reborrow(ctx.path, node));
-            return;
-        }
-        for row in self.mounted.iter_mut().rev() {
-            let Some(node) = row.node else {
-                continue;
-            };
-            row.widget
-                .handle_event(event, &mut ctx.reborrow(ctx.path, node));
-            if *ctx.handled {
-                break;
-            }
-        }
-    }
-
     fn handle_scrollbar_event(&mut self, event: &WindowEvent, scale_factor: f64) -> bool {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
@@ -1367,13 +1340,7 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
-            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
-        );
+        self.rect = crate::widget::layout_rect(taffy, node, origin);
         let child_origin = Point::new(self.rect.x0, self.rect.y0);
         let mut measurements = Vec::with_capacity(self.mounted.len());
         for row in &mut self.mounted {
@@ -1499,7 +1466,12 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
             return;
         }
         if !self.drag_scroll.is_tracking() && !self.reorder.is_tracking() {
-            self.route_to_children(event, ctx);
+            crate::widget::route_to_mounted(
+                &mut self.mounted,
+                |mounted| (&mut mounted.widget, mounted.node),
+                event,
+                ctx,
+            );
         }
         if *ctx.handled {
             return;
@@ -1851,9 +1823,10 @@ mod tests {
     use std::rc::Rc;
     use winit::event::MouseScrollDelta;
 
+    use crate::testing::Dispatch;
     use taffy::AvailableSpace;
     use winit::dpi::PhysicalPosition;
-    use winit::event::{DeviceId, Modifiers};
+    use winit::event::DeviceId;
 
     struct HugeList {
         count: usize,
@@ -2010,25 +1983,18 @@ mod tests {
             _theme: &Theme,
             node_map: &mut HashMap<NodeId, *mut dyn Widget>,
         ) -> NodeId {
-            let node = taffy.leaf_node(Style {
+            let style = Style {
                 size: Size {
                     width: percent(1.0_f32),
                     height: Dimension::length(self.height),
                 },
                 ..Default::default()
-            });
-            node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-            node
+            };
+            taffy.widget_leaf(style, node_map, self)
         }
 
         fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-            let layout = taffy.layout(node).copied().unwrap_or_default();
-            self.rect = Rect::new(
-                origin.x + f64::from(layout.location.x),
-                origin.y + f64::from(layout.location.y),
-                origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
-                origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
-            );
+            self.rect = crate::widget::layout_rect(taffy, node, origin);
         }
 
         fn draw(
@@ -2113,23 +2079,10 @@ mod tests {
         taffy: &TaffyTree<()>,
         node: NodeId,
     ) -> bool {
-        let mut doc = AutoCommit::new();
-        let mut handled = false;
-        let mut focus = None;
-        list.handle_event(
-            event,
-            &mut crate::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &Modifiers::default(),
-                state: crate::widget::Edits::lend(&mut doc),
-                path: &automerge::ROOT,
-                handled: &mut handled,
-                focus_target: &mut focus,
-                node_id: node,
-                taffy,
-            },
-        );
-        handled
+        Dispatch::new()
+            .layout(taffy, node)
+            .send(list, event)
+            .handled
     }
 
     #[test]

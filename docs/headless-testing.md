@@ -130,7 +130,9 @@ qc key Enter                                # named key OR single char
 qc type "hello"                             # one press+release per character
 qc modifiers ctrl,shift                     # comma-separated set; empty clears all
 qc snapshot /tmp/state.png                  # PNG to disk
-qc state-dump --pretty                      # live WorkspaceTree + Chrome as JSON
+qc windows                                  # open windows: workspace/strip, group, tab, app
+qc state-dump --pretty                      # live WorkspaceTree + Chrome as JSON, without history
+qc state-dump --history                     # ... with effect receipts and audit trails
 qc raw '{"op":"list_targets"}'              # escape hatch for unwrapped commands
 ```
 
@@ -158,9 +160,10 @@ not establish application identity.
 
 After launch, enumerate again and inspect the app actions' `application`,
 `resource`, `operation`, `params`, and `contract` fields. Invoke the returned
-provider/ID with its declared arguments. Inspect the invocation receipt and,
-when pending, use `actions status INVOCATION_ID` until it reaches a terminal
-state. Then read back the affected resource or desktop state to verify the
+provider/ID with its declared arguments, adding `--wait` so the answer is the
+result and not the admission. To follow a pending receipt, use
+`actions status INVOCATION_ID --wait`, never a sleep-and-retry loop (see
+`docs/agent-action-api.md`). Then read back the affected resource or desktop state to verify the
 effect. A descriptor alone does not prove execution; a visible tile alone does
 not prove the app has rendered. `raw '{"op":"foreign_frames"}'` exposes the
 presented app identity, surface, frame count, and rendering errors for foreign
@@ -206,8 +209,13 @@ echo '{"op":"type","text":"hello"}' | nc -U $TILO_TEST_CONTROL
 # Capture a PNG of the current state:
 echo '{"op":"snapshot","path":"/tmp/state.png"}' | nc -U $TILO_TEST_CONTROL
 
-# Get the live workspace tree + chrome state as JSON:
+# Get the live workspace tree + chrome state as JSON. A workspace's
+# append-only history (effect receipts, task audit trails, ownership-transfer
+# records) is left out; add "include_history":true to get it:
 echo '{"op":"state_dump"}' | nc -U $TILO_TEST_CONTROL
+
+# Just the open windows, one row per tab:
+echo '{"op":"windows"}' | nc -U $TILO_TEST_CONTROL
 
 # Copy and paste as the compositor's own in-process widgets do. Both call
 # straight into `ui::text_selection`, the same functions the terminal, the
@@ -288,6 +296,15 @@ echo '{"op":"snapshot","path":"/tmp/after-add-workspace.png"}' | nc -U $XDG_RUNT
 kill %1
 ```
 
+To time what an agent waits for on this socket, run
+`scripts/perf/agent_rtt.py`. It measures actions list, state dump, a no-op
+invoke (accepted, and completed through `wait_ms`), throughput under
+concurrent clients and the same no-op through the MCP server. Give it
+`--socket PATH` for a running desktop, or `--spawn SHELL` to start a
+compositor through `spawn-headless.sh`. A spawned compositor is removed on
+exit. `spawn-headless.sh` runs `$TILO_HEADLESS_BINARY` when that is set. A
+release build serves the socket only with `--features dev-overrides`.
+
 Configure the headless viewport via env var (defaults to 1600×900):
 ```bash
 TILO_HEADLESS_SIZE=1920x1080 cargo run --bin shell -- --backend headless
@@ -310,6 +327,15 @@ and answers clients' frame callbacks but does not rasterize them; `snapshot`
 renders on demand. A viewer that streams frames attaches with
 `{"op":"watch","watching":true}` (`tilo-control watch on`), or starts the
 session with `TILO_HEADLESS_WATCH=1`.
+
+While watched, headless requests the producer's retained-damage proof. A matching
+empty damage list first validates the previous image with the existing bounded
+screenshot renderer; later unchanged frames reuse that completed RGBA buffer
+without a render or readback. First and changed frames keep the dense path.
+Missing predecessors, unversioned scene edits, viewer detach/reattach and material
+or HDR frames redraw. A replacement backend starts uncached at its new size.
+Presentation remains synchronous; snapshots cannot race queued renderer work.
+This reduces watched headless work, not physical display input-to-photon latency.
 
 ## End-to-end recipe — "click, snapshot, look"
 
@@ -408,6 +434,7 @@ scripts/perf/frame-loop-bench.py --resummarize target/frame-bench/run.csv
 | Env var | Effect |
 |---|---|
 | `TILO_FRAME_TRACE=/path.csv` | one row per loop tick |
+| `TILO_FRAME_CPU_TRACE=/private/path.csv` | numeric companion for painted ticks: phase CPU and bracketed clock anchors |
 | `TILO_FRAME_SUMMARY=/path.json` | percentile summary on clean exit |
 | `TILO_FRAME_WARMUP_MS` | samples excluded from the summary (default 1500) |
 | `TILO_RUN_SECONDS` | exit cleanly after N seconds, flushing both |
@@ -417,6 +444,81 @@ scripts/perf/frame-loop-bench.py --resummarize target/frame-bench/run.csv
 
 `TILO_RUN_SECONDS` matters for a scripted run: the trace and summary are
 written by the normal exit path, so a `SIGKILL`ed compositor loses them.
+
+For a source-matched performance fixture, opt into `TILO_FRAME_CPU_TRACE` through
+its supported launch configuration. Use a new, separate file in the fixture
+owner's private directory; an existing file is refused instead of overwritten.
+This leaves the original frame CSV and its parsers unchanged;
+join the companion's `seq` and `start_us` to the original rows. It records no
+application payload, titles, paths or identities. No extra clock reads or writes
+occur when this option is absent.
+
+The companion measures calling-thread and aggregate process CPU separately for
+layout, scene construction, submission and the layout-start-to-submit-return
+interval. The layout label includes the existing focus/output/accessibility
+reconciliation. Process
+CPU includes parallel renderer **and other background threads**. A low thread CPU
+value alone cannot identify GPU waiting, host scheduling or TCG overhead. Compare
+the paired guest/host CPU and scheduling counters as well. `present_async=1`
+means submit timings cover enqueueing, rather than the render worker's completion.
+Subtract the labelled wall phases from `paint_wall_us` to retain visibility of
+capture and control work between them; never call that residual GPU time.
+
+`anchor_unix_us` is bracketed by guest `CLOCK_MONOTONIC` readings;
+`anchor_offset_us` measures tick-start-to-`Instant` sampled inside that bracket.
+Subtract that offset from both monotonic endpoints to bound the tick start; retain
+rounding uncertainty as well as the bracket width.
+Correlate UTC with the collector's paired host/guest clock samples and retain
+their uncertainty. Guest and host monotonic epochs differ, and UTC can step.
+Unavailable CPU or monotonic clocks are blank, not zero. The companion flushes
+its first painted row and then once per second, retains no sample history, and
+stops after 200,000 painted rows with a diagnostic. Its row formatting allocates
+no heap memory; only explicitly enabled tracing incurs CPU clock and I/O costs.
+
+## Idle wakeups
+
+An idle desktop should leave the CPU asleep. `idle_wakeups::` in the shell's
+`it` target holds it to a budget: it starts the production binary headless with
+a signed-in desktop, restores a Notes tab, opens a Terminal through
+`window.new.terminal`, waits out startup work and 5 s more, then samples every thread of the
+compositor's process tree from `/proc` for 10 s and fails above
+`IDLE_WAKEUP_BUDGET` context switches per second, or if the compositor painted
+while nobody touched it.
+
+```bash
+cargo test --locked -p shell --test it idle_wakeups:: -- --nocapture
+```
+
+It prints a table, busiest first:
+
+```text
+idle wakeups over 10.0 s: 60.27/s and 2.1 % of a core across 1 processes
+  wakeups/s  preempt/s   cpu %  threads  process / thread
+      20.79       1.20     0.6        2  shell / tilo-collab-bro
+      19.89       0.00     0.4        1  shell / tilo-audio-outp
+       ...
+compositor frame loop: 0.0 ticks/s, 0 frames painted; its paint-stats in the window:
+```
+
+`wakeups/s` counts every context switch (voluntary: the thread blocked again;
+involuntary: it was preempted), `preempt/s` the involuntary share, `cpu %` its
+CPU time, `threads` how many threads of that name were seen (names are the
+kernel's 15-byte truncation). A loop that spins without blocking shows in
+`cpu %` and in the frame loop's tick rate rather than in wakeups, so the gate
+also holds the loop to `LOOP_TICK_BUDGET` and to zero painted frames; the
+`paint-stats: wakes` lines name what woke it. Pull requests run it whenever
+`shell` changes; the scheduled lane (`kpis=wakeups`) runs it with a 60 s window
+(`TILO_IDLE_WAKEUP_WINDOW_SECS`) and records `wakeups.*`. When a change
+removes a waker, lower `IDLE_WAKEUP_BUDGET` in the same pull request to the new
+measurement plus the same margin.
+
+Headless covers what headless runs. DRM-only services (power, hotplug, the
+rotation sensor) and out-of-process apps are held by per-thread probes in
+their own crates: `tilo_test_env::idle::{spawned_thread, assert_stays_asleep}`
+for one service thread of a unit test, `idle_wakeups(pid, settle, window)` for
+a process tree, and `sample_process` with `Wakeups::between` for a stretch the
+test drives itself (`shell::network::idle_quiet_tests` uses it for the
+collaboration plane of two converged desktops).
 
 ## Where to look in source
 

@@ -192,13 +192,6 @@ impl<Id: Clone> DragController<Id> {
         Self::new(Axis::Horizontal)
     }
 
-    /// Override the drag-start threshold (default [`REORDER_THRESHOLD_PX`]).
-    #[must_use]
-    pub fn with_threshold(mut self, px: f64) -> Self {
-        self.threshold = px;
-        self
-    }
-
     pub fn axis(&self) -> Axis {
         self.axis
     }
@@ -298,12 +291,6 @@ impl<Id: Clone> DragController<Id> {
     /// showing).
     pub fn is_active(&self) -> bool {
         self.session.as_ref().is_some_and(|s| s.active)
-    }
-
-    /// Same as [`is_pending`](DragController::is_pending) — the drag wants
-    /// exclusive pointer capture for as long as a press is latched.
-    pub fn wants_capture(&self) -> bool {
-        self.is_pending()
     }
 
     /// The original index of the item being dragged, once the drag is active.

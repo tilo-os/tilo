@@ -382,6 +382,22 @@ mod tests {
                         .unwrap_or_else(|| panic!("{id} must be gated"));
                 assert_eq!(verb, Verb::Invite, "{id}");
             }
+
+            // Managing who is a member, and minting or revoking the
+            // credentials that admit someone, is administration.
+            for id in [
+                "member.role.set",
+                "member.remove",
+                "invitation.issue",
+                "invitation.list",
+                "invitation.resend",
+                "invitation.cancel",
+            ] {
+                let (_, verb) =
+                    required_capability(&resource("actions", id), &ResourceKind::Action)
+                        .unwrap_or_else(|| panic!("{id} must be gated"));
+                assert_eq!(verb, Verb::Admin, "{id}");
+            }
         }
 
         // Phase `writing_into_a_document_requires_write`.

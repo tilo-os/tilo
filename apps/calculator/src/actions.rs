@@ -42,7 +42,6 @@ use automerge::transaction::Transactable;
 use automerge::{ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value};
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
-use ui::time::UNIX_EPOCH;
 
 use tilo_actions::{Action, ActionError, ActionRegistry, Doc, EncodedAction, ExecutionLocus};
 use ui::doc::{put_if_changed, put_text_diffed};
@@ -389,9 +388,7 @@ static LAST_RANK: AtomicI64 = AtomicI64::new(0);
 /// strictly increasing within the process, so a row added after a restart
 /// still sorts after every row added before it.
 fn next_rank() -> i64 {
-    let now = ui::time::wall()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| i64::try_from(d.as_micros()).unwrap_or(i64::MAX));
+    let now = i64::try_from(ui::time::unix_now_ns() / 1_000).unwrap_or(i64::MAX);
     let previous = LAST_RANK
         .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |last| {
             Some(now.max(last.saturating_add(1)))
@@ -403,9 +400,7 @@ fn new_id(kind: &str) -> String {
     // Identity is chosen before action encoding, never during replay.  The
     // timestamp makes independently running collaborator windows disjoint;
     // the process counter also distinguishes two additions in the same tick.
-    let tick = ui::time::wall()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| d.as_nanos());
+    let tick = ui::time::unix_now_ns();
     format!("{kind}-{tick}-{}", NEXT_ID.fetch_add(1, Ordering::Relaxed))
 }
 
@@ -418,9 +413,7 @@ mod tests {
     use ui::tilo_resource::Resource as _;
 
     fn registry() -> ActionRegistry {
-        let mut r = ActionRegistry::new();
-        register(&mut r);
-        r
+        ActionRegistry::with(register)
     }
 
     /// Apply an action through the executor exactly as the app's dispatch does.

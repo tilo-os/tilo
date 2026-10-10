@@ -23,23 +23,11 @@
 
 #![deny(rust_2018_idioms)]
 #![warn(missing_docs)]
-#![cfg_attr(
-    test,
-    allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
-        clippy::panic,
-        reason = "in a test these are the assertion, not a hazard"
-    )
-)]
 
 #[cfg(feature = "iroh")]
 pub mod certify;
 #[cfg(feature = "iroh")]
 pub mod client;
-#[cfg(feature = "iroh")]
-mod clock;
 pub mod coedit;
 #[cfg(feature = "iroh")]
 pub mod environment;

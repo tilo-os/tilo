@@ -144,10 +144,6 @@ fn signing_payload(token: &PeerInviteToken) -> Result<Vec<u8>, postcard::Error> 
     })
 }
 
-fn now_unix_seconds() -> u64 {
-    tilo_clock::unix_now()
-}
-
 /// Stable, non-secret identifier for one exact signed invite. Authorities use
 /// it to correlate a redemption with the role they minted without putting a
 /// room-wide "next arrival" grant on the wire.
@@ -333,7 +329,7 @@ pub fn make_invite_token_with_recipient(
         invite_nonce: *uuid::Uuid::new_v4().as_bytes(),
         recipient_user_public_key,
         invitee_name: invitee_name.map(str::to_string),
-        expiry_unix_seconds: now_unix_seconds().saturating_add(expiry_seconds_from_now),
+        expiry_unix_seconds: tilo_clock::unix_now().saturating_add(expiry_seconds_from_now),
         signature: Vec::new(),
     };
     token.signature = key
@@ -362,7 +358,7 @@ pub fn validate_invite_token(token_str: &str) -> Result<PeerInviteToken, String>
         .map_err(|e| format!("base64 decode: {e}"))?;
     let token: PeerInviteToken =
         serde_json::from_slice(&json).map_err(|error| format!("json parse: {error}"))?;
-    if token.expiry_unix_seconds < now_unix_seconds() {
+    if token.expiry_unix_seconds < tilo_clock::unix_now() {
         return Err("token expired".into());
     }
     if token.invitee_name.as_ref().is_some_and(|name| {

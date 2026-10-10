@@ -451,15 +451,6 @@ impl Session {
         self.status = RunStatus::Error(message.to_owned());
     }
 
-    /// Switch the active connection and (re)open its engine on the worker.
-    pub fn select_connection(&mut self, idx: usize) {
-        if idx >= self.connections.len() || idx == self.active {
-            return;
-        }
-        self.active = idx;
-        self.connect_active();
-    }
-
     /// Reconcile the connection list from the shared document. Preserves which
     /// profile is active (by id), keeps the session's passwords, and resets the
     /// view when the active connection has been removed. Returns the id of a

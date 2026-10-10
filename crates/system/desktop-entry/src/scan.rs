@@ -88,16 +88,16 @@ pub fn application_dirs() -> Vec<PathBuf> {
         }
     };
 
-    if let Some(home) = xdg_paths::xdg::data_home() {
+    if let Some(home) = tilo_paths::xdg::data_home() {
         push(home.join("applications"));
     }
-    for base in xdg_paths::xdg::data_dirs() {
+    for base in tilo_paths::xdg::data_dirs() {
         push(base.join("applications"));
     }
     // Flatpak's exports. Appended, not prepended: the dedup above keeps their real precedence if
     // the session already listed them, and appending is correct otherwise — a hand-installed
     // entry should override an export.
-    if let Some(home) = xdg_paths::home() {
+    if let Some(home) = tilo_paths::home() {
         push(home.join(".local/share/flatpak/exports/share/applications"));
     }
     push(PathBuf::from("/var/lib/flatpak/exports/share/applications"));

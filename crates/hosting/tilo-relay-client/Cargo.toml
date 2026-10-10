@@ -28,12 +28,12 @@ wire-frame = { version = "0.1.0", path = "../../system/wire-frame", features = [
 # browser, the same runtime split iroh uses.
 n0-future = { version = "0.3", optional = true }
 # A wall clock that does not panic in a browser.
-web-time = { version = "1", optional = true }
+tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock", optional = true }
 
 [features]
 default = ["iroh"]
 # The iroh dialer: the v1 session client and certification over the ALPN.
-iroh = ["dep:iroh", "dep:n0-future", "dep:web-time"]
+iroh = ["dep:iroh", "dep:n0-future", "dep:tilo-clock"]
 
 [lints]
 workspace = true

@@ -99,24 +99,6 @@ pub fn restrict_directory(path: &Path) -> io::Result<()> {
     }
 }
 
-/// Restrict an existing file to its owner (mode `0600` on Unix; a no-op on
-/// platforms without permission bits).
-///
-/// # Errors
-/// Returns the permission change's error.
-pub fn restrict_file(path: &Path) -> io::Result<()> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt as _;
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = path;
-        Ok(())
-    }
-}
-
 /// Whether `metadata` grants no access to group or other users. Always `true`
 /// on platforms without Unix permission bits.
 #[inline]

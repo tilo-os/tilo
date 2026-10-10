@@ -97,6 +97,10 @@ name = "block-editor-typing"
 path = "examples/block_editor_typing.rs"
 
 [[example]]
+name = "multiline-typing"
+path = "examples/multiline_typing.rs"
+
+[[example]]
 name = "type-specimen-shots"
 path = "examples/type_specimen_shots.rs"
 

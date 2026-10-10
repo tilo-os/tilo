@@ -102,7 +102,7 @@ pub fn render(title: &str, build: &BuildInfo, panic: &Panic<'_>) -> String {
 /// stderr copy is made: a shared fallback such as `/tmp` would let another user
 /// plant the path.
 pub fn install(title: &'static str) {
-    let dir = xdg_paths::cache_dir()
+    let dir = tilo_paths::cache_dir()
         .map(|cache| cache.join("tilo").join("crashes"))
         .filter(|dir| private_fs::directory(dir).is_ok());
     let build = BuildInfo::current();

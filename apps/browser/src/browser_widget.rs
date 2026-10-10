@@ -21,6 +21,7 @@ use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 #[cfg(test)]
 use ui::widget::Edits;
+use ui::widget::TaffyTreeExt;
 use ui::widget::{AppModel, ModelPath};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -324,7 +325,7 @@ pub struct BrowserWidget {
     rect: Rect,
     engine: SharedEngine,
     browsing_mode: BrowsingMode,
-    composed: Option<Box<dyn Widget>>,
+    composed: ui::widget::Composed,
     bootstrap_done: bool,
     /// `--shots` mode: no network, no filter loader, deterministic page.
     headless: bool,
@@ -516,16 +517,6 @@ impl BrowserWidget {
         w
     }
 
-    /// Widget for `--shots`: as [`Self::new_headless`], but the page is a
-    /// blank document rather than the test engine's placeholder colour.
-    pub fn new_capture(mode: BrowsingMode) -> Self {
-        let engine = crate::capture_page::CapturePage::engine();
-        engine.send(WebViewCommand::Navigate(SHOTS_URL.to_string()));
-        let mut w = Self::with_engine_mode(engine, true, mode);
-        w.initial_url = SHOTS_URL.into();
-        w
-    }
-
     /// Set the first URI loaded before the widget bootstraps. The binary uses
     /// this only after validating the URI against Browser's declared schemes.
     #[must_use]
@@ -695,7 +686,7 @@ impl BrowserWidget {
             rect: Rect::ZERO,
             engine,
             browsing_mode,
-            composed: None,
+            composed: ui::widget::Composed::default(),
             bootstrap_done: false,
             headless,
             dispatch: None,
@@ -925,11 +916,6 @@ impl BrowserWidget {
         self.force_suggestions = true;
     }
 
-    /// Headless visual-review hook: type `text` into the address field.
-    pub fn debug_type_address(&mut self, text: &'static str) {
-        self.review_stage = Some(ReviewStage::Typing { text });
-    }
-
     /// Headless visual-review hook: show the settled no-video guidance note.
     pub fn debug_show_empty_pip_feedback(&mut self) {
         self.set_pip_feedback(Some(PipFeedback::persistent(PipFeedbackKind::NoVideo)));
@@ -1061,28 +1047,10 @@ impl BrowserWidget {
         self.structure_dirty = true;
     }
 
-    /// Headless visual-review hook: the site panel on its protection page, or
-    /// on its connection and data page.
-    pub fn debug_show_site_panel(&mut self, information: bool) {
-        self.review_stage = Some(ReviewStage::Site { information });
-    }
-
     /// Headless visual-review hook: the passwords panel, or the address
     /// autofill panel.
     pub fn debug_show_autofill(&mut self, addresses: bool) {
         self.review_stage = Some(ReviewStage::Autofill { addresses });
-    }
-
-    /// Where a capture presses to open the toolbar's overflow menu, once the
-    /// window has been laid out.
-    pub fn debug_overflow_center(&self) -> Option<(f64, f64)> {
-        let rect = self.find_rect(toolbar::OVERFLOW_ID)?;
-        Some((rect.center().x, rect.center().y))
-    }
-
-    /// Headless visual-review hook: find in page, open on a query.
-    pub fn debug_show_find(&mut self) {
-        self.review_stage = Some(ReviewStage::Find);
     }
 
     /// Headless visual-review hook: a site asking for the camera.
@@ -1093,26 +1061,6 @@ impl BrowserWidget {
             permissions: "camera and microphone".into(),
         });
         self.structure_dirty = true;
-    }
-
-    /// Headless visual-review hook: a page offering a file.
-    pub fn debug_request_download(&mut self) {
-        self.capabilities
-            .apply(WebViewEvent::NativeDownloadRequested {
-                id: 1,
-                url: "https://example.org/tilo-sdk.tar.zst".into(),
-                name: "tilo-sdk.tar.zst".into(),
-            });
-        self.structure_dirty = true;
-    }
-
-    /// Headless widget in a private window, for visual review.
-    pub fn new_headless_private() -> Self {
-        let engine: SharedEngine = TestEngine::new();
-        engine.send(WebViewCommand::Navigate(SHOTS_URL.to_string()));
-        let mut w = Self::with_engine_mode(engine, true, BrowsingMode::Private);
-        w.initial_url = SHOTS_URL.into();
-        w
     }
 
     pub fn debug_show_settings(&mut self) {
@@ -2195,8 +2143,6 @@ impl BrowserWidget {
             self.current_uri.clone()
         };
         match stage {
-            ReviewStage::Typing { text } => self.address.set(text.to_owned()),
-            ReviewStage::Site { information } => self.site.stage_for_review(information, &url),
             ReviewStage::Autofill { addresses } => {
                 // The panels open from rows of the settings page, so that is
                 // the page behind them.
@@ -2204,7 +2150,6 @@ impl BrowserWidget {
                 self.show_library = false;
                 self.credentials.stage_for_review(addresses, &url);
             }
-            ReviewStage::Find => self.daily.stage_for_review(),
         }
         self.structure_dirty = true;
     }
@@ -2271,8 +2216,8 @@ impl BrowserWidget {
             None
         }
         self.composed
-            .as_ref()
-            .and_then(|c| walk(c.as_ref(), id))
+            .element()
+            .and_then(|c| walk(c, id))
             .unwrap_or(false)
     }
 
@@ -3129,9 +3074,9 @@ impl BrowserWidget {
             }
             false
         }
-        self.composed.as_mut().is_some_and(|composed| {
-            clear(composed.as_mut());
-            focus(composed.as_mut(), id)
+        self.composed.element_mut().is_some_and(|composed| {
+            clear(composed);
+            focus(composed, id)
         })
     }
 
@@ -3151,13 +3096,10 @@ impl BrowserWidget {
                 restore(child, id, value);
             }
         }
-        let saved = self
-            .composed
-            .as_ref()
-            .and_then(|widget| state(widget.as_ref(), id));
+        let saved = self.composed.element().and_then(|widget| state(widget, id));
         self.focus_control(id);
-        if let (Some(value), Some(widget)) = (saved, self.composed.as_mut()) {
-            restore(widget.as_mut(), id, &value);
+        if let (Some(value), Some(widget)) = (saved, self.composed.element_mut()) {
+            restore(widget, id, &value);
         }
     }
 
@@ -3186,8 +3128,8 @@ impl BrowserWidget {
             w.children().iter().find_map(|c| walk(*c, id))
         }
         self.composed
-            .as_ref()
-            .and_then(|c| walk(c.as_ref(), id))
+            .element()
+            .and_then(|c| walk(c, id))
             .or_else(|| {
                 self.anchored_panel
                     .as_ref()
@@ -3534,10 +3476,7 @@ impl Widget for BrowserWidget {
     ) -> NodeId {
         self.pending_chrome_focus = None;
         let page_focused = self.control_focused("browser.surface");
-        let address_state = self
-            .composed
-            .as_ref()
-            .and_then(|widget| address_state(widget.as_ref()));
+        let address_state = self.composed.element().and_then(address_state);
         // The tiers and the labelled widths follow the text scale, which is
         // only known here; the one-frame capture seed set them at 1×.
         self.text_scale = theme.text_scale;
@@ -3555,14 +3494,14 @@ impl Widget for BrowserWidget {
             restore_address(composed.as_mut(), &id, &state);
         }
         composed.set_motion_reduced(self.motion_reduced);
-        self.composed = Some(composed);
+        self.composed.replace(composed);
         if let Some(id) = self.daily.focus_pending.take() {
             self.focus_control(id);
             if id == crate::daily_controls::FIND_INPUT
                 && let Some(cursor) = self.daily.take_buffered_cursor()
-                && let Some(composed) = self.composed.as_mut()
+                && let Some(composed) = self.composed.element_mut()
             {
-                restore_address(composed.as_mut(), id, &cursor.to_string());
+                restore_address(composed, id, &cursor.to_string());
             }
             self.pending_chrome_focus = node_map.iter().find_map(|(node, widget)| {
                 (unsafe { &**widget }.test_id() == Some(id)).then_some((*node, id))
@@ -3602,31 +3541,20 @@ impl Widget for BrowserWidget {
             children.push(panel_node);
             self.anchored_panel = Some(panel);
         }
-        #[allow(
-            clippy::unwrap_used,
-            reason = "all child nodes were just created in this tree"
-        )]
-        let node = taffy.new_with_children(style, &children).unwrap();
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        taffy.widget_node(style, &children, node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let Ok(layout) = taffy.layout(node) else {
             return;
         };
-        self.rect = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
-            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
-        );
+        self.rect = ui::widget::placed(layout, origin);
         let compact = is_compact_chrome(self.chrome_width(), self.compact_breakpoint);
         if compact != self.compact_chrome {
             self.compact_chrome = compact;
             self.structure_dirty = true;
         }
-        if let Some(c) = &mut self.composed
+        if let Some(c) = self.composed.element_mut()
             && let Ok(children) = taffy.children(node)
             && let Some(&child_node) = children.first()
         {
@@ -3660,7 +3588,7 @@ impl Widget for BrowserWidget {
         if scale.is_finite() && scale > 0.0 {
             self.window_scale = scale as f32;
         }
-        if let Some(c) = &mut self.composed {
+        if let Some(c) = self.composed.element_mut() {
             c.draw(scene, transform, text_renderer, theme, presence);
         }
         // One hairline under the toolbar row separates it from the page.
@@ -3680,7 +3608,7 @@ impl Widget for BrowserWidget {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        if let Some(c) = &mut self.composed {
+        if let Some(c) = self.composed.element_mut() {
             c.draw_overlay(scene, transform, text_renderer, theme, presence);
         }
         // The popover paints its own material, shadow and content.
@@ -3707,22 +3635,18 @@ impl Widget for BrowserWidget {
         self.navigation_hold.waiting()
             || self
                 .composed
-                .as_ref()
-                .is_some_and(|composed| composed.needs_animation_frame())
+                .element()
+                .is_some_and(Widget::needs_animation_frame)
     }
 
     fn take_structure_dirty(&mut self) -> bool {
         // Toggling the settings pane swaps the content widget → rebuild.
-        std::mem::take(&mut self.structure_dirty)
-            || self
-                .composed
-                .as_mut()
-                .is_some_and(|c| c.take_structure_dirty())
+        std::mem::take(&mut self.structure_dirty) || self.composed.take_structure_dirty()
     }
 
     fn set_motion_reduced(&mut self, reduced: bool) {
         self.motion_reduced = reduced;
-        if let Some(composed) = &mut self.composed {
+        if let Some(composed) = self.composed.element_mut() {
             composed.set_motion_reduced(reduced);
         }
     }
@@ -3964,7 +3888,7 @@ impl Widget for BrowserWidget {
             }
         }
 
-        if let Some(c) = &mut self.composed
+        if let Some(c) = self.composed.element_mut()
             && let Ok(children) = ctx.taffy.children(ctx.node_id)
             && let Some(&child_node) = children.first()
         {
@@ -4132,13 +4056,13 @@ impl Widget for BrowserWidget {
             .modal_capture()
             .or_else(|| self.back_menu.modal_capture())
             .or_else(|| self.suggestions.modal_capture())
-            .or_else(|| self.composed.as_ref().and_then(|c| c.modal_capture()))
+            .or_else(|| self.composed.element().and_then(Widget::modal_capture))
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
         self.composed
-            .as_ref()
-            .map(|c| c.as_ref() as &dyn Widget)
+            .element()
+            .map(|c| c as &dyn Widget)
             .into_iter()
             .chain(
                 self.anchored_panel
@@ -4150,8 +4074,8 @@ impl Widget for BrowserWidget {
 
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
         self.composed
-            .as_mut()
-            .map(|c| c.as_mut() as &mut (dyn Widget + '_))
+            .element_mut()
+            .map(|c| c as &mut (dyn Widget + '_))
             .into_iter()
             .chain(
                 self.anchored_panel
@@ -4672,7 +4596,7 @@ impl BrowserWidget {
         self.structure_dirty |= self.capabilities.downloads_changed();
         self.sync_search_and_suggestions();
 
-        if let Some(c) = &mut self.composed {
+        if let Some(c) = self.composed.element_mut() {
             c.sync(state, path);
         }
         self.poll_active_pip_element();
@@ -4844,14 +4768,8 @@ mod architecture_tests {
                 .into_iter()
                 .find_map(|child| target(child, label))
         }
-        let menu = menu(
-            widget
-                .composed
-                .as_mut()
-                .expect("actual composition")
-                .as_mut(),
-        )
-        .expect("retained overflow menu");
+        let menu = menu(widget.composed.element_mut().expect("actual composition"))
+            .expect("retained overflow menu");
         menu.open(true);
         let target = target(menu.accessibility().expect("exported menu"), label)
             .expect("the command has its real semantic target");
@@ -4898,44 +4816,21 @@ mod architecture_tests {
     }
 
     fn dispatch_back_event(widget: &mut BrowserWidget, event: &WindowEvent) -> bool {
-        let mut tree = TaffyTree::new();
-        let node = tree.new_leaf(Style::default()).unwrap();
-        let mut doc = AutoCommit::new();
-        let mut handled = false;
-        widget.handle_event(
-            event,
-            &mut ui::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &winit::event::Modifiers::default(),
-                state: Edits::lend(&mut doc),
-                path: &automerge::ROOT,
-                handled: &mut handled,
-                focus_target: &mut None,
-                node_id: node,
-                taffy: &tree,
-            },
-        );
-        handled
+        ui::testing::dispatch(widget, event)
     }
 
     fn mouse(button: MouseButton, state: ElementState) -> WindowEvent {
         WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             button,
             state,
         }
     }
 
     fn key(named: WNamedKey) -> WindowEvent {
-        let mut event: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
-        event.logical_key = WKey::Named(named);
-        event.physical_key = winit::keyboard::PhysicalKey::Unidentified(
-            winit::keyboard::NativeKeyCode::Unidentified,
-        );
-        event.location = winit::keyboard::KeyLocation::Standard;
-        event.state = ElementState::Pressed;
+        let event = ui::synthetic_input::key_event(WKey::Named(named), None, ElementState::Pressed);
         WindowEvent::KeyboardInput {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             event,
             is_synthetic: false,
         }
@@ -4971,21 +4866,9 @@ mod architecture_tests {
         {
             let engine = TestEngine::new();
             let mut widget = BrowserWidget::with_engine(engine.clone(), true);
-            let mut tree = TaffyTree::new();
-            let node = tree.new_leaf(Style::default()).unwrap();
-            widget.handle_event(
-                &WindowEvent::Focused(true),
-                &mut ui::widget::EventCtx {
-                    scale_factor: 2.0,
-                    modifiers: &winit::event::Modifiers::default(),
-                    state: Edits::lend(&mut AutoCommit::new()),
-                    path: &automerge::ROOT,
-                    handled: &mut false,
-                    focus_target: &mut None,
-                    node_id: node,
-                    taffy: &tree,
-                },
-            );
+            ui::testing::Dispatch::new()
+                .scale_factor(2.0)
+                .send(&mut widget, &WindowEvent::Focused(true));
             super::tests::layout_at(&mut widget, 800.0, 600.0);
             widget
                 .daily
@@ -5043,19 +4926,12 @@ mod architecture_tests {
                     event.logical_key = WKey::Character(letter.into());
                     event.text = Some(letter.into());
                 }
-                widget.handle_event(
-                    &event,
-                    &mut ui::widget::EventCtx {
-                        scale_factor: 1.0,
-                        modifiers: &winit::event::Modifiers::default(),
-                        state: Edits::lend(&mut doc),
-                        path: &automerge::ROOT,
-                        handled: &mut false,
-                        focus_target: &mut target,
-                        node_id: node,
-                        taffy: &tree,
-                    },
-                );
+                target = ui::testing::Dispatch::new()
+                    .doc(&mut doc)
+                    .layout(&tree, node)
+                    .focus_target(target)
+                    .send(&mut widget, &event)
+                    .focus_target;
                 widget.daily.sync(&widget.engine);
             }
             widget.daily.sync(&widget.engine);
@@ -5955,7 +5831,7 @@ mod architecture_tests {
             dispatch_back_event(
                 &mut widget,
                 &WindowEvent::CursorMoved {
-                    device_id: unsafe { std::mem::zeroed() },
+                    device_id: winit::event::DeviceId::dummy(),
                     position: winit::dpi::PhysicalPosition::new(850.0, 650.0),
                 },
             );
@@ -6621,7 +6497,9 @@ mod tests {
         point: Point,
     ) -> bool {
         let mut state = AutoCommit::new();
-        let root = automerge::ROOT;
+        let mut at = ui::testing::Dispatch::new()
+            .doc(&mut state)
+            .layout(tree, node);
         let mut release_handled = false;
         for event in [
             WindowEvent::CursorMoved {
@@ -6639,22 +6517,7 @@ mod tests {
                 button: MouseButton::Left,
             },
         ] {
-            let mut handled = false;
-            let mut focus = None;
-            widget.handle_event(
-                &event,
-                &mut ui::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &winit::event::Modifiers::default(),
-                    state: ui::widget::Edits::lend(&mut state),
-                    path: &root,
-                    handled: &mut handled,
-                    focus_target: &mut focus,
-                    node_id: node,
-                    taffy: tree,
-                },
-            );
-            release_handled = handled;
+            release_handled = at.send(widget, &event).handled;
         }
         release_handled
     }
@@ -8479,9 +8342,9 @@ mod tests {
             let mut w = BrowserWidget::new_headless();
             layout_at(&mut w, 900.0, 600.0);
             layout_at(&mut w, 900.0, 600.0);
-            let composed = w.composed.as_ref().expect("composed browser");
+            let composed = w.composed.element().expect("composed browser");
             assert_eq!(
-                surface_name(composed.as_ref()).as_deref(),
+                surface_name(composed).as_deref(),
                 Some(format!("{SHOTS_URL} — test page").as_str()),
                 "assistive technology reads the loaded page by its title"
             );
@@ -9277,10 +9140,7 @@ impl ui::widget::search_field::Filterable for BrowserWidget {
 
 #[derive(Clone, Copy, Debug)]
 enum ReviewStage {
-    Typing { text: &'static str },
-    Site { information: bool },
     Autofill { addresses: bool },
-    Find,
 }
 
 fn is_compact_chrome(width: f64, breakpoint: f32) -> bool {

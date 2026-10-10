@@ -158,8 +158,11 @@ else
   bad "MAX_TAPP_BYTES can weaken the canonical application size policy"
 fi
 
+# The dependencies are the collector's closure: DT_NEEDED and the libraries the
+# runtime loads on first use (GLib, GStreamer; TIL-713).
 if grep -q -- '--include /out/libruntime_dylib.so' "$CONTAINERFILE" \
-   && grep -q 'ldd /out/libruntime_dylib.so' "$CONTAINERFILE"; then
+   && grep -q 'tilo-collect-runtime-dependencies.py' "$CONTAINERFILE" \
+   && grep -q -- '--library-dir /out /out/libruntime_dylib.so' "$CONTAINERFILE"; then
   ok "the signed runtime bundle carries the shared runtime and its ELF dependencies"
 else
   bad "the image builds thin apps but does not bundle their shared runtime dependencies"

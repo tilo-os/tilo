@@ -76,11 +76,25 @@ pub struct WorkspaceData {
     pub tag_assignments: Vec<TagAssignment>,
 }
 
+/// The body-only projection adopted between two committed revisions.
+/// This receipt is ephemeral and lets presentation caches reject missed updates.
+#[derive(Clone, Debug)]
+pub struct BodyProjectionRefresh {
+    pub before: Vec<automerge::ChangeHash>,
+    pub after: Vec<automerge::ChangeHash>,
+    pub pages: Vec<PageId>,
+}
+
 /// Convenience wrapper around [`WorkspaceData`] with the runtime ops
 /// the UI needs. Pure logic — no IO, no rendering.
 #[derive(Clone, Debug, Default)]
 pub struct Workspace {
     pub data: WorkspaceData,
+    /// Committed document revision whose canonical schema this projection
+    /// validated. Ephemeral: neither notebook storage nor collaboration state.
+    pub canonical_projection_heads: Option<Vec<automerge::ChangeHash>>,
+    /// Body-only change receipt; never serialized or used without matching heads.
+    pub body_projection_refresh: Option<BodyProjectionRefresh>,
     /// What every note says, when the workspace was read from a notebook.
     pub bodies: std::sync::Arc<crate::actions::Bodies>,
     /// Each note's body as the rich text it is, published as the note's
@@ -122,14 +136,6 @@ impl Workspace {
             name: name.trim().to_string(),
         });
         id
-    }
-
-    pub fn rename_tag(&mut self, id: TagId, name: &str) -> bool {
-        let Some(tag) = self.data.tags.iter_mut().find(|tag| tag.id == id) else {
-            return false;
-        };
-        tag.name = name.trim().to_string();
-        true
     }
 
     /// Remove a tag and every keyed assignment to it. The corresponding

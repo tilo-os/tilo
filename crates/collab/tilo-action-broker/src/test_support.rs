@@ -44,8 +44,12 @@ impl WorkspaceTreeHandle {
     }
 }
 impl WorkspaceAuthority for WorkspaceTreeHandle {
-    fn snapshot(&self) -> Result<tilo_desktop_model::DesktopTree, String> {
-        Ok(self.read().desktop.clone())
+    fn with_tree(
+        &self,
+        read: &mut dyn FnMut(&tilo_desktop_model::DesktopTree),
+    ) -> Result<(), String> {
+        read(&self.read().desktop);
+        Ok(())
     }
     fn legacy_journal_root(&self) -> Option<std::path::PathBuf> {
         self.read().persist_path.as_ref().map(|p| {

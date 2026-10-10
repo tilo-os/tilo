@@ -14,7 +14,12 @@ pub(crate) struct CachedDocument {
     doc: Arc<AutoCommit>,
     serialized: Arc<OnceLock<Vec<u8>>>,
     policy: Arc<OnceLock<PolicyData>>,
+    identities: Arc<OnceLock<IdentityViews>>,
 }
+/// Each governed identity row decoded, keyed like
+/// [`PolicyData::identities`]; an undecodable row keeps its decode error.
+pub(crate) type IdentityViews =
+    std::collections::BTreeMap<String, Result<crate::state::GovernedIdentity, String>>;
 pub(crate) struct PolicyData {
     pub owner: Option<String>,
     pub caps: Vec<collab_types::caps::CapOverride>,
@@ -26,6 +31,7 @@ impl From<AutoCommit> for CachedDocument {
             doc: Arc::new(doc),
             serialized: Arc::default(),
             policy: Arc::default(),
+            identities: Arc::default(),
         }
     }
 }
@@ -41,6 +47,7 @@ impl DerefMut for CachedDocument {
         // changing heads. Detach before lending; older clones retain their bytes.
         self.serialized = Arc::default();
         self.policy = Arc::default();
+        self.identities = Arc::default();
         #[cfg(test)]
         if Arc::strong_count(&self.doc) > 1 {
             DETACHES.with(|count| count.set(count.get().saturating_add(1)));
@@ -54,6 +61,23 @@ impl CachedDocument {
     pub(crate) fn policy(&self) -> &PolicyData {
         self.policy
             .get_or_init(|| crate::room::policy::legacy(&self.doc))
+    }
+    /// The governed identity rows of [`Self::policy`], each decoded once per
+    /// document state rather than on every membership lookup. Data only, like
+    /// `policy`: certificate, revocation and role checks still run per call.
+    pub(crate) fn identities(&self) -> &IdentityViews {
+        self.identities.get_or_init(|| {
+            self.policy()
+                .identities
+                .iter()
+                .map(|(key, bytes)| {
+                    #[cfg(test)]
+                    IDENTITY_DECODES.with(|count| count.set(count.get().saturating_add(1)));
+                    let identity = serde_json::from_slice(bytes).map_err(|e| e.to_string());
+                    (key.clone(), identity)
+                })
+                .collect()
+        })
     }
     pub(crate) fn saved(&self) -> Vec<u8> {
         self.serialized
@@ -79,6 +103,8 @@ pub(crate) fn take_copies_and_saves() -> (usize, usize) {
         SERIALIZATIONS.with(|count| count.replace(0)),
     )
 }
+#[cfg(test)]
+thread_local! { pub(crate) static IDENTITY_DECODES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
 #[cfg(test)]
 mod tests {
     use super::*;

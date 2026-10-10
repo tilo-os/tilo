@@ -9,6 +9,7 @@
 )]
 
 use tilo_ui::presence::PresenceCtx;
+use tilo_ui::widget::TaffyTreeExt;
 use tilo_ui::{AppKind, AppWidget, IconDescriptor, Theme, Widget};
 
 struct DummyApp;
@@ -20,9 +21,7 @@ impl Widget for DummyApp {
         _theme: &Theme,
         node_map: &mut std::collections::HashMap<taffy::NodeId, *mut dyn Widget>,
     ) -> taffy::NodeId {
-        let node = taffy.new_leaf(taffy::Style::default()).unwrap();
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        taffy.widget_leaf(taffy::Style::default(), node_map, self)
     }
     fn apply_layout(
         &mut self,

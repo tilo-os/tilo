@@ -1247,7 +1247,8 @@ pub(super) mod fixture {
     }
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
+#[cfg(unix)]
 pub(super) mod tests {
     use super::fixture::{basis, facts, fake_bounds, fake_plan};
     use super::*;

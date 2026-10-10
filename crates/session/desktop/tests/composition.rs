@@ -175,8 +175,8 @@ struct OverlayApp {
     draws: std::rc::Rc<std::cell::Cell<usize>>,
 }
 impl ui::widget::Widget for OverlayApp {
-    fn next_wake_deadline(&self) -> Option<ui::clock::Instant> {
-        self.capture.then(ui::clock::Instant::now)
+    fn next_wake_deadline(&self) -> Option<ui::time::Instant> {
+        self.capture.then(ui::time::Instant::now)
     }
     fn modal_capture(&self) -> Option<vello::kurbo::Rect> {
         self.capture

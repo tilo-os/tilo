@@ -9,7 +9,7 @@
 
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Shape};
-use vello::peniko::{BlendMode, Color, Fill};
+use vello::peniko::{Color, Fill};
 
 use crate::theme::Theme;
 
@@ -48,31 +48,6 @@ pub fn paint_rounded(scene: &mut Scene, transform: Affine, rect: Rect, radius: f
     crate::surface::shadow(scene, transform, rect, radius, elevation);
     scene.pop_layer();
     crate::surface::panel(scene, transform, rect, radius, theme);
-}
-
-/// [`paint`] at `alpha` (0..=1), for a Panel fading in or out. Pair with
-/// drawing the content inside the same alpha.
-pub fn paint_faded(scene: &mut Scene, transform: Affine, rect: Rect, alpha: f32, theme: &Theme) {
-    let alpha = alpha.clamp(0.0, 1.0);
-    if alpha <= 0.0 {
-        return;
-    }
-    if alpha >= 1.0 {
-        paint(scene, transform, rect, theme);
-        return;
-    }
-    // The layer bounds include the shadow's reach so its fade is not cut.
-    let reach = f64::from(theme.tokens.elevation.floating.blur) * 2.0
-        + f64::from(theme.tokens.elevation.floating.offset_y).abs();
-    scene.push_layer(
-        Fill::NonZero,
-        BlendMode::default(),
-        alpha,
-        transform,
-        &rect.inflate(reach, reach),
-    );
-    paint(scene, transform, rect, theme);
-    scene.pop_layer();
 }
 
 /// How far a menu's rows sit inside its Panel, on every side: the `s2`
@@ -677,11 +652,7 @@ mod tests {
 mod control_bar_tests {
     use super::*;
     use crate::icons::Icon;
-    use winit::event::{DeviceId, ElementState, MouseButton, WindowEvent};
-
-    fn device() -> DeviceId {
-        unsafe { std::mem::zeroed() }
-    }
+    use winit::event::{ElementState, MouseButton, WindowEvent};
 
     #[test]
     fn a_control_bar_is_concentric_and_reports_its_clicks() {
@@ -714,14 +685,14 @@ mod control_bar_tests {
         let click = |bar: &mut ControlBar, p: Point| {
             bar.handle(
                 &WindowEvent::CursorMoved {
-                    device_id: device(),
+                    device_id: winit::event::DeviceId::dummy(),
                     position: winit::dpi::PhysicalPosition::new(p.x, p.y),
                 },
                 1.0,
             );
             bar.handle(
                 &WindowEvent::MouseInput {
-                    device_id: device(),
+                    device_id: winit::event::DeviceId::dummy(),
                     state: ElementState::Pressed,
                     button: MouseButton::Left,
                 },
@@ -729,7 +700,7 @@ mod control_bar_tests {
             );
             bar.handle(
                 &WindowEvent::MouseInput {
-                    device_id: device(),
+                    device_id: winit::event::DeviceId::dummy(),
                     state: ElementState::Released,
                     button: MouseButton::Left,
                 },

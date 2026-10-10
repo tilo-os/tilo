@@ -312,8 +312,7 @@ impl World for TypstWorld {
             }
             // An offset asks for the UTC date shifted by it.
             Some(offset) => {
-                let now = ui::time::wall().duration_since(ui::time::UNIX_EPOCH).ok()?;
-                let seconds = i64::try_from(now.as_secs()).ok()?;
+                let seconds = i64::try_from(ui::time::try_unix_now()?).ok()?;
                 let shifted = seconds.checked_add(offset.seconds() as i64)?;
                 let (year, month, day) = civil_from_days(shifted.div_euclid(86_400));
                 Datetime::from_ymd(year, month, day)

@@ -66,27 +66,6 @@ pub fn parse_form_query(query: &str) -> Vec<(String, String)> {
         .collect()
 }
 
-/// A string that names an absolute local path the same way before and after
-/// the file exists, for keys derived from document paths.
-///
-/// On Windows, canonicalizing an existing file adds a verbatim `\\?\` prefix;
-/// the file URL folds both spellings together. Elsewhere the path itself is
-/// already stable.
-#[must_use]
-pub fn stable_path_key(absolute: &std::path::Path) -> String {
-    #[cfg(windows)]
-    {
-        url::Url::from_file_path(absolute).map_or_else(
-            |()| absolute.to_string_lossy().into_owned(),
-            |url| url.to_string(),
-        )
-    }
-    #[cfg(not(windows))]
-    {
-        absolute.to_string_lossy().into_owned()
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -84,15 +84,6 @@ impl CollaborationOverview {
     pub fn experience(&self) -> &CollaborationExperience {
         &self.experience
     }
-    pub fn experience_mut(&mut self) -> &mut CollaborationExperience {
-        self.dirty = true;
-        &mut self.experience
-    }
-    pub fn set_digest(&mut self, digest: ActivityDigest) {
-        self.digest = digest;
-        self.expanded.clear();
-        self.dirty = true;
-    }
     pub fn take_action(&mut self) -> Option<CollaborationOverviewAction> {
         self.pending.take()
     }

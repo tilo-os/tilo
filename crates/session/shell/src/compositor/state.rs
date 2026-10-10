@@ -22,12 +22,88 @@ enum ForeignCommitCapture {
 #[derive(Default)]
 struct ForeignCommitCaptures(Mutex<VecDeque<ForeignCommitCapture>>);
 
+/// Set once the surface queued an SHM capture, which may have left a base in
+/// the frame store for its next commit's damage. A commit the capture does
+/// not see clears that base only while this is set, so the many surfaces
+/// never captured do not take the frame store's lock on every commit.
+#[derive(Default)]
+struct ShmCaptureBase(std::sync::atomic::AtomicBool);
+
+/// Record that the surface queued an SHM capture.
+fn mark_shm_capture_base(states: &wl_compositor::SurfaceData) {
+    states
+        .data_map
+        .insert_if_missing_threadsafe(ShmCaptureBase::default);
+    if let Some(base) = states.data_map.get::<ShmCaptureBase>() {
+        base.0.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+/// A commit the capture never sees still changes the surface: a later SHM
+/// commit's damage is relative to it, not to the last one captured.
+fn forget_uncaptured_shm_base(surface: &WlSurface, surface_id: u64) {
+    let had_base = wl_compositor::with_states(surface, |states| {
+        states
+            .data_map
+            .get::<ShmCaptureBase>()
+            .is_some_and(|base| base.0.swap(false, std::sync::atomic::Ordering::Relaxed))
+    });
+    if had_base {
+        crate::compositor::foreign::store().reset_shm_base(surface_id);
+    }
+}
+
+/// After any captured commit but an SHM buffer (or a commit that changes
+/// nothing), the next SHM commit's damage is not relative to the frame the
+/// SHM capture built: it copies whole.
+fn settle_shm_base(surface_id: u64, association: &ForeignCommitCapture) {
+    if !matches!(
+        association,
+        ForeignCommitCapture::Shm(_) | ForeignCommitCapture::NoBuffer
+    ) {
+        crate::compositor::foreign::store().reset_shm_base(surface_id);
+    }
+}
+
+/// Buffer damage as the frame store records it.
+fn buffer_damage(rects: &[BufferRect]) -> Vec<vello::kurbo::Rect> {
+    rects
+        .iter()
+        .map(|rect| {
+            vello::kurbo::Rect::from_origin_size(
+                (f64::from(rect.loc.x), f64::from(rect.loc.y)),
+                (f64::from(rect.size.w), f64::from(rect.size.h)),
+            )
+        })
+        .collect()
+}
+
+/// Buffer damage as the whole pixels an SHM capture copies, clipped to the
+/// buffer's non-negative quadrant.
+fn shm_regions(rects: &[BufferRect]) -> Vec<crate::compositor::surface_readback::ShmRegion> {
+    rects
+        .iter()
+        .filter_map(|rect| {
+            let x = rect.loc.x.max(0);
+            let y = rect.loc.y.max(0);
+            let right = rect.loc.x.saturating_add(rect.size.w);
+            let bottom = rect.loc.y.saturating_add(rect.size.h);
+            Some(crate::compositor::surface_readback::ShmRegion {
+                x: usize::try_from(x).ok()?,
+                y: usize::try_from(y).ok()?,
+                width: usize::try_from(right.saturating_sub(x)).ok()?,
+                height: usize::try_from(bottom.saturating_sub(y)).ok()?,
+            })
+        })
+        .collect()
+}
+
+type BufferRect = smithay::utils::Rectangle<i32, smithay::utils::Buffer>;
+
 /// Keep only unambiguous buffer-coordinate damage. Surface-coordinate
 /// rectangles require viewport/scale conversion; absent or transformed hints
 /// remain whole-buffer damage rather than guessing that conversion.
-fn pending_buffer_damage(
-    attrs: &wl_compositor::SurfaceAttributes,
-) -> Option<Vec<vello::kurbo::Rect>> {
+fn pending_buffer_rects(attrs: &wl_compositor::SurfaceAttributes) -> Option<Vec<BufferRect>> {
     if attrs.buffer_transform
         != smithay::reexports::wayland_server::protocol::wl_output::Transform::Normal
         || attrs
@@ -45,13 +121,7 @@ fn pending_buffer_damage(
             let wl_compositor::Damage::Buffer(rect) = damage else {
                 return None;
             };
-            if rect.size.w <= 0 || rect.size.h <= 0 {
-                return None;
-            }
-            Some(vello::kurbo::Rect::from_origin_size(
-                (f64::from(rect.loc.x), f64::from(rect.loc.y)),
-                (f64::from(rect.size.w), f64::from(rect.size.h)),
-            ))
+            (rect.size.w > 0 && rect.size.h > 0).then_some(*rect)
         })
         .collect()
 }
@@ -202,23 +272,13 @@ pub(crate) struct OutputPresentationSurface {
 
 pub(crate) use crate::shell::floating::*;
 
-/// Read the persisted `HiDPI` display scale from the shared settings store.
+/// The persisted `HiDPI` display scale in a settings document.
 ///
-/// The Settings app writes `~/.config/tilo/settings.json` with a
-/// `"display"` object carrying a `"scale"` number (1.0=100%, …); the
-/// compositor reads the same file via `settings_store`, resolving the same
-/// XDG rule the apps use. Any read/parse failure or out-of-range value falls back to `1.0`.
-fn load_display_scale() -> f64 {
-    let Some(path) = settings_store::settings_path() else {
-        return 1.0;
-    };
-    let Ok(text) = std::fs::read_to_string(&path) else {
-        return 1.0;
-    };
-    let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) else {
-        return 1.0;
-    };
-    match json
+/// The Settings app writes a `"display"` object carrying a `"scale"` number
+/// (1.0=100%, …); the compositor follows the same document through its live
+/// settings snapshot. An absent or out-of-range value falls back to `1.0`.
+pub fn display_scale_from(document: &serde_json::Map<String, serde_json::Value>) -> f64 {
+    match document
         .get("display")
         .and_then(|d| d.get("scale"))
         .and_then(serde_json::Value::as_f64)
@@ -279,6 +339,76 @@ pub(crate) struct TrackedPopup {
     parent: SurfaceId,
     geometry: Rectangle<i32, Logical>,
     grabbed: bool,
+}
+
+/// Everything the capture protection of transient surfaces is derived
+/// from, as of the last [`State::sync_capture_protection`] pass. Compared
+/// field by field on each wakeup without allocating, taking the tree lock
+/// or the store's protection lock; any difference re-derives, so a newly
+/// mapped popup, a reparented one, a secret field gaining focus, an app
+/// asking for protection or a renamed tab is never missed.
+#[derive(Default, PartialEq)]
+pub(crate) struct CaptureProtectionInputs {
+    /// The focused text field declares its content secret.
+    secret_field: bool,
+    osk: Option<SurfaceId>,
+    /// The workspace tree's write generation and the store's protection
+    /// epoch: which app each tiled surface belongs to, and which apps and
+    /// surfaces are protected.
+    versions: (u64, u64),
+    input_method_popups: Vec<(SurfaceId, Option<SurfaceId>)>,
+    popups: Vec<(SurfaceId, bool, SurfaceId)>,
+    /// Floating toplevels and their apps.
+    floating: Vec<(SurfaceId, String)>,
+}
+
+impl CaptureProtectionInputs {
+    fn capture(state: &State, secret_field: bool, versions: (u64, u64)) -> Self {
+        Self {
+            secret_field,
+            osk: state.osk_surface,
+            versions,
+            input_method_popups: state.capture_protection_input_method_popups().collect(),
+            popups: state.capture_protection_popups().collect(),
+            floating: state
+                .floating_toplevels
+                .iter()
+                .map(|toplevel| (toplevel.surface_id, toplevel.app_id.clone()))
+                .collect(),
+        }
+    }
+
+    fn matches(&self, state: &State, secret_field: bool, versions: (u64, u64)) -> bool {
+        self.secret_field == secret_field
+            && self.osk == state.osk_surface
+            && self.versions == versions
+            && self
+                .input_method_popups
+                .iter()
+                .copied()
+                .eq(state.capture_protection_input_method_popups())
+            && self
+                .popups
+                .iter()
+                .copied()
+                .eq(state.capture_protection_popups())
+            && self
+                .floating
+                .iter()
+                .map(|(surface, app_id)| (*surface, app_id.as_str()))
+                .eq(state
+                    .floating_toplevels
+                    .iter()
+                    .map(|toplevel| (toplevel.surface_id, toplevel.app_id.as_str())))
+    }
+}
+
+/// [`State::sync_capture_protection`]'s memory between wakeups.
+#[derive(Default)]
+pub(crate) struct CaptureProtectionSync {
+    last: Option<CaptureProtectionInputs>,
+    #[cfg(test)]
+    passes: usize,
 }
 
 #[derive(Clone)]
@@ -642,8 +772,8 @@ pub struct State {
     /// icon for its tab; see [`crate::compositor::toplevel_icon`].
     pub toplevel_icon_manager: crate::compositor::toplevel_icon::ToplevelIconManager,
     /// Current display scale factor (`HiDPI`), sent to clients as the
-    /// preferred `wp_fractional_scale`. Read once at session start from the
-    /// shared settings store (`display.scale`), so it tracks the Settings app's "Display scale" control. Defaults to `1.0` when unset or absent.
+    /// preferred `wp_fractional_scale`. Follows the shared settings
+    /// (`display.scale`, see [`display_scale_from`]), so it tracks the Settings app's "Display scale" control. Defaults to `1.0` when unset or absent.
     pub scale: f64,
     /// Every output as `(position, size, scale)` in the logical desktop,
     /// mirrored from the backend.
@@ -764,6 +894,7 @@ pub struct State {
     /// Every text input's declared content type, for telling a secret
     /// field from an ordinary one.
     pub(crate) text_fields: crate::compositor::text_commit::TextFields,
+    pub(crate) private_text_input: crate::compositor::private_text_input::PrivateTextInput,
     /// Text the shell is committing into the focused field.
     pub(crate) text_commit: crate::compositor::text_commit::TextCommit,
     /// The trusted OSK's xdg-toplevel surface, promoted out of the workspace
@@ -794,6 +925,8 @@ pub struct State {
     /// Live app-owned secondary surfaces, outside the normal workspace tree.
     pub(crate) floating_toplevels: Vec<FloatingToplevel>,
     pub(crate) floating_toplevel_events: Vec<FloatingToplevelEvent>,
+    /// What transient surfaces' capture protection was last derived from.
+    capture_protection_sync: CaptureProtectionSync,
 }
 
 pub(crate) fn foreign_root(surface: &WlSurface) -> Option<WlSurface> {
@@ -1224,6 +1357,7 @@ impl State {
         // dedicated socket acceptor, and only the kind that currently owns
         // the seat (see `compositor::input_method`) sees them at all.
         let text_input_manager_state = TextInputManagerState::new::<Self>(&display_handle);
+        crate::compositor::private_text_input::PrivateTextInput::register(&display_handle);
         let seat_input_method = crate::compositor::input_method::SeatInputMethod::default();
         let input_method_manager_state =
             InputMethodManagerState::new::<Self, _>(&display_handle, {
@@ -1245,8 +1379,6 @@ impl State {
         let idle_inhibit_manager = IdleInhibitManagerState::new::<Self>(&display_handle);
         let toplevel_icon_manager = crate::compositor::toplevel_icon::manager(&display_handle);
         let (session_lock_state, output_management) = Self::privileged_globals(&display_handle);
-        // Read the persisted display scale from the shared settings store so the compositor advertises what the Settings app wrote.
-        let scale = load_display_scale();
         // Advertise touchpad gestures for a bare-TTY session with no host compositor; constructed before the struct literal moves `display_handle`.
         let pointer_gestures_state = PointerGesturesState::new::<Self>(&display_handle);
         let cursor_shape_state = CursorShapeManagerState::new::<Self>(&display_handle);
@@ -1319,7 +1451,9 @@ impl State {
             idle_inhibit_manager,
             idle_inhibitors: crate::compositor::idle_inhibit::IdleInhibitors::default(),
             toplevel_icon_manager,
-            scale,
+            // The session sets the persisted scale from its live settings
+            // ([`display_scale_from`]); a bare `State` advertises 100%.
+            scale: 1.0,
             output_layout: Vec::new(),
             output_sizes: HashMap::new(),
             output_rects: HashMap::new(),
@@ -1358,6 +1492,7 @@ impl State {
             seat_input_method,
             trusted_input_method_clients: Vec::new(),
             text_fields: crate::compositor::text_commit::TextFields::default(),
+            private_text_input: crate::compositor::private_text_input::PrivateTextInput::default(),
             text_commit: crate::compositor::text_commit::TextCommit::default(),
             osk_surface: None,
             osk_commits: 0,
@@ -1368,6 +1503,7 @@ impl State {
             pending_floating_toplevels: Vec::new(),
             floating_toplevels: Vec::new(),
             floating_toplevel_events: Vec::new(),
+            capture_protection_sync: CaptureProtectionSync::default(),
         };
         state.activate_keyboard_source(initial_keyboard_index);
         state
@@ -1958,7 +2094,7 @@ impl State {
             });
         }
         // Surfaces no longer placed lose their cached scale, so a re-placed one is recomputed, not resurrected at its last value.
-        let live: Vec<u64> = placements.iter().map(|(id, _)| *id).collect();
+        let live: HashSet<u64> = placements.iter().map(|(id, _)| *id).collect();
         self.surface_scales.retain(|id, _| live.contains(id));
     }
 
@@ -1970,19 +2106,32 @@ impl State {
 
     /// Whether shared window `surface` must reach its viewers as the
     /// placeholder instead of its pixels.
+    ///
+    /// The app behind a tiled surface comes from the input router's cache of
+    /// the tree, without the tree lock. Until the loop folds a tree write
+    /// into that cache, the tree itself is read, so a renamed or newly
+    /// adopted tab is never judged by a stale app id.
     pub fn is_surface_capture_protected(&self, surface: SurfaceId) -> bool {
-        let app_id = {
-            let tree = self.workspace_tree.read();
-            tab_binding::app_id_for_surface(&tree, surface).map(str::to_owned)
-        }
-        .or_else(|| {
+        let floating = || {
             self.floating_toplevels
                 .iter()
                 .find(|toplevel| toplevel.surface_id == surface)
-                .map(|toplevel| toplevel.app_id.clone())
-        });
-        crate::compositor::foreign::store()
-            .is_capture_protected(surface, app_id.as_deref().unwrap_or_default())
+                .map(|toplevel| toplevel.app_id.as_str())
+        };
+        let store = crate::compositor::foreign::store();
+        if self
+            .client_input
+            .app_ids_current(self.workspace_tree.generation())
+        {
+            let app_id = self.client_input.app_id(surface).or_else(floating);
+            return store.is_capture_protected(surface, app_id.unwrap_or_default());
+        }
+        let tiled = {
+            let tree = self.workspace_tree.read();
+            tab_binding::app_id_for_surface(&tree, surface).map(str::to_owned)
+        };
+        let app_id = tiled.as_deref().or_else(floating);
+        store.is_capture_protected(surface, app_id.unwrap_or_default())
     }
 
     /// A share session's next frame: the window's pixels, or the themed
@@ -2794,7 +2943,13 @@ impl State {
                         ForeignCommitCapture::Dmabuf(token) => {
                             store().capture_commit_associated(surface_id, buffer, Some(token))
                         }
-                        ForeignCommitCapture::Shm(_) => CaptureOutcome::Queued,
+                        ForeignCommitCapture::Shm(generation) => {
+                            if store().note_shm_committed(surface_id, generation) {
+                                CaptureOutcome::Queued
+                            } else {
+                                CaptureOutcome::Failed("SHM commit generation is not queued".into())
+                            }
+                        }
                         ForeignCommitCapture::NoBuffer
                         | ForeignCommitCapture::Failed
                         | ForeignCommitCapture::Removed => {
@@ -3946,9 +4101,10 @@ impl State {
             || self.is_output_presentation_surface(surface_id)
             || self.is_transient_surface(surface_id);
         if !captured_here {
+            forget_uncaptured_shm_base(surface, surface_id);
             return;
         }
-        let (association, blocker) = wl_compositor::with_states(surface, |states| {
+        let (association, capture) = wl_compositor::with_states(surface, |states| {
             let mut attrs = states
                 .cached_state
                 .get::<wl_compositor::SurfaceAttributes>();
@@ -3969,8 +4125,10 @@ impl State {
                     return (association, None);
                 }
             };
-            let damage = pending_buffer_damage(attrs.pending());
+            let rects = pending_buffer_rects(attrs.pending());
             drop(attrs);
+            let damage = rects.as_deref().map(buffer_damage);
+            let regions = rects.as_deref().map(shm_regions);
             let Some(client) = surface.client() else {
                 return (ForeignCommitCapture::Failed, None);
             };
@@ -3980,7 +4138,7 @@ impl State {
                     .get::<crate::wayland::color_management::ColorManagementSurfaceData>()
                     .and_then(crate::wayland::color_management::ColorManagementSurfaceData::current_colorimetry)
                     .map(|(colorimetry, _)| colorimetry);
-                if let Some((token, barrier)) = crate::compositor::foreign::store()
+                if let Some(capture) = crate::compositor::foreign::store()
                     .prepare_dmabuf_capture_with_damage(
                         surface_id,
                         client,
@@ -3994,28 +4152,26 @@ impl State {
                     // must happen after this callback returns. Doing it here
                     // self-deadlocked the compositor on the first GPU-backed
                     // app commit (most visibly Chat).
-                    return (ForeignCommitCapture::Dmabuf(token), Some(barrier));
+                    return (ForeignCommitCapture::Dmabuf(capture.token), Some(capture));
                 }
                 return (ForeignCommitCapture::Failed, None);
             }
-            match crate::compositor::surface_readback::copy_shm_frame(&buffer) {
-                Ok(frame) => {
-                    if let Some(generation) = crate::compositor::foreign::store()
-                        .prepare_shm_capture_with_damage(surface_id, frame, damage)
-                    {
-                        (ForeignCommitCapture::Shm(generation), None)
-                    } else {
-                        (ForeignCommitCapture::Failed, None)
-                    }
-                }
-                Err(error) => {
-                    crate::compositor::foreign::store().note_failure(surface_id, error.to_string());
-                    (ForeignCommitCapture::Failed, None)
-                }
+            match crate::compositor::foreign::store().capture_shm_commit(
+                surface_id,
+                &buffer,
+                damage,
+                regions.as_deref(),
+            ) {
+                Some(generation) => (ForeignCommitCapture::Shm(generation), None),
+                None => (ForeignCommitCapture::Failed, None),
             }
         });
-        if let Some(blocker) = blocker {
-            wl_compositor::add_blocker(surface, blocker);
+        settle_shm_base(surface_id, &association);
+        if let Some(capture) = capture {
+            wl_compositor::add_blocker(surface, capture.barrier);
+            if let Some(fence) = capture.fence {
+                self.watch_dmabuf_fence(fence, surface_id, capture.token);
+            }
         }
         if matches!(
             association,
@@ -4043,13 +4199,75 @@ impl State {
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .push_back(association);
             }
+            if matches!(association, ForeignCommitCapture::Shm(_)) {
+                mark_shm_capture_base(states);
+            }
         });
+    }
+
+    /// Take hold of the buffer the commit just applied on `surface` when the
+    /// frame it published is drawn from that buffer itself. Left in the
+    /// surface state, Smithay would give it back the moment the next commit
+    /// applies, while a queued frame can still draw it; held here, it goes
+    /// back once the last frame that drew it finished
+    /// ([`crate::shell::gpu_frames`]). Runs last in the commit handler, after
+    /// everything that reads the applied buffer.
+    fn hold_drawn_buffer(surface: &WlSurface, surface_id: u64) {
+        let store = crate::compositor::foreign::store();
+        let Some(frame) = store.take_unheld_frame(surface_id) else {
+            return;
+        };
+        let buffer = wl_compositor::with_states(surface, |states| {
+            take_new_buffer(
+                &mut states
+                    .cached_state
+                    .get::<wl_compositor::SurfaceAttributes>()
+                    .current()
+                    .buffer,
+            )
+        });
+        if let Some(buffer) = buffer {
+            crate::compositor::foreign::hold_buffer(buffer, &frame);
+        } else {
+            // Never draw from a buffer the client may reuse.
+            tracing::warn!(
+                target: "shell::compositor::foreign",
+                surface_id,
+                "a client frame's buffer was not current when its commit applied; not drawing it"
+            );
+            store.withdraw_unheld_frame(surface_id, &frame);
+        }
+    }
+
+    /// Start the capture of commit `token` on `surface_id` when its buffer's
+    /// implicit fence signals. The loop watches the fence, so no thread waits
+    /// on a client's GPU and a slow client holds up only its own commits.
+    fn watch_dmabuf_fence(
+        &self,
+        fence: smithay::backend::allocator::dmabuf::DmabufSource,
+        surface_id: u64,
+        token: u64,
+    ) {
+        let watched = self.loop_handle.insert_source(fence, move |(), _, _| {
+            crate::compositor::foreign::dmabuf_fence_signalled(surface_id, token);
+            Ok(())
+        });
+        if let Err(error) = watched {
+            tracing::warn!(
+                target: "shell::compositor::foreign",
+                surface_id,
+                error = %error.error,
+                "could not watch a client buffer's fence; capturing it on the worker"
+            );
+            crate::compositor::foreign::dmabuf_fence_unwatched(surface_id, token);
+        }
     }
 
     /// Re-evaluate transactions whose off-thread buffer capture completed.
     /// Called by the compositor loop on its owning thread; worker threads only
     /// flip barriers and enqueue owning client handles.
     pub fn pump_foreign_capture_barriers(&mut self, display: &DisplayHandle) -> bool {
+        crate::compositor::foreign::give_back_released_buffers();
         let completed = crate::compositor::foreign::drain_completed_dmabuf_captures();
         let changed =
             crate::compositor::foreign::take_published_shm_frames() | !completed.is_empty();
@@ -4312,6 +4530,20 @@ fn authenticated_toplevel_identity(
     Ok((Some(package_id.to_string()), Some(room)))
 }
 
+/// Take the buffer out of `slot` when it holds a newly attached one, leaving
+/// any other assignment in place.
+fn take_new_buffer(
+    slot: &mut Option<wl_compositor::BufferAssignment>,
+) -> Option<smithay::reexports::wayland_server::protocol::wl_buffer::WlBuffer> {
+    match slot.take() {
+        Some(wl_compositor::BufferAssignment::NewBuffer(buffer)) => Some(buffer),
+        other => {
+            *slot = other;
+            None
+        }
+    }
+}
+
 // Handler trait impls.
 
 impl CompositorHandler for State {
@@ -4378,6 +4610,7 @@ impl CompositorHandler for State {
         // Foreign-surface compositing: an adopted toplevel's buffer is captured every commit for `ForeignSurfaceWidget` to paint — independent of the share path above.
         self.capture_committed_foreign_pixels(surface, surface_id);
         if !is_shared {
+            Self::hold_drawn_buffer(surface, surface_id);
             return;
         }
         // Pull the most recent buffer assignment: `NewBuffer(b)` is freshly-attached; `Removed` means detach — drop the tracker slot.
@@ -4452,6 +4685,7 @@ impl CompositorHandler for State {
         // encoder the same tick — without this the encoder waits for the
         // render loop's next damage sweep, a full-frame stall. Delegated to `tick_share_session_for_surface` to keep the pump logic testable without a real `WlSurface`.
         let _ = self.tick_share_session_for_surface(surface_id);
+        Self::hold_drawn_buffer(surface, surface_id);
     }
 
     fn destroyed(&mut self, surface: &WlSurface) {
@@ -4752,44 +4986,102 @@ impl State {
     /// protected while the focused field declares its content secret (a
     /// password, a PIN or hidden text), and an input method's popup also
     /// while the window it serves is protected.
-    pub fn sync_capture_protection(&self) {
+    ///
+    /// Re-derived only when something it depends on changed since the last
+    /// pass (see [`CaptureProtectionInputs`]); otherwise a wakeup takes
+    /// neither the tree lock nor the store's protection lock.
+    pub fn sync_capture_protection(&mut self) {
         let secret_field = self.active_field_content_type().is_sensitive();
         let store = crate::compositor::foreign::store();
-        if let Some(keyboard) = self.osk_surface {
-            store.set_surface_capture_protected(keyboard, secret_field);
-        }
-        for popup in self
-            .input_method_popups
-            .iter()
-            .filter(|popup| popup.alive())
+        // Loaded before anything they guard is read: a change racing this
+        // pass advances them again and is folded in on the next wakeup.
+        let versions = (
+            self.workspace_tree.generation(),
+            store.capture_protection_epoch(),
+        );
+        if self
+            .capture_protection_sync
+            .last
+            .as_ref()
+            .is_some_and(|last| last.matches(self, secret_field, versions))
         {
-            let parent_protected = popup.get_parent().is_some_and(|parent| {
-                self.is_surface_capture_protected(surface_id(&parent.surface))
-            });
-            store.set_surface_capture_protected(
-                surface_id(popup.wl_surface()),
-                secret_field || parent_protected,
-            );
+            return;
         }
+        #[cfg(test)]
+        {
+            self.capture_protection_sync.passes =
+                self.capture_protection_sync.passes.saturating_add(1);
+        }
+        let mut protected = Vec::new();
+        if let Some(keyboard) = self.osk_surface {
+            protected.push((keyboard, secret_field));
+        }
+        for (popup, parent) in self.capture_protection_input_method_popups() {
+            let parent_protected =
+                parent.is_some_and(|parent| self.is_surface_capture_protected(parent));
+            protected.push((popup, secret_field || parent_protected));
+        }
+        // Nested popups chain to their toplevel through every tracked popup,
+        // live or not; a malformed graph is bounded exactly as
+        // `popup_parent_rect` bounds it.
+        let parents: HashMap<SurfaceId, SurfaceId> = self
+            .popups
+            .iter()
+            .map(|popup| (surface_id(popup.surface.wl_surface()), popup.parent))
+            .collect();
         for popup in self.popups.iter().filter(|popup| popup.surface.alive()) {
             let mut root = popup.parent;
-            // Nested popups chain to their toplevel; a malformed graph is
-            // bounded exactly as `popup_parent_rect` bounds it.
             for _ in 0..16 {
-                match self
-                    .popups
-                    .iter()
-                    .find(|candidate| surface_id(candidate.surface.wl_surface()) == root)
-                {
-                    Some(parent) => root = parent.parent,
+                match parents.get(&root) {
+                    Some(parent) => root = *parent,
                     None => break,
                 }
             }
-            store.set_surface_capture_protected(
+            protected.push((
                 surface_id(popup.surface.wl_surface()),
                 self.is_surface_capture_protected(root),
-            );
+            ));
         }
+        store.set_surfaces_capture_protected(&protected);
+        self.capture_protection_sync.last = Some(CaptureProtectionInputs::capture(
+            self,
+            secret_field,
+            versions,
+        ));
+    }
+
+    /// Live input-method popups and the surface each one serves.
+    fn capture_protection_input_method_popups(
+        &self,
+    ) -> impl Iterator<Item = (SurfaceId, Option<SurfaceId>)> + '_ {
+        self.input_method_popups
+            .iter()
+            .filter(|popup| popup.alive())
+            .map(|popup| {
+                (
+                    surface_id(popup.wl_surface()),
+                    popup.get_parent().map(|parent| surface_id(&parent.surface)),
+                )
+            })
+    }
+
+    /// Every tracked xdg popup: its surface, whether it is alive, and its
+    /// parent.
+    fn capture_protection_popups(&self) -> impl Iterator<Item = (SurfaceId, bool, SurfaceId)> + '_ {
+        self.popups.iter().map(|popup| {
+            (
+                surface_id(popup.surface.wl_surface()),
+                popup.surface.alive(),
+                popup.parent,
+            )
+        })
+    }
+
+    /// Passes [`Self::sync_capture_protection`] has made that re-derived
+    /// protection rather than finding nothing changed.
+    #[cfg(test)]
+    pub(crate) const fn capture_protection_passes(&self) -> usize {
+        self.capture_protection_sync.passes
     }
 
     #[doc(hidden)]
@@ -7862,6 +8154,127 @@ mod keycap_layout_tests {
         assert_eq!(label(), "Strg+Alt+Entf");
         // The stored chord never changed.
         assert_eq!(power.display(), "Ctrl+Alt+Delete");
+    }
+}
+
+/// The compositor loop re-derives state from the workspace tree and the
+/// surface registries only after something it depends on changed.
+#[cfg(test)]
+mod loop_gating_tests {
+    use super::*;
+    use smithay::reexports::calloop::EventLoop;
+    use smithay::reexports::wayland_server::Display;
+
+    fn make_state() -> State {
+        let event_loop: EventLoop<'static, State> = EventLoop::try_new().expect("calloop");
+        let display: Display<State> = Display::new().expect("display");
+        State::new(event_loop.handle(), display.handle())
+    }
+
+    #[test]
+    fn update_surface_scales_drops_unplaced_surfaces() {
+        let mut state = make_state();
+        state.update_surface_scales(&[(1, (0.0, 0.0)), (2, (10.0, 10.0)), (2, (10.0, 10.0))]);
+        let mut placed = state.surface_scales.keys().copied().collect::<Vec<_>>();
+        placed.sort_unstable();
+        assert_eq!(placed, vec![1, 2]);
+        state.update_surface_scales(&[(2, (10.0, 10.0))]);
+        assert_eq!(
+            state.surface_scales.keys().copied().collect::<Vec<_>>(),
+            vec![2],
+            "a surface no longer placed loses its cached scale"
+        );
+        state.update_surface_scales(&[]);
+        assert!(state.surface_scales.is_empty());
+    }
+
+    #[test]
+    fn a_wakeup_without_a_tree_write_walks_nothing() {
+        const SURFACE: u64 = 0x0188_0001;
+        const APP: &str = "org.example.LoopGating";
+        let mut state = make_state();
+        let tree = state.workspace_tree.clone();
+        state.client_input.refresh_from_tree(&tree);
+        let walks = state.client_input.tree_walks();
+        assert_eq!(walks, 1, "the first wakeup derives everything once");
+        for _ in 0..100 {
+            assert!(!state.client_input.refresh_from_tree(&tree));
+        }
+        assert_eq!(
+            state.client_input.tree_walks(),
+            walks,
+            "wakeups with no tree write and no surface change walk nothing"
+        );
+
+        crate::shell::tab_binding::adopt_toplevel_at(
+            &mut tree.write(),
+            SURFACE,
+            Some(APP.into()),
+            crate::shell::tab_binding::Placement::NewGroup,
+        );
+        assert!(
+            !state.client_input.app_ids_current(tree.generation()),
+            "a tree written since the last wakeup is not answered from the cache"
+        );
+        state.client_input.refresh_from_tree(&tree);
+        assert_eq!(state.client_input.tree_walks(), walks.saturating_add(1));
+        assert!(state.client_input.app_ids_current(tree.generation()));
+        assert_eq!(state.client_input.app_id(SURFACE), Some(APP));
+        for _ in 0..100 {
+            state.client_input.refresh_from_tree(&tree);
+        }
+        assert_eq!(state.client_input.tree_walks(), walks.saturating_add(1));
+    }
+
+    #[test]
+    fn capture_protection_is_rederived_only_after_an_input_changed() {
+        const KEYBOARD: u64 = 0x0188_0002;
+        const CONNECTION: u64 = 0x0188_0C02;
+        const APP: &str = "org.example.LoopGatingProtected";
+        let store = crate::compositor::foreign::store();
+        let mut state = make_state();
+        state.sync_capture_protection();
+        assert_eq!(state.capture_protection_passes(), 1);
+        for _ in 0..100 {
+            state.sync_capture_protection();
+        }
+        assert_eq!(
+            state.capture_protection_passes(),
+            1,
+            "wakeups that change nothing take neither the tree nor the protection lock"
+        );
+
+        drop(state.workspace_tree.write());
+        state.sync_capture_protection();
+        assert_eq!(
+            state.capture_protection_passes(),
+            2,
+            "a tree write may have renamed a protected window's tab"
+        );
+
+        state.osk_surface = Some(KEYBOARD);
+        state.sync_capture_protection();
+        assert_eq!(
+            state.capture_protection_passes(),
+            3,
+            "a new keyboard surface"
+        );
+        state.sync_capture_protection();
+        assert_eq!(state.capture_protection_passes(), 3);
+
+        store.request_app_capture_protection(CONNECTION, APP, true);
+        state.sync_capture_protection();
+        assert_eq!(
+            state.capture_protection_passes(),
+            4,
+            "an app asked for protection"
+        );
+        store.release_capture_protection(CONNECTION);
+        state.sync_capture_protection();
+        assert_eq!(state.capture_protection_passes(), 5, "and gave it up");
+        state.sync_capture_protection();
+        assert_eq!(state.capture_protection_passes(), 5);
+        store.forget(KEYBOARD);
     }
 }
 

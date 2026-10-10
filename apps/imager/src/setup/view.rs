@@ -8,13 +8,12 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
+use ui::widget::TaffyTreeExt;
 use ui::widget::{AppModel, ModelPath};
 
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use ui::a11y::Politeness;
 use ui::icons::Icon;
-use ui::presence::PresenceCtx;
-use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::tokens::typography::TextRole;
 #[cfg(any(target_os = "linux", windows, all(test, unix)))]
@@ -23,9 +22,6 @@ use ui::widget::{
     Button, ButtonRole, Column, Container, ControlSize, ListRow, Row, Section, SectionHeader,
     Spacer, Text, ToggleGroup, Widget, toggle_group::Segment,
 };
-use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
-use winit::event::WindowEvent;
 
 use super::actions::SetupEffect;
 use super::controller::{SetupController, SetupPage};
@@ -161,8 +157,7 @@ pub struct SetupApp {
     show_help: bool,
     status: String,
     status_is_error: bool,
-    composed: Option<Box<dyn Widget>>,
-    rect: Rect,
+    composed: ui::widget::Composed,
     structure_dirty: bool,
     import_requested: bool,
     /// Whether the view shows folder imports in place of setup.
@@ -307,8 +302,7 @@ impl SetupApp {
             show_help: false,
             status: "Choose an available experience to begin.".into(),
             status_is_error: false,
-            composed: None,
-            rect: Rect::ZERO,
+            composed: ui::widget::Composed::default(),
             structure_dirty: true,
             import_requested: false,
             imports: None,
@@ -3074,15 +3068,13 @@ impl Widget for SetupApp {
         self.poll_background();
         self.drain_commands();
         self.open_requested_imports();
-        if let Some(composed) = &mut self.composed {
-            composed.sync(state, path);
-        }
+        self.composed.sync(state, path);
     }
 
     fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
         let mut changed = self.poll_background() || self.drain_commands();
         self.open_requested_imports();
-        if let Some(composed) = &mut self.composed {
+        if let Some(composed) = self.composed.element_mut() {
             changed |= composed.update(state, path);
         }
         changed
@@ -3094,87 +3086,26 @@ impl Widget for SetupApp {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let mut composed = self.build_composition();
-        let child = composed.build_layout(taffy, theme, node_map);
-        self.composed = Some(composed);
-        let node = taffy
-            .new_with_children(
-                Style {
-                    display: taffy::Display::Flex,
-                    flex_direction: taffy::FlexDirection::Column,
-                    size: Size {
-                        width: Dimension::percent(1.0),
-                        height: Dimension::percent(1.0),
-                    },
-                    ..Default::default()
-                },
-                &[child],
-            )
-            .unwrap_or(child);
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        let composition = self.build_composition();
+        let child = self
+            .composed
+            .build_layout(composition, taffy, theme, node_map);
+        let style = Style {
+            display: taffy::Display::Flex,
+            flex_direction: taffy::FlexDirection::Column,
+            size: Size {
+                width: Dimension::percent(1.0),
+                height: Dimension::percent(1.0),
+            },
+            ..Default::default()
+        };
+        taffy.widget_node(style, &[child], node_map, self)
     }
 
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x + layout.size.width),
-            origin.y + f64::from(layout.location.y + layout.size.height),
-        );
-        if let Some(composed) = &mut self.composed
-            && let Ok(children) = taffy.children(node)
-            && let Some(&child) = children.first()
-        {
-            composed.apply_layout(taffy, child, Point::new(self.rect.x0, self.rect.y0));
-        }
-    }
-
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
-        if let Some(composed) = &mut self.composed {
-            composed.draw(scene, transform, text_renderer, theme, presence);
-        }
-    }
-
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
-        if let Some(composed) = &mut self.composed
-            && let Ok(children) = ctx.taffy.children(ctx.node_id)
-            && let Some(&child) = children.first()
-        {
-            composed.handle_event(event, &mut ctx.reborrow(ctx.path, child));
-        }
-    }
-
-    fn children(&self) -> Vec<&dyn Widget> {
-        self.composed
-            .as_ref()
-            .map(|child| child.as_ref() as &dyn Widget)
-            .into_iter()
-            .collect()
-    }
-
-    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        self.composed
-            .as_mut()
-            .map(|child| child.as_mut() as &mut (dyn Widget + '_))
-            .into_iter()
-            .collect()
-    }
+    ui::forward_to_composed!(composed);
 
     fn name(&self) -> &'static str {
         "SetupApp"
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.rect
     }
 
     fn needs_idle_sync(&self) -> bool {
@@ -3200,11 +3131,7 @@ impl Widget for SetupApp {
     }
 
     fn take_structure_dirty(&mut self) -> bool {
-        std::mem::take(&mut self.structure_dirty)
-            || self
-                .composed
-                .as_mut()
-                .is_some_and(|child| child.take_structure_dirty())
+        std::mem::take(&mut self.structure_dirty) || self.composed.take_structure_dirty()
     }
 }
 
@@ -3314,7 +3241,8 @@ pub(crate) fn mount(
 }
 
 // View fixtures depend on the Unix installer and cache worker test adapters.
-#[cfg(all(test, unix))]
+#[cfg(test)]
+#[cfg(unix)]
 mod tests {
     use std::path::PathBuf;
 

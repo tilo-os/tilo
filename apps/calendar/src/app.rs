@@ -20,6 +20,7 @@
 
 use automerge::transaction::Transactable;
 use std::collections::{HashMap, HashSet};
+use ui::widget::TaffyTreeExt;
 
 /// The files the calendar imports and exports.
 fn ics_filter() -> ui::portal::FileFilter {
@@ -280,9 +281,6 @@ pub struct CalendarApp {
     /// Shots-only: spawn a fresh event on the first sync so the offscreen
     /// renderer can capture the New-Event form. No effect on live runtime.
     staged_new_event: bool,
-    /// A deterministic visual form state should not include a transient toast
-    /// that only exists after an interactive creation action.
-    shots_suppress_status: bool,
     /// Shots-only: open this popover once the form is bound.
     staged_popover: Option<FormPopover>,
     /// Shots-only: open the calendar dropdown once the form is bound.
@@ -474,7 +472,6 @@ impl CalendarApp {
                 .with_accessible_name("Month"),
             search_opener: ui::search::SearchOpener::new(),
             staged_new_event: false,
-            shots_suppress_status: false,
             staged_popover: None,
             shots_pending_calendar_menu: false,
             shots_detail_scroll_to_end: false,
@@ -570,13 +567,6 @@ impl CalendarApp {
         }
     }
 
-    /// Pin the week/day timeline scroll to `hour` for a screenshot (`0.0` = top
-    /// of the day, `24.0` = clamped to the bottom). Proves the full 24h scrolls.
-    pub fn shots_scroll_timeline(&mut self, hour: f64) {
-        self.timeline.pin_hour(hour);
-        self.dirty = true;
-    }
-
     /// Show the calendar screen (close the detail panel) for a screenshot.
     pub fn shots_show_calendar(&mut self) {
         self.detail_open = false;
@@ -648,30 +638,6 @@ impl CalendarApp {
         }
     }
 
-    /// Show the Today task list in the sidebar for a screenshot.
-    pub fn shots_show_task_list(&mut self) {
-        self.list_sel = Some(ListSel::Today);
-        self.dirty = true;
-    }
-
-    /// Open the sidebar's overflow menu for a screenshot.
-    pub fn shots_open_sidebar_menu(&mut self) {
-        self.shots_pending_sidebar_menu = true;
-        self.dirty = true;
-    }
-
-    /// Open the sidebar drawer for a screenshot of a narrow window.
-    pub fn shots_open_flap(&mut self) {
-        self.sidebar.open_after_layout();
-        self.dirty = true;
-    }
-
-    /// Collapse the persistent sidebar for a screenshot (wide layout only).
-    pub fn shots_collapse_sidebar(&mut self) {
-        self.sidebar.set_collapsed(true);
-        self.dirty = true;
-    }
-
     /// Deterministic transport-state presentation for visual regression shots.
     pub fn shots_set_sync_state(&mut self, state: &str) {
         self.syncing = state == "syncing";
@@ -687,63 +653,10 @@ impl CalendarApp {
         self.dirty = true;
     }
 
-    /// Add a deterministic overlapping event to the demo model for visual
-    /// review of the editor's local scheduling warning. This is screenshot
-    /// staging only: the live app never fabricates a conflicting booking.
-    pub fn shots_show_schedule_conflict(&mut self) {
-        let Some(Sel::Event(id)) = self.selection else {
-            return;
-        };
-        let Some(edited) = self.model.event(id).cloned() else {
-            return;
-        };
-        let mut overlapping = edited.clone();
-        overlapping.id = Uuid::new_v4();
-        overlapping.title = "Design review follow-up".into();
-        overlapping.start = edited.start + Duration::minutes(15);
-        overlapping.end = edited.end + Duration::minutes(30);
-        overlapping.recurrence = Recurrence::Weekly;
-        self.model.events.push(overlapping);
-        self.detail_open = true;
-        self.dirty = true;
-    }
-
-    /// Create a fresh event on the next sync and open its edit form — the
-    /// New-Event screenshot. The event has an empty title (so the field shows
-    /// its placeholder) and empty notes (so the notes editor shows its hint).
-    pub fn shots_new_event(&mut self) {
-        self.staged_new_event = true;
-        self.shots_suppress_status = true;
-        self.dirty = true;
-    }
-
-    /// Open the start-date grid popover over the New-Event form for a
-    /// screenshot of the date picker.
-    pub fn shots_open_date_popover(&mut self) {
-        self.staged_new_event = true;
-        self.staged_popover = Some(FormPopover::StartDate);
-        self.dirty = true;
-    }
-
-    /// Open the start-time spinner popover over the New-Event form for a
-    /// screenshot.
-    pub fn shots_open_time_popover(&mut self) {
-        self.staged_new_event = true;
-        self.staged_popover = Some(FormPopover::StartTime);
-        self.dirty = true;
-    }
-
     /// Open the calendar dropdown of a new event's form for a screenshot.
     pub fn shots_open_calendar_popover(&mut self) {
         self.staged_new_event = true;
         self.shots_pending_calendar_menu = true;
-        self.dirty = true;
-    }
-
-    /// Scroll the event sheet to its lower bound after layout, for a truthful
-    /// visual proof that large-text content below the fold remains reachable.
-    pub fn shots_scroll_detail_to_end(&mut self) {
-        self.shots_detail_scroll_to_end = true;
         self.dirty = true;
     }
 
@@ -3758,34 +3671,19 @@ impl Widget for CalendarApp {
         // comment) — and `Widget::build_layout` returns a bare `NodeId`
         // across every implementor, so there is nowhere to surface a
         // theoretical error.
-        #[allow(
-            clippy::unwrap_used,
-            reason = "child was just built in this tree; see ui::widget::TaffyTreeExt"
-        )]
-        let root = taffy
-            .new_with_children(
-                Style {
-                    size: Size {
-                        width: Dimension::percent(1.0),
-                        height: Dimension::percent(1.0),
-                    },
-                    ..Default::default()
-                },
-                &[editor_node],
-            )
-            .unwrap();
-        node_map.insert(root, std::ptr::from_mut::<dyn Widget>(self));
-        root
+        let style = Style {
+            size: Size {
+                width: Dimension::percent(1.0),
+                height: Dimension::percent(1.0),
+            },
+            ..Default::default()
+        };
+        taffy.widget_node(style, &[editor_node], node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let layout = taffy.layout(node).copied().unwrap_or_default();
-        let new_rect = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
-            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
-        );
+        let new_rect = ui::widget::placed(&layout, origin);
         let size_changed = (new_rect.width() - self.rect.width()).abs() > f64::EPSILON
             || (new_rect.height() - self.rect.height()).abs() > f64::EPSILON;
         if size_changed {

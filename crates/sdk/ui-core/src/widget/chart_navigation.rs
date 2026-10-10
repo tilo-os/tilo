@@ -1,7 +1,7 @@
-//! Shared keyboard semantics for interactive chart widgets.
+//! Shared pointer, touch and keyboard semantics for interactive chart widgets.
 
 use vello::kurbo::Point;
-use winit::event::{ElementState, KeyEvent, TouchPhase, WindowEvent};
+use winit::event::{ElementState, KeyEvent, MouseButton, TouchPhase, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -131,6 +131,109 @@ pub fn moved_item(
 ) -> Option<usize> {
     let position = current.and_then(|current| items.iter().position(|item| *item == current));
     moved_index(position, items.len(), action).and_then(|position| items.get(position).copied())
+}
+
+/// The item key an accessibility `Activate` at `keys` targets: the last key.
+/// Any other action, or an empty path, targets nothing.
+pub(crate) fn activated_key(action: &crate::a11y::Action, keys: &[u64]) -> Option<u64> {
+    if matches!(action, crate::a11y::Action::Activate) {
+        keys.last().copied()
+    } else {
+        None
+    }
+}
+
+/// The id among `ids` whose accessibility key an `Activate` at `keys` targets.
+pub(crate) fn activated_id<I: std::hash::Hash>(
+    action: &crate::a11y::Action,
+    keys: &[u64],
+    ids: impl IntoIterator<Item = I>,
+) -> Option<I> {
+    let key = activated_key(action, keys)?;
+    ids.into_iter().find(|id| crate::a11y::hash_key(id) == key)
+}
+
+/// What a chart supplies so [`handle_chart_event`] can drive its hover,
+/// activation and keyboard inspection.
+pub(crate) trait InteractiveChart {
+    /// The last pointer position (the inspected item's anchor while the
+    /// keyboard drives), whether the keyboard chose the hovered item, and the
+    /// touch tracker.
+    fn interaction(&mut self) -> (&mut Point, &mut bool, &mut ChartTouchTracker);
+    /// Hovers whatever lies under the pointer.
+    fn update_hover(&mut self);
+    fn clear_hover(&mut self);
+    /// Activates the hovered item; false when nothing activatable is hovered.
+    fn activate_hovered(&mut self) -> bool;
+    /// Steps the hovered item for any action but `Activate` and anchors the
+    /// pointer on it; returns whether an item is now inspected.
+    fn move_keyboard_inspection(&mut self, action: ChartNavAction) -> bool;
+    /// Toggles the legend entry under `point`, if the chart has one there.
+    fn toggle_legend_at(&mut self, _point: Point) -> bool {
+        false
+    }
+}
+
+/// Hover follows the mouse or finger, a click or tap toggles a legend entry
+/// or activates the hovered item, and keys step through the items. Leaving
+/// the window keeps an item the keyboard chose.
+pub(crate) fn handle_chart_event(
+    chart: &mut impl InteractiveChart,
+    event: &WindowEvent,
+    ctx: &mut crate::widget::EventCtx<'_>,
+) {
+    let claim = |ctx: &mut crate::widget::EventCtx<'_>| {
+        *ctx.handled = true;
+        *ctx.focus_target = Some(ctx.node_id);
+    };
+    if let Some(action) = chart.interaction().2.handle(event, ctx.scale_factor) {
+        match action {
+            ChartTouchAction::Inspect(point) => {
+                *chart.interaction().0 = point;
+                chart.update_hover();
+                *chart.interaction().1 = false;
+            }
+            ChartTouchAction::Activate(point) => {
+                *chart.interaction().0 = point;
+                chart.update_hover();
+                if chart.toggle_legend_at(point) || chart.activate_hovered() {
+                    claim(ctx);
+                }
+            }
+            ChartTouchAction::Clear => chart.clear_hover(),
+        }
+        return;
+    }
+    match event {
+        WindowEvent::CursorMoved { position, .. } => {
+            *chart.interaction().0 =
+                Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+            chart.update_hover();
+            *chart.interaction().1 = false;
+        }
+        WindowEvent::CursorLeft { .. } if !*chart.interaction().1 => chart.clear_hover(),
+        WindowEvent::MouseInput {
+            state: ElementState::Released,
+            button: MouseButton::Left,
+            ..
+        } => {
+            let pointer = *chart.interaction().0;
+            if chart.toggle_legend_at(pointer) || chart.activate_hovered() {
+                claim(ctx);
+            }
+        }
+        _ => {
+            let Some(action) = chart_nav_action(event) else {
+                return;
+            };
+            if action == ChartNavAction::Activate {
+                let _ = chart.activate_hovered();
+            } else {
+                *chart.interaction().1 = chart.move_keyboard_inspection(action);
+            }
+            claim(ctx);
+        }
+    }
 }
 
 #[cfg(test)]

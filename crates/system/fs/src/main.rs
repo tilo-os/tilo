@@ -1,15 +1,13 @@
 #![cfg_attr(
     test,
     allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
         clippy::string_slice,
-        clippy::panic,
         clippy::unreachable,
         reason = "in a test these are the assertion, not a hazard"
     )
 )]
+
+mod workspace_startup;
 
 use anyhow::{Context, Result, bail};
 use clap::{Args, Parser, Subcommand};
@@ -59,9 +57,10 @@ struct Cli {
 #[cfg(test)]
 mod share_mount_tests {
     use super::*;
-    use collab_types::{
-        ContentHash, Ed25519PublicKey, FileActor, FileMetadataV1, FileProvenance, FileRecordId,
-        FileVersionId, FileVersionV1, IndexStatus, PreviewStatus, PreviewVariant,
+    use collab_types::Ed25519PublicKey;
+    use fs_protocol::{
+        ContentHash, FileActor, FileMetadataV1, FileProvenance, FileRecordId, FileVersionId,
+        FileVersionV1, IndexStatus, PreviewStatus, PreviewVariant,
     };
 
     fn actor() -> FileActor {
@@ -193,8 +192,8 @@ mod share_mount_tests {
                 index_status: IndexStatus::Indexed,
                 properties: None,
             }),
-            content_revision: Some(collab_types::ContentRevisionV1 {
-                schema_version: collab_types::CONTENT_REVISION_VERSION,
+            content_revision: Some(fs_protocol::ContentRevisionV1 {
+                schema_version: fs_protocol::CONTENT_REVISION_VERSION,
                 record_id,
                 version_id: child,
                 content_hash: Some(ContentHash([0x33; 32])),
@@ -250,8 +249,8 @@ mod share_mount_tests {
             second
                 .versions
                 .push(version(record_id, next, vec![prior], 0x55));
-            second.content_revision = Some(collab_types::ContentRevisionV1 {
-                schema_version: collab_types::CONTENT_REVISION_VERSION,
+            second.content_revision = Some(fs_protocol::ContentRevisionV1 {
+                schema_version: fs_protocol::CONTENT_REVISION_VERSION,
                 record_id,
                 version_id: next,
                 content_hash: Some(ContentHash([0x55; 32])),
@@ -369,8 +368,16 @@ fn parse_owner(spec: &str) -> Result<(u32, u32)> {
 
 #[derive(Subcommand, Debug)]
 enum Command {
+    /// Inspect saved workspace bindings without starting transport or exposing tickets.
+    WorkspaceStatus {
+        #[arg(long)]
+        cache_dir: PathBuf,
+    },
     /// Host a collaborative workspace and mount it locally.
     Serve {
+        /// Refuse a fresh namespace; resume saved state or an authenticated discovered workspace only.
+        #[arg(long)]
+        require_existing_workspace: bool,
         /// Where to mount the workspace.
         #[arg(short, long)]
         mount_point: PathBuf,
@@ -482,6 +489,17 @@ enum Command {
         /// Filesystem executable used for supervised `mount-cloud` children.
         #[arg(long)]
         fs_binary: Option<PathBuf>,
+        /// Where to serve account control (list, sync now, pause, resume;
+        /// no file requests); defaults to
+        /// `$XDG_RUNTIME_DIR/tilo-fs-cloud/control.sock`.
+        #[arg(long)]
+        control_socket: Option<PathBuf>,
+        /// Where to serve file requests (revisions, restore, share links)
+        /// as well as account control; defaults to
+        /// `$XDG_RUNTIME_DIR/tilo-fs-cloud-files/files.sock`. Keep it out
+        /// of `--control-socket`'s directory.
+        #[arg(long)]
+        file_socket: Option<PathBuf>,
     },
     /// Serve one cloud account at `--mount-point`. The mount specification
     /// and credential arrive on stdin from `cloud-service`, never in argv.
@@ -599,7 +617,15 @@ async fn run_command() -> Result<()> {
         fs::clock::install_test_clock_file(path).context("configuring deterministic test clock")?;
     }
     match cli.command {
+        Command::WorkspaceStatus { cache_dir } => {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&workspace_startup::inspect(&cache_dir)?)?
+            );
+            Ok(())
+        }
         Command::Serve {
+            require_existing_workspace,
             mount_point,
             cache_dir,
             seed,
@@ -609,6 +635,12 @@ async fn run_command() -> Result<()> {
             acl,
             data_plane,
         } => {
+            if require_existing_workspace {
+                let cache = cache_dir
+                    .as_deref()
+                    .context("recovery requires --cache-dir")?;
+                workspace_startup::inspect(cache)?.require_existing()?;
+            }
             serve(
                 mount_point,
                 cache_dir,
@@ -676,7 +708,11 @@ async fn run_command() -> Result<()> {
             state_root,
             config_root,
             fs_binary,
+            control_socket,
+            file_socket,
         } => {
+            let control_socket = control_socket.or_else(runtime_fs::cloud::default_socket);
+            let file_socket = file_socket.or_else(runtime_fs::cloud::default_files_socket);
             let executable = match fs_binary {
                 Some(path) => path,
                 None => std::env::current_exe()?,
@@ -693,6 +729,8 @@ async fn run_command() -> Result<()> {
                         config_root,
                         mounts_root,
                         state_root,
+                        control_socket,
+                        file_socket,
                     },
                     Box::new(fs::cloud::ProcessLauncher {
                         executable,
@@ -1634,7 +1672,7 @@ async fn serve(
     let transport_identity =
         FsTransportIdentity::new(credentials.clone(), Arc::clone(&revocations))
             .with_transport_gate(transport_gate);
-    let history_actor = collab_types::FileActor {
+    let history_actor = fs_protocol::FileActor {
         person: collab_types::Ed25519PublicKey(credentials.user_public_key()),
         device: collab_types::Ed25519PublicKey(credentials.device_public_key()),
     };
@@ -1730,38 +1768,30 @@ async fn serve(
     // The serving owner is the authority publisher. A capability file may
     // bootstrap its first signed revision, but every peer thereafter enforces
     // the durable governor-signed state exposed by the authority ALPN.
-    if remote_ticket.is_none()
-        && let (Some(records), Some(cache_dir), Some(acl_path), Some(governor)) = (
-            record_services.as_mut(),
-            cache_dir.as_ref(),
-            acl_args.acl.as_ref(),
-            share_issuer.as_ref(),
-        )
-    {
-        let capabilities = serde_json::from_slice(&std::fs::read(acl_path)?)
-            .context("parse workspace authority bootstrap capabilities")?;
+    if let (Some(records), Some(cache_dir)) = (record_services.as_mut(), cache_dir.as_ref()) {
         let principals = acl_args
             .principals
             .iter()
             .map(|principal| parse_principal(principal))
             .collect::<Result<Vec<_>>>()?;
-        let authority = Arc::new(WorkspaceAuthority::open(
-            cache_dir.join("workspace-authority.bin"),
+        let bootstrap = acl_args
+            .acl
+            .as_ref()
+            .filter(|_| remote_ticket.is_none())
+            .zip(share_issuer.as_ref())
+            .map(|(path, signer)| -> Result<_> {
+                let capabilities = serde_json::from_slice(&std::fs::read(path)?)
+                    .context("parse workspace authority bootstrap capabilities")?;
+                Ok((capabilities, signer))
+            })
+            .transpose()?;
+        records.workspace_authority = workspace_startup::owner_authority(
+            cache_dir,
             workspace_id,
-            governor.verifying_key().to_bytes(),
             credentials.user_public_key(),
             principals,
-        )?);
-        if authority.current().is_none() {
-            authority.apply(WorkspaceAuthorityEnvelope::sign(
-                workspace_id,
-                1,
-                capabilities,
-                false,
-                governor,
-            )?)?;
-        }
-        records.workspace_authority = Some(authority);
+            bootstrap,
+        )?;
     }
     let record_publisher = record_repository
         .clone()
@@ -2086,7 +2116,7 @@ fn initialize_owner_record_authority(
     namespace: Arc<Mutex<Namespace>>,
     hydrator: Arc<Hydrator>,
     history: Arc<FileHistoryStore>,
-    actor: collab_types::FileActor,
+    actor: fs_protocol::FileActor,
     publisher: Arc<RecordPublisher>,
 ) -> Result<()> {
     let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
@@ -2150,7 +2180,7 @@ async fn mount(
     let (device, credentials) = certified.into_parts();
     let transport_identity = FsTransportIdentity::new(credentials.clone(), revocations)
         .with_transport_gate(transport_gate);
-    let history_actor = collab_types::FileActor {
+    let history_actor = fs_protocol::FileActor {
         person: collab_types::Ed25519PublicKey(credentials.user_public_key()),
         device: collab_types::Ed25519PublicKey(credentials.device_public_key()),
     };
@@ -2310,7 +2340,7 @@ enum SharedCredential {
 }
 
 impl SharedCredential {
-    fn invite(&self) -> &collab_types::FileInviteV1 {
+    fn invite(&self) -> &fs_protocol::FileInviteV1 {
         match self {
             Self::Bearer(link) => &link.invite,
             Self::Named(envelope) => &envelope.invite,
@@ -2359,7 +2389,7 @@ async fn mount_share(
     let certified = load_certified_mount_identity(&paths, unix_now_ns())?;
     let revocations = Arc::new(RwLock::new(load_revocation_list(&paths)?));
     let (device, credentials) = certified.into_parts();
-    let actor = collab_types::FileActor {
+    let actor = fs_protocol::FileActor {
         person: collab_types::Ed25519PublicKey(credentials.user_public_key()),
         device: collab_types::Ed25519PublicKey(credentials.device_public_key()),
     };
@@ -2874,7 +2904,7 @@ impl SharedFetchError {
 )] // Registry update and persistence are one mutation.
 fn track_shared_revision(
     availability: Option<&Arc<Mutex<fs::AvailabilityRegistry>>>,
-    revision: collab_types::ContentRevisionV1,
+    revision: fs_protocol::ContentRevisionV1,
 ) -> Result<()> {
     let Some(availability) = availability else {
         return Ok(());
@@ -2904,7 +2934,7 @@ fn track_shared_revision(
 async fn refresh_host_replica_observation(
     client: &RecordProtocolClient,
     link: &FileShareLinkV2,
-    revision: collab_types::ContentRevisionV1,
+    revision: fs_protocol::ContentRevisionV1,
     availability: Option<&Arc<Mutex<fs::AvailabilityRegistry>>>,
     local_device: collab_types::Ed25519PublicKey,
 ) -> Result<()> {
@@ -2994,7 +3024,7 @@ fn apply_shared_snapshot(
         if let Some(preview) = metadata
             .previews
             .iter()
-            .filter(|preview| preview.status == collab_types::PreviewStatus::Ready)
+            .filter(|preview| preview.status == fs_protocol::PreviewStatus::Ready)
             .filter_map(|preview| preview.hash.map(|hash| (preview.max_edge, hash)))
             .max_by_key(|(max_edge, _)| *max_edge)
         {
@@ -3014,7 +3044,7 @@ fn apply_shared_snapshot(
 /// than exposing an unrelated file through the read-only FUSE mount.
 fn validate_shared_namespace(
     namespace: &mut Namespace,
-    expected_record: collab_types::FileRecordId,
+    expected_record: fs_protocol::FileRecordId,
     allow_empty: bool,
 ) -> Result<()> {
     let mut entries = namespace
@@ -3073,7 +3103,7 @@ fn append_snapshot_history(
     Ok(())
 }
 
-fn shared_record_name(record_id: collab_types::FileRecordId, mime: Option<&str>) -> String {
+fn shared_record_name(record_id: fs_protocol::FileRecordId, mime: Option<&str>) -> String {
     let extension = match mime.unwrap_or_default() {
         "image/png" => ".png",
         "image/jpeg" => ".jpg",
@@ -3370,7 +3400,7 @@ struct MountServices {
     availability: Option<Arc<Mutex<fs::AvailabilityRegistry>>>,
     eviction_queue: Option<Arc<tokio::sync::Mutex<fs::eviction::EvictionQueue>>>,
     share_authority: Option<Arc<ShareAuthority>>,
-    history: Option<(Arc<FileHistoryStore>, collab_types::FileActor)>,
+    history: Option<(Arc<FileHistoryStore>, fs_protocol::FileActor)>,
     record_publisher: Option<Arc<RecordPublisher>>,
     replacement_transactions: Option<(Arc<Mutex<fs::RecordTransactionJournal>>, PathBuf)>,
     rebind: Option<tokio::sync::mpsc::UnboundedReceiver<()>>,

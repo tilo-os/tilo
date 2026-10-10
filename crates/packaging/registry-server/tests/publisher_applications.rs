@@ -16,6 +16,7 @@ use registry_server::applications::{self, ApplicationFailure, ProofSource};
 use registry_server::serve::ServeOptions;
 use registry_server::{AppState, ServerIdentity, Storage, bind_and_run};
 use registry_types::application::{NamespaceClaim, PublisherApplication, proof_token};
+use tilo_clock::try_unix_now;
 
 #[derive(Clone, Default)]
 struct Proofs(Arc<Mutex<BTreeMap<String, Vec<String>>>>);
@@ -42,13 +43,6 @@ impl ProofSource for Proofs {
     }
 }
 
-fn unix_now() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_secs()
-}
-
 fn application(key: &SigningKey) -> PublisherApplication {
     let mut application = PublisherApplication {
         pubkey_hex: String::new(),
@@ -57,7 +51,7 @@ fn application(key: &SigningKey) -> PublisherApplication {
         }],
         contact: "ada@example.com".into(),
         note: "Ada's apps".into(),
-        submitted_at_unix: unix_now(),
+        submitted_at_unix: try_unix_now().unwrap(),
         signature_hex: String::new(),
     };
     application.sign(key);
@@ -66,7 +60,8 @@ fn application(key: &SigningKey) -> PublisherApplication {
 
 fn owner_approves_only_while_proven(storage: &Storage, pubkey: &str, proofs: &Proofs) {
     proofs.set_txt("_tilo-publisher.example.com", Vec::new());
-    let withdrawn = applications::approve(storage, pubkey, "owner", unix_now(), proofs);
+    let withdrawn =
+        applications::approve(storage, pubkey, "owner", try_unix_now().unwrap(), proofs);
     assert!(
         matches!(withdrawn, Err(ApplicationFailure::Rejected(_))),
         "{withdrawn:?}"
@@ -74,14 +69,15 @@ fn owner_approves_only_while_proven(storage: &Storage, pubkey: &str, proofs: &Pr
     assert!(storage.load_allowlist().unwrap().publishers.is_empty());
 
     proofs.set_txt("_tilo-publisher.example.com", vec![proof_token(pubkey)]);
-    let (_, row) = applications::approve(storage, pubkey, "owner", unix_now(), proofs).unwrap();
+    let (_, row) =
+        applications::approve(storage, pubkey, "owner", try_unix_now().unwrap(), proofs).unwrap();
     assert!(row.can_add_new);
     assert_eq!(row.namespaces, ["com.example"]);
     assert!(row.owns_package_id("com.example.notes"));
     assert!(!row.owns_package_id("so.tilo.notes"));
     assert_eq!(storage.load_allowlist().unwrap().publishers, [row]);
     assert!(matches!(
-        applications::approve(storage, pubkey, "owner", unix_now(), proofs),
+        applications::approve(storage, pubkey, "owner", try_unix_now().unwrap(), proofs),
         Err(ApplicationFailure::NotPending(_))
     ));
 }

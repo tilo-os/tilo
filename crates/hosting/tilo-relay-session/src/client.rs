@@ -28,6 +28,7 @@ use crate::transport::{
 };
 
 use crate::session_carrier::{CarrierHandle, IrohCarrier, SessionChannels};
+use tilo_delivery_protocol::peer_actions::SignedDirectedAction;
 use tilo_delivery_protocol::transport_v2::{EnvelopeV2, SessionReader};
 
 /// Authenticated relay delivery, never constructible from application payloads.
@@ -35,15 +36,29 @@ use tilo_delivery_protocol::transport_v2::{EnvelopeV2, SessionReader};
 pub struct CertifiedAction {
     action: tilo_delivery_protocol::peer_actions::DirectedAction,
     certificate: DeviceCert,
+    // Boxed: the signed bytes would otherwise make every delivery event as
+    // large as the largest one.
+    signed: Option<Box<SignedDirectedAction>>,
 }
 impl CertifiedAction {
     /// Exact source-bound private request.
     pub fn action(&self) -> &tilo_delivery_protocol::peer_actions::DirectedAction {
         &self.action
     }
-    /// Certificate retained from the relay's mutually authenticated source.
+    /// Certificate the relay attached for the session's authenticated source.
+    /// The relay can attach any certificate it has seen; only [`Self::signed`]
+    /// proves the certificate's device sent this action.
     pub fn certificate(&self) -> &DeviceCert {
         &self.certificate
+    }
+    /// The source device's signature over exactly [`Self::action`], already
+    /// verified against [`Self::certificate`]'s device key on receipt. `None`
+    /// for an unsigned delivery, which a broker may serve only for an
+    /// effect-free read ([`ActionMessage::requires_signature`]).
+    ///
+    /// [`ActionMessage::requires_signature`]: tilo_delivery_protocol::peer_actions::ActionMessage::requires_signature
+    pub fn signed(&self) -> Option<&SignedDirectedAction> {
+        self.signed.as_deref()
     }
 }
 /// Private session control or opaque authenticated delivery.
@@ -73,6 +88,12 @@ pub struct RelayClient {
     own_device: [u8; 32],
     action_outbound: Option<mpsc::Sender<EnvelopeV2>>,
     action_inbound: Arc<AsyncMutex<mpsc::Receiver<EnvelopeV2>>>,
+    /// This device's key, present only when the relay negotiated
+    /// [`ALPN_SIGNED_ACTIONS_V1`]: every private action this device sends
+    /// as its own source is then signed with it.
+    ///
+    /// [`ALPN_SIGNED_ACTIONS_V1`]: tilo_delivery_protocol::transport_v2::ALPN_SIGNED_ACTIONS_V1
+    action_key: Option<ed25519_dalek::SigningKey>,
     /// Owns the authenticated pump's transport lifetime, independently of the
     /// canonical state/private channels and their certification rules.
     carrier: CarrierHandle,
@@ -96,11 +117,13 @@ struct ExpectedServer {
 
 /// This device's own relay credential: its certificate, the signer holding
 /// its device key (a key in memory, or a browser's non-extractable one) and
-/// the revocation list it checks the server against.
+/// the revocation list it checks the server against. A private-action
+/// session also holds the key itself, to sign each action it sends.
 struct ClientCredentials<'a> {
     cert: DeviceCert,
     signer: &'a dyn DeviceSigner,
     revocations: RevocationList,
+    action_key: Option<ed25519_dalek::SigningKey>,
 }
 
 fn state_in_scope(scope: &InteractiveWorkspaceScope, envelope: &Envelope) -> bool {
@@ -144,6 +167,7 @@ fn state_in_scope(scope: &InteractiveWorkspaceScope, envelope: &Envelope) -> boo
 fn action_in_scope(scope: &InteractiveWorkspaceScope, envelope: &EnvelopeV2) -> bool {
     match envelope {
         EnvelopeV2::State(state) => state_in_scope(scope, state),
+        EnvelopeV2::UnsignedDelta { workspace_id, .. } => *workspace_id == scope.workspace_id,
         EnvelopeV2::EnableActions { room }
         | EnvelopeV2::ActionsReady { room, .. }
         | EnvelopeV2::Unavailable { room, .. }
@@ -152,6 +176,10 @@ fn action_in_scope(scope: &InteractiveWorkspaceScope, envelope: &EnvelopeV2) -> 
         EnvelopeV2::Directed(action)
         | EnvelopeV2::Delivered { action, .. }
         | EnvelopeV2::CertifiedDelivered { action, .. } => action.room == scope.room,
+        EnvelopeV2::SignedDirected(signed)
+        | EnvelopeV2::CertifiedSignedDelivered { action: signed, .. } => {
+            signed.action().room == scope.room
+        }
     }
 }
 
@@ -232,8 +260,12 @@ fn classify_connect_error(error: &iroh::endpoint::ConnectError) -> ClientError {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum RelayWireProtocol {
+    /// [`Self::TiloV2Signed`] whose zero-signature deltas omit the signature.
+    TiloV2Compact,
+    /// v2 with device-signed private actions.
+    TiloV2Signed,
     TiloV2,
     TiloV1,
 }
@@ -241,13 +273,58 @@ enum RelayWireProtocol {
 impl RelayWireProtocol {
     fn alpn(self) -> &'static [u8] {
         match self {
+            Self::TiloV2Compact => tilo_delivery_protocol::transport_v2::ALPN_COMPACT_STATE_V1,
+            Self::TiloV2Signed => tilo_delivery_protocol::transport_v2::ALPN_SIGNED_ACTIONS_V1,
             Self::TiloV2 => tilo_delivery_protocol::transport_v2::ALPN_AGENT_READS_V1,
             Self::TiloV1 => ALPN,
         }
     }
 
     fn is_v2(self) -> bool {
-        matches!(self, Self::TiloV2)
+        self.framing().is_v2()
+    }
+
+    fn signs_actions(self) -> bool {
+        matches!(self, Self::TiloV2Compact | Self::TiloV2Signed)
+    }
+
+    fn framing(self) -> tilo_delivery_protocol::transport_v2::StateFraming {
+        use tilo_delivery_protocol::transport_v2::StateFraming;
+        match self {
+            Self::TiloV2Compact => StateFraming::Compact,
+            Self::TiloV2Signed | Self::TiloV2 => StateFraming::V2,
+            Self::TiloV1 => StateFraming::V1,
+        }
+    }
+
+    /// The protocol a relay that does not speak this one may still speak.
+    /// Compact state degrades to the full delta envelope, and signing to
+    /// unsigned actions, which current brokers serve for effect-free reads
+    /// only.
+    fn fallback(self) -> Option<Self> {
+        match self {
+            Self::TiloV2Compact => Some(Self::TiloV2Signed),
+            Self::TiloV2Signed => Some(Self::TiloV2),
+            Self::TiloV2 | Self::TiloV1 => None,
+        }
+    }
+}
+
+/// Dial `protocol`, falling back along [`RelayWireProtocol::fallback`] while
+/// the relay offers no such ALPN. Every other failure is returned as is.
+async fn dial(
+    endpoint: &Endpoint,
+    relay_addr: EndpointAddr,
+    mut protocol: RelayWireProtocol,
+) -> Result<(iroh::endpoint::Connection, RelayWireProtocol), ClientError> {
+    loop {
+        match endpoint.connect(relay_addr.clone(), protocol.alpn()).await {
+            Ok(conn) => return Ok((conn, protocol)),
+            Err(error) => match (classify_connect_error(&error), protocol.fallback()) {
+                (ClientError::UnsupportedProtocol, Some(older)) => protocol = older,
+                (error, _) => return Err(error),
+            },
+        }
     }
 }
 
@@ -297,7 +374,7 @@ impl RelayClient {
             &ack,
             &expected_server_user,
             &revocations,
-            tilo_delivery_protocol::clock::now_ns(),
+            tilo_clock::unix_now_ns(),
             &nonce,
         )?;
         if ack.cert.device_public_key != expected_server_device {
@@ -445,19 +522,12 @@ impl RelayClient {
         let ack: HelloAck = postcard::from_bytes(&read_frame(&mut recv, MAX_FRAME_BYTES).await?)
             .map_err(|error| ClientError::Codec(error.to_string()))?;
         match expected_server.as_ref() {
-            Some((user, _)) => auth::verify_hello_ack(
-                &ack,
-                user,
-                &revocations,
-                tilo_delivery_protocol::clock::now_ns(),
-                &nonce,
-            )?,
-            None => auth::verify_pinned_host_ack(
-                &ack,
-                &revocations,
-                tilo_delivery_protocol::clock::now_ns(),
-                &nonce,
-            )?,
+            Some((user, _)) => {
+                auth::verify_hello_ack(&ack, user, &revocations, tilo_clock::unix_now_ns(), &nonce)?
+            }
+            None => {
+                auth::verify_pinned_host_ack(&ack, &revocations, tilo_clock::unix_now_ns(), &nonce)?
+            }
         };
         if let Some((_, expected_device)) = expected_server
             && ack.cert.device_public_key != expected_device
@@ -630,6 +700,7 @@ impl RelayClient {
                 cert: own_cert,
                 signer,
                 revocations,
+                action_key: None,
             },
             RelayWireProtocol::TiloV1,
         )
@@ -657,6 +728,7 @@ impl RelayClient {
                 cert: own_cert,
                 signer: &own_sk,
                 revocations,
+                action_key: None,
             },
             RelayWireProtocol::TiloV1,
         )
@@ -691,8 +763,9 @@ impl RelayClient {
                 cert: own_cert,
                 signer: &own_sk,
                 revocations,
+                action_key: Some(own_sk.clone()),
             },
-            RelayWireProtocol::TiloV2,
+            RelayWireProtocol::TiloV2Compact,
         )
         .await
     }
@@ -736,8 +809,9 @@ impl RelayClient {
                 cert: own_cert,
                 signer: &own_sk,
                 revocations,
+                action_key: Some(own_sk.clone()),
             },
-            RelayWireProtocol::TiloV2,
+            RelayWireProtocol::TiloV2Compact,
         )
         .await
     }
@@ -762,18 +836,16 @@ impl RelayClient {
             cert: own_cert,
             signer,
             revocations,
+            action_key,
         } = credentials;
         if signer.device_public_key() != own_cert.device_public_key {
             return Err(ClientError::Sign(
                 "signer does not hold the certified device key".into(),
             ));
         }
-        let v2 = protocol.is_v2();
         let endpoint_keepalive = endpoint.clone();
-        let conn = endpoint
-            .connect(relay_addr, protocol.alpn())
-            .await
-            .map_err(|error| classify_connect_error(&error))?;
+        let (conn, protocol) = dial(&endpoint, relay_addr, protocol).await?;
+        let v2 = protocol.is_v2();
         let (mut send, mut recv) = conn
             .open_bi()
             .await
@@ -795,7 +867,7 @@ impl RelayClient {
         let ack_bytes = read_frame(&mut recv, MAX_FRAME_BYTES).await?;
         let ack: HelloAck =
             postcard::from_bytes(&ack_bytes).map_err(|e| ClientError::Codec(e.to_string()))?;
-        let now_ns = tilo_delivery_protocol::clock::now_ns();
+        let now_ns = tilo_clock::unix_now_ns();
         let relay_peer = if let Some(scope) = interactive_scope.as_ref() {
             auth::verify_interactive_owner_ack(
                 &ack,
@@ -837,7 +909,7 @@ impl RelayClient {
         let (inbound_tx, inbound_rx) = mpsc::channel::<Envelope>(256);
         let (action_tx, mut action_rx) = mpsc::channel::<EnvelopeV2>(32);
         let (action_inbound_tx, action_inbound_rx) = mpsc::channel::<EnvelopeV2>(32);
-        let mut reader = SessionReader::new(recv, v2);
+        let mut reader = SessionReader::framed(recv, protocol.framing());
         let pump_connection = conn.clone();
         let pump_scope = interactive_scope.clone();
         let pump = n0_future::task::spawn(async move {
@@ -950,6 +1022,9 @@ impl RelayClient {
         // Install the verified interactive scope before exposing the client.
         // Keep the carrier assembly boundary independent of trust DTOs.
         client.workspace_scope = interactive_scope;
+        if protocol.signs_actions() {
+            client.action_key = action_key;
+        }
         Ok(client)
     }
 
@@ -974,6 +1049,7 @@ impl RelayClient {
             own_device,
             action_outbound: channels.action_outbound,
             action_inbound: Arc::new(AsyncMutex::new(channels.action_inbound)),
+            action_key: None,
             carrier,
         }
     }
@@ -1044,40 +1120,69 @@ impl RelayClient {
                 "interactive owner trust does not cover this action room".into(),
             ));
         }
+        let frame = self.sign_own_action(frame)?;
         tilo_delivery_protocol::transport_v2::encode(&frame)
             .map_err(|e| ClientError::Codec(e.to_string()))?;
         tx.try_send(frame)
             .map_err(|error| private_send_error(&error))
     }
 
+    /// Sign a private action this device sends as its own source, when the
+    /// relay negotiated signed actions. An action naming another source stays
+    /// unsigned: the relay refuses it as it always has.
+    fn sign_own_action(&self, frame: EnvelopeV2) -> Result<EnvelopeV2, ClientError> {
+        match (frame, &self.action_key) {
+            (EnvelopeV2::Directed(action), Some(key))
+                if action.source == key.verifying_key().to_bytes() =>
+            {
+                SignedDirectedAction::sign(&action, tilo_clock::unix_now_ns(), key)
+                    .map(EnvelopeV2::SignedDirected)
+                    .map_err(|error| ClientError::Codec(error.to_string()))
+            }
+            (frame, _) => Ok(frame),
+        }
+    }
+
     /// Receive authenticated source evidence from this exact relay session.
     /// Only this method can construct the evidence; peer control frames cannot.
+    ///
+    /// A signed delivery is accepted only if the attached certificate's device
+    /// signed exactly this action; the relay cannot author or alter one. An
+    /// unsigned delivery is evidence of the relay's word alone, and is marked
+    /// so ([`CertifiedAction::signed`] is `None`).
     pub async fn recv_certified_action(&self) -> Option<CertifiedActionEvent> {
-        match self.recv_action().await? {
+        let (action, source_certificate, signed) = match self.recv_action().await? {
             EnvelopeV2::CertifiedDelivered {
                 action,
                 source_certificate,
-            } => {
-                let cert: DeviceCert = serde_json::from_slice(&source_certificate).ok()?;
-                if action.target != self.own_device
-                    || action.source != cert.device_public_key
-                    || !action.validate()
-                    || cert.capabilities.can_act_as_host
-                    || tilo_user_identity::verify_device_cert_at(
-                        &cert,
-                        tilo_delivery_protocol::clock::now_ns(),
-                    )
-                    .is_err()
-                {
-                    return None;
-                }
-                Some(CertifiedActionEvent::Delivered(CertifiedAction {
-                    action,
-                    certificate: cert,
-                }))
-            }
-            other => Some(CertifiedActionEvent::Control(other)),
+            } => (action, source_certificate, None),
+            EnvelopeV2::CertifiedSignedDelivered {
+                action,
+                source_certificate,
+            } => (
+                action.action().clone(),
+                source_certificate,
+                Some(Box::new(action)),
+            ),
+            other => return Some(CertifiedActionEvent::Control(other)),
+        };
+        let cert: DeviceCert = serde_json::from_slice(&source_certificate).ok()?;
+        if action.target != self.own_device
+            || action.source != cert.device_public_key
+            || !action.validate()
+            || cert.capabilities.can_act_as_host
+            || tilo_user_identity::verify_device_cert_at(&cert, tilo_clock::unix_now_ns()).is_err()
+            || signed
+                .as_ref()
+                .is_some_and(|signed| signed.verify(&cert.device_public_key).is_err())
+        {
+            return None;
         }
+        Some(CertifiedActionEvent::Delivered(CertifiedAction {
+            action,
+            certificate: cert,
+            signed,
+        }))
     }
 
     /// Receive private frames; None means disconnected or v1.
@@ -1141,7 +1246,8 @@ where
     R: tokio::io::AsyncRead + Unpin,
     W: tokio::io::AsyncWrite + Unpin,
 {
-    let writing = run_v2_writer(send, states, actions, scope);
+    // Both halves of a session share the protocol the reader was built for.
+    let writing = run_v2_writer(send, states, actions, scope, reader.framing());
     let reading = run_v2_reader(reader, state_sink, action_sink, scope);
     tokio::pin!(writing);
     tokio::pin!(reading);
@@ -1156,6 +1262,7 @@ async fn run_v2_writer<W>(
     states: &mut mpsc::Receiver<Envelope>,
     actions: &mut mpsc::Receiver<EnvelopeV2>,
     scope: Option<&InteractiveWorkspaceScope>,
+    framing: tilo_delivery_protocol::transport_v2::StateFraming,
 ) -> bool
 where
     W: tokio::io::AsyncWrite + Unpin,
@@ -1179,7 +1286,8 @@ where
                 {
                     tracing::info!(phase = "client_delta_write", workspace_id, authored_at_ns);
                 }
-                let Ok(bytes) = tilo_delivery_protocol::transport_v2::encode_state(&env, true)
+                let Ok(bytes) =
+                    tilo_delivery_protocol::transport_v2::encode_state_framed(&env, framing)
                 else {
                     return false;
                 };
@@ -1763,6 +1871,22 @@ mod scheduling_tests {
             super::ClientError::UnsupportedProtocol
         ));
     }
+
+    #[test]
+    fn compact_state_degrades_to_the_full_envelope_before_signing_degrades() {
+        use super::RelayWireProtocol::{TiloV1, TiloV2, TiloV2Compact, TiloV2Signed};
+        use tilo_delivery_protocol::transport_v2::StateFraming;
+        let mut chain = vec![TiloV2Compact];
+        while let Some(older) = chain.last().and_then(|protocol| protocol.fallback()) {
+            chain.push(older);
+        }
+        assert_eq!(chain, [TiloV2Compact, TiloV2Signed, TiloV2]);
+        assert_eq!(TiloV2Compact.framing(), StateFraming::Compact);
+        assert_eq!(TiloV2Signed.framing(), StateFraming::V2);
+        assert_eq!(TiloV1.framing(), StateFraming::V1);
+        assert!(TiloV2Compact.signs_actions() && TiloV2Signed.signs_actions());
+        assert!(!TiloV2.signs_actions());
+    }
     use tilo_delivery_protocol::peer_actions::{ActionMessage, DirectedAction};
     use uuid::Uuid;
 
@@ -1989,7 +2113,8 @@ mod scheduling_tests {
     }
 }
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 mod session_carrier_tests {
     use super::*;
     use crate::session_carrier::{SessionCarrier, SessionChannels};
@@ -2058,7 +2183,7 @@ mod session_carrier_tests {
             &ack,
             &host_cert.user_public_key,
             &RevocationList::new(),
-            tilo_delivery_protocol::clock::now_ns(),
+            tilo_clock::unix_now_ns(),
             &[1; 32],
         )
         .unwrap();
@@ -2264,11 +2389,115 @@ mod session_carrier_tests {
         assert!(fixture.client.recv_certified_action().await.is_none());
     }
 
+    fn signed_request(
+        by: u8,
+        source: [u8; 32],
+    ) -> tilo_delivery_protocol::peer_actions::SignedDirectedAction {
+        let action = tilo_delivery_protocol::peer_actions::DirectedAction {
+            room: uuid::Uuid::from_u128(1),
+            request_id: uuid::Uuid::from_u128(2),
+            source: ed25519_dalek::SigningKey::from_bytes(&[by; 32])
+                .verifying_key()
+                .to_bytes(),
+            target: [30; 32],
+            message: tilo_delivery_protocol::peer_actions::ActionMessage::CatalogueRefresh {
+                scope: None,
+            },
+        };
+        let signed = tilo_delivery_protocol::peer_actions::SignedDirectedAction::sign(
+            &action,
+            tilo_clock::unix_now_ns(),
+            &ed25519_dalek::SigningKey::from_bytes(&[by; 32]),
+        )
+        .unwrap();
+        if source == action.source {
+            return signed;
+        }
+        // Re-encode the claimed source as a host would, keeping device A's signature.
+        let mut wire = postcard::to_allocvec(&signed).unwrap();
+        let at = wire
+            .windows(32)
+            .position(|window| window == action.source)
+            .unwrap();
+        wire.get_mut(at..at.saturating_add(32))
+            .unwrap()
+            .copy_from_slice(&source);
+        postcard::from_bytes(&wire).unwrap()
+    }
+
+    #[tokio::test]
+    async fn signed_delivery_is_evidence_only_under_its_source_certificate() {
+        let fixture = fixture(true);
+        let cert = certificate(40, DeviceCapabilities::primary());
+        let frame = |action| EnvelopeV2::CertifiedSignedDelivered {
+            action,
+            source_certificate: serde_json::to_vec(&cert).unwrap(),
+        };
+        let signed = signed_request(40, cert.device_public_key);
+        fixture.incoming.send(frame(signed.clone())).await.unwrap();
+        let Some(CertifiedActionEvent::Delivered(evidence)) =
+            fixture.client.recv_certified_action().await
+        else {
+            panic!("verified signed delivery missing");
+        };
+        assert_eq!(evidence.action(), signed.action());
+        assert_eq!(evidence.signed(), Some(&signed));
+        // Device 41 signs an action the host then attributes to device 40.
+        fixture
+            .incoming
+            .send(frame(signed_request(41, cert.device_public_key)))
+            .await
+            .unwrap();
+        assert!(fixture.client.recv_certified_action().await.is_none());
+        // An unsigned delivery is the relay's word alone, and says so.
+        fixture
+            .incoming
+            .send(EnvelopeV2::CertifiedDelivered {
+                action: signed.action().clone(),
+                source_certificate: serde_json::to_vec(&cert).unwrap(),
+            })
+            .await
+            .unwrap();
+        let Some(CertifiedActionEvent::Delivered(unsigned)) =
+            fixture.client.recv_certified_action().await
+        else {
+            panic!("unsigned delivery missing");
+        };
+        assert!(unsigned.signed().is_none());
+    }
+
+    #[tokio::test]
+    async fn negotiated_session_signs_only_its_own_actions() {
+        let mut fixture = fixture(true);
+        let key = ed25519_dalek::SigningKey::from_bytes(&[30; 32]);
+        let own = signed_request(30, key.verifying_key().to_bytes())
+            .action()
+            .clone();
+        fixture.client.action_key = Some(key.clone());
+        fixture
+            .client
+            .send_action(EnvelopeV2::Directed(own.clone()))
+            .unwrap();
+        let Some(EnvelopeV2::SignedDirected(signed)) = fixture.actions.recv().await else {
+            panic!("own action left unsigned");
+        };
+        assert_eq!(signed.action(), &own);
+        signed.verify(&own.source).unwrap();
+        let mut foreign = own;
+        foreign.source = [41; 32];
+        fixture
+            .client
+            .send_action(EnvelopeV2::Directed(foreign.clone()))
+            .unwrap();
+        assert_eq!(
+            fixture.actions.recv().await,
+            Some(EnvelopeV2::Directed(foreign))
+        );
+    }
+
     #[test]
     fn native_client_retains_spawn_compatibility() {
         fn send_sync<T: Send + Sync>() {}
         send_sync::<RelayClient>();
     }
 }
-
-mod http_actions;

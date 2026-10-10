@@ -44,6 +44,25 @@ pub enum ScrollAlignment {
     Nearest,
 }
 
+impl ScrollAlignment {
+    /// The scroll offset that lands an item spanning `top..top + height` this
+    /// way in a `viewport`-tall window currently scrolled to `offset`.
+    fn offset_for(self, top: f64, height: f64, offset: f64, viewport: f64) -> f64 {
+        let bottom = top + height;
+        match self {
+            Self::Start => top,
+            Self::Center => top - (viewport - height) / 2.0,
+            Self::End => bottom - viewport,
+            Self::Nearest if height >= viewport && top <= offset && bottom >= offset + viewport => {
+                offset
+            }
+            Self::Nearest if top < offset => top,
+            Self::Nearest if bottom > offset + viewport => bottom - viewport,
+            Self::Nearest => offset,
+        }
+    }
+}
+
 /// Deterministic single-axis momentum used by virtualized collection widgets.
 /// Wheel input moves immediately; line-wheel impulses additionally feed this
 /// decay curve so detented wheels can traverse long collections without
@@ -655,26 +674,8 @@ where
         let (Some(top), Some(height)) = (self.item_top(index), self.item_height(index)) else {
             return false;
         };
-        let bottom = top + height;
-        let next = match alignment {
-            ScrollAlignment::Start => top,
-            ScrollAlignment::Center => top - (self.viewport - height) / 2.0,
-            ScrollAlignment::End => bottom - self.viewport,
-            ScrollAlignment::Nearest
-                if height >= self.viewport
-                    && top <= self.offset
-                    && bottom >= self.offset + self.viewport =>
-            {
-                self.offset
-            }
-            ScrollAlignment::Nearest if top < self.offset => top,
-            ScrollAlignment::Nearest if bottom > self.offset + self.viewport => {
-                bottom - self.viewport
-            }
-            ScrollAlignment::Nearest => self.offset,
-        };
         let previous = self.offset;
-        self.set_offset(next);
+        self.set_offset(alignment.offset_for(top, height, self.offset, self.viewport));
         self.offset.to_bits() != previous.to_bits()
     }
 
@@ -1090,26 +1091,8 @@ where
         let (Some(top), Some(height)) = (self.item_top(index), self.item_height(index)) else {
             return false;
         };
-        let bottom = top + height;
-        let next = match alignment {
-            ScrollAlignment::Start => top,
-            ScrollAlignment::Center => top - (self.viewport - height) / 2.0,
-            ScrollAlignment::End => bottom - self.viewport,
-            ScrollAlignment::Nearest
-                if height >= self.viewport
-                    && top <= self.offset
-                    && bottom >= self.offset + self.viewport =>
-            {
-                self.offset
-            }
-            ScrollAlignment::Nearest if top < self.offset => top,
-            ScrollAlignment::Nearest if bottom > self.offset + self.viewport => {
-                bottom - self.viewport
-            }
-            ScrollAlignment::Nearest => self.offset,
-        };
         let previous = self.offset;
-        self.set_offset(next);
+        self.set_offset(alignment.offset_for(top, height, self.offset, self.viewport));
         self.offset.to_bits() != previous.to_bits()
     }
 

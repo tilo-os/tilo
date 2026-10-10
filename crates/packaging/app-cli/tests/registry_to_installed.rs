@@ -208,10 +208,7 @@ fn signed_snapshot(
     owner: &SigningKey,
     previous: Option<&SignedRegistrySnapshot>,
 ) -> SignedRegistrySnapshot {
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_secs();
+    let now = tilo_clock::try_unix_now().unwrap();
     let publisher = entry.publisher_pubkey_hex.clone();
     let mut snapshot = SignedRegistrySnapshot {
         protocol: registry_types::SNAPSHOT_PROTOCOL,

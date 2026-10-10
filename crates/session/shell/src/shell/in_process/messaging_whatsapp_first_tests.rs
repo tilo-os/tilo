@@ -33,7 +33,7 @@ fn default_whatsapp_approved_preflight_invokes_factory_and_fails_closed() {
 }
 fn protected_preflight(approve: bool) {
     let mut rig = Rig::new();
-    let _paths = xdg_paths::scope_profile(rig.root.path().join("wa-owner"));
+    let _paths = tilo_paths::scope_profile(rig.root.path().join("wa-owner"));
     let _secrets = tilo_secrets::scope_thread(tilo_secrets::memory_backend());
     let lifecycle = LocalSessionAuthority::new();
     lifecycle.lifecycle().publish_native_state(false, false);

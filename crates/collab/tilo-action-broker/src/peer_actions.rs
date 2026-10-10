@@ -163,6 +163,9 @@ pub struct PeerActionQueue {
         tokio::sync::broadcast::Sender<(CertifiedAction, Option<tilo_actions::InvocationUpdate>)>,
     /// Owner time retained by relay-served requests; see [`Self::with_policy_time`].
     policy_time: Option<PolicyTime>,
+    /// Signed actions this broker admitted while still fresh, across every
+    /// attachment and reconnect, so a relay cannot deliver one twice.
+    replay: Arc<std::sync::Mutex<tilo_delivery_protocol::peer_actions::ActionReplayWindow>>,
 }
 impl std::fmt::Debug for PeerActionQueue {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -171,6 +174,7 @@ impl std::fmt::Debug for PeerActionQueue {
             .field("permits", &self.permits)
             .field("transitions", &self.transitions)
             .field("policy_time", &self.policy_time.is_some())
+            .field("replay", &self.replay)
             .finish()
     }
 }
@@ -210,6 +214,7 @@ impl PeerActionQueue {
                 permits: Arc::new(Semaphore::new(CAPACITY)),
                 transitions: tokio::sync::broadcast::channel(CAPACITY).0,
                 policy_time: None,
+                replay: Arc::default(),
             },
             receiver,
         )
@@ -363,29 +368,6 @@ impl PeerActionQueue {
         result
     }
 
-    /// [`Self::serve_with_readiness`] that pauses at `barrier` before registering.
-    ///
-    /// # Errors
-    ///
-    /// Returns why serving stopped; a closed transport also closes the session.
-    #[cfg(feature = "test-support")]
-    pub async fn serve_with_readiness_and_registration_barrier_for_test(
-        &self,
-        session: Arc<tilo_relay_session::RelayCoeditSession>,
-        room: Uuid,
-        host: Uuid,
-        acknowledged: tokio::sync::watch::Sender<bool>,
-        barrier: ActionRegistrationBarrier,
-    ) -> Result<(), PeerActionAttachmentError> {
-        let result = self
-            .serve_with_readiness_inner(session.clone(), room, host, acknowledged, Some(barrier))
-            .await;
-        if result == Err(PeerActionAttachmentError::TransportClosed) {
-            session.close().await;
-        }
-        result
-    }
-
     async fn serve_with_readiness_inner(
         &self,
         session: Arc<tilo_relay_session::RelayCoeditSession>,
@@ -429,7 +411,10 @@ impl PeerActionQueue {
                 event = session.recv_certified_action() => match event {
                     Some(CertifiedActionEvent::Delivered(evidence)) => {
                         if evidence.action().room != room { return Err(PeerActionAttachmentError::Failed); }
-                        let response = self.request("delivered_action", Some(evidence.clone()), None, None).await.map_err(|_| PeerActionAttachmentError::Failed)?;
+                        let response = match self.admit_delivery(&evidence) {
+                            Err(error) => ActionMessage::Rejected { code: error.code().into() },
+                            Ok(()) => self.request("delivered_action", Some(evidence.clone()), None, None).await.map_err(|_| PeerActionAttachmentError::Failed)?,
+                        };
                         send(&session, &evidence, response.clone()).map_err(attachment_send_error)?;
                         if let ActionMessage::Observation { invocation, ref update, uncertain, .. } = response {
                             if !uncertain && update.as_ref().is_some_and(|u| !u.is_terminal()) {
@@ -468,6 +453,24 @@ impl PeerActionQueue {
                 }
             }
         }
+    }
+
+    /// Admit a freshly delivered signed action once: within its freshness
+    /// window and not delivered before. The broker still verifies the
+    /// signature, and refuses any effect that carries none.
+    fn admit_delivery(
+        &self,
+        evidence: &CertifiedAction,
+    ) -> Result<(), tilo_delivery_protocol::peer_actions::ActionSignatureError> {
+        let Some(signed) = evidence.signed() else {
+            return Ok(());
+        };
+        self.replay
+            .lock()
+            .map_err(|_| {
+                tilo_delivery_protocol::peer_actions::ActionSignatureError::ReplayCapacity
+            })?
+            .admit(signed, tilo_clock::unix_now_ns())
     }
 
     /// The schedule of [`Self::liveness_due`]: its first probe one
@@ -537,7 +540,7 @@ fn send(
     session.send_action(bounded_reply(request, message))
 }
 
-fn bounded_reply(request: &DirectedAction, message: ActionMessage) -> DirectedAction {
+pub(crate) fn bounded_reply(request: &DirectedAction, message: ActionMessage) -> DirectedAction {
     let mut reply = DirectedAction {
         room: request.room,
         request_id: request.request_id,
