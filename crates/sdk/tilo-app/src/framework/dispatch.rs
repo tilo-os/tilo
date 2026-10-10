@@ -116,6 +116,30 @@ type PermissionOf<R> = Rc<dyn Fn(&<R as Resource>::Action) -> PermissionRequirem
 /// One observable per requested permission, shared by this resource's views.
 type PermissionStates = Rc<RefCell<Vec<(PermissionRequirement, LocalState<bool>)>>>;
 
+/// Read-only view of the live permission slot shared by a resource's views.
+///
+/// A view is constructed before its owner installs [`LivePermissions`], so
+/// cloning the slot rather than its current `Option` is what makes later
+/// installation and replacement visible to retained secondary surfaces.
+#[derive(Clone)]
+pub struct PermissionSource(Rc<RefCell<Option<LivePermissions>>>);
+
+impl PermissionSource {
+    /// The host's current permission context, once this live view is mounted.
+    #[must_use]
+    pub fn current(&self) -> Option<ui_core::permissions::PermissionContext> {
+        self.0.borrow().as_ref().map(LivePermissions::current)
+    }
+}
+
+impl std::fmt::Debug for PermissionSource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PermissionSource")
+            .field("mounted", &self.0.borrow().is_some())
+            .finish_non_exhaustive()
+    }
+}
+
 /// An immediate action and the serial it was applied at.
 type Serialed<R> = (u64, <R as Resource>::Action);
 
@@ -243,6 +267,14 @@ impl<R: Resource> Dispatcher<R> {
     /// view of a past version, which nobody edits.
     pub fn me(&self) -> Option<&str> {
         self.me.as_deref()
+    }
+
+    /// Follow the permission slot owned by this exact mounted resource.
+    /// The returned handle remains useful when called during view
+    /// construction, before the owner installs its first live context.
+    #[must_use]
+    pub fn permission_source(&self) -> PermissionSource {
+        PermissionSource(Rc::clone(&self.permissions))
     }
 
     /// A dispatcher for a past version in History: nothing it is given is

@@ -343,7 +343,7 @@ pub use app::run;
 pub use app::{FileHistory, ResourceApp, SeedCx, definition, run_helper};
 pub use controls::{ActionControl, Actions};
 pub use delivery::HostDelivery;
-pub use dispatch::{DispatchGroup, Dispatcher, Refused};
+pub use dispatch::{DispatchGroup, Dispatcher, PermissionSource, Refused};
 pub use each::Each;
 pub use effect::{
     ChosenFile, DocumentVersion, EffectAnswer, EffectCx, EffectReply, EffectStatus, Effected,

@@ -948,6 +948,7 @@ impl ChatApp {
             {
                 if self.direct_agent_intent_allowed(intent) {
                     self.set_direct_agent_intent(intent);
+                    self.refresh_composer_read_only();
                     self.set_composer_focus();
                 }
             }
@@ -5835,6 +5836,190 @@ mod tests {
             .view
             .on_hit(Hit::Send, &mut ui::widget::Edits::lend(&mut doc));
         assert_eq!(host.requests().len(), requests_before);
+        assert_eq!(
+            app.agent_surfaces[&channel]
+                .view
+                .composer_main
+                .private_plain()
+                .as_deref(),
+            Some("Keep this view-only draft")
+        );
+    }
+
+    fn draw_detached_agent_surface(app: &mut ChatApp, surface_id: &str) {
+        let mut scene = vello::Scene::new();
+        let mut text = ui::text_render::TextRenderer::new();
+        assert!(ui::widget::FloatingSurfaceWidgetExt::draw_floating_surface(
+            app,
+            surface_id,
+            &mut scene,
+            vello::kurbo::Affine::IDENTITY,
+            &mut text,
+            &ui::theme::Theme::dark(),
+            &ui::presence::PresenceCtx::empty(),
+        ));
+    }
+
+    fn activate_detached_queue(app: &mut ChatApp, doc: &mut AutoCommit, surface_id: &str) -> bool {
+        let target = format!(
+            "agent-surface:{surface_id}|{}",
+            Hit::AgentIntent(crate::app::AgentComposerIntent::Queue).semantic_id()
+        );
+        ui::widget::FloatingSurfaceWidgetExt::perform_floating_surface_accessibility_action(
+            app,
+            surface_id,
+            &target,
+            &ui::a11y::Action::Activate,
+            &mut ui::widget::Edits::lend(doc),
+            &automerge::ROOT,
+        )
+    }
+
+    fn assert_restricted_detached_message_surface(
+        app: &mut ChatApp,
+        doc: &mut AutoCommit,
+        host: &TaskControlHost,
+        channel: &str,
+        surface_id: &str,
+    ) {
+        draw_detached_agent_surface(app, surface_id);
+        let surface = &app.agent_surfaces[channel];
+        assert!(!surface.view.can_participate());
+        assert_eq!(
+            surface.view.composer_main.private_plain().as_deref(),
+            Some("Keep this view-only draft")
+        );
+        assert_eq!(surface.view.composer_main.selection(), (5, 14));
+        assert!(!has_semantic_target(
+            &surface.view,
+            &Hit::FocusMain.semantic_id()
+        ));
+        assert!(!has_semantic_target(
+            &surface.view,
+            &Hit::Send.semantic_id()
+        ));
+        assert!(has_semantic_target(
+            &surface.view,
+            &Hit::AgentIntent(crate::app::AgentComposerIntent::Queue).semantic_id()
+        ));
+        let accessible =
+            ui::Widget::accessibility(&*surface.view).expect("detached Chat accessibility tree");
+        assert!(accessible.children.iter().all(|node| {
+            node.role != ui::a11y::Role::TextInput
+                && node.name.as_deref() != Some("Send message")
+                && node.name.as_deref() != Some("Message")
+        }));
+        assert!(accessible.children.iter().any(|node| {
+            node.role == ui::a11y::Role::StaticText
+                && node.name.as_deref() == Some("Keep this view-only draft")
+        }));
+        assert!(accessible.children.iter().any(|node| {
+            node.role == ui::a11y::Role::StaticText
+                && node.name.as_deref() == Some("You cannot send messages in this conversation.")
+        }));
+        let editor_target = format!(
+            "agent-surface:{surface_id}|{}",
+            Hit::FocusMain.semantic_id()
+        );
+        assert!(
+            !ui::widget::FloatingSurfaceWidgetExt::perform_floating_surface_accessibility_action(
+                app,
+                surface_id,
+                &editor_target,
+                &ui::a11y::Action::SetValue("must not replace the private draft".into()),
+                &mut ui::widget::Edits::lend(doc),
+                &automerge::ROOT,
+            )
+        );
+        let requests_before = host.requests().len();
+        app.agent_surfaces
+            .get_mut(channel)
+            .expect("the detached conversation")
+            .view
+            .on_hit(Hit::Send, &mut ui::widget::Edits::lend(doc));
+        assert_eq!(host.requests().len(), requests_before);
+    }
+
+    #[test]
+    fn live_permission_replacement_reaches_detached_surface_before_parent_paint() {
+        let mut doc = AutoCommit::new();
+        ChatDoc::seed_starter(&mut doc, "u_alice", "Alice", "AL");
+        let mut app = peer("u_alice", "Alice", "AL", 0);
+        app.room_agents.push("scribe".into());
+        let host = Arc::new(TaskControlHost::default());
+        app.agent_task_actions = ui::remote_actions::RemoteActions::with_host(
+            Arc::clone(&host) as Arc<dyn ActionHost + Send + Sync>,
+            Caller::local_app("so.tilo.chat").in_room("ws_home"),
+        );
+        let dispatcher = ui::framework::Dispatcher::detached("so.tilo.chat", model::ME);
+        app.attach_framework(dispatcher.clone());
+        let mounted = dispatcher.with_permissions(ui::permissions::LivePermissions::fixed(
+            ui::permissions::PermissionContext::from_capabilities(
+                ui::permissions::Actor::person(Some(ui::permissions::Role::Editor), model::ME),
+                vec![],
+            ),
+        ));
+        app.reload(&doc);
+        render_frame(&mut app, 1200.0, 800.0);
+        app.on_hit(
+            Hit::Agent("scribe".into()),
+            &mut ui::widget::Edits::lend(&mut doc),
+        );
+        type_str(&mut app, &mut doc, "Keep this view-only draft");
+        app.composer_main.select(5, 14);
+        app.on_hit(Hit::AgentWindow, &mut ui::widget::Edits::lend(&mut doc));
+        let channel = ChatDoc::agent_conversation_channel_id("ws_home", "scribe");
+        let request = ui::widget::FloatingSurfaceWidgetExt::take_floating_surface_request(&mut app)
+            .expect("Float requests the shared native surface");
+        let detached = request.initial_rect.expect("Float retains its geometry");
+        adopt_agent_surface(&mut app, &request.id, detached);
+        let surface_id = request.id;
+        draw_detached_agent_surface(&mut app, &surface_id);
+        let editor_target = format!(
+            "agent-surface:{surface_id}|{}",
+            Hit::FocusMain.semantic_id()
+        );
+        assert!(
+            ui::widget::FloatingSurfaceWidgetExt::perform_floating_surface_accessibility_action(
+                &mut app,
+                &surface_id,
+                &editor_target,
+                &ui::a11y::Action::SetValue("Keep this view-only draft".into()),
+                &mut ui::widget::Edits::lend(&mut doc),
+                &automerge::ROOT,
+            )
+        );
+        app.agent_surfaces
+            .get_mut(&channel)
+            .expect("the adopted conversation")
+            .view
+            .composer_main
+            .select(5, 14);
+        let _restricted = mounted.with_permissions(ui::permissions::LivePermissions::fixed(
+            ui::permissions::PermissionContext::from_capabilities(
+                ui::permissions::Actor::person(Some(ui::permissions::Role::Viewer), model::ME),
+                vec![],
+            ),
+        ));
+        assert_restricted_detached_message_surface(
+            &mut app,
+            &mut doc,
+            &host,
+            &channel,
+            &surface_id,
+        );
+        assert!(activate_detached_queue(&mut app, &mut doc, &surface_id));
+        draw_detached_agent_surface(&mut app, &surface_id);
+        assert!(
+            ui::widget::FloatingSurfaceWidgetExt::perform_floating_surface_accessibility_action(
+                &mut app,
+                &surface_id,
+                &editor_target,
+                &ui::a11y::Action::SetValue("Keep this view-only draft".into()),
+                &mut ui::widget::Edits::lend(&mut doc),
+                &automerge::ROOT,
+            )
+        );
         assert_eq!(
             app.agent_surfaces[&channel]
                 .view

@@ -30,6 +30,7 @@ use crate::call::CallAction;
 #[derive(Clone, Debug)]
 pub struct ChatPermissions {
     ctx: PermissionContext,
+    live: Option<ui::framework::PermissionSource>,
 }
 
 impl Default for ChatPermissions {
@@ -45,12 +46,31 @@ impl ChatPermissions {
     pub fn permissive() -> Self {
         Self {
             ctx: PermissionContext::permissive(),
+            live: None,
         }
     }
 
     /// Adopt the context the compositor passed into `draw`.
     pub fn from_context(ctx: PermissionContext) -> Self {
-        Self { ctx }
+        Self { ctx, live: None }
+    }
+
+    /// Follow a mounted resource's permission slot, including installation
+    /// after view construction and later host replacements.
+    pub(crate) fn follow(&mut self, live: ui::framework::PermissionSource) {
+        self.live = Some(live);
+    }
+
+    /// Refresh the standalone fallback without dropping a mounted live source.
+    pub(crate) fn adopt_context(&mut self, ctx: PermissionContext) {
+        self.ctx = ctx;
+    }
+
+    fn check(&self, scope: &PermissionScope) -> bool {
+        self.live
+            .as_ref()
+            .and_then(ui::framework::PermissionSource::current)
+            .map_or_else(|| self.ctx.check(scope), |current| current.check(scope))
     }
 
     /// May this peer hydrate + render the bytes behind an attachment `blob`?
@@ -66,7 +86,7 @@ impl ChatPermissions {
                 | crate::images::DEMO_NOTES
                 | crate::images::DEMO_CLIP
         );
-        (valid_hash || valid_demo) && self.ctx.check(&PermissionScope::workspace(Verb::Read))
+        (valid_hash || valid_demo) && self.check(&PermissionScope::workspace(Verb::Read))
     }
 
     /// May this peer post / react / publish a call here? `Write` on the room and Chat (a
@@ -79,10 +99,8 @@ impl ChatPermissions {
     /// underscore. An argument that is carried and dropped is worse than one
     /// that was never asked for: it describes a boundary that does not exist.
     pub fn can_participate(&self) -> bool {
-        self.ctx.check(&PermissionScope::workspace(Verb::Write))
-            && self
-                .ctx
-                .check(&PermissionScope::app("so.tilo.chat", Verb::Write))
+        self.check(&PermissionScope::workspace(Verb::Write))
+            && self.check(&PermissionScope::app("so.tilo.chat", Verb::Write))
     }
 
     /// Join/listen requires Read; publication requires Write. This UI check
@@ -91,7 +109,7 @@ impl ChatPermissions {
     pub fn allows(&self, action: CallAction) -> bool {
         match action {
             CallAction::Leave => true,
-            CallAction::Join => self.ctx.check(&PermissionScope::workspace(Verb::Read)),
+            CallAction::Join => self.check(&PermissionScope::workspace(Verb::Read)),
             _ => self.can_participate(),
         }
     }
@@ -207,5 +225,38 @@ mod tests {
             vec![],
         );
         assert!(ChatPermissions::from_context(editor).can_participate());
+    }
+
+    #[test]
+    fn permission_source_follows_installation_and_replacement_after_view_construction() {
+        let dispatcher =
+            ui::framework::Dispatcher::<crate::resource::Chat>::detached("so.tilo.chat", "person");
+        let source = dispatcher.permission_source();
+        assert!(source.current().is_none());
+        let mut permissions = ChatPermissions::permissive();
+        permissions.follow(source.clone());
+        assert!(permissions.can_participate());
+        let mounted = dispatcher.with_permissions(ui::permissions::LivePermissions::fixed(
+            PermissionContext::from_capabilities(
+                Actor::person(Some(Role::Viewer), "person"),
+                vec![],
+            ),
+        ));
+        assert_eq!(
+            source.current().and_then(|current| current.role()),
+            Some(Role::Viewer)
+        );
+        assert!(!permissions.can_participate());
+        let _replaced = mounted.with_permissions(ui::permissions::LivePermissions::fixed(
+            PermissionContext::from_capabilities(
+                Actor::person(Some(Role::Editor), "person"),
+                vec![],
+            ),
+        ));
+        assert_eq!(
+            source.current().and_then(|current| current.role()),
+            Some(Role::Editor)
+        );
+        assert!(permissions.can_participate());
     }
 }

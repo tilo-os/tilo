@@ -1295,6 +1295,7 @@ impl ChatApp {
         &mut self,
         dispatcher: ui::framework::Dispatcher<crate::resource::Chat>,
     ) {
+        self.perms.follow(dispatcher.permission_source());
         self.composer_main.attach(dispatcher.clone());
         self.composer_thread.attach(dispatcher.clone());
         self.dispatch = Some(dispatcher);
@@ -2242,6 +2243,13 @@ impl ChatApp {
             || self.can_participate(),
             |_| self.direct_agent_intent_allowed(self.direct_agent_intent()),
         )
+    }
+
+    pub(crate) fn refresh_composer_read_only(&mut self) {
+        let main_read_only = !self.main_composer_can_edit();
+        let thread_read_only = !self.can_participate();
+        self.composer_main.set_read_only(main_read_only);
+        self.composer_thread.set_read_only(thread_read_only);
     }
 
     fn direct_agent_stop_allowed(&self) -> bool {
@@ -3733,9 +3741,7 @@ impl ChatApp {
         self.composer_thread.set_placeholder("Reply in thread");
         self.composer_thread
             .set_local_author(Some(self.me.id.clone()));
-        let read_only = !self.can_participate();
-        self.composer_main.set_read_only(read_only);
-        self.composer_thread.set_read_only(read_only);
+        self.refresh_composer_read_only();
         if self.detached_agent_placeholder_status().is_some() {
             self.composer_main.set_focus(false);
         } else {
@@ -5582,6 +5588,7 @@ impl ChatApp {
         // action moves focus into the actual TextInput instead, so let that
         // editor be the single focused accessibility child.
         self.clear_keyboard_target();
+        self.refresh_composer_read_only();
         match action {
             Action::Focus | Action::Activate => {
                 self.on_hit(hit, state);
@@ -6137,7 +6144,7 @@ impl Widget for ChatApp {
         // Adopt the OS-provided permission context so channel participation and
         // file-embed hydration are gated by the real grant policy (the
         // compositor hands each app its context here every frame).
-        self.perms = ChatPermissions::from_context(permissions.clone());
+        self.perms.adopt_context(permissions.clone());
         // Adopt the room's answer for who everybody is. Names and colours are
         // the room's to give: they arrive on the collaboration context stream
         // and land in the presence store, and this is the one door an app has
