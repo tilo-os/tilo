@@ -4893,6 +4893,19 @@ fn launched_package(client: Option<&ClientState>) -> Option<String> {
     client.package_id.clone()
 }
 
+/// App ids of prompts that belong to the session, not to a window: they are
+/// shown as a sheet over the focused window and never tiled into a strip.
+const SYSTEM_PROMPT_APP_IDS: &[&str] = &[
+    "gcr-prompter",
+    "gcr-ssh-askpass",
+    "org.gnome.keyring.SystemPrompter",
+    "org.gnome.keyring.PrivatePrompter",
+    "polkit-gnome-authentication-agent-1",
+    "org.kde.polkit-kde-authentication-agent-1",
+    "lxqt-policykit-agent",
+    "org.freedesktop.impl.portal.desktop.gtk",
+];
+
 fn authenticated_toplevel_identity(
     client: Option<&ClientState>,
     announced_app_id: Option<String>,
@@ -5910,6 +5923,17 @@ impl State {
             .parent()
             .map(|parent| surface_id(&parent))
             .filter(|parent| self.can_host_sheet(*parent));
+        // A system prompt names no parent: it is a dialog of whatever the
+        // person is working in, and must not take a place in the strip.
+        let implicit = parent.is_none() && self.is_system_prompt_toplevel(surface);
+        if implicit && was_sheet {
+            return;
+        }
+        let parent = parent.or_else(|| {
+            implicit
+                .then(|| self.system_prompt_host(id))
+                .flatten()
+        });
         let Some(parent) = parent else {
             if was_sheet {
                 store.detach_sheet(id);
@@ -5961,6 +5985,47 @@ impl State {
             modal,
             "showing transient toplevel as a sheet on its parent's tile"
         );
+    }
+
+    /// Whether `surface` is a prompt the system or a host service raises for
+    /// the whole session (keyring unlock, polkit agent, portal dialog) rather
+    /// than an app window: a host process, never a package-launched or guest
+    /// client, announcing one of [`SYSTEM_PROMPT_APP_IDS`].
+    fn is_system_prompt_toplevel(&self, surface: &ToplevelSurface) -> bool {
+        let announced = wl_compositor::with_states(surface.wl_surface(), |states| {
+            states
+                .data_map
+                .get::<XdgToplevelSurfaceData>()
+                .and_then(|data| data.lock().ok().and_then(|d| d.app_id.clone()))
+        });
+        let Some(app_id) = announced else {
+            return false;
+        };
+        let host_process = surface
+            .wl_surface()
+            .client()
+            .and_then(|client| {
+                client
+                    .get_data::<ClientState>()
+                    .map(|state| state.package_id.is_none() && state.legacy_guest.is_none())
+            })
+            .unwrap_or(true);
+        host_process && SYSTEM_PROMPT_APP_IDS.contains(&app_id.as_str())
+    }
+
+    /// The window a system prompt is shown over: what has the keyboard, else
+    /// the focused tab, so the prompt appears where the person is looking
+    /// and nothing scrolls.
+    fn system_prompt_host(&self, prompt: SurfaceId) -> Option<SurfaceId> {
+        let focused = self.client_input.keyboard_focus();
+        let active = {
+            let tree = self.workspace_tree.read();
+            crate::shell::input_policy::active_foreign_surface(&tree)
+        };
+        focused
+            .into_iter()
+            .chain(active)
+            .find(|candidate| *candidate != prompt && self.can_host_sheet(*candidate))
     }
 
     /// A sheet whose parent went away is a window in its own right, per
@@ -6387,6 +6452,9 @@ impl XdgShellHandler for State {
                 }
                 return;
             }
+            // A system prompt announces itself here (GTK sets the id after
+            // `get_toplevel`): turn the provisional tab into a sheet.
+            self.sync_toplevel_parent(&surface);
             if crate::compositor::foreign::store().is_sheet(surface_id) {
                 // A sheet has no tab to rename; the id is read again should it ever become one.
                 return;

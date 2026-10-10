@@ -276,3 +276,62 @@ fn a_modal_dialog_is_a_sheet_on_its_parent_tile_and_owns_its_input() {
         vec![child_id]
     );
 }
+
+/// What a host-service prompt (gcr-prompter's keyring unlock) sends: no
+/// parent, no dialog hint, the id announced after `get_toplevel`.
+#[test]
+fn a_parentless_system_prompt_is_a_sheet_and_leaves_the_strip_alone() {
+    let mut h = Harness::new();
+    let compositor = h.bind::<wl_compositor::WlCompositor>("wl_compositor", 4);
+    let wm = h.bind::<xdg_wm_base::XdgWmBase>("xdg_wm_base", 3);
+    let qh = h.queue.handle();
+
+    let mut keep = Vec::new();
+    for app in ["org.example.Editor", "org.example.Browser"] {
+        let surface = compositor.create_surface(&qh, ());
+        let xdg = wm.get_xdg_surface(&surface, &qh, ());
+        let top = xdg.get_toplevel(&qh, ());
+        top.set_app_id(app.into());
+        surface.commit();
+        h.pump();
+        keep.push((surface, xdg, top));
+    }
+    let tabs = foreign_tabs(&h.state);
+    assert_eq!(tabs.len(), 2);
+    let focused = tabs[1].0;
+    h.state.set_client_keyboard_focus(Some(focused));
+    h.pump();
+
+    let view = |state: &shell::compositor::state::State| {
+        let tree = state.workspace_tree.read();
+        let workspace = tree.desktop.active;
+        let strip = tree.desktop.active_strip.get(&workspace).copied();
+        let group = strip.and_then(|strip| tree.desktop.active_group_for(strip));
+        let groups: usize = tree
+            .desktop
+            .workspaces
+            .iter()
+            .flat_map(|ws| ws.strips.iter())
+            .map(|strip| strip.window_groups.len())
+            .sum();
+        (workspace, strip, group, groups)
+    };
+    let before = view(&h.state);
+
+    let prompt = compositor.create_surface(&qh, ());
+    let prompt_xdg = wm.get_xdg_surface(&prompt, &qh, ());
+    let prompt_top = prompt_xdg.get_toplevel(&qh, ());
+    prompt_top.set_app_id("gcr-prompter".into());
+    prompt.commit();
+    h.pump();
+
+    assert_eq!(
+        foreign_tabs(&h.state).len(),
+        2,
+        "a system prompt is never a tab"
+    );
+    assert_eq!(view(&h.state), before, "the strip did not change or pan");
+    let sheets = store().sheets_over(focused);
+    assert_eq!(sheets.len(), 1, "the prompt is a sheet over the focused window");
+    drop(keep);
+}
