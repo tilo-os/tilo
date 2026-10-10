@@ -1,0 +1,46 @@
+[package]
+name = "tilo-secret-service"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "The per-user freedesktop Secret Service (org.freedesktop.secrets), sealed under the device identity"
+
+[lib]
+name = "tilo_secret_service"
+path = "src/lib.rs"
+
+[[bin]]
+name = "tilo-secret-service"
+path = "src/main.rs"
+
+[dependencies]
+# The vault's at-rest envelope, the store key derivation and the Secret
+# Service session encryption all live in tilo-seal.
+tilo-seal = { version = "0.1.0", path = "../tilo-seal" }
+# The device identity whose key the store key derives from.
+tilo-user-identity = { version = "0.1.0", path = "../../collab/tilo-user-identity" }
+# Owner-only files, written atomically.
+private-fs = { version = "0.1.0", path = "../private-fs" }
+serde.workspace = true
+serde_json.workspace = true
+postcard.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
+zeroize.workspace = true
+hex.workspace = true
+libc.workspace = true
+clap.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal", "sync", "time", "process"] }
+zbus = { workspace = true, features = ["tokio"] }
+futures-util.workspace = true
+workspace-hack = { version = "0.1" }
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true
