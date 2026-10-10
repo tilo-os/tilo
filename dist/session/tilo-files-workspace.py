@@ -36,10 +36,14 @@ def command(environment, fs_binary, admin_binary):
     mount = state / "mount"
     mount.mkdir(mode=0o700, exist_ok=True)
     runtime.mkdir(mode=0o700, parents=True, exist_ok=True)
+    # Only accounting and verified hydration eviction cross the Settings
+    # system interface. Never project the identity/authority/blob directory.
+    storage = Path(environment["XDG_RUNTIME_DIR"]) / "tilo-files-storage"
+    storage.mkdir(mode=0o700, parents=True, exist_ok=True)
     child_environment = dict(environment)
     child_environment["TILO_IDENTITY_ROOT"] = str(identity)
     child_environment["TILO_AUTHORITY_SOCKET_DIR"] = str(runtime)
-    argv = [fs_binary, "serve", "--require-existing-workspace", "--cache-dir", str(state), "--mount-point", str(mount), "--acl", str(config / "fs-capabilities.json"), "--data-plane", "fuse", "--storage-sock", str(runtime / "fs-storage.sock"), "--blob-sock", str(runtime / "fs-blobs.sock")]
+    argv = [fs_binary, "serve", "--require-existing-workspace", "--cache-dir", str(state), "--mount-point", str(mount), "--acl", str(config / "fs-capabilities.json"), "--data-plane", "fuse", "--storage-sock", str(storage / "fs-storage.sock"), "--blob-sock", str(runtime / "fs-blobs.sock")]
     return argv, child_environment
 
 

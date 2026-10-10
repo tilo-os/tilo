@@ -1920,6 +1920,20 @@ greeter, and "Tilo" shows up in the session menu next to your usual desktop.
 Skip `tilo-session-devel` on any machine you are not developing Tilo on — see
 "Edit → build → log into your own build" below for what it can do.
 
+Host Files still starts only after the existing namespace, certified identity and
+normal scoped Files permission pass its preflight. Settings receives only the
+storage-accounting directory `$XDG_RUNTIME_DIR/tilo-files-storage`, projected as
+`/run/tilo/host-files-storage`; the identity, authority and document-media runtime
+directory stays private. The accounting directory survives service restarts, so
+**Refresh synced storage** reads the replacement socket without reopening Settings.
+The host wrapper prepares only this empty private accounting directory before
+apps launch, so Refresh also works after the first normal Files setup without
+reopening Settings. Refresh is a semantic Settings effect; freeing local copies retains its existing destructive
+consent and the daemon revalidates stable identity, inode, exact version, signed
+remote durability, pinning and in-flight work. A failed request invalidates stale
+accounting, and no freed-byte claim precedes verified GC. Neither the Storage pane
+nor service startup initializes a workspace or grants access.
+
 ### Edit → build → run nested
 
 The compositor prints its socket name and writes it to

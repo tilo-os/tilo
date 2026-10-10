@@ -52,6 +52,10 @@ class FilesWorkspaceTest(unittest.TestCase):
             self.assertEqual(child["TILO_AUTHORITY_SOCKET_DIR"], str(runtime))
             self.assertEqual(child["TILO_IDENTITY_ROOT"], str(identity))
             self.assertEqual(argv[argv.index("--blob-sock") + 1], str(runtime / "fs-blobs.sock"))
+            storage = root / "run/tilo-files-storage"
+            self.assertEqual(argv[argv.index("--storage-sock") + 1], str(storage / "fs-storage.sock"))
+            self.assertEqual(storage.stat().st_mode & 0o777, 0o700)
+            self.assertEqual(list(storage.iterdir()), [])
             self.assertEqual((cache / "mount").stat().st_mode & 0o777, 0o700)
             self.assertEqual(runtime.stat().st_mode & 0o777, 0o700)
             self.assertFalse((identity / "device-private").exists())
@@ -130,6 +134,8 @@ class FilesWorkspaceTest(unittest.TestCase):
             for relative in ["bin/fs", "bin/tilo-relay-admin", "bin/tilo-enroll", "libexec/tilo-files-workspace"]:
                 self.assertTrue(os.access(primary / relative, os.X_OK))
             unit = (primary / "systemd-user/tilo-files-workspace.service").read_text()
+            self.assertIn("RuntimeDirectory=tilo/files-workspace tilo-files-storage", unit)
+            self.assertIn("RuntimeDirectoryPreserve=yes", unit)
             self.assertIn("StandardOutput=null", unit)
             for hidden_mount in ["PrivateTmp=yes", "PrivateIPC=yes", "ProtectSystem=strict", "ProtectHome=read-only"]:
                 self.assertNotIn(hidden_mount, unit)

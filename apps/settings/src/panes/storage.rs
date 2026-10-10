@@ -4,9 +4,7 @@
 
 use desktop_policy::{CleanupPreview, StorageCategory, StorageRoots, StorageSnapshot};
 use os_actions::{BackupsRoute, DisksRoute, ToolIntent};
-use runtime_fs::storage::{
-    DEFAULT_STORAGE_SOCKET, EvictionReport, EvictionSelection, StorageClient, SyncStorageSnapshot,
-};
+use runtime_fs::storage::{EvictionReport, EvictionSelection, StorageClient, SyncStorageSnapshot};
 use ui::framework::{EffectAnswer, EffectCx, EffectReply, Effected};
 use ui::i18n::ArgValue;
 use ui::tilo_resource::{self, Effect};
@@ -30,8 +28,11 @@ fn category_label(category: StorageCategory) -> String {
 
 /// Reclaiming this device's space, and its storage tools.
 #[derive(Clone, Debug, PartialEq, Eq, tilo_resource::Effect)]
-#[effect(operation = "settings.effect")]
+#[effect(operation = "settings.effect", device_only)]
 pub enum StorageEffect {
+    /// Read the current accounting, including after a daemon reconnect.
+    #[effect(job)]
+    RefreshSyncedStorage,
     /// Remove the apps' caches.
     #[effect(job, destructive)]
     CleanUpCaches,
@@ -109,6 +110,7 @@ impl StorageArea {
 pub struct StorageModel {
     cx: PaneCx,
     roots: StorageRoots,
+    storage_socket: std::path::PathBuf,
     snapshot: StorageSnapshot,
     cleanup: Option<CleanupPreview>,
     sync_snapshot: Option<SyncStorageSnapshot>,
@@ -139,6 +141,7 @@ impl StorageModel {
         Self {
             cx,
             roots,
+            storage_socket: runtime_fs::storage::storage_socket(),
             snapshot,
             cleanup,
             sync_snapshot: None,
@@ -153,15 +156,14 @@ impl StorageModel {
 
     fn refresh_sync(&mut self) {
         let (sender, receiver) = std::sync::mpsc::channel();
+        let socket = self.storage_socket.clone();
         std::thread::spawn(move || {
-            let result = StorageClient::connect(DEFAULT_STORAGE_SOCKET)
+            let result = StorageClient::connect(socket)
                 .and_then(|mut client| client.snapshot())
                 .map_err(|error| error.to_string());
             let _ = sender.send(result);
         });
-        if self.sync_snapshot.is_none() {
-            self.sync_message = Some(t("settings-storage-loading"));
-        }
+        self.sync_message = Some(t("settings-storage-loading"));
         self.snapshot_result = Some(receiver);
     }
 
@@ -171,6 +173,13 @@ impl StorageModel {
         self.replies.wait(id, reply);
         self.changed = true;
         match effect {
+            StorageEffect::RefreshSyncedStorage => {
+                if self.snapshot_result.is_none() && !self.sync_busy {
+                    self.refresh_sync();
+                } else {
+                    self.replies.finish(id, Err(t("settings-storage-loading")));
+                }
+            }
             StorageEffect::CleanUpCaches => self.clean_up_caches(),
             StorageEffect::FreeSyncedFiles => self.free_synced_files(),
             StorageEffect::OpenDisks => {
@@ -224,12 +233,14 @@ impl StorageModel {
 
     fn free_synced_files(&mut self) {
         if !self.sync_busy
+            && self.snapshot_result.is_none()
             && let Some(snapshot) = &self.sync_snapshot
         {
             let selected = reclaimable_selections(snapshot);
             let (sender, receiver) = std::sync::mpsc::channel();
+            let socket = self.storage_socket.clone();
             std::thread::spawn(move || {
-                let result = StorageClient::connect(DEFAULT_STORAGE_SOCKET)
+                let result = StorageClient::connect(socket)
                     .and_then(|mut client| client.evict(selected))
                     .map_err(|error| error.to_string());
                 let _ = sender.send(result);
@@ -244,10 +255,45 @@ impl StorageModel {
         }
     }
 
+    fn accept_snapshot(&mut self, result: Result<SyncStorageSnapshot, String>) {
+        self.snapshot_result = None;
+        match result {
+            Ok(snapshot) => {
+                self.sync_snapshot = Some(snapshot);
+                self.replies.finish(
+                    StorageEffect::REFRESH_SYNCED_STORAGE.id,
+                    Ok(t("settings-storage-refreshed")),
+                );
+                if self.sync_message.as_deref() == Some(t("settings-storage-loading").as_str()) {
+                    self.sync_message = None;
+                }
+            }
+            Err(error) => {
+                self.sync_snapshot = None;
+                let message = t_args(
+                    "settings-storage-service-unavailable",
+                    &[("error", error.into())],
+                );
+                self.sync_message = Some(message.clone());
+                self.replies
+                    .finish(StorageEffect::REFRESH_SYNCED_STORAGE.id, Err(message));
+            }
+        }
+    }
+
     fn build_composition(&self) -> Box<dyn Widget> {
         crate::widgets::cards(vec![
             self.overview_card(),
-            self.synced_card(),
+            rows(vec![
+                self.synced_card(),
+                Box::new(
+                    self.cx.bind_invocation(
+                        Button::new("storage.sync.refresh", &t("settings-storage-refresh"))
+                            .with_enabled(!self.sync_busy && self.snapshot_result.is_none()),
+                        StorageEffect::RefreshSyncedStorage,
+                    ),
+                ),
+            ]),
             self.apps_card(),
             self.cleanup_card(),
             self.tools_card(),
@@ -328,7 +374,7 @@ impl StorageModel {
                         value_row(&f.logical_path, &ui::format::bytes_si(f.reclaimable_bytes))
                     }),
             );
-            if reclaimable > 0 && !self.sync_busy {
+            if reclaimable > 0 && !self.sync_busy && self.snapshot_result.is_none() {
                 let free = t_args(
                     "settings-storage-free",
                     &[("size", ui::format::bytes_si(reclaimable).into())],
@@ -463,26 +509,15 @@ impl PaneModel for StorageModel {
         let waiting = (self.snapshot_result.is_some(), self.sync_result.is_some());
         if let Some(receiver) = &self.snapshot_result {
             match receiver.try_recv() {
-                Ok(Ok(snapshot)) => {
-                    self.sync_snapshot = Some(snapshot);
-                    self.snapshot_result = None;
-                    if self.sync_message.as_deref() == Some(t("settings-storage-loading").as_str())
-                    {
-                        self.sync_message = None;
-                    }
-                }
-                Ok(Err(error)) => {
-                    self.sync_snapshot = None;
-                    self.snapshot_result = None;
-                    self.sync_message = Some(t_args(
-                        "settings-storage-service-unavailable",
-                        &[("error", error.into())],
-                    ));
-                }
+                Ok(result) => self.accept_snapshot(result),
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                     self.sync_snapshot = None;
                     self.snapshot_result = None;
                     self.sync_message = Some(t("settings-storage-service-ended"));
+                    self.replies.finish(
+                        StorageEffect::REFRESH_SYNCED_STORAGE.id,
+                        Err(t("settings-storage-service-ended")),
+                    );
                 }
                 Err(std::sync::mpsc::TryRecvError::Empty) => {}
             }
@@ -523,10 +558,11 @@ impl PaneModel for StorageModel {
                     );
                 }
                 Ok(Err(error)) => {
+                    self.sync_snapshot = None;
                     self.sync_busy = false;
                     self.sync_result = None;
                     let message = t_args(
-                        "settings-storage-nothing-removed",
+                        "settings-storage-request-failed",
                         &[("error", error.into())],
                     );
                     self.sync_message = Some(message.clone());
@@ -534,6 +570,7 @@ impl PaneModel for StorageModel {
                         .finish(StorageEffect::FREE_SYNCED_FILES.id, Err(message));
                 }
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    self.sync_snapshot = None;
                     self.sync_busy = false;
                     self.sync_result = None;
                     self.sync_message = Some(t("settings-storage-request-ended"));
@@ -571,6 +608,163 @@ fn reclaimable_selections(snapshot: &SyncStorageSnapshot) -> Vec<EvictionSelecti
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn storage_effects_keep_device_custody_and_destructive_consent() {
+        let declarations = StorageEffect::declarations();
+        assert!(declarations.iter().all(|decl| decl.device_only));
+        for id in [
+            StorageEffect::CLEAN_UP_CACHES.id,
+            StorageEffect::FREE_SYNCED_FILES.id,
+        ] {
+            assert!(
+                declarations
+                    .iter()
+                    .find(|decl| decl.id == id)
+                    .unwrap()
+                    .risk
+                    .requires_confirmation()
+            );
+        }
+        let refresh = declarations
+            .iter()
+            .find(|decl| decl.id == StorageEffect::REFRESH_SYNCED_STORAGE.id)
+            .unwrap();
+        assert!(!refresh.risk.requires_confirmation());
+        assert!(matches!(
+            StorageEffect::decode(refresh.id, &serde_json::Map::new()).unwrap(),
+            StorageEffect::RefreshSyncedStorage
+        ));
+    }
+
+    fn finish_storage_work(model: &mut StorageModel) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(6);
+        while model.busy() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "storage work did not finish"
+            );
+            model.poll();
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+    }
+
+    fn storage_fixture(socket: &std::path::Path) -> std::thread::JoinHandle<()> {
+        use runtime_fs::storage::{STORAGE_FRAMING, StorageRequest, StorageResponse};
+        let file = runtime_fs::storage::SyncedFileState {
+            workspace: "authorized-fixture".into(),
+            app: None,
+            logical_path: "/document".into(),
+            identity: "stable-node".into(),
+            inode: 42,
+            version: "version-a".into(),
+            logical_bytes: 24,
+            hydrated_bytes: 24,
+            remote_only: false,
+            dirty: false,
+            pinned: false,
+            in_flight: false,
+            remotely_durable: true,
+            reclaimable_bytes: 24,
+        };
+        let snapshot = SyncStorageSnapshot {
+            online: true,
+            files: vec![file.clone()],
+            ..Default::default()
+        };
+        let listener = std::os::unix::net::UnixListener::bind(socket).unwrap();
+        listener.set_nonblocking(true).unwrap();
+        std::thread::spawn(move || {
+            for phase in 0..3 {
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(6);
+                let mut stream = loop {
+                    match listener.accept() {
+                        Ok((stream, _)) => break stream,
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                            assert!(std::time::Instant::now() < deadline);
+                            std::thread::sleep(std::time::Duration::from_millis(1));
+                        }
+                        Err(error) => panic!("accept failed: {error}"),
+                    }
+                };
+                stream
+                    .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                    .unwrap();
+                let request = STORAGE_FRAMING
+                    .read_value::<_, StorageRequest>(&mut stream)
+                    .unwrap()
+                    .unwrap();
+                let response = if phase == 1 {
+                    let StorageRequest::Evict { selected } = request else {
+                        panic!("expected selection");
+                    };
+                    assert_eq!(selected, vec![EvictionSelection::from(&file)]);
+                    // A concurrent version change refuses the stale selection.
+                    // No physical eviction is performed by this protocol fixture.
+                    StorageResponse::Error("version changed; retained".into())
+                } else {
+                    assert!(matches!(request, StorageRequest::Snapshot));
+                    let mut current = snapshot.clone();
+                    if phase == 2 {
+                        current.files[0].version = "version-b".into();
+                        current.files[0].dirty = true;
+                        current.files[0].reclaimable_bytes = 0;
+                    }
+                    StorageResponse::Snapshot(current)
+                };
+                STORAGE_FRAMING.write_value(&mut stream, &response).unwrap();
+            }
+        })
+    }
+
+    #[test]
+    fn storage_model_retries_offline_service_and_preserves_eviction_tokens() {
+        let root = tempfile::tempdir().unwrap();
+        let socket = root.path().join("storage.sock");
+        let cx = PaneCx::in_file(root.path().join("settings.json"));
+        let mut model = StorageModel::with_roots(
+            cx,
+            StorageRoots {
+                app_payloads: None,
+                room_data: None,
+                app_cache: None,
+                sync_replica: None,
+            },
+        );
+        model.storage_socket = socket.clone();
+        model.refresh_sync();
+        finish_storage_work(&mut model);
+        assert!(model.sync_snapshot.is_none());
+        let server = storage_fixture(&socket);
+        model.refresh_sync();
+        finish_storage_work(&mut model);
+        assert!(
+            model.sync_message.is_none(),
+            "a successful retry clears the unavailable error"
+        );
+        assert_eq!(
+            model.sync_snapshot.as_ref().unwrap().files[0].version,
+            "version-a"
+        );
+        model.free_synced_files();
+        finish_storage_work(&mut model);
+        assert!(
+            model.sync_snapshot.is_none(),
+            "failed eviction invalidates stale accounting"
+        );
+        model.refresh_sync();
+        finish_storage_work(&mut model);
+        assert!(reclaimable_selections(model.sync_snapshot.as_ref().unwrap()).is_empty());
+        assert_eq!(
+            model.sync_snapshot.as_ref().unwrap().files[0].version,
+            "version-b"
+        );
+        server.join().unwrap();
+        std::fs::remove_file(&socket).unwrap();
+        model.refresh_sync();
+        finish_storage_work(&mut model);
+        assert!(model.sync_snapshot.is_none());
+    }
     /// Only real roots are reported and only authority-approved files are reclaimed.
     #[test]
     fn storage_pane_reports_real_roots_and_reclaims_only_approved_files() {

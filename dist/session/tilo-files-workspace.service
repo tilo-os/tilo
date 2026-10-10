@@ -12,8 +12,11 @@ StandardOutput=null
 Restart=on-failure
 RestartPreventExitStatus=78
 RestartSec=2s
-RuntimeDirectory=tilo/files-workspace
+RuntimeDirectory=tilo/files-workspace tilo-files-storage
 RuntimeDirectoryMode=0700
+# Keep the accounting directory inode through restart so Settings' narrow
+# directory projection observes the replacement socket, not a stale bind.
+RuntimeDirectoryPreserve=yes
 ExecStop=-/usr/bin/fusermount3 -u -z %S/tilo/files/mount
 # Remove only the generated empty mountpoint after unmount/failure. A nonempty
 # directory is preserved by rmdir, so unavailable data cannot look like an

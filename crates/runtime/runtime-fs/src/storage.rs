@@ -10,6 +10,26 @@ use std::path::Path;
 use wire_frame::{FrameError, Framing};
 
 pub const DEFAULT_STORAGE_SOCKET: &str = "/run/tilo/fs-storage.sock";
+/// Storage-only host runtime directory projected by Settings' system interface.
+/// It contains neither Files credentials nor the document-media endpoint.
+pub const HOST_STORAGE_DIRECTORY: &str = "/run/tilo/host-files-storage";
+
+/// Select one authority, never falling back to another daemon after failure.
+#[must_use]
+pub fn storage_socket() -> std::path::PathBuf {
+    socket_in(
+        Path::new(HOST_STORAGE_DIRECTORY),
+        Path::new(DEFAULT_STORAGE_SOCKET),
+    )
+}
+
+fn socket_in(host_directory: &Path, image_socket: &Path) -> std::path::PathBuf {
+    if host_directory.is_dir() {
+        host_directory.join("fs-storage.sock")
+    } else {
+        image_socket.to_path_buf()
+    }
+}
 
 /// Every storage-socket message, in both directions, is one frame: a
 /// little-endian `u32` length, then the postcard-encoded request or response.
@@ -111,9 +131,11 @@ impl StorageClient {
     /// Returns an [`std::io::Error`] if the Unix socket at `path` doesn't
     /// exist or refuses the connection.
     pub fn connect(path: impl AsRef<Path>) -> std::io::Result<Self> {
-        Ok(Self {
-            stream: UnixStream::connect(path)?,
-        })
+        let stream = UnixStream::connect(path)?;
+        let timeout = Some(std::time::Duration::from_secs(5));
+        stream.set_read_timeout(timeout)?;
+        stream.set_write_timeout(timeout)?;
+        Ok(Self { stream })
     }
 
     /// # Errors
@@ -158,6 +180,54 @@ impl StorageClient {
 mod tests {
     use super::*;
     use std::io::{Read, Write};
+
+    #[test]
+    fn host_storage_reconnects_without_crossing_authorities() {
+        let root = tempfile::tempdir().unwrap();
+        let host = root.path().join("storage");
+        let image = root.path().join("image.sock");
+        assert_eq!(socket_in(&host, &image), image);
+        std::fs::create_dir(&host).unwrap();
+        let path = socket_in(&host, &image);
+        assert_eq!(path, host.join("fs-storage.sock"));
+        let image_listener = std::os::unix::net::UnixListener::bind(&image).unwrap();
+        image_listener.set_nonblocking(true).unwrap();
+        assert!(StorageClient::connect(&path).is_err());
+        assert_eq!(
+            image_listener.accept().unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock
+        );
+        for online in [false, true] {
+            let listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
+            let server = std::thread::spawn(move || {
+                let (mut stream, _) = listener.accept().unwrap();
+                let request = STORAGE_FRAMING
+                    .read_value::<_, StorageRequest>(&mut stream)
+                    .unwrap();
+                assert!(matches!(request, Some(StorageRequest::Snapshot)));
+                STORAGE_FRAMING
+                    .write_value(
+                        &mut stream,
+                        &StorageResponse::Snapshot(SyncStorageSnapshot {
+                            online,
+                            ..Default::default()
+                        }),
+                    )
+                    .unwrap();
+            });
+            assert_eq!(
+                StorageClient::connect(&path)
+                    .unwrap()
+                    .snapshot()
+                    .unwrap()
+                    .online,
+                online
+            );
+            server.join().unwrap();
+            std::fs::remove_file(&path).unwrap();
+            assert!(StorageClient::connect(&path).is_err());
+        }
+    }
 
     #[test]
     fn storage_wire_bytes_and_protocol_carry_revalidation_identity() {

@@ -29,6 +29,9 @@
 //! - the cloud account service's runtime directory with its control socket:
 //!   sync now, pause and resume a mounted account (no credential crosses it,
 //!   and file requests are served only on a socket outside this grant);
+//! - the Files storage-only runtime directory, projected at
+//!   `/run/tilo/host-files-storage` (or the image's exact accounting socket).
+//!   Identity, signed authority and document-media endpoints stay masked;
 //! - the compositor's runtime state files (`$XDG_RUNTIME_DIR/tilo`: the
 //!   connected displays, input devices), read-only, with every
 //!   subdirectory (capabilities, identity projections, service sockets)
@@ -167,6 +170,38 @@ fn authority_sockets(uid: u32) -> Vec<PathBuf> {
     ]
 }
 
+/// A dedicated directory lets a daemon replace its socket without widening
+/// the projection to Files' credentials, authority or blob endpoints.
+fn storage_bind(host: PathBuf, image: PathBuf, uid: u32) -> Option<SocketBind> {
+    use std::os::unix::fs::{FileTypeExt, MetadataExt};
+    if !host.is_absolute() {
+        return None;
+    }
+    match std::fs::symlink_metadata(&host) {
+        Ok(metadata) => {
+            // An existing but invalid host directory must never select the
+            // image's different authority. Symlinks are deliberately refused.
+            if !metadata.is_dir() || metadata.uid() != uid || metadata.mode() & 0o077 != 0 {
+                return None;
+            }
+            Some(SocketBind {
+                host,
+                sandbox: "/run/tilo/host-files-storage".into(),
+            })
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            std::fs::symlink_metadata(&image)
+                .ok()
+                .filter(|metadata| metadata.file_type().is_socket())
+                .map(|_| SocketBind {
+                    host: image.clone(),
+                    sandbox: image,
+                })
+        }
+        Err(_) => None,
+    }
+}
+
 /// Where an app looks for the person's app store: under the `XDG_DATA_HOME`
 /// its sandbox environment names.
 fn sandbox_user_apps() -> PathBuf {
@@ -210,6 +245,14 @@ pub fn resolve(
                 host: socket,
             });
         }
+    }
+    let storage_directory = std::env::var_os("XDG_RUNTIME_DIR")
+        .filter(|value| !value.is_empty())
+        .map_or_else(|| PathBuf::from(format!("/run/user/{uid}")), PathBuf::from)
+        .join("tilo-files-storage");
+    if let Some(storage) = storage_bind(storage_directory, "/run/tilo/fs-storage.sock".into(), uid)
+    {
+        plan.sockets.push(storage);
     }
     plan.runtime_state = runtime_state(uid);
     plan.user_apps = package_store::layout::default_user_root()
@@ -315,6 +358,60 @@ pub fn push_landlock_rules(argv: &mut Vec<String>, plan: &SystemAuthorityPlan) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn storage_projection_is_private_and_excludes_other_files_endpoints() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = tempfile::tempdir().unwrap();
+        let host = root.path().join("tilo-files-storage");
+        let image = root.path().join("image.sock");
+        let _image = std::os::unix::net::UnixListener::bind(&image).unwrap();
+        let uid = unsafe { libc::geteuid() };
+        assert_eq!(
+            storage_bind(host.clone(), image.clone(), uid).unwrap().host,
+            image
+        );
+        std::fs::create_dir(&host).unwrap();
+        std::fs::set_permissions(&host, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let binding = storage_bind(host.clone(), image.clone(), uid).unwrap();
+        assert!(storage_bind(host.clone(), image.clone(), uid.wrapping_add(1)).is_none());
+        assert!(storage_bind("relative".into(), image.clone(), uid).is_none());
+        assert_eq!(binding.host, host);
+        assert_eq!(
+            binding.sandbox,
+            PathBuf::from("/run/tilo/host-files-storage")
+        );
+        let plan = SystemAuthorityPlan {
+            sockets: vec![binding],
+            ..Default::default()
+        };
+        let mut binds = Vec::new();
+        push_binds(&mut binds, &plan);
+        assert_eq!(
+            binds,
+            [
+                "--bind",
+                host.to_str().unwrap(),
+                "/run/tilo/host-files-storage"
+            ]
+        );
+        let mut rules = Vec::new();
+        push_landlock_rules(&mut rules, &plan);
+        assert_eq!(rules, ["--rw", "/run/tilo/host-files-storage"]);
+        for private in [
+            "tilo/files-workspace",
+            "fs-blobs.sock",
+            "authority",
+            "identity",
+        ] {
+            assert!(!binds.iter().chain(&rules).any(|arg| arg.contains(private)));
+        }
+        std::fs::set_permissions(&host, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(storage_bind(host.clone(), image.clone(), uid).is_none());
+        std::fs::remove_dir(&host).unwrap();
+        std::os::unix::fs::symlink(root.path(), &host).unwrap();
+        assert!(storage_bind(host, image, uid).is_none());
+    }
 
     #[test]
     fn only_the_control_panel_receives_the_grant() {

@@ -225,6 +225,25 @@ else
     journal_startup_failure 'systemd user environment import' "$status"
     exit "$status"
 fi
+# Project an empty, private accounting directory before any app is launched.
+# No namespace, Files grant or daemon is created here. A normal later Files
+# setup can place its socket into this same directory while Settings stays open.
+files_storage_runtime=${XDG_RUNTIME_DIR:?}/tilo-files-storage
+case "$files_storage_runtime" in
+    /*) ;;
+    *) echo 'tilo-session: storage runtime path must be absolute' >&2; exit 78 ;;
+esac
+if [ -e "$files_storage_runtime" ] || [ -L "$files_storage_runtime" ]; then
+    if [ -L "$files_storage_runtime" ] || [ ! -d "$files_storage_runtime" ] ||
+       [ "$(/usr/bin/stat -c %u -- "$files_storage_runtime")" != "$(/usr/bin/id -u)" ] ||
+       [ "$(/usr/bin/stat -c %a -- "$files_storage_runtime")" != 700 ]; then
+        echo 'tilo-session: storage runtime must be a private user-owned directory' >&2
+        exit 78
+    fi
+else
+    mkdir -m 0700 -- "$files_storage_runtime"
+fi
+
 if "$SYSTEMCTL" --user start "$SESSION_TARGET"; then
     :
 else

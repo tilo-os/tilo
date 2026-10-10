@@ -1579,6 +1579,9 @@ settings-region-undo-action = Change region preferences
 
 # Storage pane
 settings-storage-use = Storage use
+settings-storage-refresh = Refresh synced storage
+settings-storage-refreshed = Synced storage refreshed.
+settings-storage-request-failed = Could not confirm the reclamation result: { $error } Refresh synced storage before trying again.
 settings-storage-unavailable = Not available
 settings-storage-cat-apps = Installed apps
 settings-storage-cat-data = App data

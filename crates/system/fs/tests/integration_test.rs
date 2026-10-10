@@ -143,6 +143,106 @@ async fn cap_fixture(identity: [u8; 32], caps: &[CapOverride], now: Option<u64>)
     .await
 }
 
+/// Settings uses the real accounting authority. A stale preview and an
+/// unverified remote copy must retain every payload, without needing FUSE.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn storage_socket_revalidates_versions_and_retains_unverified_content() {
+    use runtime_fs::storage::{EvictionSelection, StorageClient};
+    let fixture = cap_fixture([37; 32], &[], None).await;
+    let authority = fs::storage::StorageAuthority::new(
+        fixture.fs.namespace.clone(),
+        fixture.fs.hydrator.clone(),
+        fixture.fs.write_buffers_handle(),
+        None,
+        None,
+        None,
+        "synthetic workspace",
+    );
+    let root = tempdir().unwrap();
+    let socket = root.path().join("fs-storage.sock");
+    let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+    let server = tokio::spawn(fs::storage::serve(listener, authority));
+    let client_socket = socket.clone();
+    let snapshot = tokio::task::spawn_blocking(move || {
+        StorageClient::connect(client_socket)
+            .unwrap()
+            .snapshot()
+            .unwrap()
+    })
+    .await
+    .unwrap();
+    assert!(!snapshot.online);
+    assert_eq!(snapshot.files.len(), 3);
+    assert!(
+        snapshot
+            .files
+            .iter()
+            .all(|file| file.reclaimable_bytes == 0 && !file.remotely_durable)
+    );
+    let before = snapshot
+        .files
+        .iter()
+        .find(|file| file.inode == fixture.docs_child)
+        .unwrap();
+    assert_eq!(before.logical_bytes, 8);
+    let old_hash = fixture
+        .fs
+        .namespace
+        .lock()
+        .unwrap()
+        .hash_for(fixture.docs_child)
+        .unwrap();
+    assert_eq!(
+        before.hydrated_bytes,
+        fixture.store.local(old_hash).await.unwrap().len() as u64 + 8
+    );
+    let selection = EvictionSelection::from(before);
+    let new_hash = fixture
+        .store
+        .write_content(b"concurrent revision")
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(fixture.fs.namespace.lock().unwrap().set_content(
+        fixture.docs_child,
+        Some(&new_hash),
+        19,
+        2
+    ));
+    let report = tokio::task::spawn_blocking(move || {
+        StorageClient::connect(socket)
+            .unwrap()
+            .evict(vec![selection])
+            .unwrap()
+    })
+    .await
+    .unwrap();
+    assert_eq!(
+        (
+            report.evicted_files,
+            report.queued_files,
+            report.freed_bytes
+        ),
+        (0, 0, 0)
+    );
+    assert_eq!(report.skipped.len(), 1);
+    assert!(report.skipped[0].contains("changed since preview"));
+    assert!(fixture.store.local(old_hash).await.is_some());
+    assert!(fixture.store.local(new_hash).await.is_some());
+    assert_eq!(
+        fixture
+            .fs
+            .namespace
+            .lock()
+            .unwrap()
+            .hash_for(fixture.docs_child),
+        Some(new_hash)
+    );
+    server.abort();
+    assert!(server.await.unwrap_err().is_cancelled());
+    fixture.shutdown().await;
+}
+
 /// [`cap_fixture`] over an ACL handle someone else owns — a
 /// [`fs::CapabilityFile`], for tests that swap the policy while the same
 /// `QuickFS` stays live.

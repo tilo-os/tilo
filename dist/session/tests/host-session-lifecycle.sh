@@ -46,6 +46,10 @@ exit 0
 SH
 cat >"$work/shell" <<'SH'
 #!/bin/sh
+# The real wrapper must expose the empty accounting directory before the
+# compositor (and hence Settings) can start, even without a Files namespace.
+test -d "$XDG_RUNTIME_DIR/tilo-files-storage"
+test "$(stat -c %a "$XDG_RUNTIME_DIR/tilo-files-storage")" = 700
 printf 'shell %s\n' "$*" >>"$TILO_SESSION_TEST_LOG"
 printf 'frames=1 direct_frames=0 direct_dropped=0 flip_completions=1 unprofiled_frames=1 window_us=17 bridge_us=11 scanout_us=6 readback_bytes=0 output_bytes=0 DRM render phase summary\n' >&2
 if [ -n "${TILO_FRAME_TRACE:-}" ]; then
@@ -174,6 +178,9 @@ EOF
 sort "$work/expected" >"$work/expected.sorted"
 sort "$log" >"$work/log.sorted"
 cmp "$work/expected.sorted" "$work/log.sorted"
+test -d "$XDG_RUNTIME_DIR/tilo-files-storage"
+test "$(stat -c %a "$XDG_RUNTIME_DIR/tilo-files-storage")" = 700
+test -z "$(find "$XDG_RUNTIME_DIR/tilo-files-storage" -mindepth 1 -print -quit)"
 ! grep -Fq 'must-not-be-logged' "$log"
 
 : >"$log"
@@ -267,6 +274,26 @@ for failure in dbus import; do
     grep -Fqx 'dbus-update --systemd XDG_CURRENT_DESKTOP= XDG_SESSION_TYPE=' "$log"
     grep -Fqx 'systemctl --user unset-environment DISPLAY WAYLAND_DISPLAY XAUTHORITY DESKTOP_SESSION GDMSESSION XDG_CURRENT_DESKTOP XDG_SESSION_DESKTOP XDG_SESSION_TYPE' "$log"
     ! grep -Fq 'shell --host-desktop-session' "$log"
+done
+
+# A preexisting permissive directory or a symlink must never become a
+# Settings projection or start the compositor. This touches only the fixture.
+for invalid in permissive symlink; do
+    : >"$log"
+    if [[ $invalid == permissive ]]; then
+        chmod 0755 "$XDG_RUNTIME_DIR/tilo-files-storage"
+    else
+        rmdir "$XDG_RUNTIME_DIR/tilo-files-storage"
+        ln -s "$work" "$XDG_RUNTIME_DIR/tilo-files-storage"
+    fi
+    set +e
+    TILO_SESSION_TEST_LOG=$log "$work/tilo-session" "$work/shell" >"$work/storage-refusal" 2>&1
+    status=$?
+    set -e
+    [[ $status == 78 ]]
+    ! grep -Fq 'shell --host-desktop-session' "$log"
+    ! grep -Fq 'systemctl --user start tilo-graphical-session.target' "$log"
+    grep -Fq 'storage runtime must be a private user-owned directory' "$work/storage-refusal"
 done
 
 echo 'host session lifecycle: PASS'
