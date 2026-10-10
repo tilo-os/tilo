@@ -163,6 +163,19 @@ pub enum RunError {
     #[error("manifest declares runtime `{0}` but the value is not in `<name>/<version>` form")]
     RuntimeReferenceMalformed(String),
     #[error(
+        "`{package}` changed while it was opening: an update replaced the build at {path}. \
+         Open it again to start the new one."
+    )]
+    PackageChanged { package: String, path: PathBuf },
+    #[error(
+        "could not hold {path} for this launch, so an update could remove it under the app: {source}"
+    )]
+    LaunchLease {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error(
         "runtime bundle at {path} is unsigned — refuse to launch. Pass \
          --allow-unsigned-runtime for bring-up / debugging."
     )]
@@ -1072,7 +1085,7 @@ fn find_runtime_bundle(
 
 /// A version names a directory under the runtime roots and the sandbox's
 /// `/run/tilo-runtime`, so it is one plain path component.
-fn valid_runtime_version(version: &str) -> bool {
+pub(crate) fn valid_runtime_version(version: &str) -> bool {
     !version.is_empty()
         && version.len() <= 64
         && version != "."
@@ -3148,6 +3161,11 @@ pub(crate) fn run_with_context(
     // bug, not a policy one. Checked at launch too, not just install.
     crate::manifest::enforce_fs_policy(manifest)?;
 
+    // Hold the payload and runtime trees before they are looked at, until
+    // the sandbox that mounts them has exited: an update or collection
+    // meanwhile leaves them alone (`crate::lease`).
+    let _leases = crate::lease::LaunchLeases::take(manifest, payload_root, opts)?;
+
     // Host preflight precedes connected service custody.
     // Seccomp baseline → tmpfile → fd.
     let seccomp_fds = stage_seccomp(manifest)?;
@@ -3856,6 +3874,9 @@ fn run_with_capture_spawn<T>(
         ))?)?,
     };
 
+    // As in `run_with_context`: held from before the lookup until the
+    // sandbox has exited.
+    let _leases = crate::lease::LaunchLeases::take(manifest, payload_root, opts)?;
     // Build the exact production sandbox shape. Capture changes stdout only.
     let resolved_runtime = resolve_runtime(manifest, opts)?;
     let runtime_arg = resolved_runtime

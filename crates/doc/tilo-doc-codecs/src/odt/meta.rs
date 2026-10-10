@@ -3,7 +3,7 @@
 //! `meta:generator`, mapped onto the canonical `meta.props` map both directions, while
 //! preserving any unmodeled child elements verbatim on export.
 
-use crate::office_meta::{import_elements, strip_modeled};
+use crate::office_meta::{import_elements, unmodeled_inner};
 use crate::xml_escape::escape_text;
 use tilo_doc::model::{DocMut, DocRef, doc_prop};
 use tilo_doc::schema::{
@@ -34,6 +34,17 @@ pub(super) fn import_meta(xml: &[u8], doc: &mut DocMut) {
     import_elements(xml, doc, prop_for_element);
 }
 
+/// The `office:meta` children (by local name) the properties own.
+const MODELED: [&[u8]; 7] = [
+    b"title",
+    b"creator",
+    b"subject",
+    b"keyword",
+    b"date",
+    b"creation-date",
+    b"generator",
+];
+
 /// The ODF element (with prefix) a canonical property maps onto inside `office:meta`.
 fn element_for_prop(prop: &str) -> Option<&'static str> {
     match prop {
@@ -63,22 +74,6 @@ fn modeled_children(doc: &DocRef) -> String {
     out
 }
 
-/// Strip modeled child elements from an existing `office:meta` inner XML, keeping the unmodeled ones verbatim so they survive the round-trip.
-fn unmodeled_children(meta_inner: &[u8]) -> String {
-    strip_modeled(
-        meta_inner,
-        &[
-            b"title",
-            b"creator",
-            b"subject",
-            b"keyword",
-            b"date",
-            b"creation-date",
-            b"generator",
-        ],
-    )
-}
-
 /// The XML namespaces a freshly-generated `meta.xml` declares.
 const META_NS: &str = concat!(
     r#"xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" "#,
@@ -86,33 +81,12 @@ const META_NS: &str = concat!(
     r#"xmlns:dc="http://purl.org/dc/elements/1.1/""#,
 );
 
-/// Extract the inner XML of the first `office:meta` element from an existing `meta.xml`, if present.
-fn meta_inner(xml: &[u8]) -> Option<Vec<u8>> {
-    let s = xml;
-    // The element is shallow (a flat list of children), so a substring search suffices.
-    let text = String::from_utf8_lossy(s);
-    let open = text.find("office:meta")?;
-    let after_name = text.get(open..)?;
-    let gt = after_name.find('>')?;
-    if after_name.as_bytes().get(gt.wrapping_sub(1)) == Some(&b'/') {
-        return Some(Vec::new());
-    }
-    let inner_start = open.checked_add(gt)?.checked_add(1)?;
-    let close = text.get(inner_start..)?.find("</office:meta>")?;
-    Some(
-        text.get(inner_start..inner_start.checked_add(close)?)?
-            .as_bytes()
-            .to_vec(),
-    )
-}
-
 /// Build the `meta.xml` bytes for export, preserving unmodeled `office:meta` children from
 /// `original`; `None` with no properties and no original avoids a synthesized empty part.
 pub(super) fn export_meta(doc: &DocRef, original: Option<&[u8]>) -> Option<Vec<u8>> {
     let modeled = modeled_children(doc);
     let preserved = original
-        .and_then(meta_inner)
-        .map(|inner| unmodeled_children(&inner))
+        .map(|xml| unmodeled_inner(xml, "meta", &MODELED))
         .unwrap_or_default();
 
     if modeled.is_empty() && preserved.trim().is_empty() && original.is_none() {

@@ -149,7 +149,8 @@ owner's record moved and no widget reported a presentation change
 when hover opens or closes a nested menu). The bound snapshot is carried to the
 owner's new generation. Hover also skips the pre-dispatch availability
 projection, since hover activates nothing and every frame refreshes
-availability again before it paints. Every other event republishes as before.
+availability again before it paints. Every other event republishes as before
+(key releases and modifiers keep the tree too since TIL-751, below).
 
 `cargo run --release -p tilo-app --features test-support --example
 framework-scaling` mounts a checklist of N tasks (title and checkbox per row) in
@@ -172,6 +173,81 @@ rows. Each frame still runs the full availability refresh in
 `draw_frame_content`. With an unchanged tree that refresh hits every cache, but
 discovery still walks the bound owners and projection still visits every
 control.
+
+### A keystroke publishes twice (TIL-751)
+
+Traced through the hosted path (`App::surface_input` for the key's press and
+release, each followed by the host's frame, `App::surface_frame`, and its
+accessibility walk, as `EmbeddedApp` runs them), one keystroke into a bound
+field built the whole published tree four times: the bound-action door's
+broker-routing pre-check resolved the edit in a tree of its own, the door
+resolved it again, the frame after the edit republished, and the key's release
+dropped the tree so the frame after it republished once more. Now the door
+resolves the action once and asks the host, before anything runs, whether it
+goes through the broker (`ResourceActionRequest::route`); a broker-bound action
+comes back unexecuted and takes the broker path as before. A key's release, a
+modifier key's press and a modifier change are inert input like hover: unless
+consumed, and when no document, bound record, focus or reported presentation
+moved, they keep the tree. A local invocation of a bound action (a control,
+the palette, an agent) therefore builds the tree once.
+
+The `framework-scaling` example types 20 keys into the draft of the same
+checklist, press → host frame → release → host frame, and reports p50 from
+press to the end of the frame showing the key, the most publications one
+keystroke ran, and p50 of the time one keystroke spent publishing. Apple M5
+Max, macOS 27, release build, median of three interleaved runs on a shared,
+loaded machine:
+
+| Tasks | Publications before | after | Publishing per keystroke before | after | Keystroke→frame before | after |
+|---:|---:|---:|---:|---:|---:|---:|
+| 10 | 4 | 2 | 0.027 ms | 0.019 ms | 0.47 ms | 0.47 ms |
+| 250 | 4 | 2 | 0.248 ms | 0.194 ms | 1.67 ms | 1.65 ms |
+| 1,000 | 4 | 2 | 1.045 ms | 0.793 ms | 5.42 ms | 5.11 ms |
+
+The first keystroke after pointer input publishes once more: it moves the
+window to keyboard modality, which may change what it presents. The headless
+`FrameHarness` still counts three, because its undo-status discovery after
+every relayout is uncached. Publication is 0.8 ms of the 5 ms a keystroke
+takes at 1,000 tasks; the rest of the frame was not profiled here.
+
+The hosted input-cost regression scopes monotonic time to one instant while
+it drives the real press/frame/release/frame path. The record-save status
+poll is an independent 100 ms idle deadline; under CI load it can otherwise
+fall inside that observation and add a publication unrelated to input. A
+separate regression advances that scoped clock to the deadline and requires
+the real save-status frame to publish while preserving the typed draft. The
+clock override is test-support only, thread-local, and restored on unwind;
+production save sampling and clock readings keep their existing behaviour.
+
+### Opening a long list (TIL-758)
+
+`framework-scaling -- 5000,50000 open` reopens the checklist over a record
+already holding N tasks, five times, to its first laid-out frame. Each size
+also prints a `FRAMEWORK-OPEN` line, which the scheduled lane's render job
+records as `render.framework_open.{ms,allocations,heap_per_item}.<size>`
+(`tools/perf/adapters.py framework-open`). Apple M5 Max, macOS 27, release,
+three interleaved runs of each build, p50 of five opens:
+
+| Tasks | Open before | Open after | Heap held before | Heap held after |
+|---:|---:|---:|---:|---:|
+| 5,000 | 155–156 ms | 120–122 ms | 28.5 MB (5,472 B/task) | 24.7 MB (4,698 B/task) |
+| 50,000 | 1,820–1,836 ms | 1,163–1,174 ms | 638 MB (12,739 B/task) | 224 MB (4,454 B/task) |
+
+Two storage costs were behind most of it. Appending an item gave it an order
+key halfway between the last key and the end, so keys grew by a character
+every six appends: the 50,000th task's key was 8,334 characters, 208 MB of
+order keys in all, which the record load re-encoded and hashed, the read
+copied and the sort compared. Keys toward an open end now step instead
+(`tilo_resource::order::between`): 50,000 appends need at most seven
+characters, and a key minted the old way keeps its length. And the collection
+read looked up every key of every item separately (about six Automerge
+lookups per item); it now walks each map once (`tilo_resource::read_slots`).
+
+What remains at 50,000, from `sample`: `AutoCommit::load` 40 % (Automerge
+rebuilds and hashes every change to learn the change graph; the titles alone
+are 2.75 million text ops), the collection read 21 % (one object lookup each
+for the entry, the item and its title text), layout and the bound-control
+refresh 18 %, and closing the previous window 10 %.
 
 ## Verified shared-list CPU workload
 

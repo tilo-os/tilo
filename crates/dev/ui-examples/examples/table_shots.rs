@@ -33,7 +33,6 @@ use winit::event::{Modifiers, WindowEvent};
 use tilo_ui::offscreen::OffscreenRenderer;
 use tilo_ui::presence::PresenceCtx;
 use tilo_ui::text_render::TextRenderer;
-use tilo_ui::theme::Theme;
 use tilo_ui::widget::Widget;
 use tilo_ui::widget::table::{self, Table};
 
@@ -86,7 +85,7 @@ fn frame(
     t: &ObjId,
 ) -> Option<(TaffyTree<()>, NodeId, (f64, f64))> {
     table.sync(doc, t);
-    let theme = shot_theme();
+    let theme = crate::registry::shot_theme();
     let mut taffy: TaffyTree<()> = TaffyTree::new();
     let mut nm: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
     let mut tr = TextRenderer::new();
@@ -143,7 +142,7 @@ use tilo_ui::synthetic_input::cursor_moved;
 use tilo_ui::synthetic_input::mouse_press;
 
 fn shoot(table: &mut Table, size: (f64, f64), out: &Path) {
-    let theme = shot_theme();
+    let theme = crate::registry::shot_theme();
     let mut tr = TextRenderer::new();
     let presence = PresenceCtx::default();
     let cw = px_dim(size.0 + MARGIN * 2.0);
@@ -244,16 +243,4 @@ pub fn run(_args: &[String]) {
     );
     assert_eq!(table::cell_text(&doc, &t, 1, 2), "Owner");
     println!("OK: middle column inserted between originals; content preserved");
-}
-
-/// `TILO_SHOTS_THEME` picks the palette (`dark` by default) and
-/// `TILO_SHOTS_TEXT_SCALE` the text scale — the switches every app's `--shots`
-/// honours through `tilo_ui::launch::shot_theme`, whose `LaunchArgs` an example
-/// cannot construct. An unknown theme name is an error, never a silent dark
-/// shot: a capture that cannot observe its subject must fail.
-fn shot_theme() -> Theme {
-    tilo_ui::launch::shot_theme_from_env().unwrap_or_else(|error| {
-        eprintln!("ui-shots: {error}");
-        std::process::exit(2)
-    })
 }

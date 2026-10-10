@@ -122,15 +122,15 @@ pub use action::{
     ActionCx, ActionRef, Binds, Invoke, Mapped, Operation, Outcome, Refusal, Stamped,
 };
 pub use child::{child_resource_id, publish_child};
-pub use collection::{Collection, Id};
+pub use collection::{Collection, Id, Membership};
 pub use delta::{Delta, Path, Touch, Touched, Tracker};
 pub use effect::{Answers, Effect, EffectDecl, NoEffect};
 pub use group::{ActionGroup, GROUP, GROUP_PARAM};
 pub use kind::{Kinds, ResourceKind};
 pub use low_mutation::{APPLY_LOW, GROUP_LOW};
 pub use model::{
-    Atom, Doc, Fields, Json, Model, ModelError, Slot, read_key, refresh_key, write_key,
-    write_key_changed,
+    Atom, Doc, Fields, Json, MapSlot, Model, ModelError, Slot, load_slot, read_key, read_slots,
+    refresh_key, write_key, write_key_changed,
 };
 pub use reader::{Demand, Reader, heads_of};
 pub use replica::Replica;

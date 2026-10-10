@@ -783,22 +783,8 @@ impl Widget for Card {
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
-        let Ok(child_nodes) = ctx.taffy.children(ctx.node_id) else {
-            return;
-        };
-        if let Some(idx) = self.children.iter().position(|c| c.wants_pointer_capture()) {
-            if let Some(&cnode) = child_nodes.get(idx)
-                && let Some(child) = self.children.get_mut(idx)
-            {
-                child.handle_event(event, &mut ctx.reborrow(ctx.path, cnode));
-            }
-            return;
-        }
-        for (child, &child_node) in self.children.iter_mut().zip(child_nodes.iter()) {
-            child.handle_event(event, &mut ctx.reborrow(ctx.path, child_node));
-            if *ctx.handled {
-                break;
-            }
+        if let Ok(child_nodes) = ctx.taffy.children(ctx.node_id) {
+            ui::widget::route_to_children(&mut self.children, &child_nodes, event, ctx);
         }
     }
 
@@ -934,26 +920,8 @@ impl Widget for ViewportStage {
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
-        let Ok(child_nodes) = ctx.taffy.children(ctx.node_id) else {
-            return;
-        };
-        if let Some(index) = self
-            .children
-            .iter()
-            .position(|child| child.wants_pointer_capture())
-        {
-            if let (Some(child), Some(&child_node)) =
-                (self.children.get_mut(index), child_nodes.get(index))
-            {
-                child.handle_event(event, &mut ctx.reborrow(ctx.path, child_node));
-            }
-            return;
-        }
-        for (child, &child_node) in self.children.iter_mut().zip(child_nodes.iter()) {
-            child.handle_event(event, &mut ctx.reborrow(ctx.path, child_node));
-            if *ctx.handled {
-                break;
-            }
+        if let Ok(child_nodes) = ctx.taffy.children(ctx.node_id) {
+            ui::widget::route_to_children(&mut self.children, &child_nodes, event, ctx);
         }
     }
 
@@ -1089,7 +1057,7 @@ pub struct InstallerApp {
     /// from the system at runtime (see [`crate::timezones::list_timezones`]).
     timezones: Vec<String>,
     /// Headless-shot only: build the Options-step time-zone dropdown in
-    /// its open state so `--shots --step options-open` captures the popup.
+    /// its open state so `--shots --scenario options-open` captures the popup.
     tz_open_for_shot: bool,
     /// Transient validation / error line under the controls.
     status: String,
@@ -1448,7 +1416,7 @@ impl InstallerApp {
     }
 
     /// Mutate a `for_shot(Step::Options)` app so its time-zone dropdown
-    /// renders open — used by `--shots --step options-open` to capture the
+    /// renders open — used by `--shots --scenario options-open` to capture the
     /// overlay popup state.
     pub fn shot_open_timezone(&mut self) {
         self.step = Step::Options;
@@ -1494,7 +1462,7 @@ impl InstallerApp {
     }
 
     /// Seed a non-default keyboard layout (by display name) for a
-    /// `--shots --step keyboard` render, so the visual preview clearly
+    /// `--shots --scenario keyboard` render, so the visual preview clearly
     /// shows remapped keys.
     pub fn shot_keymap(&mut self, display_name: &str) {
         self.step = Step::Keyboard;

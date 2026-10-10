@@ -20,6 +20,34 @@ use package_store::{Catalog, InstalledPackage, PackageStore, Pinning};
 use tilo_app_package::id::PackageId;
 
 /// Service state shared across every accepted connection.
+/// What `tilo-install` runs after every install, update and uninstall, run
+/// after this daemon's own: the store's size cap, payload trees and staging
+/// nothing names, and the runtime builds nothing installed runs on any
+/// more. A tree a launch holds or a running app has mounted stays. Never
+/// fails the change it follows.
+fn collect_after_change(store: &PackageStore, catalog: &Catalog, max_store_bytes: u64) {
+    let runtimes = match runtime_bundle::gc::BundleRoot::from_env() {
+        Ok(runtimes) => runtimes,
+        Err(error) => {
+            tracing::warn!(%error, "no runtime bundle root; applying the size cap only");
+            if let Err(error) = store.sweep(max_store_bytes) {
+                tracing::warn!(%error, "post-change sweep failed");
+            }
+            return;
+        }
+    };
+    let request = ::install::gc::Request::after_change(max_store_bytes);
+    match ::install::gc::collect(store, catalog, &runtimes, request) {
+        Ok(report) => tracing::debug!(
+            freed_bytes = report.freed_bytes(),
+            evicted = report.evicted.len(),
+            runtimes = report.runtimes.removed.len(),
+            "collected after a change"
+        ),
+        Err(error) => tracing::warn!(%error, "collection after a change failed"),
+    }
+}
+
 pub struct AppHostServer {
     store: Arc<PackageStore>,
     catalog: Arc<Catalog>,
@@ -745,11 +773,14 @@ impl app_host::Server for AppHostServer {
         _results: app_host::RemoveResults,
     ) -> impl core::future::Future<Output = Result<(), Error>> + 'static {
         let (store, catalog) = (Arc::clone(&self.store), Arc::clone(&self.catalog));
+        let max_bytes = self.max_store_bytes;
         async move {
             let id = parse_id(params.get().map_err(failed)?.get_id().map_err(failed)?)?;
             blocking(move || {
                 let package = find_user(&catalog, id)?;
-                store.remove(&package.id, false).map(drop).map_err(failed)
+                store.remove(&package.id, false).map_err(failed)?;
+                collect_after_change(&store, &catalog, max_bytes);
+                Ok(())
             })
             .await
         }
@@ -829,7 +860,7 @@ impl app_host::Server for AppHostServer {
         params: app_host::InstallParams,
         mut results: app_host::InstallResults,
     ) -> impl core::future::Future<Output = Result<(), Error>> + 'static {
-        let store = Arc::clone(&self.store);
+        let (store, catalog) = (Arc::clone(&self.store), Arc::clone(&self.catalog));
         let max_bytes = self.max_store_bytes;
         async move {
             let p = params.get().map_err(failed)?;
@@ -862,11 +893,8 @@ impl app_host::Server for AppHostServer {
                 let installed =
                     install_verified_tapp(&store, &tapp_bytes, pinning, &expected, None)
                         .map_err(failed)?;
-                // Best-effort post-install sweep. Errors here should not
-                // fail the install — the package is already committed.
-                if let Err(e) = store.sweep(max_bytes) {
-                    tracing::warn!(error = %e, "post-install sweep failed");
-                }
+                // Best-effort: the package is already committed.
+                collect_after_change(&store, &catalog, max_bytes);
                 installed
                     .package_id()
                     .ok_or_else(|| Error::failed("installed package has no package id".into()))

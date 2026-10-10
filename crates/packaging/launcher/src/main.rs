@@ -457,6 +457,16 @@ fn run_gui_command(args: RunCliArgs) -> ExitCode {
         open_document: args.open,
         open_uri: args.open_uri,
     };
+    // Held from before the package is verified until the app exits, so an
+    // update meanwhile leaves the build this launch runs alone
+    // (`launcher::lease`).
+    let _payload_held = match launcher::lease::hold_payload(&args.payload_root) {
+        Ok(held) => held,
+        Err(e) => {
+            eprintln!("tilo-launcher: {e}");
+            return exit_code(e.to_exit_code());
+        }
+    };
     // Joining the app's scope (a round trip to the user manager) and
     // verifying the package (reading and hashing its files) need nothing
     // from each other, so they run side by side. The join completes before
@@ -709,7 +719,9 @@ struct ExecArgs {
 /// same code. The app still gets exactly one writable directory, and
 /// no flag here can change that.
 fn exec_installed(package: &str, args: ExecArgs) -> ExitCode {
-    let entry = match package_store::find_installed(package) {
+    // Held from the lookup until the app exits, so an update meanwhile
+    // leaves the build this launch runs alone (`launcher::lease`).
+    let (entry, _payload_held) = match launcher::lease::find_installed_held(package) {
         Ok(Some(e)) => e,
         Ok(None) => {
             eprintln!(
@@ -833,7 +845,8 @@ fn run_installed(
     minimal_libs: bool,
     rest: Vec<String>,
 ) -> ExitCode {
-    let entry = match package_store::find_installed(package) {
+    // As in `exec_installed`.
+    let (entry, _payload_held) = match launcher::lease::find_installed_held(package) {
         Ok(Some(e)) => e,
         Ok(None) => {
             eprintln!(

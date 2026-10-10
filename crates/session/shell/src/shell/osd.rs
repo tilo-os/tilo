@@ -28,7 +28,7 @@ use ui::theme::Theme;
 use vello::Scene;
 #[cfg(test)]
 use vello::kurbo::Point;
-use vello::kurbo::{Affine, Rect, RoundedRect, Stroke};
+use vello::kurbo::{Affine, Rect, RoundedRect};
 use vello::peniko::{BlendMode, Fill};
 
 /// How long the slab stays up after the last press. Long enough to read
@@ -455,7 +455,7 @@ impl Osd {
         let (_, caption_h) =
             text_renderer.measure_style(&caption, None, &theme.text(TextRole::Label));
         let stack = OsdStack::layout(rect, self.has_level(), f64::from(caption_h), theme);
-        draw_card(scene, transform, rect, theme);
+        ui::chrome::shell::paint_panel(scene, transform, rect, theme, 1.0);
         draw_glyph(scene, transform, stack.glyph, theme, self.kind);
         if let Some(bar) = stack.bar {
             draw_level_bar(scene, transform, bar, theme, self);
@@ -518,30 +518,6 @@ impl OsdStack {
             caption,
         }
     }
-}
-
-fn draw_card(scene: &mut Scene, transform: Affine, rect: Rect, theme: &Theme) {
-    // Panel role (HIG §9.1/§9.2): radius, elevation, ground and edge come
-    // from the same helpers every other floating Panel uses, so the slab is
-    // the same material — `panel_ground` walks the overlay tier away from
-    // the desktop where a theme's declared overlay would be swallowed.
-    let radius = ui::chrome::ChromeRole::Panel.radius(theme, rect.height());
-    ui::chrome::shell::panel_shadow(scene, transform, rect, radius, theme, 1.0);
-    let body = RoundedRect::from_rect(rect, radius);
-    scene.fill(
-        Fill::NonZero,
-        transform,
-        ui::chrome::shell::panel_ground(theme),
-        None,
-        &body,
-    );
-    scene.stroke(
-        &Stroke::new(1.0),
-        transform,
-        ui::chrome::shell::panel_border(theme),
-        None,
-        &body,
-    );
 }
 
 fn draw_glyph(

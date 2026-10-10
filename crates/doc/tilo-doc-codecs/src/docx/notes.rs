@@ -3,9 +3,8 @@
 //! `<w:footnoteReference w:id="N"/>`/`<w:endnoteReference w:id="N"/>`. This maps a note
 //! onto a `note-ref` marker in body text plus its content in the `notes` container.
 
-use super::comments::{attr_w_val, render_plain_body};
-use quick_xml::events::Event;
-use quick_xml::reader::Reader;
+use super::side_part;
+use super::styles::attr_val;
 use std::collections::BTreeMap;
 use tilo_doc::model::{DocMut, DocRef, NoteKind, materialize_notes};
 use tilo_doc::snapshot::NoteView;
@@ -18,128 +17,40 @@ pub(super) const FOOTNOTES_PART: &str = "word/footnotes.xml";
 pub(super) const ENDNOTES_PART: &str = "word/endnotes.xml";
 
 /// Import a footnotes/endnotes part, returning a `docx_id → qdoc_note_id` map for the
-/// body parser. Reserved separator/continuationSeparator notes hold no user content and
+/// body parser; each `w:p` of a note becomes a paragraph block. Reserved
+/// separator/continuationSeparator notes (those with a `w:type`) hold no user content and
 /// are skipped.
 pub(super) fn import_notes_part(
     xml: &[u8],
     kind: NoteKind,
     doc: &mut DocMut,
 ) -> BTreeMap<String, String> {
-    let mut map = BTreeMap::new();
-    let Ok(s) = std::str::from_utf8(xml) else {
-        return map;
-    };
     let tag: &[u8] = match kind {
         NoteKind::Footnote => b"w:footnote",
         NoteKind::Endnote => b"w:endnote",
     };
-    let mut reader = Reader::from_str(s);
-    // Per-note capture: the docx id, its raw-XML start byte, and the open depth.
-    let mut capture: Option<(String, usize, i32)> = None;
-    loop {
-        let pos_before = usize::try_from(reader.buffer_position()).unwrap_or(usize::MAX);
-        let Ok(ev) = reader.read_event() else {
-            break;
-        };
-        // Advance / close an in-progress note capture.
-        if let Some((id, start, depth)) = capture.as_mut() {
-            match &ev {
-                Event::Start(_) => *depth = depth.saturating_add(1),
-                Event::End(_) => {
-                    *depth = depth.saturating_sub(1);
-                    if *depth == 0 {
-                        let pos_after =
-                            usize::try_from(reader.buffer_position()).unwrap_or(usize::MAX);
-                        let raw = s.get(*start..pos_after).unwrap_or_default().to_string();
-                        let note_id = import_one_note(&raw, kind, doc);
-                        map.insert(id.clone(), note_id);
-                        capture = None;
-                    }
-                }
-                _ => {}
+    let mut map = BTreeMap::new();
+    side_part::scan_items(
+        xml,
+        tag,
+        |e| {
+            if attr_val(e, b"w:type").is_some() {
+                return None;
             }
-            continue;
-        }
-        match ev {
-            Event::Start(e) if e.name().as_ref() == tag => {
-                // A content note has no `w:type` (separators do); capture it verbatim and parse on close.
-                let ntype = attr_w_val(&e, b"w:type");
-                if ntype.is_none()
-                    && let Some(id) = attr_w_val(&e, b"w:id")
-                {
-                    capture = Some((id, pos_before, 1));
-                }
-            }
-            Event::Eof => break,
-            _ => {}
-        }
-    }
+            attr_val(e, b"w:id")
+        },
+        |id, raw| {
+            let note_id = doc.insert_note(kind);
+            side_part::import_paragraphs(
+                raw,
+                doc,
+                |doc, prev| doc.insert_note_block(&note_id, prev, "paragraph"),
+                |doc, block, at, text| doc.splice_note_text(&note_id, block, at, 0, text),
+            );
+            map.insert(id, note_id);
+        },
+    );
     map
-}
-
-/// Parse one verbatim `<w:footnote>/<w:endnote>` element into a fresh note: each `w:p`
-/// becomes a paragraph block, `w:t` runs are text.
-fn import_one_note(raw: &str, kind: NoteKind, doc: &mut DocMut) -> String {
-    let note_id = doc.insert_note(kind);
-    let mut reader = Reader::from_str(raw);
-    let mut prev: Option<String> = None;
-    let mut cur: Option<String> = None;
-    let mut cur_len: usize = 0;
-    let mut in_t = false;
-
-    let open_block = |doc: &mut DocMut,
-                      prev: &mut Option<String>,
-                      cur: &mut Option<String>,
-                      cur_len: &mut usize| {
-        if let Some(id) = doc.insert_note_block(&note_id, prev.as_deref(), "paragraph") {
-            *prev = Some(id.clone());
-            *cur = Some(id);
-            *cur_len = 0;
-        }
-    };
-    let append = |doc: &mut DocMut, cur: &Option<String>, cur_len: &mut usize, txt: &str| {
-        if let Some(b) = cur
-            && !txt.is_empty()
-        {
-            doc.splice_note_text(&note_id, b, *cur_len, 0, txt);
-            *cur_len = cur_len.saturating_add(txt.chars().count());
-        }
-    };
-
-    while let Ok(ev) = reader.read_event() {
-        match ev {
-            Event::Start(e) => match e.name().as_ref() {
-                b"w:p" => open_block(doc, &mut prev, &mut cur, &mut cur_len),
-                b"w:t" => in_t = true,
-                _ => {}
-            },
-            Event::Empty(e) => match e.name().as_ref() {
-                b"w:tab" => append(doc, &cur, &mut cur_len, "\t"),
-                b"w:br" | b"w:cr" => append(doc, &cur, &mut cur_len, "\n"),
-                _ => {}
-            },
-            Event::Text(t) if in_t => {
-                if let Ok(txt) = t.xml10_content()
-                    && !txt.is_empty()
-                {
-                    append(doc, &cur, &mut cur_len, &txt);
-                }
-            }
-            Event::GeneralRef(r) if in_t => {
-                if let Some(c) = crate::resolve_general_ref(&r) {
-                    append(doc, &cur, &mut cur_len, c.encode_utf8(&mut [0; 4]));
-                }
-            }
-            Event::End(e) => match e.name().as_ref() {
-                b"w:t" => in_t = false,
-                b"w:p" => cur = None,
-                _ => {}
-            },
-            Event::Eof => break,
-            _ => {}
-        }
-    }
-    note_id
 }
 
 /// A note assigned a stable `w:id` for the body references, paired with its view.
@@ -221,7 +132,7 @@ fn part_xml(notes: &[ExportNote], root: &str, item: &str) -> Option<Vec<u8>> {
             inner,
             r#"<w:{item} w:id="{}">{}</w:{item}>"#,
             en.docx_id,
-            render_plain_body(&en.note.blocks)
+            side_part::render_paragraphs(&en.note.blocks)
         );
     }
     let xml = format!(

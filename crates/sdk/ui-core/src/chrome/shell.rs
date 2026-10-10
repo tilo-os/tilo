@@ -660,6 +660,31 @@ pub fn panel_shadow(
     scene.pop_layer();
 }
 
+/// Paint a floating [`ChromeRole::Panel`] body: its shadow at
+/// `shadow_intensity`, the [`panel_ground`] fill and the 1 px
+/// [`panel_border`], all at the Panel radius. Returns the body's outline
+/// for callers that clip their content to it.
+pub fn paint_panel(
+    scene: &mut Scene,
+    transform: Affine,
+    rect: Rect,
+    theme: &Theme,
+    shadow_intensity: f32,
+) -> RoundedRect {
+    let radius = ChromeRole::Panel.radius(theme, rect.height());
+    panel_shadow(scene, transform, rect, radius, theme, shadow_intensity);
+    let body = RoundedRect::from_rect(rect, radius);
+    scene.fill(Fill::NonZero, transform, panel_ground(theme), None, &body);
+    scene.stroke(
+        &vello::kurbo::Stroke::new(1.0),
+        transform,
+        panel_border(theme),
+        None,
+        &body,
+    );
+    body
+}
+
 /// A separator or edge drawn on a chrome surface. Derived against the
 /// ground it sits on rather than a declared `border_standard`, which
 /// doesn't track what's under a translucent panel and either vanishes on
