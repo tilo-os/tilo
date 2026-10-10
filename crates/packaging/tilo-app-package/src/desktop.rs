@@ -23,6 +23,23 @@ pub fn runtime_dependency(manifest: &Manifest) -> Option<&str> {
     }
 }
 
+/// The optional runtimes (`[package].optional-runtimes`) a Tilo OS app mounts
+/// when present, such as a browser's engine. The app pins them by exact
+/// version, so whatever installs the app must bring them; a desktop target
+/// carries its own engine and names none.
+#[must_use]
+pub fn optional_runtime_dependencies(manifest: &Manifest) -> &[String] {
+    if manifest
+        .target
+        .as_ref()
+        .is_some_and(|target| registry_types::DESKTOP_PLATFORMS.contains(&target.platform.as_str()))
+    {
+        &[]
+    } else {
+        &manifest.package.optional_runtimes
+    }
+}
+
 /// Validate the signed target before a native installer or launcher uses
 /// its desktop size/runtime contract. Web and foreign native targets are
 /// artifacts for their own host, never native executables on this one.
