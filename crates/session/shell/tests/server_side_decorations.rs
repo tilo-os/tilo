@@ -175,3 +175,60 @@ fn every_client_is_given_server_side_decorations() {
         );
     }
 }
+
+/// Qt5 and some GTK/Wine builds only speak the KDE spelling of the protocol.
+/// It must be advertised and answered `Server`, whatever is requested, or
+/// those clients draw a second title bar.
+#[test]
+fn a_kde_server_decoration_client_is_given_server_mode() {
+    use wayland_protocols_misc::server_decoration::client::{
+        org_kde_kwin_server_decoration, org_kde_kwin_server_decoration_manager as manager,
+    };
+    use wayland_client::WEnum;
+
+    #[derive(Default)]
+    struct Kde {
+        globals: Vec<(u32, String, u32)>,
+        modes: Vec<org_kde_kwin_server_decoration::Mode>,
+    }
+    impl Dispatch<org_kde_kwin_server_decoration::OrgKdeKwinServerDecoration, ()> for Kde {
+        fn event(
+            state: &mut Self,
+            _: &org_kde_kwin_server_decoration::OrgKdeKwinServerDecoration,
+            event: org_kde_kwin_server_decoration::Event,
+            (): &(),
+            _: &Connection,
+            _: &QueueHandle<Self>,
+        ) {
+            if let org_kde_kwin_server_decoration::Event::Mode { mode: WEnum::Value(m) } = event {
+                state.modes.push(m);
+            }
+        }
+    }
+    delegate_noop!(Kde: ignore wl_compositor::WlCompositor);
+    delegate_noop!(Kde: ignore wl_surface::WlSurface);
+    delegate_noop!(Kde: ignore manager::OrgKdeKwinServerDecorationManager);
+    crate::support::wayland::test_client!(Kde: registry);
+
+    let mut h = crate::support::wayland::Harness::<Kde>::new();
+    let manager = h
+        .try_bind::<manager::OrgKdeKwinServerDecorationManager>(
+            "org_kde_kwin_server_decoration_manager",
+            1,
+        )
+        .expect("org_kde_kwin_server_decoration_manager is not advertised");
+    let compositor = h.bind::<wl_compositor::WlCompositor>("wl_compositor", 4);
+    h.pump();
+    let qh = h.queue.handle();
+    let surface = compositor.create_surface(&qh, ());
+    let decoration = manager.create(&surface, &qh, ());
+    h.pump();
+    decoration.request_mode(org_kde_kwin_server_decoration::Mode::Client);
+    h.pump();
+    let modes = &h.client.modes;
+    assert!(!modes.is_empty(), "no mode was sent");
+    assert!(
+        modes.iter().all(|m| *m == org_kde_kwin_server_decoration::Mode::Server),
+        "a KDE-protocol client was told {modes:?}; the OS owns the chrome"
+    );
+}

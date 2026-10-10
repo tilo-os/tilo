@@ -457,6 +457,11 @@ use smithay::wayland::session_lock::{
 };
 use smithay::reexports::wayland_protocols::xdg::decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode as DecorationMode;
 use smithay::wayland::shell::xdg::decoration::{XdgDecorationHandler, XdgDecorationState};
+use smithay::reexports::wayland_protocols_misc::server_decoration::server::{
+    org_kde_kwin_server_decoration::{Mode as KdeMode, OrgKdeKwinServerDecoration},
+    org_kde_kwin_server_decoration_manager::Mode as KdeDefaultMode,
+};
+use smithay::wayland::shell::kde::decoration::{KdeDecorationHandler, KdeDecorationState};
 use smithay::wayland::shell::xdg::dialog::{XdgDialogHandler, XdgDialogState};
 use smithay::wayland::shell::xdg::{
     PopupSurface, PositionerState, ShellClient, ToplevelSurface, XdgShellHandler, XdgShellState,
@@ -476,7 +481,7 @@ use smithay::{
     delegate_output, delegate_pointer_constraints, delegate_pointer_gestures,
     delegate_primary_selection, delegate_relative_pointer,
     delegate_session_lock, delegate_shm,
-    delegate_viewporter, delegate_xdg_decoration,
+    delegate_kde_decoration, delegate_viewporter, delegate_xdg_decoration,
     delegate_xdg_activation, delegate_xdg_dialog, delegate_xdg_shell,
 };
 
@@ -905,6 +910,10 @@ pub struct State {
     /// to negotiate with and falls back to drawing its own title bar — a
     /// second frame inside the first, subtracting from the client's configured size.
     pub xdg_decoration_state: XdgDecorationState,
+    /// `org_kde_kwin_server_decoration_manager` global state — the older
+    /// KDE spelling of the same question, still what Qt5 and some GTK and
+    /// Wine builds ask. Answered `Server`, always, like `xdg_decoration_state`.
+    pub kde_decoration_state: KdeDecorationState,
     /// `wl_shm` global state — software buffer support; always advertises ARGB8888 + XRGB8888, no extra formats yet.
     pub shm_state: ShmState,
     /// `zwp_linux_dmabuf_v1` global state — enables clients to attach
@@ -1683,6 +1692,8 @@ impl State {
         let xdg_dialog_state = XdgDialogState::new::<Self>(&display_handle);
         // Advertised to every client, unfiltered: hiding this global just makes a toolkit decorate itself.
         let xdg_decoration_state = XdgDecorationState::new::<Self>(&display_handle);
+        // Default `Server`: a client that never states a preference is decorated by the compositor.
+        let kde_decoration_state = KdeDecorationState::new::<Self>(&display_handle, KdeDefaultMode::Server);
         let shm_state = ShmState::new::<Self>(&display_handle, vec![]);
         let mut seat_state = SeatState::new();
         let output_manager_state = OutputManagerState::new_with_xdg_output::<Self>(&display_handle);
@@ -1754,6 +1765,7 @@ impl State {
             host_launch_activations: HashMap::new(),
             host_launch_surface_labels: HashMap::new(),
             xdg_decoration_state,
+            kde_decoration_state,
             shm_state,
             dmabuf_state,
             dmabuf_global,
@@ -6670,6 +6682,28 @@ impl XdgDecorationHandler for State {
     }
 }
 
+/// `org_kde_kwin_server_decoration`: the same policy as [`XdgDecorationHandler`]
+/// for clients that only speak the KDE protocol. The window's chrome is the
+/// tab, so the mode is `Server` whatever the client requests.
+impl KdeDecorationHandler for State {
+    fn kde_decoration_state(&self) -> &KdeDecorationState {
+        &self.kde_decoration_state
+    }
+
+    fn new_decoration(&mut self, _surface: &WlSurface, decoration: &OrgKdeKwinServerDecoration) {
+        decoration.mode(KdeMode::Server);
+    }
+
+    fn request_mode(
+        &mut self,
+        _surface: &WlSurface,
+        decoration: &OrgKdeKwinServerDecoration,
+        _mode: smithay::reexports::wayland_server::WEnum<KdeMode>,
+    ) {
+        decoration.mode(KdeMode::Server);
+    }
+}
+
 impl State {
     /// Put `ServerSide` in the toplevel's pending state, and send it if the
     /// client has already had its opening configure.
@@ -6813,6 +6847,7 @@ delegate_xdg_shell!(State);
 delegate_xdg_dialog!(State);
 // `zxdg_decoration_manager_v1`: how a client is told the compositor draws chrome, rather than left to guess. See `XdgDecorationHandler` above.
 delegate_xdg_decoration!(State);
+delegate_kde_decoration!(State);
 delegate_shm!(State);
 delegate_dmabuf!(State);
 // `wl_seat` is Smithay's, with one observation added: whether each client
