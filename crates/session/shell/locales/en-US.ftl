@@ -2522,3 +2522,5 @@ device-fabric-error-input-decline-unavailable = Your declined input devices coul
 device-fabric-error-input-decline-save-failed = Input control was revoked, but the decline could not be saved. Automatic input remains disabled.
 
 device-fabric-error-input-sequence-exhausted = Input sequencing is exhausted. Request a new control lease.
+
+device-fabric-error-input-cleanup-pending = Previous input is still being released. Try again.
