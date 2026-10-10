@@ -1,5 +1,5 @@
 use super::*;
-use tilo_actions::{ContinuationArguments, ContinuationEvidence, ContinuationQuery};
+use tilo_actions::{ActionInput, ContinuationArguments, ContinuationEvidence, ContinuationQuery};
 
 fn projected() -> (SemanticTree, SemanticId) {
     let mut field =

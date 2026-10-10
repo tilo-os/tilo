@@ -79,12 +79,33 @@ pub fn item_children<R: Resource>(
     collections: &[ItemCollection],
     actions: &[ItemAction],
 ) -> Vec<tilo_actions::Resource> {
+    let mut children = Vec::new();
+    for_each_item_child::<R>(collections, actions, &mut |_, _, _, build| {
+        children.push(build());
+    });
+    children
+}
+
+/// What [`for_each_item_child`] calls per item child: its collection field,
+/// id and label, and how to build it.
+pub type ItemChildVisitor<'a> =
+    dyn FnMut(&'static str, &Id, &str, &dyn Fn() -> tilo_actions::Resource) + 'a;
+
+/// [`item_children`] one item at a time, for a publisher that keeps the
+/// items it built before: `each(field, id, label, build)` is called for
+/// every item child in order, and `build()` makes that child exactly as
+/// [`item_children`] does. A child is a function of its collection field,
+/// its id and its label (and the locale its actions' labels are in).
+pub fn for_each_item_child<R: Resource>(
+    collections: &[ItemCollection],
+    actions: &[ItemAction],
+    each: &mut ItemChildVisitor<'_>,
+) {
     let declarations = R::declarations();
     let fields: Vec<&str> = collections
         .iter()
         .map(|collection| collection.field)
         .collect();
-    let mut children = Vec::new();
     for collection in collections {
         let scoped: Vec<(&ItemAction, &ActionDecl<R>)> = actions
             .iter()
@@ -101,18 +122,32 @@ pub fn item_children<R: Resource>(
         }
         let kind = format!("{}.{}", R::KIND, collection.field);
         for (id, label) in &collection.items {
-            let mut child = tilo_actions::Resource::new(
-                item_resource_id::<R>(collection.field, id),
-                &kind,
-                label,
-            );
-            for (action, decl) in &scoped {
-                child = child.with_action(item_spec(decl, action.param, id));
-            }
-            children.push(child);
+            each(collection.field, id, label, &|| {
+                let mut child = tilo_actions::Resource::new(
+                    item_resource_id::<R>(collection.field, id),
+                    &kind,
+                    label,
+                );
+                for (action, decl) in &scoped {
+                    child = child.with_action(item_spec(decl, action.param, id));
+                }
+                child
+            });
         }
     }
-    children
+}
+
+/// [`Resource::children`] in the parts a publisher can keep between
+/// versions ([`Resource::children_parts`]): the children that are not
+/// items, then one per item of `items` carrying `item_actions`
+/// ([`item_children`]).
+pub struct ChildrenParts {
+    /// The children before the items, built afresh.
+    pub others: Vec<tilo_actions::Resource>,
+    /// The record's collections, each item with its label.
+    pub items: Vec<ItemCollection>,
+    /// The actions offered on items.
+    pub item_actions: Vec<ItemAction>,
 }
 
 /// [`Resource::children_offer_bound`] of a record whose children are
