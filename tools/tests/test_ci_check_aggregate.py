@@ -143,6 +143,7 @@ class CheckAggregateTests(unittest.TestCase):
             "needs.select.outputs.wasm_required": "true",
             "needs.policy.result": "success",
             "needs.builder.outputs.affected": "true",
+            "needs.builder.outputs.linux_affected": "true",
         }
 
         def admitted(job, cancelled=False, **changes):
@@ -205,7 +206,14 @@ class CheckAggregateTests(unittest.TestCase):
                     self.assertTrue(admitted(job, **{"github.event_name": "push",
                                                      "needs.policy.result": status}))
                 self.assertFalse(admitted(job, cancelled=True))
-                self.assertFalse(admitted(job, **{"needs.builder.outputs.affected": "false"}))
+                self.assertFalse(admitted(job, **{"needs.builder.outputs.affected": "false",
+                                                 "needs.builder.outputs.linux_affected": "false"}))
+                selected = "linux_affected" if name == "linux" else "affected"
+                other = "affected" if name == "linux" else "linux_affected"
+                for value in ("false", "", "invalid"):
+                    self.assertFalse(admitted(job, **{f"needs.builder.outputs.{selected}": value}))
+                # A lane can be inapplicable without suppressing another lane.
+                self.assertTrue(admitted(job, **{f"needs.builder.outputs.{other}": "false"}))
                 for event in ("pull_request", "push"):
                     for status in ("failure", "cancelled", "skipped", ""):
                         self.assertFalse(admitted(job, **{"github.event_name": event,
