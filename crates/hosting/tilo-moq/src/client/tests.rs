@@ -180,3 +180,113 @@ async fn a_two_second_dtx_pause_counts_no_dropped_frames_on_either_carrier_form(
     assert_eq!(counters.late_dropped, 0, "DTX pauses are not loss");
     assert_eq!(counters.duplicate_dropped, 0);
 }
+
+fn write_group_frame(group: &mut moq_net::group::Producer, frame: u64) {
+    group
+        .write_frame(
+            moq_net::Timestamp::from_scale(timestamp(frame), 48_000).unwrap(),
+            object(frame, frame).encode().unwrap(),
+        )
+        .unwrap();
+}
+
+async fn poll_group_receiver(
+    mut receiving: std::pin::Pin<&mut impl std::future::Future<Output = ()>>,
+) {
+    let pending = std::future::poll_fn(|cx| {
+        std::task::Poll::Ready(std::future::Future::poll(receiving.as_mut(), cx).is_pending())
+    })
+    .await;
+    assert!(
+        pending,
+        "the active production receiver must retain its track"
+    );
+}
+
+fn drain_group_sequences(shared: &Shared, received: &mut Vec<u64>) {
+    let mut state = shared.state.lock().unwrap();
+    if let Some(queue) = state.received.get_mut(NAME) {
+        received.extend(queue.drain(..).map(|frame| frame.object.sequence));
+    }
+}
+
+#[tokio::test]
+async fn a_new_group_keeps_the_previous_unexpired_tail() {
+    let shared = live_shared();
+    let broadcast = shared.incoming.create_broadcast(NAME).unwrap();
+    let publisher = broadcast.create_track(VOICE_TRACK, None).unwrap();
+    let subscriber = publisher
+        .consume()
+        .subscribe(moq_net::track::Subscription::default().with_max_age(RECEIVE_AGE))
+        .await
+        .unwrap();
+    let last = Mutex::new(None);
+    let receiving = receive_groups(&shared, NAME, subscriber, &last);
+    tokio::pin!(receiving);
+    let mut received = Vec::new();
+    let mut next_group = 0_u64;
+    let mut checkpoints = Vec::new();
+    while next_group < 50 {
+        let first = next_group.saturating_mul(voice::FRAMES_PER_GROUP);
+        let mut group = publisher
+            .create_group(moq_net::group::Info::from(next_group))
+            .unwrap();
+        if first == 65 {
+            // QUIC group streams can complete in a different order. Make the
+            // newer group readable while frame 69 is still in flight, without
+            // expiring the original group or changing its authority.
+            for frame in first..69 {
+                write_group_frame(&mut group, frame);
+            }
+            poll_group_receiver(receiving.as_mut()).await;
+            drain_group_sequences(&shared, &mut received);
+            assert_eq!(received, (0..69).collect::<Vec<_>>());
+            let mut newer = publisher
+                .create_group(moq_net::group::Info::from(next_group.saturating_add(1)))
+                .unwrap();
+            for frame in 70..75 {
+                write_group_frame(&mut newer, frame);
+            }
+            newer.finish().unwrap();
+            poll_group_receiver(receiving.as_mut()).await;
+            drain_group_sequences(&shared, &mut received);
+            checkpoints.push(received.clone());
+            write_group_frame(&mut group, 69);
+            group.finish().unwrap();
+            poll_group_receiver(receiving.as_mut()).await;
+            drain_group_sequences(&shared, &mut received);
+            checkpoints.push(received.clone());
+            next_group = next_group.saturating_add(2);
+        } else {
+            for frame in first..first.saturating_add(voice::FRAMES_PER_GROUP) {
+                write_group_frame(&mut group, frame);
+            }
+            group.finish().unwrap();
+            poll_group_receiver(receiving.as_mut()).await;
+            drain_group_sequences(&shared, &mut received);
+            next_group = next_group.saturating_add(1);
+        }
+    }
+    publisher.finish().unwrap();
+    tilo_test_env::within("all 250 original grouped frames", receiving).await;
+    drain_group_sequences(&shared, &mut received);
+    let counters = shared.state.lock().unwrap().counters;
+    eprintln!(
+        "all250frames: {counters:?}; missing={:?}",
+        (0..250)
+            .filter(|frame| !received.contains(frame))
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(counters.received, 250);
+    assert_eq!(received, (0..250).collect::<Vec<_>>());
+    assert_eq!(checkpoints.len(), 2);
+    assert_eq!(
+        checkpoints[0],
+        (0..69).collect::<Vec<_>>(),
+        "a newer group must not retire the original unexpired frame 69"
+    );
+    assert_eq!(checkpoints[1], (0..75).collect::<Vec<_>>());
+    assert_eq!(counters.late_dropped, 0);
+    assert_eq!(counters.duplicate_dropped, 0);
+    assert_eq!(counters.capacity_dropped, 0);
+}
