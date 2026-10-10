@@ -13,8 +13,7 @@ path = "src/lib.rs"
 # owner-signed snapshot (with an anti-rollback checkpoint), the version it
 # selects for its runtime ABI and wasm features, and the signed tapp of that
 # version down to the list of payload blobs to fetch. Builds for
-# `wasm32-unknown-unknown` without wasm-bindgen, web-sys or getrandom;
-# `registry-web-bindgen` is the JavaScript shim.
+# `wasm32-unknown-unknown` without wasm-bindgen, web-sys or getrandom.
 
 [dependencies]
 registry-types = { path = "../registry-types" }
