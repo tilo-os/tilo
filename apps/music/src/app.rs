@@ -1583,6 +1583,23 @@ impl MusicApp {
         }
     }
 
+    /// Decoder teardown at local EOS releases the live position query. Retain
+    /// only the end position whose duration the decoder actually observed;
+    /// catalogue metadata and transport intent cannot establish completion.
+    fn observed_position_ms(&self) -> Option<u64> {
+        self.audio.position_ms().or_else(|| {
+            self.local_file
+                .as_ref()
+                .filter(|file| {
+                    !self.pb.playing
+                        && !self.audio.has_stream()
+                        && self.pb.current.as_deref() == Some(&file.track.id)
+                })
+                .and_then(|file| file.observed_duration_ms)
+                .filter(|duration| self.playhead_ms.max(0.0) as u64 == *duration)
+        })
+    }
+
     fn observed_duration_ms(&self) -> Option<u64> {
         self.audio.duration_ms().or_else(|| {
             self.local_file
