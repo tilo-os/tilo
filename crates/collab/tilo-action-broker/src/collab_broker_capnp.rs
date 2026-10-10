@@ -2764,6 +2764,26 @@ fn directory_resolution_target(
     }
 }
 
+fn decode_directory_resolution(
+    resolution: capnp::Result<
+        runtime_collab::collab_capnp::action_directory_resolution::Reader<'_>,
+    >,
+    max_bytes: u32,
+) -> Result<runtime_collab::ActionDirectoryResolutionReply, String> {
+    let resolution = resolution.map_err(|error| error.to_string())?;
+    if resolution
+        .total_size()
+        .map_err(|error| error.to_string())?
+        .word_count
+        .saturating_mul(8)
+        > u64::from(max_bytes)
+    {
+        return Err("application exceeded directory resolution byte budget".into());
+    }
+    runtime_collab::decode_action_directory_resolution_reply(resolution)
+        .map_err(|error| error.to_string())
+}
+
 fn validate_directory_resolution_request(
     cluster_id: &str,
     request: &runtime_collab::ActionDirectoryResolutionRequest,
@@ -4721,37 +4741,46 @@ impl CapnpBrokerState {
         let registered = directories
             .registered(peer_id, cluster_id)
             .map_err(|error| error.to_string())?;
-        let mut request = registered.directory.resolve_request();
-        {
-            let mut wire = request.get();
-            wire.set_revision(revision);
-            wire.set_resource(resource);
-            wire.set_action(action);
-            if let Some(expected) = expected {
+        let decoded = if let Some(expected) = expected {
+            let mut request = registered.directory.resolve_fresh_request();
+            {
+                let mut wire = request.get();
+                wire.set_resource(resource);
+                wire.set_action(action);
                 runtime_collab::encode_fresh_action_binding(wire.init_expected_binding(), expected)
                     .map_err(|error| error.to_string())?;
             }
-        }
-        let reply = request
-            .send()
-            .promise
-            .await
-            .map_err(|error| error.to_string())?;
-        let resolution = reply
-            .get()
-            .and_then(runtime_collab::collab_capnp::action_directory::resolve_results::Reader::get_resolution)
-            .map_err(|error| error.to_string())?;
-        if resolution
-            .total_size()
-            .map_err(|error| error.to_string())?
-            .word_count
-            .saturating_mul(8)
-            > u64::from(Self::DIRECTORY_MAX_BYTES)
-        {
-            return Err("application exceeded directory resolution byte budget".into());
-        }
-        let decoded = runtime_collab::decode_action_directory_resolution_reply(resolution)
-            .map_err(|error| error.to_string())?;
+            let reply = request
+                .send()
+                .promise
+                .await
+                .map_err(|error| error.to_string())?;
+            decode_directory_resolution(
+                reply.get().and_then(
+                    runtime_collab::collab_capnp::action_directory::resolve_fresh_results::Reader::get_resolution,
+                ),
+                Self::DIRECTORY_MAX_BYTES,
+            )?
+        } else {
+            let mut request = registered.directory.resolve_request();
+            {
+                let mut wire = request.get();
+                wire.set_revision(revision);
+                wire.set_resource(resource);
+                wire.set_action(action);
+            }
+            let reply = request
+                .send()
+                .promise
+                .await
+                .map_err(|error| error.to_string())?;
+            decode_directory_resolution(
+                reply.get().and_then(
+                    runtime_collab::collab_capnp::action_directory::resolve_results::Reader::get_resolution,
+                ),
+                Self::DIRECTORY_MAX_BYTES,
+            )?
+        };
         let current = directories
             .registered(peer_id, cluster_id)
             .map_err(|error| error.to_string())?;
@@ -10078,6 +10107,14 @@ impl channel_handle::Server for CapnpChannelHandle {
         resolved_invocation::resolve(self, &params, results)
     }
 
+    fn resolve_fresh_published_action(
+        self: Rc<Self>,
+        params: channel_handle::ResolveFreshPublishedActionParams,
+        results: channel_handle::ResolveFreshPublishedActionResults,
+    ) -> Promise<(), capnp::Error> {
+        resolved_invocation::resolve_fresh(self, &params, results)
+    }
+
     fn subscribe_invocations(
         self: Rc<Self>,
         params: channel_handle::SubscribeInvocationsParams,
@@ -15243,6 +15280,8 @@ pub mod tests {
     pub struct TestActionDirectory {
         revision: String,
         fresh_binding: bool,
+        input: runtime_collab::ExportedInput,
+        params: Vec<tilo_actions::ActionParam>,
         pub resolve_mode: DirectoryResolveMode,
         result: tilo_actions::ResultSpec,
         confirmation_required: bool,
@@ -15276,9 +15315,9 @@ pub mod tests {
                 action_label: "Open Atlas".into(),
                 description: Some("Open the Atlas workspace".into()),
                 operation_kind: tilo_actions::OperationKind::View,
-                params: Vec::new(),
+                params: self.params.clone(),
                 contract: contract.clone(),
-                input: runtime_collab::ExportedInput::None,
+                input: self.input.clone(),
                 view: None,
             };
             let fresh_binding = self
@@ -15338,8 +15377,32 @@ pub mod tests {
 
         fn resolve(
             self: Rc<Self>,
-            params: action_directory::ResolveParams,
+            _params: action_directory::ResolveParams,
             mut results: action_directory::ResolveResults,
+        ) -> Promise<(), capnp::Error> {
+            let mut state = self.state.borrow_mut();
+            state.resolve_count = state.resolve_count.saturating_add(1);
+            let mut out = results.get().init_resolution();
+            match state.resolve_mode {
+                DirectoryResolveMode::Found => {
+                    runtime_collab::write_action_directory_row(
+                        out.reborrow().init_found(),
+                        &state.row(),
+                    )
+                    .expect("test directory row encodes");
+                    // As a current owner does: the revision it resolved at.
+                    out.set_resolved_revision(state.revision.as_str());
+                }
+                DirectoryResolveMode::Stale => out.set_stale_revision(()),
+                DirectoryResolveMode::NotFound => out.set_not_found(()),
+            }
+            Promise::ok(())
+        }
+
+        fn resolve_fresh(
+            self: Rc<Self>,
+            params: action_directory::ResolveFreshParams,
+            mut results: action_directory::ResolveFreshResults,
         ) -> Promise<(), capnp::Error> {
             let request = match params.get() {
                 Ok(request) => request,
@@ -15347,17 +15410,13 @@ pub mod tests {
             };
             let mut state = self.state.borrow_mut();
             state.resolve_count = state.resolve_count.saturating_add(1);
+            let fresh_matches = request
+                .get_expected_binding()
+                .and_then(runtime_collab::decode_fresh_action_binding)
+                .ok()
+                .as_ref()
+                == state.row().fresh_binding.as_ref();
             let mut out = results.get().init_resolution();
-            let fresh_matches = if request.has_expected_binding() {
-                request
-                    .get_expected_binding()
-                    .and_then(runtime_collab::decode_fresh_action_binding)
-                    .ok()
-                    .as_ref()
-                    == state.row().fresh_binding.as_ref()
-            } else {
-                true
-            };
             match state.resolve_mode {
                 DirectoryResolveMode::Found if fresh_matches => {
                     runtime_collab::write_action_directory_row(
@@ -15365,7 +15424,6 @@ pub mod tests {
                         &state.row(),
                     )
                     .expect("test directory row encodes");
-                    // As a current owner does: the revision it resolved at.
                     out.set_resolved_revision(state.revision.as_str());
                 }
                 DirectoryResolveMode::Stale => out.set_stale_revision(()),
@@ -15443,6 +15501,10 @@ pub mod tests {
 
         pub fn set_result_spec(&self, result: tilo_actions::ResultSpec) {
             self.directory_state.borrow_mut().result = result;
+        }
+
+        pub fn set_action_params(&self, params: Vec<tilo_actions::ActionParam>) {
+            self.directory_state.borrow_mut().params = params;
         }
 
         fn invocation_channel(&self) -> channel_handle::Client {
@@ -15679,6 +15741,8 @@ pub mod tests {
         let directory_state = Rc::new(RefCell::new(TestActionDirectory {
             revision: "directory-r1".into(),
             fresh_binding: false,
+            input: runtime_collab::ExportedInput::None,
+            params: Vec::new(),
             resolve_mode: DirectoryResolveMode::Found,
             result: tilo_actions::ResultSpec::None,
             confirmation_required: false,

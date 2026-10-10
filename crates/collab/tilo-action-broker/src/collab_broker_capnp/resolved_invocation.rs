@@ -6,7 +6,8 @@ use super::{
     InvocationCaller, InvocationInputs, LocalActionDirectoryRegistry, PrivateWorkerRegistration,
     Promise, PublishedAction, PublishedSurface, Rc, RegisteredActionDirectory, channel_handle,
     invocation_target_peer, published_directory_action, validate_directory_identifier,
-    validate_directory_target_input, validate_directory_text,
+    validate_directory_resolution_request, validate_directory_target_input,
+    validate_directory_text,
 };
 
 struct CapturedResolution {
@@ -195,9 +196,7 @@ impl CapnpBrokerState {
         actor: &BrokerActor,
         cluster: &str,
         peer: u64,
-        revision: &str,
-        resource: &str,
-        action: &str,
+        request: &runtime_collab::ActionDirectoryResolutionRequest,
     ) -> Result<CapturedResolution, String> {
         let permit = directories
             .resolved_permits
@@ -215,17 +214,7 @@ impl CapnpBrokerState {
             .and_then(|current| current.worker_registration.clone());
         let resolution = tokio::time::timeout(
             Duration::from_secs(2),
-            self.resolve_action_directory_for_actor(
-                directories,
-                actor,
-                cluster,
-                peer,
-                &runtime_collab::ActionDirectoryResolutionRequest::RevisionBound {
-                    revision: revision.to_owned(),
-                    resource: resource.to_owned(),
-                    action: action.to_owned(),
-                },
-            ),
+            self.resolve_action_directory_for_actor(directories, actor, cluster, peer, request),
         )
         .await
         .map_err(|_| "action directory resolution timeout")??;
@@ -264,9 +253,11 @@ impl CapnpBrokerState {
                 actor,
                 cluster,
                 peer,
-                revision,
-                resource,
-                action,
+                &runtime_collab::ActionDirectoryResolutionRequest::RevisionBound {
+                    revision: revision.to_owned(),
+                    resource: resource.to_owned(),
+                    action: action.to_owned(),
+                },
             )
             .await?;
         let runtime_collab::ActionDirectoryResolution::Found { row, .. } = captured.resolution
@@ -354,9 +345,11 @@ pub(super) fn resolve(
                 &admitted.broker_actor(),
                 &route.cluster_id,
                 peer,
-                &revision,
-                &resource,
-                &action,
+                &runtime_collab::ActionDirectoryResolutionRequest::RevisionBound {
+                    revision: revision.clone(),
+                    resource: resource.clone(),
+                    action: action.clone(),
+                },
             )
             .await
             .map_err(capnp::Error::failed)?;
@@ -388,6 +381,123 @@ pub(super) fn resolve(
                 runtime_collab::ActionDirectoryResolution::Found { .. }
             ) {
             // Missing journal/stream/worker custody permits browsing only.
+            captured.binding(state, peer).ok()
+        } else {
+            None
+        };
+        let mut out = results.get();
+        runtime_collab::write_action_directory_resolution(
+            out.reborrow().init_resolution(),
+            &captured.resolution,
+        )?;
+        if let Some(binding) = binding {
+            let mut target = out.init_invocation_binding();
+            target.set_host(&binding.host);
+            target.set_peer_id(binding.peer_id);
+            target.set_app_id(&binding.app_id);
+            target.set_record_id(&binding.record_id);
+            target.set_root(&binding.root);
+            target.set_device(&binding.device);
+            target.set_target_binding(&binding.target_binding);
+        }
+        drop(admission);
+        drop(captured);
+        Ok(())
+    })
+}
+
+#[expect(
+    clippy::too_many_lines,
+    reason = "one ordered fresh parse, bounded capture, admission recheck and reply"
+)]
+pub(super) fn resolve_fresh(
+    channel: Rc<CapnpChannelHandle>,
+    params: &channel_handle::ResolveFreshPublishedActionParams,
+    mut results: channel_handle::ResolveFreshPublishedActionResults,
+) -> Promise<(), capnp::Error> {
+    let parsed = (|| {
+        let request = params.get()?;
+        let peer = request.get_peer_id();
+        let resource = bounded_text(
+            request.get_resource()?,
+            "directory resource",
+            DIRECTORY_MAX_IDENTIFIER_BYTES,
+            true,
+            true,
+        )?;
+        let action = bounded_text(
+            request.get_action()?,
+            "directory action",
+            DIRECTORY_MAX_IDENTIFIER_BYTES,
+            true,
+            true,
+        )?;
+        let expected =
+            runtime_collab::decode_fresh_action_binding(request.get_expected_binding()?)?;
+        let resolution = runtime_collab::ActionDirectoryResolutionRequest::FreshBinding {
+            resource,
+            action,
+            expected: Box::new(expected),
+        };
+        let route = channel.route();
+        validate_directory_resolution_request(&route.cluster_id, &resolution)?;
+        let time = channel
+            .state
+            .registered_policy_time()
+            .map_err(capnp::Error::failed)?;
+        channel
+            .state
+            .checked_policy_time(time.as_ref())
+            .map_err(capnp::Error::failed)?;
+        let admitted = channel
+            .state
+            .revalidate_admission(&route, &channel.verified_identity)?;
+        Ok((peer, resolution, route, time, admitted))
+    })();
+    let (peer, resolution, route, time, admitted) = match parsed {
+        Ok(value) => value,
+        Err(error) => return Promise::err(error),
+    };
+    let host_guard = HostWorkerReadGuard::for_channel(&channel.state, channel.peer_id, &admitted);
+    Promise::from_future(async move {
+        HostWorkerReadGuard::check(host_guard.as_ref())?;
+        let state = &channel.state;
+        let captured = state
+            .capture_directory_resolution(
+                &channel.directories,
+                &admitted.broker_actor(),
+                &route.cluster_id,
+                peer,
+                &resolution,
+            )
+            .await
+            .map_err(capnp::Error::failed)?;
+        HostWorkerReadGuard::check(host_guard.as_ref())?;
+        let admission = state
+            .admission_lock
+            .lock()
+            .map_err(|_| capnp::Error::failed("invocation admission unavailable".into()))?;
+        if !state.is_accepting() {
+            return Err(capnp::Error::failed("invocation broker retired".into()));
+        }
+        state
+            .checked_policy_time(time.as_ref())
+            .map_err(capnp::Error::failed)?;
+        let current = state.revalidate_admission(&route, &admitted)?;
+        check_registration(
+            &captured.registered,
+            captured.worker.as_ref(),
+            state,
+            &channel.directories,
+            peer,
+        )
+        .map_err(capnp::Error::failed)?;
+        let binding = if time.is_some()
+            && current.certificate.is_some()
+            && matches!(
+                &captured.resolution,
+                runtime_collab::ActionDirectoryResolution::Found { .. }
+            ) {
             captured.binding(state, peer).ok()
         } else {
             None

@@ -170,6 +170,8 @@ pub fn directory_state(revision: &str) -> Rc<RefCell<TestActionDirectory>> {
     Rc::new(RefCell::new(TestActionDirectory {
         revision: revision.into(),
         fresh_binding: false,
+        input: runtime_collab::ExportedInput::None,
+        params: Vec::new(),
         resolve_mode: DirectoryResolveMode::Found,
         result: tilo_actions::ResultSpec::None,
         confirmation_required: false,

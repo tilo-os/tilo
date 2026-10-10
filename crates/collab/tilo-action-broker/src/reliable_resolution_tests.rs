@@ -1,4 +1,54 @@
 #[tokio::test(flavor = "current_thread")]
+async fn fresh_resolution_uses_additive_channel_and_directory_methods() {
+    use signed_worker::{OriginalRoom, directory_server, fresh_directory_state};
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let room =
+                OriginalRoom::new(tilo_user_identity::DeviceCapabilities::host(), None, None);
+            let (worker, _authorize) = room.join_worker(903).await;
+            let state = fresh_directory_state("fresh-r1");
+            worker
+                .handle
+                .publish_action_directory(&room.route.app_id, directory_server(&state))
+                .await
+                .unwrap();
+            let page = worker
+                .handle
+                .query_action_directory(&runtime_collab::ActionDirectoryQuery {
+                    peer_id: 903,
+                    revision: String::new(),
+                    cursor: Vec::new(),
+                    needle: String::new(),
+                    parent_resource: String::new(),
+                    max_results: 1,
+                    max_bytes: 8192,
+                    max_work: 64,
+                    max_depth: 1,
+                })
+                .await
+                .unwrap();
+            let binding = page.rows[0]
+                .fresh_binding
+                .as_ref()
+                .expect("fresh binding published");
+            let resolution = worker
+                .handle
+                .resolve_current_published_action(903, "workspace:atlas", "open", binding)
+                .await
+                .unwrap();
+            assert!(matches!(
+                resolution,
+                runtime_collab::ActionDirectoryResolution::Found {
+                    revision: Some(revision),
+                    ..
+                } if revision == "fresh-r1"
+            ));
+            assert_eq!(state.borrow().resolve_count, 1);
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn reliable_resolution_binding_uses_exact_captured_signed_worker() {
     use signed_worker::{HeldHostDirectory, OriginalRoom, directory_server, directory_state};
     tokio::task::LocalSet::new()

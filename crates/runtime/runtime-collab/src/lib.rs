@@ -1523,11 +1523,10 @@ impl ChannelHandle {
         {
             return Err(capnp::Error::failed("invalid fresh action binding".into()).into());
         }
-        let mut request = self.inner.resolve_published_action_request();
+        let mut request = self.inner.resolve_fresh_published_action_request();
         {
             let mut wire = request.get();
             wire.set_peer_id(peer_id);
-            wire.set_revision("");
             wire.set_resource(resource);
             wire.set_action(action);
             encode_fresh_action_binding(wire.init_expected_binding(), expected)?;
@@ -5324,6 +5323,63 @@ mod reliable_invocation_tests {
         })
         .await;
     }
+    struct Old35(Rc<Cell<usize>>);
+    impl collab_capnp::channel_handle::Server for Old35 {
+        fn resolve_published_action(
+            self: Rc<Self>,
+            _: collab_capnp::channel_handle::ResolvePublishedActionParams,
+            mut results: collab_capnp::channel_handle::ResolvePublishedActionResults,
+        ) -> impl std::future::Future<Output = Result<(), capnp::Error>> + 'static {
+            self.0.set(self.0.get().saturating_add(1));
+            results.get().init_resolution().set_not_found(());
+            Promise::ok(())
+        }
+    }
+    fn fresh_binding() -> FreshActionBinding {
+        FreshActionBinding {
+            descriptor: ExportedAction {
+                resource: "r".into(),
+                semantic_identity: Some(ExportedResourceSemanticIdentity {
+                    kind: "note".into(),
+                    key: "note:r".into(),
+                }),
+                action: "a".into(),
+                resource_kind: "note".into(),
+                resource_label: "Note".into(),
+                action_label: "Open".into(),
+                description: None,
+                operation_kind: tilo_actions::OperationKind::View,
+                params: Vec::new(),
+                contract: tilo_actions::ActionContract::view(),
+                view: None,
+                input: ExportedInput::None,
+            },
+            locus: serde_json::to_string(&tilo_actions::ExecutionLocus::ClientLocal).unwrap(),
+            operation_type: None,
+        }
+    }
+    #[tokio::test(flavor = "current_thread")]
+    async fn fresh_resolution_never_falls_back_to_legacy_35() {
+        let effects = Rc::new(Cell::new(0));
+        let seen = effects.clone();
+        over_wire(Old35(effects), |c| async move {
+            let error = c
+                .resolve_current_published_action(9, "r", "a", &fresh_binding())
+                .await
+                .unwrap_err();
+            assert!(matches!(
+                error,
+                NotAvailable::Capnp(error) if error.kind == capnp::ErrorKind::Unimplemented
+            ));
+            assert_eq!(seen.get(), 0, "fresh resolution fell back to legacy @35");
+            assert_eq!(
+                c.resolve_published_action(9, "v", "r", "a").await.unwrap(),
+                ActionDirectoryResolution::NotFound
+            );
+            assert_eq!(seen.get(), 1);
+        })
+        .await;
+    }
     #[test]
     fn reliable_invocation_old_35_and_47_parameter_words_stay_exact() {
         let fixtures: [(bool, &[u64]); 2] = [
@@ -5392,5 +5448,38 @@ mod reliable_invocation_tests {
             }
             assert_eq!(capnp::serialize::write_message_to_words(&out), bytes);
         }
+    }
+    #[test]
+    fn action_directory_old_1_parameter_words_stay_exact() {
+        let words = [
+            0x0000_0007_0000_0000_u64,
+            0x0003_0000_0000_0000,
+            0x0000_0012_0000_0009,
+            0x0000_0012_0000_0009,
+            0x0000_0012_0000_0009,
+            0x76,
+            0x72,
+            0x61,
+        ];
+        let bytes: Vec<u8> = words.iter().flat_map(|word| word.to_le_bytes()).collect();
+        let decoded = capnp::serialize::read_message(
+            &mut bytes.as_slice(),
+            capnp::message::ReaderOptions::default(),
+        )
+        .unwrap();
+        let params = decoded
+            .get_root::<collab_capnp::action_directory::resolve_params::Reader<'_>>()
+            .unwrap();
+        assert_eq!(params.get_revision().unwrap().to_str().unwrap(), "v");
+        assert_eq!(params.get_resource().unwrap().to_str().unwrap(), "r");
+        assert_eq!(params.get_action().unwrap().to_str().unwrap(), "a");
+
+        let mut out = capnp::message::Builder::new_default();
+        let mut params =
+            out.init_root::<collab_capnp::action_directory::resolve_params::Builder<'_>>();
+        params.set_revision("v");
+        params.set_resource("r");
+        params.set_action("a");
+        assert_eq!(capnp::serialize::write_message_to_words(&out), bytes);
     }
 }

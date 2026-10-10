@@ -13,6 +13,11 @@ async fn approved_check_rpc_requires_exact_retained_target_and_accepted_id() {
             let state = signed_worker::directory_state("approved-check-r1");
             let mut descriptor = state.borrow().row().descriptor.unwrap();
             descriptor.action = runtime_collab::approved_checks::ACTION_ID.into();
+            descriptor.input = runtime_collab::ExportedInput::Text {
+                prompt: "Approved check request".into(),
+                placeholder: String::new(),
+                wants_content: false,
+            };
             descriptor.semantic_identity = Some(runtime_collab::ExportedResourceSemanticIdentity {
                 kind: descriptor.resource_kind.clone(),
                 key: descriptor.resource.clone(),
@@ -182,6 +187,11 @@ async fn approved_check_rpc_native_target_requires_live_launcher_connection() {
         let directory = signed_worker::directory_state("native-check-r1");
         let mut descriptor = directory.borrow().row().descriptor.unwrap();
         descriptor.action = runtime_collab::approved_checks::ACTION_ID.into();
+        descriptor.input = runtime_collab::ExportedInput::Text {
+            prompt: "Approved check request".into(),
+            placeholder: String::new(),
+            wants_content: false,
+        };
             descriptor.semantic_identity = Some(runtime_collab::ExportedResourceSemanticIdentity { kind: descriptor.resource_kind.clone(), key: descriptor.resource.clone() });
         descriptor.operation_kind = tilo_actions::OperationKind::Effect;
         descriptor.contract = tilo_actions::ActionContract {

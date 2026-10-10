@@ -303,8 +303,7 @@ interface ChannelHandle {
   # descriptor at `revision`; an unavailable, changed, or disconnected owner
   # returns a non-ok status and is never invoked from cached catalogue data.
   resolvePublishedAction @35 (peerId :UInt64, revision :Text,
-                              resource :Text, action :Text,
-                              expectedBinding :FreshActionBinding)
+                              resource :Text, action :Text)
       -> (resolution :ActionDirectoryResolution,
           invocationBinding :PublishedInvocationBinding);
 
@@ -443,6 +442,15 @@ interface ChannelHandle {
   openDocumentContribution @67 (sourceToken :Data, totalBytes :UInt64)
       -> (writer :DocumentContributionWriter, reference :Data);
 
+  # Fresh semantic resolution is additive: @35 remains byte-for-byte
+  # compatible with clients which predate FreshActionBinding. Unsupported
+  # peers must refuse this method; callers never fall back to @35.
+  resolveFreshPublishedAction @68 (
+      peerId :UInt64, resource :Text, action :Text,
+      expectedBinding :FreshActionBinding)
+      -> (resolution :ActionDirectoryResolution,
+          invocationBinding :PublishedInvocationBinding);
+
 }
 
 # One bounded, contiguous upload. An unfinished writer's disposal releases
@@ -484,15 +492,16 @@ struct PublishedInvocationObservation {
 # connection/capability goes away.
 interface ActionDirectory {
   query @0 (query :ActionDirectoryQuery) -> (page :ActionDirectoryPage);
-  # Three explicit modes share this wire door. A non-empty `revision` with no
-  # binding is pinned to that revision. Empty revision and no binding resolves
-  # the exact address against the directory as it is now. Empty revision plus
-  # `expectedBinding` resolves the current handler only while its complete
-  # public semantic binding remains unchanged. A non-empty revision plus a
-  # binding is invalid. Current and fresh found replies name the revision they
-  # resolved against in `resolvedRevision`.
-  resolve @1 (revision :Text, resource :Text, action :Text,
-              expectedBinding :FreshActionBinding)
+  # A non-empty `revision` is pinned to that revision. Empty resolves the exact
+  # address against the directory as it is now. This legacy method's parameter
+  # words remain stable for old application owners.
+  resolve @1 (revision :Text, resource :Text, action :Text)
+      -> (resolution :ActionDirectoryResolution);
+  # Resolve the current handler only while its complete public semantic
+  # binding remains unchanged. Unsupported owners refuse rather than falling
+  # back to the legacy address-only method.
+  resolveFresh @2 (resource :Text, action :Text,
+                   expectedBinding :FreshActionBinding)
       -> (resolution :ActionDirectoryResolution);
 }
 

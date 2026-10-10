@@ -132,7 +132,11 @@ fn managed_action_fixture() -> ManagedActionFixture {
                 params: vec![],
                 contract: tilo_actions::ActionContract::view(),
                 view: None,
-                input: PublishedInput::None,
+                input: PublishedInput::Text {
+                    prompt: "Conversation request".into(),
+                    placeholder: String::new(),
+                    wants_content: false,
+                },
             }],
             live: true,
         },

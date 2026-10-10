@@ -21,8 +21,8 @@ bindings_sha256 = "c54b139f3ad67018f8717c47c6ed9e1af85754cc3e8ded231fcd21e55e3f8
 path = "crates/runtime/runtime-collab"
 src_prefix = "schema"
 schemas = ["schema/collab.capnp"]
-schema_sha256 = "7af5f72d3d299abe920665b501c485ee6365ef77d70e847e362641bece248c93"
-bindings_sha256 = "db87744af09856ccde95c69a73a097e1c0960f6f7e5f79b981ed110a200a4f89"
+schema_sha256 = "ee4b44ce4e1e2804ed68a40417a4bc9f15089603861b0e5007b2766c4ae1b983"
+bindings_sha256 = "fe0397ef2281416bda8a059020af35d61e48382235512ba5111cf95758b1b902"
 
 [[crate]]
 path = "crates/runtime/runtime-fs"

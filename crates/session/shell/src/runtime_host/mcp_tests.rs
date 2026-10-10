@@ -422,6 +422,18 @@ async fn invocations_preserve_actor_arguments_and_start_once() {
     tokio::task::LocalSet::new()
         .run_until(async {
             let (mut fixture, room, actor) = fixture();
+            fixture.set_action_params(
+                [
+                    ("region", tilo_actions::ParamType::Text),
+                    ("json_looking_text", tilo_actions::ParamType::Text),
+                    ("scale", tilo_actions::ParamType::Number),
+                    ("enabled", tilo_actions::ParamType::Boolean),
+                    ("content", tilo_actions::ParamType::Text),
+                ]
+                .into_iter()
+                .map(|(name, ty)| tilo_actions::ActionParam::optional(name, ty, "MCP argument"))
+                .collect(),
+            );
             let server = McpServer::new(BrokerActionHost::new(fixture.broker.clone()), room, actor);
             let original = json!({
                 "region": "0.16666666666666666,0,0.6666666666666666,1",
@@ -452,8 +464,15 @@ async fn invocations_preserve_actor_arguments_and_start_once() {
                 assert_eq!(reply["result"]["isError"], false, "{reply}");
                 let delivered = fixture
                     .take_invocation_argument()
-                    .flatten()
-                    .expect("MCP invocation delivers one encoded argument map");
+                    .expect("MCP invocation reached the actual worker");
+                if arguments.as_object().unwrap().is_empty() {
+                    assert_eq!(
+                        delivered, None,
+                        "empty arguments use canonical no-input encoding"
+                    );
+                    continue;
+                }
+                let delivered = delivered.expect("nonempty MCP arguments retain their envelope");
                 let encoded = delivered
                     .strip_prefix(tilo_actions::ARGUMENTS_JSON_PREFIX)
                     .expect("MCP invocation uses the canonical typed-argument envelope");

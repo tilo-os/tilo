@@ -8,6 +8,7 @@ mod invocation_stream_health_tests {
     struct Probe {
         subscriptions: std::cell::Cell<usize>,
         reads: RefCell<Vec<bool>>,
+        serves_native_source: std::cell::Cell<bool>,
     }
 
     struct Service(Rc<Probe>);
@@ -50,7 +51,7 @@ mod invocation_stream_health_tests {
             let native = params.get().unwrap().get_native_document_source();
             let first = self.0.reads.borrow().is_empty();
             self.0.reads.borrow_mut().push(native);
-            if native {
+            if native && !self.0.serves_native_source.get() {
                 return Promise::err(capnp::Error::failed("source admission refused".into()));
             }
             if !first {
@@ -62,8 +63,24 @@ mod invocation_stream_health_tests {
             result.set_resource("opaque-record/control");
             result.set_action("open");
             result.set_actor("person");
+            if native {
+                result.set_source_token(&[8; 32]);
+                result.set_source_spec_json(native_source_spec_json());
+            }
             Promise::ok(())
         }
+    }
+
+    fn native_source_spec_json() -> String {
+        serde_json::to_string(&crate::invocation_scope::PublishedInvocationSpec {
+            kind: tilo_actions::OperationKind::Document,
+            contract: tilo_actions::ActionContract::default(),
+            params: Vec::new(),
+            input: tilo_actions::InputSpec::None,
+            directory_revision: Some("current-native-source".into()),
+            fresh_binding: None,
+        })
+        .unwrap()
     }
 
     fn run_reader(native: bool) -> (BridgeState, Rc<Probe>, Vec<CollabEvent>) {
@@ -84,12 +101,14 @@ mod invocation_stream_health_tests {
                 record: Some("record".into()),
             };
             let state = BridgeState::new();
+            let continuity = Arc::new(PeerStreamContinuity::default());
             let (tx, mut rx) = tokio_mpsc::channel(SDK_EVENT_QUEUE);
             spawn_invocation_stream(
                 &channel,
                 route,
                 native,
                 &InboundBridge::new(tx, state.clone()),
+                &continuity,
             )
             .await;
             for _ in 0..64 {
@@ -134,5 +153,56 @@ mod invocation_stream_health_tests {
         );
         assert_eq!(probe.subscriptions.get(), 1);
         assert_eq!(*probe.reads.borrow(), vec![false, false]);
+    }
+
+    #[test]
+    fn native_reader_uses_the_replacement_route_and_committed_read_mode() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let local = tokio::task::LocalSet::new();
+        local.block_on(&runtime, async {
+            let probe = Rc::new(Probe::default());
+            probe.serves_native_source.set(true);
+            let client = runtime_collab::CollabClient::from_raw(capnp_rpc::new_client(Service(
+                probe.clone(),
+            )));
+            let channel = client.join_channel("fixture", &[]).await.unwrap();
+            let route = RouteSpec::record("so.tilo.chat", Uuid::new_v4(), "new-primary");
+            let state = BridgeState::new();
+            let continuity = Arc::new(PeerStreamContinuity::default());
+            let (tx, mut rx) = tokio_mpsc::channel(SDK_EVENT_QUEUE);
+            spawn_invocation_stream(
+                &channel,
+                route.clone(),
+                true,
+                &InboundBridge::new(tx, state.clone()),
+                &continuity,
+            )
+            .await;
+            let event = rx.recv().await.unwrap().event;
+            let CollabEvent::Invocation {
+                native_source: Some(source),
+                ..
+            } = event
+            else {
+                panic!("native read must retain its exact immutable source");
+            };
+            assert_eq!(source.route(), &route);
+            tilo_test_env::within("the completed native stream to fail closed", async {
+                while state.is_healthy() {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await;
+            assert_closed(&state);
+            assert!(
+                rx.try_recv().is_err(),
+                "the stream EOF cannot invent another invocation or settlement"
+            );
+            assert_eq!(probe.subscriptions.get(), 1);
+            assert_eq!(*probe.reads.borrow(), vec![true, true]);
+        });
     }
 }

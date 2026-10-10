@@ -50,7 +50,7 @@ use getrandom::{SysRng, rand_core::UnwrapErr};
 use runtime_portal::RawFd;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::thread;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::mpsc as tokio_mpsc;
@@ -1652,6 +1652,8 @@ struct BridgeState {
     /// How far the shovel has got establishing the session. Written by the
     /// shovel, read by the owner through [`CollabTransport::status`].
     connect: Arc<std::sync::Mutex<ConnectPhase>>,
+    #[cfg(test)]
+    peer_stream_continuity: Arc<std::sync::Mutex<Option<Arc<PeerStreamContinuity>>>>,
 }
 
 /// Progress of the shovel's connection setup.
@@ -1797,6 +1799,8 @@ impl BridgeState {
             owner_wake,
             wake_pending: Arc::new(AtomicBool::new(false)),
             connect: Arc::new(std::sync::Mutex::new(ConnectPhase::Connecting)),
+            #[cfg(test)]
+            peer_stream_continuity: Arc::new(std::sync::Mutex::new(None)),
         }
     }
 
@@ -3905,6 +3909,20 @@ async fn drive_shovel(
     let mut key_fetch: Option<KeyFetch> = None;
     let mut routes = std::collections::HashMap::<String, SdkRoute>::new();
     let mut primary: Option<String> = None;
+    // Invocation and task queues are peer-scoped on the broker. Secondary
+    // routes never replace them; an actual primary transition does, and this
+    // generation distinguishes that expected retirement from a lost stream.
+    let peer_stream_continuity = Arc::new(PeerStreamContinuity::default());
+    #[cfg(test)]
+    {
+        *inbound_tx
+            .state
+            .peer_stream_continuity
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) =
+            Some(Arc::clone(&peer_stream_continuity));
+    }
+    let mut task_stream_room: Option<Uuid> = None;
     let mut participant_handle: Option<String> = None;
     let mut primary_result = Err("primary collaboration route was not announced".to_string());
     // The app's settings over the primary route, when the shell keeps them.
@@ -3976,11 +3994,16 @@ async fn drive_shovel(
             }) => {
                 participant_handle = handle;
                 let key = spec.channel_id();
+                let install_invocation_stream = primary.as_deref() != Some(key.as_str());
+                let install_task_stream = task_stream_room != Some(spec.cluster_id);
                 primary_result = match tokio::time::timeout_at(
                     tokio::time::Instant::from_std(deadline.start()),
                     ensure_sdk_route(
                         &SdkJoinContext {
                             asks_channel_keys,
+                            owns_invocation_stream: install_invocation_stream,
+                            owns_task_stream: install_task_stream,
+                            peer_stream_continuity: &peer_stream_continuity,
                             native_document_source,
                             native_document_budget: &native_document_budget,
                             key_signals: &key_signals,
@@ -3998,7 +4021,12 @@ async fn drive_shovel(
                 )
                 .await
                 {
-                    Ok(result) => result.map(|()| spec),
+                    Ok(result) => result.map(|()| {
+                        if install_task_stream {
+                            task_stream_room = Some(spec.cluster_id);
+                        }
+                        spec
+                    }),
                     Err(_) => Err(PRIMARY_ROUTE_TIMED_OUT.to_string()),
                 };
                 primary = primary_result.is_ok().then_some(key);
@@ -4038,6 +4066,9 @@ async fn drive_shovel(
                 let _ = ensure_sdk_route(
                     &SdkJoinContext {
                         asks_channel_keys,
+                        owns_invocation_stream: false,
+                        owns_task_stream: false,
+                        peer_stream_continuity: &peer_stream_continuity,
                         native_document_source,
                         native_document_budget: &native_document_budget,
                         key_signals: &key_signals,
@@ -4059,6 +4090,9 @@ async fn drive_shovel(
                 let joined = ensure_sdk_route(
                     &SdkJoinContext {
                         asks_channel_keys,
+                        owns_invocation_stream: false,
+                        owns_task_stream: false,
+                        peer_stream_continuity: &peer_stream_continuity,
                         native_document_source,
                         native_document_budget: &native_document_budget,
                         key_signals: &key_signals,
@@ -4125,6 +4159,9 @@ async fn drive_shovel(
                 let result = install_sdk_encryption(
                     SdkJoinContext {
                         asks_channel_keys,
+                        owns_invocation_stream: false,
+                        owns_task_stream: false,
+                        peer_stream_continuity: &peer_stream_continuity,
                         native_document_source,
                         native_document_budget: &native_document_budget,
                         key_signals: &key_signals,
@@ -4289,6 +4326,12 @@ async fn install_sdk_encryption(
 #[derive(Clone, Copy)]
 struct SdkJoinContext<'a> {
     asks_channel_keys: bool,
+    /// Invocation and task queues address the authenticated peer, not one
+    /// joined route. Only a primary transition may replace them; discovery
+    /// and explicit secondary routes must not.
+    owns_invocation_stream: bool,
+    owns_task_stream: bool,
+    peer_stream_continuity: &'a Arc<PeerStreamContinuity>,
     native_document_source: bool,
     native_document_budget: &'a native_message::NativeDocumentBudget,
     /// Where each route's endpoint says its keys may have changed.
@@ -4328,6 +4371,9 @@ async fn ensure_sdk_route(
 ) -> Result<(), String> {
     let SdkJoinContext {
         asks_channel_keys,
+        owns_invocation_stream,
+        owns_task_stream,
+        peer_stream_continuity,
         native_document_source,
         native_document_budget,
         key_signals,
@@ -4339,7 +4385,19 @@ async fn ensure_sdk_route(
         media_routes,
     } = *context;
     let channel_id = spec.channel_id();
-    if routes.contains_key(&channel_id) {
+    if let Some(route) = routes.get(&channel_id) {
+        if owns_invocation_stream || owns_task_stream {
+            spawn_peer_streams(
+                &route.channel,
+                route.spec.clone(),
+                native_document_source && route.committed,
+                inbound_tx,
+                peer_stream_continuity,
+                owns_invocation_stream,
+                owns_task_stream,
+            )
+            .await;
+        }
         return Ok(());
     }
     let channel = match client
@@ -4458,21 +4516,22 @@ async fn ensure_sdk_route(
         },
         spawn_context_stream(&channel, spec.clone(), inbound_tx),
         spawn_action_stream(&channel, inbound_tx),
-        spawn_invocation_stream(
-            &channel,
-            spec.clone(),
-            native_document_source && committed,
-            inbound_tx,
-        ),
-        spawn_realtime_stream(&channel, inbound_tx),
         async {
-            // This intentionally fails quietly for person sessions. An
-            // admitted agent gets a separate broker-addressed queue; a
-            // document agent never has to infer task work from room traffic.
-            if !crate::host::environment().identity.managed_agent_context {
-                spawn_task_run_stream(&channel, inbound_tx).await;
+            if owns_invocation_stream || owns_task_stream {
+                spawn_peer_streams(
+                    &channel,
+                    spec.clone(),
+                    native_document_source && committed,
+                    inbound_tx,
+                    peer_stream_continuity,
+                    owns_invocation_stream,
+                    owns_task_stream,
+                )
+                .await;
             }
         },
+        spawn_realtime_stream(&channel, inbound_tx),
+        async {},
         spawn_presence_stream(&channel, inbound_tx),
     );
     spawn_content_stream(&channel, spec.clone(), inbound_tx).await;
@@ -4782,6 +4841,131 @@ async fn spawn_action_stream(channel: &runtime_collab::ChannelHandle, inbound_tx
     }
 }
 
+#[derive(Default)]
+struct PeerStreamContinuity {
+    generation: AtomicU64,
+    replacing: AtomicBool,
+    retirement_waiters: AtomicUsize,
+    changed: tokio::sync::Notify,
+}
+
+impl PeerStreamContinuity {
+    fn begin(self: &Arc<Self>) -> PeerStreamReplacement {
+        let already_replacing = self.replacing.swap(true, Ordering::AcqRel);
+        debug_assert!(
+            !already_replacing,
+            "peer stream replacements are serialized"
+        );
+        PeerStreamReplacement {
+            continuity: Arc::clone(self),
+            active: true,
+        }
+    }
+
+    async fn retired(&self, generation: u64) -> bool {
+        loop {
+            let changed = self.changed.notified();
+            if self.generation.load(Ordering::Acquire) != generation {
+                return true;
+            }
+            if !self.replacing.load(Ordering::Acquire) {
+                return false;
+            }
+            let _waiter = PeerRetirementWaiter::new(self);
+            changed.await;
+        }
+    }
+
+    #[cfg(test)]
+    fn retirement_waiters(&self) -> usize {
+        self.retirement_waiters.load(Ordering::Acquire)
+    }
+}
+
+struct PeerRetirementWaiter<'a>(&'a AtomicUsize);
+
+impl<'a> PeerRetirementWaiter<'a> {
+    fn new(continuity: &'a PeerStreamContinuity) -> Self {
+        continuity.retirement_waiters.fetch_add(1, Ordering::AcqRel);
+        Self(&continuity.retirement_waiters)
+    }
+}
+
+impl Drop for PeerRetirementWaiter<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+struct PeerStreamReplacement {
+    continuity: Arc<PeerStreamContinuity>,
+    active: bool,
+}
+
+impl PeerStreamReplacement {
+    fn complete(mut self) -> Option<u64> {
+        let previous = self
+            .continuity
+            .generation
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |value| {
+                value.checked_add(1)
+            })
+            .ok()?;
+        self.active = false;
+        self.continuity.replacing.store(false, Ordering::Release);
+        self.continuity.changed.notify_waiters();
+        Some(previous + 1)
+    }
+}
+
+impl Drop for PeerStreamReplacement {
+    fn drop(&mut self) {
+        if self.active {
+            self.continuity.replacing.store(false, Ordering::Release);
+            self.continuity.changed.notify_waiters();
+        }
+    }
+}
+
+/// Install the two broker queues that address an authenticated peer rather
+/// than one of its joined document routes.
+#[allow(
+    clippy::future_not_send,
+    reason = "capnp-rpc futures are !Send by design; driven only on the shovel thread's LocalSet"
+)]
+async fn spawn_peer_streams(
+    channel: &runtime_collab::ChannelHandle,
+    route: RouteSpec,
+    native_document_source: bool,
+    inbound_tx: &InboundBridge,
+    continuity: &Arc<PeerStreamContinuity>,
+    invocation: bool,
+    task: bool,
+) {
+    tokio::join!(
+        async {
+            if invocation {
+                spawn_invocation_stream(
+                    channel,
+                    route,
+                    native_document_source,
+                    inbound_tx,
+                    continuity,
+                )
+                .await;
+            }
+        },
+        async {
+            // This intentionally fails quietly for person sessions. An
+            // admitted agent gets a separate broker-addressed queue; a
+            // document agent never has to infer task work from room traffic.
+            if task && !crate::host::environment().identity.managed_agent_context {
+                spawn_task_run_stream(channel, inbound_tx).await;
+            }
+        },
+    );
+}
+
 #[allow(
     clippy::future_not_send,
     reason = "capnp-rpc futures are !Send by design; driven only on the shovel thread's LocalSet"
@@ -4791,8 +4975,17 @@ async fn spawn_invocation_stream(
     route: RouteSpec,
     native_document_source: bool,
     inbound_tx: &InboundBridge,
+    continuity: &Arc<PeerStreamContinuity>,
 ) {
+    let replacement = continuity.begin();
     if let Ok(stream) = channel.subscribe_stable_invocations().await {
+        let Some(current_generation) = replacement.complete() else {
+            inbound_tx
+                .state
+                .fail_closed("application invocation stream generation exhausted");
+            return;
+        };
+        let continuity = Arc::clone(continuity);
         let tx = inbound_tx.clone();
         let cancellation_channel = channel.clone();
         let key = route.channel_id();
@@ -4815,23 +5008,36 @@ async fn spawn_invocation_stream(
                 } else {
                     stream.read().await
                 };
-                let Ok(invocation) = received else {
-                    if native_document_source {
-                        tracing::debug!(
-                            target: "tilo_agent_delivery",
-                            "native-delivery:source_read:uncertain"
+                let invocation = match received {
+                    Ok(invocation) => invocation,
+                    Err(error) => {
+                        let retired_eof = matches!(
+                            &error,
+                            runtime_portal::NotAvailable::Capnp(error)
+                                if error.kind == capnp::ErrorKind::Disconnected
                         );
-                    } else {
-                        tracing::debug!(
-                            target: "tilo_agent_delivery",
-                            "native-delivery:legacy_read:uncertain"
-                        );
+                        if retired_eof && continuity.retired(current_generation).await {
+                            // A newly accepted primary deliberately replaced this
+                            // peer-scoped stream. Its reader now owns continuity.
+                            break;
+                        }
+                        if native_document_source {
+                            tracing::debug!(
+                                target: "tilo_agent_delivery",
+                                "native-delivery:source_read:uncertain"
+                            );
+                        } else {
+                            tracing::debug!(
+                                target: "tilo_agent_delivery",
+                                "native-delivery:legacy_read:uncertain"
+                            );
+                        }
+                        // Losing an established publisher stream leaves admitted
+                        // calls unresolved; never invent a terminal result or
+                        // silently keep advertising a healthy action transport.
+                        tx.state.fail_closed("application invocation stream read");
+                        break;
                     }
-                    // Losing an established publisher stream leaves admitted
-                    // calls unresolved; never invent a terminal result or
-                    // silently keep advertising a healthy action transport.
-                    tx.state.fail_closed("application invocation stream read");
-                    break;
                 };
                 let turn = match native_invocation_delivery_turn(&key, &tx.state).await {
                     Ok(turn) => turn,
@@ -6027,83 +6233,96 @@ impl runtime_collab::collab_capnp::action_directory::Server for ActionDirectoryS
         mut results: runtime_collab::collab_capnp::action_directory::ResolveResults,
     ) -> capnp::capability::Promise<(), capnp::Error> {
         let request = params.get().and_then(|request| {
-            let text = |value: capnp::Result<capnp::text::Reader<'_>>| {
-                value
-                    .and_then(|value| {
-                        value
-                            .to_str()
-                            .map_err(|error| capnp::Error::failed(error.to_string()))
-                    })
-                    .map(str::to_owned)
-            };
             Ok((
-                text(request.get_revision())?,
-                text(request.get_resource())?,
-                text(request.get_action())?,
-                request
-                    .has_expected_binding()
-                    .then(|| {
-                        request
-                            .get_expected_binding()
-                            .and_then(runtime_collab::decode_fresh_action_binding)
-                    })
-                    .transpose()?,
+                directory_param_text(request.get_revision())?,
+                directory_param_text(request.get_resource())?,
+                directory_param_text(request.get_action())?,
             ))
         });
-        let (revision, resource, action, expected) = match request {
+        let (revision, resource, action) = match request {
             Ok(request) => request,
             Err(error) => return capnp::capability::Promise::err(error),
         };
-        if expected.is_some() && !revision.is_empty() {
-            return capnp::capability::Promise::err(capnp::Error::failed(
-                "fresh binding and pinned revision are mutually exclusive".into(),
-            ));
-        }
         let requests = self.requests.clone();
         let owner = self.owner.clone();
         capnp::capability::Promise::from_future(async move {
-            let reply_value = if let Some(expected) = expected {
-                let (reply, response) = tokio::sync::oneshot::channel();
-                if submit_directory_request(
-                    &requests,
-                    &owner,
-                    ActionDirectoryRequest::ResolveFresh {
-                        resource,
-                        action,
-                        expected,
-                        reply,
-                    },
-                )
-                .is_err()
-                {
-                    directory_unavailable()
-                } else {
-                    response.await.unwrap_or_else(|_| directory_unavailable())
-                }
+            let (reply, response) = tokio::sync::oneshot::channel();
+            let reply_value = if submit_directory_request(
+                &requests,
+                &owner,
+                ActionDirectoryRequest::Resolve {
+                    revision,
+                    resource,
+                    action,
+                    reply,
+                },
+            )
+            .is_err()
+            {
+                directory_unavailable()
             } else {
-                let (reply, response) = tokio::sync::oneshot::channel();
-                if submit_directory_request(
-                    &requests,
-                    &owner,
-                    ActionDirectoryRequest::Resolve {
-                        revision,
-                        resource,
-                        action,
-                        reply,
-                    },
-                )
-                .is_err()
-                {
-                    directory_unavailable()
-                } else {
-                    // As for a query: the asker's deadline, not one of ours.
-                    response.await.unwrap_or_else(|_| directory_unavailable())
-                }
+                // As for a query: the asker's deadline, not one of ours.
+                response.await.unwrap_or_else(|_| directory_unavailable())
             };
             let out = results.get().init_resolution();
             runtime_collab::write_action_directory_resolution(out, &reply_value)
         })
     }
+
+    fn resolve_fresh(
+        self: std::rc::Rc<Self>,
+        params: runtime_collab::collab_capnp::action_directory::ResolveFreshParams,
+        mut results: runtime_collab::collab_capnp::action_directory::ResolveFreshResults,
+    ) -> capnp::capability::Promise<(), capnp::Error> {
+        let request = params.get().and_then(|request| {
+            Ok((
+                directory_param_text(request.get_resource())?,
+                directory_param_text(request.get_action())?,
+                runtime_collab::decode_fresh_action_binding(request.get_expected_binding()?)?,
+            ))
+        });
+        let (resource, action, expected) = match request {
+            Ok(request) => request,
+            Err(error) => return capnp::capability::Promise::err(error),
+        };
+        let requests = self.requests.clone();
+        let owner = self.owner.clone();
+        capnp::capability::Promise::from_future(async move {
+            let (reply, response) = tokio::sync::oneshot::channel();
+            let reply_value = if submit_directory_request(
+                &requests,
+                &owner,
+                ActionDirectoryRequest::ResolveFresh {
+                    resource,
+                    action,
+                    expected,
+                    reply,
+                },
+            )
+            .is_err()
+            {
+                directory_unavailable()
+            } else {
+                response.await.unwrap_or_else(|_| directory_unavailable())
+            };
+            runtime_collab::write_action_directory_resolution(
+                results.get().init_resolution(),
+                &reply_value,
+            )
+        })
+    }
+}
+
+fn directory_param_text(
+    value: capnp::Result<capnp::text::Reader<'_>>,
+) -> Result<String, capnp::Error> {
+    value
+        .and_then(|value| {
+            value
+                .to_str()
+                .map_err(|error| capnp::Error::failed(error.to_string()))
+        })
+        .map(str::to_owned)
 }
 
 type TaskActionResult = Result<(u64, tilo_actions::InvocationUpdate), String>;
@@ -7270,6 +7489,15 @@ mod tests {
         }
     }
 
+    fn peer_stream_retirement_waiters(manager: &CollaborationManager) -> usize {
+        broker_state(manager)
+            .peer_stream_continuity
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .map_or(0, |continuity| continuity.retirement_waiters())
+    }
+
     #[cfg(unix)]
     include!("directory_client_tests.rs");
     #[cfg(unix)]
@@ -7309,7 +7537,7 @@ mod tests {
     use runtime_collab::raw::{
         action_catalogue_stream, channel_context, channel_handle, collab_service, context_stream,
         invocation_stream, presence_event, presence_handle, presence_payload, presence_stream,
-        scrollback_batch, stream,
+        scrollback_batch, stream, task_run_stream,
     };
 
     #[derive(Default)]
@@ -7329,8 +7557,20 @@ mod tests {
         committed_malformed_refresh_replies: usize,
         committed_revision: Option<[u8; 32]>,
         invocation_fixture_enabled: bool,
+        invocation_subscriptions: usize,
+        invocation_stream_generation: usize,
+        retired_invocation_read_fails: bool,
+        invocation_subscription_gate: Option<(
+            mpsc::Sender<()>,
+            tokio::sync::oneshot::Receiver<Result<(), String>>,
+        )>,
         invocations: std::collections::VecDeque<runtime_collab::Invocation>,
         received_invocations: usize,
+        task_run_fixture_enabled: bool,
+        task_run_subscriptions: usize,
+        task_run_stream_generation: usize,
+        task_runs: std::collections::VecDeque<runtime_collab::TaskRunEnvelope>,
+        received_task_runs: usize,
         invocation_execution: Option<Result<bool, String>>,
         committed_recheck_gate: Option<tokio::sync::oneshot::Receiver<()>>,
         committed_ack_gate: Option<(mpsc::Sender<()>, tokio::sync::oneshot::Receiver<()>)>,
@@ -7420,7 +7660,7 @@ mod tests {
         done: bool,
     }
 
-    struct FakeInvocationStream(SharedCaptures);
+    struct FakeInvocationStream(SharedCaptures, usize);
     impl invocation_stream::Server for FakeInvocationStream {
         fn read(
             self: Rc<Self>,
@@ -7431,6 +7671,15 @@ mod tests {
                 loop {
                     let invocation = {
                         let mut captures = self.0.lock().unwrap();
+                        if captures.invocation_stream_generation != self.1 {
+                            return Err(if captures.retired_invocation_read_fails {
+                                capnp::Error::failed("fixture retired read refused".into())
+                            } else {
+                                capnp::Error::disconnected(
+                                    "fixture invocation stream replaced".into(),
+                                )
+                            });
+                        }
                         let invocation = captures.invocations.pop_front();
                         if invocation.is_some() {
                             captures.received_invocations += 1;
@@ -7447,6 +7696,41 @@ mod tests {
                         wire.set_has_argument(invocation.argument.is_some());
                         wire.set_actor(&invocation.actor);
                         wire.set_context_json(&invocation.context_json);
+                        return Ok(());
+                    }
+                    tokio::time::sleep(Duration::from_millis(1)).await;
+                }
+            })
+        }
+    }
+
+    struct FakeTaskRunStream(SharedCaptures, usize);
+    impl task_run_stream::Server for FakeTaskRunStream {
+        fn read(
+            self: Rc<Self>,
+            _: task_run_stream::ReadParams,
+            mut results: task_run_stream::ReadResults,
+        ) -> Promise<(), capnp::Error> {
+            Promise::from_future(async move {
+                loop {
+                    let run = {
+                        let mut captures = self.0.lock().unwrap();
+                        if captures.task_run_stream_generation != self.1 {
+                            return Err(capnp::Error::disconnected(
+                                "fixture task stream replaced".into(),
+                            ));
+                        }
+                        let run = captures.task_runs.pop_front();
+                        if run.is_some() {
+                            captures.received_task_runs += 1;
+                        }
+                        run
+                    };
+                    if let Some(run) = run {
+                        results.get().set_task_json(
+                            &serde_json::to_string(&run)
+                                .map_err(|error| capnp::Error::failed(error.to_string()))?,
+                        );
                         return Ok(());
                     }
                     tokio::time::sleep(Duration::from_millis(1)).await;
@@ -7795,14 +8079,51 @@ mod tests {
             params: channel_handle::SubscribeInvocationsParams,
             mut results: channel_handle::SubscribeInvocationsResults,
         ) -> Promise<(), capnp::Error> {
-            if !self.captures.lock().unwrap().invocation_fixture_enabled {
+            let mut captures = self.captures.lock().unwrap();
+            if !captures.invocation_fixture_enabled {
                 return Promise::err(capnp::Error::unimplemented(
                     "fixture has no invocation stream".into(),
                 ));
             }
+            captures.invocation_subscriptions += 1;
+            captures.invocation_stream_generation += 1;
+            let generation = captures.invocation_stream_generation;
+            let gate = captures.invocation_subscription_gate.take();
+            drop(captures);
             assert!(params.get().unwrap().get_stable_invocation_ids());
-            let stream: invocation_stream::Client =
-                capnp_rpc::new_client(FakeInvocationStream(self.captures.clone()));
+            let captures = self.captures.clone();
+            Promise::from_future(async move {
+                if let Some((entered, release)) = gate {
+                    let _ = entered.send(());
+                    release
+                        .await
+                        .map_err(|_| capnp::Error::failed("fixture gate dropped".into()))?
+                        .map_err(capnp::Error::failed)?;
+                }
+                let stream: invocation_stream::Client =
+                    capnp_rpc::new_client(FakeInvocationStream(captures, generation));
+                results.get().set_stream(stream);
+                Ok(())
+            })
+        }
+
+        fn subscribe_task_runs(
+            self: Rc<Self>,
+            _: channel_handle::SubscribeTaskRunsParams,
+            mut results: channel_handle::SubscribeTaskRunsResults,
+        ) -> Promise<(), capnp::Error> {
+            let mut captures = self.captures.lock().unwrap();
+            if !captures.task_run_fixture_enabled {
+                return Promise::err(capnp::Error::unimplemented(
+                    "fixture has no task run stream".into(),
+                ));
+            }
+            captures.task_run_subscriptions += 1;
+            captures.task_run_stream_generation += 1;
+            let generation = captures.task_run_stream_generation;
+            drop(captures);
+            let stream: task_run_stream::Client =
+                capnp_rpc::new_client(FakeTaskRunStream(self.captures.clone(), generation));
             results.get().set_stream(stream);
             Promise::ok(())
         }
@@ -9104,6 +9425,272 @@ mod tests {
         assert_eq!(second.wait(Some(tilo_test_env::hang_deadline())), Ok(()));
         assert_eq!(captures.lock().unwrap().signed_ops.len(), 2);
         assert!(manager.is_connected());
+        drop(manager);
+        thread.join().unwrap();
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn peer_scoped_streams_stay_owned_by_primary_across_secondary_routes() {
+        let invocation_id = tilo_actions::InvocationId::new();
+        let task = runtime_collab::TaskRunEnvelope {
+            version: 1,
+            task_id: "owned-task".into(),
+            title: "Owned task".into(),
+            instruction: Some("Keep the original queue".into()),
+            run_id: 17,
+            lease: "opaque-lease".into(),
+            planning: runtime_collab::TaskRunPlanning::RulesOnly,
+            execution_budget: None,
+            action_context: serde_json::json!({}),
+        };
+        let captures = Arc::new(std::sync::Mutex::new(Captures {
+            invocation_fixture_enabled: true,
+            invocations: [runtime_collab::Invocation {
+                id: 23,
+                invocation_uuid: *invocation_id.0.as_bytes(),
+                resource: "owned/resource".into(),
+                action: "inspect".into(),
+                argument: None,
+                actor: "owner".into(),
+                context_json: String::new(),
+                document_source: None,
+            }]
+            .into(),
+            task_run_fixture_enabled: true,
+            task_runs: [task.clone()].into(),
+            ..Captures::default()
+        }));
+        let broker = FakeBroker {
+            captures: captures.clone(),
+            op_backlog: vec![],
+            presence_backlog: vec![],
+            context_backlog: vec![],
+            scrollback_response: None,
+        };
+        let (fd, _, thread) = stand_up_fake_broker(broker);
+        let cluster = Uuid::new_v4();
+        let mut manager = CollaborationManager::from_sdk_fd_for_test(fd, "worker", cluster);
+        manager.join_route(RouteSpec::cluster(cluster));
+        manager.join_route(RouteSpec {
+            app_id: "secondary.app".into(),
+            cluster_id: cluster,
+            record: Some("secondary-record".into()),
+        });
+        manager
+            .begin_document_publication_barrier()
+            .unwrap()
+            .wait(Some(tilo_test_env::hang_deadline()))
+            .unwrap();
+
+        let mut saw_invocation = false;
+        let mut saw_task = false;
+        tilo_test_env::wait_until("the primary peer streams to deliver their work", || {
+            for event in manager.poll() {
+                match event {
+                    CollabEvent::Invocation {
+                        id: 23,
+                        invocation,
+                        resource,
+                        action,
+                        ..
+                    } if invocation == invocation_id
+                        && resource == "owned/resource"
+                        && action == "inspect" =>
+                    {
+                        saw_invocation = true;
+                    }
+                    CollabEvent::TaskRun(delivered) if delivered == task => saw_task = true,
+                    _ => {}
+                }
+            }
+            saw_invocation && saw_task
+        });
+        let captures = captures.lock().unwrap();
+        assert_eq!(captures.invocation_subscriptions, 1);
+        assert_eq!(captures.task_run_subscriptions, 1);
+        assert_eq!(captures.received_invocations, 1);
+        assert_eq!(captures.received_task_runs, 1);
+        drop(captures);
+        assert!(manager.is_connected());
+        assert!(manager.send(CollabRequest::document_incremental(
+            b"reply remains publishable".to_vec()
+        )));
+        manager
+            .begin_document_publication_barrier()
+            .unwrap()
+            .wait(Some(tilo_test_env::hang_deadline()))
+            .unwrap();
+        drop(manager);
+        thread.join().unwrap();
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn primary_transition_replaces_only_its_invocation_stream_without_an_eof_gap() {
+        let captures = Arc::new(std::sync::Mutex::new(Captures {
+            invocation_fixture_enabled: true,
+            task_run_fixture_enabled: true,
+            ..Captures::default()
+        }));
+        let broker = FakeBroker {
+            captures: captures.clone(),
+            op_backlog: vec![],
+            presence_backlog: vec![],
+            context_backlog: vec![],
+            scrollback_response: None,
+        };
+        let (fd, _, thread) = stand_up_fake_broker(broker);
+        let cluster = Uuid::new_v4();
+        let mut manager = CollaborationManager::from_sdk_fd_for_test(fd, "worker", cluster);
+        let replacement = RouteSpec {
+            app_id: "secondary.app".into(),
+            cluster_id: cluster,
+            record: Some("new-primary".into()),
+        };
+        manager.join_route(replacement.clone());
+        manager
+            .begin_document_publication_barrier()
+            .unwrap()
+            .wait(Some(tilo_test_env::hang_deadline()))
+            .unwrap();
+
+        let (entered, observed) = mpsc::channel();
+        let (release, receiver) = tokio::sync::oneshot::channel();
+        captures.lock().unwrap().invocation_subscription_gate = Some((entered, receiver));
+        assert!(manager.send(CollabRequest::Hello {
+            app_id: replacement.app_id.clone(),
+            cluster_id: cluster,
+            record: replacement.record.clone(),
+            record_kind: None,
+            handle: None,
+        }));
+        tilo_test_env::recv("the replacement after it retired the old sender", &observed);
+        tilo_test_env::wait_until("the old reader to reconcile its EOF", || {
+            peer_stream_retirement_waiters(&manager) == 1
+        });
+        assert!(
+            manager.is_connected(),
+            "an old EOF waits for the in-flight replacement outcome"
+        );
+        release.send(Ok(())).unwrap();
+        manager
+            .await_primary_route()
+            .expect("the production switch path acknowledges the replacement primary");
+        assert!(
+            manager
+                .primary_route
+                .accepted
+                .as_ref()
+                .is_some_and(|accepted| accepted.route == replacement)
+        );
+
+        let invocation = tilo_actions::InvocationId::new();
+        captures
+            .lock()
+            .unwrap()
+            .invocations
+            .push_back(runtime_collab::Invocation {
+                id: 71,
+                invocation_uuid: *invocation.0.as_bytes(),
+                resource: "new-primary/resource".into(),
+                action: "inspect".into(),
+                argument: None,
+                actor: "owner".into(),
+                context_json: String::new(),
+                document_source: None,
+            });
+        tilo_test_env::wait_until("the replacement stream to deliver", || {
+            manager.poll().into_iter().any(|event| {
+                matches!(event, CollabEvent::Invocation { id: 71, invocation: delivered, .. } if delivered == invocation)
+            })
+        });
+        let captures = captures.lock().unwrap();
+        assert_eq!(captures.invocation_subscriptions, 2);
+        assert_eq!(captures.task_run_subscriptions, 1);
+        drop(captures);
+        assert!(manager.is_connected());
+        drop(manager);
+        thread.join().unwrap();
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn failed_primary_stream_replacement_does_not_hide_the_retired_eof() {
+        let captures = Arc::new(std::sync::Mutex::new(Captures {
+            invocation_fixture_enabled: true,
+            ..Captures::default()
+        }));
+        let broker = FakeBroker {
+            captures: captures.clone(),
+            op_backlog: vec![],
+            presence_backlog: vec![],
+            context_backlog: vec![],
+            scrollback_response: None,
+        };
+        let (fd, _, thread) = stand_up_fake_broker(broker);
+        let cluster = Uuid::new_v4();
+        let mut manager = CollaborationManager::from_sdk_fd_for_test(fd, "worker", cluster);
+        let (entered, observed) = mpsc::channel();
+        let (release, receiver) = tokio::sync::oneshot::channel();
+        captures.lock().unwrap().invocation_subscription_gate = Some((entered, receiver));
+        assert!(manager.send(CollabRequest::Hello {
+            app_id: "replacement.app".into(),
+            cluster_id: cluster,
+            record: Some("replacement".into()),
+            record_kind: None,
+            handle: None,
+        }));
+        tilo_test_env::recv("the failed replacement after sender retirement", &observed);
+        tilo_test_env::wait_until("the old reader to reconcile its EOF", || {
+            peer_stream_retirement_waiters(&manager) == 1
+        });
+        assert!(manager.is_connected());
+        release.send(Err("replacement refused".into())).unwrap();
+        tilo_test_env::wait_until("the retired stream failure to close the bridge", || {
+            let _ = manager.poll();
+            !manager.is_connected()
+        });
+        assert_eq!(captures.lock().unwrap().invocation_subscriptions, 2);
+        drop(manager);
+        thread.join().unwrap();
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn successful_replacement_does_not_hide_a_retired_stream_refusal() {
+        let captures = Arc::new(std::sync::Mutex::new(Captures {
+            invocation_fixture_enabled: true,
+            retired_invocation_read_fails: true,
+            ..Captures::default()
+        }));
+        let broker = FakeBroker {
+            captures: captures.clone(),
+            op_backlog: vec![],
+            presence_backlog: vec![],
+            context_backlog: vec![],
+            scrollback_response: None,
+        };
+        let (fd, _, thread) = stand_up_fake_broker(broker);
+        let cluster = Uuid::new_v4();
+        let mut manager = CollaborationManager::from_sdk_fd_for_test(fd, "worker", cluster);
+        let (entered, observed) = mpsc::channel();
+        let (release, receiver) = tokio::sync::oneshot::channel();
+        captures.lock().unwrap().invocation_subscription_gate = Some((entered, receiver));
+        assert!(manager.send(CollabRequest::Hello {
+            app_id: "replacement.app".into(),
+            cluster_id: cluster,
+            record: Some("replacement".into()),
+            record_kind: None,
+            handle: None,
+        }));
+        tilo_test_env::recv("the replacement after sender retirement", &observed);
+        tilo_test_env::wait_until("the refused old read to close the bridge", || {
+            let _ = manager.poll();
+            !manager.is_connected()
+        });
+        release.send(Ok(())).unwrap();
+        assert_eq!(captures.lock().unwrap().invocation_subscriptions, 2);
         drop(manager);
         thread.join().unwrap();
     }

@@ -21,6 +21,11 @@ async fn resolved_invocation_rpc_retains_actual_original_and_exact_worker() {
         let (worker, authorize) = room.join_worker(903).await;
         let handle = &worker.handle;
         let directory_state = directory_state("original-r1");
+        directory_state.borrow_mut().input = runtime_collab::ExportedInput::Text {
+            prompt: "Original request".into(),
+            placeholder: String::new(),
+            wants_content: false,
+        };
         handle
             .publish_action_directory(&route.app_id, directory_server(&directory_state))
             .await
@@ -512,6 +517,24 @@ impl action_directory::Server for RecordingDirectory {
         }
         Promise::ok(())
     }
+
+    fn resolve_fresh(
+        self: Rc<Self>,
+        _params: action_directory::ResolveFreshParams,
+        mut results: action_directory::ResolveFreshResults,
+    ) -> Promise<(), capnp::Error> {
+        self.revisions.borrow_mut().push(String::new());
+        let mut out = results.get().init_resolution();
+        if let Err(error) =
+            runtime_collab::write_action_directory_row(out.reborrow().init_found(), &self.row)
+        {
+            return Promise::err(error);
+        }
+        if let Some(resolved) = self.resolved {
+            out.set_resolved_revision(resolved);
+        }
+        Promise::ok(())
+    }
 }
 
 /// Serve the fixture's directory through a [`RecordingDirectory`] naming
@@ -649,6 +672,52 @@ async fn fresh_bound_confirmation_does_not_use_unbound_current_rule() {
                 .expect("the observed unchanged binding carries its confirmation contract");
             assert_eq!(*revisions.borrow(), [String::new()]);
             assert!(fixture.take_invocation_identity().is_some());
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn fresh_bound_resolution_never_falls_back_to_legacy_directory_method() {
+    use std::cell::Cell;
+
+    struct LegacyOnly {
+        calls: Rc<Cell<usize>>,
+    }
+    impl action_directory::Server for LegacyOnly {
+        fn resolve(
+            self: Rc<Self>,
+            _params: action_directory::ResolveParams,
+            mut results: action_directory::ResolveResults,
+        ) -> Promise<(), capnp::Error> {
+            self.calls.set(self.calls.get().saturating_add(1));
+            results.get().init_resolution().set_not_found(());
+            Promise::ok(())
+        }
+    }
+
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let mut fixture = local_directory_fixture();
+            fixture.directory_state.borrow_mut().fresh_binding = true;
+            let caller = tilo_actions::remote::Caller::local_person("fixture-owner")
+                .in_room(fixture.cluster_id.clone())
+                .in_new_execution();
+            let binding = listed_fresh_binding(&fixture, &caller).await;
+            let legacy_calls = Rc::new(Cell::new(0));
+            fixture
+                .directories
+                .directories
+                .borrow_mut()
+                .get_mut(&fixture.peer_id)
+                .expect("fixture directory")
+                .directory = capnp_rpc::new_client(LegacyOnly {
+                calls: Rc::clone(&legacy_calls),
+            });
+            let mut request = directory_request(&fixture, None, None);
+            request.fresh_binding = Some(binding);
+            assert!(admit_directory_invoke(&fixture, &request).await.is_err());
+            assert_eq!(legacy_calls.get(), 0, "fresh resolution fell back to @1");
+            assert!(fixture.take_invocation_identity().is_none());
         })
         .await;
 }

@@ -1903,6 +1903,8 @@ mod owner_commit_tests {
             let row = TestActionDirectory {
                 revision: "directory-r1".into(),
                 fresh_binding: false,
+                input: runtime_collab::ExportedInput::None,
+                params: Vec::new(),
                 resolve_mode: DirectoryResolveMode::Found,
                 result: tilo_actions::ResultSpec::None,
                 confirmation_required: false,
@@ -1977,6 +1979,8 @@ mod owner_commit_tests {
             let descriptor = TestActionDirectory {
                 revision: "directory-r1".into(),
                 fresh_binding: false,
+                input: runtime_collab::ExportedInput::None,
+                params: Vec::new(),
                 resolve_mode: DirectoryResolveMode::Found,
                 result: tilo_actions::ResultSpec::None,
                 confirmation_required: false,

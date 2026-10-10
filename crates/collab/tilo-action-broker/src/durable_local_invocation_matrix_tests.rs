@@ -97,6 +97,13 @@ mod durable_local_matrix {
             Self::with_services(env, env.membership.services()).await
         }
         async fn with_services(env: &Environment, services: HostServices) -> Self {
+            Self::with_input(env, services, runtime_collab::ExportedInput::None).await
+        }
+        async fn with_input(
+            env: &Environment,
+            services: HostServices,
+            input: runtime_collab::ExportedInput,
+        ) -> Self {
             let fanout = Arc::new(FanoutState::new());
             let (state, bridge_rx) = CapnpBrokerState::new_configured(
                 &fanout,
@@ -120,7 +127,10 @@ mod durable_local_matrix {
             let (worker, authorize) =
                 join_worker(&state, &directories, &env.route, &env.cert, &env.key, 903).await;
             let handle = &worker.handle;
-            publish_for(handle, &env.route.app_id).await;
+            publish_for(handle, &env.route.app_id)
+                .await
+                .borrow_mut()
+                .input = input;
             let stream = handle.subscribe_stable_invocations().await.unwrap();
             let (_, binding) = handle
                 .resolve_published_action_for_invocation(
@@ -251,7 +261,7 @@ mod durable_local_matrix {
     #[tokio::test(flavor = "current_thread")]
     async fn durable_local_rpc_exact_uuid_duplicate_cancel_and_retained_observation() {
         tokio::task::LocalSet::new().run_until(async {
-            let env=Environment::new();let rig=Rig::new(&env).await;
+            let env=Environment::new();let rig=Rig::with_input(&env, env.membership.services(), runtime_collab::ExportedInput::Text { prompt: "Durable request".into(), placeholder: String::new(), wants_content: false }).await;
             let handle=&rig.worker.handle;let binding=&rig.binding;let stream=rig.stream.as_ref().unwrap();let authorize=&rig.authorize;
             let invocation=id(0xabcd_ef00_0000_0000_0000_0000_0000_0001);
             let (first,duplicate)=tokio::join!(
@@ -790,6 +800,8 @@ mod durable_local_matrix {
                     let row_state = TestActionDirectory {
                         revision: "original-r1".into(),
                         fresh_binding: false,
+                        input: runtime_collab::ExportedInput::None,
+                        params: Vec::new(),
                         resolve_mode: DirectoryResolveMode::Found,
                         result: tilo_actions::ResultSpec::None,
                         confirmation_required: false,
