@@ -136,18 +136,34 @@ fn reports(
             return Err("stale report accepted".into());
         }
         frame(&mut model, &serde_json::json!({"stage":"progress"}))?;
-        gate(&mut model, b'F')?;
+        let mut next = [0];
+        model.read_exact(&mut next)?;
+        let finish_sequence = match next[0] {
+            b'D' => {
+                let applied = runtime_collab::TaskRunUpdate::DirectionsApplied { revision: 1 };
+                channel.report_enrolled_task(&accepted, 2, &applied).await?;
+                channel.report_enrolled_task(&accepted, 2, &applied).await?;
+                frame(
+                    &mut model,
+                    &serde_json::json!({"stage":"direction-applied"}),
+                )?;
+                gate(&mut model, b'F')?;
+                3
+            }
+            b'F' => 2,
+            _ => return Err("private fixture gate changed".into()),
+        };
         let finished = runtime_collab::TaskRunUpdate::Succeeded {
             message: "Fixture complete".into(),
         };
         channel
-            .report_enrolled_task(&accepted, 2, &finished)
+            .report_enrolled_task(&accepted, finish_sequence, &finished)
             .await?;
         channel
-            .report_enrolled_task(&accepted, 2, &finished)
+            .report_enrolled_task(&accepted, finish_sequence, &finished)
             .await?;
         if channel
-            .report_enrolled_task(&accepted, 3, &update)
+            .report_enrolled_task(&accepted, finish_sequence + 1, &update)
             .await
             .is_ok()
         {

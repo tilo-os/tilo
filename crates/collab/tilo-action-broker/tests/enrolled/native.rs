@@ -15,6 +15,12 @@ pub(super) struct Native {
     pub room: RoomId,
 }
 impl WorkspaceAuthority for Native {
+    fn with_tree(&self, read: &mut dyn FnMut(&DesktopTree)) -> Result<(), String> {
+        let tree = self.snapshot()?;
+        read(&tree);
+        Ok(())
+    }
+
     fn snapshot(&self) -> Result<DesktopTree, String> {
         let mut workspace = self.owner.with_current(self.room, |view| {
             let document = view

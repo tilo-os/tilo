@@ -900,6 +900,14 @@ pub(super) async fn report(
         .map(|e| e.phase)
         .ok_or("accepted native phase is not observable")?;
     let (command, terminal) = match &update {
+        TaskRunUpdate::DirectionsApplied { revision } => (
+            WorkspaceTaskCommand::AppliedAck {
+                task_id: accepted.task_id.clone(),
+                run_epoch: epoch,
+                revision: *revision,
+            },
+            false,
+        ),
         TaskRunUpdate::Accepted => (
             WorkspaceTaskCommand::ExecutionPhase {
                 task_id: accepted.task_id.clone(),

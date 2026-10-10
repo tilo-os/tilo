@@ -347,6 +347,74 @@ fn signed_kernel_recipient_accepts_and_reports_through_actual_capnp_and_native_o
 }
 
 #[test]
+fn signed_enrolled_recipient_acknowledges_only_the_actual_direction_revision() -> Qualification<()>
+{
+    let mut fixture = running_fixture()?;
+    fixture.accept_and_progress()?;
+    let request = OwnerCommitRequest {
+        room: fixture.native.room.to_string(),
+        operation: CommitOperation::WorkspaceTaskCommand {
+            invocation: uuid::Uuid::new_v4(),
+            authority: WorkspaceTaskAuthority::Person {
+                caller: fixture.certificate.clone(),
+            },
+            command: WorkspaceTaskCommand::Direction {
+                task_id: fixture.task.clone(),
+                text: "Use the reviewed native task direction".into(),
+            },
+        },
+    };
+    fixture
+        .native
+        .owner
+        .commit_workspace_task_command(request.clone(), SystemTime::now())?
+        .validate_for(&request)?;
+    let before = fixture
+        .native
+        .owner
+        .workspace_task_snapshot(fixture.native.room)?;
+    let (_, control) = task_view(&before, &fixture.task)?;
+    require_eq(
+        &control
+            .directions
+            .last()
+            .map(|direction| direction.revision),
+        Some(1),
+    )?;
+    require(
+        control.directions[0].applied.is_none(),
+        "direction already acknowledged",
+    )?;
+
+    fixture.model_peer.write_all(b"D")?;
+    read_frame(&mut fixture.model_peer, "direction-applied")?;
+    let after = fixture
+        .native
+        .owner
+        .workspace_task_snapshot(fixture.native.room)?;
+    let (_, control) = task_view(&after, &fixture.task)?;
+    let applied = control.directions[0]
+        .applied
+        .as_ref()
+        .ok_or("actual direction acknowledgement absent")?;
+    require_eq(&(applied.agent_id.as_str()), "fixture-agent")?;
+    require_eq(&(applied.run_epoch), 1)?;
+    let run = control.active_run.as_ref().ok_or("active run absent")?;
+    require_eq(&(run.applied_direction_revision), 1)?;
+    require_eq(
+        &(control
+            .execution
+            .as_ref()
+            .ok_or("execution absent")?
+            .sequence),
+        1,
+    )?;
+    fixture.finish()?;
+    fixture.stop()?;
+    Ok(())
+}
+
+#[test]
 fn disconnected_signed_recipient_abandons_only_its_actual_native_epoch() {
     actual_enrolled_transport(false).unwrap();
 }
