@@ -682,3 +682,62 @@ async fn separate_process_exact_share_evicts_restarts_and_rehydrates() {
     );
     loss_viewer.stop();
 }
+
+/// Voluntary wakeups per second an idle `fs serve` may make across all of
+/// its threads (TIL-750). An idle thread blocks once and stays blocked, so
+/// each voluntary switch is a timer or a poll that fired. Preemptions are
+/// printed but not budgeted: on a loaded shared runner they measure the
+/// neighbours, not this process (TIL-749).
+const IDLE_SERVE_WAKEUP_BUDGET: f64 = 5.0;
+
+/// The shipped daemon serving a mounted workspace that nobody touches
+/// sleeps: no persist poll, no session-supervisor poll, no repair tick.
+/// Prints the per-thread table the budget is judged on.
+#[cfg(target_os = "linux")]
+#[test]
+fn idle_serve_mount_stays_asleep() {
+    if std::env::var("TILO_FS_FUSE_REQUIRED").as_deref() != Ok("1") {
+        eprintln!("skipping the idle serve mount outside the dedicated mandatory FUSE job");
+        return;
+    }
+    let temp = TempDir::new().unwrap();
+    let identity = temp.path().join("identity");
+    let mount = temp.path().join("mount");
+    let cache = temp.path().join("cache");
+    let seed = temp.path().join("seed");
+    let clock = temp.path().join("clock-ms");
+    let sockets = temp.path().join("authority-sockets");
+    for path in [&mount, &seed, &sockets] {
+        std::fs::create_dir_all(path).unwrap();
+    }
+    std::fs::write(seed.join("idle.txt"), PAYLOAD).unwrap();
+    let clock_now = tilo_clock::unix_now_ms();
+    write_clock(&clock, clock_now);
+    install_identity(&identity, rand::random(), rand::random(), true, clock_now);
+    let binary = Path::new(env!("CARGO_BIN_EXE_fs"));
+    let mut host = spawn_host(binary, &identity, &sockets, &mount, &cache, &seed, &clock);
+    host.wait_for_line("Mounting QuickFS");
+    let file = mount.join("idle.txt");
+    wait_for_process(&mut host, "the mount to serve its seed", || {
+        get_xattr(&file, fs::syncstate::RECORD_ID_XATTR).ok()
+    });
+
+    // Startup work (seeding, the first persist, thumbnails, the first sync
+    // pass) settles well inside the first 10 s; the window sees only idle.
+    let wakeups = tilo_test_env::idle::idle_wakeups(
+        host.child.id(),
+        Duration::from_secs(10),
+        Duration::from_secs(20),
+    )
+    .expect("the idle daemon's threads must be observable");
+    eprintln!("{wakeups}");
+    let blocked: u64 = wakeups.rows.iter().map(|row| row.voluntary).sum();
+    let per_second = wakeups.rate(blocked);
+    eprintln!("TIL-750 idle fs serve: {per_second:.2} voluntary wakeups/s");
+    host.stop();
+    assert!(
+        per_second <= IDLE_SERVE_WAKEUP_BUDGET,
+        "an idle fs serve woke {per_second:.2} times a second (budget \
+         {IDLE_SERVE_WAKEUP_BUDGET}):\n{wakeups}"
+    );
+}
