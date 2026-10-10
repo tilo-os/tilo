@@ -18,6 +18,7 @@ mod direct_retry;
 pub mod gestures;
 pub mod hotplug;
 pub mod input_config;
+mod kms_flip;
 mod output_signal;
 pub mod outputs;
 pub mod paint;
@@ -2364,7 +2365,10 @@ fn present_client(
         opaque,
         sdr: !targets.format().is_hdr() && !entry.hdr_wanted(),
         no_hdr_layers: frame.hdr_layers.is_empty(),
-        same_format: fourcc == Some(targets.format().fourcc()),
+        // A legacy flip keeps the targets' format; an atomic one may change it, and the
+        // plane's `IN_FORMATS` and a `TEST_ONLY` commit decide per buffer.
+        format_reachable: entry.scanout.flips_change_format()
+            || fourcc == Some(targets.format().fourcc()),
     };
     let refused = client_scanout::client_scanout_rejection(eligibility);
     let (Some(client), Some(dmabuf), Some(fourcc), None) = (client, dmabuf, fourcc, refused) else {
@@ -2461,7 +2465,7 @@ fn refresh_client_offer(
                 opaque: true,
                 sdr: !format.is_hdr() && !entry.hdr_wanted(),
                 no_hdr_layers: frame.hdr_layers.is_empty(),
-                same_format: true,
+                format_reachable: true,
             })
             .is_none()
         })
