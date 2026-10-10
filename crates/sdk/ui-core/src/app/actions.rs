@@ -1382,6 +1382,15 @@ impl App {
             if provider_cursor.as_ref().is_some_and(|cursor| {
                 !providers[provider_index].action_directory_cursor_is_current(cursor)
             }) {
+                tracing::debug!(
+                    target: "tilo::listing",
+                    provider = providers[provider_index].name(),
+                    generation = ?providers[provider_index].action_directory_generation(),
+                    cursor = ?provider_cursor.as_ref().map(crate::search::SearchCursor::opaque_parts),
+                    from_client = cursor_key.is_some(),
+                    rows = rows.len(),
+                    "action directory: a provider's continuation is not current"
+                );
                 return runtime_collab::ActionDirectoryPage {
                     revision,
                     rows: Vec::new(),
