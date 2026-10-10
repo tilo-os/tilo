@@ -173,6 +173,32 @@ class IdleThreads(unittest.TestCase):
         self.assertEqual((ush["cpu_pct"], ush["threads"][0]["name"], ush["threads"][0]["cpu_pct"]),
                          (10.0, "broker", 8.0))
 
+    def test_a_busy_process_keeps_each_threads_index_and_whether_it_is_new(self):
+        ush = next(p for p in self.summary()["top"] if p["comm"] == "tilo-ush")
+        self.assertEqual([(t["tid"], t["comm"], t["new"]) for t in ush["thread_rows"]],
+                         [(301, "broker", False), (300, "tilo-ush", False)])
+
+    def test_terminals_runtime_sums_every_tilo_ush_process_and_thread(self):
+        text = IDLE_SAMPLE.replace("@@1\n", "P 400 tilo-ush 0 0 1 2500\nH 400 400 tilo-ush 0 0\n@@1\n") \
+            .replace("HZ 100", "P 400 tilo-ush 5 20 1 2500\nH 400 400 tilo-ush 5 20\n"
+                               "H 400 401 iroh-blob-store-7 0 10\nHZ 100")
+        ush = self.summary(text)["ush"]
+        self.assertEqual((ush["processes"], ush["cpu_pct"], ush["wakeups_per_s"]), (2, 10.5, 66.0))
+        self.assertEqual([g["name"] for g in ush["thread_groups"]], ["broker", "tilo-ush", "iroh-blob-store"])
+        self.assertTrue(next(t for t in ush["threads"]["400"] if t["tid"] == 401)["new"])
+        self.assertIsNone(self.summary(IDLE_SAMPLE.replace("tilo-ush", "foot"))["ush"])
+
+    def test_tilo_ush_is_judged_only_once_terminals_shell_ran(self):
+        budgets = {"idle_apps_ush_cpu_pct": 1.0, "idle_apps_ush_wakeups_per_s": 5.0}
+        ush = self.summary()["ush"]
+        cpu, woke = resources.ush_problems(ush, 3.5, budgets)
+        self.assertEqual(cpu, "tilo-ush CPU 10.0% > 1.0% (broker 8.0%, tilo-ush 2.0%; exited threads 0.0%)")
+        self.assertEqual(woke, "tilo-ush woke 63.0/s > 5.0/s (broker 60.0/s, tilo-ush 3.0/s)")
+        [unmeasured] = resources.ush_problems(ush, None, budgets)
+        self.assertIn("was not measured idle", unmeasured)
+        quiet = {**ush, "cpu_pct": 0.2, "wakeups_per_s": 1.0}
+        self.assertEqual(resources.ush_problems(quiet, 3.5, budgets), [])
+
     def test_an_over_budget_compositor_names_its_busiest_threads_and_age(self):
         m = {**self.summary(), "frames_painted": 0, "shell_loop_ticks_per_s": 0.0}
         budgets = {"idle_shell_cpu_pct": 1.0, "idle_frames": 2, "idle_loop_ticks_per_s": 2.0,
