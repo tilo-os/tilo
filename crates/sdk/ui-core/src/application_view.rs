@@ -110,11 +110,7 @@ pub struct InstanceViewStore {
     device_id: String,
     workspace_id: String,
     ephemeral: bool,
-    #[allow(
-        dead_code,
-        reason = "ownership of the profile resource, rather than access to it, keeps it alive"
-    )]
-    profile_lifetime: Option<std::rc::Rc<dyn std::any::Any>>,
+    _profile_lifetime: Option<std::rc::Rc<dyn std::any::Any>>,
 }
 
 pub(crate) fn validate_identity(identity: &str) -> Result<(), ThawError> {
@@ -163,7 +159,7 @@ impl InstanceViewStore {
             portable: None,
             device_id: device_id.into(),
             workspace_id: workspace_id.into(),
-            profile_lifetime: None,
+            _profile_lifetime: None,
             ephemeral: false,
         })
     }
@@ -183,7 +179,7 @@ impl InstanceViewStore {
             device_id: device.clone(),
             workspace_id: workspace.into(),
             portable: Some(cache),
-            profile_lifetime: None,
+            _profile_lifetime: None,
             ephemeral: false,
         })
     }
@@ -214,7 +210,7 @@ impl InstanceViewStore {
         mut self,
         lifetime: std::rc::Rc<dyn std::any::Any>,
     ) -> Self {
-        self.profile_lifetime = Some(lifetime);
+        self._profile_lifetime = Some(lifetime);
         self
     }
     pub(crate) fn matches_namespace(&self, namespace: &str, device: &str, workspace: &str) -> bool {

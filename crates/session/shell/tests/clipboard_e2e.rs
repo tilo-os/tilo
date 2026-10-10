@@ -35,8 +35,8 @@ use std::time::{Duration, Instant, SystemTime};
 use getrandom::{SysRng, rand_core::UnwrapErr};
 use smithay::input::keyboard::xkb::keysyms;
 use threshold_identity::ThresholdIdentity;
+use tilo_identity_ceremony::IdentityRecord;
 use ui::clipboard::{ClipboardBackend, ClipboardTarget};
-use ui::widget::identity_flow::IdentityRecord;
 use wayland_client::protocol::{
     wl_buffer::WlBuffer,
     wl_compositor::WlCompositor,
@@ -1575,6 +1575,46 @@ impl TestClient {
         drop(write_fd);
         self.conn.flush().expect("flush the receive request");
         drain(read_fd, self, peer)
+    }
+}
+
+#[test]
+fn clipboard_mirror_never_requests_gtk_save_targets_as_payload() {
+    let compositor = Compositor::start();
+    let mut client = TestClient::new(compositor.connect(), "org.tilo.test.gtk-clipboard-source");
+    client.assert_is_tilo_compositor();
+    client.map_window(&compositor);
+    let manager = client.state.data_manager.clone().expect("data manager");
+    let device = client.data_device.clone().expect("data device");
+
+    for payload in ["first GTK copy", "replacement GTK copy"] {
+        let source = manager.create_data_source(&client.qh, payload.to_owned());
+        source.offer(TEXT_MIME.to_owned());
+        source.offer("SAVE_TARGETS".to_owned());
+        device.set_selection(Some(&source), client.state.last_serial);
+        client.roundtrip();
+        wait_for_clipboard(
+            &mut client,
+            || compositor.chrome_paste(false).as_deref() == Some(payload),
+            "chrome never observed the current GTK-style selection",
+        );
+        assert!(
+            client
+                .state
+                .send_requests
+                .iter()
+                .any(|mime| mime == TEXT_MIME),
+            "the live client must supply the clipboard bytes"
+        );
+        assert!(
+            !client
+                .state
+                .send_requests
+                .iter()
+                .any(|mime| mime == "SAVE_TARGETS"),
+            "SAVE_TARGETS is a clipboard-manager operation, not a data format: {:?}",
+            client.state.send_requests
+        );
     }
 }
 

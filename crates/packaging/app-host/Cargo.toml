@@ -29,6 +29,8 @@ service = [
     "dep:bounded-command",
     "dep:app-registry",
     "dep:app-cli",
+    "dep:install",
+    "dep:runtime-bundle",
     "dep:wire-frame",
     "dep:futures-util",
     "dep:clap",
@@ -40,9 +42,9 @@ service = [
     "dep:sd-notify",
 ]
 test-support = []
-# Honour the developer-only environment overrides (`src/dev_env.rs`, and the
-# system store's in `package-store`) in a release build. Debug builds always
-# honour them; shipped images never enable this.
+# Honour the developer-only environment overrides (`package_store::dev_env`)
+# in a release build. Debug builds always honour them; shipped images never
+# enable this.
 dev-overrides = ["service", "package-store/dev-overrides"]
 
 [dependencies]
@@ -54,6 +56,11 @@ tilo-app-package = { path = "../tilo-app-package" }
 package-store = { path = "../package-store" }
 app-registry = { path = "../app-registry", optional = true }
 app-cli = { path = "../app-cli", optional = true }
+# The collection `tilo-install` runs after every change (payload size sweep,
+# orphaned trees and staging, unused runtime builds), run after the daemon's
+# own installs and removals too.
+install = { path = "../install", optional = true }
+runtime-bundle = { path = "../runtime-bundle", optional = true }
 runtime-portal = { path = "../../runtime/runtime-portal" }
 
 # Cap'n Proto RPC for the control socket, matching format-host.

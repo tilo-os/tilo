@@ -5821,6 +5821,27 @@ struct SpatialControlSession {
     nearby_drop: Option<std::path::PathBuf>,
 }
 
+/// Apply a production native-seat batch; the runtime drains revocation barriers
+/// before surviving input. Both phases keep their existing timing/count names.
+pub(crate) fn dispatch_spatial_input_batch(
+    state: &mut State,
+    batch: crate::shell::device_fabric_runtime::SpatialInputBatch,
+) {
+    use crate::shell::device_fabric_runtime::SpatialInputBatch;
+    match batch {
+        SpatialInputBatch::Releases(controllers) => {
+            for controller in controllers {
+                let _ = state.release_personal_fabric_input(&controller);
+            }
+        }
+        SpatialInputBatch::Inputs(events) => {
+            for (controller, event) in events {
+                let _ = state.apply_personal_fabric_input(&controller, event);
+            }
+        }
+    }
+}
+
 fn end_spatial_control(
     network: &crate::shell::network::ShellNetwork,
     active: &mut Option<SpatialControlSession>,
@@ -5828,29 +5849,54 @@ fn end_spatial_control(
     let Some(session) = active.take() else {
         return;
     };
-    for keycode in session.pressed_keys {
-        let _ = crate::shell::device_fabric_runtime::send_spatial_input_bound(
-            network,
-            &session.target,
-            session.lease_nonce,
-            crate::shell::device_fabric::FabricInputEvent::Key {
+    let events = session
+        .pressed_keys
+        .into_iter()
+        .map(
+            |keycode| crate::shell::device_fabric::FabricInputEvent::Key {
                 keycode,
                 pressed: false,
                 modifiers: 0,
             },
-        );
-    }
-    for button in session.pressed_buttons {
-        let _ = crate::shell::device_fabric_runtime::send_spatial_input_bound(
-            network,
-            &session.target,
-            session.lease_nonce,
+        )
+        .chain(session.pressed_buttons.into_iter().map(|button| {
             crate::shell::device_fabric::FabricInputEvent::PointerButton {
                 button,
                 pressed: false,
-            },
-        );
-    }
+            }
+        }))
+        .collect();
+    let _ = crate::shell::device_fabric_runtime::queue_spatial_input_cleanup_bound(
+        network,
+        &session.target,
+        session.lease_nonce,
+        events,
+    );
+}
+
+#[cfg(test)]
+pub(crate) fn teardown_spatial_control_for_test(
+    network: &crate::shell::network::ShellNetwork,
+    target: crate::shell::personal_continuity::DeviceId,
+    nonce: [u8; 16],
+    held: (
+        std::collections::BTreeSet<u32>,
+        std::collections::BTreeSet<u32>,
+    ),
+) -> bool {
+    let mut active = Some(SpatialControlSession {
+        target,
+        lease_nonce: nonce,
+        output: None,
+        return_edge: crate::shell::device_fabric::DisplayEdge::Right,
+        x: 0.0,
+        y: 0.0,
+        pressed_keys: held.0,
+        pressed_buttons: held.1,
+        nearby_drop: None,
+    });
+    end_spatial_control(network, &mut active);
+    active.is_none()
 }
 
 #[allow(
@@ -7636,11 +7682,9 @@ struct PortalBackend {
     /// The on-screen file chooser's queue, shared with the chooser service
     /// that apps without a portal reach.
     pickers: crate::portal::FilePickerQueue,
-    #[allow(
-        dead_code,
-        reason = "Retaining the registration keeps its D-Bus connection, bus name, and object server alive once registered."
-    )]
-    server: crate::session_runtime::Registration<crate::portal::ServerHandle>,
+    /// Never read: retaining the registration keeps its D-Bus connection, bus
+    /// name, and object server alive once registered.
+    _server: crate::session_runtime::Registration<crate::portal::ServerHandle>,
     remote_input: std::sync::mpsc::Receiver<crate::network::streaming::RemoteAction>,
     input_capture: crate::portal::InputCaptureCompositorHandle,
     screencast: crate::portal::ScreenCastStreamProvisionerHandle,
@@ -7967,7 +8011,7 @@ fn start_portal_backend(
         media_grants: grants,
         media_prompts: prompts,
         pickers,
-        server,
+        _server: server,
         remote_input: remote_input_rx,
         input_capture,
         screencast,
@@ -8438,9 +8482,12 @@ pub fn run() {
             .is_some_and(|value| value == "1");
     let identity_missing =
         crate::shell::identity_provisioning::needs_first_run_flow(&identity_store);
-    // The device admin's control socket is the real seat's: a nested or
-    // headless compositor is a development session with its own sockets.
-    let mut admin_control_due = (backend_kind == BackendKind::Drm)
+    // The normal admin socket remains the real seat's. An owner can request
+    // a separate semantic endpoint for headless work without enabling the
+    // development input socket or changing first-use and lock handling.
+    let headless_owner_control = backend_kind == BackendKind::Headless
+        && std::env::args().any(|argument| argument == "--headless-owner-control");
+    let mut admin_control_due = (backend_kind == BackendKind::Drm || headless_owner_control)
         .then(|| identity_store.path().parent().map(Path::to_path_buf))
         .flatten();
     let onboarding_identity_dir = if should_activate_first_use(
@@ -9340,6 +9387,13 @@ pub fn run() {
     let mut watched_for_host = false;
     // Optional paint-rate diagnostics (`TILO_PAINT_STATS=1`).
     let paint_stats = std::env::var("TILO_PAINT_STATS").is_ok();
+    // `TILO_PAINT_STATS=ticks` also prints a `paint-tick:` line on every
+    // iteration, so a reader can tell when each one ran: a summary covers
+    // everything since the previous one, which may lie long before the
+    // period the reader measures (the idle gate counts only its window).
+    let paint_ticks = std::env::var("TILO_PAINT_STATS").is_ok_and(|value| value.trim() == "ticks");
+    // What ended the park before this iteration, for `paint-tick:`.
+    let mut last_wake: &'static str = "start";
     // Slow iterations are exceptional and always worth preserving in the
     // session flight record: a compositor that stops pumping input for 100 ms
     // is already visibly broken. `TILO_LOOP_TIMING` additionally enables the
@@ -11547,25 +11601,33 @@ pub fn run() {
             if let Some(bridge) = realtime_fabric_bridge.as_ref() {
                 pump_phase!("realtime-app-events", bridge.pump_app_events());
             }
-            let spatial_input = crate::shell::device_fabric_runtime::take_spatial_input();
-            let spatial_input_count = spatial_input.len();
-            pump_phase!(
-                "spatial-input",
-                spatial_input_count,
-                for (controller, event) in spatial_input {
-                    let _ = state.apply_personal_fabric_input(&controller, event);
+            for batch in crate::shell::device_fabric_runtime::take_spatial_input_batches() {
+                use crate::shell::device_fabric_runtime::SpatialInputBatch;
+                match batch {
+                    SpatialInputBatch::Releases(controllers) => {
+                        let count = controllers.len();
+                        pump_phase!(
+                            "spatial-input-releases",
+                            count,
+                            dispatch_spatial_input_batch(
+                                &mut state,
+                                SpatialInputBatch::Releases(controllers),
+                            )
+                        );
+                    }
+                    SpatialInputBatch::Inputs(events) => {
+                        let count = events.len();
+                        pump_phase!(
+                            "spatial-input",
+                            count,
+                            dispatch_spatial_input_batch(
+                                &mut state,
+                                SpatialInputBatch::Inputs(events)
+                            )
+                        );
+                    }
                 }
-            );
-            let spatial_releases =
-                crate::shell::device_fabric_runtime::take_spatial_input_releases();
-            let spatial_release_count = spatial_releases.len();
-            pump_phase!(
-                "spatial-input-releases",
-                spatial_release_count,
-                for controller in spatial_releases {
-                    let _ = state.release_personal_fabric_input(&controller);
-                }
-            );
+            }
             let nearby_drop_events = crate::shell::device_fabric_runtime::take_nearby_drop_events();
             let nearby_drop_event_count = nearby_drop_events.len();
             pump_phase!(
@@ -11613,7 +11675,8 @@ pub fn run() {
                     });
                 }
             );
-            let personal_viewers = crate::shell::device_fabric_runtime::window_viewers();
+            let personal_viewers =
+                crate::shell::device_fabric_runtime::window_viewers(continuity_policy.current());
             let viewer_hosts = if backend_kind == BackendKind::Headless {
                 let active_room = {
                     let tree_handle = frame_builder.chrome_handle().borrow().tree_handle();
@@ -11856,7 +11919,11 @@ pub fn run() {
                 let tree = tree_handle.read();
                 shown_hosted_windows(&tree, &tiles)
             };
-            crate::shell::device_fabric_runtime::publish_window_views(net, window_views);
+            crate::shell::device_fabric_runtime::publish_window_views(
+                net,
+                window_views,
+                continuity_policy.current(),
+            );
         }
         pump_checkpoint!("device-fabric-and-network");
         // Keep the presence relay current, then fold in what peers sent. Pointer
@@ -11923,7 +11990,12 @@ pub fn run() {
         }
         // First login has to finish before the device has an owner to serve.
         if !onboarding_active && let Some(identity_dir) = admin_control_due.take() {
-            match crate::compositor::admin_control::bind(&identity_dir) {
+            let bound = if headless_owner_control {
+                crate::compositor::admin_control::bind_headless_owner(&identity_dir)
+            } else {
+                crate::compositor::admin_control::bind(&identity_dir)
+            };
+            match bound {
                 Ok((listener, path)) => {
                     tracing::info!(path = %path.display(), "admin control: listening");
                     let wake = control_listener_wake(&listener, &event_loop.handle());
@@ -12194,6 +12266,9 @@ pub fn run() {
         // vs idled and why, confirming the loop actually idles without guessing.
         if paint_stats {
             frames_total = frames_total.saturating_add(1);
+            if paint_ticks {
+                eprintln!("paint-tick: painted={should_paint} woke={last_wake}");
+            }
             if should_paint {
                 frames_painted = frames_painted.saturating_add(1);
                 if had_backend_events {
@@ -13195,6 +13270,7 @@ pub fn run() {
         metrics.mark_wake(wake);
         if paint_stats {
             wakes_seen.note(wake);
+            last_wake = wake;
             if wake == "widget" && widget_wake_owner.is_none() {
                 widget_wake_owner = Some(frame_builder.wake_deadline_owners().join(","));
             }

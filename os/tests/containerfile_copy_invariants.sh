@@ -147,7 +147,13 @@ containerfile="$repo/os/Containerfile"
 # catalog's bytes once, TIL-609): that row replaces the runtime's and the font
 # catalogs' native-builder-payload rows; every installed path is unchanged and
 # /usr/share/fonts/tilo, formerly written by a RUN, is new to the contract.
-expected_contract=750b422f513e0a3274d8fa644c65e590cb7d6c2a8a491cfd2f7947dee0ee9c6a
+# The Plymouth theme arrives rendered from the plymouth-assets stage, which
+# replaces the context copy of its sources; make-plymouth-assets.py, which
+# rendered it inside the rootfs, no longer enters /usr/local/bin (TIL-733).
+# The app store arrives from the app-store stage, the builder's store with the
+# env-runtime's host-identical files left out and named in its host-sources
+# (TIL-735); the installed path is unchanged.
+expected_contract=2d0dd1ea813ea5c63d3b3a5c38ae6c73cefe768dd1e4e5b0b301c3fd0eb91400
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {

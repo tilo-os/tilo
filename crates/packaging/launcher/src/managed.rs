@@ -1,6 +1,6 @@
 //! Installed, explicitly authorized managed processes and shared supervision.
 //! No ambient identity, package trust or process-global environment is changed.
-use crate::manifest::MinimalManifest;
+use crate::manifest::ManifestView;
 use package_store::InstalledPackage;
 use std::{
     collections::{HashMap, VecDeque},
@@ -130,13 +130,13 @@ impl InstalledManagedPackage {
     /// # Errors
     ///
     /// Returns a description of the first verification failure.
-    pub fn revalidate(&self, trust: &PackageTrust) -> Result<MinimalManifest, String> {
+    pub fn revalidate(&self, trust: &PackageTrust) -> Result<ManifestView, String> {
         self.verified_manifest(trust).map(|(manifest, _)| manifest)
     }
     fn verified_manifest(
         &self,
         trust: &PackageTrust,
-    ) -> Result<(MinimalManifest, tilo_app_package::BlobHash), String> {
+    ) -> Result<(ManifestView, tilo_app_package::BlobHash), String> {
         let evidence = self.record_dir();
         let signed = std::fs::read(evidence.join("signed-root")).map_err(|e| e.to_string())?;
         let root = tilo_app_package::SignedRoot::decode(&signed).map_err(|e| e.to_string())?;
@@ -216,7 +216,7 @@ impl InstalledManagedPackage {
         refuse_unexpected_files(&self.installed.payload_root, collection)?;
         // Parse the exact bytes already verified above, never reread a path
         // that could have changed after signature/integrity validation.
-        let manifest: MinimalManifest =
+        let manifest: ManifestView =
             toml::from_str(std::str::from_utf8(&manifest).map_err(|e| e.to_string())?)
                 .map_err(|e| e.to_string())?;
         require_managed_service(&manifest)?;
@@ -309,7 +309,7 @@ fn refuse_unusual_entries(root: &Path) -> Result<(), String> {
 }
 /// A managed agent is a headless service with required collaboration and
 /// model gateway services and no network.
-fn require_managed_service(manifest: &MinimalManifest) -> Result<(), String> {
+fn require_managed_service(manifest: &ManifestView) -> Result<(), String> {
     let requires = |service: &str| {
         manifest.sandbox.services.get(service).is_some_and(|value| {
             crate::manifest::ServiceReq::parse(value).is_ok_and(|req| req.is_required())
@@ -443,7 +443,7 @@ impl ManagedRuntime {
     /// # Errors
     /// Refuses missing trust, policy bypasses, or an untrusted/missing runtime.
     pub fn from_launch_options(
-        manifest: &MinimalManifest,
+        manifest: &ManifestView,
         options: &crate::run::RunOptions,
         sandbox_shim: PathBuf,
         bwrap: PathBuf,
@@ -622,7 +622,7 @@ impl VerifiedManagedRuntime {
     }
 }
 fn verify_bundle(
-    manifest: &MinimalManifest,
+    manifest: &ManifestView,
     runtime: &ManagedRuntime,
 ) -> Result<runtime_bundle::BundleManifest, String> {
     let (_, version) = manifest
@@ -1180,7 +1180,7 @@ pub(crate) trait EnrolledProcessObserver {
 }
 #[cfg(target_os = "linux")]
 pub(crate) fn verify_runtime(
-    manifest: &MinimalManifest,
+    manifest: &ManifestView,
     opts: &crate::run::RunOptions,
 ) -> Result<(PathBuf, String), String> {
     let root = opts

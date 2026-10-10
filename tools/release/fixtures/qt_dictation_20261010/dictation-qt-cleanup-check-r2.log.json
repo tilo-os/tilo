@@ -1,0 +1,10 @@
+{
+  "encoding": "UTF-8 lines; concatenate lines to reconstruct stdout",
+  "lines": [
+    "PASS exact owned Qt scope removed plain beabb6aeda2b9a2125cd34df661e399737c6eb7feb3cefe30c1a4943b0fa8603\n",
+    "PASS exact owned Qt scope removed rich 9f16c79cf4b130f03308a2105d2b4b019b93deefa449e0f6094eefe12c668aaa\n",
+    "PASS exact owned Qt scope removed line_selection_failed 257565df9e524ad850ec201b6a188a5e9ce521058c77aa07cb1dbab4e1c7d16e\n",
+    "PASS exact owned Qt scope removed line_protected_active_failed a17956915f4b0336c4556b2678db862f0fa9e09252a878467b632d0e02752cf9\n",
+    "PASS exact owned Qt scope removed privacy b4dae14cc72bbf14cb8d625eecbf1a002ae8e8c288d7c2378129d7ee46628eff\n"
+  ]
+}

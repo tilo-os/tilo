@@ -65,6 +65,10 @@ pub(super) struct ClientEligibility {
     /// The output's scanout is upright: a client buffer flipped onto a
     /// turned output would show unturned.
     pub upright: bool,
+    /// The output has no ICC profile: a client buffer flipped onto a
+    /// calibrated output would skip the profile its composited frames go
+    /// through (`shell::render::icc_lut`).
+    pub uncalibrated: bool,
     /// The candidate covers exactly this output, pixel for pixel.
     pub covers_output: bool,
     /// The candidate draws a client's dma-buf.
@@ -89,6 +93,9 @@ pub(super) fn client_scanout_rejection(input: ClientEligibility) -> Option<&'sta
     }
     if !input.upright {
         return Some("the output is rotated");
+    }
+    if !input.uncalibrated {
+        return Some("the output has an ICC profile");
     }
     if !input.covers_output {
         return Some("the fullscreen client does not cover this output pixel for pixel");
@@ -545,6 +552,7 @@ mod tests {
         ClientEligibility {
             enabled: true,
             upright: true,
+            uncalibrated: true,
             covers_output: true,
             client_buffer: true,
             opaque: true,
@@ -564,6 +572,10 @@ mod tests {
             },
             ClientEligibility {
                 upright: false,
+                ..eligible()
+            },
+            ClientEligibility {
+                uncalibrated: false,
                 ..eligible()
             },
             ClientEligibility {

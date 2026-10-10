@@ -14,6 +14,8 @@ homepage.workspace = true
 [dependencies]
 tilo-relay-client = { version = "0.1.0", path = "../../hosting/tilo-relay-client", default-features = false }
 tilo-relay-protocol = { version = "0.1.0", path = "../../hosting/tilo-relay-protocol" }
+# The iroh session client native peers reach the host with.
+tilo-relay-session = { version = "0.1.0", path = "../../hosting/tilo-relay-session", optional = true }
 # A host's browser tab, drawn here from its paint stream (`remote_page`).
 tilo-paint-stream = { version = "0.1.0", path = "../paint-stream" }
 tilo-user-identity = { version = "0.1.0", path = "../../collab/tilo-user-identity" }
@@ -43,7 +45,7 @@ tilo-net = { version = "0.1.0", path = "../../platform/tilo-net", optional = tru
 default = ["iroh"]
 # Reach the host over iroh as well as HTTPS (native peers). The page builds
 # without it, so the wasm bundle links no iroh.
-iroh = ["dep:iroh", "dep:iroh-base", "tilo-relay-client/iroh"]
+iroh = ["dep:iroh", "dep:iroh-base", "dep:tilo-relay-session", "tilo-relay-client/iroh"]
 toolkit = ["dep:ui"]
 # `NetHttp`: `HttpClient` over `tilo_net::Client`, on every target.
 net = ["dep:tilo-net"]
@@ -67,6 +69,7 @@ hyper-util = { version = "0.1", features = ["tokio"] }
 http-body-util = "0.1"
 tokio-rustls.workspace = true
 rustls.workspace = true
+tilo-net = { path = "../../platform/tilo-net" }
 sha2.workspace = true
 bytes.workspace = true
 tokio = { workspace = true, features = ["full"] }

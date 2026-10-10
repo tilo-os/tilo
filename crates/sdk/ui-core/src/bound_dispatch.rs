@@ -82,6 +82,10 @@ pub(crate) enum BoundActionError {
     AmbiguousTarget {
         address: tilo_actions::ActionAddress,
     },
+    /// The resolved action runs through the workspace broker, so the door
+    /// handed it back before anything ran
+    /// ([`ResourceActionRequest::route`]).
+    Rerouted,
 }
 impl BoundActionError {
     pub(crate) fn into_door(self) -> tilo_actions::DoorError {
@@ -100,6 +104,7 @@ impl BoundActionError {
             Self::Dispatch(BoundDispatchError::ClosedLifetime) => "closed_lifetime",
             Self::Dispatch(_) => "record_unavailable",
             Self::AmbiguousTarget { .. } => "ambiguous_action_target",
+            Self::Rerouted => "bound_broker_route_required",
         }
     }
 }
@@ -115,6 +120,7 @@ impl std::fmt::Display for BoundActionError {
                     address.encode()
                 )
             }
+            Self::Rerouted => write!(f, "the action runs through the workspace broker"),
         }
     }
 }
@@ -898,6 +904,15 @@ pub(crate) struct BoundOwnerMark {
     binding: CallbackBinding,
     generation: Option<u64>,
     document: Option<(Vec<automerge::ChangeHash>, usize)>,
+}
+
+#[cfg(feature = "native")]
+impl BoundOwnerMark {
+    pub(crate) fn is_committed(&self) -> bool {
+        self.document
+            .as_ref()
+            .is_some_and(|(_, pending)| *pending == 0)
+    }
 }
 
 /// Every live bound owner under `root`, once each, in tree order.
@@ -2166,6 +2181,12 @@ pub(crate) struct ResourceActionRequest<'a> {
     pub(crate) source_invocation: Option<tilo_actions::InvocationId>,
     pub(crate) ambient: Option<&'a tilo_actions::ActionContext>,
     pub(crate) scope: Option<&'a crate::invocation_scope::ResourceInvocationScope>,
+    /// Asked with the action as the door resolved it, before any check after
+    /// resolution and before anything runs: `true` hands the invocation back
+    /// unexecuted as [`BoundActionError::Rerouted`], for the host to route
+    /// through the workspace broker. The host decides the route from the
+    /// door's own resolution, so an invocation resolves the tree once.
+    pub(crate) route: Option<&'a dyn Fn(&tilo_actions::ActionSpec) -> bool>,
 }
 
 /// Private checked front door. `document` carries the explicit active Doc when
@@ -2187,6 +2208,7 @@ pub(crate) fn invoke_resource_action(
         source_invocation,
         ambient,
         scope,
+        route: reroute,
     } = request;
     let _entry = target.binding.enter()?;
     let mut result = None;
@@ -2235,6 +2257,9 @@ pub(crate) fn invoke_resource_action(
                         arguments,
                         confirmed,
                     )?;
+                    if reroute.is_some_and(|reroute| reroute(spec)) {
+                        return Err(BoundActionError::Rerouted);
+                    }
                     if let Some(scope) = scope {
                         scope.check_dispatch_spec(spec)?;
                     }
@@ -2414,24 +2439,12 @@ pub struct CallbackBinding {
     /// intents by the shell that presents search.
     pub(crate) search_requests:
         Rc<RefCell<std::collections::VecDeque<crate::search::SearchRequest>>>,
-    #[allow(
-        dead_code,
-        reason = "binding retains original authority for the following typed-action provenance task"
-    )]
     pub(crate) instance_id: crate::application::InstanceId,
     pub(crate) app_id: String,
     pub(crate) records: RecordStore,
     pub(crate) checkout: RecordCheckout,
     pub(crate) permissions: Rc<RefCell<PermissionContext>>,
-    #[allow(
-        dead_code,
-        reason = "binding retains original authority for the following typed-action provenance task"
-    )]
     pub(crate) author: UserId,
-    #[allow(
-        dead_code,
-        reason = "binding retains original authority for the following typed-action provenance task"
-    )]
     pub(crate) operation_context: tilo_actions::ActionContext,
     /// Edits commit as the author's own writer on the record
     /// ([`crate::application::HostContext::write_as_author`]).

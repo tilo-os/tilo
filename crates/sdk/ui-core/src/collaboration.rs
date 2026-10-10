@@ -444,6 +444,7 @@ pub enum CollabRequest {
         update: runtime_collab::TaskRunUpdate,
     },
     ReportTaskRun {
+        request_id: Option<u64>,
         run_id: u64,
         lease: String,
         update: runtime_collab::TaskRunUpdate,
@@ -550,13 +551,7 @@ pub struct BrokerActionInput {
 }
 
 #[derive(serde::Deserialize)]
-#[cfg_attr(
-    not(feature = "broker-transport"),
-    allow(
-        dead_code,
-        reason = "only the broker transport decodes the catalogue wire"
-    )
-)]
+#[cfg(feature = "broker-transport")]
 pub(crate) struct BrokerActionCatalogueWire {
     pub(crate) surfaces: Vec<BrokerActionSurface>,
 }
@@ -808,6 +803,14 @@ pub enum CollabEvent {
     TaskRunCancellation {
         request_id: u64,
         result: Result<bool, String>,
+    },
+    TaskRunControl {
+        request_id: u64,
+        control: runtime_collab::TaskRunControl,
+    },
+    TaskRunReportResult {
+        request_id: u64,
+        result: Result<(), String>,
     },
     WorkspaceControl {
         session_id: u64,

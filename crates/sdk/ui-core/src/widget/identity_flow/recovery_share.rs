@@ -25,12 +25,13 @@ use crate::text_selection::clipboard_copy;
 use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
+use crate::widget::identity_flow::ScreenOutcome;
 use crate::widget::identity_flow::sheet::{
     Align, BodyScroll, GRID_SHEET_WIDTH, Resolved, Role, Rows, SheetSpec, WordGrid, check_box_rect,
     paint_check_row, paint_text, paragraph_height, resolve, screen_style, with_layout_renderer,
 };
-use crate::widget::identity_flow::{IdentityRecord, ScreenOutcome};
 use crate::widget::modal_dialog::ModalAction;
+use tilo_identity_ceremony::IdentityRecord;
 
 const TITLE_READY: &str = "Your recovery words";
 const TITLE_UNAVAILABLE: &str = "Recovery is not ready yet";

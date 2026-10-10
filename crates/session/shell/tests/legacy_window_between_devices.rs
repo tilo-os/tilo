@@ -530,6 +530,140 @@ fn a_board_viewer_receives_only_pictures_its_hardware_decoder_takes() {
     assert!(decoded >= 3);
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_encoded_backlog_preserves_the_viewers_reference_chain() {
+    let (host_cmd, mut host_events, host_addr) = spawn_device().await;
+    let (viewer_cmd, mut viewer_events, viewer_addr) = spawn_device().await;
+    let host_peer = shell::network::behaviour::peer_liveness_handle(&host_addr.id);
+    let viewer_peer = shell::network::behaviour::peer_liveness_handle(&viewer_addr.id);
+    host_cmd
+        .send(NetCmd::Connect { addr: viewer_addr })
+        .await
+        .unwrap();
+    viewer_cmd
+        .send(NetCmd::Connect { addr: host_addr })
+        .await
+        .unwrap();
+    wait_joined(&mut host_events).await;
+    wait_joined(&mut viewer_events).await;
+    let session = SharedFlatpakSession::start_with_metrics(
+        host_peer,
+        APP,
+        SURFACE,
+        WIDTH,
+        HEIGHT,
+        &FlatpakShareConfig {
+            max_bitrate_kbps: 8000,
+            target_fps: 60,
+            encoder: EncoderChoice::Auto,
+            hdr: None,
+        },
+        &[media::realtime::local_capabilities()],
+        None,
+    )
+    .expect("an encoder for the window");
+    session.add_viewer(viewer_peer, false);
+    let codec = session.chosen_codec().wire_label();
+    let mut view = PeerView::new_with_metrics(SURFACE, viewer_peer, PeerSurfaceMetrics::default());
+    view.restart_stream(codec, Some((WIDTH, HEIGHT)));
+    let (mut frames, timestamps) = record_encoded_units(&session);
+    host_cmd
+        .send(NetCmd::PublishSurfaceTo {
+            ws: WS,
+            msg: session.stream_start_msg(),
+            viewers: vec![viewer_peer],
+        })
+        .await
+        .unwrap();
+    host_cmd
+        .send(NetCmd::PublishSurfaceTo {
+            ws: WS,
+            msg: frames.remove(0),
+            viewers: vec![viewer_peer],
+        })
+        .await
+        .unwrap();
+    let (encoded, ts) = next_surface_frame(&mut viewer_events).await;
+    assert_eq!(ts, timestamps[0]);
+    assert_eq!(
+        view.push_encoded_with_latency(&encoded, None),
+        PushOutcome::Decoded
+    );
+    view.mark_drawn();
+    for msg in frames {
+        host_cmd
+            .send(NetCmd::PublishSurfaceTo {
+                ws: WS,
+                msg,
+                viewers: vec![viewer_peer],
+            })
+            .await
+            .unwrap();
+    }
+    let mut previous_index = 0_usize;
+    tilo_test_env::within("the final recorded unit reached the viewer", async {
+        loop {
+            let (encoded_h264, ts) = next_surface_frame(&mut viewer_events).await;
+            let index = timestamps.iter().position(|timestamp| *timestamp == ts).expect("recorded capture timestamp");
+            let started = Instant::now();
+            let outcome = view.push_encoded_with_latency(&encoded_h264, None);
+            eprintln!("legacy-backlog previous_index={previous_index} index={index} outcome={outcome:?} decode_ms={:.2}", millis(started.elapsed()));
+            assert!(matches!(outcome, PushOutcome::Decoded | PushOutcome::DroppedOldest),
+                "every delivered encoded unit decodes: previous_index={previous_index} index={index} outcome={outcome:?}");
+            assert_eq!(index, previous_index.saturating_add(1), "the bounded backlog preserves each encoded reference");
+            view.mark_drawn();
+            previous_index = index;
+            if index == timestamps.len().saturating_sub(1) { return; }
+        }
+    }).await;
+}
+
+fn record_encoded_units(session: &SharedFlatpakSession) -> (Vec<NeighbourMsg>, Vec<u64>) {
+    // Encoding is complete before publication: this deterministically exercises
+    // queued encoded units, rather than relying on loaded-runner capture jitter.
+    let mut frames = Vec::new();
+    let mut now = Instant::now();
+    for index in 0_u32..24 {
+        session.deposit_captured_rgba(window_frame(index.saturating_mul(23)));
+        now = now
+            .checked_add(Duration::from_millis(40))
+            .expect("bounded recording clock");
+        frames.push(
+            session
+                .encode_next_frame(now)
+                .expect("one encoded unit")
+                .into_neighbour_msg(),
+        );
+    }
+    let timestamps: Vec<_> = frames
+        .iter()
+        .map(|frame| match frame {
+            NeighbourMsg::SurfaceFrame { ts, .. } => *ts,
+            _ => panic!("an encoded frame"),
+        })
+        .collect();
+    (frames, timestamps)
+}
+
+async fn next_surface_frame(events: &mut mpsc::Receiver<NetEvent>) -> (Vec<u8>, u64) {
+    tilo_test_env::within("a recorded surface unit reached the viewer", async {
+        while let Some(event) = events.recv().await {
+            if let NetEvent::Msg {
+                msg:
+                    NeighbourMsg::SurfaceFrame {
+                        encoded_h264, ts, ..
+                    },
+                ..
+            } = event
+            {
+                return (encoded_h264, ts);
+            }
+        }
+        panic!("viewer event channel closed");
+    })
+    .await
+}
+
 fn window_frame_sized(width: u32, height: u32, index: u32) -> Vec<u8> {
     let caret = index.saturating_mul(7).checked_rem(width).unwrap_or(0);
     let mut rgba = Vec::new();

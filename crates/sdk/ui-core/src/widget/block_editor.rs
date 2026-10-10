@@ -7758,6 +7758,8 @@ impl Widget for BlockEditor {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
+        #[cfg(test)]
+        let setup_probe = crate::profiling::frame_probe::span("block_setup");
         let incoming = std::mem::take(scene);
         let track_paragraphs = !self.blocks.is_empty()
             && !self.has_open_popup()
@@ -7932,6 +7934,10 @@ impl Widget for BlockEditor {
 
         let outside_prefix = track_paragraphs.then(|| std::mem::take(ctx.scene));
         let mut dragged_scene: Option<(Scene, Rect)> = None;
+        #[cfg(test)]
+        drop(setup_probe);
+        #[cfg(test)]
+        let blocks_probe = crate::profiling::frame_probe::span("block_paint");
         for (idx, b) in self.blocks.iter_mut().enumerate() {
             if !painted[idx] {
                 continue;
@@ -8113,6 +8119,10 @@ impl Widget for BlockEditor {
                 }
             }
         }
+        #[cfg(test)]
+        drop(blocks_probe);
+        #[cfg(test)]
+        let suffix_probe = crate::profiling::frame_probe::span("block_suffix");
         if let (Some(_), Some((preview, bounds))) = (active_drag, dragged_scene) {
             // Clamp against the actual preview, not the full-width text row:
             // short paragraphs must still follow horizontal pointer movement.
@@ -8296,7 +8306,11 @@ impl Widget for BlockEditor {
         // Link hit geometry depends on the shaped positions produced by this
         // frame's block draw. Refreshing it before that draw made first-frame
         // style, scale, and BiDi changes unclickable.
+        #[cfg(test)]
+        let links_probe = crate::profiling::frame_probe::span("block_link_hits");
         self.refresh_live_link_hits(theme);
+        #[cfg(test)]
+        drop(links_probe);
         if let Some(prefix) = outside_prefix {
             let suffix = std::mem::take(scene);
             let mut outside = prefix.clone();
@@ -8320,6 +8334,8 @@ impl Widget for BlockEditor {
         }
         let own = std::mem::replace(scene, incoming);
         scene.append(&own, None);
+        #[cfg(test)]
+        drop(suffix_probe);
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {

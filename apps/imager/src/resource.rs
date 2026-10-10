@@ -694,6 +694,51 @@ mod tests {
     }
 
     #[test]
+    fn malformed_enrollment_calls_preserve_the_enabled_choice_and_document() {
+        let mut app = customizing();
+        app.call("enroll-identity", serde_json::json!({ "on": true }))
+            .unwrap();
+        assert!(app.state().profile.enroll_local_identity);
+        let enabled_document = app.read_document(|doc| doc.clone().save());
+        for arguments in [
+            serde_json::json!({}),
+            serde_json::json!({ "on": "maybe" }),
+            serde_json::json!({ "on": "false" }),
+            serde_json::json!({ "on": null }),
+            serde_json::json!({ "on": 0 }),
+            serde_json::json!({ "on": [] }),
+            serde_json::json!({ "on": {} }),
+            serde_json::json!({ "enabled": false }),
+            serde_json::json!({ "on": false, "unexpected": true }),
+        ] {
+            let error = app
+                .call("enroll-identity", arguments.clone())
+                .expect_err("invalid arguments must not create an enrollment edit");
+            assert!(
+                matches!(error, ui::tilo_actions::DoorError::InvalidArguments(_)),
+                "{arguments}: {error}"
+            );
+            assert!(
+                app.state().profile.enroll_local_identity,
+                "{arguments}: rejected input turned enrollment off"
+            );
+            assert_eq!(
+                app.read_document(|doc| doc.clone().save()),
+                enabled_document,
+                "{arguments}: rejected input mutated the document"
+            );
+        }
+        app.call("enroll-identity", serde_json::json!({ "on": false }))
+            .unwrap();
+        assert!(!app.state().profile.enroll_local_identity);
+        assert_ne!(
+            app.read_document(|doc| doc.clone().save()),
+            enabled_document,
+            "an explicit Boolean false must still edit the choice"
+        );
+    }
+
+    #[test]
     fn every_scenario_captures_its_flow_without_touching_the_machine() {
         for scenario in
             std::iter::once(None).chain(ImagerShell::scenarios().iter().copied().map(Some))

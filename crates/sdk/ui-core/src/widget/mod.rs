@@ -165,6 +165,35 @@ pub fn layout_rect(
     placed(&taffy.layout(node).copied().unwrap_or_default(), origin)
 }
 
+/// Route `event` through a container's children, first handler wins. A
+/// child latching a drag gets it exclusively, so the drag survives the
+/// cursor crossing a peer whose handler would otherwise claim it first; a
+/// child holding an open modal owns the input the same way, so nothing
+/// standing behind the sheet takes the press meant for it.
+pub fn route_to_children(
+    children: &mut [Box<dyn Widget>],
+    nodes: &[NodeId],
+    event: &WindowEvent,
+    ctx: &mut EventCtx<'_>,
+) {
+    let owner = children
+        .iter()
+        .position(|c| c.wants_pointer_capture())
+        .or_else(|| children.iter().position(|c| c.modal_capture().is_some()));
+    if let Some(idx) = owner {
+        if let (Some(child), Some(&node)) = (children.get_mut(idx), nodes.get(idx)) {
+            child.handle_event(event, &mut ctx.reborrow(ctx.path, node));
+        }
+        return;
+    }
+    for (child, &node) in children.iter_mut().zip(nodes) {
+        child.handle_event(event, &mut ctx.reborrow(ctx.path, node));
+        if *ctx.handled {
+            break;
+        }
+    }
+}
+
 /// What a gated, presence-publishing widget draws over itself once drawn:
 /// the denied-permission scrim, then the focus ring of the first peer on it.
 pub(crate) fn draw_gate_and_peer_focus(
@@ -917,7 +946,7 @@ thread_local! {
 /// that opens a nested menu. The host keeps the published resource tree
 /// across bare pointer motion, so such a widget must call this or the tree
 /// agents and assistive technology read would go stale. Clicks, keys and
-/// any handled event already republish.
+/// handled events outside the explicit view-only scroll contract republish.
 pub fn note_resource_presentation_changed() {
     RESOURCE_PRESENTATION_EPOCH.with(|epoch| epoch.set(epoch.get().wrapping_add(1)));
 }
@@ -1037,6 +1066,15 @@ pub trait Widget {
         _path: &ModelPath,
     ) -> Option<serde_json::Value> {
         None
+    }
+
+    /// Opt in only when this wheel event changes scroll geometry and nothing
+    /// else: no document edit, focus/selection, action availability, resource
+    /// declaration, pending command or work that requires `sync`. The runner
+    /// still lays out, paints and refreshes accessibility geometry. Unknown
+    /// handlers stay on the full synchronization/publication path.
+    fn view_only_scroll(&self, _event: &WindowEvent) -> bool {
+        false
     }
 
     /// Explicit app-owned region; never search secondary children implicitly.
@@ -2667,6 +2705,23 @@ pub trait TaffyTreeExt {
         node
     }
 
+    /// [`Self::widget_leaf`] for a leaf that fills its parent's box: a
+    /// canvas, viewport or overlay that sizes and lays out its own content.
+    fn fill_leaf(
+        &mut self,
+        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+        widget: &mut (dyn Widget + 'static),
+    ) -> NodeId {
+        let style = taffy::Style {
+            size: taffy::Size {
+                width: taffy::Dimension::percent(1.0),
+                height: taffy::Dimension::percent(1.0),
+            },
+            ..Default::default()
+        };
+        self.widget_leaf(style, node_map, widget)
+    }
+
     /// Insert a parent node over `children` for `widget` and register it in
     /// `node_map`: how a container's `build_layout` ends.
     fn widget_node(
@@ -3156,10 +3211,7 @@ pub mod qr;
 pub mod resource_actions;
 pub use conflict_banner::ConflictBanner;
 pub use conflict_picker::{ConflictPicker, PickerOutcome};
-pub use identity_flow::{
-    IdentityFlow, IdentityFlowScreen, IdentityRecord, IdentityStore, InviteEnvelope, InviteExpiry,
-    MemoryIdentityStore, PairingHandshake, PairingPayload, ScreenOutcome,
-};
+pub use identity_flow::{IdentityFlow, IdentityFlowScreen, ScreenOutcome};
 pub use merge_strategy::{
     Alternative, ConcurrentOp, ConflictKind, ConflictResolver, MergeStrategy, surface_banner,
 };

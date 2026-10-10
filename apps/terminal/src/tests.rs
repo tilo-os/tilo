@@ -395,6 +395,15 @@ fn hosted_service_sockets_are_probed_and_never_fall_back() {
         )
         .unwrap();
         ui::widget::Widget::sync(&mut widget, &doc, &automerge::ROOT);
+        let deadline = std::time::Instant::now() + HANG_BOUND;
+        while matches!(widget.session_state(), crate::sessions::OpenState::Opening) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "healthy open must finish"
+            );
+            ui::widget::Widget::update(&mut widget, &doc, &automerge::ROOT);
+            std::thread::yield_now();
+        }
         assert_eq!(widget.session_state(), &crate::sessions::OpenState::Open);
         drop(widget);
         server.join().unwrap();
@@ -441,6 +450,15 @@ fn hosted_service_sockets_are_probed_and_never_fall_back() {
         )
         .unwrap();
         ui::widget::Widget::sync(&mut widget, &doc, &automerge::ROOT);
+        let deadline = std::time::Instant::now() + HANG_BOUND;
+        while matches!(widget.session_state(), crate::sessions::OpenState::Opening) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "open failure must finish"
+            );
+            ui::widget::Widget::update(&mut widget, &doc, &automerge::ROOT);
+            std::thread::yield_now();
+        }
         assert!(
             matches!(
                 widget.session_state(),
@@ -1778,7 +1796,7 @@ fn find_in_terminal_is_local_discoverable_and_reflows() {
             .iter()
             .find(|child| child.role == Role::Menu)
             .expect("discoverable menu");
-        let find_label = ui::i18n::I18nManager::lookup("terminal-find-scrollback", None);
+        let find_label = crate::i18n::t("terminal-find-scrollback");
         assert_ne!(
             find_label, "terminal-find-scrollback",
             "toolkit supplies the visible label"
@@ -1909,7 +1927,7 @@ fn find_in_terminal_is_local_discoverable_and_reflows() {
         // Assistive activation resolves the exported controls to their real
         // FindBar owner rather than sending child targets to TerminalView.
         let control = |harness: &ui::headless::FrameHarness, key: &str| {
-            let label = ui::i18n::I18nManager::lookup_plain(key);
+            let label = crate::i18n::t(key);
             harness
                 .a11y_nodes()
                 .into_iter()

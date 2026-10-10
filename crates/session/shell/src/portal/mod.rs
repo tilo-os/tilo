@@ -1008,19 +1008,7 @@ pub mod flow {
         kind: CapabilityKind,
         cap_template: Capability,
     ) -> PromptOutcome {
-        // Fast path — `Always`-scoped grant already present.
-        let Some(consent_key) = ctx.grants().portal_consent_key(&caller, kind) else {
-            return PromptOutcome::Deny;
-        };
-        if matches!(ctx.grants().lookup(&caller, kind), Some(GRANT_ALWAYS)) {
-            return PromptOutcome::AllowAlways;
-        }
-        let rx = ctx.prompts().enqueue(caller.clone(), cap_template);
-        match rx.await {
-            Ok(outcome) => finish(ctx, &caller, kind, consent_key, outcome),
-            // A dead channel means the prompt pump shut down mid-flight — deny rather than hang the caller forever.
-            Err(_) => PromptOutcome::Deny,
-        }
+        resolve_inner(ctx, caller, kind, cap_template, None).await
     }
 
     /// Request-owned variant of [`resolve`]. It lets a portal close remove
@@ -1032,38 +1020,29 @@ pub mod flow {
         cap_template: Capability,
         request_key: String,
     ) -> PromptOutcome {
+        resolve_inner(ctx, caller, kind, cap_template, Some(request_key)).await
+    }
+
+    async fn resolve_inner(
+        ctx: &impl ConsentContext,
+        caller: PortalCaller,
+        kind: CapabilityKind,
+        cap_template: Capability,
+        request_key: Option<String>,
+    ) -> PromptOutcome {
         let Some(consent_key) = ctx.grants().portal_consent_key(&caller, kind) else {
             return PromptOutcome::Deny;
         };
+        // Fast path — `Always`-scoped grant already present.
         if matches!(ctx.grants().lookup(&caller, kind), Some(GRANT_ALWAYS)) {
             return PromptOutcome::AllowAlways;
         }
         let rx = ctx
             .prompts()
-            .enqueue_for_request(caller.clone(), cap_template, request_key);
+            .enqueue_inner(caller.clone(), cap_template, request_key);
         match rx.await {
             Ok(outcome) => finish(ctx, &caller, kind, consent_key, outcome),
-            Err(_) => PromptOutcome::Deny,
-        }
-    }
-
-    /// Consent path for portal-only capability kinds. It deliberately never
-    /// falls through to a broader workspace capability with a similar name.
-    pub async fn resolve_local(
-        ctx: &impl ConsentContext,
-        caller: PortalCaller,
-        kind: CapabilityKind,
-        cap_template: Capability,
-    ) -> PromptOutcome {
-        let Some(consent_key) = ctx.grants().portal_consent_key(&caller, kind) else {
-            return PromptOutcome::Deny;
-        };
-        if matches!(ctx.grants().lookup(&caller, kind), Some(GRANT_ALWAYS)) {
-            return PromptOutcome::AllowAlways;
-        }
-        let rx = ctx.prompts().enqueue(caller.clone(), cap_template);
-        match rx.await {
-            Ok(outcome) => finish(ctx, &caller, kind, consent_key, outcome),
+            // A dead channel means the prompt pump shut down mid-flight — deny rather than hang the caller forever.
             Err(_) => PromptOutcome::Deny,
         }
     }
@@ -1335,7 +1314,7 @@ pub async fn serve_with_inhibit_and_clipboard(
     }
 
     Ok(ServerHandle {
-        connection,
+        _connection: connection,
         owns_name,
     })
 }
@@ -1343,11 +1322,9 @@ pub async fn serve_with_inhibit_and_clipboard(
 /// RAII handle keeping the portal D-Bus connection alive; drop releases the bus name and tears down the object server.
 #[cfg(target_os = "linux")]
 pub struct ServerHandle {
-    #[allow(
-        dead_code,
-        reason = "never read on purpose: holding the Connection keeps the bus name and object server alive until drop"
-    )]
-    connection: zbus::Connection,
+    /// Never read: holding the connection keeps the bus name and object
+    /// server alive until drop.
+    _connection: zbus::Connection,
     owns_name: bool,
 }
 
@@ -1372,7 +1349,7 @@ mod tests {
 
     #[tokio::test]
     async fn private_portal_prompt_cannot_approve_a_different_room() {
-        for variant in 0..3 {
+        for variant in 0..2 {
             for outcome in [
                 PromptOutcome::AllowOnce,
                 PromptOutcome::AllowSession,
@@ -1386,7 +1363,7 @@ mod tests {
                     let cap = Capability::Camera { scope: GRANT_ONCE };
                     match variant {
                         0 => flow::resolve(&ctx, caller.clone(), CapabilityKind::Camera, cap).await,
-                        1 => {
+                        _ => {
                             flow::resolve_for_request(
                                 &ctx,
                                 caller.clone(),
@@ -1395,10 +1372,6 @@ mod tests {
                                 "/request/camera".into(),
                             )
                             .await
-                        }
-                        _ => {
-                            flow::resolve_local(&ctx, caller.clone(), CapabilityKind::Camera, cap)
-                                .await
                         }
                     }
                 };

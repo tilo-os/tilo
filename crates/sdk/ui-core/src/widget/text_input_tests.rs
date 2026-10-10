@@ -4512,3 +4512,38 @@ fn spelling_marks_follow_edits_like_a_full_check() {
         assert!(!input.spell_spans.is_empty(), "{edited:?}");
     }
 }
+
+#[test]
+fn single_line_batch_metrics_preserve_graphemes_preedit_and_theme_geometry() {
+    for text in ["", "ordinary ffi text", "abc אבג xyz", "é 👩‍💻 end"] {
+        for scale in [1.0, 2.0] {
+            let theme = Theme::dark().with_text_scale(scale);
+            let mut input = TextInput::local().with_initial_value(text);
+            input.apply_layout_external(Rect::new(20.0, 30.0, 420.0, 70.0));
+            for preedit_at in [None, Some(0), Some(text.len() / 2), Some(text.len())] {
+                input.core.clear_preedit();
+                if let Some(at) = preedit_at {
+                    input.set_cursor_pos(at);
+                    input.core.set_preedit("編", Some((0, "編".len())));
+                }
+                draw_with_theme(&mut input, &theme);
+                let layout = input
+                    .single_layout
+                    .as_ref()
+                    .expect("production draw shapes the field");
+                let mut reference = vec![0.0; text.len().saturating_add(1)];
+                for byte in grapheme_indices(text)
+                    .map(|(byte, _)| byte)
+                    .chain([text.len()])
+                {
+                    reference[byte] =
+                        f64::from(layout.caret_geometry(input.text_to_layout_byte(byte)).0);
+                }
+                assert_eq!(
+                    input.char_x_positions, reference,
+                    "{text:?}, scale={scale}, preedit_at={preedit_at:?}"
+                );
+            }
+        }
+    }
+}

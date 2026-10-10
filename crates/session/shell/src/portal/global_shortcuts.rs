@@ -479,14 +479,7 @@ struct Session {
     owner: String,
     caller: PortalCaller,
     shortcuts: Vec<GlobalShortcut>,
-    #[cfg(any(test, target_os = "linux"))]
-    #[cfg_attr(
-        not(target_os = "linux"),
-        expect(
-            dead_code,
-            reason = "the authenticated Linux portal adapter consumes this shared model; retain its complete cross-host shape"
-        )
-    )]
+    #[cfg(target_os = "linux")]
     binding: bool,
 }
 
@@ -596,7 +589,7 @@ impl GlobalShortcutsHandle {
                         preferred_trigger: None,
                     })
                     .collect(),
-                #[cfg(any(test, target_os = "linux"))]
+                #[cfg(target_os = "linux")]
                 binding: false,
             },
         );
@@ -1563,6 +1556,7 @@ mod tests {
                         description: None,
                         preferred_trigger: None,
                     }],
+                    #[cfg(target_os = "linux")]
                     binding: false,
                 },
             );

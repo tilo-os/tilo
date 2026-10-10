@@ -551,6 +551,42 @@ impl DetachedContent {
         Self { taffy, node }
     }
 
+    /// Hand `event` to a floating Panel's `content`, in the host's tree at
+    /// `hosted` or else in `detached`'s own tree. Reports whether the content
+    /// handled it, while leaving `ctx.handled` set if it already was.
+    pub(crate) fn forward(
+        content: &mut dyn crate::widget::Widget,
+        hosted: Option<taffy::NodeId>,
+        detached: Option<&Self>,
+        event: &winit::event::WindowEvent,
+        ctx: &mut crate::widget::EventCtx<'_>,
+    ) -> bool {
+        let before = std::mem::replace(ctx.handled, false);
+        if let Some(node) = hosted {
+            content.handle_event(event, &mut ctx.reborrow(ctx.path, node));
+        } else if let Some(detached) = detached {
+            // A node of the Panel's own tree means nothing to the host; the
+            // content keeps its own focus.
+            let mut detached_focus = None;
+            content.handle_event(
+                event,
+                &mut crate::widget::EventCtx {
+                    scale_factor: ctx.scale_factor,
+                    modifiers: ctx.modifiers,
+                    state: ctx.state.reborrow(),
+                    path: ctx.path,
+                    handled: ctx.handled,
+                    focus_target: &mut detached_focus,
+                    node_id: detached.node,
+                    taffy: &detached.taffy,
+                },
+            );
+        }
+        let consumed = *ctx.handled;
+        *ctx.handled = before || consumed;
+        consumed
+    }
+
     /// The laid-out size of the content's root.
     pub(crate) fn size(&self) -> (f64, f64) {
         self.taffy.layout(self.node).map_or((0.0, 0.0), |l| {

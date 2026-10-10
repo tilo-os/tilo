@@ -868,19 +868,27 @@ async function connect({
     throw error;
   }
 
-  async function dispose() {
-    if (disposed) return;
+  let disposal;
+  function dispose() {
+    if (disposal) return disposal;
+    let resolve, reject;
+    disposal = new Promise((done, failed) => { resolve = done; reject = failed; });
     disposed = true;
-    for (const refuse of [...pendingRecordWaits]) refuse(new Error('Shared resource connection closed'));
-    for (const entry of [...surfaces.values()]) dropSurface(entry);
-    unsubscribeStorage?.();
-    agents?.dispose();
-    actions?.dispose();
-    voice?.dispose();
-    stopLive();
-    peer?.dispose();
-    listeners.clear();
-    await storage?.release();
+    // Abort and explicit close can overlap. Every caller joins the same
+    // settlement, installed before teardown can call back into dispose.
+    (async () => {
+      for (const refuse of [...pendingRecordWaits]) refuse(new Error('Shared resource connection closed'));
+      for (const entry of [...surfaces.values()]) dropSurface(entry);
+      unsubscribeStorage?.();
+      agents?.dispose();
+      actions?.dispose();
+      voice?.dispose();
+      stopLive();
+      peer?.dispose();
+      listeners.clear();
+      await storage?.release();
+    })().then(resolve, reject);
+    return disposal;
   }
   signal?.addEventListener('abort', dispose, {once: true});
 
