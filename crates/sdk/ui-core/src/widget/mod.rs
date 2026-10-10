@@ -2788,6 +2788,7 @@ mod button;
 pub use button::{Button, ButtonFace, ButtonInteract, ButtonRole, face_colors};
 mod control_size;
 pub use control_size::ControlSize;
+mod bool_control;
 mod checkbox;
 pub use checkbox::{Checkbox, CheckboxFace, CheckboxInteract};
 mod column;

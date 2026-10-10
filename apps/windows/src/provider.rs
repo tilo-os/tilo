@@ -553,6 +553,31 @@ impl LiveProvider {
             }
         }
     }
+
+    fn send(&self, command: WorkerCommand) -> Result<(), String> {
+        self.commands
+            .send(command)
+            .map_err(|_| "The compatibility service worker has stopped.".to_string())
+    }
+
+    /// The current entry for `app_id`, after taking in the worker's news.
+    fn managed_app(&mut self, app_id: &str) -> Result<&WindowsApp, String> {
+        self.drain();
+        self.cached
+            .app(app_id)
+            .ok_or_else(|| "That managed Windows application is not in this session.".to_string())
+    }
+
+    /// The installer waiting for a destination, which the choice consumes.
+    fn take_pending_install(&mut self) -> Result<(File, String), String> {
+        let pending = self
+            .pending_vm_install
+            .take()
+            .ok_or_else(|| "Choose an installer before confirming a destination.".to_string())?;
+        self.cached.vm_install_confirmation = None;
+        self.pending_vm_install_confirmation = None;
+        Ok(pending)
+    }
 }
 
 impl CompatibilityProvider for LiveProvider {
@@ -572,53 +597,38 @@ impl CompatibilityProvider for LiveProvider {
     }
 
     fn launch(&mut self, app_id: &str) -> Result<(), String> {
-        self.drain();
-        let application = self.cached.app(app_id).ok_or_else(|| {
-            "That managed Windows application is not in this session.".to_string()
-        })?;
+        let application = self.managed_app(app_id)?;
         if !application.launch_available {
             return Err(application
                 .launch_unavailable_reason
                 .clone()
                 .unwrap_or_else(|| "This launch route is unavailable.".to_string()));
         }
-        self.commands
-            .send(WorkerCommand::Launch(app_id.to_string()))
-            .map_err(|_| "The compatibility service worker has stopped.".to_string())
+        self.send(WorkerCommand::Launch(app_id.to_string()))
     }
 
     fn launch_vm_fallback(&mut self, app_id: &str) -> Result<(), String> {
-        self.drain();
-        let application = self.cached.app(app_id).ok_or_else(|| {
-            "That managed Windows application is not in this session.".to_string()
-        })?;
+        let application = self.managed_app(app_id)?;
         if !application.vm_fallback_available {
             return Err(application
                 .vm_fallback_unavailable_reason
                 .clone()
                 .unwrap_or_else(|| "The Windows fallback is unavailable.".to_string()));
         }
-        self.commands
-            .send(WorkerCommand::LaunchVmFallback(app_id.to_string()))
-            .map_err(|_| "The compatibility service worker has stopped.".to_string())
+        self.send(WorkerCommand::LaunchVmFallback(app_id.to_string()))
     }
 
     fn launch_vm_with_file(&mut self, app_id: &str, source: File) -> Result<(), String> {
-        self.drain();
-        let application = self.cached.app(app_id).ok_or_else(|| {
-            "That managed Windows application is not in this session.".to_string()
-        })?;
+        let application = self.managed_app(app_id)?;
         if application.route != Route::Vm {
             return Err(
                 "Open file is available only for a published Windows VM application.".to_string(),
             );
         }
-        self.commands
-            .send(WorkerCommand::LaunchVmWithFile {
-                entry_id: app_id.to_string(),
-                source,
-            })
-            .map_err(|_| "The compatibility service worker has stopped.".to_string())
+        self.send(WorkerCommand::LaunchVmWithFile {
+            entry_id: app_id.to_string(),
+            source,
+        })
     }
 
     fn install(&mut self, source: File, source_name: &str) -> Result<(), String> {
@@ -657,60 +667,38 @@ impl CompatibilityProvider for LiveProvider {
             vm_fallback_available: false,
             vm_fallback_unavailable_reason: Some("Setup is still running.".into()),
         });
-        self.commands
-            .send(WorkerCommand::Install {
-                source,
-                source_name: source_name.to_string(),
-            })
-            .map_err(|_| "The compatibility service worker has stopped.".to_string())
+        self.send(WorkerCommand::Install {
+            source,
+            source_name: source_name.to_string(),
+        })
     }
 
     fn confirm_capsule_install(&mut self) -> Result<(), String> {
-        let (source, source_name) = self
-            .pending_vm_install
-            .take()
-            .ok_or_else(|| "Choose an installer before confirming a destination.".to_string())?;
-        self.cached.vm_install_confirmation = None;
-        self.pending_vm_install_confirmation = None;
-        self.commands
-            .send(WorkerCommand::InstallInCapsule {
-                source,
-                source_name,
-            })
-            .map_err(|_| "The compatibility service worker has stopped.".to_string())
+        let (source, source_name) = self.take_pending_install()?;
+        self.send(WorkerCommand::InstallInCapsule {
+            source,
+            source_name,
+        })
     }
 
     fn confirm_vm_install(&mut self) -> Result<(), String> {
-        let (source, source_name) = self
-            .pending_vm_install
-            .take()
-            .ok_or_else(|| "Choose an installer before confirming a destination.".to_string())?;
-        self.cached.vm_install_confirmation = None;
-        self.pending_vm_install_confirmation = None;
-        self.commands
-            .send(WorkerCommand::InstallInVm {
-                source,
-                source_name,
-            })
-            .map_err(|_| "The compatibility service worker has stopped.".to_string())
+        let (source, source_name) = self.take_pending_install()?;
+        self.send(WorkerCommand::InstallInVm {
+            source,
+            source_name,
+        })
     }
 
     fn publish_vm_candidate(&mut self, entry_id: &str) -> Result<(), String> {
-        self.commands
-            .send(WorkerCommand::PublishVmCandidate(entry_id.to_string()))
-            .map_err(|_| "The compatibility service worker has stopped.".to_string())
+        self.send(WorkerCommand::PublishVmCandidate(entry_id.to_string()))
     }
 
     fn vendor_uninstall_vm(&mut self, entry_id: &str) -> Result<(), String> {
-        self.commands
-            .send(WorkerCommand::VendorUninstallVm(entry_id.to_string()))
-            .map_err(|_| "The compatibility service worker has stopped.".to_string())
+        self.send(WorkerCommand::VendorUninstallVm(entry_id.to_string()))
     }
 
     fn retry_install(&mut self, capsule_id: &str) -> Result<(), String> {
-        self.commands
-            .send(WorkerCommand::RetryInstall(capsule_id.to_string()))
-            .map_err(|_| "The compatibility service worker has stopped.".to_string())
+        self.send(WorkerCommand::RetryInstall(capsule_id.to_string()))
     }
 
     fn escalate_install_to_vm(&mut self, capsule_id: &str) -> Result<(), String> {
@@ -726,27 +714,19 @@ impl CompatibilityProvider for LiveProvider {
                 "This retained setup cannot be continued in the Windows appliance now.".into(),
             );
         }
-        self.commands
-            .send(WorkerCommand::EscalateInstallToVm(capsule_id.to_string()))
-            .map_err(|_| "The compatibility service worker has stopped.".to_string())
+        self.send(WorkerCommand::EscalateInstallToVm(capsule_id.to_string()))
     }
 
     fn remove_launcher(&mut self, app_id: &str) -> Result<(), String> {
-        self.commands
-            .send(WorkerCommand::RemoveLauncher(app_id.to_string()))
-            .map_err(|_| "The compatibility service worker has stopped.".to_string())
+        self.send(WorkerCommand::RemoveLauncher(app_id.to_string()))
     }
 
     fn vendor_uninstall(&mut self, capsule_id: &str) -> Result<(), String> {
-        self.commands
-            .send(WorkerCommand::VendorUninstall(capsule_id.to_string()))
-            .map_err(|_| "The compatibility service worker has stopped.".to_string())
+        self.send(WorkerCommand::VendorUninstall(capsule_id.to_string()))
     }
 
     fn delete_data(&mut self, capsule_id: &str) -> Result<(), String> {
-        self.commands
-            .send(WorkerCommand::DeleteData(capsule_id.to_string()))
-            .map_err(|_| "The compatibility service worker has stopped.".to_string())
+        self.send(WorkerCommand::DeleteData(capsule_id.to_string()))
     }
 
     fn take_notice(&mut self) -> Option<String> {
