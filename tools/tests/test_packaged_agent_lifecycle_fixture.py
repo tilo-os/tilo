@@ -1561,7 +1561,7 @@ class PresentedEditorTargetTests(unittest.TestCase):
                 patch.object(PROOF, "agent_conversation_accessibility", return_value=access), \
                 patch.object(client, "named", return_value=["/queue-tab"]), \
                 patch.object(client, "role", return_value=PROOF.AT_SPI_ROLE_BUTTON), \
-                self.assertRaisesRegex(RuntimeError, "no exact Queue task tab"):
+                self.assertRaisesRegex(RuntimeError, "Agent intent control role=43"):
             PROOF.wait_for_named_agent_control(access, "Queue task", process=None)
         with common[0], common[1], common[2], common[3], common[4], \
                 patch.object(PROOF, "agent_conversation_accessibility",
@@ -1763,6 +1763,21 @@ class PresentedEditorTargetTests(unittest.TestCase):
                  "/draft": PROOF.AT_SPI_ROLE_LABEL}
         self.assertEqual(sample(base, roles),
                          (access, {"draft_matches": True}, False))
+        roster = {**base, "/roster": "(<'Tide, agent'>,)"}
+        self.assertEqual(
+            sample(roster, {**roles, "/roster": PROOF.AT_SPI_ROLE_LIST_ITEM}),
+            (access, {"draft_matches": True}, False),
+        )
+        same_name_button = {**base, "/button-alias": "(<'Tide, agent'>,)"}
+        with self.assertRaisesRegex(RuntimeError, "invalid Agent heading"):
+            sample(same_name_button, {
+                **roles, "/button-alias": PROOF.AT_SPI_ROLE_BUTTON,
+            })
+        duplicate_heading = {**base, "/heading-2": "(<'Tide, agent'>,)"}
+        with self.assertRaisesRegex(RuntimeError, "invalid Agent heading"):
+            sample(duplicate_heading, {
+                **roles, "/heading-2": PROOF.AT_SPI_ROLE_HEADING,
+            })
         self.assertIsNone(sample(base, roles, editable=("/draft",)))
         composer = {**base, "/composer": "(<'Task instruction composer'>,)"}
         self.assertIsNone(sample(composer, {**roles, "/composer": 30}))
@@ -4506,13 +4521,28 @@ class PresentedEditorTargetTests(unittest.TestCase):
     def test_detached_provider_extension_is_explicit_exact_and_bounded_to_six(self):
         provider = PROOF.HeldProvider()
         try:
-            with self.assertRaises(RuntimeError):
+            with self.assertRaises(RuntimeError) as unavailable:
                 provider.arm_detached_task_phase(lambda: {"phase": "planning"})
+            diagnostic = json.loads(str(unavailable.exception).split(": ", 1)[1])
+            self.assertEqual(diagnostic, {
+                "allowed_count": 0,
+                "detached_phase_armed": False,
+                "exact_release_ordinals": [],
+                "has_admission_probe": False,
+                "marker_agent_present": False,
+                "provider_closed": False,
+                "refused_request_count": 0,
+                "request_count": 0,
+            })
             self.assertEqual(provider.request_limit, 4)
             provider.requests = 4
             provider.allowed = 2
-            provider.exact_releases = {4}
             provider.owner_admission_probe = lambda: {"phase": "WaitingForReply"}
+            provider.release_exact(4)
+            self.assertEqual(provider.allowed, 2)
+            with self.assertRaises(RuntimeError):
+                provider.arm_detached_task_phase(lambda: {"phase": "planning"})
+            provider.release_through(3)
             provider.arm_detached_task_phase(lambda: {"run_epoch": 7, "phase": "planning", "sequence": 1})
             self.assertEqual(provider.request_limit, 6)
             with self.assertRaises(RuntimeError):
@@ -4540,7 +4570,7 @@ class PresentedEditorTargetTests(unittest.TestCase):
                 PROOF.wait_for("real sixth rebuilt task request", lambda: provider.request_count() == 6, timeout=5)
                 provider.release_detached_task_turn(6)
                 self.assertEqual(sixth.result(timeout=5), 200)
-                self.assertEqual(provider.allowed, 2)
+                self.assertEqual(provider.allowed, 3)
                 self.assertNotIn(3, provider.exact_releases)
                 with self.assertRaises(urllib.error.HTTPError) as refused:
                     post()
@@ -4551,13 +4581,13 @@ class PresentedEditorTargetTests(unittest.TestCase):
             provider.close()
 
     def test_detached_provider_extension_refuses_wrong_phase_or_marker(self):
-        for changed in ({"requests": 3}, {"allowed": 3}, {"exact_releases": set()},
+        for changed in ({"requests": 3}, {"allowed": 2}, {"exact_releases": set()},
                         {"refused_requests": 1}, {"closed": True}, {"marker_agent": "tide"},
                         {"owner_admission_probe": None}):
             provider = PROOF.HeldProvider()
             try:
                 provider.requests = 4
-                provider.allowed = 2
+                provider.allowed = 3
                 provider.exact_releases = {4}
                 provider.owner_admission_probe = lambda: {}
                 for field, value in changed.items():

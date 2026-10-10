@@ -1728,8 +1728,10 @@ def wait_for_named_agent_control(access, label, process):
         matches = client.named(tree, label)
         if len(matches) > 1:
             raise RuntimeError(f"the actual Agent conversation has no unique {label} control")
-        if matches and client.role(matches[0]) != AT_SPI_ROLE_TAB:
-            raise RuntimeError(f"the actual Agent conversation has no exact {label} tab")
+        if matches:
+            role = client.role(matches[0])
+            if role != AT_SPI_ROLE_TAB:
+                raise RuntimeError(f"the actual Agent intent control role={role}")
         return (current, matches[0]) if matches else None
 
     current, control = wait_for(f"exact owned {label} control", current_control, process)
@@ -4277,19 +4279,44 @@ class HeldProvider:
         """Only the completed four-turn proof may admit two final real task turns."""
         with self.request_lock:
             if self.marker_agent is not None or self.closed or self.detached_task_phase_armed \
-                    or self.requests != 4 or self.allowed != 2 or self.exact_releases != {4} \
+                    or self.requests != 4 or self.allowed != 3 or self.exact_releases != {4} \
                     or self.refused_requests != 0 or self.owner_admission_probe is None \
                     or not callable(probe):
-                raise RuntimeError("detached task extension requires the exact completed four-turn phase")
+                diagnostic = self._detached_task_phase_diagnostic_locked()
+                raise RuntimeError(
+                    "detached task extension requires the exact completed four-turn phase: "
+                    + json.dumps(diagnostic, sort_keys=True)
+                )
             self.detached_task_phase_armed = True
             self.request_limit = 6
             self.owner_admission_probe = probe
 
+    def _detached_task_phase_diagnostic_locked(self):
+        """Return finite provider state only while `request_lock` is held."""
+        return {
+            "request_count": min(max(self.requests, 0), 64),
+            "allowed_count": min(max(self.allowed, 0), 64),
+            "exact_release_ordinals": sorted(
+                ordinal for ordinal in self.exact_releases
+                if type(ordinal) is int and 1 <= ordinal <= 6
+            ),
+            "refused_request_count": min(max(self.refused_requests, 0), 64),
+            "provider_closed": self.closed,
+            "detached_phase_armed": self.detached_task_phase_armed,
+            "has_admission_probe": self.owner_admission_probe is not None,
+            "marker_agent_present": self.marker_agent is not None,
+        }
+
+    def detached_task_phase_diagnostic(self):
+        """Observe only bounded state used by the detached-phase guard."""
+        with self.request_lock:
+            return self._detached_task_phase_diagnostic_locked()
+
     def release_detached_task_turn(self, ordinal):
-        """Never release the old cancelled third turn while completing this task."""
+        """Release only the armed task turns after the cancelled third has settled."""
         with self.request_lock:
             if not self.detached_task_phase_armed or ordinal not in (5, 6) \
-                    or self.requests < ordinal or self.requests > 6 or self.allowed != 2 \
+                    or self.requests < ordinal or self.requests > 6 or self.allowed != 3 \
                     or 4 not in self.exact_releases \
                     or ordinal == 6 and 5 not in self.exact_releases:
                 raise RuntimeError("detached task release lacks its exact armed turn")
@@ -7478,15 +7505,24 @@ def restricted_task_read_only_sample(custody, draft, observation):
             client, window, atspi.APP_TREE_NODE_LIMIT, observation=observation
         )
         decoded = decoded_accessible_names(tree)
-        headings = [path for path, name in decoded.items()
-                    if name.casefold() == f"{original['agent'].casefold()}, agent"]
+        heading_candidates = [path for path, name in decoded.items()
+                              if name.casefold() == f"{original['agent'].casefold()}, agent"]
+        heading_roles = {path: client.role(path) for path in heading_candidates}
+        if any(role not in (AT_SPI_ROLE_HEADING, AT_SPI_ROLE_LIST_ITEM)
+               for role in heading_roles.values()) \
+                or sum(role == AT_SPI_ROLE_LIST_ITEM for role in heading_roles.values()) > 1:
+            raise RuntimeError("Task restriction has invalid Agent heading")
+        headings = [path for path, role in heading_roles.items()
+                    if role == AT_SPI_ROLE_HEADING]
         route_name = "Return conversation" if original["detached"] else "Float conversation"
         routes = [path for path, name in decoded.items() if name == route_name]
         drags = [path for path, name in decoded.items() if name == "Drag conversation"]
         retained = [path for path, name in decoded.items() if name == draft]
         task_composers = [path for path, name in decoded.items()
                           if name == "Task instruction composer"]
-        if not headings or not routes or not drags:
+        if heading_candidates and not headings:
+            raise RuntimeError("Task restriction has invalid Agent heading")
+        if not heading_candidates or not routes or not drags:
             return None
         for label, paths, role in (
                 ("Agent heading", headings, AT_SPI_ROLE_HEADING),
