@@ -505,6 +505,16 @@ max = 1.0
 min_delta = 0.5
 source = "KPI document: Idle wakeups and idle power; run.py idle_shell_cpu_pct"
 
+# The part of idle.shell_cpu_pct spent on threads the GPU driver started (TIL-739). On a
+# software-rendered guest that is lavapipe rasterising the window's frames, a GPU's work on
+# the reference hardware, so R01/R02 judge the compositor's CPU without it. It moves by ~1.4
+# per clock frame that lands in the window, which idle.frames allows; min_delta absorbs two.
+[kpi."idle.gpu_driver_cpu_pct"]
+unit = "percent"
+max = 3.0
+min_delta = 3.0
+source = "TIL-739: lavapipe's share of idle.shell_cpu_pct, one clock frame ~1.4% of a 30 s window; reported only"
+
 [kpi."idle.frames"]
 unit = "count"
 max = 2.0
