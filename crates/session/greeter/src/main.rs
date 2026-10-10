@@ -116,23 +116,12 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// Start the console endpoints that exist here: the greeter user's private
 /// runtime socket, and the virtio port only a hypervisor can attach.
 fn serve_console(console: &console_control::ConsoleServer, proxy: EventLoopProxy<UserEvent>) {
-    let proxy = std::sync::Mutex::new(proxy);
     let waker: console_control::server::Waker = Arc::new(move || {
-        if let Ok(proxy) = proxy.lock() {
-            let _ = proxy.send_event(UserEvent::External(
-                greeter::greeter_app::CONSOLE_WAKE.to_owned(),
-            ));
-        }
+        let _ = proxy.send_event(UserEvent::External(
+            greeter::greeter_app::CONSOLE_WAKE.to_owned(),
+        ));
     });
-    let endpoints = console_control::Endpoint::discover(greeter::greeter_app::CONSOLE_PROVIDER);
-    let failed = console.serve_all(&endpoints, &waker);
-    for endpoint in &endpoints {
-        if let Some((_, error)) = failed.iter().find(|(candidate, _)| candidate == endpoint) {
-            tracing::warn!(?endpoint, %error, "greeter console endpoint unavailable");
-        } else {
-            tracing::info!(?endpoint, "greeter console listening");
-        }
-    }
+    console.serve_discovered(greeter::greeter_app::CONSOLE_PROVIDER, &waker);
 }
 
 /// Returns the optional logical-pixel viewport supplied to the headless

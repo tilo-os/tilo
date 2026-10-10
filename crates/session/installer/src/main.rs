@@ -95,23 +95,12 @@ fn serve_console(
     console: &console_control::ConsoleServer,
     proxy: winit::event_loop::EventLoopProxy<ui::app::UserEvent>,
 ) {
-    let proxy = Mutex::new(proxy);
     let waker: console_control::server::Waker = Arc::new(move || {
-        if let Ok(proxy) = proxy.lock() {
-            let _ = proxy.send_event(ui::app::UserEvent::External(
-                installer::installer_app::CONSOLE_WAKE.to_owned(),
-            ));
-        }
+        let _ = proxy.send_event(ui::app::UserEvent::External(
+            installer::installer_app::CONSOLE_WAKE.to_owned(),
+        ));
     });
-    let endpoints = console_control::Endpoint::discover(installer::operation::PROVIDER);
-    let failed = console.serve_all(&endpoints, &waker);
-    for endpoint in &endpoints {
-        if let Some((_, error)) = failed.iter().find(|(candidate, _)| candidate == endpoint) {
-            tracing::warn!(?endpoint, %error, "installer console endpoint unavailable");
-        } else {
-            tracing::info!(?endpoint, "installer console listening");
-        }
-    }
+    console.serve_discovered(installer::operation::PROVIDER, &waker);
 }
 
 /// Returns the optional logical-pixel viewport supplied to the headless
