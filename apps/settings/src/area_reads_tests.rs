@@ -218,7 +218,7 @@ fn the_pane_shown_accepts_what_it_accepts_when_every_area_read_first() {
 }
 
 #[test]
-fn a_window_publishes_every_area_a_few_frames_after_its_first() {
+fn a_window_publishes_every_area_a_little_after_its_first_frame() {
     let mut first = reading_first();
     first.settle();
     let whole = published(&mut first);
@@ -228,19 +228,20 @@ fn a_window_publishes_every_area_a_few_frames_after_its_first() {
         whole.0,
         "the first frame publishes only the areas that have read"
     );
-    let mut frames = 0;
+    // The areas whose reads block read on the background executor and
+    // wake the window when they end (TIL-760); the others read a sync at a
+    // time. `wait_until` drives frames and parks on the executor between
+    // them, as the host's event loop sleeps until a wake.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
     while read(&mut window).len() < LIVE_AREAS.len() {
         assert!(
-            window.harness().poll_frame().expect("a frame lays out"),
-            "a drawn window asks for its next area's read: {:?}",
+            std::time::Instant::now() < deadline,
+            "every area reads after the first frame: {:?}",
             read(&mut window)
         );
-        frames += 1;
-        assert!(
-            frames <= 2 * LIVE_AREAS.len(),
-            "an area reads with every frame: {:?}",
-            read(&mut window)
-        );
+        window
+            .harness()
+            .wait_until(ui::time::Duration::from_millis(50), |_| false);
     }
     window.settle();
     let settled = published(&mut window);
@@ -254,6 +255,27 @@ fn a_window_publishes_every_area_a_few_frames_after_its_first() {
     assert_eq!(
         settled.1, whole.1,
         "every published action is the one reading first published"
+    );
+}
+
+/// The host asks for a pending host intent on every turn of its event
+/// loop, the first before the first frame (TIL-760). Asking reads no
+/// display: a display move is only pending in a model an effect has read.
+#[test]
+fn asking_for_a_host_intent_reads_no_display() {
+    let mut window = reading_after();
+    let intent = window
+        .surface::<SettingsApp, _>(|settings| {
+            <SettingsApp as ui::framework::ResourceSurface<
+                crate::resource::Settings,
+                crate::effects::SettingsEffect,
+            >>::take_host_intent(settings)
+        })
+        .expect("the settings surface is mounted");
+    assert!(intent.is_none(), "nothing was asked of the host");
+    assert!(
+        !read(&mut window).contains(&"settings.rows.displays"),
+        "asking for a host intent leaves Displays unread"
     );
 }
 

@@ -354,6 +354,9 @@ impl BluetoothControl for RealBluetooth {
 pub struct BluetoothArea {
     cx: PaneCx,
     model: OnceCell<Shared<BluetoothModel>>,
+    /// The adapter, read off the UI thread after the window's first frame
+    /// ([`Self::start_read`]).
+    read: crate::device_read::DeviceRead<AdapterRead>,
 }
 
 impl BluetoothArea {
@@ -361,22 +364,48 @@ impl BluetoothArea {
         Self {
             cx: cx.clone(),
             model: OnceCell::new(),
+            read: crate::device_read::DeviceRead::default(),
+        }
+    }
+
+    /// `BlueZ`, or sample devices for a screenshot.
+    fn control(&self) -> Arc<dyn BluetoothControl> {
+        if self.cx.reaches_devices() {
+            Arc::new(RealBluetooth)
+        } else {
+            Arc::new(SampleBluetooth)
         }
     }
 
     /// The model, over `BlueZ`, or over sample devices for a screenshot.
     pub fn model(&self) -> &Shared<BluetoothModel> {
         self.model.get_or_init(|| {
-            let control: Arc<dyn BluetoothControl> = if self.cx.reaches_devices() {
-                Arc::new(RealBluetooth)
-            } else {
-                Arc::new(SampleBluetooth)
-            };
-            Rc::new(std::cell::RefCell::new(BluetoothModel::new(
+            let control = self.control();
+            let read = self
+                .read
+                .take()
+                .unwrap_or_else(|| read_adapter_of(control.as_ref()));
+            Rc::new(std::cell::RefCell::new(BluetoothModel::with_read(
                 self.cx.clone(),
                 control,
+                read,
             )))
         })
+    }
+
+    /// Read the adapter off the UI thread; `false` when it has been read or
+    /// is being read.
+    pub(crate) fn start_read(&self) -> bool {
+        if self.is_open() {
+            return false;
+        }
+        let control = self.control();
+        self.read.start(move || read_adapter_of(control.as_ref()))
+    }
+
+    /// Whether the read [`Self::start_read`] started has ended.
+    pub(crate) fn read_finished(&self) -> bool {
+        self.read.is_finished()
     }
 
     /// Whether the area has read what its rows show: its pane was shown,
@@ -446,8 +475,21 @@ pub struct BluetoothModel {
     changed: bool,
 }
 
+/// The adapter's devices, power and discovery state as one read found
+/// them, or why it could not.
+type AdapterRead = Result<(Vec<DeviceInfo>, bool, bool), String>;
+
+/// Read `control`'s adapter: a few D-Bus round trips on a device, so the
+/// window's warm-up makes this read off the UI thread.
+fn read_adapter_of(control: &dyn BluetoothControl) -> AdapterRead {
+    control
+        .devices()
+        .and_then(|devices| Ok((devices, control.powered()?, control.scanning()?)))
+}
+
 impl BluetoothModel {
-    fn new(cx: PaneCx, control: Arc<dyn BluetoothControl>) -> Self {
+    /// The model over `control`'s adapter as `read` found it.
+    fn with_read(cx: PaneCx, control: Arc<dyn BluetoothControl>, read: AdapterRead) -> Self {
         let mut model = Self {
             cx,
             control,
@@ -460,7 +502,9 @@ impl BluetoothModel {
             aliases: HashMap::new(),
             changed: false,
         };
-        model.refresh();
+        // A failure is kept on the model and shown in place of the adapter.
+        let _ = model.adopt(read);
+        model.changed = true;
         model
     }
 
@@ -482,10 +526,13 @@ impl BluetoothModel {
     /// keeps the last values and records why, so they are not shown as the
     /// adapter's state.
     fn read_adapter(&mut self) -> Result<(), String> {
-        let read = self
-            .control
-            .devices()
-            .and_then(|devices| Ok((devices, self.control.powered()?, self.control.scanning()?)));
+        let read = read_adapter_of(self.control.as_ref());
+        self.adopt(read)
+    }
+
+    /// Take in what a read of the adapter found; a failed read keeps the
+    /// last values and records why.
+    fn adopt(&mut self, read: AdapterRead) -> Result<(), String> {
         match read {
             Ok((devices, powered, scanning)) => {
                 self.devices = devices;
@@ -890,13 +937,12 @@ mod tests {
     fn an_unreadable_adapter_is_shown_as_an_error() {
         let profile = tempfile::tempdir().unwrap();
         let cx = PaneCx::in_file(profile.path().join("settings.json"));
-        let mut model = BluetoothModel::new(
-            cx,
-            Arc::new(Mock {
-                calls: Mutex::new(vec![]),
-                devices: vec![dev()],
-            }),
-        );
+        let control: Arc<dyn BluetoothControl> = Arc::new(Mock {
+            calls: Mutex::new(vec![]),
+            devices: vec![dev()],
+        });
+        let read = read_adapter_of(control.as_ref());
+        let mut model = BluetoothModel::with_read(cx, control, read);
         model.control = Arc::new(Unreachable);
         assert!(model.read_adapter().is_err());
         assert_eq!(model.devices.len(), 1, "the last read is kept");

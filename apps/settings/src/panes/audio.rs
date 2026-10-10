@@ -487,6 +487,10 @@ fn devices_from_graph(graph: &AudioGraph) -> AudioDevices {
 pub struct AudioArea {
     cx: PaneCx,
     model: std::cell::OnceCell<Shared<AudioModel>>,
+    /// The device's audio, read off the UI thread after the window's first
+    /// frame ([`Self::start_read`]); `None` stands for the sample graph a
+    /// screenshot shows.
+    read: crate::device_read::DeviceRead<Option<AudioRead>>,
 }
 
 impl AudioArea {
@@ -494,19 +498,55 @@ impl AudioArea {
         Self {
             cx: cx.clone(),
             model: std::cell::OnceCell::new(),
+            read: crate::device_read::DeviceRead::default(),
         }
     }
 
     /// The model, over `PipeWire`, or over a sample graph for a screenshot.
     pub fn model(&self) -> &Shared<AudioModel> {
         self.model.get_or_init(|| {
-            let model = if self.cx.reaches_devices() {
-                AudioModel::of_device(self.cx.clone())
-            } else {
-                AudioModel::sample(self.cx.clone())
+            let read = self.read.take().unwrap_or_else(|| self.read_now());
+            let model = match read {
+                Some(read) => AudioModel::from_read(self.cx.clone(), read),
+                None => AudioModel::sample(self.cx.clone()),
             };
             Rc::new(std::cell::RefCell::new(model))
         })
+    }
+
+    /// What a read of the device would find, read on this thread: the
+    /// device's audio, or `None` for the sample graph.
+    fn read_now(&self) -> Option<AudioRead> {
+        let (device, output, input) = self.route();
+        device.then(|| AudioRead::of_device(output.as_deref(), input.as_deref()))
+    }
+
+    /// Whether the area reaches the device, and the remembered output and
+    /// input devices a read routes to again.
+    fn route(&self) -> (bool, Option<String>, Option<String>) {
+        let prefs = self.cx.settings::<AudioPrefs>().get();
+        (
+            self.cx.reaches_devices(),
+            prefs.output_device,
+            prefs.input_device,
+        )
+    }
+
+    /// Read the device's audio off the UI thread; `false` when it has been
+    /// read or is being read.
+    pub(crate) fn start_read(&self) -> bool {
+        if self.is_open() {
+            return false;
+        }
+        let (device, output, input) = self.route();
+        self.read.start(move || {
+            device.then(|| AudioRead::of_device(output.as_deref(), input.as_deref()))
+        })
+    }
+
+    /// Whether the read [`Self::start_read`] started has ended.
+    pub(crate) fn read_finished(&self) -> bool {
+        self.read.is_finished()
     }
 
     /// Whether the area has read what its rows show: its pane was shown,
@@ -617,10 +657,28 @@ pub struct AudioModel {
     changed: bool,
 }
 
-impl AudioModel {
-    /// This device's audio, read now; a remembered physical route is
-    /// applied again when its device is present.
-    fn of_device(cx: PaneCx) -> Self {
+/// What the Sound area reads of the device: the levels, the device list and
+/// node graph, what the audio runtime can do and the installed sound
+/// themes. That is several `wpctl`/`pw-dump`/`pactl` runs, so the window's
+/// warm-up makes the read off the UI thread.
+struct AudioRead {
+    initial: os_actions::VolumeState,
+    volume_error: Option<String>,
+    input_volume: f32,
+    input_error: Option<String>,
+    devices: AudioDevices,
+    devices_error: Option<String>,
+    graph: AudioGraph,
+    runtime_caps: RuntimeCapabilities,
+    sound_themes: Vec<SoundTheme>,
+    event_sounds_available: bool,
+}
+
+impl AudioRead {
+    /// Read this device's audio. The remembered physical route (`output`,
+    /// `input`, the devices' names) is applied again when its device is
+    /// present.
+    fn of_device(output: Option<&str>, input: Option<&str>) -> Self {
         let (initial, volume_error) = match os_actions::get_volume_state() {
             Ok(state) => (state, None),
             Err(error) => (
@@ -635,13 +693,12 @@ impl AudioModel {
             Ok(level) => (level, None),
             Err(error) => (0.0, Some(error)),
         };
-        let prefs = cx.follow::<AudioPrefs>();
         let (mut devices, mut devices_error) = match list_audio_devices() {
             Ok(devices) => (devices, None),
             Err(error) => (AudioDevices::default(), Some(error)),
         };
         let mut graph = media::audio::enumerate();
-        if let Some(name) = prefs.get().output_device.as_deref()
+        if let Some(name) = output
             && let Some(dev) = graph.sinks.iter().find(|d| d.description == name)
         {
             let id = dev.id;
@@ -651,7 +708,7 @@ impl AudioModel {
                 }
             }
         }
-        if let Some(name) = prefs.get().input_device.as_deref()
+        if let Some(name) = input
             && let Some(dev) = graph.sources.iter().find(|d| d.description == name)
         {
             let id = dev.id;
@@ -665,6 +722,37 @@ impl AudioModel {
             devices = devices_from_graph(&graph);
             devices_error = None;
         }
+        Self {
+            initial,
+            volume_error,
+            input_volume,
+            input_error,
+            devices,
+            devices_error,
+            graph,
+            runtime_caps: RealAudioRuntime.capabilities(),
+            sound_themes: media::event_sound::installed_themes(),
+            event_sounds_available: media::event_sound::sound_backend()
+                != media::event_sound::SoundBackend::Unavailable,
+        }
+    }
+}
+
+impl AudioModel {
+    /// The model over what `read` found on this device.
+    fn from_read(cx: PaneCx, read: AudioRead) -> Self {
+        let AudioRead {
+            initial,
+            volume_error,
+            input_volume,
+            input_error,
+            devices,
+            devices_error,
+            graph,
+            runtime_caps,
+            sound_themes,
+            event_sounds_available,
+        } = read;
         let runtime: Arc<dyn AudioRuntimeControl> = Arc::new(RealAudioRuntime);
         Self {
             output: Arc::new(SystemOutput(dispatcher_or_real(None))),
@@ -676,12 +764,11 @@ impl AudioModel {
             enumerator: Arc::new(RealEnumerator),
             hotplug_interval: HOTPLUG_INTERVAL,
             last_enum: Some(ui::time::now()),
-            runtime_caps: runtime.capabilities(),
+            runtime_caps,
             runtime,
-            prefs,
-            sound_themes: media::event_sound::installed_themes(),
-            event_sounds_available: media::event_sound::sound_backend()
-                != media::event_sound::SoundBackend::Unavailable,
+            prefs: cx.follow::<AudioPrefs>(),
+            sound_themes,
+            event_sounds_available,
             tests_shown: false,
             volume_error,
             input_error,
