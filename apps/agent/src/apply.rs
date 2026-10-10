@@ -26,20 +26,6 @@ pub struct Editor {
 }
 
 impl Editor {
-    /// A fresh, unbound document of `contract`'s kind, as `author`. Used by
-    /// tests; a live agent always starts from a peer's snapshot.
-    pub fn empty_for(
-        contract: &'static AppContract,
-        author: &str,
-        permissions: PermissionContext,
-    ) -> Self {
-        Self {
-            participant: Participant::new(contract.kind, author, permissions),
-            contract,
-            route_app_id: contract.app_id().to_string(),
-        }
-    }
-
     /// Which app wrote the document this holds.
     pub fn contract(&self) -> &'static AppContract {
         self.contract
@@ -252,17 +238,6 @@ impl Editor {
         self.participant
             .apply_all_typed::<R>(actions)
             .map_err(|error| anyhow::anyhow!("{} refused the edit: {error}", R::LABEL))
-    }
-
-    /// How many ancestor changes this replica is waiting for.
-    ///
-    /// Automerge queues a change whose dependencies it has not got, and
-    /// nothing about reading the document afterwards says so: it
-    /// materialises as the page *before* the gap. So a replica missing one
-    /// change in the middle reads exactly like a document with nothing
-    /// more in it — this is the one honest way to tell those apart.
-    pub fn missing_ancestors(&mut self) -> usize {
-        self.participant.missing_changes()
     }
 
     /// The whole document, for a peer that just arrived.

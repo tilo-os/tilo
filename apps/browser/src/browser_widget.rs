@@ -517,16 +517,6 @@ impl BrowserWidget {
         w
     }
 
-    /// Widget for `--shots`: as [`Self::new_headless`], but the page is a
-    /// blank document rather than the test engine's placeholder colour.
-    pub fn new_capture(mode: BrowsingMode) -> Self {
-        let engine = crate::capture_page::CapturePage::engine();
-        engine.send(WebViewCommand::Navigate(SHOTS_URL.to_string()));
-        let mut w = Self::with_engine_mode(engine, true, mode);
-        w.initial_url = SHOTS_URL.into();
-        w
-    }
-
     /// Set the first URI loaded before the widget bootstraps. The binary uses
     /// this only after validating the URI against Browser's declared schemes.
     #[must_use]
@@ -926,11 +916,6 @@ impl BrowserWidget {
         self.force_suggestions = true;
     }
 
-    /// Headless visual-review hook: type `text` into the address field.
-    pub fn debug_type_address(&mut self, text: &'static str) {
-        self.review_stage = Some(ReviewStage::Typing { text });
-    }
-
     /// Headless visual-review hook: show the settled no-video guidance note.
     pub fn debug_show_empty_pip_feedback(&mut self) {
         self.set_pip_feedback(Some(PipFeedback::persistent(PipFeedbackKind::NoVideo)));
@@ -1062,28 +1047,10 @@ impl BrowserWidget {
         self.structure_dirty = true;
     }
 
-    /// Headless visual-review hook: the site panel on its protection page, or
-    /// on its connection and data page.
-    pub fn debug_show_site_panel(&mut self, information: bool) {
-        self.review_stage = Some(ReviewStage::Site { information });
-    }
-
     /// Headless visual-review hook: the passwords panel, or the address
     /// autofill panel.
     pub fn debug_show_autofill(&mut self, addresses: bool) {
         self.review_stage = Some(ReviewStage::Autofill { addresses });
-    }
-
-    /// Where a capture presses to open the toolbar's overflow menu, once the
-    /// window has been laid out.
-    pub fn debug_overflow_center(&self) -> Option<(f64, f64)> {
-        let rect = self.find_rect(toolbar::OVERFLOW_ID)?;
-        Some((rect.center().x, rect.center().y))
-    }
-
-    /// Headless visual-review hook: find in page, open on a query.
-    pub fn debug_show_find(&mut self) {
-        self.review_stage = Some(ReviewStage::Find);
     }
 
     /// Headless visual-review hook: a site asking for the camera.
@@ -1094,26 +1061,6 @@ impl BrowserWidget {
             permissions: "camera and microphone".into(),
         });
         self.structure_dirty = true;
-    }
-
-    /// Headless visual-review hook: a page offering a file.
-    pub fn debug_request_download(&mut self) {
-        self.capabilities
-            .apply(WebViewEvent::NativeDownloadRequested {
-                id: 1,
-                url: "https://example.org/tilo-sdk.tar.zst".into(),
-                name: "tilo-sdk.tar.zst".into(),
-            });
-        self.structure_dirty = true;
-    }
-
-    /// Headless widget in a private window, for visual review.
-    pub fn new_headless_private() -> Self {
-        let engine: SharedEngine = TestEngine::new();
-        engine.send(WebViewCommand::Navigate(SHOTS_URL.to_string()));
-        let mut w = Self::with_engine_mode(engine, true, BrowsingMode::Private);
-        w.initial_url = SHOTS_URL.into();
-        w
     }
 
     pub fn debug_show_settings(&mut self) {
@@ -2196,8 +2143,6 @@ impl BrowserWidget {
             self.current_uri.clone()
         };
         match stage {
-            ReviewStage::Typing { text } => self.address.set(text.to_owned()),
-            ReviewStage::Site { information } => self.site.stage_for_review(information, &url),
             ReviewStage::Autofill { addresses } => {
                 // The panels open from rows of the settings page, so that is
                 // the page behind them.
@@ -2205,7 +2150,6 @@ impl BrowserWidget {
                 self.show_library = false;
                 self.credentials.stage_for_review(addresses, &url);
             }
-            ReviewStage::Find => self.daily.stage_for_review(),
         }
         self.structure_dirty = true;
     }
@@ -9196,10 +9140,7 @@ impl ui::widget::search_field::Filterable for BrowserWidget {
 
 #[derive(Clone, Copy, Debug)]
 enum ReviewStage {
-    Typing { text: &'static str },
-    Site { information: bool },
     Autofill { addresses: bool },
-    Find,
 }
 
 fn is_compact_chrome(width: f64, breakpoint: f32) -> bool {

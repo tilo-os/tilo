@@ -1473,10 +1473,6 @@ impl ClipboardHistory {
         self.entries.remove(index);
         true
     }
-
-    pub fn clear_unpinned(&mut self) {
-        self.entries.retain(|entry| entry.pinned);
-    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

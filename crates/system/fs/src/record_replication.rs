@@ -793,11 +793,6 @@ impl RecordReplica {
             conflicts,
         }
     }
-
-    /// Sequence numbers already consumed, useful when persisting replay state.
-    pub fn sequence_watermarks(&self) -> impl Iterator<Item = (&FileActor, &u64)> {
-        self.highest_sequence.iter()
-    }
 }
 
 /// Failures that reject a record operation or attempted read.
