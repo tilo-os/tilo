@@ -268,8 +268,6 @@ mod tests {
                 .is_some_and(ActionContext::is_housekeeping)
         );
         assert!(last_context(&mut a).is_some_and(|context| context.is_housekeeping()));
-        assert_eq!(env.context.as_ref().unwrap().executed_action, Some(env.id));
-        assert_eq!(last_context(&mut a).unwrap().executed_action, Some(env.id));
         replay(&mut b, &env, &registry()).unwrap();
         assert_eq!(a.get_heads(), b.get_heads(), "replay makes the same change");
 
@@ -356,16 +354,14 @@ mod tests {
     }
 
     #[test]
-    fn actual_semantic_executor_pins_correlation_and_replays_identical_change() {
+    fn the_executor_keeps_the_admitted_invocation_and_replays_the_identical_change() {
         let (mut origin, mut peer) = two_replicas();
         let action = Counter::Put {
             key: "score".into(),
             value: 42,
         };
         let invocation = InvocationId::new();
-        let forged = ActionId::new();
         let context = ActionContext {
-            executed_action: Some(forged),
             source_invocation: Some(invocation),
             ..Default::default()
         };
@@ -377,9 +373,7 @@ mod tests {
             context,
         )
         .unwrap();
-        assert_ne!(envelope.id, forged);
         let committed = last_context(&mut origin).unwrap();
-        assert_eq!(committed.executed_action, Some(envelope.id));
         assert_eq!(committed.source_invocation, Some(invocation));
         assert_eq!(envelope.context, Some(committed));
         replay(&mut peer, &envelope, &registry()).unwrap();
@@ -391,7 +385,7 @@ mod tests {
     }
 
     #[test]
-    fn legacy_attributed_context_replays_without_inserting_executor_correlation() {
+    fn a_callers_entry_replays_to_the_identical_change() {
         let (mut origin, mut peer) = two_replicas();
         let action = Counter::Put {
             key: "score".into(),
@@ -408,7 +402,6 @@ mod tests {
             context: Some(context.clone()),
         };
         let old_message = context.change_message().unwrap();
-        assert!(!old_message.contains("executed_action"));
         let wire = serde_json::to_vec(&envelope).unwrap();
         let decoded: ActionEnvelope = serde_json::from_slice(&wire).unwrap();
         assert_eq!(serde_json::to_vec(&decoded).unwrap(), wire);
@@ -421,7 +414,6 @@ mod tests {
         );
         replay(&mut peer, &decoded, &registry()).unwrap();
         assert_eq!(last_message(&mut peer), Some(old_message));
-        assert_eq!(last_context(&mut peer).unwrap().executed_action, None);
         assert_eq!(origin.get_heads(), peer.get_heads());
         assert_eq!(
             origin.get_changes(&envelope.base_change_hashes())[0].raw_bytes(),

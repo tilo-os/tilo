@@ -604,7 +604,13 @@ fn local_projection_partial_ack_rebuilds_within_reduced_remaining_reservation() 
     branch.set_actor(automerge::ActorId::from(vec![71; 32]));
     branch.put(ROOT, "small-independent", true).unwrap();
     branch.commit_edit("fixture", "small-independent");
-    let large = local_edit(&mut member, &key, now, true, &"large".repeat(500));
+    // Large even compressed: the projection compresses its history.
+    let large_text = (0..1200_u64).fold(String::new(), |mut text, n| {
+        use std::fmt::Write as _;
+        let _ = write!(text, "{:x}", n.wrapping_mul(0x9e37_79b9_7f4a_7c15));
+        text
+    });
+    let large = local_edit(&mut member, &key, now, true, &large_text);
     let small = member
         .publish_incremental("test.app", "tab:1", branch.save_after(&base), &key, now)
         .unwrap();

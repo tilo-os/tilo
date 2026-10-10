@@ -217,7 +217,6 @@ fn envelope_for(
     }
     context.action = Some(recorded_form(&encoded)?);
     context.compensation = compensation;
-    context.executed_action = Some(id);
     let context = Some(context);
     Ok(ActionEnvelope {
         id,
