@@ -1811,6 +1811,9 @@ fn clipboard_crosses_between_clients_and_in_process_chrome_as_text_and_png() {
         let mut app = TestClient::new(compositor.connect(), "org.tilo.test.app-clipboard");
         app.assert_is_tilo_compositor();
         let clipboard = ui::clipboard::WaylandClipboard::new_for_wayland_test(app.conn.clone());
+        // Seat callbacks bind the publication worker's keyboard and device.
+        // Fence those real bindings before mapping acquires focus and copy.
+        assert!(clipboard.wait_ready_for_wayland_test(deadline()));
         app.map_window(&compositor);
 
         // This is the app-side backend, not HostClipboard: its publication worker
