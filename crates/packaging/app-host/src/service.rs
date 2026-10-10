@@ -152,18 +152,23 @@ fn path_or_default(
     )
 }
 
-/// The launcher that builds every app's sandbox. `TILO_LAUNCHER_BIN`
+/// Names the `tilo-launcher` binary instead of `/usr/bin/tilo-launcher`.
+const LAUNCHER_BIN_ENV: &str = "TILO_LAUNCHER_BIN";
+/// Names the `app` binary instead of `/usr/bin/app`.
+const APP_BIN_ENV: &str = "TILO_APP_BIN";
+
+/// The launcher that builds every app's sandbox. [`LAUNCHER_BIN_ENV`]
 /// re-points it in developer builds only.
 fn launcher_bin() -> std::path::PathBuf {
     path_or_default(
-        crate::dev_env::dev_override(crate::dev_env::LAUNCHER_BIN_ENV),
+        package_store::dev_env::dev_override(LAUNCHER_BIN_ENV),
         "/usr/bin/tilo-launcher",
     )
 }
 
 fn app_bin() -> std::path::PathBuf {
     path_or_default(
-        crate::dev_env::dev_override(crate::dev_env::APP_BIN_ENV),
+        package_store::dev_env::dev_override(APP_BIN_ENV),
         "/usr/bin/app",
     )
 }
@@ -1756,8 +1761,8 @@ esac
 
 #[cfg(test)]
 mod dev_override_tests {
-    use super::path_or_default;
-    use crate::dev_env::{LAUNCHER_BIN_ENV, dev_override_from};
+    use super::{LAUNCHER_BIN_ENV, path_or_default};
+    use package_store::dev_env::dev_override_from;
     use std::path::PathBuf;
 
     #[test]

@@ -16,10 +16,10 @@ name = "app"
 path = "src/main.rs"
 
 [features]
-# Honour the developer-only environment overrides (`src/dev_env.rs`) in a
-# release build. Debug builds always honour them; shipped images never enable
-# this.
-dev-overrides = []
+# Honour the developer-only environment overrides (`package_store::dev_env`)
+# in a release build. Debug builds always honour them; shipped images never
+# enable this.
+dev-overrides = ["package-store/dev-overrides"]
 
 [dependencies]
 tilo-clock = { path = "../../platform/tilo-clock" }

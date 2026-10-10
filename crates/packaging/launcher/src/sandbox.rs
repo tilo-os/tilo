@@ -770,7 +770,8 @@ pub fn egress_decision(
     // must come from the same answer, or the app gets an empty namespace
     // with nothing to reach through it.
     if matches!(decision, crate::netgate::EgressDecision::Filtered(_))
-        && crate::dev_env::dev_override(crate::dev_env::NET_GATE_ENV).is_some_and(|v| v == "off")
+        && package_store::dev_env::dev_override(crate::dev_env::NET_GATE_ENV)
+            .is_some_and(|v| v == "off")
     {
         tracing::warn!(
             hosts = ?decision.policy().map(super::netgate::EgressPolicy::describe),
