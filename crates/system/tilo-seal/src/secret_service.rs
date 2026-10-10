@@ -25,6 +25,8 @@ use cbc::cipher::{BlockModeDecrypt, BlockModeEncrypt, KeyIvInit, block_padding::
 use hkdf::Hkdf;
 use num_bigint::BigUint;
 use sha2::Sha256;
+use std::ops::{Add, Rem, Sub};
+
 use zeroize::{Zeroize, Zeroizing};
 
 use crate::error::{Error, Result};
@@ -108,7 +110,10 @@ impl Handshake {
         let p = prime();
         let two = BigUint::from(2_u8);
         // 2 <= x <= p - 2.
-        let private = BigUint::from_bytes_be(seed.as_ref()) % (&p - BigUint::from(3_u8)) + &two;
+        // Function-call syntax: `p` is a 1024-bit constant, so these
+        // big-integer operations cannot underflow or overflow.
+        let span = Sub::sub(&p, BigUint::from(3_u8));
+        let private = Add::add(Rem::rem(BigUint::from_bytes_be(seed.as_ref()), span), &two);
         let public = padded(&two.modpow(&private, &p)).to_vec();
         Ok(Self { private, public })
     }
@@ -136,7 +141,8 @@ impl Handshake {
     pub fn finish(self, peer_public: &[u8]) -> Result<TransportKey> {
         let p = prime();
         let peer = BigUint::from_bytes_be(peer_public);
-        if peer_public.len() > GROUP_LEN || peer < BigUint::from(2_u8) || peer >= &p - 1_u8 {
+        if peer_public.len() > GROUP_LEN || peer < BigUint::from(2_u8) || peer >= Sub::sub(&p, 1_u8)
+        {
             return Err(Error::InvalidKey);
         }
         let shared = padded(&peer.modpow(&self.private, &p));

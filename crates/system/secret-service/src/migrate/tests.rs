@@ -30,7 +30,10 @@ impl Fake {
 
 impl LegacySource for Fake {
     async fn load(&self) -> Result<Vec<LegacyItem>, SourceError> {
-        *self.asked.lock().unwrap() += 1;
+        {
+            let mut asked = self.asked.lock().unwrap();
+            *asked = asked.saturating_add(1);
+        }
         self.answers.lock().unwrap().remove(0)
     }
 }

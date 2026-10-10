@@ -7,6 +7,15 @@
 //! fixed caller identity in place of the bus daemon's process credentials;
 //! all of them share one store, as separate applications do.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::arithmetic_side_effects,
+    clippy::too_many_lines,
+    reason = "in a test these are the assertion, not a hazard"
+)]
+
 use std::collections::HashMap;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -53,7 +62,7 @@ impl KeySource for DeviceKey {
 }
 
 struct World {
-    _dir: tempfile::TempDir,
+    dir: tempfile::TempDir,
     store: Arc<Store>,
     device: DeviceKey,
     managers: Managers,
@@ -72,7 +81,7 @@ impl World {
             portal: vec![app("binary:/usr/bin/shell")],
         };
         Self {
-            _dir: dir,
+            dir,
             store,
             device,
             managers,
@@ -653,7 +662,7 @@ async fn items_survive_a_restart_of_the_service() {
 
     // A new service process over the same files.
     let store = Arc::new(Store::new(
-        world._dir.path().join("vault"),
+        world.dir.path().join("vault"),
         Box::new(world.device.clone()),
     ));
     let core = Core::new(

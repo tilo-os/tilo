@@ -300,6 +300,7 @@ impl Store {
             self.commit(open)?;
             open.dirty = false;
         }
+        drop(inner);
         result
     }
 
@@ -550,14 +551,13 @@ impl Store {
                         .map(|(id, _)| id.clone())
                 })
                 .flatten();
-            let id = match existing {
-                Some(id) => id,
-                None => {
-                    if target.items.len() >= MAX_ITEMS {
-                        return Err(StoreError::Invalid("too many items"));
-                    }
-                    random_id()?
+            let id = if let Some(id) = existing {
+                id
+            } else {
+                if target.items.len() >= MAX_ITEMS {
+                    return Err(StoreError::Invalid("too many items"));
                 }
+                random_id()?
             };
             let created = target.items.get(&id).map_or(now, |item| item.created);
             target.items.insert(
