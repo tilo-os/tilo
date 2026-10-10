@@ -69,6 +69,7 @@ impl Node {
     }
 
     /// Forget readers that no longer exist, and nodes left empty.
+    #[inline(never)]
     fn prune(&mut self, live: &BTreeMap<u64, impl Sized>) -> bool {
         self.here.retain(|id| live.contains_key(id));
         self.members.retain(|id| live.contains_key(id));
@@ -188,6 +189,7 @@ impl<R: Resource> Updaters<R> {
         })))
     }
 
+    #[inline(never)]
     pub(crate) fn push(&self, alive: Weak<()>, reads: Reads, update: Update<R>) {
         let mut index = self.0.borrow_mut();
         let id = index.next;
@@ -203,6 +205,7 @@ impl<R: Resource> Updaters<R> {
     /// Run the readers `change` wakes, in the order they were registered.
     /// A reader may register more (a rebuilt row); those run from the next
     /// change on.
+    #[inline(never)]
     pub(crate) fn run(&self, state: &R::State, change: &Change<'_>) {
         let woken: BTreeSet<u64> = {
             let mut index = self.0.borrow_mut();

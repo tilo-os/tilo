@@ -774,6 +774,7 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
 
     let mut structs = Vec::new();
     let mut variants = Vec::new();
+    let mut decode_arms = Vec::new();
     let mut arms = Vec::new();
     let mut risks = Vec::new();
     let mut kinds = Vec::new();
@@ -799,6 +800,9 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
         variants.push(quote! {
             #[serde(rename = #id)]
             #variant(#params_mod::#variant)
+        });
+        decode_arms.push(quote! {
+            #id => #krate::__private::serde::Deserialize::deserialize(args).map(Self::#variant),
         });
         verb_variants.push(variant.clone());
         verb_ids.push(id.clone());
@@ -1308,6 +1312,10 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
     if options.seed.is_some() {
         change_kinds.push(seed_change_kind);
     }
+    let seed_decode = options
+        .seed
+        .as_ref()
+        .map(|_| quote!("seed" => ::core::result::Result::Ok(Self::Seed),));
     let availability = options.available.as_ref().map_or_else(
         || quote!(),
         |path| {
@@ -1550,7 +1558,7 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
         #(#item_checks)*
 
         #[doc = #enum_doc]
-        #[derive(Clone, Debug, #krate::__private::serde::Serialize, #krate::__private::serde::Deserialize)]
+        #[derive(Clone, Debug, #krate::__private::serde::Serialize)]
         #[serde(crate = #serde_path, tag = "action", content = "args")]
         pub enum #action_enum {
             #(#variants,)*
@@ -1558,6 +1566,31 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
             /// A field edit: a path into the record and an operation.
             #[serde(rename = "field-edit")]
             FieldEdit(#krate::Edit<#self_ty>),
+        }
+
+        // Decoded through a JSON value by its action name: each verb's
+        // parameters are decoded from one deserializer, not one per
+        // deserializer the action meets.
+        impl<'de> #krate::__private::serde::Deserialize<'de> for #action_enum {
+            fn deserialize<D: #krate::__private::serde::Deserializer<'de>>(
+                deserializer: D,
+            ) -> ::core::result::Result<Self, D::Error> {
+                let value = <#krate::__private::serde_json::Value as #krate::__private::serde::Deserialize>::deserialize(deserializer)?;
+                let (action, args) = #krate::__private::tagged(value)
+                    .map_err(<D::Error as #krate::__private::serde::de::Error>::custom)?;
+                match action.as_str() {
+                    #(#decode_arms)*
+                    #seed_decode
+                    "field-edit" => #krate::__private::serde::Deserialize::deserialize(args).map(Self::FieldEdit),
+                    other => ::core::result::Result::Err(
+                        <#krate::__private::serde_json::Error as #krate::__private::serde::de::Error>::unknown_variant(
+                            other,
+                            &[#(#verb_ids,)* "field-edit"],
+                        ),
+                    ),
+                }
+                .map_err(<D::Error as #krate::__private::serde::de::Error>::custom)
+            }
         }
 
         impl #krate::Operation for #action_enum {

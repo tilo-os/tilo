@@ -643,7 +643,7 @@ pub fn reverting_type(kind: &str) -> String {
 /// was made on), derives the edits that restore what the change wrote from
 /// the record before and after it, applies them, and runs the record's
 /// `queue` so what the change queued outside is compensated.
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize)]
 #[serde(bound = "")]
 pub struct Reverting<O> {
     actor: String,
@@ -652,6 +652,34 @@ pub struct Reverting<O> {
     now_ms: i64,
     #[serde(skip)]
     operation: PhantomData<O>,
+}
+
+// Decoded through a JSON value by one function for every record type.
+impl<'de, O> Deserialize<'de> for Reverting<O> {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let value = serde_json::Value::deserialize(deserializer)?;
+        let (actor, deps, now_ms) = reverted(value).map_err(serde::de::Error::custom)?;
+        Ok(Self {
+            actor,
+            deps,
+            now_ms,
+            operation: PhantomData,
+        })
+    }
+}
+
+/// The writer, heads and time a reverting action's JSON form names.
+#[inline(never)]
+fn reverted(value: serde_json::Value) -> Result<(String, Vec<String>, i64), serde_json::Error> {
+    #[derive(Deserialize)]
+    struct Form {
+        actor: String,
+        deps: Vec<String>,
+        #[serde(rename = "at", default)]
+        now_ms: i64,
+    }
+    let form = Form::deserialize(value)?;
+    Ok((form.actor, form.deps, form.now_ms))
 }
 
 impl<O> std::fmt::Debug for Reverting<O> {
@@ -667,26 +695,35 @@ impl<O: Operation> Reverting<O> {
     /// The change this takes back, by its writer and the heads it was made
     /// on.
     fn change(&self, doc: &mut Doc) -> Result<automerge::ChangeHash, ActionError> {
-        let refused = |why: &str| ActionError::Refused(why.into());
-        let mut deps = self
-            .deps
-            .iter()
-            .map(|hash| hash.parse())
-            .collect::<Result<Vec<automerge::ChangeHash>, _>>()
-            .map_err(|_| refused("a reverted change names invalid heads"))?;
-        deps.sort();
-        doc.get_changes(&deps)
-            .into_iter()
-            .find(|change| {
-                change.actor_id().to_hex_string() == self.actor && {
-                    let mut of = change.deps().to_vec();
-                    of.sort();
-                    of == deps
-                }
-            })
-            .map(|change| change.hash())
-            .ok_or_else(|| refused("the change to take back is not in this document"))
+        reverted_change(&self.actor, &self.deps, doc)
     }
+}
+
+/// The change by `actor` made on the heads `deps`.
+#[inline(never)]
+fn reverted_change(
+    actor: &str,
+    deps: &[String],
+    doc: &mut Doc,
+) -> Result<automerge::ChangeHash, ActionError> {
+    let refused = |why: &str| ActionError::Refused(why.into());
+    let mut deps = deps
+        .iter()
+        .map(|hash| hash.parse())
+        .collect::<Result<Vec<automerge::ChangeHash>, _>>()
+        .map_err(|_| refused("a reverted change names invalid heads"))?;
+    deps.sort();
+    doc.get_changes(&deps)
+        .into_iter()
+        .find(|change| {
+            change.actor_id().to_hex_string() == actor && {
+                let mut of = change.deps().to_vec();
+                of.sort();
+                of == deps
+            }
+        })
+        .map(|change| change.hash())
+        .ok_or_else(|| refused("the change to take back is not in this document"))
 }
 
 impl<O: Operation> tilo_actions::Action for Reverting<O> {
