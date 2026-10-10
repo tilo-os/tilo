@@ -1,0 +1,67 @@
+name: CI / native compile width trial
+# Diagnostic only. No publication, credentials, required gates or slot configuration.
+on:
+  workflow_dispatch:
+concurrency:
+  group: native-width-${{ github.ref }}
+  cancel-in-progress: false
+env:
+  CARGO_INCREMENTAL: "0"
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  CARGO_PROFILE_TEST_DEBUG: "0"
+  CARGO_TERM_COLOR: never
+  CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-D warnings"
+  WGPU_BACKEND: vulkan
+  WGPU_ADAPTER_NAME: llvmpipe
+  TILO_REQUIRE_MEDIA: "1"
+  TILO_REQUIRE_AUDIO: "1"
+  TILO_REQUIRE_GPU: "1"
+jobs:
+  builder:
+    runs-on: runner-quality
+    timeout-minutes: 5
+    container:
+      image: registry.tilo.so/tilo/ci-control@sha256:0f205596aa1753a7ca1f2f496aa25095f68668ff80a28acbfdc6d0f35f6dcfde
+    outputs:
+      image: ${{ steps.resolve.outputs.image }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+      - id: resolve
+        run: python3 tools/ci/resolve_builder.py
+  compare:
+    needs: [builder]
+    # Existing paid x86 large pool; do not occupy a general feature-PR slot.
+    # Outer VM is unchanged. Strict in-job envelope is checked before building.
+    runs-on: runner-large
+    timeout-minutes: 120
+    container:
+      image: ${{ needs.builder.outputs.image }}
+      options: --cpus=6 --memory=22g --memory-swap=22g
+    env:
+      BUILDER_IMAGE: ${{ needs.builder.outputs.image }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: ./.forgejo/actions/prepare-rust-build
+      - name: Verify native fixture dependencies
+        run: |
+          ./os/dev/assert-native-arch.sh x86_64
+          test -r /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
+          echo 'VK_DRIVER_FILES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json' >> "$GITHUB_ENV"
+          bash tools/ensure-headless-audio.sh
+      - name: Compare exact native test builds and execute their unchanged suite
+        run: python3 tools/ci/native_width_trial.py
+      - uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e
+        if: always()
+        with:
+          name: native-width-trial
+          path: ${{ runner.temp }}/native-width-trial
+          if-no-files-found: error
+      - name: Report shared compiler cache
+        if: always()
+        run: bash tools/ci/sccache.sh report || true
