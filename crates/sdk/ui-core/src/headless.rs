@@ -6643,6 +6643,7 @@ impl FrameHarness {
                         broker_admitted: false,
                         ambient: None,
                     },
+                    None,
                 )?;
                 return Ok(crate::widget::ResourceOperationStart::Completed(
                     tilo_actions::ActionOutput::default(),
@@ -6662,6 +6663,7 @@ impl FrameHarness {
                 spec.kind,
                 &encoded,
                 &mut self.state.doc,
+                None,
             )?;
             match &result {
                 crate::widget::ResourceOperationStart::Accepted
@@ -6943,6 +6945,7 @@ impl FrameHarness {
                             broker_admitted: false,
                             ambient: None,
                         },
+                        None,
                     )?;
                     crate::widget::ResourceOperationStart::Completed(
                         tilo_actions::ActionOutput::default(),
@@ -6962,6 +6965,7 @@ impl FrameHarness {
                         spec.kind,
                         &encoded,
                         &mut self.state.doc,
+                        None,
                     )?;
                     match &result {
                         crate::widget::ResourceOperationStart::Accepted

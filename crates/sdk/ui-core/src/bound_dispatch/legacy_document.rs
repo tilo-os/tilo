@@ -626,15 +626,6 @@ pub(crate) fn invoke_legacy_document<'a>(
     target: &'a LegacyResourceTarget,
     services: LegacyDocumentServices<'a>,
     input: LegacyInvocation<'a>,
-) -> Result<LegacyDocumentOutcome, DoorError> {
-    invoke_legacy_document_scoped(root, target, services, input, None)
-}
-
-pub(crate) fn invoke_legacy_document_scoped<'a>(
-    root: &mut dyn Widget,
-    target: &'a LegacyResourceTarget,
-    services: LegacyDocumentServices<'a>,
-    input: LegacyInvocation<'a>,
     scope: Option<&'a crate::invocation_scope::ResourceInvocationScope>,
 ) -> Result<LegacyDocumentOutcome, DoorError> {
     let mut request = ResourceRequest::Document {
@@ -684,17 +675,6 @@ pub(crate) fn resolve_legacy_invocation(
     Ok(snapshot.resources)
 }
 pub(crate) fn invoke_legacy_effect(
-    root: &mut dyn Widget,
-    target: &LegacyResourceTarget,
-    invocation: tilo_actions::InvocationId,
-    kind: OperationKind,
-    encoded: &tilo_actions::EncodedAction,
-    outer: &mut AutoCommit,
-) -> Result<crate::widget::ResourceOperationStart, DoorError> {
-    invoke_legacy_effect_scoped(root, target, invocation, kind, encoded, outer, None)
-}
-
-pub(crate) fn invoke_legacy_effect_scoped(
     root: &mut dyn Widget,
     target: &LegacyResourceTarget,
     invocation: tilo_actions::InvocationId,
