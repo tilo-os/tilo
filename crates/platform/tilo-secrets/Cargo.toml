@@ -22,6 +22,7 @@ zeroize.workspace = true
 
 # A machine without a keychain keeps its secrets in sealed owner-only files.
 [target.'cfg(unix)'.dependencies]
+hex.workspace = true
 tilo-seal = { version = "0.1.0", path = "../../system/tilo-seal" }
 sha2.workspace = true
 libc.workspace = true

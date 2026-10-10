@@ -9,10 +9,6 @@
 //!
 //! The scopes compile and nest on every target, so a host's dispatch code has
 //! no `cfg`; the desktop backends ignore them.
-#![cfg_attr(
-    not(all(target_arch = "wasm32", target_os = "unknown")),
-    allow(dead_code, reason = "only the web backend reads the event scopes")
-)]
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -40,9 +36,13 @@ pub enum CopyReport {
 /// Where a copy made inside a click reports how it ended.
 type Report = Rc<dyn Fn(CopyReport)>;
 
+/// Only the web backend reads the event; the desktop backends ignore it.
 struct Transfer {
+    #[cfg(any(test, all(target_arch = "wasm32", target_os = "unknown")))]
     data: Rc<dyn EventTransfer>,
+    #[cfg(any(test, all(target_arch = "wasm32", target_os = "unknown")))]
     read: bool,
+    #[cfg(any(test, all(target_arch = "wasm32", target_os = "unknown")))]
     rich_attempted: bool,
     copied: bool,
 }
@@ -62,10 +62,15 @@ pub fn during<R>(transfer: Rc<dyn EventTransfer>, run: impl FnOnce() -> R) -> R 
             TRANSFER.with_borrow_mut(|slot| *slot = previous);
         }
     }
+    #[cfg(not(any(test, all(target_arch = "wasm32", target_os = "unknown"))))]
+    drop(transfer);
     let previous = TRANSFER.with_borrow_mut(|slot| {
         slot.replace(Transfer {
+            #[cfg(any(test, all(target_arch = "wasm32", target_os = "unknown")))]
             data: transfer,
+            #[cfg(any(test, all(target_arch = "wasm32", target_os = "unknown")))]
             read: false,
+            #[cfg(any(test, all(target_arch = "wasm32", target_os = "unknown")))]
             rich_attempted: false,
             copied: false,
         })
@@ -101,6 +106,7 @@ pub fn in_event() -> bool {
 }
 
 /// Write `text` to the event being dispatched. `None` when there is none.
+#[cfg(any(test, all(target_arch = "wasm32", target_os = "unknown")))]
 pub(crate) fn write(text: &str) -> Option<bool> {
     TRANSFER.with_borrow_mut(|slot| {
         let t = slot.as_mut()?;
@@ -113,6 +119,7 @@ pub(crate) fn write(text: &str) -> Option<bool> {
 
 /// Read the event being dispatched, once. `None` when there is none, it was
 /// already read, or it holds no text.
+#[cfg(any(test, all(target_arch = "wasm32", target_os = "unknown")))]
 pub(crate) fn read() -> Option<String> {
     TRANSFER.with_borrow_mut(|slot| {
         let t = slot.as_mut()?;
@@ -126,6 +133,7 @@ pub(crate) fn read() -> Option<String> {
 
 /// Probe rich text once. Only an accepted offer consumes the event's read;
 /// missing, empty or oversized HTML leaves the ordinary plain read available.
+#[cfg(any(test, all(target_arch = "wasm32", target_os = "unknown")))]
 pub(crate) fn read_rich() -> Option<crate::RichTextOffer> {
     TRANSFER.with_borrow_mut(|slot| {
         let t = slot.as_mut()?;
@@ -140,6 +148,7 @@ pub(crate) fn read_rich() -> Option<crate::RichTextOffer> {
 }
 
 /// The report of the input event being dispatched, if any.
+#[cfg(any(test, all(target_arch = "wasm32", target_os = "unknown")))]
 pub(crate) fn input_report() -> Option<Report> {
     INPUT.with_borrow(Clone::clone)
 }

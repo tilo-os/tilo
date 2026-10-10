@@ -919,24 +919,6 @@ impl WordProcessor {
         let _ = self.apply_rich(state, action);
     }
 
-    /// Whether the caret's block forces a page break before it (the
-    /// `page_break_before` block attr). False for a fresh/legacy block.
-    pub fn caret_page_break_before(&self, state: &AutoCommit) -> bool {
-        let Some(c) = self.containers.as_ref() else {
-            return false;
-        };
-        let snap = tilo_doc::model::materialize(state, c);
-        snap.blocks
-            .iter()
-            .find(|b| b.id == self.caret.block)
-            .is_some_and(|b| {
-                matches!(
-                    b.attrs.get("page_break_before"),
-                    Some(tilo_doc::AttrVal::Bool(true))
-                )
-            })
-    }
-
     /// Set the `page_break_before` attr on the caret's block (forcing pagination
     /// to start that block on a fresh page when `on`). Table cells are skipped —
     /// a cell breaking mid-table would split the grid.
@@ -1117,13 +1099,6 @@ impl WordProcessor {
         self.review_change(state, Some(change_id), false);
     }
 
-    /// Accept every tracked change in the document. Processed in reverse
-    /// document order so an accepted deletion's text removal never shifts the
-    /// anchored range of an earlier-but-not-yet-processed change.
-    pub fn accept_all_changes(&mut self, state: &mut ui::widget::Edits<'_>) {
-        self.review_change(state, None, true);
-    }
-
     fn review_change(&self, state: &mut ui::widget::Edits<'_>, id: Option<&str>, accept: bool) {
         if self.containers.is_none() || self.ids.is_none() {
             return;
@@ -1138,32 +1113,6 @@ impl WordProcessor {
             }
         };
         let _ = self.apply_rich(state, action);
-    }
-
-    /// The tracked-change ids present in the document, sorted by their anchored
-    /// `(block-order, start)` body position (earliest first). Falls back to the
-    /// canonical id order for changes whose anchoring mark is gone.
-    #[allow(
-        dead_code,
-        reason = "review navigation helper kept beside Accept/Reject until wired"
-    )]
-    fn changes_in_doc_order(&self, state: &AutoCommit) -> Vec<String> {
-        let Some(c) = self.containers.as_ref() else {
-            return Vec::new();
-        };
-        let block_order = self.ordered_blocks(state);
-        let pos = |bid: &str| {
-            block_order
-                .iter()
-                .position(|b| b == bid)
-                .unwrap_or(usize::MAX)
-        };
-        let mut ids = tilo_doc::model::change_ids(state, c);
-        ids.sort_by_key(|id| {
-            tilo_doc::model::change_range(state, c, id)
-                .map_or((usize::MAX, usize::MAX), |(b, s, _)| (pos(&b), s))
-        });
-        ids
     }
 
     /// Delete a comment by id: remove its anchoring `comment` mark over the body
@@ -2079,35 +2028,6 @@ impl WordProcessor {
                 region: self.action_region(),
                 blocks: vec![block.to_string()],
             }
-        };
-        let _ = self.apply_rich(state, action);
-    }
-
-    #[allow(
-        dead_code,
-        reason = "clear-mark helper kept for region edits not yet on RichTextAction"
-    )]
-    fn region_remove_mark(
-        &self,
-        state: &mut ui::widget::Edits<'_>,
-        block: &str,
-        start: usize,
-        end: usize,
-        name: &str,
-    ) {
-        if start >= end {
-            return;
-        }
-        let action = crate::actions::RichTextAction::SetMark {
-            region: self.action_region(),
-            spans: vec![crate::actions::Span {
-                block: block.to_string(),
-                start,
-                end,
-            }],
-            name: name.to_string(),
-            value: None,
-            also_clear: Vec::new(),
         };
         let _ = self.apply_rich(state, action);
     }

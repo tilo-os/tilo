@@ -151,6 +151,26 @@ impl Records {
         Ok(keys)
     }
 
+    /// Whether [`Self::resolve`] of `key` would succeed, without creating the
+    /// default environment: the supervisor answers an open with this before
+    /// it hands out a terminal, and leaves the first write to the session.
+    ///
+    /// # Errors
+    /// What [`Self::resolve`] would return, except a failure to write.
+    pub fn resolvable(&self, key: Option<&str>, images: &dyn Images) -> Result<(), RecordError> {
+        let key = key.unwrap_or(DEFAULT_RECORD);
+        if self.load(key)?.is_some() {
+            return Ok(());
+        }
+        if key != DEFAULT_RECORD {
+            return Err(RecordError::Missing(key.to_owned()));
+        }
+        images
+            .current_runtime()
+            .map(drop)
+            .map_err(RecordError::NoRuntime)
+    }
+
     /// The environment a session names, creating the default environment on
     /// first use with the system store's current `env-runtime`. Any other
     /// missing record is an error: only the default comes into being by
@@ -293,6 +313,38 @@ mod tests {
         ));
         assert!(matches!(
             records.resolve(Some("../x"), &OneRuntime(Some(image(1)))),
+            Err(RecordError::BadKey(_))
+        ));
+    }
+
+    /// The supervisor's check before it hands out a terminal answers as
+    /// `resolve` would, but leaves the default's creation to the session.
+    #[test]
+    fn whether_an_environment_resolves_is_answered_without_creating_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let records = Records::at(dir.path());
+
+        assert!(matches!(
+            records.resolvable(None, &OneRuntime(None)),
+            Err(RecordError::NoRuntime(_))
+        ));
+        records
+            .resolvable(None, &OneRuntime(Some(image(1))))
+            .unwrap();
+        assert!(
+            records.load(DEFAULT_RECORD).unwrap().is_none(),
+            "answering made the default record"
+        );
+
+        records.resolve(None, &OneRuntime(Some(image(1)))).unwrap();
+        // An existing record resolves whatever the device's runtime is now.
+        records.resolvable(None, &OneRuntime(None)).unwrap();
+        assert!(matches!(
+            records.resolvable(Some("work"), &OneRuntime(Some(image(1)))),
+            Err(RecordError::Missing(_))
+        ));
+        assert!(matches!(
+            records.resolvable(Some("../x"), &OneRuntime(Some(image(1)))),
             Err(RecordError::BadKey(_))
         ));
     }

@@ -112,6 +112,19 @@ pub fn incoming(frame: &[u8], account: &str) -> Result<Incoming, Error> {
         return Err(Error::WrongAccount);
     }
     let envelope = received.get("envelope").ok_or(Error::InvalidFrame)?;
+    if [
+        "editMessage",
+        "storyMessage",
+        "syncMessage",
+        "callMessage",
+        "receiptMessage",
+        "typingMessage",
+    ]
+    .iter()
+    .any(|field| envelope.get(field).is_some_and(|value| !value.is_null()))
+    {
+        return Err(Error::Unsupported);
+    }
     let sender = envelope
         .get("sourceUuid")
         .and_then(Value::as_str)
@@ -125,15 +138,30 @@ pub fn incoming(frame: &[u8], account: &str) -> Result<Incoming, Error> {
             "timestamp",
             "message",
             "viewOnce",
+            "isExpirationUpdate",
+            "isEndSession",
+            "isProfileKeyUpdate",
+            "hasProfileKey",
             "expiresInSeconds",
             "attachments",
             "mentions",
             "contacts",
         ]
         .contains(&field.as_str())
+    }) || [
+        "viewOnce",
+        "isExpirationUpdate",
+        "isEndSession",
+        "isProfileKeyUpdate",
+    ]
+    .iter()
+    .any(|key| {
+        message
+            .get(key)
+            .is_some_and(|value| value.as_bool() != Some(false))
     }) || message
-        .get("viewOnce")
-        .is_some_and(|value| value.as_bool() != Some(false))
+        .get("hasProfileKey")
+        .is_some_and(|value| value.as_bool().is_none())
         || message
             .get("expiresInSeconds")
             .is_some_and(|value| value.as_u64() != Some(0))
@@ -271,7 +299,32 @@ mod tests {
     fn notification(account: &str) -> Value {
         json!({"jsonrpc":"2.0","method":"receive","params":{"account":account,
             "envelope":{"sourceUuid":ACI,"dataMessage":{"timestamp":42,"message":"hello",
-                "attachments":[],"contacts":[],"mentions":[],"viewOnce":false,"expiresInSeconds":0}}}})
+                "attachments":[],"contacts":[],"mentions":[],"viewOnce":false,"expiresInSeconds":0,
+                "isExpirationUpdate":false,"isEndSession":false,"isProfileKeyUpdate":false,"hasProfileKey":true}}}})
+    }
+
+    #[test]
+    fn plain_text_never_flattens_another_envelope_kind() {
+        for kind in [
+            "editMessage",
+            "storyMessage",
+            "syncMessage",
+            "callMessage",
+            "receiptMessage",
+            "typingMessage",
+        ] {
+            for value in [json!({}), json!([]), json!(false), json!("unexpected")] {
+                let mut event = notification("account-a");
+                event["params"]["envelope"][kind] = value;
+                assert!(matches!(
+                    incoming(&serde_json::to_vec(&event).unwrap(), "account-a"),
+                    Err(Error::Unsupported)
+                ));
+            }
+            let mut event = notification("account-a");
+            event["params"]["envelope"][kind] = Value::Null;
+            assert!(incoming(&serde_json::to_vec(&event).unwrap(), "account-a").is_ok());
+        }
     }
 
     #[test]
@@ -324,6 +377,52 @@ mod tests {
         .unwrap();
         assert!(a.id != other.id);
         assert!(!format!("{a:?}").contains("hello"));
+    }
+
+    #[test]
+    fn signal_cli_0148_plain_text_metadata_keeps_exact_incoming_identity() {
+        // JsonDataMessage v0.14.8 serializes these Boolean flags even when
+        // false; hasProfileKey is metadata, not a profile-key update or grant.
+        for has_profile_key in [false, true] {
+            let mut event = notification(ACI);
+            event["params"]["envelope"]["dataMessage"] = json!({
+                "timestamp":42, "message":"hello", "expiresInSeconds":0,
+                "isExpirationUpdate":false, "viewOnce":false,
+                "isEndSession":false, "isProfileKeyUpdate":false,
+                "hasProfileKey":has_profile_key
+            });
+            let parsed = incoming(&serde_json::to_vec(&event).unwrap(), ACI).unwrap();
+            assert_eq!(parsed.text.as_str(), "hello");
+            assert_eq!(parsed.id.account, ACI);
+            assert_eq!(parsed.id.sender_aci, ACI);
+            assert_eq!(parsed.id.timestamp, 42);
+            assert!(matches!(
+                incoming(&serde_json::to_vec(&event).unwrap(), "other"),
+                Err(Error::WrongAccount)
+            ));
+        }
+    }
+
+    #[test]
+    fn plain_text_metadata_never_admits_control_events_or_malformed_flags() {
+        for field in ["isExpirationUpdate", "isEndSession", "isProfileKeyUpdate"] {
+            for value in [json!(true), json!(null), json!(0), json!("false")] {
+                let mut event = notification(ACI);
+                event["params"]["envelope"]["dataMessage"][field] = value;
+                assert!(matches!(
+                    incoming(&serde_json::to_vec(&event).unwrap(), ACI),
+                    Err(Error::Unsupported)
+                ));
+            }
+        }
+        for value in [json!(null), json!(0), json!("true")] {
+            let mut event = notification(ACI);
+            event["params"]["envelope"]["dataMessage"]["hasProfileKey"] = value;
+            assert!(matches!(
+                incoming(&serde_json::to_vec(&event).unwrap(), ACI),
+                Err(Error::Unsupported)
+            ));
+        }
     }
 
     #[test]

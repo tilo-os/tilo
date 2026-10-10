@@ -11,26 +11,49 @@ description = "Tilo app host — the privileged door to the device package store
 [[bin]]
 name = "tilo-app-host"
 path = "src/main.rs"
+required-features = ["service"]
 
 [lib]
 name = "app_host"
 path = "src/lib.rs"
 
 [features]
+# The daemon: the package store with its content store, installs, remote
+# fetch and the control socket. The Store app depends on this crate with
+# `default-features = false` and gets only the client side (the typed client,
+# the wire schema and local-archive review), so an app never compiles the
+# privileged door it talks to, and the shared app runtime never carries it.
+default = ["service"]
+service = [
+    "package-store/store",
+    "dep:bounded-command",
+    "dep:app-registry",
+    "dep:app-cli",
+    "dep:wire-frame",
+    "dep:futures-util",
+    "dep:clap",
+    "dep:anyhow",
+    "dep:tracing",
+    "dep:tracing-subscriber",
+    "dep:libc",
+    "dep:tempfile",
+    "dep:sd-notify",
+]
 test-support = []
-# Honour the developer-only environment overrides (`src/dev_env.rs`, and the
-# system store's in `package-store`) in a release build. Debug builds always
-# honour them; shipped images never enable this.
-dev-overrides = ["package-store/dev-overrides"]
+# Honour the developer-only environment overrides (`package_store::dev_env`)
+# in a release build. Debug builds always honour them; shipped images never
+# enable this.
+dev-overrides = ["service", "package-store/dev-overrides"]
 
 [dependencies]
 tilo-paths.workspace = true
-bounded-command = { path = "../../system/bounded-command" }
+bounded-command = { path = "../../system/bounded-command", optional = true }
 tilo-app-package = { path = "../tilo-app-package" }
-# The one package registry and store; this daemon keeps none of its own.
-package-store = { path = "../package-store", features = ["store"] }
-app-registry = { path = "../app-registry" }
-app-cli = { path = "../app-cli" }
+# The one package registry; the daemon (`service`) also writes its store and
+# keeps none of its own.
+package-store = { path = "../package-store" }
+app-registry = { path = "../app-registry", optional = true }
+app-cli = { path = "../app-cli", optional = true }
 runtime-portal = { path = "../../runtime/runtime-portal" }
 
 # Cap'n Proto RPC for the control socket, matching format-host.
@@ -40,24 +63,24 @@ capnp-rpc.workspace = true
 # Async runtime + transport.
 tokio = { workspace = true, features = ["macros", "net", "io-util", "fs", "signal", "time", "sync", "process"] }
 tokio-util.workspace = true
-wire-frame = { path = "../../system/wire-frame", features = ["tokio"] }
+wire-frame = { path = "../../system/wire-frame", features = ["tokio"], optional = true }
 # capnp-rpc speaks futures-io; `io` supplies its buffered reader/writer.
-futures-util = { workspace = true, features = ["io"] }
+futures-util = { workspace = true, features = ["io"], optional = true }
 
 # Daemon plumbing.
-clap.workspace = true
+clap = { workspace = true, optional = true }
 serde_json.workspace = true
 serde.workspace = true
 hex.workspace = true
 thiserror.workspace = true
-anyhow.workspace = true
-tracing.workspace = true
-tracing-subscriber = { workspace = true, features = ["env-filter"] }
-libc.workspace = true
-tempfile.workspace = true
+anyhow = { workspace = true, optional = true }
+tracing = { workspace = true, optional = true }
+tracing-subscriber = { workspace = true, features = ["env-filter"], optional = true }
+libc = { workspace = true, optional = true }
+tempfile = { workspace = true, optional = true }
 
 # systemd notify (sd_notify); missing environment variables are tolerated.
-sd-notify.workspace = true
+sd-notify = { workspace = true, optional = true }
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
@@ -68,11 +91,13 @@ ed25519-dalek.workspace = true
 [[test]]
 name = "it"
 path = "tests/it.rs"
+required-features = ["service"]
 
 [[bench]]
 name = "install_timing"
 path = "benches/install_timing.rs"
 harness = false
+required-features = ["service"]
 
 [lints]
 workspace = true

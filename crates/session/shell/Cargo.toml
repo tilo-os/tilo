@@ -343,9 +343,6 @@ tilo-copy-lint = { path = "../../dev/copy-lint" }
 # toolkit's test support bounds that exchange only against a hang.
 ui = { package = "tilo-ui", path = "../../sdk/ui-core", features = ["test-support"] }
 media = { package = "tilo-media", path = "../../platform/tilo-media", features = ["test-support"] }
-# Parses the locale catalogues the way the runtime does, so a German entry
-# that would silently fall back to English fails a test.
-fluent.workspace = true
 runtime-portal = { path = "../../runtime/runtime-portal" }
 tilo-files = { path = "../../platform/tilo-files", features = ["test-support"] }
 tilo-action-broker = { path = "../../collab/tilo-action-broker", features = ["test-support"] }

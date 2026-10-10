@@ -163,13 +163,6 @@ impl LaunchArgs {
 
 /// How the standard lifecycle launches one application definition: its
 /// component host, capture scenarios, commands and accepted arguments.
-#[cfg_attr(
-    not(feature = "native"),
-    allow(
-        dead_code,
-        reason = "some fields are read only by the native event-loop runner"
-    )
-)]
 #[derive(Clone)]
 pub struct LaunchSpec {
     definition: &'static crate::application::ApplicationDefinition,

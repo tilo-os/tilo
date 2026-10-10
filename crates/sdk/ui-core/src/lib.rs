@@ -54,7 +54,7 @@
     target_arch = "wasm32",
     allow(
         dead_code,
-        reason = "the browser build omits the native App runner, broker transport and offscreen renderer, which are the only callers of much shared plumbing"
+        reason = "the browser build compiles native-host plumbing it never drives: the App runner, broker transport and offscreen renderer are its only callers"
     )
 )]
 #![cfg_attr(

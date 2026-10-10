@@ -1697,10 +1697,16 @@ impl Widget for MainPanel {
                 if (self.scroll_y - prev).abs() > f64::EPSILON {
                     self.dirty = true;
                     *ctx.handled = true;
+                    // This event belongs to the viewport. Lending it to the
+                    // rich-text editor snapshots and compares every block as
+                    // though it might be an edit, even though it only scrolled.
+                    return;
                 }
             }
         }
         if let Some(n) = self.editor_node {
+            #[cfg(test)]
+            let _profile = crate::cpu_profile::Phase::start("rich_text_input");
             self.editor
                 .handle_event(event, &mut ctx.reborrow(ctx.path, n));
             if self.editor.is_focused()
@@ -1978,6 +1984,31 @@ impl Widget for MainPanel {
 }
 
 impl MainPanel {
+    pub(crate) fn view_only_scroll(&self, event: &WindowEvent) -> bool {
+        let delta = match event {
+            WindowEvent::MouseWheel { delta, .. } => match delta {
+                winit::event::MouseScrollDelta::LineDelta(_, y) => -f64::from(*y) * 40.0,
+                winit::event::MouseScrollDelta::PixelDelta(position) => -position.y,
+            },
+            _ => return false,
+        };
+        let target = (self.scroll_y + delta).clamp(0.0, self.scroll_metrics().max_scroll());
+        (target - self.scroll_y).abs() > f64::EPSILON
+            && self.page_id.is_some()
+            && self.scroll_viewport().contains(self.last_pointer)
+            && !self.title_label.is_editing()
+            && !self.has_editor_popup()
+            && self.pending_rename.is_none()
+            && self.pending_tag_open.is_none()
+            && self.pending_backlink_open.is_none()
+            && self.editor.blocks().iter().all(|block| {
+                matches!(
+                    block.kind,
+                    ui::widget::BlockKind::Paragraph | ui::widget::BlockKind::Heading(_)
+                )
+            })
+    }
+
     pub(crate) fn has_editor_popup(&self) -> bool {
         self.editor.editor().has_open_popup()
     }

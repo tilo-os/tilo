@@ -163,12 +163,6 @@ pub fn setting_row_described(label: &str, description: &str, control: El) -> El 
     labelled_row(label, Some(description), control)
 }
 
-/// A row for a continuous control (a slider) that wants the whole measure:
-/// the label on its own line and the control spanning the section.
-pub fn slider_row(label: &str, control: El) -> El {
-    choice_row_stacked(label, control)
-}
-
 /// A row for a text field: the label on its own line and the field beneath
 /// it spanning the section, as every form in Settings lays its fields out.
 pub fn field_row(label: &str, control: El) -> El {

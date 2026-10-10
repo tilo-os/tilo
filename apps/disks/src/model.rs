@@ -280,11 +280,6 @@ impl Drive {
         self.size.saturating_sub(self.allocated())
     }
 
-    /// Sum of used bytes across mounted filesystems.
-    pub fn used_total(&self) -> u64 {
-        self.partitions.iter().filter_map(|p| p.used).sum()
-    }
-
     /// SMART status, defaulting to Unknown when no data is present.
     pub fn smart_status(&self) -> SmartStatus {
         self.smart

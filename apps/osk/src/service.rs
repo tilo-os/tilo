@@ -331,16 +331,6 @@ mod tests {
         }
     }
 
-    #[cfg(target_os = "linux")]
-    fn context_switches(tid: libc::pid_t) -> u64 {
-        std::fs::read_to_string(format!("/proc/self/task/{tid}/status"))
-            .expect("thread status")
-            .lines()
-            .filter(|line| line.contains("ctxt_switches"))
-            .filter_map(|line| line.split_whitespace().nth(1)?.parse::<u64>().ok())
-            .sum()
-    }
-
     #[test]
     fn the_focus_thread_sleeps_until_the_input_method_speaks() {
         let (compositor, client) = UnixStream::pair().expect("socketpair");
@@ -373,11 +363,7 @@ mod tests {
                 .lock()
                 .expect("thread")
                 .expect("the thread read once");
-            std::thread::sleep(Duration::from_millis(50));
-            let settled = context_switches(tid);
-            std::thread::sleep(Duration::from_millis(400));
-            let woke = context_switches(tid).saturating_sub(settled);
-            assert_eq!(woke, 0, "the idle focus thread woke {woke} times in 400 ms");
+            tilo_test_env::idle::assert_stays_asleep(&tid.to_string(), "focus thread");
         }
         std::thread::sleep(Duration::from_millis(100));
         assert_eq!(

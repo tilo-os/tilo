@@ -1380,9 +1380,9 @@ impl Selection {
                 super::test_barrier::check(&self.staged, "selection-full-flush")?;
                 self.sorter.stats.staging_full_flushes =
                     self.sorter.stats.staging_full_flushes.saturating_add(3);
-                self.output.sync_all()?;
-                self.live_output.sync_all()?;
-                self.gc_output.sync_all()?;
+                crate::store::fsync(&self.output)?;
+                crate::store::fsync(&self.live_output)?;
+                crate::store::fsync(&self.gc_output)?;
                 retained::sync_dir(&self.staged)?;
                 #[cfg(test)]
                 super::test_barrier::pause(self.store.root(), "shell-select-switch");

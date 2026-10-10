@@ -162,7 +162,7 @@ else
   bad 'runtime rootfs retains Wayland/input development payloads'
 fi
 
-runtime_splash="$(sed -n '/# Splash rendering needs Pillow/,/# The install-config drop-in/p' "$repo/os/Containerfile")"
+runtime_splash="$(sed -n '/# The ukify transaction\./,/# The install-config drop-in/p' "$repo/os/Containerfile")"
 crypto_packages='systemd-ukify|openssl|sbsigntools|efitools|mokutil|pesign|nss-tools|gnutls-utils|git|git-core|openvpn|NetworkManager-openvpn|openssh-server'
 if inventory_cleanup "$runtime_splash" "^($crypto_packages)\$" \
     "xargs -r dnf --disablerepo='*' remove -y" "^(python3-pillow|$crypto_packages)\$"; then

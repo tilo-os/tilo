@@ -339,14 +339,6 @@ fn join_responses() -> Vec<(&'static str, JoinTransportResponse)> {
     ]
 }
 
-fn hex(bytes: &[u8]) -> String {
-    use std::fmt::Write as _;
-    bytes.iter().fold(String::new(), |mut out, byte| {
-        let _ = write!(out, "{byte:02x}");
-        out
-    })
-}
-
 fn assert_stable<T>(what: &str, values: Vec<(&'static str, T)>, expected: &[(&str, &str)])
 where
     T: serde::Serialize + serde::de::DeserializeOwned + PartialEq + std::fmt::Debug,
@@ -359,7 +351,11 @@ where
     );
     for ((name, value), (_, bytes)) in values.into_iter().zip(expected) {
         let encoded = postcard::to_stdvec(&value).unwrap();
-        assert_eq!(hex(&encoded), *bytes, "{what} {name} changed on the wire");
+        assert_eq!(
+            hex::encode(&encoded),
+            *bytes,
+            "{what} {name} changed on the wire"
+        );
         let decoded: T = postcard::from_bytes(&encoded).unwrap();
         assert_eq!(decoded, value, "{what} {name} round-trips");
     }

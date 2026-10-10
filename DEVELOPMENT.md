@@ -236,7 +236,8 @@ The records, each with its verdict, are appended to the public generic package
 `tilo-perf-results` (one immutable file per run, a version per UTC month), so
 the current numbers come from there, not from `docs/benchmarks/`. Read them with
 `python3 tools/perf/store.py fetch https://code.tilo.so`. Dispatch inputs:
-`kpis` selects groups (`fs`, `footprint`, `agent`, `latency`, `render`, `wakeups`, `hosting`); `accept` takes this run's values as
+`kpis` selects groups (`fs`, `footprint` (app and OS image sizes), `agent`, `latency`, `render`, `wakeups`, `hosting`); `mode: ab` with `ab_base`,
+`ab_candidate` and `ab_rounds` runs the A/B lane below instead; `accept` takes this run's values as
 the new baseline start after an intended change (from main only); and
 `synthetic_series` with `synthetic_factor` multiplies a run's values to prove
 the gate. A 1.25 factor passes as pending in the first run of a series and fails
@@ -290,6 +291,53 @@ Pull requests may gate only on deterministic, runner-independent counters
 (bytes, allocation counts, raster pixels), only when the measured paths change,
 and following `tools/web/wasm_size_ratchet.py`. Wall-clock KPIs belong in
 this lane.
+
+### Proving a performance change (A/B)
+
+A nightly record cannot prove what one change did to a wall-clock or CPU
+KPI: it is compared with earlier nights on other hosts, and the shared
+runners differ by more than most changes (the unchanged relay bench has
+measured 15.9 and 31.2 CPU-seconds per collaborator-hour). To claim a gain,
+or to show there is no regression, dispatch **Perf / scheduled** with
+`mode: ab`:
+
+```bash
+fgj workflow run perf-scheduled.yml -R tilo/tilo --hostname code.tilo.so \
+  --ref <your-branch> -f mode=ab -f kpis=hosting
+# optional: -f ab_base=<ref> (default origin/main)
+#           -f ab_candidate=<ref> (default the dispatched commit) -f ab_rounds=8
+```
+
+One job per group in `kpis` (`hosting`, `latency`, `render`, `agent`,
+`wakeups`, `fs`; `footprint` is bytes of published artifacts and has no A/B)
+builds the base and the candidate in one checkout, one after the other, and
+runs that group's existing benchmark on both, alternating, for `ab_rounds`
+rounds on one runner (`tools/perf/ab.py`). Odd rounds run the base first and
+even rounds the candidate first, so drift over the job falls on both sides.
+Each round pairs the two runs, so a slow host slows both and cancels out.
+The binaries come from each side's commit. The harness (`scripts/perf/`, the
+adapters) comes from the dispatched commit and drives both sides.
+
+For each KPI, the job summary judges the p50 and the p99. The estimate is the
+paired ratio candidate/base (Hodges-Lehmann), with its distribution-free
+95 % interval (exact Wilcoxon signed rank). Beside it are the rounds the
+candidate won and lost, and the sign test. The verdict:
+
+- **improved** or **regressed**: the whole interval lies on one side of no
+  change (lower is better, except fps);
+- **unchanged**: both sides measured the same in every round;
+- **inconclusive**: the interval includes no change. Six rounds is the
+  minimum for a 95 % interval; then every round must agree. Add rounds
+  rather than rerunning until a run agrees with you.
+
+A KPI that only one side reports, such as a metric the candidate adds, is
+listed and not paired. Paste the summary table into the pull request, and
+link the run. The artifact `perf-ab-<group>` holds `ab-result.json`, every
+record and every run's log. Rerun the analysis with
+`python3 tools/perf/ab.py analyse records.jsonl`. A/B results never enter the
+store or the baseline, and the job fails only when a run could not measure,
+never on a verdict. The same tool runs locally on Linux, on a clean checkout:
+`python3 tools/perf/ab.py run --groups hosting --base origin/main --candidate HEAD`.
 
 ## App package size
 
@@ -397,6 +445,67 @@ bytes = 4194304
 ```
 
 When the runtime shrinks, both gates print the lower budget to commit.
+
+What the runtime may carry is a rule of its own. It holds the SDK, crates
+several apps share and engines too heavy for their one app's tapp, never an
+OS daemon or other OS-internal crate (the filesystem, the launcher, the app
+host, the install CLI, the peer transport) and nothing no app reaches. An app
+that calls into such a crate links it itself and gets only the code it calls;
+the Store, for one, depends on `app-host` without its default `service`
+feature. `tools/policy/check_runtime_dylib_surface.py` (CI / fast quality)
+resolves the runtime with the default collection the way the release does and
+fails on either.
+
+## OS image size
+
+Every install downloads the OS image and every update pulls its changed
+layers, so its size is a KPI too (TIL-609). `tools/perf/image_size.py`
+measures one image without a container engine: it streams each layer from
+the registry, checks it against its digest and replays the layers with their
+whiteouts. It reports, in bytes:
+
+- `compressed`: the layer blobs a full pull downloads;
+- `unique_content`: the merged root's regular files with identical files
+  counted once, which is what composefs stores after install. Files that only
+  `/sysroot` names are left out and reported as `undeployed`: the base
+  image's own ostree repository, hard-linked to its `/usr`, which bootc does
+  not deploy. Removing a base package from `/usr` therefore shrinks the
+  installed root but not the pull;
+- `redundant_payload`: bytes the layers carry beyond one copy of each distinct
+  file (the same file in two layers or at two paths, or one a later layer
+  replaced). composefs dedupes these on disk, but every pull still downloads
+  them.
+
+It also breaks the image down by layer (with the instruction that made it),
+by directory, by file and by installed package (from the image's own rpmdb).
+`--why PACKAGE` prints the chain of requires and recommends that pulls a
+package in:
+
+```bash
+python3 tools/perf/image_size.py --dev-base registry.tilo.so/tilo/tilo-vm:main-ci \
+  --arch x86_64 --markdown image.md --json image.json --why python3-botocore
+python3 tools/perf/image_size.py --image registry.tilo.so/tilo/tilo-ci:<ref>-<sha7>-x86_64 --markdown image.md
+```
+
+`--dev-base` measures the production-layout `tilo-ci` image that a dev image
+names as its base. Pull requests that touch the image publish
+`tilo-ci:<ref>-<sha7>-<arch>` (Build / OS dev), so measure a branch with
+`--image` before merging. Perf / scheduled (footprint group, nightly)
+measures main's newest image for both architectures and records
+`footprint.image.{compressed_bytes,unique_content_bytes,redundant_payload_bytes}.<arch>`.
+`tools/perf/kpi-budgets.toml` holds them to two rules:
+
+- **Growth.** More than 5 % above the median of the last five nights fails on
+  the second night running. To land intended growth, dispatch Perf / scheduled
+  on main with `kpis=footprint` and `accept=<KPI ids>` once the image has it.
+- **Ceiling.** Compressed bytes and unique content are held to an enforced
+  ceiling, set 5 % over the image TIL-609 measured and lowered by what each
+  later size change saved, so slow creep fails too. It may only be lowered,
+  except by a change that says why in the same pull request; a change that
+  shrinks the image lowers it by its measured saving and records the
+  numbers under `docs/benchmarks/`. The KPI targets (3.5 GB compressed, 7 GB of content for
+  x86_64) are written beside the ceilings. Windows compatibility is most of
+  the gap; TIL-711 moves it to a downloaded system extension.
 
 ## Fast checks before assembly
 

@@ -28,8 +28,10 @@ runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 # One owner for ~/.config/tilo/settings.json.
 settings-store = { path = "../../crates/system/settings-store" }
 desktop-policy = { path = "../../crates/system/desktop-policy" }
-launcher = { path = "../../crates/packaging/launcher" }
 package-store = { path = "../../crates/packaging/package-store" }
+# Installed manifests are read through the package format's one decoder,
+# not the sandbox launcher's library.
+tilo-app-package = { path = "../../crates/packaging/tilo-app-package" }
 # The same freedesktop scanner the shell uses for host and Flatpak launches;
 # notification rules must be keyed by those canonical desktop identities.
 desktop-entry = { package = "tilo-desktop-entry", path = "../../crates/system/desktop-entry" }
@@ -127,6 +129,9 @@ cloud-source-gdrive = { path = "../../crates/system/cloud-source-gdrive", featur
 cloud-source-onedrive = { path = "../../crates/system/cloud-source-onedrive", features = ["fake-server"] }
 cloud-source-dropbox = { path = "../../crates/system/cloud-source-dropbox", features = ["fake-server"] }
 cloud-source-icloud = { path = "../../crates/system/cloud-source-icloud", features = ["fake-server"] }
+# The keyboard preview's confinement test runs it inside the launcher's real
+# read-only sandbox profile. The app itself never links the launcher.
+launcher = { path = "../../crates/packaging/launcher" }
 
 [[test]]
 name = "it"
