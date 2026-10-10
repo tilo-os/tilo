@@ -286,32 +286,32 @@
     "save-targets-red.log.json": {
       "canonical_file": "tools/release/fixtures/gtk3_dictation_20261010/save-targets-red.log.json",
       "original_sha256": "88bca8cc4e21579d1ddc9bb778d355d600c51ca2b6e4c35bd33bab1afdc28bef",
-      "portable_file_sha256": "468b5474e757c46a2b6801f32562b391bf431372bae9df00406bd2ecaa7cc19d",
-      "portable_reconstructed_stdout_sha256": "88bca8cc4e21579d1ddc9bb778d355d600c51ca2b6e4c35bd33bab1afdc28bef"
+      "portable_file_sha256": "c9ad7bee9cc40ba1cb1a1bd31c4403e0cd2f1d53f11156bbde2401bd730aad08",
+      "portable_reconstructed_stdout_sha256": "b547bdb643dc99f2c845d91bc4ff63e3e628b063d453aac012ea32cc3f7e402c"
     },
     "save-targets-green.log.json": {
       "canonical_file": "tools/release/fixtures/gtk3_dictation_20261010/save-targets-green.log.json",
       "original_sha256": "94f8433436bdef16e4742f4dd3e7b8bd9949aa8dfa84d51ad63cab19ed519fa8",
-      "portable_file_sha256": "b8f233d92e791795ccf9822f0b32ba656143ca22371f742814db949367155637",
-      "portable_reconstructed_stdout_sha256": "94f8433436bdef16e4742f4dd3e7b8bd9949aa8dfa84d51ad63cab19ed519fa8"
+      "portable_file_sha256": "af528567328d4e177865723bca4e710eee302e5c0304eb9e65c6a9dc4e59707c",
+      "portable_reconstructed_stdout_sha256": "d1c7136ab3b1dc0dce7bc35ac708569b8a1cad62c12c2203ee2e24ed753a04cc"
     },
     "clipboard-formats-check.log.json": {
       "canonical_file": "tools/release/fixtures/gtk3_dictation_20261010/clipboard-formats-check.log.json",
       "original_sha256": "5fc2c22b3cd098bab7b7012c37632a1b1c083e73182f683e52109a96342a7906",
-      "portable_file_sha256": "1ee0500a2713f974aad69d3d2603fe46d98b87428b2321e7939f0772d81b2a01",
-      "portable_reconstructed_stdout_sha256": "5fc2c22b3cd098bab7b7012c37632a1b1c083e73182f683e52109a96342a7906"
+      "portable_file_sha256": "de723b187881ba08fdb66157220c56f76aaf346f54f503df63a08ae67ab81715",
+      "portable_reconstructed_stdout_sha256": "6ec12491387eb85f3f4c5d89c07daa7342235cf87c38e8239214f1fb39345569"
     },
     "shell-tests-check.log.json": {
       "canonical_file": "tools/release/fixtures/gtk3_dictation_20261010/shell-tests-check.log.json",
       "original_sha256": "8e30a3da8cbd4bf3eb9e328b78a0573fac3e0d37d964dad650d497376320f0a2",
-      "portable_file_sha256": "c6ef48979fcd2750a8383988392f45b0fb75f653e406b97a0982b5560621d4e7",
-      "portable_reconstructed_stdout_sha256": "8e30a3da8cbd4bf3eb9e328b78a0573fac3e0d37d964dad650d497376320f0a2"
+      "portable_file_sha256": "f60db196ad36a6d48d6506f65d3401bf89b6609162a08397fbea9ad23a83d930",
+      "portable_reconstructed_stdout_sha256": "3442c65d493cdc321f93c91333ef71d3d98cce620f47e01bf3d01509c2dec24e"
     },
     "current-shell-build.log.json": {
       "canonical_file": "tools/release/fixtures/gtk3_dictation_20261010/current-shell-build.log.json",
       "original_sha256": "97ad4f9812e28e40c279ccc3ff3a94e79f98d6693f2541b656a2bd8d9688f92e",
-      "portable_file_sha256": "70023c6a69663bcaad8caf779814adedbb3e45996e2ea3476f593f4a851c70b7",
-      "portable_reconstructed_stdout_sha256": "97ad4f9812e28e40c279ccc3ff3a94e79f98d6693f2541b656a2bd8d9688f92e"
+      "portable_file_sha256": "ad6b46d6b562b35da0275d7dbb1cbea3c21e170c0841a8c0ba0e787a89b4fc2d",
+      "portable_reconstructed_stdout_sha256": "e149f2a33f1b160605490ef7693acb6c08f8fc575b15553c51e0f3ce916f29ad"
     },
     "owned-cleanup-verify.log.json": {
       "canonical_file": "tools/release/fixtures/gtk3_dictation_20261010/owned-cleanup-verify.log.json",

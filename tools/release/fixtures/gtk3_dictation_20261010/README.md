@@ -16,4 +16,6 @@ cancellation, focus retirement, protected-field and ordinary-recovery assertions
 Each ledger archive resolves to one canonical repository file, including aliases
 into earlier qualification directories. `.log.json` files retain raw escape
 characters and exact line endings: concatenate `lines` to recover portable stdout.
-The sole path substitution is the owned remote build root, `${BUILD_ROOT}`.
+Path substitutions replace the owned remote build root with `${BUILD_ROOT}`
+and the developer home with `/var/home/you`. The ledger retains original byte
+digests separately from normalized file and reconstructed-stdout digests.

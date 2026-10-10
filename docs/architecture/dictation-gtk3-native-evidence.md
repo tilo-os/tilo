@@ -36,7 +36,8 @@ The [machine-readable ledger](dictation-gtk3-native-evidence.json) retains sourc
 and binary identities, signed-package provenance, failed diagnostics, limits,
 results and canonical archive references. Logs preserve escape characters and
 line endings as JSON line arrays. Concatenating `lines` reconstructs the archived
-stdout; only the owned remote build root is replaced with `${BUILD_ROOT}`.
+stdout. The owned remote build root is replaced with `${BUILD_ROOT}` and
+the developer home with `/var/home/you`; original byte digests remain recorded.
 Byte-identical artifacts reference their existing canonical file.
 
 All five exact owned native-run containers were verified absent. Recorder,
