@@ -57,6 +57,12 @@ def prepare(archive, history, out):
             name: digest(tree / name)
             for name in [*lock["base_files"], *lock["history"]["files"]]
         },
+        "source_tree": {
+            str(path.relative_to(tree)): ({"symlink": str(path.readlink())}
+                if path.is_symlink() else {"sha256": digest(path)})
+            for path in sorted(tree.rglob("*"))
+            if path.is_file() or path.is_symlink()
+        },
         "compiled": False,
         "installed": False,
         "production_ready": False,
