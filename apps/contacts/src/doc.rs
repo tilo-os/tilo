@@ -67,22 +67,11 @@ impl ContactsDoc {
         Self::active_contact(doc, id).is_some()
     }
 
-    /// Whether a group entry id exists on an active contact.
-    pub fn group_row_exists(doc: &AutoCommit, id: ContactId, entry_id: Uuid) -> bool {
-        Self::active_contact(doc, id)
-            .is_some_and(|contact| list_row(doc, &contact, "groups", entry_id).is_some())
-    }
-
-    /// Whether a phone/email row id exists on an active contact.
-    pub fn labeled_row_exists(doc: &AutoCommit, id: ContactId, key: &str, entry_id: Uuid) -> bool {
+    /// Whether the `key` list (groups, phones, emails, addresses) holds row
+    /// `entry_id` on an active contact.
+    pub fn entry_exists(doc: &AutoCommit, id: ContactId, key: &str, entry_id: Uuid) -> bool {
         Self::active_contact(doc, id)
             .is_some_and(|contact| list_row(doc, &contact, key, entry_id).is_some())
-    }
-
-    /// Whether an address row id exists on an active contact.
-    pub fn address_row_exists(doc: &AutoCommit, id: ContactId, entry_id: Uuid) -> bool {
-        Self::active_contact(doc, id)
-            .is_some_and(|contact| list_row(doc, &contact, "addresses", entry_id).is_some())
     }
 
     /// Create a previously unseen contact. An existing active record or a
@@ -132,10 +121,10 @@ impl ContactsDoc {
             c.birthday.map(|b| b.iso()).unwrap_or_default(),
         );
         ui::doc::put_if_changed(doc, m, "favorite", c.favorite);
-        sync_group_list(doc, m, &c.groups);
-        sync_labeled_list(doc, m, "phones", &c.phones);
-        sync_labeled_list(doc, m, "emails", &c.emails);
-        sync_address_list(doc, m, "addresses", &c.addresses);
+        sync_list(doc, m, "groups", &c.groups, read_group_list);
+        sync_list(doc, m, "phones", &c.phones, read_labeled_list);
+        sync_list(doc, m, "emails", &c.emails, read_labeled_list);
+        sync_list(doc, m, "addresses", &c.addresses, read_address_list);
     }
 
     /// Tombstone a contact. The map is intentionally retained so stale
@@ -178,76 +167,39 @@ impl ContactsDoc {
         true
     }
 
-    /// Add a fresh group row. The caller supplies its durable entry identity.
-    pub fn add_group(doc: &mut AutoCommit, id: ContactId, value: &GroupEntry) -> bool {
+    /// Add a fresh row to the `key` list. The caller supplies its durable
+    /// entry identity.
+    pub fn add_entry<T: ListRow>(
+        doc: &mut AutoCommit,
+        id: ContactId,
+        key: &str,
+        value: &T,
+    ) -> bool {
         let Some(contact) = Self::active_contact(doc, id) else {
             return false;
         };
-        add_group_row(doc, &contact, value)
+        add_row(doc, &contact, key, value)
     }
 
-    /// Update exactly one group row by identity.
-    pub fn update_group(doc: &mut AutoCommit, id: ContactId, value: &GroupEntry) -> bool {
+    /// Update exactly one row of the `key` list by durable entry identity.
+    pub fn update_entry<T: ListRow>(
+        doc: &mut AutoCommit,
+        id: ContactId,
+        key: &str,
+        value: &T,
+    ) -> bool {
         let Some(contact) = Self::active_contact(doc, id) else {
             return false;
         };
-        update_group_row(doc, &contact, value)
+        update_row(doc, &contact, key, value)
     }
 
-    /// Remove exactly one group row by identity.
-    pub fn remove_group(doc: &mut AutoCommit, id: ContactId, entry_id: Uuid) -> bool {
-        let Some(contact) = Self::active_contact(doc, id) else {
-            return false;
-        };
-        remove_row(doc, &contact, "groups", entry_id)
-    }
-
-    /// Add a fresh phone/email row by durable entry identity.
-    pub fn add_labeled(doc: &mut AutoCommit, id: ContactId, key: &str, value: &Labeled) -> bool {
-        let Some(contact) = Self::active_contact(doc, id) else {
-            return false;
-        };
-        add_labeled_row(doc, &contact, key, value)
-    }
-
-    /// Update exactly one phone/email row by durable entry identity.
-    pub fn update_labeled(doc: &mut AutoCommit, id: ContactId, key: &str, value: &Labeled) -> bool {
-        let Some(contact) = Self::active_contact(doc, id) else {
-            return false;
-        };
-        update_labeled_row(doc, &contact, key, value)
-    }
-
-    /// Remove exactly one phone/email row by durable entry identity.
-    pub fn remove_labeled(doc: &mut AutoCommit, id: ContactId, key: &str, entry_id: Uuid) -> bool {
+    /// Remove exactly one row of the `key` list by durable entry identity.
+    pub fn remove_entry(doc: &mut AutoCommit, id: ContactId, key: &str, entry_id: Uuid) -> bool {
         let Some(contact) = Self::active_contact(doc, id) else {
             return false;
         };
         remove_row(doc, &contact, key, entry_id)
-    }
-
-    /// Add a fresh postal-address row by durable entry identity.
-    pub fn add_address(doc: &mut AutoCommit, id: ContactId, value: &Address) -> bool {
-        let Some(contact) = Self::active_contact(doc, id) else {
-            return false;
-        };
-        add_address_row(doc, &contact, value)
-    }
-
-    /// Update exactly one postal-address row by durable entry identity.
-    pub fn update_address(doc: &mut AutoCommit, id: ContactId, value: &Address) -> bool {
-        let Some(contact) = Self::active_contact(doc, id) else {
-            return false;
-        };
-        update_address_row(doc, &contact, value)
-    }
-
-    /// Remove exactly one postal-address row by durable entry identity.
-    pub fn remove_address(doc: &mut AutoCommit, id: ContactId, entry_id: Uuid) -> bool {
-        let Some(contact) = Self::active_contact(doc, id) else {
-            return false;
-        };
-        remove_row(doc, &contact, "addresses", entry_id)
     }
 
     /// Read every contact out of the document. Records with an
@@ -278,7 +230,7 @@ impl ContactsDoc {
                 notes: read_str_or_text(doc, &m, "notes").unwrap_or_default(),
                 birthday: Birthday::parse(&read_str(doc, &m, "birthday").unwrap_or_default()),
                 favorite: read_bool(doc, &m, "favorite").unwrap_or(false),
-                groups: read_group_list(doc, &m),
+                groups: read_group_list(doc, &m, "groups"),
                 phones: read_labeled_list(doc, &m, "phones"),
                 emails: read_labeled_list(doc, &m, "emails"),
                 addresses: read_address_list(doc, &m, "addresses"),
@@ -363,8 +315,64 @@ fn remove_row(doc: &mut AutoCommit, parent: &ObjId, key: &str, entry_id: Uuid) -
         .is_some_and(|(list, index, _)| doc.delete(&list, index).is_ok())
 }
 
-fn read_group_list(doc: &AutoCommit, parent: &ObjId) -> Vec<GroupEntry> {
-    let Ok(Some((Value::Object(ObjType::List), list))) = doc.get(parent, "groups") else {
+/// One row of a contact's lists, kept under its durable entry identity.
+pub trait ListRow {
+    /// The durable identity the row is addressed by.
+    fn entry_id(&self) -> Uuid;
+    /// Write every field into the map `row`, leaving unchanged ones alone.
+    fn write(&self, doc: &mut AutoCommit, row: &ObjId);
+}
+
+fn add_row<T: ListRow>(doc: &mut AutoCommit, parent: &ObjId, key: &str, value: &T) -> bool {
+    if list_row(doc, parent, key, value.entry_id()).is_some() {
+        return false;
+    }
+    let Some(list) = list_obj(doc, parent, key) else {
+        return false;
+    };
+    let Ok(row) = doc.insert_object(&list, doc.length(&list), ObjType::Map) else {
+        return false;
+    };
+    value.write(doc, &row);
+    true
+}
+
+fn update_row<T: ListRow>(doc: &mut AutoCommit, parent: &ObjId, key: &str, value: &T) -> bool {
+    let Some((_, _, row)) = list_row(doc, parent, key, value.entry_id()) else {
+        return false;
+    };
+    value.write(doc, &row);
+    true
+}
+
+/// Make the `key` list, as `read` sees it, hold exactly `values`.
+fn sync_list<T: ListRow>(
+    doc: &mut AutoCommit,
+    parent: &ObjId,
+    key: &str,
+    values: &[T],
+    read: fn(&AutoCommit, &ObjId, &str) -> Vec<T>,
+) {
+    let current = read(doc, parent, key);
+    for value in &current {
+        if !values
+            .iter()
+            .any(|next| next.entry_id() == value.entry_id())
+        {
+            let _ = remove_row(doc, parent, key, value.entry_id());
+        }
+    }
+    for value in values {
+        if current.iter().any(|old| old.entry_id() == value.entry_id()) {
+            let _ = update_row(doc, parent, key, value);
+        } else {
+            let _ = add_row(doc, parent, key, value);
+        }
+    }
+}
+
+fn read_group_list(doc: &AutoCommit, parent: &ObjId, key: &str) -> Vec<GroupEntry> {
+    let Ok(Some((Value::Object(ObjType::List), list))) = doc.get(parent, key) else {
         return Vec::new();
     };
     (0..doc.length(&list))
@@ -378,46 +386,14 @@ fn read_group_list(doc: &AutoCommit, parent: &ObjId) -> Vec<GroupEntry> {
         .collect()
 }
 
-fn write_group_row(doc: &mut AutoCommit, row: &ObjId, value: &GroupEntry) {
-    ui::doc::put_if_changed(doc, row, "id", value.id.to_string());
-    ui::doc::put_if_changed(doc, row, "value", value.value.clone());
-}
-
-fn add_group_row(doc: &mut AutoCommit, parent: &ObjId, value: &GroupEntry) -> bool {
-    if list_row(doc, parent, "groups", value.id).is_some() {
-        return false;
+impl ListRow for GroupEntry {
+    fn entry_id(&self) -> Uuid {
+        self.id
     }
-    let Some(list) = list_obj(doc, parent, "groups") else {
-        return false;
-    };
-    let Ok(row) = doc.insert_object(&list, doc.length(&list), ObjType::Map) else {
-        return false;
-    };
-    write_group_row(doc, &row, value);
-    true
-}
 
-fn update_group_row(doc: &mut AutoCommit, parent: &ObjId, value: &GroupEntry) -> bool {
-    let Some((_, _, row)) = list_row(doc, parent, "groups", value.id) else {
-        return false;
-    };
-    write_group_row(doc, &row, value);
-    true
-}
-
-fn sync_group_list(doc: &mut AutoCommit, parent: &ObjId, values: &[GroupEntry]) {
-    let current = read_group_list(doc, parent);
-    for value in &current {
-        if !values.iter().any(|next| next.id == value.id) {
-            let _ = remove_row(doc, parent, "groups", value.id);
-        }
-    }
-    for value in values {
-        if current.iter().any(|old| old.id == value.id) {
-            let _ = update_group_row(doc, parent, value);
-        } else {
-            let _ = add_group_row(doc, parent, value);
-        }
+    fn write(&self, doc: &mut AutoCommit, row: &ObjId) {
+        ui::doc::put_if_changed(doc, row, "id", self.id.to_string());
+        ui::doc::put_if_changed(doc, row, "value", self.value.clone());
     }
 }
 
@@ -437,47 +413,15 @@ fn read_labeled_list(doc: &AutoCommit, parent: &ObjId, key: &str) -> Vec<Labeled
         .collect()
 }
 
-fn write_labeled_row(doc: &mut AutoCommit, row: &ObjId, value: &Labeled) {
-    ui::doc::put_if_changed(doc, row, "id", value.id.to_string());
-    ui::doc::put_if_changed(doc, row, "label", value.label.clone());
-    sync_text(doc, row, "value", &value.value);
-}
-
-fn add_labeled_row(doc: &mut AutoCommit, parent: &ObjId, key: &str, value: &Labeled) -> bool {
-    if list_row(doc, parent, key, value.id).is_some() {
-        return false;
+impl ListRow for Labeled {
+    fn entry_id(&self) -> Uuid {
+        self.id
     }
-    let Some(list) = list_obj(doc, parent, key) else {
-        return false;
-    };
-    let Ok(row) = doc.insert_object(&list, doc.length(&list), ObjType::Map) else {
-        return false;
-    };
-    write_labeled_row(doc, &row, value);
-    true
-}
 
-fn update_labeled_row(doc: &mut AutoCommit, parent: &ObjId, key: &str, value: &Labeled) -> bool {
-    let Some((_, _, row)) = list_row(doc, parent, key, value.id) else {
-        return false;
-    };
-    write_labeled_row(doc, &row, value);
-    true
-}
-
-fn sync_labeled_list(doc: &mut AutoCommit, parent: &ObjId, key: &str, values: &[Labeled]) {
-    let current = read_labeled_list(doc, parent, key);
-    for value in &current {
-        if !values.iter().any(|next| next.id == value.id) {
-            let _ = remove_row(doc, parent, key, value.id);
-        }
-    }
-    for value in values {
-        if current.iter().any(|old| old.id == value.id) {
-            let _ = update_labeled_row(doc, parent, key, value);
-        } else {
-            let _ = add_labeled_row(doc, parent, key, value);
-        }
+    fn write(&self, doc: &mut AutoCommit, row: &ObjId) {
+        ui::doc::put_if_changed(doc, row, "id", self.id.to_string());
+        ui::doc::put_if_changed(doc, row, "label", self.label.clone());
+        sync_text(doc, row, "value", &self.value);
     }
 }
 
@@ -501,54 +445,22 @@ fn read_address_list(doc: &AutoCommit, parent: &ObjId, key: &str) -> Vec<Address
         .collect()
 }
 
-fn write_address_row(doc: &mut AutoCommit, row: &ObjId, value: &Address) {
-    ui::doc::put_if_changed(doc, row, "id", value.id.to_string());
-    for (key, field) in [
-        ("label", &value.label),
-        ("street", &value.street),
-        ("city", &value.city),
-        ("region", &value.region),
-        ("postal", &value.postal),
-        ("country", &value.country),
-    ] {
-        ui::doc::put_if_changed(doc, row, key, field.clone());
+impl ListRow for Address {
+    fn entry_id(&self) -> Uuid {
+        self.id
     }
-}
 
-fn add_address_row(doc: &mut AutoCommit, parent: &ObjId, value: &Address) -> bool {
-    if list_row(doc, parent, "addresses", value.id).is_some() {
-        return false;
-    }
-    let Some(list) = list_obj(doc, parent, "addresses") else {
-        return false;
-    };
-    let Ok(row) = doc.insert_object(&list, doc.length(&list), ObjType::Map) else {
-        return false;
-    };
-    write_address_row(doc, &row, value);
-    true
-}
-
-fn update_address_row(doc: &mut AutoCommit, parent: &ObjId, value: &Address) -> bool {
-    let Some((_, _, row)) = list_row(doc, parent, "addresses", value.id) else {
-        return false;
-    };
-    write_address_row(doc, &row, value);
-    true
-}
-
-fn sync_address_list(doc: &mut AutoCommit, parent: &ObjId, key: &str, values: &[Address]) {
-    let current = read_address_list(doc, parent, key);
-    for value in &current {
-        if !values.iter().any(|next| next.id == value.id) {
-            let _ = remove_row(doc, parent, key, value.id);
-        }
-    }
-    for value in values {
-        if current.iter().any(|old| old.id == value.id) {
-            let _ = update_address_row(doc, parent, value);
-        } else {
-            let _ = add_address_row(doc, parent, value);
+    fn write(&self, doc: &mut AutoCommit, row: &ObjId) {
+        ui::doc::put_if_changed(doc, row, "id", self.id.to_string());
+        for (key, field) in [
+            ("label", &self.label),
+            ("street", &self.street),
+            ("city", &self.city),
+            ("region", &self.region),
+            ("postal", &self.postal),
+            ("country", &self.country),
+        ] {
+            ui::doc::put_if_changed(doc, row, key, field.clone());
         }
     }
 }
