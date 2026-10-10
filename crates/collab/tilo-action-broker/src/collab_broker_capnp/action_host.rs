@@ -78,6 +78,36 @@ enum DirectoryResolutionMode {
     Fresh(Box<FreshActionBinding>),
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct EagerCatalogueRevision {
+    surfaces: u64,
+    directories: u64,
+    authority: Option<(u64, u64)>,
+    policy_epoch: u64,
+}
+
+impl EagerCatalogueRevision {
+    fn encode(
+        self,
+        rows: &[CatalogueRow],
+        providers: &[CatalogueProvider],
+    ) -> Result<String, ActionHostError> {
+        let projected =
+            serde_json::to_vec(&(rows, providers)).map_err(|_| ActionHostError::Unavailable {
+                reason: "the action catalogue could not be versioned".into(),
+            })?;
+        let contents = blake3::hash(&projected).to_hex();
+        let authority = self.authority.map_or_else(
+            || "none".into(),
+            |(room, external)| format!("{room}.{external}"),
+        );
+        Ok(format!(
+            "{}.{}.{authority}.{contents}",
+            self.surfaces, self.directories
+        ))
+    }
+}
+
 struct ValidatedDirectoryInvocation {
     mode: DirectoryResolutionMode,
     argument: Option<String>,
@@ -1143,6 +1173,29 @@ impl CapnpBrokerState {
             .find(|root| root.peer_id == peer_id && rooms.contains(&root.cluster_id))
     }
 
+    /// Every source that can change an eager catalogue page. The authority
+    /// revisions are sampled from the same committed tree that filters its
+    /// rows; inability to observe that tree cannot produce a reusable page.
+    fn eager_catalogue_revision(&self) -> Result<EagerCatalogueRevision, ActionHostError> {
+        let authority = self
+            .membership
+            .as_ref()
+            .map(|membership| {
+                membership
+                    .decide_in_tree(|tree| (tree.room_epoch(), tree.external_revision))
+                    .map_err(|_| ActionHostError::Unavailable {
+                        reason: "workspace authority is unavailable".into(),
+                    })
+            })
+            .transpose()?;
+        Ok(EagerCatalogueRevision {
+            surfaces: self.published_surfaces_generation(),
+            directories: self.action_directory_root_page(None, 0).generation,
+            authority,
+            policy_epoch: tilo_identity_host::policy_change::epoch(),
+        })
+    }
+
     /// One page of what `caller` is offered. A provider publishing a live
     /// directory is browsed there, on the broker's local set; everything
     /// else is answered at once from the eager surfaces.
@@ -1201,12 +1254,24 @@ impl CapnpBrokerState {
             None if query.max_results == 0 => RowScope::None,
             None => RowScope::All,
         };
+        let before = match self.eager_catalogue_revision() {
+            Ok(revision) => revision,
+            Err(error) => return Pending::ready(Err(error)),
+        };
         let (rows, providers) = self.eager_catalogue(caller, scope);
-        let revision = format!(
-            "{}.{}",
-            self.published_surfaces_generation(),
-            self.action_directory_root_page(None, 0).generation
-        );
+        let after = match self.eager_catalogue_revision() {
+            Ok(revision) if revision == before => revision,
+            Ok(_) => {
+                return Pending::ready(Err(ActionHostError::Unavailable {
+                    reason: "the action catalogue changed while it was read".into(),
+                }));
+            }
+            Err(error) => return Pending::ready(Err(error)),
+        };
+        let revision = match after.encode(&rows, &providers) {
+            Ok(revision) => revision,
+            Err(error) => return Pending::ready(Err(error)),
+        };
         let mut page = CataloguePage::from_rows(revision, rows, query);
         if query.provider.is_none() {
             page.providers = providers;
@@ -3516,11 +3581,31 @@ mod app_close_tests {
     use super::super::{
         BrokerActor, BrokerChannels, CapnpBrokerState, FanoutState, PeerPublisher, PublishedSurface,
     };
-    use super::RowScope;
+    use super::{APPLICATION_CLOSE_ACTION, RowScope};
     use crate::route::CrdtRoute;
-    use crate::test_support::{Workspace, WorkspaceId, WorkspaceTree};
+    use crate::test_support::{Workspace, WorkspaceId, WorkspaceTree, WorkspaceTreeHandle};
+    use collab_types::{CapOverride, Role, Verb};
     use std::sync::{Arc, Mutex};
     use tilo_actions::remote::Caller;
+
+    struct ControlledPolicyTime(crate::peer_actions::PolicyOrigin);
+
+    impl crate::peer_actions::CertificateAuthority for ControlledPolicyTime {
+        fn policy_time(&self) -> Result<Option<crate::peer_actions::PolicyTime>, String> {
+            self.0
+                .capture()
+                .map(Some)
+                .map_err(|error| error.to_string())
+        }
+
+        fn authorize(
+            &self,
+            _room: uuid::Uuid,
+            _certificate: &tilo_user_identity::DeviceCert,
+        ) -> Result<(), String> {
+            Ok(())
+        }
+    }
 
     #[derive(Default)]
     struct Launcher {
@@ -3562,18 +3647,22 @@ mod app_close_tests {
         }
     }
 
-    fn broker(launcher: Arc<Launcher>, live: bool) -> (Arc<CapnpBrokerState>, Caller, String) {
+    fn broker_with_tree(
+        launcher: Arc<Launcher>,
+        live: bool,
+    ) -> (Arc<CapnpBrokerState>, Caller, String, WorkspaceTreeHandle) {
         let user = [31; 32];
         let mut workspace = Workspace::new(WorkspaceId(8), "Close");
         workspace.owner = Some(hex::encode(user));
         let room = workspace.room.to_string();
         let mut tree = WorkspaceTree::default();
         tree.workspaces.push(workspace);
+        let tree = tree.shared();
         let (state, _bridge_rx) = CapnpBrokerState::new_configured(
             &Arc::new(FanoutState::new()),
             Arc::new(Mutex::new(BrokerChannels::default())),
             PeerPublisher::disabled(),
-            Some(tree.shared().authority()),
+            Some(tree.authority()),
             None,
             None,
             crate::services::HostServices {
@@ -3591,6 +3680,11 @@ mod app_close_tests {
             }]);
         }
         let caller = Caller::authenticated(user, [32; 32]).in_room(room.clone());
+        (state, caller, room, tree)
+    }
+
+    fn broker(launcher: Arc<Launcher>, live: bool) -> (Arc<CapnpBrokerState>, Caller, String) {
+        let (state, caller, room, _tree) = broker_with_tree(launcher, live);
         (state, caller, room)
     }
 
@@ -3734,6 +3828,155 @@ mod app_close_tests {
         let stranger = Caller::authenticated([99; 32], [98; 32]).in_room(room);
         let (rows, _) = state.eager_catalogue(&stranger, RowScope::Provider(&workspace));
         assert!(rows.is_empty());
+    }
+
+    #[test]
+    fn eager_page_revision_tracks_the_exact_workspace_policy_snapshot() {
+        let launcher = Arc::new(Launcher {
+            closes: true,
+            ..Default::default()
+        });
+        let (state, caller, room, tree) = broker_with_tree(Arc::clone(&launcher), true);
+        let provider = tilo_actions::remote::workspace_provider(&room);
+        let query = tilo_actions::remote::CatalogueQuery {
+            provider: Some(provider.clone()),
+            max_results: 64,
+            ..Default::default()
+        };
+
+        let initial = answered(&state, &launcher, &caller, &query).0;
+        let unchanged = answered(&state, &launcher, &caller, &query).0;
+        assert_eq!(unchanged.revision, initial.revision);
+        assert!(initial.rows.iter().any(|row| {
+            row.action
+                .as_ref()
+                .is_some_and(|action| action.address.action == APPLICATION_CLOSE_ACTION)
+        }));
+
+        let restriction = {
+            let mut tree = tree.write();
+            let id = tree.workspaces[0].grant_capability(CapOverride::restrict_role_in_app(
+                Role::Owner,
+                "so.tilo.word-processor",
+                Verb::Read,
+            ));
+            tree.external_revision = tree.external_revision.wrapping_add(1);
+            id
+        };
+        let restricted = answered(&state, &launcher, &caller, &query).0;
+        assert_ne!(restricted.revision, initial.revision);
+        assert!(!restricted.rows.iter().any(|row| {
+            row.action
+                .as_ref()
+                .is_some_and(|action| action.address.action == APPLICATION_CLOSE_ACTION)
+        }));
+
+        let stale = answered(
+            &state,
+            &launcher,
+            &caller,
+            &tilo_actions::remote::CatalogueQuery {
+                revision: Some(initial.revision),
+                cursor: 0_u64.to_le_bytes().to_vec(),
+                ..query.clone()
+            },
+        )
+        .0;
+        assert!(stale.stale_cursor);
+        assert!(stale.rows.is_empty());
+
+        {
+            let mut tree = tree.write();
+            let removed =
+                tree.workspaces[0].revoke_matching(|capability| capability.id == restriction);
+            assert_eq!(removed, [restriction]);
+            tree.external_revision = tree.external_revision.wrapping_add(1);
+        }
+        let restored = answered(&state, &launcher, &caller, &query).0;
+        assert_ne!(restored.revision, restricted.revision);
+        assert!(restored.rows.iter().any(|row| {
+            row.action
+                .as_ref()
+                .is_some_and(|action| action.address.action == APPLICATION_CLOSE_ACTION)
+        }));
+
+        {
+            let mut tree = tree.write();
+            tree.room_epoch = tree.room_epoch.wrapping_add(1);
+        }
+        let replicated = answered(&state, &launcher, &caller, &query).0;
+        assert_ne!(replicated.revision, restored.revision);
+        assert_eq!(replicated.rows, restored.rows);
+    }
+
+    #[test]
+    fn eager_page_revision_tracks_a_time_bound_policy_without_a_tree_write() {
+        const SECOND: u64 = 1_000_000_000;
+        let launcher = Arc::new(Launcher {
+            closes: true,
+            ..Default::default()
+        });
+        let (state, caller, room, tree) = broker_with_tree(Arc::clone(&launcher), true);
+        let (clock, control) = crate::peer_actions::OwnerPolicyClock::for_test(10 * SECOND);
+        assert!(
+            state
+                .certificate_authority
+                .set(Arc::new(ControlledPolicyTime(clock.new_origin())))
+                .is_ok()
+        );
+        {
+            let mut tree = tree.write();
+            tree.workspaces[0].grant_capability(
+                CapOverride::restrict_role_in_app(
+                    Role::Owner,
+                    "so.tilo.word-processor",
+                    Verb::Read,
+                )
+                .with_expiry(11),
+            );
+            tree.external_revision = tree.external_revision.wrapping_add(1);
+        }
+        let query = tilo_actions::remote::CatalogueQuery {
+            provider: Some(tilo_actions::remote::workspace_provider(&room)),
+            max_results: 64,
+            ..Default::default()
+        };
+        let restricted = answered(&state, &launcher, &caller, &query).0;
+        assert!(!restricted.rows.iter().any(|row| {
+            row.action
+                .as_ref()
+                .is_some_and(|action| action.address.action == APPLICATION_CLOSE_ACTION)
+        }));
+
+        control.set_wall_ns(12 * SECOND);
+        let expired = answered(&state, &launcher, &caller, &query).0;
+        assert_ne!(expired.revision, restricted.revision);
+        assert!(expired.rows.iter().any(|row| {
+            row.action
+                .as_ref()
+                .is_some_and(|action| action.address.action == APPLICATION_CLOSE_ACTION)
+        }));
+    }
+
+    #[test]
+    fn an_authority_less_broker_has_a_stable_empty_eager_page() {
+        let fanout = Arc::new(FanoutState::new());
+        let (state, _bridge) = CapnpBrokerState::new_configured(
+            &fanout,
+            Arc::new(Mutex::new(BrokerChannels::default())),
+            PeerPublisher::disabled(),
+            None,
+            None,
+            None,
+            crate::services::HostServices::default(),
+        );
+        let caller = Caller::authenticated([91; 32], [92; 32]);
+        let query = tilo_actions::remote::CatalogueQuery::default();
+        let launcher = Launcher::default();
+        let first = answered(&state, &launcher, &caller, &query).0;
+        let second = answered(&state, &launcher, &caller, &query).0;
+        assert!(first.rows.is_empty() && first.providers.is_empty() && first.exhausted);
+        assert_eq!(second.revision, first.revision);
     }
 
     #[test]
