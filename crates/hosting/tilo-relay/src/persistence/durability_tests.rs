@@ -320,3 +320,129 @@ fn delta_commit_cpu_per_stored_records() {
         println!("RETAIN_COST stored={stored} cpu_ns_per_edit={cpu_ns} listed_per_edit={listed}");
     }
 }
+
+/// Long enough that a directory changed afterwards has other change times
+/// than the tail index was kept at, on filesystems with coarse timestamps.
+fn next_timestamp_tick() {
+    std::thread::sleep(std::time::Duration::from_millis(20));
+}
+
+#[test]
+fn a_delta_commit_lists_no_directory_however_long_the_tail() {
+    let dir = tempfile::tempdir().unwrap();
+    let stored = 5_000;
+    let mut state = with_history(dir.path(), stored);
+    // The first commit after start-up lists the generation once, to index it.
+    let before = crate::store::thread_listed_entries();
+    let sequence = state.next_sequence_at(NOW).unwrap();
+    commit(&state, sequence, stored);
+    assert!(
+        crate::store::thread_listed_entries() - before >= u64::from(stored),
+        "the first commit indexes the whole generation"
+    );
+    // Every further edit lists nothing and pays exactly its record barriers.
+    let listed = crate::store::thread_listed_entries();
+    let fsyncs = crate::store::thread_fsyncs();
+    for index in 1..=50 {
+        let sequence = state.next_sequence_at(NOW).unwrap();
+        commit(&state, sequence, stored + index);
+    }
+    assert_eq!(
+        crate::store::thread_listed_entries() - listed,
+        0,
+        "an edit listed its lineage's history"
+    );
+    let barriers = if cfg!(target_vendor = "apple") { 3 } else { 2 };
+    assert_eq!(crate::store::thread_fsyncs() - fsyncs, barriers * 50);
+    assert_eq!(
+        retained_edits(&state.store),
+        (0..=stored + 50).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn a_retried_edit_is_still_retained_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut state = open(dir.path());
+    for index in 0..4 {
+        let sequence = state.next_sequence_at(NOW).unwrap();
+        commit(&state, sequence, index);
+    }
+    // The index holds edit 2, so its retry goes to the scan, which finds it.
+    let sequence = state.next_sequence_at(NOW).unwrap();
+    commit(&state, sequence, 2);
+    let sequence = state.next_sequence_at(NOW).unwrap();
+    commit(&state, sequence, 4);
+    assert_eq!(retained_edits(&state.store), [0, 1, 2, 3, 4]);
+}
+
+#[test]
+fn records_written_behind_the_index_are_kept_and_found() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut state = open(dir.path());
+    for index in 0..3 {
+        let sequence = state.next_sequence_at(NOW).unwrap();
+        commit(&state, sequence, index);
+    }
+    // Another writer takes the next ordinal, and stores edit 7 further on.
+    next_timestamp_tick();
+    let active = active_generation(&state.store);
+    std::fs::write(active.join(format!("{:016x}.delta", 4)), edit(3)).unwrap();
+    std::fs::write(active.join(format!("{:016x}.delta", 9)), edit(7)).unwrap();
+    // The next commit lists the changed generation: neither record is
+    // overwritten, and edit 7 is found to be retained already.
+    let before = crate::store::thread_listed_entries();
+    let sequence = state.next_sequence_at(NOW).unwrap();
+    commit(&state, sequence, 7);
+    assert!(crate::store::thread_listed_entries() > before);
+    let sequence = state.next_sequence_at(NOW).unwrap();
+    commit(&state, sequence, 8);
+    assert_eq!(retained_edits(&state.store), [0, 1, 2, 3, 7, 8]);
+}
+
+#[test]
+fn a_record_at_the_next_ordinal_is_never_overwritten() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut state = open(dir.path());
+    for index in 0..3 {
+        let sequence = state.next_sequence_at(NOW).unwrap();
+        commit(&state, sequence, index);
+    }
+    // No tick: a change the directory's times may not show is not lost.
+    let active = active_generation(&state.store);
+    std::fs::write(active.join(format!("{:016x}.delta", 4)), edit(3)).unwrap();
+    let sequence = state.next_sequence_at(NOW).unwrap();
+    commit(&state, sequence, 4);
+    assert_eq!(retained_edits(&state.store), [0, 1, 2, 3, 4]);
+}
+
+#[test]
+fn a_new_generation_is_listed_not_answered_from_the_index() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut state = open(dir.path());
+    for index in 0..3 {
+        let sequence = state.next_sequence_at(NOW).unwrap();
+        commit(&state, sequence, index);
+    }
+    // A generation published beside the indexed one, as compaction does,
+    // keeping only edit 1, at ordinal 0.
+    let lineage = edits_lineage(&state.store);
+    let old = active_generation(&state.store);
+    let name = "0123456789abcdef0123456789abcdef";
+    std::fs::create_dir(lineage.join(name)).unwrap();
+    std::fs::hard_link(
+        old.join(format!("{:016x}.delta", 2)),
+        lineage.join(name).join(format!("{:016x}.delta", 0)),
+    )
+    .unwrap();
+    std::fs::write(lineage.join("CURRENT"), name).unwrap();
+    let sequence = state.next_sequence_at(NOW).unwrap();
+    commit(&state, sequence, 3);
+    assert_eq!(retained_edits(&state.store), [1, 3]);
+    assert!(
+        active_generation(&state.store)
+            .join(format!("{:016x}.delta", 1))
+            .exists(),
+        "the next ordinal follows the new generation, not the old index"
+    );
+}
