@@ -5821,6 +5821,27 @@ struct SpatialControlSession {
     nearby_drop: Option<std::path::PathBuf>,
 }
 
+/// Apply a production native-seat batch; the runtime drains revocation barriers
+/// before surviving input. Both phases keep their existing timing/count names.
+pub(crate) fn dispatch_spatial_input_batch(
+    state: &mut State,
+    batch: crate::shell::device_fabric_runtime::SpatialInputBatch,
+) {
+    use crate::shell::device_fabric_runtime::SpatialInputBatch;
+    match batch {
+        SpatialInputBatch::Releases(controllers) => {
+            for controller in controllers {
+                let _ = state.release_personal_fabric_input(&controller);
+            }
+        }
+        SpatialInputBatch::Inputs(events) => {
+            for (controller, event) in events {
+                let _ = state.apply_personal_fabric_input(&controller, event);
+            }
+        }
+    }
+}
+
 fn end_spatial_control(
     network: &crate::shell::network::ShellNetwork,
     active: &mut Option<SpatialControlSession>,
@@ -11574,25 +11595,33 @@ pub fn run() {
             if let Some(bridge) = realtime_fabric_bridge.as_ref() {
                 pump_phase!("realtime-app-events", bridge.pump_app_events());
             }
-            let spatial_input = crate::shell::device_fabric_runtime::take_spatial_input();
-            let spatial_input_count = spatial_input.len();
-            pump_phase!(
-                "spatial-input",
-                spatial_input_count,
-                for (controller, event) in spatial_input {
-                    let _ = state.apply_personal_fabric_input(&controller, event);
+            for batch in crate::shell::device_fabric_runtime::take_spatial_input_batches() {
+                use crate::shell::device_fabric_runtime::SpatialInputBatch;
+                match batch {
+                    SpatialInputBatch::Releases(controllers) => {
+                        let count = controllers.len();
+                        pump_phase!(
+                            "spatial-input-releases",
+                            count,
+                            dispatch_spatial_input_batch(
+                                &mut state,
+                                SpatialInputBatch::Releases(controllers),
+                            )
+                        );
+                    }
+                    SpatialInputBatch::Inputs(events) => {
+                        let count = events.len();
+                        pump_phase!(
+                            "spatial-input",
+                            count,
+                            dispatch_spatial_input_batch(
+                                &mut state,
+                                SpatialInputBatch::Inputs(events)
+                            )
+                        );
+                    }
                 }
-            );
-            let spatial_releases =
-                crate::shell::device_fabric_runtime::take_spatial_input_releases();
-            let spatial_release_count = spatial_releases.len();
-            pump_phase!(
-                "spatial-input-releases",
-                spatial_release_count,
-                for controller in spatial_releases {
-                    let _ = state.release_personal_fabric_input(&controller);
-                }
-            );
+            }
             let nearby_drop_events = crate::shell::device_fabric_runtime::take_nearby_drop_events();
             let nearby_drop_event_count = nearby_drop_events.len();
             pump_phase!(
