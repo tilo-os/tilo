@@ -281,8 +281,8 @@ impl ImportWorker {
         self.results.try_recv()
     }
 
-    #[cfg(test)]
-    fn close_for_test(&self) {
+    /// Stop the worker: it takes no more imports and drops a waiting one.
+    fn close(&self) {
         let (lock, wake) = &*self.mailbox;
         let mut state = lock
             .lock()
@@ -296,14 +296,7 @@ impl ImportWorker {
 
 impl Drop for ImportWorker {
     fn drop(&mut self) {
-        let (lock, wake) = &*self.mailbox;
-        let mut state = lock
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        state.closed = true;
-        state.pending = None;
-        drop(state);
-        wake.notify_one();
+        self.close();
     }
 }
 
@@ -5559,16 +5552,7 @@ impl BooksApp {
         if let Some(rn) = self.renaming.as_mut() {
             rn.field.handle_event(
                 ctx.event,
-                &mut ui::widget::EventCtx {
-                    scale_factor: ctx.scale_factor,
-                    modifiers: &ctx.modifiers,
-                    state: ctx.state.reborrow(),
-                    path: ctx.root,
-                    handled: &mut field_handled,
-                    focus_target: &mut field_focus,
-                    node_id: ctx.node_id,
-                    taffy: ctx.taffy,
-                },
+                &mut ctx.widget_ctx(&mut field_handled, &mut field_focus),
             );
         }
         self.poll_rename_outcome(&mut ctx.state);
@@ -7050,7 +7034,7 @@ impl BooksApp {
                 .map_or_else(String::new, |b| b.author.to_lowercase())
         };
         let mut idx: Vec<usize> = (0..lib.len())
-            .filter(|&i| !self.library_prefs.hide_read || frac(i) < 0.985)
+            .filter(|&i| !self.library_prefs.hide_read || !crate::model::Progress::is_read(frac(i)))
             .collect();
         match self.library_prefs.sort {
             LibrarySort::Title => idx.sort_by_key(|&a| title(a)),

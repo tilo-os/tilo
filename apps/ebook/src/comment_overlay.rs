@@ -645,21 +645,8 @@ mod tests {
     use ui::theme::Theme;
     use vello::Scene;
     use vello::kurbo::Affine;
-    use winit::event::{ElementState, Modifiers, WindowEvent};
-    use winit::keyboard::{Key, NamedKey};
-
-    fn key(logical_key: Key) -> WindowEvent {
-        let text = match &logical_key {
-            Key::Character(text) => Some(text.clone()),
-            _ => None,
-        };
-        let event = ui::synthetic_input::key_event(logical_key, text, ElementState::Pressed);
-        WindowEvent::KeyboardInput {
-            device_id: winit::event::DeviceId::dummy(),
-            event,
-            is_synthetic: false,
-        }
-    }
+    use winit::event::{Modifiers, WindowEvent};
+    use winit::keyboard::NamedKey;
 
     fn annotation(kind: AnnoKind, group: Uuid, note: &str) -> Annotation {
         let mut a = Annotation::new("book", kind, 0, 0).with_group(group);
@@ -762,7 +749,7 @@ mod tests {
                 assert!(!press(
                     &mut overlay,
                     &mut doc,
-                    key(Key::Character(ch.into()))
+                    ui::synthetic_input::char_key(ch)
                 ));
             }
             let stored = crate::resource::read_doc(&doc)
@@ -775,7 +762,7 @@ mod tests {
             assert!(press(
                 &mut overlay,
                 &mut doc,
-                key(Key::Named(NamedKey::Enter))
+                ui::synthetic_input::named_key(NamedKey::Enter)
             ));
             assert_eq!(overlay.editing_id(), None);
         }
