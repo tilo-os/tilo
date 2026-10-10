@@ -293,6 +293,12 @@ follow chip and the notification stack. A retained scene carries its parts
 with it (`scene_parts::record` / `scene_parts::append`), so an in-process
 app's own parts (the terminal's rows and cursor) reach the compositor:
 typing or a peer's pointer moving repaints well under 1 % of a 4K output.
+The shell's adaptive Area renderer canonicalizes each tile's segment order
+before coverage accumulation. Dense and retained repairs then round the same
+unchanged geometry to the same pixels despite GPU scheduling. Each successful
+repair settles its overflow counters before the next frame; explicit pinned
+`VELLO_BUMP_BUDGET=upstream` experiments retain Vello's existing exclusion from
+canonical ordering and do not carry this pixel-repeatability guarantee.
 Foreign buffer swaps keep their client-reported damage. Night light and the
 colour filters are per-pixel tints drawn into the same scene, so frames under
 them stay sparse while the tint is unchanged; the magnifier and the
@@ -300,10 +306,10 @@ crosshair, which follow the pointer, keep every frame dense.
 
 ### Composited frames: GBM render targets, dumb-buffer fallback
 
-Eligibility is decided per output. An output with no colour transform, a
-hardware cursor plane, event-driven page flips, and a renderer on the same
-PCI function as its scanout card renders direct, however it is rotated and
-however many other outputs there are: the DRM backend allocates two linear
+Eligibility is decided per output. An output with a hardware cursor plane,
+event-driven page flips, and a renderer on the same PCI function as its
+scanout card renders direct, however it is rotated, whatever ICC profile it
+has, and however many other outputs there are: the DRM backend allocates two linear
 GBM buffer objects the size of that output's mode (XRGB8888, or a 10-bit or
 half-float format in HDR) with `SCANOUT | RENDERING`, registers them as KMS
 framebuffers (`add_planar_framebuffer`), and imports them into Vulkan as
@@ -317,7 +323,17 @@ each scanout pixel from the surface pixel it shows
 permutation the readback applies on the CPU, so the pixels are identical,
 and damage still maps onto the upright surface by translation alone. KMS
 plane rotation is not used: the legacy KMS path and linear buffers leave
-quarter turns unsupported on most drivers. Every output keeps its own retained
+quarter turns unsupported on most drivers. An ICC-profiled SDR output is
+calibrated in the same pass: when the profile is chosen, its qcms transform
+(the one the readback runs per pixel on the CPU) is sampled on a 65³ grid of
+8-bit codes into a 3D texture (`shell::render::icc_lut`), which the pass
+interpolates tetrahedrally per pixel (`shell/output_color_lut.wgsl`). Against
+qcms over every sRGB colour that is at most one code value per channel for
+profiles that hold sRGB in gamut, 3 for a lut-based profile, and 10 in the
+saturated colours qcms clips into a narrower gamut; mean ΔE2000 stays under
+0.15. In HDR the profile is ignored, as on the readback: the PQ encode
+replaces it. KMS `CTM`/`GAMMA_LUT` are not used either: they express only
+matrix-and-curve profiles, and their precision is the driver's. Every output keeps its own retained
 surface and two-slot ring; the renderer and the device are shared. A slot
 stays owned by KMS until its page-flip event retires it, so the renderer
 never touches the front or flip-pending slot. Page-flip events are drained
@@ -362,8 +378,7 @@ It returns to one output's size once every output renders direct again.
 The phase summary's `readback_bytes` and `cpu_pixel_passes` (passes over an
 output's pixels on the CPU: rotate and swizzle or PQ encode, and an ICC
 profile's copy and qcms pass) are both zero while every output renders
-direct. An ICC-profiled output still takes this path every frame; a GPU
-colour LUT is the remaining step (TIL-660).
+direct, rotated and ICC-profiled outputs included.
 
 ### Fullscreen client scanout
 
@@ -389,10 +404,11 @@ frame it appears in:
   fingerprint of the finished scene: anything the loop appends afterwards
   (a drag, a presentation surface) voids it on that frame
   (`FramePaint::scanout_candidate`).
-- Per output, the presenter requires the direct path's own contract (no
-  colour transform, hardware cursor plane, renderer on the scanout card)
-  plus: the output is upright (a rotated scanout would show the buffer
-  unturned), the candidate covers exactly this output, it is a
+- Per output, the presenter requires the direct path's own contract
+  (hardware cursor plane, renderer on the scanout card) plus: the output is
+  upright (a rotated scanout would show the buffer unturned), it has no ICC
+  profile (the buffer would skip the calibration the final pass applies),
+  the candidate covers exactly this output, it is a
   client dma-buf (`gpu_frames::client_frame`), the buffer is opaque
   (`XRGB8888`, the format the output's 8-bit targets have — a legacy flip
   cannot change formats), the output is SDR and the frame composites no

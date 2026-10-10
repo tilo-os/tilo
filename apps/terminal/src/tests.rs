@@ -1796,7 +1796,7 @@ fn find_in_terminal_is_local_discoverable_and_reflows() {
             .iter()
             .find(|child| child.role == Role::Menu)
             .expect("discoverable menu");
-        let find_label = ui::i18n::I18nManager::lookup("terminal-find-scrollback", None);
+        let find_label = crate::i18n::t("terminal-find-scrollback");
         assert_ne!(
             find_label, "terminal-find-scrollback",
             "toolkit supplies the visible label"
@@ -1927,7 +1927,7 @@ fn find_in_terminal_is_local_discoverable_and_reflows() {
         // Assistive activation resolves the exported controls to their real
         // FindBar owner rather than sending child targets to TerminalView.
         let control = |harness: &ui::headless::FrameHarness, key: &str| {
-            let label = ui::i18n::I18nManager::lookup_plain(key);
+            let label = crate::i18n::t(key);
             harness
                 .a11y_nodes()
                 .into_iter()

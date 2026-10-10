@@ -213,10 +213,6 @@ pub(crate) enum MenuTarget {
     /// One of your own messages — the action menu offers Edit.
     Message(Id),
     /// The workspace background / the sidebar's "+" — create affordances.
-    #[allow(
-        dead_code,
-        reason = "legacy CRDT scope selection remains testable for wire compatibility; production navigation uses Inbox and CurrentContext"
-    )]
     Workspace(Id),
 }
 
@@ -446,14 +442,6 @@ pub(crate) enum Hit {
     /// Toggle the participant list expand/collapse in the overlay.
     CallParticipantsToggle,
     CallMute,
-    /// Share-screen control. The native voice path refuses it (calls are
-    /// microphone audio only); the shipped call chrome does not expose it
-    /// until production has a real screen-capture producer.
-    #[allow(
-        dead_code,
-        reason = "kept for defensive refusal handling and the voice-profile refusal test"
-    )]
-    CallShareScreen,
     CallExpand,
     CallLeave,
     /// Toggle the left flap (rail + channel sidebar).
@@ -513,7 +501,6 @@ impl Hit {
             Self::EditSave => "chat.edit-save".into(),
             Self::EditCancel => "chat.edit-cancel".into(),
             Self::CallMute => "chat.call-mute".into(),
-            Self::CallShareScreen => "chat.call-share-screen".into(),
             Self::CallParticipantsToggle => "chat.call-participants".into(),
             Self::CallExpand => "chat.call-expand".into(),
             Self::CallLeave => "chat.call-leave".into(),
@@ -1984,17 +1971,6 @@ impl ChatApp {
         self.call
             .placement
             .pin_handoff_for_visual_review(handoff_phase);
-    }
-
-    /// Whether this peer is currently sharing its screen — the shared-truth
-    /// flag used by the featured tile and the call-control tests. Chat has no
-    /// local screen-capture producer, so production never sets it.
-    #[allow(
-        dead_code,
-        reason = "queried by call-control tests while the production capture control is hidden"
-    )]
-    pub(crate) fn sharing_screen(&self) -> bool {
-        self.call.sharing
     }
 
     // --- model lookups ----------------------------------------------------
@@ -4729,9 +4705,6 @@ impl ChatApp {
                         Role::ToggleButton,
                         self.call.muted,
                     ),
-                    Hit::CallShareScreen => {
-                        ("Share screen".into(), Role::ToggleButton, self.call.sharing)
-                    }
                     Hit::CallParticipantsToggle => (
                         "Show call participants".into(),
                         Role::ToggleButton,

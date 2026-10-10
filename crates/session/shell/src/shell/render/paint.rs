@@ -29,6 +29,7 @@ use wgpu::util::TextureBlitter;
 
 use super::hdr_composite::{HdrCompositor, HdrPass};
 use super::hdr_encode::HdrEncodePipeline;
+use super::icc_lut::IccLut;
 use super::orientation::OrientedCopy;
 use super::xrgb_history::XrgbWritePlan;
 pub use super::xrgb_history::{
@@ -661,7 +662,7 @@ impl RetainedGpuTarget {
         #[cfg(target_os = "linux")]
         crate::shader_seed::observe_device(gpu.adapter.get_info());
         let seed = pipeline_seed_to_publish(gpu);
-        let renderer = Renderer::new(
+        let mut renderer = Renderer::new(
             &gpu.device,
             RendererOptions {
                 use_cpu: false,
@@ -672,6 +673,13 @@ impl RetainedGpuTarget {
             },
         )
         .map_err(|e| BridgeError::Renderer(format!("{e:?}")))?;
+        // Atomic tile allocation otherwise sums Area coverage in GPU scheduling order.
+        // The same unchanged desktop can then round to different pixels in dense and
+        // retained renders. Keep their segment order stable on the adaptive shell path;
+        // Vello still preserves its pinned-budget and overflow-validation guards.
+        renderer
+            .enable_canonical_segment_order(&gpu.device)
+            .map_err(|e| BridgeError::Renderer(format!("{e:?}")))?;
         if let Some(seed) = seed {
             publish_pipeline_seed(gpu, &seed);
         }
@@ -1983,7 +1991,7 @@ pub struct VelloDrmBridge {
     dispatch_stage_observer: Option<DispatchStageObserver>,
     /// SDR → PQ encode passes, one per HDR scanout format in use.
     hdr_encoders: Vec<HdrEncodePipeline>,
-    /// The SDR final pass of rotated outputs; built with the first one.
+    /// The SDR final pass of rotated or calibrated outputs; built with the first one.
     oriented_copy: Option<OrientedCopy>,
     /// Composites HDR layers; built with the first frame that has any.
     hdr_compositor: Option<HdrCompositor>,
@@ -2381,6 +2389,7 @@ impl VelloDrmBridge {
             OutputSignal {
                 sdr_white_nits,
                 hdr_layers,
+                color_lut: None,
             },
         )
     }
@@ -2410,26 +2419,29 @@ impl VelloDrmBridge {
         }
     }
 
-    /// The final pass `output` needs exists and writes its orientation with the next
-    /// submission: the PQ encode for an HDR target, the oriented copy for a rotated SDR one.
-    fn prepare_final_pass(&mut self, output: OutputTarget<'_>, hdr: bool, sdr_white_nits: f32) {
+    /// The final pass `output` needs exists and is set up for the next submission: the PQ
+    /// encode for an HDR target, the oriented copy for an SDR one that is rotated or
+    /// calibrated (`color_lut`). Returns whether the oriented copy runs; an unrotated,
+    /// uncalibrated SDR target keeps the plain blit.
+    fn prepare_final_pass(
+        &mut self,
+        output: OutputTarget<'_>,
+        hdr: bool,
+        sdr_white_nits: f32,
+        color_lut: Option<&IccLut>,
+    ) -> bool {
         if hdr {
             self.prepare_hdr_encoder(output.format, sdr_white_nits, output.orientation);
-        } else {
-            self.prepare_oriented_copy(output.orientation);
+            return false;
         }
-    }
-
-    /// The SDR final pass of a rotated output exists and writes `orientation` with the next
-    /// submission. An unrotated output keeps the plain blit.
-    fn prepare_oriented_copy(&mut self, orientation: OutputTransform) {
-        if orientation == OutputTransform::Normal {
-            return;
+        if output.orientation == OutputTransform::Normal && color_lut.is_none() {
+            return false;
         }
-        let device = &self.target.device;
+        let (device, queue) = (&self.target.device, &self.target.queue);
         self.oriented_copy
             .get_or_insert_with(|| OrientedCopy::new(device))
-            .set_orientation(&self.target.queue, orientation);
+            .prepare(device, queue, output.orientation, color_lut);
+        true
     }
 
     /// Render `scene` into the target currently swapped into `self.target`, then run the
@@ -2447,6 +2459,7 @@ impl VelloDrmBridge {
         let OutputSignal {
             sdr_white_nits,
             hdr_layers,
+            ..
         } = signal;
         self.last_phase_timing = None;
         if let Some(error) = self.take_device_error() {
@@ -2488,15 +2501,14 @@ impl VelloDrmBridge {
         } else {
             damage
         };
-        self.prepare_final_pass(output, hdr, sdr_white_nits);
+        // The profile describes the panel's SDR response; the PQ encode replaces it.
+        let color_lut = signal.color_lut.filter(|_| !hdr);
+        let copies = self.prepare_final_pass(output, hdr, sdr_white_nits, color_lut);
         let encode = self
             .hdr_encoders
             .iter()
             .find(|pipeline| hdr && pipeline.format() == output.format);
-        let oriented = self
-            .oriented_copy
-            .as_ref()
-            .filter(|_| !hdr && output.orientation != OutputTransform::Normal);
+        let oriented = self.oriented_copy.as_ref().filter(|_| copies);
         let blitter = &self.bgra_blitter;
         let view = output.view;
         let format = output.format;
@@ -2516,7 +2528,7 @@ impl VelloDrmBridge {
             |device, encoder, source| match (compositor, encode, oriented) {
                 (Some(compositor), _, _) => compositor.encode(encoder, source, view, format),
                 (None, Some(pipeline), _) => pipeline.encode(device, encoder, source, view),
-                (None, None, Some(copy)) => copy.copy(device, encoder, source, view),
+                (None, None, Some(copy)) => copy.copy(device, encoder, source, view, color_lut),
                 (None, None, None) => blitter.copy(device, encoder, source, view),
             },
         );
@@ -5366,17 +5378,24 @@ mod tests {
         view: &OutputView,
         damage: SceneDamage<'_>,
     ) -> (wgpu::Texture, GpuFrameStats) {
-        paint_output_offscreen_as(bridge, scene, view, damage, wgpu::TextureFormat::Bgra8Unorm)
+        paint_output_offscreen_as(
+            bridge,
+            scene,
+            view,
+            damage,
+            (wgpu::TextureFormat::Bgra8Unorm, None),
+        )
     }
 
     /// [`paint_output_offscreen`] into a stand-in of `format`: `Bgra8Unorm` for an SDR
-    /// scanout, `Rgb10a2Unorm` for an `XBGR2101010` HDR one.
+    /// scanout, `Rgb10a2Unorm` for an `XBGR2101010` HDR one; through `color_lut` when the
+    /// output has an ICC profile.
     fn paint_output_offscreen_as(
         bridge: &mut VelloDrmBridge,
         scene: &Scene,
         view: &OutputView,
         damage: SceneDamage<'_>,
-        format: wgpu::TextureFormat,
+        (format, color_lut): (wgpu::TextureFormat, Option<&IccLut>),
     ) -> (wgpu::Texture, GpuFrameStats) {
         let (width, height) = view.target_size();
         let (device, _) = bridge.gpu();
@@ -5413,6 +5432,7 @@ mod tests {
                 OutputSignal {
                     sdr_white_nits: crate::shell::color_pipeline::SDR_REFERENCE_WHITE_NITS,
                     hdr_layers: &[],
+                    color_lut,
                 },
             )
             .expect("the output's frame renders");
@@ -5663,7 +5683,7 @@ mod tests {
                 &scene,
                 &view,
                 full_frame(revision),
-                wgpu::TextureFormat::Rgb10a2Unorm,
+                (wgpu::TextureFormat::Rgb10a2Unorm, None),
             );
             let gpu = read_target(&bridge, &texture);
             let (pw, ph) = view.target_size();
@@ -5700,6 +5720,119 @@ mod tests {
                 "{transform:?}: the GPU PQ encode differs from the readback's by {max_delta} code values"
             );
         }
+    }
+
+    #[test]
+    fn a_calibrated_output_matches_the_readback_qcms_pass() {
+        // The readback calibrates on the CPU: the output's sub-rect copied out, qcms applied,
+        // then turned and swizzled (`paint_one_scanout`). The direct path does the same in
+        // its final GPU pass through the profile's `IccLut`, with no readback, and stays
+        // within the LUT's stated tolerance of qcms (`icc_lut` module docs).
+        let size = (90, 52);
+        let panel = super::super::icc_lut::tests::adobe_rgb();
+        let transform_icc = panel.transform();
+        let lut = IccLut::from_transform(&transform_icc);
+        let mut bridge = required_bridge(size.0, size.1);
+        let scene = asymmetric_scene(size);
+        let rgba = bridge.paint(&scene).expect("the dense render").to_vec();
+        let mut calibrated = Vec::new();
+        copy_rgba_subrect(
+            SubrectSource {
+                src_rgba: &rgba,
+                src_w: size.0 as usize,
+                src_h: size.1 as usize,
+                src_x: 0,
+                src_y: 0,
+            },
+            size.0 as usize,
+            size.1 as usize,
+            &mut calibrated,
+        );
+        transform_icc.apply(&mut calibrated);
+        bridge.set_phase_timing_enabled(true);
+        for (revision, transform) in (1..).zip(ORIENTATIONS) {
+            let view =
+                OutputView::at(crate::shell::render::OutputId(0), (0, 0), size).oriented(transform);
+            let (texture, _) = paint_output_offscreen_as(
+                &mut bridge,
+                &scene,
+                &view,
+                full_frame(revision),
+                (wgpu::TextureFormat::Bgra8Unorm, Some(&lut)),
+            );
+            assert_eq!(
+                bridge
+                    .last_phase_timing()
+                    .expect("phase timing")
+                    .readback_bytes,
+                0,
+                "{transform:?}: a calibrated output reads nothing back"
+            );
+            let gpu = read_target(&bridge, &texture);
+            let (pw, ph) = view.target_size();
+            let mut cpu = vec![0_u8; (pw * ph * 4) as usize];
+            swizzle_subrect_rgba_to_xrgb8888_composited(
+                SubrectSource {
+                    src_rgba: &calibrated,
+                    src_w: size.0 as usize,
+                    src_h: size.1 as usize,
+                    src_x: 0,
+                    src_y: 0,
+                },
+                &mut cpu,
+                (pw * 4) as usize,
+                (pw as usize, ph as usize),
+                transform,
+                None,
+            );
+            let max_delta = gpu
+                .chunks_exact(4)
+                .zip(cpu.chunks_exact(4))
+                .flat_map(|(g, c)| [0, 1, 2].map(|i| i32::from(g[i].abs_diff(c[i]))))
+                .max()
+                .unwrap_or(0);
+            assert!(
+                max_delta <= panel.max_code_delta,
+                "{transform:?}: the GPU calibration differs from the readback's qcms pass by {max_delta} code values"
+            );
+            // Without the profile the same output is further from the readback than that.
+            let uncalibrated = paint_output_pixels(&mut bridge, &scene, &view, revision + 100);
+            let uncalibrated_delta = uncalibrated
+                .chunks_exact(4)
+                .zip(cpu.chunks_exact(4))
+                .flat_map(|(g, c)| [0, 1, 2].map(|i| i32::from(g[i].abs_diff(c[i]))))
+                .max()
+                .unwrap_or(0);
+            assert!(
+                uncalibrated_delta > panel.max_code_delta,
+                "{transform:?}: the profile is visible ({uncalibrated_delta} code values)"
+            );
+        }
+    }
+
+    #[test]
+    fn an_hdr_output_ignores_its_icc_profile() {
+        // The profile describes the panel's SDR response; in HDR the PQ encode replaces it,
+        // on the GPU as on the readback.
+        let size = (90, 52);
+        let lut = IccLut::from_transform(&super::super::icc_lut::tests::adobe_rgb().transform());
+        let mut bridge = required_bridge(size.0, size.1);
+        let scene = asymmetric_scene(size);
+        let view = OutputView::at(crate::shell::render::OutputId(0), (0, 0), size)
+            .oriented(OutputTransform::Rotate90);
+        let pq = |bridge: &mut VelloDrmBridge, revision, color_lut| {
+            let (texture, _) = paint_output_offscreen_as(
+                bridge,
+                &scene,
+                &view,
+                full_frame(revision),
+                (wgpu::TextureFormat::Rgb10a2Unorm, color_lut),
+            );
+            read_target(bridge, &texture)
+        };
+        let plain = pq(&mut bridge, 1, None);
+        let profiled = pq(&mut bridge, 2, Some(&lut));
+        assert_eq!(plain, profiled);
     }
 
     #[test]
@@ -6388,6 +6521,87 @@ mod tests {
             assert_eq!(
                 bridge.staging_content,
                 Some((bridge.target.geometry_generation, Some(3)))
+            );
+        }
+    }
+
+    #[test]
+    fn default_area_frames_keep_stable_pixels_after_counter_settlement() {
+        use crate::shell::output_scene::OutputGeometry;
+
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.remove("VELLO_CANONICAL_SEGMENT_ORDER");
+        env.remove("VELLO_BUMP_BUDGET");
+        env.set("TILO_CLOCK", "09:41");
+        let mut target = required_target(3_840, 2_160);
+        assert!(target.renderer.canonical_segment_order_available());
+        let mut frame = PopulatedShellFixture::new(
+            (3_840, 2_160),
+            ui::theme::Theme::high_contrast().with_reduce_motion(true),
+        );
+        frame.set_output_geometry(vec![
+            OutputGeometry::unscaled(0.0, 0.0, 1920.0, 2160.0).with_id(0),
+            OutputGeometry::unscaled(1920.0, 0.0, 1920.0, 2160.0).with_id(1),
+        ]);
+        frame.relayout();
+        let scene = frame.paint();
+        target
+            .render_until(
+                &scene,
+                version(1, None, None),
+                Instant::now() + Duration::from_secs(10),
+            )
+            .unwrap();
+        let expected = target_pixels(&target);
+        // Repaint the high-contrast label edges implicated by the overview failure.
+        // A whole half-desktop is deliberately ineligible under the profitability gate.
+        let damage = [vello::FineDamageRect {
+            x: 640,
+            y: 128,
+            width: 128,
+            height: 64,
+        }];
+        for revision in 2_u64..=9 {
+            let sparse = revision.is_multiple_of(2);
+            let started = Instant::now();
+            target
+                .render_until(
+                    &scene,
+                    version(
+                        revision,
+                        revision.checked_sub(1),
+                        sparse.then_some(&damage[..]),
+                    ),
+                    Instant::now() + Duration::from_secs(10),
+                )
+                .unwrap();
+            eprintln!(
+                "default Area revision {revision}: sparse={sparse}, completed_render_us={}",
+                started.elapsed().as_micros()
+            );
+            assert_eq!(
+                target.renderer.poll_bump_budget(&target.device).unwrap(),
+                vello::BumpBudgetPoll::Complete { overflowed: false },
+                "the next adaptive frame must not inherit a pending measurement"
+            );
+            assert_eq!(target.last_render_attempts, 1);
+            if sparse {
+                assert_eq!(target.last_canonical_segment_order_sparse_attempts, 1);
+                assert_eq!(target.last_full_render_attempts, 0);
+            } else {
+                assert_eq!(target.last_canonical_segment_order_full_attempts, 1);
+                assert_eq!(target.last_sparse_render_attempts, 0);
+            }
+            let actual = target_pixels(&target);
+            let first = actual
+                .iter()
+                .zip(&expected)
+                .position(|(actual, expected)| actual != expected);
+            assert!(
+                actual == expected,
+                "revision {revision}: {} versus {} bytes; first differing byte {first:?}",
+                actual.len(),
+                expected.len()
             );
         }
     }

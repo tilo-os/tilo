@@ -393,3 +393,12 @@ Settings uses it to label its foreground physical keyboard map independently
 from logical key events. A real Smithay-to-Winit wire regression covers initial
 keymap/focus and several queued modifier/group changes; no global capture or new
 protocol/socket is introduced.
+
+## Build-script-generated protobuf descriptors
+
+`buffa-build` 0.9.2 is carried as verified registry source with a small
+upstream-compatible change: a descriptor proven to be produced inside the
+caller's Cargo OUT_DIR is not registered as an input. All external descriptors
+remain tracked, including symlinks across the output-directory boundary.
+`vendor/buffa-build/PROVENANCE.md` records the checksum, revision and patch.
+The registry waproto source and its source/hash guards remain unchanged.
