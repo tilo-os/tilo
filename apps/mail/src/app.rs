@@ -3025,10 +3025,7 @@ fn found_status(
         .map(str::to_owned)
         .or_else(|| found.display_name.clone())
         .unwrap_or_else(|| domain.to_owned());
-    crate::setup_sheet::ProviderStatus::Found {
-        name,
-        server: found.imap_host.clone(),
-    }
+    crate::setup_sheet::ProviderStatus::Found { name }
 }
 
 /// Mozilla autoconfig discovery for a typed email. Real HTTP under

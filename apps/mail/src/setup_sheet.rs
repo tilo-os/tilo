@@ -76,8 +76,8 @@ pub(crate) enum ProviderStatus {
     Idle,
     /// The servers are being looked up.
     Finding,
-    /// The provider and the incoming server found for the address.
-    Found { name: String, server: String },
+    /// The provider found for the address.
+    Found { name: String },
 }
 
 /// What the sheet shows. Clones share the same values.
@@ -431,14 +431,25 @@ fn status_line(message: &str) -> Element {
     )
 }
 
-/// What the address has told the sheet, under the address: the provider
+/// The address with, under it, what it has told the sheet: the provider
 /// found, or that its servers are being looked up.
-fn provider_help(status: &ProviderStatus) -> Option<String> {
-    match status {
-        ProviderStatus::Idle => None,
-        ProviderStatus::Finding => Some(crate::i18n::t("mail-setup-finding-provider")),
-        ProviderStatus::Found { name, server } => Some(format!("{name} · {server}")),
-    }
+fn address_input(fields: &SetupFields, status: &ProviderStatus) -> Element {
+    let address =
+        input(fields, EMAIL).with_accessible_name(crate::i18n::t("mail-setup-label-email"));
+    let note = match status {
+        ProviderStatus::Idle => return Box::new(address),
+        ProviderStatus::Finding => crate::i18n::t("mail-setup-finding-provider"),
+        ProviderStatus::Found { name } => name.clone(),
+    };
+    Box::new(
+        Column::new()
+            .with_no_padding()
+            .with_intrinsic_height()
+            .push(Box::new(address))
+            .push(Box::new(
+                Text::new(&note).with_role(TextRole::Caption).dimmed(),
+            )),
+    )
 }
 
 /// The switch that shows or hides the server rows.
@@ -465,10 +476,10 @@ fn form(fields: &SetupFields, requests: &Requests, editing: bool, shape: &Shape)
     let label = crate::i18n::t;
     // What a person gives: the address and how to sign in. The servers are
     // found from the address.
-    let mut email = Field::new(label("mail-setup-label-email"), input(fields, EMAIL));
-    if let Some(help) = provider_help(&shape.provider_status) {
-        email = email.with_help(help);
-    }
+    let email = Field::custom(
+        label("mail-setup-label-email"),
+        address_input(fields, &shape.provider_status),
+    );
     let mut account = FormSection::untitled().field(with_error(email, shape.error_for(&["email"])));
     account = match shape.auth {
         AuthMethod::Password => account.field(Field::new(
