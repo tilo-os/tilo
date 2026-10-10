@@ -1,7 +1,9 @@
 //! Host action authority is separate from a record's participation.
 use super::{Actor, PermissionContext, Principal, ResourceRef, UserId};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::AtomicU64;
+#[cfg(any(feature = "native", test))]
+use std::sync::atomic::Ordering;
 
 #[derive(Clone)]
 pub(super) struct ActionAuthoritySampler {
@@ -72,6 +74,7 @@ impl ActionAuthoritySampler {
         Ok(current)
     }
 
+    #[cfg(any(feature = "native", test))]
     pub(super) fn deadline_unix_ms(&self) -> Option<u64> {
         match self.deadline_unix_ms.load(Ordering::Acquire) {
             0 => None,
@@ -113,12 +116,14 @@ impl PermissionContext {
         current
     }
 
+    #[cfg(any(feature = "native", test))]
     pub(crate) fn action_authority_deadline_unix_ms(&self) -> Option<u64> {
         self.action_authority
             .as_ref()
             .and_then(ActionAuthoritySampler::deadline_unix_ms)
     }
 
+    #[cfg(feature = "native")]
     pub(crate) fn has_live_action_authority(&self) -> bool {
         self.action_authority
             .as_ref()

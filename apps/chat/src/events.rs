@@ -1672,9 +1672,9 @@ impl ChatApp {
                 return;
             }
             let message = ui::agent_message_action::begin(&self.agent_task_actions, &key.0);
-            let give_up_at = std::time::Instant::now()
+            let give_up_at = ui::time::now()
                 .checked_add(crate::app::AGENT_MESSAGE_RESOLVE_WINDOW)
-                .unwrap_or_else(std::time::Instant::now);
+                .unwrap_or_else(ui::time::now);
             let next_poll_at = ui::agent_message_action::next_wake_deadline(
                 &self.agent_task_actions,
                 &message,
@@ -1716,9 +1716,9 @@ impl ChatApp {
                         draft_revision,
                         intent,
                         message: None,
-                        give_up_at: std::time::Instant::now()
+                        give_up_at: ui::time::now()
                             .checked_add(crate::app::AGENT_MESSAGE_RESOLVE_WINDOW)
-                            .unwrap_or_else(std::time::Instant::now),
+                            .unwrap_or_else(ui::time::now),
                         next_poll_at: None,
                         pages_remaining: crate::app::AGENT_MESSAGE_MAX_PAGES,
                     },
@@ -4651,27 +4651,51 @@ mod tests {
         );
     }
 
-    #[test]
-    fn detached_agent_without_a_text_fallback_keeps_one_truthful_return_placeholder() {
-        use ui::Widget;
-
+    fn agent_with_only_direct_text_channel() -> (ChatApp, AutoCommit, String) {
         let mut doc = AutoCommit::new();
         ChatDoc::seed_starter(&mut doc, "u_alice", "Alice", "AL");
+        assert!(ChatDoc::post_agent_message(
+            &mut doc,
+            "ws_home",
+            "scribe",
+            "m_direct_route_fixture",
+            NewMessage {
+                author: "u_alice".into(),
+                ts: 1,
+                text: "Known direct route request".into(),
+                agent_intent: Some(model::AgentIntent::Message),
+                ..Default::default()
+            },
+        ));
         let mut app = peer("u_alice", "Alice", "AL", 0);
         app.room_agents.push("scribe".into());
         app.room_names
             .insert("agent:scribe".into(), "Scribe".into());
         app.reload(&doc);
-        let text_channels: Vec<_> = app
+        let ordinary_text_channels = app
             .channels
             .iter()
-            .filter(|channel| channel.kind == ChannelKind::Text)
+            .filter(|channel| {
+                channel.kind == ChannelKind::Text && channel.conversation_with.is_none()
+            })
             .map(|channel| channel.id.clone())
-            .collect();
-        for channel in text_channels {
+            .collect::<Vec<_>>();
+        for channel in ordinary_text_channels {
             ChatDoc::delete_channel(&mut doc, &channel);
         }
         app.reload(&doc);
+        let channel = ChatDoc::agent_conversation_channel_id("ws_home", "scribe");
+        assert!(app.channels.iter().any(|candidate| {
+            candidate.id == channel && candidate.conversation_with.as_deref() == Some("scribe")
+        }));
+        (app, doc, channel)
+    }
+
+    #[test]
+    fn detached_agent_channel_is_not_an_ordinary_fallback_and_keeps_one_editor() {
+        use ui::Widget;
+
+        let (mut app, mut doc, channel) = agent_with_only_direct_text_channel();
         render_frame(&mut app, 800.0, 600.0);
         app.on_hit(
             Hit::Agent("scribe".into()),
@@ -4685,7 +4709,6 @@ mod tests {
             .expect("the exact retained conversation floats");
         let request = ui::widget::FloatingSurfaceWidgetExt::take_floating_surface_request(&mut app)
             .expect("Float publishes one request");
-        let channel = ChatDoc::agent_conversation_channel_id("ws_home", "scribe");
         assert_eq!(app.detached_agent_placeholder.as_deref(), Some(&*channel));
         assert!(app.direct_agent.is_none(), "the editor source was cleared");
         assert_eq!(
@@ -6397,7 +6420,10 @@ mod tests {
             NewMessage {
                 author: "u_alice".into(),
                 ts: fixture_ts,
-                text: "Known fixture request".into(),
+                text: format!(
+                    "Known fixture request\n{}",
+                    ["Bounded context line"; 12].join("\n")
+                ),
                 agent_intent: Some(model::AgentIntent::Message),
                 ..Default::default()
             },
@@ -6732,6 +6758,10 @@ mod tests {
             .unwrap()
             .view
             .reload(&doc);
+        let float = ui::widget::FloatingSurfaceWidgetExt::take_floating_surface_request(&mut app)
+            .expect("the progress fixture keeps the production Float request");
+        let detached = vello::kurbo::Rect::new(0.0, 0.0, 512.0, 360.0);
+        adopt_agent_surface(&mut app, &float.id, detached);
         let surface = &app.agent_surfaces[&channel];
         let request = surface
             .view
@@ -6746,10 +6776,28 @@ mod tests {
                 .as_deref(),
             Some("Reply saved; waiting for conversation")
         );
-        let view = &mut app.agent_surfaces.get_mut(&channel).unwrap().view;
-        let _ = view.take_relayout_request();
-        render_frame(view, 720.0, 640.0);
-        let surface = &app.agent_surfaces[&channel];
+        assert_reply_visibility_uses_meaningful_bounds(&mut app, &channel, &request_row, reply_row);
+        return_progress_surface(&mut app, &mut doc, &channel, &request_row, float.id);
+    }
+
+    fn assert_reply_visibility_uses_meaningful_bounds(
+        app: &mut ChatApp,
+        channel: &str,
+        request_row: &str,
+        reply_row: &str,
+    ) {
+        let _ = app
+            .agent_surfaces
+            .get_mut(channel)
+            .unwrap()
+            .view
+            .take_relayout_request();
+        render_detached_surfaces(app);
+        let surface = &app.agent_surfaces[channel];
+        assert!(
+            surface.view.visible_message_rows.contains(reply_row),
+            "the adopted 512x360 frame sees complete reply content without requiring its decorative padding"
+        );
         let request = surface
             .view
             .messages
@@ -6759,40 +6807,103 @@ mod tests {
         assert_eq!(surface.view.agent_message_progress_label(request), None);
         assert!(
             app.agent_surfaces
-                .get_mut(&channel)
+                .get_mut(channel)
                 .unwrap()
                 .view
                 .take_relayout_request(),
             "the current frame corrects the stale paint label and schedules canonical propagation"
         );
-        write_progress_shots(
-            &mut app.agent_surfaces.get_mut(&channel).unwrap().view,
-            "reply-visible-detached",
-        );
-        render_frame_with_theme(
-            &mut app.agent_surfaces.get_mut(&channel).unwrap().view,
-            720.0,
-            640.0,
-            &ui::theme::Theme::high_contrast().with_text_scale(2.0),
-        );
-        let visible = app.agent_surfaces[&channel]
+        let visible = app.agent_surfaces[channel]
             .view
             .visible_message_rows
             .clone();
-        let height = app.agent_surfaces[&channel].view.scroll_content;
+        render_detached_surfaces(app);
+        assert_eq!(
+            app.agent_surfaces[channel].view.visible_message_rows, visible,
+            "an unchanged adopted frame preserves exact row visibility"
+        );
+        assert!(
+            !app.agent_surfaces
+                .get_mut(channel)
+                .unwrap()
+                .view
+                .take_relayout_request(),
+            "an unchanged exact visibility set does not schedule a repaint loop"
+        );
+        write_progress_shots(
+            &mut app.agent_surfaces.get_mut(channel).unwrap().view,
+            "reply-visible-detached",
+        );
+        assert_clipped_reply_retains_progress(app, channel, request_row, reply_row);
+    }
+
+    fn assert_clipped_reply_retains_progress(
+        app: &mut ChatApp,
+        channel: &str,
+        request_row: &str,
+        reply_row: &str,
+    ) {
+        let theme = ui::theme::Theme::high_contrast().with_text_scale(2.0);
         render_frame_with_theme(
-            &mut app.agent_surfaces.get_mut(&channel).unwrap().view,
+            &mut app.agent_surfaces.get_mut(channel).unwrap().view,
+            512.0,
+            360.0,
+            &theme,
+        );
+        assert!(
+            !app.agent_surfaces[channel]
+                .view
+                .visible_message_rows
+                .contains(reply_row),
+            "an unpaintable compact HC200 timeline cannot retain the dark frame's visible reply"
+        );
+        render_frame_with_theme(
+            &mut app.agent_surfaces.get_mut(channel).unwrap().view,
             720.0,
             640.0,
-            &ui::theme::Theme::high_contrast().with_text_scale(2.0),
+            &theme,
         );
-        let surface = &app.agent_surfaces[&channel];
+        let view = &mut app.agent_surfaces.get_mut(channel).unwrap().view;
+        let max_scroll = (view.scroll_content - view.scroll_viewport).max(0.0);
+        assert!(
+            max_scroll > view.scroll_viewport,
+            "the HC200 fixture has more than one viewport of genuine message history: max_scroll={max_scroll}, viewport={}",
+            view.scroll_viewport
+        );
+        view.scroll = max_scroll;
+        render_frame_with_theme(view, 720.0, 640.0, &theme);
+        let surface = &app.agent_surfaces[channel];
+        assert!(
+            !surface.view.visible_message_rows.contains(reply_row),
+            "clipped semantic reply content is not treated as visible"
+        );
+        let visible = surface.view.visible_message_rows.clone();
+        let height = surface.view.scroll_content;
+        assert!(
+            app.agent_surfaces
+                .get_mut(channel)
+                .unwrap()
+                .view
+                .take_relayout_request(),
+            "the clipped visibility transition propagates once"
+        );
+        render_frame_with_theme(
+            &mut app.agent_surfaces.get_mut(channel).unwrap().view,
+            720.0,
+            640.0,
+            &theme,
+        );
+        assert!(
+            !app.agent_surfaces
+                .get_mut(channel)
+                .unwrap()
+                .view
+                .take_relayout_request(),
+            "the unchanged clipped frame does not schedule a repaint loop"
+        );
+        let surface = &app.agent_surfaces[channel];
         assert_eq!(surface.view.visible_message_rows, visible);
         assert_eq!(surface.view.scroll_content, height);
-        assert!(
-            !visible.contains(reply_row),
-            "the HC200 boundary fixture keeps the reply clipped rather than treating it as visible"
-        );
         let request = surface
             .view
             .messages
@@ -6807,6 +6918,29 @@ mod tests {
             Some("Reply saved; waiting for conversation"),
             "a clipped reply retains the saved caption without changing row geometry"
         );
+    }
+
+    fn return_progress_surface(
+        app: &mut ChatApp,
+        doc: &mut AutoCommit,
+        channel: &str,
+        request_row: &str,
+        surface_id: String,
+    ) {
+        let view = &mut app.agent_surfaces.get_mut(channel).unwrap().view;
+        view.on_hit(Hit::AgentWindow, &mut ui::widget::Edits::lend(doc));
+        app.settle_agent_surface_commands();
+        ui::widget::FloatingSurfaceWidgetExt::on_floating_surface_host_message(
+            app,
+            &ui::floating_surface::FloatingSurfaceHostMessage::Suspended { id: surface_id },
+        );
+        render_frame(app, 1280.0, 800.0);
+        let request = app
+            .messages
+            .iter()
+            .find(|message| message.id == request_row)
+            .expect("request after the production Return handoff");
+        assert_eq!(app.agent_message_progress_label(request), None);
     }
 
     #[test]

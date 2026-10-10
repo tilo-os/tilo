@@ -364,6 +364,11 @@ impl ChatApp {
             push_clip(scene, tf, area);
             self.draw_messages(PaintCtx::new(scene, tf, tr, theme), presence, area, hits);
             scene.pop_layer();
+        } else if !self.visible_message_rows.is_empty() {
+            // A compact large-text composer can leave no paintable timeline.
+            // Never keep the previous frame's reply visibility in that case.
+            self.visible_message_rows.clear();
+            self.request_relayout();
         }
         // Older messages fade at the header edge when more history is above.
         if area.height() > 0.0 && self.scroll_content - self.scroll_viewport - self.scroll > 0.5 {
@@ -1848,10 +1853,9 @@ impl ChatApp {
 
         let mut visible_rows = std::collections::HashSet::new();
         let mut row_y = y;
-        let margin = f64::from(theme.tokens.spacing.s2);
         for row in &rows {
-            let row_rect = Rect::new(area.x0, row_y, area.x1, row_y + row.height());
-            if row_rect.y0 >= area.y0 + margin && row_rect.y1 <= area.y1 - margin {
+            let (content_y0, content_y1) = row.meaningful_bounds(row_y);
+            if content_y0 >= area.y0 && content_y1 <= area.y1 {
                 visible_rows.insert(row.idx_id.clone());
             }
             row_y += row.height();
@@ -4352,6 +4356,13 @@ fn refresh_progress_paint_labels(
 }
 
 impl RowM {
+    /// Vertical bounds of everything this row actually paints or exposes.
+    /// Group separation and trailing breathing room are layout decoration and
+    /// must not keep an otherwise complete canonical reply in a waiting state.
+    fn meaningful_bounds(&self, row_y: f64) -> (f64, f64) {
+        (row_y + self.top_gap, row_y + self.height() - self.pad)
+    }
+
     fn height(&self) -> f64 {
         let header = if self.show_header { self.header_h } else { 0.0 };
         let body = if self.editing {

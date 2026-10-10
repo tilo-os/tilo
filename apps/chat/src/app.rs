@@ -109,10 +109,10 @@ pub(crate) struct AgentSubmission {
     pub(crate) draft_revision: u64,
     pub(crate) intent: AgentComposerIntent,
     pub(crate) message: Option<AgentMessageSubmission>,
-    pub(crate) give_up_at: std::time::Instant,
+    pub(crate) give_up_at: ui::time::Instant,
     /// Stable owner-poll anchor. Deadline getters must not move an outstanding
     /// catalogue poll into the future every time the native loop inspects it.
-    pub(crate) next_poll_at: Option<std::time::Instant>,
+    pub(crate) next_poll_at: Option<ui::time::Instant>,
     pub(crate) pages_remaining: u16,
 }
 
@@ -3064,6 +3064,7 @@ impl ChatApp {
                 channel.workspace == workspace
                     && !channel.archived
                     && channel.kind == model::ChannelKind::Text
+                    && channel.conversation_with.is_none()
             })
             .min_by_key(|channel| channel.order)
             .map(|channel| channel.id.clone());
