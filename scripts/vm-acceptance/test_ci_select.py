@@ -33,6 +33,19 @@ class SelectTest(unittest.TestCase):
         self.assertEqual(select([S + "acceptance/vm.py"]), "")
         self.assertEqual(select([S + "acceptance/checks/__init__.py"]), "")
 
+    def test_source_paths_select_the_area_that_proves_them(self):
+        self.assertEqual(select(["crates/dev/tilo-vmd/src/input.rs"]), "B04,W17,input")
+        self.assertEqual(select(["os/hardware/profiles/lenovo-83ed/input/touchpad.json"]), "B04,W17,input")
+        self.assertEqual(select(["crates/runtime/tilo-runtime/src/session_door.rs"]), "agent")
+        self.assertEqual(select([S + "guest/mcp_client.py"]), "agent")
+        both = set(select(["crates/dev/tilo-vmd/src/input.rs",
+                           "crates/runtime/tilo-runtime/src/mcp.rs"]).split(","))
+        self.assertEqual(both, {"B04", "W17", "input", "agent"})
+
+    def test_unrelated_paths_in_a_whole_diff_are_ignored_and_the_workflow_runs_all(self):
+        self.assertEqual(select(["apps/notes/src/lib.rs", "crates/dev/tilo-vmd/src/input.rs"]), "B04,W17,input")
+        self.assertEqual(select(["crates/dev/tilo-vmd/src/input.rs", ".forgejo/workflows/vm-acceptance.yml"]), "")
+
     def test_a_removed_check_module_runs_everything(self):
         self.assertEqual(select([S + "acceptance/checks/gone.py"]), "")
 
