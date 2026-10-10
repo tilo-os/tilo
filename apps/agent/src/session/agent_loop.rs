@@ -2612,6 +2612,41 @@ mod tests {
         fn answer(&mut self, delay: Duration, event: CollabEvent) {
             self.held.push((ui::time::now() + delay, event));
         }
+
+        fn answer_cancellation(&mut self, request_id: u64, lease: &str) {
+            let (cancelled, delay, control) = {
+                let mut world = self.world.borrow_mut();
+                world.cancellation_checks += 1;
+                let cancelled = (world.cancel_after_checks != 0
+                    && world.cancellation_checks > world.cancel_after_checks)
+                    || world
+                        .cancel_after_steps
+                        .is_some_and(|steps| world.steps.len() >= steps);
+                let control = world.native_control.clone().map(|mut control| {
+                    let (_, revision) = runtime_collab::native_task_revision(lease).unwrap();
+                    control.from_revision = revision;
+                    control.applied_revision = world.native_applied_revision;
+                    control
+                        .directions
+                        .retain(|direction| direction.revision > revision);
+                    control
+                });
+                (cancelled, world.cancel_delay, control)
+            };
+            if let Some(control) = control {
+                self.events.push(CollabEvent::TaskRunControl {
+                    request_id,
+                    control,
+                });
+            }
+            self.answer(
+                delay,
+                CollabEvent::TaskRunCancellation {
+                    request_id,
+                    result: Ok(cancelled),
+                },
+            );
+        }
     }
 
     impl ui::collaboration::PeerTransport for Broker {
@@ -2691,39 +2726,7 @@ mod tests {
                 CollabRequest::TaskRunCancellation {
                     request_id, lease, ..
                 } => {
-                    let (cancelled, delay, control) = {
-                        let mut world = self.world.borrow_mut();
-                        world.cancellation_checks += 1;
-                        let cancelled = (world.cancel_after_checks != 0
-                            && world.cancellation_checks > world.cancel_after_checks)
-                            || world
-                                .cancel_after_steps
-                                .is_some_and(|steps| world.steps.len() >= steps);
-                        let control = world.native_control.clone().map(|mut control| {
-                            let (_, revision) =
-                                runtime_collab::native_task_revision(lease).unwrap();
-                            control.from_revision = revision;
-                            control.applied_revision = world.native_applied_revision;
-                            control
-                                .directions
-                                .retain(|direction| direction.revision > revision);
-                            control
-                        });
-                        (cancelled, world.cancel_delay, control)
-                    };
-                    if let Some(control) = control {
-                        self.events.push(CollabEvent::TaskRunControl {
-                            request_id: *request_id,
-                            control,
-                        });
-                    }
-                    self.answer(
-                        delay,
-                        CollabEvent::TaskRunCancellation {
-                            request_id: *request_id,
-                            result: Ok(cancelled),
-                        },
-                    );
+                    self.answer_cancellation(*request_id, lease);
                 }
                 CollabRequest::ReportTaskRun {
                     request_id, update, ..
