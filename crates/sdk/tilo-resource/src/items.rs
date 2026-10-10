@@ -201,8 +201,22 @@ fn item_resource<R: Resource>(
     id: &Id,
     label: &str,
 ) -> tilo_actions::Resource {
+    cached_item(TypeId::of::<R>(), field, id, label, &|| {
+        build_item(scoped, field, id, label)
+    })
+}
+
+/// The item resource `build` makes, from the cache of the resource type
+/// `kind` when it was built for the same label and code.
+fn cached_item(
+    kind: TypeId,
+    field: &str,
+    id: &Id,
+    label: &str,
+    build: &dyn Fn() -> tilo_actions::Resource,
+) -> tilo_actions::Resource {
     let epoch = crate::resource::type_epoch();
-    let key = (TypeId::of::<R>(), field.to_owned());
+    let key = (kind, field.to_owned());
     let cached = BUILT.with(|built| {
         built
             .borrow()
@@ -216,12 +230,12 @@ fn item_resource<R: Resource>(
     if let Some(resource) = cached {
         debug_assert_eq!(
             fingerprint(&resource),
-            fingerprint(&build_item(scoped, field, id, label)),
+            fingerprint(&build()),
             "a cached item resource differs from a fresh one"
         );
         return resource;
     }
-    let resource = build_item(scoped, field, id, label);
+    let resource = build();
     BUILT.with(|built| {
         built
             .borrow_mut()
@@ -463,6 +477,7 @@ const fn same(a: &[u8], b: &[u8]) -> bool {
 
 /// The item resources of a record: one per item of each collection, carrying
 /// the item actions that act on that collection with the item bound.
+#[inline(never)]
 pub fn item_children<R: Resource>(
     collections: &[ItemCollection],
     actions: &[ItemAction],
@@ -581,6 +596,7 @@ fn item_spec<R: Resource>(decl: &ActionDecl<R>, param: &'static str, item: &Id) 
 /// built, checked and undone exactly as the declaration is. Published on a
 /// child, the declaration stays on the resource for scripts that name the
 /// item, out of the palette's way.
+#[inline(never)]
 pub fn bound<R: Resource, N: AsRef<str>>(
     decl: &ActionDecl<R>,
     values: &[(N, serde_json::Value)],
@@ -639,6 +655,7 @@ pub fn bound<R: Resource, N: AsRef<str>>(
 
 /// Whether some resource in `children`, at any depth, offers `decl` with
 /// arguments bound ([`bound`]).
+#[inline(never)]
 pub(crate) fn offered_bound<R: Resource>(
     children: &[tilo_actions::Resource],
     decl: &ActionDecl<R>,

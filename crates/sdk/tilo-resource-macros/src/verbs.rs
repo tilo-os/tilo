@@ -1105,8 +1105,8 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
                 )]
             }
         });
-        let destructive = verb.options.destructive.then(|| quote!(.destructive()));
-        let answering = verb.options.answers.then(|| quote!(.answering()));
+        let destructive = verb.options.destructive;
+        let answering = verb.options.answers;
         // Run where the verb is built from its arguments (the origin), never
         // when its recorded action replays: the action carries the result.
         let prepare = verb
@@ -1138,7 +1138,7 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
                     let description = &param.description;
                     let public = &param.public;
                     (
-                        quote!(.collecting_content(#description)),
+                        quote!(::core::option::Option::Some(#description)),
                         quote! {
                             if let ::core::option::Option::Some(hash) =
                                 arguments.remove(#krate::__private::PROMPTED_PARAM)
@@ -1148,27 +1148,38 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
                         },
                     )
                 }
-                None => (quote!(), quote!()),
+                None => (quote!(::core::option::Option::None), quote!()),
             };
-        let describe = (!verb.description.is_empty()).then(|| {
-            let description = &verb.description;
-            quote!(.describe(#description))
-        });
-        let field = verb.options.field.as_deref().map(|field| {
-            fields_of.push(quote! {
-                #action_enum::#variant(..) => ::core::option::Option::Some(#field),
-            });
-            quote!(.below_field(#field))
-        });
+        let description = &verb.description;
+        let field = verb.options.field.as_deref().map_or_else(
+            || quote!(::core::option::Option::None),
+            |field| {
+                fields_of.push(quote! {
+                    #action_enum::#variant(..) => ::core::option::Option::Some(#field),
+                });
+                quote!(::core::option::Option::Some(#field))
+            },
+        );
         decls.push(quote! {
-            #krate::ActionDecl::new(
-                #id,
-                #label_text,
-                {
-                    let mut params: ::std::vec::Vec<#krate::__private::ActionParam> =
-                        ::std::vec::Vec::new();
-                    #(params.extend(#params);)*
-                    params
+            #krate::__private::declare::<#self_ty>(
+                #krate::__private::VerbDecl {
+                    id: #id,
+                    label: #label_text,
+                    description: #description,
+                    kind: #krate::ActionKind::#action_kind,
+                    field: #field,
+                    destructive: #destructive,
+                    answering: #answering,
+                    collects: #collects,
+                    item_field: #item_field,
+                    writes: &[#(#declared_writes),*],
+                    shape: <#self_ty as #krate::Model>::SHAPE,
+                    params: || {
+                        let mut params: ::std::vec::Vec<#krate::__private::ActionParam> =
+                            ::std::vec::Vec::new();
+                        #(params.extend(#params);)*
+                        params
+                    },
                 },
                 |args, now_ms| {
                     let mut arguments = args.to_json();
@@ -1177,17 +1188,6 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
                     #build_body
                 },
             )
-            #describe
-            .of_kind(#krate::ActionKind::#action_kind)
-            #field
-            #destructive
-            #answering
-            #collects
-            .writing(#krate::footprint::declared(
-                <#self_ty as #krate::Model>::SHAPE,
-                #item_field,
-                &[#(#declared_writes),*],
-            ))
         });
     }
 
@@ -1576,8 +1576,18 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
                 deserializer: D,
             ) -> ::core::result::Result<Self, D::Error> {
                 let value = <#krate::__private::serde_json::Value as #krate::__private::serde::Deserialize>::deserialize(deserializer)?;
-                let (action, args) = #krate::__private::tagged(value)
-                    .map_err(<D::Error as #krate::__private::serde::de::Error>::custom)?;
+                Self::from_tagged(value)
+                    .map_err(<D::Error as #krate::__private::serde::de::Error>::custom)
+            }
+        }
+
+        impl #action_enum {
+            /// The action in its JSON form, `{"action": .., "args": ..}`.
+            #[inline(never)]
+            fn from_tagged(
+                value: #krate::__private::serde_json::Value,
+            ) -> ::core::result::Result<Self, #krate::__private::serde_json::Error> {
+                let (action, args) = #krate::__private::tagged(value)?;
                 match action.as_str() {
                     #(#decode_arms)*
                     #seed_decode
@@ -1589,7 +1599,6 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
                         ),
                     ),
                 }
-                .map_err(<D::Error as #krate::__private::serde::de::Error>::custom)
             }
         }
 

@@ -205,10 +205,22 @@ const fn operation(op: &EditOp) -> tilo_actions::EditOp {
 
 /// A field edit of a record of shape `shape`, as it reads before it applies.
 pub(crate) fn edit<R: crate::Model>(doc: &Doc, shape: Shape, edit: &Edit<R>) -> Option<Described> {
-    let located = locate(doc, shape, edit.path());
+    edit_at(doc, shape, edit.path(), edit.op(), R::op_describe)
+}
+
+/// [`edit`] past its one typed step, describing a `rich` operation.
+#[inline(never)]
+fn edit_at(
+    doc: &Doc,
+    shape: Shape,
+    path: &[crate::Segment],
+    op: &EditOp,
+    op_describe: fn(&[crate::Segment], &serde_json::Value) -> Option<crate::path::OpDescription>,
+) -> Option<Described> {
+    let located = locate(doc, shape, path);
     let (owner, field) = located.owner?;
     let old = located.value.as_ref().and_then(|(value, _)| scalar(value));
-    let new = match edit.op() {
+    let new = match op {
         // A set's value, or the element a set gained or lost.
         EditOp::Set { value } | EditOp::Insert { value } | EditOp::Remove { value } => {
             Scalar::from_json(value)
@@ -223,7 +235,7 @@ pub(crate) fn edit<R: crate::Model>(doc: &Doc, shape: Shape, edit: &Edit<R>) -> 
     };
     // An item added or removed is the item the entry is about, unless the
     // collection sits inside an item (a playlist's songs).
-    let item = match (edit.op(), located.shape) {
+    let item = match (op, located.shape) {
         _ if located.item.is_some() => located.item.clone(),
         (EditOp::InsertItem { id, value, .. }, Shape::Collection(item) | Shape::Keyed(item)) => {
             let label = label_in(*item, value);
@@ -260,25 +272,25 @@ pub(crate) fn edit<R: crate::Model>(doc: &Doc, shape: Shape, edit: &Edit<R>) -> 
         }
         _ => located.item.clone(),
     };
-    let rich = match edit.op() {
-        EditOp::Rich { rich } => R::op_describe(edit.path(), rich),
+    let rich = match op {
+        EditOp::Rich { rich } => op_describe(path, rich),
         _ => None,
     };
-    if let EditOp::Settle { id, .. } | EditOp::Forget { id } = edit.op() {
-        return Some(outbox_edit(owner, field, edit, id));
+    if let EditOp::Settle { id, .. } | EditOp::Forget { id } = op {
+        return Some(outbox_edit(owner, field, path, op, id));
     }
     let described = Described::new(Did::Edit(FieldEdit {
         ty: owner.to_owned(),
         field,
-        path: edit.path().iter().map(step).collect(),
-        op: match edit.op() {
+        path: path.iter().map(step).collect(),
+        op: match op {
             EditOp::Rich { .. } => rich
                 .as_ref()
                 .map_or(tilo_actions::EditOp::Mark, |described| described.op),
             op => operation(op),
         },
         args: rich.map(|described| described.args).unwrap_or_default(),
-        old: matches!(edit.op(), EditOp::Set { .. } | EditOp::Add { .. })
+        old: matches!(op, EditOp::Set { .. } | EditOp::Add { .. })
             .then_some(old)
             .flatten(),
         new,
@@ -294,11 +306,17 @@ pub(crate) fn edit<R: crate::Model>(doc: &Doc, shape: Shape, edit: &Edit<R>) -> 
 
 /// An outbox entry settled or forgotten: the entry's id ends the path, and a
 /// settlement names its state (`done`, `failed`) and reason.
-fn outbox_edit<R>(owner: &str, field: String, edit: &Edit<R>, id: &crate::Id) -> Described {
-    let mut path: Vec<PathStep> = edit.path().iter().map(step).collect();
+fn outbox_edit(
+    owner: &str,
+    field: String,
+    path: &[crate::Segment],
+    op: &EditOp,
+    id: &crate::Id,
+) -> Described {
+    let mut path: Vec<PathStep> = path.iter().map(step).collect();
     path.push(PathStep::Item(id.as_str().to_owned()));
     let mut args = std::collections::BTreeMap::new();
-    if let EditOp::Settle { outcome, .. } = edit.op() {
+    if let EditOp::Settle { outcome, .. } = op {
         if let Some(state) = outcome.get("state").and_then(Scalar::from_json) {
             args.insert("state".to_owned(), state);
         }
@@ -314,7 +332,7 @@ fn outbox_edit<R>(owner: &str, field: String, edit: &Edit<R>, id: &crate::Id) ->
         ty: owner.to_owned(),
         field,
         path,
-        op: operation(edit.op()),
+        op: operation(op),
         args,
         old: None,
         new: None,

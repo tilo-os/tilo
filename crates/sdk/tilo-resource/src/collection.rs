@@ -620,6 +620,49 @@ fn touched_entry(
     Ok(Touched::Fresh { entry, order })
 }
 
+/// The JSON form's schema of a collection of items of the schema `item`.
+#[inline(never)]
+fn entries_schema(item: serde_json::Value) -> serde_json::Value {
+    let mut properties = serde_json::Map::new();
+    properties.insert("id".into(), serde_json::json!({"type": "string"}));
+    properties.insert("value".into(), item);
+    let mut entry = serde_json::Map::new();
+    entry.insert("type".into(), "object".into());
+    entry.insert("properties".into(), properties.into());
+    let mut schema = serde_json::Map::new();
+    schema.insert("type".into(), "array".into());
+    schema.insert("items".into(), entry.into());
+    schema.into()
+}
+
+/// An item's entry in a collection's JSON form.
+#[inline(never)]
+fn entry_json(id: &Id, value: serde_json::Value) -> serde_json::Value {
+    let mut entry = serde_json::Map::new();
+    entry.insert("id".into(), id.as_str().into());
+    entry.insert("value".into(), value);
+    entry.into()
+}
+
+/// The id and value of the entry at `index` of a collection's JSON form.
+#[inline(never)]
+fn entry_parts(
+    index: usize,
+    entry: &serde_json::Value,
+) -> Result<(Id, &serde_json::Value), ModelError> {
+    let id = entry
+        .get("id")
+        .map(Id::from_json)
+        .transpose()?
+        .ok_or_else(|| {
+            ModelError::Missing {
+                path: index.to_string(),
+            }
+            .at("id")
+        })?;
+    Ok((id, entry.get("value").unwrap_or(&serde_json::Value::Null)))
+}
+
 /// Read every `{ k, v }` entry of the map `id` in stored order, handing
 /// each entry's value slot to `read`.
 pub(crate) fn load_entries(
@@ -712,7 +755,7 @@ fn longest_increasing(keys: &[Option<&str>]) -> Vec<usize> {
 
 impl<T: Model> Model for Collection<T> {
     fn value_schema() -> serde_json::Value {
-        serde_json::json!({"type": "array", "items": {"type": "object", "properties": {"id": {"type": "string"}, "value": T::value_schema()}}})
+        entries_schema(T::value_schema())
     }
     const SHAPE: crate::Shape = crate::Shape::Collection(&T::SHAPE);
     const CHECKS: bool = T::CHECKS;
@@ -755,7 +798,7 @@ impl<T: Model> Model for Collection<T> {
         serde_json::Value::Array(
             self.items
                 .iter()
-                .map(|entry| serde_json::json!({ "id": entry.id.as_str(), "value": entry.item.to_json() }))
+                .map(|entry| entry_json(&entry.id, entry.item.to_json()))
                 .collect(),
         )
     }
@@ -767,18 +810,8 @@ impl<T: Model> Model for Collection<T> {
         };
         let mut collection = Self::default();
         for (index, entry) in entries.iter().enumerate() {
-            let id = entry
-                .get("id")
-                .map(Id::from_json)
-                .transpose()?
-                .ok_or_else(|| {
-                    ModelError::Missing {
-                        path: index.to_string(),
-                    }
-                    .at("id")
-                })?;
-            let item = T::from_json(entry.get("value").unwrap_or(&serde_json::Value::Null))
-                .map_err(|error| error.at(id.as_str()))?;
+            let (id, value) = entry_parts(index, entry)?;
+            let item = T::from_json(value).map_err(|error| error.at(id.as_str()))?;
             collection.push(id, item);
         }
         Ok(collection)

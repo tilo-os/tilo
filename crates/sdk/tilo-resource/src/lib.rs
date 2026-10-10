@@ -210,6 +210,54 @@ pub mod __private {
         }
     }
 
+    /// What `#[resource]` declares of one verb, besides how it is built.
+    #[derive(Clone, Copy)]
+    pub struct VerbDecl {
+        pub id: &'static str,
+        pub label: &'static str,
+        pub description: &'static str,
+        pub kind: ActionKind,
+        pub field: Option<&'static str>,
+        pub destructive: bool,
+        pub answering: bool,
+        pub collects: Option<&'static str>,
+        pub item_field: Option<&'static str>,
+        pub writes: &'static [&'static str],
+        pub shape: crate::Shape,
+        pub params: fn() -> Vec<ActionParam>,
+    }
+
+    /// The declaration of the verb `verb`, built by `build`: one function
+    /// per record type, not a builder chain per verb.
+    pub fn declare<R: crate::Resource>(
+        verb: VerbDecl,
+        build: fn(&ActionArgs, i64) -> Result<R::Action, String>,
+    ) -> crate::ActionDecl<R> {
+        let mut decl = crate::ActionDecl::new(verb.id, verb.label, (verb.params)(), build)
+            .of_kind(verb.kind)
+            .writing(crate::footprint::declared(
+                verb.shape,
+                verb.item_field,
+                verb.writes,
+            ));
+        if !verb.description.is_empty() {
+            decl = decl.describe(verb.description);
+        }
+        if let Some(field) = verb.field {
+            decl = decl.below_field(field);
+        }
+        if verb.destructive {
+            decl = decl.destructive();
+        }
+        if verb.answering {
+            decl = decl.answering();
+        }
+        if let Some(prompt) = verb.collects {
+            decl = decl.collecting_content(prompt);
+        }
+        decl
+    }
+
     /// Where a declared parameter names a place in the record.
     #[derive(Clone, Copy)]
     pub enum PlaceIn {
