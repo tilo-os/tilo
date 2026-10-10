@@ -553,11 +553,7 @@ pub fn revert_changes(
         let forward = doc.diff(&before, &after);
         let created = objects_created(&forward);
         let inverse = doc.diff(&after, &before);
-        let invoker = doc
-            .get_change_meta_by_hash(hash)
-            .and_then(|meta| meta.message.as_deref().map(str::to_owned))
-            .as_deref()
-            .and_then(tilo_actions::ActionContext::from_change_message)
+        let invoker = tilo_actions::entry_of(doc.committed_document(), *hash)
             .and_then(|context| context.invoker)
             .map(|invoker| invoker.actor);
         let later = later_writers(doc, &after, Some(actor), invoker.as_deref(), &created);

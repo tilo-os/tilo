@@ -159,3 +159,129 @@ fn a_large_action_is_recorded_with_its_parts_as_content() {
         Verified::Reproduced
     );
 }
+
+/// Types one character at the end of the text `body`: a keystroke.
+#[derive(Debug, Serialize, Deserialize)]
+struct Type(String);
+
+impl Action for Type {
+    fn apply(&self, doc: &mut Doc) -> Result<(), ActionError> {
+        let body = match doc.get(ROOT, "body")? {
+            Some((automerge::Value::Object(automerge::ObjType::Text), id)) => id,
+            _ => doc.put_object(ROOT, "body", automerge::ObjType::Text)?,
+        };
+        let end = doc.length(&body);
+        doc.splice_text(&body, end, 0, &self.0)?;
+        Ok(())
+    }
+
+    /// Every keystroke reads the same: one character typed into the body.
+    fn describe(&self, _doc: &Doc) -> Option<tilo_actions::Described> {
+        Some(tilo_actions::Described::new(tilo_actions::Did::Edit(
+            tilo_actions::FieldEdit {
+                ty: "note".into(),
+                field: "body".into(),
+                path: vec![tilo_actions::PathStep::Field("body".into())],
+                op: tilo_actions::EditOp::Splice,
+                old: None,
+                new: None,
+                args: [(
+                    "typed".to_owned(),
+                    tilo_actions::Scalar::from_json(&1.into()).unwrap(),
+                )]
+                .into(),
+            },
+        )))
+    }
+}
+
+/// Three keystrokes of one gesture by one writer, each dispatched as an
+/// action with the gesture's entry.
+fn typed(doc: &mut AutoCommit, transport: &mut LocalTransport, text: &str) {
+    let gesture = tilo_actions::ActionId::new();
+    for ch in text.chars() {
+        let context = ActionContext {
+            gesture: Some(gesture),
+            ..ActionContext::for_resource("note", "notes.note", "Plan")
+        };
+        tilo_actions::dispatch_by_with_context(
+            doc,
+            &Type(ch.to_string()),
+            EncodedAction::encode("test.type", &Type(ch.to_string())).unwrap(),
+            transport,
+            Some(b"writer"),
+            context,
+        )
+        .unwrap();
+    }
+}
+
+#[test]
+fn a_gestures_later_changes_are_short_continuations_of_its_first_entry() {
+    let mut registry = ActionRegistry::new();
+    registry.register::<Type>("test.type");
+    let mut origin = AutoCommit::new();
+    let mut peer = origin.fork();
+    let mut transport = LocalTransport::new();
+    typed(&mut origin, &mut transport, "abc");
+    let changes = origin.get_changes(&[]);
+    let messages: Vec<&str> = changes
+        .iter()
+        .filter_map(|change| change.message())
+        .collect();
+    assert!(
+        messages[0].starts_with(tilo_actions::CHANGE_MESSAGE_PREFIX),
+        "{messages:?}"
+    );
+    for continuation in &messages[1..] {
+        assert!(
+            continuation.starts_with(tilo_actions::CONTINUATION_PREFIX),
+            "{messages:?}"
+        );
+        assert!(continuation.len() * 2 < messages[0].len(), "{messages:?}");
+    }
+
+    // Every change reads as the gesture's entry with its own action.
+    let first = ActionContext::from_change_message(messages[0]).unwrap();
+    let mut listed = tilo_actions::EntryReader::default();
+    for (change, ch) in changes.iter().zip(["a", "b", "c"]) {
+        let entry = tilo_actions::entry_of(origin.committed_document(), change.hash()).unwrap();
+        assert_eq!(entry.resource, first.resource);
+        assert_eq!(entry.gesture, first.gesture);
+        assert_eq!(
+            entry.action,
+            Some(EncodedAction::encode("test.type", &Type(ch.to_owned())).unwrap())
+        );
+        let read = listed
+            .read(&change.actor_id().clone(), change.message())
+            .unwrap();
+        assert_eq!(read.action, entry.action);
+    }
+
+    // A device replays each keystroke, continuation included, to the same
+    // change, and verifies it against its recorded action.
+    for envelope in &transport.replicated {
+        tilo_actions::replay(&mut peer, envelope, &registry).unwrap();
+    }
+    assert_eq!(peer.get_heads(), origin.get_heads());
+    for change in &changes {
+        assert_eq!(
+            verify_change(&mut origin, change.hash(), &registry).unwrap(),
+            Verified::Reproduced
+        );
+    }
+
+    // A new gesture starts with its whole entry again.
+    typed(&mut origin, &mut transport, "d");
+    let last = origin
+        .get_changes(&[])
+        .last()
+        .unwrap()
+        .message()
+        .unwrap()
+        .to_owned();
+    assert!(
+        last.starts_with(tilo_actions::CHANGE_MESSAGE_PREFIX),
+        "{last}"
+    );
+}

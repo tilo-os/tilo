@@ -108,8 +108,8 @@ pub use action::{
 pub use content::{CONTENT_PART_THRESHOLD, CONTENT_REFERENCE_KEY, MissingContent, keep_content_in};
 pub use context::{
     AGENT_TASK_PARTICIPANT_PREFIX, ActionApp, ActionContext, ActionFacet, ActionGroup,
-    ActionInvoker, ActionResource, CHANGE_MESSAGE_PREFIX, ChangeKind, MAX_PARTICIPANT_ID_BYTES,
-    ParticipantId, RISK_FACET,
+    ActionInvoker, ActionResource, CHANGE_MESSAGE_PREFIX, CONTINUATION_PREFIX, ChangeKind,
+    MAX_PARTICIPANT_ID_BYTES, ParticipantId, RISK_FACET,
 };
 pub use contract::{
     ARGUMENT_RISK_TAG, ActionContract, ActionKind, ActionNeed, Availability, ConfirmationPolicy,
@@ -123,10 +123,11 @@ pub use entry::{
 };
 pub use envelope::ActionEnvelope;
 pub use executor::{
-    ActionTransport, CompensatingScope, Dispatched, HostDecision, LocalTransport, UNDONE_KEY,
-    Verified, apply_local, apply_local_by, apply_local_with_context, await_compensation,
-    current_step, dispatch, dispatch_by, dispatch_by_with_context, dispatch_with_context,
-    invoking_context, open_step, replay, settle_compensation, verify_change,
+    ActionTransport, CompensatingScope, Dispatched, EntryReader, HostDecision, LocalTransport,
+    UNDONE_KEY, Verified, apply_local, apply_local_by, apply_local_with_context,
+    await_compensation, current_step, dispatch, dispatch_by, dispatch_by_with_context,
+    dispatch_with_context, entry_message, entry_of, invoking_context, open_step, replay,
+    settle_compensation, verify_change,
 };
 pub use framework::FrameworkChange;
 pub use interaction::{

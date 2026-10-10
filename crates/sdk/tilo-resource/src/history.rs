@@ -35,16 +35,21 @@ pub struct Version {
     pub message: Option<String>,
 }
 
-/// One change as a version on the timeline.
-pub fn version_of(meta: &automerge::ChangeMetadata<'_>) -> Version {
+/// One change of `doc` as a version on the timeline; a continuation of a
+/// gesture reads as its gesture's entry ([`tilo_actions::entry_of`]).
+pub fn version_of(doc: &automerge::Automerge, meta: &automerge::ChangeMetadata<'_>) -> Version {
     let message = meta.message.as_deref().map(str::to_owned);
+    let context = match message.as_deref() {
+        Some(text) if text.starts_with(tilo_actions::CONTINUATION_PREFIX) => {
+            tilo_actions::entry_of(doc, meta.hash)
+        }
+        text => text.and_then(ActionContext::from_change_message),
+    };
     Version {
         hash: meta.hash,
         actor: meta.actor.to_hex_string(),
         time_ms: meta.timestamp.saturating_mul(1000),
-        context: message
-            .as_deref()
-            .and_then(ActionContext::from_change_message),
+        context,
         message,
     }
 }
@@ -63,10 +68,20 @@ pub fn versions(doc: &mut Doc) -> Vec<Version> {
 /// [`versions`] of the committed document, read through a shared
 /// reference: a transaction still open is not listed.
 pub fn committed_versions(doc: &Doc) -> Vec<Version> {
+    let mut entries = tilo_actions::EntryReader::default();
     doc.committed_document()
         .get_changes_meta(&[])
         .iter()
-        .map(version_of)
+        .map(|meta| {
+            let message = meta.message.as_deref().map(str::to_owned);
+            Version {
+                hash: meta.hash,
+                actor: meta.actor.to_hex_string(),
+                time_ms: meta.timestamp.saturating_mul(1000),
+                context: entries.read(&meta.actor, message.as_deref()),
+                message,
+            }
+        })
         .collect()
 }
 
@@ -261,13 +276,14 @@ struct Walk {
 }
 
 impl Walk {
-    fn rank(&mut self, doc: &mut Doc, hash: ChangeHash) -> Option<Rank> {
+    fn rank(&mut self, doc: &Doc, hash: ChangeHash) -> Option<Rank> {
         if let Some((rank, _, _)) = self.metas.get(&hash) {
             return Some(*rank);
         }
-        let meta = doc.get_change_meta_by_hash(&hash)?;
+        let document = doc.committed_document();
+        let meta = document.get_change_meta_by_hash(&hash)?;
         let rank = (meta.max_op, meta.start_op);
-        let entry = (rank, meta.deps.clone(), version_of(&meta));
+        let entry = (rank, meta.deps.clone(), version_of(document, &meta));
         self.metas.insert(hash, entry);
         Some(rank)
     }

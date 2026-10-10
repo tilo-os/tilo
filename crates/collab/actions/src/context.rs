@@ -11,13 +11,22 @@
 use serde::{Deserialize, Serialize};
 
 use crate::InvocationId;
-use crate::entry::{ActionItem, Described, Did};
+use crate::entry::{ActionItem, Described, Did, PathStep};
 use crate::interaction::ActorKind;
 use crate::key::ActionKind;
 
 /// Prefix used when an entry is embedded in an Automerge change message.
 /// Ordinary application-authored commit messages remain untouched.
 pub const CHANGE_MESSAGE_PREFIX: &str = "tilo.entry/1 ";
+
+/// Prefix of a change message that continues its writer's open gesture
+/// (the next keystroke of a word): `tilo.cont/1 <gesture> <path> <payload>`.
+/// It is the gesture's first entry again but for the action's payload, so
+/// it carries only the gesture (simple hex), the edit's path (`body`,
+/// `rows/r1/title`; `-` for none) and the action's JSON payload, whose type
+/// is the first entry's. Readers fold it into that entry
+/// ([`ActionContext::continued`]).
+pub const CONTINUATION_PREFIX: &str = "tilo.cont/1 ";
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
@@ -378,10 +387,88 @@ impl ActionContext {
     }
 
     /// Read an entry from a change message. Unknown and malformed messages
-    /// are ordinary app commits, never an error that hides their history.
+    /// are ordinary app commits, never an error that hides their history. A
+    /// continuation is no entry on its own: read it with
+    /// [`continued`](Self::continued) from its gesture's first entry.
     pub fn from_change_message(message: &str) -> Option<Self> {
         let json = message.strip_prefix(CHANGE_MESSAGE_PREFIX)?;
         serde_json::from_str(json).ok()
+    }
+
+    /// This entry, written as the continuation of `first` (its writer's
+    /// previous entry): when it is the same step of the same gesture,
+    /// differing only in its action's payload. `None` when it has to be
+    /// written whole.
+    #[must_use]
+    pub fn continuation_of(&self, first: &Self) -> Option<String> {
+        let gesture = self.gesture?;
+        let action = self.action.as_ref()?;
+        let earlier = first.action.as_ref()?;
+        let bare = |entry: &Self| Self {
+            action: None,
+            executed_action: None,
+            ..entry.clone()
+        };
+        if first.gesture != Some(gesture)
+            || self.compensation.is_some()
+            || first.compensation.is_some()
+            || action.type_id != earlier.type_id
+            || bare(self) != bare(first)
+        {
+            return None;
+        }
+        let payload = std::str::from_utf8(&action.payload).ok()?;
+        let path = match &self.what {
+            Some(Did::Edit(edit)) if !edit.path.is_empty() => edit
+                .path
+                .iter()
+                .map(|step| match step {
+                    PathStep::Field(name) | PathStep::Item(name) | PathStep::Key(name) => {
+                        name.clone()
+                    }
+                    PathStep::Cell(row, column) => format!("{row}:{column}"),
+                })
+                .collect::<Vec<_>>()
+                .join("/"),
+            _ => "-".to_owned(),
+        };
+        if path.contains(' ') {
+            return None;
+        }
+        Some(format!(
+            "{CONTINUATION_PREFIX}{} {path} {payload}",
+            gesture.0.simple()
+        ))
+    }
+
+    /// The gesture a continuation message continues.
+    #[must_use]
+    pub fn continued_gesture(message: &str) -> Option<crate::ActionId> {
+        let rest = message.strip_prefix(CONTINUATION_PREFIX)?;
+        let gesture = rest.split(' ').next()?;
+        uuid::Uuid::try_parse(gesture).ok().map(crate::ActionId)
+    }
+
+    /// The entry a continuation `message` stands for, from its gesture's
+    /// first entry `first`.
+    #[must_use]
+    pub fn continued(message: &str, first: &Self) -> Option<Self> {
+        let rest = message.strip_prefix(CONTINUATION_PREFIX)?;
+        let mut parts = rest.splitn(3, ' ');
+        let gesture = uuid::Uuid::try_parse(parts.next()?).ok()?;
+        let _path = parts.next()?;
+        let payload = parts.next()?;
+        if first.gesture.map(|first| first.0) != Some(gesture) {
+            return None;
+        }
+        Some(Self {
+            action: Some(crate::EncodedAction {
+                type_id: first.action.as_ref()?.type_id.clone(),
+                payload: payload.as_bytes().to_vec(),
+            }),
+            executed_action: None,
+            ..first.clone()
+        })
     }
 }
 
