@@ -406,7 +406,14 @@ pub fn decide_op_pinned(
         crate::role::OpKind::Compaction => governed(roles::governance::COMPACT),
         crate::role::OpKind::Redaction => governed(roles::governance::REDACT),
         crate::role::OpKind::Change => {
-            let Some(source) = &surfaces.0 else {
+            // An op of an app that publishes no surface (and of a record that
+            // names none) is decided as an edit of the record; one naming a
+            // surface is decided against it, and held until it is here.
+            let Some(source) = surfaces
+                .0
+                .as_ref()
+                .filter(|_| op.surface.is_some() || pinned.is_some())
+            else {
                 let node = record_node(record);
                 return if allows(&node, ActionKind::Undoable) {
                     Ok(Receipt::Admit)
