@@ -85,10 +85,11 @@ pub(super) fn short(digest: &[u8; 32]) -> u64 {
 /// describes that generation as it is now (`stamp`) and holds no record that
 /// may equal the frame with `digest`. `None` means: scan.
 pub(super) fn last(lineage: &Path, stamp: &Stamp, digest: &[u8; 32]) -> Option<u64> {
-    let index = index();
-    let generation = index.lineages.get(lineage)?;
-    (generation.stamp == *stamp && !generation.digests.contains(&short(digest)))
-        .then_some(generation.last)
+    let prefix = short(digest);
+    index().lineages.get(lineage).and_then(|generation| {
+        (generation.stamp == *stamp && !generation.digests.contains(&prefix))
+            .then_some(generation.last)
+    })
 }
 
 /// Remember what a full scan of the generation stamped `stamp` (taken before
