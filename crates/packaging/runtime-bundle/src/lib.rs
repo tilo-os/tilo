@@ -20,6 +20,7 @@
 )]
 
 pub mod component_pins;
+pub mod gc;
 pub mod verity;
 
 use getrandom::{SysRng, rand_core::UnwrapErr};
