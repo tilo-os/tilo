@@ -241,3 +241,82 @@ fn a_killed_writer_loses_no_acknowledged_edit() {
     commit(&state, resumed, next);
     assert_eq!(retained_edits(&state.store), (0..=next).collect::<Vec<_>>());
 }
+
+/// CPU time this thread has run, in nanoseconds.
+fn thread_cpu_ns() -> u64 {
+    let mut now = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    // SAFETY: `now` is a valid, writable timespec for the call's duration.
+    let status = unsafe { libc::clock_gettime(libc::CLOCK_THREAD_CPUTIME_ID, &raw mut now) };
+    assert_eq!(status, 0, "clock_gettime(CLOCK_THREAD_CPUTIME_ID)");
+    u64::try_from(now.tv_sec)
+        .unwrap()
+        .saturating_mul(1_000_000_000)
+        .saturating_add(u64::try_from(now.tv_nsec).unwrap())
+}
+
+/// The lineage of the edits, as the store names it.
+fn edits_lineage(store: &WorkspaceStore) -> std::path::PathBuf {
+    store.root().join("retained/v2").join(format!(
+        "{}-{}",
+        hex::encode([1; 32]),
+        hex::encode(CHANNEL)
+    ))
+}
+
+/// The active generation of the edits' lineage.
+fn active_generation(store: &WorkspaceStore) -> std::path::PathBuf {
+    crate::store::retained::current(&edits_lineage(store))
+        .unwrap()
+        .unwrap()
+}
+
+const NOW: u64 = 1_800_000_000_000_000_000;
+
+/// A store whose edits' lineage holds `stored` records: the first committed,
+/// the rest written as earlier commits leave them, so that setting up a long
+/// history takes no quadratic time.
+fn with_history(root: &Path, stored: u32) -> State {
+    let mut state = open(root);
+    let sequence = state.next_sequence_at(NOW).unwrap();
+    commit(&state, sequence, 0);
+    let active = active_generation(&state.store);
+    for index in 1..stored {
+        std::fs::write(active.join(format!("{index:016x}.delta")), edit(index)).unwrap();
+    }
+    state
+}
+
+/// CPU nanoseconds and listed directory entries per edit of `count` commits
+/// after `stored` records, the first commit after start-up excluded (a
+/// long-running relay is past it).
+fn cost_per_edit(stored: u32, count: u32) -> (u64, u64) {
+    let dir = tempfile::tempdir().unwrap();
+    let mut state = with_history(dir.path(), stored);
+    let sequence = state.next_sequence_at(NOW).unwrap();
+    commit(&state, sequence, stored);
+    let listed = crate::store::thread_listed_entries();
+    let before = thread_cpu_ns();
+    for index in 1..=count {
+        let sequence = state.next_sequence_at(NOW).unwrap();
+        commit(&state, sequence, stored.saturating_add(index));
+    }
+    let per_edit = |total: u64| total.checked_div(u64::from(count)).unwrap();
+    (
+        per_edit(thread_cpu_ns().saturating_sub(before)),
+        per_edit(crate::store::thread_listed_entries().saturating_sub(listed)),
+    )
+}
+
+/// Reports what an edit costs the committing thread as the document's
+/// retained history grows (TIL-742). Timing is never asserted; the listing
+/// it grew with is.
+#[test]
+fn delta_commit_cpu_per_stored_records() {
+    for stored in [1, 256, 1_000, 5_000] {
+        let (cpu_ns, listed) = cost_per_edit(stored, 200);
+        println!("RETAIN_COST stored={stored} cpu_ns_per_edit={cpu_ns} listed_per_edit={listed}");
+    }
+}
