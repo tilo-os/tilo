@@ -5929,6 +5929,16 @@ mod tests {
         )
     }
 
+    fn detached_queue_roles(app: &ChatApp, surface_id: &str) -> Vec<ui::a11y::Role> {
+        ui::widget::FloatingSurfaceWidgetExt::floating_surface_accessibility(app, surface_id)
+            .expect("the detached conversation has an accessibility tree")
+            .children
+            .into_iter()
+            .filter(|node| node.name.as_deref() == Some("Queue task"))
+            .map(|node| node.role)
+            .collect()
+    }
+
     fn assert_restricted_detached_message_surface(
         app: &mut ChatApp,
         doc: &mut AutoCommit,
@@ -6196,6 +6206,105 @@ mod tests {
             app.direct_agent_intent(),
             crate::app::AgentComposerIntent::Message
         );
+    }
+
+    #[test]
+    fn detached_task_controls_expire_on_the_production_refresh_deadline() {
+        let clock = ui::background::Pumped::new();
+        let _entered = clock.background().enter();
+        let (mut app, mut doc, host) = agent_task_control_app();
+        let tasks = app
+            .direct_agent_tasks()
+            .expect("the attached conversation owns its task context");
+        type_str(&mut app, &mut doc, "Keep this Queue draft private");
+        app.composer_main.select(5, 15);
+        render_frame(&mut app, 1200.0, 800.0);
+        app.on_hit(Hit::AgentWindow, &mut ui::widget::Edits::lend(&mut doc));
+        let request = ui::widget::FloatingSurfaceWidgetExt::take_floating_surface_request(&mut app)
+            .expect("Float publishes the retained conversation");
+        let rect = request
+            .initial_rect
+            .expect("the detached conversation keeps its geometry");
+        let surface_id = request.id;
+        adopt_agent_surface(&mut app, &surface_id, rect);
+        render_detached_surfaces(&mut app);
+        assert!(activate_detached_queue(&mut app, &mut doc, &surface_id));
+        render_detached_surfaces(&mut app);
+
+        let initial_queue = detached_queue_roles(&app, &surface_id);
+        assert_eq!(initial_queue.len(), 2);
+        assert!(initial_queue.contains(&ui::a11y::Role::Tab));
+        assert!(initial_queue.contains(&ui::a11y::Role::Button));
+        assert!(
+            ui::widget::FloatingSurfaceWidgetExt::floating_surface_presentations(&app)
+                .iter()
+                .any(|surface| surface.id == surface_id),
+            "the adopted detached surface keeps its shared task observer active"
+        );
+        let channel = ChatDoc::agent_conversation_channel_id("ws_home", "scribe");
+        let view = &app.agent_surfaces[&channel].view;
+        assert_eq!(app.agent_surfaces[&channel].id, surface_id);
+        assert_eq!(view.direct_agent.as_deref(), Some("scribe"));
+        assert_eq!(view.active_ws, "ws_home");
+        let deadline = tasks
+            .borrow()
+            .next_refresh_deadline()
+            .expect("the visible task context publishes its production refresh deadline");
+        let reads_before = host
+            .requests()
+            .iter()
+            .filter(|request| request.target.address.action == "read-current-tasks")
+            .count();
+
+        host.revoke_task_controls();
+        clock.advance(
+            deadline
+                .saturating_duration_since(clock.background().now())
+                .saturating_add(std::time::Duration::from_millis(1)),
+        );
+        ui::Widget::sync(&mut app, &doc, &automerge::ROOT);
+        render_detached_surfaces(&mut app);
+
+        assert!(
+            !tasks.borrow().can_queue(),
+            "servicing the widget deadline must discard the stale Queue offer"
+        );
+        assert!(
+            detached_queue_roles(&app, &surface_id).is_empty(),
+            "neither the Queue tab nor selected Queue submit button remains public"
+        );
+        let reads = host
+            .requests()
+            .into_iter()
+            .filter(|request| request.target.address.action == "read-current-tasks")
+            .collect::<Vec<_>>();
+        assert!(reads.len() > reads_before);
+        let refreshed = reads.last().expect("the deadline re-read current tasks");
+        assert_eq!(refreshed.target.provider, "workspace:ws_home");
+        assert_eq!(refreshed.target.address.resource, "desktop:tasks");
+        assert_eq!(json_argument(refreshed)["agent"], "scribe");
+        let access =
+            ui::widget::FloatingSurfaceWidgetExt::floating_surface_accessibility(&app, &surface_id)
+                .expect("the restricted detached conversation remains accessible");
+        assert!(access.children.iter().any(|node| {
+            node.role == ui::a11y::Role::Tab && node.name.as_deref() == Some("Message")
+        }));
+        let view = &app.agent_surfaces[&channel].view;
+        assert_eq!(app.agent_surfaces[&channel].id, surface_id);
+        assert_eq!(view.direct_agent.as_deref(), Some("scribe"));
+        assert_eq!(view.active_ws, "ws_home");
+        assert_eq!(
+            view.composer_main.private_plain().as_deref(),
+            Some("Keep this Queue draft private")
+        );
+        assert_eq!(view.composer_main.selection(), (5, 15));
+        assert!(
+            ui::widget::FloatingSurfaceWidgetExt::floating_surface_presentations(&app)
+                .iter()
+                .any(|surface| surface.id == surface_id),
+            "authority loss must not switch or retire the adopted conversation"
+        );
+        assert!(!activate_detached_queue(&mut app, &mut doc, &surface_id));
     }
 
     #[test]

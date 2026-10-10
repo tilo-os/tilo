@@ -58,6 +58,7 @@ PERMISSION_OBSERVATION_COUNTS = (
     "retained", "mutable", "editable", "queue_tabs", "queue_buttons", "at_unobservable",
     "read_candidates", "read_exact_matches", "read_semantic_matches", "read_provider_matches",
     "read_operation_global", "read_same_app_room", "read_same_app_room_semantic",
+    "queue_other_controls", "queue_enabled_controls", "queue_action_controls",
 )
 PERMISSION_OBSERVATION_FIELDS = PERMISSION_OBSERVATION_COUNTS + (
     "assignment_unexpired_start", "assignment_unexpired_after_catalogue", "assignment_unexpired_after_at",
@@ -705,13 +706,17 @@ def visible_authenticated_agent_navigation(access, names):
             return None
         window_x, window_y, window_w, window_h = window_rect
         tree = accessible_subtree(client, access["window"], atspi.APP_TREE_NODE_LIMIT)
+        folded = {path: name.casefold() for path, name in decoded_accessible_names(tree).items()}
         visible = {}
         for name in names:
-            label = f"{name}, agent"
-            matches = [path for path in client.named(tree, label)
+            display_label = f"{name}, agent"
+            label = f"{name.casefold()}, agent"
+            matches = [path for path in client.named(folded, label)
                        if client.role(path) == AT_SPI_ROLE_LIST_ITEM]
             if len(matches) > 1:
-                raise RuntimeError(f"Chat published duplicate authenticated {label} rows")
+                raise RuntimeError(
+                    f"Chat published duplicate authenticated {display_label} rows"
+                )
             if not matches:
                 return None
             rect = atspi.extents_reply(client.call(
@@ -7416,8 +7421,29 @@ def restricted_task_editor_sample(custody, draft, observation):
                 or chat_process_identity(current) != identity:
             raise RuntimeError("Task restriction changed its owned private editor")
         observed = private_editor_observation(current, draft)
-        names = accessible_names(current, observation=observation)
-        return current, observed, names
+        client = atspi.AtspiClient(atspi.atspi_address(), current["bus"])
+        tree = accessible_subtree(
+            client, current["window"], atspi.APP_TREE_NODE_LIMIT, observation=observation
+        )
+        decoded = decoded_accessible_names(tree)
+        queue_controls = [path for path, name in decoded.items() if name == "Queue task"]
+        roles = {path: client.role(path) for path in queue_controls}
+        tabs = [path for path, role in roles.items() if role == AT_SPI_ROLE_TAB]
+        buttons = [path for path, role in roles.items() if role == AT_SPI_ROLE_BUTTON]
+        mutations = tabs + buttons
+        permission_count(observation, "queue_tabs", len(tabs))
+        permission_count(observation, "queue_buttons", len(buttons))
+        permission_count(observation, "queue_other_controls", len(queue_controls) - len(mutations))
+        for path in mutations:
+            permission_count(
+                observation, "queue_enabled_controls",
+                int(accessibility_control_enabled(current, path)),
+            )
+            actions = client.call(path, "org.a11y.atspi.Action.GetActions", check=False)
+            permission_count(
+                observation, "queue_action_controls", int("'click'" in actions)
+            )
+        return current, observed, bool(queue_controls)
     except atspi.GateError as error:
         text = str(error)
         observation["at_unknown_object"] = "org.freedesktop.DBus.Error.UnknownObject" in text
@@ -7553,11 +7579,11 @@ def native_task_write_downgrade(socket, room, record, person, output, size, proc
                 sample["at_matched"] = editor is not None
                 if editor is None:
                     return None
-                access, observed, names = editor
+                access, observed, queue_control_present = editor
                 permission_count(sample, "retained", int(observed.get("draft_matches") is True))
-                sample["queue_control_present"] = "Queue task" in names
+                sample["queue_control_present"] = queue_control_present
                 sample["private_editor_state_matches"] = same_private_editor_state(observed, queue_before)
-                if "Queue task" in names:
+                if queue_control_present:
                     return None
                 if not same_private_editor_state(observed, queue_before):
                     return None
@@ -8030,11 +8056,40 @@ def native_delivery_diagnostic(output):
             "log_truncated": log_truncated}
 
 
+def shell_precleanup_status(shell):
+    """Classify the owned shell before fixture teardown can change its status."""
+    if shell is None:
+        return {
+            "observable": False, "running": False, "return_code": None,
+            "termination": "unobserved", "signal_number": None,
+        }
+    code = shell.poll()
+    if code is None:
+        termination = "running"
+        signal_number = None
+    elif code == 0:
+        termination = "clean_exit"
+        signal_number = None
+    elif code < 0:
+        termination = "signal"
+        signal_number = -code
+    else:
+        termination = "exit_error"
+        signal_number = None
+    return {
+        "observable": True, "running": code is None, "return_code": code,
+        "termination": termination, "signal_number": signal_number,
+    }
+
+
 def finalize_fixture(
-        profile, output, processes, logs, provider, runtime_owner, owned_fcitx=None):
+        profile, output, processes, logs, provider, runtime_owner, owned_fcitx=None, shell=None):
     """Save the closed classifier, then always tear down test-owned state."""
     try:
         try:
+            (output / "shell-precleanup-status.json").write_text(
+                json.dumps(shell_precleanup_status(shell), indent=2) + "\n"
+            )
             diagnostic = native_delivery_diagnostic(output)
             (output / "native-message-delivery-final.json").write_text(
                 json.dumps(diagnostic, indent=2) + "\n"
@@ -8724,6 +8779,7 @@ def bootstrap(binaries, output, native=False, size="1600x900", lifecycle=False,
     detached_task_evidence = None
     marker_evidence = None
     owned_fcitx = None
+    shell = None
     try:
         # Keep Unix socket paths short enough for the production private IME
         # displays. This is still an exclusively owned mode-0700 directory,
@@ -9193,7 +9249,7 @@ def bootstrap(binaries, output, native=False, size="1600x900", lifecycle=False,
         return lifecycle_proven
     finally:
         finalize_fixture(
-            profile, output, processes, logs, provider, runtime_owner, owned_fcitx
+            profile, output, processes, logs, provider, runtime_owner, owned_fcitx, shell
         )
 
 

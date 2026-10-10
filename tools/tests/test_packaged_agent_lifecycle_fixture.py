@@ -194,11 +194,13 @@ class CurrentChatCategoryTests(unittest.TestCase):
 class AuthenticatedAgentNavigationTests(unittest.TestCase):
     def observe(self, *, duplicate=False, missing=False, zero_extent=False,
                 missing_window=False, zero_window=False, off_window=False,
-                wrong_role=False):
+                wrong_role=False, lowercase=False):
         client = PROOF.atspi.AtspiClient("owned-address", "owned-chat")
         tree = {"/tide": "Tide, agent", "/reed": "Reed, agent"}
+        if lowercase:
+            tree = {path: name.casefold() for path, name in tree.items()}
         if duplicate:
-            tree["/duplicate"] = "Tide, agent"
+            tree["/duplicate"] = "TIDE, AGENT" if lowercase else "Tide, agent"
         if missing:
             tree.pop("/reed")
         rects = {path: (10, 20 + index * 30, 120, 24)
@@ -211,8 +213,8 @@ class AuthenticatedAgentNavigationTests(unittest.TestCase):
         if zero_window:
             window_rect = (0, 0, 0, 0)
 
-        def named(_tree, label):
-            return [path for path, name in tree.items() if name == label]
+        def named(current, label):
+            return [path for path, name in current.items() if name == label]
 
         def extent(path, *_args):
             return window_rect if path == "/window" else rects[path]
@@ -220,6 +222,7 @@ class AuthenticatedAgentNavigationTests(unittest.TestCase):
         with patch.object(PROOF.atspi, "atspi_address", return_value="owned-address"), \
                 patch.object(PROOF.atspi, "AtspiClient", return_value=client), \
                 patch.object(PROOF, "accessible_subtree", return_value=tree), \
+                patch.object(PROOF, "decoded_accessible_names", return_value=tree), \
                 patch.object(client, "named", side_effect=named), \
                 patch.object(client, "role", return_value=(
                     31 if wrong_role else 32  # AT-SPI wire roles: LIST / LIST_ITEM.
@@ -233,6 +236,7 @@ class AuthenticatedAgentNavigationTests(unittest.TestCase):
     def test_exact_authenticated_rows_require_visible_list_item_extents(self):
         self.assertEqual(PROOF.AT_SPI_ROLE_LIST_ITEM, 32)
         self.assertEqual(set(self.observe()), {"tide", "reed"})
+        self.assertEqual(set(self.observe(lowercase=True)), {"tide", "reed"})
         self.assertIsNone(self.observe(missing=True))
         self.assertIsNone(self.observe(zero_extent=True))
         self.assertIsNone(self.observe(missing_window=True))
@@ -241,6 +245,8 @@ class AuthenticatedAgentNavigationTests(unittest.TestCase):
         self.assertIsNone(self.observe(wrong_role=True))
         with self.assertRaisesRegex(RuntimeError, "duplicate authenticated Tide, agent rows"):
             self.observe(duplicate=True)
+        with self.assertRaisesRegex(RuntimeError, "duplicate authenticated Tide, agent rows"):
+            self.observe(duplicate=True, lowercase=True)
 
     def test_marker_stage_makes_the_signed_agent_capture_mandatory(self):
         stage = inspect.getsource(PROOF.managed_agent_marker_stage)
@@ -1603,14 +1609,17 @@ class PresentedEditorTargetTests(unittest.TestCase):
         with patch.object(PROOF, "agent_conversation_accessibility", return_value=access), \
                 patch.object(PROOF, "chat_process_identity", return_value=(7, "start")), \
                 patch.object(PROOF, "private_editor_observation", return_value=state), \
-                patch.object(PROOF, "accessible_names",
-                             side_effect=[stale, {"Task instruction composer"}]) as names:
+                patch.object(PROOF, "accessible_subtree", side_effect=[
+                    stale, {"/composer": "wire"}
+                ]) as trees, \
+                patch.object(PROOF, "decoded_accessible_names",
+                             return_value={"/composer": "Task instruction composer"}):
             self.assertIsNone(PROOF.restricted_task_editor_sample(
                 (access, (7, "start")), "PRIVATE", samples[0]))
             self.assertEqual(PROOF.restricted_task_editor_sample(
                 (access, (7, "start")), "PRIVATE", samples[1]),
-                (access, state, {"Task instruction composer"}))
-        self.assertEqual(names.call_count, 2)
+                (access, state, False))
+        self.assertEqual(trees.call_count, 2)
         self.assertTrue(samples[0]["at_unknown_object"])
         self.assertTrue(samples[0]["at_known_stale_transport"])
         self.assertFalse(samples[0]["at_other_transport_failure"])
@@ -1626,7 +1635,7 @@ class PresentedEditorTargetTests(unittest.TestCase):
         with patch.object(PROOF, "agent_conversation_accessibility", return_value=access), \
                 patch.object(PROOF, "chat_process_identity", return_value=(7, "start")), \
                 patch.object(PROOF, "private_editor_observation", return_value=state), \
-                patch.object(PROOF, "accessible_names", side_effect=error), \
+                patch.object(PROOF, "accessible_subtree", side_effect=error), \
                 self.assertRaises(PROOF.atspi.GateError):
             PROOF.restricted_task_editor_sample(
                 (access, (7, "start")), "PRIVATE", sample)
@@ -1642,6 +1651,39 @@ class PresentedEditorTargetTests(unittest.TestCase):
             PROOF.restricted_task_editor_sample(
                 (access, (7, "start")), "PRIVATE", {})
         read.assert_not_called()
+
+    def test_task_restriction_classifies_queue_mutation_roles_without_accepting_them(self):
+        access = {"bus": "owned", "window": "/window", "process": 7,
+                  "agent": "Tide", "detached": False, "composer": "/composer"}
+        state = {"draft_matches": True, "caret": 3, "selection": [1, 3]}
+        client = unittest.mock.Mock()
+        client.role.side_effect = lambda path: {
+            "/tab": PROOF.AT_SPI_ROLE_TAB,
+            "/button": PROOF.AT_SPI_ROLE_BUTTON,
+            "/other": PROOF.AT_SPI_ROLE_LIST_ITEM,
+        }[path]
+        client.call.side_effect = ["([('click', '', '')],)", "(@a(sss) [],)"]
+        sample = {}
+        with patch.object(PROOF.atspi, "AtspiClient", return_value=client), \
+                patch.object(PROOF, "agent_conversation_accessibility", return_value=access), \
+                patch.object(PROOF, "chat_process_identity", return_value=(7, "start")), \
+                patch.object(PROOF, "private_editor_observation", return_value=state), \
+                patch.object(PROOF, "accessible_subtree", return_value={}), \
+                patch.object(PROOF, "decoded_accessible_names", return_value={
+                    "/tab": "Queue task", "/button": "Queue task", "/other": "Queue task",
+                }), \
+                patch.object(PROOF, "accessibility_control_enabled",
+                             side_effect=[True, False]):
+            result = PROOF.restricted_task_editor_sample(
+                (access, (7, "start")), "PRIVATE", sample)
+        self.assertEqual(result, (access, state, True))
+        self.assertEqual(sample["queue_tabs"], 1)
+        self.assertEqual(sample["queue_buttons"], 1)
+        self.assertEqual(sample["queue_other_controls"], 1)
+        self.assertEqual(sample["queue_enabled_controls"], 1)
+        self.assertEqual(sample["queue_action_controls"], 1)
+        restricted = inspect.getsource(PROOF.native_task_write_downgrade)
+        self.assertIn("if queue_control_present:\n                    return None", restricted)
 
     def test_read_only_and_restricted_views_cannot_hide_serialized_mutable_controls(self):
         client = PROOF.atspi.AtspiClient("address", "owned")
@@ -1965,7 +2007,7 @@ class PresentedEditorTargetTests(unittest.TestCase):
                     return action
 
                 def finalize(_profile, _output, _processes, logs, _provider,
-                             runtime_owner, _fcitx):
+                             runtime_owner, _fcitx, _shell):
                     for log in logs:
                         log.close()
                     runtime_owner.cleanup()
@@ -3823,6 +3865,64 @@ class PresentedEditorTargetTests(unittest.TestCase):
             self.assertTrue(provider.closed)
             self.assertTrue(runtime_owner.closed)
             self.assertFalse(profile.exists())
+
+    def test_shell_precleanup_status_is_closed_and_precedes_fixture_signal(self):
+        class Shell:
+            pid = 4321
+
+            def __init__(self, code, events=None):
+                self.code = code
+                self.events = events
+
+            def poll(self):
+                if self.events is not None:
+                    self.events.append("poll")
+                return self.code
+
+            def wait(self, timeout):
+                self.events.append(("wait", timeout))
+                self.code = -PROOF.signal.SIGTERM
+
+        cases = [
+            (None, True, "running", None),
+            (0, False, "clean_exit", None),
+            (7, False, "exit_error", None),
+            (-PROOF.signal.SIGABRT, False, "signal", PROOF.signal.SIGABRT),
+        ]
+        for code, running, termination, signal_number in cases:
+            with self.subTest(code=code):
+                status = PROOF.shell_precleanup_status(Shell(code))
+                self.assertTrue(status["observable"])
+                self.assertIs(status["running"], running)
+                self.assertEqual(status["return_code"], code)
+                self.assertEqual(status["termination"], termination)
+                self.assertEqual(status["signal_number"], signal_number)
+        self.assertEqual(PROOF.shell_precleanup_status(None), {
+            "observable": False, "running": False, "return_code": None,
+            "termination": "unobserved", "signal_number": None,
+        })
+
+        events = []
+        shell = Shell(None, events)
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(PROOF, "process_program", return_value="shell"), \
+                patch.object(PROOF, "owned_fcitx_identity", return_value=None), \
+                patch.object(PROOF.os, "killpg",
+                             side_effect=lambda *_args: events.append("kill")):
+            root = pathlib.Path(directory)
+            profile = root / "profile"
+            output = root / "output"
+            profile.mkdir()
+            output.mkdir()
+            PROOF.finalize_fixture(
+                profile, output, [shell], [], None, None, shell=shell
+            )
+            receipt = json.loads((output / "shell-precleanup-status.json").read_text())
+        self.assertEqual(receipt, {
+            "observable": True, "running": True, "return_code": None,
+            "termination": "running", "signal_number": None,
+        })
+        self.assertLess(events.index("poll"), events.index("kill"))
 
     def test_finalization_retains_only_closed_managed_startup_evidence(self):
         with tempfile.TemporaryDirectory() as directory:
