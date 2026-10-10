@@ -1447,6 +1447,7 @@ async fn a_hosted_agent_asks_the_persons_device_before_an_action_that_asks_first
     // The action as the calculator offers it, not the agent's own words.
     assert_eq!(question.action_label, "Remove every history entry");
     assert_eq!(question.resource_label, "Calculator");
+    assert_eq!(question.risk, "destructive");
     assert!(
         question.question().starts_with("Careful wants to ")
             && question.question().ends_with(", for you"),

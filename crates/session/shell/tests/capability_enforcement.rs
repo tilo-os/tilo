@@ -517,8 +517,9 @@ fn filesystem_capabilities_export_exactly_and_inherit_to_the_boundary() {
 
         persist::wait_for_saves();
         let raw = std::fs::read_to_string(&acl_path).expect("the export must exist after a grant");
-        let exported: Vec<CapOverride> =
-            serde_json::from_str(&raw).expect("the export must be the array the filesystem parses");
+        let exported: Vec<CapOverride> = serde_json::from_str::<collab_types::FsAuthority>(&raw)
+            .expect("the export must be the authority the filesystem parses")
+            .capabilities;
 
         assert!(
             exported.iter().any(|c| c.id == "bob-design"),
@@ -538,7 +539,9 @@ fn filesystem_capabilities_export_exactly_and_inherit_to_the_boundary() {
         assert!(tree.revoke_sandbox_in_workspace(id, &ALICE.to_string(), "bob-design"));
         persist::wait_for_saves();
         let raw = std::fs::read_to_string(&acl_path).expect("export still present");
-        let exported: Vec<CapOverride> = serde_json::from_str(&raw).expect("parse");
+        let exported: Vec<CapOverride> = serde_json::from_str::<collab_types::FsAuthority>(&raw)
+            .expect("parse")
+            .capabilities;
         assert!(
             !exported.iter().any(|c| c.id == "bob-design"),
             "a revoked capability must disappear from the filesystem's list, or the mount \
@@ -847,8 +850,9 @@ fn scoped_capabilities_carry_exactly_their_own_authority() {
             !ws.allows(&holder, &path, Access::Write),
             "a read link is not a write link"
         );
-        assert!(
-            !ws.allows(&holder, &ResourceRef::Workspace, Access::Read),
+        assert_eq!(
+            ws.room_readers_at(tilo_clock::unix_now()),
+            vec![(ALICE.to_string(), None)],
             "a share link grants no standing in the room"
         );
 
@@ -898,7 +902,7 @@ fn scoped_capabilities_carry_exactly_their_own_authority() {
             "an agent is confined to what it was given, like any other subject"
         );
         assert!(
-            !ws.allows(&agent, &ResourceRef::Workspace, Access::Write),
+            ws.agent_members_at(tilo_clock::unix_now()).is_empty(),
             "and holds no role, so it never inherits room-wide authority"
         );
 

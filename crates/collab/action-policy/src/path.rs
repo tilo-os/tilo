@@ -225,14 +225,6 @@ impl TreePath {
         Self(self.0.iter().skip(usize::from(room)).cloned().collect())
     }
 
-    /// Whether the path names one node (no open level, no `**`).
-    #[must_use]
-    pub fn is_concrete(&self) -> bool {
-        self.0
-            .iter()
-            .all(|segment| matches!(segment, Segment::Name(..)))
-    }
-
     /// The parent node, or `None` at the root.
     #[must_use]
     pub fn parent(&self) -> Option<Self> {

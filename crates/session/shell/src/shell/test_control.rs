@@ -1830,24 +1830,17 @@ pub fn parse_subject(s: &str) -> Result<crate::shell::state::Subject, String> {
     }
 }
 
-/// Parse a sandbox scope string against the room `room_key` names.
+/// Parse a sandbox scope string.
 ///
 /// # Errors
 ///
-/// Returns a human-readable message when `s` matches none of `workspace`, `room`, `fs:<path>` or `device:<id>`.
-pub fn parse_scope(s: &str, room_key: &str) -> Result<crate::shell::state::Scope, String> {
+/// Returns a human-readable message when `s` matches neither `fs:<path>` nor `device:<id>`.
+pub fn parse_scope(s: &str) -> Result<crate::shell::state::Scope, String> {
     use crate::shell::state::Scope;
-    match s {
-        "workspace" => return Ok(Scope::Workspace),
-        "room" => return Ok(Scope::Room(room_key.to_string())),
-        _ => {}
-    }
     match s.split_once(':') {
         Some(("fs", path)) => Ok(Scope::FsPath(path.to_string())),
         Some(("device", d)) => Ok(Scope::Device(d.to_string())),
-        _ => Err(format!(
-            "scope must be workspace, room, fs:<path> or device:<id>, got `{s}`"
-        )),
+        _ => Err(format!("scope must be fs:<path> or device:<id>, got `{s}`")),
     }
 }
 

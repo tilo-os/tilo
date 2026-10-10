@@ -1,14 +1,12 @@
 use super::{NativeAppOpenAccess, native_app_open_access, native_launch_capabilities};
 use crate::shell::native_workspace_owner::{NativeWorkspaceOwner, test_enrolled_owner};
 use crate::shell::state::RoomId;
-use collab_types::caps::{Access, CapOverride, Scope, Subject};
 use ed25519_dalek::SigningKey;
 use std::time::SystemTime;
 use tilo_peer_state::TransportOrigin;
 
 /// What one signed governance change writes.
 enum Governed {
-    Sandbox(CapOverride),
     Grant(tilo_action_policy::Grant),
 }
 
@@ -24,9 +22,6 @@ fn signed_governance(
             let before = view.peer().clone();
             let mut candidate = before.clone();
             match change {
-                Governed::Sandbox(cap) => {
-                    candidate.put_governed_sandbox(std::slice::from_ref(cap), &key, now)?;
-                }
                 Governed::Grant(grant) => {
                     candidate.put_governed_grants(std::slice::from_ref(grant), &key, now)?;
                 }
@@ -95,14 +90,11 @@ fn native_existing_writer_preserves_delegation_but_person_restriction_wins() {
         &owner,
         room,
         now,
-        &Governed::Sandbox(
-            CapOverride::grant(
-                Subject::app("so.tilo.chat"),
-                Scope::Workspace,
-                Access::Write,
-            )
-            .with_id("native-open-chat-author"),
-        ),
+        &Governed::Grant(tilo_action_policy::roles::app_authorship(
+            &room.to_string(),
+            "so.tilo.chat",
+            tilo_action_policy::Subject::person(person.clone()),
+        )),
     );
     assert!(matches!(
         native_app_open_access(&owner, room, &certificate, "so.tilo.chat").unwrap(),
@@ -134,14 +126,11 @@ fn a_distinct_admitted_read_only_device_never_borrows_the_governors_app_write() 
         &owner,
         room,
         now,
-        &Governed::Sandbox(
-            CapOverride::grant(
-                Subject::app("so.tilo.chat"),
-                Scope::Workspace,
-                Access::Write,
-            )
-            .with_id("native-open-governor-chat-writer"),
-        ),
+        &Governed::Grant(tilo_action_policy::roles::app_authorship(
+            &room.to_string(),
+            "so.tilo.chat",
+            tilo_action_policy::Subject::person("governor"),
+        )),
     );
     let signing_identity = SigningKey::from_bytes(&[72; 32]);
     let viewer_key = SigningKey::from_bytes(&[71; 32]);
@@ -179,31 +168,29 @@ fn a_distinct_admitted_read_only_device_never_borrows_the_governors_app_write() 
         NativeAppOpenAccess::Viewer
     ));
     assert!(native_app_open_access(&owner, room, &viewer, "so.tilo.missing").is_err());
-    let capabilities = owner
-        .with_current(room, |view| view.peer().governed_sandbox())
+    let grants = owner
+        .with_current(room, |view| {
+            Ok(view
+                .peer()
+                .permissions(governor.device_public_key, now)?
+                .policy
+                .grants)
+        })
         .unwrap();
     let mut workspace = tilo_desktop_model::Workspace::new(
         tilo_desktop_model::WorkspaceId(71),
         "Admitted viewer launch",
     );
     workspace.set_room(room);
-    workspace.sandbox = capabilities;
+    workspace.policy.grants = grants;
+    let seconds = now
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    assert!(workspace.launch_grants(seconds).authors("so.tilo.chat"));
     let constrained =
-        native_launch_capabilities(workspace, "so.tilo.chat", NativeAppOpenAccess::Viewer);
-    assert_eq!(
-        collab_types::caps::decide_capability(
-            &collab_types::caps::Actor::app("so.tilo.chat").in_room(room.to_string()),
-            &collab_types::caps::ResourceRef::Workspace,
-            Access::Write,
-            &constrained.sandbox,
-            Some(
-                now.duration_since(SystemTime::UNIX_EPOCH)
-                    .unwrap()
-                    .as_secs()
-            )
-        ),
-        collab_types::caps::CapDecision::DeniedByRestriction
-    );
+        native_launch_capabilities(&workspace, "so.tilo.chat", NativeAppOpenAccess::Viewer);
+    assert!(!constrained.authors("so.tilo.chat"));
 }
 
 fn admit_viewer(

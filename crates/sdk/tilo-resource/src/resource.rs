@@ -45,6 +45,10 @@ pub trait Resource: Sized + 'static {
     const KIND: &'static str;
     /// Human name of one resource of this kind, e.g. `"Notebook"`.
     const LABEL: &'static str;
+    /// The committed `surface.toml` of the app crate the resource is
+    /// declared in, which its package ships: what receivers decide the
+    /// changes it makes against. `#[resource]` fills it in.
+    const COMMITTED_SURFACE: Option<&'static [u8]> = None;
     /// The registry type id every action of this resource is replayed under.
     const ACTION_TYPE: &'static str = Self::KIND;
 

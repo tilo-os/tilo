@@ -701,6 +701,46 @@ mod tests {
         assert_eq!(stream.try_recv().expect("delivered").action, "new-window");
     }
 
+    /// An agent running a task is held to the task's grants on every call,
+    /// whether or not the call names the task.
+    #[test]
+    fn an_agents_run_is_held_to_its_tasks_grants_without_naming_it() {
+        use crate::test_support::{Answer, Grants as _, KindSet, Subject, TreePath};
+        let mut workspace = workspace();
+        workspace.admit_agent("scribe", KindSet::READ_UNDOABLE);
+        workspace.answer(
+            Subject::Task("task:tidy".into()),
+            &TreePath::root().app(APP).rest().action("new-window"),
+            KindSet::READ_UNDOABLE,
+            Answer::Deny,
+        );
+        workspace.tasks.push(tilo_desktop_model::WorkspaceTask {
+            id: "task:tidy".into(),
+            title: "Tidy up".into(),
+            created_by: "owner".into(),
+            assigned_agent: Some("scribe".into()),
+            route: tilo_desktop_model::WorkspaceTaskRoute::Model,
+            status: tilo_desktop_model::WorkspaceTaskStatus::InProgress,
+            resource: None,
+            created_at: 1,
+            updated_at: 1,
+            audit: Vec::new(),
+        });
+        let (state, room) = broker(&workspace);
+        state
+            .surfaces
+            .lock()
+            .expect("surfaces")
+            .insert(5, surface(5, &room));
+        let mut app = state.capture_invocations_for_test(5);
+        let agent = Caller::local_agent("scribe").in_room(&room);
+        assert!(
+            invoke(&state, &agent, "5", "new-window", None).is_err(),
+            "the running task's grants leave this action out"
+        );
+        assert!(app.try_recv().is_err(), "nothing ran");
+    }
+
     /// The broker reads a field edit without the app's code: only removing
     /// an item of a collection not published as quiet asks for confirmation;
     /// sets and an outbox's settle do not.

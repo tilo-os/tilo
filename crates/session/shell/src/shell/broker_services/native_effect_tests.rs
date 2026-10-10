@@ -70,7 +70,6 @@ fn native_member_terminal_audit_uses_installed_governor_and_original_retry_recei
 
 #[test]
 fn native_published_authorship_requires_admin_and_durably_enables_the_actual_app() {
-    use collab_types::caps::{Access, Actor, CapDecision, ResourceRef, decide_capability};
     let fixture = fixture();
     let actions = fixture.broker.app_action_broker().unwrap();
     wait_for_membership_surface(&actions, fixture.room);
@@ -81,16 +80,13 @@ fn native_published_authorship_requires_admin_and_durably_enables_the_actual_app
                 let now = std::time::SystemTime::now();
                 view.peer()
                     .check_workspace_administration(fixture.certificate.device_public_key, now)?;
-                let caps = view.peer().governed_sandbox()?;
-                let seconds = now.duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+                let member = view
+                    .peer()
+                    .permissions(fixture.certificate.device_public_key, now)?;
                 assert_eq!(
-                    decide_capability(
-                        &Actor::app("so.tilo.chat").in_room(fixture.room.to_string()),
-                        &ResourceRef::Workspace,
-                        Access::Write,
-                        &caps,
-                        Some(seconds)
-                    ),
+                    member
+                        .policy
+                        .app_authors("so.tilo.chat", &tilo_action_policy::Context::at_time(now)),
                     expected
                 );
                 assert!(
@@ -101,7 +97,7 @@ fn native_published_authorship_requires_admin_and_durably_enables_the_actual_app
             })
             .unwrap();
     };
-    check(CapDecision::NotGranted);
+    check(false);
     let job = actions
         .change_workspace_membership(
             &fixture.room.to_string(),
@@ -117,7 +113,7 @@ fn native_published_authorship_requires_admin_and_durably_enables_the_actual_app
         actions.status(job.id),
         Some(InvocationUpdate::Succeeded { .. })
     ));
-    check(CapDecision::Allow);
+    check(true);
     drop(actions);
     drop(fixture.broker);
     crate::shell::persist::wait_for_saves();
@@ -128,16 +124,13 @@ fn native_published_authorship_requires_admin_and_durably_enables_the_actual_app
     reopened
         .with_current(fixture.room, |view| {
             let now = std::time::SystemTime::now();
-            let caps = view.peer().governed_sandbox()?;
-            assert_eq!(
-                decide_capability(
-                    &Actor::app("so.tilo.chat").in_room(fixture.room.to_string()),
-                    &ResourceRef::Workspace,
-                    Access::Write,
-                    &caps,
-                    Some(now.duration_since(std::time::UNIX_EPOCH).unwrap().as_secs())
-                ),
-                CapDecision::Allow
+            let member = view
+                .peer()
+                .permissions(fixture.certificate.device_public_key, now)?;
+            assert!(
+                member
+                    .policy
+                    .app_authors("so.tilo.chat", &tilo_action_policy::Context::at_time(now))
             );
             assert!(view.peer().document("so.tilo.chat", "").is_none());
             Ok(())
@@ -763,18 +756,14 @@ fn native_files_home_consent_is_not_reconstructed_when_session_reopens() {
     let reopened = native_workspace_owner::open(tree.clone()).unwrap();
     reopened
         .with_current(fixture.room, |view| {
-            use collab_types::caps::{Actor, CapDecision, decide_capability};
             let now = std::time::SystemTime::now();
-            let caps = view.peer().governed_sandbox()?;
-            assert_eq!(
-                decide_capability(
-                    &Actor::app(FILES).in_room(fixture.room.to_string()),
-                    &ResourceRef::Workspace,
-                    Access::Write,
-                    &caps,
-                    Some(now.duration_since(std::time::UNIX_EPOCH).unwrap().as_secs())
-                ),
-                CapDecision::Allow
+            let member = view
+                .peer()
+                .permissions(fixture.certificate.device_public_key, now)?;
+            assert!(
+                member
+                    .policy
+                    .app_authors(FILES, &tilo_action_policy::Context::at_time(now))
             );
             Ok(())
         })

@@ -386,6 +386,25 @@ pub(super) fn with_session_blobs<T>(
     result
 }
 
+/// Decide every change this session's rooms receive by its claim against
+/// the app surface its op names, read from the session's content store in
+/// the record's room and app; name, in the changes the session signs for an
+/// app it hosts, the surface that app was started with.
+pub fn decide_receipt_against_surfaces() {
+    use runtime_fs::blobs::ReadOutcome;
+    tilo_action_broker::decide_receipt_against_surfaces(|record, hash| {
+        match with_session_blobs(|client| {
+            client
+                .scope(record.room, record.app)
+                .and_then(|scoped| scoped.read_all(hash))
+        }) {
+            Ok(ReadOutcome::Ready { bytes, .. }) => Some(bytes),
+            // Still arriving, or nowhere: the op waits.
+            Ok(ReadOutcome::Pending | ReadOutcome::Unavailable) | Err(_) => None,
+        }
+    });
+}
+
 impl LaunchContentReader for SessionContentStore {
     fn read(&self, room: &str, app: &str, hash: &str) -> Result<Vec<u8>, String> {
         use runtime_fs::blobs::ReadOutcome;
@@ -611,7 +630,7 @@ impl NativeLauncher {
             return;
         };
         drop(tree);
-        workspace.grant_sandbox(stored);
+        workspace.grant(stored);
     }
 }
 
@@ -702,7 +721,7 @@ impl LauncherServices for NativeLauncher {
                 super::launcher::launch_uri_in_room(
                     app,
                     workspace.room,
-                    workspace.sandbox.clone(),
+                    workspace.launch_grants(tilo_clock::unix_now()),
                     &record.uri(),
                 )
             }
@@ -2170,8 +2189,7 @@ mod tests {
     /// nothing, so the app launches a viewer.
     #[test]
     fn an_owner_opening_an_app_grants_it_authorship_once() {
-        use super::super::state::WorkspaceExt as _;
-        use collab_types::caps::{Access, ResourceRef};
+        let now = tilo_clock::unix_now();
         let mut tree = crate::shell::state::WorkspaceTree::default();
         let mut workspace = crate::shell::state::Workspace::new(
             crate::shell::state::WorkspaceId(7),
@@ -2185,20 +2203,19 @@ mod tests {
 
         let mut stranger_copy = workspace.clone();
         launcher.grant_authorship("stranger", app, &mut stranger_copy);
-        let actor = stranger_copy.actor_for_app(app);
-        assert!(!stranger_copy.allows(&actor, &ResourceRef::Workspace, Access::Write));
+        assert!(!stranger_copy.app_is_author_at(app, now));
 
         let mut launch_copy = workspace.clone();
         launcher.grant_authorship("owner", app, &mut launch_copy);
-        let actor = launch_copy.actor_for_app(app);
-        assert!(launch_copy.allows(&actor, &ResourceRef::Workspace, Access::Write));
-        let stored = handle.read().desktop.workspaces[0].sandbox.len();
+        assert!(launch_copy.app_is_author_at(app, now));
+        assert!(launch_copy.launch_grants(now).authors(app));
+        let stored = handle.read().desktop.workspaces[0].policy.grants.len();
 
         let mut again = handle.read().desktop.workspaces[0].clone();
         launcher.grant_authorship("owner", app, &mut again);
         drop(launcher);
         assert_eq!(
-            handle.read().desktop.workspaces[0].sandbox.len(),
+            handle.read().desktop.workspaces[0].policy.grants.len(),
             stored,
             "granted once"
         );
@@ -2208,8 +2225,7 @@ mod tests {
     /// here granting authorship, once.
     #[test]
     fn the_person_here_authors_an_app_they_open() {
-        use super::super::state::WorkspaceExt as _;
-        use collab_types::caps::{Access, ResourceRef};
+        let now = tilo_clock::unix_now();
         let mut tree = crate::shell::state::WorkspaceTree::default();
         let person = crate::shell::state::local_user_id();
         let mut workspace =
@@ -2221,12 +2237,15 @@ mod tests {
         let opened = tree
             .workspace_after_opening_app("so.tilo.word-processor")
             .expect("active workspace");
-        let actor = opened.actor_for_app("so.tilo.word-processor");
-        assert!(opened.allows(&actor, &ResourceRef::Workspace, Access::Write));
+        assert!(opened.app_is_author_at("so.tilo.word-processor", now));
         let again = tree
             .workspace_after_opening_app("so.tilo.word-processor")
             .expect("still active");
-        assert_eq!(again.sandbox.len(), opened.sandbox.len(), "granted once");
+        assert_eq!(
+            again.policy.grants.len(),
+            opened.policy.grants.len(),
+            "granted once"
+        );
     }
 
     /// The shell stages content through the scope of the application that

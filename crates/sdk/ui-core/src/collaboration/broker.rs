@@ -5184,7 +5184,7 @@ async fn send_document_mutation(
             ));
         }
     };
-    let claims = origin_claims(&mutation);
+    let claims = origin_claims(&route.spec.app_id, &mutation);
     let count = frames.len();
     for (index, frame) in frames.into_iter().enumerate() {
         if let Err(error) = send_document_frame(route, signer, frame, &claims, &inbound.state).await
@@ -5213,8 +5213,13 @@ async fn send_document_mutation(
         reason = "a debug build's check that every change this device makes is claimed"
     )
 )]
-fn origin_claims(mutation: &collab_types::DocumentMutation) -> Vec<collab_types::ChangeClaim> {
-    collab_types::mutation_claims(mutation, collab_types::record_unit).unwrap_or_else(|error| {
+fn origin_claims(
+    app_id: &str,
+    mutation: &collab_types::DocumentMutation,
+) -> Vec<collab_types::ChangeClaim> {
+    let claims = collab_types::mutation_claims(mutation, collab_types::record_unit)
+        .map(|claims| with_footprints(app_id, claims));
+    claims.unwrap_or_else(|error| {
         #[cfg(debug_assertions)]
         if let collab_types::DocumentMutation::Incremental(bytes) = mutation
             && collab_types::parse_changes(bytes).is_ok()
@@ -5225,6 +5230,39 @@ fn origin_claims(mutation: &collab_types::DocumentMutation) -> Vec<collab_types:
         tracing::warn!(%error, "collab: a document change carries no claim");
         Vec::new()
     })
+}
+
+/// `claims` naming as units what each action may write by the app's own
+/// surface: what a relay that cannot read a sealed change checks it against
+/// (devices that open it check what it really wrote).
+fn with_footprints(
+    app_id: &str,
+    mut claims: Vec<collab_types::ChangeClaim>,
+) -> Vec<collab_types::ChangeClaim> {
+    use collab_types::ReceiptSurface as _;
+    let Some(file) = crate::app_surface::bytes_of(app_id)
+        .and_then(|bytes| collab_types::surface::SurfaceFile::parse(bytes).ok())
+    else {
+        return claims;
+    };
+    for claim in &mut claims {
+        let kind = claim
+            .action
+            .members()
+            .into_iter()
+            .find_map(|action| match action {
+                collab_types::ClaimedAction::Verb { action, .. } => Some(action.kind.clone()),
+                collab_types::ClaimedAction::Edit { kind, .. } if !kind.is_empty() => {
+                    Some(kind.clone())
+                }
+                _ => None,
+            });
+        if let Some(resource) = file.resource(kind.as_deref()) {
+            let surface = collab_types::surface::KindSurface(resource.clone());
+            claim.units = surface.footprint(&claim.action);
+        }
+    }
+    claims
 }
 
 /// Encrypt, sign and send one typed document frame, or hold it on the

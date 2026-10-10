@@ -419,6 +419,18 @@ pub fn build_bwrap_argv(
     )
 }
 
+/// The hash of the surface the package ships (`surface.toml` at its payload
+/// root), which the app names in every change it signs. A package without
+/// one names none, and its changes wait wherever surfaces decide them.
+fn push_surface(argv: &mut Vec<String>, payload_root: &Path) {
+    let Ok(bytes) = std::fs::read(payload_root.join("surface.toml")) else {
+        return;
+    };
+    argv.push("--setenv".to_string());
+    argv.push("TILO_SURFACE".to_string());
+    argv.push(blake3::hash(&bytes).to_hex().to_string());
+}
+
 fn push_continuity_environment(argv: &mut Vec<String>) {
     for key in [
         "TILO_CONTINUITY_INSTANCE",
@@ -634,6 +646,7 @@ pub fn build_bwrap_argv_for_entry(
     argv.push("--setenv".to_string());
     argv.push("TILO_PACKAGE_ID".to_string());
     argv.push(manifest.package_id.clone());
+    push_surface(&mut argv, payload_root);
 
     // Same-identity continuation is launcher-authored metadata. bwrap clears
     // the parent environment, so forward only the compact identifiers/payload
@@ -1321,6 +1334,44 @@ mod tests {
                 .expect("payload host path in argv");
             assert_eq!(argv[pos - 1], "--ro-bind");
             assert_eq!(argv[pos + 1], "/var/tilo-apps/com.example.notes");
+        }
+        // Phase `argv_names_the_surface_the_package_ships`.
+        {
+            let m = mk_manifest("off");
+            let payload = tempfile::tempdir().unwrap();
+            let named = |argv: &[String]| {
+                argv.windows(3)
+                    .find(|w| w[0] == "--setenv" && w[1] == "TILO_SURFACE")
+                    .map(|w| w[2].clone())
+            };
+            let without = build_bwrap_argv(
+                &m,
+                payload.path(),
+                None,
+                &[],
+                None,
+                None,
+                &CapabilityPlan::empty(),
+            );
+            assert_eq!(
+                named(&without),
+                None,
+                "a package without a surface names none"
+            );
+            std::fs::write(payload.path().join("surface.toml"), b"[[resources]]\n").unwrap();
+            let with = build_bwrap_argv(
+                &m,
+                payload.path(),
+                None,
+                &[],
+                None,
+                None,
+                &CapabilityPlan::empty(),
+            );
+            assert_eq!(
+                named(&with),
+                Some(blake3::hash(b"[[resources]]\n").to_hex().to_string())
+            );
         }
         // Phase `argv_reads_come_from_the_system_profile_not_the_manifest`.
         // The reads a launch gets are the system profile's; a manifest naming

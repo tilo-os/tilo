@@ -189,6 +189,14 @@ impl RelayWitness {
                     || address.resource.clone(),
                     |resource| resource.label.clone(),
                 ),
+            risk: context
+                .and_then(|context| {
+                    context
+                        .facets
+                        .iter()
+                        .find(|facet| facet.key == tilo_actions::RISK_FACET)
+                })
+                .map_or_else(|| "destructive".to_owned(), |facet| facet.value.clone()),
             room: room.to_owned(),
             expires_at_ns: tilo_clock::unix_now_ns().saturating_add(CONFIRMATION_WAIT_NS),
         })

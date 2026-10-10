@@ -264,7 +264,7 @@ fn may_write(
                 .with_grants(policy.grants_of(&Subject::ForeignDevice)),
         );
     }
-    let cx = Context::at(caps_now.saturating_mul(1000));
+    let cx = Context::at_secs(caps_now);
     if authority
         .decide(&TreePath::room(room), ActionKind::Undoable, &cx)
         .answer

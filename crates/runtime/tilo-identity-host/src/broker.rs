@@ -445,7 +445,7 @@ fn sign_collaboration_op(
                 &record,
                 None,
                 None,
-                &collab_types::Surfaces::default(),
+                &collab_types::Surfaces::process(),
                 &allows,
             )
             .is_ok_and(|receipt| receipt == collab_types::Receipt::Admit),
@@ -981,6 +981,89 @@ mod tests {
                 record_id,
                 &unsigned,
             ),
+            Response::Denied(reason) if reason.contains("denies this document action")
+        ));
+        // With the app's surface a commenter's comment is signed, their edit
+        // of the page is not.
+        let surface: &str = r#"
+[[resources]]
+kind = "notes.page"
+label = "Page"
+version = 1
+
+[[resources.fields]]
+owner = "page"
+path = "body"
+stored = "value"
+title = "Body"
+type = "String"
+
+[[resources.verbs]]
+id = "comment"
+kind = "undoable"
+label = "Comment"
+field = "comments"
+params = []
+"#;
+        let hash = *blake3::hash(surface.as_bytes()).as_bytes();
+        let hex = hex::encode(hash);
+        collab_types::Surfaces::set_process(collab_types::Surfaces::from_source(
+            std::sync::Arc::new(collab_types::surface::ContentSurfaces::new(
+                move |_, wanted| (wanted == hex).then(|| surface.as_bytes().to_vec()),
+            )),
+        ));
+        let change = |what: tilo_actions::Did, seq: u64| {
+            use automerge::transaction::Transactable as _;
+            let mut doc = automerge::AutoCommit::new();
+            doc.put(automerge::ROOT, "written", seq).expect("write");
+            let context = tilo_actions::ActionContext {
+                what: Some(what),
+                ..tilo_actions::ActionContext::for_resource(record_id, "notes.page", "Page")
+            };
+            doc.commit_with(
+                automerge::transaction::CommitOptions::default()
+                    .with_message(context.change_message().expect("entry")),
+            );
+            let mut op = op.clone();
+            op.payload = DocumentMutation::Incremental(doc.save_after(&[]))
+                .encode()
+                .expect("typed mutation");
+            op.seq = seq;
+            postcard::to_stdvec(&op.with_surface(Some(hash))).expect("envelope")
+        };
+        let comment = change(
+            tilo_actions::Did::Verb(tilo_actions::VerbCall::new(
+                tilo_actions::ActionKey::new(app_id, "notes.page", "comment"),
+                [],
+            )),
+            10,
+        );
+        assert!(matches!(
+            sign_collaboration_op(
+                &tree,
+                &room,
+                app_id,
+                &workspace_id,
+                app_id,
+                record_id,
+                &comment
+            ),
+            Response::Signature(_)
+        ));
+        let edit = change(
+            tilo_actions::Did::Edit(tilo_actions::FieldEdit {
+                ty: "page".into(),
+                field: "body".into(),
+                path: vec![tilo_actions::PathStep::Field("body".into())],
+                op: tilo_actions::EditOp::Set,
+                old: None,
+                new: None,
+                args: std::collections::BTreeMap::new(),
+            }),
+            11,
+        );
+        assert!(matches!(
+            sign_collaboration_op(&tree, &room, app_id, &workspace_id, app_id, record_id, &edit),
             Response::Denied(reason) if reason.contains("denies this document action")
         ));
         let mut tree_guard = tree.write();

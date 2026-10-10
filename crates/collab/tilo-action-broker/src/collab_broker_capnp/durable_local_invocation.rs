@@ -212,18 +212,10 @@ pub(super) fn authorize_action_in(
     actor: &BrokerActor,
     now: u64,
 ) -> Result<(), String> {
-    let node = tilo_actions::action_node(
-        &workspace.node(),
-        app,
-        resource_kind,
-        resource,
-        need.field.as_deref(),
-        action,
-    );
     // Genuine durable callers revalidate live membership and delegation
     // separately; this is the action's own grant.
     if !crate::published_authorization::permits(
-        actor.answer_for_in(workspace, &node, need.kind, need.privileged, now),
+        actor.action_answer_in(workspace, app, (resource_kind, resource, action), need, now),
         actor.direct(),
     ) {
         return Err("caller no longer authorized for invocation".into());
@@ -244,15 +236,7 @@ pub(super) fn admit_action_in(
     actor: &BrokerActor,
     now: u64,
 ) -> Result<bool, String> {
-    let node = tilo_actions::action_node(
-        &workspace.node(),
-        app,
-        resource_kind,
-        resource,
-        need.field.as_deref(),
-        action,
-    );
-    match actor.answer_for_in(workspace, &node, need.kind, need.privileged, now) {
+    match actor.action_answer_in(workspace, app, (resource_kind, resource, action), need, now) {
         tilo_action_policy::Answer::Allow => Ok(false),
         tilo_action_policy::Answer::Ask => Ok(true),
         tilo_action_policy::Answer::Deny => {

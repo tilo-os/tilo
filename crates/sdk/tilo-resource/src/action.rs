@@ -956,20 +956,25 @@ fn bind_arguments(
     params: &[&str],
     value: serde_json::Value,
 ) -> Result<serde_json::Map<String, serde_json::Value>, String> {
-    match (params, value) {
-        // An absent option is left out, as a parameter not given.
-        ([], serde_json::Value::Object(fields)) => Ok(fields
+    // An absent option is left out, as a parameter not given.
+    let given = |fields: Vec<(String, serde_json::Value)>| {
+        fields
             .into_iter()
             .filter(|(_, value)| !value.is_null())
-            .collect()),
+            .collect()
+    };
+    match (params, value) {
+        ([], serde_json::Value::Object(fields)) => Ok(given(fields.into_iter().collect())),
         ([], serde_json::Value::Null) => Ok(serde_json::Map::new()),
         ([], other) => Err(format!("`{id}` takes named arguments, not `{other}`")),
-        ([single], value) => Ok(serde_json::Map::from_iter([((*single).to_owned(), value)])),
-        (names, serde_json::Value::Array(values)) if values.len() == names.len() => Ok(names
-            .iter()
-            .map(|name| (*name).to_owned())
-            .zip(values)
-            .collect()),
+        ([single], value) => Ok(given(vec![((*single).to_owned(), value)])),
+        (names, serde_json::Value::Array(values)) if values.len() == names.len() => Ok(given(
+            names
+                .iter()
+                .map(|name| (*name).to_owned())
+                .zip(values)
+                .collect(),
+        )),
         (names, other) => Err(format!(
             "`{id}` takes {} arguments ({}), not `{other}`",
             names.len(),

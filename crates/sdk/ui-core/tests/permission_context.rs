@@ -385,10 +385,22 @@ fn grants_and_capabilities_are_inspectable_scoped_and_expire() {
     // Case `permissive_is_an_owner_with_one_real_workspace_wide_capability`.
     {
         let ctx = PermissionContext::permissive();
-        // Not a bypass flag — an inspectable capability and a structural owner.
-        assert_eq!(ctx.capabilities().len(), 1);
-        assert_eq!(ctx.capabilities()[0].scope, Scope::Workspace);
-        assert_eq!(ctx.capabilities()[0].access, Access::Write);
+        // Not a bypass flag — inspectable capabilities and a structural owner.
+        let scopes: Vec<_> = ctx.capabilities().iter().map(|cap| &cap.scope).collect();
+        assert_eq!(
+            scopes,
+            [
+                &Scope::FsPath("/".into()),
+                &Scope::Device("*".into()),
+                &Scope::NetHost("*".into()),
+                &Scope::FsRecord("*".into()),
+            ]
+        );
+        assert!(
+            ctx.capabilities()
+                .iter()
+                .all(|cap| cap.access == Access::Write)
+        );
         assert!(ctx.check(&PermissionScope::governance(
             policy::roles::governance::SETTINGS
         )));

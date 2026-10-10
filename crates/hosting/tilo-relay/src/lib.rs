@@ -120,6 +120,8 @@ pub mod room_records;
 pub mod rooms;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod store;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod surfaces;
 #[cfg(feature = "web")]
 pub mod web;
 #[cfg(not(target_arch = "wasm32"))]

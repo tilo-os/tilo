@@ -176,6 +176,10 @@ pub struct PendingConfirmation {
     pub action_label: String,
     /// What it acts on, as the record that offers it says.
     pub resource_label: String,
+    /// What the action risks, as `tilo_actions::RiskLevel` names it
+    /// (`none`, `low`, `destructive`, `privileged`, `sensitive`), for the
+    /// sheet to state. An approver reads an unknown name as the gravest.
+    pub risk: String,
     /// The room the agent acts in.
     pub room: String,
     /// Unanswered by then, the question is a refusal; ns since the epoch.

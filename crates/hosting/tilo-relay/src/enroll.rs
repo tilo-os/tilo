@@ -2311,7 +2311,7 @@ fn approval_projection(
                 .context("local workspace ticket is invalid")?;
             let capability_json = std::fs::read_to_string(options.acl)
                 .with_context(|| format!("read {}", options.acl.display()))?;
-            let capabilities = serde_json::from_str(&capability_json)
+            let capabilities: collab_types::FsAuthority = serde_json::from_str(&capability_json)
                 .context("filesystem capability export is invalid")?;
             let authority = fs::workspace_authority::WorkspaceAuthorityEnvelope::sign_with(
                 ticket.workspace_id(),

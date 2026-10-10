@@ -382,6 +382,21 @@ impl AgentPreset {
     }
 }
 
+/// The grant making application `app` an author of `room`: it reads and
+/// changes the room's content as the person using it, and reaches nothing
+/// outside it. Given when a person who may change the room opens the app.
+#[must_use]
+pub fn app_authorship(room: &str, app: &str, granted_by: Subject) -> Grant {
+    Grant::new(
+        format!("app-author:{app}"),
+        Subject::App(app.to_owned()),
+        TreePath::room(room),
+        KindSet::READ_UNDOABLE,
+        Answer::Allow,
+        granted_by,
+    )
+}
+
 /// What a person may do from a device that is not theirs, in any room: read
 /// and change content, ask first before reaching outside it, never govern.
 #[must_use]

@@ -104,7 +104,7 @@ impl MemberAuthority {
     pub fn allows(&self, node: &TreePath, kind: ActionKind, now: SystemTime) -> bool {
         let bound = tilo_action_policy::roles::foreign_device_bound();
         self.authority(&bound)
-            .decide(node, kind, &policy_context(now))
+            .decide(node, kind, &tilo_action_policy::Context::at_time(now))
             .answer
             == Answer::Allow
     }
@@ -112,7 +112,7 @@ impl MemberAuthority {
 /// Whether `agent` is admitted to the room: it holds a live grant on the room
 /// itself.
 pub(crate) fn agent_is_member(policy: &RoomPolicy, agent: &str, now: SystemTime) -> bool {
-    let cx = policy_context(now);
+    let cx = tilo_action_policy::Context::at_time(now);
     let room = policy.node();
     policy.grants.iter().any(|grant| {
         matches!(&grant.subject, Subject::Agent(held) if held == agent)
@@ -126,15 +126,6 @@ fn administrator_grant_id(user_public_key: [u8; 32]) -> String {
     format!("room-admin-v1:{}", hex::encode(user_public_key))
 }
 /// The decision context of a policy question asked at `now`.
-pub(crate) fn policy_context(now: SystemTime) -> tilo_action_policy::Context<'static> {
-    tilo_action_policy::Context::at(
-        now.duration_since(SystemTime::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis()
-            .try_into()
-            .unwrap_or(u64::MAX),
-    )
-}
 pub fn peer_handle(key: &[u8; 32]) -> u64 {
     let mut hasher = fnv::FnvHasher::default();
     std::hash::Hasher::write(&mut hasher, key);
@@ -326,6 +317,40 @@ pub struct StatePeer {
     app_surfaces: AppSurfaces,
 }
 
+fn defaults() -> &'static std::sync::Mutex<(collab_types::Surfaces, AppSurfaces)> {
+    static DEFAULTS: std::sync::OnceLock<std::sync::Mutex<(collab_types::Surfaces, AppSurfaces)>> =
+        std::sync::OnceLock::new();
+    DEFAULTS.get_or_init(std::sync::Mutex::default)
+}
+
+fn process_default() -> (collab_types::Surfaces, AppSurfaces) {
+    defaults()
+        .lock()
+        .map(|defaults| defaults.clone())
+        .unwrap_or_default()
+}
+
+/// The app surfaces this process decides received changes against
+/// ([`decide_with_surfaces`]).
+#[must_use]
+pub fn default_surfaces() -> collab_types::Surfaces {
+    process_default().0
+}
+
+/// Decide the changes every peer of this process receives against the app
+/// surfaces `surfaces` finds, and name in the changes it signs the surface
+/// `of` returns for each app: what a host sets once, before it opens or
+/// restores its rooms. A peer made before keeps what it had.
+pub fn decide_with_surfaces(
+    surfaces: collab_types::Surfaces,
+    of: impl Fn(&str) -> Option<[u8; 32]> + Send + Sync + 'static,
+) {
+    collab_types::Surfaces::set_process(surfaces.clone());
+    if let Ok(mut defaults) = defaults().lock() {
+        *defaults = (surfaces, AppSurfaces(Some(std::sync::Arc::new(of))));
+    }
+}
+
 /// The surface hash of an app's package, by app id.
 #[derive(Clone, Default)]
 struct AppSurfaces(Option<std::sync::Arc<SurfaceOf>>);
@@ -405,8 +430,8 @@ impl StatePeer {
                 native_cut_publisher: None,
                 _retention: (),
             },
-            surfaces: collab_types::Surfaces::default(),
-            app_surfaces: AppSurfaces::default(),
+            surfaces: process_default().0,
+            app_surfaces: process_default().1,
         })
     }
     /// Add a root-certified viewer to existing governed history. Only the pinned
@@ -955,6 +980,29 @@ impl StatePeer {
             .values()
             .map(|bytes| serde_json::from_slice(bytes).map_err(err))
             .collect()
+    }
+
+    /// The standing of every governed member device at `now`: what a relay
+    /// that does not hold the room's governance decides their changes
+    /// with, each held to its foreign-device bound.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the room's governance is missing or malformed.
+    pub fn governed_standings(
+        &self,
+        now: SystemTime,
+    ) -> Result<std::collections::BTreeMap<[u8; 32], tilo_action_policy::Standing>, String> {
+        let access = self.governed_access(now)?;
+        Ok(access
+            .member_devices
+            .into_iter()
+            .filter_map(|device| {
+                self.permissions(device, now)
+                    .ok()
+                    .map(|member| (device, member.standing()))
+            })
+            .collect())
     }
 
     /// Current governed access derived from the admitted room document.
@@ -3435,8 +3483,8 @@ impl StatePeer {
                 native_cut_publisher: None,
                 _retention: (),
             },
-            surfaces: collab_types::Surfaces::default(),
-            app_surfaces: AppSurfaces::default(),
+            surfaces: process_default().0,
+            app_surfaces: process_default().1,
         };
         backend::validate_pending(&peer.core.pending, peer.core.pending_bytes).map_err(err)?;
         peer.core.revocations = backend::restore_revocation_union(

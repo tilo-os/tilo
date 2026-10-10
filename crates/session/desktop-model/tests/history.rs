@@ -131,7 +131,7 @@ fn a_policy_view_decides_like_the_workspace_and_carries_no_layout_or_history() {
     ));
     workspace.grant_sandbox(CapOverride::grant(
         collab_types::caps::Subject::app("so.tilo.notes"),
-        Scope::Workspace,
+        Scope::FsPath("/var/workspace/notes".into()),
         Access::Read,
     ));
     let view = workspace.policy_view();
@@ -178,8 +178,9 @@ fn a_policy_view_decides_like_the_workspace_and_carries_no_layout_or_history() {
     };
     assert_eq!(app(&view), app(&workspace));
     let code = Actor::app("so.tilo.notes").in_room(workspace.room.to_string());
+    let notes_files = ResourceRef::FsPath("/var/workspace/notes/a.md".into());
     assert_eq!(
-        view.sandbox_decide_at(&code, &ResourceRef::Workspace, Access::Read, NOW),
-        workspace.sandbox_decide_at(&code, &ResourceRef::Workspace, Access::Read, NOW),
+        view.sandbox_decide_at(&code, &notes_files, Access::Read, NOW),
+        workspace.sandbox_decide_at(&code, &notes_files, Access::Read, NOW),
     );
 }

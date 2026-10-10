@@ -14,7 +14,7 @@ pub(in crate::state) fn document_read(
         .decide(
             &collab_types::document_node(room, app, record),
             ActionKind::Read,
-            &crate::state::policy_context(now),
+            &tilo_action_policy::Context::at_time(now),
         )
         .answer
         == Answer::Allow
@@ -28,7 +28,7 @@ pub(in crate::state) fn room(
     now: SystemTime,
 ) -> (bool, bool) {
     let node = TreePath::room(room);
-    let cx = crate::state::policy_context(now);
+    let cx = tilo_action_policy::Context::at_time(now);
     let allowed = |kind| authority.decide(&node, kind, &cx).answer == Answer::Allow;
     (allowed(ActionKind::Read), allowed(ActionKind::Undoable))
 }

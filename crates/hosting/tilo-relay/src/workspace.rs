@@ -62,6 +62,9 @@ pub struct Subscriber {
     pub disconnect: mpsc::Sender<()>,
 }
 
+/// The standing of each member device of a room, by device key.
+pub type Standings = std::collections::BTreeMap<[u8; 32], tilo_action_policy::Standing>;
+
 /// Per-workspace runtime.
 pub struct WorkspaceRuntime {
     pub(crate) sync_refresh: Option<crate::peer::sync_refresh::Mailbox>,
@@ -72,6 +75,11 @@ pub struct WorkspaceRuntime {
     /// The in-process authority governing this workspace's room, if any: it
     /// answers the room's calls.
     pub(crate) room_authority: Option<crate::rooms::RoomAuthority>,
+    /// The standing of each member device, as the room's governor projects
+    /// it: what the relay decides each change's claimed action against.
+    /// `None` until a governor projects one; the relay then decides changes
+    /// against their app surface alone.
+    pub(crate) standings: Option<Arc<Standings>>,
     /// On-disk state.
     pub store: WorkspaceStore,
     /// Initial pinned document. Transferred to `persistence` on first live
@@ -344,6 +352,7 @@ impl WorkspaceRuntime {
             sync_refresh: None,
             governor_tap: None,
             room_authority: None,
+            standings: None,
             live_members: HashMap::new(),
             last_seq: 0,
             commits,

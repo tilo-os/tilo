@@ -17,9 +17,12 @@ pub struct Surface {
     pub label: String,
     /// The storage version (`#[resource(version = N)]`).
     pub version: u32,
+    /// Absent from a surface file that lists none.
+    #[serde(default)]
     pub verbs: Vec<VerbSurface>,
     /// Every stored field, depth first; empty for a resource without a
     /// model shape.
+    #[serde(default)]
     pub fields: Vec<FieldSurface>,
 }
 

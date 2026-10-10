@@ -187,33 +187,6 @@ fn restrictions_cap_grants_and_devices_stay_apart() {
         CapDecision::NotGranted
     );
 
-    // An app's workspace grant makes it an author of the room; it reaches
-    // no storage, device or network.
-    let workspace_wide = vec![CapOverride::grant(
-        Subject::app("org.tilo.Camera"),
-        Scope::Workspace,
-        Access::Write,
-    )];
-    for resource in [
-        fs("/var/workspace/a"),
-        ResourceRef::Device("printer".into()),
-        ResourceRef::NetHost("example.com".into()),
-    ] {
-        assert_eq!(
-            decide(&app, &resource, Access::Write, &workspace_wide),
-            CapDecision::NotGranted,
-            "{resource:?}"
-        );
-    }
-    assert_eq!(
-        decide(
-            &app,
-            &ResourceRef::Workspace,
-            Access::Write,
-            &workspace_wide
-        ),
-        CapDecision::Allow
-    );
     let mut caps = vec![CapOverride::grant(
         Subject::app("org.tilo.Camera"),
         Scope::FsPath("/var/workspace".into()),
@@ -282,7 +255,7 @@ fn grants_and_restrictions_lapse_at_their_expiry() {
         ),
         CapOverride::new(
             Subject::app("org.tilo.Ebook"),
-            Scope::Workspace,
+            Scope::FsPath("/var/workspace".into()),
             Effect::Restrict,
             Access::Read,
         )

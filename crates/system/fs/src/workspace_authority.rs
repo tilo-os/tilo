@@ -239,6 +239,9 @@ pub struct WorkspaceAuthorityEnvelope {
     pub workspace: uuid::Uuid,
     pub revision: u64,
     pub capabilities: Vec<CapOverride>,
+    /// Who may reach each room a relay carries, by its relay room id.
+    #[serde(default)]
+    pub room_members: std::collections::BTreeMap<String, Vec<collab_types::RoomMember>>,
     pub tombstoned: bool,
     pub governor: [u8; 32],
     #[serde(with = "serde_bytes_64")]
@@ -276,14 +279,14 @@ impl WorkspaceAuthorityEnvelope {
     pub fn sign(
         workspace: uuid::Uuid,
         revision: u64,
-        capabilities: Vec<CapOverride>,
+        authority: impl Into<collab_types::FsAuthority>,
         tombstoned: bool,
         governor: &ed25519_dalek::SigningKey,
     ) -> anyhow::Result<Self> {
         Self::sign_with(
             workspace,
             revision,
-            capabilities,
+            authority,
             tombstoned,
             governor.verifying_key().to_bytes(),
             |payload| Ok(governor.sign(payload).to_bytes()),
@@ -301,15 +304,20 @@ impl WorkspaceAuthorityEnvelope {
     pub fn sign_with(
         workspace: uuid::Uuid,
         revision: u64,
-        capabilities: Vec<CapOverride>,
+        authority: impl Into<collab_types::FsAuthority>,
         tombstoned: bool,
         governor: [u8; 32],
         sign: impl FnOnce(&[u8]) -> anyhow::Result<[u8; 64]>,
     ) -> anyhow::Result<Self> {
+        let collab_types::FsAuthority {
+            capabilities,
+            room_members,
+        } = authority.into();
         let mut envelope = Self {
             workspace,
             revision,
             capabilities,
+            room_members,
             tombstoned,
             governor,
             signature: [0; 64],
@@ -340,6 +348,7 @@ impl WorkspaceAuthorityEnvelope {
             self.workspace,
             self.revision,
             &self.capabilities,
+            &self.room_members,
             self.tombstoned,
             self.governor,
         ))?)

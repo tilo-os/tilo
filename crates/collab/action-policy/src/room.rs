@@ -238,6 +238,16 @@ impl RoomPolicy {
         Party::new(vec![subject], &self.grants)
     }
 
+    /// Whether application `app` is an author of the room: its grants let it
+    /// change the room's content ([`roles::app_authorship`]).
+    #[must_use]
+    pub fn app_authors(&self, app: &str, cx: &Context<'_>) -> bool {
+        Authority::person(self.party_of(Subject::App(app.to_owned())))
+            .decide(&self.node(), ActionKind::Undoable, cx)
+            .answer
+            == Answer::Allow
+    }
+
     /// The grants naming `subject`.
     pub fn grants_of<'a>(&'a self, subject: &'a Subject) -> impl Iterator<Item = &'a Grant> + 'a {
         self.grants

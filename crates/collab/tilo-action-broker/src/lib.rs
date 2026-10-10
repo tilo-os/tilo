@@ -26,3 +26,19 @@ pub mod test_support;
 // from this test binary; this serves them.
 #[cfg(test)]
 tilo_automerge_isolate::test_worker!();
+
+/// Decide every change this process's rooms receive by its claim against
+/// the app surface its op names, read by `read` (the host's content store,
+/// in the record's room and app), and name in the changes the process signs
+/// for an app the surface that app runs with. A host calls it once, before
+/// it opens its rooms.
+pub fn decide_receipt_against_surfaces(
+    read: impl Fn(&collab_types::Record<'_>, &str) -> Option<Vec<u8>> + Send + Sync + 'static,
+) {
+    tilo_peer_state::decide_with_surfaces(
+        collab_types::Surfaces::from_source(std::sync::Arc::new(
+            collab_types::surface::ContentSurfaces::new(read),
+        )),
+        ui::app_surface::hash_of,
+    );
+}

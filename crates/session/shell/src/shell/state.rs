@@ -257,8 +257,11 @@ mod identity_fs_tests {
             tree.export_fs_capabilities();
             crate::shell::persist::wait_for_saves();
 
-            let exported: Vec<CapOverride> =
-                serde_json::from_slice(&std::fs::read(&output).expect("export")).expect("json");
+            let exported: Vec<CapOverride> = serde_json::from_slice::<collab_types::FsAuthority>(
+                &std::fs::read(&output).expect("export"),
+            )
+            .expect("json")
+            .capabilities;
             let device = tilo_user_identity::persist::read_device_key(&paths.device_privkey)
                 .expect("device")
                 .verifying_key()
@@ -281,7 +284,11 @@ mod identity_fs_tests {
             tree.export_fs_capabilities();
             crate::shell::persist::wait_for_saves();
             let after_revoke: Vec<CapOverride> =
-                serde_json::from_slice(&std::fs::read(&output).expect("export")).expect("json");
+                serde_json::from_slice::<collab_types::FsAuthority>(
+                    &std::fs::read(&output).expect("export"),
+                )
+                .expect("json")
+                .capabilities;
             assert!(after_revoke.iter().all(|capability| {
                 !matches!(
                     capability.subject,
@@ -292,46 +299,46 @@ mod identity_fs_tests {
 
         // Phase `filesystem_export_projects_room_membership_per_workspace_and_preserves_revocation`.
         {
+            use tilo_action_policy::{
+                Answer, Grant, KindSet, Lifetime, Subject as PolicySubject, TreePath,
+            };
             let temp = tempfile::tempdir().expect("temp");
             let output = temp.path().join("fs-caps.json");
             let alice = collab_types::Ed25519PublicKey::from_bytes([0xa1; 32]);
             let bob = collab_types::Ed25519PublicKey::from_bytes([0xb2; 32]);
+            let alice_id = hex::encode(alice.as_bytes());
+            let bob_id = hex::encode(bob.as_bytes());
             let mut room_a = Workspace::new(WorkspaceId(1), "A");
             let mut room_b = Workspace::new(WorkspaceId(2), "B");
-            let room_a_id = room_a.room;
-            let primary_room_scope = room_a.room.to_string();
-            let secondary_room_scope = room_b.room.to_string();
             let primary_relay_scope = crate::shell::network::room_topic_id(room_a.room).to_string();
             let secondary_relay_scope =
                 crate::shell::network::room_topic_id(room_b.room).to_string();
-            room_a.sandbox.extend([
-                CapOverride::new(
-                    Subject::User(alice),
-                    Scope::Room(primary_room_scope),
-                    Effect::Grant,
-                    Access::Read,
-                ),
-                // A Files share remains Files authority, not an implicit relay
-                // membership on either room.
-                CapOverride::new(
-                    Subject::User(alice),
-                    Scope::FsPath("/var/workspace/a".into()),
-                    Effect::Grant,
-                    Access::Read,
-                ),
-                CapOverride::new(
-                    Subject::User(alice),
-                    Scope::Room(room_a.room.to_string()),
-                    Effect::Restrict,
-                    Access::Read,
-                ),
-            ]);
-            room_b.sandbox.push(CapOverride::new(
-                Subject::User(bob),
-                Scope::Room(secondary_room_scope),
+            let reader = |id: &str, person: &str, room: &str| {
+                Grant::new(
+                    id,
+                    PolicySubject::Person(person.to_owned()),
+                    TreePath::room(room),
+                    KindSet::READ,
+                    Answer::Allow,
+                    PolicySubject::Person("owner".into()),
+                )
+            };
+            let room_a_policy = room_a.policy.room.clone();
+            room_a.grant(reader("alice-reads", &alice_id, &room_a_policy));
+            // A Files share remains Files authority, not an implicit relay
+            // membership on either room.
+            room_a.sandbox.push(CapOverride::new(
+                Subject::User(alice),
+                Scope::FsPath("/var/workspace/a".into()),
                 Effect::Grant,
                 Access::Read,
             ));
+            let until_ms = (tilo_clock::unix_now() + 3600) * 1000;
+            let room_b_policy = room_b.policy.room.clone();
+            room_b.grant(
+                reader("bob-reads", &bob_id, &room_b_policy)
+                    .with_lifetime(Lifetime::Until(until_ms)),
+            );
             let mut tree = WorkspaceTree {
                 desktop: DesktopTree {
                     workspaces: vec![room_a, room_b],
@@ -340,45 +347,70 @@ mod identity_fs_tests {
                 fs_acl_path: Some(output.clone()),
                 ..WorkspaceTree::default()
             };
+            let read = |output: &std::path::Path| -> collab_types::FsAuthority {
+                serde_json::from_slice(&std::fs::read(output).expect("export")).expect("json")
+            };
             tree.export_fs_capabilities();
             crate::shell::persist::wait_for_saves();
 
-            let exported: Vec<CapOverride> =
-                serde_json::from_slice(&std::fs::read(&output).expect("export")).expect("json");
-            assert!(exported.iter().any(|capability| {
-                capability.subject == Subject::User(alice)
-                    && capability.scope == Scope::Room(primary_relay_scope.clone())
-                    && capability.effect == Effect::Grant
-            }));
-            assert!(exported.iter().any(|capability| {
-                capability.subject == Subject::User(alice)
-                    && capability.scope == Scope::Room(primary_relay_scope.clone())
-                    && capability.effect == Effect::Restrict
-            }));
-            assert!(exported.iter().any(|capability| {
-                capability.subject == Subject::User(bob)
-                    && capability.scope == Scope::Room(secondary_relay_scope.clone())
-            }));
-            assert!(exported.iter().all(|capability| {
-                !(capability.subject == Subject::User(alice)
-                    && capability.scope == Scope::Room(secondary_relay_scope.clone()))
-            }));
-            assert!(exported.iter().any(|capability| {
+            let exported = read(&output);
+            let members_of = |authority: &collab_types::FsAuthority, scope: &str| {
+                authority
+                    .room_members
+                    .get(scope)
+                    .cloned()
+                    .unwrap_or_default()
+            };
+            assert!(members_of(&exported, &primary_relay_scope).contains(
+                &collab_types::RoomMember {
+                    user: alice,
+                    until: None,
+                }
+            ));
+            assert!(members_of(&exported, &secondary_relay_scope).contains(
+                &collab_types::RoomMember {
+                    user: bob,
+                    until: Some(until_ms / 1000),
+                }
+            ));
+            assert!(
+                members_of(&exported, &secondary_relay_scope)
+                    .iter()
+                    .all(|member| member.user != alice)
+            );
+            assert!(exported.capabilities.iter().any(|capability| {
                 capability.subject == Subject::User(alice)
                     && capability.scope == Scope::FsPath("/var/workspace/a".into())
             }));
 
-            tree.desktop.workspaces[0]
-                .sandbox
-                .retain(|capability| !matches!(&capability.scope, Scope::Room(room) if room == &room_a_id.to_string()));
+            // A denial in the room's policy keeps the relay closed to her.
+            tree.desktop.workspaces[0].grant(Grant::new(
+                "alice-denied",
+                PolicySubject::Person(alice_id.clone()),
+                TreePath::room(&room_a_policy),
+                KindSet::READ,
+                Answer::Deny,
+                PolicySubject::Person("owner".into()),
+            ));
             tree.export_fs_capabilities();
             crate::shell::persist::wait_for_saves();
-            let after_revoke: Vec<CapOverride> =
-                serde_json::from_slice(&std::fs::read(&output).expect("export")).expect("json");
-            assert!(after_revoke.iter().all(|capability| {
-                !(capability.subject == Subject::User(alice)
-                    && capability.scope == Scope::Room(primary_relay_scope.clone()))
-            }));
+            assert!(
+                members_of(&read(&output), &primary_relay_scope)
+                    .iter()
+                    .all(|member| member.user != alice)
+            );
+
+            tree.desktop.workspaces[0]
+                .revoke_grant(&tilo_action_policy::GrantId::new("alice-denied"));
+            tree.desktop.workspaces[0]
+                .revoke_grant(&tilo_action_policy::GrantId::new("alice-reads"));
+            tree.export_fs_capabilities();
+            crate::shell::persist::wait_for_saves();
+            assert!(
+                members_of(&read(&output), &primary_relay_scope)
+                    .iter()
+                    .all(|member| member.user != alice)
+            );
         }
     }
 }
@@ -844,13 +876,13 @@ impl Default for WorkspaceTree {
 /// What [`WorkspaceTree::export_fs_capabilities`] takes from a workspace
 /// to write on the state writer thread.
 struct FsExportWorkspace {
-    id: WorkspaceId,
     room: RoomId,
     /// Only those that persist across a restart; the export never carries
     /// session grants.
     capabilities: Vec<CapOverride>,
-    /// The room's owner and members, whom the relay admits to its topic.
-    members: Vec<UserId>,
+    /// Who may read the whole room, and until when (Unix seconds): the
+    /// people the relay admits to its topic.
+    members: Vec<(UserId, Option<u64>)>,
 }
 
 /// The filesystem's capability list as of one moment, to be written on the
@@ -2652,63 +2684,16 @@ impl WorkspaceTree {
         }
     }
 
-    /// A member of the room, as the relay admits them to its exact numeric
+    /// A reader of the room, as the relay admits them to its exact numeric
     /// shard. The relay authenticates public keys, not display names: a
     /// person whose id is not a canonical hex key cannot be made a network
     /// principal and is omitted fail-closed.
-    fn relay_room_membership(workspace: &FsExportWorkspace, person: &str) -> Option<CapOverride> {
+    fn relay_room_member(person: &str, until: Option<u64>) -> Option<collab_types::RoomMember> {
         let bytes: [u8; 32] = hex::decode(person).ok()?.try_into().ok()?;
-        Some(
-            CapOverride::grant(
-                Subject::User(collab_types::Ed25519PublicKey::from_bytes(bytes)),
-                Scope::Room(crate::shell::network::room_topic_id(workspace.room).to_string()),
-                Access::Read,
-            )
-            .with_id(format!("member:{person}")),
-        )
-    }
-
-    /// Turn a room-scoped sandbox capability into the exact numeric relay
-    /// shard it reaches. Files-path grants deliberately do not pass through
-    /// here: filesystem residency is global, while relay admission is per
-    /// room. A `Workspace` capability is also room reach for its containing
-    /// workspace, so it is projected to that workspace's shard. A canonical
-    /// hex person id is converted to its key; any other person is omitted
-    /// fail-closed.
-    fn relay_room_capability(
-        workspace: &FsExportWorkspace,
-        capability: &CapOverride,
-    ) -> Option<CapOverride> {
-        if !capability.persists_across_restart() {
-            return None;
-        }
-        let applies_to_workspace = match &capability.scope {
-            Scope::Workspace => true,
-            // Current room documents use the durable UUID. Older shell
-            // mutation paths wrote the local workspace handle instead;
-            // accept it only while exporting that exact workspace, then
-            // normalize to the durable relay shard below.
-            Scope::Room(room) => {
-                room == &workspace.room.to_string() || room == &workspace.id.raw().to_string()
-            }
-            _ => false,
-        };
-        if !applies_to_workspace {
-            return None;
-        }
-        let subject = match &capability.subject {
-            Subject::User(user) => Subject::User(*user),
-            Subject::Principal(Principal::Person(person)) => {
-                let bytes: [u8; 32] = hex::decode(person).ok()?.try_into().ok()?;
-                Subject::User(collab_types::Ed25519PublicKey::from_bytes(bytes))
-            }
-            Subject::Principal(_) => return None,
-        };
-        let mut projected = capability.clone();
-        projected.subject = subject;
-        projected.scope =
-            Scope::Room(crate::shell::network::room_topic_id(workspace.room).to_string());
-        Some(projected)
+        Some(collab_types::RoomMember {
+            user: collab_types::Ed25519PublicKey::from_bytes(bytes),
+            until,
+        })
     }
 
     /// Write the capability list the filesystem enforces. The FUSE mount
@@ -2735,12 +2720,12 @@ impl WorkspaceTree {
 
     fn fs_capability_export(&self) -> Option<FsExport> {
         let path = self.fs_acl_path.clone()?;
+        let now = tilo_clock::unix_now();
         let workspaces: Vec<FsExportWorkspace> = self
             .desktop
             .workspaces
             .iter()
             .map(|workspace| FsExportWorkspace {
-                id: workspace.id,
                 room: workspace.room,
                 capabilities: workspace
                     .sandbox
@@ -2748,11 +2733,7 @@ impl WorkspaceTree {
                     .filter(|capability| capability.persists_across_restart())
                     .cloned()
                     .collect(),
-                members: workspace
-                    .roster()
-                    .into_iter()
-                    .map(|(person, _)| person)
-                    .collect(),
+                members: workspace.room_readers_at(now),
             })
             .collect();
         Some(FsExport {
@@ -2770,6 +2751,7 @@ impl WorkspaceTree {
                 .ok()
                 .map(|key| key.verifying_key().to_bytes());
         let mut caps: Vec<CapOverride> = Vec::new();
+        let mut room_members = std::collections::BTreeMap::new();
         for workspace in workspaces {
             let profile =
                 crate::identity_registry::selected_identity_profile(&workspace.room.to_string())
@@ -2814,22 +2796,21 @@ impl WorkspaceTree {
                 }
             }
             // Signed room membership is a separate projection from Files
-            // access. Keep all Effects, including Restrict, so a relay
-            // revocation can never be widened by this export.
-            caps.extend(
-                workspace
-                    .capabilities
-                    .iter()
-                    .filter_map(|capability| Self::relay_room_capability(workspace, capability)),
-            );
-            caps.extend(
+            // access: who the room's policy lets read it, per relay shard.
+            room_members.insert(
+                crate::shell::network::room_topic_id(workspace.room).to_string(),
                 workspace
                     .members
                     .iter()
-                    .filter_map(|person| Self::relay_room_membership(workspace, person)),
+                    .filter_map(|(person, until)| Self::relay_room_member(person, *until))
+                    .collect::<Vec<_>>(),
             );
         }
-        let Ok(json) = serde_json::to_vec_pretty(&caps) else {
+        let authority = collab_types::FsAuthority {
+            capabilities: caps,
+            room_members,
+        };
+        let Ok(json) = serde_json::to_vec_pretty(&authority) else {
             return;
         };
         if let Err(e) = tilo_files::native::atomic::write_creating_parent(path, &json) {
@@ -3219,7 +3200,7 @@ impl WorkspaceTree {
 
     /// Record `person` making `app` an author of `workspace_id`'s space —
     /// what opening an app yourself means — unless it already is one. The
-    /// stored capability, or `None` when nothing was recorded: already an
+    /// grant as stored, or `None` when nothing was recorded: already an
     /// author, or `person` lacks the authority, in which case the app opens
     /// a viewer.
     pub fn grant_app_authorship(
@@ -3227,33 +3208,36 @@ impl WorkspaceTree {
         workspace_id: WorkspaceId,
         person: &UserId,
         app: &str,
-    ) -> Option<CapOverride> {
+    ) -> Option<tilo_action_policy::Grant> {
+        let now = tilo_clock::unix_now();
         let workspace = self
             .desktop
             .workspaces
             .iter()
             .find(|w| w.id == workspace_id)?;
-        if workspace.sandbox_decide_at(
-            &Actor::app(app),
-            &ResourceRef::Workspace,
-            Access::Write,
-            tilo_clock::unix_now(),
-        ) == CapDecision::Allow
+        if workspace.app_is_author_at(app, now) || !self.may_write_governance(workspace_id, person)
         {
             return None;
         }
-        let grant = CapOverride::grant(Subject::app(app), Scope::Workspace, Access::Write)
-            .with_id(format!("app-author:{app}"));
-        let recorded = self.grant_sandbox_in_workspace(workspace_id, person, grant)?;
+        let grant = tilo_action_policy::roles::app_authorship(
+            &workspace.policy.room,
+            app,
+            tilo_action_policy::Subject::Person(person.clone()),
+        );
+        let stored = self
+            .desktop
+            .grant_in_workspace_at(workspace_id, person, grant, now)
+            .ok()?;
+        self.doc_write_policy(
+            workspace_id,
+            &PolicyEdit {
+                granted: vec![stored.id.clone()],
+                ..PolicyEdit::default()
+            },
+        );
+        self.queue_save();
         self.desktop.external_revision = self.desktop.external_revision.wrapping_add(1);
-        self.desktop
-            .workspaces
-            .iter()
-            .find(|w| w.id == workspace_id)?
-            .sandbox
-            .iter()
-            .find(|cap| cap.id == recorded)
-            .cloned()
+        Some(stored)
     }
 
     /// The active workspace after the person at this machine opens `app`.
@@ -9220,26 +9204,38 @@ mod workspace_tree_lifecycle_tests {
 
     #[test]
     fn relay_authority_never_turns_session_grants_into_timeless_nas_access() {
-        let workspace = FsExportWorkspace {
-            id: WorkspaceId::new(),
-            room: RoomId::new(),
-            capabilities: Vec::new(),
-            members: Vec::new(),
-        };
-        let subject = Subject::User(collab_types::Ed25519PublicKey::from_bytes([7; 32]));
-        let reach = || {
-            CapOverride::grant(
-                subject.clone(),
-                Scope::Room(workspace.room.to_string()),
-                Access::Read,
+        use tilo_action_policy::{Answer, Grant, KindSet, Lifetime, Subject, TreePath};
+        let mut workspace = Workspace::new(WorkspaceId(1), "A");
+        let room = workspace.policy.room.clone();
+        let reach = |id: &str, person: &str, lifetime: Lifetime| {
+            Grant::new(
+                id,
+                Subject::Person(person.to_owned()),
+                TreePath::room(&room),
+                KindSet::READ,
+                Answer::Allow,
+                Subject::Person("owner".into()),
             )
+            .with_lifetime(lifetime)
         };
-        for expiry in [Expiry::AfterUse, Expiry::EndOfSession] {
-            let capability = reach().expiring(expiry);
-            assert!(WorkspaceTree::relay_room_capability(&workspace, &capability).is_none());
-        }
-        let persistent = reach();
-        assert!(WorkspaceTree::relay_room_capability(&workspace, &persistent).is_some());
+        let once = "07".repeat(32);
+        let session = "08".repeat(32);
+        let persistent = "09".repeat(32);
+        workspace.grant(reach("once", &once, Lifetime::Once));
+        workspace.grant(reach(
+            "session",
+            &session,
+            Lifetime::Session(tilo_desktop_model::session_id().to_owned()),
+        ));
+        workspace.grant(reach("persistent", &persistent, Lifetime::UntilRevoked));
+        let readers: Vec<String> = workspace
+            .room_readers_at(tilo_clock::unix_now())
+            .into_iter()
+            .map(|(person, _)| person)
+            .collect();
+        assert!(!readers.contains(&once));
+        assert!(!readers.contains(&session));
+        assert!(readers.contains(&persistent));
     }
 
     #[test]

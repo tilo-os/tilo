@@ -682,7 +682,11 @@ fn shipped_daemons_partition_restart_and_converge_through_real_fuse() {
             collab_types::caps::Access::Read,
         ),
     ];
-    std::fs::write(&acl, serde_json::to_vec(&caps).unwrap()).unwrap();
+    std::fs::write(
+        &acl,
+        serde_json::to_vec(&collab_types::FsAuthority::from(caps)).unwrap(),
+    )
+    .unwrap();
 
     let host_mount = temp.path().join("host-mount");
     let peer_mount = temp.path().join("peer-mount");
@@ -971,7 +975,11 @@ macro_rules! run_nas_replica_lifecycle_scenario {
                 collab_types::caps::Access::Read,
             ),
         ];
-        std::fs::write(&acl, serde_json::to_vec(&caps).unwrap()).unwrap();
+        std::fs::write(
+            &acl,
+            serde_json::to_vec(&collab_types::FsAuthority::from(caps.clone())).unwrap(),
+        )
+        .unwrap();
         let binary = Path::new(env!("CARGO_BIN_EXE_fs"));
         let owner_mount = temp.path().join("owner-mount");
         std::fs::create_dir(&owner_mount).unwrap();
@@ -1134,7 +1142,11 @@ macro_rules! run_nas_replica_lifecycle_scenario {
                 collab_types::caps::Access::Read,
             ),
         ];
-        std::fs::write(&revoked_acl, serde_json::to_vec(&revoked_caps).unwrap()).unwrap();
+        std::fs::write(
+            &revoked_acl,
+            serde_json::to_vec(&collab_types::FsAuthority::from(revoked_caps.clone())).unwrap(),
+        )
+        .unwrap();
         publish_authority(binary, &owner_identity, &owner_cache, &revoked_acl);
         let replica_authority = replica_cache
             .join(original.workspace_id().to_string())

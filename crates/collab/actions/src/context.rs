@@ -607,6 +607,10 @@ pub struct ActionGroup {
     pub kind: String,
 }
 
+/// [`ActionFacet::key`] of the risk ([`crate::RiskLevel::name`]) of the
+/// action a context describes, for a question about it put to a person.
+pub const RISK_FACET: &str = "risk";
+
 /// A filterable activity dimension. Open key/value vocabulary lets future
 /// apps add facets without changing the wire enum.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

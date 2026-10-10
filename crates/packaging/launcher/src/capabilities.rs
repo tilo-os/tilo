@@ -61,7 +61,8 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use collab_types::caps::{
-    Access, Actor, CapDecision, CapOverride, Effect, ResourceRef, Scope, decide_capability,
+    Access, Actor, CapDecision, CapOverride, Effect, LaunchGrants, ResourceRef, Scope,
+    decide_capability,
 };
 
 /// How an app may take part in the space it is launched into. Resolved
@@ -246,16 +247,15 @@ impl CapabilityPlan {
                         net_hosts.push(host.clone());
                     }
                 }
-                // Workspace / App / Room / artifact / action scopes are about the CRDT
-                // and the room, not the kernel — inert here, never permissive.
-                _ => {}
+                // A collaborative-file record is reached through the room's
+                // documents, not the kernel — inert here, never permissive.
+                Scope::FsRecord(_) => {}
             }
         }
 
         let mut plan = CapabilityPlan {
             allow_network: !net_hosts.is_empty(),
             net_hosts,
-            participation: participation_for(&actor, caps, now),
             ..CapabilityPlan::empty()
         };
         for (path, writable) in fs {
@@ -275,27 +275,6 @@ impl CapabilityPlan {
         plan.devices = devices;
         plan
     }
-}
-
-/// Read the app's participation in the space out of the capability list.
-///
-/// One question asked twice of [`decide_capability`], against
-/// `ResourceRef::Workspace`: may it write, and may it read? "Read but
-/// not write" is read-only participation.
-///
-/// Deliberately not a fourth enforcement point to keep in step with the
-/// other three — same decision function, same capability list, so a
-/// grant the compositor shows as read-only cannot be an authoring
-/// grant here.
-fn participation_for(actor: &Actor, caps: &[CapOverride], now: Option<u64>) -> Participation {
-    let resource = ResourceRef::Workspace;
-    if allows(actor, &resource, Access::Write, caps, now) {
-        return Participation::Author;
-    }
-    if allows(actor, &resource, Access::Read, caps, now) {
-        return Participation::ReadOnly;
-    }
-    Participation::Unscoped
 }
 
 fn allows(
@@ -390,7 +369,7 @@ pub fn host_device_paths(device: &str) -> Vec<PathBuf> {
 /// — the app gets exactly what its manifest declared, nothing more.
 /// Never returns an error for that reason: no failure mode here should
 /// widen the sandbox, and none should abort a launch either.
-pub fn load_capability_file(path: &Path) -> Vec<CapOverride> {
+pub fn load_capability_file(path: &Path) -> LaunchGrants {
     let bytes = match std::fs::read(path) {
         Ok(b) => b,
         Err(e) => {
@@ -399,18 +378,18 @@ pub fn load_capability_file(path: &Path) -> Vec<CapOverride> {
                 error = %e,
                 "capability file unreadable; launching with manifest permissions only"
             );
-            return Vec::new();
+            return LaunchGrants::default();
         }
     };
-    match serde_json::from_slice::<Vec<CapOverride>>(&bytes) {
-        Ok(caps) => caps,
+    match serde_json::from_slice::<LaunchGrants>(&bytes) {
+        Ok(grants) => grants,
         Err(e) => {
             tracing::warn!(
                 path = %path.display(),
                 error = %e,
                 "capability file malformed; launching with manifest permissions only"
             );
-            Vec::new()
+            LaunchGrants::default()
         }
     }
 }
@@ -445,14 +424,11 @@ mod tests {
         }
         // Phase `read_capability_plans_a_read_only_path_only`.
         {
-            let caps = vec![
-                CapOverride::grant(
-                    Subject::app("so.tilo.books"),
-                    Scope::Workspace,
-                    Access::Write,
-                ),
-                fs_grant("so.tilo.books", "/var/workspace/books", Access::Read),
-            ];
+            let caps = vec![fs_grant(
+                "so.tilo.books",
+                "/var/workspace/books",
+                Access::Read,
+            )];
             let plan =
                 CapabilityPlan::for_app_with("so.tilo.books", &caps, Some(1000), fake_device_paths);
             assert_eq!(plan.ro_paths, vec![PathBuf::from("/var/workspace/books")]);
@@ -645,137 +621,32 @@ mod tests {
                 "/var/workspace/books",
                 Access::Read,
             )];
-            std::fs::write(&path, serde_json::to_vec(&caps).unwrap()).unwrap();
-            assert_eq!(load_capability_file(&path), caps);
+            let grants = LaunchGrants {
+                authors: vec!["so.tilo.books".into()],
+                sandbox: caps,
+            };
+            std::fs::write(&path, serde_json::to_vec(&grants).unwrap()).unwrap();
+            assert_eq!(load_capability_file(&path), grants);
         }
     }
 
-    /// A workspace-scoped `Restrict` at `Access::Read`: "see everything
-    /// here, change nothing". The existing vocabulary, not a new one.
-    fn read_only_participation(app: &str) -> Vec<CapOverride> {
-        vec![
-            CapOverride::grant(Subject::app(app), Scope::Workspace, Access::Read),
-            CapOverride::new(
-                Subject::app(app),
-                Scope::Workspace,
-                Effect::Restrict,
-                Access::Read,
-            ),
-        ]
-    }
-
+    /// A launch file names which apps author the room; an app reads its
+    /// own entry and nothing of another app's.
     #[test]
-    fn participation_follows_the_live_workspace_grant() {
-        // Phase `a_read_only_grant_resolves_to_read_only_participation`.
-        {
-            let caps = read_only_participation("so.tilo.viewer");
-            let plan = CapabilityPlan::for_app_with(
-                "so.tilo.viewer",
-                &caps,
-                Some(1_000),
-                fake_device_paths,
-            );
-            assert_eq!(plan.participation, Participation::ReadOnly);
-            assert!(
-                !plan.participation.carries_identity(),
-                "a read-only participant must hold no signing key — that is what makes it unable \
-                 to originate a change rather than merely refused one"
-            );
-            assert_eq!(plan.participation.env_value(), Some("read-only"));
-        }
-        // Phase `a_write_grant_resolves_to_authorship`.
-        {
-            let caps = vec![CapOverride::grant(
-                Subject::app("so.tilo.editor"),
-                Scope::Workspace,
-                Access::Write,
-            )];
-            let plan = CapabilityPlan::for_app_with(
-                "so.tilo.editor",
-                &caps,
-                Some(1_000),
-                fake_device_paths,
-            );
-            assert_eq!(plan.participation, Participation::Author);
-            assert!(plan.participation.carries_identity());
-        }
-        // Phase `no_workspace_capability_leaves_participation_unscoped`.
-        // No workspace-scoped capability says nothing about participation, so
-        // nothing is inferred — this module doesn't decide who may author.
-        {
-            let caps = vec![fs_grant(
-                "so.tilo.books",
-                "/var/workspace/books",
-                Access::Write,
-            )];
-            let plan = CapabilityPlan::for_app_with(
-                "so.tilo.books",
-                &caps,
-                Some(1_000),
-                fake_device_paths,
-            );
-            assert_eq!(plan.participation, Participation::Unscoped);
-            assert!(plan.participation.carries_identity());
-            assert_eq!(plan.participation.env_value(), None);
-
-            let none =
-                CapabilityPlan::for_app_with("so.tilo.books", &[], Some(1_000), fake_device_paths);
-            assert_eq!(none.participation, Participation::Unscoped);
-        }
-        // Phase `read_only_participation_leaves_no_writable_bind`.
-        // The same restriction that caps participation caps the filesystem,
-        // since `Scope::Workspace` matches every resource — one capability,
-        // not two rules that could disagree.
-        {
-            let mut caps = read_only_participation("so.tilo.viewer");
-            caps.push(fs_grant(
+    fn a_launch_file_tells_each_app_whether_it_authors() {
+        let grants = LaunchGrants {
+            authors: vec!["so.tilo.editor".into()],
+            sandbox: vec![fs_grant(
                 "so.tilo.viewer",
                 "/var/workspace/shared",
                 Access::Write,
-            ));
-            let plan = CapabilityPlan::for_app_with(
-                "so.tilo.viewer",
-                &caps,
-                Some(1_000),
-                fake_device_paths,
-            );
-            assert_eq!(plan.participation, Participation::ReadOnly);
-            assert!(
-                plan.rw_paths.is_empty(),
-                "a read-only participant must have no writable path: {plan:?}"
-            );
-            assert_eq!(
-                plan.ro_paths,
-                vec![PathBuf::from("/var/workspace/shared")],
-                "it still sees the shared tree — read-only participation is participation"
-            );
-        }
-        // Phase `another_apps_read_only_grant_does_not_apply`.
-        // Participation is another app's business only if it names that app.
-        {
-            let caps = read_only_participation("so.tilo.viewer");
-            let plan = CapabilityPlan::for_app_with(
-                "so.tilo.editor",
-                &caps,
-                Some(1_000),
-                fake_device_paths,
-            );
-            assert_eq!(plan.participation, Participation::Unscoped);
-        }
-        // Phase `an_expired_participation_grant_says_nothing`.
-        // An expired read-only grant expires into "nothing said", not
-        // authorship — identity returns only because nothing scopes it.
-        {
-            let caps: Vec<CapOverride> = read_only_participation("so.tilo.viewer")
-                .into_iter()
-                .map(|c| c.expiring(Expiry::AtUnix(500)))
-                .collect();
-            let live =
-                CapabilityPlan::for_app_with("so.tilo.viewer", &caps, Some(499), fake_device_paths);
-            assert_eq!(live.participation, Participation::ReadOnly);
-            let lapsed =
-                CapabilityPlan::for_app_with("so.tilo.viewer", &caps, Some(501), fake_device_paths);
-            assert_eq!(lapsed.participation, Participation::Unscoped);
-        }
+            )],
+        };
+        assert!(grants.authors("so.tilo.editor"));
+        assert!(!grants.authors("so.tilo.viewer"));
+        let viewer = grants.for_app("so.tilo.viewer");
+        assert!(viewer.authors.is_empty());
+        assert_eq!(viewer.sandbox.len(), 1);
+        assert!(grants.for_app("so.tilo.editor").sandbox.is_empty());
     }
 }

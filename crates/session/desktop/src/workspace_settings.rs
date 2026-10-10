@@ -1719,7 +1719,6 @@ fn scope_object_label(scope: &Scope, apps: &dyn AppDirectory) -> String {
 
 fn scope_phrase(scope: &Scope, object: bool, _apps: &dyn AppDirectory) -> String {
     let (key, args): (&str, Vec<(&str, ui::i18n::ArgValue)>) = match scope {
-        Scope::Workspace | Scope::Room(_) => ("workspace-settings-scope-workspace", Vec::new()),
         Scope::FsPath(path) => fs_scope_phrase(path),
         Scope::FsRecord(record) => (
             "workspace-settings-scope-record",
@@ -2465,10 +2464,7 @@ pub fn agent_authority_preset(ws: &Workspace, agent: &str) -> AgentPreset {
     let broad_sandbox = ws.sandbox.iter().any(|cap| {
         cap.effect == Effect::Grant
             && matches!(&cap.subject, Subject::Principal(Principal::Agent(id)) if id == agent)
-            && matches!(
-                cap.scope,
-                Scope::Workspace | Scope::Device(_) | Scope::NetHost(_)
-            )
+            && matches!(cap.scope, Scope::Device(_) | Scope::NetHost(_))
     });
     if broad_grant || broad_sandbox {
         return AgentPreset::Custom;
@@ -5574,8 +5570,6 @@ mod permissions_pane_tests {
         // two the panel shows today, so a new scope can't reintroduce the leak.
         {
             let scopes = vec![
-                Scope::Workspace,
-                Scope::Room("r".into()),
                 Scope::FsPath(WORKSPACE_FILES_PATH.into()),
                 Scope::FsPath(format!("{WORKSPACE_FILES_PATH}/")),
                 Scope::FsPath(format!("{WORKSPACE_FILES_PATH}/design")),
@@ -5807,8 +5801,9 @@ mod permissions_pane_tests {
                                 Scope::Device(d) => ResourceRef::Device(d.clone()),
                                 Scope::NetHost(h) => ResourceRef::NetHost(h.clone()),
                                 Scope::FsPath(p) => ResourceRef::FsPath(p.clone()),
-                                Scope::Workspace => ResourceRef::Workspace,
-                                other => panic!("unexpected scope in the grant table: {other:?}"),
+                                Scope::FsRecord(record) => {
+                                    panic!("unexpected scope in the grant table: {record:?}")
+                                }
                             };
                             probe
                                 .grant_as(&OWNER.to_string(), cap.clone())
@@ -5854,16 +5849,16 @@ mod permissions_pane_tests {
             // Phase `a_workspace_scoped_app_grant_is_listed_and_revocable`.
             {
                 let mut ws = ws_with_grants();
-                let id = ws
-                    .grant_as(
-                        &OWNER.to_string(),
-                        CapOverride::grant(
-                            Subject::app("firefox"),
-                            Scope::Workspace,
-                            Access::Write,
-                        ),
-                    )
+                let now = tilo_clock::unix_now();
+                let grant = tilo_action_policy::roles::app_authorship(
+                    &ws.policy.room,
+                    "firefox",
+                    tilo_action_policy::Subject::person(OWNER),
+                );
+                let id = grant.id.as_str().to_owned();
+                ws.govern_as_at(OWNER, tilo_action_policy::Change::Grant(grant.clone()), now)
                     .expect("owner grants");
+                assert!(ws.app_is_author_at("firefox", now));
                 let layout = permissions_pane_layout(&ws, pane(), &NoAppDirectory, VIEWER);
                 let row = layout
                     .rows
@@ -5871,18 +5866,14 @@ mod permissions_pane_tests {
                     .find(|r| r.cap_id == id)
                     .expect("the workspace-scoped app grant has a row");
                 assert_eq!(row.subject.kind, SubjectKind::App);
-                assert_eq!(row.allows, "Edit this workspace");
+                assert_eq!(row.allows, grant_allows(&grant, &NoAppDirectory));
                 assert_eq!(
                     apply_revoke(&mut ws, &OWNER.to_string(), &row.cap_id)
-                        .sandbox_revoked
+                        .revoked
                         .len(),
                     1
                 );
-                assert!(!ws.allows(
-                    &app_actor(&ws, "firefox"),
-                    &ResourceRef::Workspace,
-                    Access::Write
-                ));
+                assert!(!ws.app_is_author_at("firefox", now));
             }
 
             // Phase `revoking_a_row_stops_the_capability_working`.

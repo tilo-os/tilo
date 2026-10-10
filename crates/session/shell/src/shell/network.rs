@@ -24,6 +24,8 @@ mod personal_device_peers;
 mod record_content;
 pub use record_content::InboundRecordContent;
 #[cfg(test)]
+mod agent_question_tests;
+#[cfg(test)]
 mod node_member_tests;
 mod relay_rooms;
 mod room_gate;
@@ -11359,7 +11361,7 @@ mod tests {
                         },
                         None,
                         None,
-                        &collab_types::Surfaces::default(),
+                        &collab_types::Surfaces::process(),
                         &allows,
                     )
                     .is_ok_and(|receipt| receipt == collab_types::Receipt::Admit)
@@ -11658,6 +11660,49 @@ mod tests {
                 ),
                 "a commenter must not smuggle a splice through the generic document route",
             );
+            // Decided against the app's surface, the commenter's comment is
+            // theirs to make.
+            let surface: &str = "[[resources]]\nkind = \"notes.page\"\nlabel = \"Page\"\nversion = 1\n\n[[resources.verbs]]\nid = \"comment\"\nkind = \"undoable\"\nlabel = \"Comment\"\nfield = \"comments\"\nparams = []\n";
+            let hash = *blake3::hash(surface.as_bytes()).as_bytes();
+            let hex = hex::encode(hash);
+            collab_types::Surfaces::set_process(collab_types::Surfaces::from_source(
+                std::sync::Arc::new(collab_types::surface::ContentSurfaces::new(
+                    move |_, wanted| (wanted == hex).then(|| surface.as_bytes().to_vec()),
+                )),
+            ));
+            let mut comment = envelope.clone().with_surface(Some(hash));
+            {
+                use automerge::transaction::Transactable as _;
+                let mut doc = automerge::AutoCommit::new();
+                doc.put(automerge::ROOT, "comment", "looks good").unwrap();
+                let context = tilo_actions::ActionContext {
+                    what: Some(tilo_actions::Did::Verb(tilo_actions::VerbCall::new(
+                        tilo_actions::ActionKey::new(&route.app_id, "notes.page", "comment"),
+                        [],
+                    ))),
+                    ..tilo_actions::ActionContext::for_resource(
+                        &route.record_id,
+                        "notes.page",
+                        "Page",
+                    )
+                };
+                doc.commit_with(
+                    automerge::transaction::CommitOptions::default()
+                        .with_message(context.change_message().unwrap()),
+                );
+                comment.payload = collab_types::DocumentMutation::Incremental(doc.save_after(&[]))
+                    .encode()
+                    .unwrap();
+            }
+            collab_types::sign_op(&mut comment, &signing).expect("signed comment");
+            assert!(document_allowed(
+                &net,
+                &origin,
+                &route.cluster_id,
+                &route.app_id,
+                &route.record_id,
+                &comment,
+            ));
 
             let replica = net.replica.lock().expect("replica");
             let mut tree = replica.tree.write();

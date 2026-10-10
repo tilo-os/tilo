@@ -14410,6 +14410,7 @@ dependencies = [
  "tilo-power-mgmt",
  "tilo-projector",
  "tilo-relay",
+ "tilo-relay-client",
  "tilo-relay-protocol",
  "tilo-relay-session",
  "tilo-resource",
@@ -17060,6 +17061,7 @@ dependencies = [
 name = "tilo-identity-host"
 version = "0.1.0"
 dependencies = [
+ "blake3",
  "collab-types",
  "ed25519-dalek 3.0.0",
  "getrandom 0.4.3",
@@ -17073,7 +17075,9 @@ dependencies = [
  "tempfile",
  "threshold-identity",
  "tilo-action-policy",
+ "tilo-actions",
  "tilo-advisory-lock",
+ "tilo-automerge-fork",
  "tilo-clock",
  "tilo-desktop-model",
  "tilo-files",
@@ -17694,6 +17698,7 @@ name = "tilo-relay"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "app-registry",
  "base64",
  "blake3",
  "bounded-command",
@@ -18011,6 +18016,7 @@ dependencies = [
  "tilo-automerge-isolate",
  "tilo-capture",
  "tilo-clock",
+ "tilo-content",
  "tilo-delivery-protocol",
  "tilo-desktop-model",
  "tilo-dialogs",

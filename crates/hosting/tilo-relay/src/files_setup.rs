@@ -254,13 +254,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn room_administration_never_substitutes_for_files_authorization() {
+    fn a_device_grant_never_substitutes_for_files_authorization() {
         use collab_types::{Access, CapOverride, Ed25519PublicKey, Effect, Expiry, Scope, Subject};
         let person = [41; 32];
         let mut grant = CapOverride {
             id: String::default(),
             subject: Subject::User(Ed25519PublicKey(person)),
-            scope: Scope::Room("existing-room".into()),
+            scope: Scope::Device("camera".into()),
             access: Access::Write,
             effect: Effect::Grant,
             expiry: Expiry::Never,

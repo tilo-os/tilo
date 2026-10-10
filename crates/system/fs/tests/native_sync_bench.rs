@@ -158,7 +158,11 @@ fn full_access_acl(path: &Path, person_seed: [u8; 32]) {
         )
     })
     .collect();
-    std::fs::write(path, serde_json::to_vec(&caps).unwrap()).unwrap();
+    std::fs::write(
+        path,
+        serde_json::to_vec(&collab_types::FsAuthority::from(caps)).unwrap(),
+    )
+    .unwrap();
 }
 
 /// Two network namespaces joined by a veth pair with a fixed one-way delay

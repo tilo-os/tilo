@@ -66,6 +66,14 @@ impl Rooms {
         let mut document = automerge::AutoCommit::load(&bytes)
             .map_err(|error| CollaborationError::new(error.to_string()))?;
         let result = change(&mut document)?;
+        // The governor writes the record directly: an edit of the whole
+        // record, named as such.
+        if automerge::transaction::Transactable::pending_ops(&document) != 0 {
+            document.commit_with(
+                automerge::transaction::CommitOptions::default()
+                    .with_message(tilo_actions::FrameworkChange::Native.change_message()),
+            );
+        }
         let changes = document.save_after(&heads);
         if changes.len() > 64 * 1024 {
             return Err(CollaborationError::new(

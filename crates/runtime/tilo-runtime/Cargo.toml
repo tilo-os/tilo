@@ -73,6 +73,8 @@ tilo-installed-apps = { path = "../../packaging/installed-apps" }
 # Joined rooms: their enrolled replicas, invitation redemption and relay sessions.
 tilo-joined-room = { path = "../../collab/tilo-joined-room" }
 tilo-peer-state = { path = "../../collab/tilo-peer-state" }
+# The content store app surfaces are read from.
+tilo-content = { path = "../../system/content" }
 # The relay session a joined room syncs through; the daemon is a dev-dependency.
 tilo-relay-session = { path = "../../hosting/tilo-relay-session" }
 tilo-relay-protocol = { path = "../../hosting/tilo-relay-protocol" }

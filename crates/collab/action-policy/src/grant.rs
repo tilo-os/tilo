@@ -272,6 +272,24 @@ impl<'a> Context<'a> {
         }
     }
 
+    /// At `now`, Unix seconds.
+    #[must_use]
+    pub const fn at_secs(now: u64) -> Self {
+        Self::at(now.saturating_mul(1000))
+    }
+
+    /// At the wall-clock time `now`; the Unix epoch for a time before it.
+    #[must_use]
+    pub fn at_time(now: std::time::SystemTime) -> Self {
+        Self::at(
+            now.duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis()
+                .try_into()
+                .unwrap_or(u64::MAX),
+        )
+    }
+
     #[must_use]
     pub const fn in_session(mut self, session: &'a str) -> Self {
         self.session = Some(session);

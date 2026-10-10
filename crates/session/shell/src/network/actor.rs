@@ -878,6 +878,9 @@ struct ActorState {
     )>,
     connecting_hosts: HashSet<(WorkspaceId, EndpointId)>,
     content_discovery_tasks: HashMap<(WorkspaceId, EndpointId), tokio::task::JoinHandle<()>>,
+    /// Approver sessions that put this person's agents' questions on the
+    /// sheet, one per connected host.
+    agent_questions: super::agent_questions::Answering,
     peers_seen: HashMap<(WorkspaceId, EndpointId), PeerMembership>,
     next_membership_epoch: u64,
     /// Inbound ALPN connections are bound once to the membership active on
@@ -1475,6 +1478,8 @@ impl ActorState {
                     tracing::warn!(peer = %id, "cannot connect workspace host without a device certificate");
                     return true;
                 };
+                self.agent_questions
+                    .start(&self.endpoint, addr.clone(), identity);
                 let mut routes = HostRouteScheduler {
                     endpoint: &self.endpoint,
                     identity,
@@ -1507,6 +1512,7 @@ impl ActorState {
     /// is reserved for an explicit enrolled-home-peer removal: an address
     /// refresh must never revoke a still-valid Files hydration source.
     fn teardown_host(&mut self, id: EndpointId, remove_content: bool) {
+        self.agent_questions.stop(id);
         let enrolled_home_peer = self
             .hosts
             .remove(&id)
@@ -3457,6 +3463,7 @@ async fn run(
         action_broker: None,
         connecting_hosts: HashSet::new(),
         content_discovery_tasks: HashMap::new(),
+        agent_questions: super::agent_questions::Answering::default(),
         peers_seen: HashMap::new(),
         next_membership_epoch: 0,
         personal_fabric_ingress: HashMap::new(),

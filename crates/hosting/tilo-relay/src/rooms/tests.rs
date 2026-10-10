@@ -476,17 +476,22 @@ async fn app_authorship_grant_uses_current_owner_and_conflict_checked_retries() 
     let state = rooms.room(&created.room).await.unwrap();
     {
         let room = state.lock().await;
-        let caps = room.peer().governed_sandbox().unwrap();
-        let grant = caps
+        let now = std::time::SystemTime::now();
+        let policy = room
+            .peer()
+            .permissions(cert.device_public_key, now)
+            .unwrap()
+            .policy;
+        let grant = policy
+            .grants
             .iter()
-            .find(|cap| cap.id == "app-author:so.tilo.chat")
+            .find(|grant| grant.id.as_str() == "app-author:so.tilo.chat")
             .unwrap();
         assert_eq!(
             grant.subject,
-            collab_types::caps::Subject::app("so.tilo.chat")
+            tilo_action_policy::Subject::App("so.tilo.chat".into())
         );
-        assert_eq!(grant.access, collab_types::caps::Access::Write);
-        assert_eq!(grant.scope, collab_types::caps::Scope::Workspace);
+        assert!(policy.app_authors("so.tilo.chat", &tilo_action_policy::Context::at_time(now),));
     }
     let mut conflict = request.clone();
     conflict.app = "so.tilo.ebook".into();

@@ -265,7 +265,7 @@ impl PermissionContext {
     }
 
     /// The **unrestricted local user**: the owner of [`LOCAL_ROOM`] holding
-    /// one explicit sandbox capability over every sandboxed resource.
+    /// one explicit sandbox capability over the whole filesystem.
     ///
     /// Not a bypass flag — ownership is the room's structural rule and the
     /// sandbox reach is a real [`CapOverride`], both evaluated like any other.
@@ -275,10 +275,19 @@ impl PermissionContext {
     pub fn permissive() -> Self {
         Self::new(
             Actor::person(LOCAL_USER),
-            vec![
-                CapOverride::grant(Subject::person(LOCAL_USER), Scope::Workspace, Access::Write)
-                    .with_id("local-user-unrestricted"),
-            ],
+            [
+                Scope::FsPath("/".into()),
+                Scope::Device(collab_types::caps::EVERY.into()),
+                Scope::NetHost(collab_types::caps::EVERY.into()),
+                Scope::FsRecord(collab_types::caps::EVERY.into()),
+            ]
+            .into_iter()
+            .enumerate()
+            .map(|(index, scope)| {
+                CapOverride::grant(Subject::person(LOCAL_USER), scope, Access::Write)
+                    .with_id(format!("local-user-unrestricted-{index}"))
+            })
+            .collect(),
             Standing::person(policy::RoomPolicy::new(LOCAL_ROOM, LOCAL_USER), LOCAL_USER),
         )
     }
@@ -431,7 +440,7 @@ impl PermissionContext {
                 ))
             })
             .transpose()?;
-        let cx = policy::Context::at(now.unwrap_or(0).saturating_mul(1000));
+        let cx = policy::Context::at_secs(now.unwrap_or(0));
         let live = self
             .standing
             .policy
@@ -517,7 +526,7 @@ impl PermissionContext {
         privileged: bool,
     ) -> Result<(Answer, String), String> {
         let now = self.policy_now()?;
-        let cx = policy::Context::at(now.unwrap_or(0).saturating_mul(1000));
+        let cx = policy::Context::at_secs(now.unwrap_or(0));
         let standing = match &self.action_authority {
             Some(authority) if authority.matches(node) => authority.sample_for(self)?.standing,
             _ => self.standing.clone(),
@@ -747,9 +756,9 @@ mod tests {
                 "/var/workspace/secret.png",
                 Access::Read
             )));
-            assert_eq!(ctx.capabilities().len(), 1);
+            assert_eq!(ctx.capabilities().len(), 4);
             assert_eq!(ctx.capabilities()[0].access, Access::Write);
-            assert_eq!(ctx.capabilities()[0].scope, Scope::Workspace);
+            assert_eq!(ctx.capabilities()[0].scope, Scope::FsPath("/".into()));
             assert!(ctx.check(&PermissionScope::app("notes", ActionKind::Outside)));
 
             // The same owner, no capability: a room role confers no reach over

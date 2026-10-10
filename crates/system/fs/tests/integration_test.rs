@@ -1312,9 +1312,13 @@ fn read_sync_xattr(path: &std::path::Path) -> Option<String> {
 // from absent. What these tests turn on is that the answer *changes*
 // when the list is re-read.
 
-/// Write `caps` to `path` as the JSON array the mount reads.
+/// Write `caps` to `path` as the file authority the mount reads.
 fn put_caps(path: &std::path::Path, caps: &[CapOverride]) {
-    std::fs::write(path, serde_json::to_vec(caps).unwrap()).unwrap();
+    std::fs::write(
+        path,
+        serde_json::to_vec(&collab_types::FsAuthority::from(caps.to_vec())).unwrap(),
+    )
+    .unwrap();
     // Make the ordering of two writes unambiguous regardless of the
     // filesystem's mtime resolution.
     std::thread::sleep(Duration::from_millis(10));

@@ -462,7 +462,7 @@ impl EmailService for ShellEmailService {
                     .find(|workspace| workspace.id == request.workspace_id)?;
                 Some((
                     workspace.room,
-                    workspace.sandbox.clone(),
+                    workspace.launch_grants(tilo_clock::unix_now()),
                     workspace.default_apps.clone(),
                     crate::shell::state::local_user_id_for_room(&workspace.room),
                 ))
@@ -488,7 +488,7 @@ impl EmailService for ShellEmailService {
             );
         }
         add_mail_attachment_grants(
-            &mut capabilities,
+            &mut capabilities.sandbox,
             &handler.package_id,
             &request.attachment_paths,
         );

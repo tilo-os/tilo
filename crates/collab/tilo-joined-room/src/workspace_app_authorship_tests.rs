@@ -1,6 +1,5 @@
 use crate::application_record::tests::fixture;
 use crate::{RoomId, testing};
-use collab_types::caps::{Access, Effect, Scope, Subject};
 use tilo_peer_state::owner_commit::{CommitOperation, OwnerCommitRequest};
 use tilo_peer_state::workspace_membership::WorkspaceMembershipCommand;
 
@@ -58,19 +57,14 @@ fn app_authorship_is_governor_signed_durable_and_exact_retry_only() {
     let reopened = crate::open_file(&fixture.directory.path().join("owner.json")).unwrap();
     reopened
         .with_current(RoomId::parse(testing::ROOM).unwrap(), |view| {
-            let caps = view.peer().governed_sandbox()?;
-            assert!(
-                caps.iter()
-                    .any(|cap| cap.subject == Subject::app("so.tilo.chat")
-                        && cap.scope == Scope::Workspace
-                        && cap.access == Access::Write
-                        && cap.effect == Effect::Grant)
-            );
-            assert!(
-                !caps
-                    .iter()
-                    .any(|cap| cap.subject == Subject::app("so.tilo.files"))
-            );
+            let now = std::time::SystemTime::now();
+            let policy = view
+                .peer()
+                .permissions(fixture.certificate.device_public_key, now)?
+                .policy;
+            let cx = tilo_action_policy::Context::at_time(now);
+            assert!(policy.app_authors("so.tilo.chat", &cx));
+            assert!(!policy.app_authors("so.tilo.files", &cx));
             Ok(())
         })
         .unwrap();
