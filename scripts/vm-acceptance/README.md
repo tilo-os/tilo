@@ -182,7 +182,8 @@ the store (DEVELOPMENT.md, "Performance results") and publishes the nightly run'
 | `idle.ram_mib.{anon,shmem,kernel}` | MiB | R01 | `/proc/meminfo` AnonPages, Shmem and unreclaimable kernel memory (SUnreclaim, KernelStack, PageTables, SecPageTables, VmallocUsed, Percpu) |
 | `idle.ram_mib.harness`, `idle.ram_mib.installed` | MiB | R01 | anon + shmem + kernel of what only the dev VM runs (seat0's greeter, the dev image's sshd, tilo-device-admin and tilo-vmd units, root's ssh sessions); `idle.ram_mib` less it |
 | `memory.idle_mib.<bucket>`, `memory.idle_mib.unattributed` | MiB | R01 | anon + shmem + kernel per bucket of cgroups (`compositor`, `apps`, `session_services`, `system`, `greeter`, `harness`); the guest's that no process's cgroup is charged |
-| `memory.idle_pss_mib.<process>` | MiB | R01 | PSS of the ten largest process names, every user's |
+| `idle.ram_mib.{reserve,untracked}` | MiB | R01 | what MemAvailable withholds (the zones' reserve from `/proc/zoneinfo`, and min(half, low watermarks) of the file LRU and reclaimable kernel memory); the rest, pages no meminfo counter names |
+| `memory.idle_anon_mib.<process>` | MiB | R01 | anonymous RSS of the ten largest process names, every user's |
 | `idle.*.four_apps`, `memory.idle_*.four_apps` | | R02 | the same with Terminal, Files, Settings and Notes open |
 | `idle.ram_mib.after_close`, `idle.ram_mib.*.after_close`, `memory.idle_*.after_close` | MiB | R03 | the same once R03 has closed the four apps |
 | `memory.shell_anon_mib.per_open_close` | MiB | A15 | least-squares growth of the compositor's anonymous RSS per warm open and close |
@@ -196,11 +197,12 @@ the store (DEVELOPMENT.md, "Performance results") and publishes the nightly run'
 | `render.frame_cpu_ms` | ms | R04 | compositor CPU per painted frame during interactions |
 
 `idle.ram_mib` stays the guest-wide figure the KPI document defines. Beside it, R01, R02
-and R03 write `R0x-footprint*.json` (`resources.footprint`): every user's processes by PSS,
-every cgroup's anon, file, shmem and kernel charge grouped into the buckets above, each
-tmpfs's use, and the guest's meminfo split. A tilo-vm guest runs seat0's greeter beside the
-slot, which an installed machine ends at login, so `idle.ram_mib.installed` is the number to
-hold against the target.
+and R03 write `R0x-footprint*.json` (`resources.footprint`): every user's processes by RSS
+split into anon, file and shmem (Tilo's kernel has no smaps, so there is no PSS), every
+cgroup's anon, file, shmem and kernel charge grouped into the buckets above, each tmpfs's
+use, and the guest's meminfo and zoneinfo split. A tilo-vm guest runs seat0's greeter
+beside the slot, which an installed machine ends at login, so `idle.ram_mib.installed` is
+the number to hold against the target.
 
 The records name the commit whose code ran (the swapped ref's, else the disk's) and keep
 the base disk's commit, the swapped components and the booted image digest in `meta`.
