@@ -237,6 +237,11 @@ impl Session {
             let tree = self.images.tree(&id).map_err(anyhow::Error::msg)?;
             images.push((format!("{label} {id}"), tree));
         }
+        if !self.images.is_local(&runtime) {
+            // Stderr is the session's terminal: the person sees why there is
+            // no prompt yet, instead of a pane that only echoes their keys.
+            eprintln!("ush: preparing this environment's runtime for its first use…");
+        }
         let tree = self.images.tree(&runtime).map_err(anyhow::Error::msg)?;
         images.push((
             format!("runtime {} {runtime}", environment.runtime.release),
@@ -940,7 +945,7 @@ fn serve_guest_session(
     // process*, not a thread: attaching a pty means `dup2` onto fds 0/1/2 and
     // `setsid`, both process-wide — on a thread that would steal the
     // supervisor's own stdio and controlling terminal (and under a test harness, the harness's).
-    let child = spawn_attached(&launch, &slave)?;
+    let mut child = spawn_attached(&launch, &slave)?;
     // The child already holds its own clones for stdio, so the original can
     // close as soon as the spawn is done.
     drop(slave);
@@ -950,17 +955,32 @@ fn serve_guest_session(
         relay_session: None,
         editor_protocol: editor.as_ref().map(|_| runtime_portal::editor::VERSION),
     };
-    if let Some((app, _)) = &editor {
+    let handed = if let Some((app, _)) = &editor {
         use std::os::fd::AsFd;
-        let mut bytes = serde_json::to_vec(&response)?;
-        bytes.push(b'\n');
-        runtime_portal::fd_transport::send_with_fds(
-            writer.as_raw_fd(),
-            &bytes,
-            &[master.as_raw_fd(), app.as_fd().as_raw_fd()],
-        )?;
+        serde_json::to_vec(&response)
+            .map_err(anyhow::Error::from)
+            .and_then(|mut bytes| {
+                bytes.push(b'\n');
+                runtime_portal::fd_transport::send_with_fds(
+                    writer.as_raw_fd(),
+                    &bytes,
+                    &[master.as_raw_fd(), app.as_fd().as_raw_fd()],
+                )
+                .map_err(anyhow::Error::from)
+            })
     } else {
-        reply(writer, &response, Some(master.as_raw_fd()))?;
+        reply(writer, &response, Some(master.as_raw_fd()))
+    };
+    if let Err(error) = handed {
+        // Terminal gave up on the open before the answer came: nothing holds
+        // this session's terminal, so its guest must not run on unseen.
+        let _ = child.kill();
+        let _ = child.wait();
+        AuditLog::at(store.audit_dir()).append(
+            &crate::audit::AuditRecord::new(&id, &record, "close-session", true)
+                .because("terminal gone before the session was handed over"),
+        );
+        return Err(error);
     }
     drop(editor);
     // Hold the master open until the app has it: closing before the descriptor
@@ -1003,15 +1023,16 @@ fn refused_unbuildable(
 
 /// Why the environment `record` (`None`: the default) cannot be built on
 /// this device: the answer for the app and the reason in words. `None` when
-/// it resolves — the default environment is made here on first use, as the
-/// guest would make it.
+/// it resolves. Nothing is written: the session makes the default
+/// environment on its first use, so this answer — which Terminal waits for
+/// with a short deadline — never includes a durable record write.
 pub fn unbuildable(
     store: &Store,
     record: Option<&str>,
     images: &dyn Images,
 ) -> Option<(ServeResponse, String)> {
-    match Records::at(store.records_root()).resolve(record, images) {
-        Ok(_) => None,
+    match Records::at(store.records_root()).resolvable(record, images) {
+        Ok(()) => None,
         Err(crate::records::RecordError::NoRuntime(why)) => {
             let reason = format!("no environment can be built on this device: {why}");
             Some((

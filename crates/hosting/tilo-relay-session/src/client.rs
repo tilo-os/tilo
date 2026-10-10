@@ -167,7 +167,8 @@ fn state_in_scope(scope: &InteractiveWorkspaceScope, envelope: &Envelope) -> boo
 fn action_in_scope(scope: &InteractiveWorkspaceScope, envelope: &EnvelopeV2) -> bool {
     match envelope {
         EnvelopeV2::State(state) => state_in_scope(scope, state),
-        EnvelopeV2::UnsignedDelta { workspace_id, .. } => *workspace_id == scope.workspace_id,
+        EnvelopeV2::UnsignedDelta { workspace_id, .. }
+        | EnvelopeV2::PresenceBatch { workspace_id, .. } => *workspace_id == scope.workspace_id,
         EnvelopeV2::EnableActions { room }
         | EnvelopeV2::ActionsReady { room, .. }
         | EnvelopeV2::Unavailable { room, .. }
@@ -262,6 +263,9 @@ fn classify_connect_error(error: &iroh::endpoint::ConnectError) -> ClientError {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum RelayWireProtocol {
+    /// [`Self::TiloV2Compact`] whose presence arrives batched and
+    /// slot-coded.
+    TiloV2Presence,
     /// [`Self::TiloV2Signed`] whose zero-signature deltas omit the signature.
     TiloV2Compact,
     /// v2 with device-signed private actions.
@@ -273,6 +277,7 @@ enum RelayWireProtocol {
 impl RelayWireProtocol {
     fn alpn(self) -> &'static [u8] {
         match self {
+            Self::TiloV2Presence => tilo_delivery_protocol::transport_v2::ALPN_PRESENCE_BATCH_V1,
             Self::TiloV2Compact => tilo_delivery_protocol::transport_v2::ALPN_COMPACT_STATE_V1,
             Self::TiloV2Signed => tilo_delivery_protocol::transport_v2::ALPN_SIGNED_ACTIONS_V1,
             Self::TiloV2 => tilo_delivery_protocol::transport_v2::ALPN_AGENT_READS_V1,
@@ -285,12 +290,16 @@ impl RelayWireProtocol {
     }
 
     fn signs_actions(self) -> bool {
-        matches!(self, Self::TiloV2Compact | Self::TiloV2Signed)
+        matches!(
+            self,
+            Self::TiloV2Presence | Self::TiloV2Compact | Self::TiloV2Signed
+        )
     }
 
     fn framing(self) -> tilo_delivery_protocol::transport_v2::StateFraming {
         use tilo_delivery_protocol::transport_v2::StateFraming;
         match self {
+            Self::TiloV2Presence => StateFraming::Presence,
             Self::TiloV2Compact => StateFraming::Compact,
             Self::TiloV2Signed | Self::TiloV2 => StateFraming::V2,
             Self::TiloV1 => StateFraming::V1,
@@ -298,11 +307,12 @@ impl RelayWireProtocol {
     }
 
     /// The protocol a relay that does not speak this one may still speak.
-    /// Compact state degrades to the full delta envelope, and signing to
-    /// unsigned actions, which current brokers serve for effect-free reads
-    /// only.
+    /// Batched presence degrades to one frame per presence, compact state to
+    /// the full delta envelope, and signing to unsigned actions, which
+    /// current brokers serve for effect-free reads only.
     fn fallback(self) -> Option<Self> {
         match self {
+            Self::TiloV2Presence => Some(Self::TiloV2Compact),
             Self::TiloV2Compact => Some(Self::TiloV2Signed),
             Self::TiloV2Signed => Some(Self::TiloV2),
             Self::TiloV2 | Self::TiloV1 => None,
@@ -765,7 +775,7 @@ impl RelayClient {
                 revocations,
                 action_key: Some(own_sk.clone()),
             },
-            RelayWireProtocol::TiloV2Compact,
+            RelayWireProtocol::TiloV2Presence,
         )
         .await
     }
@@ -811,7 +821,7 @@ impl RelayClient {
                 revocations,
                 action_key: Some(own_sk.clone()),
             },
-            RelayWireProtocol::TiloV2Compact,
+            RelayWireProtocol::TiloV2Presence,
         )
         .await
     }
@@ -1873,18 +1883,25 @@ mod scheduling_tests {
     }
 
     #[test]
-    fn compact_state_degrades_to_the_full_envelope_before_signing_degrades() {
-        use super::RelayWireProtocol::{TiloV1, TiloV2, TiloV2Compact, TiloV2Signed};
+    fn batched_presence_then_compact_state_degrade_before_signing_degrades() {
+        use super::RelayWireProtocol::{
+            TiloV1, TiloV2, TiloV2Compact, TiloV2Presence, TiloV2Signed,
+        };
         use tilo_delivery_protocol::transport_v2::StateFraming;
-        let mut chain = vec![TiloV2Compact];
+        let mut chain = vec![TiloV2Presence];
         while let Some(older) = chain.last().and_then(|protocol| protocol.fallback()) {
             chain.push(older);
         }
-        assert_eq!(chain, [TiloV2Compact, TiloV2Signed, TiloV2]);
+        assert_eq!(chain, [TiloV2Presence, TiloV2Compact, TiloV2Signed, TiloV2]);
+        assert_eq!(TiloV2Presence.framing(), StateFraming::Presence);
         assert_eq!(TiloV2Compact.framing(), StateFraming::Compact);
         assert_eq!(TiloV2Signed.framing(), StateFraming::V2);
         assert_eq!(TiloV1.framing(), StateFraming::V1);
-        assert!(TiloV2Compact.signs_actions() && TiloV2Signed.signs_actions());
+        assert!(
+            TiloV2Presence.signs_actions()
+                && TiloV2Compact.signs_actions()
+                && TiloV2Signed.signs_actions()
+        );
         assert!(!TiloV2.signs_actions());
     }
     use tilo_delivery_protocol::peer_actions::{ActionMessage, DirectedAction};
