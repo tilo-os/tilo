@@ -12,6 +12,7 @@
 pub use settings_store::display_placement as placement;
 
 use crate as ui;
+use crate::widget::TaffyTreeExt;
 
 use std::collections::HashMap;
 
@@ -506,24 +507,15 @@ impl Widget for DisplayArrangement {
     ) -> NodeId {
         self.padding = f64::from(theme.tokens.spacing.s6);
         self.snap_radius = f64::from(theme.tokens.metrics.icon_sm);
-        #[allow(
-            clippy::unwrap_used,
-            reason = "taffy 0.10's new_leaf always inserts and returns Ok; see ui::widget::TaffyTreeExt's doc comment"
-        )]
-        let node = taffy
-            .new_leaf(Style {
-                size: Size {
-                    width: Dimension::percent(1.0),
-                    height: Dimension::length(
-                        theme.tokens.metrics.panel_width_utility * 11.0 / 16.0,
-                    ),
-                },
-                flex_shrink: 0.0,
-                ..Default::default()
-            })
-            .unwrap();
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        let style = Style {
+            size: Size {
+                width: Dimension::percent(1.0),
+                height: Dimension::length(theme.tokens.metrics.panel_width_utility * 11.0 / 16.0),
+            },
+            flex_shrink: 0.0,
+            ..Default::default()
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
 
     /// Value, hover and drag change the paint, not this leaf's intrinsic size.

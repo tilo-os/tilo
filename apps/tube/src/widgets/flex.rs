@@ -194,11 +194,6 @@ impl Flex {
     }
 
     #[must_use]
-    pub fn push_if(self, cond: bool, child: impl IntoElement) -> Self {
-        if cond { self.push(child) } else { self }
-    }
-
-    #[must_use]
     pub fn gap(mut self, g: f32) -> Self {
         self.gap = g;
         self
@@ -211,18 +206,6 @@ impl Flex {
     }
 
     #[must_use]
-    pub fn pad_xy(mut self, x: f32, y: f32) -> Self {
-        self.pad = [x, y, x, y];
-        self
-    }
-
-    #[must_use]
-    pub fn pad_each(mut self, l: f32, t: f32, r: f32, b: f32) -> Self {
-        self.pad = [l, t, r, b];
-        self
-    }
-
-    #[must_use]
     pub fn w(mut self, w: Len) -> Self {
         self.width = w;
         self
@@ -231,14 +214,6 @@ impl Flex {
     pub fn h(mut self, h: Len) -> Self {
         self.height = h;
         self
-    }
-    #[must_use]
-    pub fn fill_w(self) -> Self {
-        self.w(Len::Fill)
-    }
-    #[must_use]
-    pub fn fill_h(self) -> Self {
-        self.h(Len::Fill)
     }
     #[must_use]
     pub fn fixed(self, w: f32, h: f32) -> Self {

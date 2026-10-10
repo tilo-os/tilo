@@ -241,11 +241,6 @@ impl TargetKind {
             TargetKind::Other => "Block device",
         }
     }
-    /// Removable media is the "safe" flash target; fixed internal disks are
-    /// the dangerous install target and get a louder warning.
-    pub fn is_removable_class(&self) -> bool {
-        matches!(self, TargetKind::Usb | TargetKind::SdCard)
-    }
     pub fn from_lsblk(rota: bool, tran: Option<&str>, removable: bool) -> Self {
         match tran {
             Some("usb") => TargetKind::Usb,

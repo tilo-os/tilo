@@ -598,3 +598,40 @@ fn schema_reuse_keeps_resource_types_and_live_children_distinct() {
         "repeated publications and group reuse the compiled action schema"
     );
 }
+
+#[test]
+fn the_head_is_the_published_record_without_building_a_child() {
+    for count in [0_usize, 1, 3] {
+        let board = Board {
+            title: "Plan".to_owned(),
+            cards: (0..count)
+                .map(|index| {
+                    let card = Card {
+                        text: format!("Card {index}"),
+                        stage: Stage::Todo,
+                        created_ms: 0,
+                    };
+                    (Id::from_raw(format!("card-{index}")), card)
+                })
+                .collect(),
+        };
+        let mut published = tilo_resource::publish::<Board>("board", "Board", &board);
+        assert_eq!(published.children.len(), count);
+        published.children.clear();
+        let head = tilo_resource::publish_head::<Board>("board", "Board", &board);
+        assert!(head.children.is_empty());
+        assert_eq!(
+            tilo_actions::door::survey(&[head]),
+            tilo_actions::door::survey(&[published]),
+            "{count} cards: the head carries the published record's own actions"
+        );
+        // Counted, not built: the card actions are for scripts once a card
+        // offers them.
+        let offered = Board::children_offer_bound(&board);
+        if count == 0 {
+            assert!(offered.is_empty(), "{offered:?}");
+        } else {
+            assert_eq!(offered, ["advance", "move-card", "delete-card"]);
+        }
+    }
+}

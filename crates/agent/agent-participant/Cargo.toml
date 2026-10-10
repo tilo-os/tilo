@@ -80,12 +80,27 @@ tilo-model-gateway = { path = "../model-gateway" }
 tokio = { workspace = true, features = ["rt-multi-thread"] }
 tracing.workspace = true
 workspace-hack = { version = "0.1" }
+# App workers: an app's code runs in a confined process of this executable,
+# spoken to over framed messages; what it returns is admitted through the
+# isolate before the host signs it.
+wire-frame = { path = "../../system/wire-frame", features = ["postcard"] }
+tilo-automerge-isolate = { path = "../../doc/tilo-automerge-isolate" }
+
+[target.'cfg(unix)'.dependencies]
+# The worker's confinement: detach, resource limits and, on macOS, Seatbelt.
+tilo-sandbox = { path = "../../platform/tilo-sandbox" }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# The worker's Landlock ruleset and seccomp filters, from the shared
+# primitives every confinement path uses.
+tilo-sandbox-core = { path = "../../system/sandbox-core" }
+seccompiler.workspace = true
+libc.workspace = true
 
 [dev-dependencies]
 tilo-crypto = { path = "../../system/tilo-crypto", features = ["tls-fixture"] }
 accounts = { path = "../../system/accounts", features = ["person"] }
 tilo-peer-state = { path = "../../collab/tilo-peer-state" }
-tilo-automerge-isolate = { path = "../../doc/tilo-automerge-isolate" }
 tempfile.workspace = true
 tilo-document = { path = "../../doc/tilo-document" }
 tilo-relay = { path = "../../hosting/tilo-relay", features = ["agents"] }

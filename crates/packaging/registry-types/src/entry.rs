@@ -242,16 +242,6 @@ impl RegistryEntry {
         entry_signing_message(self)
     }
 
-    /// Detach the publisher signature, returning an entry with an empty
-    /// `signature_hex` — for preparing an entry to sign or re-signing
-    /// after a moderator edit. Verification uses `signing_message`
-    /// directly and doesn't need this.
-    #[must_use]
-    pub fn without_signature(mut self) -> Self {
-        self.signature_hex.clear();
-        self
-    }
-
     /// Validate the entry's identifiers, localized metadata, package targets,
     /// and artifact bindings.
     ///

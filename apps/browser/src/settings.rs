@@ -17,13 +17,8 @@
 //! effects, while closing the pane is an explicit view operation.
 
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
-#[cfg(test)]
-use ui::widget::Edits;
-use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
+use ui::widget::TaffyTreeExt;
 
-use ui::presence::PresenceCtx;
-use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::{
     Button, Card, Column, Container, Row, ScrollAxis, Scrollable, Section, Spacer, Text, TextInput,
@@ -197,14 +192,6 @@ impl SettingsPane {
     #[must_use]
     pub fn with_history_clear_error(mut self, error: Option<String>) -> Self {
         self.history_clear_error = error;
-        self
-    }
-
-    /// Keep New Private Window discoverable when compact chrome moves the
-    /// dedicated toolbar button into Settings.
-    #[must_use]
-    pub fn with_private_window_request(mut self, request: ui::LocalState<bool>) -> Self {
-        self.private_window_request = Some(request);
         self
     }
 
@@ -511,53 +498,13 @@ impl Widget for SettingsPane {
         };
         // `new_with_children` only fails when a child belongs to a different
         // tree; `child_node` was just built in this one above.
-        #[allow(
-            clippy::unwrap_used,
-            reason = "every child node was just created in this same tree"
-        )]
-        let node = taffy.new_with_children(style, &[child_node]).unwrap();
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        taffy.widget_node(style, &[child_node], node_map, self)
     }
 
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.composed.apply_layout(taffy, node, origin);
-    }
-
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
-        self.composed
-            .draw(scene, transform, text_renderer, theme, presence);
-    }
-
-    fn handle_event(
-        &mut self,
-        event: &winit::event::WindowEvent,
-        ctx: &mut ui::widget::EventCtx<'_>,
-    ) {
-        self.composed.handle_event(event, ctx);
-    }
-
-    fn children(&self) -> Vec<&dyn Widget> {
-        self.composed.children()
-    }
-
-    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        self.composed.children_mut()
-    }
+    ui::forward_to_composed!(composed);
 
     fn name(&self) -> &'static str {
         "SettingsPane"
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.composed.rect()
     }
 
     fn test_id(&self) -> Option<&str> {
@@ -585,6 +532,7 @@ mod tests {
     use automerge::AutoCommit;
     use automerge::ReadDoc;
     use std::collections::HashMap;
+    use vello::kurbo::{Point, Rect};
 
     #[test]
     fn preference_defaults_are_sensible() {
@@ -664,7 +612,7 @@ mod tests {
             // Drive the real five-pass path: build_layout → compute_layout →
             // apply_layout, then flip the ad-block toggle through the live
             // widget tree and assert the CRDT bool changed.
-            use winit::event::{DeviceId, ElementState, MouseButton, WindowEvent};
+            use winit::event::{ElementState, MouseButton, WindowEvent};
 
             // Locate the ad-block toggle's rect by walking the live tree.
             fn find_toggle_rect(w: &dyn Widget, id: &str) -> Option<Rect> {
@@ -705,35 +653,20 @@ mod tests {
                 .expect("ad-block toggle is addressable in the tree");
             let center = rect.center();
 
-            let device: DeviceId = unsafe { std::mem::zeroed() };
-            let mods = winit::event::Modifiers::default();
-            let mut dispatch = |pane: &mut SettingsPane, ev: WindowEvent| {
-                let mut handled = false;
-                let mut focus = None;
-                pane.handle_event(
-                    &ev,
-                    &mut ui::widget::EventCtx {
-                        scale_factor: 1.0,
-                        modifiers: &mods,
-                        state: Edits::lend(&mut doc),
-                        path: &root,
-                        handled: &mut handled,
-                        focus_target: &mut focus,
-                        node_id: node,
-                        taffy: &taffy,
-                    },
-                );
-            };
-            dispatch(
+            let device = winit::event::DeviceId::dummy();
+            let mut at = ui::testing::Dispatch::new()
+                .doc(&mut doc)
+                .layout(&taffy, node);
+            at.send(
                 &mut pane,
-                WindowEvent::CursorMoved {
+                &WindowEvent::CursorMoved {
                     device_id: device,
                     position: (center.x, center.y).into(),
                 },
             );
-            dispatch(
+            at.send(
                 &mut pane,
-                WindowEvent::MouseInput {
+                &WindowEvent::MouseInput {
                     device_id: device,
                     state: ElementState::Pressed,
                     button: MouseButton::Left,

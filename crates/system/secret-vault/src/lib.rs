@@ -29,16 +29,6 @@
 //! with an exclusive create, so concurrent creators all converge on the one
 //! key that reached disk.
 
-#![cfg_attr(
-    test,
-    allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
-        reason = "in a test these are the assertion, not a hazard"
-    )
-)]
-
 use std::io::Read as _;
 use std::path::Path;
 
@@ -222,12 +212,6 @@ impl VaultFormat {
                 None
             }
         }
-    }
-
-    /// [`Self::load_or_create_key`] with [`Custody::System`], in `store`
-    /// rather than the platform's. For tests and hosts with their own store.
-    pub fn load_or_create_key_in(&self, dir: &Path, store: &SecretStore) -> Option<VaultKey> {
-        self.system_key(dir, store)
     }
 
     /// The store and key naming this format's vault key: the `application`

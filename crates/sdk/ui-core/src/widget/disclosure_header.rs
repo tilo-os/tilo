@@ -76,12 +76,6 @@ impl<'a> DisclosureHeaderFace<'a> {
     }
 
     #[must_use]
-    pub fn optional_summary(mut self, summary: Option<impl Into<Cow<'a, str>>>) -> Self {
-        self.summary = summary.map(Into::into);
-        self
-    }
-
-    #[must_use]
     pub fn hovered(mut self, value: bool) -> Self {
         self.interact.hovered = value;
         self

@@ -765,3 +765,299 @@ mode = "off"
     let refused = entry_args(true);
     assert!(!refused.status.success(), "a tampered chunk must fail");
 }
+
+struct AttestFixture {
+    dir: tempfile::TempDir,
+    publisher: PathBuf,
+    attestor: PathBuf,
+    attestor_public: String,
+    original: PathBuf,
+}
+
+impl AttestFixture {
+    fn new() -> Self {
+        let dir = tempfile::tempdir().unwrap();
+        let publisher = dir.path().join("publisher.json");
+        let attestor = dir.path().join("attestor.json");
+        let generate = |path: &std::path::Path| {
+            let output = Command::new(bin_path())
+                .arg("keygen")
+                .arg("--out")
+                .arg(path)
+                .output()
+                .unwrap();
+            assert!(output.status.success());
+            String::from_utf8(output.stdout).unwrap().trim().to_owned()
+        };
+        let public = generate(&publisher);
+        let attestor_public = generate(&attestor);
+        let manifest = dir.path().join("manifest.toml");
+        std::fs::write(&manifest, sample_manifest_with(&public)).unwrap();
+        let payload = dir.path().join("payload");
+        std::fs::create_dir_all(payload.join("bin")).unwrap();
+        std::fs::write(
+            payload.join("bin/hello"),
+            b"#!/bin/sh\necho owned-fixture\n",
+        )
+        .unwrap();
+        let original = dir.path().join("original.tapp");
+        let output = Command::new(bin_path())
+            .arg("pack")
+            .arg("--manifest")
+            .arg(manifest)
+            .arg("--payload")
+            .arg(payload)
+            .arg("--identity")
+            .arg(&publisher)
+            .arg("--output")
+            .arg(&original)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        Self {
+            dir,
+            publisher,
+            attestor,
+            attestor_public,
+            original,
+        }
+    }
+
+    fn command(&self, input: &std::path::Path, output: &std::path::Path, scope: &str) -> Command {
+        let mut command = Command::new(bin_path());
+        command
+            .arg("attest")
+            .arg("--publisher-identity")
+            .arg(&self.publisher)
+            .arg("--attestor-identity")
+            .arg(&self.attestor)
+            .arg("--attestor")
+            .arg("owned-fixture")
+            .arg("--scope")
+            .arg(scope)
+            .arg(input)
+            .arg("--output")
+            .arg(output);
+        command
+    }
+}
+
+fn decoded(
+    path: &std::path::Path,
+) -> (
+    tilo_app_package::Tapp,
+    std::collections::BTreeMap<tilo_app_package::BlobHash, Vec<u8>>,
+) {
+    let mut blobs = std::collections::BTreeMap::new();
+    let package =
+        tilo_app_package::tapp::read(std::fs::File::open(path).unwrap(), &mut blobs).unwrap();
+    (package, blobs)
+}
+
+#[test]
+fn cli_attest_preserves_payload_and_original_publisher_with_scoped_recipient_trust() {
+    use tilo_app_package::trust::{AttestorScope, RevocationList, TrustedAttestor};
+    let fixture = AttestFixture::new();
+    let destination = fixture.dir.path().join("attested.tapp");
+    let before = std::fs::read(&fixture.original).unwrap();
+    let output = fixture
+        .command(&fixture.original, &destination, "prefix:so.tilo.example")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let (original, original_blobs) = decoded(&fixture.original);
+    let (attested, attested_blobs) = decoded(&destination);
+    assert_eq!(std::fs::read(&fixture.original).unwrap(), before);
+    assert_eq!(original_blobs, attested_blobs);
+    assert_eq!(
+        original.meta.collection_bytes,
+        attested.meta.collection_bytes
+    );
+    assert_eq!(
+        original.meta.root.payload_root_hash,
+        attested.meta.root.payload_root_hash
+    );
+    assert_eq!(
+        original.meta.root.publisher_identity,
+        attested.meta.root.publisher_identity
+    );
+    assert_ne!(original.meta.id, attested.meta.id);
+    assert!(attested.is_complete());
+    let trust = TrustedAttestor {
+        id: "owned-fixture".into(),
+        pubkey_hex: fixture.attestor_public,
+        scope: AttestorScope::parse("prefix:so.tilo.example").unwrap(),
+    };
+    assert!(matches!(
+        tilo_app_package::verify_with_trust(
+            &attested.meta,
+            &[],
+            std::slice::from_ref(&trust),
+            &RevocationList::empty()
+        ),
+        tilo_app_package::Verification::AttestedBy { .. }
+    ));
+    let revoked = tilo_app_package::trust::RevocationList {
+        revoked: vec![tilo_app_package::trust::RevokedKey {
+            pubkey_hex: hex::encode(attested.meta.root.publisher_identity),
+            reason: "withdrawn publisher".into(),
+        }],
+    };
+    assert!(matches!(
+        tilo_app_package::verify_with_trust(
+            &attested.meta,
+            &[],
+            std::slice::from_ref(&trust),
+            &revoked
+        ),
+        tilo_app_package::Verification::Revoked { .. }
+    ));
+    let mut unknown = trust.clone();
+    unknown.pubkey_hex = hex::encode(original.meta.root.publisher_identity);
+    assert!(matches!(
+        tilo_app_package::verify_with_trust(
+            &attested.meta,
+            &[],
+            &[unknown],
+            &RevocationList::empty()
+        ),
+        tilo_app_package::Verification::UntrustedPublisher { .. }
+    ));
+    let foreign = TrustedAttestor {
+        scope: AttestorScope::parse("prefix:foreign.").unwrap(),
+        ..trust
+    };
+    assert!(matches!(
+        tilo_app_package::verify_with_trust(
+            &attested.meta,
+            &[],
+            &[foreign],
+            &RevocationList::empty()
+        ),
+        tilo_app_package::Verification::UntrustedPublisher { .. }
+    ));
+}
+
+#[test]
+fn cli_attest_refuses_foreign_publisher_scope_partial_and_existing_output() {
+    let mut fixture = AttestFixture::new();
+    let destination = fixture.dir.path().join("attested.tapp");
+    let output = fixture
+        .command(&fixture.original, &destination, "prefix:foreign.")
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(!destination.exists());
+    let publisher = fixture.publisher.clone();
+    fixture.publisher = fixture.attestor.clone();
+    assert!(
+        !fixture
+            .command(&fixture.original, &destination, "all")
+            .output()
+            .unwrap()
+            .status
+            .success()
+    );
+    assert!(!destination.exists());
+    fixture.publisher = publisher;
+    let thin = fixture.dir.path().join("thin.tapp");
+    assert!(
+        Command::new(bin_path())
+            .arg("thin")
+            .arg(&fixture.original)
+            .arg("--output")
+            .arg(&thin)
+            .output()
+            .unwrap()
+            .status
+            .success()
+    );
+    assert!(
+        !fixture
+            .command(&thin, &destination, "all")
+            .output()
+            .unwrap()
+            .status
+            .success()
+    );
+    assert!(!destination.exists());
+    std::fs::write(&destination, b"preserved").unwrap();
+    assert!(
+        !fixture
+            .command(&fixture.original, &destination, "all")
+            .output()
+            .unwrap()
+            .status
+            .success()
+    );
+    assert_eq!(std::fs::read(&destination).unwrap(), b"preserved");
+    assert!(
+        !fixture
+            .command(&fixture.original, &fixture.original, "all")
+            .output()
+            .unwrap()
+            .status
+            .success()
+    );
+    assert!(decoded(&fixture.original).0.is_complete());
+}
+
+#[test]
+fn cli_compress_writes_a_twin_that_decompresses_to_the_package() {
+    let workdir = tempfile::tempdir().unwrap();
+    let payload_dir = workdir.path().join("payload");
+    std::fs::create_dir_all(payload_dir.join("bin")).unwrap();
+    std::fs::write(
+        payload_dir.join("bin/hello"),
+        b"#!/bin/sh\necho hi\n".repeat(512),
+    )
+    .unwrap();
+    let manifest_path = workdir.path().join("manifest.toml");
+    std::fs::write(&manifest_path, sample_manifest_with(&"00".repeat(32))).unwrap();
+    let tapp = workdir.path().join("example.tapp");
+    run(&[
+        "pack",
+        "--manifest",
+        manifest_path.to_str().unwrap(),
+        "--payload",
+        payload_dir.to_str().unwrap(),
+        "-o",
+        tapp.to_str().unwrap(),
+    ]);
+
+    run(&["compress", tapp.to_str().unwrap()]);
+    let package = std::fs::read(&tapp).unwrap();
+    let twin = std::fs::read(workdir.path().join("example.tapp.zst")).unwrap();
+    assert!(
+        twin.len() < package.len() / 2,
+        "{} of {}",
+        twin.len(),
+        package.len()
+    );
+    let mut plain = Vec::new();
+    tilo_app_package::compressed::decompress_bounded(
+        twin.as_slice(),
+        package.len() as u64,
+        &mut plain,
+    )
+    .unwrap();
+    assert_eq!(plain, package);
+
+    // Only a package gets a twin: anything else is refused, and nothing is written.
+    let other = workdir.path().join("notes.txt");
+    std::fs::write(&other, b"not a package").unwrap();
+    let out = Command::new(bin_path())
+        .args(["compress", other.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert!(!workdir.path().join("notes.txt.zst").exists());
+}

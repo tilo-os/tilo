@@ -83,6 +83,8 @@ pub(super) struct InputRuntime {
     /// The app is shown inside a host whose focus order continues past it:
     /// Tab at either end of the app's order leaves it for the host.
     pub(super) tab_order_continues_in_host: bool,
+    /// The pointer buttons held down, one bit each; see `input_publication`.
+    pub(super) pointer_buttons: u32,
 }
 
 impl InputRuntime {
@@ -97,6 +99,7 @@ impl InputRuntime {
             tooltip_host: crate::widget::TooltipHost::new(),
             pen: crate::pen::PenInput::default(),
             tab_order_continues_in_host: false,
+            pointer_buttons: 0,
         }
     }
 }
@@ -144,6 +147,7 @@ pub(super) struct ActionRuntime {
     pub(super) resource_generation: Cell<u64>,
     pub(super) permission_generation: Cell<u64>,
     pub(super) last_control_availability: Option<(ResourceCacheKey, u64)>,
+    pub(super) local_history_status: Option<(bool, bool, bool)>,
     pub(super) last_published_actions: Option<Vec<tilo_actions::ActionDescriptor>>,
     #[cfg(test)]
     pub(super) action_surface_publication_attempts: usize,
@@ -213,6 +217,7 @@ impl ActionRuntime {
             resource_generation: Cell::new(0),
             permission_generation: Cell::new(0),
             last_control_availability: None,
+            local_history_status: None,
             last_published_actions: None,
             #[cfg(test)]
             action_surface_publication_attempts: 0,

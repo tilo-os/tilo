@@ -123,7 +123,9 @@ fn read_token(path: &Path) -> io::Result<String> {
 
 struct Session<H> {
     retire: Option<Box<dyn FnOnce() + Send + Sync>>,
-    server: Arc<tokio::sync::Mutex<McpServer<H>>>,
+    /// Shared, not locked: one session's requests overlap, so a
+    /// `tilo_status` answers while its `tilo_invoke` waits.
+    server: Arc<McpServer<H>>,
     last_used: Instant,
 }
 
@@ -368,7 +370,7 @@ impl<H: ActionHost + Clone + Send + Sync + 'static> Endpoint<H> {
             },
             (None, false) => return plain(StatusCode::BAD_REQUEST, "missing Mcp-Session-Id"),
         };
-        let reply = server.lock().await.handle(request).await;
+        let reply = server.handle(request).await;
         let header = created.then_some(id.as_str());
         if let Some(reply) = reply {
             return json_response(StatusCode::OK, &reply, header);
@@ -382,10 +384,7 @@ impl<H: ActionHost + Clone + Send + Sync + 'static> Endpoint<H> {
         response
     }
 
-    fn create(
-        &self,
-        initialize: &Value,
-    ) -> Option<(String, Arc<tokio::sync::Mutex<McpServer<H>>>)> {
+    fn create(&self, initialize: &Value) -> Option<(String, Arc<McpServer<H>>)> {
         let id = uuid::Uuid::new_v4().to_string();
         let server = match self.session_factory.get() {
             Some(factory) => factory().ok()?,
@@ -401,7 +400,7 @@ impl<H: ActionHost + Clone + Send + Sync + 'static> Endpoint<H> {
             .with_media(self.media.get().cloned());
         let caller = server.execution_caller();
         let host = self.host.clone();
-        let server = Arc::new(tokio::sync::Mutex::new(server));
+        let server = Arc::new(server);
         let now = Instant::now();
         let session = Session {
             retire: Some(Box::new(move || host.retire_execution(&caller))),
@@ -451,7 +450,7 @@ impl<H: ActionHost + Clone + Send + Sync + 'static> Endpoint<H> {
         }
     }
 
-    fn find(&self, id: &str) -> Option<Arc<tokio::sync::Mutex<McpServer<H>>>> {
+    fn find(&self, id: &str) -> Option<Arc<McpServer<H>>> {
         let mut sessions = self.sessions.lock().ok()?;
         let now = Instant::now();
         if sessions
@@ -615,4 +614,4 @@ pub fn spawn<H: ActionHost + Clone + Send + Sync + 'static>(
 
 #[cfg(test)]
 #[path = "mcp_http_tests.rs"]
-mod tests;
+pub(crate) mod tests;

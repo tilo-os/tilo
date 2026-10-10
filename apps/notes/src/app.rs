@@ -53,14 +53,6 @@ thread_local! {
     static SHELL_PRESENTS_HISTORY: std::cell::Cell<bool> = const { std::cell::Cell::new(true) };
 }
 
-/// Test seam: keep the shell out of the tree the window offers its History
-/// control to. The published host History door remains available without
-/// adding a second toolbar; the component host can invoke that door directly.
-#[doc(hidden)]
-pub fn present_history_in_shell_for_test(present: bool) {
-    SHELL_PRESENTS_HISTORY.set(present);
-}
-
 /// The test id of the sidebar header's "New note" button.
 pub(crate) const NEW_NOTE_BUTTON_ID: &str = "new-note";
 /// The test id of the note header's "Note actions" button.
@@ -2412,18 +2404,14 @@ impl Widget for NotesApp {
             node
         });
 
-        let root = taffy.parent_node(
-            Style {
-                size: Size {
-                    width: Dimension::percent(1.0),
-                    height: Dimension::percent(1.0),
-                },
-                ..Default::default()
+        let style = Style {
+            size: Size {
+                width: Dimension::percent(1.0),
+                height: Dimension::percent(1.0),
             },
-            &[shell_node],
-        );
-        node_map.insert(root, std::ptr::from_mut::<dyn Widget>(self));
-        root
+            ..Default::default()
+        };
+        taffy.widget_node(style, &[shell_node], node_map, self)
     }
 
     // `taffy.layout(...)` only errors for a `NodeId` from a different tree,
@@ -3326,6 +3314,34 @@ mod tests {
     mod search_refresh;
     use super::*;
     use tempfile::TempDir;
+
+    #[test]
+    fn capture_draw_preserves_import_notification_at_expiry_boundary() {
+        ui::clock::freeze_for_capture();
+        let (mut app, _state, _tmp, _) = app_seeded_into_doc();
+        // A zero remaining lifetime deterministically exercises the expiry
+        // boundary without making CI speed or a real-time sleep the oracle.
+        app.transfer_toasts =
+            ui::widget::toast::ToastStack::new().with_default_ttl(ui::time::Duration::ZERO);
+        app.transfer_toasts.push(
+            "Imported Project brief",
+            ui::widget::toast::ToastKind::Success,
+        );
+        app.rect = Rect::new(0.0, 0.0, 1280.0, 720.0);
+        app.draw(
+            &mut Scene::new(),
+            Affine::IDENTITY,
+            &mut TextRenderer::new(),
+            &Theme::default(),
+            &PresenceCtx::empty(),
+        );
+        let node = app
+            .transfer_toasts
+            .accessibility()
+            .expect("the captured import notification remains announced");
+        assert_eq!(node.name.as_deref(), Some("Notifications"));
+        assert_eq!(node.value.as_deref(), Some("Imported Project brief"));
+    }
 
     #[test]
     fn transclusion_previews_follow_selected_marks_remote_edits_and_deleted_targets() {

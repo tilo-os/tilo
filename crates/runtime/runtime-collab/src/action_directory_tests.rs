@@ -138,7 +138,15 @@ fn a_directory_row_round_trips_typed() {
 #[test]
 fn an_exact_resolution_round_trips_typed() {
     for sent in [
-        ActionDirectoryResolution::Found(Box::new(action_row())),
+        ActionDirectoryResolution::Found {
+            row: Box::new(action_row()),
+            revision: Some("r9".into()),
+        },
+        // An owner built before the resolved revision existed names none.
+        ActionDirectoryResolution::Found {
+            row: Box::new(action_row()),
+            revision: None,
+        },
         ActionDirectoryResolution::NotFound,
         ActionDirectoryResolution::StaleRevision,
         ActionDirectoryResolution::Unavailable,

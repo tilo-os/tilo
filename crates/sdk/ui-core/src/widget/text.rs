@@ -358,14 +358,6 @@ impl Text {
         self
     }
 
-    /// Force a remeasure/repaint after mutating engine state through a shared
-    /// owner whose revision cannot be observed automatically.
-    pub fn invalidate_layout_engine(&mut self) {
-        self.dirty = true;
-        self.layout_dirty = true;
-        self.prepared_input = None;
-    }
-
     fn observe_engine_revision(&mut self) {
         let Some(engine) = self.layout_engine.as_deref() else {
             return;
@@ -1139,15 +1131,11 @@ impl Widget for Text {
         presence: &crate::presence::PresenceCtx,
         permissions: &crate::permissions::PermissionContext,
     ) {
-        if presence.should_cull(self.get_rect()) {
-            return;
-        }
-        self.draw(scene, transform, text_renderer, theme, presence);
-
-        crate::widget::draw_gate_and_peer_focus(
+        crate::widget::draw_gated_leaf(
             self,
             scene,
             transform,
+            text_renderer,
             theme,
             presence,
             permissions,

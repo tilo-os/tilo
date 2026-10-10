@@ -12,21 +12,11 @@
 //! installed, [`installed_in_process_model`] finds the verified object by
 //! capability, reading only the store under [`user_model_root`].
 
-#![cfg_attr(
-    test,
-    allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::panic,
-        reason = "tests assert service boundaries"
-    )
-)]
-
 use std::collections::BTreeMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::Read;
 #[cfg(unix)]
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Component, Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -557,7 +547,8 @@ impl<T: HttpsTransport, P: ProcessSupervisor> LocalModelService<T, P> {
             ModelArtifactFormat::VllmGguf
             | ModelArtifactFormat::LlamaCppGguf
             | ModelArtifactFormat::OnnxFile
-            | ModelArtifactFormat::WhisperGgml => self.object_path(&model.artifact.sha256),
+            | ModelArtifactFormat::WhisperGgml
+            | ModelArtifactFormat::WhistleCact => self.object_path(&model.artifact.sha256),
         }
     }
 
@@ -634,7 +625,8 @@ impl<T: HttpsTransport, P: ProcessSupervisor> LocalModelService<T, P> {
             ModelArtifactFormat::VllmGguf
             | ModelArtifactFormat::LlamaCppGguf
             | ModelArtifactFormat::OnnxFile
-            | ModelArtifactFormat::WhisperGgml => Ok(object),
+            | ModelArtifactFormat::WhisperGgml
+            | ModelArtifactFormat::WhistleCact => Ok(object),
             ModelArtifactFormat::HfSnapshotTarZst => self.extract_snapshot(&object, model),
         }
     }
@@ -1349,22 +1341,37 @@ fn validate_sha256(value: &str) -> Result<(), ServiceError> {
     }
 }
 fn verify_file(path: &Path, artifact: &PinnedArtifact) -> Result<(), ServiceError> {
-    let metadata = fs::metadata(path)?;
-    if metadata.len() != artifact.size_bytes {
+    let mut options = OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    options.custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK);
+    let mut file = options.open(path)?;
+    let metadata = file.metadata()?;
+    if !metadata.is_file() || metadata.len() != artifact.size_bytes {
         return Err(ServiceError::DigestMismatch);
     }
-    let mut file = File::open(path)?;
+    // Hash the same descriptor whose size was checked. Reading one extra byte
+    // detects growth without letting a concurrently extended object turn a
+    // pinned receipt into an unbounded read. Large delivery stays constant-space.
+    let maximum = artifact
+        .size_bytes
+        .checked_add(1)
+        .ok_or(ServiceError::InvalidArtifact)?;
+    let mut reader = (&mut file).take(maximum);
     let mut hasher = Sha256::new();
     let mut buffer = vec![0_u8; 32 * 1024];
+    let mut total = 0_u64;
     loop {
-        let read = file.read(&mut buffer)?;
+        let read = reader.read(&mut buffer)?;
         if read == 0 {
             break;
         }
-        // `Read` never reports more bytes than the buffer holds.
+        total = total
+            .checked_add(u64::try_from(read).map_err(|_| ServiceError::DigestMismatch)?)
+            .ok_or(ServiceError::DigestMismatch)?;
         hasher.update(buffer.get(..read).ok_or(ServiceError::DigestMismatch)?);
     }
-    if hex::encode(hasher.finalize()) == artifact.sha256 {
+    if total == artifact.size_bytes && hex::encode(hasher.finalize()) == artifact.sha256 {
         Ok(())
     } else {
         Err(ServiceError::DigestMismatch)
@@ -2526,6 +2533,30 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn model_delivery_refuses_cached_links_and_non_files() {
+        let bytes = b"pinned object";
+        let dir = tempfile::tempdir().unwrap();
+        let pin = artifact(bytes);
+        let mut service = service_for(dir.path(), bytes);
+        let path = service.object_path(&pin.sha256).unwrap();
+        let outside = dir.path().join("outside-object");
+        fs::write(&outside, bytes).unwrap();
+        std::os::unix::fs::symlink(&outside, &path).unwrap();
+        assert!(service.fetch_verified(&pin).is_err());
+        assert!(service.transport.starts.is_empty());
+        fs::remove_file(&path).unwrap();
+        fs::create_dir(&path).unwrap();
+        assert!(service.fetch_verified(&pin).is_err());
+        fs::remove_dir(&path).unwrap();
+        fs::write(&path, bytes).unwrap();
+        assert_eq!(service.fetch_verified(&pin).unwrap(), path);
+        assert!(service.transport.starts.is_empty());
+        fs::write(&path, b"pinned object extra").unwrap();
+        assert!(service.fetch_verified(&pin).is_err());
+    }
+
     /// A verified snapshot is safely extracted to a content-addressed directory; the path policy
     /// refuses traversal and absolute names; expansion beyond the signed installed size and symlinks are
     /// refused before promotion.
@@ -2651,11 +2682,20 @@ mod tests {
 
     #[test]
     fn speech_install_uses_verified_objects_and_never_launches_a_runtime() {
+        for format in [
+            ModelArtifactFormat::WhisperGgml,
+            ModelArtifactFormat::WhistleCact,
+        ] {
+            assert_speech_install(format);
+        }
+    }
+
+    fn assert_speech_install(format: ModelArtifactFormat) {
         let bytes = b"synthetic speech graph receipt";
         let dir = tempfile::tempdir().unwrap();
         let mut release = onnx_model(bytes);
         release.id = "speech".into();
-        release.artifact_format = ModelArtifactFormat::WhisperGgml;
+        release.artifact_format = format;
         release.segmentation = false;
         let mut service = service_for(dir.path(), bytes);
         assert!(matches!(
@@ -2715,8 +2755,7 @@ mod tests {
             fs::write(&catalog_path, serde_json::to_vec(&signed).unwrap()).unwrap();
             fs::write(&keys_path, serde_json::to_vec(&serde_json::json!({"keys": {"isolated-test-only": hex::encode(key.verifying_key().to_bytes())}})).unwrap()).unwrap();
             let verified = VerifiedCatalog::load(&catalog_path, &keys_path).unwrap();
-            let (_, _, loaded) = crate::speech::speech_model_bytes(dir.path(), &verified).unwrap();
-            assert_eq!(&**loaded, bytes);
+            assert_speech_witness(dir.path(), &verified, format, bytes);
             fs::write(&installed.path, vec![0; bytes.len()]).unwrap();
             assert!(matches!(
                 crate::speech::speech_model_bytes(dir.path(), &verified),
@@ -2748,6 +2787,35 @@ mod tests {
             installed_in_process_model(dir.path(), InProcessCapability::SpeechRecognition).unwrap(),
             None
         );
+    }
+
+    fn assert_speech_witness(
+        root: &Path,
+        verified: &crate::catalog::VerifiedCatalog,
+        format: ModelArtifactFormat,
+        bytes: &[u8],
+    ) {
+        assert_eq!(
+            crate::speech::speech_model_file(root, verified)
+                .unwrap()
+                .format(),
+            format
+        );
+        let (_, _, loaded) = crate::speech::speech_model_bytes(root, verified).unwrap();
+        assert_eq!(&**loaded, bytes);
+        #[cfg(feature = "whisper")]
+        if format == ModelArtifactFormat::WhistleCact {
+            // These authenticated fixture weights deliberately have the wrong
+            // pinned size. Both feature configurations must reject them before
+            // configuring a session or entering any native model parser.
+            let mut input = std::io::empty();
+            let mut output = Vec::new();
+            assert_eq!(
+                crate::speech::worker::serve(root, verified, &mut input, &mut output),
+                Err(crate::speech::SpeechError::ModelUnavailable)
+            );
+            assert!(output.is_empty());
+        }
     }
 
     /// An in-process model installs through the verified download and the

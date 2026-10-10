@@ -2,7 +2,7 @@
 //! nobody sits at (a provider guest). The host issues the invitation; the
 //! session redeems it through the same canonical native enrollment a person
 //! uses, into the active workspace, once per room.
-use super::*;
+use super::{Path, RoomId, ShellNetwork};
 use crate::shell::peer_sync_overlay::PeerSyncResponse;
 use std::time::{Duration, Instant};
 

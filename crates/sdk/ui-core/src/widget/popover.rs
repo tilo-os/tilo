@@ -859,15 +859,6 @@ impl Popover {
         };
     }
 
-    pub fn highlight_first(&mut self) {
-        self.options_mut().highlighted = 0;
-    }
-
-    pub fn highlight_last(&mut self) {
-        let options = self.options_mut();
-        options.highlighted = options.items.len().saturating_sub(1);
-    }
-
     /// Record `idx` as selected and pending, and close. Out-of-range
     /// indices are ignored.
     pub fn select(&mut self, idx: usize) {
@@ -944,27 +935,23 @@ impl<C: Widget + 'static> Widget for Popover<C> {
         let width = self.presented.map_or(Dimension::auto(), |w| {
             Dimension::length(crate::num::f32_of_f64(w.width()))
         });
-        let node = taffy.parent_node(
-            Style {
-                position: taffy::Position::Absolute,
-                inset: taffy::Rect {
-                    left: taffy::LengthPercentageAuto::length(0.0),
-                    top: taffy::LengthPercentageAuto::length(0.0),
-                    right: taffy::LengthPercentageAuto::auto(),
-                    bottom: taffy::LengthPercentageAuto::auto(),
-                },
-                size: Size {
-                    width,
-                    height: Dimension::auto(),
-                },
-                flex_direction: taffy::FlexDirection::Row,
-                align_items: Some(taffy::AlignItems::FlexStart),
-                ..Default::default()
+        let style = Style {
+            position: taffy::Position::Absolute,
+            inset: taffy::Rect {
+                left: taffy::LengthPercentageAuto::length(0.0),
+                top: taffy::LengthPercentageAuto::length(0.0),
+                right: taffy::LengthPercentageAuto::auto(),
+                bottom: taffy::LengthPercentageAuto::auto(),
             },
-            &[content],
-        );
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+            size: Size {
+                width,
+                height: Dimension::auto(),
+            },
+            flex_direction: taffy::FlexDirection::Row,
+            align_items: Some(taffy::AlignItems::FlexStart),
+            ..Default::default()
+        };
+        taffy.widget_node(style, &[content], node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, _origin: Point) {
@@ -1312,10 +1299,6 @@ impl<C: Widget + 'static> PopoverButton<C> {
         &self.popover
     }
 
-    pub fn popover_mut(&mut self) -> &mut Popover<C> {
-        &mut self.popover
-    }
-
     pub fn button_mut(&mut self) -> &mut crate::widget::Button {
         &mut self.button
     }
@@ -1375,9 +1358,7 @@ impl<C: Widget + 'static> Widget for PopoverButton<C> {
         // The popover's node stands out of flow beside the button's, so the
         // pair is as big as the button and the popover's content joins the
         // window's tree (and its focus order) while it is open.
-        let node = taffy.parent_node(Style::default(), &[button, popover]);
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        taffy.widget_node(Style::default(), &[button, popover], node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {

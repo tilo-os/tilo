@@ -2283,9 +2283,8 @@ impl<'a> DropdownFace<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testing::Dispatch;
     use automerge::{AutoCommit, ObjId, ObjType, ReadDoc, transaction::Transactable};
-    use winit::event::Modifiers;
-    use winit::keyboard::{KeyLocation, PhysicalKey, SmolStr};
 
     fn opts() -> Vec<String> {
         ["UTC", "Europe/Amsterdam", "America/New_York", "Asia/Tokyo"]
@@ -2610,43 +2609,11 @@ mod tests {
         (doc, root)
     }
 
-    /// Synthesise a `Pressed` `KeyboardInput` (winit keeps `KeyEvent`'s
-    /// extra field `pub(crate)`, so a struct literal isn't possible).
-    fn key(logical_key: Key, text: Option<&str>) -> WindowEvent {
-        let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-        ev.logical_key = logical_key;
-        ev.physical_key = PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
-        ev.location = KeyLocation::Standard;
-        ev.state = ElementState::Pressed;
-        ev.repeat = false;
-        ev.text = text.map(SmolStr::new);
-        WindowEvent::KeyboardInput {
-            device_id: unsafe { std::mem::zeroed() },
-            event: ev,
-            is_synthetic: false,
-        }
-    }
+    use crate::synthetic_input::key_press;
 
     /// Drive a key through a focused dropdown with a throwaway taffy node.
     fn feed_key(dd: &mut Dropdown, ev: &WindowEvent, doc: &mut AutoCommit, root: &ObjId) -> bool {
-        let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let node = taffy.leaf_node(Style::default());
-        let mut handled = false;
-        let mut focus_target = None;
-        dd.handle_event(
-            ev,
-            &mut crate::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &Modifiers::default(),
-                state: crate::widget::Edits::lend(doc),
-                path: root,
-                handled: &mut handled,
-                focus_target: &mut focus_target,
-                node_id: node,
-                taffy: &taffy,
-            },
-        );
-        handled
+        Dispatch::new().doc(doc).path(root).send(dd, ev).handled
     }
 
     #[test]
@@ -2666,7 +2633,7 @@ mod tests {
             dd.set_focus(true);
             assert!(feed_key(
                 &mut dd,
-                &key(Key::Named(NamedKey::ArrowDown), None),
+                &key_press(Key::Named(NamedKey::ArrowDown), None),
                 &mut doc,
                 &root
             ));
@@ -2683,20 +2650,20 @@ mod tests {
             dd.do_open();
             feed_key(
                 &mut dd,
-                &key(Key::Named(NamedKey::ArrowDown), None),
+                &key_press(Key::Named(NamedKey::ArrowDown), None),
                 &mut doc,
                 &root,
             );
             feed_key(
                 &mut dd,
-                &key(Key::Named(NamedKey::ArrowDown), None),
+                &key_press(Key::Named(NamedKey::ArrowDown), None),
                 &mut doc,
                 &root,
             );
             assert_eq!(dd.highlight_index(), 2);
             feed_key(
                 &mut dd,
-                &key(Key::Named(NamedKey::ArrowUp), None),
+                &key_press(Key::Named(NamedKey::ArrowUp), None),
                 &mut doc,
                 &root,
             );
@@ -2720,19 +2687,19 @@ mod tests {
             // Move to "America/New_York" (index 2) and select it.
             feed_key(
                 &mut dd,
-                &key(Key::Named(NamedKey::ArrowDown), None),
+                &key_press(Key::Named(NamedKey::ArrowDown), None),
                 &mut doc,
                 &root,
             );
             feed_key(
                 &mut dd,
-                &key(Key::Named(NamedKey::ArrowDown), None),
+                &key_press(Key::Named(NamedKey::ArrowDown), None),
                 &mut doc,
                 &root,
             );
             assert!(feed_key(
                 &mut dd,
-                &key(Key::Named(NamedKey::Enter), None),
+                &key_press(Key::Named(NamedKey::Enter), None),
                 &mut doc,
                 &root
             ));
@@ -2759,13 +2726,13 @@ mod tests {
             dd.do_open();
             feed_key(
                 &mut dd,
-                &key(Key::Named(NamedKey::ArrowDown), None),
+                &key_press(Key::Named(NamedKey::ArrowDown), None),
                 &mut doc,
                 &root,
             );
             assert!(feed_key(
                 &mut dd,
-                &key(Key::Named(NamedKey::Escape), None),
+                &key_press(Key::Named(NamedKey::Escape), None),
                 &mut doc,
                 &root
             ));
@@ -2809,19 +2776,19 @@ mod tests {
             // "ame" matches only "America/New_York".
             feed_key(
                 &mut dd,
-                &key(Key::Character("a".into()), Some("a")),
+                &key_press(Key::Character("a".into()), Some("a")),
                 &mut doc,
                 &root,
             );
             feed_key(
                 &mut dd,
-                &key(Key::Character("m".into()), Some("m")),
+                &key_press(Key::Character("m".into()), Some("m")),
                 &mut doc,
                 &root,
             );
             feed_key(
                 &mut dd,
-                &key(Key::Character("e".into()), Some("e")),
+                &key_press(Key::Character("e".into()), Some("e")),
                 &mut doc,
                 &root,
             );
@@ -2830,7 +2797,7 @@ mod tests {
             // Enter selects the sole filtered match.
             feed_key(
                 &mut dd,
-                &key(Key::Named(NamedKey::Enter), None),
+                &key_press(Key::Named(NamedKey::Enter), None),
                 &mut doc,
                 &root,
             );
@@ -2850,7 +2817,7 @@ mod tests {
                 (Key::Named(NamedKey::Space), None),
                 (Key::Character("Y".into()), Some("Y")),
             ] {
-                feed_key(&mut dd, &key(key_value, text), &mut doc, &root);
+                feed_key(&mut dd, &key_press(key_value, text), &mut doc, &root);
             }
             assert_eq!(dd.filter_query(), "New Y");
             assert_eq!(dd.visible_count(), 1);
@@ -2864,20 +2831,20 @@ mod tests {
             dd.do_open();
             feed_key(
                 &mut dd,
-                &key(Key::Character("a".into()), Some("a")),
+                &key_press(Key::Character("a".into()), Some("a")),
                 &mut doc,
                 &root,
             );
             feed_key(
                 &mut dd,
-                &key(Key::Character("z".into()), Some("z")),
+                &key_press(Key::Character("z".into()), Some("z")),
                 &mut doc,
                 &root,
             );
             assert_eq!(dd.visible_count(), 0); // "az" matches nothing
             feed_key(
                 &mut dd,
-                &key(Key::Named(NamedKey::Backspace), None),
+                &key_press(Key::Named(NamedKey::Backspace), None),
                 &mut doc,
                 &root,
             );
@@ -2895,14 +2862,14 @@ mod tests {
             let cluster = "👩🏽‍💻";
             feed_key(
                 &mut dd,
-                &key(Key::Character(cluster.into()), Some(cluster)),
+                &key_press(Key::Character(cluster.into()), Some(cluster)),
                 &mut doc,
                 &root,
             );
             assert_eq!(dd.filter_query(), cluster);
             feed_key(
                 &mut dd,
-                &key(Key::Named(NamedKey::Backspace), None),
+                &key_press(Key::Named(NamedKey::Backspace), None),
                 &mut doc,
                 &root,
             );
@@ -2923,7 +2890,7 @@ mod tests {
             };
             feed_key(
                 &mut dd,
-                &key(Key::Character("亜".into()), Some("亜")),
+                &key_press(Key::Character("亜".into()), Some("亜")),
                 &mut doc,
                 &root,
             );
@@ -3020,7 +2987,7 @@ mod tests {
             dd.rect = Rect::new(0.0, 0.0, 200.0, 40.0);
             let (mut doc, root) = doc_with_tz("UTC");
             let enter = WindowEvent::CursorMoved {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 position: winit::dpi::PhysicalPosition::new(20.0, 20.0),
             };
             assert!(
@@ -3029,7 +2996,7 @@ mod tests {
             );
             assert!(dd.is_hovered, "the pointer is over the control");
             let leave = WindowEvent::CursorLeft {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
             };
             feed_key(&mut dd, &leave, &mut doc, &root);
             assert!(!dd.is_hovered, "CursorLeft clears the resting hover");
@@ -3249,27 +3216,27 @@ mod tests {
         menu.set_focus(true);
         assert!(feed_key(
             &mut menu,
-            &key(Key::Named(NamedKey::Enter), None),
+            &key_press(Key::Named(NamedKey::Enter), None),
             &mut document,
             &root
         ));
         assert!(menu.is_open());
         feed_key(
             &mut menu,
-            &key(Key::Character("a".into()), Some("a")),
+            &key_press(Key::Character("a".into()), Some("a")),
             &mut document,
             &root,
         );
         assert_eq!(menu.visible_count(), opts().len());
         feed_key(
             &mut menu,
-            &key(Key::Named(NamedKey::ArrowDown), None),
+            &key_press(Key::Named(NamedKey::ArrowDown), None),
             &mut document,
             &root,
         );
         feed_key(
             &mut menu,
-            &key(Key::Named(NamedKey::Enter), None),
+            &key_press(Key::Named(NamedKey::Enter), None),
             &mut document,
             &root,
         );
@@ -3334,7 +3301,7 @@ mod tests {
             dd.set_focus(true);
             let handled = feed_key(
                 &mut dd,
-                &key(Key::Named(NamedKey::ArrowDown), None),
+                &key_press(Key::Named(NamedKey::ArrowDown), None),
                 &mut doc,
                 &root,
             );
@@ -3548,7 +3515,7 @@ mod tests {
             assert_eq!(dd.highlight_index(), 0);
             assert!(feed_key(
                 &mut dd,
-                &key(Key::Character("a".into()), Some("a")),
+                &key_press(Key::Character("a".into()), Some("a")),
                 &mut doc,
                 &root,
             ));
@@ -3557,7 +3524,7 @@ mod tests {
             assert_eq!(dd.highlight_index(), 2, "the next option starting with a");
             feed_key(
                 &mut dd,
-                &key(Key::Character("a".into()), Some("a")),
+                &key_press(Key::Character("a".into()), Some("a")),
                 &mut doc,
                 &root,
             );

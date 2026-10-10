@@ -20,6 +20,7 @@ use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::tokens::Rhythm;
+use ui::widget::TaffyTreeExt;
 use ui::widget::{
     Container, Element, EmptyState, EmptyStateContent, ListRow, Scrollable, Section, TabBar,
     TabDescriptor, Widget,
@@ -482,27 +483,17 @@ impl Widget for BottomPanel {
             .map(|list| list.build_layout(taffy, theme, node_map));
         let mut kids = vec![tabs_node];
         kids.extend(self.list_node);
-        #[allow(
-            clippy::unwrap_used,
-            reason = "Widget::build_layout is infallible by trait contract; inserting a node over a freshly created child cannot fail short of an already-corrupted taffy arena, which nothing here could recover from"
-        )]
-        let node = taffy
-            .new_with_children(
-                Style {
-                    display: taffy::Display::Flex,
-                    flex_direction: taffy::FlexDirection::Column,
-                    size: Size {
-                        width: Dimension::percent(1.0),
-                        height: Dimension::length(self.height as f32),
-                    },
-                    flex_shrink: 0.0,
-                    ..Default::default()
-                },
-                &kids,
-            )
-            .unwrap();
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        let style = Style {
+            display: taffy::Display::Flex,
+            flex_direction: taffy::FlexDirection::Column,
+            size: Size {
+                width: Dimension::percent(1.0),
+                height: Dimension::length(self.height as f32),
+            },
+            flex_shrink: 0.0,
+            ..Default::default()
+        };
+        taffy.widget_node(style, &kids, node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {

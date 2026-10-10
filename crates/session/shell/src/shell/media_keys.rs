@@ -633,8 +633,6 @@ mod tests {
         every_machine_key_is_classified();
     }
 
-    /// Build a `KeyboardInput` event for `key` via the zeroed-struct
-    /// workaround (winit's `KeyEvent` has a private `platform_specific` field).
     fn press(key: Key) -> WindowEvent {
         key_event(key, ElementState::Pressed)
     }
@@ -644,23 +642,7 @@ mod tests {
     }
 
     fn key_event(key: Key, state: ElementState) -> WindowEvent {
-        // SAFETY: every public field is overwritten below, and the one
-        // private field tolerates an all-zero bit pattern — the same
-        // invariant `native::keyboard_input_event` relies on.
-        let mut ev: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
-        ev.logical_key = key;
-        ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
-            winit::keyboard::NativeKeyCode::Unidentified,
-        );
-        ev.location = winit::keyboard::KeyLocation::Standard;
-        ev.state = state;
-        ev.repeat = false;
-        ev.text = None;
-        WindowEvent::KeyboardInput {
-            device_id: unsafe { std::mem::zeroed() },
-            event: ev,
-            is_synthetic: false,
-        }
+        ui::synthetic_input::keyboard_input(ui::synthetic_input::key_event(key, None, state))
     }
 
     /// Recording dispatcher: captures the actuation without touching the

@@ -835,7 +835,7 @@ fn prompt_host(
         })
         .collect();
     host.set_output_geometry(&geometry);
-    let layout = crate::display_layout_switcher::layout_host(&mut host);
+    let layout = crate::support::host::layout_host(&mut host);
     host.show_display_confirmation(confirmation.transaction, confirmation.tool);
     (host, layout)
 }

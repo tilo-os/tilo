@@ -243,21 +243,22 @@ host) and the carrier.
   barrier runs before the change counts as delivered.
 - **Durable plane: signed Automerge changes over an HTTPS delivery
   carrier.** The browser uploads its own signed changes from a durable
-  outbox (`POST /peer/v3/state`). It reads the host-ordered replay through
-  held long-poll chains (`/peer/v3/events`) starting at a host-signed opaque
-  cursor, and acknowledges consumption (`/peer/v3/acks`). A reconnecting
-  browser resumes from its cursor and re-uploads anything unacknowledged.
-  The host de-duplicates by digest/operation id. When history is gone it
-  answers with a reset to a snapshot (`/peer/v3/snapshots`). Every request
-  carries a device-signed HTTP proof.
+  outbox. It reads the host-ordered replay through held long polls starting
+  at a host-signed opaque cursor, and acknowledges consumption. A
+  reconnecting browser resumes from its cursor and re-uploads anything
+  unacknowledged. The host de-duplicates by digest/operation id. When
+  history is gone it answers with a reset to a snapshot. `main` does not
+  serve 541's routes or its HTTP request proofs: its routes are the
+  `/peer/v1` carrier below (`tilo_relay_protocol::web`).
 - **Conflicts** are CRDT merges (Automerge: deterministic per-property
   last-writer-wins, the same outcome on every replica). The host decides
   *admission*, not merge results.
-- **Live plane (`LIVE_V1`).** Ephemeral and never authority
-  (`tilo-delivery-protocol::delivery_v3::live_wire`):
+- **Live plane (`LIVE_V1`).** Ephemeral and never authority. The frames
+  are `tilo-relay-protocol::live`, the one copy the relay and the browser
+  speak:
   - A latest-value `presence` track (datagrams): `PresenceFrame {seq,
-    sent_at_ms, focus, pointer, selection anchors, drag}`. Receivers drop
-    older sequence numbers.
+    sent_at_ms, focus, pointer, selection anchors, drag, participant}`.
+    Receivers drop older sequence numbers.
   - One ordered `ops/<record>` track per record: `OpsFrame::Preview` (text
     preview ops against CRDT anchors) and `OpsFrame::SignedChange`, an
     early forward of a durable change.
@@ -269,7 +270,8 @@ host) and the carrier.
     permission from one shared owner turn whenever an authority change is
     announced, so revocation cuts live sessions within about 100 ms.
   - The carrier is moq-lite over WebTransport (`/moq/live`), with an HTTPS
-    streaming fallback (`/peer/v3/live/fallback/*`). There are no WebSockets.
+    streaming fallback (`/peer/v3/live/fallback/*`, the paths `main` still
+    serves). There are no WebSockets.
 - **Browser speculation.** `peer_live/speculation.rs` keeps a *durable
   basis* plus an in-memory *view*: basis + early-forwarded changes. The
   view is what renders. A durable cut settles each outstanding change:
@@ -348,7 +350,13 @@ rather than a second host:
     `CoverageStatement` naming the retained entries (by digest of their
     body) it had delivered or published before the request. The host
     removes exactly those. Rooms whose replay a native shell selects
-    (`shell_authority`) are left to that selection.
+    (`shell_authority`) are left to that selection. It runs for
+    checkpoints, room frames and before every replay, not per keystroke:
+    a signed route increment that sorts after the route's
+    accepted tails and applies to them is published as an original from an
+    in-memory cursor the last clean selection left behind
+    (`store/shell_selection/tail_cache.rs`), since a selection could only
+    have listed it.
 - **Live plane over WebTransport.** It uses 541's `LIVE_V1` relay
   (`crates/hosting/tilo-moq`, ported from `qos-moq`), `moq-lite` at
   `/moq/live` on the same port number over UDP.
@@ -363,7 +371,8 @@ rather than a second host:
     (`tilo-relay/src/authority_epoch.rs`), a session ending or running out, a
     grant issued — and on the 5 s session sweep as a backstop.
   - Browsers without WebTransport use 541's HTTPS stream fallback
-    (`/peer/v1/live/fallback/{open,send,resume}`) with the same frames.
+    (`/peer/v3/live/fallback/{open,send,resume}`, outside `API_PREFIX`;
+    `tilo-moq` `live/fallback.rs`) with the same frames.
   - Live frames from iroh peers are bridged into the relay, so native and
     browser members share one live room.
 - **Early forwarding is dropped.** In 541 it hid long-poll latency. Here a
@@ -872,7 +881,18 @@ and no control was projected for it.
 
 `crates/agent/agent-participant/src/host.rs` runs a supervisor in a host
 process. Each agent's participant runs on its own thread with the host's
-model, pumping its session until it stops or the host shuts down. Grants
+model, pumping its session until it stops or the host shuts down. Between
+pumps the thread sleeps until its session or steering changes or its
+presence keep-alive is due, never on an interval; a pump runs a plan's local
+steps back to back for up to 5 ms and at most one model call. Records the
+agent has not opened are held as their documents, history kept and each
+change once, so opening one seeds its replica with exactly what its changes
+made: the shared desktop live, its changes merged once per pump, its tabs
+read only when it changed; every other record saved, with the changes since
+merged in one load once they outweigh it (or 64 KiB). Those changes come
+from room members, so every merge goes through `tilo-automerge-isolate`
+first and none decodes in the host process; a change the isolate refuses is
+dropped, and with no isolate the record does not open. Grants
 (agent key, certificate, delegation) and agents (status, room, task log,
 conversation) are kept in `<state>/agents/agents.json` (owner-only). A
 ticker settles expired grants: the agent stops and the relay refuses its
@@ -899,9 +919,22 @@ it. `--agent-model` chooses the planner:
 `ModelPlanner` also offers the room's existing records of an app before a
 new one, so "add a sheet named …" edits the sheet people already have.
 
-**Agents run no app's code.** An agent holds records as replicas of their
-resources, so nothing it does reads the host user's files or secret store;
-it plans with the host's model.
+**App code runs in confined workers, never in the host.** An agent holds
+records as replicas of their resources, and a replica runs the app's own
+resource code (its operations, seed and presence). Each record an agent or
+the host's room actions hold lives in its own app worker
+(`tilo_agent_participant::worker`, `ConfinedReplica`): the host's executable
+started again, which confines itself before it reads a request: no path
+opened or changed, no socket, no exec, no signal to another process. The
+same goes for a record's registered reads and its view discovery. The host
+keeps the device keys and signs; the worker returns unsigned Automerge
+bytes, which the host admits through `tilo-automerge-isolate` before it
+signs them. So nothing an agent does reads the host user's files, secret
+store or the agents' keys; it plans with the host's model. Every binary that
+hosts agents calls `tilo_agent_participant::worker::dispatch_early()` first
+thing in `main` (a test crate, `app_worker!()`); see
+`docs/architecture/security.md`, "App workers for host agents and room
+actions".
 
 `host_agents` covers it end to end: a page requests a grant, a laptop
 approves it with its delegation, the page spawns with a plain-words task, the

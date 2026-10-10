@@ -3,8 +3,13 @@
 //! Sources are copied into this private spool before an offer is sent. This
 //! makes a resumed transfer immutable across source edits and reboots. The
 //! wire protocol refers only to random IDs and portable display names.
+//!
+//! This is the one byte-transfer primitive between a person's devices. A
+//! Nearby send delivers into a destination the receiver chose; a media
+//! handoff ([`TransferKind::MediaHandoff`]) delivers into the store's private,
+//! leased media cache and never into Downloads or a Files destination.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::ffi::CString;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom, Write};
@@ -24,6 +29,14 @@ pub const MAX_TOTAL_BYTES: u64 = 64 * 1024 * 1024 * 1024;
 pub const MAX_FOLDER_ENTRIES: usize = 100_000;
 pub const TRANSFER_LIFETIME_MS: u64 = 7 * 24 * 60 * 60 * 1000;
 pub const CHECKPOINT_BYTES: u64 = 8 * 1024 * 1024;
+/// Verified media-handoff objects kept for players, apart from the spool quota.
+pub const MAX_MEDIA_CACHE_BYTES: u64 = 64 * 1024 * 1024 * 1024;
+/// Free space every staged or incoming object must leave on the spool's filesystem.
+pub const MIN_FREE_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+/// How long a player that resolved a cached media object keeps it alive.
+pub const MEDIA_LEASE: std::time::Duration = std::time::Duration::from_secs(12 * 60 * 60);
+/// Completed media handoffs a receiver remembers before evicting the oldest.
+pub const MAX_CACHED_MEDIA: usize = 64;
 
 #[cfg(target_os = "linux")]
 const RESOLVE_NO_MAGICLINKS: u64 = 0x02;
@@ -265,11 +278,31 @@ fn openat2_beneath(root: &File, relative: &Path, directory: bool) -> Result<File
     Ok(unsafe { File::from_raw_fd(fd) })
 }
 
+/// What one transfer carries. Postcard encodes the variant index on the wire,
+/// so variants are only ever appended.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TransferKind {
     File,
     FolderArchive,
+    /// The local file behind a media handoff. The receiver's accepted
+    /// `ResumeMedia` authorises it instead of a Files consent, and it is
+    /// delivered only into the private media cache. Neither side keeps it
+    /// across a restart: the authorising action is session-local.
+    MediaHandoff,
+}
+
+impl TransferKind {
+    /// The continuity switch that governs transfers of this kind.
+    #[must_use]
+    pub const fn capability(self) -> crate::shell::continuity_policy::ContinuityCapability {
+        match self {
+            Self::File | Self::FolderArchive => {
+                crate::shell::continuity_policy::ContinuityCapability::FileTransfer
+            }
+            Self::MediaHandoff => crate::shell::continuity_policy::ContinuityCapability::Media,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -321,6 +354,95 @@ struct StoreIndex {
 pub struct NearbyTransferStore {
     root: PathBuf,
     index: StoreIndex,
+    /// Running hash of each incoming prefix written this session, so finishing
+    /// a large object does not re-read it on the receive path.
+    hashers: BTreeMap<[u8; 16], (u64, blake3::Hasher)>,
+    media: MediaCache,
+}
+
+/// Session-local bindings from an exact sender and transfer to a verified
+/// cached object, plus the player leases that keep an object alive after its
+/// binding is gone. Objects are content addressed, so bindings may share one.
+#[derive(Default)]
+struct MediaCache {
+    completed: BTreeMap<(String, [u8; 16]), PathBuf>,
+    completed_order: VecDeque<(String, [u8; 16])>,
+    leased_until: BTreeMap<PathBuf, std::time::Instant>,
+}
+
+impl MediaCache {
+    fn expire_leases(&mut self) {
+        let now = std::time::Instant::now();
+        self.leased_until.retain(|_, until| *until > now);
+    }
+
+    fn protected_paths(&mut self) -> BTreeSet<PathBuf> {
+        self.expire_leases();
+        self.completed
+            .values()
+            .cloned()
+            .chain(self.leased_until.keys().cloned())
+            .collect()
+    }
+
+    /// Remove `path` once no binding and no live lease references it.
+    fn release_object(&mut self, path: &Path) {
+        self.expire_leases();
+        let referenced = self.completed.values().any(|candidate| candidate == path)
+            || self.leased_until.contains_key(path);
+        if !referenced {
+            let _ = fs::remove_file(path);
+            if let Some(parent) = path.parent() {
+                let _ = fs::remove_dir(parent);
+            }
+        }
+    }
+
+    fn unbind(&mut self, key: &(String, [u8; 16])) -> bool {
+        let Some(path) = self.completed.remove(key) else {
+            return false;
+        };
+        self.completed_order.retain(|candidate| candidate != key);
+        self.release_object(&path);
+        true
+    }
+
+    fn evict_oldest_completed(&mut self) -> bool {
+        let oldest = loop {
+            if let Some(candidate) = self.completed_order.pop_front() {
+                if self.completed.contains_key(&candidate) {
+                    break Some(candidate);
+                }
+                continue;
+            }
+            break self.completed.keys().next().cloned();
+        };
+        oldest.is_some_and(|oldest| self.unbind(&oldest))
+    }
+
+    fn bind(&mut self, key: (String, [u8; 16]), path: PathBuf) {
+        if let Some(previous) = self.completed.insert(key.clone(), path) {
+            self.completed_order.retain(|candidate| candidate != &key);
+            if self.completed.get(&key) != Some(&previous) {
+                self.release_object(&previous);
+            }
+        }
+        self.completed_order.push_back(key);
+        while self.completed.len() > MAX_CACHED_MEDIA {
+            if !self.evict_oldest_completed() {
+                break;
+            }
+        }
+    }
+}
+
+/// One staging request: the identity and display name an outbox entry gets.
+struct Staging {
+    id: [u8; 16],
+    name: String,
+    target: String,
+    now_unix_ms: u64,
+    media: bool,
 }
 
 impl NearbyTransferStore {
@@ -353,9 +475,24 @@ impl NearbyTransferStore {
         index
             .inbox
             .retain(|entry| entry.expires_unix_ms > now_unix_ms);
-        let mut store = Self { root, index };
+        // A media handoff is authorised by one session's `ResumeMedia`; after a
+        // restart neither side can resume it, so its bytes are only waste.
+        index
+            .outbox
+            .retain(|entry| entry.kind != TransferKind::MediaHandoff);
+        index
+            .inbox
+            .retain(|entry| entry.kind != TransferKind::MediaHandoff);
+        ensure_private_dir(&root.join("media"))?;
+        let mut store = Self {
+            root,
+            index,
+            hashers: BTreeMap::new(),
+            media: MediaCache::default(),
+        };
         store.repair_files()?;
         store.persist()?;
+        let _ = prune_media_objects(&store.media_root(), &BTreeSet::new(), MAX_MEDIA_CACHE_BYTES);
         Ok(store)
     }
 
@@ -374,6 +511,11 @@ impl NearbyTransferStore {
 
     pub fn partial_path(&self, id: [u8; 16]) -> PathBuf {
         self.root.join("inbox").join(format!("{}.part", id_hex(id)))
+    }
+
+    /// Private root of verified media-handoff objects, `<hash>/<name>` beneath.
+    pub fn media_root(&self) -> PathBuf {
+        self.root.join("media")
     }
 
     /// Stage a source under a new random identity.
@@ -410,8 +552,57 @@ impl NearbyTransferStore {
         now_unix_ms: u64,
         id: [u8; 16],
     ) -> Result<OutboxEntry, String> {
-        self.ensure_capacity(0)?;
         let name = portable_name(source)?;
+        self.stage_path(
+            source,
+            Staging {
+                id,
+                name,
+                target,
+                now_unix_ms,
+                media: false,
+            },
+        )
+    }
+
+    /// Stage the regular file behind a media handoff under a caller-issued
+    /// identity and portable display name.
+    ///
+    /// # Errors
+    /// Returns an error for an invalid/in-use ID or name, a source that is not
+    /// one regular file, quota or free-space exhaustion, or I/O failure.
+    pub fn stage_media_with_id(
+        &mut self,
+        source: &Path,
+        name: String,
+        target: String,
+        now_unix_ms: u64,
+        id: [u8; 16],
+    ) -> Result<OutboxEntry, String> {
+        self.stage_path(
+            source,
+            Staging {
+                id,
+                name,
+                target,
+                now_unix_ms,
+                media: true,
+            },
+        )
+    }
+
+    fn stage_path(&mut self, source: &Path, staging: Staging) -> Result<OutboxEntry, String> {
+        let Staging {
+            id,
+            name,
+            target,
+            now_unix_ms,
+            media,
+        } = staging;
+        self.ensure_capacity(0)?;
+        if !super::device_fabric::valid_nearby_file_name(&name) {
+            return Err(crate::shell::i18n::t("nearby-error-name-not-portable"));
+        }
         if id == [0; 16]
             || self.index.outbox.iter().any(|entry| entry.id == id)
             || self.index.inbox.iter().any(|entry| entry.id == id)
@@ -427,7 +618,15 @@ impl NearbyTransferStore {
                 return Err(crate::shell::i18n::t("nearby-error-too-large"));
             }
             self.ensure_capacity(metadata.len())?;
-            copy_regular(source, &object).map(|()| TransferKind::File)
+            self.ensure_free_space(metadata.len())?;
+            let kind = if media {
+                TransferKind::MediaHandoff
+            } else {
+                TransferKind::File
+            };
+            copy_regular(source, &object).map(|()| kind)
+        } else if media {
+            return Err(crate::shell::i18n::t("nearby-error-not-regular"));
         } else if metadata.file_type().is_dir() {
             archive_folder(source, &object).map(|()| TransferKind::FolderArchive)
         } else {
@@ -498,6 +697,7 @@ impl NearbyTransferStore {
                 return Err(crate::shell::i18n::t("nearby-error-too-large"));
             }
             self.ensure_capacity(metadata.len())?;
+            self.ensure_free_space(metadata.len())?;
             copy_open_regular(source.into_file(), &object).map(|()| TransferKind::File)
         } else if metadata.is_dir() {
             archive_open_folder(&source.into_file(), &object).map(|()| TransferKind::FolderArchive)
@@ -568,14 +768,18 @@ impl NearbyTransferStore {
             {
                 return Err("resume manifest does not match the staged transfer".into());
             }
-            return Ok((
-                existing.committed_offset,
-                prefix_hash(&self.partial_path(id), existing.committed_offset)?,
-            ));
+            let committed = existing.committed_offset;
+            let hash = self.seed_hasher(id, committed)?;
+            return Ok((committed, hash));
         }
         self.ensure_capacity(total_bytes)?;
+        if kind == TransferKind::MediaHandoff {
+            self.reserve_media_cache(total_bytes)?;
+        }
+        self.ensure_free_space(total_bytes)?;
         let part = self.partial_path(id);
         create_private_new(&part)?.sync_all().map_err(display)?;
+        self.hashers.insert(id, (0, blake3::Hasher::new()));
         self.index.inbox.push(InboxEntry {
             id,
             source,
@@ -616,7 +820,6 @@ impl NearbyTransferStore {
             return Err("resume manifest does not match the staged transfer".into());
         }
         let path = self.partial_path(existing.id);
-        let hash = prefix_hash(&path, existing.committed_offset)?;
         let partial = OpenOptions::new()
             .write(true)
             .custom_flags(libc::O_NOFOLLOW)
@@ -626,6 +829,7 @@ impl NearbyTransferStore {
             .set_len(existing.committed_offset)
             .map_err(display)?;
         partial.sync_data().map_err(display)?;
+        let hash = self.seed_hasher(existing.id, existing.committed_offset)?;
         if let Some(entry) = self
             .index
             .inbox
@@ -704,8 +908,20 @@ impl NearbyTransferStore {
             return Err("nearby transfer chunk is out of order".into());
         }
         file.seek(SeekFrom::Start(offset)).map_err(display)?;
-        file.write_all(bytes).map_err(display)?;
+        if let Err(error) = file.write_all(bytes) {
+            self.hashers.remove(&id);
+            return Err(error.to_string());
+        }
         let next = offset.saturating_add(u64::try_from(bytes.len()).map_err(display)?);
+        match self.hashers.get_mut(&id) {
+            Some((covered, running)) if *covered == offset => {
+                running.update(bytes);
+                *covered = next;
+            }
+            _ => {
+                self.hashers.remove(&id);
+            }
+        }
         if next == entry.total_bytes
             || next.saturating_sub(entry.committed_offset) >= CHECKPOINT_BYTES
         {
@@ -730,21 +946,93 @@ impl NearbyTransferStore {
             .find(|entry| entry.id == id)
             .cloned()
             .ok_or_else(|| "unknown nearby transfer".to_string())?;
-        let part = self.partial_path(id);
-        let (len, hash) = hash_file(&part)?;
-        if len != entry.total_bytes || hash != entry.content_hash {
-            self.cancel_incoming(id)?;
-            return Err("nearby transfer integrity check failed".into());
+        if entry.kind == TransferKind::MediaHandoff {
+            return Err(MEDIA_CACHE_ONLY.into());
         }
+        let part = self.partial_path(id);
+        self.verify_incoming(&entry)?;
         ensure_private_dir(downloads)?;
         let installed = match entry.kind {
             TransferKind::File => install_file_create_new(&part, downloads, &entry.name)?,
             TransferKind::FolderArchive => {
                 extract_archive_create_new(&part, downloads, &entry.name)?
             }
+            TransferKind::MediaHandoff => return Err(MEDIA_CACHE_ONLY.into()),
         };
         self.cancel_incoming(id)?;
         Ok(installed)
+    }
+
+    /// Verify a completed media handoff and move it into the private media
+    /// cache, bound to its exact sender and transfer. The object never enters
+    /// Downloads or a Files destination.
+    ///
+    /// # Errors
+    /// Returns an error for an unknown or non-media transfer, an integrity
+    /// failure (the transfer is then discarded), or failed I/O.
+    pub fn finish_to_cache(&mut self, id: [u8; 16]) -> Result<PathBuf, String> {
+        let entry = self
+            .index
+            .inbox
+            .iter()
+            .find(|entry| entry.id == id)
+            .cloned()
+            .ok_or_else(|| "unknown nearby transfer".to_string())?;
+        if entry.kind != TransferKind::MediaHandoff {
+            return Err("only a media handoff is delivered to the media cache".into());
+        }
+        self.verify_incoming(&entry)?;
+        let object_dir = self.media_root().join(hex::encode(entry.content_hash));
+        let installed = ensure_private_dir(&object_dir).and_then(|()| {
+            let object = object_dir.join(&entry.name);
+            // The directory names the verified content, so replacing an
+            // existing copy only swaps identical bytes; a player holding the
+            // old descriptor keeps reading its inode.
+            fs::rename(self.partial_path(id), &object)
+                .map(|()| object)
+                .map_err(display)
+        });
+        let object = match installed {
+            Ok(object) => object,
+            Err(error) => {
+                self.cancel_incoming(id)?;
+                return Err(error);
+            }
+        };
+        self.cancel_incoming(id)?;
+        self.media.bind((entry.source, id), object.clone());
+        Ok(object)
+    }
+
+    /// Resolve one verified media handoff from this exact sender to its cached
+    /// object and lease it to the player that is about to open it.
+    pub fn cached_media(&mut self, source: &str, id: [u8; 16]) -> Option<PathBuf> {
+        let path = self
+            .media
+            .completed
+            .get(&(source.to_string(), id))
+            .cloned()?;
+        let now = std::time::Instant::now();
+        self.media
+            .leased_until
+            .insert(path.clone(), now.checked_add(MEDIA_LEASE).unwrap_or(now));
+        Some(path)
+    }
+
+    /// Revoke one exact sender/transfer media binding and any partial bytes it
+    /// created. A verified object stays while another binding or a live player
+    /// lease still references it.
+    ///
+    /// # Errors
+    /// Returns an error when partial bytes cannot be removed.
+    pub fn release_media(&mut self, source: &str, id: [u8; 16]) -> Result<bool, String> {
+        let incoming = self.index.inbox.iter().any(|entry| {
+            entry.id == id && entry.source == source && entry.kind == TransferKind::MediaHandoff
+        });
+        if incoming {
+            self.cancel_incoming(id)?;
+        }
+        Ok(self.media.unbind(&(source.to_string(), id)) || incoming)
     }
 
     /// Verify and install through an already-open destination capability.
@@ -766,12 +1054,11 @@ impl NearbyTransferStore {
             .find(|entry| entry.id == id)
             .cloned()
             .ok_or_else(|| "unknown nearby transfer".to_string())?;
-        let part = self.partial_path(id);
-        let (len, hash) = hash_file(&part)?;
-        if len != entry.total_bytes || hash != entry.content_hash {
-            self.cancel_incoming(id)?;
-            return Err("nearby transfer integrity check failed".into());
+        if entry.kind == TransferKind::MediaHandoff {
+            return Err(MEDIA_CACHE_ONLY.into());
         }
+        let part = self.partial_path(id);
+        self.verify_incoming(&entry)?;
         #[cfg(target_os = "macos")]
         {
             let installed = match entry.kind {
@@ -786,6 +1073,7 @@ impl NearbyTransferStore {
                 TransferKind::FolderArchive => {
                     extract_capability_archive(&part, &destination.directory, &entry.name)?
                 }
+                TransferKind::MediaHandoff => return Err(MEDIA_CACHE_ONLY.into()),
             };
             self.cancel_incoming(id)?;
             return Ok(destination.display_root.join(installed));
@@ -798,6 +1086,7 @@ impl NearbyTransferStore {
                 TransferKind::FolderArchive => {
                     extract_archive_create_new(&part, &root, &entry.name)?
                 }
+                TransferKind::MediaHandoff => return Err(MEDIA_CACHE_ONLY.into()),
             };
             self.cancel_incoming(id)?;
             Ok(destination.display_root.join(
@@ -838,6 +1127,7 @@ impl NearbyTransferStore {
         file.set_len(0).map_err(display)?;
         file.sync_all().map_err(display)?;
         entry.committed_offset = 0;
+        self.hashers.insert(id, (0, blake3::Hasher::new()));
         self.persist()?;
         Ok(*blake3::hash(&[]).as_bytes())
     }
@@ -848,8 +1138,79 @@ impl NearbyTransferStore {
     /// Returns an error when cleanup cannot be persisted.
     pub fn cancel_incoming(&mut self, id: [u8; 16]) -> Result<(), String> {
         self.index.inbox.retain(|entry| entry.id != id);
+        self.hashers.remove(&id);
         remove_if_exists(&self.partial_path(id))?;
         self.persist()
+    }
+
+    /// Hash the committed prefix of `id` and, when nothing follows it on disk,
+    /// keep the running hash so the finish need not re-read those bytes.
+    fn seed_hasher(&mut self, id: [u8; 16], committed: u64) -> Result<[u8; 32], String> {
+        let path = self.partial_path(id);
+        let hasher = prefix_hasher(&path, committed)?;
+        let hash = *hasher.finalize().as_bytes();
+        let on_disk = fs::symlink_metadata(&path).map_err(display)?.len();
+        if on_disk == committed {
+            self.hashers.insert(id, (committed, hasher));
+        } else {
+            self.hashers.remove(&id);
+        }
+        Ok(hash)
+    }
+
+    /// Check a completed incoming object's size and blake3 hash before any
+    /// delivery. A mismatch discards the untrusted bytes.
+    fn verify_incoming(&mut self, entry: &InboxEntry) -> Result<(), String> {
+        let part = self.partial_path(entry.id);
+        let on_disk = fs::symlink_metadata(&part).map_err(display)?.len();
+        let (len, hash) = match self.hashers.remove(&entry.id) {
+            Some((covered, running)) if covered == on_disk => {
+                (covered, *running.finalize().as_bytes())
+            }
+            _ => hash_file(&part)?,
+        };
+        if len != entry.total_bytes || hash != entry.content_hash {
+            self.cancel_incoming(entry.id)?;
+            return Err("nearby transfer integrity check failed".into());
+        }
+        Ok(())
+    }
+
+    /// Make room in the media cache for one more incoming object, evicting the
+    /// oldest objects no binding or player lease protects.
+    fn reserve_media_cache(&mut self, candidate_bytes: u64) -> Result<(), String> {
+        let reserved = self
+            .index
+            .inbox
+            .iter()
+            .filter(|entry| entry.kind == TransferKind::MediaHandoff)
+            .fold(0_u64, |total, entry| {
+                total.saturating_add(entry.total_bytes)
+            });
+        let budget = MAX_MEDIA_CACHE_BYTES
+            .checked_sub(reserved)
+            .and_then(|remaining| remaining.checked_sub(candidate_bytes))
+            .ok_or_else(|| crate::shell::i18n::t("nearby-error-quota-full"))?;
+        let protected = self.media.protected_paths();
+        if prune_media_objects(&self.media_root(), &protected, budget) > budget {
+            return Err(crate::shell::i18n::t("nearby-error-quota-full"));
+        }
+        Ok(())
+    }
+
+    /// Refuse an object whose bytes, with every unfinished receive, would
+    /// leave less than [`MIN_FREE_BYTES`] on the spool's filesystem.
+    fn ensure_free_space(&self, candidate_bytes: u64) -> Result<(), String> {
+        let pending = self.index.inbox.iter().fold(0_u64, |total, entry| {
+            total.saturating_add(entry.total_bytes.saturating_sub(entry.committed_offset))
+        });
+        let required = pending
+            .saturating_add(candidate_bytes)
+            .saturating_add(MIN_FREE_BYTES);
+        if available_bytes(&self.root).is_none_or(|available| available < required) {
+            return Err(crate::shell::i18n::t("nearby-error-disk-full"));
+        }
+        Ok(())
     }
 
     fn ensure_capacity(&self, candidate_bytes: u64) -> Result<(), String> {
@@ -928,6 +1289,89 @@ impl NearbyTransferStore {
         tilo_files::native::atomic::write_with_mode(&self.root.join("index.json"), &bytes, 0o600)
             .map_err(display)
     }
+}
+
+const MEDIA_CACHE_ONLY: &str = "a media handoff is delivered only to the private media cache";
+
+#[derive(Debug)]
+struct MediaCacheObject {
+    path: PathBuf,
+    bytes: u64,
+    modified: std::time::SystemTime,
+}
+
+/// Regular files directly beneath `<media>/<hash>/`. Symlinks and anything
+/// else are never followed or counted.
+fn media_cache_objects(root: &Path) -> Vec<MediaCacheObject> {
+    let mut objects = Vec::new();
+    let Ok(hash_dirs) = fs::read_dir(root) else {
+        return objects;
+    };
+    for hash_dir in hash_dirs.flatten() {
+        let Ok(hash_metadata) = fs::symlink_metadata(hash_dir.path()) else {
+            continue;
+        };
+        if !hash_metadata.file_type().is_dir() {
+            continue;
+        }
+        let Ok(files) = fs::read_dir(hash_dir.path()) else {
+            continue;
+        };
+        for file in files.flatten() {
+            let Ok(metadata) = fs::symlink_metadata(file.path()) else {
+                continue;
+            };
+            if metadata.file_type().is_file() {
+                objects.push(MediaCacheObject {
+                    path: file.path(),
+                    bytes: metadata.len(),
+                    modified: metadata
+                        .modified()
+                        .unwrap_or(std::time::SystemTime::UNIX_EPOCH),
+                });
+            }
+        }
+    }
+    objects
+}
+
+/// Remove the oldest unprotected media objects until at most `target_bytes`
+/// remain, and return what remains.
+fn prune_media_objects(root: &Path, protected: &BTreeSet<PathBuf>, target_bytes: u64) -> u64 {
+    let mut objects = media_cache_objects(root);
+    let mut retained = objects
+        .iter()
+        .fold(0_u64, |total, object| total.saturating_add(object.bytes));
+    objects.sort_by_key(|object| object.modified);
+    for object in objects {
+        if retained <= target_bytes {
+            break;
+        }
+        if protected.contains(&object.path) || fs::remove_file(&object.path).is_err() {
+            continue;
+        }
+        retained = retained.saturating_sub(object.bytes);
+        if let Some(parent) = object.path.parent() {
+            let _ = fs::remove_dir(parent);
+        }
+    }
+    retained
+}
+
+#[allow(
+    clippy::unnecessary_cast,
+    reason = "statvfs block counts are u64 on Linux but narrower on other Unix targets"
+)]
+fn available_bytes(path: &Path) -> Option<u64> {
+    let path = CString::new(path.as_os_str().as_bytes()).ok()?;
+    let mut info = std::mem::MaybeUninit::<libc::statvfs>::uninit();
+    // SAFETY: `path` is NUL-terminated and `info` is valid for one write.
+    if unsafe { libc::statvfs(path.as_ptr(), info.as_mut_ptr()) } != 0 {
+        return None;
+    }
+    // SAFETY: statvfs returned success, so it initialised `info`.
+    let info = unsafe { info.assume_init() };
+    (info.f_bavail as u64).checked_mul(info.f_frsize as u64)
 }
 
 fn same_incoming_object(entry: &InboxEntry, manifest: &IncomingManifest) -> bool {
@@ -1294,7 +1738,7 @@ fn validate_relative(path: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn prefix_hash(path: &Path, limit: u64) -> Result<[u8; 32], String> {
+fn prefix_hasher(path: &Path, limit: u64) -> Result<blake3::Hasher, String> {
     let mut file = OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_NOFOLLOW)
@@ -1302,7 +1746,11 @@ fn prefix_hash(path: &Path, limit: u64) -> Result<[u8; 32], String> {
         .map_err(display)?;
     let mut hasher = blake3::Hasher::new();
     io::copy(&mut Read::by_ref(&mut file).take(limit), &mut hasher).map_err(display)?;
-    Ok(*hasher.finalize().as_bytes())
+    Ok(hasher)
+}
+
+fn prefix_hash(path: &Path, limit: u64) -> Result<[u8; 32], String> {
+    prefix_hasher(path, limit).map(|hasher| *hasher.finalize().as_bytes())
 }
 
 /// Hash a private spool object's prefix without following its final symlink.
@@ -1389,6 +1837,348 @@ fn display(error: impl std::fmt::Display) -> String {
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    fn media_manifest(id: [u8; 16], source: &str, bytes: &[u8]) -> IncomingManifest {
+        IncomingManifest {
+            id,
+            source: source.into(),
+            request_id: [0x5e; 16],
+            name: "concert.webm".into(),
+            kind: TransferKind::MediaHandoff,
+            total_bytes: u64::try_from(bytes.len()).unwrap(),
+            content_hash: *blake3::hash(bytes).as_bytes(),
+        }
+    }
+
+    #[test]
+    fn media_handoff_object_lands_in_private_cache_with_lease() {
+        let tmp = TempDir::new().unwrap();
+        let source_file = tmp.path().join("concert.webm");
+        let bytes = vec![0x5a; 4096];
+        fs::write(&source_file, &bytes).unwrap();
+        let mut sender = NearbyTransferStore::open(tmp.path().join("sender"), 10).unwrap();
+        let staged = sender
+            .stage_media_with_id(
+                &source_file,
+                "concert.webm".into(),
+                "receiver".into(),
+                10,
+                [0x41; 16],
+            )
+            .unwrap();
+        assert_eq!(staged.kind, TransferKind::MediaHandoff);
+
+        let downloads = tmp.path().join("Downloads");
+        let mut receiver = NearbyTransferStore::open(tmp.path().join("receiver"), 10).unwrap();
+        let manifest = IncomingManifest {
+            id: staged.id,
+            source: "sender".into(),
+            request_id: [0x42; 16],
+            name: staged.name,
+            kind: staged.kind,
+            total_bytes: staged.total_bytes,
+            content_hash: staged.content_hash,
+        };
+        receiver.begin_incoming(manifest, 10).unwrap();
+        receiver.append(staged.id, 0, &bytes).unwrap();
+        assert!(
+            receiver.finish(staged.id, &downloads).is_err(),
+            "a media handoff never installs into Downloads"
+        );
+        let path = receiver.finish_to_cache(staged.id).unwrap();
+        assert!(path.starts_with(receiver.media_root()));
+        assert!(!downloads.exists());
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+        assert!(receiver.inbox().is_empty());
+        assert!(!receiver.media.leased_until.contains_key(&path));
+        let resolved = std::time::Instant::now();
+        assert_eq!(
+            receiver.cached_media("sender", staged.id),
+            Some(path.clone())
+        );
+        assert!(
+            receiver
+                .media
+                .leased_until
+                .get(&path)
+                .is_some_and(|until| until.saturating_duration_since(resolved) >= MEDIA_LEASE),
+            "resolving the object leases it to the player"
+        );
+        assert_eq!(receiver.cached_media("other-sender", staged.id), None);
+    }
+
+    #[test]
+    fn media_handoff_resumes_from_committed_offset() {
+        let tmp = TempDir::new().unwrap();
+        let half = usize::try_from(CHECKPOINT_BYTES).unwrap();
+        let mut bytes = vec![0x11; half];
+        bytes.extend(vec![0x22; half]);
+        let manifest = media_manifest([0x43; 16], "sender", &bytes);
+        let mut store = NearbyTransferStore::open(tmp.path().join("spool"), 10).unwrap();
+        assert_eq!(
+            store.begin_incoming(manifest.clone(), 10).unwrap(),
+            (0, *blake3::hash(&[]).as_bytes())
+        );
+        store.append(manifest.id, 0, &bytes[..half]).unwrap();
+        // The link drops; the sender re-offers the same object.
+        let (offset, prefix) = store.begin_incoming(manifest.clone(), 11).unwrap();
+        assert_eq!(offset, CHECKPOINT_BYTES);
+        assert_eq!(prefix, *blake3::hash(&bytes[..half]).as_bytes());
+        let mut retry = manifest.clone();
+        retry.request_id = [0x44; 16];
+        assert_eq!(
+            store.accept_incoming_offer(retry, 12).unwrap(),
+            (offset, prefix),
+            "a re-offer resumes from the verified prefix, not byte zero"
+        );
+        store.append(manifest.id, offset, &bytes[half..]).unwrap();
+        let path = store.finish_to_cache(manifest.id).unwrap();
+        assert_eq!(fs::read(path).unwrap(), bytes);
+    }
+
+    #[test]
+    fn media_handoff_is_session_local_and_dropped_on_reopen() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().join("spool");
+        let source_file = tmp.path().join("film.mkv");
+        fs::write(&source_file, b"film").unwrap();
+        let mut store = NearbyTransferStore::open(root.clone(), 10).unwrap();
+        let staged = store
+            .stage_media_with_id(
+                &source_file,
+                "film.mkv".into(),
+                "peer".into(),
+                10,
+                [0x45; 16],
+            )
+            .unwrap();
+        let manifest = media_manifest([0x46; 16], "peer", b"partial bytes");
+        store.begin_incoming(manifest.clone(), 10).unwrap();
+        store.append(manifest.id, 0, b"partial").unwrap();
+        let object = store.object_path(staged.id);
+        let part = store.partial_path(manifest.id);
+        drop(store);
+        let reopened = NearbyTransferStore::open(root, 11).unwrap();
+        assert!(reopened.outbox().is_empty());
+        assert!(reopened.inbox().is_empty());
+        assert!(!object.exists());
+        assert!(!part.exists());
+    }
+
+    #[test]
+    fn media_handoff_source_must_be_one_regular_file() {
+        let tmp = TempDir::new().unwrap();
+        let folder = tmp.path().join("album");
+        fs::create_dir(&folder).unwrap();
+        fs::write(folder.join("track.flac"), b"audio").unwrap();
+        let mut store = NearbyTransferStore::open(tmp.path().join("spool"), 10).unwrap();
+        assert!(
+            store
+                .stage_media_with_id(&folder, "album".into(), "peer".into(), 10, [0x47; 16])
+                .is_err()
+        );
+        assert!(store.outbox().is_empty());
+    }
+
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn media_cache_prunes_leases_and_discards_only_unreferenced_objects() {
+        fn media_cache_prunes_only_unprotected_regular_objects() {
+            use std::os::unix::fs::symlink;
+
+            let cache = TempDir::new().unwrap();
+            let first_dir = cache.path().join("11".repeat(32));
+            let second_dir = cache.path().join("22".repeat(32));
+            ensure_private_dir(&first_dir).unwrap();
+            ensure_private_dir(&second_dir).unwrap();
+            let protected_path = first_dir.join("keep.mp4");
+            let evictable_path = second_dir.join("old.mp4");
+            fs::write(&protected_path, [1_u8; 4]).unwrap();
+            fs::write(&evictable_path, [2_u8; 4]).unwrap();
+            let outside = cache.path().join("outside");
+            fs::write(&outside, b"do not follow").unwrap();
+            symlink(&outside, second_dir.join("link.mp4")).unwrap();
+
+            let retained =
+                prune_media_objects(cache.path(), &BTreeSet::from([protected_path.clone()]), 4);
+            assert_eq!(retained, 4);
+            assert!(protected_path.exists());
+            assert!(!evictable_path.exists());
+            assert_eq!(fs::read(outside).unwrap(), b"do not follow");
+        }
+
+        fn player_lease_keeps_evicted_transfer_object_alive() {
+            let cache = TempDir::new().unwrap();
+            let object_dir = cache.path().join("33".repeat(32));
+            ensure_private_dir(&object_dir).unwrap();
+            let path = object_dir.join("film.mkv");
+            fs::write(&path, b"film").unwrap();
+            let key = ("source".to_string(), [0x55; 16]);
+            let mut media = MediaCache::default();
+            media.completed.insert(key.clone(), path.clone());
+            media.completed_order.push_back(key);
+            let now = std::time::Instant::now();
+            media
+                .leased_until
+                .insert(path.clone(), now.checked_add(MEDIA_LEASE).unwrap_or(now));
+
+            assert!(media.evict_oldest_completed());
+            assert!(path.exists());
+            assert!(media.completed.is_empty());
+        }
+
+        fn media_directories_are_owner_only() {
+            let tmp = TempDir::new().unwrap();
+            let store = NearbyTransferStore::open(tmp.path().join("spool"), 10).unwrap();
+            assert_eq!(
+                fs::metadata(store.media_root())
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o700
+            );
+            let private = tmp.path().join("private");
+            ensure_private_dir(&private).unwrap();
+            assert_eq!(
+                fs::metadata(private).unwrap().permissions().mode() & 0o777,
+                0o700
+            );
+        }
+
+        fn media_release_is_exact_and_preserves_referenced_objects() {
+            let tmp = TempDir::new().unwrap();
+            let mut store = NearbyTransferStore::open(tmp.path().join("spool"), 10).unwrap();
+            let source = "source-device";
+            let sibling = "sibling-device";
+            let transfer_id = [0x73; 16];
+            let manifest = media_manifest(transfer_id, source, b"partial!");
+            store.begin_incoming(manifest, 10).unwrap();
+            let part_path = store.partial_path(transfer_id);
+            assert!(part_path.exists());
+            assert!(
+                !store.release_media(sibling, transfer_id).unwrap(),
+                "another sender cannot discard this receive"
+            );
+            assert!(part_path.exists());
+            assert!(store.release_media(source, transfer_id).unwrap());
+            assert!(!part_path.exists());
+            assert!(store.inbox().is_empty());
+
+            let object_dir = store.media_root().join("44".repeat(32));
+            ensure_private_dir(&object_dir).unwrap();
+            let object = object_dir.join("shared.webm");
+            fs::write(&object, b"verified").unwrap();
+            store
+                .media
+                .bind((source.to_string(), transfer_id), object.clone());
+            store
+                .media
+                .bind((sibling.to_string(), transfer_id), object.clone());
+            let now = std::time::Instant::now();
+            store
+                .media
+                .leased_until
+                .insert(object.clone(), now.checked_add(MEDIA_LEASE).unwrap());
+            assert!(store.release_media(source, transfer_id).unwrap());
+            assert!(
+                object.exists(),
+                "sibling mapping and player lease protect bytes"
+            );
+            assert!(store.cached_media(source, transfer_id).is_none());
+            assert!(store.cached_media(sibling, transfer_id).is_some());
+            store.media.leased_until.clear();
+            assert!(store.release_media(sibling, transfer_id).unwrap());
+            assert!(!object.exists(), "an unreferenced object is removed");
+        }
+
+        media_cache_prunes_only_unprotected_regular_objects();
+        player_lease_keeps_evicted_transfer_object_alive();
+        media_directories_are_owner_only();
+        media_release_is_exact_and_preserves_referenced_objects();
+    }
+
+    #[test]
+    fn media_ingest_requires_verification_before_it_is_playable() {
+        fn media_becomes_visible_only_after_size_and_hash_verification() {
+            let tmp = TempDir::new().unwrap();
+            let mut store = NearbyTransferStore::open(tmp.path().join("spool"), 10).unwrap();
+            let transfer_id = [0x33; 16];
+            let chunk = crate::network::actor::PERSONAL_TRANSFER_CHUNK_BYTES;
+            let bytes = vec![0x5a; chunk.saturating_add(17)];
+            let manifest = media_manifest(transfer_id, "source", &bytes);
+            store.begin_incoming(manifest, 10).unwrap();
+            assert!(
+                store.cached_media("source", transfer_id).is_none(),
+                "a manifest is not playable bytes"
+            );
+            for (index, piece) in bytes.chunks(chunk).enumerate() {
+                store
+                    .append(
+                        transfer_id,
+                        u64::try_from(index.saturating_mul(chunk)).unwrap(),
+                        piece,
+                    )
+                    .unwrap();
+            }
+            assert!(
+                store.cached_media("source", transfer_id).is_none(),
+                "all chunks still require a verified finish"
+            );
+            let path = store.finish_to_cache(transfer_id).unwrap();
+            assert_eq!(
+                store.cached_media("source", transfer_id),
+                Some(path.clone())
+            );
+            assert_eq!(fs::read(path).unwrap(), bytes);
+        }
+
+        fn malformed_media_never_leaves_a_playable_cache_entry() {
+            let tmp = TempDir::new().unwrap();
+            let mut store = NearbyTransferStore::open(tmp.path().join("spool"), 10).unwrap();
+            let transfer_id = [0x55; 16];
+            let manifest = media_manifest(transfer_id, "source", b"good");
+            store.begin_incoming(manifest, 10).unwrap();
+            assert!(
+                store.append(transfer_id, 1, b"evi").is_err(),
+                "an out-of-order chunk is refused"
+            );
+            store.append(transfer_id, 0, b"evil").unwrap();
+            assert!(store.finish_to_cache(transfer_id).is_err());
+            assert!(store.cached_media("source", transfer_id).is_none());
+            assert_eq!(
+                fs::read_dir(tmp.path().join("spool").join("inbox"))
+                    .unwrap()
+                    .count(),
+                0,
+                "rejected transfers remove partial bytes"
+            );
+            assert_eq!(
+                media_cache_objects(&store.media_root()).len(),
+                0,
+                "nothing unverified reaches the cache"
+            );
+        }
+
+        fn non_media_transfer_never_enters_the_media_cache() {
+            let tmp = TempDir::new().unwrap();
+            let mut store = NearbyTransferStore::open(tmp.path().join("spool"), 10).unwrap();
+            let transfer_id = [0x56; 16];
+            let mut manifest = media_manifest(transfer_id, "source", b"file");
+            manifest.kind = TransferKind::File;
+            store.begin_incoming(manifest, 10).unwrap();
+            store.append(transfer_id, 0, b"file").unwrap();
+            assert!(store.finish_to_cache(transfer_id).is_err());
+            assert!(store.cached_media("source", transfer_id).is_none());
+        }
+
+        media_becomes_visible_only_after_size_and_hash_verification();
+        malformed_media_never_leaves_a_playable_cache_entry();
+        non_media_transfer_never_enters_the_media_cache();
+    }
 
     #[test]
     fn nearby_fresh_consent_rebinds_retry_and_truncates_only_uncommitted_tail() {

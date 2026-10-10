@@ -13,17 +13,6 @@
 //! and `perm allow-host` is [`Environment::ALLOW_HOST`].
 //! History and undo come from the record layer.
 
-#![cfg_attr(
-    test,
-    allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
-        clippy::panic,
-        reason = "in a test these are the assertion, not a hazard"
-    )
-)]
-
 use std::collections::BTreeMap;
 use std::path::{Component, Path};
 use std::str::FromStr;

@@ -57,10 +57,16 @@ inputs = ["os/scripts/collect-runtime-dependencies.py", "os/scripts/bake-runtime
 suites = ["os/tests/test_runtime_dependency_closure.py"]
 
 [[group]]
+name = "runtime-dylib-lazy-link"
+inputs = ["tools/ci/runtime-dylib-lazy-link.py", "tools/ci/rustc-thin-app-wrapper.sh"]
+suites = ["tools/ci/test_runtime_dylib_lazy_link.py"]
+
+[[group]]
 name = "os"
 inputs = ["os/"]
 suites = [
   "os/dev/test-assemble-app-runtime.py",
+  "os/dev/test-export-sdk-compiler.py",
   "os/dev/test-install-copy-scratch-cleanup.sh",
   "os/dev/test-install-copy-scratch.py",
   "os/kernel/tests/test-cc-wrapper.sh",
@@ -69,6 +75,7 @@ suites = [
   "os/tests/containerfile_copy_invariants.sh",
   "os/tests/board_session.sh",
   "os/tests/board_release_promotion.py",
+  "os/tests/test_board_successor.py",
   "os/tests/board_generation_series.py",
   "os/tests/cage_session_env.sh",
   "os/tests/board_audio_contract.sh",
@@ -380,26 +387,44 @@ suites = [
 
 [[group]]
 name = "vm-acceptance"
-inputs = ["scripts/vm-acceptance/", ".forgejo/workflows/vm-acceptance.yml"]
+# acceptance/records.py writes its records through tools/perf/record.py.
+inputs = ["scripts/vm-acceptance/", ".forgejo/workflows/vm-acceptance.yml", "tools/perf/"]
 suites = [
   "scripts/vm-acceptance/test_apps.py",
   "scripts/vm-acceptance/test_app_startup.py",
   "scripts/vm-acceptance/test_ci_select.py",
   "scripts/vm-acceptance/test_frames.py",
   "scripts/vm-acceptance/test_provenance.py",
+  "scripts/vm-acceptance/test_records.py",
   "scripts/vm-acceptance/test_management.py",
   "scripts/vm-acceptance/test_terminal_cohort.py",
   "scripts/vm-acceptance/test_app_cohort.py",
   "scripts/vm-acceptance/test_store_chooser.py",
   "scripts/vm-acceptance/test_runtime_backing.py",
+  "scripts/vm-acceptance/test_lock_guard.py",
 ]
 
 [[group]]
 name = "perf-tools"
-inputs = ["scripts/perf/", "apps/settings/src/categories.rs"]
+inputs = [
+  "scripts/perf/", "apps/settings/src/categories.rs", "tools/perf/",
+  # tools/perf/test_adapters.py keeps kpi-budgets.toml equal to the gate's SLOs
+  # and the WORKSPACE-SWITCH parser equal to the compositor's line.
+  "crates/system/fs/tests/performance_gate.rs",
+  "crates/session/shell/src/compositor/switch_latency.rs",
+  # ... and the hosting-load KPI ids equal to the relay load bench's.
+  "crates/hosting/tilo-relay/examples/relay_load/main.rs",
+  # scripts/perf/render_bench_test.py keeps the parsed lines equal to the harnesses'.
+  "crates/dev/ui-examples/examples/dashboard_perf_bench.rs",
+  "crates/session/shell/examples/redraw_bench.rs",
+  # tools/perf/test_tapp_size_ratchet.py holds the budgeted apps equal to the
+  # default collection.
+  "tools/apps/app_release.py", "dist/apps/app-collections.toml", "apps/*/tilo-app.toml",
+]
 suites = [
   "scripts/perf/check_app_coverage_test.py",
   "scripts/perf/code_editor_effects_test.py",
+  "scripts/perf/device_latency_bench_test.py",
   "scripts/perf/device_notes_latency_test.py",
   "scripts/perf/device_notes_trace_test.py",
   "scripts/perf/collect_code_editor_native_test.py",
@@ -408,18 +433,27 @@ suites = [
   "scripts/perf/collect_settings_native_test.py",
   "scripts/perf/file_explorer_effects_test.py",
   "scripts/perf/input_latency_test.py",
+  "scripts/perf/latency_bench_test.py",
   "scripts/perf/physical_notes_latency_test.py",
   "scripts/perf/physical_notes_stages_test.py",
+  "scripts/perf/agent_rtt_test.py",
   "scripts/perf/main_stages_test.py",
   "scripts/perf/native_app_capture_test.py",
   "scripts/perf/native_delivery_test.py",
   "scripts/perf/presentation_feedback_test.py",
+  "scripts/perf/render_bench_test.py",
   "scripts/perf/render_boundaries_test.py",
   "scripts/perf/runtime_benchmark_test.py",
   "scripts/perf/scratchpad_effects_test.py",
   "scripts/perf/settings_effects_test.py",
   "scripts/perf/word_processor_effects_test.py",
   "scripts/perf/worker_handoff_test.py",
+  "tools/perf/test_adapters.py",
+  "tools/perf/test_compare.py",
+  "tools/perf/test_record.py",
+  "tools/perf/test_runtime_size_ratchet.py",
+  "tools/perf/test_store.py",
+  "tools/perf/test_tapp_size_ratchet.py",
 ]
 
 [[group]]
@@ -657,6 +691,8 @@ inputs = [
   "tools/policy/app_portability_rules.toml", "tools/policy/app_capability_usage.toml",
   # Standalone apps take the SDK's toolchain and lock file.
   "rust-toolchain.toml", "Cargo.lock",
+  "tools/ci/rustc-sdk-consumer.sh", "os/dev/export-sdk-compiler.py",
+  "os/dev/assemble-app-runtime.py", "tools/ci/rustc-thin-app-wrapper.sh", "apps/*/Cargo.toml",
   # The outside-repository test builds a generated app against the checkout.
   "Cargo.toml", "crates/sdk/", "crates/platform/", "vendor/",
   # Canonical worker builder sources and the real packaging manifest fixture.
@@ -731,6 +767,7 @@ readers = [
   "crates/dev/tilo-app-cli/src/android.rs",
   "crates/dev/tilo-app-cli/src/targets/web.rs",
   "crates/dev/tilo-app-cli/src/resource_kinds.rs",
+  "crates/dev/tilo-app-cli/src/native_sdk/tests.rs", "crates/dev/tilo-app-cli/tests/native_sdk.rs",
 ]
 
 [[cargo]]
@@ -873,6 +910,9 @@ inputs = [
   "crates/sdk/ui-core/assets/fonts/",
   "dist/VERSION",
   "docs/shell-navigation-keyboard-map.md",
+  "docs/architecture/dictation-whistle-aot-review.json",
+  "docs/architecture/dictation-whistle-aot-image.json",
+  "docs/architecture/dictation-whistle-aot-image-120s.json",
   "tools/with-test-environment.sh",
   "tools/atspi_external_client.py",
   "scripts/headless-examples/",
@@ -884,6 +924,7 @@ readers = [
   "crates/session/shell/examples/packaged_native_bootstrap.rs",
   "crates/session/shell/src/linux_main.rs",
   "crates/session/shell/tests/support/snapshot.rs",
+  "crates/session/shell/tests/input_method_wire.rs",
   "crates/session/shell/src/shell/fixed_chords.rs",
   "crates/session/shell/src/shell/network/paired_continuity_tests.rs",
 ]

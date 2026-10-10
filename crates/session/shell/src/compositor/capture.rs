@@ -996,13 +996,7 @@ impl CaptureExecutor {
         let folder = path
             .parent()
             .ok_or_else(|| format!("recording path has no parent: {}", path.display()))?;
-        std::process::Command::new("xdg-open")
-            .arg(folder)
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn()
-            .map_err(|error| format!("show recording in Files: {error}"))?;
+        xdg_open(folder).map_err(|error| format!("show recording in Files: {error}"))?;
         Ok(CaptureOutcome::RecordingRevealed(path.clone()))
     }
 
@@ -1011,13 +1005,7 @@ impl CaptureExecutor {
             .last_recording
             .as_ref()
             .ok_or_else(|| "there is no completed recording to play".to_string())?;
-        std::process::Command::new("xdg-open")
-            .arg(path)
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn()
-            .map_err(|error| format!("play recording {}: {error}", path.display()))?;
+        xdg_open(path).map_err(|error| format!("play recording {}: {error}", path.display()))?;
         Ok(CaptureOutcome::RecordingOpened(path.clone()))
     }
 
@@ -1143,13 +1131,7 @@ impl CaptureExecutor {
         let folder = path
             .parent()
             .ok_or_else(|| format!("screenshot path has no parent: {}", path.display()))?;
-        std::process::Command::new("xdg-open")
-            .arg(folder)
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn()
-            .map_err(|error| format!("show screenshot in Files: {error}"))?;
+        xdg_open(folder).map_err(|error| format!("show screenshot in Files: {error}"))?;
         Ok(CaptureOutcome::ScreenshotRevealed(path.clone()))
     }
 
@@ -1158,13 +1140,7 @@ impl CaptureExecutor {
             .last_screenshot
             .as_ref()
             .ok_or_else(|| "there is no saved screenshot to open".to_string())?;
-        std::process::Command::new("xdg-open")
-            .arg(path)
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn()
-            .map_err(|error| format!("open screenshot {}: {error}", path.display()))?;
+        xdg_open(path).map_err(|error| format!("open screenshot {}: {error}", path.display()))?;
         Ok(CaptureOutcome::ScreenshotOpened(path.clone()))
     }
 
@@ -1790,8 +1766,8 @@ fn compose_scene(
     }
     match layout {
         PipLayout::Auto => compose_spatial(source, &regions),
-        PipLayout::Grid => compose_grid(source, &regions),
-        PipLayout::Stack => compose_stack(source, &regions),
+        PipLayout::Grid => compose_placed(source, &regions, grid_geometry(&regions)),
+        PipLayout::Stack => compose_placed(source, &regions, stack_geometry(&regions)),
     }
 }
 
@@ -1806,23 +1782,24 @@ fn compose_spatial(source: &Scene, regions: &[Rect]) -> Result<(Scene, u32, u32)
     Ok((scene, width, height))
 }
 
-fn compose_grid(source: &Scene, regions: &[Rect]) -> Result<(Scene, u32, u32), String> {
-    let (raw_w, raw_h, placements) = grid_geometry(regions);
-    let (width, height, global_scale) = output_dimensions(raw_w, raw_h)?;
-    let mut scene = Scene::new();
-    for (region, placement) in regions.iter().zip(placements) {
-        let local_scale = placement.width() / region.width();
-        let transform = Affine::scale(global_scale)
-            * Affine::translate((placement.x0, placement.y0))
-            * Affine::scale(local_scale)
-            * Affine::translate((-region.x0, -region.y0));
-        append_clipped(&mut scene, source, *region, transform);
-    }
-    Ok((scene, width, height))
+/// Hand `target` to the desktop's default handler, detached from the
+/// compositor's stdio.
+fn xdg_open(target: &std::path::Path) -> std::io::Result<std::process::Child> {
+    std::process::Command::new("xdg-open")
+        .arg(target)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
 }
 
-fn compose_stack(source: &Scene, regions: &[Rect]) -> Result<(Scene, u32, u32), String> {
-    let (raw_w, raw_h, placements) = stack_geometry(regions);
+/// Draw each region scaled into its placement from `geometry`, which is
+/// the laid-out size and one placement per region.
+fn compose_placed(
+    source: &Scene,
+    regions: &[Rect],
+    (raw_w, raw_h, placements): (f64, f64, Vec<Rect>),
+) -> Result<(Scene, u32, u32), String> {
     let (width, height, global_scale) = output_dimensions(raw_w, raw_h)?;
     let mut scene = Scene::new();
     for (region, placement) in regions.iter().zip(placements) {
@@ -2044,6 +2021,7 @@ mod tests {
     use super::*;
     use crate::shell::state::{AppKind, Tab, TileContent, WindowGroup, WindowWidth, WorkspaceTree};
     use ui::Widget;
+    use ui::widget::TaffyTreeExt;
     use vello::kurbo::RoundedRect;
     use vello::peniko::{Color, Fill};
 
@@ -2076,17 +2054,14 @@ mod tests {
             _theme: &ui::theme::Theme,
             node_map: &mut std::collections::HashMap<taffy::NodeId, *mut dyn Widget>,
         ) -> taffy::NodeId {
-            let node = taffy
-                .new_leaf(taffy::Style {
-                    size: taffy::Size {
-                        width: taffy::Dimension::percent(1.0),
-                        height: taffy::Dimension::percent(1.0),
-                    },
-                    ..taffy::Style::default()
-                })
-                .unwrap();
-            node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-            node
+            let style = taffy::Style {
+                size: taffy::Size {
+                    width: taffy::Dimension::percent(1.0),
+                    height: taffy::Dimension::percent(1.0),
+                },
+                ..taffy::Style::default()
+            };
+            taffy.widget_leaf(style, node_map, self)
         }
 
         fn apply_layout(

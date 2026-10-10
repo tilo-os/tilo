@@ -532,8 +532,7 @@ fn ics_imports_are_idempotent_atomic_and_commit_one_batch() {
             // Serialized callers and deferred widget imports share the real decoder
             // and executor; rejection cannot leave the preceding valid event behind.
             let encoded = crate::actions::encode(&batch);
-            let mut registry = tilo_actions::ActionRegistry::new();
-            crate::actions::register(&mut registry);
+            let registry = tilo_actions::ActionRegistry::with(crate::actions::register);
             let decoded = registry.decode(&encoded).unwrap();
             let mut transport = tilo_actions::LocalTransport::new();
             assert!(
@@ -2435,7 +2434,7 @@ impl Harness {
     fn click(&mut self, p: Point) {
         // winit exposes no public DeviceId constructor; the production
         // synthesized-press path does exactly this.
-        let device_id = unsafe { std::mem::zeroed() };
+        let device_id = winit::event::DeviceId::dummy();
         self.dispatch(&winit::event::WindowEvent::CursorMoved {
             device_id,
             position: winit::dpi::PhysicalPosition::new(p.x, p.y),
@@ -2448,14 +2447,14 @@ impl Harness {
     }
 
     fn mouse_move(&mut self, p: Point) {
-        let device_id = unsafe { std::mem::zeroed() };
+        let device_id = winit::event::DeviceId::dummy();
         self.dispatch(&winit::event::WindowEvent::CursorMoved {
             device_id,
             position: winit::dpi::PhysicalPosition::new(p.x, p.y),
         });
     }
     fn mouse_button(&mut self, state: ElementState) -> bool {
-        let device_id = unsafe { std::mem::zeroed() };
+        let device_id = winit::event::DeviceId::dummy();
         self.dispatch(&winit::event::WindowEvent::MouseInput {
             device_id,
             state,
@@ -2479,12 +2478,12 @@ impl Harness {
 
     /// Press a single character through the real keyboard path.
     fn type_char(&mut self, ch: &str) {
-        self.dispatch(&char_press(ch));
+        self.dispatch(&char_key(ch));
     }
 
     /// Press a named key (arrows, etc.) through the real keyboard path.
     fn press_named(&mut self, named: winit::keyboard::NamedKey) {
-        self.dispatch(&named_press(named));
+        self.dispatch(&named_key(named));
     }
 
     /// Centre of the first hit rect carrying an action matching `pred`.
@@ -2676,41 +2675,8 @@ fn week_timeline_scrolls_the_full_day_and_drags_create_and_reschedule() {
     }
 }
 
-// Synthesised winit keyboard events (the zeroed-KeyEvent trick the toolkit's
-// own widget tests use — every field is overwritten before use).
-fn synth_device() -> winit::event::DeviceId {
-    unsafe { std::mem::zeroed() }
-}
-fn char_press(ch: &str) -> winit::event::WindowEvent {
-    let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-    ev.logical_key = Key::Character(ch.into());
-    ev.physical_key =
-        winit::keyboard::PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
-    ev.location = winit::keyboard::KeyLocation::Standard;
-    ev.state = ElementState::Pressed;
-    ev.repeat = false;
-    ev.text = Some(ch.into());
-    winit::event::WindowEvent::KeyboardInput {
-        device_id: synth_device(),
-        event: ev,
-        is_synthetic: false,
-    }
-}
-fn named_press(named: winit::keyboard::NamedKey) -> winit::event::WindowEvent {
-    let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-    ev.logical_key = Key::Named(named);
-    ev.physical_key =
-        winit::keyboard::PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
-    ev.location = winit::keyboard::KeyLocation::Standard;
-    ev.state = ElementState::Pressed;
-    ev.repeat = false;
-    ev.text = None;
-    winit::event::WindowEvent::KeyboardInput {
-        device_id: synth_device(),
-        event: ev,
-        is_synthetic: false,
-    }
-}
+use ui::synthetic_input::char_key;
+use ui::synthetic_input::named_key;
 
 // --- per-calendar visibility actually filters the views ----------------
 

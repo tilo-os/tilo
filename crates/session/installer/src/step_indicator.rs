@@ -11,8 +11,9 @@
 //! All colours / sizing come from the [`Theme`] — nothing is hard-coded.
 
 use std::collections::HashMap;
+use ui::widget::TaffyTreeExt;
 
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use taffy::{NodeId, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Circle, Line, Point, Rect, RoundedRect, Stroke, Vec2};
 use vello::peniko::{Color, Fill};
@@ -125,23 +126,7 @@ impl Widget for StepIndicator {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        // `new_leaf` only errors for a corrupted tree; `Widget::build_layout`
-        // returns a bare `NodeId` across every implementor, so surfacing a
-        // theoretical error here would mean threading a `Result` through the
-        // whole toolkit for a branch that can't be taken.
-        #[allow(clippy::unwrap_used, reason = "new_leaf on a fresh style cannot fail")]
-        let node = taffy
-            .new_leaf(Style {
-                size: Size {
-                    width: Dimension::percent(1.0),
-                    height: Dimension::length(HEIGHT),
-                },
-                flex_shrink: 0.0,
-                ..Default::default()
-            })
-            .unwrap();
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        taffy.widget_leaf(crate::full_width_row(HEIGHT), node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {

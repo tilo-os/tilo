@@ -130,11 +130,19 @@ containerfile="$repo/os/Containerfile"
 # the destination, source bytes and executable mode remain the same.
 # The disk-unlock polkit action and exact-command read rule ship beside the
 # existing policies. Their two rootfs payload rows are the intentional delta.
+# The version-bound cooperative Bash editor at /usr/lib/tilo/ush/bash-editor.so
+# is an intentional ush component payload addition; no permission is activated.
 # The signed SDK font-catalog tree adds one native-builder-payload row.
 # Combining the application publisher with the existing runtime publisher
 # COPY preserves their exact payload mappings and the 156-instruction budget.
-# The first-login Flatpak initializer adds one unit in the existing COPY group.
-expected_contract=302cba41c8e18bf2288cc7bcb260b3808ffce02cb8f58644de82d32a19e3dbde
+# The first-login Flatpak unit and cooperative Bash editor are both retained.
+# The Windows egress reaper gains two path units (tilo-windows-vm-egress-reaper
+# .path and tilo-windows-vm-egress-lease.path); they are the intentional delta.
+# The user-identity component carries the board-successor verifier, hardware
+# profile and pinned Cosign. Its staged-trust and verified-update helpers move
+# from direct rootfs COPY to that component at the same installed paths and
+# executable mode; the component installer tests cover their staged sources.
+expected_contract=01e3f452f1160b9a99aeb6135d8e0ca32fea63ab2fbaa0463f8ebf805f574489
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {

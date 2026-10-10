@@ -32,12 +32,9 @@ use smithay::reexports::drm as drm_re;
 use smithay::reexports::input::Libinput;
 use winit::dpi::PhysicalPosition;
 use winit::event::{
-    ElementState, KeyEvent, Modifiers, MouseButton, MouseScrollDelta, Touch, TouchPhase,
-    WindowEvent,
+    ElementState, Modifiers, MouseButton, MouseScrollDelta, Touch, TouchPhase, WindowEvent,
 };
-use winit::keyboard::{
-    Key, KeyLocation, ModifiersState, NamedKey, NativeKey, PhysicalKey, SmolStr,
-};
+use winit::keyboard::{Key, ModifiersState, NamedKey, NativeKey, PhysicalKey, SmolStr};
 use winit::platform::scancode::PhysicalKeyExtScancode as _;
 
 use super::access_keys::{
@@ -2058,10 +2055,7 @@ impl DrmDispatchState {
 
     /// Perform one step of the pause/resume sequence the session state machine asked for.
     fn with_presentations_quiesced<T>(gate: Option<&Arc<Mutex<()>>>, f: impl FnOnce() -> T) -> T {
-        let _present_guard = gate.map(|gate| {
-            gate.lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-        });
+        let _quiesced = super::quiesce_presentations(gate);
         f()
     }
 
@@ -2466,7 +2460,7 @@ impl DrmDispatchState {
             dy_unaccel: dy,
             time_usec: crate::shell::network::fabric_monotonic_us(),
         });
-        self.push(BackendEvent::Input(cursor_moved_event(x, y)));
+        self.push(BackendEvent::Input(cursor_moved(x, y)));
     }
 
     fn push_mouse_keys_button(&mut self, edge: ButtonEdge) {
@@ -3369,7 +3363,7 @@ impl DrmDispatchState {
                 let requested = (event.x_transformed(w.max(1)), event.y_transformed(h.max(1)));
                 self.set_pointer_logical(layout::clamp_to_outputs(&placements, requested));
                 let (x, y) = self.confine_pointer(previous);
-                self.push(BackendEvent::Input(cursor_moved_event(x, y)));
+                self.push(BackendEvent::Input(cursor_moved(x, y)));
             }
             // Relative motion (mouse): accumulate in logical pixels, clamp to
             // the logical outputs, then present in the scene.
@@ -3390,7 +3384,7 @@ impl DrmDispatchState {
                 let previous = self.pointer;
                 self.move_pointer_by((event.delta_x(), event.delta_y()));
                 let (x, y) = self.confine_pointer(previous);
-                self.push(BackendEvent::Input(cursor_moved_event(x, y)));
+                self.push(BackendEvent::Input(cursor_moved(x, y)));
             }
             InputEvent::PointerButton { event } => {
                 if let Some(button) = map_mouse_button(event.button()) {
@@ -4256,7 +4250,7 @@ impl DrmRuntime {
         let dispatch = &mut self.dispatch;
         dispatch.set_pointer_scene((x, y));
         let (x, y) = dispatch.pointer;
-        dispatch.push(BackendEvent::Input(cursor_moved_event(x, y)));
+        dispatch.push(BackendEvent::Input(cursor_moved(x, y)));
     }
 
     pub fn cancel_touch(&mut self) {
@@ -5014,20 +5008,12 @@ where
     )
 }
 
-/// Build a `WindowEvent::CursorMoved` for the compositor's input wire. `device_id` is zeroed — the host path never inspects it (mirrors `native::execute_planned_action`).
-fn cursor_moved_event(x: f64, y: f64) -> WindowEvent {
-    WindowEvent::CursorMoved {
-        device_id: unsafe { std::mem::zeroed() },
-        position: PhysicalPosition::new(x, y),
-    }
-}
+use ui::synthetic_input::cursor_moved;
 
-/// Build a `WindowEvent::Touch` for the shell's direct-touch arena. DRM has
-/// no winit window, so its device id is the same inert zero value used by the
-/// other synthetic input adapters; touch identity is carried by `slot`.
+/// Build a `WindowEvent::Touch` for the shell's direct-touch arena.
 fn touch_input_event(slot: u32, x: f64, y: f64, phase: TouchPhase) -> WindowEvent {
     WindowEvent::Touch(Touch {
-        device_id: unsafe { std::mem::zeroed() },
+        device_id: winit::event::DeviceId::dummy(),
         phase,
         location: PhysicalPosition::new(x, y),
         force: None,
@@ -5063,7 +5049,7 @@ fn device_input_capabilities(device: &smithay::reexports::input::Device) -> ui::
 /// Build a `WindowEvent::MouseInput`.
 fn mouse_input_event(state: ElementState, button: MouseButton) -> WindowEvent {
     WindowEvent::MouseInput {
-        device_id: unsafe { std::mem::zeroed() },
+        device_id: winit::event::DeviceId::dummy(),
         state,
         button,
     }
@@ -5089,7 +5075,7 @@ fn mouse_wheel_event(source: AxisSource, dx: f64, dy: f64) -> WindowEvent {
         }
     };
     WindowEvent::MouseWheel {
-        device_id: unsafe { std::mem::zeroed() },
+        device_id: winit::event::DeviceId::dummy(),
         delta,
         phase: TouchPhase::Moved,
     }
@@ -5431,31 +5417,25 @@ fn text_for(ch: Option<char>, mods: ModifiersState) -> Option<SmolStr> {
     }
 }
 
-/// Build a `WindowEvent::KeyboardInput`. Mirrors the zero-init workaround
-/// in `compositor::native::keyboard_input_event`/`overlay_host::key_press`: winit's `pub(crate)` `platform_specific` field tolerates the zeroed struct.
+/// Build a `WindowEvent::KeyboardInput` from the evdev key `evdev_keycode`.
 fn keyboard_input_event(
     logical_key: Key,
     text: Option<SmolStr>,
     pressed: bool,
     evdev_keycode: u32,
 ) -> WindowEvent {
-    // SAFETY: every public field of `KeyEvent` is overwritten below, and
-    // the only non-public field (`platform_specific: KeyEventExtra`)
-    // tolerates the all-zero bit pattern — the same invariant the two
-    // existing `KeyEvent`-building helpers in this crate rely on.
-    let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-    ev.logical_key = logical_key;
+    let mut ev = ui::synthetic_input::key_event(
+        logical_key,
+        text,
+        if pressed {
+            ElementState::Pressed
+        } else {
+            ElementState::Released
+        },
+    );
     ev.physical_key = PhysicalKey::from_scancode(evdev_keycode);
-    ev.location = KeyLocation::Standard;
-    ev.state = if pressed {
-        ElementState::Pressed
-    } else {
-        ElementState::Released
-    };
-    ev.repeat = false;
-    ev.text = text;
     WindowEvent::KeyboardInput {
-        device_id: unsafe { std::mem::zeroed() },
+        device_id: winit::event::DeviceId::dummy(),
         event: ev,
         is_synthetic: false,
     }
@@ -5787,7 +5767,7 @@ mod tests {
             let mut s = DrmDispatchState::default();
             // `BackendEvent::Input` carries the actual `WindowEvent`; synthesise a minimal CursorMoved so the variant constructs.
             let fake = winit::event::WindowEvent::CursorMoved {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 position: winit::dpi::PhysicalPosition::new(0.0, 0.0),
             };
             s.push(BackendEvent::Input(fake));
@@ -6475,7 +6455,7 @@ mod tests {
 
             // The runtime feeds these exact values to both delivery paths.
             let touch = TiloTouchEvent::Motion { slot: 4, x, y };
-            let pointer = cursor_moved_event(x, y);
+            let pointer = cursor_moved(x, y);
             assert_eq!(
                 touch,
                 TiloTouchEvent::Motion {

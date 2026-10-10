@@ -604,9 +604,7 @@ mod tests {
     use ui::widget::Widget;
 
     fn registry() -> ActionRegistry {
-        let mut r = ActionRegistry::new();
-        <crate::resource::Camera as ui::tilo_resource::Resource>::register(&mut r);
-        r
+        ActionRegistry::with(<crate::resource::Camera as ui::tilo_resource::Resource>::register)
     }
 
     /// A hermetic Camera app synced with a record holding one recent capture.

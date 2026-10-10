@@ -142,32 +142,6 @@ pub(crate) fn dispatch_populated_fixture_click(
     frame.paint()
 }
 
-/// A pressed key as winit delivers it, carrying the text a character key
-/// types. `KeyEvent`'s platform field is private, so the event is
-/// zero-initialised and every public field overwritten.
-#[cfg(test)]
-pub(crate) fn typed_key_event(key: winit::keyboard::Key) -> winit::event::WindowEvent {
-    // SAFETY: every public field is overwritten below; the all-zero private
-    // platform field is only read by winit internals the shell never reaches.
-    let mut event: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
-    event.text = match &key {
-        winit::keyboard::Key::Character(text) => Some(text.clone()),
-        _ => None,
-    };
-    event.logical_key = key;
-    event.physical_key =
-        winit::keyboard::PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
-    event.location = winit::keyboard::KeyLocation::Standard;
-    event.state = winit::event::ElementState::Pressed;
-    event.repeat = false;
-    winit::event::WindowEvent::KeyboardInput {
-        // SAFETY: a device id is an opaque token the shell never inspects.
-        device_id: unsafe { std::mem::zeroed() },
-        event,
-        is_synthetic: false,
-    }
-}
-
 /// Run `f` with a throwaway event context: an empty document, no focus
 /// target and a one-node layout tree.
 #[cfg(test)]

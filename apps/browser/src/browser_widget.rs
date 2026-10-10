@@ -21,6 +21,7 @@ use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 #[cfg(test)]
 use ui::widget::Edits;
+use ui::widget::TaffyTreeExt;
 use ui::widget::{AppModel, ModelPath};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -516,16 +517,6 @@ impl BrowserWidget {
         w
     }
 
-    /// Widget for `--shots`: as [`Self::new_headless`], but the page is a
-    /// blank document rather than the test engine's placeholder colour.
-    pub fn new_capture(mode: BrowsingMode) -> Self {
-        let engine = crate::capture_page::CapturePage::engine();
-        engine.send(WebViewCommand::Navigate(SHOTS_URL.to_string()));
-        let mut w = Self::with_engine_mode(engine, true, mode);
-        w.initial_url = SHOTS_URL.into();
-        w
-    }
-
     /// Set the first URI loaded before the widget bootstraps. The binary uses
     /// this only after validating the URI against Browser's declared schemes.
     #[must_use]
@@ -925,11 +916,6 @@ impl BrowserWidget {
         self.force_suggestions = true;
     }
 
-    /// Headless visual-review hook: type `text` into the address field.
-    pub fn debug_type_address(&mut self, text: &'static str) {
-        self.review_stage = Some(ReviewStage::Typing { text });
-    }
-
     /// Headless visual-review hook: show the settled no-video guidance note.
     pub fn debug_show_empty_pip_feedback(&mut self) {
         self.set_pip_feedback(Some(PipFeedback::persistent(PipFeedbackKind::NoVideo)));
@@ -1061,28 +1047,10 @@ impl BrowserWidget {
         self.structure_dirty = true;
     }
 
-    /// Headless visual-review hook: the site panel on its protection page, or
-    /// on its connection and data page.
-    pub fn debug_show_site_panel(&mut self, information: bool) {
-        self.review_stage = Some(ReviewStage::Site { information });
-    }
-
     /// Headless visual-review hook: the passwords panel, or the address
     /// autofill panel.
     pub fn debug_show_autofill(&mut self, addresses: bool) {
         self.review_stage = Some(ReviewStage::Autofill { addresses });
-    }
-
-    /// Where a capture presses to open the toolbar's overflow menu, once the
-    /// window has been laid out.
-    pub fn debug_overflow_center(&self) -> Option<(f64, f64)> {
-        let rect = self.find_rect(toolbar::OVERFLOW_ID)?;
-        Some((rect.center().x, rect.center().y))
-    }
-
-    /// Headless visual-review hook: find in page, open on a query.
-    pub fn debug_show_find(&mut self) {
-        self.review_stage = Some(ReviewStage::Find);
     }
 
     /// Headless visual-review hook: a site asking for the camera.
@@ -1093,26 +1061,6 @@ impl BrowserWidget {
             permissions: "camera and microphone".into(),
         });
         self.structure_dirty = true;
-    }
-
-    /// Headless visual-review hook: a page offering a file.
-    pub fn debug_request_download(&mut self) {
-        self.capabilities
-            .apply(WebViewEvent::NativeDownloadRequested {
-                id: 1,
-                url: "https://example.org/tilo-sdk.tar.zst".into(),
-                name: "tilo-sdk.tar.zst".into(),
-            });
-        self.structure_dirty = true;
-    }
-
-    /// Headless widget in a private window, for visual review.
-    pub fn new_headless_private() -> Self {
-        let engine: SharedEngine = TestEngine::new();
-        engine.send(WebViewCommand::Navigate(SHOTS_URL.to_string()));
-        let mut w = Self::with_engine_mode(engine, true, BrowsingMode::Private);
-        w.initial_url = SHOTS_URL.into();
-        w
     }
 
     pub fn debug_show_settings(&mut self) {
@@ -2195,8 +2143,6 @@ impl BrowserWidget {
             self.current_uri.clone()
         };
         match stage {
-            ReviewStage::Typing { text } => self.address.set(text.to_owned()),
-            ReviewStage::Site { information } => self.site.stage_for_review(information, &url),
             ReviewStage::Autofill { addresses } => {
                 // The panels open from rows of the settings page, so that is
                 // the page behind them.
@@ -2204,7 +2150,6 @@ impl BrowserWidget {
                 self.show_library = false;
                 self.credentials.stage_for_review(addresses, &url);
             }
-            ReviewStage::Find => self.daily.stage_for_review(),
         }
         self.structure_dirty = true;
     }
@@ -3596,13 +3541,7 @@ impl Widget for BrowserWidget {
             children.push(panel_node);
             self.anchored_panel = Some(panel);
         }
-        #[allow(
-            clippy::unwrap_used,
-            reason = "all child nodes were just created in this tree"
-        )]
-        let node = taffy.new_with_children(style, &children).unwrap();
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        taffy.widget_node(style, &children, node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
@@ -4877,44 +4816,21 @@ mod architecture_tests {
     }
 
     fn dispatch_back_event(widget: &mut BrowserWidget, event: &WindowEvent) -> bool {
-        let mut tree = TaffyTree::new();
-        let node = tree.new_leaf(Style::default()).unwrap();
-        let mut doc = AutoCommit::new();
-        let mut handled = false;
-        widget.handle_event(
-            event,
-            &mut ui::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &winit::event::Modifiers::default(),
-                state: Edits::lend(&mut doc),
-                path: &automerge::ROOT,
-                handled: &mut handled,
-                focus_target: &mut None,
-                node_id: node,
-                taffy: &tree,
-            },
-        );
-        handled
+        ui::testing::dispatch(widget, event)
     }
 
     fn mouse(button: MouseButton, state: ElementState) -> WindowEvent {
         WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             button,
             state,
         }
     }
 
     fn key(named: WNamedKey) -> WindowEvent {
-        let mut event: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
-        event.logical_key = WKey::Named(named);
-        event.physical_key = winit::keyboard::PhysicalKey::Unidentified(
-            winit::keyboard::NativeKeyCode::Unidentified,
-        );
-        event.location = winit::keyboard::KeyLocation::Standard;
-        event.state = ElementState::Pressed;
+        let event = ui::synthetic_input::key_event(WKey::Named(named), None, ElementState::Pressed);
         WindowEvent::KeyboardInput {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             event,
             is_synthetic: false,
         }
@@ -4950,21 +4866,9 @@ mod architecture_tests {
         {
             let engine = TestEngine::new();
             let mut widget = BrowserWidget::with_engine(engine.clone(), true);
-            let mut tree = TaffyTree::new();
-            let node = tree.new_leaf(Style::default()).unwrap();
-            widget.handle_event(
-                &WindowEvent::Focused(true),
-                &mut ui::widget::EventCtx {
-                    scale_factor: 2.0,
-                    modifiers: &winit::event::Modifiers::default(),
-                    state: Edits::lend(&mut AutoCommit::new()),
-                    path: &automerge::ROOT,
-                    handled: &mut false,
-                    focus_target: &mut None,
-                    node_id: node,
-                    taffy: &tree,
-                },
-            );
+            ui::testing::Dispatch::new()
+                .scale_factor(2.0)
+                .send(&mut widget, &WindowEvent::Focused(true));
             super::tests::layout_at(&mut widget, 800.0, 600.0);
             widget
                 .daily
@@ -5022,19 +4926,12 @@ mod architecture_tests {
                     event.logical_key = WKey::Character(letter.into());
                     event.text = Some(letter.into());
                 }
-                widget.handle_event(
-                    &event,
-                    &mut ui::widget::EventCtx {
-                        scale_factor: 1.0,
-                        modifiers: &winit::event::Modifiers::default(),
-                        state: Edits::lend(&mut doc),
-                        path: &automerge::ROOT,
-                        handled: &mut false,
-                        focus_target: &mut target,
-                        node_id: node,
-                        taffy: &tree,
-                    },
-                );
+                target = ui::testing::Dispatch::new()
+                    .doc(&mut doc)
+                    .layout(&tree, node)
+                    .focus_target(target)
+                    .send(&mut widget, &event)
+                    .focus_target;
                 widget.daily.sync(&widget.engine);
             }
             widget.daily.sync(&widget.engine);
@@ -5934,7 +5831,7 @@ mod architecture_tests {
             dispatch_back_event(
                 &mut widget,
                 &WindowEvent::CursorMoved {
-                    device_id: unsafe { std::mem::zeroed() },
+                    device_id: winit::event::DeviceId::dummy(),
                     position: winit::dpi::PhysicalPosition::new(850.0, 650.0),
                 },
             );
@@ -6600,7 +6497,9 @@ mod tests {
         point: Point,
     ) -> bool {
         let mut state = AutoCommit::new();
-        let root = automerge::ROOT;
+        let mut at = ui::testing::Dispatch::new()
+            .doc(&mut state)
+            .layout(tree, node);
         let mut release_handled = false;
         for event in [
             WindowEvent::CursorMoved {
@@ -6618,22 +6517,7 @@ mod tests {
                 button: MouseButton::Left,
             },
         ] {
-            let mut handled = false;
-            let mut focus = None;
-            widget.handle_event(
-                &event,
-                &mut ui::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &winit::event::Modifiers::default(),
-                    state: ui::widget::Edits::lend(&mut state),
-                    path: &root,
-                    handled: &mut handled,
-                    focus_target: &mut focus,
-                    node_id: node,
-                    taffy: tree,
-                },
-            );
-            release_handled = handled;
+            release_handled = at.send(widget, &event).handled;
         }
         release_handled
     }
@@ -9256,10 +9140,7 @@ impl ui::widget::search_field::Filterable for BrowserWidget {
 
 #[derive(Clone, Copy, Debug)]
 enum ReviewStage {
-    Typing { text: &'static str },
-    Site { information: bool },
     Autofill { addresses: bool },
-    Find,
 }
 
 fn is_compact_chrome(width: f64, breakpoint: f32) -> bool {

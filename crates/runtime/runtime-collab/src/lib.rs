@@ -25,11 +25,7 @@
 #![cfg_attr(
     test,
     allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
         clippy::string_slice,
-        clippy::panic,
         clippy::unreachable,
         reason = "in a test these are the assertion, not a hazard"
     )
@@ -67,6 +63,7 @@ pub mod collab_capnp {
     include!("generated/collab_capnp.rs");
 }
 
+pub mod approved_checks;
 /// The host distinguishes local UI intent from continuation of a published action.
 /// A published id is resolved only against broker-retained original custody.
 #[derive(Clone, Copy, Debug)]
@@ -1077,6 +1074,23 @@ impl ChannelHandle {
         Ok(AppSettingsHandle {
             inner: Rc::new(reply.get()?.get_settings()?),
         })
+    }
+
+    /// Wait until this route's channel keys, or this device's access to
+    /// them, may have changed since `after` (0 at first, then what the
+    /// previous call returned), and return the value to wait from next. The
+    /// call stays pending, without traffic, while nothing changes.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NotAvailable`] when the broker has no channel service to
+    /// follow (an older broker answers unimplemented) or is unavailable;
+    /// the endpoint then asks for keys on a timer.
+    pub async fn channel_keys_changed(&self, after: u64) -> Result<u64, NotAvailable> {
+        let mut request = self.inner.channel_keys_changed_request();
+        request.get().set_after(after);
+        let reply = request.send().promise.await?;
+        Ok(reply.get()?.get_change())
     }
 
     /// This application's live activity: what it shows outside its windows
@@ -3019,7 +3033,8 @@ mod certified_join_tests {
     }
 }
 
-#[cfg(all(test, feature = "client"))]
+#[cfg(test)]
+#[cfg(feature = "client")]
 mod tests {
     #[cfg(feature = "client")]
     #[test]
@@ -3835,7 +3850,8 @@ impl ChannelHandle {
     }
 }
 
-#[cfg(all(test, feature = "client"))]
+#[cfg(test)]
+#[cfg(feature = "client")]
 mod resolved_invocation_tests {
     use super::*;
 
@@ -4450,7 +4466,8 @@ impl ChannelHandle {
     }
 }
 
-#[cfg(all(test, feature = "client"))]
+#[cfg(test)]
+#[cfg(feature = "client")]
 mod reliable_invocation_tests {
     use super::*;
 
@@ -4770,7 +4787,7 @@ mod reliable_invocation_tests {
         over_wire(s, |c| async move {
             assert!(matches!(
                 c.resolve_published_action(9, "v", "r", "a").await.unwrap(),
-                ActionDirectoryResolution::Found(_)
+                ActionDirectoryResolution::Found { .. }
             ));
             assert!(
                 c.resolve_published_action_for_invocation(9, "v", "r", "a")

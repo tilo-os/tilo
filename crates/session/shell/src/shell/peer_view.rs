@@ -406,11 +406,6 @@ impl PeerView {
         });
     }
 
-    /// Compat shim; prefer [`Self::record_key`] for new call sites.
-    pub fn record_key_no_mods(&mut self, keysym: u32, pressed: bool) {
-        self.record_key(keysym, pressed, 0);
-    }
-
     pub fn take_pending_inputs(&mut self) -> Vec<InputEvent> {
         std::mem::take(&mut self.pending_inputs)
     }
@@ -934,29 +929,10 @@ mod tests {
 
         fn wheel_and_composed_text_go_to_the_window_under_focus() {
             let mut view = PeerView::new(42, 9);
-            let mut taffy = TaffyTree::<()>::new();
-            let node = taffy.new_leaf(taffy::Style::default()).unwrap();
-            let send = |view: &mut PeerView, event: WindowEvent| {
-                let mut doc = automerge::AutoCommit::new();
-                let mut handled = false;
-                let mut focus = None;
-                view.handle_event(
-                    &event,
-                    &mut ui::widget::EventCtx {
-                        scale_factor: 1.0,
-                        modifiers: &winit::event::Modifiers::default(),
-                        state: ui::widget::Edits::lend(&mut doc),
-                        path: &automerge::ROOT,
-                        handled: &mut handled,
-                        focus_target: &mut focus,
-                        node_id: node,
-                        taffy: &taffy,
-                    },
-                );
-                handled
-            };
+            let send =
+                |view: &mut PeerView, event: WindowEvent| ui::testing::dispatch(view, &event);
             let wheel = || WindowEvent::MouseWheel {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 delta: winit::event::MouseScrollDelta::LineDelta(0.0, 1.0),
                 phase: winit::event::TouchPhase::Moved,
             };

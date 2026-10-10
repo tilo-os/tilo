@@ -873,13 +873,11 @@ fn draw_merged_overlay(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testing::dispatch;
     use crate::time::{Duration, SystemTime};
-    use automerge::AutoCommit;
     use std::cell::RefCell;
     use std::rc::Rc;
     use std::sync::Arc;
-    use winit::event::Modifiers;
-    use winit::keyboard::PhysicalKey;
 
     fn alt(label: &str, author: &str) -> Alternative {
         Alternative {
@@ -1002,65 +1000,11 @@ mod tests {
         picker_fits_in_narrow_viewport_via_stack();
     }
 
-    fn cursor_moved(x: f64, y: f64) -> WindowEvent {
-        WindowEvent::CursorMoved {
-            device_id: unsafe { std::mem::zeroed() },
-            position: winit::dpi::PhysicalPosition::new(x, y),
-        }
-    }
+    use crate::synthetic_input::cursor_moved;
 
-    fn mouse_press() -> WindowEvent {
-        WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        }
-    }
+    use crate::synthetic_input::mouse_press;
 
-    /// Synthesise a `WindowEvent::KeyboardInput` carrying `key`
-    /// in the `Pressed` state. Mirrors the zero-init workaround
-    /// used in `command_palette::tests` — winit 0.30 keeps
-    /// `KeyEventExtra` `pub(crate)` so we cannot construct a
-    /// `KeyEvent` through a struct literal.
-    fn key_press(key: NamedKey) -> WindowEvent {
-        // SAFETY: all pub fields of `KeyEvent` tolerate the
-        // all-zero bit pattern; `handle_event` only inspects
-        // `logical_key` + `state`.
-        let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-        ev.logical_key = Key::Named(key);
-        ev.physical_key = PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
-        ev.location = winit::keyboard::KeyLocation::Standard;
-        ev.state = ElementState::Pressed;
-        ev.repeat = false;
-        ev.text = None;
-        WindowEvent::KeyboardInput {
-            device_id: unsafe { std::mem::zeroed() },
-            event: ev,
-            is_synthetic: false,
-        }
-    }
-
-    fn dispatch(p: &mut ConflictPicker, event: &WindowEvent) {
-        let mut tree = TaffyTree::<()>::new();
-        let node = tree.leaf_node(Style::default());
-        let mut handled = false;
-        let mut focus = None;
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        p.handle_event(
-            event,
-            &mut crate::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &Modifiers::default(),
-                state: crate::widget::Edits::lend(&mut doc),
-                path: &root,
-                handled: &mut handled,
-                focus_target: &mut focus,
-                node_id: node,
-                taffy: &tree,
-            },
-        );
-    }
+    use crate::synthetic_input::named_key;
 
     #[test]
     fn picker_buttons_and_dismissal_fire_the_matching_outcome() {
@@ -1116,7 +1060,7 @@ mod tests {
                 .on_pick(move |o| outcomes_clone.borrow_mut().push(o));
             p.rect = Rect::new(0.0, 0.0, 1280.0, 360.0);
 
-            dispatch(&mut p, &key_press(NamedKey::Escape));
+            dispatch(&mut p, &named_key(NamedKey::Escape));
             assert_eq!(outcomes.borrow().len(), 1);
             assert_eq!(outcomes.borrow()[0], PickerOutcome::Cancel);
         }
@@ -1175,38 +1119,11 @@ mod tests {
 
             let banner_chip = banner.review_chip_rect().unwrap();
 
-            let mut tree = TaffyTree::<()>::new();
-            let node = tree.leaf_node(Style::default());
-            let mut handled = false;
-            let mut focus = None;
-            let mut doc = AutoCommit::new();
-            let root = automerge::ROOT;
-            banner.handle_event(
+            dispatch(
+                &mut banner,
                 &cursor_moved(banner_chip.center().x, banner_chip.center().y),
-                &mut crate::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &Modifiers::default(),
-                    state: crate::widget::Edits::lend(&mut doc),
-                    path: &root,
-                    handled: &mut handled,
-                    focus_target: &mut focus,
-                    node_id: node,
-                    taffy: &tree,
-                },
             );
-            banner.handle_event(
-                &mouse_press(),
-                &mut crate::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &Modifiers::default(),
-                    state: crate::widget::Edits::lend(&mut doc),
-                    path: &root,
-                    handled: &mut handled,
-                    focus_target: &mut focus,
-                    node_id: node,
-                    taffy: &tree,
-                },
-            );
+            dispatch(&mut banner, &mouse_press());
             assert!(*review_fired.borrow(), "banner [Review] must fire");
 
             // 2. Host opens the picker and the user picks alternative 0.

@@ -27,14 +27,13 @@ use shell::shell::state::{
     AppKind, GroupId, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace,
     WorkspaceId, WorkspaceTree,
 };
-use taffy::prelude::TaffyMaxContent;
-use taffy::{AvailableSpace, NodeId, Size, TaffyTree};
-use ui::theme::Theme;
-use ui::widget::Widget;
-use vello::kurbo::{Affine, Point};
-use winit::dpi::PhysicalPosition;
-use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, WindowEvent};
-use winit::keyboard::{Key, KeyLocation, ModifiersState, NamedKey, PhysicalKey};
+use taffy::{NodeId, TaffyTree};
+use vello::kurbo::Point;
+use winit::keyboard::{Key, ModifiersState, NamedKey};
+
+use ui::widget::Widget as _;
+
+use crate::support::host::{click, layout_host, paint, press_key};
 
 #[derive(Default)]
 struct RecordingDispatcher {
@@ -160,150 +159,6 @@ fn minimal_tree() -> WorkspaceTree {
     }
 }
 
-/// `apply_layout` sets `self.rect`, which geometry helpers like
-/// `quick_settings_slider_geometry` need.
-fn layout_host(host: &mut shell::shell::overlay_host::ShellOverlayHost) -> (TaffyTree<()>, NodeId) {
-    use taffy::{Dimension, Style};
-    let theme = Theme::dark();
-    let mut taffy: TaffyTree<()> = TaffyTree::new();
-    let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-    let host_node = host.build_layout(&mut taffy, &theme, &mut node_map);
-    let root = taffy
-        .new_with_children(
-            Style {
-                size: Size {
-                    width: Dimension::length(1600.0),
-                    height: Dimension::length(900.0),
-                },
-                ..Default::default()
-            },
-            &[host_node],
-        )
-        .unwrap();
-    let map_for_measure = node_map.clone();
-    let mut tr = ui::text_render::TextRenderer::new();
-    taffy
-        .compute_layout_with_measure(
-            root,
-            Size {
-                width: AvailableSpace::Definite(1600.0),
-                height: AvailableSpace::Definite(900.0),
-            },
-            |known, available, node_id, _, _| {
-                if let Some(&ptr) = map_for_measure.get(&node_id) {
-                    unsafe { (*ptr).measure(known, available, &mut tr) }
-                } else {
-                    taffy::Size::ZERO
-                }
-            },
-        )
-        .or_else(|_| taffy.compute_layout(root, taffy::Size::MAX_CONTENT))
-        .expect("layout must compute");
-    host.apply_layout(&taffy, host_node, Point::ZERO);
-    (taffy, host_node)
-}
-
-/// Drive a whole click — `CursorMoved`, `Pressed`, `Released` — after
-/// [`layout_host`]. The release matters: sliders hold their value until
-/// button-up (so a drag doesn't spawn one process call per frame), while
-/// toggles and the power chip dispatch on press.
-fn click_at(
-    host: &mut shell::shell::overlay_host::ShellOverlayHost,
-    taffy: &TaffyTree<()>,
-    host_node: NodeId,
-    x: f64,
-    y: f64,
-) {
-    let mut state = automerge::AutoCommit::new();
-    let root_id = automerge::ROOT;
-    let mut handled = false;
-    let mut focus_target: Option<NodeId> = None;
-    let moved = WindowEvent::CursorMoved {
-        device_id: unsafe { std::mem::zeroed() },
-        position: PhysicalPosition::new(x, y),
-    };
-    host.handle_event(
-        &moved,
-        &mut ui::widget::EventCtx {
-            scale_factor: 1.0,
-            modifiers: &winit::event::Modifiers::default(),
-            state: ui::widget::Edits::lend(&mut state),
-            path: &root_id,
-            handled: &mut handled,
-            focus_target: &mut focus_target,
-            node_id: host_node,
-            taffy,
-        },
-    );
-
-    for button_state in [ElementState::Pressed, ElementState::Released] {
-        let mut handled = false;
-        let mut focus_target: Option<NodeId> = None;
-        let ev = WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
-            state: button_state,
-            button: MouseButton::Left,
-        };
-        host.handle_event(
-            &ev,
-            &mut ui::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &winit::event::Modifiers::default(),
-                state: ui::widget::Edits::lend(&mut state),
-                path: &root_id,
-                handled: &mut handled,
-                focus_target: &mut focus_target,
-                node_id: host_node,
-                taffy,
-            },
-        );
-    }
-}
-
-/// Route a pressed logical key through the host dispatcher. `KeyEvent`
-/// deliberately has no public constructor because a small platform payload is
-/// opaque, so initialise that payload to zero and set every public field just
-/// as the compositor's own test harness does.
-fn press_key(
-    host: &mut shell::shell::overlay_host::ShellOverlayHost,
-    taffy: &TaffyTree<()>,
-    host_node: NodeId,
-    key: Key,
-    modifiers: ModifiersState,
-) -> bool {
-    let mut key_event: KeyEvent = unsafe { std::mem::zeroed() };
-    key_event.logical_key = key;
-    key_event.physical_key =
-        PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
-    key_event.location = KeyLocation::Standard;
-    key_event.state = ElementState::Pressed;
-    key_event.repeat = false;
-    key_event.text = None;
-    let event = WindowEvent::KeyboardInput {
-        device_id: unsafe { std::mem::zeroed() },
-        event: key_event,
-        is_synthetic: false,
-    };
-    let mut state = automerge::AutoCommit::new();
-    let root_id = automerge::ROOT;
-    let mut handled = false;
-    let mut focus_target = None;
-    host.handle_event(
-        &event,
-        &mut ui::widget::EventCtx {
-            scale_factor: 1.0,
-            modifiers: &Modifiers::from(modifiers),
-            state: ui::widget::Edits::lend(&mut state),
-            path: &root_id,
-            handled: &mut handled,
-            focus_target: &mut focus_target,
-            node_id: host_node,
-            taffy,
-        },
-    );
-    handled
-}
-
 fn open_quick_settings(
     host: &mut shell::shell::overlay_host::ShellOverlayHost,
     chrome: &shell::shell::chrome_state::Chrome,
@@ -344,7 +199,7 @@ fn quick_settings_sliders_route_clicks_and_arrows_through_the_host() {
         let bar = host.quick_settings_slider_geometry(0).0;
         let click_x = bar.x0 + bar.width() / 3.0;
         let click_y = f64::midpoint(bar.y0, bar.y1);
-        click_at(&mut host, &taffy, host_node, click_x, click_y);
+        click(&mut host, &taffy, host_node, Point::new(click_x, click_y));
 
         let calls = recorder.0.calls();
         assert!(
@@ -371,7 +226,7 @@ fn quick_settings_sliders_route_clicks_and_arrows_through_the_host() {
         let bar = host.quick_settings_slider_geometry(1).0;
         let click_x = bar.x0 + bar.width() / 2.0;
         let click_y = f64::midpoint(bar.y0, bar.y1);
-        click_at(&mut host, &taffy, host_node, click_x, click_y);
+        click(&mut host, &taffy, host_node, Point::new(click_x, click_y));
 
         let calls = recorder.0.calls();
         assert!(
@@ -671,7 +526,7 @@ fn quick_settings_toggles_chips_and_wifi_rows_route_to_their_actions() {
         // card's bottom-left maps to the toggle hit.
         let click_x = card.x0 + 24.0;
         let click_y = card.y1 - 16.0;
-        click_at(&mut host, &taffy, host_node, click_x, click_y);
+        click(&mut host, &taffy, host_node, Point::new(click_x, click_y));
 
         let calls = recorder.0.calls();
         assert!(
@@ -702,7 +557,7 @@ fn quick_settings_toggles_chips_and_wifi_rows_route_to_their_actions() {
         let card = host.quick_settings_toggle_geometry(1);
         let click_x = card.x0 + 24.0;
         let click_y = card.y1 - 16.0;
-        click_at(&mut host, &taffy, host_node, click_x, click_y);
+        click(&mut host, &taffy, host_node, Point::new(click_x, click_y));
 
         let calls = recorder.0.calls();
         assert!(
@@ -729,7 +584,7 @@ fn quick_settings_toggles_chips_and_wifi_rows_route_to_their_actions() {
         let pp = host.quick_settings_power_profile_geometry();
         let click_x = pp.x0 + pp.width() / 2.0;
         let click_y = f64::midpoint(pp.y0, pp.y1);
-        click_at(&mut host, &taffy, host_node, click_x, click_y);
+        click(&mut host, &taffy, host_node, Point::new(click_x, click_y));
 
         let calls = recorder.0.calls();
         assert!(
@@ -783,7 +638,12 @@ fn quick_settings_toggles_chips_and_wifi_rows_route_to_their_actions() {
 
         // Row 0 — secured, not joined: must prompt for a passphrase rather than
         // firing a connect that would fail silently.
-        click_at(&mut host, &taffy, host_node, click_x, secured_row_y);
+        click(
+            &mut host,
+            &taffy,
+            host_node,
+            Point::new(click_x, secured_row_y),
+        );
         {
             let st = chrome.borrow();
             let prompt = st
@@ -809,7 +669,12 @@ fn quick_settings_toggles_chips_and_wifi_rows_route_to_their_actions() {
             st.quick_settings.wifi_password = None;
             st.bump();
         }
-        click_at(&mut host, &taffy, host_node, click_x, connected_row_y);
+        click(
+            &mut host,
+            &taffy,
+            host_node,
+            Point::new(click_x, connected_row_y),
+        );
         let calls = recorder.0.calls();
         assert!(
             calls.is_empty(),
@@ -853,7 +718,7 @@ fn only_the_invite_button_opens_the_signed_composer() {
         assert!(!host.peer_sync_card_visible());
 
         let c = btn.center();
-        click_at(&mut host, &taffy, host_node, c.x, c.y);
+        click(&mut host, &taffy, host_node, c);
 
         assert!(
             host.peer_sync_card_visible(),
@@ -881,7 +746,7 @@ fn only_the_invite_button_opens_the_signed_composer() {
         let btn = host.ws_settings_invite_rect_for_tests();
         // Well left of the button, still inside the modal body.
         let p = Point::new(btn.x0 - 160.0, btn.center().y);
-        click_at(&mut host, &taffy, host_node, p.x, p.y);
+        click(&mut host, &taffy, host_node, p);
 
         assert!(
             !host.peer_sync_card_visible(),
@@ -916,26 +781,12 @@ fn clicking_a_strip_ribbon_segment_moves_focus() {
 
     let target = ribbon.hit_rect(2).expect("third segment has a target");
     let c = target.center();
-    click_at(&mut host, &taffy, host_node, c.x, c.y);
+    click(&mut host, &taffy, host_node, c);
 
     let (_, focused) = chrome.borrow().strip_focus();
     assert_eq!(
         focused, 2,
         "clicking the third ribbon segment must focus the third strip"
-    );
-}
-
-/// Paint one frame so retained chrome geometry matches what a person sees.
-fn repaint(host: &mut shell::shell::overlay_host::ShellOverlayHost) {
-    let theme = Theme::dark();
-    let mut text = ui::text_render::TextRenderer::new();
-    let mut scene = vello::Scene::new();
-    host.draw(
-        &mut scene,
-        Affine::IDENTITY,
-        &mut text,
-        &theme,
-        &ui::presence::PresenceCtx::default(),
     );
 }
 
@@ -966,9 +817,9 @@ fn every_quick_settings_destination_click_lands_on_its_surface() {
         let tree = minimal_tree();
         let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
         let (taffy, host_node) = open_quick_settings(&mut host, &chrome);
-        repaint(&mut host);
+        paint(&mut host);
         let centre = quick_settings_target(&host, target).center();
-        click_at(&mut host, &taffy, host_node, centre.x, centre.y);
+        click(&mut host, &taffy, host_node, centre);
         let st = chrome.borrow();
         assert!(
             st.overlays.quick_settings,
@@ -986,9 +837,9 @@ fn every_quick_settings_destination_click_lands_on_its_surface() {
     let tree = minimal_tree();
     let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
     let (taffy, host_node) = open_quick_settings(&mut host, &chrome);
-    repaint(&mut host);
+    paint(&mut host);
     let centre = quick_settings_target(&host, "quick_settings_privacy").center();
-    click_at(&mut host, &taffy, host_node, centre.x, centre.y);
+    click(&mut host, &taffy, host_node, centre);
     {
         let st = chrome.borrow();
         assert!(!st.overlays.quick_settings);
@@ -1003,9 +854,9 @@ fn every_quick_settings_destination_click_lands_on_its_surface() {
     let tree = minimal_tree();
     let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
     let (taffy, host_node) = open_quick_settings(&mut host, &chrome);
-    repaint(&mut host);
+    paint(&mut host);
     let centre = quick_settings_target(&host, "quick_settings_power").center();
-    click_at(&mut host, &taffy, host_node, centre.x, centre.y);
+    click(&mut host, &taffy, host_node, centre);
     assert!(!chrome.borrow().overlays.quick_settings);
     assert!(!host.power_menu_semantic_rects().is_empty());
 }
@@ -1018,7 +869,7 @@ fn tab_through_every_quick_settings_stop_focuses_exactly_one_node() {
     let tree = minimal_tree();
     let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
     let (taffy, host_node) = open_quick_settings(&mut host, &chrome);
-    repaint(&mut host);
+    paint(&mut host);
     let quick_settings = |host: &shell::shell::overlay_host::ShellOverlayHost| {
         host.accessibility()
             .expect("shell semantics")
@@ -1107,9 +958,9 @@ fn do_not_disturb_tile_click_holds_notifications() {
         ],
     });
     let (taffy, host_node) = open_quick_settings(&mut host, &chrome);
-    repaint(&mut host);
+    paint(&mut host);
     let centre = quick_settings_target(&host, "quick_settings_do_not_disturb").center();
-    click_at(&mut host, &taffy, host_node, centre.x, centre.y);
+    click(&mut host, &taffy, host_node, centre);
     {
         let st = chrome.borrow();
         assert!(st.dnd(), "the tile turns Do Not Disturb on");
@@ -1121,7 +972,7 @@ fn do_not_disturb_tile_click_holds_notifications() {
         assert!(st.notifications().is_empty());
         assert_eq!(st.notification_history().len(), 1);
     }
-    repaint(&mut host);
-    click_at(&mut host, &taffy, host_node, centre.x, centre.y);
+    paint(&mut host);
+    click(&mut host, &taffy, host_node, centre);
     assert!(!chrome.borrow().dnd(), "a second click turns it back off");
 }

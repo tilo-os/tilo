@@ -46,6 +46,9 @@ pub(crate) struct WgpuEngine {
     ///
     /// The `Texture` should have the same size as the `Image`.
     pub(crate) image_overrides: HashMap<u64, wgpu::TexelCopyTextureInfoBase<Texture>>,
+    /// Images drawn into the atlas from a texture through a render pass
+    /// (Tilo patch): any colour format, optionally opaque.
+    pub(crate) image_sources: crate::image_source::ImageSources,
     pipeline_cache: Option<PipelineCache>,
     /// Compute-pass batching policy: mode 2 (including deferred frees) is the
     /// production default; explicit modes 0 and 1 remain available for A/B runs.
@@ -2379,7 +2382,19 @@ impl WgpuEngine {
                     let block_size = format
                         .block_copy_size(None)
                         .expect("ImageFormat must have a valid block size");
-                    if let Some(overrider) = self.image_overrides.get(&image.data.id()) {
+                    let drawn = self.image_sources.write(
+                        device,
+                        &mut encoder,
+                        image.data.id(),
+                        &crate::image_source::AtlasSlot {
+                            atlas: texture,
+                            at: [*x, *y],
+                            size: [image.width, image.height],
+                        },
+                    );
+                    if drawn {
+                        // Drawn from its `ImageSource`: the one copy.
+                    } else if let Some(overrider) = self.image_overrides.get(&image.data.id()) {
                         encoder.copy_texture_to_texture(
                             wgpu::TexelCopyTextureInfo {
                                 texture: &overrider.texture,
@@ -3233,7 +3248,10 @@ impl BindMap {
                     mip_level_count: 1,
                     sample_count: 1,
                     dimension: wgpu::TextureDimension::D2,
-                    usage: TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_DST,
+                    // Render attachment too: an `ImageSource` is drawn in.
+                    usage: TextureUsages::TEXTURE_BINDING
+                        | TextureUsages::COPY_DST
+                        | TextureUsages::RENDER_ATTACHMENT,
                     format,
                     view_formats: &[],
                 });

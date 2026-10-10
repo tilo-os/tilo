@@ -8,6 +8,7 @@ use tokio::sync::{MutexGuard, OwnedSemaphorePermit, Semaphore, watch};
 
 use crate::membership_watch::DiskGeneration;
 use crate::peer::WorkspaceRegistry;
+use crate::room_access::AdmissionMode;
 use crate::store::{GovernedAccessRecord, StoreError, WorkspaceStore};
 use crate::workspace::{Membership, SharedWorkspace, WorkspaceRuntime};
 
@@ -146,7 +147,7 @@ fn watched_generation(runtime: &mut WorkspaceRuntime) -> Option<DiskGeneration> 
 /// already sees their removals.
 ///
 /// Only device membership is reloaded. `governed_user_roots` and
-/// `governed_access` change through `replace_governed_access` and the
+/// the governed admission mode change through `replace_governed_access` and the
 /// runtime's open, as before the watch: an external edit of the governed file
 /// narrows or widens the exact devices, not the handshake roots.
 pub(crate) async fn fresh_membership(
@@ -243,28 +244,6 @@ fn apply_loaded_membership(
     }
     runtime.membership.set(members);
     runtime.loaded_generation = observed;
-}
-
-/// [`fresh_membership`] for a caller already on a blocking worker that holds
-/// the routing lock: reads the disk only when the watch saw a change, and
-/// applies the replacement ceiling like every other reload.
-///
-/// # Errors
-///
-/// Returns the store's error for an unreadable or malformed membership file;
-/// the in-memory set is then left untouched and the next call reads again.
-pub(crate) fn current_membership_blocking(
-    runtime: &mut WorkspaceRuntime,
-) -> Result<(), StoreError> {
-    if runtime.membership_is_current() {
-        return Ok(());
-    }
-    let observed = watched_generation(runtime)
-        .as_ref()
-        .and_then(DiskGeneration::current);
-    let members = runtime.store.load_membership()?;
-    apply_loaded_membership(runtime, members, observed);
-    Ok(())
 }
 
 /// Persist an explicitly authorized admission before granting it. The detached,
@@ -403,8 +382,7 @@ pub(crate) async fn replace_governed_access(
             runtime
                 .governed_user_roots
                 .retain(|root| access.member_user_roots.contains(root));
-            runtime.governed_access = true;
-            runtime.admit_authenticated = false;
+            runtime.admission = AdmissionMode::Governed;
             // Refuse while the authority lane is held so the writer can deliver
             // NotAuthorised before a waiting access audit closes the session.
             runtime.refuse_removed_live_members(&removed);
@@ -416,8 +394,7 @@ pub(crate) async fn replace_governed_access(
         let mut runtime = workspace.lock().await;
         runtime.membership.set(access.member_devices);
         runtime.governed_user_roots = access.member_user_roots.into_iter().collect();
-        runtime.governed_access = true;
-        runtime.admit_authenticated = false;
+        runtime.admission = AdmissionMode::Governed;
         runtime.membership_ceiling = None;
         Ok(())
     })
@@ -437,7 +414,7 @@ async fn open_runtime(
     state_root: std::path::PathBuf,
     workspace_id: u64,
     pinned: bool,
-    admit_authenticated: bool,
+    admission: AdmissionMode,
 ) -> OpenResult {
     static OPEN: OnceLock<Arc<Semaphore>> = OnceLock::new();
     let permit = OPEN
@@ -450,7 +427,8 @@ async fn open_runtime(
         let _permit = permit;
         let mut runtime =
             WorkspaceRuntime::open(&state_root, workspace_id, pinned, Membership::default())?;
-        runtime.admit_authenticated = admit_authenticated;
+        // A governed record on disk keeps the room governed.
+        runtime.admission = runtime.admission.rebind(admission);
         Ok::<_, StoreError>(Arc::new(tokio::sync::Mutex::new(runtime)))
     })
     .await
@@ -470,7 +448,7 @@ pub(crate) async fn get_or_initialize(
     state_root: std::path::PathBuf,
     workspace_id: u64,
     pinned: bool,
-    admit_authenticated: bool,
+    admission: AdmissionMode,
     capacity: usize,
 ) -> Result<SharedWorkspace, StoreError> {
     let registry_id = Arc::as_ptr(workspaces) as usize;
@@ -499,8 +477,7 @@ pub(crate) async fn get_or_initialize(
             drop(map);
             let registry = workspaces.clone();
             tokio::spawn(async move {
-                let opened =
-                    open_runtime(state_root, workspace_id, pinned, admit_authenticated).await;
+                let opened = open_runtime(state_root, workspace_id, pinned, admission).await;
                 let mut map = registry.lock().await;
                 let opened =
                     opened.map(|workspace| map.entry(workspace_id).or_insert(workspace).clone());
@@ -829,19 +806,77 @@ mod tests {
         std::fs::remove_dir(&path).unwrap();
         std::fs::write(&path, saved).unwrap();
         // The old file still lists [1; 32]; the failed replacement removed it.
-        let attached = workspace.clone().lock_owned().await;
-        let (runtime, admission) = tokio::task::spawn_blocking(move || {
-            let mut runtime = attached;
-            let admission = crate::compute_session::admit_compute_peer(&mut runtime, [1; 32]);
-            (runtime, admission)
-        })
-        .await
-        .unwrap();
-        assert!(
-            matches!(admission, Ok(None)),
-            "a removed device attached as a compute peer"
+        let owner = [9; 32];
+        let revocations = std::sync::RwLock::new(tilo_user_identity::RevocationList::new());
+        let policy = std::sync::RwLock::new(crate::policy::TrustPolicy::AllowAny);
+        let agents = crate::peer::AgentRegistry::default();
+        let trust = crate::room_access::RelayTrust {
+            revocations: &revocations,
+            policy: &policy,
+            own_user: &owner,
+            agents: &agents,
+        };
+        let removed = crate::room_access::tests::unsigned_peer(owner, [1; 32]);
+        for mode in [AdmissionMode::Explicit, AdmissionMode::SameOwner] {
+            // Not even a same-owner room enrols past the ceiling.
+            workspace.lock().await.admission = mode;
+            let admission =
+                crate::compute_session::admit_compute_peer(&workspace, &trust, &removed)
+                    .await
+                    .unwrap();
+            assert_eq!(
+                admission,
+                Err(crate::room_access::DenyReason::NotAMember),
+                "a removed device attached as a compute peer"
+            );
+            assert_eq!(workspace.lock().await.membership.devices, vec![[2; 32]]);
+        }
+    }
+
+    #[tokio::test]
+    async fn compute_attach_does_not_enrol_cross_user_device() {
+        let tmp = tempfile::tempdir().unwrap();
+        let workspace = runtime(tmp.path());
+        workspace.lock().await.admission = AdmissionMode::SameOwner;
+        let owner = [9; 32];
+        // The handshake admits anyone: only the room may keep a stranger out.
+        let revocations = std::sync::RwLock::new(tilo_user_identity::RevocationList::new());
+        let policy = std::sync::RwLock::new(crate::policy::TrustPolicy::AllowAny);
+        let agents = crate::peer::AgentRegistry::default();
+        let trust = crate::room_access::RelayTrust {
+            revocations: &revocations,
+            policy: &policy,
+            own_user: &owner,
+            agents: &agents,
+        };
+        let stranger = crate::room_access::tests::unsigned_peer([8; 32], [1; 32]);
+        assert_eq!(
+            crate::compute_session::admit_compute_peer(&workspace, &trust, &stranger)
+                .await
+                .unwrap(),
+            Err(crate::room_access::DenyReason::NotAMember)
         );
-        assert_eq!(runtime.membership.devices, vec![[2; 32]]);
+        assert!(
+            fresh_membership(&workspace)
+                .await
+                .unwrap()
+                .membership
+                .devices
+                .is_empty(),
+            "a cross-user device was enrolled through compute"
+        );
+        let own = crate::room_access::tests::unsigned_peer(owner, [2; 32]);
+        assert_eq!(
+            crate::compute_session::admit_compute_peer(&workspace, &trust, &own)
+                .await
+                .unwrap(),
+            Ok(())
+        );
+        assert_eq!(
+            workspace.lock().await.store.load_membership().unwrap(),
+            vec![[2; 32]],
+            "the owner's device is enrolled durably"
+        );
     }
 
     #[tokio::test]
@@ -853,17 +888,32 @@ mod tests {
         let first_registry = registry.clone();
         let first_root = root.clone();
         let first = tokio::spawn(async move {
-            get_or_initialize(&first_registry, first_root, 7, false, false, 1).await
+            get_or_initialize(
+                &first_registry,
+                first_root,
+                7,
+                false,
+                AdmissionMode::Explicit,
+                1,
+            )
+            .await
         });
         reached.await.unwrap();
         assert!(
-            get_or_initialize(&registry, root.clone(), 8, false, false, 1)
-                .await
-                .is_err()
+            get_or_initialize(
+                &registry,
+                root.clone(),
+                8,
+                false,
+                AdmissionMode::Explicit,
+                1
+            )
+            .await
+            .is_err()
         );
         first.abort();
         drop(release);
-        let workspace = get_or_initialize(&registry, root, 7, false, false, 1)
+        let workspace = get_or_initialize(&registry, root, 7, false, AdmissionMode::Explicit, 1)
             .await
             .unwrap();
         assert!(Arc::ptr_eq(&registry.lock().await[&7], &workspace));
@@ -881,7 +931,15 @@ mod tests {
         let first_registry = registry.clone();
         let first_root = root.clone();
         let first = tokio::spawn(async move {
-            get_or_initialize(&first_registry, first_root, 7, false, false, 1).await
+            get_or_initialize(
+                &first_registry,
+                first_root,
+                7,
+                false,
+                AdmissionMode::Explicit,
+                1,
+            )
+            .await
         });
         reached.await.unwrap();
         let mut second = Box::pin(get_or_initialize(
@@ -889,7 +947,7 @@ mod tests {
             root.clone(),
             7,
             false,
-            false,
+            AdmissionMode::Explicit,
             1,
         ));
         assert!(
@@ -904,7 +962,7 @@ mod tests {
         assert!(registry.lock().await.is_empty());
         std::fs::remove_file(tmp.path().join("workspaces/7")).unwrap();
         assert!(
-            get_or_initialize(&registry, root, 7, false, false, 1)
+            get_or_initialize(&registry, root, 7, false, AdmissionMode::Explicit, 1)
                 .await
                 .is_ok()
         );

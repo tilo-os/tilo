@@ -77,8 +77,15 @@ pub enum Command {
     Snapshot { path: String },
     /// Say whether a viewer is looking at a headless session's frames. Unwatched, the headless backend lays frames out and hands clients their frame callbacks but does not rasterize them; attaching a viewer paints a fresh frame, and shared legacy windows are encoded only while watched. `snapshot` renders on demand either way. Other backends always paint. Answered by the native transport; the agent-control socket accepts it, so a partner's `POST /watch` lease reaches it.
     Watch { watching: bool },
-    /// Read-only snapshot of the live `shell::state::WorkspaceTree` plus [`ChromeState`](crate::shell::chrome_state::ChromeState), both as opaque `serde_json::Value` so future fields don't break the wire.
-    StateDump,
+    /// Read-only snapshot of the live `shell::state::WorkspaceTree` plus [`ChromeState`](crate::shell::chrome_state::ChromeState), both opaque JSON so future fields don't break the wire.
+    ///
+    /// The tree is the desktop as it is now. A workspace's append-only history — effect receipts, task audit trails, ownership-transfer records — grows with every action ever taken, so it is left out unless `include_history` asks for it (`tilo_desktop_model::history`).
+    StateDump {
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        include_history: bool,
+    },
+    /// The open windows, one row per tab: `workspace`, `strip`, `group`, `tab`, `kind`, `app_id`, `title`, and `active` for the tab in front of the active workspace's active group. Read straight off the live tree, so it costs the windows, not a state dump.
+    Windows,
     /// Grant a capability on the active workspace on behalf of the user at this session, through `Workspace::grant_as` — the production authority check, so a grantor without ownership or `Admin` is refused, not worked around.
     ///
     /// `subject` is `person:<id>` / `app:<id>` / `agent:<id>`; `scope` is `workspace`, `room`, `app:<id>` or `action:<app>/<action>`; `verb` is read / comment / write / invite / admin.
@@ -184,11 +191,26 @@ pub enum Command {
         primary: bool,
     },
     /// Enumerate the actions/resources the shell exports now, through the same provider registry that feeds the Ctrl+K palette. Read-only — no invoke handles in the reply. An empty `query` lists every provider's defaults.
+    ///
+    /// The answer is one page of the listing ([`ListingRequest`]); a request without paging fields gets the first.
     ActionsEnumerate {
         #[serde(default)]
         query: String,
         #[serde(default)]
         include_programmatic: bool,
+        #[serde(flatten)]
+        page: ListingRequest,
+        /// Hold the answer until the listing is `complete` — no index build
+        /// or app directory page that would change it still owed — for at
+        /// most this many milliseconds (capped at 30 s). The answer says
+        /// whether it `settled`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        wait_ms: Option<u64>,
+        /// With `wait_ms`: a listing with this `revision` was already seen,
+        /// so only a different one settles the wait — "answer when this
+        /// changes", e.g. when an app just opened publishes its actions.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        after_revision: Option<String>,
     },
     /// Invoke one enumerated action by its `(provider, id)` address, with no window, scene or synthetic input.
     ///
@@ -210,7 +232,13 @@ pub enum Command {
         wait_ms: Option<u64>,
     },
     /// Read the latest broker lifecycle state for an invocation receipt id.
-    ActionsStatus { invocation_id: u64 },
+    ActionsStatus {
+        invocation_id: u64,
+        /// Hold the answer until the invocation settles, as
+        /// `actions_invoke`'s `wait_ms` does.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        wait_ms: Option<u64>,
+    },
     /// Request cooperative cancellation for an invocation receipt id.
     ActionsCancel { invocation_id: u64 },
     /// Seat the request's [`Agent`] without injecting input: its strip takes
@@ -272,7 +300,8 @@ pub enum Response {
     ForeignFrames { frames: serde_json::Value },
     /// `state_dump` response — persisted `WorkspaceTree` + [`ChromeState`](crate::shell::chrome_state::ChromeState), both opaque.
     State {
-        workspace_tree: serde_json::Value,
+        /// Serialised once, straight from the tree, and written into the reply as it is.
+        workspace_tree: RawJson,
         chrome: serde_json::Value,
         /// The peers this session would paint, straight off the `PresenceCtx` the overlay reads.
         peers: serde_json::Value,
@@ -284,6 +313,233 @@ pub enum Response {
     Answer(serde_json::Value),
     /// `clipboard_paste` response. `None` means nothing has been copied — distinct from `Some("")`, an owned empty selection.
     Clipboard { text: Option<String> },
+}
+
+/// Rows an `actions_enumerate` page holds when the request names no `limit`.
+/// A stock desktop's whole surface fits, so a client that predates paging
+/// still sees all of it there, and `truncated` says when it does not.
+pub const DEFAULT_LISTING_LIMIT: usize = 200;
+/// Most rows one `actions_enumerate` page holds, whatever `limit` asks.
+pub const MAX_LISTING_LIMIT: usize = 2_000;
+
+/// Which page of an `actions_enumerate` listing to answer, and how much of
+/// each row. Every field is optional on the wire.
+///
+/// The answer carries `count` (rows in this page), `total` (rows in the
+/// listing), `truncated` and `next_cursor`: while `truncated`, send the same
+/// query again with `cursor` set to `next_cursor` for the next page. A
+/// cursor names a position in one listing; if the listing has changed since,
+/// the request is refused with `stale_cursor` and the caller starts again.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ListingRequest {
+    /// Rows in the page: [`DEFAULT_LISTING_LIMIT`] when absent, at least one
+    /// and at most [`MAX_LISTING_LIMIT`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<usize>,
+    /// The previous page's `next_cursor`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<String>,
+    /// How much of each row: `full` (the default) or `compact`, which leaves
+    /// out each row's `contract`, most of a row's size. Every other field,
+    /// including `params`, stays, so a compact row can still be invoked.
+    #[serde(default, skip_serializing_if = "ListingDetail::is_full")]
+    pub detail: ListingDetail,
+}
+
+/// How much of each row a listing carries; see [`ListingRequest::detail`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ListingDetail {
+    #[default]
+    Full,
+    Compact,
+}
+
+impl ListingDetail {
+    #[must_use]
+    pub const fn is_full(&self) -> bool {
+        matches!(self, Self::Full)
+    }
+}
+
+/// The rows of a listing one page holds, as [`ListingRequest::window`] cut it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ListingWindow {
+    /// Indices of this page's rows in the whole listing.
+    pub rows: std::ops::Range<usize>,
+    /// Rows in the whole listing.
+    pub total: usize,
+    /// Where the next page starts; `None` on the last page.
+    pub next_cursor: Option<String>,
+}
+
+impl ListingWindow {
+    /// Record this page's place in `answer`: `count`, `total`, `truncated`
+    /// and `next_cursor`.
+    pub fn describe(&self, answer: &mut serde_json::Map<String, serde_json::Value>) {
+        answer.insert("count".into(), self.rows.len().into());
+        answer.insert("total".into(), self.total.into());
+        answer.insert("truncated".into(), self.next_cursor.is_some().into());
+        answer.insert(
+            "next_cursor".into(),
+            self.next_cursor
+                .clone()
+                .map_or(serde_json::Value::Null, Into::into),
+        );
+    }
+}
+
+/// An identity for one listing: its rows' addresses, in order. A cursor cut
+/// from one listing is stale against any other.
+pub fn listing_fingerprint<'a>(addresses: impl IntoIterator<Item = (&'a str, &'a str)>) -> u64 {
+    use std::hash::{Hash as _, Hasher as _};
+    let mut hasher = std::hash::DefaultHasher::new();
+    for (provider, id) in addresses {
+        provider.hash(&mut hasher);
+        id.hash(&mut hasher);
+    }
+    hasher.finish()
+}
+
+impl ListingRequest {
+    /// The rows of a listing of `total` rows, identified by `fingerprint`
+    /// ([`listing_fingerprint`]), that this page holds.
+    ///
+    /// # Errors
+    ///
+    /// `invalid_arguments` for a cursor this socket never handed out, and
+    /// `stale_cursor` for one cut from a listing that has changed since.
+    pub fn window(&self, total: usize, fingerprint: u64) -> Result<ListingWindow, ActionRefusal> {
+        let start = match self.cursor.as_deref() {
+            None => 0,
+            Some(cursor) => {
+                let (offset, listing) = cursor
+                    .split_once('.')
+                    .and_then(|(offset, listing)| {
+                        Some((
+                            offset.parse::<usize>().ok()?,
+                            u64::from_str_radix(listing, 16).ok()?,
+                        ))
+                    })
+                    .ok_or_else(|| {
+                        ActionRefusal::invalid_arguments(
+                            "cursor is not a next_cursor this listing handed out",
+                        )
+                    })?;
+                if listing != fingerprint || offset > total {
+                    return Err(ActionRefusal::stale_cursor());
+                }
+                offset
+            }
+        };
+        let limit = self
+            .limit
+            .unwrap_or(DEFAULT_LISTING_LIMIT)
+            .clamp(1, MAX_LISTING_LIMIT);
+        let end = start.saturating_add(limit).min(total);
+        Ok(ListingWindow {
+            rows: start..end,
+            total,
+            next_cursor: (end < total).then(|| format!("{end}.{fingerprint:016x}")),
+        })
+    }
+
+    /// Cut this page out of a whole listing already in `answer` — `actions`,
+    /// one row per action — and describe it there ([`ListingWindow::describe`]).
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::window`].
+    pub fn apply(&self, answer: &mut serde_json::Value) -> Result<(), ActionRefusal> {
+        let Some(answer) = answer.as_object_mut() else {
+            return Ok(());
+        };
+        let mut rows = match answer.remove("actions") {
+            Some(serde_json::Value::Array(rows)) => rows,
+            _ => Vec::new(),
+        };
+        let field = |row: &serde_json::Value, name: &str| {
+            row.get(name)
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default()
+                .to_owned()
+        };
+        let addresses: Vec<(String, String)> = rows
+            .iter()
+            .map(|row| (field(row, "provider"), field(row, "id")))
+            .collect();
+        let window = self.window(
+            rows.len(),
+            listing_fingerprint(
+                addresses
+                    .iter()
+                    .map(|(provider, id)| (provider.as_str(), id.as_str())),
+            ),
+        )?;
+        rows.truncate(window.rows.end);
+        let mut page: Vec<serde_json::Value> = rows.drain(window.rows.clone()).collect();
+        if !self.detail.is_full() {
+            for row in &mut page {
+                if let Some(row) = row.as_object_mut() {
+                    row.remove("contract");
+                }
+            }
+        }
+        answer.insert("actions".into(), page.into());
+        window.describe(answer);
+        Ok(())
+    }
+}
+
+/// JSON text serialised once, straight from a typed value, and written into
+/// the reply as it is. Going through a `serde_json::Value` tree instead costs
+/// several times the serialisation itself for a whole desktop tree.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct RawJson(Box<serde_json::value::RawValue>);
+
+impl RawJson {
+    /// JSON `null`.
+    #[must_use]
+    pub fn null() -> Self {
+        Self(serde_json::value::RawValue::NULL.to_owned())
+    }
+
+    /// `value` as JSON text, or `null` if it will not serialise. The derived
+    /// `Serialize` impls are infallible in practice, and this crate builds
+    /// with `panic = "abort"`, so a hypothetical bad value must not take the
+    /// compositor down.
+    pub fn of<T: Serialize + ?Sized>(value: &T) -> Self {
+        serde_json::value::to_raw_value(value).map_or_else(
+            |error| {
+                tracing::error!(
+                    target: "shell::compositor::test_control",
+                    %error,
+                    "failed to serialise a state dump field; answering null"
+                );
+                Self::null()
+            },
+            Self,
+        )
+    }
+
+    /// The JSON text.
+    #[must_use]
+    pub fn get(&self) -> &str {
+        self.0.get()
+    }
+
+    /// Parsed into a [`serde_json::Value`], for a reader that walks it.
+    #[must_use]
+    pub fn to_value(&self) -> serde_json::Value {
+        serde_json::from_str(self.get()).unwrap_or(serde_json::Value::Null)
+    }
+}
+
+impl PartialEq for RawJson {
+    fn eq(&self, other: &Self) -> bool {
+        self.get() == other.get()
+    }
 }
 
 /// One `list_targets` entry. `rect` is `(x, y, w, h)` in the compositor's coordinate space.
@@ -306,9 +562,17 @@ impl TargetEntry {
 pub trait ControlState {
     /// Snapshot of every addressable widget in the live widget tree.
     fn widget_registry(&self) -> HashMap<String, Rect>;
-    /// JSON view of the persisted `WorkspaceTree` — same shape `TILO_TEST_STATE_DUMP` writes on every frame tick. Defaults to `Null` so mock fixtures that only need `widget_registry` don't have to spell out a tree.
-    fn workspace_tree_json(&self) -> serde_json::Value {
-        serde_json::Value::Null
+    /// JSON view of the persisted `WorkspaceTree` — same shape `TILO_TEST_STATE_DUMP` writes on every frame tick, less the workspaces' history unless `include_history` (see [`Command::StateDump`]). Defaults to `null` so mock fixtures that only need `widget_registry` don't have to spell out a tree.
+    fn workspace_tree_json(&self, _include_history: bool) -> RawJson {
+        RawJson::null()
+    }
+    /// The open windows, one row per tab ([`Command::Windows`]), from the live tree. Default impl refuses: "no tree" must not read as "no windows".
+    ///
+    /// # Errors
+    ///
+    /// Returns a human-readable refusal when this control state has no live tree.
+    fn windows_json(&self) -> Result<serde_json::Value, String> {
+        Err("no live workspace tree on this control state".to_string())
     }
     /// JSON view of [`ChromeState`](crate::shell::chrome_state::ChromeState) (`overlays`, `search_scope`, `ws_settings_tab`, `revision`, `editing_workspace_name`). Defaults to `Null`.
     fn chrome_state_json(&self) -> serde_json::Value {
@@ -378,20 +642,30 @@ pub trait ControlState {
         Err("no live action registry on this control state".to_string())
     }
 
-    /// Enumerate the bounded machine catalogue only when explicitly supported.
+    /// One `page` of the listing for `query`, with the bounded machine
+    /// catalogue only when explicitly supported. The default impl pages
+    /// [`Self::enumerate_actions`]' whole listing.
     ///
     /// # Errors
-    /// Returns a refusal if this state does not support programmatic discovery,
-    /// or if the underlying action catalogue is unavailable.
+    /// `enumerate_failed` if this state does not support programmatic
+    /// discovery, or if the underlying action catalogue is unavailable; a
+    /// cursor refusal from [`ListingRequest::window`].
     fn enumerate_actions_with_programmatic(
         &self,
         query: &str,
         include_programmatic: bool,
-    ) -> Result<serde_json::Value, String> {
+        page: &ListingRequest,
+    ) -> Result<serde_json::Value, ActionRefusal> {
         if include_programmatic {
-            return Err("this control state cannot enumerate programmatic actions".into());
+            return Err(ActionRefusal::listing_failed(
+                "this control state cannot enumerate programmatic actions",
+            ));
         }
-        self.enumerate_actions(query)
+        let mut answer = self
+            .enumerate_actions(query)
+            .map_err(ActionRefusal::listing_failed)?;
+        page.apply(&mut answer)?;
+        Ok(answer)
     }
 
     /// Resolve `(provider, id)` against a fresh catalogue and report what it addresses, without invoking it — the validation half of `actions_invoke`, so the transport can refuse instead of planning an invocation that silently does nothing.
@@ -442,6 +716,26 @@ impl ActionRefusal {
         Self {
             code: "action_failed",
             message: message.into(),
+        }
+    }
+
+    /// The listing could not be enumerated at all.
+    pub fn listing_failed(message: impl Into<String>) -> Self {
+        Self {
+            code: "enumerate_failed",
+            message: message.into(),
+        }
+    }
+
+    /// A listing cursor names a place in a listing that has changed since it
+    /// was handed out; list again from the start.
+    #[must_use]
+    pub fn stale_cursor() -> Self {
+        Self {
+            code: "stale_cursor",
+            message:
+                "the listing changed since this cursor was handed out; list again without a cursor"
+                    .into(),
         }
     }
 }
@@ -672,7 +966,16 @@ pub fn dispatch_command<S: ControlState>(
         }),
         Command::Snapshot { path } => snapshot(path),
         Command::ForeignFrames => foreign_frames(state),
-        Command::StateDump => state_dump(state),
+        Command::StateDump { include_history } => state_dump(state, *include_history),
+        Command::Windows => (
+            answer_or_err(
+                state
+                    .windows_json()
+                    .map(|windows| serde_json::json!({ "windows": windows })),
+                "windows_failed",
+            ),
+            Vec::new(),
+        ),
         Command::Grant {
             subject,
             scope,
@@ -774,14 +1077,20 @@ pub fn dispatch_command<S: ControlState>(
         Command::ClipboardCopy { text, primary } => clipboard_copy(text, *primary),
         Command::ClipboardCopyImage => clipboard_copy_image(),
         Command::ClipboardPaste { primary } => clipboard_paste(*primary),
+        // Whether a listing waits is the transport's: it holds the reply.
         Command::ActionsEnumerate {
             query,
             include_programmatic,
+            page,
+            ..
         } => (
-            answer_or_err(
-                state.enumerate_actions_with_programmatic(query, *include_programmatic),
-                "enumerate_failed",
-            ),
+            match state.enumerate_actions_with_programmatic(query, *include_programmatic, page) {
+                Ok(answer) => Response::Answer(answer),
+                Err(refusal) => Response::Err {
+                    code: refusal.code.to_string(),
+                    message: refusal.message,
+                },
+            },
             Vec::new(),
         ),
         // How long the answer waits is the transport's: it holds the reply.
@@ -795,7 +1104,7 @@ pub fn dispatch_command<S: ControlState>(
             Some(device) => plan_enrolled_device_action(device, provider, id, args),
             None => actions_invoke(state, provider, id, args),
         },
-        Command::ActionsStatus { invocation_id } => invocation_control(
+        Command::ActionsStatus { invocation_id, .. } => invocation_control(
             crate::shell::search::providers::live_app_actions::job_status_id(*invocation_id),
         ),
         Command::ActionsCancel { invocation_id } => invocation_control(
@@ -1168,16 +1477,70 @@ fn foreign_frames<S: ControlState>(state: &S) -> (Response, Vec<PlannedAction>) 
 }
 
 /// [`Command::StateDump`]: the persisted tree, chrome state and peers, read-only.
-fn state_dump<S: ControlState>(state: &S) -> (Response, Vec<PlannedAction>) {
+fn state_dump<S: ControlState>(state: &S, include_history: bool) -> (Response, Vec<PlannedAction>) {
     (
         Response::State {
-            workspace_tree: state.workspace_tree_json(),
+            workspace_tree: state.workspace_tree_json(include_history),
             chrome: state.chrome_state_json(),
             peers: state.peers_json(),
             sharing: state.sharing_json(),
         },
         Vec::new(),
     )
+}
+
+/// [`Command::Windows`]: one row per tab of `desktop` — where it is, which
+/// app shows it, and whether it is the tab in front of the active
+/// workspace's active strip and group. A workspace or strip without a name
+/// is named by its id; `kind` is the tile's variant and `app_id` the app it
+/// names, if any.
+#[must_use]
+pub fn window_rows(desktop: &crate::shell::state::DesktopTree) -> Vec<serde_json::Value> {
+    fn named(name: &str, id: u64) -> serde_json::Value {
+        if name.is_empty() {
+            id.into()
+        } else {
+            name.into()
+        }
+    }
+    let mut rows = Vec::new();
+    for workspace in &desktop.workspaces {
+        let workspace_active = workspace.id == desktop.active;
+        let active_strip = desktop.active_strip.get(&workspace.id);
+        for strip in &workspace.strips {
+            let strip_active = workspace_active && active_strip == Some(&strip.id);
+            let active_group = desktop.active_group.get(&strip.id);
+            for group in &strip.window_groups {
+                let group_active = strip_active && active_group == Some(&group.id);
+                for tab in &group.tabs {
+                    let (kind, app_id) = tile_kind(&tab.tile);
+                    rows.push(serde_json::json!({
+                        "workspace": named(&workspace.name, workspace.id.0),
+                        "strip": named(&strip.name, strip.id.0),
+                        "group": group.id,
+                        "tab": tab.id,
+                        "kind": kind,
+                        "app_id": app_id,
+                        "title": tab.title,
+                        "active": group_active && group.active_tab == tab.id,
+                    }));
+                }
+            }
+        }
+    }
+    rows
+}
+
+/// A tile's variant name and the `app_id` it carries, as its JSON spells them.
+fn tile_kind(tile: &crate::shell::state::TileContent) -> (String, serde_json::Value) {
+    match serde_json::to_value(tile).unwrap_or_default() {
+        serde_json::Value::String(kind) => (kind, serde_json::Value::Null),
+        serde_json::Value::Object(variant) => variant.into_iter().next().map_or_else(
+            || (String::new(), serde_json::Value::Null),
+            |(kind, body)| (kind, body.get("app_id").cloned().unwrap_or_default()),
+        ),
+        _ => (String::new(), serde_json::Value::Null),
+    }
 }
 
 /// [`Command::Grant`]: grant a capability through the authority check.
@@ -1563,7 +1926,7 @@ pub const AGENT_CONTROL_NOT_PERMITTED: &str =
 /// serve. It names where the rest of the protocol lives, so a caller that
 /// reached for input learns the semantic route rather than retrying.
 pub const ADMIN_CONTROL_NOT_PERMITTED: &str = "the admin control socket serves the action model only \
-     (actions list/invoke/status/cancel, state-dump, foreign-frames); synthetic input and \
+     (actions list/invoke/status/cancel, windows, state-dump, foreign-frames); synthetic input and \
      screenshots exist only on a development session's test-control socket ($TILO_TEST_CONTROL)";
 
 /// Protocol error for an action or screenshot asked for while the session
@@ -1585,7 +1948,8 @@ impl Command {
                 | Self::ActionsInvoke { .. }
                 | Self::ActionsStatus { .. }
                 | Self::ActionsCancel { .. }
-                | Self::StateDump
+                | Self::StateDump { .. }
+                | Self::Windows
                 | Self::ForeignFrames
         )
     }
@@ -1710,7 +2074,28 @@ mod tests {
             // Phase `parse_state_dump_command_round_trips`.
             {
                 let cmd = parse_command(r#"{"op":"state_dump"}"#).unwrap();
-                assert_eq!(cmd, Command::StateDump);
+                assert_eq!(
+                    cmd,
+                    Command::StateDump {
+                        include_history: false
+                    }
+                );
+                // An older client's request is unchanged on the wire.
+                assert_eq!(
+                    serde_json::to_value(&cmd).unwrap(),
+                    serde_json::json!({ "op": "state_dump" })
+                );
+                let cmd = parse_command(r#"{"op":"state_dump","include_history":true}"#).unwrap();
+                assert_eq!(
+                    cmd,
+                    Command::StateDump {
+                        include_history: true
+                    }
+                );
+                assert_eq!(
+                    parse_command(r#"{"op":"windows"}"#).unwrap(),
+                    Command::Windows
+                );
             }
 
             // Phase `serialise_response_emits_kebab_friendly_json`.
@@ -1740,7 +2125,7 @@ mod tests {
             // Phase `serialise_state_response_emits_workspace_tree_chrome_and_peers`.
             {
                 let resp = Response::State {
-                    workspace_tree: serde_json::json!({ "workspaces": [] }),
+                    workspace_tree: RawJson::of(&serde_json::json!({ "workspaces": [] })),
                     chrome: serde_json::json!({ "overlays": {} }),
                     peers: serde_json::json!({ "pointers": [] }),
                     sharing: serde_json::json!({ "exposures": [] }),
@@ -1754,6 +2139,12 @@ mod tests {
                 assert!(out.contains("\"chrome\""), "got {out}");
                 assert!(out.contains("\"peers\""), "got {out}");
                 assert!(out.contains("\"sharing\""), "got {out}");
+                // The pre-serialised tree is spliced in as JSON, not as a string.
+                let parsed: serde_json::Value = serde_json::from_str(&out).unwrap();
+                assert_eq!(
+                    parsed["state"]["workspace_tree"],
+                    serde_json::json!({ "workspaces": [] })
+                );
             }
         }
 
@@ -1805,7 +2196,12 @@ mod tests {
                         "revision": 7_u64,
                     }),
                 };
-                let (resp, actions) = dispatch_command(&Command::StateDump, &state);
+                let (resp, actions) = dispatch_command(
+                    &Command::StateDump {
+                        include_history: false,
+                    },
+                    &state,
+                );
                 assert!(actions.is_empty(), "state_dump must have no side effects");
                 let Response::State {
                     workspace_tree,
@@ -1816,6 +2212,7 @@ mod tests {
                 else {
                     panic!("expected Response::State, got something else");
                 };
+                let workspace_tree = workspace_tree.to_value();
                 assert!(
                     workspace_tree.get("workspaces").is_some(),
                     "workspace_tree should carry `workspaces` key; got {workspace_tree:?}"
@@ -1831,7 +2228,12 @@ mod tests {
             // Phase `state_dump_default_impl_returns_nulls`.
             {
                 let state = StaticState::new(&[]);
-                let (resp, actions) = dispatch_command(&Command::StateDump, &state);
+                let (resp, actions) = dispatch_command(
+                    &Command::StateDump {
+                        include_history: false,
+                    },
+                    &state,
+                );
                 assert!(actions.is_empty());
                 let Response::State {
                     workspace_tree,
@@ -1842,10 +2244,111 @@ mod tests {
                 else {
                     panic!("expected Response::State");
                 };
-                assert!(workspace_tree.is_null());
+                assert!(workspace_tree.to_value().is_null());
                 assert!(chrome.is_null());
             }
+
+            // Phase `windows_answers_rows_or_refuses_without_a_tree`.
+            {
+                let (resp, actions) = dispatch_command(&Command::Windows, &StaticState::new(&[]));
+                assert!(actions.is_empty());
+                let Response::Err { code, .. } = resp else {
+                    panic!("no tree is not the same answer as no windows");
+                };
+                assert_eq!(code, "windows_failed");
+                let state = StateDumpMockState {
+                    workspace_tree: serde_json::Value::Null,
+                    chrome: serde_json::Value::Null,
+                };
+                let (resp, actions) = dispatch_command(&Command::Windows, &state);
+                assert!(actions.is_empty());
+                assert_eq!(
+                    resp,
+                    Response::Answer(serde_json::json!({ "windows": [{ "tab": 1 }] }))
+                );
+            }
         }
+    }
+
+    /// One workspace, two strips; the active strip holds two groups, the
+    /// active one with two tabs.
+    fn windows_fixture() -> crate::shell::state::DesktopTree {
+        use crate::shell::state::{
+            AppKind, DesktopTree, Strip, Tab, TileContent, WindowGroup, WindowWidth, Workspace,
+            WorkspaceId,
+        };
+        let tab = |id, title: &str, tile| Tab {
+            id,
+            title: title.to_string(),
+            tile,
+        };
+        let group = |id, tabs: Vec<Tab>, active_tab| WindowGroup {
+            id,
+            tabs,
+            active_tab,
+            width: WindowWidth::Normal,
+            maximized: false,
+        };
+        let notes = || TileContent::Foreign {
+            app_id: "so.tilo.notes".into(),
+            surface_id: 9,
+        };
+        let mut home = Workspace::new(WorkspaceId(1), "Home");
+        let mut main = Strip::new(crate::shell::state::StripId(10), "Main");
+        main.window_groups = vec![
+            group(
+                100,
+                vec![
+                    tab(1000, "Notes", notes()),
+                    tab(
+                        1001,
+                        "Placeholder",
+                        TileContent::Stub {
+                            kind: AppKind::Terminal,
+                            label: "Terminal".into(),
+                        },
+                    ),
+                ],
+                1001,
+            ),
+            group(101, vec![tab(1010, "Notes 2", notes())], 1010),
+        ];
+        let mut unnamed = Strip::new(crate::shell::state::StripId(11), "");
+        unnamed.window_groups = vec![group(
+            110,
+            vec![tab(1100, "Activity", TileContent::WorkspaceActivity)],
+            1100,
+        )];
+        home.strips = vec![main, unnamed];
+        let mut tree = DesktopTree {
+            workspaces: vec![home],
+            active: WorkspaceId(1),
+            ..DesktopTree::default()
+        };
+        tree.active_strip
+            .insert(WorkspaceId(1), crate::shell::state::StripId(10));
+        tree.active_group
+            .insert(crate::shell::state::StripId(10), 100);
+        tree
+    }
+
+    #[test]
+    fn windows_list_every_tab_with_its_app_place_and_the_one_in_front() {
+        let rows = window_rows(&windows_fixture());
+        assert_eq!(
+            serde_json::Value::Array(rows),
+            serde_json::json!([
+                {"workspace": "Home", "strip": "Main", "group": 100, "tab": 1000, "kind": "Foreign",
+                 "app_id": "so.tilo.notes", "title": "Notes", "active": false},
+                {"workspace": "Home", "strip": "Main", "group": 100, "tab": 1001, "kind": "Stub",
+                 "app_id": null, "title": "Placeholder", "active": true},
+                {"workspace": "Home", "strip": "Main", "group": 101, "tab": 1010, "kind": "Foreign",
+                 "app_id": "so.tilo.notes", "title": "Notes 2", "active": false},
+                // An unnamed strip is named by its id; a unit tile by its variant.
+                {"workspace": "Home", "strip": 11, "group": 110, "tab": 1100, "kind": "WorkspaceActivity",
+                 "app_id": null, "title": "Activity", "active": false},
+            ])
+        );
     }
 
     #[test]
@@ -2583,11 +3086,14 @@ mod tests {
         fn widget_registry(&self) -> HashMap<String, Rect> {
             HashMap::new()
         }
-        fn workspace_tree_json(&self) -> serde_json::Value {
-            self.workspace_tree.clone()
+        fn workspace_tree_json(&self, _include_history: bool) -> RawJson {
+            RawJson::of(&self.workspace_tree)
         }
         fn chrome_state_json(&self) -> serde_json::Value {
             self.chrome.clone()
+        }
+        fn windows_json(&self) -> Result<serde_json::Value, String> {
+            Ok(serde_json::json!([{ "tab": 1 }]))
         }
     }
 
@@ -2668,6 +3174,166 @@ mod tests {
         assert!(effects.is_empty());
     }
 
+    /// A listing of `rows` actions, each with a contract, or of the
+    /// `renamed` set when the listing has changed under a cursor.
+    struct ManyActions {
+        rows: usize,
+        renamed: std::cell::Cell<bool>,
+    }
+
+    impl ControlState for ManyActions {
+        fn widget_registry(&self) -> HashMap<String, Rect> {
+            HashMap::new()
+        }
+
+        fn enumerate_actions(&self, query: &str) -> Result<serde_json::Value, String> {
+            let prefix = if self.renamed.get() {
+                "renamed"
+            } else {
+                "action"
+            };
+            let actions: Vec<_> = (0..self.rows)
+                .map(|n| {
+                    serde_json::json!({
+                        "provider": "shell.actions",
+                        "id": format!("{prefix}.{n}"),
+                        "params": [],
+                        "contract": { "permission": "write" },
+                    })
+                })
+                .collect();
+            Ok(serde_json::json!({ "query": query, "count": actions.len(), "actions": actions }))
+        }
+    }
+
+    fn list(page: ListingRequest) -> Command {
+        Command::ActionsEnumerate {
+            query: String::new(),
+            include_programmatic: false,
+            page,
+            wait_ms: None,
+            after_revision: None,
+        }
+    }
+
+    fn answer(response: Response) -> serde_json::Value {
+        let Response::Answer(answer) = response else {
+            panic!("expected an answer, got {response:?}");
+        };
+        answer
+    }
+
+    #[test]
+    fn listings_come_in_pages_an_old_client_sees_the_first_of() {
+        let state = ManyActions {
+            rows: 450,
+            renamed: std::cell::Cell::new(false),
+        };
+        // A request without paging fields parses and is answered as before,
+        // as the first page, which says the listing goes on.
+        let old = parse_command(r#"{"op":"actions_enumerate","query":""}"#).unwrap();
+        assert_eq!(old, list(ListingRequest::default()));
+        assert_eq!(
+            serde_json::to_value(&old).unwrap(),
+            serde_json::json!({"op": "actions_enumerate", "query": "", "include_programmatic": false})
+        );
+        let first = answer(dispatch_command(&old, &state).0);
+        assert_eq!(first["count"], DEFAULT_LISTING_LIMIT);
+        assert_eq!(
+            first["actions"].as_array().unwrap().len(),
+            DEFAULT_LISTING_LIMIT
+        );
+        assert_eq!(first["total"], 450);
+        assert_eq!(first["truncated"], true);
+        assert_eq!(first["actions"][0]["contract"]["permission"], "write");
+
+        // Following `next_cursor` visits every row once, in order.
+        let mut seen = Vec::new();
+        let mut cursor = None;
+        loop {
+            let request = parse_command(
+                &serde_json::json!({
+                    "op": "actions_enumerate", "limit": 100, "cursor": cursor, "detail": "compact",
+                })
+                .to_string(),
+            )
+            .unwrap();
+            let page = answer(dispatch_command(&request, &state).0);
+            for row in page["actions"].as_array().unwrap() {
+                assert!(
+                    row.get("contract").is_none(),
+                    "compact rows carry no contract"
+                );
+                assert!(
+                    row.get("params").is_some(),
+                    "compact rows can still be invoked"
+                );
+                seen.push(row["id"].as_str().unwrap().to_owned());
+            }
+            assert_eq!(page["count"], page["actions"].as_array().unwrap().len());
+            if page["truncated"] == false {
+                assert!(page["next_cursor"].is_null());
+                break;
+            }
+            cursor = page["next_cursor"].as_str().map(str::to_owned);
+        }
+        let expected: Vec<String> = (0..450).map(|n| format!("action.{n}")).collect();
+        assert_eq!(seen, expected);
+
+        // A cursor into a listing that has since changed is refused, not
+        // silently applied to the new one; a made-up one is a bad argument.
+        let page = answer(
+            dispatch_command(
+                &list(ListingRequest {
+                    limit: Some(10),
+                    ..ListingRequest::default()
+                }),
+                &state,
+            )
+            .0,
+        );
+        let cursor = page["next_cursor"].as_str().unwrap().to_owned();
+        state.renamed.set(true);
+        let (response, _) = dispatch_command(
+            &list(ListingRequest {
+                cursor: Some(cursor),
+                ..ListingRequest::default()
+            }),
+            &state,
+        );
+        assert!(
+            matches!(&response, Response::Err { code, .. } if code == "stale_cursor"),
+            "{response:?}"
+        );
+        let (response, _) = dispatch_command(
+            &list(ListingRequest {
+                cursor: Some("nonsense".into()),
+                ..ListingRequest::default()
+            }),
+            &state,
+        );
+        assert!(
+            matches!(&response, Response::Err { code, .. } if code == "invalid_arguments"),
+            "{response:?}"
+        );
+
+        // `limit` is clamped, never trusted to size a reply.
+        let window = ListingRequest {
+            limit: Some(usize::MAX),
+            ..ListingRequest::default()
+        }
+        .window(10_000, 7)
+        .unwrap();
+        assert_eq!(window.rows, 0..MAX_LISTING_LIMIT);
+        let window = ListingRequest {
+            limit: Some(0),
+            ..ListingRequest::default()
+        }
+        .window(5, 7)
+        .unwrap();
+        assert_eq!(window.rows, 0..1);
+    }
+
     const MOCK_INSERT_PARAMS: &[crate::shell::search::action_api::ActionParam] = &[
         crate::shell::search::action_api::ActionParam::required(
             "text",
@@ -2706,6 +3372,9 @@ mod tests {
                     &Command::ActionsEnumerate {
                         include_programmatic: false,
                         query: String::new(),
+                        page: ListingRequest::default(),
+                        wait_ms: None,
+                        after_revision: None,
                     },
                     &ActionState,
                 );
@@ -2790,7 +3459,10 @@ mod tests {
             {
                 for (command, expected) in [
                     (
-                        Command::ActionsStatus { invocation_id: 37 },
+                        Command::ActionsStatus {
+                            invocation_id: 37,
+                            wait_ms: None,
+                        },
                         crate::shell::search::providers::live_app_actions::job_status_id(37),
                     ),
                     (
@@ -2839,6 +3511,9 @@ mod tests {
                     &Command::ActionsEnumerate {
                         include_programmatic: false,
                         query: String::new(),
+                        page: ListingRequest::default(),
+                        wait_ms: None,
+                        after_revision: None,
                     },
                     &state,
                 );
@@ -2858,7 +3533,10 @@ mod tests {
                     enumerate,
                     Command::ActionsEnumerate {
                         include_programmatic: false,
-                        query: "settings".to_string()
+                        query: "settings".to_string(),
+                        page: ListingRequest::default(),
+                        wait_ms: None,
+                        after_revision: None,
                     }
                 );
 
@@ -2868,7 +3546,10 @@ mod tests {
                     bare,
                     Command::ActionsEnumerate {
                         include_programmatic: false,
-                        query: String::new()
+                        query: String::new(),
+                        page: ListingRequest::default(),
+                        wait_ms: None,
+                        after_revision: None,
                     }
                 );
 
@@ -2891,6 +3572,46 @@ mod tests {
                     panic!("expected ActionsInvoke");
                 };
                 assert_eq!(wait_ms, Some(5000));
+
+                // A listing and a job read wait the same way; without the
+                // fields they answer at once, and serialise as before.
+                let waited_listing = parse_command(
+                    r#"{"op":"actions_enumerate","query":"read","wait_ms":2000,"after_revision":"r1"}"#,
+                )
+                .expect("actions_enumerate should parse with a wait");
+                assert_eq!(
+                    waited_listing,
+                    Command::ActionsEnumerate {
+                        include_programmatic: false,
+                        query: "read".to_string(),
+                        page: ListingRequest::default(),
+                        wait_ms: Some(2000),
+                        after_revision: Some("r1".to_string()),
+                    }
+                );
+                assert_eq!(
+                    serde_json::to_value(&bare).expect("serialise"),
+                    serde_json::json!({"op": "actions_enumerate", "query": "", "include_programmatic": false})
+                );
+                let status = parse_command(r#"{"op":"actions_status","invocation_id":4}"#)
+                    .expect("actions_status should parse");
+                assert_eq!(
+                    status,
+                    Command::ActionsStatus {
+                        invocation_id: 4,
+                        wait_ms: None
+                    }
+                );
+                let waited_status =
+                    parse_command(r#"{"op":"actions_status","invocation_id":4,"wait_ms":10}"#)
+                        .expect("actions_status should parse with a wait");
+                assert_eq!(
+                    waited_status,
+                    Command::ActionsStatus {
+                        invocation_id: 4,
+                        wait_ms: Some(10)
+                    }
+                );
 
                 let with_args = parse_command(
                     r#"{"op":"actions_invoke","provider":"p","id":"i","args":{"text":"hi","at":2}}"#,
@@ -3030,8 +3751,8 @@ mod tests {
 }
 
 use std::io::BufRead;
-use winit::event::{ElementState, KeyEvent, WindowEvent};
-use winit::keyboard::{Key, KeyLocation, PhysicalKey};
+use winit::event::{ElementState, WindowEvent};
+use winit::keyboard::Key;
 pub const TEST_CONTROL_MAX_LINE_BYTES: usize = 64 * 1024;
 /// Read up to one `\n`-terminated line from `reader`, capped at
 /// `TEST_CONTROL_MAX_LINE_BYTES`. Returns:
@@ -3125,32 +3846,23 @@ impl BoundedLineBuffer {
     }
 }
 
-/// Build a `WindowEvent::KeyboardInput` for `key`. Mirrors
-/// `shots/driver.rs::key_press_event`: winit's `KeyEvent` has a
-/// `pub(crate)` `platform_specific` field, so we zero-init and overwrite
-/// only the fields the host reads; `text` is set for `Character` keys so
-/// text-input branches see the same glyph real hardware would send.
+/// Build a `WindowEvent::KeyboardInput` for `key`; `text` is set for
+/// `Character` keys so text-input branches see the same glyph real hardware
+/// would send.
 pub fn keyboard_input_event(key: &Key, pressed: bool) -> WindowEvent {
-    let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-    ev.logical_key = key.clone();
-    ev.physical_key = PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
-    ev.location = KeyLocation::Standard;
-    ev.state = if pressed {
-        ElementState::Pressed
-    } else {
-        ElementState::Released
-    };
-    ev.repeat = false;
-    ev.text = if let Key::Character(s) = key {
-        Some(s.clone())
-    } else {
-        None
-    };
-    WindowEvent::KeyboardInput {
-        device_id: unsafe { std::mem::zeroed() },
-        event: ev,
-        is_synthetic: false,
-    }
+    ui::synthetic_input::keyboard_input(ui::synthetic_input::key_event(
+        key.clone(),
+        if let Key::Character(s) = key {
+            Some(s.clone())
+        } else {
+            None
+        },
+        if pressed {
+            ElementState::Pressed
+        } else {
+            ElementState::Released
+        },
+    ))
 }
 #[cfg(test)]
 mod framing_tests {

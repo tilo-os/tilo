@@ -6,6 +6,7 @@ use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 use crate::widget::binding::{BoxedBinding, Pulled};
+use crate::widget::toggle::BoolChangeCallback;
 use crate::widget::{ActionEmitter, ControlBindingMetadata};
 use crate::widget::{AppModel, ModelPath};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -43,8 +44,6 @@ pub struct CheckboxFace {
     checked: bool,
     interact: CheckboxInteract,
 }
-
-type BoolChangeCallback = Box<dyn FnMut(bool)>;
 
 impl CheckboxFace {
     pub fn new(rect: Rect, checked: bool) -> Self {
@@ -197,18 +196,12 @@ impl Checkbox {
     }
 
     fn commit_user_toggle(&mut self, _state: &AppModel, _root: &ModelPath) {
-        let checked = !self.is_checked;
-        if let Some(action) = &mut self.action {
-            let _ = action.emit(checked);
-        } else if let Some(binding) = &mut self.binding {
-            binding.publish(&checked);
-        }
-        self.is_checked = checked;
-        if self.action.is_none()
-            && let Some(callback) = self.on_change.as_mut()
-        {
-            callback(checked);
-        }
+        super::toggle::commit_flip(
+            &mut self.is_checked,
+            &mut self.action,
+            &mut self.binding,
+            &mut self.on_change,
+        );
     }
 
     /// Opt this widget into presence tracking by binding it to a CRDT-style path.
@@ -652,15 +645,11 @@ impl Widget for Checkbox {
         presence: &crate::presence::PresenceCtx,
         permissions: &crate::permissions::PermissionContext,
     ) {
-        if presence.should_cull(self.get_rect()) {
-            return;
-        }
-        self.draw(scene, transform, text_renderer, theme, presence);
-
-        crate::widget::draw_gate_and_peer_focus(
+        crate::widget::draw_gated_leaf(
             self,
             scene,
             transform,
+            text_renderer,
             theme,
             presence,
             permissions,
@@ -702,6 +691,7 @@ fn square_box(rect: Rect) -> Rect {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testing::Dispatch;
     use crate::widget::Widget;
     use automerge::{AutoCommit, ReadDoc, transaction::Transactable};
 
@@ -802,8 +792,6 @@ mod tests {
         }
 
         fn visible_label_is_part_of_the_checkbox_click_target() {
-            use winit::event::DeviceId;
-
             let mut checkbox = Checkbox::new("ack", "acknowledged")
                 .with_id("acknowledgement")
                 .with_label("I understand the consequence.");
@@ -829,43 +817,24 @@ mod tests {
             let row_rect = checkbox.rect;
             assert!(row_rect.width() > 300.0, "row={row_rect:?}");
 
-            let device: DeviceId = unsafe { std::mem::zeroed() };
-            let mut doc = AutoCommit::new();
-            let mut handled = false;
-            let mut focus = None;
-            checkbox.handle_event(
+            let device = winit::event::DeviceId::dummy();
+            let mut sender = Dispatch::new().layout(&tree, node);
+            let moved = sender.send(
+                &mut checkbox,
                 &WindowEvent::CursorMoved {
                     device_id: device,
-                    position: (320.0, checkbox.rect.center().y).into(),
-                },
-                &mut crate::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &winit::event::Modifiers::default(),
-                    state: crate::widget::Edits::lend(&mut doc),
-                    path: &automerge::ROOT,
-                    handled: &mut handled,
-                    focus_target: &mut focus,
-                    node_id: node,
-                    taffy: &tree,
+                    position: (320.0, row_rect.center().y).into(),
                 },
             );
-            checkbox.handle_event(
+            let pressed = sender.send(
+                &mut checkbox,
                 &WindowEvent::MouseInput {
                     device_id: device,
                     state: ElementState::Pressed,
                     button: MouseButton::Left,
                 },
-                &mut crate::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &winit::event::Modifiers::default(),
-                    state: crate::widget::Edits::lend(&mut doc),
-                    path: &automerge::ROOT,
-                    handled: &mut handled,
-                    focus_target: &mut focus,
-                    node_id: node,
-                    taffy: &tree,
-                },
             );
+            let focus = pressed.focus_target.or(moved.focus_target);
 
             assert!(checkbox.is_checked());
             assert_eq!(focus, Some(node));
@@ -1013,8 +982,6 @@ mod tests {
         }
 
         fn disabled_checkbox_does_not_toggle() {
-            use winit::event::DeviceId;
-
             let mut c = Checkbox::new("id", "checked").with_enabled(false);
 
             let mut tree = TaffyTree::<()>::new();
@@ -1031,46 +998,27 @@ mod tests {
             .unwrap();
             c.apply_layout(&tree, node, Point::ZERO);
 
-            let device: DeviceId = unsafe { std::mem::zeroed() };
+            let device = winit::event::DeviceId::dummy();
             let mut doc = AutoCommit::new();
             let root = automerge::ROOT;
-            let mods = winit::event::Modifiers::default();
-            let mut focus = None;
-            let mut handled = false;
-
-            c.handle_event(
+            let mut sender = Dispatch::new().doc(&mut doc).layout(&tree, node);
+            let moved = sender.send(
+                &mut c,
                 &WindowEvent::CursorMoved {
                     device_id: device,
                     position: (10.0, 10.0).into(),
                 },
-                &mut crate::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &mods,
-                    state: crate::widget::Edits::lend(&mut doc),
-                    path: &root,
-                    handled: &mut handled,
-                    focus_target: &mut focus,
-                    node_id: node,
-                    taffy: &tree,
-                },
             );
-            c.handle_event(
+            let pressed = sender.send(
+                &mut c,
                 &WindowEvent::MouseInput {
                     device_id: device,
                     state: ElementState::Pressed,
                     button: MouseButton::Left,
                 },
-                &mut crate::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &mods,
-                    state: crate::widget::Edits::lend(&mut doc),
-                    path: &root,
-                    handled: &mut handled,
-                    focus_target: &mut focus,
-                    node_id: node,
-                    taffy: &tree,
-                },
             );
+            let focus = pressed.focus_target.or(moved.focus_target);
+            let handled = moved.handled || pressed.handled;
 
             assert!(focus.is_none(), "disabled checkbox must not request focus");
             assert!(!handled, "disabled checkbox must not swallow input");

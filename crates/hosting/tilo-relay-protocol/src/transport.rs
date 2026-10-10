@@ -528,6 +528,51 @@ pub enum Envelope {
     },
 }
 
+impl Envelope {
+    /// The workspace (relay room) this envelope belongs to, or `None` for
+    /// the connection-level frames (`Ping`, `Pong`, `PeerRelayHello`).
+    ///
+    /// The match is exhaustive on purpose: a new variant has to say which
+    /// room it is charged to.
+    #[must_use]
+    pub const fn workspace_id(&self) -> Option<u64> {
+        match self {
+            Self::Subscribe { workspace_id }
+            | Self::Unsubscribe { workspace_id }
+            | Self::Delta { workspace_id, .. }
+            | Self::Presence { workspace_id, .. }
+            | Self::Ready { workspace_id, .. }
+            | Self::NotAuthorised { workspace_id, .. }
+            | Self::SyncRequest { workspace_id, .. }
+            | Self::SyncResponse { workspace_id, .. }
+            | Self::RemoteAction { workspace_id, .. }
+            | Self::RemoteActionUndeliverable { workspace_id, .. }
+            | Self::RecordContent { workspace_id, .. }
+            | Self::Commit { workspace_id, .. }
+            | Self::Committed { workspace_id, .. }
+            | Self::CommitRefused { workspace_id, .. }
+            | Self::LiveJoin { workspace_id }
+            | Self::LiveLeave { workspace_id }
+            | Self::Live { workspace_id, .. }
+            | Self::LiveMember { workspace_id, .. }
+            | Self::SubscribeFrom { workspace_id, .. }
+            | Self::Position { workspace_id, .. }
+            | Self::CompactVolunteer { workspace_id }
+            | Self::CompactRequest { workspace_id, .. }
+            | Self::Compacted { workspace_id, .. }
+            | Self::VoiceCall { workspace_id, .. }
+            | Self::VoiceCallResult { workspace_id, .. }
+            | Self::VoiceJoin { workspace_id, .. }
+            | Self::VoiceGranted { workspace_id, .. }
+            | Self::VoiceRefused { workspace_id, .. }
+            | Self::VoiceLeave { workspace_id, .. }
+            | Self::VoiceCalls { workspace_id }
+            | Self::VoiceCallList { workspace_id, .. } => Some(*workspace_id),
+            Self::Ping | Self::Pong | Self::PeerRelayHello { .. } => None,
+        }
+    }
+}
+
 /// Largest [`Envelope::RecordContent`] frame a relay routes.
 pub const MAX_RECORD_CONTENT_FRAME_BYTES: usize = 256 * 1024;
 
@@ -648,6 +693,34 @@ mod tests {
                 envelope
             );
         }
+    }
+
+    #[test]
+    fn room_frames_name_their_workspace_and_connection_frames_none() {
+        let delta = Envelope::Delta {
+            workspace_id: 9,
+            author_device_public_key: [1; 32],
+            authored_at_ns: 2,
+            delta: vec![3],
+            signature: [0; 64],
+        };
+        assert_eq!(delta.workspace_id(), Some(9));
+        assert_eq!(
+            Envelope::Presence {
+                workspace_id: 4,
+                payload: Vec::new(),
+            }
+            .workspace_id(),
+            Some(4)
+        );
+        assert_eq!(Envelope::Ping.workspace_id(), None);
+        assert_eq!(
+            Envelope::PeerRelayHello {
+                hosted_workspaces: vec![1]
+            }
+            .workspace_id(),
+            None
+        );
     }
 
     #[test]

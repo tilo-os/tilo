@@ -10,7 +10,7 @@ use crate::model::FormatCategory;
 
 fn mouse(state: ElementState) -> WindowEvent {
     WindowEvent::MouseInput {
-        device_id: unsafe { std::mem::zeroed() },
+        device_id: winit::event::DeviceId::dummy(),
         state,
         button: MouseButton::Left,
     }
@@ -19,7 +19,7 @@ fn mouse(state: ElementState) -> WindowEvent {
 /// Move the pointer to `p` and press and release the left button there.
 fn click(app: &mut SheetsApp, doc: &mut AutoCommit, p: Point) {
     let moved = WindowEvent::CursorMoved {
-        device_id: unsafe { std::mem::zeroed() },
+        device_id: winit::event::DeviceId::dummy(),
         position: winit::dpi::PhysicalPosition::new(p.x, p.y),
     };
     feed(app, doc, &moved, Modifiers::default());

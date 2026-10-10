@@ -134,18 +134,6 @@ impl Link {
         self.last_activated.as_deref()
     }
 
-    /// For a parent that routes input by hand instead of through
-    /// [`handle_event`](Widget::handle_event). Returns `true` when the state
-    /// changed, so the caller can request a redraw.
-    pub fn set_hovered(&mut self, hovered: bool) -> bool {
-        if hovered == self.is_hovered {
-            false
-        } else {
-            self.is_hovered = hovered;
-            true
-        }
-    }
-
     /// Bypasses taffy — mirrors
     /// [`TextInput::apply_layout_external`](crate::widget::TextInput) for
     /// parents that lay children out by hand.
@@ -432,7 +420,7 @@ impl Widget for Link {
 mod tests {
     use super::*;
     use automerge::AutoCommit;
-    use winit::event::{DeviceId, ElementState, MouseButton};
+    use winit::event::{ElementState, MouseButton};
 
     #[test]
     fn link_opens_its_url_by_pointer_and_keyboard() {
@@ -450,26 +438,10 @@ mod tests {
             let mut link = Link::new("https://example.com/page");
             let (tree, node) = laid_out(&mut link);
 
-            let device: DeviceId = unsafe { std::mem::zeroed() };
-            let mut doc = AutoCommit::new();
-            let root = automerge::ROOT;
-            let mods = winit::event::Modifiers::default();
+            let device = winit::event::DeviceId::dummy();
+            let mut sender = crate::testing::Dispatch::new().layout(&tree, node);
             let mut dispatch = |link: &mut Link, ev: WindowEvent| {
-                let mut handled = false;
-                let mut focus = None;
-                link.handle_event(
-                    &ev,
-                    &mut crate::widget::EventCtx {
-                        scale_factor: 1.0,
-                        modifiers: &mods,
-                        state: crate::widget::Edits::lend(&mut doc),
-                        path: &root,
-                        handled: &mut handled,
-                        focus_target: &mut focus,
-                        node_id: node,
-                        taffy: &tree,
-                    },
-                );
+                sender.send(link, &ev);
             };
 
             dispatch(

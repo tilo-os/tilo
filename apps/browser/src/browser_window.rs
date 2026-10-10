@@ -370,20 +370,21 @@ impl Widget for BrowserWindow {
                 (widget.test_id() == Some("browser.url_input")).then_some(*id)
             });
         }
-        let root = taffy.parent_node(
-            Style {
-                display: taffy::Display::Flex,
-                flex_direction: taffy::FlexDirection::Column,
-                min_size: Size {
-                    width: Dimension::length(0.0),
-                    height: Dimension::length(0.0),
-                },
-                ..full
+        let style = Style {
+            display: taffy::Display::Flex,
+            flex_direction: taffy::FlexDirection::Column,
+            min_size: Size {
+                width: Dimension::length(0.0),
+                height: Dimension::length(0.0),
             },
+            ..full
+        };
+        taffy.widget_node(
+            style,
             &panel.map_or_else(|| vec![page], |panel| vec![panel, page]),
-        );
-        nodes.insert(root, std::ptr::from_mut::<dyn Widget>(self));
-        root
+            nodes,
+            self,
+        )
     }
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let Ok(layout) = taffy.layout(node) else {
@@ -849,15 +850,9 @@ mod tests {
     }
 
     fn key_event_with_state(key: Key, state: ElementState) -> WindowEvent {
-        let mut event: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
-        event.logical_key = key;
-        event.physical_key = winit::keyboard::PhysicalKey::Unidentified(
-            winit::keyboard::NativeKeyCode::Unidentified,
-        );
-        event.location = winit::keyboard::KeyLocation::Standard;
-        event.state = state;
+        let event = ui::synthetic_input::key_event(key, None, state);
         WindowEvent::KeyboardInput {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             event,
             is_synthetic: false,
         }
@@ -904,21 +899,11 @@ mod tests {
         event: &WindowEvent,
         modifiers: winit::keyboard::ModifiersState,
     ) -> bool {
-        let mut handled = false;
-        window.handle_event(
-            event,
-            &mut ui::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &winit::event::Modifiers::from(modifiers),
-                state: Edits::lend(&mut AutoCommit::new()),
-                path: &automerge::ROOT,
-                handled: &mut handled,
-                focus_target: &mut None,
-                node_id: root,
-                taffy: tree,
-            },
-        );
-        handled
+        ui::testing::Dispatch::new()
+            .modifiers(modifiers)
+            .layout(tree, root)
+            .send(window, event)
+            .handled
     }
 
     fn invoke_exit_choice(window: &mut BrowserWindow, id: &str, doc: &mut AutoCommit) {

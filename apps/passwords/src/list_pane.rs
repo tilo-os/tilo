@@ -3,6 +3,7 @@
 
 use std::collections::HashMap;
 use std::rc::Rc;
+use ui::widget::TaffyTreeExt;
 
 use accounts::SecretId;
 use taffy::{NodeId, Style, TaffyTree};
@@ -414,29 +415,18 @@ impl Widget for ListPane {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         self.gutter = Gutter::of(theme);
-        let node = taffy
-            .new_leaf(Style {
-                size: taffy::Size {
-                    width: taffy::Dimension::percent(1.0),
-                    height: taffy::Dimension::percent(1.0),
-                },
-                ..Default::default()
-            })
-            .expect("a leaf node");
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        let style = Style {
+            size: taffy::Size {
+                width: taffy::Dimension::percent(1.0),
+                height: taffy::Dimension::percent(1.0),
+            },
+            ..Default::default()
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).copied().unwrap_or_default();
-        let x = origin.x + f64::from(layout.location.x);
-        let y = origin.y + f64::from(layout.location.y);
-        self.rect = Rect::new(
-            x,
-            y,
-            x + f64::from(layout.size.width),
-            y + f64::from(layout.size.height),
-        );
+        self.rect = ui::widget::layout_rect(taffy, node, origin);
     }
 
     fn draw(

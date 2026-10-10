@@ -205,12 +205,6 @@ impl AdministrativeFailure {
             _ => None,
         }
     }
-    pub fn fresh_child_error(&self) -> Option<&FreshChildError> {
-        match self.operation.physical.as_ref()? {
-            PhysicalError::Fresh(e) => Some(e),
-            _ => None,
-        }
-    }
     /// Retry under the original root/instance. Unknown publication
     /// and lost fresh-child custody remain errors, never new publication/adoption.
     pub fn retry(self) -> Result<AdministrativeFile, Self> {

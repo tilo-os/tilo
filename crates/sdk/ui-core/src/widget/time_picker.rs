@@ -325,11 +325,6 @@ impl TimePicker {
         self.publish_local_state();
     }
 
-    pub fn set_seconds(&mut self, seconds: Option<u8>) {
-        self.seconds = seconds.map(|seconds| seconds.min(MINSEC_MAX));
-        self.publish_local_state();
-    }
-
     pub fn set_value(&mut self, value: TimeValue) {
         self.apply_value(value.normalized());
         self.publish_local_state();
@@ -947,44 +942,17 @@ impl TimePicker {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testing::dispatch;
     use automerge::AutoCommit;
 
-    fn cursor_moved(x: f64, y: f64) -> WindowEvent {
-        WindowEvent::CursorMoved {
-            device_id: unsafe { std::mem::zeroed() },
-            position: winit::dpi::PhysicalPosition::new(x, y),
-        }
-    }
+    use crate::synthetic_input::cursor_moved;
 
     fn wheel(dy: f32) -> WindowEvent {
         WindowEvent::MouseWheel {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             delta: MouseScrollDelta::LineDelta(0.0, dy),
             phase: winit::event::TouchPhase::Moved,
         }
-    }
-
-    /// Drive an event through the picker with default scaffolding.
-    fn dispatch(tp: &mut TimePicker, event: &WindowEvent) {
-        let mut tree = TaffyTree::<()>::new();
-        let node = tree.leaf_node(Style::default());
-        let mut handled = false;
-        let mut focus_target = None;
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        tp.handle_event(
-            event,
-            &mut crate::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &winit::event::Modifiers::default(),
-                state: crate::widget::Edits::lend(&mut doc),
-                path: &root,
-                handled: &mut handled,
-                focus_target: &mut focus_target,
-                node_id: node,
-                taffy: &tree,
-            },
-        );
     }
 
     /// Populates `hour_rect`/`minute_rect`/`second_rect` by running
@@ -1078,7 +1046,7 @@ mod tests {
             dispatch(
                 &mut tp,
                 &WindowEvent::MouseInput {
-                    device_id: unsafe { std::mem::zeroed() },
+                    device_id: winit::event::DeviceId::dummy(),
                     state: ElementState::Pressed,
                     button: MouseButton::Left,
                 },
