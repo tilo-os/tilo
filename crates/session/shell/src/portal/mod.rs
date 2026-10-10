@@ -56,7 +56,7 @@ pub mod app_chooser;
 pub mod appearance;
 #[cfg(target_os = "linux")]
 pub mod auth;
-#[cfg(any(test, target_os = "linux"))]
+#[cfg(target_os = "linux")]
 pub mod background;
 #[cfg(any(test, target_os = "linux"))]
 pub mod camera;
@@ -71,9 +71,9 @@ pub mod email;
 pub mod file_chooser;
 pub mod file_picker_spawner;
 pub mod global_shortcuts;
-#[cfg(any(test, target_os = "linux"))]
+#[cfg(target_os = "linux")]
 pub mod inhibit;
-#[cfg(any(test, target_os = "linux"))]
+#[cfg(target_os = "linux")]
 pub mod input_capture;
 #[cfg(target_os = "linux")]
 pub(crate) mod interface_dispatch;
@@ -86,9 +86,9 @@ pub mod notification;
 pub mod permission_store;
 pub mod picker_queue;
 pub mod print;
-#[cfg(any(test, target_os = "linux"))]
+#[cfg(target_os = "linux")]
 pub mod remote_desktop;
-#[cfg(any(test, target_os = "linux"))]
+#[cfg(target_os = "linux")]
 pub mod screencast;
 pub mod screencast_pipewire;
 #[cfg(target_os = "linux")]
@@ -98,7 +98,7 @@ pub mod screenshot;
 #[cfg(any(test, target_os = "linux"))]
 pub mod secret;
 pub mod settings;
-#[cfg(any(test, target_os = "linux"))]
+#[cfg(target_os = "linux")]
 pub mod usb;
 #[cfg(any(test, target_os = "linux"))]
 pub mod wallpaper;
@@ -1335,7 +1335,7 @@ pub async fn serve_with_inhibit_and_clipboard(
     }
 
     Ok(ServerHandle {
-        connection,
+        _connection: connection,
         owns_name,
     })
 }
@@ -1343,11 +1343,9 @@ pub async fn serve_with_inhibit_and_clipboard(
 /// RAII handle keeping the portal D-Bus connection alive; drop releases the bus name and tears down the object server.
 #[cfg(target_os = "linux")]
 pub struct ServerHandle {
-    #[allow(
-        dead_code,
-        reason = "never read on purpose: holding the Connection keeps the bus name and object server alive until drop"
-    )]
-    connection: zbus::Connection,
+    /// Never read: holding the connection keeps the bus name and object
+    /// server alive until drop.
+    _connection: zbus::Connection,
     owns_name: bool,
 }
 

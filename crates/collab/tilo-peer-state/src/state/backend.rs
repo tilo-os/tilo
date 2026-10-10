@@ -80,18 +80,10 @@ impl Storage for BoundedNative {
     }
 }
 
-// Historical restore keeps checkpoint bytes lazy. No eager load rejects
-// previously accepted opaque checkpoint bytes.
-pub(super) struct NativeCheckpoint {
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "kept for a later decode; only tests read it today"
-        )
-    )]
-    pub(super) original: Vec<u8>,
-}
+// Bounded restore records that a checkpoint covers the document without
+// decoding or retaining its bytes, so no eager load rejects previously
+// accepted opaque checkpoint bytes.
+pub(super) struct NativeCheckpoint;
 
 pub(super) struct PeerDocument<S: Storage> {
     pub(super) doc: S::Document,

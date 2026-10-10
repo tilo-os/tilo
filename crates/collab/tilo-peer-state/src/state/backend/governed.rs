@@ -292,14 +292,6 @@ pub(in crate::state) fn legacy(
 pub(super) struct Imported {
     pub(super) certificates: roster::BoundedRoster,
     pub(super) revocations: revocations::BoundedRevocations,
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "restore adopts the import unconditionally; tests assert parity with the legacy import"
-        )
-    )]
-    pub(super) changed: bool,
 }
 pub(super) fn bounded<R: RoomRead>(
     room: &R,
@@ -330,7 +322,7 @@ pub(super) fn bounded<R: RoomRead>(
             .insert(entry.clone())
             .map_err(ImportError::Revocation)?;
     }
-    let changed = apply(
+    apply(
         &inputs,
         original.map(),
         &mut certificates,
@@ -342,7 +334,6 @@ pub(super) fn bounded<R: RoomRead>(
     Ok(Imported {
         certificates: roster::BoundedRoster::imported(certificates),
         revocations: revocations::BoundedRevocations::imported(candidate_revocations),
-        changed,
     })
 }
 

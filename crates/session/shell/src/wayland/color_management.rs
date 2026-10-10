@@ -274,13 +274,6 @@ struct ParametricBuilderInner {
     tf_power_eexp: Option<u32>,
     /// Primary color volume luminance range: (`min_lum` × `10_000`,
     /// `max_lum`, `reference_lum`) — cd/m².
-    #[cfg_attr(
-        not(target_os = "linux"),
-        expect(
-            dead_code,
-            reason = "the Linux Wayland dispatcher consumes this shared color state; retain the complete model"
-        )
-    )]
     luminances: Option<(u32, u32, u32)>,
     /// Mastering display primaries in the same wire encoding as
     /// `primaries_custom`.
@@ -292,13 +285,6 @@ struct ParametricBuilderInner {
     /// Max frame-average light level — cd/m².
     max_fall: Option<u32>,
     /// Set once `create` runs so a second `create` is caught cleanly.
-    #[cfg_attr(
-        not(target_os = "linux"),
-        expect(
-            dead_code,
-            reason = "the Linux Wayland dispatcher consumes this shared color state; retain the complete model"
-        )
-    )]
     consumed: bool,
 }
 
@@ -688,13 +674,6 @@ struct ColorManagementSurfaceInner {
     /// Guards `get_surface` from creating a second per-surface manager.
     /// Set the first time a `wp_color_management_surface_v1` is minted
     /// for this `wl_surface`.
-    #[cfg_attr(
-        not(target_os = "linux"),
-        expect(
-            dead_code,
-            reason = "the Linux Wayland dispatcher consumes this shared color state; retain the complete model"
-        )
-    )]
     manager_attached: bool,
 }
 
@@ -844,12 +823,8 @@ fn description_data(description: OutputDescription) -> ImageDescriptionData {
 #[derive(Debug, Clone)]
 #[cfg(target_os = "linux")]
 pub struct ColorManagementSurfaceUserData {
-    // Retains the protocol surface identity; pending/current color state lives
-    // in the compositor surface data map and is applied on wl_surface.commit.
-    #[allow(
-        dead_code,
-        reason = "holding the wl_surface preserves the protocol object's identity while pending color state lives in Smithay's surface data map"
-    )]
+    // Pending/current color state lives in the compositor surface data map and
+    // is applied on wl_surface.commit.
     surface: WlSurface,
 }
 
@@ -863,27 +838,9 @@ impl ColorManagementSurfaceUserData {
 }
 
 /// User-data attached to a `wp_color_management_surface_feedback_v1`.
-/// Minimal — carries the `wl_surface` so `get_preferred*` can hand
-/// back the compositor's preferred description.
 #[derive(Debug, Clone)]
 #[cfg(target_os = "linux")]
-pub struct ColorManagementSurfaceFeedbackData {
-    // Retains the surface identity for preferred-description feedback.
-    #[allow(
-        dead_code,
-        reason = "holding the wl_surface preserves feedback-resource identity for future preferred-description updates"
-    )]
-    surface: WlSurface,
-}
-
-#[cfg(target_os = "linux")]
-impl ColorManagementSurfaceFeedbackData {
-    /// Create a new user-data instance for a `wp_color_management_surface_feedback_v1`.
-    #[must_use]
-    pub fn new(surface: WlSurface) -> Self {
-        Self { surface }
-    }
-}
+pub struct ColorManagementSurfaceFeedbackData;
 
 // -----------------------------------------------------------------------------
 // Dispatch impls
@@ -1036,8 +993,8 @@ where
                     data_init.init(id, ColorManagementSurfaceUserData::new(surface));
                 }
             }
-            wp_color_manager_v1::Request::GetSurfaceFeedback { id, surface } => {
-                let resource = data_init.init(id, ColorManagementSurfaceFeedbackData::new(surface));
+            wp_color_manager_v1::Request::GetSurfaceFeedback { id, surface: _ } => {
+                let resource = data_init.init(id, ColorManagementSurfaceFeedbackData);
                 if let Ok(mut feedbacks) = state.as_ref().feedbacks.lock() {
                     feedbacks.push(resource);
                 }
