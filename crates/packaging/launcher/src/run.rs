@@ -1104,30 +1104,37 @@ fn splice_runtime_mounts(
     opts: &RunOptions,
     resolved_runtime_present: bool,
 ) -> Result<Vec<String>, RunError> {
+    let optional = resolve_optional_runtimes(manifest, opts);
+    splice_runtime_mounts_with(argv, opts, resolved_runtime_present, &optional)
+}
+
+/// [`splice_runtime_mounts`] for optional runtimes already resolved.
+fn splice_runtime_mounts_with(
+    argv: &mut Vec<String>,
+    opts: &RunOptions,
+    resolved_runtime_present: bool,
+    optional: &[(PathBuf, String)],
+) -> Result<Vec<String>, RunError> {
     let mut paths = splice_minimal_libs(argv, opts, resolved_runtime_present)?;
-    paths.extend(splice_optional_runtimes(argv, manifest, opts)?);
+    paths.extend(splice_resolved_optional_runtimes(argv, optional)?);
     Ok(paths)
 }
 
-/// Mount every installed, verified bundle the manifest lists in
-/// `[package].optional-runtimes` read-only at its runtime mount, before the
-/// trailing entrypoint token. A missing bundle is skipped and one that fails
-/// verification is refused, so the app sees either as not installed and
-/// offers to install it. Returns the sandbox paths Landlock must let it read.
-fn splice_optional_runtimes(
-    argv: &mut Vec<String>,
+/// Every installed, verified bundle the manifest lists in
+/// `[package].optional-runtimes`, with its version. A missing bundle is
+/// skipped and one that fails verification is refused, so the app sees either
+/// as not installed and offers to install it.
+///
+/// Verifying a per-user bundle reads the whole payload, so the launch runs
+/// this beside the rest of host preparation rather than after it.
+fn resolve_optional_runtimes(
     manifest: &crate::manifest::ManifestView,
     opts: &RunOptions,
-) -> Result<Vec<String>, RunError> {
-    let mut mounts = Vec::new();
+) -> Vec<(PathBuf, String)> {
+    let mut found = Vec::new();
     for raw in &manifest.optional_runtimes {
         match find_runtime_bundle(raw, opts) {
-            Ok((Some((root, version)), _)) => {
-                let entry = pop_entry(argv)?;
-                let mount = crate::sandbox::push_optional_runtime(argv, &root, &version);
-                argv.push(entry);
-                mounts.push(mount.display().to_string());
-            }
+            Ok((Some(bundle), _)) => found.push(bundle),
             Ok((None, searched)) => tracing::info!(
                 runtime = %raw,
                 searched = ?searched,
@@ -1140,7 +1147,33 @@ fn splice_optional_runtimes(
             ),
         }
     }
+    found
+}
+
+/// Mount each of `bundles` (from [`resolve_optional_runtimes`]) read-only at
+/// its runtime mount, before the trailing entrypoint token. Returns the
+/// sandbox paths Landlock must let the app read.
+fn splice_resolved_optional_runtimes(
+    argv: &mut Vec<String>,
+    bundles: &[(PathBuf, String)],
+) -> Result<Vec<String>, RunError> {
+    let mut mounts = Vec::new();
+    for (root, version) in bundles {
+        let entry = pop_entry(argv)?;
+        let mount = crate::sandbox::push_optional_runtime(argv, root, version);
+        argv.push(entry);
+        mounts.push(mount.display().to_string());
+    }
     Ok(mounts)
+}
+
+/// [`resolve_optional_runtimes`] then [`splice_resolved_optional_runtimes`].
+fn splice_optional_runtimes(
+    argv: &mut Vec<String>,
+    manifest: &crate::manifest::ManifestView,
+    opts: &RunOptions,
+) -> Result<Vec<String>, RunError> {
+    splice_resolved_optional_runtimes(argv, &resolve_optional_runtimes(manifest, opts))
 }
 
 /// Verify the bundle at `path` against the signature policy. Unless
@@ -3182,11 +3215,19 @@ pub(crate) fn run_with_context(
     // join, and dropping the guards stops the proxies before any sandbox
     // exists.
     let (portals, graphical) = (&manifest.sandbox.portals, opts.wayland_socket.is_some());
-    let ((dbus_plan, _dbus_guards), host) = std::thread::scope(|scope| {
+    let ((dbus_plan, _dbus_guards), host, optional_runtimes) = std::thread::scope(|scope| {
         let dbus = spawn_beside(scope, "launch-dbus", move || {
             let bind = resolve_dbus_bind(portals, graphical);
             tilo_startup_metrics::handoff_mark("dbus-proxies-ready");
             bind
+        })?;
+        // Verifying an optional runtime reads its whole payload (a browser
+        // engine is hundreds of MB); nothing else here needs the answer
+        // before the sandbox argv is built.
+        let optional = spawn_beside(scope, "launch-optional-runtimes", move || {
+            let bundles = resolve_optional_runtimes(manifest, opts);
+            tilo_startup_metrics::handoff_mark("optional-runtimes-verified");
+            bundles
         })?;
         let host = prepare_launch_host(
             manifest,
@@ -3194,7 +3235,7 @@ pub(crate) fn run_with_context(
             opts,
             enrolled.as_ref().map(|(services, _)| &**services),
         );
-        Ok::<_, RunError>((join_beside(dbus), host))
+        Ok::<_, RunError>((join_beside(dbus), host, join_beside(optional)))
     })?;
     tilo_startup_metrics::handoff_mark("dbus-joined");
     let LaunchHost {
@@ -3323,7 +3364,12 @@ pub(crate) fn run_with_context(
         )?;
     }
     splice_game_ntsync(&mut argv, latency_sensitive)?;
-    let ro_paths = splice_runtime_mounts(&mut argv, manifest, opts, resolved_runtime.is_some())?;
+    let ro_paths = splice_runtime_mounts_with(
+        &mut argv,
+        opts,
+        resolved_runtime.is_some(),
+        &optional_runtimes,
+    )?;
     splice_workspace_id_bind(&mut argv, opts)?;
     if enrolled.is_none() {
         splice_tool_context(&mut argv)?;
