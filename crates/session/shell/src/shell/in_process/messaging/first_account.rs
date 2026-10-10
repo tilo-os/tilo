@@ -224,6 +224,17 @@ impl FirstAccounts for Actor {
         EnrollmentClient::new(self.port.principal.clone(), self.port.clone())
     }
     fn pump(&self, apps: &mut super::super::InProcessApps) {
+        // A reset can cancel and then enqueue a fresh Begin before this pump.
+        // Retire the old owned attempt before admitting the explicit new one.
+        {
+            let mut slot = self.attempt.borrow_mut();
+            if let Some(attempt) = slot.as_mut()
+                && (attempt.identity.check().is_err() || attempt.cancellation.is_cancelled())
+            {
+                self.retire(apps, attempt);
+                slot.take();
+            }
+        }
         for request in self.requests.try_iter().take(CAPACITY) {
             self.request(apps, request);
         }

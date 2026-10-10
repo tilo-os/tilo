@@ -618,6 +618,25 @@ impl ContentStore {
         }
     }
 
+    /// Make the writes just made durable now or, inside a deferred-durability
+    /// group ([`Self::defer_sync`]), leave the one sync to the group's end.
+    async fn sync_unless_deferred(&self) -> Result<()> {
+        let deferred = {
+            let mut deferred = self
+                .deferred
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if deferred.0 > 0 {
+                deferred.1 = true;
+            }
+            deferred.0 > 0
+        };
+        if !deferred {
+            self.store().sync_db().await?;
+        }
+        Ok(())
+    }
+
     async fn persist_owned(&self, data: Bytes) -> Result<Hash> {
         self.persist_owned_batch(vec![data])
             .await?
@@ -660,19 +679,7 @@ impl ContentStore {
         // in-memory backend. Inside a deferred-durability group the group's
         // end syncs once instead; the owned tags are already installed, so
         // nothing collects the blobs meanwhile.
-        let deferred = {
-            let mut deferred = self
-                .deferred
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if deferred.0 > 0 {
-                deferred.1 = true;
-            }
-            deferred.0 > 0
-        };
-        if !deferred {
-            self.store().sync_db().await?;
-        }
+        self.sync_unless_deferred().await?;
         let hashes = protected
             .iter()
             .map(|(temporary, _)| temporary.hash())

@@ -89,6 +89,8 @@ Those are held by thread probes in their own crates.
   run sees TIL-696 depends on the wall clock and a spin's rate on the
   runner. When TIL-696 lands they drop to 75/s (60/s plus a quarter) and 1/s.
 - `IDLE_WAKEUP_BUDGET` 15/s in `idle_quiet_tests.rs`: 11.6/s plus a quarter.
+  TIL-690 raised it to 21/s, the shell shard's measured p95 plus a quarter
+  (see "The collaboration-plane gate in the shell shard").
 
 Each later fix lowers the matching budget in its own pull request: the
 audio-output poll (−20/s), the collaboration broker threads (−21/s), the
@@ -135,3 +137,29 @@ when it changed what authorization reads (owners, rosters, grants,
 permission profiles, tasks, admitted devices, stewarded rooms). The
 whole-tree budget does not move: run 90830 still spun at 1215/s (TIL-696),
 which the 3000/s spin budget covers; the parked budget drops with TIL-696.
+
+## The collaboration-plane gate in the shell shard
+
+`idle_quiet_tests` (two converged desktops) had a 15/s budget, set from
+focused runs. It runs in the pull-request shell shard, and there it failed
+across unrelated PRs. All of the excess was `tilo-net-rt`, which none of
+those PRs touched.
+
+| where | runs | wakeups/s |
+| -- | -- | -- |
+| focused, main `f58efc9e86` | 90118 | 11.85 |
+| focused, main `f238447596` | 90372, 90373, 90374, 90375 | 12.41, 10.80, 10.95, 10.23 |
+| focused, #3983 | 90117, 90376, 90377, 90378 | 11.42, 10.83, 12.50, 11.61 |
+| shell shard, #3983 | 89970, 90055, 90190, 90601 | 15.59, 15.52, 16.16, 15.82 |
+| shell shard, other PRs | #3982, #4006, #4009 | 15.31, 16.80, 15.18 |
+
+Main and #3983 measure the same when focused, so the code is not the
+difference; the shard environment is. It is not contention either. Check run
+90601 gave the test the pool to itself (`threads-required = "num-cpus"`) and
+still measured 15.82/s, with 0.7/s of involuntary switches. The extra
+wakeups are voluntary `tilo-net-rt` turns where the shard runs (its runner
+and `tools/test-env.sh`).
+
+By TIL-614's rule, measured p95 plus a quarter, set in the environment the
+gate runs in: shard p95 16.8/s → **21/s**. TIL-702, the network runtime's
+idle wakers, is what lowers it.
