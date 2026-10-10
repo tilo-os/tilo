@@ -86,3 +86,35 @@ over randomised histories (including changes that overwrite an op under
 another key) and checks the cost does not grow with history. Upstream
 `main` walks the same way; the patch applies there unchanged in substance
 and is upstreamable.
+
+# Tilo patch: load with the change hashes the saver listed
+
+A compacted document chunk stores each change's metadata but not its hash,
+so `Document::reconstruct` re-encodes every change from the op set and
+SHA-256s it to build the change graph: about 45 % of loading a large
+document, to learn hashes the program that saved it had in memory.
+`LoadOptions::known_change_hashes` takes them instead, in the order
+`Automerge::change_hashes` listed them at the save. The load then builds only
+the op set's indexes (one pass over the ops, noting each actor's lowest
+counter) and `ChangeGraphCols::finalize_known` builds the same graph
+`finalize` does: op counts from the dependencies' maximum op, where Automerge
+starts every change that has some, and from the actor's lowest counter for a
+first change without any; authors from the stored extra bytes.
+
+Hashes are used only if they are one per change, all distinct, the ones no
+change depends on are exactly the document's stored heads, and no change
+after an actor's first lacks dependencies; otherwise the changes are rebuilt
+as before. They are not checked against the changes themselves, so a caller
+must pass only hashes it listed for exactly these bytes (Tilo's `app-state`
+binds them to the document chunk by digest and never takes them from peers).
+Without the option nothing changes. Pinned by
+`crates/doc/tilo-automerge/tests/known_hashes.rs`.
+
+# Tilo patch: no hash lookup per op on an empty map
+
+Reconstructing a document looks every op's id up in the change collector's
+`preds` map and the index builder's `counters` map, both of which are empty
+for nearly every op (they hold only ops still waiting for a successor or an
+increment). Skipping the SipHash when the map is empty saved 8–10 % of
+loading a large document; the maps' contents and the result are unchanged.
+Covered by the same test.
