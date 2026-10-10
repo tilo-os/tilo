@@ -985,7 +985,11 @@ ARG CHROMIUM_RUNTIME_VERSION
 RUN --mount=type=secret,id=browser_runtime_identity \
     : > /out/browser-runtime-publisher.hex \
     && if [ "${TILO_WITH_BROWSER}" != 0 ]; then \
-         test -x /out/chromium-engine/chromium/tilo-chromium-host \
+         pinned="$(sed -n 's/^pub const RUNTIME_VERSION: &str = "\([^"]*\)";$/\1/p' \
+              /build/crates/sdk/ui-core/src/webview/chromium/runtime.rs)" \
+         && test -n "$pinned" \
+         && test "$pinned" = "${CHROMIUM_RUNTIME_VERSION}" \
+         && test -x /out/chromium-engine/chromium/tilo-chromium-host \
          && if [ -n "$TILO_BROWSER_RUNTIME_PUBLISHER" ]; then \
               test -s /run/secrets/browser_runtime_identity \
               && actual="$(/out/tilo-runtime-bundle key pubkey \
