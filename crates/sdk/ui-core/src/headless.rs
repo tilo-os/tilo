@@ -6056,7 +6056,7 @@ impl FrameHarness {
         .map_err(|error| crate::bound_dispatch::BoundActionError::Dispatch(error).into_door())?
         .into_iter()
         .filter(|snapshot| instance.is_none_or(|instance| snapshot.binding.instance_id == instance))
-        .flat_map(|snapshot| snapshot.resources)
+        .flat_map(|snapshot| std::rc::Rc::unwrap_or_clone(snapshot.resources))
         .collect::<Vec<_>>();
         // The app's own resolution of `id` is a top-level entry and wins over
         // the summary its eager tree may hold (a channel without its messages).
@@ -6086,11 +6086,13 @@ impl FrameHarness {
             .into_iter()
             .filter(|s| instance.is_none_or(|id| s.binding.instance_id == id))
             .flat_map(|s| {
-                s.resources.into_iter().map(move |r| {
-                    self.bound_publication
-                        .project(&s.binding, r)
-                        .map_err(crate::bound_dispatch::BoundActionError::into_door)
-                })
+                std::rc::Rc::unwrap_or_clone(s.resources)
+                    .into_iter()
+                    .map(move |r| {
+                        self.bound_publication
+                            .project(&s.binding, r)
+                            .map_err(crate::bound_dispatch::BoundActionError::into_door)
+                    })
             })
             .collect()
     }
