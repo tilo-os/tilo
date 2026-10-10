@@ -305,6 +305,15 @@ there is no build-time key that machine's firmware would accept —
 `/usr/libexec/tilo-secureboot` signs the UKI on the installed system instead.
 Measurement does not depend on the signature.
 
+A later refinement (TIL-733): in a layered build the split is a whiteout plus a
+fresh copy at `/kernel`, so an image that ships `/kernel` carries the kernel and
+initramfs a second time beside the UKI. `os/Containerfile` therefore splits twice
+from the same rootfs: a throwaway `kernel` stage feeds the UKI, and the shipped
+`split` keeps only `/kernel/<kver>/vmlinuz` (the signed development board restores
+it from there) and drops the initramfs, which the UKI's `.initrd` carries byte for
+byte. `tools/policy/check_uki_pipeline.py` holds the three sealed images to that
+shape.
+
 Two things fit Tilo unusually well here:
 
 - `bootc container ukify` "reads extra kernel arguments from
