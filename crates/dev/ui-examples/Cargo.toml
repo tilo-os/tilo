@@ -21,7 +21,6 @@ presentation-feedback = ["tilo-ui/presentation-feedback"]
 # Scenarios used to live as [[example]] targets of tilo-ui and therefore
 # inherited its dependency graph. Keep the same direct crates they `use`.
 accesskit = "0.25.0"
-tilo-files = { path = "../../platform/tilo-files" }
 automerge.workspace = true
 chrono = { workspace = true, features = ["clock", "std"] }
 collab-types = { path = "../../collab/collab-types" }
