@@ -128,6 +128,11 @@ pub struct WorkspaceRuntime {
     /// once, and the next idle set, on the same channels, is withheld from a
     /// device that already holds every delta — see `fanout_delta`.
     checkpoint_served: HashMap<[u8; 32], HashSet<[u8; 32]>>,
+    /// The presence mailbox of each subscriber whose connection takes its
+    /// presence coalesced and batched ([`crate::presence_mailbox`]). Set
+    /// right after the subscription it belongs to and dropped with it; a
+    /// subscriber without one gets each presence on its frame queue.
+    presence_mailboxes: HashMap<[u8; 32], Arc<crate::presence_mailbox::PresenceMailbox>>,
     /// Subscribers that joined the live plane, with their rate budgets.
     live_members: HashMap<[u8; 32], LiveBudget>,
     /// Host order of the last admitted delta.
@@ -341,6 +346,7 @@ impl WorkspaceRuntime {
             state_sessions: HashMap::new(),
             outbound_federation: HashMap::new(),
             checkpoint_served: HashMap::new(),
+            presence_mailboxes: HashMap::new(),
             sync_refresh: None,
             governor_tap: None,
             room_authority: None,
@@ -501,6 +507,7 @@ impl WorkspaceRuntime {
             .is_some_and(|current| current.tx.same_channel(&sub.tx))
         {
             self.action_targets.remove(&sub.device_public_key);
+            self.presence_mailboxes.remove(&sub.device_public_key);
             if let Some(session) = self.state_sessions.remove(&sub.device_public_key) {
                 session
                     .live
@@ -515,6 +522,20 @@ impl WorkspaceRuntime {
         self.checkpoint_served
             .insert(sub.device_public_key, HashSet::new());
         self.subscribers.insert(sub.device_public_key, sub);
+    }
+
+    /// Hand the presence fanned out to subscriber `device` to its
+    /// connection's `mailbox` rather than its frame queue. Call right after
+    /// [`Self::add_subscriber`] registered that connection; replacing or
+    /// removing the subscription drops the route.
+    pub fn route_presence(
+        &mut self,
+        device: [u8; 32],
+        mailbox: Arc<crate::presence_mailbox::PresenceMailbox>,
+    ) {
+        if self.subscribers.contains_key(&device) {
+            self.presence_mailboxes.insert(device, mailbox);
+        }
     }
 
     /// A device asked for a baseline (its hello, a `SyncReq`, or a rejected
@@ -578,6 +599,7 @@ impl WorkspaceRuntime {
             crate::authority_epoch::bump();
         }
         self.action_targets.remove(device);
+        self.presence_mailboxes.remove(device);
         if let Some(session) = self.state_sessions.remove(device) {
             session
                 .live
@@ -899,20 +921,42 @@ impl WorkspaceRuntime {
     }
 
     /// Route a presence envelope (no persistence, drop-on-empty).
-    /// Same echo-suppression rule as `fanout_delta`.
+    /// Same echo-suppression rule as `fanout_delta`. A subscriber whose
+    /// connection has a presence mailbox gets it there, coalesced under
+    /// `slot` with the author's later presence; the payload is shared by every
+    /// such subscriber, not copied.
     pub fn fanout_presence(
         &mut self,
         author: &[u8; 32],
         from_role: PeerRole,
         envelope: &Envelope,
+        slot: Option<tilo_peer_state::PresenceSlot>,
     ) -> usize {
         let mut delivered = 0usize;
         let mut dead: Vec<[u8; 32]> = Vec::new();
+        let mut shared: Option<Arc<[u8]>> = None;
+        let now = tokio::time::Instant::now();
         for (peer, sub) in &self.subscribers {
             if peer == author {
                 continue;
             }
             if from_role == PeerRole::PeerRelay && sub.role == PeerRole::PeerRelay {
+                continue;
+            }
+            if let (
+                Some(mailbox),
+                Envelope::Presence {
+                    workspace_id,
+                    payload,
+                },
+            ) = (self.presence_mailboxes.get(peer), envelope)
+            {
+                let payload = shared
+                    .get_or_insert_with(|| Arc::from(payload.as_slice()))
+                    .clone();
+                if mailbox.post(*workspace_id, *author, slot, payload, now) {
+                    delivered = delivered.saturating_add(1);
+                }
                 continue;
             }
             match sub.tx.try_send(envelope.clone()) {
