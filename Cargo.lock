@@ -16119,6 +16119,7 @@ dependencies = [
 name = "tilo-app-state"
 version = "0.1.0"
 dependencies = [
+ "blake3",
  "durable-store",
  "hex",
  "same-file",
