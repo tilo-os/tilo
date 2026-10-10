@@ -66,13 +66,7 @@ pub(crate) enum RoomOperation {
     /// Replaying retained state to a subscriber.
     Replay,
     /// A browser live-plane grant or its observation.
-    #[cfg_attr(
-        not(feature = "web"),
-        allow(
-            dead_code,
-            reason = "only the browser plane asks, and it is behind `web`"
-        )
-    )]
+    #[cfg(any(test, feature = "web"))]
     Live,
     /// Discovering the room's content endpoints.
     ContentDiscovery,
@@ -111,7 +105,9 @@ impl RoomOperation {
     const fn owner_device(self) -> OwnerDevice {
         match self {
             Self::Subscribe | Self::Compute => OwnerDevice::Enrol,
-            Self::Live | Self::ContentDiscovery | Self::Environment => OwnerDevice::Admit,
+            #[cfg(any(test, feature = "web"))]
+            Self::Live => OwnerDevice::Admit,
+            Self::ContentDiscovery | Self::Environment => OwnerDevice::Admit,
             Self::State | Self::Replay | Self::RemoteAction => OwnerDevice::Refuse,
         }
     }

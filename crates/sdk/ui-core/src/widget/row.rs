@@ -441,32 +441,7 @@ impl Widget for Row {
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
-        // Same pointer-capture short-circuit as `Column::handle_event` —
-        // a dragging child gets exclusive event routing so the drag
-        // survives the cursor wandering through peer widgets.
-        // A child holding an open modal owns the input the same way.
-        let owner = self
-            .children
-            .iter()
-            .position(|c| c.wants_pointer_capture())
-            .or_else(|| {
-                self.children
-                    .iter()
-                    .position(|c| c.modal_capture().is_some())
-            });
-        if let Some(idx) = owner
-            && let Some(&cnode) = self.child_nodes.get(idx)
-            && let Some(child) = self.children.get_mut(idx)
-        {
-            child.handle_event(event, &mut ctx.reborrow(ctx.path, cnode));
-            return;
-        }
-        for (child_widget, &child_node) in self.children.iter_mut().zip(&self.child_nodes) {
-            child_widget.handle_event(event, &mut ctx.reborrow(ctx.path, child_node));
-            if *ctx.handled {
-                break;
-            }
-        }
+        crate::widget::route_to_children(&mut self.children, &self.child_nodes, event, ctx);
     }
 
     /// Propagate pointer-capture intent from any descendant — mirrors

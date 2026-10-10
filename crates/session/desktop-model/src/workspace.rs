@@ -687,10 +687,10 @@ impl Workspace {
     pub fn role_for_membership_at(
         owner: Option<&str>,
         capabilities: &[CapOverride],
-        user: &UserId,
+        user: &str,
         now: u64,
     ) -> Option<CapRole> {
-        if owner == Some(user.as_str()) {
+        if owner == Some(user) {
             return Some(CapRole::Owner);
         }
         // A person with a signing key is named by its lowercase hex, so a
@@ -738,6 +738,17 @@ impl Workspace {
     /// Build the [`Actor`] for a person acting in this room.
     pub fn actor_for_person_at(&self, user: &UserId, now: u64) -> Actor {
         Actor::person(self.role_of_at(user, now), user.clone()).in_room(self.room.to_string())
+    }
+
+    /// [`Self::actor_for_person_at`], held to the foreign-device cap when
+    /// `capped`.
+    pub fn actor_for_person_on_device_at(&self, user: &UserId, capped: bool, now: u64) -> Actor {
+        let actor = self.actor_for_person_at(user, now);
+        if capped {
+            collab_types::foreign_device::on_foreign_device(actor, &self.capabilities, now)
+        } else {
+            actor
+        }
     }
 
     /// Build the [`Actor`] for an app running in this room. Carries the

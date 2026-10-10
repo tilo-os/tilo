@@ -228,6 +228,39 @@ left: `ui-collab-shovel` 3.4/s, `tilo-identity-client` 2.0/s, the network
 runtime about 1/s, and a few tenths from the fs authority, session audio and
 secrets bus.
 
+### TIL-752: upkeep and gossip's sweep wait for a peer
+
+What TIL-702 left on loopback, about 1/s, was the network actor's 5 s
+upkeep tick and iroh-gossip's 10 s cache sweep on each of the desktop's
+three topics (the compatibility topic, its room, the person's continuity
+topic). With nobody to talk to neither has work. The upkeep tick is now
+armed only while there is a peer, a workspace host, a governed room's
+relay route, a remote action held for a peer or a failed subscription, and
+the address it refreshed every tick follows iroh's address watcher instead.
+iroh-gossip arms a topic's sweep on its first message or neighbour and never
+stops it, and a lone desktop broadcast into its empty topics on every local
+change, so a topic now hands gossip nothing until it has had a neighbour.
+The 600 s host-checkpoint tick is armed only while a host session exists.
+
+Focused runs, blocking (voluntary) switches per second:
+
+| gate | main `f744af88ad` (92709-92713) | branch (92724, 92787-92796) |
+| -- | --: | --: |
+| lone desktop, all threads | 0.90-1.05 | 0.30-0.40 |
+| lone desktop, `tilo-net-rt` | 0.85-0.95 | 0.25-0.35 |
+| idle pair, all threads | 6.12-6.98 | 5.84-7.17 |
+
+What the lone desktop still does, from a tracing probe (run 92833): in the
+20 s window only two events, both iroh timers that Tilo cannot reach through
+iroh's API, netwatch's 15 s wall-clock check and the socket's 20-26 s
+re-STUN tick (a no-op with no relays). They cost a worker eight switches in
+that window. A desktop that has had a peer keeps its topics' sweeps until it
+leaves them, since iroh-gossip has no way to stop one. Each topic also keeps
+iroh-gossip's 60 s membership shuffle, outside the gate's window.
+
+The lone gate's budget is now 0.6/s (p95 0.45/s plus a quarter). The idle
+pair is gated on blocking switches too, at 12/s with a 1 % CPU bound.
+
 ## The collaboration-plane gate in the shell shard
 
 `idle_quiet_tests` (two converged desktops) had a 15/s budget, set from
