@@ -325,13 +325,16 @@ def mcp_noop(socket_path: str, address: tuple[str, str], warmup: int,
 
 
 @contextlib.contextmanager
-def spawned(shell: Path, log: Path, timeout: int) -> Iterator[str]:
+def spawned(shell: Path, log: Path, timeout: int,
+            extra_env: dict[str, str] | None = None) -> Iterator[str]:
     """A headless compositor through spawn-headless.sh, removed on exit.
 
     The script is the one way this repository starts a headless desktop: it
     isolates the profile and removes it, the socket and the compositor when
     it is told to stop. It runs in its own process group, which is killed
-    as a whole if it does not stop by itself.
+    as a whole if it does not stop by itself. `extra_env` reaches the
+    compositor (spawn-headless.sh passes its environment on), for example
+    `TILO_HEADLESS_PROFILE` and what a seeded profile restores from.
     """
     if not shell.is_file() or not os.access(shell, os.X_OK):
         raise BenchError(f"no compositor at {shell}")
@@ -340,7 +343,7 @@ def spawned(shell: Path, log: Path, timeout: int) -> Iterator[str]:
         raise BenchError("XDG_RUNTIME_DIR must name a private directory for the socket")
     directory = Path(tempfile.mkdtemp(prefix="agent-rtt-", dir=runtime))
     socket_path = str(directory / "control.sock")
-    env = {**os.environ, "TILO_HEADLESS_BINARY": str(shell.resolve()),
+    env = {**os.environ, **(extra_env or {}), "TILO_HEADLESS_BINARY": str(shell.resolve()),
            "TILO_HEADLESS_TIMEOUT": str(timeout)}
     log.write_bytes(b"")
     # Appending, as drain() does with the compositor's stdout.

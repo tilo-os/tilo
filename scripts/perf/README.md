@@ -63,6 +63,17 @@ executable stand-alone; the higher-level flow is described below.
   action. With `--env-json` it writes `tools/perf/record.py` records.
   **Perf / scheduled** runs it nightly as the `agent` group.
 
+- `agent_task.py (--socket PATH | --spawn SHELL [--seeder EXAMPLE])` — a
+  whole agent task: a scripted model, streamed like the Messages API from a
+  loopback fake, creates a note in Notes, writes its body, finds it by
+  search and opens it, one tool call per turn over the control socket.
+  Records the task's wall time, the time in Tilo, in the (fake) model and in
+  the agent loop, the turns and each step; `--split-repetitions` also times
+  each invoke's accept and apply apart. `--think-ms` and `--tokens-per-s`
+  model a real provider; the lane runs both at 0. `--spawn` seeds a
+  signed-in Notes desktop with the `agent_task_desktop` example of `shell`.
+  Part of the `agent` group.
+
 ## Optimise (three-step PGO + optional BOLT)
 
 1. `pgo-instrument.sh` — build shell + terminal + file-explorer +
