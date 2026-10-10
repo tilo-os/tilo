@@ -957,8 +957,22 @@ impl LiveAppActionsProvider {
                     ready.push((key.clone(), page, pending.initial_page));
                     false
                 }
-                PendingPoll::Ready(_) | PendingPoll::Abandoned => false,
+                PendingPoll::Ready(answer) => {
+                    tracing::debug!(
+                        target: "tilo::listing",
+                        peer = key.0,
+                        error = ?answer.as_ref().err(),
+                        stale_cursor = answer.as_ref().is_ok_and(|page| page.stale_cursor),
+                        "app directory page not kept"
+                    );
+                    false
+                }
+                PendingPoll::Abandoned => {
+                    tracing::debug!(target: "tilo::listing", peer = key.0, "app directory page abandoned");
+                    false
+                }
                 PendingPoll::Waiting if pending.deadline <= now => {
+                    tracing::debug!(target: "tilo::listing", peer = key.0, "app directory page expired");
                     expired = true;
                     false
                 }
