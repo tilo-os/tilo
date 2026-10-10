@@ -194,7 +194,11 @@ jobs:
   # shared `runner` class. The compositor is built once here: release
   # optimisation, thin LTO as release-apps.yml builds, and `dev-overrides`,
   # the dev image's feature that serves the control socket in a release
-  # build. Authorization and the capability gate stay on.
+  # build. Authorization and the capability gate stay on. Then the whole
+  # agent task (scripts/perf/agent_task.py, TIL-759): a scripted, streamed
+  # model creates a note, writes its body and finds it by search on a seeded
+  # Notes desktop (the `agent_task_desktop` example, built with the
+  # compositor), with a 0 ms model so the time is Tilo's.
   agent:
     needs: [plan, builder]
     if: needs.plan.outputs.agent == 'true'
@@ -226,7 +230,8 @@ jobs:
       - name: Build the compositor
         run: >-
           bash scripts/ci-run.sh "agent round trip compositor build" --
-          cargo build --locked --release -p shell --bin shell --features dev-overrides
+          cargo build --locked --release -p shell --bin shell --example agent_task_desktop
+          --features dev-overrides
 
       - name: Measure and record
         run: |
@@ -242,6 +247,10 @@ jobs:
             --spawn target/release/shell --samples 1000 --warmup 100 \
             --transport "test-control socket, headless, release + dev-overrides, thin LTO" \
             --env-json perf/env.json --out perf/agent.jsonl --log perf/compositor.log
+          bash tools/with-test-environment.sh python3 scripts/perf/agent_task.py \
+            --spawn target/release/shell --seeder target/release/examples/agent_task_desktop \
+            --transport "test-control socket, headless, release + dev-overrides, thin LTO" \
+            --env-json perf/env.json --out perf/agent.jsonl --log perf/task-compositor.log
           cat perf/agent.jsonl
 
       - uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
