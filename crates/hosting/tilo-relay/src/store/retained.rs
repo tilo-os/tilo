@@ -450,6 +450,8 @@ pub(super) fn sync_dir_once(path: &Path) -> Result<(), StoreError> {
 /// before and it has not been written since. Readers and collection quanta
 /// re-establish the durability of an unchanged selection this way.
 pub(super) fn sync_file_once(path: &Path) -> Result<(), StoreError> {
+    #[cfg(test)]
+    super::test_barrier::check(path, "sync-file")?;
     sync_once(path)
 }
 
@@ -1490,11 +1492,15 @@ impl WorkspaceStore {
         max_bytes: usize,
     ) -> Result<Vec<Vec<u8>>, StoreError> {
         let mut budget = ViewReadBudget {
+            root: self.root.clone(),
             bytes: max_bytes,
             entries: 8192,
         };
         let mut out = Vec::new();
-        if let Some(selected) = current(&self.root.join(super::shell_selection::DIRECTORY))? {
+        let selection = self.root.join(super::shell_selection::DIRECTORY);
+        budget.selection(&selection)?;
+        if let Some(selected) = current(&selection)? {
+            budget.barrier(&selected.join("basis.manifest"))?;
             let mut manifest = fs::File::open(selected.join("basis.manifest"))?;
             while let Some(meta) = super::bounded::read_meta(&mut manifest)? {
                 budget.entry()?;
@@ -1522,6 +1528,7 @@ impl WorkspaceStore {
         }
         lineages.sort_by_key(fs::DirEntry::file_name);
         for lineage in lineages {
+            budget.selection(&lineage.path())?;
             let Some(active) = current(&lineage.path())? else {
                 continue;
             };
@@ -1600,12 +1607,31 @@ fn view_channel_matches(bytes: &[u8], workspace: u64, channel: &[u8; 32]) -> boo
 
 #[cfg(feature = "agents")]
 struct ViewReadBudget {
+    root: PathBuf,
     bytes: usize,
     entries: usize,
 }
 
 #[cfg(feature = "agents")]
 impl ViewReadBudget {
+    fn selection(&self, lineage: &Path) -> Result<(), StoreError> {
+        let selector = lineage.join("CURRENT");
+        if selector.exists() {
+            self.barrier(&selector)?;
+        }
+        Ok(())
+    }
+    fn barrier(&self, path: &Path) -> Result<(), StoreError> {
+        sync_file_once(path)?;
+        for parent in path.ancestors().skip(1) {
+            sync_dir_once(parent)?;
+            if Some(parent) == self.root.parent() {
+                break;
+            }
+        }
+        Ok(())
+    }
+
     fn entry(&mut self) -> Result<(), StoreError> {
         self.entries = self
             .entries
@@ -1615,6 +1641,7 @@ impl ViewReadBudget {
     }
     fn read(&mut self, path: &Path) -> Result<Vec<u8>, StoreError> {
         use std::io::Read as _;
+        self.barrier(path)?;
         let file = fs::File::open(path)?;
         let size = usize::try_from(file.metadata()?.len())
             .map_err(|_| invalid("oversized view source"))?;
@@ -1657,6 +1684,23 @@ pub(super) mod tests {
             retained,
             "bounded view reads must not rewrite committed retained history"
         );
+    }
+
+    #[cfg(feature = "agents")]
+    #[test]
+    fn retained_view_refuses_a_failed_durability_barrier() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = WorkspaceStore::open(dir.path(), 7, false).unwrap();
+        store
+            .retain_checkpoint(&[9; 32], &message(true, 1))
+            .unwrap();
+        let v2 = store.root.join(RETAINED_DIR).join("v2");
+        let lineage = fs::read_dir(v2).unwrap().next().unwrap().unwrap().path();
+        let selector = lineage.join("CURRENT");
+        let fault = super::super::test_barrier::fail(&selector, "sync-file");
+        assert!(store.load_view_channel(&[9; 32], 4096).is_err());
+        drop(fault);
+        assert_eq!(store.load_view_channel(&[9; 32], 4096).unwrap().len(), 1);
     }
 
     fn message(checkpoint: bool, value: u8) -> Vec<u8> {
