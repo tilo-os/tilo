@@ -2397,6 +2397,27 @@ impl App {
         Ok(started)
     }
 
+    /// Invoke a registered action as this application's current local person.
+    /// This uses the same current record, policy and broker checks as the palette.
+    /// # Errors
+    /// Refuses unavailable, denied, stale or ambiguous actions and invalid arguments.
+    pub fn invoke_local_resource_action(
+        &mut self,
+        address: &tilo_actions::ActionAddress,
+        arguments: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError> {
+        let _entry = self.enter_wake_scope();
+        let actor = self.collaboration.local_author.0.clone();
+        let argument = format!(
+            "{}{}",
+            tilo_actions::ARGUMENTS_JSON_PREFIX,
+            serde_json::Value::Object(arguments.clone())
+        );
+        self.invoke_resource_action(
+            ResourceInvocation::new(address, &actor).argument(Some(&argument)),
+        )
+    }
+
     /// Route through the broker an invocation the door resolved as one that
     /// runs there ([`crate::bound_dispatch::BoundActionError::Rerouted`]):
     /// the component's published resources are discovered and the broker

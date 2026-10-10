@@ -7737,6 +7737,26 @@ pub(crate) fn native_read_network_for_test(
     (network, commands)
 }
 
+/// Deliver a fixture response through production peer authentication and RPC matching.
+#[cfg(test)]
+pub(crate) fn native_remote_answer_for_test(
+    network: &ShellNetwork,
+    workspace: u64,
+    from: iroh::EndpointId,
+    message: tilo_actions::remote::RemoteActionMessage,
+) {
+    let frame = tilo_actions::remote::RemoteActionFrame::new(message)
+        .encode()
+        .unwrap();
+    network.dispatch_neighbour_msg(
+        workspace,
+        from,
+        None,
+        false,
+        NeighbourMsg::RemoteAction { frame },
+    );
+}
+
 /// Give a fixture network the worker runtime a spawned one owns, so governor
 /// invocations are answered instead of refused as "the network is not running".
 #[cfg(test)]
