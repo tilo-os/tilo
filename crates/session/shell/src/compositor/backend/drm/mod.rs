@@ -1651,6 +1651,9 @@ fn paint_scanouts(
         // compile scratch is free now, but glibc would keep it (TIL-705).
         crate::shell::heap_trim::request();
     }
+    if let Some(bridge) = paint.as_mut() {
+        bridge.after_paint();
+    }
     sample
 }
 

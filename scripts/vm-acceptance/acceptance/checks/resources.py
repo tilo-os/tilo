@@ -664,6 +664,7 @@ def idle_empty(ctx, res):
         ctx.write("R01-shell-smaps.json", json.dumps(smaps, indent=1))
         res.metrics["shell_anon_rss_mib"] = smaps["anon_rss_mib"]
         ctx.record("memory.shell_anon_mib.empty", "MiB", [smaps["anon_rss_mib"]])
+        _record_shell_shm(ctx, res, smaps)
     # What the idle RAM is made of, every user's processes and cgroups.
     try:
         fp = footprint(ctx)
@@ -673,6 +674,18 @@ def idle_empty(ctx, res):
         write_footprint(ctx, "R01-footprint.json", fp, m["guest_ram_used_mib"])
         res.metrics["footprint_mib"] = _footprint_summary(fp, m["guest_ram_used_mib"])
     expect(not problems, "; ".join(problems))
+
+
+def _record_shell_shm(ctx, res, smaps: dict, variant: str = "") -> None:
+    """`memory.compositor_memfd_mib{.variant}`: shmem allocated to the memfds the
+    compositor holds open, mapped or not, with the per-name split in the metrics."""
+    suffix = f".{variant}" if variant else ""
+    by_name = smaps["shm_by_name"]
+    res.metrics[f"shell_shm_by_name{suffix}"] = by_name
+    ctx.record(f"memory.compositor_memfd_mib{suffix}", "MiB",
+               [round(sum(v["allocated_mib"] for v in by_name.values()), 1)],
+               what="shmem allocated to the compositor's open memfds and /dev/shm files",
+               largest=next(iter(by_name), None))
 
 
 def _footprint_summary(fp: dict, ram_mib: float) -> dict:
@@ -742,9 +755,12 @@ def mem(ctx, res):
     expect(m["shell"], "no compositor process found")
     problems, unobserved = [], []
     try:
-        ctx.write("R03-shell-smaps.json", json.dumps(core.shell_memory(ctx, m["shell"]["pid"]), indent=1))
+        smaps = core.shell_memory(ctx, m["shell"]["pid"])
     except core.Unobservable as e:
         unobserved.append(str(e))
+    else:
+        ctx.write("R03-shell-smaps.json", json.dumps(smaps, indent=1))
+        _record_shell_shm(ctx, res, smaps, "four_apps")
     if m["shell"]["anon_rss_mb"] > b["shell_anon_mb"]:
         problems.append(f"compositor anonymous RSS {m['shell']['anon_rss_mb']} MB > {b['shell_anon_mb']} MB")
     big = [p for p in m["procs"] if p["comm"] != "shell" and (p["anon_rss_mb"] or 0) > b["process_anon_mb"]]
@@ -783,6 +799,17 @@ def mem(ctx, res):
         write_footprint(ctx, "R03-footprint-after-close.json", after, ram, "after_close")
         ctx.record("idle.ram_mib.after_close", "MiB", [ram], what="guest MemTotal - MemAvailable")
         res.metrics["after_close_mib"] = _footprint_summary(after, ram)
+        try:
+            smaps = core.shell_memory(ctx, m["shell"]["pid"])
+        except core.Unobservable as e:
+            unobserved.append(f"the compositor's memory after the apps closed: {e}")
+        else:
+            ctx.write("R03-shell-smaps-after-close.json", json.dumps(smaps, indent=1))
+            _record_shell_shm(ctx, res, smaps, "after_close")
+        # The renderer's own account: its atlas and buffers as they grew and shrank, and
+        # each trim's release of freed device memory.
+        ctx.write("R03-renderer-memory.log", ctx.vm.exec(
+            f'grep -a -E "RENDERER-MEMORY|DEVICE-MEMORY" "{core.SESSION_LOG}"; true', check=False))
     try:
         res.metrics["disk"] = record_disk(ctx)
     except core.Unobservable as e:
