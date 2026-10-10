@@ -528,3 +528,211 @@ fn spatial_cleanup_native_teardown_survives_full_input_and_transport_queues() {
     send_spatial_input_bound(&fixture.network, &lease.target, lease.nonce, key(true)).unwrap();
     drop(fixture);
 }
+
+struct SpatialSeat {
+    _event_loop: smithay::reexports::calloop::EventLoop<'static, crate::compositor::state::State>,
+    _display: smithay::reexports::wayland_server::Display<crate::compositor::state::State>,
+    state: crate::compositor::state::State,
+}
+impl SpatialSeat {
+    fn new() -> Self {
+        let event_loop = smithay::reexports::calloop::EventLoop::try_new().unwrap();
+        let display = smithay::reexports::wayland_server::Display::new().unwrap();
+        let state = crate::compositor::state::State::new(event_loop.handle(), display.handle());
+        Self {
+            _event_loop: event_loop,
+            _display: display,
+            state,
+        }
+    }
+    fn pump(&mut self) {
+        for batch in crate::shell::device_fabric_runtime::take_spatial_input_batches() {
+            crate::compositor::native::dispatch_spatial_input_batch(&mut self.state, batch);
+        }
+    }
+    fn keys(&self) -> BTreeSet<u32> {
+        self.state
+            .seat
+            .get_keyboard()
+            .unwrap()
+            .pressed_keys()
+            .iter()
+            .map(|key| {
+                u32::from(*key)
+                    .checked_sub(8)
+                    .expect("seat key must be an XKB keycode")
+            })
+            .collect()
+    }
+}
+fn spatial_key(keycode: u32, pressed: bool) -> crate::shell::device_fabric::FabricInputEvent {
+    crate::shell::device_fabric::FabricInputEvent::Key {
+        keycode,
+        pressed,
+        modifiers: 0,
+    }
+}
+fn spatial_button(button: u32, pressed: bool) -> crate::shell::device_fabric::FabricInputEvent {
+    crate::shell::device_fabric::FabricInputEvent::PointerButton { button, pressed }
+}
+fn admit_spatial(
+    fixture: &Fixture,
+    nonce: [u8; 16],
+    event: crate::shell::device_fabric::FabricInputEvent,
+) {
+    let route = fixture
+        .network
+        .current_personal_route(&fixture.controller)
+        .unwrap();
+    let target = fixture.network.local_device_fabric_identity().unwrap().0;
+    crate::shell::device_fabric_runtime::handle_spatial_action(
+        &fixture.network,
+        &route,
+        &target,
+        PersonalFabricAction::Input {
+            lease_nonce: nonce,
+            event,
+        },
+    );
+}
+fn fill_transport(fixture: &Fixture) {
+    while fixture.network.cmd_tx.capacity() > 0 {
+        let (reply, _) = tokio::sync::oneshot::channel();
+        fixture
+            .network
+            .cmd_tx
+            .try_send(NetCmd::WireTally(reply))
+            .unwrap();
+    }
+}
+
+#[test]
+fn spatial_revocation_replacement_preserves_fresh_seat_edges_and_discards_old_nonce() {
+    let mut fixture = Fixture::new();
+    Fixture::policy(false);
+    let mut seat = SpatialSeat::new();
+    let old = grant_input_control(&fixture.network, &fixture.controller).unwrap();
+    admit_spatial(&fixture, old.nonce, spatial_key(30, true));
+    admit_spatial(&fixture, old.nonce, spatial_button(0x110, true));
+    seat.pump();
+    assert_eq!(seat.keys(), BTreeSet::from([30]));
+    for _ in 0..256 {
+        admit_spatial(&fixture, old.nonce, spatial_key(31, true));
+    }
+    let fresh = grant_input_control(&fixture.network, &fixture.controller).unwrap();
+    assert_ne!(old.nonce, fresh.nonce);
+    admit_spatial(&fixture, old.nonce, spatial_key(33, true));
+    admit_spatial(&fixture, fresh.nonce, spatial_key(32, true));
+    admit_spatial(&fixture, fresh.nonce, spatial_button(0x111, true));
+    seat.pump();
+    assert_eq!(
+        seat.keys(),
+        BTreeSet::from([32]),
+        "old cleanup must precede fresh down edges"
+    );
+    assert!(
+        seat.state
+            .apply_personal_fabric_input(&fixture.controller, spatial_button(0x111, false)),
+        "fresh button attribution must survive the old release barrier"
+    );
+    assert!(
+        !seat
+            .state
+            .apply_personal_fabric_input(&fixture.controller, spatial_button(0x110, false)),
+        "old button attribution must be gone"
+    );
+    admit_spatial(&fixture, fresh.nonce, spatial_key(32, false));
+    seat.pump();
+    assert!(seat.keys().is_empty());
+    assert_eq!(
+        fixture
+            .actions()
+            .iter()
+            .filter(|action| matches!(action, PersonalFabricAction::InputLeaseGranted { .. }))
+            .count(),
+        2,
+    );
+    drop(fixture);
+}
+
+#[test]
+fn spatial_revocation_failed_notification_still_clears_real_seat_and_refuses_stale_input() {
+    let mut fixture = Fixture::new();
+    Fixture::policy(false);
+    let mut seat = SpatialSeat::new();
+    let lease = grant_input_control(&fixture.network, &fixture.controller).unwrap();
+    assert_eq!(fixture.grants(), vec![lease.clone()]);
+    admit_spatial(&fixture, lease.nonce, spatial_key(30, true));
+    admit_spatial(&fixture, lease.nonce, spatial_button(0x110, true));
+    seat.pump();
+    assert_eq!(seat.keys(), BTreeSet::from([30]));
+    admit_spatial(&fixture, lease.nonce, spatial_key(31, true));
+    fill_transport(&fixture);
+    assert!(revoke_input_control(&fixture.network, &fixture.controller).is_err());
+    assert!(
+        fixture.actions().is_empty(),
+        "full transport delivered no revocation notification"
+    );
+    admit_spatial(&fixture, lease.nonce, spatial_key(32, true));
+    seat.state.remote_input_firewall.engage_kill_switch();
+    seat.pump();
+    assert!(
+        seat.keys().is_empty(),
+        "local authority removal must release held and discard queued edges even under kill switch"
+    );
+    assert!(
+        !seat
+            .state
+            .apply_personal_fabric_input(&fixture.controller, spatial_button(0x110, false))
+    );
+    drop(fixture);
+    assert_eq!(seat.state.release_all_personal_fabric_input(), 0);
+}
+
+#[test]
+fn spatial_revocation_policy_disable_cleans_target_without_delivery_or_new_authority() {
+    use crate::compositor::selection::SharedSelection;
+    use crate::shell::device_fabric_runtime::DeviceFabricRuntime;
+    let mut fixture = Fixture::new();
+    Fixture::policy(false);
+    let mut runtime = DeviceFabricRuntime::new(
+        &fixture.network,
+        crate::notifications::NotificationBridge::new(),
+    );
+    let selection = SharedSelection::default();
+    runtime.enforce_policy_for_test(
+        &fixture.network,
+        &selection,
+        ContinuityPolicySnapshot::load(),
+    );
+    let lease = grant_input_control(&fixture.network, &fixture.controller).unwrap();
+    assert_eq!(fixture.grants(), vec![lease.clone()]);
+    let mut seat = SpatialSeat::new();
+    admit_spatial(&fixture, lease.nonce, spatial_key(30, true));
+    admit_spatial(&fixture, lease.nonce, spatial_button(0x110, true));
+    seat.pump();
+    assert_eq!(seat.keys(), BTreeSet::from([30]));
+    admit_spatial(&fixture, lease.nonce, spatial_key(31, true));
+    fill_transport(&fixture);
+    settings_store::update_section(
+        "continuity",
+        serde_json::json!({"enabled":true,"display_input":false,"automatic_display_input":false})
+            .as_object()
+            .unwrap()
+            .clone(),
+    )
+    .unwrap();
+    runtime.enforce_policy_for_test(
+        &fixture.network,
+        &selection,
+        ContinuityPolicySnapshot::load(),
+    );
+    assert!(fixture.actions().is_empty());
+    admit_spatial(&fixture, lease.nonce, spatial_key(32, true));
+    seat.state.remote_input_firewall.engage_kill_switch();
+    seat.pump();
+    assert!(seat.keys().is_empty());
+    assert_eq!(seat.state.release_all_personal_fabric_input(), 0);
+    assert!(grant_input_control(&fixture.network, &fixture.controller).is_err());
+    drop(fixture);
+}

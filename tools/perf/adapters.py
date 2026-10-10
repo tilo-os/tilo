@@ -220,6 +220,7 @@ HOSTING_KPIS = {
     "hosting.relay.frame_bytes_per_collab_hour": "bytes",
     "hosting.relay.fanout_ms": "ms",
     "hosting.relay.store_fsyncs_per_edit": "count",
+    "hosting.relay.store_listed_entries_per_edit": "count",
 }
 
 
@@ -243,14 +244,29 @@ def collab_hour_usd(provider: dict[str, Any], prices: dict[str, Any], cpu_s: flo
     return compute + billable_gb * float(provider["egress_usd_per_gb"]), capacity, binding
 
 
-def hosting_load(report: dict[str, Any], prices: dict[str, Any], env: dict[str, Any]) -> list[record.Record]:
-    """Records for one relay load bench run, priced with `prices`."""
+# What pricing needs: a report without these cannot be priced at all.
+HOSTING_PRICED_KPIS = ("hosting.relay.cpu_s_per_collab_hour", "hosting.relay.rss_mib_per_collab",
+                       "hosting.relay.egress_bytes_per_collab_hour")
+
+
+def hosting_load(report: dict[str, Any], prices: dict[str, Any], env: dict[str, Any],
+                 require_all: bool = True) -> list[record.Record]:
+    """Records for one relay load bench run, priced with `prices`.
+
+    The nightly requires exactly today's KPIs. `require_all=False` is the
+    same-job A/B lane (tools/perf/ab.py), which also reads an older bench: it
+    records the known KPIs the report has and leaves out any it does not know.
+    """
     collaborators = int(report["collaborators"])
     variant = f"n{collaborators}"
     kpis = report.get("kpis", {})
-    if set(kpis) != set(HOSTING_KPIS):
+    if require_all and set(kpis) != set(HOSTING_KPIS):
         raise ValueError(f"the bench reported {sorted(kpis)}, not {sorted(HOSTING_KPIS)}")
-    for kpi, unit in HOSTING_KPIS.items():
+    missing = [kpi for kpi in HOSTING_PRICED_KPIS if kpi not in kpis]
+    if missing:
+        raise ValueError(f"the bench reported {sorted(kpis)}, without {missing}")
+    present = {kpi: unit for kpi, unit in HOSTING_KPIS.items() if kpi in kpis}
+    for kpi, unit in present.items():
         if kpis[kpi]["unit"] != unit or not kpis[kpi]["samples"]:
             raise ValueError(f"{kpi}: expected samples in {unit}")
     meta = {**env.get("meta", {}), "collaborators": str(collaborators), "rooms": str(report["rooms"]),
@@ -259,7 +275,7 @@ def hosting_load(report: dict[str, Any], prices: dict[str, Any], env: dict[str, 
             "undelivered_edits": str(report["undelivered_edits"]), "prices_checked": str(prices["checked"])}
     base = {name: value for name, value in env.items() if name != "meta"}
     records = [record.from_samples(f"{kpi}.{variant}", unit, kpis[kpi]["samples"], meta=meta, **base)
-               for kpi, unit in HOSTING_KPIS.items()]
+               for kpi, unit in present.items()]
     minutes = list(zip(kpis["hosting.relay.cpu_s_per_collab_hour"]["samples"],
                        kpis["hosting.relay.rss_mib_per_collab"]["samples"],
                        kpis["hosting.relay.egress_bytes_per_collab_hour"]["samples"], strict=True))
