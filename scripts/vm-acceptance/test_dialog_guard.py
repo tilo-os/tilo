@@ -20,6 +20,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from acceptance import context as context_mod  # noqa: E402
 from acceptance import core  # noqa: E402
+from acceptance.checks import window  # noqa: E402,F401 - registers W20
 from acceptance.context import Context  # noqa: E402
 from acceptance.vm import VmError  # noqa: E402
 
