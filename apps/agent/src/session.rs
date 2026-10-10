@@ -64,9 +64,9 @@ struct TaskAction {
     action: String,
     arguments: serde_json::Map<String, serde_json::Value>,
     label: String,
-    /// This action's sole content argument comes from the immediately
-    /// preceding action result, never from model-authored JSON.
-    carries: bool,
+    /// The parameter whose content comes from the immediately preceding
+    /// action result, never from model-authored JSON.
+    carries: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -102,22 +102,21 @@ impl StepOutcome {
 }
 
 fn arguments_for_step(
-    carries: bool,
+    carries: Option<&str>,
     planned: &serde_json::Map<String, serde_json::Value>,
     previous: Option<&StepOutcome>,
 ) -> Result<serde_json::Map<String, serde_json::Value>, String> {
-    if !carries {
+    let Some(param) = carries else {
         return Ok(planned.clone());
-    }
+    };
     let hash = previous
         .ok_or_else(|| "a content-consuming action has no preceding action result".to_string())?
         .content_hash()?;
     let mut arguments = planned.clone();
-    // `prompted_content` always projects its one input under this shared
-    // parameter name. Replace any model-authored value: the descriptor says
-    // the value is carried, so only the preceding application may supply it.
+    // Replace any model-authored value: the descriptor says the value is
+    // carried, so only the preceding application may supply it.
     arguments.insert(
-        tilo_actions::PROMPTED_PARAM.to_string(),
+        param.to_owned(),
         serde_json::Value::String(hash.to_string()),
     );
     Ok(arguments)
@@ -321,7 +320,7 @@ fn task_action_from_offer(
         action: offer.descriptor.address.action.clone(),
         arguments,
         label: offer.descriptor.action_label.clone(),
-        carries: offer.wants_content(),
+        carries: offer.content_param(),
     })
 }
 
@@ -841,7 +840,11 @@ impl Session {
                 return self.cancel_task(run, "Cancelled before the next action");
             }
             let arguments = match handoff.outcome().and_then(|previous| {
-                arguments_for_step(action.carries, &action.arguments, previous.as_ref())
+                arguments_for_step(
+                    action.carries.as_deref(),
+                    &action.arguments,
+                    previous.as_ref(),
+                )
             }) {
                 Ok(arguments) => arguments,
                 Err(message) => return self.fail_task(run, &message),
@@ -938,7 +941,7 @@ impl Session {
         action: &TaskAction,
         arguments: &serde_json::Map<String, serde_json::Value>,
     ) -> Option<(String, String, TaskAction)> {
-        if self.enrolled_active.is_none() || action.carries {
+        if self.enrolled_active.is_none() || action.carries.is_some() {
             return None;
         }
         let offer = self.offer_of(action)?;
@@ -2709,19 +2712,22 @@ impl Session {
                     arguments,
                     confirmation,
                 } => {
-                    let arguments =
-                        match arguments_for_step(step.carries, arguments, previous.as_ref()) {
-                            Ok(arguments) => arguments,
-                            Err(why) => {
-                                self.splice_reply(
-                                    &blocks,
-                                    ins_id,
-                                    &format!("{}: I couldn't do that - {why}", self.cfg.name),
-                                )?;
-                                self.finish_run()?;
-                                return Ok(true);
-                            }
-                        };
+                    let arguments = match arguments_for_step(
+                        step.carries.as_deref(),
+                        arguments,
+                        previous.as_ref(),
+                    ) {
+                        Ok(arguments) => arguments,
+                        Err(why) => {
+                            self.splice_reply(
+                                &blocks,
+                                ins_id,
+                                &format!("{}: I couldn't do that - {why}", self.cfg.name),
+                            )?;
+                            self.finish_run()?;
+                            return Ok(true);
+                        }
+                    };
                     let dispatch_key = dispatched_action_key(id, &arguments);
                     if self.dispatched_this_turn.contains(&dispatch_key) {
                         true
@@ -3713,7 +3719,7 @@ mod tests {
                     action: "act".into(),
                     arguments: serde_json::Map::new(),
                     label: "Action".into(),
-                    carries: false,
+                    carries: None,
                 };
                 let outcome = session
                     .invoke_task_action(&run, &action, &action.arguments)
@@ -3973,7 +3979,7 @@ mod tests {
                 action: name.into(),
                 arguments: serde_json::Map::new(),
                 label: name.into(),
-                carries,
+                carries: carries.then(|| tilo_actions::PROMPTED_PARAM.to_owned()),
             }
         }
 
@@ -4142,7 +4148,7 @@ mod tests {
             assert!(matches!(handoff, Handoff::Committed(_)));
             let second = action("consume", true);
             let arguments = arguments_for_step(
-                second.carries,
+                second.carries.as_deref(),
                 &second.arguments,
                 handoff.outcome().unwrap().as_ref(),
             )
@@ -4321,15 +4327,19 @@ mod tests {
                 serde_json::Value::String("model-invented".into()),
             )]);
 
-            let bound = arguments_for_step(true, &planned, Some(&previous))
-                .expect("one content result binds the next content input");
+            let bound = arguments_for_step(
+                Some(tilo_actions::PROMPTED_PARAM),
+                &planned,
+                Some(&previous),
+            )
+            .expect("one content result binds the next content input");
             assert_eq!(
                 bound.get(tilo_actions::PROMPTED_PARAM),
                 Some(&serde_json::Value::String("abc123".into())),
                 "the preceding app result must replace model input"
             );
             assert!(
-                arguments_for_step(true, &planned, None).is_err(),
+                arguments_for_step(Some(tilo_actions::PROMPTED_PARAM), &planned, None).is_err(),
                 "a content action cannot reuse an older or invented result"
             );
         }
@@ -4343,7 +4353,12 @@ mod tests {
                 },
             };
             assert!(
-                arguments_for_step(true, &serde_json::Map::new(), Some(&ambiguous)).is_err(),
+                arguments_for_step(
+                    Some(tilo_actions::PROMPTED_PARAM),
+                    &serde_json::Map::new(),
+                    Some(&ambiguous)
+                )
+                .is_err(),
                 "choosing one of two products would be a model-visible guess"
             );
 
@@ -4354,7 +4369,12 @@ mod tests {
                 },
             };
             assert!(
-                arguments_for_step(true, &serde_json::Map::new(), Some(&wrong_kind)).is_err(),
+                arguments_for_step(
+                    Some(tilo_actions::PROMPTED_PARAM),
+                    &serde_json::Map::new(),
+                    Some(&wrong_kind)
+                )
+                .is_err(),
                 "a generic resource address is not proof that content bytes exist"
             );
         }
@@ -4363,7 +4383,12 @@ mod tests {
         {
             let previous = StepOutcome::default();
             assert!(
-                arguments_for_step(true, &serde_json::Map::new(), Some(&previous)).is_err(),
+                arguments_for_step(
+                    Some(tilo_actions::PROMPTED_PARAM),
+                    &serde_json::Map::new(),
+                    Some(&previous)
+                )
+                .is_err(),
                 "a step that produced nothing cannot feed a content input"
             );
         }
@@ -4468,6 +4493,8 @@ mod tests {
         const PHOTOS: &str = "so.tilo.photos";
         const WRITER: &str = "so.tilo.word-processor";
         const PRODUCE: &str = "export-edited-content";
+        /// The word processor's typed content parameter of `place-image`.
+        const PLACED_CONTENT: &str = "content";
         const RECORD: &str = "file:/handoff-sequence.docx";
         static SERIAL: Mutex<()> = Mutex::new(());
         type Calls = Vec<(String, serde_json::Map<String, serde_json::Value>)>;
@@ -4699,11 +4726,12 @@ mod tests {
                                 }
                             } else {
                                 let resources = writer_resources(&replica, &caret, &content);
-                                peer::service_document_invocation(
+                                peer::service_document_invocation_lending(
                                     &mut client,
                                     &mut replica,
                                     &resources,
                                     wp::register,
+                                    Some(&content),
                                     peer::DocumentInvocation {
                                         invocation,
                                         address: tilo_actions::ActionAddress { resource, action },
@@ -4817,7 +4845,7 @@ mod tests {
             steps.push(bound_step(
                 "place-image",
                 serde_json::Map::from_iter([(
-                    tilo_actions::PROMPTED_PARAM.into(),
+                    PLACED_CONTENT.into(),
                     serde_json::Value::String("model-invented-hash".into()),
                 )]),
             ));
@@ -4911,7 +4939,7 @@ mod tests {
                     (
                         "place-image".into(),
                         serde_json::Map::from_iter([(
-                            tilo_actions::PROMPTED_PARAM.into(),
+                            PLACED_CONTENT.into(),
                             serde_json::Value::String(hash.clone())
                         ),])
                     )
@@ -5028,7 +5056,7 @@ mod tests {
                 assert_eq!(observed.calls.len(), 2);
                 assert_eq!(observed.calls[1].0, "place-image");
                 assert_eq!(
-                    observed.calls[1].1.get(tilo_actions::PROMPTED_PARAM),
+                    observed.calls[1].1.get(PLACED_CONTENT),
                     Some(&serde_json::Value::String(missing)),
                 );
                 assert!(observed.images.is_empty());

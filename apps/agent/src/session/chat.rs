@@ -422,10 +422,11 @@ impl Session {
             if !self.dispatched_this_turn.insert(id.clone()) {
                 continue;
             }
-            let arguments = match arguments_for_step(step.carries, arguments, previous.as_ref()) {
-                Ok(arguments) => arguments,
-                Err(why) => return self.chat_refused(&why),
-            };
+            let arguments =
+                match arguments_for_step(step.carries.as_deref(), arguments, previous.as_ref()) {
+                    Ok(arguments) => arguments,
+                    Err(why) => return self.chat_refused(&why),
+                };
             if let Some(run) = &mut self.chat_run {
                 run.work.state = AgentWorkState::Doing {
                     did: offer.descriptor.action_label.clone(),

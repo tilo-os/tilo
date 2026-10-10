@@ -95,6 +95,11 @@ pub const RESOURCE_KIND_ANNOTATION: &str = "resource_kind";
 /// [`ActionParam::as_place`].
 pub const PLACE_ANNOTATION: &str = "place";
 
+/// Schema annotation marking a text parameter as the address of content
+/// another action produced (a content hash), not words a caller can say;
+/// see [`ActionParam::as_content`].
+pub const CONTENT_ANNOTATION: &str = "content";
+
 /// The schema of a place inside a resource ([`ActionParam::as_place`]).
 #[must_use]
 pub fn place_schema() -> serde_json::Value {
@@ -289,6 +294,32 @@ impl ActionParam {
         self.ty = ParamType::Object;
         self.schema = Some(std::sync::Arc::new(schema));
         self
+    }
+
+    /// Make this text parameter the address of content another action
+    /// produced: a caller chains it from that action's result, never from
+    /// words (marked with the [`CONTENT_ANNOTATION`]).
+    #[must_use]
+    pub fn as_content(mut self) -> Self {
+        self.ty = ParamType::Text;
+        self.schema = Some(std::sync::Arc::new(serde_json::json!({
+            "type": "string",
+            CONTENT_ANNOTATION: true,
+        })));
+        self
+    }
+
+    /// Whether this parameter takes content another action produced
+    /// ([`Self::as_content`]).
+    #[must_use]
+    pub fn is_content(&self) -> bool {
+        self.ty == ParamType::Text
+            && self
+                .schema
+                .as_ref()
+                .and_then(|schema| schema.get(CONTENT_ANNOTATION))
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false)
     }
 
     /// Whether this parameter is a place inside the resource
@@ -1189,6 +1220,7 @@ const SCHEMA_ANNOTATIONS: &[&str] = &[
     "writeOnly",
     RESOURCE_KIND_ANNOTATION,
     PLACE_ANNOTATION,
+    CONTENT_ANNOTATION,
 ];
 
 /// Validate the assertion vocabulary itself before a surface is published.

@@ -299,6 +299,23 @@ pub fn service_document_invocation(
     register: fn(&mut ActionRegistry),
     invocation: DocumentInvocation<'_>,
 ) -> tilo_actions::InvocationUpdate {
+    service_document_invocation_lending(peer, replica, resources, register, None, invocation)
+}
+
+/// [`service_document_invocation`] by an owner whose window holds the room's
+/// `content` (the bytes an image another app made is named by).
+///
+/// # Panics
+///
+/// As [`service_document_invocation`].
+pub fn service_document_invocation_lending(
+    peer: &mut TypedPeer,
+    replica: &mut automerge::AutoCommit,
+    resources: &[Resource],
+    register: fn(&mut ActionRegistry),
+    content: Option<&tilo_content::ContentStore>,
+    invocation: DocumentInvocation<'_>,
+) -> tilo_actions::InvocationUpdate {
     let DocumentInvocation {
         invocation,
         address,
@@ -330,9 +347,16 @@ pub fn service_document_invocation(
         .unwrap_or_default();
     let contract = tilo_agent::surface::CONTRACTS
         .iter()
-        .find(|contract| contract.kind.kind() == root)
+        .find(|contract| {
+            // The record itself, or an item of it (a library's photograph).
+            let kind = contract.kind.kind();
+            root == kind
+                || root
+                    .strip_prefix(kind)
+                    .is_some_and(|rest| rest.starts_with('.'))
+        })
         .expect("an app the agent speaks to owns the record");
-    let result = owner_view(contract, replica).and_then(|mut view| {
+    let result = owner_view(contract, replica, content).and_then(|mut view| {
         let arguments = match argument
             .and_then(|value| value.strip_prefix(tilo_actions::ARGUMENTS_JSON_PREFIX))
         {
@@ -377,6 +401,7 @@ pub fn service_document_invocation(
 fn owner_view(
     contract: &tilo_agent::surface::AppContract,
     replica: &automerge::AutoCommit,
+    content: Option<&tilo_content::ContentStore>,
 ) -> Result<ui::framework::AttachedView, tilo_actions::DoorError> {
     let definition = (contract.definition)();
     let checkout = ui::record::identity(replica)
@@ -384,15 +409,14 @@ fn owner_view(
         .unwrap_or_else(|| {
             ui::record::RecordCheckout::package_primary(definition.record_kind.clone())
         });
-    ui::framework::AttachedView::open(
-        definition,
-        &room().to_string(),
-        checkout,
-        replica.clone().save(),
-        "owner",
-        ui::permissions::PermissionContext::permissive(),
-        false,
-    )
+    let room = room().to_string();
+    let opening =
+        ui::framework::AttachedView::opening(definition, &room, checkout, replica.clone().save());
+    match content {
+        Some(content) => opening.lending(content.clone()),
+        None => opening,
+    }
+    .open()
     .map_err(tilo_actions::DoorError::Failed)
 }
 

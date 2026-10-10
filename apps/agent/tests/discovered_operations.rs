@@ -235,11 +235,12 @@ fn run(
                 ..
             } => {
                 let resources = word_processor_resources(&replica, &content);
-                let update = typed_peer::service_document_invocation(
+                let update = typed_peer::service_document_invocation_lending(
                     &mut peer,
                     &mut replica,
                     &resources,
                     word_processor::actions::register,
+                    Some(&content),
                     typed_peer::DocumentInvocation {
                         invocation,
                         address: ActionAddress::new(resource, action),
@@ -932,11 +933,12 @@ fn drive_word_processor_peer(
                 ..
             } => {
                 let resources = word_processor_resources(&wp_replica, content);
-                let update = typed_peer::service_document_invocation(
+                let update = typed_peer::service_document_invocation_lending(
                     &mut wp_peer,
                     &mut wp_replica,
                     &resources,
                     word_processor::actions::register,
+                    Some(content),
                     typed_peer::DocumentInvocation {
                         invocation,
                         address: ActionAddress::new(resource, action),

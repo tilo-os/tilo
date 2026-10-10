@@ -310,7 +310,25 @@ impl Offer {
     /// content can only be performed as a step after something that
     /// produced some.
     pub fn wants_content(&self) -> bool {
-        self.descriptor.input.wants_content()
+        self.content_param().is_some()
+    }
+
+    /// The parameter content another operation produced is carried under:
+    /// its typed content parameter (`#[param(content)]`), or the one input of
+    /// an operation that collects only content.
+    pub fn content_param(&self) -> Option<String> {
+        if let Some(param) = self
+            .descriptor
+            .params
+            .iter()
+            .find(|param| param.is_content())
+        {
+            return Some(param.name.to_string());
+        }
+        self.descriptor
+            .input
+            .wants_content()
+            .then(|| tilo_actions::PROMPTED_PARAM.to_owned())
     }
 
     /// Whether performing it answers with content another operation takes:
