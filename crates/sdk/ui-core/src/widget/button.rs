@@ -46,6 +46,11 @@ pub struct Button {
     /// so toolbars render crisp lucide icons without depending on a
     /// Nerd Font being installed.
     icon: Option<crate::icons::Icon>,
+    /// A picture drawn in the icon's place (an icon-only button), with an
+    /// optional badge pill on its corner: what an extension's toolbar action
+    /// shows. The glyph in `icon` remains the fallback and the layout key.
+    image: Option<vello::peniko::ImageData>,
+    badge: Option<String>,
     /// Stretch to the parent's width instead of sizing to the label.
     fill_width: bool,
     /// What the button does, which decides its whole look (see
@@ -151,6 +156,8 @@ impl Button {
             is_focused: false,
             pressed_into_focus: false,
             icon: None,
+            image: None,
+            badge: None,
             fill_width: false,
             role: ButtonRole::Secondary,
             toggled: None,
@@ -268,6 +275,16 @@ impl Button {
     #[must_use]
     pub fn with_icon(mut self, icon: crate::icons::Icon) -> Self {
         self.icon = Some(icon);
+        self
+    }
+
+    /// Draw `image` where the icon would be, and a small pill with `badge`
+    /// on its bottom-right corner. Only an icon-only button shows either.
+    #[must_use]
+    pub fn with_image(mut self, image: vello::peniko::ImageData, badge: Option<&str>) -> Self {
+        self.image = Some(image);
+        self.badge = badge.filter(|text| !text.is_empty()).map(str::to_owned);
+        self.dirty = true;
         self
     }
 
@@ -822,6 +839,8 @@ impl FaceSizer {
     ) -> f64 {
         FaceContent {
             icon,
+            image: None,
+            badge: None,
             label,
             hint: None,
             flush: false,
@@ -831,10 +850,22 @@ impl FaceSizer {
     }
 }
 
+/// A badge pill on the bottom-right corner of `rect`.
+fn paint_corner_badge(ctx: &mut PaintCtx<'_>, rect: Rect, label: &str) {
+    use crate::widget::badge::BadgeFace;
+    let height = BadgeFace::height(ctx.theme);
+    let width = BadgeFace::intrinsic_width(label, ctx.text, ctx.theme).min(rect.width());
+    let pill = Rect::new(rect.x1 - width, rect.y1 - height, rect.x1, rect.y1);
+    BadgeFace::new(pill, label).paint(ctx.scene, ctx.transform, ctx.text, ctx.theme);
+}
+
 /// What sits inside a button's face: an optional leading icon, the label and
 /// an optional trailing shortcut hint.
 struct FaceContent<'a> {
     icon: Option<crate::icons::Icon>,
+    /// Painted instead of `icon` on an icon-only face.
+    image: Option<&'a vello::peniko::ImageData>,
+    badge: Option<&'a str>,
     label: &'a str,
     hint: Option<String>,
     /// A labelled plain face: no inner padding, the ink on the layout edge.
@@ -868,6 +899,23 @@ impl FaceContent<'_> {
         } else {
             width.ceil().max(2.0 * height)
         }
+    }
+
+    /// `image` stretched over `rect`.
+    fn draw_image(&self, ctx: &mut PaintCtx<'_>, image: &vello::peniko::ImageData, rect: Rect) {
+        let (width, height) = (f64::from(image.width), f64::from(image.height));
+        if width <= 0.0 || height <= 0.0 {
+            return;
+        }
+        let place = Affine::translate((rect.x0, rect.y0))
+            * Affine::scale_non_uniform(rect.width() / width, rect.height() / height);
+        ctx.scene.fill(
+            vello::peniko::Fill::NonZero,
+            ctx.transform,
+            &vello::peniko::ImageBrush::new(image.clone()),
+            Some(place),
+            &rect,
+        );
     }
 
     fn draw_icon(
@@ -904,6 +952,15 @@ impl FaceContent<'_> {
     ) {
         let icon_px = metrics.icon.min(rect.height());
         if self.label.is_empty() {
+            if let Some(image) = self.image {
+                let ix = rect.center().x - icon_px / 2.0;
+                let iy = rect.center().y - icon_px / 2.0;
+                self.draw_image(ctx, image, Rect::new(ix, iy, ix + icon_px, iy + icon_px));
+                if let Some(badge) = self.badge {
+                    paint_corner_badge(ctx, rect, badge);
+                }
+                return;
+            }
             if let Some(icon) = self.icon {
                 let ix = rect.center().x - icon_px / 2.0;
                 let iy = rect.center().y - icon_px / 2.0;
@@ -1206,6 +1263,8 @@ impl<'a> ButtonFace<'a> {
         let metrics = FaceMetrics::of_role(self.control_size, self.role, theme);
         FaceContent {
             icon: self.icon,
+            image: None,
+            badge: None,
             label: &label,
             hint: self.shortcut.as_ref().map(shortcut_text),
             flush: false,
@@ -1274,6 +1333,8 @@ impl Button {
             interact: face.interact,
             content: FaceContent {
                 icon: face.icon,
+                image: None,
+                badge: None,
                 label: &label,
                 hint: face.shortcut.as_ref().map(shortcut_text),
                 // A painted face fills the rect its host gave it.
@@ -1320,6 +1381,8 @@ impl Button {
             FaceContent {
                 flush: self.role.flush() && !label.is_empty(),
                 icon: self.icon,
+                image: None,
+                badge: None,
                 label: &label,
                 hint,
                 filled_icon: false,
@@ -1560,6 +1623,8 @@ impl Widget for Button {
             content: FaceContent {
                 flush: self.role.flush() && !label.is_empty(),
                 icon: self.icon,
+                image: self.image.as_ref(),
+                badge: self.badge.as_deref(),
                 label: &label,
                 hint,
                 filled_icon: on && self.icon.is_some_and(fills_when_on),
