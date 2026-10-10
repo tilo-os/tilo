@@ -607,7 +607,7 @@ fn extend(store: &WorkspaceStore, doc: &mut AutoCommit, edits: u64, seq: &mut u6
 /// key: what a peer, or a writer with access to the store's disk, could
 /// put where device 1's entries are. Its dependencies are retained, so a
 /// fold that skipped the signature would merge it.
-fn forged_change(base: &AutoCommit) -> Vec<u8> {
+fn forged_change(base: &mut AutoCommit) -> Vec<u8> {
     let mut forged = base.fork();
     let before = forged.get_heads();
     forged.put(ROOT, "forged", "evil").unwrap();
@@ -671,7 +671,7 @@ fn a_tampered_entry_is_refused_even_after_its_bytes_verified_once() {
     let tmp = tempfile::tempdir().unwrap();
     let store = WorkspaceStore::open(tmp.path(), WORKSPACE, false).unwrap();
     let mut seq = 0;
-    let (base, _) = history(&store, 10, &mut seq);
+    let (mut base, _) = history(&store, 10, &mut seq);
     let mut signatures = Signatures::default();
     let (entries, folded, checks) = round(&store, &mut signatures);
     assert_eq!(checks, 11, "the first round verifies every entry");
@@ -679,7 +679,7 @@ fn a_tampered_entry_is_refused_even_after_its_bytes_verified_once() {
 
     let last = entries.last().unwrap().digest;
     let path = retained_file(tmp.path(), &last).expect("the last edit's file");
-    let forged = forged_change(&base);
+    let forged = forged_change(&mut base);
     std::fs::write(&path, &forged).unwrap();
 
     let (entries, folded, checks) = round(&store, &mut signatures);
@@ -737,8 +737,8 @@ fn a_forged_entry_never_verifies() {
     let tmp = tempfile::tempdir().unwrap();
     let store = WorkspaceStore::open(tmp.path(), WORKSPACE, false).unwrap();
     let mut seq = 0;
-    let (base, _) = history(&store, 4, &mut seq);
-    let forged = forged_change(&base);
+    let (mut base, _) = history(&store, 4, &mut seq);
+    let forged = forged_change(&mut base);
     store.retain_delta(&channel(), 500, &forged).unwrap();
     let mut signatures = Signatures::default();
     for (round_number, expected) in [(1, 6), (2, 1), (3, 1)] {
