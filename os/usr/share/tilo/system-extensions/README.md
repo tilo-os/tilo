@@ -266,9 +266,9 @@ Status JSON: `schema`, `id`, `state` (`not-installed`, `waiting-for-network`,
 Units: `tilo-extension@<verb>:<id>.service` (polkit lets a local, active
 administrator start only `install`, `remove` and `refresh` instances; it
 downloads into the state above and then starts the activation),
-`tilo-extension-activate.service` (every boot, offline, before the greeter,
-and after every change; it has no mount namespace of its own, so the
-merge is the host's), `tilo-extension-refresh.timer` (after boot, daily, and
+`tilo-extension-activate.service` (every boot on which an extension is on or
+still has parts to unmerge, offline, before the greeter, and after every
+change; it has no mount namespace of its own, so the merge is the host's), `tilo-extension-refresh.timer` (after boot, daily, and
 on every update check), and NetworkManager's `90-tilo-extension` (an opt-in
 made offline installs once the device is online).
 
