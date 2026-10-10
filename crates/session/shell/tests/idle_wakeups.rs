@@ -106,6 +106,10 @@ const LOOP_TICK_BUDGET: f64 = 1.0;
 /// Frames the top bar's clock paints when a wall-clock minute turns: the one
 /// thing an idle desktop's screen should change. A ten-second window holds a
 /// turn about one run in six, and the scheduled lane's longer one always does.
+/// Measured over a 65 s window (run 93205): one tick, woken by the bar's
+/// widget deadline, painting one frame. The `paint-stats` summary that wake
+/// printed said 19/24, startup's Terminal frames, which the old count charged
+/// to the window: 2.4 ticks/s over the pull-request gate's ten seconds.
 const CLOCK_MINUTE_FRAMES: u64 = 1;
 
 /// How late after the minute turns the clock's repaint may land; a turn this
