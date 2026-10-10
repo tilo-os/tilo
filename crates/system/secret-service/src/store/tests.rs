@@ -216,7 +216,7 @@ fn search_lookup_replace_and_delete_work_like_libsecret_expects() {
         .unwrap();
     assert_eq!(replaced, one);
     assert_eq!(store.read_secret(&me, &one).unwrap().0.expose(), b"p1b");
-    assert_eq!(store.item_info(&one).unwrap().label, "one!");
+    assert_eq!(store.item_info(&me, &one).unwrap().label, "one!");
     // Without replace it adds.
     let third = store
         .create_item(

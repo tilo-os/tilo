@@ -222,7 +222,7 @@ async fn read_password(
     item: &OwnedObjectPath,
 ) -> Vec<u8> {
     let item = proxy(connection, item.as_str(), ITEM).await;
-    let secret: WireSecret = item.call("GetSecret", &(session,)).await.unwrap();
+    let (secret,): (WireSecret,) = item.call("GetSecret", &(session,)).await.unwrap();
     key.decrypt(&secret.1, &secret.2).unwrap().to_vec()
 }
 
@@ -282,8 +282,8 @@ async fn a_libsecret_client_can_store_find_read_and_delete_over_an_encrypted_ses
         b"hunter2"
     );
 
-    // The item describes itself; the collection does not list items to
-    // property readers, who carry no identity.
+    // The item describes itself, and the collection lists exactly the items
+    // its reader may see: what clients that browse through `Items` rely on.
     let item_proxy = proxy(&client, item.as_str(), ITEM).await;
     assert_eq!(
         item_proxy.get_property::<String>("Label").await.unwrap(),
@@ -298,12 +298,12 @@ async fn a_libsecret_client_can_store_find_read_and_delete_over_an_encrypted_ses
     );
     assert!(!item_proxy.get_property::<bool>("Locked").await.unwrap());
     let collection = proxy(&client, DEFAULT, COLLECTION).await;
-    assert!(
+    assert_eq!(
         collection
             .get_property::<Vec<OwnedObjectPath>>("Items")
             .await
-            .unwrap()
-            .is_empty()
+            .unwrap(),
+        vec![item.clone()]
     );
 
     // secret_password_store again with the same attributes replaces.
@@ -370,7 +370,7 @@ async fn the_plain_session_and_unsupported_algorithms_behave_as_the_specificatio
         .await
         .unwrap();
     let item = proxy(&client, item.as_str(), ITEM).await;
-    let secret: WireSecret = item.call("GetSecret", &(&session,)).await.unwrap();
+    let (secret,): (WireSecret,) = item.call("GetSecret", &(&session,)).await.unwrap();
     assert_eq!(secret.2, b"visible");
 
     let service = proxy(&client, ROOT, SERVICE).await;
@@ -398,7 +398,7 @@ async fn the_plain_session_and_unsupported_algorithms_behave_as_the_specificatio
     let session_proxy = proxy(&client, session.as_str(), "org.freedesktop.Secret.Session").await;
     session_proxy.call::<_, _, ()>("Close", &()).await.unwrap();
     assert!(
-        item.call::<_, _, WireSecret>("GetSecret", &(&session,))
+        item.call::<_, _, (WireSecret,)>("GetSecret", &(&session,))
             .await
             .is_err()
     );
@@ -493,7 +493,7 @@ async fn applications_are_attributed_isolated_and_revocable() {
     let foreign = proxy(&other, item.as_str(), ITEM).await;
     assert!(
         foreign
-            .call::<_, _, WireSecret>("GetSecret", &(&other_session,))
+            .call::<_, _, (WireSecret,)>("GetSecret", &(&other_session,))
             .await
             .is_err()
     );
@@ -517,6 +517,31 @@ async fn applications_are_attributed_isolated_and_revocable() {
         read_password(&chromium, &session, &key, &item).await,
         b"chromium-secret"
     );
+
+    // Property reads are attributed as well: the other application lists no
+    // item of Chromium's under `Items`, and cannot read what the item says.
+    let other_collection = proxy(&other, DEFAULT, COLLECTION).await;
+    assert_eq!(
+        other_collection
+            .get_property::<Vec<OwnedObjectPath>>("Items")
+            .await
+            .unwrap(),
+        vec![theirs.clone()]
+    );
+    for property in ["Label", "Created", "Modified"] {
+        assert!(
+            foreign.get_property::<OwnedValue>(property).await.is_err(),
+            "{property}"
+        );
+    }
+    assert!(
+        foreign
+            .get_property::<HashMap<String, String>>("Attributes")
+            .await
+            .is_err()
+    );
+    let own = proxy(&other, theirs.as_str(), ITEM).await;
+    assert_eq!(own.get_property::<String>("Label").await.unwrap(), "o");
 
     // An application nobody installed is recorded as such.
     let (tool_session, tool_key) = dh_session(&tool).await;
