@@ -3793,7 +3793,7 @@ impl TerminalWidget {
     ) {
         let mut bytes = self.map_key(logical_key, modifiers);
         if bytes.is_none() {
-            bytes = Self::map_physical_key(physical_key);
+            bytes = Self::map_physical_key(physical_key, modifiers);
         }
         if bytes.is_none()
             && let Some(t) = text
@@ -4826,9 +4826,15 @@ impl TerminalWidget {
         Some(out)
     }
 
-    fn map_physical_key(physical: PhysicalKey) -> Option<Vec<u8>> {
+    fn map_physical_key(
+        physical: PhysicalKey,
+        modifiers: winit::event::Modifiers,
+    ) -> Option<Vec<u8>> {
         match physical {
             PhysicalKey::Code(KeyCode::Enter | KeyCode::NumpadEnter) => Some(vec![b'\r']),
+            PhysicalKey::Code(KeyCode::Space) if modifiers.state().control_key() => {
+                Self::map_ctrl_char(" ", modifiers.state().alt_key())
+            }
             PhysicalKey::Code(KeyCode::Space) => Some(vec![b' ']),
             _ => None,
         }
@@ -4853,6 +4859,7 @@ impl TerminalWidget {
         }
 
         match key {
+            Key::Named(NamedKey::Space) if ctrl => Self::map_ctrl_char(" ", alt),
             Key::Named(named) => {
                 Self::map_named_key(*named, shift, mod_param, self.modes.app_cursor_keys)
             }

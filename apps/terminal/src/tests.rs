@@ -600,6 +600,57 @@ fn typed_text_reaches_the_pty_without_keyevent_text() {
     );
 }
 
+/// Physical and named Space must preserve Readline's mark command.
+#[test]
+fn control_space_reaches_the_native_editor_as_nul() {
+    use winit::event::{ElementState, WindowEvent};
+    use winit::keyboard::{Key, KeyCode, ModifiersState, NamedKey, PhysicalKey, SmolStr};
+
+    let (mut widget, writes) = build_test_widget();
+    let mut doc = AutoCommit::new();
+    widget.force_geometry(Rect::new(0.0, 0.0, 800.0, 480.0), 10.0, 20.0);
+
+    for alt in [false, true] {
+        let modifiers = if alt {
+            ModifiersState::CONTROL | ModifiersState::ALT
+        } else {
+            ModifiersState::CONTROL
+        };
+        for key in [
+            Key::Named(NamedKey::Space),
+            Key::Character(SmolStr::new_static(" ")),
+            Key::Unidentified(winit::keyboard::NativeKey::Unidentified),
+        ] {
+            let mut event = ui::synthetic_input::key_event(key, None, ElementState::Pressed);
+            event.physical_key = PhysicalKey::Code(KeyCode::Space);
+            assert!(
+                ui::testing::Dispatch::new()
+                    .modifiers(modifiers)
+                    .doc(&mut doc)
+                    .send(
+                        &mut widget,
+                        &WindowEvent::KeyboardInput {
+                            device_id: winit::event::DeviceId::dummy(),
+                            event,
+                            is_synthetic: false,
+                        },
+                    )
+                    .handled,
+                "the terminal must consume modified Space"
+            );
+            assert_eq!(
+                drain_writes(&writes),
+                if alt {
+                    b"\x1b\0".as_slice()
+                } else {
+                    b"\0".as_slice()
+                },
+                "all native key spellings must reach Readline's mark command"
+            );
+        }
+    }
+}
+
 /// Grid initialisation, printing through the performer, and the crate's widget surface.
 #[test]
 #[expect(
