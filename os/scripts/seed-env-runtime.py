@@ -78,6 +78,10 @@ def prune(store: Path, host: Path) -> int:
                 twin = host / relative
                 if not regular(path) or not regular(twin):
                     continue
+                # The user's session imports the bytes, so the host file must
+                # be readable by anyone, as the store's own copy is.
+                if not twin.stat().st_mode & stat.S_IROTH:
+                    continue
                 if path.stat().st_size != twin.stat().st_size:
                     continue
                 digest = sha256(path)
