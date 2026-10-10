@@ -618,6 +618,7 @@ mod tests {
                 assert_eq!(output.value, Some(serde_json::json!({"state":"playing"})));
                 action.contract.result.validate(&output).unwrap();
                 assert!(app.audio.frames_rendered() > 0);
+                assert!(app.audio.is_playing_confirmed());
                 break;
             }
             assert!(ui::time::now() < deadline, "replay produced no actual PCM");
@@ -1178,6 +1179,7 @@ mod tests {
                         .validate(&output)
                         .expect("real resumed PCM completion must match the published result");
                     assert!(app.audio.frames_rendered() >= before);
+                    assert!(app.audio.is_playing_confirmed());
                     break;
                 }
                 assert!(
