@@ -41,17 +41,17 @@ use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
+use crate::widget::identity_flow::ScreenOutcome;
 use crate::widget::identity_flow::sheet::{
     Align, BodyScroll, FORM_SHEET_WIDTH, Resolved, Role, Rows, SheetSpec, code_cell_side, edited,
     field_leaf, line_height, paint_cell, paint_text, paragraph_height, place_code_cell,
     place_field, resolve, screen_style, with_layout_renderer,
 };
-use crate::widget::identity_flow::{
-    IdentityFlowError, PairingHandshake, PairingPayload, ScreenOutcome, derive_pairing_code,
-    format_pairing_code,
-};
 use crate::widget::modal_dialog::ModalAction;
 use crate::widget::text_input::TextInput;
+use tilo_identity_ceremony::{
+    IdentityFlowError, PairingHandshake, PairingPayload, derive_pairing_code, format_pairing_code,
+};
 
 /// The pairing code is exactly six digits, one per input box.
 const CODE_LEN: usize = 6;
@@ -430,7 +430,12 @@ impl PairDeviceScreen {
                         "DKG produced no round-2 reply to share 1".into(),
                     )
                 })?;
-            let mac = super::pairing_transcript_mac(payload, "pairer-to-host", &my_round1, &reply)?;
+            let mac = tilo_identity_ceremony::pairing_transcript_mac(
+                payload,
+                "pairer-to-host",
+                &my_round1,
+                &reply,
+            )?;
             // Publication is one acknowledged, idempotent exchange. A transient
             // TLS timeout must not strand round 1 or round 2 while both screens
             // continue to say they are waiting for the other device.
@@ -460,8 +465,12 @@ impl PairDeviceScreen {
                 })?;
             loop {
                 if let Some((r, host_mac)) = hs.take_host_round2(&nonce) {
-                    let expected =
-                        super::pairing_transcript_mac(payload, "host-to-pairer", &my_round1, &r)?;
+                    let expected = tilo_identity_ceremony::pairing_transcript_mac(
+                        payload,
+                        "host-to-pairer",
+                        &my_round1,
+                        &r,
+                    )?;
                     if expected != host_mac {
                         return Err(IdentityFlowError::PairingMacInvalid);
                     }

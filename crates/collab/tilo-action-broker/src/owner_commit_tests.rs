@@ -2580,11 +2580,12 @@ mod owner_commit_tests {
             invocation: key.invocation,
             output: tilo_actions::ActionOutput::default(),
         };
-        let mut effect = crate::policy::redacted_effect_receipt(
+        let mut effect = tilo_desktop_model::WorkspaceEffectReceipt::redacted(
             key.invocation,
             &actor,
             context,
             tilo_actions::EffectReceiptStatus::Succeeded,
+            tilo_clock::unix_now_i64(),
         );
         effect.completed_at = 100;
         let request = tilo_peer_state::owner_commit::OwnerCommitRequest {

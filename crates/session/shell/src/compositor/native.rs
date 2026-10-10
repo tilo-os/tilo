@@ -12199,7 +12199,8 @@ pub fn run() {
                     });
                 }
             );
-            let personal_viewers = crate::shell::device_fabric_runtime::window_viewers();
+            let personal_viewers =
+                crate::shell::device_fabric_runtime::window_viewers(continuity_policy.current());
             let viewer_hosts = if backend_kind == BackendKind::Headless {
                 let active_room = {
                     let tree_handle = frame_builder.chrome_handle().borrow().tree_handle();
@@ -12442,7 +12443,11 @@ pub fn run() {
                 let tree = tree_handle.read();
                 shown_hosted_windows(&tree, &tiles)
             };
-            crate::shell::device_fabric_runtime::publish_window_views(net, window_views);
+            crate::shell::device_fabric_runtime::publish_window_views(
+                net,
+                window_views,
+                continuity_policy.current(),
+            );
         }
         pump_checkpoint!("device-fabric-and-network");
         // Keep the presence relay current, then fold in what peers sent. Pointer

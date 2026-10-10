@@ -128,13 +128,10 @@ infer views from `OperationKind::View`, parameter names, or an action named
 
 ### 5. Expose it from the widget
 
-```rust
-impl ResourceProvider for MyApp {
-    fn resources(&self, doc: &AutoCommit) -> Vec<Resource> {
-        match self.open_thing() { Some(x) => provide_resources(&x, doc), None => Vec::new() }
-    }
-}
-```
+The app is a `tilo_app::ResourceApp`; its tree comes only from
+`tilo_resource::publish`, which the framework's resource root serves through
+`ui::resources::PublishesResources`. Do not hand-build a second
+`tilo_actions::Resource` tree for the same document state.
 
 `Widget::resources()` is the hook the shell's one Ctrl+K palette
 (`ui::ActionPalette`) walks. Return an **empty** tree when nothing is open — a

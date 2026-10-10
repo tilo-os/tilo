@@ -1820,9 +1820,8 @@ fn deep_owned_state_restore_stamps_once_undoes_and_refuses_without_action_inner(
         )
         .unwrap();
     assert!(receipt.changed);
-    assert_eq!(receipt.before, current);
     assert_eq!(receipt.after, state.doc.base_heads());
-    assert_eq!(receipt.history_revision, revision + 1);
+    assert_eq!(state.history_revision(), revision + 1);
     assert_eq!(state.doc.get_changes(&[]).len(), change_count + 1);
     let entry = state.peek_last_undo().unwrap();
     assert_eq!(entry.before, current);

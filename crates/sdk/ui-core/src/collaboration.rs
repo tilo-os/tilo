@@ -607,13 +607,7 @@ pub struct BrokerActionInput {
 }
 
 #[derive(serde::Deserialize)]
-#[cfg_attr(
-    not(feature = "broker-transport"),
-    allow(
-        dead_code,
-        reason = "only the broker transport decodes the catalogue wire"
-    )
-)]
+#[cfg(feature = "broker-transport")]
 pub(crate) struct BrokerActionCatalogueWire {
     pub(crate) surfaces: Vec<BrokerActionSurface>,
 }

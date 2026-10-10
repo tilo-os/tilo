@@ -23,13 +23,7 @@ const UPDATE: &str = r#"{"state":"accepted","invocation":"01010101-0101-0101-010
 #[derive(Clone, Copy)]
 enum Mode {
     Good,
-    #[cfg_attr(
-        not(target_os = "macos"),
-        expect(
-            dead_code,
-            reason = "only the macOS cancellation fixture completes a call"
-        )
-    )]
+    #[cfg(target_os = "macos")]
     Succeeded,
     Absent,
     WrongHost,
@@ -85,7 +79,11 @@ fn reply(
     out.set_found(true);
     out.set_id(99);
     let invocation = uuid::Uuid::from_bytes(*invocation);
-    let update = if matches!(mode, Mode::Succeeded) {
+    #[cfg(target_os = "macos")]
+    let succeeded = matches!(mode, Mode::Succeeded);
+    #[cfg(not(target_os = "macos"))]
+    let succeeded = false;
+    let update = if succeeded {
         format!(r#"{{"state":"succeeded","invocation":"{invocation}","output":{{}}}}"#)
     } else {
         format!(r#"{{"state":"accepted","invocation":"{invocation}"}}"#)

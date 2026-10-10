@@ -4,7 +4,7 @@ use collab_types::caps::{
     decide_capability,
 };
 use collab_types::role::Role as CapRole;
-use tilo_desktop_model::{UserId, Workspace, WorkspaceEffectReceipt};
+use tilo_desktop_model::{UserId, Workspace};
 pub trait WorkspacePolicy {
     fn grant_capability(&mut self, cap: CapOverride) -> String;
     fn revoke_capability(&mut self, id: &str) -> bool;
@@ -176,79 +176,6 @@ impl WorkspacePolicy for Workspace {
             .collect()
     }
 }
-fn bounded_receipt_text(value: &str, max: usize) -> String {
-    value
-        .chars()
-        .filter(|character| !character.is_control())
-        .take(max)
-        .collect::<String>()
-        .trim()
-        .to_string()
-}
-
-fn redact_receipt_context(context: &mut tilo_actions::ActionContext) {
-    context.action_label = bounded_receipt_text(&context.action_label, 200);
-    if let Some(app) = &mut context.app {
-        app.id = bounded_receipt_text(&app.id, 160);
-        app.label = bounded_receipt_text(&app.label, 160);
-    }
-    if let Some(resource) = &mut context.resource {
-        resource.id = bounded_receipt_text(&resource.id, 512);
-        resource.kind = bounded_receipt_text(&resource.kind, 160);
-        resource.label = bounded_receipt_text(&resource.label, 200);
-    }
-    context.purpose = context
-        .purpose
-        .as_deref()
-        .map(|value| bounded_receipt_text(value, 512))
-        .filter(|value| !value.is_empty());
-    if let Some(group) = &mut context.group {
-        group.id = bounded_receipt_text(&group.id, 160);
-        group.label = bounded_receipt_text(&group.label, 200);
-        group.kind = bounded_receipt_text(&group.kind, 160);
-    }
-    context.facets.truncate(32);
-    for facet in &mut context.facets {
-        facet.key = bounded_receipt_text(&facet.key, 96);
-        facet.value = bounded_receipt_text(&facet.value, 160);
-    }
-}
-
-/// Construct the same bounded public receipt for native and standalone owners.
-/// No invocation arguments, output, streamed items or private failure text enter it.
-pub fn redacted_effect_receipt(
-    invocation: tilo_actions::InvocationId,
-    actor: &str,
-    mut context: tilo_actions::ActionContext,
-    status: tilo_actions::EffectReceiptStatus,
-) -> WorkspaceEffectReceipt {
-    let completed_at = tilo_clock::unix_now_i64();
-    let original_action = bounded_receipt_text(&context.action_label, 160);
-    context.action_label = if original_action.is_empty() {
-        status.label().to_string()
-    } else {
-        format!("{} · {original_action}", status.label())
-    };
-    // Arbitrary application facets may contain private argument summaries.
-    // Only broker-owned terminal identifiers enter this public audit.
-    context.facets.clear();
-    context
-        .facets
-        .push(tilo_actions::ActionFacet::new("tilo.receipt", "effect"));
-    context.facets.push(tilo_actions::ActionFacet::new(
-        "tilo.invocation",
-        invocation.0.to_string(),
-    ));
-    redact_receipt_context(&mut context);
-    WorkspaceEffectReceipt {
-        invocation,
-        actor: bounded_receipt_text(actor, 160),
-        context,
-        status,
-        completed_at,
-    }
-}
-
 #[cfg(test)]
 mod retained_clock_tests {
     use super::*;
@@ -330,11 +257,12 @@ mod effect_receipt_redaction_tests {
             ],
             ..Default::default()
         };
-        let receipt = super::redacted_effect_receipt(
+        let receipt = tilo_desktop_model::WorkspaceEffectReceipt::redacted(
             invocation,
             "person",
             context,
             tilo_actions::EffectReceiptStatus::Succeeded,
+            tilo_clock::unix_now_i64(),
         );
         assert_eq!(
             receipt.context.facets,
