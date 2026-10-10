@@ -393,7 +393,11 @@ whiteouts. It reports, in bytes:
 
 - `compressed`: the layer blobs a full pull downloads;
 - `unique_content`: the merged root's regular files with identical files
-  counted once, which is what composefs stores after install;
+  counted once, which is what composefs stores after install. Files that only
+  `/sysroot` names are left out and reported as `undeployed`: the base
+  image's own ostree repository, hard-linked to its `/usr`, which bootc does
+  not deploy. Removing a base package from `/usr` therefore shrinks the
+  installed root but not the pull;
 - `redundant_payload`: bytes the layers carry beyond one copy of each distinct
   file (the same file in two layers or at two paths, or one a later layer
   replaced). composefs dedupes these on disk, but every pull still downloads
@@ -422,8 +426,9 @@ measures main's newest image for both architectures and records
   the second night running. To land intended growth, dispatch Perf / scheduled
   on main with `kpis=footprint` and `accept=<KPI ids>` once the image has it.
 - **Ceiling.** Compressed bytes and unique content are held to an enforced
-  ceiling. It may only be lowered, except by a change that says why in the
-  same pull request. The KPI targets (3.5 GB compressed, 7 GB of content for
+  ceiling, 5 % over the image TIL-609 measured, so slow creep fails too. It
+  may only be lowered, except by a change that says why in the same pull
+  request. The KPI targets (3.5 GB compressed, 7 GB of content for
   x86_64) are written beside the ceilings. Windows compatibility is most of
   the gap; TIL-711 moves it to a downloaded system extension.
 

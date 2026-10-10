@@ -13,9 +13,14 @@ Totals, each in bytes:
 
 - `compressed`: the layer blobs a full pull downloads (manifest sizes).
 - `payload`: regular-file bytes the layers carry, every layer counted.
-- `content`: regular-file bytes of the merged root (a hard link once).
+- `content`: regular-file bytes of the merged root that install deploys,
+  each file once however many hard links name it.
 - `unique_content`: `content` with identical files counted once, which is
   what composefs stores after install.
+- `undeployed`: files only `/sysroot` names. The base image carries its own
+  ostree repository there, hard-linked to its `/usr`; bootc does not deploy
+  it, so removing a base package from `/usr` leaves its bytes here: pulled,
+  never installed.
 - `redundant_payload`: payload beyond one copy of each distinct file: the
   same bytes shipped twice in one image (in two layers or at two paths), or
   a file a later layer replaced. composefs dedupes it on disk; every pull
@@ -50,6 +55,7 @@ import collections
 import dataclasses
 import gzip
 import hashlib
+import http.client
 import io
 import json
 import os
@@ -97,7 +103,7 @@ class Registry:
         self.host, self.repository = host, repository
         self.token: str | None = None
 
-    def open(self, path: str, accept: str | None = None) -> IO[bytes]:
+    def open(self, path: str, accept: str | None = None, start: int = 0) -> IO[bytes]:
         url = f"https://{self.host}/v2/{self.repository}/{path}"
         for attempt in range(2):
             headers = {"User-Agent": "tilo-image-size/1"}
@@ -105,8 +111,14 @@ class Registry:
                 headers["Accept"] = accept
             if self.token:
                 headers["Authorization"] = f"Bearer {self.token}"
+            if start:
+                headers["Range"] = f"bytes={start}-"
             try:
-                return urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=120)
+                reply = urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=120)
+                if start and reply.status != 206:
+                    reply.close()
+                    raise ValueError(f"{url}: the registry ignored a resumed range request")
+                return reply
             except urllib.error.HTTPError as error:
                 challenge = error.headers.get("WWW-Authenticate", "")
                 if error.code != 401 or attempt or not challenge.startswith("Bearer "):
@@ -134,13 +146,50 @@ class Registry:
         return self.json(f"manifests/{reference}", MANIFEST_TYPES)
 
     def blob(self, digest: str) -> IO[bytes]:
-        return self.open(f"blobs/{digest}")
+        return io.BufferedReader(Resuming(lambda start: self.open(f"blobs/{digest}", start=start)), CHUNK)
 
     def blob_json(self, digest: str) -> dict[str, Any]:
         data, actual = self.json(f"blobs/{digest}")
         if actual != digest:
             raise ValueError(f"blob {digest} fails its digest check")
         return data
+
+
+class Resuming(io.RawIOBase):
+    """A download that reopens at its offset when the connection drops.
+
+    Gigabyte layers over a shared runner's network time out now and then; the
+    digest check over the whole blob still decides whether the bytes are
+    right."""
+
+    RETRIES = 4
+
+    def __init__(self, opener: Callable[[int], IO[bytes]]) -> None:
+        self.opener, self.offset, self.failures = opener, 0, 0
+        self.stream: IO[bytes] = opener(0)
+
+    def readable(self) -> bool:
+        return True
+
+    def readinto(self, buffer: Any) -> int:
+        while True:
+            try:
+                data = self.stream.read(len(buffer))
+            except (OSError, http.client.HTTPException) as error:
+                self.failures += 1
+                if self.failures > self.RETRIES:
+                    raise ValueError(f"download failed {self.failures} times at byte {self.offset}: {error}") from error
+                self.stream.close()
+                self.stream = self.opener(self.offset)
+                continue
+            size = len(data)
+            buffer[:size] = data
+            self.offset += size
+            return size
+
+    def close(self) -> None:
+        self.stream.close()
+        super().close()
 
 
 class Layout:
@@ -371,7 +420,8 @@ class Root:
 
     def __init__(self) -> None:
         self.files: dict[str, Entry] = {}
-        self.links: set[str] = set()
+        # Hard links by path, to the file they share an inode with.
+        self.links: dict[str, Entry] = {}
         # content hash -> (size, [(layer, path)]) over every layer's payload
         self.payload: dict[str, tuple[int, list[tuple[int, str]]]] = {}
         # The bytes of every rpmdb.sqlite the layers carry, by path; links alias them.
@@ -380,7 +430,7 @@ class Root:
     def replace(self, path: str) -> None:
         """A layer's entry at `path` replaces the lower one."""
         self.files.pop(path, None)
-        self.links.discard(path)
+        self.links.pop(path, None)
 
     def remove(self, path: str, below_layer: int | None = None) -> None:
         """A whiteout of `path` and everything below it (opaque: from lower layers only)."""
@@ -389,7 +439,8 @@ class Root:
             if below_layer is None or self.files[name].layer < below_layer:
                 del self.files[name]
         if below_layer is None:
-            self.links = {name for name in self.links if name != path and not name.startswith(prefix)}
+            for name in [name for name in self.links if name == path or name.startswith(prefix)]:
+                del self.links[name]
 
     def apply(self, index: int, layer: Layer, archive: tarfile.TarFile) -> None:
         for member in archive:
@@ -404,8 +455,10 @@ class Root:
             if not member.isdir():
                 self.replace(path)
             if member.islnk():
-                self.links.add(path)
                 target = normal(member.linkname)
+                entry = self.files.get(target) or self.links.get(target)
+                if entry is not None:
+                    self.links[path] = entry
                 if target in self.kept:
                     self.kept[path] = self.kept[target]
             if not member.isreg():
@@ -603,10 +656,35 @@ def directory_totals(files: dict[str, Entry], depth: int) -> dict[str, int]:
     return dict(totals)
 
 
+# The image's own ostree repository: the base's objects, hard-linked to its
+# /usr. bootc does not deploy /sysroot from an image (the receipt in
+# docs/benchmarks/os-runtime-current-main-2026-10-06.md: deleting it leaves the
+# composefs root digest unchanged), so a file only it names is pulled but never
+# installed.
+UNDEPLOYED = "sysroot/"
+
+
+def inodes(root: Root) -> list[tuple[Entry, list[str]]]:
+    """Every file of the merged root once, with all its names, deployed names first."""
+    groups: dict[int, tuple[Entry, list[str]]] = {}
+    for path, entry in [*root.files.items(), *root.links.items()]:
+        groups.setdefault(id(entry), (entry, []))[1].append(path)
+    for _, names in groups.values():
+        names.sort(key=lambda name: (name.startswith(UNDEPLOYED), name))
+    return list(groups.values())
+
+
+def deployed(names: list[str]) -> bool:
+    return not names[0].startswith(UNDEPLOYED)
+
+
 def report(image: Image, layers: list[Layer], root: Root) -> dict[str, Any]:
+    groups = inodes(root)
+    placed = {names[0]: entry for entry, names in groups}
     unique: dict[str, int] = {}
-    for entry in root.files.values():
-        unique[entry.sha] = entry.size
+    for entry, names in groups:
+        if deployed(names):
+            unique[entry.sha] = entry.size
     payload = sum(layer.payload for layer in layers)
     distinct = sum(size for size, _ in root.payload.values())
     redundant = []
@@ -637,19 +715,20 @@ def report(image: Image, layers: list[Layer], root: Root) -> dict[str, Any]:
             "layers": len(layers),
             "compressed": sum(layer.compressed for layer in layers),
             "payload": payload,
-            "content": sum(entry.size for entry in root.files.values()),
+            "content": sum(entry.size for entry, names in groups if deployed(names)),
             "unique_content": sum(unique.values()),
+            "undeployed": sum(entry.size for entry, names in groups if not deployed(names)),
             "redundant_payload": payload - distinct,
-            "files": len(root.files),
+            "files": sum(deployed(names) for _, names in groups),
             "hard_links": len(root.links),
             "packages": len(installed),
         },
         "layers": [dataclasses.asdict(layer) for layer in layers],
         "directories": {
-            "depth2": sorted(directory_totals(root.files, 2).items(), key=lambda kv: -kv[1])[:TOP],
-            "depth3": sorted(directory_totals(root.files, 3).items(), key=lambda kv: -kv[1])[:TOP],
+            "depth2": sorted(directory_totals(placed, 2).items(), key=lambda kv: -kv[1])[:TOP],
+            "depth3": sorted(directory_totals(placed, 3).items(), key=lambda kv: -kv[1])[:TOP],
         },
-        "files": sorted(([f"/{path}", entry.size] for path, entry in root.files.items()),
+        "files": sorted(([f"/{path}", entry.size] for path, entry in placed.items()),
                         key=lambda item: -item[1])[:TOP],
         "packages": sorted(([package.name, package.size] for package in installed),
                            key=lambda item: -item[1])[:TOP],
@@ -671,7 +750,7 @@ def markdown(data: dict[str, Any], why_lines: dict[str, list[str]]) -> str:
              f"Revision `{data['revision']}`, {data['architecture']}, {totals['layers']} layers, "
              f"{totals['files']:,} files, {totals['packages']} packages.", "",
              "| measure | bytes | |", "|---|---:|---:|"]
-    for name in ("compressed", "payload", "content", "unique_content", "redundant_payload"):
+    for name in ("compressed", "payload", "content", "unique_content", "undeployed", "redundant_payload"):
         lines.append(f"| {name} | {totals[name]:,} | {mb(totals[name])} |")
     def table(title: str, rows: list[Any], header: str = "| path | bytes |") -> None:
         lines.extend(["", f"## {title}", "", header, "|---|---:|"])
