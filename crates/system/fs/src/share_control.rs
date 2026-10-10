@@ -48,6 +48,7 @@ pub struct ShareControlServer {
     repository: Arc<RecordRepository>,
     clock: Arc<dyn Clock>,
     named_outbox: Option<Arc<crate::NamedShareOutbox>>,
+    reachability: crate::reachability::Reachability,
 }
 
 impl ShareControlServer {
@@ -118,12 +119,21 @@ impl ShareControlServer {
             repository,
             clock,
             named_outbox: None,
+            reachability: crate::reachability::Reachability::default(),
         })
     }
 
     #[must_use]
     pub fn with_named_delivery_outbox(mut self, outbox: Arc<crate::NamedShareOutbox>) -> Self {
         self.named_outbox = Some(outbox);
+        self
+    }
+
+    /// Wake `reachability` before a share is created: its recipient will
+    /// dial this device (TIL-774).
+    #[must_use]
+    pub fn with_reachability(mut self, reachability: crate::reachability::Reachability) -> Self {
+        self.reachability = reachability;
         self
     }
 
@@ -195,6 +205,13 @@ impl ShareControlServer {
             return error_response(ShareControlErrorCode::UnsupportedVersion);
         }
         let now_ms = self.clock.now_ms();
+        if matches!(
+            request.operation,
+            ShareControlOperationV1::CreateNamed { .. }
+                | ShareControlOperationV1::CreateBearerV2 { .. }
+        ) {
+            self.reachability.wake("a share is being created");
+        }
         let result = match request.operation {
             ShareControlOperationV1::CreateNamed {
                 record_id,
