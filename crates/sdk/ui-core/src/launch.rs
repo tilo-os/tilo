@@ -13,7 +13,7 @@ use crate::Theme;
 use crate::headless::{self, FrameHarness};
 
 mod shot_frame;
-pub use shot_frame::{ShotFrame, ShotLayout};
+pub use shot_frame::ShotFrame;
 // Writing a PNG needs the offscreen renderer's blocking GPU readback, which
 // the browser has not got; laying out and drawing a frame is portable.
 #[cfg(not(target_arch = "wasm32"))]
