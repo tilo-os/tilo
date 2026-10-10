@@ -12485,6 +12485,7 @@ pub fn run() {
                 FramePaint::full(lock_scene)
             } else {
                 let mut frame_paint = if retained_damage_supported {
+                    frame_builder.set_retained_layer_width(backend.retained_layer_width());
                     frame_builder.paint_with_damage()
                 } else {
                     let scene = frame_builder.paint();

@@ -1800,6 +1800,11 @@ pub struct DrmScanout {
     /// The primary plane and the client buffers tried on it, for scanning a
     /// fullscreen client's buffer out.
     client_plane: ClientPlane,
+    /// Thread-confined GLES resources; KMS ownership is tracked here.
+    retained_layers: Option<super::retained_layers::Consumer>,
+    retained_unavailable: bool,
+    retained_bound: bool,
+    retained_pending: bool,
 }
 
 /// Two dumb buffers and their framebuffers, in one pixel format.
@@ -2060,6 +2065,10 @@ impl DrmScanout {
             hdr_request: None,
             hdr_encoder: None,
             client_plane: ClientPlane::default(),
+            retained_layers: None,
+            retained_unavailable: false,
+            retained_bound: false,
+            retained_pending: false,
         })
     }
 
@@ -2742,6 +2751,7 @@ impl DrmScanout {
                             .take()
                             .map(|queued| flip.duration.saturating_sub(queued));
                         self.log_flip_completion();
+                        self.complete_retained_flip();
                         self.flip_pending = false;
                     }
                 }
@@ -2911,6 +2921,177 @@ impl DrmScanout {
             self.invalidate_xrgb_history();
         }
         cpu.finish_present(revision, accepted);
+    }
+
+    /// Present retained desktop layers only through event-retired physical
+    /// SDR scanout. The dense renderer remains available on any refusal.
+    pub(super) fn present_retained_layers(
+        &mut self,
+        cache: &crate::shell::frame::FrameCache,
+        pointer: (f64, f64),
+        cpu: &mut super::cpu_present::CpuRenderer,
+        revision: u64,
+        previous_revision: Option<u64>,
+    ) -> bool {
+        let started = Instant::now();
+        if !self.use_pageflip || self.retained_unavailable || self.format.is_hdr() {
+            return false;
+        }
+        if self.flip_pending {
+            return true;
+        }
+        // A restore can cancel a pending flip without delivering its event.
+        // Prove that KMS relinquished it before reusing either GLES slot.
+        if self.retained_pending && !self.leave_retained_layers() {
+            return true;
+        }
+        if !self.ensure_retained_layers() {
+            return false;
+        }
+        let cursor = if self.hw_cursor_active {
+            None
+        } else {
+            self.cursor_bitmap().map(|bitmap| {
+                (
+                    bitmap.clone(),
+                    pixel_coord(pointer.0)
+                        .saturating_sub(i32::try_from(bitmap.hotspot.0).unwrap_or(0)),
+                    pixel_coord(pointer.1)
+                        .saturating_sub(i32::try_from(bitmap.hotspot.1).unwrap_or(0)),
+                )
+            })
+        };
+        let Some(consumer) = &self.retained_layers else {
+            return false;
+        };
+        let frame = match consumer.paint(cache, cursor) {
+            Ok(frame) => frame,
+            Err(error) => {
+                tracing::warn!(%error, "retained GLES failed; retaining dense CPU fallback");
+                self.retained_unavailable = true;
+                return false;
+            }
+        };
+        let accepted = self.submit_retained_framebuffer(frame.framebuffer);
+        let mut stats = frame.stats;
+        stats.revision = revision;
+        stats.previous_revision = previous_revision;
+        stats.flip_wait = cpu.stats().flip_wait;
+        stats.previous_flip_latency = cpu.stats().previous_flip_latency;
+        stats.total = started.elapsed().saturating_add(stats.flip_wait);
+        stats.software_cursor = !self.hw_cursor_active;
+        stats.presented = accepted;
+        stats.compose_draws = frame.compose.draws;
+        stats.upload_px = frame.compose.upload_px;
+        stats.compose = frame.compose.record;
+        stats.gpu_wait = frame.gpu_wait;
+        tracing::trace!(
+            draws = frame.compose.draws,
+            upload_px = frame.compose.upload_px,
+            record_us = frame.compose.record.as_micros(),
+            gpu_wait_us = frame.gpu_wait.as_micros(),
+            accepted,
+            "retained GLES composition"
+        );
+        cpu.record_retained_frame(stats);
+        // A failed publish owns no new KMS target; leave the previous front
+        // in place and retry on the next frame. Texture uploads stay valid.
+        !self.retained_unavailable
+    }
+
+    fn ensure_retained_layers(&mut self) -> bool {
+        if self.retained_layers.is_some() {
+            return true;
+        }
+        let created = self
+            .card
+            .as_fd()
+            .try_clone_to_owned()
+            .map_err(|error| error.to_string())
+            .and_then(|card| super::retained_layers::Consumer::new(card, self.size()));
+        match created {
+            Ok(consumer) => self.retained_layers = Some(consumer),
+            Err(error) => {
+                tracing::warn!(%error, "retained GLES unavailable; using dense CPU presentation");
+                self.retained_unavailable = true;
+                return false;
+            }
+        }
+        true
+    }
+
+    /// Keep kernel acceptance and the ownership transfer in one transaction.
+    fn submit_retained_framebuffer(&mut self, framebuffer: framebuffer::Handle) -> bool {
+        self.apply_adaptive_sync();
+        let accepted = match self
+            .card
+            .page_flip(self.crtc, framebuffer, PageFlipFlags::EVENT, None)
+        {
+            Ok(()) => true,
+            Err(error) => {
+                let errno = error.raw_os_error().unwrap_or_default();
+                if errno != libc::EBUSY && errno != libc::EAGAIN {
+                    tracing::warn!(%error, "retained GLES page flip refused; using dense CPU fallback");
+                    self.retained_unavailable = true;
+                }
+                false
+            }
+        };
+        if accepted {
+            if let Some(consumer) = &self.retained_layers {
+                consumer.accepted();
+            }
+            self.flip_submission = self.flip_submission.wrapping_add(1);
+            self.flip_queued_at = Some(Instant::now());
+            self.flip_queued_mono = Some(monotonic_now());
+            self.note_publish(false, true);
+            self.retained_bound = true;
+            self.retained_pending = true;
+        } else if let Some(consumer) = &self.retained_layers {
+            consumer.refused();
+        }
+        accepted
+    }
+
+    fn complete_retained_flip(&mut self) {
+        if self.retained_pending {
+            if let Some(consumer) = &self.retained_layers {
+                consumer.complete();
+            }
+            self.retained_pending = false;
+        }
+    }
+
+    /// A successful modeset is the authority to release GLES slot ownership.
+    /// On failure, keep resources pinned and refuse dense publication.
+    pub(super) fn leave_retained_layers(&mut self) -> bool {
+        if !self.retained_bound && !self.retained_pending {
+            return true;
+        }
+        let Some(framebuffer) = self.fb_at(self.front) else {
+            return false;
+        };
+        if let Err(error) = self.card.set_crtc(
+            self.crtc,
+            Some(framebuffer),
+            (0, 0),
+            &[self.connector],
+            Some(self.mode),
+        ) {
+            tracing::warn!(%error, "retained GLES fallback modeset failed; keeping scanout buffers pinned");
+            return false;
+        }
+        self.physical_identity.cancel_pending(self.flip_pending);
+        self.flip_pending = false;
+        self.flip_queued_at = None;
+        self.flip_queued_mono = None;
+        self.retained_bound = false;
+        self.retained_pending = false;
+        self.invalidate_xrgb_history();
+        if let Some(consumer) = &self.retained_layers {
+            consumer.forget();
+        }
+        true
     }
 
     /// Present without draining DRM events first: the multi-output backend drains the shared card fd
@@ -3160,6 +3341,7 @@ impl DrmScanout {
             for ev in events {
                 if let Event::PageFlip(_) = ev {
                     self.log_flip_completion();
+                    self.complete_retained_flip();
                     self.flip_pending =
                         inflight_after_page_flip_event(u8::from(self.flip_pending)) > 0;
                 }
@@ -3267,6 +3449,7 @@ impl DrmScanout {
     pub fn mark_flip_complete(&mut self, crtc: crtc::Handle) {
         if crtc == self.crtc {
             self.log_flip_completion();
+            self.complete_retained_flip();
             self.flip_pending = inflight_after_page_flip_event(u8::from(self.flip_pending)) > 0;
         }
     }
@@ -3579,6 +3762,17 @@ impl DrmScanout {
 
 impl Drop for DrmScanout {
     fn drop(&mut self) {
+        if (self.retained_bound || self.retained_pending)
+            && self
+                .card
+                .set_crtc(self.crtc, None, (0, 0), &[], None)
+                .is_err()
+            && let Some(consumer) = self.retained_layers.take()
+        {
+            // KMS still owns these buffers. Keep their worker and BOs alive
+            // rather than destroying a framebuffer the CRTC can be reading.
+            std::mem::forget(consumer);
+        }
         // Framebuffer IDs are kernel objects independent of the dumb-buffer
         // handles.  Explicit teardown matters for hotplug and rapid developer
         // compositor replacement; otherwise each cycle leaks two IDs until

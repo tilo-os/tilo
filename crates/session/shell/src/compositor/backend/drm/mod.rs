@@ -16,11 +16,13 @@ pub mod cpu_present;
 pub mod devices;
 mod direct_retry;
 pub mod gestures;
+mod gl_compose;
 pub mod hotplug;
 pub mod input_config;
 mod output_signal;
 pub mod outputs;
 pub mod paint;
+mod retained_layers;
 pub mod runtime;
 pub mod scale;
 pub mod scanout;
@@ -1463,6 +1465,7 @@ fn apply_scanout_command(
 #[derive(Clone, Copy)]
 struct ScanoutFrame<'a> {
     scene: &'a Scene,
+    cache: Option<&'a crate::shell::frame::FrameCache>,
     damage: Option<SceneDamage<'a>>,
     hdr_layers: &'a [HdrLayer],
     /// What the scene's floating surfaces are drawn over.
@@ -1479,6 +1482,7 @@ impl<'a> ScanoutFrame<'a> {
     fn scene_only(scene: &'a Scene) -> Self {
         Self {
             scene,
+            cache: None,
             damage: None,
             hdr_layers: &[],
             backdrop: None,
@@ -1493,6 +1497,7 @@ impl<'a> From<&'a FramePaint> for ScanoutFrame<'a> {
     fn from(frame: &'a FramePaint) -> Self {
         Self {
             scene: &frame.scene,
+            cache: frame.cache.as_ref(),
             damage: (frame.revision != 0).then_some(SceneDamage {
                 revision: frame.revision,
                 previous_revision: frame.previous_revision,
@@ -2462,7 +2467,9 @@ fn paint_scanouts_cpu(
         previous_revision: damage.and_then(|damage| damage.previous_revision),
         regions: damage.and_then(|damage| damage.regions),
     };
-    renderer.update(cpu_frame, target_size);
+    if frame.cache.is_none() {
+        renderer.update(cpu_frame, target_size);
+    }
 
     if single
         && let Some(entry) = scanouts.first_mut()
@@ -2481,9 +2488,39 @@ fn paint_scanouts_cpu(
                 renderer.invalidate_screen();
             }
         }
+        if let Some(cache) = frame.cache
+            && entry.scanout.present_retained_layers(
+                cache,
+                pointer,
+                renderer,
+                cpu_frame.revision,
+                cpu_frame.previous_revision,
+            )
+        {
+            renderer.finish_frame();
+            return;
+        }
+        if !entry.scanout.leave_retained_layers() {
+            return;
+        }
+        if frame.cache.is_some() {
+            let wait = renderer.stats();
+            renderer.update(cpu_frame, target_size);
+            renderer.record_flip_wait(wait.flip_wait, wait.previous_flip_latency);
+        }
         entry.scanout.present_cpu(renderer, Some(pointer));
         renderer.finish_frame();
         return;
+    }
+
+    if scanouts
+        .iter_mut()
+        .any(|entry| !entry.scanout.leave_retained_layers())
+    {
+        return;
+    }
+    if frame.cache.is_some() {
+        renderer.update(cpu_frame, target_size);
     }
 
     drain_page_flip_completions(scanouts);
@@ -2626,6 +2663,7 @@ fn render_combined_readback(
         hdr_layers,
         backdrop: _,
         scanout: _,
+        cache: _,
     } = frame;
     let Some(bridge) = paint.as_mut() else {
         return PaintScanoutSample::default();
@@ -3192,6 +3230,18 @@ impl Backend for DrmBackend {
 
     fn pixel_aligned_strip_pan(&self) -> bool {
         cpu_present::cpu_render_reason().is_some()
+    }
+
+    fn retained_layer_width(&self) -> Option<u32> {
+        (cpu_present::cpu_render_reason().is_some()
+            && !std::env::var("TILO_DRM_GL_COMPOSE").is_ok_and(|value| value == "0")
+            && self.outputs.len() == 1
+            && self.outputs.first().is_some_and(|output| {
+                output.position == (0, 0)
+                    && output.scale.to_bits() == 1.0_f32.to_bits()
+                    && output.transform == settings_store::hardware::OutputTransform::Normal
+            }))
+        .then_some(retained_layers::MAX_LAYER_WIDTH)
     }
 
     /// Inline presentation, reached only when the presenter hasn't been split off yet — kept so a caller that never splits still paints.

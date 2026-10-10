@@ -656,6 +656,12 @@ pub trait Backend {
         false
     }
 
+    /// Maximum retained workspace width for this presenter's layer consumer.
+    /// The frame builder scopes unbaking to the individual produced frame.
+    fn retained_layer_width(&self) -> Option<u32> {
+        None
+    }
+
     /// Submit a frame with optional retained-damage authority. Backends that cannot retain a
     /// previous native target keep the established dense scene path.
     fn submit_frame_with_damage(&mut self, frame: &FramePaint, output: OutputId) {
