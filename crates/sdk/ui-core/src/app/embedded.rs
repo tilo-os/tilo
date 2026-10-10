@@ -803,6 +803,54 @@ mod theme_repaint_tests {
     }
 
     #[test]
+    fn a_tooltip_in_an_embedded_app_damages_its_chip_not_the_app() {
+        let app = App::new_with_controlled_inputs(
+            crate::state::State::new(),
+            Box::new(crate::widget::Button::new("probe", "Probe").tooltip("Probe the tile")),
+        );
+        let mut tile = EmbeddedApp::new(app, |_| {}).unwrap();
+        let theme = Theme::light();
+        layout(&mut tile, &theme);
+        for _ in 0..4 {
+            let _ = paint_tracked(&mut tile, &theme);
+        }
+        let region = KurboRect::new(40.0, 20.0, 340.0, 120.0);
+        let button = tile.app.root_widget.get_rect();
+        // The pointer arrives over the button and its hover is painted.
+        let at = button.center();
+        let moved = WindowEvent::CursorMoved {
+            device_id: winit::event::DeviceId::dummy(),
+            position: winit::dpi::PhysicalPosition::new(at.x, at.y),
+        };
+        tile.app.surface_input(&tile.region, moved, false);
+        tile.wants_frame.set(true);
+        let hovered = paint_tracked(&mut tile, &theme);
+        assert!(
+            tile.app.input.tooltip_host.needs_frame(),
+            "the button's tooltip is pending over {button:?}"
+        );
+        // It rests: the tooltip shows, and only it changes.
+        std::thread::sleep(
+            crate::widget::tooltip::HOVER_DWELL + crate::time::Duration::from_millis(50),
+        );
+        tile.wants_frame.set(true);
+        let shown = paint_tracked(&mut tile, &theme);
+        assert!(
+            tile.app.input.tooltip_host.visible().is_some(),
+            "the tooltip shows"
+        );
+        let damage = crate::scene_parts::damage(&hovered.0, &hovered.1, &shown.0, &shown.1)
+            .expect("the tooltip is proven");
+        let chip = tile.damage_report_for_test();
+        assert!(!damage.is_empty(), "the tooltip is repainted");
+        let repainted: f64 = damage.iter().map(|rect| rect.area()).sum();
+        assert!(
+            repainted < region.area(),
+            "{damage:?} repaints the tooltip ({chip:?}), not the app's {region:?}"
+        );
+    }
+
+    #[test]
     fn an_embedded_frame_hands_its_widget_damage_to_the_host() {
         let label = std::rc::Rc::new(std::cell::RefCell::new("before".to_owned()));
         let source = std::rc::Rc::clone(&label);
