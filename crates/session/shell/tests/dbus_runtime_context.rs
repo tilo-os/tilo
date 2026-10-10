@@ -22,6 +22,9 @@ use shell::compositor::accessibility::NativeAccessibility;
 use shell::shell::mpris;
 use smithay_client_toolkit::reexports::calloop::ping::make_ping;
 
+#[path = "dbus_runtime_context/shared.rs"]
+mod shared;
+
 const CHILD_ENV: &str = "TILO_DBUS_RUNTIME_CONTEXT_BUS";
 const PROBE_ENV: &str = "TILO_DBUS_RUNTIME_CONTEXT_PROBE";
 const TEST_NAME: &str = "dbus_runtime_context::dbus_clients_work_from_threads_without_a_runtime";
