@@ -20,12 +20,11 @@
 # the session), which keeps the always-present, VM-testable password login
 # working and registers the started session with logind.
 #
-# Tilo stores an existing identity's private signing share in the user's
-# freedesktop Secret Service.  Capture the successful password and start /
-# unlock gnome-keyring in the PAM session exactly as GDM does.  Without these
-# two hooks a direct greetd login authenticates successfully but the desktop's
-# first identity lookup receives ENOKEY and falsely presents recovery chrome.
-# The Tilo image installs gnome-keyring-pam and checks that contract below.
+# Tilo's own Secret Service (tilo-secret-service) owns org.freedesktop.secrets
+# and opens with the device identity after any login method.  The two
+# gnome-keyring hooks below remain for one purpose only: at a password login
+# they unlock the person's old GNOME login keyring, which tilo-secret-service
+# reads once and imports.  Nothing of gnome-keyring serves the bus name.
 # systemd-homed: per-user encrypted home (LUKS-backed), unlocked at login and
 # locked at logout/suspend. For a homed user pam_systemd_home authenticates +
 # activates the home (sufficient = short-circuit success); for a traditional
