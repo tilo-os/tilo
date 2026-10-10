@@ -71,7 +71,9 @@ its read-only root in the per-user package store. System images are rebuilt
 there from verified bytes through the content store, so bootc and system
 extensions beneath `/usr` do not consume the guest overlay's stacking depth.
 Cached bytes, links, executable modes and publisher trust are checked again
-before use. The guest mounts this local tree read-only; its confinement stays
+before use. The import is one durability barrier, not one per file: the
+content store syncs once before the tree is materialised. A session that has
+to import first says so on its terminal before the prompt appears. The guest mounts this local tree read-only; its confinement stays
 the same. Other image readers can use `materialized_tree` without relocating
 the system tree.
 

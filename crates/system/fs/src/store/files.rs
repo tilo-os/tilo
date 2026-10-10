@@ -22,7 +22,10 @@ impl ContentStore {
     ///
     /// The blob is protected by the same service-owned tag as
     /// [`ContentStore::ingest`], so it survives until it is explicitly
-    /// evicted. The source file is left untouched.
+    /// evicted. The source file is left untouched. Like `ingest`, the import
+    /// is durable when this returns or, inside a deferred-durability group
+    /// ([`ContentStore::defer_sync`]), when the group ends: importing a tree
+    /// of files then costs one database sync rather than one per file.
     ///
     /// # Errors
     ///
@@ -55,7 +58,7 @@ impl ContentStore {
                 temporary.hash_and_format(),
             )
             .await?;
-        self.store().sync_db().await?;
+        self.sync_unless_deferred().await?;
         drop(temporary);
         Ok(hash)
     }
@@ -187,5 +190,44 @@ mod tests {
             );
             reopened.close().await.unwrap();
         }
+    }
+
+    /// Open deferred groups, and whether one still owes a database sync.
+    fn owed_sync(store: &ContentStore) -> (usize, bool) {
+        *store
+            .deferred
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    #[tokio::test]
+    async fn file_imports_in_a_deferred_group_sync_once_when_it_ends() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("store");
+        let store = ContentStore::open(&root).await.unwrap();
+        let mut imported = Vec::new();
+        store.defer_sync();
+        for n in 0..3u8 {
+            let source = dir.path().join(format!("f{n}"));
+            std::fs::write(&source, vec![n; 70_000]).unwrap();
+            imported.push(store.ingest_file(&source).await.unwrap());
+            // The import left its sync to the group.
+            assert_eq!(owed_sync(&store), (1, true));
+        }
+        store.end_deferred_sync().await.unwrap();
+        assert_eq!(owed_sync(&store), (0, false));
+
+        // Outside a group an import owes nothing once it returns.
+        let source = dir.path().join("alone");
+        std::fs::write(&source, vec![9u8; 70_000]).unwrap();
+        imported.push(store.ingest_file(&source).await.unwrap());
+        assert_eq!(owed_sync(&store), (0, false));
+        store.close().await.unwrap();
+
+        let reopened = ContentStore::open(&root).await.unwrap();
+        for hash in imported {
+            assert_eq!(reopened.complete_len(hash).await.unwrap(), Some(70_000));
+        }
+        reopened.close().await.unwrap();
     }
 }
