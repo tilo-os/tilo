@@ -214,12 +214,6 @@ impl VaultFormat {
         }
     }
 
-    /// [`Self::load_or_create_key`] with [`Custody::System`], in `store`
-    /// rather than the platform's. For tests and hosts with their own store.
-    pub fn load_or_create_key_in(&self, dir: &Path, store: &SecretStore) -> Option<VaultKey> {
-        self.system_key(dir, store)
-    }
-
     /// The store and key naming this format's vault key: the `application`
     /// and `purpose` attributes, else the format's name.
     fn system_item(&self) -> (&'static str, &'static str) {

@@ -1563,38 +1563,6 @@ pub fn load_metadata_from_path(path: &std::path::Path) -> Result<IdentityMetadat
     })
 }
 
-/// Load a secured record through an explicitly installed hardware provider.
-/// The metadata backend id must match; this prevents silently downgrading a
-/// TPM-labelled identity to a software key.
-///
-/// # Errors
-///
-/// Returns [`NotAvailable::ConnectionFailed`] if the file can't be read or
-/// is malformed, the record has no secret reference, the reference names a
-/// different provider than `provider`, or the secret can't be loaded.
-pub fn load_from_path_with_provider(
-    path: &std::path::Path,
-    provider: &dyn SecretProvider,
-) -> Result<SigningIdentity, NotAvailable> {
-    let bytes =
-        read_record_bytes(path).map_err(|e| LoadFailure::ReadFailed(e).into_not_available())?;
-    let record = parse_record(&bytes)?;
-    let reference = record
-        .secret_ref
-        .as_ref()
-        .ok_or_else(|| LoadFailure::SecuredRecordNeedsProvider.into_not_available())?;
-    if reference.backend != provider.backend_id() {
-        return Err(NotAvailable::ConnectionFailed(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "identity record uses a different secret provider",
-        )));
-    }
-    let secret = provider
-        .load(&reference.locator)
-        .map_err(|e| LoadFailure::ReadFailed(e).into_not_available())?;
-    identity_from_record(record, Some(secret.as_slice()))
-}
-
 /// Same as [`load`] but parses from an in-memory byte slice.
 ///
 /// # Errors

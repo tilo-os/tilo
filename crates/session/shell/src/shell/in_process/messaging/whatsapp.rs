@@ -173,31 +173,6 @@ async fn assemble_native(
 }
 
 impl super::super::InProcessApps {
-    /// Assemble existing OS-keychain custody on the native worker and register
-    /// the account's original Messages loan. Locked or failed setup remains
-    /// visible through that loan and can be explicitly recovered by the host.
-    /// # Errors
-    /// Refuses relative storage or another persona/profile/service/account.
-    pub fn start_native_whatsapp_account(
-        &mut self,
-        startup: WhatsappAccountStartup,
-        handles: NativeWhatsappHandles,
-    ) -> Result<
-        impl Future<Output = Arc<NativeWhatsappAccount>> + Send + 'static + use<>,
-        LaunchError,
-    > {
-        if !handles.private_root.is_absolute() {
-            return Err(LaunchError::BindingMismatch);
-        }
-        let account = self.prepare_whatsapp_account(startup)?;
-        // Only the already registered, Send native account and its handles
-        // enter the worker future. UI record owners never cross that boundary.
-        Ok(async move {
-            let _ = account.activate_native(handles).await;
-            account
-        })
-    }
-
     /// Register the current signed account through the normal Messages mount.
     /// Missing grants stay locked without calling the factory. The native host
     /// retains the returned handle for an explicit grant/recovery operation.

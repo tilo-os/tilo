@@ -514,17 +514,6 @@ impl SlidesDoc {
             .map(|(_, _, object)| object)
     }
 
-    /// Resolve (or create) the CRDT text backing one slide's speaker notes.
-    /// Shared editors bind to this object directly, preserving character-level
-    /// concurrent edits instead of mirroring a whole string.
-    pub fn notes_text_obj(doc: &mut AutoCommit, slide_idx: usize) -> Option<ObjId> {
-        let slide = Self::slide_obj(doc, slide_idx)?;
-        Some(match doc.get(&slide, "notes") {
-            Ok(Some((Value::Object(ObjType::Text), id))) => id,
-            _ => doc.put_object(&slide, "notes", ObjType::Text).ok()?,
-        })
-    }
-
     pub fn set_element_pos(doc: &mut AutoCommit, slide_idx: usize, elem_id: &str, x: f64, y: f64) {
         if let Some(e) = Self::element_obj(doc, slide_idx, elem_id) {
             let _ = doc.put(&e, "x", x);
