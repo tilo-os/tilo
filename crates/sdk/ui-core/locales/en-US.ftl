@@ -309,6 +309,7 @@ widget-block-indent = Indent block and children
 widget-block-text = Block text
 widget-block-outdent = Outdent block and children
 widget-maximized-restore = Restore
+widget-maximized-fullscreen = Full screen
 tree-rename-field = Rename
 tree-move-up = Move up
 tree-move-down = Move down

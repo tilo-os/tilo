@@ -306,6 +306,7 @@ widget-block-indent = Block mit Unterelementen einrücken
 widget-block-text = Blocktext
 widget-block-outdent = Block mit Unterelementen ausrücken
 widget-maximized-restore = Wiederherstellen
+widget-maximized-fullscreen = Vollbild
 tree-rename-field = Umbenennen
 tree-move-up = Nach oben verschieben
 tree-move-down = Nach unten verschieben
