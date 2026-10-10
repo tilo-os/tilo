@@ -130,9 +130,10 @@ fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
                 let mut reads = Vec::new();
                 // Every stored field is read in one walk of the map
                 // (`read_slots`), then loaded in declaration order, each
-                // taking the next slot of the one array. A local per slot
-                // would make every field's `?` drop each slot after it, a
-                // drop chain per field in every app (TIL-765).
+                // taking its slot out of the one array through the
+                // non-generic `take_slot`. A local per slot would make every
+                // field's `?` drop each slot after it, and an iterator over
+                // the array is generic code of its own in every app (TIL-765).
                 let mut slot_keys = Vec::new();
                 let mut missing = Vec::new();
                 let mut writes = Vec::new();
@@ -155,8 +156,9 @@ fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
                         missing.push(quote!(#ident: ::core::default::Default::default()));
                         continue;
                     }
+                    let index = proc_macro2::Literal::usize_unsuffixed(slot_keys.len());
                     reads.push(quote!(#ident: #krate::load_slot::<#ty>(
-                        doc, ::core::iter::Iterator::next(&mut __slots).flatten(), #key
+                        doc, #krate::take_slot(&mut __slots, #index), #key
                     )?));
                     slot_keys.push(key.clone());
                     missing.push(quote!(
@@ -193,9 +195,7 @@ fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
                 let slots = if slot_keys.is_empty() {
                     quote!()
                 } else {
-                    quote!(let mut __slots = ::core::iter::IntoIterator::into_iter(
-                        #krate::read_slots(doc, obj, [#(#slot_keys),*]),
-                    );)
+                    quote!(let mut __slots = #krate::read_slots(doc, obj, [#(#slot_keys),*]);)
                 };
                 let item_collections = if collections.is_empty() {
                     quote!()

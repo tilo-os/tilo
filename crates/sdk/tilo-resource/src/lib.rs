@@ -130,7 +130,7 @@ pub use kind::{Kinds, ResourceKind};
 pub use low_mutation::{APPLY_LOW, GROUP_LOW};
 pub use model::{
     Atom, Doc, Fields, Json, MapSlot, Model, ModelError, Slot, load_slot, read_key, read_slots,
-    refresh_key, write_key, write_key_changed,
+    refresh_key, take_slot, write_key, write_key_changed,
 };
 pub use reader::{Demand, Reader, heads_of};
 pub use replica::Replica;

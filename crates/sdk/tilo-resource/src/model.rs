@@ -411,6 +411,15 @@ fn map_slots(doc: &Doc, obj: &ObjId) -> Vec<(String, MapSlot)> {
         .collect()
 }
 
+/// The slot at `index` of what [`read_slots`] returned, taken out of it, or
+/// an empty slot past its end. Not generic over the number of slots, so the
+/// derived reads share one copy (TIL-765).
+#[must_use]
+#[inline(never)]
+pub fn take_slot(slots: &mut [MapSlot], index: usize) -> MapSlot {
+    slots.get_mut(index).and_then(Option::take)
+}
+
 /// `T` read from a slot [`read_slots`] found under `key`, or
 /// [`Model::missing`]: what [`read_key`] answers for that key.
 ///
