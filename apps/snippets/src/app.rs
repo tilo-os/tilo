@@ -16,8 +16,6 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use std::collections::HashSet;
-
 use taffy::{NodeId, TaffyTree};
 use ui::framework::TextControl;
 use ui::framework::{Dispatcher, Submit};
@@ -157,9 +155,9 @@ pub(crate) struct Core {
     body_identity: Option<(SnippetId, Language)>,
     /// The snippet the content column shows.
     pub(crate) open: Option<SnippetId>,
-    /// The snippets there were when this view created or duplicated one: the
-    /// first snippet presented that is not among them is opened.
-    pending_open: Option<HashSet<SnippetId>>,
+    /// This view created or duplicated a snippet: the one its submission
+    /// minted opens once it lands.
+    pub(crate) open_minted: bool,
     /// Ordered ids the list shows (the chosen place's snippets).
     pub(crate) visible: Vec<SnippetId>,
     /// The fill-in-variables dialog, when open.
@@ -193,7 +191,7 @@ impl Core {
             body: Self::body_control(None, None),
             body_identity: None,
             open: None,
-            pending_open: None,
+            open_minted: false,
             visible: Vec::new(),
             expand: None,
             menu: None,
@@ -373,19 +371,30 @@ impl Core {
     /// an undo.
     pub(crate) fn show_library(&mut self, state: &Rc<Snippets>) {
         self.library = Rc::clone(state);
-        if let Some(known) = &self.pending_open
-            && let Some(made) = self
-                .library
-                .snippets
-                .ids()
-                .find(|id| !known.contains(*id))
-                .cloned()
-        {
-            self.pending_open = None;
-            self.open = Some(made);
-        }
         self.recompute_visible();
+        self.open_landed();
         self.sync_body_editor(None);
+    }
+
+    /// Open the snippet this view's own "new" or "duplicate" minted, once
+    /// the submission landed and the library presents it.
+    pub(crate) fn open_landed(&mut self) {
+        if !self.open_minted {
+            return;
+        }
+        let Some(landed) = self.dispatch.as_ref().and_then(|d| d.landed().get()) else {
+            return;
+        };
+        let Some(made) = landed.minted().into_iter().next() else {
+            self.open_minted = false;
+            return;
+        };
+        if self.library.get(&made).is_none() {
+            return;
+        }
+        self.open_minted = false;
+        self.open = Some(made);
+        self.recompute_visible();
     }
 
     /// Edit through the resource's dispatcher from now on.
@@ -529,7 +538,10 @@ impl Core {
     /// Open the snippet this view is about to create once it is presented,
     /// in front on a narrow window.
     fn open_when_presented(&mut self) {
-        self.pending_open = Some(self.library.snippets.ids().cloned().collect());
+        self.open_minted = true;
+        if let Some(dispatch) = &self.dispatch {
+            dispatch.landed().set(None);
+        }
         self.list.reveal = true;
         self.show_pane = Some(NavPane::Content);
     }
@@ -1014,6 +1026,7 @@ impl SnippetsApp {
         for action in requests {
             self.core.borrow_mut().apply(action);
         }
+        self.core.borrow_mut().open_landed();
         let (pane, titles) = {
             let mut core = self.core.borrow_mut();
             (
