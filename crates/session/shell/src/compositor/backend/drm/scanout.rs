@@ -3428,6 +3428,22 @@ impl DrmScanout {
             .framebuffer(&self.card, self.crtc, dmabuf, fourcc)
     }
 
+    /// Refresh what this output's primary plane offers a fullscreen client
+    /// in place of `target` framebuffers on the KMS device `device`; `None`
+    /// withdraws the offer ([`super::client_scanout::ClientPlane::offer`]).
+    pub(super) fn offer_client_plane(&mut self, device: u64, target: Option<DrmFourcc>) {
+        self.client_plane
+            .offer(&self.card, self.crtc, device, target);
+    }
+
+    /// This output's offer to fullscreen clients, when it changed since it
+    /// was last taken.
+    pub(super) fn unpublished_client_plane(
+        &mut self,
+    ) -> Option<Option<std::sync::Arc<crate::compositor::scanout_feedback::ScanoutPlane>>> {
+        self.client_plane.unpublished_offer()
+    }
+
     /// A flip of `dmabuf` failed: composite it from now on.
     pub(super) fn refuse_client_buffer(
         &mut self,

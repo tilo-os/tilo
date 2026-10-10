@@ -797,6 +797,11 @@ pub struct State {
     /// whose dma-bufs the compositor can actually read. Not advertising is
     /// the honest answer there: Mesa falls back to its `wl_shm` software path instead of offering dmabufs it would have to reject.
     pub dmabuf_global: Option<DmabufGlobal>,
+    /// The feedback each surface gets from [`Self::dmabuf_global`]: the
+    /// default, or a scanout tranche for the fullscreen client a display
+    /// could scan out ([`Self::update_scanout_feedback`]). `None` whenever
+    /// the global is.
+    pub scanout_feedback: Option<crate::compositor::scanout_feedback::ScanoutFeedback>,
     /// The render node handed to clients as
     /// `zwp_linux_dmabuf_feedback_v1.main_device`, or the reason none was —
     /// kept so the boot log, state dump and integration tests read the *decision* rather than re-deriving it.
@@ -1501,7 +1506,8 @@ impl State {
         let output_manager_state = OutputManagerState::new_with_xdg_output::<Self>(&display_handle);
 
         let mut dmabuf_state = DmabufState::new();
-        let (dmabuf_device, dmabuf_global) = Self::init_dmabuf(&display_handle, &mut dmabuf_state);
+        let (dmabuf_device, dmabuf_global, scanout_feedback) =
+            Self::init_dmabuf(&display_handle, &mut dmabuf_state);
 
         // Register a real seat with a pointer device for `apply_remote_input` to inject into; name matches the wayland.rs sibling for consistency.
         let mut seat = seat_state.new_wl_seat(&display_handle, "tilo-desktop");
@@ -1569,6 +1575,7 @@ impl State {
             shm_state,
             dmabuf_state,
             dmabuf_global,
+            scanout_feedback,
             dmabuf_device,
             seat_state,
             text_input_manager_state,
@@ -1688,7 +1695,11 @@ impl State {
     fn init_dmabuf(
         display_handle: &DisplayHandle,
         dmabuf_state: &mut DmabufState,
-    ) -> (Result<RenderNode, ProbeError>, Option<DmabufGlobal>) {
+    ) -> (
+        Result<RenderNode, ProbeError>,
+        Option<DmabufGlobal>,
+        Option<crate::compositor::scanout_feedback::ScanoutFeedback>,
+    ) {
         // `zwp_linux_dmabuf_v1`. Two things have to be right for a GPU client:
         //
         // 1. **A main device.** Mesa dropped `wl_drm`, so
@@ -1719,54 +1730,59 @@ impl State {
         })
         .collect();
         let dmabuf_device = crate::compositor::render_node::probe();
-        let dmabuf_global =
-            match &dmabuf_device {
-                Ok(node) => {
-                    match DmabufFeedbackBuilder::new(node.dev, dmabuf_formats.clone()).build() {
-                        Ok(feedback) => {
-                            // Publish the decision for the import side: buffers clients hand us were allocated on this GPU, so it must read them back.
-                            crate::compositor::render_node::set_advertised(node.path.clone());
-                            crate::compositor::gpu_health::record_dmabuf(Ok(&node.path));
-                            tracing::info!(
-                                target: "shell::compositor::dmabuf",
-                                device = %node.path.display(),
-                                driver = node.driver.as_deref().unwrap_or("<unknown>"),
-                                dev = node.dev,
-                                formats = dmabuf_formats.len(),
-                                "advertising zwp_linux_dmabuf_v1 with feedback"
-                            );
-                            Some(dmabuf_state.create_global_with_default_feedback::<Self>(
-                                display_handle,
-                                &feedback,
-                            ))
-                        }
-                        Err(e) => {
-                            crate::compositor::gpu_health::record_dmabuf(Err(&e.to_string()));
-                            // The format table lives in a sealed memfd; failing to create it means no correct feedback — the broken state this block avoids.
-                            tracing::error!(
-                                target: "shell::compositor::dmabuf",
-                                error = %e,
-                                "could not build dmabuf feedback; not advertising dmabuf — \
-                                 GPU clients will fall back to wl_shm"
-                            );
-                            None
-                        }
+        let mut scanout_feedback = None;
+        let dmabuf_global = match &dmabuf_device {
+            Ok(node) => {
+                match DmabufFeedbackBuilder::new(node.dev, dmabuf_formats.clone()).build() {
+                    Ok(feedback) => {
+                        // Publish the decision for the import side: buffers clients hand us were allocated on this GPU, so it must read them back.
+                        crate::compositor::render_node::set_advertised(node.path.clone());
+                        crate::compositor::gpu_health::record_dmabuf(Ok(&node.path));
+                        tracing::info!(
+                            target: "shell::compositor::dmabuf",
+                            device = %node.path.display(),
+                            driver = node.driver.as_deref().unwrap_or("<unknown>"),
+                            dev = node.dev,
+                            formats = dmabuf_formats.len(),
+                            "advertising zwp_linux_dmabuf_v1 with feedback"
+                        );
+                        let global = dmabuf_state
+                            .create_global_with_default_feedback::<Self>(display_handle, &feedback);
+                        scanout_feedback =
+                            Some(crate::compositor::scanout_feedback::ScanoutFeedback::new(
+                                node.dev,
+                                dmabuf_formats.clone(),
+                                feedback,
+                            ));
+                        Some(global)
                     }
-                }
-                Err(e) => {
-                    if !matches!(e, ProbeError::NoRenderNodes | ProbeError::NoRenderer(_)) {
+                    Err(e) => {
                         crate::compositor::gpu_health::record_dmabuf(Err(&e.to_string()));
+                        // The format table lives in a sealed memfd; failing to create it means no correct feedback — the broken state this block avoids.
+                        tracing::error!(
+                            target: "shell::compositor::dmabuf",
+                            error = %e,
+                            "could not build dmabuf feedback; not advertising dmabuf — \
+                             GPU clients will fall back to wl_shm"
+                        );
+                        None
                     }
-                    tracing::warn!(
-                        target: "shell::compositor::dmabuf",
-                        reason = %e,
-                        "not advertising zwp_linux_dmabuf_v1 — GPU clients will render \
-                         through wl_shm (software) instead"
-                    );
-                    None
                 }
-            };
-        (dmabuf_device, dmabuf_global)
+            }
+            Err(e) => {
+                if !matches!(e, ProbeError::NoRenderNodes | ProbeError::NoRenderer(_)) {
+                    crate::compositor::gpu_health::record_dmabuf(Err(&e.to_string()));
+                }
+                tracing::warn!(
+                    target: "shell::compositor::dmabuf",
+                    reason = %e,
+                    "not advertising zwp_linux_dmabuf_v1 — GPU clients will render \
+                     through wl_shm (software) instead"
+                );
+                None
+            }
+        };
+        (dmabuf_device, dmabuf_global, scanout_feedback)
     }
 
     /// Add a keyboard device to `seat` from the persisted XKB settings,
@@ -4244,6 +4260,33 @@ impl State {
             .committed(surface, surface_id, pixels);
     }
 
+    /// Tell the fullscreen client what the display can scan out, after each
+    /// frame is built: `offer` is the frame's scanout candidate with the
+    /// plane of the output it covers ([`crate::compositor::scanout_feedback::offer`]).
+    /// The fullscreen surface gets a scanout tranche while it is that
+    /// candidate and its buffer is opaque; on the frame it stops being
+    /// either — covered by chrome or a popup, translucent, out of
+    /// fullscreen — it gets the default feedback back. Without a dmabuf
+    /// global, or without a plane, every surface keeps the default.
+    pub fn update_scanout_feedback(
+        &mut self,
+        offer: Option<crate::compositor::scanout_feedback::ScanoutOffer>,
+    ) {
+        let Some(feedback) = self.scanout_feedback.as_mut() else {
+            return;
+        };
+        let offered = offer.and_then(|offer| {
+            let target = self
+                .fullscreen_target
+                .as_ref()
+                .filter(|target| target.surface_id == offer.surface)?;
+            let surface = target.surface.wl_surface();
+            crate::compositor::scanout_feedback::ScanoutOpacity::of(surface)
+                .then(|| (surface.clone(), offer.plane))
+        });
+        feedback.offer(offered.as_ref().map(|(surface, plane)| (surface, plane)));
+    }
+
     fn prepare_pending_foreign_capture(&self, surface: &WlSurface) {
         let surface_id = crate::compositor::state::surface_id(surface);
         // `new_toplevel` registers the protocol surface before adopting it
@@ -4293,8 +4336,18 @@ impl State {
             let Some(client) = surface.client() else {
                 return (ForeignCommitCapture::Failed, None);
             };
-            if let Ok(dmabuf) = smithay::wayland::dmabuf::get_dmabuf(&buffer).cloned() {
-                let commit = declared.commit(states, dmabuf);
+            let dmabuf = smithay::wayland::dmabuf::get_dmabuf(&buffer).cloned().ok();
+            let commit = dmabuf.map(|dmabuf| declared.commit(states, dmabuf));
+            crate::compositor::scanout_feedback::ScanoutOpacity::record(
+                states,
+                commit.as_ref().is_some_and(|commit| {
+                    crate::compositor::scanout_feedback::scanout_opaque(
+                        commit.buffer.format().code,
+                        commit.opaque,
+                    )
+                }),
+            );
+            if let Some(commit) = commit {
                 if let Some(capture) = crate::compositor::foreign::store()
                     .prepare_dmabuf_capture_with_damage(surface_id, client, commit, damage)
                 {
@@ -4913,6 +4966,18 @@ impl DmabufHandler for State {
             modifier = u64::from(dmabuf.format().modifier),
             "dmabuf imported and accepted"
         );
+    }
+
+    fn new_surface_feedback(
+        &mut self,
+        surface: &WlSurface,
+        _global: &DmabufGlobal,
+    ) -> Option<smithay::wayland::dmabuf::DmabufFeedback> {
+        // A surface offered a plane before it asked for feedback gets the
+        // scanout tranche with its first batch.
+        self.scanout_feedback
+            .as_ref()
+            .and_then(|feedback| feedback.for_new_surface(surface))
     }
 }
 
