@@ -246,14 +246,6 @@ impl ColorPicker {
         self
     }
 
-    /// Replace the swatch palette (see [`Self::with_swatches`]).
-    pub fn set_swatches(&mut self, swatches: impl IntoIterator<Item = ColorSwatch>) {
-        self.swatches = swatches.into_iter().collect();
-        if self.rect != Rect::ZERO {
-            self.apply_layout_external(self.rect);
-        }
-    }
-
     /// Confirm mode: paint `title` above the picker and *Cancel* / *Done*
     /// below it. Edits stay pending — [`Self::color`] follows them and
     /// [`Self::take_changed`] still reports them for a live preview — while
@@ -1004,7 +996,7 @@ impl Widget for ColorPicker {
     ) -> NodeId {
         // Its preferred size, narrowed to what the parent gives; the height
         // then follows the width it got (`adjust_layout_style`).
-        let node = taffy.leaf_node(Style {
+        let style = Style {
             size: Size {
                 width: Dimension::length(Self::px(PICKER_WIDTH)),
                 height: Dimension::length(Self::px(self.content_height(PICKER_WIDTH))),
@@ -1015,9 +1007,8 @@ impl Widget for ColorPicker {
             },
             flex_shrink: 1.0,
             ..Default::default()
-        });
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
 
     /// A picker narrowed by its parent is as tall as that width needs.
@@ -1386,6 +1377,7 @@ fn parse_hex(s: &str) -> Option<Color> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testing::dispatch;
     use crate::theme::Theme;
     use automerge::AutoCommit;
 
@@ -1398,50 +1390,11 @@ mod tests {
         p
     }
 
-    fn cursor_moved(x: f64, y: f64) -> WindowEvent {
-        WindowEvent::CursorMoved {
-            device_id: unsafe { std::mem::zeroed() },
-            position: winit::dpi::PhysicalPosition::new(x, y),
-        }
-    }
+    use crate::synthetic_input::cursor_moved;
 
-    fn mouse_press() -> WindowEvent {
-        WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        }
-    }
+    use crate::synthetic_input::mouse_press;
 
-    fn mouse_release() -> WindowEvent {
-        WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
-            state: ElementState::Released,
-            button: MouseButton::Left,
-        }
-    }
-
-    fn dispatch(p: &mut ColorPicker, event: &WindowEvent) {
-        let mut tree = TaffyTree::<()>::new();
-        let node = tree.leaf_node(Style::default());
-        let mut handled = false;
-        let mut focus_target = None;
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        p.handle_event(
-            event,
-            &mut crate::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &winit::event::Modifiers::default(),
-                state: crate::widget::Edits::lend(&mut doc),
-                path: &root,
-                handled: &mut handled,
-                focus_target: &mut focus_target,
-                node_id: node,
-                taffy: &tree,
-            },
-        );
-    }
+    use crate::synthetic_input::mouse_release;
 
     #[test]
     fn picker_surfaces_edit_hue_saturation_value_and_rgb() {
@@ -1792,22 +1745,11 @@ mod tests {
     }
 
     fn key(p: &mut ColorPicker, named: NamedKey) {
-        // SAFETY: KeyEvent has private fields in winit 0.30; the public ones
-        // tolerate the zero bit pattern and `handle_event` only inspects
-        // `logical_key` + `state`.
-        let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-        ev.logical_key = Key::Named(named);
-        ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
-            winit::keyboard::NativeKeyCode::Unidentified,
-        );
-        ev.location = winit::keyboard::KeyLocation::Standard;
-        ev.state = ElementState::Pressed;
-        ev.repeat = false;
-        ev.text = None;
+        let ev = crate::synthetic_input::key_event(Key::Named(named), None, ElementState::Pressed);
         dispatch(
             p,
             &WindowEvent::KeyboardInput {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 event: ev,
                 is_synthetic: false,
             },

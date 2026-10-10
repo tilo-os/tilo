@@ -45,6 +45,7 @@ use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
+use ui::widget::TaffyTreeExt;
 use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId};
@@ -699,42 +700,32 @@ impl Widget for Card {
         // `new_with_children` only errors for a child `NodeId` from a
         // different tree, which never happens here since every id in
         // `child_nodes` was just built in this same tree by the calls above.
-        #[allow(
-            clippy::unwrap_used,
-            reason = "every child node was just built in this same tree"
-        )]
-        let node = taffy
-            .new_with_children(
-                Style {
-                    display: Display::Flex,
-                    flex_direction: FlexDirection::Column,
-                    align_items: Some(AlignItems::Stretch),
-                    gap: Size {
-                        width: length(0.0_f32),
-                        height: length(CARD_GAP),
-                    },
-                    padding: taffy::Rect {
-                        left: length(CARD_PADDING),
-                        right: length(CARD_PADDING),
-                        top: length(CARD_PADDING),
-                        bottom: length(CARD_PADDING),
-                    },
-                    size: Size {
-                        width: percent(1.0_f32),
-                        height: Dimension::auto(),
-                    },
-                    max_size: Size {
-                        width: length(CARD_WIDTH),
-                        height: Dimension::auto(),
-                    },
-                    flex_shrink: 0.0,
-                    ..Default::default()
-                },
-                &child_nodes,
-            )
-            .unwrap();
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        let style = Style {
+            display: Display::Flex,
+            flex_direction: FlexDirection::Column,
+            align_items: Some(AlignItems::Stretch),
+            gap: Size {
+                width: length(0.0_f32),
+                height: length(CARD_GAP),
+            },
+            padding: taffy::Rect {
+                left: length(CARD_PADDING),
+                right: length(CARD_PADDING),
+                top: length(CARD_PADDING),
+                bottom: length(CARD_PADDING),
+            },
+            size: Size {
+                width: percent(1.0_f32),
+                height: Dimension::auto(),
+            },
+            max_size: Size {
+                width: length(CARD_WIDTH),
+                height: Dimension::auto(),
+            },
+            flex_shrink: 0.0,
+            ..Default::default()
+        };
+        taffy.widget_node(style, &child_nodes, node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
@@ -743,12 +734,7 @@ impl Widget for Card {
         // received from its own `build_layout` call.
         #[allow(clippy::unwrap_used, reason = "node always belongs to this tree")]
         let layout = taffy.layout(node).unwrap();
-        self.rect = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
-            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
-        );
+        self.rect = ui::widget::placed(layout, origin);
         let card_origin = Point::new(self.rect.x0, self.rect.y0);
         if let Ok(child_nodes) = taffy.children(node) {
             for (child, &child_node) in self.children.iter_mut().zip(child_nodes.iter()) {
@@ -797,22 +783,8 @@ impl Widget for Card {
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
-        let Ok(child_nodes) = ctx.taffy.children(ctx.node_id) else {
-            return;
-        };
-        if let Some(idx) = self.children.iter().position(|c| c.wants_pointer_capture()) {
-            if let Some(&cnode) = child_nodes.get(idx)
-                && let Some(child) = self.children.get_mut(idx)
-            {
-                child.handle_event(event, &mut ctx.reborrow(ctx.path, cnode));
-            }
-            return;
-        }
-        for (child, &child_node) in self.children.iter_mut().zip(child_nodes.iter()) {
-            child.handle_event(event, &mut ctx.reborrow(ctx.path, child_node));
-            if *ctx.handled {
-                break;
-            }
+        if let Ok(child_nodes) = ctx.taffy.children(ctx.node_id) {
+            ui::widget::route_to_children(&mut self.children, &child_nodes, event, ctx);
         }
     }
 
@@ -887,53 +859,37 @@ impl Widget for ViewportStage {
             .iter_mut()
             .map(|child| child.build_layout(taffy, theme, node_map))
             .collect();
-        #[allow(
-            clippy::unwrap_used,
-            reason = "every child node was just created in this same tree"
-        )]
-        let node = taffy
-            .new_with_children(
-                Style {
-                    display: Display::Flex,
-                    flex_direction: FlexDirection::Column,
-                    align_items: Some(AlignItems::Center),
-                    padding: taffy::Rect {
-                        left: length(VIEWPORT_PADDING),
-                        right: length(VIEWPORT_PADDING),
-                        top: length(VIEWPORT_PADDING),
-                        bottom: length(VIEWPORT_PADDING),
-                    },
-                    size: Size {
-                        width: percent(1.0_f32),
-                        // The scrollable measures this node for its scroll
-                        // extent. A fixed viewport height hid the overflowing
-                        // Review controls from the scrollbar.
-                        height: Dimension::auto(),
-                    },
-                    min_size: Size {
-                        width: Dimension::auto(),
-                        // Short steps still fill the viewport so the two
-                        // flexible spacers can centre the card.
-                        height: percent(1.0_f32),
-                    },
-                    flex_shrink: 0.0,
-                    ..Default::default()
-                },
-                &child_nodes,
-            )
-            .unwrap();
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        let style = Style {
+            display: Display::Flex,
+            flex_direction: FlexDirection::Column,
+            align_items: Some(AlignItems::Center),
+            padding: taffy::Rect {
+                left: length(VIEWPORT_PADDING),
+                right: length(VIEWPORT_PADDING),
+                top: length(VIEWPORT_PADDING),
+                bottom: length(VIEWPORT_PADDING),
+            },
+            size: Size {
+                width: percent(1.0_f32),
+                // The scrollable measures this node for its scroll
+                // extent. A fixed viewport height hid the overflowing
+                // Review controls from the scrollbar.
+                height: Dimension::auto(),
+            },
+            min_size: Size {
+                width: Dimension::auto(),
+                // Short steps still fill the viewport so the two
+                // flexible spacers can centre the card.
+                height: percent(1.0_f32),
+            },
+            flex_shrink: 0.0,
+            ..Default::default()
+        };
+        taffy.widget_node(style, &child_nodes, node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
-            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
-        );
+        self.rect = ui::widget::layout_rect(taffy, node, origin);
         let own_origin = Point::new(self.rect.x0, self.rect.y0);
         if let Ok(child_nodes) = taffy.children(node) {
             for (child, &child_node) in self.children.iter_mut().zip(child_nodes.iter()) {
@@ -964,26 +920,8 @@ impl Widget for ViewportStage {
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
-        let Ok(child_nodes) = ctx.taffy.children(ctx.node_id) else {
-            return;
-        };
-        if let Some(index) = self
-            .children
-            .iter()
-            .position(|child| child.wants_pointer_capture())
-        {
-            if let (Some(child), Some(&child_node)) =
-                (self.children.get_mut(index), child_nodes.get(index))
-            {
-                child.handle_event(event, &mut ctx.reborrow(ctx.path, child_node));
-            }
-            return;
-        }
-        for (child, &child_node) in self.children.iter_mut().zip(child_nodes.iter()) {
-            child.handle_event(event, &mut ctx.reborrow(ctx.path, child_node));
-            if *ctx.handled {
-                break;
-            }
+        if let Ok(child_nodes) = ctx.taffy.children(ctx.node_id) {
+            ui::widget::route_to_children(&mut self.children, &child_nodes, event, ctx);
         }
     }
 
@@ -1119,7 +1057,7 @@ pub struct InstallerApp {
     /// from the system at runtime (see [`crate::timezones::list_timezones`]).
     timezones: Vec<String>,
     /// Headless-shot only: build the Options-step time-zone dropdown in
-    /// its open state so `--shots --step options-open` captures the popup.
+    /// its open state so `--shots --scenario options-open` captures the popup.
     tz_open_for_shot: bool,
     /// Transient validation / error line under the controls.
     status: String,
@@ -1130,7 +1068,7 @@ pub struct InstallerApp {
     /// step's first field. Drained via [`Widget::take_focus_reset`].
     focus_reset: bool,
     rect: Rect,
-    composed: Option<Box<dyn Widget>>,
+    composed: ui::widget::Composed,
     /// Set once the install worker thread has been spawned, so a stray
     /// extra `begin` can't launch a second install.
     install_launched: bool,
@@ -1316,7 +1254,7 @@ impl InstallerApp {
             dirty_structure: false,
             focus_reset: false,
             rect: Rect::ZERO,
-            composed: None,
+            composed: ui::widget::Composed::default(),
             install_launched: false,
             storage_preflight_request: None,
             storage_preflight_passed: false,
@@ -1478,7 +1416,7 @@ impl InstallerApp {
     }
 
     /// Mutate a `for_shot(Step::Options)` app so its time-zone dropdown
-    /// renders open — used by `--shots --step options-open` to capture the
+    /// renders open — used by `--shots --scenario options-open` to capture the
     /// overlay popup state.
     pub fn shot_open_timezone(&mut self) {
         self.step = Step::Options;
@@ -1524,7 +1462,7 @@ impl InstallerApp {
     }
 
     /// Seed a non-default keyboard layout (by display name) for a
-    /// `--shots --step keyboard` render, so the visual preview clearly
+    /// `--shots --scenario keyboard` render, so the visual preview clearly
     /// shows remapped keys.
     pub fn shot_keymap(&mut self, display_name: &str) {
         self.step = Step::Keyboard;
@@ -3761,9 +3699,7 @@ impl Widget for InstallerApp {
         if self.network.ensure_initial_scan(self.event_proxy()) {
             self.dirty_structure = true;
         }
-        if let Some(c) = &mut self.composed {
-            c.sync(state, root);
-        }
+        self.composed.sync(state, root);
     }
 
     fn build_layout(
@@ -3772,36 +3708,26 @@ impl Widget for InstallerApp {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let mut composed = self.build_composition(theme);
-        let card_node = composed.build_layout(taffy, theme, node_map);
-        self.composed = Some(composed);
+        let composition = self.build_composition(theme);
+        let card_node = self
+            .composed
+            .build_layout(composition, taffy, theme, node_map);
 
         // `new_with_children` only errors for a child `NodeId` from a
         // different tree, which never happens here since `card_node` was
         // just built in this same tree by the call above.
-        #[allow(
-            clippy::unwrap_used,
-            reason = "card_node was just built in this same tree"
-        )]
-        let root = taffy
-            .new_with_children(
-                Style {
-                    display: Display::Flex,
-                    flex_direction: FlexDirection::Column,
-                    justify_content: Some(JustifyContent::Center),
-                    align_items: Some(AlignItems::Center),
-                    size: Size {
-                        width: percent(1.0_f32),
-                        height: percent(1.0_f32),
-                    },
-                    ..Default::default()
-                },
-                &[card_node],
-            )
-            .unwrap();
-
-        node_map.insert(root, std::ptr::from_mut::<dyn Widget>(self));
-        root
+        let style = Style {
+            display: Display::Flex,
+            flex_direction: FlexDirection::Column,
+            justify_content: Some(JustifyContent::Center),
+            align_items: Some(AlignItems::Center),
+            size: Size {
+                width: percent(1.0_f32),
+                height: percent(1.0_f32),
+            },
+            ..Default::default()
+        };
+        taffy.widget_node(style, &[card_node], node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
@@ -3810,13 +3736,8 @@ impl Widget for InstallerApp {
         // received from its own `build_layout` call.
         #[allow(clippy::unwrap_used, reason = "node always belongs to this tree")]
         let layout = taffy.layout(node).unwrap();
-        self.rect = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
-            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
-        );
-        if let Some(c) = &mut self.composed
+        self.rect = ui::widget::placed(layout, origin);
+        if let Some(c) = self.composed.element_mut()
             && let Ok(children) = taffy.children(node)
             && let Some(&card_node) = children.first()
         {
@@ -3839,7 +3760,7 @@ impl Widget for InstallerApp {
             None,
             &self.rect,
         );
-        if let Some(c) = &mut self.composed {
+        if let Some(c) = self.composed.element_mut() {
             c.draw(scene, transform, text_renderer, theme, presence);
         }
     }
@@ -3851,7 +3772,7 @@ impl Widget for InstallerApp {
         // selects an option (and the Dropdown marks the event handled) —
         // without forwarding first we'd also raise `NEXT` and skip the
         // step out from under the user.
-        if let Some(c) = &mut self.composed
+        if let Some(c) = self.composed.element_mut()
             && let Ok(children) = ctx.taffy.children(ctx.node_id)
             && let Some(&card_node) = children.first()
         {
@@ -3982,35 +3903,24 @@ impl Widget for InstallerApp {
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
-        self.composed
-            .as_ref()
-            .map(|c| c.as_ref() as &dyn Widget)
-            .into_iter()
-            .collect()
+        self.composed.children()
     }
 
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        self.composed
-            .as_mut()
-            .map(|c| c.as_mut() as &mut (dyn Widget + '_))
-            .into_iter()
-            .collect()
+        self.composed.children_mut()
     }
 
     fn take_structure_dirty(&mut self) -> bool {
         let mine = self.dirty_structure;
         self.dirty_structure = false;
-        let child = self
-            .composed
-            .as_mut()
-            .is_some_and(|c| c.take_structure_dirty());
+        let child = self.composed.take_structure_dirty();
         mine || child
     }
 
     fn wants_pointer_capture(&self) -> bool {
         self.composed
-            .as_ref()
-            .is_some_and(|c| c.wants_pointer_capture())
+            .element()
+            .is_some_and(Widget::wants_pointer_capture)
     }
 
     fn name(&self) -> &'static str {
@@ -4047,7 +3957,7 @@ mod tests {
     /// technology does, then let the app sync. Nothing reaches the document.
     fn perform(app: &mut InstallerApp, doc: &mut AutoCommit, id: &str, action: &ui::a11y::Action) {
         let _ = build(app);
-        let composed = app.composed.as_deref_mut().expect("composed step");
+        let composed = app.composed.element_mut().expect("composed step");
         let control = find_test_id_mut(composed, id).unwrap_or_else(|| panic!("no control {id}"));
         assert!(
             control.perform_action(action, &mut ui::widget::Edits::lend(doc), &automerge::ROOT),
@@ -4622,7 +4532,7 @@ mod tests {
     fn the_media_step_is_one_install_button_and_review_repeats_it() {
         let mut app = InstallerApp::for_shot(Step::Media);
         let _ = build(&mut app);
-        let composed = app.composed.as_deref().unwrap();
+        let composed = app.composed.element().unwrap();
         assert!(has_test_id(composed, "codecs_install"));
         assert!(has_test_id(composed, "codecs_skip"));
         assert!(
@@ -4651,14 +4561,14 @@ mod tests {
         let mut options = InstallerApp::for_shot(Step::Options);
         let _ = build(&mut options);
         assert!(
-            find_accessible(options.composed.as_deref().unwrap(), CODECS_TITLE).is_none(),
+            find_accessible(options.composed.element().unwrap(), CODECS_TITLE).is_none(),
             "Options no longer carries the formats"
         );
 
         app.codecs = true;
         app.dirty_structure = true;
         let _ = build(&mut app);
-        let chosen = app.composed.as_deref().unwrap();
+        let chosen = app.composed.element().unwrap();
         assert!(has_test_id(chosen, "codecs_undo"));
         assert!(!has_test_id(chosen, "codecs_install"));
         assert!(find_accessible(chosen, CODECS_CHOSEN).is_some());
@@ -4666,7 +4576,7 @@ mod tests {
         app.step = Step::Review;
         app.dirty_structure = true;
         let _ = build(&mut app);
-        let review = app.composed.as_deref().unwrap();
+        let review = app.composed.element().unwrap();
         assert!(
             find_accessible(review, "Install once the new system is online").is_some(),
             "Review repeats the codecs choice"
@@ -6078,7 +5988,7 @@ mod tests {
             assert_eq!(app.step, Step::Options);
             let _ = build(&mut app);
             assert!(
-                has_test_id(app.composed.as_deref().unwrap(), "fido2_choice"),
+                has_test_id(app.composed.element().unwrap(), "fido2_choice"),
                 "Review Back must keep on-device security choices reachable"
             );
             app.go_back();

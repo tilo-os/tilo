@@ -14,11 +14,12 @@
 //! event surface.
 
 use crate::time::SystemTime;
+use std::borrow::Cow;
 use std::collections::HashMap;
 
 use collab_types::{ChannelId, Ed25519PublicKey, Role as ChannelRole};
 use ed25519_dalek::SigningKey as DalekSigningKey;
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use taffy::{NodeId, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, MouseButton, WindowEvent};
@@ -30,14 +31,15 @@ use crate::text_selection::clipboard_copy;
 use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
+use crate::widget::identity_flow::ScreenOutcome;
 use crate::widget::identity_flow::sheet::{
-    Align, BodyScroll, FORM_SHEET_WIDTH, Resolved, Role, Rows, SheetSpec, line_height, paint_qr,
-    paint_segments, paint_text, paragraph_height, resolve, segment_rects, with_layout_renderer,
-    wrap_chars,
+    Align, BodyScroll, Resolved, Role, Rows, SheetFrame, SheetScreen, draw_screen, layout_screen,
+    line_height, paint_qr, paint_segments, paint_text, paragraph_height, screen_style,
+    segment_rects, wrap_chars,
 };
-use crate::widget::identity_flow::{InviteEnvelope, InviteExpiry, ScreenOutcome, mint_invite};
 use crate::widget::modal_dialog::ModalAction;
 use crate::widget::qr::QrWidget;
+use tilo_identity_ceremony::{InviteEnvelope, InviteExpiry, mint_invite};
 
 const EXPIRY_LABEL: &str = "Expires after";
 const LINK_LABEL: &str = "Invite link";
@@ -61,7 +63,7 @@ const ACTION_GENERATE: usize = 2;
 
 /// Every rect the screen paints and hit-tests, from one pass over the rows.
 #[derive(Clone, Debug, Default)]
-struct Plan {
+pub(super) struct Plan {
     expiry_label: Rect,
     segments: Vec<Rect>,
     /// The QR and the link under it, once an invite exists. The link is
@@ -79,7 +81,7 @@ struct Plan {
 
 /// Screen 5: invite-mint form.
 pub struct InviteMintScreen {
-    rect: Rect,
+    frame: SheetFrame,
     /// Channel id we're minting an invite into. The container seeds
     /// this; tests pass it explicitly via `set_channel`.
     channel: Option<ChannelId>,
@@ -96,11 +98,6 @@ pub struct InviteMintScreen {
     pub qr: Option<QrWidget>,
     clipboard_msg: Option<String>,
     error: Option<String>,
-    /// The theme `build_layout` saw, so `apply_layout` can resolve the rows
-    /// without waiting for a paint.
-    layout_theme: Option<Theme>,
-    scroll: BodyScroll,
-    body_height: f64,
 }
 
 impl Default for InviteMintScreen {
@@ -112,7 +109,7 @@ impl Default for InviteMintScreen {
 impl InviteMintScreen {
     pub fn new() -> Self {
         Self {
-            rect: Rect::ZERO,
+            frame: SheetFrame::default(),
             channel: None,
             channel_name: String::new(),
             expiry: InviteExpiry::OneDay,
@@ -126,9 +123,6 @@ impl InviteMintScreen {
             qr: None,
             clipboard_msg: None,
             error: None,
-            layout_theme: None,
-            scroll: BodyScroll::default(),
-            body_height: 0.0,
         }
     }
 
@@ -183,9 +177,9 @@ impl InviteMintScreen {
         inviter_label: impl Into<String>,
         role: ChannelRole,
         now: SystemTime,
-    ) -> Result<&InviteEnvelope, crate::widget::identity_flow::IdentityFlowError> {
+    ) -> Result<&InviteEnvelope, tilo_identity_ceremony::IdentityFlowError> {
         let channel = self.channel.ok_or_else(|| {
-            crate::widget::identity_flow::IdentityFlowError::DecodeFailed("no channel set".into())
+            tilo_identity_ceremony::IdentityFlowError::DecodeFailed("no channel set".into())
         })?;
         let expires_at = self.expiry.resolve(now);
         let env = mint_invite(
@@ -204,7 +198,7 @@ impl InviteMintScreen {
         self.error = None;
         self.clipboard_msg = None;
         self.last_envelope.as_ref().ok_or_else(|| {
-            crate::widget::identity_flow::IdentityFlowError::DecodeFailed(
+            tilo_identity_ceremony::IdentityFlowError::DecodeFailed(
                 "invite envelope was not stored after minting".into(),
             )
         })
@@ -273,7 +267,7 @@ impl InviteMintScreen {
                 ScreenOutcome::Stay
             }
             WindowEvent::MouseWheel { delta, .. } => {
-                if self.scroll.wheel(delta) {
+                if self.frame.wheel(delta) {
                     *ctx.handled = true;
                 }
                 ScreenOutcome::Stay
@@ -287,7 +281,7 @@ impl InviteMintScreen {
                     },
                 ..
             } => {
-                if self.scroll.key(logical_key, self.body_height) {
+                if self.frame.key(logical_key) {
                     *ctx.handled = true;
                 }
                 ScreenOutcome::Stay
@@ -296,54 +290,66 @@ impl InviteMintScreen {
         }
     }
 
-    /// One geometry pass for both `apply_layout` and `draw`; hit rects are
-    /// clipped to the visible body.
-    fn resolve(&mut self, theme: &Theme, text_renderer: &mut TextRenderer) -> Resolved<Plan> {
-        let title = self.title();
-        let actions = self.actions();
-        let spec = SheetSpec {
-            title: &title,
-            max_width: FORM_SHEET_WIDTH,
-            actions: &actions,
-        };
-        let mut scroll = self.scroll;
-        let resolved = resolve(
-            self.rect,
-            &spec,
-            &mut scroll,
-            text_renderer,
-            theme,
-            |rows, control_h, tr, theme| {
-                let plan = self.plan(rows, control_h, tr, theme);
-                let bottom = plan.bottom;
-                (plan, bottom)
-            },
-        );
-        self.scroll = scroll;
-        let body = resolved.sheet.body();
-        self.body_height = body.height();
-        self.expiry_rects = resolved
-            .plan
-            .segments
-            .iter()
-            .map(|r| BodyScroll::visible(body, *r))
-            .collect();
-        self.copy_rect = resolved.sheet.action(ACTION_COPY);
-        self.revoke_rect = resolved.sheet.action(ACTION_REVOKE);
-        self.generate_rect = resolved.sheet.action(ACTION_GENERATE);
-        resolved
-    }
-
-    fn title(&self) -> String {
-        if self.channel_name.is_empty() {
-            GENERATE_LABEL.to_string()
-        } else {
-            format!("Invite to #{}", self.channel_name)
-        }
-    }
-
     fn selected_index(&self) -> usize {
         EXPIRIES.iter().position(|e| *e == self.expiry).unwrap_or(1)
+    }
+
+    /// The minted state: QR, its label, and the whole link wrapped under it.
+    fn draw_minted(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        plan: &Plan,
+    ) {
+        if self.last_url.is_none() {
+            return;
+        }
+        if let (Some(qr), Some(rect)) = (&self.qr, plan.qr) {
+            paint_qr(scene, transform, text_renderer, theme, qr, rect);
+        }
+        if let Some(rect) = plan.link_label {
+            paint_text(
+                &mut PaintCtx::new(scene, transform, text_renderer, theme),
+                rect,
+                LINK_LABEL,
+                Role::Label,
+                Align::Center,
+                false,
+            );
+        }
+        for (line, rect) in &plan.link_lines {
+            paint_text(
+                &mut PaintCtx::new(scene, transform, text_renderer, theme),
+                *rect,
+                line,
+                Role::Value,
+                Align::Center,
+                false,
+            );
+        }
+    }
+}
+
+impl SheetScreen for InviteMintScreen {
+    type Plan = Plan;
+    type Actions = [ModalAction<'static>; 3];
+
+    fn frame(&self) -> &SheetFrame {
+        &self.frame
+    }
+
+    fn frame_mut(&mut self) -> &mut SheetFrame {
+        &mut self.frame
+    }
+
+    fn title(&self) -> Cow<'static, str> {
+        if self.channel_name.is_empty() {
+            GENERATE_LABEL.into()
+        } else {
+            format!("Invite to #{}", self.channel_name).into()
+        }
     }
 
     fn actions(&self) -> [ModalAction<'static>; 3] {
@@ -359,7 +365,6 @@ impl InviteMintScreen {
                 .hovered(self.generate_rect.contains(self.last_cursor)),
         ]
     }
-
     /// Walk the body rows once: the expiry control, then either the minted
     /// QR + link or the empty-state hint, then any status lines.
     fn plan(
@@ -433,40 +438,67 @@ impl InviteMintScreen {
         }
     }
 
-    /// The minted state: QR, its label, and the whole link wrapped under it.
-    fn draw_minted(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        plan: &Plan,
+    fn bottom(plan: &Plan) -> f64 {
+        plan.bottom
+    }
+
+    fn place(
+        &mut self,
+        resolved: &Resolved<Plan>,
+        _text_renderer: &mut TextRenderer,
+        _theme: &Theme,
     ) {
-        if self.last_url.is_none() {
-            return;
+        let body = resolved.sheet.body();
+        self.expiry_rects = resolved
+            .plan
+            .segments
+            .iter()
+            .map(|r| BodyScroll::visible(body, *r))
+            .collect();
+        self.copy_rect = resolved.sheet.action(ACTION_COPY);
+        self.revoke_rect = resolved.sheet.action(ACTION_REVOKE);
+        self.generate_rect = resolved.sheet.action(ACTION_GENERATE);
+    }
+
+    fn paint_body(
+        &mut self,
+        ctx: &mut PaintCtx<'_>,
+        _presence: &PresenceCtx,
+        resolved: &Resolved<Plan>,
+    ) {
+        let plan = &resolved.plan;
+        paint_text(
+            ctx,
+            plan.expiry_label,
+            EXPIRY_LABEL,
+            Role::Label,
+            Align::Start,
+            false,
+        );
+        let labels: Vec<&str> = EXPIRIES.iter().map(InviteExpiry::label).collect();
+        let hovered = plan
+            .segments
+            .iter()
+            .position(|r| r.contains(self.last_cursor));
+        paint_segments(
+            ctx.scene,
+            ctx.transform,
+            ctx.text,
+            ctx.theme,
+            &plan.segments,
+            &labels,
+            self.selected_index(),
+            hovered,
+        );
+        self.draw_minted(ctx.scene, ctx.transform, ctx.text, ctx.theme, plan);
+        if let Some(rect) = plan.hint {
+            paint_text(ctx, rect, EMPTY_HINT, Role::Caption, Align::Start, true);
         }
-        if let (Some(qr), Some(rect)) = (&self.qr, plan.qr) {
-            paint_qr(scene, transform, text_renderer, theme, qr, rect);
+        if let (Some(rect), Some(msg)) = (plan.clipboard, self.clipboard_msg.as_deref()) {
+            paint_text(ctx, rect, msg, Role::Caption, Align::Start, true);
         }
-        if let Some(rect) = plan.link_label {
-            paint_text(
-                &mut PaintCtx::new(scene, transform, text_renderer, theme),
-                rect,
-                LINK_LABEL,
-                Role::Label,
-                Align::Center,
-                false,
-            );
-        }
-        for (line, rect) in &plan.link_lines {
-            paint_text(
-                &mut PaintCtx::new(scene, transform, text_renderer, theme),
-                *rect,
-                line,
-                Role::Value,
-                Align::Center,
-                false,
-            );
+        if let (Some(rect), Some(err)) = (plan.error, self.error.as_deref()) {
+            paint_text(ctx, rect, err, Role::Error, Align::Start, true);
         }
     }
 }
@@ -478,33 +510,12 @@ impl Widget for InviteMintScreen {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        self.layout_theme = Some(theme.clone());
-        // The screen owns the viewport, so the sheet centres on the window
-        // rather than inside a fixed box at the origin.
-        let node = taffy.leaf_node(Style {
-            size: Size {
-                width: Dimension::percent(1.0),
-                height: Dimension::percent(1.0),
-            },
-            ..Default::default()
-        });
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        self.frame.layout_theme = Some(theme.clone());
+        taffy.widget_leaf(screen_style(), node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
-            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
-        );
-        if let Some(theme) = self.layout_theme.clone() {
-            with_layout_renderer(&theme, |tr| {
-                self.resolve(&theme, tr);
-            });
-        }
+        layout_screen(self, taffy, node, origin);
     }
 
     fn draw(
@@ -513,81 +524,9 @@ impl Widget for InviteMintScreen {
         transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
-        _presence: &PresenceCtx,
+        presence: &PresenceCtx,
     ) {
-        // Identity ceremonies, invites and joins are security surfaces:
-        // every look-alike letter is set apart.
-        text_renderer.security_surface(|text_renderer| {
-            let resolved = self.resolve(theme, text_renderer);
-            let title = self.title();
-            let actions = self.actions();
-            let spec = SheetSpec {
-                title: &title,
-                max_width: FORM_SHEET_WIDTH,
-                actions: &actions,
-            };
-            let sheet = &resolved.sheet;
-            let plan = &resolved.plan;
-
-            sheet.paint_frame(scene, transform, text_renderer, theme, &spec);
-            sheet.clip_body(scene, transform);
-            paint_text(
-                &mut PaintCtx::new(scene, transform, text_renderer, theme),
-                plan.expiry_label,
-                EXPIRY_LABEL,
-                Role::Label,
-                Align::Start,
-                false,
-            );
-            let labels: Vec<&str> = EXPIRIES.iter().map(super::InviteExpiry::label).collect();
-            let hovered = plan
-                .segments
-                .iter()
-                .position(|r| r.contains(self.last_cursor));
-            paint_segments(
-                scene,
-                transform,
-                text_renderer,
-                theme,
-                &plan.segments,
-                &labels,
-                self.selected_index(),
-                hovered,
-            );
-            self.draw_minted(scene, transform, text_renderer, theme, plan);
-            if let Some(rect) = plan.hint {
-                paint_text(
-                    &mut PaintCtx::new(scene, transform, text_renderer, theme),
-                    rect,
-                    EMPTY_HINT,
-                    Role::Caption,
-                    Align::Start,
-                    true,
-                );
-            }
-            if let (Some(rect), Some(msg)) = (plan.clipboard, self.clipboard_msg.as_deref()) {
-                paint_text(
-                    &mut PaintCtx::new(scene, transform, text_renderer, theme),
-                    rect,
-                    msg,
-                    Role::Caption,
-                    Align::Start,
-                    true,
-                );
-            }
-            if let (Some(rect), Some(err)) = (plan.error, self.error.as_deref()) {
-                paint_text(
-                    &mut PaintCtx::new(scene, transform, text_renderer, theme),
-                    rect,
-                    err,
-                    Role::Error,
-                    Align::Start,
-                    true,
-                );
-            }
-            scene.pop_layer();
-            sheet.paint_actions(scene, transform, text_renderer, theme, &spec);
-        });
+        draw_screen(self, scene, transform, text_renderer, theme, presence);
     }
 
     fn name(&self) -> &'static str {
@@ -599,7 +538,7 @@ impl Widget for InviteMintScreen {
     }
 
     fn get_rect(&self) -> Rect {
-        self.rect
+        self.frame.rect
     }
 
     fn needs_redraw(&self) -> bool {
@@ -640,7 +579,7 @@ mod tests {
                 .unwrap_err();
             assert!(matches!(
                 err,
-                crate::widget::identity_flow::IdentityFlowError::DecodeFailed(_)
+                tilo_identity_ceremony::IdentityFlowError::DecodeFailed(_)
             ));
         }
 

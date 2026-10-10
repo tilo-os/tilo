@@ -54,7 +54,7 @@
     target_arch = "wasm32",
     allow(
         dead_code,
-        reason = "the browser build omits the native App runner, broker transport and offscreen renderer, which are the only callers of much shared plumbing"
+        reason = "the browser build compiles native-host plumbing it never drives: the App runner, broker transport and offscreen renderer are its only callers"
     )
 )]
 #![cfg_attr(
@@ -95,10 +95,7 @@
 #![cfg_attr(
     test,
     allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
         clippy::string_slice,
-        clippy::panic,
         clippy::unreachable,
         clippy::float_cmp,
         reason = "in a test these are the assertion, not a hazard"
@@ -237,10 +234,12 @@ pub mod close_admission;
 /// (`tools/policy/check_app_resource_action_contract.py`).
 pub mod host_operation {
     pub use crate::widget::resource_operation::{
-        OperationRequest, ResourceOperation, ResourceOperationStart, start_in_children,
+        OperationRequest, OperationTarget, ResourceOperation, ResourceOperationStart,
+        start_in_children,
     };
 }
 pub mod host_palette;
+pub mod published;
 pub mod reader_hud;
 pub mod record;
 pub mod remote_actions;
@@ -251,6 +250,7 @@ pub mod resources;
 pub mod retained_present;
 pub mod richtext;
 pub mod scale;
+pub mod scene_parts;
 pub mod screen_reader;
 pub mod search;
 pub mod secret_paint;
@@ -280,6 +280,11 @@ pub mod view;
 pub mod virtual_viewport;
 #[cfg(feature = "native")]
 pub use native::warmup;
+/// Private completion receipts shared by native and browser text editors.
+/// These types grant no access to an embedded browser or its engine.
+pub mod text_input {
+    pub use crate::webview::text_input::{Failure, Receipt, Resolver};
+}
 pub mod webview;
 pub mod widget;
 pub mod window_icon;

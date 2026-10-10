@@ -30,6 +30,7 @@ pub mod examples;
 mod font_assets;
 mod json;
 pub mod native_libs;
+pub mod native_sdk;
 mod pack;
 pub mod portability;
 mod resource_kinds;
@@ -534,6 +535,8 @@ pub use dev_reload::run_as_build_tool_if_requested;
 
 #[derive(Debug)]
 pub struct PackageRequest {
+    /// Independently selected signed native SDK; never an authored runtime override.
+    pub sdk: Option<native_sdk::SdkSelection>,
     pub output: Option<PathBuf>,
     pub identity: Option<PathBuf>,
     /// `None` picks `thin-app` for a thin build and `release` for a static one.
@@ -634,7 +637,9 @@ impl PackagePlatform {
         Ok(())
     }
 
-    /// The registry's name for the platform family.
+    /// The registry's name for the platform family. The browser has no
+    /// registry family (its runtime compiles its apps in), so `web` is only
+    /// the platform's own name.
     #[must_use]
     pub const fn registry_name(self) -> &'static str {
         match self {
@@ -642,7 +647,7 @@ impl PackagePlatform {
             Self::Linux => registry_types::LINUX_PLATFORM,
             Self::Windows => registry_types::WINDOWS_PLATFORM,
             Self::Macos => registry_types::MACOS_PLATFORM,
-            Self::Web => registry_types::WEB_PLATFORM,
+            Self::Web => "web",
             Self::Android => registry_types::ANDROID_PLATFORM,
         }
     }
@@ -4996,6 +5001,7 @@ struct AppPackageSpec {
 /// Returns an error when preflight, compilation, staging, packing, or
 /// verification fails, or when the destination exists without `force`.
 pub fn package_app(start: &Path, request: &PackageRequest) -> Result<PackageOutcome> {
+    native_sdk::validate_request(request)?;
     if request.platform == PackagePlatform::Web {
         return web::package_web(start, request);
     }
@@ -5053,8 +5059,8 @@ pub fn package_app(start: &Path, request: &PackageRequest) -> Result<PackageOutc
 
     let staged_package = staging.path().join("package.tapp");
     let identity = signing_identity(&spec.app_dir, request.identity.as_deref())?;
-    let resource_kinds = resource_kinds::declared_by_app(&spec.app_dir)?;
-    let manifest = signed_manifest(
+    let resource_kinds = package_resources(&spec, request, &built, triple.as_deref())?;
+    let mut manifest = signed_manifest(
         &spec,
         request,
         &manifest_source,
@@ -5062,6 +5068,14 @@ pub fn package_app(start: &Path, request: &PackageRequest) -> Result<PackageOutc
         triple.as_deref(),
         &shipped,
     )?;
+    if let Some(selection) = &request.sdk {
+        manifest.package.runtime = Some(native_sdk::bind_staged(
+            selection,
+            built,
+            (&payload, &shipped),
+            (&spec.app_dir, triple.as_deref()),
+        )?);
+    }
     let packed = pack::pack_manifest(
         manifest,
         resource_kinds,
@@ -5158,6 +5172,8 @@ pub struct NativeBuild {
     pub profile: String,
     /// Each Cargo binary built and where Cargo left it.
     pub executables: Vec<(String, PathBuf)>,
+    /// Exact toolkit path emitted by Cargo when using the canonical SDK graph.
+    pub sdk_toolkit: Option<PathBuf>,
     pub elapsed: Duration,
 }
 
@@ -5169,6 +5185,7 @@ impl NativeBuild {
             "platform": self.platform.cli_name(),
             "target": self.triple,
             "profile": self.profile,
+            "sdk_toolkit": self.sdk_toolkit,
             "executables": self
                 .executables
                 .iter()
@@ -5188,6 +5205,7 @@ impl NativeBuild {
 /// Returns an error for the web platform (see [`web::build_web`]), when
 /// preflight fails, or when Cargo does.
 pub fn build_native(start: &Path, request: &PackageRequest) -> Result<NativeBuild> {
+    native_sdk::validate_request(request)?;
     if request.platform == PackagePlatform::Web {
         bail!("a web build is `tilo-app build --platform web`, not a native build");
     }
@@ -5222,6 +5240,7 @@ pub fn build_native(start: &Path, request: &PackageRequest) -> Result<NativeBuil
         triple: target.triple,
         profile: target.profile,
         executables,
+        sdk_toolkit: built.get("sdk:runtime_dylib").cloned(),
         elapsed: started.elapsed(),
     })
 }
@@ -5229,6 +5248,18 @@ pub fn build_native(start: &Path, request: &PackageRequest) -> Result<NativeBuil
 /// Where the package goes: `--output`, or `dist/<package>.tapp` (with the
 /// platform and architecture for a desktop build). Refuses to replace an
 /// existing file without `force`, and creates the directory.
+fn package_resources(
+    spec: &AppPackageSpec,
+    request: &PackageRequest,
+    built: &HashMap<String, PathBuf>,
+    triple: Option<&str>,
+) -> Result<Vec<String>> {
+    match request.sdk.as_ref().filter(|sdk| sdk.compiler.is_some()) {
+        Some(sdk) => native_sdk::compiler::declared_resources(sdk, built, &spec.app_dir, triple),
+        None => resource_kinds::declared_by_app(&spec.app_dir),
+    }
+}
+
 fn package_output(
     spec: &AppPackageSpec,
     request: &PackageRequest,
@@ -5553,6 +5584,13 @@ fn build_entrypoints(
     plan: &BuildPlan<'_>,
     request: &PackageRequest,
 ) -> Result<HashMap<String, PathBuf>> {
+    if request
+        .sdk
+        .as_ref()
+        .is_some_and(|sdk| sdk.compiler.is_some())
+    {
+        return native_sdk::compiler::build(spec, plan, request);
+    }
     let cargo = std::env::var_os("CARGO").unwrap_or_else(|| OsString::from("cargo"));
     let mut command = ProcessCommand::new(&cargo);
     command
@@ -5568,7 +5606,21 @@ fn build_entrypoints(
         command.arg("--bin").arg(cargo_bin);
     }
     let mut features = request.features.clone();
-    if plan.thin {
+    if request.sdk.is_some() {
+        let root = find_repo_root(&spec.app_dir)
+            .filter(|_| app_is_workspace_member(&spec.app_dir))
+            .context("native SDK packaging requires a checkout workspace app; scaffold with tilo-app new in the SDK checkout")?;
+        features = native_sdk::configure_graph(
+            &mut command,
+            &root,
+            plan.profile,
+            &spec.cargo_package,
+            &features,
+        )?;
+        if let Some(target) = plan.triple {
+            command.arg("--target").arg(target);
+        }
+    } else if plan.thin {
         let triple = if let Some(target) = plan.triple {
             target.to_owned()
         } else {
@@ -5604,6 +5656,9 @@ fn build_entrypoints(
     for line in BufReader::new(stdout).lines() {
         let line = line.context("reading Cargo artifact stream")?;
         collect_cargo_message(&line, &expected_manifest, &mut artifacts);
+        if request.sdk.is_some() {
+            native_sdk::collect_toolkit(&line, &spec.app_dir, &mut artifacts)?;
+        }
     }
     let status = child.wait().context("waiting for Cargo build")?;
     if !status.success() {

@@ -10,7 +10,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-use collab_types::{FileRecordId, FileVersionId};
+use fs_protocol::{FileRecordId, FileVersionId};
 use futures_util::stream::{self, StreamExt, TryStreamExt};
 use iroh_blobs::Hash;
 use serde::{Deserialize, Serialize};
@@ -19,7 +19,7 @@ use uuid::Uuid;
 
 use crate::availability::{
     AvailabilityPolicy, AvailabilityRegistry, EvictionBlocker, EvictionDecision,
-    EvictionRequirements, RecordAvailability, RecordKind, Residency,
+    EvictionRequirements, RecordAvailability, RecordKind, Residency, pinned_in_snapshot,
 };
 use crate::clock::unix_now_ms;
 use crate::{FileHistoryStore, Hydrator};
@@ -236,7 +236,7 @@ impl EvictionCoordinator {
                 .ok_or_else(|| {
                     anyhow::anyhow!("version history changed during eviction planning")
                 })?;
-            if version.content_hash != Some(collab_types::ContentHash(*expected_hash.as_bytes())) {
+            if version.content_hash != Some(fs_protocol::ContentHash(*expected_hash.as_bytes())) {
                 anyhow::bail!("workspace changed since preview");
             }
         }
@@ -346,7 +346,7 @@ impl EvictionCoordinator {
             }
             let protects_current = targets.contains(&record.record_id)
                 || record.residency != Residency::NotResident
-                || captured_effective_pinned(records, record.record_id);
+                || pinned_in_snapshot(records, record.record_id);
             if protects_current && let Some(version) = record.current_version {
                 keys.push((record.record_id, version));
             }
@@ -394,25 +394,6 @@ impl EvictionCoordinator {
             .await?;
         Ok(EvictionCatalog::with_empty_versions(payloads, empty)?)
     }
-}
-
-fn captured_effective_pinned(records: &[RecordAvailability], record_id: FileRecordId) -> bool {
-    let mut current = Some(record_id);
-    let mut remaining = records.len().saturating_add(1);
-    while let Some(record_id) = current {
-        if remaining == 0 {
-            return true;
-        }
-        remaining = remaining.saturating_sub(1);
-        let Some(record) = records.iter().find(|record| record.record_id == record_id) else {
-            return true;
-        };
-        if record.policy == AvailabilityPolicy::Pinned {
-            return true;
-        }
-        current = record.parent;
-    }
-    false
 }
 
 fn plan_for_mode(
@@ -1412,8 +1393,9 @@ fn sum_bytes(extents: &[BlobExtent]) -> u64 {
 mod tests {
     use super::*;
     use crate::availability::{RecordAvailability, ReplicaObservation};
-    use collab_types::{ContentHash, Ed25519PublicKey, FileActor};
+    use collab_types::Ed25519PublicKey;
     use ed25519_dalek::SigningKey;
+    use fs_protocol::{ContentHash, FileActor};
     use getrandom::{SysRng, rand_core::UnwrapErr};
     use tempfile::TempDir;
 
@@ -1457,8 +1439,8 @@ mod tests {
         };
         let request = crate::replica_ack::ReplicaAckRequestV1::new(
             uuid::Uuid::new_v4(),
-            collab_types::ContentRevisionV1 {
-                schema_version: collab_types::CONTENT_REVISION_VERSION,
+            fs_protocol::ContentRevisionV1 {
+                schema_version: fs_protocol::CONTENT_REVISION_VERSION,
                 record_id: id,
                 version_id: version,
                 content_hash: Some(ContentHash([6; 32])),
@@ -1653,10 +1635,10 @@ mod tests {
             let missing = FileRecordId::new();
             let mut child = RecordAvailability::new(child_id, RecordKind::File);
             child.parent = Some(missing);
-            assert!(captured_effective_pinned(&[child.clone()], child_id));
+            assert!(pinned_in_snapshot(&[child.clone()], child_id));
 
             child.parent = Some(child_id);
-            assert!(captured_effective_pinned(&[child], child_id));
+            assert!(pinned_in_snapshot(&[child], child_id));
         }
         // Phase `batch_safe_plans_match_single_plans_for_shared_and_partial_payloads`.
         {

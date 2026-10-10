@@ -218,7 +218,9 @@ pub enum RichTextAction {
     },
     /// Set one block attribute (`align`, `page_break_before`, `indent`,
     /// `first_line_indent`, `line_spacing`, `tab_stops`, `style`, image
-    /// `width`/`height`/`flip_*`) to `value` on each of `blocks`.
+    /// `width`/`height`/`flip_*`/`alt`) to `value` on each of `blocks`. An
+    /// image's `alt` is its accessible description and is accepted on image
+    /// blocks only.
     SetBlockAttr {
         region: RegionKind,
         blocks: Vec<String>,
@@ -228,7 +230,8 @@ pub enum RichTextAction {
     /// Remove one block attribute from each of `blocks`, restoring its
     /// default: a list item that stops being a task (`checked`), a code line
     /// that becomes prose (`code`, `lang`, `code_group`), a block back at the
-    /// outline's top (`nesting`).
+    /// outline's top (`nesting`), an image whose description falls back to its
+    /// caption (`alt`).
     ClearBlockAttr {
         #[serde(default)]
         region: RegionKind,
@@ -524,6 +527,8 @@ pub const MAX_ACTION_TEXT_CHARS: usize = 1_000_000;
 pub const MAX_ACTION_BLOB_BYTES: usize = 64 * 1024 * 1024;
 pub const MAX_TABLE_DIMENSION: usize = 100;
 pub const MAX_TABLE_CELLS: usize = 10_000;
+/// The longest image description an action may set, in characters.
+pub const MAX_IMAGE_ALT_CHARS: usize = 2_048;
 
 /// Read only the addressed block while matching qdoc's snapshot membership:
 /// a region block must be a map with a byte-valued order key. Missing or
@@ -684,8 +689,29 @@ impl<'a> ActionValidator<'a> {
             }
             "code_group" => matches!(value, AttrVal::Str(v) if Self::safe_name(v)),
             "nesting" => matches!(value, AttrVal::Int(v) if (0..=9).contains(v)),
+            "alt" => matches!(value, AttrVal::Str(v) if Self::valid_alt(v)),
             _ => false,
         }
+    }
+
+    /// An image description a screen reader can speak: non-blank, bounded,
+    /// and free of control characters that would corrupt exports.
+    fn valid_alt(alt: &str) -> bool {
+        !alt.trim().is_empty()
+            && alt.chars().count() <= MAX_IMAGE_ALT_CHARS
+            && !alt.chars().any(char::is_control)
+    }
+
+    /// Whether every one of `blocks` is a body image: only an image has an
+    /// accessible description to set.
+    fn all_images(&self, region: RegionKind, blocks: &[String]) -> bool {
+        region == RegionKind::Body
+            && blocks.iter().all(|block| {
+                self.snapshot()
+                    .blocks
+                    .iter()
+                    .any(|b| b.id == *block && b.kind == "image")
+            })
     }
 
     fn valid_clip_attrs(block: &crate::ClipBlock) -> bool {
@@ -712,7 +738,7 @@ impl<'a> ActionValidator<'a> {
     fn clearable_attr(key: &str) -> bool {
         matches!(
             key,
-            "checked" | "code" | "lang" | "code_group" | "nesting" | "table_source"
+            "checked" | "code" | "lang" | "code_group" | "nesting" | "table_source" | "alt"
         )
     }
 
@@ -919,7 +945,11 @@ impl<'a> ActionValidator<'a> {
             blocks,
             key,
             value,
-        } => self.unique_existing(*region, blocks) && Self::valid_attr(key, value),
+        } => {
+            self.unique_existing(*region, blocks)
+                && Self::valid_attr(key, value)
+                && (key != "alt" || self.all_images(*region, blocks))
+        }
         RichTextAction::ClearBlockAttr {
             region,
             blocks,
@@ -2992,15 +3022,6 @@ pub fn insert_image_action(block: &str, at: usize, image: ImageInput) -> RichTex
     }
 }
 
-/// Remove `blocks` (an image, or a table's cells).
-/// Insert a paragraph carrying `text` after block `after`.
-pub fn insert_paragraph_action(after: &str, text: &str) -> RichTextAction {
-    RichTextAction::InsertParagraph {
-        after: after.to_string(),
-        text: text.to_string(),
-    }
-}
-
 /// Append `text` as a new paragraph at the end of the body (resolved at apply).
 pub fn append_paragraph_action(text: &str) -> RichTextAction {
     RichTextAction::AppendParagraph {
@@ -3017,11 +3038,6 @@ pub fn continue_paragraph_action(text: &str) -> RichTextAction {
 
 pub fn remove_blocks_action(blocks: Vec<String>) -> RichTextAction {
     RichTextAction::RemoveBlocks { blocks }
-}
-
-/// Move `blocks` to directly after `after` (the start of the body for `None`).
-pub fn move_blocks_action(blocks: Vec<String>, after: Option<String>) -> RichTextAction {
-    RichTextAction::MoveBlocks { blocks, after }
 }
 
 /// Replace the whole document body with `markdown`.

@@ -9,7 +9,7 @@ description = "Account-bound messaging protocol codecs; no transport credentials
 [features]
 default = ["whatsapp-sdk", "sms-dbus", "signal-broker"]
 signal-broker = ["dep:tokio", "dep:tilo-messaging", "dep:tilo-contact-directory", "dep:tilo-resource"]
-whatsapp-sdk = ["dep:whatsapp-rust", "dep:tokio"]
+whatsapp-sdk = ["dep:whatsapp-rust", "dep:tokio", "dep:futures-util", "dep:reqwest", "dep:tilo-net", "dep:rustls", "dep:rustls-native-certs", "dep:tokio-tungstenite"]
 sms-dbus = ["dep:zbus", "dep:tokio", "dep:chrono", "dep:futures-util"]
 
 [dependencies]
@@ -34,12 +34,18 @@ tokio = { workspace = true, features = ["time"], optional = true }
 zbus = { workspace = true, features = ["tokio"], optional = true }
 chrono = { workspace = true, optional = true }
 futures-util = { workspace = true, optional = true }
+reqwest = { workspace = true, optional = true }
+tilo-net = { workspace = true, features = ["http"], optional = true }
+rustls = { workspace = true, optional = true }
+rustls-native-certs = { workspace = true, optional = true }
+tokio-tungstenite = { version = "=0.28.0", default-features = false, features = ["connect", "rustls-tls-native-roots"], optional = true }
 
 [dev-dependencies]
+buffa-build = "=0.9.2"
 messages = { path = "../../../apps/messages" }
 ui = { package = "tilo-app", path = "../../sdk/tilo-app", features = ["test-support"] }
 tempfile.workspace = true
-tokio = { workspace = true, features = ["macros", "rt"] }
+tokio = { workspace = true, features = ["macros", "rt", "test-util"] }
 
 [lints]
 workspace = true

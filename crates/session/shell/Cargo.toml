@@ -14,7 +14,7 @@ signal-profile-native-test = []
 netns-e2e = []
 # Integration-only native broker fixtures. This forwards the shared broker's
 # equally gated fixture entry point; ordinary shell spawning never selects it.
-test-support = ["tilo-action-broker/test-support"]
+test-support = ["tilo-action-broker/test-support", "dep:tilo-net", "ui/test-support"]
 # When set, the hosted-mode compositor (`shell --backend winit`) binds
 # the TILO_TEST_CONTROL Unix socket the same way the headless backend
 # does. A background thread reads JSON commands and injects equivalent
@@ -47,7 +47,17 @@ dev-overrides = ["tilo-identity-host/throwaway-test-identity"]
 # independent of `dev-overrides`; desktop and OS images never enable it.
 agent-control = []
 
+[[bin]]
+name = "network-boundary-fixture"
+path = "tests/fixtures/network-boundary.rs"
+test = false
+bench = false
+required-features = ["test-support"]
+
 [dependencies]
+# Read the app SDK snapshot only in the owned native boundary fixture.
+tilo-net = { path = "../../platform/tilo-net", optional = true }
+
 agent-provider-config = { path = "../../agent/provider-config" }
 fnv.workspace = true
 tilo-advisory-lock = { path = "../../system/advisory-lock" }
@@ -69,7 +79,7 @@ tempfile.workspace = true
 # One owner for ~/.config/tilo/settings.json.
 settings-store = { path = "../../system/settings-store", features = ["watch"] }
 notify.workspace = true
-tilo-xdg-paths = { path = "../../system/xdg-paths" }
+tilo-paths.workspace = true
 # Where the control sockets live, shared with the `tilo-control` client.
 tilo-control = { path = "../control-cli" }
 # The emoji picker's catalogue, search, skin tones and recents.
@@ -90,10 +100,12 @@ tokio = { workspace = true, features = ["full"] }
 tilo-rt.workspace = true
 
 serde.workspace = true
-serde_json.workspace = true
+# `raw_value`: the control socket splices a tree serialised once into its reply.
+serde_json = { workspace = true, features = ["raw_value"] }
 toml.workspace = true
 tracing.workspace = true
-tracing-subscriber.workspace = true
+# `env-filter`: RUST_LOG plus the always-on launch-latency target (linux_main).
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
 zeroize.workspace = true
 # Every sealing construction (per-device envelopes, the portal store) goes
 # through the reviewed tilo-seal crate.
@@ -125,8 +137,11 @@ percent-encoding.workspace = true
 quick-xml.workspace = true
 
 ui = { package = "tilo-ui", path = "../../sdk/ui-core", features = ["dmabuf-import"] }
+tilo-identity-ceremony = { version = "0.1.0", path = "../../collab/tilo-identity-ceremony" }
 
 tilo-actions = { path = "../../collab/actions" }
+tilo-app = { path = "../../sdk/tilo-app" }
+chat = { path = "../../../apps/chat", default-features = false }
 console-control = { path = "../console-control" }
 tilo-automation = { path = "../../collab/automation" }
 # The record/room-index store. The compositor keeps one document per room
@@ -331,9 +346,6 @@ tilo-copy-lint = { path = "../../dev/copy-lint" }
 # toolkit's test support bounds that exchange only against a hang.
 ui = { package = "tilo-ui", path = "../../sdk/ui-core", features = ["test-support"] }
 media = { package = "tilo-media", path = "../../platform/tilo-media", features = ["test-support"] }
-# Parses the locale catalogues the way the runtime does, so a German entry
-# that would silently fall back to English fails a test.
-fluent.workspace = true
 runtime-portal = { path = "../../runtime/runtime-portal" }
 tilo-files = { path = "../../platform/tilo-files", features = ["test-support"] }
 tilo-action-broker = { path = "../../collab/tilo-action-broker", features = ["test-support"] }
@@ -386,12 +398,17 @@ workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
 signal-hook-registry = "1.4.8"
+# Raw Vulkan for returning the device memory lavapipe freed
+# (`shell::render::software_gpu_memory`); the version wgpu-hal and ui's
+# dmabuf import use, so Vulkan handles pass between them.
+ash = "0.38"
 # Tilo owns the producer side of portal ScreenCast streams.  `pipewire-rs`
 # talks to the session daemon directly; sandboxed apps only receive a remote
 # after the portal has granted a session.
 pipewire = "0.10.1"
 smithay-client-toolkit = "0.20.0"
 wayland-client.workspace = true
+wayland-scanner = "0.31.11"
 # The stand-in text input that lets the input method reach the shell's own
 # fields (`compositor::shell_text_input`).
 wayland-protocols = { version = "0.32.12", features = ["client", "unstable"] }

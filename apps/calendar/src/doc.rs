@@ -530,22 +530,6 @@ impl CalDoc {
         }
     }
 
-    pub fn upsert_occurrence_override(
-        doc: &mut AutoCommit,
-        event_id: Id,
-        edit: &OccurrenceOverride,
-    ) {
-        let events = Self::map_at(doc, "events");
-        let Ok(Some((Value::Object(ObjType::Map), event))) =
-            doc.get(&events, event_id.to_string().as_str())
-        else {
-            return;
-        };
-        let overrides = Self::ensure_child(doc, &event, "overrides");
-        let item = Self::ensure_child(doc, &overrides, &edit.original_date.to_string());
-        Self::write_occurrence_override(doc, &item, edit);
-    }
-
     pub fn patch_occurrence_override(
         doc: &mut AutoCommit,
         event_id: Id,

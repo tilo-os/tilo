@@ -9,10 +9,16 @@ name: Dev / VM acceptance
 # (tilo-vm-disk/<tag>) or, more often, the dev image (tilo-vm:<tag>-x86_64,
 # which Build / OS dev pushes per main commit) of the newest main commit at or
 # before the ref, installed here exactly as Release / Dev VM disk installs it.
-# The ref's own code reaches the VM through `tilo-vm swap --builder host`,
-# built here in the CI builder (the dev image's Fedora, with the CI sccache):
-# by default the shell plus the apps the ref changed. P01
+# The ref's own code builds here in the native immutable CI builder. Paired
+# apps/runtime cohorts cross the pinned same-run artifact service and enter
+# through verified swap-artifact; other requests retain the host swap path:
+# the artifact route is explicitly opt-in; default swap planning is unchanged. P01
 # states the result as "base <commit> + <components> swapped from <ref>".
+#
+# The run also measures the installed desktop's performance KPIs (boot to the
+# greeter, idle CPU, wakeups and RAM, memory per app, warm app opens, frame CPU)
+# and writes them as records; the perf job compares them with the store and, for
+# the nightly run on main, publishes them (DEVELOPMENT.md "Performance results").
 #
 # Runners: runner-disk-100g, the Kata runners whose KVM the dev disk and legacy
 # guest boots already use. They have no GPU, so `gl: auto` runs without virgl
@@ -28,6 +34,10 @@ on:
         description: "What to build from the ref and swap in: default (shell plus the apps the ref changed: a branch against main, a main commit against the base), none, all (every userspace component in os/components.toml), or a comma-separated list (components, app:<dir>)."
         required: false
         default: "default"
+      prebuilt_cohort:
+        description: "Use the verified same-run signed cohort artifact route (requires the swap-artifact CLI in the exact ref)."
+        required: false
+        default: "false"
       only:
         description: "Comma-separated check ids or areas (run.py --only); empty runs every check."
         required: false
@@ -52,7 +62,7 @@ concurrency:
   # A pull request's newest commit replaces its older run; dispatched and
   # nightly runs only queue behind an identical request. (github.run_id is
   # not available here: it collapsed every dispatch into one queue.)
-  group: vm-acceptance-${{ github.event_name }}-${{ github.ref }}-${{ github.event.inputs.ref }}-${{ github.event.inputs.swap }}-${{ github.event.inputs.only }}
+  group: vm-acceptance-${{ github.event_name }}-${{ github.ref }}-${{ github.event.inputs.ref }}-${{ github.event.inputs.swap }}-${{ github.event.inputs.only }}-${{ github.event.inputs.prebuilt_cohort }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
@@ -64,6 +74,8 @@ jobs:
     needs: builder
     runs-on: runner-disk-100g
     timeout-minutes: 180
+    outputs:
+      only: ${{ steps.plan.outputs.only }}
     # The CI builder: the dev image's Fedora with the workspace's build
     # dependencies and the runner's sccache, so swapped components link
     # against the libraries the VM has.
@@ -96,12 +108,14 @@ jobs:
         run: |
           set -euo pipefail
           # libvirt's QEMU driver without the system daemon: tilo-vm uses the
-          # per-user session (qemu:///session), started on demand.
+          # per-user session (qemu:///session), started on demand. bash-devel
+          # and readline-devel are the headers a `ush` swap builds Terminal's
+          # Bash editor against (crates/runtime/ush/native/build.py).
           dnf --setopt=retries=3 install -y \
             libvirt-daemon-driver-qemu libvirt-client passt qemu-kvm qemu-img edk2-ovmf \
             ipxe-roms-qemu openssh-clients rsync python3-pillow binutils btrfs-progs dosfstools \
             e2fsprogs fuse-overlayfs podman jq skopeo slirp4netns socat sudo systemd \
-            shadow-utils util-linux
+            shadow-utils util-linux bash-devel readline-devel
           command -v virsh qemu-system-x86_64 qemu-img passt ssh podman skopeo systemd-repart sudo >/dev/null
           python3 -c 'import PIL'  # the checks read pixels from shots
 
@@ -157,6 +171,7 @@ jobs:
             exit 1
           }
           behind=$(git rev-list --count "$commit..$target")
+          bridge=$(python3 scripts/vm-acceptance/management.py "$commit" "$target")
 
           # What the base lacks of the ref, built from the ref and swapped in.
           swap=${INPUT_SWAP:-default}
@@ -199,6 +214,7 @@ jobs:
             echo "target=$target"
             echo "commit=$commit"
             echo "behind=$behind"
+            echo "bridge=$bridge"
             echo "disk-url=$disk_url"
             echo "image=$image"
             echo "swap=$swap"
@@ -211,11 +227,75 @@ jobs:
             echo "::warning::the base disk is $behind commits behind ${target:0:12}: only the swapped components ($swap) are the ref's code"
           fi
 
+      - name: Check out the ref under test
+        env:
+          TARGET: ${{ steps.plan.outputs.target }}
+        run: git worktree add --detach "$WORK/src" "$TARGET"
+
       - name: Build tilo-vm
         run: |
           set -euo pipefail
-          cargo build --locked -p tilo-vm
-          install -m 0755 target/debug/tilo-vm /usr/local/bin/tilo-vm
+          (cd "$WORK/src" && cargo build --locked -p tilo-vm)
+          install -m 0755 "$WORK/src/target/debug/tilo-vm" /usr/local/bin/tilo-vm
+
+      # Root is the existing native CI build identity. The later acceptance
+      # user receives only full signed layers, never builder access or keys.
+      - name: Produce exact-source signed cohort layers
+        id: cohort
+        if: github.event.inputs.prebuilt_cohort == 'true' && contains(format(',{0},', steps.plan.outputs.swap), ',apps+runtime,')
+        timeout-minutes: 100
+        env:
+          SOURCE: ${{ steps.plan.outputs.target }}
+          BUILDER_IMAGE: ${{ needs.builder.outputs.image }}
+          COMPONENTS: ${{ steps.plan.outputs.swap }}
+        run: |
+          set -euo pipefail
+          /usr/local/bin/tilo-vm swap-artifact --help >/dev/null
+          digest=$(python3 scripts/vm-acceptance/layer_artifacts.py produce \
+            --repo "$WORK/src" --directory "$WORK/cohort-produced" \
+            --source "$SOURCE" --builder-image "$BUILDER_IMAGE" \
+            --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --components "$COMPONENTS")
+          echo "receipt-sha256=$digest" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
+        if: github.event.inputs.prebuilt_cohort == 'true' && contains(format(',{0},', steps.plan.outputs.swap), ',apps+runtime,')
+        with:
+          name: vm-cohort-${{ github.run_id }}-${{ github.run_attempt }}-${{ steps.plan.outputs.target }}
+          path: /var/tmp/vm-acceptance/cohort-produced/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 2
+
+      - uses: actions/download-artifact@d8d0a99033603453ad2255e58720b460a0555e1e # v4
+        if: github.event.inputs.prebuilt_cohort == 'true' && contains(format(',{0},', steps.plan.outputs.swap), ',apps+runtime,')
+        with:
+          name: vm-cohort-${{ github.run_id }}-${{ github.run_attempt }}-${{ steps.plan.outputs.target }}
+          path: /var/tmp/vm-acceptance/cohort
+
+      - name: Verify the same-run cohort handoff
+        if: github.event.inputs.prebuilt_cohort == 'true' && contains(format(',{0},', steps.plan.outputs.swap), ',apps+runtime,')
+        env:
+          SOURCE: ${{ steps.plan.outputs.target }}
+          BUILDER_IMAGE: ${{ needs.builder.outputs.image }}
+          COMPONENTS: ${{ steps.plan.outputs.swap }}
+          RECEIPT_SHA256: ${{ steps.cohort.outputs.receipt-sha256 }}
+        run: |
+          set -euo pipefail
+          python3 scripts/vm-acceptance/layer_artifacts.py verify \
+            --directory "$WORK/cohort" --source "$SOURCE" --builder-image "$BUILDER_IMAGE" \
+            --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --components "$COMPONENTS" --receipt-sha256 "$RECEIPT_SHA256"
+
+      - name: Build the fixture-matching management client
+        if: steps.plan.outputs.bridge == 'true'
+        env:
+          COMMIT: ${{ steps.plan.outputs.commit }}
+        run: |
+          set -euo pipefail
+          git worktree add --detach "$WORK/base-cli" "$COMMIT"
+          (cd "$WORK/base-cli" && cargo build --locked -p tilo-vm)
+          install -m 0755 "$WORK/base-cli/target/debug/tilo-vm" /usr/local/bin/tilo-vm-base
 
       # Kata's job container has a static /dev; its guest kernel provides FUSE
       # and loop nodes once devtmpfs is mounted (as in Release / Dev VM disk).
@@ -296,12 +376,6 @@ jobs:
             > "$DISK.provenance.json"
           cat "$DISK.provenance.json"
 
-      - name: Check out the ref under test
-        if: steps.plan.outputs.swap != ''
-        env:
-          TARGET: ${{ steps.plan.outputs.target }}
-        run: git worktree add --detach "$WORK/src" "$TARGET"
-
       # tilo-vm runs VMs in the user's libvirt session, as on a laptop. Root
       # cannot hand passt its socket there, so the run gets its own user, who
       # also builds the swapped components with the builder's toolchain.
@@ -350,11 +424,23 @@ jobs:
           ONLY: ${{ steps.plan.outputs.only }}
           OUTPUTS: ${{ steps.plan.outputs.outputs }}
           GL: ${{ steps.plan.outputs.gl }}
+          BRIDGE: ${{ steps.plan.outputs.bridge }}
+          PREBUILT_COHORT: ${{ github.event.inputs.prebuilt_cohort }}
+          SOURCE: ${{ steps.plan.outputs.target }}
+          BUILDER_IMAGE: ${{ needs.builder.outputs.image }}
+          RECEIPT_SHA256: ${{ steps.cohort.outputs.receipt-sha256 }}
         run: |
           set -euo pipefail
           args=(--disk "$DISK" --commit "$COMMIT" --outputs "$OUTPUTS" --out "$WORK/report"
-                --tilo-vm /usr/local/bin/tilo-vm)
+                --tilo-vm /usr/local/bin/tilo-vm
+                --records "$WORK/report/records.jsonl" --runner runner-disk-100g)
+          [[ $BRIDGE != true ]] || args+=(--bootstrap-tilo-vm /usr/local/bin/tilo-vm-base --bootstrap-from "$WORK/src" --swap-ref "$REF")
           [[ -z $SWAP ]] || args+=(--swap "$SWAP" --swap-from "$WORK/src" --swap-ref "$REF")
+          if [[ $PREBUILT_COHORT == true && ,$SWAP, == *,apps+runtime,* ]]; then
+            args+=(--artifact-receipt "$WORK/cohort/manifest.json" --artifact-source "$SOURCE"
+                   --artifact-builder-image "$BUILDER_IMAGE" --artifact-run-id "$GITHUB_RUN_ID"
+                   --artifact-run-attempt "$GITHUB_RUN_ATTEMPT" --artifact-receipt-sha256 "$RECEIPT_SHA256")
+          fi
           [[ -z $ONLY ]] || args+=(--only "$ONLY")
           [[ $GL != on ]] || args+=(--gl)
           # The checkout is root's; git reads it for the run's commit names.
@@ -394,4 +480,98 @@ jobs:
         with:
           name: vm-acceptance-${{ steps.plan.outputs.target }}
           path: /var/tmp/vm-acceptance/report
+          if-no-files-found: warn
+
+      # The run's performance records (run.py --records) for the perf job below.
+      - uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
+        if: always()
+        with:
+          name: perf-vm
+          path: /var/tmp/vm-acceptance/report/records.jsonl
+          if-no-files-found: warn
+
+  # The installed desktop's KPIs (boot, idle, memory, app, render) as performance
+  # records, compared with the store's rolling baseline and tools/perf/kpi-budgets.toml
+  # the way Perf / scheduled compares its groups (DEVELOPMENT.md, "Performance
+  # results"). They come from this workflow's VM run rather than a second one there.
+  # Its verdict is this job's, apart from the acceptance checks'. Only the nightly run
+  # on main, and a dispatch of every check on main, write to the store; the rest
+  # compare read-only.
+  perf:
+    needs: acceptance
+    if: ${{ always() && needs.acceptance.result != 'cancelled' && needs.acceptance.result != 'skipped' }}
+    runs-on: runner-quality
+    timeout-minutes: 15
+    container:
+      image: registry.tilo.so/tilo/ci-fast@sha256:ecfe2c2abf7a48d9d00d71083aba6b7b9dfc11bc9de63b87e3144522daf6d97c
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+          sparse-checkout: |
+            tools/perf
+            tools/upload_immutable_packages.sh
+          sparse-checkout-cone-mode: false
+
+      - uses: actions/download-artifact@d8d0a99033603453ad2255e58720b460a0555e1e # v4
+        with:
+          name: perf-vm
+          path: results
+
+      - name: Compare with the store and publish
+        env:
+          EVENT: ${{ github.event_name }}
+          ONLY: ${{ needs.acceptance.outputs.only }}
+          INPUT_REF: ${{ github.event.inputs.ref }}
+          INPUT_SWAP: ${{ github.event.inputs.swap }}
+          INPUT_GL: ${{ github.event.inputs.gl }}
+          TILO_PACKAGE_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
+        run: |
+          set -uo pipefail
+          owner=${GITHUB_REPOSITORY%%/*}
+          if [[ ! -s results/records.jsonl ]]; then
+            if [[ -n ${ONLY:-} ]]; then
+              echo "::notice::the selected checks ($ONLY) recorded no performance KPI"
+              exit 0
+            fi
+            echo "::error::the acceptance run wrote no performance records (it aborted, or measured nothing)"
+            exit 1
+          fi
+          # A run of every check owes every group; a subset is compared for what it measured.
+          groups=""
+          [[ -n ${ONLY:-} ]] || groups=boot,idle,memory,app,render
+          publish=false
+          if [[ $GITHUB_REF == refs/heads/main && -z ${ONLY:-} ]]; then
+            case $EVENT in
+              schedule) publish=true ;;
+              workflow_dispatch)
+                [[ ${INPUT_REF:-main} == main && ${INPUT_SWAP:-default} == default && ${INPUT_GL:-auto} == auto ]] \
+                  && publish=true ;;
+            esac
+          fi
+          status=0
+          python3 tools/perf/compare.py --results results/records.jsonl --store "$GITHUB_SERVER_URL" \
+            --owner "$owner" --groups "$groups" --publish-dir publish \
+            --run "$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-vm" --summary summary.md || status=1
+          if [[ $publish == true ]]; then
+            manifest=$(mktemp)
+            for file in publish/*/*.jsonl; do
+              month=$(basename "$(dirname "$file")")
+              printf '%s\t%s\n' "$file" \
+                "$GITHUB_SERVER_URL/api/packages/$owner/generic/tilo-perf-results/$month/$(basename "$file")"
+            done > "$manifest"
+            bash tools/upload_immutable_packages.sh "$manifest" || status=1
+          else
+            echo "Not the nightly run of every check on main: compared only, nothing written to the store."
+          fi
+          [[ -f summary.md ]] && cat summary.md >> "$GITHUB_STEP_SUMMARY"
+          exit "$status"
+
+      - uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
+        if: always()
+        with:
+          name: perf-vm-summary
+          path: |
+            summary.md
+            publish/
           if-no-files-found: warn

@@ -15,12 +15,13 @@
 //! unit tests may inject an in-memory `PairingHandshake`; the shell integration
 //! test drives the full protocol over an independent socket.
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 
 use collab_types::Ed25519PublicKey;
 use getrandom::{SysRng, rand_core::UnwrapErr};
 use rand_core::Rng;
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use taffy::{NodeId, TaffyTree};
 use threshold_identity::{DkgSession, EnrolmentRound1, EnrolmentRound2};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -32,18 +33,18 @@ use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
+use crate::widget::identity_flow::ScreenOutcome;
 use crate::widget::identity_flow::sheet::{
-    Align, BodyScroll, FORM_SHEET_WIDTH, Resolved, Role, Rows, SheetSpec, line_height, paint_cell,
-    paint_qr, paint_text, paragraph_height, resolve, with_layout_renderer,
+    Align, BodyScroll, Resolved, Role, Rows, SheetFrame, SheetScreen, draw_screen, layout_screen,
+    line_height, paint_cell, paint_qr, paint_text, paragraph_height, screen_style,
 };
-use crate::widget::identity_flow::{
-    IdentityFlowError, PairingHandshake, PairingPayload, ScreenOutcome, derive_pairing_code,
-    format_pairing_code,
-};
-#[cfg(test)]
-use crate::widget::identity_flow::{compute_pairing_mac, derive_pairing_mac_key};
 use crate::widget::modal_dialog::ModalAction;
 use crate::widget::qr::QrWidget;
+use tilo_identity_ceremony::{
+    IdentityFlowError, PairingHandshake, PairingPayload, derive_pairing_code, format_pairing_code,
+};
+#[cfg(test)]
+use tilo_identity_ceremony::{compute_pairing_mac, derive_pairing_mac_key};
 
 const TITLE: &str = "Pair another device";
 const QR_PLACEHOLDER: &str = "The QR code appears once pairing begins";
@@ -64,7 +65,7 @@ pub struct HostDkgOutcome {
 
 /// Every rect the screen paints and hit-tests, from one pass over the rows.
 #[derive(Clone, Debug, Default)]
-struct Plan {
+pub(super) struct Plan {
     qr: Rect,
     code: Rect,
     status: Rect,
@@ -74,7 +75,7 @@ struct Plan {
 /// State + rendering for hosting a device-pairing handshake — the QR + short
 /// code + status the new device pairs against.
 pub struct AddDeviceHostScreen {
-    rect: Rect,
+    frame: SheetFrame,
     qr_rect: Rect,
     cancel_rect: Rect,
     cancel_hovered: bool,
@@ -86,11 +87,6 @@ pub struct AddDeviceHostScreen {
     /// Final-line status, surfaced beneath the QR.
     status: String,
     completed_identity: Option<threshold_identity::ThresholdIdentity>,
-    /// The theme `build_layout` saw, so `apply_layout` can resolve the rows
-    /// without waiting for a paint.
-    layout_theme: Option<Theme>,
-    scroll: BodyScroll,
-    body_height: f64,
     /// Keep the DKG outcome until the mailbox acknowledges its final reply.
     pending_completion: Option<(HostDkgOutcome, EnrolmentRound2, [u8; 64])>,
 }
@@ -123,7 +119,7 @@ impl Default for AddDeviceHostScreen {
 impl AddDeviceHostScreen {
     pub fn new() -> Self {
         Self {
-            rect: Rect::ZERO,
+            frame: SheetFrame::default(),
             qr_rect: Rect::ZERO,
             cancel_rect: Rect::ZERO,
             cancel_hovered: false,
@@ -132,9 +128,6 @@ impl AddDeviceHostScreen {
             session: None,
             status: "Begin pairing to see a QR code.".to_string(),
             completed_identity: None,
-            layout_theme: None,
-            scroll: BodyScroll::default(),
-            body_height: 0.0,
             pending_completion: None,
         }
     }
@@ -253,7 +246,7 @@ impl AddDeviceHostScreen {
             .session
             .as_mut()
             .ok_or_else(|| IdentityFlowError::DecodeFailed("no active handshake".into()))?;
-        let expected = crate::widget::identity_flow::pairing_transcript_mac(
+        let expected = tilo_identity_ceremony::pairing_transcript_mac(
             &s.payload,
             "pairer-to-host",
             &pairer_round1,
@@ -310,7 +303,7 @@ impl AddDeviceHostScreen {
                     .ok_or_else(|| IdentityFlowError::DecodeFailed("session disappeared".into()))?
                     .payload
                     .clone();
-                let tag = crate::widget::identity_flow::pairing_transcript_mac(
+                let tag = tilo_identity_ceremony::pairing_transcript_mac(
                     &payload,
                     "host-to-pairer",
                     &pairer_round1,
@@ -389,7 +382,7 @@ impl AddDeviceHostScreen {
                 ScreenOutcome::Stay
             }
             WindowEvent::MouseWheel { delta, .. } => {
-                if self.scroll.wheel(delta) {
+                if self.frame.wheel(delta) {
                     *ctx.handled = true;
                 }
                 ScreenOutcome::Stay
@@ -403,7 +396,7 @@ impl AddDeviceHostScreen {
                     },
                 ..
             } => {
-                if self.scroll.key(logical_key, self.body_height) {
+                if self.frame.key(logical_key) {
                     *ctx.handled = true;
                 }
                 ScreenOutcome::Stay
@@ -412,48 +405,41 @@ impl AddDeviceHostScreen {
         }
     }
 
-    fn actions(&self) -> [ModalAction<'static>; 1] {
-        [ModalAction::secondary(CANCEL_LABEL).hovered(self.cancel_hovered)]
-    }
-
-    /// One geometry pass for both `apply_layout` and `draw`.
-    fn resolve(&mut self, theme: &Theme, text_renderer: &mut TextRenderer) -> Resolved<Plan> {
-        let actions = self.actions();
-        let spec = SheetSpec {
-            title: TITLE,
-            max_width: FORM_SHEET_WIDTH,
-            actions: &actions,
-        };
-        let mut scroll = self.scroll;
-        let resolved = resolve(
-            self.rect,
-            &spec,
-            &mut scroll,
-            text_renderer,
-            theme,
-            |rows, _control_h, tr, theme| {
-                let plan = self.plan(rows, tr, theme);
-                let bottom = plan.bottom;
-                (plan, bottom)
-            },
-        );
-        self.scroll = scroll;
-        let body = resolved.sheet.body();
-        self.body_height = body.height();
-        self.qr_rect = BodyScroll::visible(body, resolved.plan.qr);
-        self.cancel_rect = resolved.sheet.action(0);
-        resolved
-    }
-
     fn code_text(&self) -> String {
         self.pairing_code_display()
             .map_or_else(|| CODE_UNSET.to_string(), |code| format!("Code {code}"))
     }
+}
 
+impl SheetScreen for AddDeviceHostScreen {
+    type Plan = Plan;
+    type Actions = [ModalAction<'static>; 1];
+
+    fn frame(&self) -> &SheetFrame {
+        &self.frame
+    }
+
+    fn frame_mut(&mut self) -> &mut SheetFrame {
+        &mut self.frame
+    }
+
+    fn title(&self) -> Cow<'static, str> {
+        TITLE.into()
+    }
+
+    fn actions(&self) -> [ModalAction<'static>; 1] {
+        [ModalAction::secondary(CANCEL_LABEL).hovered(self.cancel_hovered)]
+    }
     /// Walk the body rows once: a square QR as wide as the body allows,
     /// the code large under it, the status under that — all centred on
     /// the QR, which is what the other device's owner is looking at.
-    fn plan(&self, mut rows: Rows, text_renderer: &mut TextRenderer, theme: &Theme) -> Plan {
+    fn plan(
+        &self,
+        mut rows: Rows,
+        _control_h: f64,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+    ) -> Plan {
         let sp = &theme.tokens.spacing;
         let width = rows.width();
         let side = width.min(f64::from(sp.s16) * 4.0);
@@ -477,6 +463,59 @@ impl AddDeviceHostScreen {
             bottom: rows.bottom(),
         }
     }
+
+    fn bottom(plan: &Plan) -> f64 {
+        plan.bottom
+    }
+
+    fn place(
+        &mut self,
+        resolved: &Resolved<Plan>,
+        _text_renderer: &mut TextRenderer,
+        _theme: &Theme,
+    ) {
+        let body = resolved.sheet.body();
+        self.qr_rect = BodyScroll::visible(body, resolved.plan.qr);
+        self.cancel_rect = resolved.sheet.action(0);
+    }
+
+    fn paint_body(
+        &mut self,
+        ctx: &mut PaintCtx<'_>,
+        _presence: &PresenceCtx,
+        resolved: &Resolved<Plan>,
+    ) {
+        let plan = &resolved.plan;
+        if let Some(qr) = &self.qr {
+            paint_qr(ctx.scene, ctx.transform, ctx.text, ctx.theme, qr, plan.qr);
+        } else {
+            paint_cell(ctx.scene, ctx.transform, ctx.theme, plan.qr, false);
+            paint_text(
+                ctx,
+                plan.qr,
+                QR_PLACEHOLDER,
+                Role::Caption,
+                Align::Center,
+                true,
+            );
+        }
+        paint_text(
+            ctx,
+            plan.code,
+            &self.code_text(),
+            Role::Code,
+            Align::Center,
+            false,
+        );
+        paint_text(
+            ctx,
+            plan.status,
+            &self.status,
+            Role::Caption,
+            Align::Center,
+            true,
+        );
+    }
 }
 
 impl Widget for AddDeviceHostScreen {
@@ -486,33 +525,12 @@ impl Widget for AddDeviceHostScreen {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        self.layout_theme = Some(theme.clone());
-        // The screen owns the viewport, so the sheet centres on the window
-        // rather than inside a fixed box at the origin.
-        let node = taffy.leaf_node(Style {
-            size: Size {
-                width: Dimension::percent(1.0),
-                height: Dimension::percent(1.0),
-            },
-            ..Default::default()
-        });
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        self.frame.layout_theme = Some(theme.clone());
+        taffy.widget_leaf(screen_style(), node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
-            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
-        );
-        if let Some(theme) = self.layout_theme.clone() {
-            with_layout_renderer(&theme, |tr| {
-                self.resolve(&theme, tr);
-            });
-        }
+        layout_screen(self, taffy, node, origin);
     }
 
     fn draw(
@@ -521,55 +539,9 @@ impl Widget for AddDeviceHostScreen {
         transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
-        _presence: &PresenceCtx,
+        presence: &PresenceCtx,
     ) {
-        // Identity ceremonies, invites and joins are security surfaces:
-        // every look-alike letter is set apart.
-        text_renderer.security_surface(|text_renderer| {
-            let resolved = self.resolve(theme, text_renderer);
-            let actions = self.actions();
-            let spec = SheetSpec {
-                title: TITLE,
-                max_width: FORM_SHEET_WIDTH,
-                actions: &actions,
-            };
-            let sheet = &resolved.sheet;
-            let plan = &resolved.plan;
-
-            sheet.paint_frame(scene, transform, text_renderer, theme, &spec);
-            sheet.clip_body(scene, transform);
-            if let Some(qr) = &self.qr {
-                paint_qr(scene, transform, text_renderer, theme, qr, plan.qr);
-            } else {
-                paint_cell(scene, transform, theme, plan.qr, false);
-                paint_text(
-                    &mut PaintCtx::new(scene, transform, text_renderer, theme),
-                    plan.qr,
-                    QR_PLACEHOLDER,
-                    Role::Caption,
-                    Align::Center,
-                    true,
-                );
-            }
-            paint_text(
-                &mut PaintCtx::new(scene, transform, text_renderer, theme),
-                plan.code,
-                &self.code_text(),
-                Role::Code,
-                Align::Center,
-                false,
-            );
-            paint_text(
-                &mut PaintCtx::new(scene, transform, text_renderer, theme),
-                plan.status,
-                &self.status,
-                Role::Caption,
-                Align::Center,
-                true,
-            );
-            scene.pop_layer();
-            sheet.paint_actions(scene, transform, text_renderer, theme, &spec);
-        });
+        draw_screen(self, scene, transform, text_renderer, theme, presence);
     }
 
     fn name(&self) -> &'static str {
@@ -581,7 +553,7 @@ impl Widget for AddDeviceHostScreen {
     }
 
     fn get_rect(&self) -> Rect {
-        self.rect
+        self.frame.rect
     }
 
     fn needs_redraw(&self) -> bool {
@@ -642,7 +614,7 @@ mod tests {
             let mut tr = TextRenderer::new();
             let body = Rect::new(100.0, 200.0, 620.0, 200.0);
             let (s, _) = fixture_host();
-            let plan = s.plan(Rows::new(body), &mut tr, &theme);
+            let plan = s.plan(Rows::new(body), 0.0, &mut tr, &theme);
             let sp = &theme.tokens.spacing;
             assert!((plan.qr.width() - plan.qr.height()).abs() < 1e-9);
             assert!((plan.qr.center().x - body.center().x).abs() < 1e-9);
@@ -717,7 +689,7 @@ mod tests {
                 .receive_round1(&[payload.initiator_round1().unwrap()])
                 .unwrap();
             let reply = outgoing.get(&1).unwrap().clone();
-            let mac = super::super::pairing_transcript_mac(
+            let mac = tilo_identity_ceremony::pairing_transcript_mac(
                 &payload,
                 "pairer-to-host",
                 &pairer_round1,
@@ -729,7 +701,7 @@ mod tests {
                 .unwrap();
             let expected_key = *outcome.identity.as_ref().unwrap().group_public_key();
             let round2 = outcome.round2_to_pairer.as_ref().unwrap().clone();
-            let tag = super::super::pairing_transcript_mac(
+            let tag = tilo_identity_ceremony::pairing_transcript_mac(
                 &payload,
                 "host-to-pairer",
                 &pairer_round1,

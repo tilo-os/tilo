@@ -141,6 +141,18 @@ pub struct WorkspaceTaskActiveRun {
     pub started_at: i64,
     /// Highest contiguous direction revision durably incorporated by the agent.
     pub applied_direction_revision: u64,
+    /// Exact person approval retained across host/agent reconnects.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approval: Option<WorkspaceTaskApproval>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct WorkspaceTaskApproval {
+    pub person: String,
+    pub device: [u8; 32],
+    pub approved_at: i64,
+    pub instruction_revision: u64,
 }
 
 /// Public execution milestones, not model reasoning or action output.
@@ -247,6 +259,98 @@ pub struct WorkspaceEffectReceipt {
     pub completed_at: i64,
 }
 
+impl WorkspaceEffectReceipt {
+    /// The bounded public receipt of `invocation`'s terminal `status`: every
+    /// text is bounded and stripped of control characters, and the context
+    /// keeps only the receipt's own facets. Arbitrary application facets may
+    /// carry private argument summaries, so none enter this audit.
+    #[must_use]
+    pub fn redacted(
+        invocation: tilo_actions::InvocationId,
+        actor: &str,
+        mut context: tilo_actions::ActionContext,
+        status: tilo_actions::EffectReceiptStatus,
+        completed_at: i64,
+    ) -> Self {
+        let original_action = bounded_receipt_text(&context.action_label, 160);
+        context.action_label = if original_action.is_empty() {
+            status.label().to_string()
+        } else {
+            format!("{} · {original_action}", status.label())
+        };
+        context.facets = vec![
+            tilo_actions::ActionFacet::new("tilo.receipt", "effect"),
+            tilo_actions::ActionFacet::new("tilo.invocation", invocation.0.to_string()),
+        ];
+        Self {
+            invocation,
+            actor: bounded_receipt_text(actor, 160),
+            context: bounded_receipt_context(context),
+            status,
+            completed_at,
+        }
+    }
+
+    /// Whether this receipt is exactly what [`Self::redacted`] produces for
+    /// its own invocation, apart from the status label it already carries.
+    #[must_use]
+    pub fn is_redacted(&self) -> bool {
+        let facets = &self.context.facets;
+        !self.invocation.0.is_nil()
+            && !self.actor.is_empty()
+            && self.actor == bounded_receipt_text(&self.actor, 160)
+            && self.completed_at >= 0
+            && self.context == bounded_receipt_context(self.context.clone())
+            && facets.len() == 2
+            && facets
+                .iter()
+                .any(|facet| facet.key == "tilo.receipt" && facet.value == "effect")
+            && facets.iter().any(|facet| {
+                facet.key == "tilo.invocation" && facet.value == self.invocation.0.to_string()
+            })
+    }
+}
+
+fn bounded_receipt_text(value: &str, max: usize) -> String {
+    value
+        .chars()
+        .filter(|character| !character.is_control())
+        .take(max)
+        .collect::<String>()
+        .trim()
+        .to_string()
+}
+
+fn bounded_receipt_context(
+    mut context: tilo_actions::ActionContext,
+) -> tilo_actions::ActionContext {
+    context.action_label = bounded_receipt_text(&context.action_label, 200);
+    if let Some(app) = &mut context.app {
+        app.id = bounded_receipt_text(&app.id, 160);
+        app.label = bounded_receipt_text(&app.label, 160);
+    }
+    if let Some(resource) = &mut context.resource {
+        resource.id = bounded_receipt_text(&resource.id, 512);
+        resource.kind = bounded_receipt_text(&resource.kind, 160);
+        resource.label = bounded_receipt_text(&resource.label, 200);
+    }
+    context.purpose = context
+        .purpose
+        .as_deref()
+        .map(|value| bounded_receipt_text(value, 512))
+        .filter(|value| !value.is_empty());
+    if let Some(group) = &mut context.group {
+        group.id = bounded_receipt_text(&group.id, 160);
+        group.label = bounded_receipt_text(&group.label, 200);
+        group.kind = bounded_receipt_text(&group.kind, 160);
+    }
+    for facet in &mut context.facets {
+        facet.key = bounded_receipt_text(&facet.key, 96);
+        facet.value = bounded_receipt_text(&facet.value, 160);
+    }
+    context
+}
+
 /// A durable unit of work in a collaboration room.
 ///
 /// Tasks are deliberately shell-owned rather than chat messages: every app
@@ -263,7 +367,7 @@ pub struct WorkspaceTask {
     pub resource: Option<WorkspaceTaskResource>,
     pub created_at: i64,
     pub updated_at: i64,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "crate::history::omitted")]
     pub audit: Vec<WorkspaceTaskAuditEvent>,
 }
 

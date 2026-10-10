@@ -49,10 +49,14 @@ sources; every following commit is a reviewable topic change:
   [toolchain-compatible lint attributes](https://github.com/linebender/vello/pull/1863).
   This keeps diagnostics and compatibility cleanup out of the performance PR
   while retaining the dependency-ordered 0.9 history used by Tilo.
-- `vendor-upstream/winit-0.30.13` contains winit alone, based on crates.io
+- `codex/winit-dictation-ack-history` contains winit alone, based on crates.io
   `winit` 0.30.13. It retains the registry metadata and updates
   `Cargo.toml.orig` alongside Cargo's normalized manifest, making the topic
   commits straightforward to apply to an upstream source checkout.
+  It extends `vendor-upstream/winit-0.30.13`: one exact synchronization records
+  already-landed pen, presentation and keyboard source from Tilo's
+  `2fa854fb55` base, followed by the content-free dictation ACK extension.
+  The ACK is a separate reviewable commit, `217d0e69b3f4824391bdab8c5f73ce178cf4946c`.
 
 Run `tools/vendor-history.sh verify` to check the recorded roots and tips. Run
 `tools/vendor-history.sh export OUTPUT_DIRECTORY` to create portable Git
@@ -92,6 +96,14 @@ uses `tilo-accesskit-winit`, and Smithay's `backend_winit` is off), so every
 crate sees tilo-winit's types without a `[patch]`. vello had no crates.io
 dependents either, so its `[patch]` entries are gone too.
 
+The winit fork also carries `tilo_text_input_v1`, a content-free, surface-bound
+acknowledgement beside standard Wayland text-input-v3. It publishes only opaque
+field stamps and operation receipts. Dictation text still arrives as the standard
+IME commit; this extension grants no microphone permission or input-method
+ownership. The SDK enables deferred browser fields only during an admitted voice
+session and consumes the original renderer's guarded receipt before acknowledging
+an edit. `vendor/winit/TILO-FORK.md` records the additional event variant and API.
+
 The `wgpu-hal` patch stays a `[patch]`: a published SDK builds on the
 crates.io release, and only the optional `presentation-feedback` feature
 needs the patched Metal observer (now part of the `metal` feature, since a
@@ -122,7 +134,7 @@ change.
 ## Vello changes
 
 `vendor/vello` and `vendor/vello_encoding` are `vello` 0.9.0 and
-`vello_encoding` 0.9.0 from crates.io, verbatim, except for the ten files
+`vello_encoding` 0.9.0 from crates.io, verbatim, except for the files
 below and the publication identity in `Cargo.toml` (see "Published forks").
 Everything else in both trees — including `Cargo.lock`, the licenses and
 every other `.rs` file — is the unmodified crates.io release; diff either tree
@@ -277,6 +289,44 @@ JavaScript collects it: a 60-window soak kept up to 1,100 of them alive.
 maximum is 8192 px per side, a 256 MB texture. Images that do not fit after
 eviction are omitted and reported, as they already were at the maximum.
 
+## Image cache eviction, shrink and stats (`image_cache.rs`, `resolve.rs`, `lib.rs`)
+
+Upstream evicts a resident image only when an allocation fails, and never
+shrinks the atlas. A Wayland client's frame is a new image on every commit,
+so every superseded frame kept its CPU pixels alive until the atlas was full,
+the atlas grew to its maximum on the way, and the compositor kept that
+high-water mark for the rest of the session (TIL-692: about 14 MiB per app
+opened and closed, past 1 GiB). Now:
+
+- `ImageCache::finish_resolve` evicts every resident no pass drew in the last
+  two (`EVICT_AFTER_GENERATIONS`, upstream's own staleness rule), so a resident
+  survives two scenes that skip it — two outputs, or a capture beside the
+  live frame — and a window that keeps committing holds three frames at most.
+- When a pass's residents cover at most an eighth of the atlas for 60 passes
+  in a row (`SHRINK_AFTER_RESOLVES`), the next pass first repacks into half
+  the side, down to the initial 1024. Repacking marks every resident dirty, so
+  each is uploaded again, at its new position, the next time it is drawn; the
+  halving happens in `begin_resolve`, before the pass hands out positions. A
+  repack that does not fit leaves the atlas as it was.
+- `Renderer::image_cache_stats()` (through `Resolver::image_cache_stats`)
+  reports `ImageCacheStats`: atlas side, resident count, resident CPU bytes
+  and area, and lifetime evictions, shrinks and omissions.
+- `Renderer::shrink_image_atlas_soon()` (through
+  `Resolver::shrink_image_atlas_soon`, `ImageCache::shrink_soon`): the caller
+  knows images went for good, a window closed. For the next 16 passes
+  (`SHRINK_SOON_RESOLVES`) a pass after a sparse one halves the atlas at once,
+  as often as the eighth-full rule allows, instead of after 60. A desktop that
+  goes idle after a close draws a handful of frames, so the slow rule kept a
+  256 MiB atlas after four apps closed (TIL-731).
+
+Own tests in `image_cache.rs`: stale residents are released without
+allocation pressure, an image survives two passes that skip it, a committing
+window holds three frames at most, the atlas shrinks after residency drops and
+uploads its residents again where it draws them, a busy atlas does not shrink,
+thirty open/close cycles leave only the wallpaper resident at the size it
+started with, and told images went the atlas comes down within a few passes
+while an expired request waits the long way again.
+
 ## `vendor/vello/src/wgpu_engine.rs`: cleared pools and freed downloads are destroyed
 
 wgpu's WebGPU backend does not destroy a buffer when it is dropped; the GPU
@@ -314,6 +364,21 @@ client frames on the GPU and draws them on its presenting renderer from
 their textures; screenshots, recordings and renderers on other devices
 reach the same frames through the source, which reads them back on demand.
 
+## `vendor/vello/src/image_source.rs` (new), `lib.rs`, `wgpu_engine.rs`: images drawn from a texture
+
+`Renderer::draw_image_from(image, Some(ImageSource { texture, origin,
+opaque }))` makes an image's atlas write a small render pass instead of a
+`copy_texture_to_texture`: the fragment shader `textureLoad`s the source at
+`origin` and writes the atlas slot (viewport and scissor on the slot), forcing
+alpha to one when `opaque`. The source may therefore be any colour format the
+device samples as float — a Wayland client's `ARGB8888` buffer imports as
+`Bgra8Unorm`, which `copy_texture_to_texture` cannot copy into the
+`Rgba8Unorm` atlas — and an `X` format is drawn opaque, so the compositor
+draws a client's dma-buf straight from its import with this one copy. The
+atlas texture gains `RENDER_ATTACHMENT` usage for it. A source takes
+precedence over an `override_image` texture for the same image.
+`Renderer::image_source_writes()` counts the writes and their bytes.
+
 ## zlink-macros
 
 `vendor/zlink-macros` is crates.io `zlink-macros` 0.7.0 (checksum
@@ -336,3 +401,12 @@ Settings uses it to label its foreground physical keyboard map independently
 from logical key events. A real Smithay-to-Winit wire regression covers initial
 keymap/focus and several queued modifier/group changes; no global capture or new
 protocol/socket is introduced.
+
+## Build-script-generated protobuf descriptors
+
+`buffa-build` 0.9.2 is carried as verified registry source with a small
+upstream-compatible change: a descriptor proven to be produced inside the
+caller's Cargo OUT_DIR is not registered as an input. All external descriptors
+remain tracked, including symlinks across the output-directory boundary.
+`vendor/buffa-build/PROVENANCE.md` records the checksum, revision and patch.
+The registry waproto source and its source/hash guards remain unchanged.

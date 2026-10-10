@@ -24,8 +24,7 @@ use std::sync::{Arc, RwLock};
 use taffy::style_helpers::percent;
 use taffy::{NodeId, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
-use winit::event::WindowEvent;
+use vello::kurbo::{Affine, Rect};
 
 /// Directory of live `*.json` screen graphs. When set, graph apps load and
 /// hot-reload screens from disk instead of the embed baked by `include_str!`.
@@ -1061,20 +1060,7 @@ impl UiGraphHandle {
     /// Returns [`UiGraphError::Poisoned`] if another thread panicked while
     /// holding the graph lock.
     pub fn undo(&self) -> Result<bool, UiGraphError> {
-        let mut state = self.inner.write().map_err(|_| UiGraphError::Poisoned)?;
-        if state.undo.is_empty() {
-            return Ok(false);
-        }
-        advance_graph_revision(&mut state.revision)?;
-        let Some(previous) = state.undo.pop() else {
-            return Ok(false);
-        };
-        let current = std::mem::replace(&mut state.document, previous);
-        push_graph_history(&mut state.redo, current);
-        state.active_edit_group = None;
-        drop(state);
-        self.persist_live()?;
-        Ok(true)
+        self.step_history(crate::undo::UndoRequest::Undo)
     }
 
     /// Reapply the most recently undone graph edit.
@@ -1086,18 +1072,29 @@ impl UiGraphHandle {
     /// Returns [`UiGraphError::Poisoned`] if another thread panicked while
     /// holding the graph lock.
     pub fn redo(&self) -> Result<bool, UiGraphError> {
-        let mut state = self.inner.write().map_err(|_| UiGraphError::Poisoned)?;
-        if state.redo.is_empty() {
+        self.step_history(crate::undo::UndoRequest::Redo)
+    }
+
+    /// Move the graph one retained document back (undo) or forward (redo),
+    /// keeping the replaced document on the opposite stack.
+    fn step_history(&self, request: crate::undo::UndoRequest) -> Result<bool, UiGraphError> {
+        let mut guard = self.inner.write().map_err(|_| UiGraphError::Poisoned)?;
+        let state = &mut *guard;
+        let (from, to) = match request {
+            crate::undo::UndoRequest::Undo => (&mut state.undo, &mut state.redo),
+            crate::undo::UndoRequest::Redo => (&mut state.redo, &mut state.undo),
+        };
+        if from.is_empty() {
             return Ok(false);
         }
         advance_graph_revision(&mut state.revision)?;
-        let Some(next) = state.redo.pop() else {
+        let Some(document) = from.pop() else {
             return Ok(false);
         };
-        let current = std::mem::replace(&mut state.document, next);
-        push_graph_history(&mut state.undo, current);
+        let current = std::mem::replace(&mut state.document, document);
+        push_graph_history(to, current);
         state.active_edit_group = None;
-        drop(state);
+        drop(guard);
         self.persist_live()?;
         Ok(true)
     }
@@ -1552,6 +1549,17 @@ impl LiveUi {
     }
 }
 
+/// The style of a widget that fills the space its parent gives it.
+fn filling() -> Style {
+    Style {
+        size: taffy::Size {
+            width: percent(1.0_f32),
+            height: percent(1.0_f32),
+        },
+        ..Default::default()
+    }
+}
+
 impl Widget for LiveUi {
     crate::provides!(dyn crate::resources::PublishesResources);
 
@@ -1573,76 +1581,13 @@ impl Widget for LiveUi {
     ) -> NodeId {
         self.theme = theme.clone();
         let child = self.child.build_layout(taffy, theme, node_map);
-        let node = crate::widget::TaffyTreeExt::parent_node(
-            taffy,
-            Style {
-                size: taffy::Size {
-                    width: percent(1.0_f32),
-                    height: percent(1.0_f32),
-                },
-                ..Default::default()
-            },
-            &[child],
-        );
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        crate::widget::TaffyTreeExt::widget_node(taffy, filling(), &[child], node_map, self)
     }
 
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x + layout.size.width),
-            origin.y + f64::from(layout.location.y + layout.size.height),
-        );
-        if let Ok(children) = taffy.children(node)
-            && let Some(child) = children.first()
-        {
-            self.child
-                .apply_layout(taffy, *child, Point::new(self.rect.x0, self.rect.y0));
-        }
-    }
-
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut crate::text_render::TextRenderer,
-        theme: &Theme,
-        presence: &crate::presence::PresenceCtx,
-    ) {
-        self.child
-            .draw(scene, transform, text_renderer, theme, presence);
-    }
-
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
-        if let Ok(children) = ctx.taffy.children(ctx.node_id)
-            && let Some(child) = children.first()
-        {
-            self.child
-                .handle_event(event, &mut ctx.reborrow(ctx.path, *child));
-        }
-    }
-
-    fn children(&self) -> Vec<&dyn Widget> {
-        vec![self.child.as_ref()]
-    }
-
-    fn for_each_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) {
-        visitor(self.child.as_ref());
-    }
-
-    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        vec![self.child.as_mut()]
-    }
+    crate::forward_to_child!(child, rect);
 
     fn name(&self) -> &'static str {
         "LiveUi"
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.rect
     }
 
     fn take_structure_dirty(&mut self) -> bool {
@@ -3213,69 +3158,10 @@ impl Widget for UiGraphEditor {
     ) -> NodeId {
         self.theme = theme.clone();
         let child = self.child.build_layout(taffy, theme, node_map);
-        let node = crate::widget::TaffyTreeExt::parent_node(
-            taffy,
-            Style {
-                size: taffy::Size {
-                    width: percent(1.0_f32),
-                    height: percent(1.0_f32),
-                },
-                ..Default::default()
-            },
-            &[child],
-        );
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        crate::widget::TaffyTreeExt::widget_node(taffy, filling(), &[child], node_map, self)
     }
 
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x + layout.size.width),
-            origin.y + f64::from(layout.location.y + layout.size.height),
-        );
-        if let Ok(children) = taffy.children(node)
-            && let Some(child) = children.first()
-        {
-            self.child
-                .apply_layout(taffy, *child, Point::new(self.rect.x0, self.rect.y0));
-        }
-    }
-
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut crate::text_render::TextRenderer,
-        theme: &Theme,
-        presence: &crate::presence::PresenceCtx,
-    ) {
-        self.child
-            .draw(scene, transform, text_renderer, theme, presence);
-    }
-
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
-        if let Ok(children) = ctx.taffy.children(ctx.node_id)
-            && let Some(child) = children.first()
-        {
-            self.child
-                .handle_event(event, &mut ctx.reborrow(ctx.path, *child));
-        }
-    }
-
-    fn children(&self) -> Vec<&dyn Widget> {
-        vec![self.child.as_ref()]
-    }
-
-    fn for_each_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) {
-        visitor(self.child.as_ref());
-    }
-
-    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        vec![self.child.as_mut()]
-    }
+    crate::forward_to_child!(child, rect);
 
     fn name(&self) -> &'static str {
         "UiGraphEditor"
@@ -3283,10 +3169,6 @@ impl Widget for UiGraphEditor {
 
     fn test_id(&self) -> Option<&str> {
         Some("ui-graph-editor")
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.rect
     }
 
     fn take_structure_dirty(&mut self) -> bool {

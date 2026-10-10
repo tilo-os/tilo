@@ -607,12 +607,6 @@ impl PageSidebar {
         self.tree.row_rect(key).map(|rect| rect.center())
     }
 
-    /// Test hook: the sidebar's laid-out rect.
-    #[doc(hidden)]
-    pub fn rect_for_test(&self) -> vello::kurbo::Rect {
-        ui::Widget::get_rect(&self.tree)
-    }
-
     /// Test hook: the x of the disclosure column's centre on row `index`.
     #[doc(hidden)]
     pub fn row_disclosure_x_for_test(&self, index: usize) -> Option<f64> {
@@ -679,7 +673,7 @@ mod tests {
     use ui::theme::Theme;
     use vello::kurbo::{Point, Rect};
     use winit::event::{ElementState, Modifiers, MouseButton, WindowEvent};
-    use winit::keyboard::{Key, NamedKey};
+    use winit::keyboard::NamedKey;
 
     /// Lay the sidebar out at `rect` the way the drawer host does.
     fn place(sidebar: &mut PageSidebar, rect: Rect, text_scale: f32) {
@@ -722,33 +716,20 @@ mod tests {
 
     fn moved(point: Point) -> WindowEvent {
         WindowEvent::CursorMoved {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             position: winit::dpi::PhysicalPosition::new(point.x, point.y),
         }
     }
 
     fn button(state: ElementState) -> WindowEvent {
         WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             state,
             button: MouseButton::Left,
         }
     }
 
-    fn key(key: NamedKey) -> WindowEvent {
-        let mut ev: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
-        ev.logical_key = Key::Named(key);
-        ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
-            winit::keyboard::NativeKeyCode::Unidentified,
-        );
-        ev.location = winit::keyboard::KeyLocation::Standard;
-        ev.state = ElementState::Pressed;
-        WindowEvent::KeyboardInput {
-            device_id: unsafe { std::mem::zeroed() },
-            event: ev,
-            is_synthetic: false,
-        }
-    }
+    use ui::synthetic_input::named_key;
 
     #[test]
     fn deleting_a_note_is_the_one_danger_row_and_sits_apart_at_the_end() {
@@ -1005,7 +986,7 @@ mod tests {
             let mut tree = PageSidebar::new();
             tree.sync_from_workspace(&ws);
             assert!(tree.begin_rename(id));
-            event(&mut tree, &key(NamedKey::Escape));
+            event(&mut tree, &named_key(NamedKey::Escape));
             assert!(!tree.is_renaming());
             assert!(tree.take_events().is_empty());
         }

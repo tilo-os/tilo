@@ -23,16 +23,6 @@
 
 #![deny(rust_2018_idioms)]
 #![warn(missing_docs)]
-#![cfg_attr(
-    test,
-    allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
-        clippy::panic,
-        reason = "in a test these are the assertion, not a hazard"
-    )
-)]
 
 pub mod carrier;
 mod channels;
@@ -52,6 +42,7 @@ pub mod transport;
 pub mod voice;
 
 pub use carrier::{HttpClient, HttpFuture, HttpsLink, LinkError};
+pub use channel_crypto::ChannelContentKeys;
 pub use custody::{
     CertifyError, IssuedRole, MemoryPeerStore, OutboxEntry, PeerRecord, PeerStore, certify,
     certify_with_root, issue_device_cert,

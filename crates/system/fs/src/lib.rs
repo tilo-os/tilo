@@ -2,11 +2,7 @@
 #![cfg_attr(
     test,
     allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
         clippy::string_slice,
-        clippy::panic,
         clippy::unreachable,
         reason = "in a test these are the assertion, not a hazard"
     )
@@ -46,6 +42,8 @@ pub mod durable_backup;
 #[cfg(feature = "filesystem")]
 pub mod eviction;
 #[cfg(feature = "filesystem")]
+pub mod file_watch;
+#[cfg(feature = "filesystem")]
 pub mod fs;
 #[cfg(feature = "filesystem")]
 pub mod full_replica;
@@ -61,10 +59,14 @@ pub mod named_share_delivery;
 pub mod namespace;
 #[cfg(feature = "filesystem")]
 pub mod namespace_binding;
+#[cfg(feature = "filesystem")]
+pub mod namespace_persist;
 #[cfg(all(feature = "filesystem", target_os = "linux"))]
 pub mod native;
 #[cfg(feature = "filesystem")]
 pub mod peer_auth;
+#[cfg(feature = "filesystem")]
+pub mod reachability;
 #[cfg(feature = "filesystem")]
 pub mod recipient_control;
 #[cfg(feature = "filesystem")]
@@ -136,7 +138,8 @@ pub mod workspace_authority;
 mod tests;
 
 // The qdoc conflict merge decodes peer versions in Automerge workers.
-#[cfg(all(test, feature = "filesystem"))]
+#[cfg(test)]
+#[cfg(feature = "filesystem")]
 tilo_automerge_isolate::test_worker!();
 
 #[cfg(feature = "filesystem")]
@@ -151,17 +154,17 @@ pub use availability::AvailabilityRegistry;
 #[cfg(feature = "filesystem")]
 pub use caps_file::{CapabilityFile, CapsError, Refresh};
 #[cfg(feature = "filesystem")]
-pub use collab_types::{
+pub use docstore::{DocStore, VersionManifest, VersionRef};
+#[cfg(feature = "filesystem")]
+pub use fs::QuickFS;
+#[cfg(feature = "filesystem")]
+pub use fs_protocol::{
     MAX_RECIPIENT_CONTROL_CONNECTIONS, MAX_RECIPIENT_CONTROL_FRAME_BYTES,
     MAX_RECIPIENT_CONTROL_REQUESTS_PER_CONNECTION, RECIPIENT_CONTROL_VERSION,
     RecipientControlErrorCode, RecipientControlOperationV1, RecipientControlRequestV1,
     RecipientControlResponseV1, RecipientControlResultV1, RecipientFailureCodeV1,
     RecipientFailureV1, RecipientSubscriptionKeyV1, RecipientSubscriptionStatusV1,
 };
-#[cfg(feature = "filesystem")]
-pub use docstore::{DocStore, VersionManifest, VersionRef};
-#[cfg(feature = "filesystem")]
-pub use fs::QuickFS;
 #[cfg(feature = "filesystem")]
 pub use history::{
     FileHistoryStore, HISTORY_XATTR, HistoryError, HistoryProjectionV1, RecordHistorySnapshot,
@@ -285,7 +288,8 @@ pub use transaction_coordinator::{
     RecordTransactionCoordinatorError, complete_replacement_transaction,
 };
 
-#[cfg(all(test, target_os = "macos", feature = "filesystem"))]
+#[cfg(test)]
+#[cfg(all(target_os = "macos", feature = "filesystem"))]
 mod native_mount_selection_tests {
     #[test]
     fn unselected_native_mount_fails_without_mounting() {
@@ -307,5 +311,21 @@ mod native_mount_selection_tests {
             "Mount is not enabled; this is test-only configuration"
         );
         assert_eq!(std::fs::read_dir(mountpoint.path()).unwrap().count(), 0);
+    }
+}
+
+/// Deterministic incompressible bytes for content tests.
+#[cfg(test)]
+mod test_bytes {
+    pub(crate) fn pseudo(len: usize, seed: u64) -> Vec<u8> {
+        let mut x = seed | 1;
+        (0..len)
+            .map(|_| {
+                x ^= x << 13;
+                x ^= x >> 7;
+                x ^= x << 17;
+                x.to_le_bytes()[0]
+            })
+            .collect()
     }
 }

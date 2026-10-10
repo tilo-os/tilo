@@ -385,11 +385,6 @@ impl Video {
         }
         &self.title
     }
-
-    /// Whether a `DeArrow` alternative exists *and* is active.
-    pub fn dearrow_active(&self, dearrow: bool) -> bool {
-        dearrow && self.dearrow_title.is_some()
-    }
 }
 
 /// How this person likes Tube to play: `SponsorBlock`, `DeArrow`, dislike
@@ -1014,15 +1009,10 @@ impl TubeModel {
     /// when we have them for this query, otherwise the local substring filter
     /// (offline / before a live response lands).
     pub fn search_display(&self, query: &str) -> Vec<&Video> {
-        if self.search_hits_query == query && !self.search_hits.is_empty() {
-            let hits: Vec<&Video> = self
-                .search_hits
-                .iter()
-                .filter_map(|id| self.video(id))
-                .collect();
-            if !hits.is_empty() {
-                return hits;
-            }
+        if self.search_hits_query == query
+            && let Some(hits) = self.known_videos(&self.search_hits)
+        {
+            return hits;
         }
         self.search(query)
     }
@@ -1031,17 +1021,19 @@ impl TubeModel {
     /// recommendations when we have them for this video, otherwise the local
     /// same-category heuristic.
     pub fn related_display(&self, id: &str) -> Vec<&Video> {
-        if self.related_of == id && !self.related_hits.is_empty() {
-            let hits: Vec<&Video> = self
-                .related_hits
-                .iter()
-                .filter_map(|rid| self.video(rid))
-                .collect();
-            if !hits.is_empty() {
-                return hits;
-            }
+        if self.related_of == id
+            && let Some(hits) = self.known_videos(&self.related_hits)
+        {
+            return hits;
         }
         self.related(id)
+    }
+
+    /// The videos of `ids` this model knows, in order; `None` when it knows
+    /// none of them.
+    fn known_videos(&self, ids: &[VideoId]) -> Option<Vec<&Video>> {
+        let hits: Vec<&Video> = ids.iter().filter_map(|id| self.video(id)).collect();
+        (!hits.is_empty()).then_some(hits)
     }
 
     /// "Up next" suggestions for a watch page: same category first, then

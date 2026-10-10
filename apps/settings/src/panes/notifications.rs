@@ -29,9 +29,6 @@ use ui::framework::{EffectAnswer, EffectCx, LiveRow};
 use ui::theme::Theme;
 use ui::tilo_resource::{self, ActionRef, Effect};
 use ui::widget::{AppModel, Dropdown, ModelPath, Toggle, Widget};
-use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
-use winit::event::WindowEvent;
 
 use crate::effects::{SettingsEffect, effect};
 use crate::host::{Followed, PaneCx};
@@ -97,7 +94,7 @@ fn installed_notification_apps_from(
 ) -> Vec<InstalledNotificationApp> {
     let mut apps = BTreeMap::new();
     for entry in package_store::list_installed().unwrap_or_default() {
-        let Ok(manifest) = launcher::manifest::read_manifest(&entry.manifest_path) else {
+        let Ok(manifest) = tilo_app_package::view::read_manifest(&entry.manifest_path) else {
             continue;
         };
         if manifest.entrypoint.gui_bin().is_none() {
@@ -307,6 +304,9 @@ pub struct NotificationsArea {
     prefs: RefCell<Followed<NotificationPrefs>>,
     apps: OnceCell<Vec<InstalledNotificationApp>>,
     sample: bool,
+    /// The installed apps, read off the UI thread after the window's first
+    /// frame ([`Self::start_read`]).
+    read: crate::device_read::DeviceRead<Vec<InstalledNotificationApp>>,
 }
 
 impl NotificationsArea {
@@ -317,6 +317,7 @@ impl NotificationsArea {
             prefs: RefCell::new(cx.follow::<NotificationPrefs>()),
             apps: OnceCell::new(),
             sample: !cx.reaches_devices(),
+            read: crate::device_read::DeviceRead::default(),
         }
     }
 
@@ -324,12 +325,46 @@ impl NotificationsArea {
     /// with a rule left behind.
     fn apps(&self) -> &[InstalledNotificationApp] {
         self.apps.get_or_init(|| {
-            if self.sample {
-                sample_apps()
-            } else {
-                installed_notification_apps(&self.prefs.borrow().get().per_app)
-            }
+            self.read
+                .take()
+                .unwrap_or_else(|| Self::read_apps(self.sample, &self.prefs.borrow().get().per_app))
         })
+    }
+
+    /// The installed apps (every package manifest and desktop entry), or
+    /// the sample a capture lists.
+    fn read_apps(
+        sample: bool,
+        per_app: &BTreeMap<String, AppNotificationRule>,
+    ) -> Vec<InstalledNotificationApp> {
+        if sample {
+            sample_apps()
+        } else {
+            installed_notification_apps(per_app)
+        }
+    }
+
+    /// Read the installed apps off the UI thread; `false` when they have
+    /// been read or are being read.
+    pub(crate) fn start_read(&self) -> bool {
+        if self.is_open() {
+            return false;
+        }
+        let sample = self.sample;
+        let per_app = self.prefs.borrow().get().per_app.clone();
+        self.read.start(move || Self::read_apps(sample, &per_app))
+    }
+
+    /// Whether the read [`Self::start_read`] started has ended.
+    pub(crate) fn read_finished(&self) -> bool {
+        self.read.is_finished()
+    }
+
+    /// Whether the area has read what its rows show: its pane was shown,
+    /// an effect or a row lookup reached it, or the window read it after
+    /// its first frame ([`crate::effects::LIVE_AREAS`]).
+    pub(crate) fn is_open(&self) -> bool {
+        self.apps.get().is_some()
     }
 
     /// One live row per app, offering its delivery choices flipped and its
@@ -667,8 +702,7 @@ pub struct NotificationsPane {
     apps: Vec<InstalledNotificationApp>,
     shown: Shown,
     structure_dirty: bool,
-    composed: Option<Box<dyn Widget>>,
-    rect: Rect,
+    composed: ui::widget::Composed,
 }
 
 impl NotificationsPane {
@@ -684,8 +718,7 @@ impl NotificationsPane {
             apps,
             shown,
             structure_dirty: false,
-            composed: None,
-            rect: Rect::ZERO,
+            composed: ui::widget::Composed::default(),
         }
     }
 
@@ -1045,9 +1078,7 @@ impl Widget for NotificationsPane {
             // The status pill and the per-app captions follow the values.
             self.structure_dirty = true;
         }
-        if let Some(c) = &mut self.composed {
-            c.sync(state, root);
-        }
+        self.composed.sync(state, root);
     }
 
     fn build_layout(
@@ -1056,93 +1087,22 @@ impl Widget for NotificationsPane {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let mut composed = self.build_composition();
-        let child = composed.build_layout(taffy, theme, node_map);
-        self.composed = Some(composed);
-        let style = taffy::Style {
-            display: taffy::Display::Flex,
-            flex_direction: taffy::FlexDirection::Column,
-            size: taffy::Size {
-                width: taffy::Dimension::percent(1.0),
-                height: taffy::Dimension::auto(),
-            },
-            ..Default::default()
-        };
-        let node = taffy.new_with_children(style, &[child]).unwrap_or(child);
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        let composition = self.build_composition();
+        let child = self
+            .composed
+            .build_layout(composition, taffy, theme, node_map);
+        crate::panes::pane_node(taffy, child, node_map, self)
     }
 
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let Ok(l) = taffy.layout(node) else {
-            return;
-        };
-        self.rect = Rect::new(
-            origin.x + f64::from(l.location.x),
-            origin.y + f64::from(l.location.y),
-            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
-            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
-        );
-        if let Some(c) = &mut self.composed
-            && let Ok(children) = taffy.children(node)
-            && let Some(&cn) = children.first()
-        {
-            c.apply_layout(taffy, cn, Point::new(self.rect.x0, self.rect.y0));
-        }
-    }
-
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut ui::text_render::TextRenderer,
-        theme: &Theme,
-        presence: &ui::presence::PresenceCtx,
-    ) {
-        if let Some(c) = &mut self.composed {
-            c.draw(scene, transform, text_renderer, theme, presence);
-        }
-    }
-
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
-        if let Some(c) = &mut self.composed
-            && let Ok(children) = ctx.taffy.children(ctx.node_id)
-            && let Some(&cn) = children.first()
-        {
-            c.handle_event(event, &mut ctx.reborrow(ctx.path, cn));
-        }
-    }
-
-    fn children(&self) -> Vec<&dyn Widget> {
-        self.composed
-            .as_ref()
-            .map(|c| c.as_ref() as &dyn Widget)
-            .into_iter()
-            .collect()
-    }
-
-    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        self.composed
-            .as_mut()
-            .map(|c| c.as_mut() as &mut (dyn Widget + '_))
-            .into_iter()
-            .collect()
-    }
+    ui::forward_to_composed!(composed);
 
     fn name(&self) -> &'static str {
         "NotificationsPane"
     }
 
-    fn get_rect(&self) -> Rect {
-        self.rect
-    }
-
     fn take_structure_dirty(&mut self) -> bool {
         let own = std::mem::take(&mut self.structure_dirty);
-        let child = self
-            .composed
-            .as_mut()
-            .is_some_and(|c| c.take_structure_dirty());
+        let child = self.composed.take_structure_dirty();
         own || child
     }
 }
@@ -1300,6 +1260,7 @@ mod tests {
             prefs: RefCell::new(cx.follow::<NotificationPrefs>()),
             apps: OnceCell::from(sample_apps()),
             sample: true,
+            read: crate::device_read::DeviceRead::default(),
         };
         let mut pane = NotificationsPane::new(cx.clone(), &area);
         assert!(pane.shown.apps["so.tilo.chat"].banners.get());

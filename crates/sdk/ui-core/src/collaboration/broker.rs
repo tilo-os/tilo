@@ -21,9 +21,9 @@ use super::{
     ActionDirectoryRequest, Backend, BrokerActionCatalogueWire, BrokerActionDescriptor,
     BrokerActionSurface, CollabEvent, CollabRequest, CollabTransport, CollaborationManager,
     Collaborator, DocumentMutation, DocumentPublicationError, DocumentPublicationReceipt,
-    ExportedAction, ExportedInput, HostDocumentCommitter, PresenceKey, PresencePayload,
-    PrimaryRouteState, RouteSpec, SignedOp, TransportCommand, TransportError, TransportStatus,
-    Uuid, auto_hello_env, mpsc, presence_handle_env,
+    ExportedAction, ExportedInput, PresenceKey, PresencePayload, PrimaryRouteState, RouteSpec,
+    SignedOp, TransportCommand, TransportError, TransportStatus, Uuid, auto_hello_env, mpsc,
+    presence_handle_env,
 };
 
 // Worker-owned Cloud facilities: committed-document reads, the paged
@@ -292,7 +292,8 @@ pub(super) struct BrokerTransport {
     _thread: Option<thread::JoinHandle<()>>,
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
+#[cfg(unix)]
 pub(crate) struct NativeHistoryInvocationFixture {
     pub manager: CollaborationManager,
     pub refresh: Box<dyn Fn(Vec<u8>, tokio::sync::oneshot::Receiver<()>)>,
@@ -789,9 +790,8 @@ fn exported_action_bytes(action: &ExportedAction, meter: &mut ByteMeter) {
     if let Some(description) = &action.description {
         meter.string_capacity(description);
     }
-    meter.string_capacity(&action.operation_kind);
-    meter.string_capacity(&action.params_json);
-    meter.string_capacity(&action.contract_json);
+    serialized_bytes(&action.params, meter);
+    serialized_bytes(&action.contract, meter);
     if let ExportedInput::Text {
         prompt,
         placeholder,
@@ -1255,30 +1255,35 @@ fn task_run_bytes(run: &runtime_collab::TaskRunEnvelope, meter: &mut ByteMeter) 
     clippy::too_many_lines,
     reason = "one exhaustive event meter must account for every bounded queue variant without a permissive fallback"
 )]
-fn event_bytes(event: &CollabEvent) -> Option<usize> {
+fn event_diagnostics(event: &CollabEvent) -> (&'static str, Option<usize>) {
     let mut meter = ByteMeter(Some(std::mem::size_of::<CollabEvent>()));
-    match event {
+    let kind = match event {
         CollabEvent::CommittedDocument { route, .. } => {
             // Capture bytes retain their own process-wide preallocation permit.
             meter.string_capacity(&route.app_id);
             if let Some(record) = &route.record {
                 meter.string_capacity(record);
             }
+            "CommittedDocument"
         }
         CollabEvent::Context {
             collaborators,
             permissions,
-        } => context_event_bytes(
-            collaborators,
-            collaborators.capacity(),
-            permissions,
-            permissions.capacity(),
-            &mut meter,
-        ),
+        } => {
+            context_event_bytes(
+                collaborators,
+                collaborators.capacity(),
+                permissions,
+                permissions.capacity(),
+                &mut meter,
+            );
+            "Context"
+        }
         CollabEvent::FollowChanged { peer_id } => {
             if let Some(peer_id) = peer_id {
                 meter.string_capacity(peer_id);
             }
+            "FollowChanged"
         }
         CollabEvent::Handoff { request } => {
             meter.add_product(1, std::mem::size_of_val(request));
@@ -1295,15 +1300,26 @@ fn event_bytes(event: &CollabEvent) -> Option<usize> {
                 meter.string_capacity(&successor.record);
                 meter.string_capacity(&successor.by);
             }
+            "Handoff"
         }
-        CollabEvent::DocumentSnapshotRequested { route }
-        | CollabEvent::ChannelAccess { route, .. } => {
+        CollabEvent::DocumentSnapshotRequested { route } => {
             meter.string_capacity(&route.app_id);
             if let Some(record) = &route.record {
                 meter.string_capacity(record);
             }
+            "DocumentSnapshotRequested"
         }
-        CollabEvent::RemoteCursorMoved { user_id, .. } => meter.string_capacity(user_id),
+        CollabEvent::ChannelAccess { route, .. } => {
+            meter.string_capacity(&route.app_id);
+            if let Some(record) = &route.record {
+                meter.string_capacity(record);
+            }
+            "ChannelAccess"
+        }
+        CollabEvent::RemoteCursorMoved { user_id, .. } => {
+            meter.string_capacity(user_id);
+            "RemoteCursorMoved"
+        }
         CollabEvent::RemotePresenceUpdate {
             user_id,
             key,
@@ -1312,6 +1328,7 @@ fn event_bytes(event: &CollabEvent) -> Option<usize> {
             meter.string_capacity(user_id);
             serialized_bytes(key, &mut meter);
             presence_payload_bytes(payload, &mut meter);
+            "RemotePresenceUpdate"
         }
         CollabEvent::ActionArrived {
             type_id,
@@ -1321,6 +1338,7 @@ fn event_bytes(event: &CollabEvent) -> Option<usize> {
             meter.string_capacity(type_id);
             meter.bytes(payload);
             meter.string_capacity(from_user_id);
+            "ActionArrived"
         }
         CollabEvent::Document {
             envelope,
@@ -1332,18 +1350,22 @@ fn event_bytes(event: &CollabEvent) -> Option<usize> {
             if let Some(payload) = decrypted_payload {
                 meter.bytes(payload);
             }
+            "Document"
         }
         CollabEvent::ScrollbackBatch {
             ops,
             decrypted_payloads,
             ..
-        } => scrollback_batch_bytes(
-            ops,
-            ops.capacity(),
-            decrypted_payloads,
-            decrypted_payloads.capacity(),
-            &mut meter,
-        ),
+        } => {
+            scrollback_batch_bytes(
+                ops,
+                ops.capacity(),
+                decrypted_payloads,
+                decrypted_payloads.capacity(),
+                &mut meter,
+            );
+            "ScrollbackBatch"
+        }
         CollabEvent::Invocation {
             resource,
             action,
@@ -1361,27 +1383,50 @@ fn event_bytes(event: &CollabEvent) -> Option<usize> {
             if let Some(context) = context {
                 serialized_bytes(context.as_ref(), &mut meter);
             }
+            "Invocation"
         }
-        CollabEvent::InvocationCancellation { .. } => {}
-        CollabEvent::RemoteAction { message } => serialized_bytes(message, &mut meter),
+        CollabEvent::InvocationCancellation { .. } => "InvocationCancellation",
+        CollabEvent::RemoteAction { message } => {
+            serialized_bytes(message, &mut meter);
+            "RemoteAction"
+        }
         CollabEvent::ActionCatalogue { surfaces } => {
             action_catalogue_bytes(surfaces, surfaces.capacity(), &mut meter);
+            "ActionCatalogue"
         }
-        CollabEvent::ActionDirectoryPage { result, .. } => match result {
-            Ok(page) => directory_client::page_bytes(page, &mut meter),
-            Err(error) => meter.string_capacity(error),
-        },
-        CollabEvent::PublishedActionResolution { result, .. } => match result {
-            Ok(resolution) => directory_client::resolution_bytes(resolution, &mut meter),
-            Err(error) => meter.string_capacity(error),
-        },
+        CollabEvent::ActionDirectoryPage { result, .. } => {
+            match result {
+                Ok(page) => directory_client::page_bytes(page, &mut meter),
+                Err(error) => meter.string_capacity(error),
+            }
+            "ActionDirectoryPage"
+        }
+        CollabEvent::PublishedActionResolution { result, .. } => {
+            match result {
+                Ok(resolution) => directory_client::resolution_bytes(resolution, &mut meter),
+                Err(error) => meter.string_capacity(error),
+            }
+            "PublishedActionResolution"
+        }
         #[cfg(unix)]
-        CollabEvent::ManagedInvocationObservation { result } => meter.add(result.meter_bytes()),
-        CollabEvent::PublishedInvocationResult { result, .. }
-        | CollabEvent::InstalledApplicationLaunchResult { result, .. } => match result {
-            Ok((_, update)) => serialized_bytes(update, &mut meter),
-            Err(error) => meter.string_capacity(error),
-        },
+        CollabEvent::ManagedInvocationObservation { result } => {
+            meter.add(result.meter_bytes());
+            "ManagedInvocationObservation"
+        }
+        CollabEvent::PublishedInvocationResult { result, .. } => {
+            match result {
+                Ok((_, update)) => serialized_bytes(update, &mut meter),
+                Err(error) => meter.string_capacity(error),
+            }
+            "PublishedInvocationResult"
+        }
+        CollabEvent::InstalledApplicationLaunchResult { result, .. } => {
+            match result {
+                Ok((_, update)) => serialized_bytes(update, &mut meter),
+                Err(error) => meter.string_capacity(error),
+            }
+            "InstalledApplicationLaunchResult"
+        }
         CollabEvent::TaskActionInvocationResult {
             result,
             continuation,
@@ -1394,27 +1439,53 @@ fn event_bytes(event: &CollabEvent) -> Option<usize> {
             if let Some(continuation) = continuation {
                 meter.add(continuation.capacity());
             }
+            "TaskActionInvocationResult"
         }
-        CollabEvent::EnrolledTask(run) => serialized_bytes(run, &mut meter),
+        CollabEvent::EnrolledTask(run) => {
+            serialized_bytes(run, &mut meter);
+            "EnrolledTask"
+        }
         CollabEvent::EnrolledTaskReply { result, .. } => {
             if let Err(error) = result {
                 meter.string_capacity(error);
             }
+            "EnrolledTaskReply"
         }
-        CollabEvent::EnrolledTaskDisconnected { detail } => meter.string_capacity(detail),
-        CollabEvent::TaskRun(run) => task_run_bytes(run, &mut meter),
+        CollabEvent::EnrolledTaskDisconnected { detail } => {
+            meter.string_capacity(detail);
+            "EnrolledTaskDisconnected"
+        }
+        CollabEvent::TaskRun(run) => {
+            task_run_bytes(run, &mut meter);
+            "TaskRun"
+        }
         CollabEvent::TaskRunCancellation { result, .. } => {
             if let Err(error) = result {
                 meter.string_capacity(error);
             }
+            "TaskRunCancellation"
+        }
+        CollabEvent::TaskRunReportResult { result, .. } => {
+            if let Err(error) = result {
+                meter.string_capacity(error);
+            }
+            "TaskRunReportResult"
+        }
+        CollabEvent::TaskRunControl { control, .. } => {
+            serialized_bytes(control, &mut meter);
+            "TaskRunControl"
         }
         CollabEvent::WorkspaceControl { event, .. } => {
             workspace_control_event_bytes(event, &mut meter);
+            "WorkspaceControl"
         }
-        CollabEvent::NativeMediaCommandResult { result, .. } => match result {
-            Ok(reply) => serialized_bytes(reply, &mut meter),
-            Err(error) => meter.string_capacity(error),
-        },
+        CollabEvent::NativeMediaCommandResult { result, .. } => {
+            match result {
+                Ok(reply) => serialized_bytes(reply, &mut meter),
+                Err(error) => meter.string_capacity(error),
+            }
+            "NativeMediaCommandResult"
+        }
         CollabEvent::RecordContent { route, hash, bytes } => {
             meter.string_capacity(&route.app_id);
             if let Some(record) = &route.record {
@@ -1422,22 +1493,44 @@ fn event_bytes(event: &CollabEvent) -> Option<usize> {
             }
             meter.string_capacity(hash);
             meter.bytes(bytes);
+            "RecordContent"
         }
-        CollabEvent::RealtimeCommandResult { result, .. } => match result {
-            Ok(reply) => serialized_bytes(reply, &mut meter),
-            Err(error) => meter.string_capacity(error),
-        },
-        CollabEvent::LocalFileClipboardResult { result, .. } => match result {
-            Ok(reply) => serialized_bytes(reply, &mut meter),
-            Err(error) => meter.string_capacity(error),
-        },
-        CollabEvent::NearbyTransferCommandResult { result, .. } => match result {
-            Ok(reply) => serialized_bytes(reply, &mut meter),
-            Err(error) => meter.string_capacity(error),
-        },
-        CollabEvent::Realtime(event) => serialized_bytes(event, &mut meter),
-    }
-    meter.finish()
+        CollabEvent::RealtimeCommandResult { result, .. } => {
+            match result {
+                Ok(reply) => serialized_bytes(reply, &mut meter),
+                Err(error) => meter.string_capacity(error),
+            }
+            "RealtimeCommandResult"
+        }
+        CollabEvent::LocalFileClipboardResult { result, .. } => {
+            match result {
+                Ok(reply) => serialized_bytes(reply, &mut meter),
+                Err(error) => meter.string_capacity(error),
+            }
+            "LocalFileClipboardResult"
+        }
+        CollabEvent::NearbyTransferCommandResult { result, .. } => {
+            match result {
+                Ok(reply) => serialized_bytes(reply, &mut meter),
+                Err(error) => meter.string_capacity(error),
+            }
+            "NearbyTransferCommandResult"
+        }
+        CollabEvent::Realtime(event) => {
+            serialized_bytes(event, &mut meter);
+            "Realtime"
+        }
+    };
+    (kind, meter.finish())
+}
+
+/// Content-free names share the meter's exhaustive, platform-aware match.
+fn event_kind(event: &CollabEvent) -> &'static str {
+    event_diagnostics(event).0
+}
+
+fn event_bytes(event: &CollabEvent) -> Option<usize> {
+    event_diagnostics(event).1
 }
 
 /// Shared failure latch. The UI reads it through `is_connected()` even when
@@ -1963,18 +2056,23 @@ impl InboundBridge {
     }
 
     fn send_durable(&self, event: CollabEvent) -> bool {
-        self.send_durable_turn(event, None)
+        self.send_durable_turn(event, None, None)
     }
 
-    /// `send_durable` retaining the existing producer turn through its owner acknowledgement.
-    fn send_durable_turn(&self, event: CollabEvent, turn: Option<EventTurn>) -> bool {
+    /// Retain the producer turn through its existing owner acknowledgement.
+    fn send_durable_turn(
+        &self,
+        event: CollabEvent,
+        turn: Option<EventTurn>,
+        serialized_bytes: Option<usize>,
+    ) -> bool {
         let required_bytes = event_bytes(&event).unwrap_or(usize::MAX);
         let Some(reservation) = self
             .state
             .event_bytes
             .reserve(required_bytes, SDK_EVENT_QUEUE_BYTES)
         else {
-            let (event_kind, surface_count, action_count) = match &event {
+            let (_catalogue_kind, surface_count, action_count) = match &event {
                 CollabEvent::ActionCatalogue { surfaces } => (
                     "action_catalogue",
                     surfaces.len(),
@@ -1986,7 +2084,10 @@ impl InboundBridge {
                 _ => ("control", 0, 0),
             };
             tracing::error!(
-                event_kind,
+                event_kind = event_kind(&event),
+                ?serialized_bytes,
+                remaining_bytes = SDK_EVENT_QUEUE_BYTES
+                    .saturating_sub(self.state.event_bytes.0.load(Ordering::Acquire)),
                 required_bytes,
                 reserved_bytes = self.state.event_bytes.0.load(Ordering::Acquire),
                 limit_bytes = SDK_EVENT_QUEUE_BYTES,
@@ -2153,42 +2254,19 @@ struct SdkJoinIdentity {
 #[derive(Clone)]
 pub struct CertifiedEndpointIdentity {
     presentation: Vec<u8>,
-    signer: EndpointDocumentSigner,
-}
-
-#[derive(Clone)]
-enum EndpointDocumentSigner {
-    Device(ed25519_dalek::SigningKey),
-    Host(std::sync::Arc<dyn HostDocumentCommitter>),
+    device_key: ed25519_dalek::SigningKey,
 }
 
 impl CertifiedEndpointIdentity {
     pub fn new(presentation: Vec<u8>, device_key: ed25519_dalek::SigningKey) -> Self {
         Self {
             presentation,
-            signer: EndpointDocumentSigner::Device(device_key),
-        }
-    }
-
-    /// Explicit owner-bound host publication. The host retains signing custody;
-    /// this hook must return only after the exact document is durably committed.
-    pub fn with_host_documents(
-        presentation: Vec<u8>,
-        documents: std::sync::Arc<dyn HostDocumentCommitter>,
-    ) -> Self {
-        Self {
-            presentation,
-            signer: EndpointDocumentSigner::Host(documents),
+            device_key,
         }
     }
 
     fn document_signer(&self) -> SdkDocumentSigner {
-        match &self.signer {
-            EndpointDocumentSigner::Host(host) => SdkDocumentSigner::Host(host.clone()),
-            EndpointDocumentSigner::Device(key) => {
-                SdkDocumentSigner::Harness(Box::new(key.clone()))
-            }
-        }
+        SdkDocumentSigner::Harness(Box::new(self.device_key.clone()))
     }
 }
 
@@ -2336,7 +2414,6 @@ impl SdkCertifiedIdentity for runtime_identity::SigningIdentity {
     )
 )]
 enum SdkDocumentSigner {
-    Host(std::sync::Arc<dyn HostDocumentCommitter>),
     /// Shared so the identity service can be asked off the shovel thread.
     Certified(std::sync::Arc<dyn SdkCertifiedIdentity>),
     /// Explicit-FD harnesses have no launcher identity service. Their
@@ -2509,12 +2586,14 @@ struct ConnectedBroker {
     primary_route: PrimaryRouteState,
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
+#[cfg(unix)]
 pub(crate) struct NativeRefreshProbe {
     replace_history: Box<dyn Fn(Vec<u8>)>,
     committed_read_count: Box<dyn Fn() -> usize>,
 }
-#[cfg(all(test, unix))]
+#[cfg(test)]
+#[cfg(unix)]
 impl NativeRefreshProbe {
     pub(crate) fn committed_read_count(&self) -> usize {
         (self.committed_read_count)()
@@ -2750,7 +2829,8 @@ impl CollaborationManager {
         .map_err(|error| error.to_string())
     }
 
-    #[cfg(all(test, unix))]
+    #[cfg(test)]
+    #[cfg(unix)]
     pub(crate) fn native_history_invocation_fixture_for_test(
         history: Vec<u8>,
     ) -> NativeHistoryInvocationFixture {
@@ -2758,7 +2838,8 @@ impl CollaborationManager {
     }
 
     /// Wire/SDK ordering fixture only; not a native authority proof.
-    #[cfg(all(test, unix))]
+    #[cfg(test)]
+    #[cfg(unix)]
     pub(crate) fn native_initial_fixture_for_test(
         app: &str,
         room: Uuid,
@@ -2769,7 +2850,8 @@ impl CollaborationManager {
 
     /// Socket-backed ordering fixture on an actual acknowledged named route.
     /// This fixture does not establish native caller authority.
-    #[cfg(all(test, unix))]
+    #[cfg(test)]
+    #[cfg(unix)]
     pub(crate) fn native_initial_named_fixture_for_test(
         route: RouteSpec,
         history: Vec<u8>,
@@ -2791,12 +2873,14 @@ impl CollaborationManager {
 
     /// A connected route whose document reads are not Required, as a
     /// standalone runtime admits it.
-    #[cfg(all(test, unix))]
+    #[cfg(test)]
+    #[cfg(unix)]
     pub(crate) fn connected_fixture_for_test(app: &str, room: Uuid) -> Self {
         tests::connected_manager_for(app, room)
     }
 
-    #[cfg(all(test, unix))]
+    #[cfg(test)]
+    #[cfg(unix)]
     pub(crate) fn native_initial_fixture_gated_for_test(
         app: &str,
         room: Uuid,
@@ -2807,7 +2891,8 @@ impl CollaborationManager {
     }
 
     /// Socket-backed committed-read fixture; the probe observes real recheck requests.
-    #[cfg(all(test, unix))]
+    #[cfg(test)]
+    #[cfg(unix)]
     pub(crate) fn native_initial_parked_fixture_for_test(
         app: &str,
         room: Uuid,
@@ -2817,7 +2902,8 @@ impl CollaborationManager {
         tests::native_initial_parked_fixture(app, room, history, gate)
     }
 
-    #[cfg(all(test, unix))]
+    #[cfg(test)]
+    #[cfg(unix)]
     pub(crate) fn native_refresh_fixture_for_test(
         app: &str,
         room: Uuid,
@@ -3053,7 +3139,7 @@ impl CollaborationManager {
     /// [`super::CollaborationState::Connecting`] until the broker
     /// acknowledges the route. For a host showing an app inside its own
     /// process.
-    pub(crate) fn for_route_host_in_background(
+    pub fn for_route_host_in_background(
         connector: HostSessionConnector,
         route: RouteSpec,
         record_kind: Option<String>,
@@ -3101,13 +3187,15 @@ impl CollaborationManager {
     }
 
     /// Real socket-backed SDK transport for App lifecycle integration tests.
-    #[cfg(all(test, unix))]
+    #[cfg(test)]
+    #[cfg(unix)]
     pub(crate) fn connected_for_lifecycle_test() -> Self {
         tests::connected_manager()
     }
 
     /// Retire the actual socket-backed capture generation, as a rejoin does.
-    #[cfg(all(test, unix))]
+    #[cfg(test)]
+    #[cfg(unix)]
     pub(crate) fn retire_document_capture_for_test(&self, route: &RouteSpec) {
         let Backend::Transport(transport) = &self.backend else {
             panic!("a broker transport");
@@ -3128,7 +3216,8 @@ impl CollaborationManager {
     /// far. A route join enqueues the route's initial action catalogue before
     /// its command completes, so the next [`Self::poll`] then sees everything
     /// those commands produced. Panics at the hang bound.
-    #[cfg(all(test, unix))]
+    #[cfg(test)]
+    #[cfg(unix)]
     pub(crate) fn wait_for_commands_for_test(&self) {
         let Backend::Transport(transport) = &self.backend else {
             panic!("a broker transport");
@@ -3153,7 +3242,8 @@ impl CollaborationManager {
 
     /// Real socket-backed SDK transport plus a probe returning every signed
     /// envelope the broker accepted, in order.
-    #[cfg(all(test, unix))]
+    #[cfg(test)]
+    #[cfg(unix)]
     pub(crate) fn capturing_for_test() -> (Self, Box<dyn Fn() -> Vec<SignedOp>>) {
         tests::capturing_manager()
     }
@@ -3161,7 +3251,8 @@ impl CollaborationManager {
     /// Like [`Self::connected_for_lifecycle_test`], but still connecting:
     /// returns the manager with the wake scope it reports to and a channel
     /// that receives each of its wakes.
-    #[cfg(all(test, unix))]
+    #[cfg(test)]
+    #[cfg(unix)]
     pub(crate) fn connecting_for_lifecycle_test()
     -> (Self, crate::wake::WakeScope, mpsc::Receiver<()>) {
         tests::connecting_manager()
@@ -3170,14 +3261,16 @@ impl CollaborationManager {
     /// Test-only: build a manager talking to an SDK broker on the given
     /// already-connected client fd, bypassing env-var lookup so two
     /// tests in one process don't race on `TILO_SVC_COLLAB_FD`.
-    #[cfg(all(test, unix))]
+    #[cfg(test)]
+    #[cfg(unix)]
     fn from_sdk_fd_for_test(fd: RawFd, app_id: &str, cluster_id: Uuid) -> Self {
         Self::from_sdk_fd_for_test_with_identity(fd, app_id, cluster_id, Vec::new())
     }
 
     /// Like [`Self::from_sdk_fd_for_test`] but stamps the `join_channel`
     /// call with a caller-supplied identity blob.
-    #[cfg(all(test, unix))]
+    #[cfg(test)]
+    #[cfg(unix)]
     fn from_sdk_fd_for_test_with_identity(
         fd: RawFd,
         app_id: &str,
@@ -3456,10 +3549,196 @@ fn run_shovel(
     state.notify_events();
 }
 
-/// How often an endpoint asks the identity service whether its routes'
-/// channel keys changed. Also bounds how long an edit waits after a new
-/// device is admitted.
+/// How soon a route waiting for keys is asked about again after anything
+/// changed, and how often every route is asked when the broker does not say
+/// when keys change (`channelKeysChanged`).
 const CHANNEL_KEY_REFRESH: Duration = Duration::from_secs(1);
+
+/// The longest a route waiting for keys goes unasked while nothing changes.
+/// Admission is pushed; this timer covers only what is not, such as a
+/// channel service that starts after the app or a steward this device learns
+/// of later.
+const CHANNEL_KEY_WAIT_LONGEST: Duration = Duration::from_secs(30);
+
+/// What makes an endpoint ask the identity service about a route's keys.
+enum KeySignal {
+    /// The route's channel changed, or ciphertext arrived its keys can't
+    /// open: ask for the route's keys now.
+    Changed(String),
+    /// The broker does not say when keys change: ask on a timer.
+    Unpushed,
+}
+
+/// Which routes one round of key questions asks about. Only routes that ask
+/// the identity service at all are ever asked.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct KeyRound {
+    /// Every such route.
+    all: bool,
+    /// Routes holding no keys yet.
+    waiting: bool,
+    /// These routes, by channel key.
+    routes: std::collections::BTreeSet<String>,
+}
+
+impl KeyRound {
+    fn asks(&self, route: &str, keys: &super::route_keys::RouteKeys) -> bool {
+        keys.asks_identity_service()
+            && (self.all || (self.waiting && keys.awaiting_keys()) || self.routes.contains(route))
+    }
+}
+
+/// When an endpoint asks the identity service for its routes' keys.
+///
+/// A route holding keys is asked only when told to: the broker resolves the
+/// route's pending `channelKeysChanged` the moment its channel's keys or
+/// this device's access change, ciphertext arrives its keys can't open, or
+/// the broker refuses an edit sealed under them (`send_document_frame`). An
+/// endpoint whose routes all hold keys therefore never wakes for them.
+///
+/// Every channel change the identity service would answer differently is a
+/// commit the channel's steward makes within its reconcile interval (about a
+/// second) of the policy change: a key rotation, an invite, a removal, a
+/// role change that ends reading, a device's enrolment or revocation. The
+/// endpoint asks the moment that commit reaches this device, so a removed or
+/// revoked route stops holding its keys within that bound plus the commit's
+/// delivery to this device. Independently, the broker refuses content sealed
+/// under a superseded epoch on every path, and the identity service checks
+/// this device's trust and the person's role on every signature, so a stale
+/// key never publishes past the commit.
+///
+/// A route waiting for keys is asked on a timer as well: after
+/// [`CHANNEL_KEY_REFRESH`], then backing off to [`CHANNEL_KEY_WAIT_LONGEST`]
+/// while nothing changes. An endpoint whose broker pushes nothing asks for
+/// every route every [`CHANNEL_KEY_REFRESH`], as before.
+struct KeySchedule {
+    /// Whether the broker says when keys change. Assumed until a route's
+    /// `channelKeysChanged` is refused.
+    pushed: bool,
+    /// Routes told to ask since the last round.
+    marked: std::collections::BTreeSet<String>,
+    /// The timer's next round, and the wait it was armed with.
+    timer: Pin<Box<tokio::time::Sleep>>,
+    wait: Duration,
+}
+
+impl KeySchedule {
+    fn new() -> Self {
+        Self {
+            pushed: true,
+            marked: std::collections::BTreeSet::new(),
+            timer: Box::pin(tokio::time::sleep(CHANNEL_KEY_REFRESH)),
+            wait: CHANNEL_KEY_REFRESH,
+        }
+    }
+
+    /// Whether the timer starts rounds: never while every route holds keys
+    /// and the broker pushes their changes.
+    fn timed(&self, awaiting: bool) -> bool {
+        !self.pushed || awaiting
+    }
+
+    fn note(&mut self, signal: KeySignal) {
+        match signal {
+            KeySignal::Changed(route) => {
+                self.marked.insert(route);
+                self.restart();
+            }
+            KeySignal::Unpushed if self.pushed => {
+                self.pushed = false;
+                self.restart();
+            }
+            KeySignal::Unpushed => {}
+        }
+    }
+
+    /// The round the timer starts now that it fired; arms the next one.
+    fn timer_round(&mut self) -> KeyRound {
+        if self.pushed {
+            self.wait = self.wait.saturating_mul(2).min(CHANNEL_KEY_WAIT_LONGEST);
+        }
+        self.arm();
+        KeyRound {
+            all: !self.pushed,
+            waiting: true,
+            routes: std::mem::take(&mut self.marked),
+        }
+    }
+
+    /// A round for the routes told to ask since the last one, if any.
+    fn marked_round(&mut self) -> Option<KeyRound> {
+        (!self.marked.is_empty()).then(|| KeyRound {
+            all: false,
+            waiting: false,
+            routes: std::mem::take(&mut self.marked),
+        })
+    }
+
+    /// The round a route that just joined starts: it learns its keys, or
+    /// that it waits, before its first edit.
+    fn join_round(&mut self) -> KeyRound {
+        self.restart();
+        KeyRound {
+            all: !self.pushed,
+            waiting: true,
+            routes: std::mem::take(&mut self.marked),
+        }
+    }
+
+    /// Something changed (a route joined, keys or access moved): a route
+    /// still waiting is asked again soon.
+    fn restart(&mut self) {
+        self.wait = CHANNEL_KEY_REFRESH;
+        self.arm();
+    }
+
+    fn arm(&mut self) {
+        self.timer.set(tokio::time::sleep(self.wait));
+    }
+}
+
+/// Whether any route holds no keys yet and asks the identity service.
+fn any_route_awaiting_keys(routes: &std::collections::HashMap<String, SdkRoute>) -> bool {
+    routes.values().any(|route| {
+        route
+            .encryption
+            .lock()
+            .is_ok_and(|keys| keys.awaiting_keys())
+    })
+}
+
+/// Follow `channel`'s key changes for as long as the endpoint runs, telling
+/// the shovel to ask for `route`'s keys after each. The call is pending
+/// without traffic while nothing changes.
+fn follow_channel_keys(
+    channel: runtime_collab::ChannelHandle,
+    route: String,
+    signals: tokio_mpsc::UnboundedSender<KeySignal>,
+) {
+    tokio::task::spawn_local(async move {
+        let mut after = 0;
+        loop {
+            match channel.channel_keys_changed(after).await {
+                Ok(change) if change != after => {
+                    after = change;
+                    if signals.send(KeySignal::Changed(route.clone())).is_err() {
+                        return;
+                    }
+                }
+                Ok(_) => {
+                    tracing::warn!("collab: the broker reported an unchanged channel as changed");
+                    let _ = signals.send(KeySignal::Unpushed);
+                    return;
+                }
+                Err(error) => {
+                    tracing::debug!(%error, "collab: the broker does not say when channel keys change; asking on a timer");
+                    let _ = signals.send(KeySignal::Unpushed);
+                    return;
+                }
+            }
+        }
+    });
+}
 
 /// SDK-side event loop: dispatches outbound requests to SDK calls, and
 /// spawns one subscription task per stream on the first `join_channel`.
@@ -3485,20 +3764,19 @@ async fn drive_shovel(
     let media_routes = native_media::Routes::default();
     let _media_worker = native_media::start(media_rx, media_routes.clone());
     // Every route of a certified endpoint is an encrypted channel whose keys
-    // come from the identity service. A harness has no such service, and an
-    // inherited host signer commits cleartext through its host owner, so
-    // both stay plaintext.
+    // come from the identity service. A harness has no such service, so it
+    // stays plaintext.
     let asks_channel_keys = !matches!(
         signer,
-        LocalSdkDocumentSigner::Inherited(
-            SdkDocumentSigner::Harness(_) | SdkDocumentSigner::Host(_)
-        )
+        LocalSdkDocumentSigner::Inherited(SdkDocumentSigner::Harness(_))
     );
-    let mut key_refresh = tokio::time::interval(CHANNEL_KEY_REFRESH);
-    key_refresh.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-    // A certified identity service is asked on a blocking thread. The
-    // periodic round runs alongside this loop, which keeps sending while the
-    // routes keep receiving; at most one round is in flight.
+    // When to ask for keys: see `KeySchedule`. Each encrypted route follows
+    // its channel's changes and marks itself on `key_signals`.
+    let mut key_schedule = KeySchedule::new();
+    let (key_signals, mut key_signal_rx) = tokio_mpsc::unbounded_channel::<KeySignal>();
+    // A certified identity service is asked on a blocking thread. A round
+    // runs alongside this loop, which keeps sending while the routes keep
+    // receiving; at most one round is in flight.
     let mut key_fetch: Option<KeyFetch> = None;
     let mut routes = std::collections::HashMap::<String, SdkRoute>::new();
     let mut primary: Option<String> = None;
@@ -3514,10 +3792,23 @@ async fn drive_shovel(
     let mut unpublished: Option<String> = None;
 
     loop {
+        let timed = asks_channel_keys
+            && key_fetch.is_none()
+            && key_schedule.timed(any_route_awaiting_keys(&routes));
         let queued = tokio::select! {
             queued = outbound_rx.recv() => queued,
-            _ = key_refresh.tick(), if asks_channel_keys && key_fetch.is_none() => {
-                key_fetch = refresh_keys(&routes, &mut signer, &inbound_tx).await;
+            Some(signal) = key_signal_rx.recv() => {
+                key_schedule.note(signal);
+                if key_fetch.is_none()
+                    && let Some(round) = key_schedule.marked_round()
+                {
+                    key_fetch = refresh_keys(&routes, &mut signer, &inbound_tx, &round).await;
+                }
+                continue;
+            }
+            () = key_schedule.timer.as_mut(), if timed => {
+                let round = key_schedule.timer_round();
+                key_fetch = refresh_keys(&routes, &mut signer, &inbound_tx, &round).await;
                 continue;
             }
             fetched = async {
@@ -3528,7 +3819,13 @@ async fn drive_shovel(
             }, if key_fetch.is_some() =>
             {
                 key_fetch = None;
-                apply_fetched_keys(&routes, fetched, &mut signer, &inbound_tx).await;
+                if apply_fetched_keys(&routes, fetched, &mut signer, &inbound_tx).await {
+                    key_schedule.restart();
+                }
+                // Routes told to ask while the round was out ask now.
+                if let Some(round) = key_schedule.marked_round() {
+                    key_fetch = refresh_keys(&routes, &mut signer, &inbound_tx, &round).await;
+                }
                 continue;
             }
         };
@@ -3559,6 +3856,7 @@ async fn drive_shovel(
                     ensure_sdk_route(
                         &SdkJoinContext {
                             asks_channel_keys,
+                            key_signals: &key_signals,
                             client: &client,
                             presentation: &presentation,
                             participant_handle: participant_handle.as_deref(),
@@ -3613,6 +3911,7 @@ async fn drive_shovel(
                 let _ = ensure_sdk_route(
                     &SdkJoinContext {
                         asks_channel_keys,
+                        key_signals: &key_signals,
                         client: &client,
                         presentation: &presentation,
                         participant_handle: participant_handle.as_deref(),
@@ -3631,6 +3930,7 @@ async fn drive_shovel(
                 let joined = ensure_sdk_route(
                     &SdkJoinContext {
                         asks_channel_keys,
+                        key_signals: &key_signals,
                         client: &client,
                         presentation: &presentation,
                         participant_handle: participant_handle.as_deref(),
@@ -3694,6 +3994,7 @@ async fn drive_shovel(
                 let result = install_sdk_encryption(
                     SdkJoinContext {
                         asks_channel_keys,
+                        key_signals: &key_signals,
                         client: &client,
                         presentation: &presentation,
                         participant_handle: participant_handle.as_deref(),
@@ -3801,12 +4102,13 @@ async fn drive_shovel(
         }
         if asks_channel_keys && routes.len() > routes_before {
             // A route joined just now learns its keys (or that it waits)
-            // before its first edit rather than at the next tick. Only
+            // before its first edit rather than at the next round. Only
             // sending waits for that; the routes keep receiving.
             if let Some(fetch) = key_fetch.take() {
                 apply_fetched_keys(&routes, fetch.await, &mut signer, &inbound_tx).await;
             }
-            if let Some(fetch) = refresh_keys(&routes, &mut signer, &inbound_tx).await {
+            let round = key_schedule.join_round();
+            if let Some(fetch) = refresh_keys(&routes, &mut signer, &inbound_tx, &round).await {
                 apply_fetched_keys(&routes, fetch.await, &mut signer, &inbound_tx).await;
             }
         }
@@ -3839,6 +4141,8 @@ async fn install_sdk_encryption(
 #[derive(Clone, Copy)]
 struct SdkJoinContext<'a> {
     asks_channel_keys: bool,
+    /// Where each route's endpoint says its keys may have changed.
+    key_signals: &'a tokio_mpsc::UnboundedSender<KeySignal>,
     client: &'a runtime_collab::CollabClient,
     presentation: &'a [u8],
     participant_handle: Option<&'a str>,
@@ -3848,6 +4152,7 @@ struct SdkJoinContext<'a> {
 }
 
 struct SdkRoute {
+    _checks: Option<super::approved_checks::Registration>,
     spec: RouteSpec,
     channel: runtime_collab::ChannelHandle,
     presence: Option<runtime_collab::PresenceHandle>,
@@ -3872,6 +4177,7 @@ async fn ensure_sdk_route(
 ) -> Result<(), String> {
     let SdkJoinContext {
         asks_channel_keys,
+        key_signals,
         client,
         presentation: identity_bytes,
         participant_handle,
@@ -3913,7 +4219,19 @@ async fn ensure_sdk_route(
         // agent cannot start deciding against stale local fallback data.
         spawn_action_catalogue_stream(&channel, inbound_tx).await?;
     }
-    let committed = committed_document::install(&channel, spec, inbound_tx).await?;
+    let committed = committed_document::install(
+        &channel,
+        spec,
+        inbound_tx,
+        committed_document::NativeReadJoin {
+            client: client.clone(),
+            presentation: identity_bytes.to_vec(),
+            participant_handle: participant_handle.unwrap_or("").into(),
+            participant_kind: participant_kind.into(),
+            record_kind: record_kind.into(),
+        },
+    )
+    .await?;
     if committed {
         // This reply contains only the original host-retained launch instance;
         // a record label or app environment never becomes private authority.
@@ -3936,18 +4254,27 @@ async fn ensure_sdk_route(
     // committing host holds no channel keys: it could neither open a sealed
     // edit nor accept cleartext on the route after one. Committed routes
     // therefore stay cleartext end to end.
-    let encryption =
-        std::sync::Arc::new(std::sync::Mutex::new(if asks_channel_keys && !committed {
-            super::route_keys::RouteKeys::requested()
-        } else {
-            super::route_keys::RouteKeys::plain()
-        }));
+    let encrypted = asks_channel_keys && !committed;
+    let encryption = std::sync::Arc::new(std::sync::Mutex::new(if encrypted {
+        super::route_keys::RouteKeys::requested()
+    } else {
+        super::route_keys::RouteKeys::plain()
+    }));
+    if encrypted {
+        follow_channel_keys(channel.clone(), channel_id.clone(), key_signals.clone());
+    }
     // The streams are independent: subscribing to them together costs the
     // join one broker round trip instead of one per stream.
     let ((), (), (), (), (), (), presence) = tokio::join!(
         async {
             if !committed {
-                spawn_op_stream(&channel, inbound_tx, std::sync::Arc::clone(&encryption)).await;
+                spawn_op_stream(
+                    &channel,
+                    inbound_tx,
+                    std::sync::Arc::clone(&encryption),
+                    encrypted.then(|| (channel_id.clone(), key_signals.clone())),
+                )
+                .await;
             }
         },
         spawn_context_stream(&channel, spec.clone(), inbound_tx),
@@ -3971,6 +4298,12 @@ async fn ensure_sdk_route(
         tracing::warn!(%error, "collab: late-join snapshot request failed");
     }
 
+    let checks = super::approved_checks::register(channel_id.clone(), channel.clone())
+        .map_err(|error| {
+            tracing::warn!(%error, "collab: approved project check lane unavailable");
+            error
+        })
+        .ok();
     media_routes.insert(channel_id.clone(), channel.clone());
     if spec.record.is_none()
         && participant_kind == "person"
@@ -3983,6 +4316,7 @@ async fn ensure_sdk_route(
     routes.insert(
         channel_id,
         SdkRoute {
+            _checks: checks,
             spec: spec.clone(),
             channel,
             presence,
@@ -4040,6 +4374,7 @@ async fn spawn_op_stream(
     channel: &runtime_collab::ChannelHandle,
     inbound_tx: &InboundBridge,
     encryption: SharedRouteKeys,
+    key_signals: Option<(String, tokio_mpsc::UnboundedSender<KeySignal>)>,
 ) {
     if let Ok(stream) = channel.subscribe().await {
         let tx = inbound_tx.clone();
@@ -4049,7 +4384,18 @@ async fn spawn_op_stream(
                     Ok(envelope) => {
                         match signed_document_event(envelope, event.from_user_id, &encryption) {
                             Ok(event) => event,
-                            Err(UndeliveredDocument::Held) => continue,
+                            Err(UndeliveredDocument::Held) => {
+                                // Sealed under an epoch the held keys lack:
+                                // ask for newer keys, once per generation.
+                                if let Some((route, signals)) = key_signals.as_ref()
+                                    && encryption
+                                        .lock()
+                                        .is_ok_and(|mut keys| keys.wants_keys_for_held())
+                                {
+                                    let _ = signals.send(KeySignal::Changed(route.clone()));
+                                }
+                                continue;
+                            }
                             Err(error) => {
                                 tracing::warn!(
                                     %error,
@@ -4305,6 +4651,7 @@ async fn spawn_invocation_stream(
                         context: context.map(Box::new),
                     },
                     turn.map(|turn| EventTurn::Document(turn.permits)),
+                    None,
                 ) {
                     break;
                 }
@@ -4559,8 +4906,6 @@ async fn spawn_action_catalogue_stream(
         .read()
         .await
         .map_err(|error| format!("reading initial action catalogue failed: {error}"))?;
-    let catalogue = serde_json::from_str::<BrokerActionCatalogueWire>(&initial)
-        .map_err(|error| format!("decoding initial action catalogue failed: {error}"))?;
     // The initial baseline occupies the same turn as subsequent watched
     // snapshots. Otherwise a busy constructor retains both before its first
     // owner poll, which can exhaust the bridge despite each baseline fitting.
@@ -4570,19 +4915,32 @@ async fn spawn_action_catalogue_stream(
         .acquire_owned()
         .await
         .map_err(|error| error.to_string())?;
-    if !inbound_tx.send_durable_turn(
-        CollabEvent::ActionCatalogue {
-            surfaces: catalogue.surfaces,
-        },
-        Some(EventTurn::Snapshot(turn)),
-    ) {
-        return Err("delivering initial action catalogue failed".to_string());
-    }
+    admit_initial_action_catalogue(&initial, inbound_tx, Some(turn))?;
 
     let tx = inbound_tx.clone();
     tokio::task::spawn_local(async move {
         forward_action_catalogues(async || stream.read().await.map_err(|_| ()), &tx, turns).await;
     });
+    Ok(())
+}
+
+/// Decode and admit the initial snapshot through the same bounded owner queue.
+fn admit_initial_action_catalogue(
+    initial: &str,
+    tx: &InboundBridge,
+    turn: Option<tokio::sync::OwnedSemaphorePermit>,
+) -> Result<(), String> {
+    let catalogue = serde_json::from_str::<BrokerActionCatalogueWire>(initial)
+        .map_err(|error| format!("decoding initial action catalogue failed: {error}"))?;
+    if !tx.send_durable_turn(
+        CollabEvent::ActionCatalogue {
+            surfaces: catalogue.surfaces,
+        },
+        turn.map(EventTurn::Snapshot),
+        Some(initial.len()),
+    ) {
+        return Err("delivering initial action catalogue failed".to_string());
+    }
     Ok(())
 }
 
@@ -4612,6 +4970,7 @@ async fn forward_action_catalogues(
                         surfaces: catalogue.surfaces,
                     },
                     Some(EventTurn::Snapshot(turn)),
+                    Some(snapshot.len()),
                 ) {
                     break;
                 }
@@ -4678,32 +5037,6 @@ async fn spawn_presence_stream(
     }
 }
 
-static LAST_CERTIFIED_DOCUMENT_SEQ: std::sync::atomic::AtomicU64 =
-    std::sync::atomic::AtomicU64::new(0);
-
-fn next_certified_document_seq(now: crate::time::SystemTime) -> u64 {
-    use std::sync::atomic::Ordering;
-
-    let wall = now
-        .duration_since(crate::time::SystemTime::UNIX_EPOCH)
-        .map_or(0, |duration| {
-            u64::try_from(duration.as_micros()).unwrap_or(u64::MAX)
-        });
-    let mut observed = LAST_CERTIFIED_DOCUMENT_SEQ.load(Ordering::Relaxed);
-    loop {
-        let candidate = wall.max(observed.saturating_add(1));
-        match LAST_CERTIFIED_DOCUMENT_SEQ.compare_exchange_weak(
-            observed,
-            candidate,
-            Ordering::Relaxed,
-            Ordering::Relaxed,
-        ) {
-            Ok(_) => return candidate,
-            Err(actual) => observed = actual,
-        }
-    }
-}
-
 /// Keep the accepted request and its queue byte reservation on the worker
 /// stack while hydration catches up. No later barrier or command can overtake
 /// it. Hydration runs independently on this same LocalSet.
@@ -4765,54 +5098,6 @@ async fn send_document_mutation(
                     .state
                     .publication_failed("original document contributors", error, true)
             })?;
-    }
-    if let LocalSdkDocumentSigner::Inherited(SdkDocumentSigner::Host(host)) = signer {
-        // The standalone owner admits cleartext state. Never bypass an MLS
-        // requirement or produce a signed cleartext replacement for ciphertext.
-        if !route
-            .encryption
-            .lock()
-            .is_ok_and(|encryption| matches!(encryption.keys, super::route_keys::Keys::Plain))
-        {
-            return Err(inbound.state.publication_failed(
-                "host document encryption unavailable",
-                "cleartext commit refused",
-                true,
-            ));
-        }
-        let committed_custody = authorization.clone();
-        let commit = match authorization {
-            Some(authorization) => host.commit_scoped(&route.spec, mutation, authorization),
-            None => host.commit(&route.spec, mutation),
-        };
-        let result = commit.await.and_then(|op| {
-            if let Some(authorization) = &committed_custody {
-                authorization.check_committed_operation(&route.spec, &op)?;
-            }
-            postcard::to_stdvec(&op).map_err(|e| e.to_string())
-        });
-        match result {
-            Ok(bytes) => {
-                if let Err(error) = route.channel.send(&bytes).await {
-                    tracing::warn!(%error, "collab: precommitted host document handoff failed; outcome unknown");
-                    return Err(inbound.state.publication_failed(
-                        "host document receipt handoff",
-                        error,
-                        true,
-                    ));
-                }
-                if let Some(authorization) = &committed_custody {
-                    authorization.acknowledge_committed();
-                }
-            }
-            Err(error) => {
-                tracing::warn!(%error, "collab: host document commit failed; outcome unknown");
-                return Err(inbound
-                    .state
-                    .publication_failed("host document commit", error, true));
-            }
-        }
-        return Ok(());
     }
     if authorization.is_some() {
         return Err(inbound.state.publication_failed(
@@ -4911,15 +5196,6 @@ async fn try_send_frame(
         };
     let now = crate::time::wall();
     let author = match signer {
-        // Host-signed documents commit through the host owner before this
-        // frame path; an inherited host signer cannot sign a frame here.
-        LocalSdkDocumentSigner::Inherited(SdkDocumentSigner::Host(_)) => {
-            return FrameSend::Failed(state.publication_failed(
-                "document signing or encoding",
-                "inherited host signer cannot sign a document frame",
-                true,
-            ));
-        }
         LocalSdkDocumentSigner::Inherited(SdkDocumentSigner::Certified(identity)) => {
             identity.signing_public_key()
         }
@@ -4931,7 +5207,7 @@ async fn try_send_frame(
     let author = collab_types::Ed25519PublicKey::from_bytes(author);
     let attestation =
         collab_types::document_attestation_id(&route.spec.app_id, &workspace_id, record_id);
-    let seq = next_certified_document_seq(now);
+    let seq = collab_types::next_unordered_document_sequence(now);
     let mut op = match encryption_metadata {
         Some(metadata) => SignedOp::new_unsigned_with_encryption(
             payload,
@@ -4965,15 +5241,6 @@ async fn try_send_frame(
         }
     };
     let signature = match signer {
-        // Host-signed documents commit through the host owner before this
-        // frame path; an inherited host signer cannot sign a frame here.
-        LocalSdkDocumentSigner::Inherited(SdkDocumentSigner::Host(_)) => {
-            return FrameSend::Failed(state.publication_failed(
-                "document signing or encoding",
-                "inherited host signer cannot sign a document frame",
-                true,
-            ));
-        }
         LocalSdkDocumentSigner::Inherited(SdkDocumentSigner::Certified(identity)) => match identity
             .sign_collaboration_op(&workspace_id, &route.spec.app_id, record_id, &unsigned_op)
         {
@@ -5139,9 +5406,7 @@ async fn refresh_route_keys(route: &SdkRoute, signer: &mut LocalSdkDocumentSigne
                 .channel_keys(&workspace_id, &route.spec.app_id, record_id, generation)
                 .await
         }
-        LocalSdkDocumentSigner::Inherited(
-            SdkDocumentSigner::Harness(_) | SdkDocumentSigner::Host(_),
-        ) => return false,
+        LocalSdkDocumentSigner::Inherited(SdkDocumentSigner::Harness(_)) => return false,
     };
     update_route_keys(route, answered_keys(reply, generation), generation)
 }
@@ -5235,8 +5500,8 @@ async fn certified_channel_keys(
     .unwrap_or_default()
 }
 
-/// Start a round of key questions for every route that asks the identity
-/// service. A certified service is asked off this thread and the round is
+/// Start a round of key questions for the routes `round` names. A certified
+/// service is asked off this thread and the round is
 /// returned to be awaited alongside the loop; a host's asynchronous service
 /// is asked here, and its answers are taken at once.
 #[allow(
@@ -5247,16 +5512,18 @@ async fn refresh_keys(
     routes: &std::collections::HashMap<String, SdkRoute>,
     signer: &mut LocalSdkDocumentSigner,
     inbound_tx: &InboundBridge,
+    round: &KeyRound,
 ) -> Option<KeyFetch> {
     let LocalSdkDocumentSigner::Inherited(SdkDocumentSigner::Certified(identity)) = signer else {
-        refresh_all_route_keys(routes, signer, inbound_tx).await;
+        refresh_all_route_keys(routes, signer, inbound_tx, round).await;
         return None;
     };
     let queries: Vec<KeyQuery> = routes
-        .values()
-        .filter_map(|route| {
+        .iter()
+        .filter_map(|(key, route)| {
             let keys = route.encryption.lock().ok()?;
-            keys.asks_identity_service()
+            round
+                .asks(key, &keys)
                 .then(|| KeyQuery::of(route, keys.generation()))
         })
         .collect();
@@ -5270,6 +5537,7 @@ async fn refresh_keys(
 }
 
 /// Take a finished round's answers, then deliver what waited on them.
+/// Returns whether any route's state or keys changed.
 #[allow(
     clippy::future_not_send,
     reason = "capnp-rpc routes are !Send and this runs only on the shovel LocalSet"
@@ -5279,7 +5547,8 @@ async fn apply_fetched_keys(
     fetched: FetchedKeys,
     signer: &mut LocalSdkDocumentSigner,
     inbound_tx: &InboundBridge,
-) {
+) -> bool {
+    let mut changed = false;
     for (key, asked, reply) in fetched {
         let Some(route) = routes.get(&key) else {
             continue;
@@ -5291,16 +5560,18 @@ async fn apply_fetched_keys(
             .lock()
             .is_ok_and(|keys| keys.generation() == asked)
         {
-            update_route_keys(route, reply, asked);
+            changed |= update_route_keys(route, reply, asked);
         }
         if !deliver_waiting(route, signer, inbound_tx).await {
-            return;
+            return changed;
         }
     }
+    changed
 }
 
-/// Bring every route's keys up to date, report access changes to the app,
-/// then send the edits and deliver the ciphertext that waited on them.
+/// Bring the keys of the routes `round` names up to date, report access
+/// changes to the app, then send the edits and deliver the ciphertext that
+/// waited on them.
 #[allow(
     clippy::future_not_send,
     reason = "capnp-rpc routes are !Send and this runs only on the shovel LocalSet"
@@ -5309,9 +5580,16 @@ async fn refresh_all_route_keys(
     routes: &std::collections::HashMap<String, SdkRoute>,
     signer: &mut LocalSdkDocumentSigner,
     inbound_tx: &InboundBridge,
+    round: &KeyRound,
 ) {
-    for route in routes.values() {
-        refresh_route_keys(route, signer).await;
+    for (key, route) in routes {
+        if route
+            .encryption
+            .lock()
+            .is_ok_and(|keys| round.asks(key, &keys))
+        {
+            refresh_route_keys(route, signer).await;
+        }
         if !deliver_waiting(route, signer, inbound_tx).await {
             return;
         }
@@ -5394,58 +5672,6 @@ fn directory_unavailable() -> runtime_collab::ActionDirectoryResolution {
     runtime_collab::ActionDirectoryResolution::Unavailable
 }
 
-fn write_directory_descriptor(
-    mut out: runtime_collab::collab_capnp::exported_action::Builder<'_>,
-    descriptor: &runtime_collab::ExportedAction,
-) {
-    out.set_resource(&descriptor.resource);
-    if let Some(identity) = &descriptor.semantic_identity {
-        let mut out = out.reborrow().init_semantic_identity();
-        out.set_kind(&identity.kind);
-        out.set_key(&identity.key);
-    }
-    out.set_action(&descriptor.action);
-    out.set_resource_kind(&descriptor.resource_kind);
-    out.set_resource_label(&descriptor.resource_label);
-    out.set_action_label(&descriptor.action_label);
-    out.set_description(descriptor.description.as_deref().unwrap_or(""));
-    out.set_operation_kind(&descriptor.operation_kind);
-    out.set_params_json(&descriptor.params_json);
-    out.set_contract_json(&descriptor.contract_json);
-    let mut input = out.init_input();
-    match &descriptor.input {
-        runtime_collab::ExportedInput::None => input.set_none(()),
-        runtime_collab::ExportedInput::Text {
-            prompt,
-            placeholder,
-            wants_content,
-        } => {
-            let mut text = input.init_text();
-            text.set_prompt(prompt);
-            text.set_placeholder(placeholder);
-            text.set_wants_content(*wants_content);
-        }
-    }
-}
-
-fn write_directory_row(
-    mut out: runtime_collab::collab_capnp::action_directory_row::Builder<'_>,
-    row: &runtime_collab::ActionDirectoryRow,
-) {
-    out.set_parent_resource(&row.parent_resource);
-    out.set_resource(&row.resource);
-    out.set_resource_kind(&row.resource_kind);
-    out.set_resource_label(&row.resource_label);
-    out.set_resource_presentation_json(&row.resource_presentation_json);
-    out.set_action(row.action.as_deref().unwrap_or(""));
-    out.set_has_children(row.has_children);
-    out.set_visibility_action(row.visibility_action.as_deref().unwrap_or(""));
-    out.set_visibility_contract_json(&row.visibility_contract_json);
-    if let Some(descriptor) = &row.descriptor {
-        write_directory_descriptor(out.reborrow().init_descriptor(), descriptor);
-    }
-}
-
 #[allow(
     refining_impl_trait,
     reason = "capnp generated server traits accept the concrete Promise type used by every existing RPC endpoint"
@@ -5519,23 +5745,7 @@ impl runtime_collab::collab_capnp::action_directory::Server for ActionDirectoryS
             let page = response.await.map_err(|_| {
                 capnp::Error::failed("application action directory is unavailable".into())
             })?;
-            let mut out = results.get().init_page();
-            out.set_revision(&page.revision);
-            out.set_next_cursor(&page.next_cursor);
-            out.set_exhausted(page.exhausted);
-            out.set_stale_cursor(page.stale_cursor);
-            out.set_budget_exhausted(page.budget_exhausted);
-            let len = u32::try_from(page.rows.len())
-                .map_err(|_| capnp::Error::failed("too many directory rows".into()))?;
-            let mut rows = out.reborrow().init_rows(len);
-            for (index, row) in page.rows.iter().enumerate() {
-                write_directory_row(
-                    rows.reborrow()
-                        .get(u32::try_from(index).unwrap_or(u32::MAX)),
-                    row,
-                );
-            }
-            Ok(())
+            runtime_collab::write_action_directory_page(results.get().init_page(), &page)
         })
     }
 
@@ -5585,18 +5795,10 @@ impl runtime_collab::collab_capnp::action_directory::Server for ActionDirectoryS
                 // As for a query: the asker's deadline, not one of ours.
                 response.await.unwrap_or_else(|_| directory_unavailable())
             };
-            let mut out = results.get().init_resolution();
-            match reply_value {
-                runtime_collab::ActionDirectoryResolution::Found(row) => {
-                    write_directory_row(out.reborrow().init_found(), &row);
-                }
-                runtime_collab::ActionDirectoryResolution::NotFound => out.set_not_found(()),
-                runtime_collab::ActionDirectoryResolution::StaleRevision => {
-                    out.set_stale_revision(());
-                }
-                runtime_collab::ActionDirectoryResolution::Unavailable => out.set_unavailable(()),
-            }
-            Ok(())
+            runtime_collab::write_action_directory_resolution(
+                results.get().init_resolution(),
+                &reply_value,
+            )
         })
     }
 }
@@ -5804,59 +6006,6 @@ async fn dispatch_sdk_request(
                 .await;
         }
         CollabRequest::PublishActions { app_id, actions } => {
-            let actions = actions
-                .into_iter()
-                .map(|action| runtime_collab::ExportedAction {
-                    resource: action.resource,
-                    semantic_identity: action.semantic_identity.map(|identity| {
-                        runtime_collab::ExportedResourceSemanticIdentity {
-                            kind: identity.kind,
-                            key: identity.key,
-                        }
-                    }),
-                    action: action.action,
-                    resource_kind: action.resource_kind,
-                    resource_label: action.resource_label,
-                    action_label: action.action_label,
-                    description: action.description,
-                    operation_kind: action.operation_kind,
-                    params_json: action.params_json,
-                    contract_json: action.contract_json,
-                    view: action.view.map(|view| runtime_collab::ExportedView {
-                        id: view.id,
-                        label: view.label,
-                        description: view.description,
-                        open_action: view.open_action,
-                        primary: view.primary,
-                        range: view
-                            .range
-                            .as_ref()
-                            .map(|range| runtime_collab::ExportedViewRange {
-                                action: range.action.clone(),
-                                start_param: range.start_param.clone(),
-                                end_param: range.end_param.clone(),
-                                unit_param: range.unit_param.clone(),
-                            }),
-                        mount: view.mount.map(|mount| runtime_collab::ExportedViewMount {
-                            action: mount.action,
-                            capability_param: mount.capability_param,
-                            view_param: mount.view_param,
-                        }),
-                    }),
-                    input: match action.input {
-                        ExportedInput::None => runtime_collab::ExportedInput::None,
-                        ExportedInput::Text {
-                            prompt,
-                            placeholder,
-                            wants_content,
-                        } => runtime_collab::ExportedInput::Text {
-                            prompt,
-                            placeholder,
-                            wants_content,
-                        },
-                    },
-                })
-                .collect::<Vec<_>>();
             if let Err(error) = route.channel.publish_actions(&app_id, &actions).await {
                 tracing::warn!(%error, "collab: publishing resource/action surface failed; republishing");
                 inbound_tx
@@ -6048,6 +6197,31 @@ async fn dispatch_sdk_request(
                 Err(error) => {
                     tracing::warn!(%error, "collab: encoding local effect receipt failed");
                     inbound_tx.state.fail_closed("effect receipt encoding");
+                }
+            }
+        }
+        CollabRequest::RemoteAction { message } if message.waits() => {
+            // The host holds this answer until the invocation moves; the
+            // connection's other traffic must not wait behind it. Polled
+            // once here, so the call still goes out in the order it was
+            // asked (a cancel right after its invoke stays after it).
+            let channel = route.channel.clone();
+            let mut round_trip =
+                Box::pin(async move { remote_action_round_trip(&channel, message).await });
+            let first = std::future::poll_fn(|context| {
+                std::task::Poll::Ready(round_trip.as_mut().poll(context))
+            })
+            .await;
+            match first {
+                std::task::Poll::Ready(answer) => {
+                    let _ = inbound_tx.send_durable(CollabEvent::RemoteAction { message: answer });
+                }
+                std::task::Poll::Pending => {
+                    let inbound = inbound_tx.clone();
+                    tokio::task::spawn_local(async move {
+                        let answer = round_trip.await;
+                        let _ = inbound.send_durable(CollabEvent::RemoteAction { message: answer });
+                    });
                 }
             }
         }
@@ -6305,11 +6479,20 @@ async fn dispatch_sdk_request(
             let _ = inbound_tx.send_durable(CollabEvent::EnrolledTaskReply { request_id, result });
         }
         CollabRequest::ReportTaskRun {
+            request_id,
             run_id,
             lease,
             update,
         } => {
-            if let Err(error) = route.channel.report_task_run(run_id, &lease, &update).await {
+            let result = route
+                .channel
+                .report_task_run(run_id, &lease, &update)
+                .await
+                .map_err(|error| error.to_string());
+            if let Some(request_id) = request_id {
+                let _ = inbound_tx
+                    .send_durable(CollabEvent::TaskRunReportResult { request_id, result });
+            } else if let Err(error) = result {
                 tracing::warn!(%error, run_id, "collab: reporting task run update failed");
             }
         }
@@ -6368,9 +6551,18 @@ async fn dispatch_sdk_request(
         } => {
             let result = route
                 .channel
-                .task_run_cancelled(run_id, &lease)
+                .task_run_status(run_id, &lease)
                 .await
-                .map_err(|error| error.to_string());
+                .map_err(|error| error.to_string())
+                .map(|status| {
+                    if let Some(control) = status.control {
+                        let _ = inbound_tx.send_durable(CollabEvent::TaskRunControl {
+                            request_id,
+                            control,
+                        });
+                    }
+                    status.cancelled
+                });
             let _ =
                 inbound_tx.send_durable(CollabEvent::TaskRunCancellation { request_id, result });
         }
@@ -6573,69 +6765,6 @@ mod tests {
 
     use super::*;
 
-    /// The byte budget an app pages its directory by is checked against the
-    /// encoded page, so the per-row estimate must never fall below a row's
-    /// Cap'n Proto size, however its fields are sized.
-    #[test]
-    fn directory_row_estimates_bound_their_encoded_size() {
-        let text = |length: usize| "x".repeat(length);
-        for length in [0, 1, 7, 8, 9, 63, 64, 1000] {
-            let row = runtime_collab::ActionDirectoryRow {
-                parent_resource: text(length),
-                resource: text(length),
-                resource_kind: text(length),
-                resource_label: text(length),
-                resource_presentation_json: text(length),
-                action: Some(text(length)),
-                descriptor: Some(runtime_collab::ExportedAction {
-                    semantic_identity: None,
-                    resource: text(length),
-                    action: text(length),
-                    resource_kind: text(length),
-                    resource_label: text(length),
-                    action_label: text(length),
-                    description: Some(text(length)),
-                    operation_kind: text(length),
-                    params_json: text(length),
-                    contract_json: text(length),
-                    view: None,
-                    input: runtime_collab::ExportedInput::Text {
-                        prompt: text(length),
-                        placeholder: text(length),
-                        wants_content: false,
-                    },
-                }),
-                has_children: false,
-                visibility_action: Some(text(length)),
-                visibility_contract_json: text(length),
-            };
-            let rows = 40u32;
-            let mut message = capnp::message::Builder::new_default();
-            {
-                let mut page = message
-                    .init_root::<runtime_collab::collab_capnp::action_directory_page::Builder<'_>>(
-                    );
-                page.set_revision("v5:00000000-0000-0000-0000-000000000000");
-                let mut list = page.reborrow().init_rows(rows);
-                for index in 0..rows {
-                    write_directory_row(list.reborrow().get(index), &row);
-                }
-            }
-            let encoded = message
-                .get_root_as_reader::<runtime_collab::collab_capnp::action_directory_page::Reader<'_>>()
-                .unwrap()
-                .total_size()
-                .unwrap()
-                .word_count
-                * 8;
-            let estimated = crate::app::directory_row_wire_bytes(&row) * rows as usize;
-            assert!(
-                u64::try_from(estimated).unwrap() >= encoded,
-                "field length {length}: estimated {estimated} < encoded {encoded}"
-            );
-        }
-    }
-
     /// The concrete broker transport's bridge state behind a test manager.
     fn broker_state(manager: &CollaborationManager) -> BridgeState {
         match &manager.backend {
@@ -6650,13 +6779,10 @@ mod tests {
     }
 
     #[cfg(unix)]
-    include!("invocation_custody_tests.rs");
-
-    #[cfg(unix)]
     include!("directory_client_tests.rs");
-    use crate::collaboration::{
-        CollaborationState, HostDocumentCommit, SignedSendError, SigningIdentity,
-    };
+    #[cfg(unix)]
+    include!("committed_read_deadline_tests.rs");
+    use crate::collaboration::{CollaborationState, SignedSendError, SigningIdentity};
 
     fn plain_route_keys() -> SharedRouteKeys {
         std::sync::Arc::new(std::sync::Mutex::new(
@@ -6708,6 +6834,10 @@ mod tests {
         received_invocations: usize,
         invocation_execution: Option<Result<bool, String>>,
         committed_recheck_gate: Option<tokio::sync::oneshot::Receiver<()>>,
+        committed_ack_gate: Option<(mpsc::Sender<()>, tokio::sync::oneshot::Receiver<()>)>,
+        committed_private_binding: Option<u64>,
+        committed_ack_failure: Option<String>,
+        committed_ack_reply: Option<runtime_collab::committed_document::Reply>,
         committed_reads: Vec<runtime_collab::committed_document::Request>,
         media_commands: Vec<runtime_collab::native_media::Request>,
         media_active_fixture: bool,
@@ -6741,6 +6871,9 @@ mod tests {
         action_catalogue_fixture: Option<Vec<String>>,
         action_catalogue_subscriptions: usize,
         action_catalogue_reads: usize,
+        /// The channel service whose changes `channelKeysChanged` follows;
+        /// without one the call is unimplemented, as on an older broker.
+        key_changes: Option<Arc<tokio::sync::watch::Sender<u64>>>,
     }
 
     struct DocumentSendGate {
@@ -7113,6 +7246,31 @@ mod tests {
     }
 
     impl channel_handle::Server for FakeChannel {
+        fn channel_keys_changed(
+            self: Rc<Self>,
+            params: channel_handle::ChannelKeysChangedParams,
+            mut results: channel_handle::ChannelKeysChangedResults,
+        ) -> Promise<(), capnp::Error> {
+            let Some(changes) = self.captures.lock().unwrap().key_changes.clone() else {
+                return Promise::err(capnp::Error::unimplemented(
+                    "fixture has no channel service".into(),
+                ));
+            };
+            let after = match params.get() {
+                Ok(params) => params.get_after(),
+                Err(error) => return Promise::err(error),
+            };
+            let mut changed = changes.subscribe();
+            Promise::from_future(async move {
+                let change = *changed
+                    .wait_for(|change| *change != after)
+                    .await
+                    .map_err(|_| capnp::Error::disconnected("fixture service gone".into()))?;
+                results.get().set_change(change);
+                Ok(())
+            })
+        }
+
         fn invocation_cancellation(
             self: Rc<Self>,
             _: channel_handle::InvocationCancellationParams,
@@ -7250,6 +7408,9 @@ mod tests {
                 let reply = match captures.committed_history_fixture.as_ref() {
                     None => Reply::Legacy,
                     Some(bytes) => match request {
+                        Request::PrivateWindowBinding => Reply::PrivateWindowBinding {
+                            instance: captures.committed_private_binding,
+                        },
                         Request::Open {
                             known_revision: Some(revision),
                         } if revision == current_revision => Reply::Unchanged { revision },
@@ -7262,7 +7423,13 @@ mod tests {
                             token: [3; 16],
                         },
                         Request::Cancel { capture: 1, token } if token == [3; 16] => {
-                            Reply::Cancelled
+                            if let Some(error) = captures.committed_ack_failure.take() {
+                                return Err(capnp::Error::failed(error));
+                            }
+                            captures
+                                .committed_ack_reply
+                                .take()
+                                .unwrap_or(Reply::Cancelled)
                         }
                         _ => {
                             return Err(capnp::Error::failed(
@@ -7273,6 +7440,11 @@ mod tests {
                 };
                 let gate = if matches!(reply, Reply::Unchanged { .. }) {
                     captures.committed_recheck_gate.take()
+                } else if matches!(reply, Reply::Cancelled) {
+                    captures.committed_ack_gate.take().map(|(entered, gate)| {
+                        entered.send(()).unwrap();
+                        gate
+                    })
                 } else {
                     None
                 };
@@ -8677,6 +8849,148 @@ mod tests {
     fn committed_routes_stay_out_of_channel_keys_while_op_routes_ask() {
         assert_eq!(channel_key_requests_on_route(true), 0);
         assert!(channel_key_requests_on_route(false) > 0);
+    }
+
+    /// A certified endpoint on one ordinary route of a broker that says when
+    /// channel keys change (`changes`) or does not (`None`), with the count
+    /// of its key requests.
+    #[cfg(unix)]
+    fn keyed_endpoint(
+        changes: Option<Arc<tokio::sync::watch::Sender<u64>>>,
+    ) -> (
+        CollaborationManager,
+        Arc<std::sync::atomic::AtomicUsize>,
+        thread::JoinHandle<()>,
+    ) {
+        let broker = FakeBroker {
+            captures: Arc::new(std::sync::Mutex::new(Captures {
+                key_changes: changes,
+                ..Captures::default()
+            })),
+            op_backlog: vec![],
+            presence_backlog: vec![],
+            context_backlog: vec![],
+            scrollback_response: None,
+        };
+        let (fd, _captures, thread) = stand_up_fake_broker(broker);
+        let asked = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let sdk = CollaborationManager::spawn_sdk(
+            SdkConnectSource::Fd(fd),
+            Some(SdkJoinIdentity {
+                presentation: Vec::new(),
+                participant_kind: "person",
+                signer: SdkDocumentSigner::Certified(Arc::new(KeyedIdentity {
+                    asked: Arc::clone(&asked),
+                })),
+            }),
+        )
+        .unwrap();
+        let mut manager = CollaborationManager::disabled();
+        manager.backend = Backend::Transport(Box::new(sdk));
+        assert!(manager.send(CollabRequest::Hello {
+            app_id: "so.tilo.test".into(),
+            cluster_id: Uuid::new_v4(),
+            record: None,
+            record_kind: None,
+            handle: None,
+        }));
+        manager.await_primary_route().unwrap();
+        tilo_test_env::wait_until("the route's endpoint to ask for its channel keys", || {
+            asked.load(std::sync::atomic::Ordering::Acquire) > 0
+        });
+        (manager, asked, thread)
+    }
+
+    /// TIL-598: an endpoint holding its route's keys asks for them again only
+    /// when the broker says the channel changed, once per change, and never
+    /// on a timer: an idle app costs the identity service nothing.
+    #[test]
+    #[cfg(unix)]
+    fn routes_holding_keys_ask_only_when_their_channel_changes() {
+        let changes = Arc::new(tokio::sync::watch::Sender::new(0_u64));
+        let (manager, asked, thread) = keyed_endpoint(Some(Arc::clone(&changes)));
+        let joined = asked.load(std::sync::atomic::Ordering::Acquire);
+        // The refresh timer would have asked three times by now.
+        std::thread::sleep(CHANNEL_KEY_REFRESH * 3 + Duration::from_millis(500));
+        assert_eq!(
+            asked.load(std::sync::atomic::Ordering::Acquire),
+            joined,
+            "a route holding keys asked again with nothing changed"
+        );
+
+        changes.send_replace(7);
+        tilo_test_env::wait_until("the endpoint to ask after its channel changed", || {
+            asked.load(std::sync::atomic::Ordering::Acquire) > joined
+        });
+        std::thread::sleep(CHANNEL_KEY_REFRESH * 2);
+        assert_eq!(
+            asked.load(std::sync::atomic::Ordering::Acquire),
+            joined + 1,
+            "one change asks once"
+        );
+        drop(manager);
+        thread.join().unwrap();
+    }
+
+    /// A broker that does not say when keys change (an older one) leaves the
+    /// endpoint asking for every route every second, as before.
+    #[test]
+    #[cfg(unix)]
+    fn without_pushed_changes_routes_are_asked_every_second() {
+        let (manager, asked, thread) = keyed_endpoint(None);
+        let joined = asked.load(std::sync::atomic::Ordering::Acquire);
+        tilo_test_env::wait_until("the endpoint to keep asking on its timer", || {
+            asked.load(std::sync::atomic::Ordering::Acquire) >= joined + 2
+        });
+        drop(manager);
+        thread.join().unwrap();
+    }
+
+    /// The timer only covers routes still waiting for keys while the broker
+    /// pushes changes, backing off while nothing changes; a change asks at
+    /// once and starts the backoff over. Without pushes, every route is
+    /// asked every second.
+    #[test]
+    fn key_schedule_polls_only_what_is_not_pushed() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .unwrap();
+        let _entered = runtime.enter();
+        let mut schedule = KeySchedule::new();
+        assert!(
+            !schedule.timed(false),
+            "routes holding keys are never polled while changes are pushed"
+        );
+        assert!(schedule.timed(true), "a waiting route is polled");
+        let mut waits = vec![schedule.wait];
+        for _ in 0..6 {
+            let round = schedule.timer_round();
+            assert!(round.waiting && !round.all, "{round:?}");
+            waits.push(schedule.wait);
+        }
+        assert_eq!(
+            waits,
+            [1, 2, 4, 8, 16, 30, 30].map(Duration::from_secs),
+            "waiting routes back off to the longest wait"
+        );
+
+        schedule.note(KeySignal::Changed("route".into()));
+        assert_eq!(schedule.wait, CHANNEL_KEY_REFRESH, "a change starts over");
+        let round = schedule.marked_round().expect("the changed route asks now");
+        assert!(!round.all && !round.waiting);
+        assert_eq!(round.routes.into_iter().collect::<Vec<_>>(), ["route"]);
+        assert_eq!(schedule.marked_round(), None, "asked once");
+
+        schedule.note(KeySignal::Unpushed);
+        assert!(
+            schedule.timed(false),
+            "without pushes, every route is polled"
+        );
+        for _ in 0..3 {
+            assert!(schedule.timer_round().all);
+            assert_eq!(schedule.wait, CHANNEL_KEY_REFRESH, "every second");
+        }
     }
 
     #[test]
@@ -11518,6 +11832,38 @@ mod tests {
             .unwrap_err();
         assert!(error.to_string().contains(expected), "{error}");
     }
+    #[test]
+    fn initial_action_catalogue_admission_accounts_for_retained_payload() {
+        let (tx, mut rx) = tokio_mpsc::channel(SDK_EVENT_QUEUE);
+        let state = BridgeState::new();
+        let inbound = InboundBridge::new(tx, state.clone());
+        let snapshot = |bytes: usize| {
+            format!(
+                r#"{{"surfaces":[{{"peer_id":1,"app_id":"so.tilo.notes","cluster_id":"c","record_id":"{}","live":true,"actions":[]}}]}}"#,
+                "r".repeat(bytes)
+            )
+        };
+        let initial = snapshot(700 * 1024);
+        admit_initial_action_catalogue(&initial, &inbound, None).unwrap();
+        let queued = rx.try_recv().expect("initial catalogue reaches the owner");
+        assert_eq!(event_kind(&queued.event), "ActionCatalogue");
+        let retained = event_bytes(&queued.event).unwrap();
+        assert_eq!(state.event_bytes.0.load(Ordering::Acquire), retained);
+        assert!(retained >= 700 * 1024);
+        drop(queued);
+        assert_eq!(state.event_bytes.0.load(Ordering::Acquire), 0);
+        assert!(state.is_healthy());
+
+        let oversized = snapshot(SDK_EVENT_QUEUE_BYTES);
+        assert!(admit_initial_action_catalogue(&oversized, &inbound, None).is_err());
+        assert!(
+            !state.is_healthy(),
+            "oversized initial snapshots fail closed"
+        );
+        assert!(rx.try_recv().is_err(), "rejected payload is never retained");
+        assert_eq!(state.event_bytes.0.load(Ordering::Acquire), 0);
+    }
+
     /// A headless worker is drained only between pumps. Large catalogue
     /// snapshots (one per host publication) must not pile up in its bounded
     /// bridge: one stays queued, the rest coalesce to the latest.

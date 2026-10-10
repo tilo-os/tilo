@@ -178,14 +178,14 @@ class OsReleaseMatrixTests(unittest.TestCase):
             self.assertEqual(groups, ["tilo-os-image-validate-2"] * 2)
             self.assertNotEqual(groups[0], concurrency_group(branches[0], "workflow_call", ""))
             self.assertIn("cancel-in-progress: ${{ github.event_name == 'workflow_call' && github.ref != 'refs/heads/main' }}", WORKFLOW.read_text())
-        with self.subTest(phase='Lenovo publication has a source-specific lock'):
+        with self.subTest(phase='Lenovo publications serialize the board generation series'):
             self.assertEqual(
                 concurrency_group("refs/heads/main", "workflow_dispatch", "true", "lenovo-83ed"),
-                f"tilo-os-image-lenovo-{SHA}",
+                "tilo-os-image-lenovo-series",
             )
             self.assertEqual(
                 concurrency_group("refs/heads/main", "workflow_dispatch", "true", "lenovo-83ed", "f" * 40),
-                f"tilo-os-image-lenovo-{'f' * 40}",
+                "tilo-os-image-lenovo-series",
             )
             self.assertNotEqual(
                 concurrency_group("refs/heads/main", "workflow_dispatch", "true"),
@@ -376,8 +376,11 @@ class ReleaseGateTests(unittest.TestCase):
                     workflow[use.end():use.end() + 24],
                     r"^:\$(?:source_ref|first_ref|repro_ref)\b",
                 )
-            self.assertIn("'${{ steps.build.outputs.digest || steps.build-uncached.outputs.digest }}'", workflow)
-            self.assertIn("'${{ steps.repro.outputs.digest }}'", workflow)
+            # The archives are rechunked in place (TIL-747); a descriptor is
+            # selected by the rechunked digest, or the build's when it is off.
+            self.assertIn("'${{ steps.rechunk.outputs.digest || steps.build.outputs.digest "
+                          "|| steps.build-uncached.outputs.digest }}'", workflow)
+            self.assertIn("'${{ steps.repro-rechunk.outputs.digest || steps.repro.outputs.digest }}'", workflow)
             self.assertNotIn("podman load --input /var/tmp/tilo-image", workflow)
 
     @unittest.skipUnless(os.name == "posix" and shutil.which("skopeo"), "skopeo on POSIX required")

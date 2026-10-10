@@ -935,9 +935,7 @@ mod tests {
     use super::*;
     use crate::shell::chrome_state::ChromeState;
     use crate::shell::state::{WorkspaceTree, WorkspaceTreeHandle};
-    use parking_lot::RwLock;
     use std::fmt::Write as _;
-    use std::sync::Arc;
 
     /// A registry + manifest pair so `launcher::installed_apps()`
     /// enumerates a package declaring `[providers].ext`.
@@ -952,10 +950,14 @@ mod tests {
             .join(", ");
         std::fs::write(
             &manifest_path,
-            format!(
-                "[package]\nid = \"{package_id}\"\nname = \"{name}\"\n\
-                 version = \"1.0.0\"\n[entrypoint]\nbin = \"bin/app\"\n\
-                 type = \"gui\"\n[providers]\nmime = []\next = [{ext_list}]\n"
+            crate::shell::test_support::canonical_manifest(
+                &format!(
+                    "id = \"{package_id}\"\nname = \"{name}\"\nversion = \"1.0.0\"\nkind = \"app\""
+                ),
+                &format!(
+                    "[entrypoint]\nbin = \"bin/app\"\ntype = \"gui\"\n\
+                     [providers]\nmime = []\next = [{ext_list}]\n"
+                ),
             ),
         )
         .unwrap();
@@ -972,7 +974,8 @@ mod tests {
     }
 
     fn chrome_with_workspace() -> Chrome {
-        let handle: WorkspaceTreeHandle = Arc::new(RwLock::new(WorkspaceTree::bootstrap_demo()));
+        let handle: WorkspaceTreeHandle =
+            crate::shell::state::WorkspaceTreeHandle::new(WorkspaceTree::bootstrap_demo());
         ChromeState::new_with_handle(handle)
     }
 

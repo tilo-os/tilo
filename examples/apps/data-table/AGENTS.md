@@ -26,6 +26,8 @@ do not invent app-local identities, a second database or a permission bypass.
 An agent is an ordinary collaborator subject to the same roles.
 For a short, offline workflow with runnable peer-edit and undo tests, use
 `tilo-app guide collaborate --json` (also `guide undo`, `history` or `sync`).
+For live roles, permission-aware panes and refused actions, use
+`tilo-app guide permissions --json` (also `guide roles` or `access`).
 
 ## Work and verify
 

@@ -64,7 +64,7 @@ impl FileStore {
 
     fn path(&self, record: &[u8]) -> PathBuf {
         self.dir
-            .join(format!("{}.{SUFFIX}", hex(&Sha256::digest(record))))
+            .join(format!("{}.{SUFFIX}", hex::encode(Sha256::digest(record))))
     }
 }
 
@@ -106,14 +106,6 @@ impl SecretBackend for FileStore {
             Err(error) => Err(failed("deleting the secret", error)),
         }
     }
-}
-
-fn hex(bytes: &[u8]) -> String {
-    use std::fmt::Write as _;
-    bytes.iter().fold(String::new(), |mut out, byte| {
-        let _ = write!(out, "{byte:02x}");
-        out
-    })
 }
 
 /// The bytes of `path`, a regular file this user owns that nobody else may
@@ -164,7 +156,7 @@ fn write_private(path: &Path, bytes: &[u8]) -> io::Result<()> {
     let dir = path.parent().ok_or_else(|| io::Error::other("no parent"))?;
     let mut nonce = [0_u8; 8];
     tilo_seal::fill_random(&mut nonce).map_err(io::Error::other)?;
-    let temp = dir.join(format!(".{}.tmp", hex(&nonce)));
+    let temp = dir.join(format!(".{}.tmp", hex::encode(nonce)));
     let written = (|| {
         let mut file = OpenOptions::new()
             .write(true)

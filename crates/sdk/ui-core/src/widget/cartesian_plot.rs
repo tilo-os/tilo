@@ -13,29 +13,25 @@
 use crate::time::{Duration, Instant};
 use crate::widget::ModelPath;
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Circle, Line, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::{BlendMode, Color, Fill};
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 
 use crate::a11y::{AccessNode, AccessState, Role};
-use crate::color_compat::ColorCompat;
+use crate::paint::with_alpha;
 use crate::presence::PresenceCtx;
 use crate::text_render::{TextRenderer, TextWeight};
 use crate::theme::Theme;
 use crate::tokens::TextRole;
+use crate::widget::Widget;
+use crate::widget::chart_labels::format_compact;
 use crate::widget::chart_legend;
 use crate::widget::chart_navigation::{
     ChartNavAction, ChartTouchAction, ChartTouchTracker, chart_nav_action, moved_index,
 };
-use crate::widget::{TaffyTreeExt, Widget};
-
-fn alpha(color: Color, value: u8) -> Color {
-    Color::from_rgba8(color.r(), color.g(), color.b(), value)
-}
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum AxisRange {
@@ -193,12 +189,6 @@ impl PlotDatum {
     #[must_use]
     pub fn with_detail(mut self, detail: impl Into<String>) -> Self {
         self.detail = detail.into();
-        self
-    }
-
-    #[must_use]
-    pub fn with_radius(mut self, radius: f64) -> Self {
-        self.radius = radius.max(1.0);
         self
     }
 }
@@ -375,10 +365,6 @@ impl CartesianAnnotation {
 
     pub fn x_band(id: impl Into<String>, start: f64, end: f64, color: Color) -> Self {
         Self::new(id, CartesianAnnotationKind::XBand { start, end }, color)
-    }
-
-    pub fn y_band(id: impl Into<String>, start: f64, end: f64, color: Color) -> Self {
-        Self::new(id, CartesianAnnotationKind::YBand { start, end }, color)
     }
 
     pub fn point(id: impl Into<String>, x: f64, y: f64, color: Color) -> Self {
@@ -668,13 +654,6 @@ impl Domain {
             AxisRange::Auto | AxisRange::Fixed { .. } => None,
         }
     }
-
-    fn shifted(self, delta: f64) -> Self {
-        Self {
-            min: self.min + delta,
-            max: self.max + delta,
-        }
-    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -821,10 +800,6 @@ impl CartesianPlot {
     ) -> Self {
         self.annotations = annotations.into_iter().collect();
         self
-    }
-    pub fn set_annotations(&mut self, annotations: impl IntoIterator<Item = CartesianAnnotation>) {
-        self.annotations = annotations.into_iter().collect();
-        self.hovered_annotation = None;
     }
     pub fn annotations(&self) -> &[CartesianAnnotation] {
         &self.annotations
@@ -986,9 +961,6 @@ impl CartesianPlot {
         }
         self.hovered_annotation.is_some()
     }
-    pub fn take_brush_selection(&mut self) -> Option<CartesianBrushSelection> {
-        self.brushed.take()
-    }
     /// Restore automatic/fixed axis domains after interactive zooming.
     pub fn reset_view(&mut self) {
         self.x_view = None;
@@ -1036,31 +1008,6 @@ impl CartesianPlot {
         self.view_changed = true;
         self.update_hover();
         true
-    }
-    /// Pan the current viewport by data-coordinate deltas. An axis without an
-    /// explicit viewport starts from its automatic/fixed configured domain.
-    pub fn pan_view_by(&mut self, x_delta: f64, y_delta: f64) -> bool {
-        if !x_delta.is_finite() || !y_delta.is_finite() {
-            return false;
-        }
-        let x = self
-            .x_view
-            .unwrap_or_else(|| self.base_domain(&self.style.x_axis, true))
-            .shifted(x_delta);
-        let y = self
-            .y_view
-            .unwrap_or_else(|| self.base_domain(&self.style.y_axis, false))
-            .shifted(y_delta);
-        self.set_viewport(
-            Some(AxisRange::Fixed {
-                min: x.min,
-                max: x.max,
-            }),
-            Some(AxisRange::Fixed {
-                min: y.min,
-                max: y.max,
-            }),
-        )
     }
     /// Pan by fractions of the visible width and height. This is convenient
     /// for responsive buttons, trackpads, and synchronized overview charts.
@@ -1149,10 +1096,6 @@ impl CartesianPlot {
     pub fn zoom_to_selection(&mut self, selection: CartesianBrushSelection) -> bool {
         self.set_viewport(Some(selection.x), selection.y)
     }
-    /// Reports and clears the viewport-change flag.
-    pub fn take_view_changed(&mut self) -> bool {
-        std::mem::take(&mut self.view_changed)
-    }
     pub fn style_mut(&mut self) -> &mut CartesianStyle {
         self.invalidate_domains();
         &mut self.style
@@ -1162,9 +1105,6 @@ impl CartesianPlot {
     }
     pub fn take_activated(&mut self) -> Option<(String, String)> {
         self.activated.take()
-    }
-    pub fn take_annotation_activated(&mut self) -> Option<String> {
-        self.annotation_activated.take()
     }
 
     fn plot_rect(&self) -> Rect {
@@ -1829,7 +1769,7 @@ impl CartesianPlot {
         xd: Domain,
         yd: Domain,
     ) {
-        let grid = alpha(theme.tokens.colors.border_standard, 100);
+        let grid = with_alpha(theme.tokens.colors.border_standard, 100);
         let size = theme.text(TextRole::Caption);
         for tick in Self::ticks(&self.style.y_axis, yd, plot.height()) {
             let Some(y) = Self::project(
@@ -2115,7 +2055,7 @@ impl CartesianPlot {
                         scene.fill(
                             Fill::NonZero,
                             transform,
-                            alpha(series.color, series.fill_alpha),
+                            with_alpha(series.color, series.fill_alpha),
                             None,
                             &area,
                         );
@@ -2152,7 +2092,7 @@ impl CartesianPlot {
                         scene.stroke(
                             &Stroke::new(series.stroke_width),
                             transform,
-                            alpha(series.color, 180),
+                            with_alpha(series.color, 180),
                             None,
                             &Line::new((point.x, zero), *point),
                         );
@@ -2189,7 +2129,7 @@ impl CartesianPlot {
                         scene.fill(
                             Fill::NonZero,
                             transform,
-                            alpha(series.color, 55),
+                            with_alpha(series.color, 55),
                             None,
                             &Circle::new(point, radius + 6.0),
                         );
@@ -2421,7 +2361,7 @@ impl CartesianPlot {
         context.scene.fill(
             Fill::NonZero,
             context.transform,
-            alpha(annotation.color, fill_alpha),
+            with_alpha(annotation.color, fill_alpha),
             None,
             &rect,
         );
@@ -2461,7 +2401,7 @@ impl CartesianPlot {
         context.scene.fill(
             Fill::NonZero,
             context.transform,
-            alpha(annotation.color, 55),
+            with_alpha(annotation.color, 55),
             None,
             &Circle::new((x, y), if hovered { 12.0 } else { 9.0 }),
         );
@@ -2505,7 +2445,7 @@ impl CartesianPlot {
         context.scene.stroke(
             &Stroke::new(1.0),
             context.transform,
-            alpha(annotation.color, 160),
+            with_alpha(annotation.color, 160),
             None,
             &rect,
         );
@@ -2554,12 +2494,12 @@ impl CartesianPlot {
             let y = item.y0;
             let hidden = self.hidden_series.contains(&series.id);
             let color = if hidden {
-                alpha(series.color, 70)
+                with_alpha(series.color, 70)
             } else {
                 series.color
             };
             let text_color = if hidden {
-                alpha(theme.tokens.colors.text_dim, 100)
+                with_alpha(theme.tokens.colors.text_dim, 100)
             } else {
                 theme.tokens.colors.text_dim
             };
@@ -2603,14 +2543,14 @@ impl CartesianPlot {
             scene.stroke(
                 &Stroke::new(1.0),
                 transform,
-                alpha(theme.tokens.colors.text_dim, 110),
+                with_alpha(theme.tokens.colors.text_dim, 110),
                 None,
                 &Line::new((hovered.point.x, plot.y0), (hovered.point.x, plot.y1)),
             );
             scene.stroke(
                 &Stroke::new(1.0),
                 transform,
-                alpha(theme.tokens.colors.text_dim, 110),
+                with_alpha(theme.tokens.colors.text_dim, 110),
                 None,
                 &Line::new((plot.x0, hovered.point.y), (plot.x1, hovered.point.y)),
             );
@@ -2739,7 +2679,7 @@ impl CartesianPlot {
         scene.stroke(
             &Stroke::new(1.0),
             transform,
-            alpha(annotation.color, 180),
+            with_alpha(annotation.color, 180),
             None,
             &RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.control)),
         );
@@ -2929,21 +2869,6 @@ impl CartesianPlot {
     }
 }
 
-fn format_compact(value: f64) -> String {
-    let absolute = value.abs();
-    if absolute >= 1_000_000_000.0 {
-        format!("{:.1}B", value / 1_000_000_000.0)
-    } else if absolute >= 1_000_000.0 {
-        format!("{:.1}M", value / 1_000_000.0)
-    } else if absolute >= 1_000.0 {
-        format!("{:.1}K", value / 1_000.0)
-    } else if absolute >= 10.0 {
-        format!("{value:.0}")
-    } else {
-        format!("{value:.1}")
-    }
-}
-
 fn format_axis_value(value: f64, format: AxisLabelFormat) -> String {
     match format {
         AxisLabelFormat::Auto => {
@@ -3018,31 +2943,8 @@ fn format_bytes(value: f64, places: u8) -> String {
 }
 
 impl Widget for CartesianPlot {
-    fn build_layout(
-        &mut self,
-        taffy: &mut TaffyTree<()>,
-        _theme: &Theme,
-        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
-    ) -> NodeId {
-        let node = taffy.leaf_node(Style {
-            size: Size {
-                width: Dimension::percent(1.0),
-                height: Dimension::length(self.height),
-            },
-            ..Default::default()
-        });
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
-    }
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x + layout.size.width),
-            origin.y + f64::from(layout.location.y + layout.size.height),
-        );
-    }
+    crate::widget::chart_navigation::chart_leaf!();
+
     fn draw(
         &mut self,
         scene: &mut Scene,
@@ -3108,7 +3010,7 @@ impl Widget for CartesianPlot {
             scene.fill(
                 Fill::NonZero,
                 transform,
-                alpha(theme.tokens.colors.intent.inverted, 42),
+                with_alpha(theme.tokens.colors.intent.inverted, 42),
                 None,
                 &brush,
             );
@@ -3348,9 +3250,6 @@ impl Widget for CartesianPlot {
     fn name(&self) -> &'static str {
         "CartesianPlot"
     }
-    fn get_rect(&self) -> Rect {
-        self.rect
-    }
     fn needs_animation_frame(&self) -> bool {
         self.is_animating()
     }
@@ -3370,9 +3269,6 @@ impl Widget for CartesianPlot {
     }
     fn wants_pointer_capture(&self) -> bool {
         self.pan_last.is_some() || self.brush_start.is_some()
-    }
-    fn is_layout_dirty(&self) -> bool {
-        self.rect == Rect::ZERO
     }
 }
 

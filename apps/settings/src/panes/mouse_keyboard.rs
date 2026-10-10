@@ -31,14 +31,12 @@ use ui::tilo_resource::{self, Binds};
 use ui::widget::{
     AppModel, Button, Dropdown, ModelPath, Row, Slider, Spacer, Text, TextInput, Toggle, Widget,
 };
-use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
-use winit::event::WindowEvent;
+use vello::kurbo::{Point, Rect};
 
 use crate::effects::{SettingsEffect, effect};
 use crate::host::{Followed, PaneCx};
 use crate::i18n::{t, t_args};
-use crate::input_sources::{CatalogEntry, installed_catalog};
+use crate::input_sources::CatalogEntry;
 use crate::prefs::InputPrefs;
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
@@ -1497,7 +1495,7 @@ fn inspect_input_sources(
     Ok(serde_json::json!({"active_source": prefs.keyboard_layout,
         "configured_sources": prefs.keyboard_layouts, "page": page, "pages": pages,
         "total": total, "sources": sources, "catalogue_live": area.live,
-        "catalogue_error": area.catalog_error, "add_picker": add_picker}))
+        "catalogue_error": area.catalog_error(), "add_picker": add_picker}))
 }
 
 /// How often the attached-device snapshot is read again, so plugging a
@@ -1507,10 +1505,7 @@ const DEVICE_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs
 /// What the input area keeps for the window: the installed input sources,
 /// and the attached devices as the compositor last reported them.
 pub struct InputArea {
-    catalog: Vec<CatalogEntry>,
-    /// Why the device's layout list could not be read; `catalog` is then a
-    /// short built-in list and says so.
-    catalog_error: Option<String>,
+    catalog: SourceCatalog,
     live: std::cell::Cell<bool>,
     devices: std::rc::Rc<RefCell<(Option<ui::time::Instant>, Option<InputHardwareSnapshot>)>>,
     editor: ui::LocalState<keyboard_editor::EditorState>,
@@ -1525,13 +1520,10 @@ impl InputArea {
         let live = cx.reaches_devices();
         Self {
             catalog: if live {
-                installed_catalog()
+                SourceCatalog::of_device()
             } else {
-                sample_catalog()
+                SourceCatalog::ready(sample_catalog(), None)
             },
-            catalog_error: live
-                .then(crate::input_sources::layout_catalog_error)
-                .flatten(),
             live: std::cell::Cell::new(live),
             devices: std::rc::Rc::new(RefCell::new((
                 None,
@@ -1555,7 +1547,20 @@ impl InputArea {
     }
 
     fn catalog(&self) -> &[CatalogEntry] {
-        &self.catalog
+        self.catalog.entries()
+    }
+
+    /// Why the device's layout list could not be read; the catalogue is
+    /// then a short built-in list and says so.
+    fn catalog_error(&self) -> Option<&str> {
+        self.catalog.error()
+    }
+
+    /// Read this device's input sources off the UI thread, unless they have
+    /// been read: the window does so once its other areas have read, so the
+    /// Mouse & Keyboard pane opens on a catalogue already in.
+    pub(crate) fn prefetch_catalog(&self) {
+        self.catalog.prefetch();
     }
 
     /// The attached devices, read again at most once per
@@ -1608,6 +1613,60 @@ impl InputArea {
                     ),
             )
             .collect()
+    }
+}
+
+/// The input sources an area offers and, when this device's layout list
+/// could not be read, why. A device's are read once, when first asked for
+/// or off the UI thread ([`InputArea::prefetch_catalog`]) — never while the
+/// window opens, which shows no input source on its first page.
+pub(crate) struct SourceCatalog {
+    read: std::cell::OnceCell<(Vec<CatalogEntry>, Option<String>)>,
+    background: crate::device_read::DeviceRead<(Vec<CatalogEntry>, Option<String>)>,
+}
+
+impl SourceCatalog {
+    /// This device's input sources, read when first asked for.
+    fn of_device() -> Self {
+        Self {
+            read: std::cell::OnceCell::new(),
+            background: crate::device_read::DeviceRead::default(),
+        }
+    }
+
+    /// `entries`, already read; `error` says why they stand in for the
+    /// device's own list.
+    pub(crate) fn ready(entries: Vec<CatalogEntry>, error: Option<String>) -> Self {
+        let read = std::cell::OnceCell::new();
+        let _ = read.set((entries, error));
+        Self {
+            read,
+            background: crate::device_read::DeviceRead::default(),
+        }
+    }
+
+    fn read(&self) -> &(Vec<CatalogEntry>, Option<String>) {
+        self.read.get_or_init(|| {
+            self.background
+                .take()
+                .unwrap_or_else(crate::input_sources::read_installed)
+        })
+    }
+
+    pub(crate) fn entries(&self) -> &[CatalogEntry] {
+        &self.read().0
+    }
+
+    pub(crate) fn error(&self) -> Option<&str> {
+        self.read().1.as_deref()
+    }
+
+    /// Start reading the device's catalogue off the UI thread, unless it
+    /// has been read or is being read.
+    fn prefetch(&self) {
+        if self.read.get().is_none() {
+            let _ = self.background.start(crate::input_sources::read_installed);
+        }
     }
 }
 
@@ -1666,11 +1725,10 @@ pub struct MouseKeyboardPane {
     tablets: Vec<InputDeviceSnapshot>,
     pads: Vec<InputDeviceSnapshot>,
     structure_dirty: bool,
-    composed: Option<Box<dyn Widget>>,
+    composed: ui::widget::Composed,
     composed_text_growth_bits: u32,
     source_row_height: f32,
     composed_locale_revision: u64,
-    rect: Rect,
     map_cache: KeyboardPreviewCacheHandle,
     osk_always: bool,
     next_device_poll: Option<ui::time::Instant>,
@@ -1701,16 +1759,15 @@ impl MouseKeyboardPane {
             dictionary_edits: RefCell::new(HashMap::new()),
             last,
             catalog: area.catalog().to_vec(),
-            catalog_error: area.catalog_error.clone(),
+            catalog_error: area.catalog_error().map(str::to_owned),
             sections: InputSections::for_devices(None),
             tablets: Vec::new(),
             pads: Vec::new(),
             structure_dirty: false,
-            composed: None,
+            composed: ui::widget::Composed::default(),
             composed_text_growth_bits: 1.0_f32.to_bits(),
             source_row_height: ui::tokens::Metrics::default().panel_row_height,
             composed_locale_revision: ui::i18n::I18nManager::revision(),
-            rect: Rect::ZERO,
             map_cache: std::rc::Rc::default(),
             osk_always: area.osk_always,
             next_device_poll: None,
@@ -1939,7 +1996,7 @@ impl MouseKeyboardPane {
                 editor.pending = None;
                 self.editor.set(editor);
             }
-            self.composed = None;
+            self.composed.clear();
             self.structure_dirty = true;
         }
         let sections = InputSections::for_devices(snapshot);
@@ -1955,7 +2012,7 @@ impl MouseKeyboardPane {
             self.tablets = tablets;
             self.pads = pads;
             self.structure_dirty = true;
-            self.composed = None;
+            self.composed.clear();
         }
     }
 
@@ -2671,6 +2728,8 @@ impl MouseKeyboardPane {
 }
 
 impl Widget for MouseKeyboardPane {
+    ui::forward_to_composed!(composed);
+
     fn sync(&mut self, state: &AppModel, root: &ModelPath) {
         if self.hardware_live
             && self
@@ -2692,7 +2751,7 @@ impl Widget for MouseKeyboardPane {
         if editor != self.last_editor {
             self.last_editor = editor;
             self.structure_dirty = true;
-            self.composed = None;
+            self.composed.clear();
         }
         let identity = ui::local_identity::bound().map(|identity| identity.group_public_key);
         let dictionary = ui::personal_dictionary::snapshot().ok();
@@ -2715,7 +2774,7 @@ impl Widget for MouseKeyboardPane {
                     })
                 });
             self.structure_dirty = true;
-            self.composed = None;
+            self.composed.clear();
         }
         // The controls are built from the values: a change rebuilds them.
         if self.input.refresh() {
@@ -2723,15 +2782,13 @@ impl Widget for MouseKeyboardPane {
             last.normalise_keyboard_sources();
             self.last = last;
             self.structure_dirty = true;
-            self.composed = None;
+            self.composed.clear();
         }
         if self.text.refresh() {
             self.structure_dirty = true;
-            self.composed = None;
+            self.composed.clear();
         }
-        if let Some(c) = &mut self.composed {
-            c.sync(state, root);
-        }
+        self.composed.sync(state, root);
     }
 
     fn build_layout(
@@ -2746,93 +2803,29 @@ impl Widget for MouseKeyboardPane {
             .max(theme.tokens.metrics.min_pointer_target + theme.tokens.spacing.s2);
         if self.source_row_height.to_bits() != source_row_height.to_bits() {
             self.source_row_height = source_row_height;
-            self.composed = None;
+            self.composed.clear();
         }
         let locale_revision = ui::i18n::I18nManager::revision();
         if self.composed_text_growth_bits != growth_bits
             || self.composed_locale_revision != locale_revision
         {
-            self.composed = None;
+            self.composed.clear();
             self.composed_text_growth_bits = growth_bits;
             self.composed_locale_revision = locale_revision;
         }
         // Layout is not a model change. Retain open/search/focus caches until
         // observed settings or device changes require new controls.
-        let mut composed = self
+        let composition = self
             .composed
             .take()
             .unwrap_or_else(|| self.build_composition());
-        let child = composed.build_layout(taffy, theme, node_map);
-        self.composed = Some(composed);
-        let style = taffy::Style {
-            display: taffy::Display::Flex,
-            flex_direction: taffy::FlexDirection::Column,
-            size: taffy::Size {
-                width: taffy::Dimension::percent(1.0),
-                height: taffy::Dimension::auto(),
-            },
-            ..Default::default()
-        };
+        let child = self
+            .composed
+            .build_layout(composition, taffy, theme, node_map);
         // `child` was just created in this same tree, so this call is not
         // reachable to fail; if it (impossibly) did, wrap it in itself
         // rather than panic this panic=abort process.
-        let node = taffy.new_with_children(style, &[child]).unwrap_or(child);
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
-    }
-
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(l.location.x),
-            origin.y + f64::from(l.location.y),
-            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
-            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
-        );
-        if let Some(c) = &mut self.composed
-            && let Ok(children) = taffy.children(node)
-            && let Some(&cn) = children.first()
-        {
-            c.apply_layout(taffy, cn, Point::new(self.rect.x0, self.rect.y0));
-        }
-    }
-
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut ui::text_render::TextRenderer,
-        theme: &Theme,
-        presence: &ui::presence::PresenceCtx,
-    ) {
-        if let Some(c) = &mut self.composed {
-            c.draw(scene, transform, text_renderer, theme, presence);
-        }
-    }
-
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
-        if let Some(c) = &mut self.composed
-            && let Ok(children) = ctx.taffy.children(ctx.node_id)
-            && let Some(&cn) = children.first()
-        {
-            c.handle_event(event, &mut ctx.reborrow(ctx.path, cn));
-        }
-    }
-
-    fn children(&self) -> Vec<&dyn Widget> {
-        self.composed
-            .as_ref()
-            .map(|c| c.as_ref() as &dyn Widget)
-            .into_iter()
-            .collect()
-    }
-
-    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        self.composed
-            .as_mut()
-            .map(|c| c.as_mut() as &mut (dyn Widget + '_))
-            .into_iter()
-            .collect()
+        crate::panes::pane_node(taffy, child, node_map, self)
     }
 
     fn next_wake_deadline(&self) -> Option<ui::time::Instant> {
@@ -2843,16 +2836,9 @@ impl Widget for MouseKeyboardPane {
         "MouseKeyboardPane"
     }
 
-    fn get_rect(&self) -> Rect {
-        self.rect
-    }
-
     fn take_structure_dirty(&mut self) -> bool {
         let own = std::mem::take(&mut self.structure_dirty);
-        let child = self
-            .composed
-            .as_mut()
-            .is_some_and(|composed| composed.take_structure_dirty());
+        let child = self.composed.take_structure_dirty();
         own || child
     }
 }
@@ -2862,6 +2848,7 @@ mod tests {
     use super::*;
     use crate::resource::SettingsShell;
     use ui::prelude::TestApp;
+    use winit::event::WindowEvent;
 
     #[test]
     fn mounted_dictionary_actions_add_edit_remove_reset_and_survive_restart() {
@@ -3148,8 +3135,7 @@ mod tests {
         let cx = PaneCx::in_file(profile.path().join("settings.json"));
         cx.settings::<InputPrefs>().set(input).unwrap();
         let area = InputArea {
-            catalog,
-            catalog_error: None,
+            catalog: SourceCatalog::ready(catalog, None),
             live: std::cell::Cell::new(false),
             devices: std::rc::Rc::new(RefCell::new((None, None))),
             editor: ui::LocalState::new(keyboard_editor::EditorState {

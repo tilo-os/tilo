@@ -11,6 +11,8 @@ mod display_input_tests;
 mod display_observations;
 mod governor_actions;
 mod hosted_topology;
+#[cfg(test)]
+mod idle_quiet_tests;
 mod input_declines;
 #[cfg(test)]
 mod live_identity_tests;
@@ -19,16 +21,20 @@ mod native_ingress;
 #[cfg(test)]
 mod paired_continuity_tests;
 mod personal_device_peers;
+#[cfg(test)]
+mod reachability_tests;
 mod record_content;
 pub use record_content::InboundRecordContent;
 #[cfg(test)]
 mod node_member_tests;
 mod relay_rooms;
+mod room_gate;
+#[cfg(test)]
+mod room_gate_tests;
 #[cfg(test)]
 mod same_person_room_tests;
 
 use std::collections::VecDeque;
-use std::io::{Read as _, Write as _};
 use std::os::unix::fs::{DirBuilderExt as _, OpenOptionsExt as _, PermissionsExt as _};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -42,19 +48,13 @@ use serde::{Deserialize, Serialize};
 use tilo_clock::unix_now_ms;
 use tokio::sync::mpsc;
 
-use crate::network::actor::{
-    Actor, HostIdentity, NearbyTransferCheckpoint, NetCmd, NetEvent, PersonalMediaTransferStatus,
-};
-use crate::network::actor::{
-    PERSONAL_MEDIA_CHUNK_BYTES, PersonalFabricPayload, PersonalMediaTransferFrame,
-    WorkspaceControlRoute,
-};
+use crate::network::actor::{Actor, HostIdentity, NearbyTransferCheckpoint, NetCmd, NetEvent};
+use crate::network::actor::{PersonalFabricPayload, WorkspaceControlRoute};
 use crate::network::behaviour::load_or_create_keypair;
 use crate::network::identity::PeerIdentityStore;
 use crate::network::invite::accept_invite_into;
 use crate::network::protocol::{MAX_PERSONAL_CONTINUITY_CHECKPOINT_BYTES, NeighbourMsg};
 use crate::network::replica::WorkspaceTreeReplica;
-#[cfg(test)]
 use crate::shell::state::WorkspaceTree;
 use crate::shell::state::{RoomId, WorkspaceTreeHandle};
 
@@ -236,289 +236,12 @@ fn queue_personal_fabric_action<T: PersonalFabricEnvelopeRef>(
     PersonalFabricQueueOutcome::Queued
 }
 
-const MAX_PERSONAL_MEDIA_BYTES: u64 = 64 * 1024 * 1024 * 1024;
-const MAX_PERSONAL_MEDIA_CACHE_BYTES: u64 = 64 * 1024 * 1024 * 1024;
-const MIN_PERSONAL_MEDIA_FREE_BYTES: u64 = 2 * 1024 * 1024 * 1024;
-const PERSONAL_MEDIA_LEASE: std::time::Duration = std::time::Duration::from_secs(12 * 60 * 60);
-const MAX_INCOMING_PERSONAL_MEDIA_TRANSFERS: usize = 8;
-const MAX_COMPLETED_PERSONAL_MEDIA_TRANSFERS: usize = 64;
-const MAX_OUTGOING_PERSONAL_MEDIA_TRANSFERS: usize = 64;
-const OUTGOING_PERSONAL_MEDIA_RETENTION: std::time::Duration =
-    std::time::Duration::from_secs(5 * 60);
-
-fn portable_media_file_name(name: &str) -> Option<String> {
-    let sanitized = name
-        .chars()
-        .take(200)
-        .map(|character| {
-            if character.is_control() || matches!(character, '/' | '\\') {
-                '_'
-            } else {
-                character
-            }
-        })
-        .collect::<String>();
-    (!sanitized.is_empty() && sanitized != "." && sanitized != "..").then_some(sanitized)
-}
-
-fn personal_media_cache_root() -> Option<PathBuf> {
-    let root = xdg_paths::cache_dir()?.join("tilo/personal-media");
-    // A partial stream is never useful after restart and can never become
-    // authorized again because transfer ids/actions are session-local.
-    let incoming = root.join("incoming");
-    let _ = std::fs::remove_dir_all(&incoming);
-    ensure_private_dir(&incoming).ok()?;
-    let _ = prune_personal_media_objects(
-        &root,
-        &std::collections::BTreeSet::new(),
-        MAX_PERSONAL_MEDIA_CACHE_BYTES,
-    );
-    Some(root)
-}
-
 fn ensure_private_dir(path: &Path) -> std::io::Result<()> {
     std::fs::DirBuilder::new()
         .recursive(true)
         .mode(0o700)
         .create(path)?;
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
-}
-
-#[derive(Debug)]
-struct PersonalMediaCacheObject {
-    path: PathBuf,
-    bytes: u64,
-    modified: SystemTime,
-}
-
-fn personal_media_cache_objects(root: &Path) -> Vec<PersonalMediaCacheObject> {
-    let mut objects = Vec::new();
-    let Ok(hash_dirs) = std::fs::read_dir(root.join("objects")) else {
-        return objects;
-    };
-    for hash_dir in hash_dirs.flatten() {
-        let Ok(hash_metadata) = std::fs::symlink_metadata(hash_dir.path()) else {
-            continue;
-        };
-        if !hash_metadata.file_type().is_dir() {
-            continue;
-        }
-        let Ok(files) = std::fs::read_dir(hash_dir.path()) else {
-            continue;
-        };
-        for file in files.flatten() {
-            let Ok(metadata) = std::fs::symlink_metadata(file.path()) else {
-                continue;
-            };
-            if metadata.file_type().is_file() {
-                objects.push(PersonalMediaCacheObject {
-                    path: file.path(),
-                    bytes: metadata.len(),
-                    modified: metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH),
-                });
-            }
-        }
-    }
-    objects
-}
-
-/// Remove oldest unprotected objects until at most `target_bytes` remain.
-/// Symlinks and non-files are never followed or counted.
-fn prune_personal_media_objects(
-    root: &Path,
-    protected: &std::collections::BTreeSet<PathBuf>,
-    target_bytes: u64,
-) -> u64 {
-    let mut objects = personal_media_cache_objects(root);
-    let mut retained = objects
-        .iter()
-        .fold(0_u64, |total, object| total.saturating_add(object.bytes));
-    objects.sort_by_key(|object| object.modified);
-    for object in objects {
-        if retained <= target_bytes {
-            break;
-        }
-        if protected.contains(&object.path) || std::fs::remove_file(&object.path).is_err() {
-            continue;
-        }
-        retained = retained.saturating_sub(object.bytes);
-        if let Some(parent) = object.path.parent() {
-            let _ = std::fs::remove_dir(parent);
-        }
-    }
-    retained
-}
-
-#[allow(
-    clippy::unnecessary_cast,
-    reason = "statvfs block counts are u64 on Linux but narrower on other Unix targets"
-)]
-fn available_bytes(path: &Path) -> Option<u64> {
-    use std::os::unix::ffi::OsStrExt as _;
-
-    let path = std::ffi::CString::new(path.as_os_str().as_bytes()).ok()?;
-    let mut info = std::mem::MaybeUninit::<libc::statvfs>::uninit();
-    if unsafe { libc::statvfs(path.as_ptr(), info.as_mut_ptr()) } != 0 {
-        return None;
-    }
-    let info = unsafe { info.assume_init() };
-    (info.f_bavail as u64).checked_mul(info.f_frsize as u64)
-}
-
-struct IncomingPersonalMediaTransfer {
-    file: std::fs::File,
-    part_path: PathBuf,
-    file_name: String,
-    total_bytes: u64,
-    received_bytes: u64,
-    hasher: blake3::Hasher,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct OutgoingPersonalMediaTransfer {
-    pub target: crate::shell::personal_continuity::DeviceId,
-    pub transfer_id: [u8; 16],
-    pub sent_bytes: u64,
-    pub total_bytes: u64,
-    pub status: PersonalMediaTransferStatus,
-}
-
-struct OutgoingPersonalMediaTransferEntry {
-    transfer: OutgoingPersonalMediaTransfer,
-    updated: std::time::Instant,
-}
-
-#[derive(Default)]
-struct PersonalMediaTransferState {
-    authorized: std::collections::BTreeSet<(crate::shell::personal_continuity::DeviceId, [u8; 16])>,
-    incoming: std::collections::BTreeMap<
-        (crate::shell::personal_continuity::DeviceId, [u8; 16]),
-        IncomingPersonalMediaTransfer,
-    >,
-    completed: std::collections::BTreeMap<
-        (crate::shell::personal_continuity::DeviceId, [u8; 16]),
-        PathBuf,
-    >,
-    completed_order: VecDeque<(crate::shell::personal_continuity::DeviceId, [u8; 16])>,
-    leased_until: std::collections::BTreeMap<PathBuf, std::time::Instant>,
-}
-
-fn discard_personal_media_transfer(
-    state: &mut PersonalMediaTransferState,
-    key: &(crate::shell::personal_continuity::DeviceId, [u8; 16]),
-) -> bool {
-    let mut removed = state.authorized.remove(key);
-    if let Some(transfer) = state.incoming.remove(key) {
-        let _ = std::fs::remove_file(transfer.part_path);
-        removed = true;
-    }
-    if let Some(path) = state.completed.remove(key) {
-        state.completed_order.retain(|candidate| candidate != key);
-        state.expire_media_leases();
-        let still_referenced = state.completed.values().any(|candidate| candidate == &path)
-            || state.leased_until.contains_key(&path);
-        if !still_referenced {
-            let _ = std::fs::remove_file(&path);
-            if let Some(parent) = path.parent() {
-                let _ = std::fs::remove_dir(parent);
-            }
-        }
-        removed = true;
-    }
-    removed
-}
-
-impl PersonalMediaTransferState {
-    fn expire_media_leases(&mut self) {
-        let now = std::time::Instant::now();
-        self.leased_until.retain(|_, until| *until > now);
-    }
-
-    fn protected_paths(&mut self) -> std::collections::BTreeSet<PathBuf> {
-        self.expire_media_leases();
-        self.completed
-            .values()
-            .cloned()
-            .chain(self.leased_until.keys().cloned())
-            .collect()
-    }
-
-    fn incoming_reserved_bytes(&self) -> u64 {
-        self.incoming.values().fold(0_u64, |total, transfer| {
-            total.saturating_add(transfer.total_bytes)
-        })
-    }
-
-    fn incoming_remaining_bytes(&self) -> u64 {
-        self.incoming.values().fold(0_u64, |total, transfer| {
-            total.saturating_add(transfer.total_bytes.saturating_sub(transfer.received_bytes))
-        })
-    }
-
-    fn evict_oldest_completed(&mut self) -> bool {
-        let oldest = loop {
-            if let Some(candidate) = self.completed_order.pop_front() {
-                if self.completed.contains_key(&candidate) {
-                    break Some(candidate);
-                }
-                continue;
-            }
-            break self.completed.keys().next().cloned();
-        };
-        let Some(oldest) = oldest else {
-            return false;
-        };
-        let Some(path) = self.completed.remove(&oldest) else {
-            return false;
-        };
-        self.expire_media_leases();
-        let still_referenced = self.completed.values().any(|candidate| candidate == &path)
-            || self.leased_until.contains_key(&path);
-        if !still_referenced {
-            let _ = std::fs::remove_file(&path);
-            if let Some(parent) = path.parent() {
-                let _ = std::fs::remove_dir(parent);
-            }
-        }
-        true
-    }
-}
-
-pub(crate) struct PreparedPersonalMediaTransfer {
-    ws: u64,
-    user_public_key: [u8; 32],
-    target: iroh::EndpointId,
-    pub transfer_id: [u8; 16],
-    pub file_name: String,
-    total_bytes: u64,
-    file: std::fs::File,
-}
-
-fn personal_media_object_matches(path: &Path, total_bytes: u64, expected: [u8; 32]) -> bool {
-    let Ok(mut file) = std::fs::File::open(path) else {
-        return false;
-    };
-    if !file
-        .metadata()
-        .is_ok_and(|metadata| metadata.len() == total_bytes)
-    {
-        return false;
-    }
-    let mut hasher = blake3::Hasher::new();
-    let mut buffer = vec![0_u8; 64 * 1024];
-    loop {
-        let Ok(read) = file.read(&mut buffer) else {
-            return false;
-        };
-        if read == 0 {
-            break;
-        }
-        let Some(bytes) = buffer.get(..read) else {
-            return false;
-        };
-        hasher.update(bytes);
-    }
-    *hasher.finalize().as_bytes() == expected
 }
 
 #[derive(Default)]
@@ -674,6 +397,15 @@ impl PeerDepartureHistory {
             .map(|state| state.entries.iter().cloned().collect())
             .unwrap_or_default()
     }
+
+    /// Departures recorded so far. Equal values read at two moments mean
+    /// [`Self::snapshot`] did not change in between.
+    pub(crate) fn generation(&self) -> u64 {
+        self.state
+            .lock()
+            .map(|state| state.generation)
+            .unwrap_or_default()
+    }
 }
 
 /// Stable transport/host shard for a durable room. Local workspace handles are
@@ -761,7 +493,7 @@ pub fn peer_key_path() -> std::path::PathBuf {
 ///
 /// When the session has no per-user state directory.
 pub fn peer_state_dir() -> std::io::Result<std::path::PathBuf> {
-    xdg_paths::state_dir()
+    tilo_paths::state_dir()
         .map(|state| state.join("tilo").join("peer-sync"))
         .ok_or_else(|| {
             std::io::Error::new(
@@ -783,14 +515,63 @@ fn parse_host_addr(value: &str) -> Option<iroh::EndpointAddr> {
 /// Which peers a session's endpoint can reach.
 #[derive(Clone, Copy)]
 enum Reach {
-    /// Any, through the public relays and discovery.
+    /// Any, through the public relays and discovery. The relays wait until
+    /// something needs this device reachable
+    /// ([`crate::network::reachability`]).
     Internet,
     /// Only this machine's (tests).
-    #[cfg_attr(
-        not(test),
-        allow(dead_code, reason = "tests reach only loopback peers")
-    )]
+    #[cfg(test)]
     Loopback,
+    /// Only this machine's, holding relays nobody listens on back the way
+    /// [`Self::Internet`] holds back the public ones (tests of the
+    /// deferral).
+    #[cfg(test)]
+    LoopbackHoldingRelays,
+}
+
+/// Why someone could need to dial this device as its session starts, from
+/// what is already recorded: a room it shares (one it joined, a peer it
+/// named or admitted, a relay-governed or continuation room), an invite
+/// still open, or another of the person's devices in its fabric (they
+/// continue, sync and disk-unlock through it). Hosts, enrolled home peers
+/// and the person's paired devices are dialled at start, which wakes the
+/// relays in the actor, as does every relationship that begins later.
+fn needs_reachability(
+    tree: &WorkspaceTree,
+    local_endpoint: &str,
+    open_invitations: bool,
+    other_devices: bool,
+) -> Option<&'static str> {
+    // The inviter names and certifies itself in its own rooms, so only an
+    // endpoint other than this one is a peer.
+    let someone_else = |peer: &String| peer != local_endpoint;
+    if tree
+        .room_authority
+        .values()
+        .any(|authority| *authority != crate::shell::state::RoomAuthority::Local)
+    {
+        Some("a room this device joined")
+    } else if tree
+        .room_peer_names
+        .values()
+        .any(|peers| peers.keys().any(someone_else))
+        || tree
+            .room_peer_identities
+            .values()
+            .any(|peers| peers.keys().any(someone_else))
+    {
+        Some("a room shared with a peer")
+    } else if !tree.native_authority.is_empty() {
+        Some("a relay-governed room")
+    } else if !tree.continuation_rooms.is_empty() {
+        Some("a room continued from another device")
+    } else if open_invitations {
+        Some("an open invitation")
+    } else if other_devices {
+        Some("another of the person's devices")
+    } else {
+        None
+    }
 }
 
 fn configured_host_addrs() -> Vec<iroh::EndpointAddr> {
@@ -1040,11 +821,23 @@ fn personal_room_ids(path: &Path) -> Vec<RoomId> {
         .collect()
 }
 
-/// How often a shell asks the rooms it is in for anything it is
-/// missing. Local changes are pushed the tick they land
-/// ([`ShellNetwork::push_room_changes`]); this pull is the repair path for a
-/// push a peer missed (it was offline, or gossip dropped it).
+/// How often a waking shell re-derives who its authenticated peers are (so a
+/// revoked or expired device drops out) and checks its own continuity
+/// snapshot for a change to publish. Local work; nothing goes out unless
+/// something changed.
 const SYNC_KICK_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
+/// How long after a room changed, here or by a peer's batch, a shell asks
+/// its rooms for anything it is missing. Local changes are pushed the tick
+/// they land ([`ShellNetwork::push_room_changes`]); this pull, made once a
+/// burst of activity settles, is the repair path for a push a peer missed:
+/// a peer whose request names changes it lacks asks back
+/// ([`crate::network::replica::WorkspaceTreeReplica`]). A peer that comes
+/// back is pulled when it joins.
+const SYNC_REPAIR_DELAY: std::time::Duration = std::time::Duration::from_secs(2);
+/// The longest a shell goes without that pull while nothing changes: the
+/// safety net under the repair pull and the join pull, not a heartbeat. An
+/// idle, converged desktop asks once per this long.
+const SYNC_SAFETY_INTERVAL: std::time::Duration = std::time::Duration::from_secs(300);
 const HOME_PEER_REFRESH_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
 /// Upper bound between full projections of every room while nothing the
 /// push trigger watches has moved. Most local edits move the desktop
@@ -1097,16 +890,10 @@ impl PendingInvitation {
     }
 }
 
-fn now_unix_seconds() -> u64 {
-    tilo_clock::unix_now()
-}
-
+/// Nanoseconds since the Unix epoch, failing closed to `u64::MAX` (every
+/// certificate expired) when the clock precedes the epoch.
 fn now_unix_nanos() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .ok()
-        .and_then(|duration| u64::try_from(duration.as_nanos()).ok())
-        .unwrap_or(u64::MAX)
+    tilo_clock::try_unix_now_ns().unwrap_or(u64::MAX)
 }
 
 fn pending_invites_path(state_dir: &Path) -> PathBuf {
@@ -1162,8 +949,10 @@ fn personal_workspaces_path(state_dir: &Path) -> PathBuf {
 
 /// How often a device restates its workspace list when nothing changed, so
 /// a snapshot lost in transit is repaired without waiting for the next edit.
-const PERSONAL_WORKSPACES_RESTATE_INTERVAL: std::time::Duration =
-    std::time::Duration::from_secs(30);
+/// A change goes out when it lands and the list goes to each of the
+/// person's devices that joins, so this is the safety net alone, at the pace
+/// of room repair ([`SYNC_SAFETY_INTERVAL`]): an idle desktop is quiet.
+const PERSONAL_WORKSPACES_RESTATE_INTERVAL: std::time::Duration = SYNC_SAFETY_INTERVAL;
 
 fn device_fabric_path(state_dir: &Path) -> PathBuf {
     state_dir.join("personal-device-fabric.postcard")
@@ -1385,6 +1174,9 @@ pub struct ShellNetwork {
     local_peer_id: iroh::EndpointId,
     /// Current direct/relay dialing addresses reported by iroh.
     listen_addrs: Arc<Mutex<Vec<iroh::EndpointAddr>>>,
+    /// The endpoint's relays, held back until something needs this device
+    /// reachable ([`crate::network::reachability`]).
+    reachability: crate::network::Reachability,
     /// Always-on hosts included in newly issued invites.
     host_addrs: Mutex<Vec<iroh::EndpointAddr>>,
     /// Home-peer ids sourced specifically from the mutable enrollment
@@ -1410,9 +1202,14 @@ pub struct ShellNetwork {
     /// be approved after this shell started, so startup-only loading is not
     /// sufficient.
     last_home_peer_refresh: Mutex<Option<std::time::Instant>>,
-    /// When [`Self::kick_periodic_sync`] last asked. `None` until the
-    /// first tick, so the first frame after startup kicks a round.
+    /// When [`Self::kick_periodic_sync`] last did its local upkeep. `None`
+    /// until the first tick.
     last_sync_kick: Mutex<Option<std::time::Instant>>,
+    /// When [`Self::kick_periodic_sync`] next asks the rooms for what this
+    /// shell is missing. `None` is now: the first frame after startup asks.
+    next_sync_pull: Mutex<Option<std::time::Instant>>,
+    /// See [`Self::peers_joined_epoch`].
+    peers_joined: std::sync::atomic::AtomicU64,
     /// Push side of room replication: see [`Self::push_room_changes`].
     room_push: Mutex<RoomPush>,
     /// Private, same-person continuation state. It is intentionally separate
@@ -1453,19 +1250,6 @@ pub struct ShellNetwork {
         Mutex<std::collections::HashMap<(u64, iroh::EndpointId), AuthenticatedPersonalRoute>>,
     /// Bounded session-local replay filter for action request ids.
     personal_fabric_action_replays: Mutex<PersonalFabricReplayWindow>,
-    /// Streaming, content-verified cache for explicit device-local media
-    /// handoffs. Paths stay local and never enter fabric snapshots/actions.
-    personal_media_cache_root: Option<PathBuf>,
-    personal_media_transfers: Mutex<PersonalMediaTransferState>,
-    /// Bounded, session-local transport truth for the Devices pane. Media
-    /// acceptance remains a separate action, so a completed upload never
-    /// implies that the destination app opened it.
-    outgoing_personal_media_transfers: Mutex<
-        std::collections::BTreeMap<
-            (crate::shell::personal_continuity::DeviceId, [u8; 16]),
-            OutgoingPersonalMediaTransferEntry,
-        >,
-    >,
     /// Verified transport-device chains received on workspace topics.
     peer_identities: PeerIdentityStore,
     /// Production is fail-closed until a peer presents `IdentityHello`.
@@ -1511,6 +1295,9 @@ pub struct ShellNetwork {
     /// latest any presence plane carried ([`neighbour_wire::PresenceColour`],
     /// a live frame's participant colour).
     peer_colours: Mutex<std::collections::HashMap<u64, ui::tokens::PresenceHue>>,
+    /// Advanced whenever [`Self::peer_colours`] changes, so the presence
+    /// pump re-applies colours only after one did.
+    peer_colours_epoch: std::sync::atomic::AtomicU64,
     /// Inbound cooperative-scrollback *requests*; the broker's drainer
     /// answers any it holds matching ops for.
     inbound_scrollback_request: Arc<Mutex<Vec<InboundScrollbackRequest>>>,
@@ -1520,6 +1307,10 @@ pub struct ShellNetwork {
     /// Remote-action requests from authenticated devices, answered by the
     /// broker's drainer.
     inbound_remote_actions: Arc<Mutex<Vec<crate::shell::remote_action_link::InboundRemoteAction>>>,
+    /// Remote-action requests that arrived before their sender's identity
+    /// hello. Delivered once that identity is accepted, dropped if it is
+    /// refused or the peer leaves.
+    held_remote_actions: Mutex<std::collections::VecDeque<HeldRemoteAction>>,
     /// Local callers waiting for a remote-action answer from a device.
     remote_action_replies: crate::shell::remote_action_link::ReplyWaiters,
     /// The suspend lease actions from the person's own devices renew.
@@ -1534,6 +1325,17 @@ pub struct ShellNetwork {
     /// state so cleanup cannot erase the evidence it needs to diagnose.
     peer_departures: Arc<PeerDepartureHistory>,
 }
+
+/// One remote-action request kept until its sender's identity is accepted.
+struct HeldRemoteAction {
+    workspace_topic: u64,
+    peer: iroh::EndpointId,
+    membership_epoch: Option<crate::network::actor::MembershipEpoch>,
+    replayed: bool,
+    frame: Vec<u8>,
+}
+
+const MAX_HELD_REMOTE_ACTIONS: usize = 8;
 
 /// A live legacy-app message after transport identity and room capability
 /// checks have passed. `workspace_topic` is retained so a viewer's input is
@@ -1775,24 +1577,51 @@ impl ShellNetwork {
         // both sides of the wire.
         let local_peer_hash = crate::network::behaviour::peer_liveness_handle(&keypair.public());
         let lookup = MemoryLookup::new();
-        let builder = match reach {
-            Reach::Internet => iroh::Endpoint::builder(presets::N0),
-            Reach::Loopback => iroh::Endpoint::builder(presets::Minimal)
-                .relay_mode(iroh::RelayMode::Disabled)
-                .bind_addr((std::net::Ipv4Addr::LOCALHOST, 0))
-                .map_err(|e| std::io::Error::other(format!("iroh bind: {e}")))?,
+        // The relay transport binds with an empty map: no home relay, net
+        // report or port mapping until something needs this device
+        // reachable, when `reachability` adds the held-back relays.
+        let held_back = iroh::RelayMode::Custom(iroh::RelayMap::empty());
+        let internet = matches!(reach, Reach::Internet);
+        let (builder, deferred_relays) = match reach {
+            Reach::Internet => (
+                iroh::Endpoint::builder(presets::N0).relay_mode(held_back),
+                iroh::endpoint::default_relay_mode().relay_map(),
+            ),
+            #[cfg(test)]
+            Reach::Loopback => (
+                iroh::Endpoint::builder(presets::Minimal)
+                    .relay_mode(iroh::RelayMode::Disabled)
+                    .bind_addr((std::net::Ipv4Addr::LOCALHOST, 0))
+                    .map_err(|e| std::io::Error::other(format!("iroh bind: {e}")))?,
+                iroh::RelayMap::empty(),
+            ),
+            #[cfg(test)]
+            Reach::LoopbackHoldingRelays => (
+                iroh::Endpoint::builder(presets::Minimal)
+                    .relay_mode(held_back)
+                    .bind_addr((std::net::Ipv4Addr::LOCALHOST, 0))
+                    .map_err(|e| std::io::Error::other(format!("iroh bind: {e}")))?,
+                reachability_tests::unused_relays(),
+            ),
         };
         let endpoint = runtime
             .block_on(
                 builder
                     .secret_key(keypair.clone())
                     .address_lookup(lookup.clone())
+                    .transport_config(crate::network::actor::transport_config())
                     .bind(),
             )
             .map_err(|e| std::io::Error::other(format!("iroh bind: {e}")))?;
-        let mdns = match reach {
-            Reach::Internet => init_lan_discovery(&endpoint),
-            Reach::Loopback => None,
+        let reachability = crate::network::Reachability::defer(
+            &endpoint,
+            &deferred_relays,
+            runtime.handle().clone(),
+        );
+        let mdns = if internet {
+            init_lan_discovery(&endpoint)
+        } else {
+            None
         };
         tracing::info!(
             local_peer_id = %local_peer_id,
@@ -1825,11 +1654,12 @@ impl ShellNetwork {
                 .with_label(identity.device_cert.device_label.clone()),
             )
         });
-        let (cmd_tx, _join) = Actor::spawn_reporting_addrs(
+        let (cmd_tx, _join) = Actor::spawn_deferring_relays(
             endpoint,
             lookup,
             host_identity.clone(),
             Arc::clone(&listen_addrs),
+            reachability.clone(),
         );
         if let Some(mdns) = mdns {
             spawn_lan_discovery_forwarding(&runtime, mdns, &cmd_tx);
@@ -1882,6 +1712,7 @@ impl ShellNetwork {
         // Peer id `1` is the replica-side identity for
         // `WorkspaceTreeReplica::handle`'s `_sender` arg; the actor's
         // Iroh `EndpointId` is transport-level and hashed separately.
+        let tree_for_reachability = tree.clone();
         let replica = Arc::new(Mutex::new(WorkspaceTreeReplica::new(1, tree)));
 
         // Capacity matches `Actor::spawn`'s command-channel default.
@@ -1916,7 +1747,7 @@ impl ShellNetwork {
         };
         let device_fabric_path = device_fabric_path(state_dir);
         let device_fabric = load_device_fabric(&device_fabric_path);
-        let now = now_unix_seconds();
+        let now = tilo_clock::unix_now();
         let pending_identity_admissions: std::collections::HashMap<_, _> =
             load_pending_invitations(&pending_invitations_path)
                 .into_iter()
@@ -1924,6 +1755,18 @@ impl ShellNetwork {
                 .map(|invite| (invite.id, invite))
                 .collect();
         persist_pending_invitations(&pending_invitations_path, &pending_identity_admissions);
+        let other_devices = device_fabric
+            .snapshots()
+            .keys()
+            .any(|device| Some(device) != personal_continuity_device.as_ref());
+        if let Some(why) = needs_reachability(
+            &tree_for_reachability.read(),
+            &local_peer_id.to_string(),
+            !pending_identity_admissions.is_empty(),
+            other_devices,
+        ) {
+            reachability.wake(why);
+        }
 
         let network = Self {
             cmd_tx,
@@ -1940,6 +1783,7 @@ impl ShellNetwork {
             host_identity,
             local_peer_id,
             listen_addrs,
+            reachability,
             host_addrs: Mutex::new(host_addrs),
             registered_home_peer_ids: Mutex::new(home_peer_ids),
             dialed_direct_peers: Mutex::new(dialed_direct_peers),
@@ -1948,6 +1792,8 @@ impl ShellNetwork {
             personal_device_peers: Mutex::default(),
             last_home_peer_refresh: Mutex::new(None),
             last_sync_kick: Mutex::new(None),
+            next_sync_pull: Mutex::new(None),
+            peers_joined: std::sync::atomic::AtomicU64::new(0),
             room_push: Mutex::new(RoomPush::default()),
             personal_focus_recency: Mutex::new(
                 crate::shell::continuity_suggestion::FocusRecency::seeded(
@@ -1972,9 +1818,6 @@ impl ShellNetwork {
             personal_fabric_actions: Mutex::new(VecDeque::new()),
             authenticated_personal_routes: Mutex::new(std::collections::HashMap::new()),
             personal_fabric_action_replays: Mutex::new(PersonalFabricReplayWindow::default()),
-            personal_media_cache_root: personal_media_cache_root(),
-            personal_media_transfers: Mutex::new(PersonalMediaTransferState::default()),
-            outgoing_personal_media_transfers: Mutex::new(std::collections::BTreeMap::new()),
             peer_identities: PeerIdentityStore::new(),
             require_peer_identity: true,
             pending_identity_admissions: Mutex::new(pending_identity_admissions),
@@ -1995,9 +1838,11 @@ impl ShellNetwork {
             live_presence: Mutex::default(),
             live_labels: Mutex::default(),
             peer_colours: Mutex::default(),
+            peer_colours_epoch: std::sync::atomic::AtomicU64::new(0),
             inbound_scrollback_request: Arc::new(Mutex::new(Vec::new())),
             inbound_scrollback_response: Arc::new(Mutex::new(Vec::new())),
             inbound_remote_actions: Arc::new(Mutex::new(Vec::new())),
+            held_remote_actions: Mutex::new(std::collections::VecDeque::new()),
             remote_action_replies: crate::shell::remote_action_link::ReplyWaiters::default(),
             remote_use: Mutex::default(),
             inbound_legacy: Arc::new(Mutex::new(std::collections::VecDeque::new())),
@@ -2056,55 +1901,23 @@ impl ShellNetwork {
             .workspace_control_direct
             .lock()
             .is_ok_and(|peers| peers.contains(&(workspace, target)));
-        let relay_ids = self
-            .workspace_control_relays
-            .lock()
-            .map(|relays| {
-                relays
-                    .iter()
-                    .filter_map(|(relay_ws, relay)| (*relay_ws == workspace).then_some(*relay))
-                    .collect::<Vec<_>>()
+        // Exact-target relayed control does not exist yet: a relay only fans
+        // out to the whole workspace, so it can explain the refusal but never
+        // carry input. A relay that is this device or the target is no relay.
+        let fanout_relay_online = self.workspace_control_relays.lock().is_ok_and(|relays| {
+            relays.iter().any(|(relay_ws, relay)| {
+                *relay_ws == workspace && *relay != self.local_peer_id && *relay != target
             })
-            .unwrap_or_default();
-        let candidates = relay_ids
-            .iter()
-            .map(|relay| tilo_relay_protocol::ServerAdvertisement {
-                device: *relay.as_bytes(),
-                role: tilo_relay_protocol::DeviceRole::AlwaysOnServer,
-                services: tilo_relay_protocol::ServiceCapabilities::relay_only(),
-                workspaces: std::collections::BTreeSet::from([workspace]),
-                apps: std::collections::BTreeSet::new(),
-                accelerators: std::collections::BTreeSet::new(),
-                priority: 0,
-                latency_ms: 0,
-                power: tilo_relay_protocol::PowerAvailability::Unknown,
-                energy_saver: false,
-                active_assignments: 0,
-                assignment_capacity: u32::MAX,
-                online: true,
-            })
-            .collect::<Vec<_>>();
-        let route = match tilo_relay_protocol::route_remote_control(
-            *self.local_peer_id.as_bytes(),
-            *target.as_bytes(),
-            workspace,
-            direct_reachable,
-            &candidates,
-        ) {
-            tilo_relay_protocol::RemoteControlRoute::Direct { .. } => {
-                WorkspaceControlRoute::Direct { target }
-            }
-            tilo_relay_protocol::RemoteControlRoute::Relayed { via, .. } => {
-                let _via = iroh::EndpointId::from_bytes(&via)
-                    .map_err(|_| "mesh selected an invalid relay identity")?;
-                return Err(
-                    "workspace control needs an exact-target route; this relay only supports workspace-wide fan-out"
-                        .into(),
-                );
-            }
-            tilo_relay_protocol::RemoteControlRoute::Unavailable => {
-                return Err("no authenticated direct workspace-control path is online".into());
-            }
+        });
+        let route = if direct_reachable {
+            WorkspaceControlRoute::Direct { target }
+        } else if fanout_relay_online {
+            return Err(
+                "workspace control needs an exact-target route; this relay only supports workspace-wide fan-out"
+                    .into(),
+            );
+        } else {
+            return Err("no authenticated direct workspace-control path is online".into());
         };
         Ok(crate::network::WorkspaceControlSession::new(
             workspace,
@@ -2284,6 +2097,17 @@ impl ShellNetwork {
         let _ = self
             .cmd_tx
             .try_send(NetCmd::SetWake(crate::network::actor::LoopWake(wake)));
+    }
+
+    /// Wake the compositor loop from any thread, once [`Self::set_wake`]
+    /// has supplied the loop's wake; a no-op before that.
+    pub(crate) fn loop_waker(&self) -> crate::session_runtime::Wake {
+        let wake = Arc::clone(&self.event_wake);
+        Arc::new(move || {
+            if let Some(wake) = wake.get() {
+                wake();
+            }
+        })
     }
 
     pub fn active_ws_for_publish(&self) -> u64 {
@@ -2596,9 +2420,33 @@ impl ShellNetwork {
         if peer == self.local_peer_hash {
             return;
         }
-        if let Ok(mut colours) = self.peer_colours.lock() {
-            colours.insert(peer, hue);
+        if let Ok(mut colours) = self.peer_colours.lock()
+            && colours.insert(peer, hue) != Some(hue)
+        {
+            self.peer_colours_epoch
+                .fetch_add(1, std::sync::atomic::Ordering::Release);
         }
+    }
+
+    /// A counter that advances whenever a peer joins one of this session's
+    /// topics or is first authenticated: what such a peer has not heard yet
+    /// (where a resting pointer is) is said again for it, and nothing is
+    /// restated on a timer for peers that already heard it.
+    pub fn peers_joined_epoch(&self) -> u64 {
+        self.peers_joined.load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    fn note_peer_joined(&self) {
+        self.peers_joined
+            .fetch_add(1, std::sync::atomic::Ordering::Release);
+    }
+
+    /// A counter that advances whenever a peer's colour changes. Equal
+    /// values read at two moments mean [`Self::peer_colours`] did not
+    /// change in between.
+    pub fn peer_colours_epoch(&self) -> u64 {
+        self.peer_colours_epoch
+            .load(std::sync::atomic::Ordering::Acquire)
     }
 
     /// The colour peer session `peer` said its person wears, if it said.
@@ -2692,6 +2540,14 @@ impl ShellNetwork {
     pub fn authenticated_devices_of(&self, user: &[u8; 32]) -> Vec<tilo_user_identity::DeviceCert> {
         self.peer_identities
             .devices_of(user, tilo_clock::unix_now_ns())
+    }
+
+    /// When [`Self::authenticated_devices_of`] next answers differently by
+    /// time alone, after `now_ns`: a certificate expiring or a revocation
+    /// dated ahead taking effect. Its writes are announced
+    /// ([`tilo_identity_host::policy_change`]).
+    pub fn authenticated_devices_next_change(&self, now_ns: u64) -> Option<u64> {
+        self.peer_identities.next_change_after(now_ns)
     }
 
     /// Shared handle to inbound signed document envelopes.
@@ -3375,6 +3231,7 @@ impl ShellNetwork {
                 context: None,
                 confirmation: None,
                 revision: None,
+                wait_ms: None,
             },
         );
         if self.send_remote_action(topic, endpoint, message) {
@@ -3507,6 +3364,57 @@ impl ShellNetwork {
             self.drain_wake.poke();
         } else if !self.remote_action_replies.deliver(peer, &frame.message) {
             tracing::debug!(peer = %peer, "remote action answer nobody was waiting for");
+        }
+    }
+
+    /// Keep a request that arrived before its sender's identity hello. A
+    /// device that has just joined sends both at once, and the request can
+    /// win. Answers are not held: nobody is waiting on an unknown device.
+    fn hold_remote_action(&self, held_action: HeldRemoteAction) {
+        let request = tilo_actions::remote::RemoteActionFrame::decode(&held_action.frame)
+            .is_ok_and(|decoded| decoded.message.is_request());
+        if !request {
+            tracing::warn!(peer = %held_action.peer, "dropping remote action from an unauthenticated device");
+            return;
+        }
+        let Ok(mut held) = self.held_remote_actions.lock() else {
+            return;
+        };
+        if held.len() >= MAX_HELD_REMOTE_ACTIONS {
+            held.pop_front();
+        }
+        held.push_back(held_action);
+    }
+
+    fn drop_held_remote_actions(&self, peer: iroh::EndpointId) {
+        if let Ok(mut held) = self.held_remote_actions.lock() {
+            held.retain(|item| item.peer != peer);
+        }
+    }
+
+    /// Dispatch, in arrival order, the requests held for `peer`. Each goes
+    /// through the full message path again, so room authority is checked
+    /// with the identity that was just accepted.
+    fn release_held_remote_actions(&self, peer: iroh::EndpointId) {
+        let ready: std::collections::VecDeque<HeldRemoteAction> = {
+            let Ok(mut held) = self.held_remote_actions.lock() else {
+                return;
+            };
+            let (ready, rest): (std::collections::VecDeque<_>, std::collections::VecDeque<_>) =
+                std::mem::take(&mut *held)
+                    .into_iter()
+                    .partition(|item| item.peer == peer);
+            *held = rest;
+            ready
+        };
+        for item in ready {
+            self.dispatch_neighbour_msg(
+                item.workspace_topic,
+                item.peer,
+                item.membership_epoch,
+                item.replayed,
+                NeighbourMsg::RemoteAction { frame: item.frame },
+            );
         }
     }
 
@@ -3887,6 +3795,15 @@ impl ShellNetwork {
         addrs.first().cloned()
     }
 
+    /// The tally of every application message this device's peers and
+    /// hosts delivered to it. Blocks until the actor answers, so it must
+    /// not be called from inside the network's runtime.
+    pub fn wire_tally(&self) -> Option<Arc<crate::network::actor::WireTally>> {
+        let (reply, answer) = tokio::sync::oneshot::channel();
+        self.cmd_tx.try_send(NetCmd::WireTally(reply)).ok()?;
+        answer.blocking_recv().ok()
+    }
+
     /// Invitations this authority can still resend or cancel. Expired
     /// credentials are removed from both memory and the private on-disk
     /// inventory before rows are returned to the UI.
@@ -3896,7 +3813,7 @@ impl ShellNetwork {
             return Vec::new();
         };
         let before = pending.len();
-        let now = now_unix_seconds();
+        let now = tilo_clock::unix_now();
         pending.retain(|_, invite| !invite.is_expired(now));
         if pending.len() != before
             && let Some(path) = self.pending_invitations_path.as_deref()
@@ -3924,7 +3841,7 @@ impl ShellNetwork {
             .lock()
             .map_err(|_| "invite admission state is unavailable".to_string())?
             .get(id)
-            .filter(|invite| !invite.is_expired(now_unix_seconds()))
+            .filter(|invite| !invite.is_expired(tilo_clock::unix_now()))
             .map(|invite| invite.token.clone())
             .ok_or_else(|| "invitation is no longer pending".to_string())
     }
@@ -4010,27 +3927,6 @@ impl ShellNetwork {
         )
     }
 
-    /// [`Self::issue_invite`], for a person this machine will name.
-    /// The name remains authority-side and is correlated with the exact
-    /// signed invite when it is redeemed.
-    ///
-    /// # Errors
-    ///
-    /// Same conditions as [`Self::issue_invite`].
-    pub fn issue_invite_named(
-        &self,
-        local: crate::shell::state::WorkspaceId,
-        expiry_seconds_from_now: u64,
-        invitee: &str,
-    ) -> Result<String, String> {
-        self.issue_invite_named_with_role(
-            local,
-            expiry_seconds_from_now,
-            invitee,
-            crate::network::invite::InviteRole::Editor,
-        )
-    }
-
     /// Mint a named invite carrying the exact role the owner selected.
     ///
     /// # Errors
@@ -4071,6 +3967,27 @@ impl ShellNetwork {
         )
     }
 
+    /// Mint an invitation on the terms an `invitation.issue` action stated:
+    /// any role, lifetime and optional name, recipient-bound when a person
+    /// key is given. Same authority checks as every other issuance path.
+    ///
+    /// # Errors
+    ///
+    /// Same conditions as [`Self::issue_invite`].
+    pub fn issue_invitation(
+        &self,
+        local: crate::shell::state::WorkspaceId,
+        terms: &crate::shell::peer_sync_overlay::InvitationTerms,
+    ) -> Result<String, String> {
+        self.issue_invite_for(
+            local,
+            terms.expires_in_seconds,
+            terms.invitee_name.as_deref(),
+            terms.role,
+            terms.recipient_user_public_key,
+        )
+    }
+
     #[allow(
         clippy::too_many_lines,
         reason = "invite issuance keeps membership authorization, recipient binding, expiry, and signing in one validated operation"
@@ -4083,6 +4000,13 @@ impl ShellNetwork {
         role: crate::network::invite::InviteRole,
         recipient_user_public_key: Option<[u8; 32]>,
     ) -> Result<String, String> {
+        use crate::shell::invite_policy::InviteRoute;
+        // Attach the native owner, when this device has one, so the policy
+        // below reads the admitted governor of a relay-governed room. A
+        // device without one only holds self-governed rooms.
+        if let Err(error) = self.native_owner() {
+            tracing::debug!(%error, "inviting without a native owner");
+        }
         let tree_handle = {
             let replica = self
                 .replica
@@ -4090,27 +4014,38 @@ impl ShellNetwork {
                 .map_err(|_| "peer-sync replica lock poisoned".to_string())?;
             replica.tree.clone()
         };
-        let tree = tree_handle.read();
-        let Some(ws) = tree.desktop.workspaces.iter().find(|w| w.id == local) else {
-            drop(tree);
-            return Err(format!("no workspace {} to invite into", local.raw()));
+        let missing = || format!("no workspace {} to invite into", local.raw());
+        // The room's governor is read outside the tree's lock (see
+        // `invite_policy::native_governor`); the decision below is taken on
+        // the workspace as it stands under one read, and issued for it.
+        let (room, owner) = {
+            let tree = tree_handle.read();
+            let room = tree.room_of(local).ok_or_else(missing)?;
+            (room, tree.installed_native_owner())
         };
-        let actor = crate::shell::state::local_user_id_for_room(&ws.room);
-        let governs = tree.governs_room(ws.room)
-            && ws.allows(
-                &ws.actor_for_person(&actor),
-                &crate::shell::state::ResourceRef::Workspace,
-                crate::shell::state::Verb::Invite,
-            );
-        let ws = ws.clone();
+        let governor = crate::shell::invite_policy::native_governor(owner, room);
+        let local_user = crate::shell::state::local_user_id_for_room(&room);
+        let tree = tree_handle.read();
+        let ws = tree
+            .desktop
+            .workspaces
+            .iter()
+            .find(|w| w.id == local && w.room == room)
+            .cloned()
+            .ok_or_else(missing)?;
+        // The same decision the invite composer and the palette are gated
+        // on: who may invite, and which authority signs it.
+        let route =
+            crate::shell::invite_policy::may_issue_invitation(&tree, &ws, &local_user, governor);
         drop(tree);
-        let relay_room = match self.administered_room(ws.room) {
-            Some(room) => Some(room),
-            None if governs => self.share_on_home_relay(local, ws.room, &ws.name)?,
-            None => {
-                return Err(
-                    "only a governing workspace administrator can create invitations".into(),
-                );
+        let relay_room = match route {
+            InviteRoute::Relay => Some(
+                self.administered_room(ws.room)
+                    .ok_or("this workspace's relay is not reachable yet; try again in a moment")?,
+            ),
+            InviteRoute::ShareOnRelay => self.share_on_home_relay(local, ws.room, &ws.name)?,
+            InviteRoute::ViaGovernor | InviteRoute::Refused(_) => {
+                return Err(route.refusal().unwrap_or_default().into());
             }
         };
         if let Some(relay_room) = relay_room {
@@ -4122,6 +4057,9 @@ impl ShellNetwork {
                 expiry_seconds_from_now,
             );
         }
+        // The invitee will dial this device. Until its address names a home
+        // relay, the invitee's dial finds the relay through address lookup.
+        self.reachability.wake("an invitation was issued");
         let addr = self
             .dial_addr()
             .ok_or_else(|| "peer-sync is not listening yet; try again in a moment".to_string())?;
@@ -4827,116 +4765,13 @@ impl ShellNetwork {
         )
     }
 
-    /// Open and validate one local media file for a later encrypted,
-    /// exact-target stream. The descriptor, not the host path, crosses the
-    /// personal fabric.
+    /// Stop only the outgoing transfer stream bound to this exact certified
+    /// target/id. The receiver keeps its last durable prefix.
     ///
     /// # Errors
     ///
-    /// Returns an error when the target is not certified/live, the source is
-    /// not a regular file, its size exceeds the bounded cache contract, or the
-    /// actor command queue is unavailable.
-    pub(crate) fn prepare_personal_media_transfer(
-        &self,
-        target: &crate::shell::personal_continuity::DeviceId,
-        path: &Path,
-    ) -> Result<PreparedPersonalMediaTransfer, String> {
-        let user_public_key = self
-            .personal_continuity_user
-            .ok_or_else(|| "this device has no certified personal identity".to_string())?;
-        let source = self
-            .personal_continuity_device
-            .as_ref()
-            .ok_or_else(|| "this device has no personal fabric identity".to_string())?;
-        if source == target || !self.certified_secret_recipients().contains(target) {
-            return Err("target is not another enrolled personal device".into());
-        }
-        let target_bytes: [u8; 32] = hex::decode(target.as_str())
-            .map_err(|_| "target is not a certified transport device id".to_string())?
-            .try_into()
-            .map_err(|_| "target is not a certified transport device id".to_string())?;
-        let transport_target = iroh::EndpointId::from_bytes(&target_bytes)
-            .map_err(|_| "target is not a certified transport device id".to_string())?;
-        let raw_name = path
-            .file_name()
-            .and_then(std::ffi::OsStr::to_str)
-            .ok_or_else(|| "media file has no portable name".to_string())?;
-        let file_name = portable_media_file_name(raw_name)
-            .ok_or_else(|| "media file has no portable name".to_string())?;
-        let file = std::fs::OpenOptions::new()
-            .read(true)
-            .custom_flags(libc::O_NOFOLLOW)
-            .open(path)
-            .map_err(|error| format!("media file cannot be opened: {error}"))?;
-        let metadata = file
-            .metadata()
-            .map_err(|error| format!("media file cannot be inspected: {error}"))?;
-        let total_bytes = metadata.len();
-        if !metadata.is_file() || total_bytes == 0 || total_bytes > MAX_PERSONAL_MEDIA_BYTES {
-            return Err("media source is not a supported regular file".into());
-        }
-        let mut transfer_id = [0_u8; 16];
-        while transfer_id == [0; 16] {
-            UnwrapErr(SysRng).fill_bytes(&mut transfer_id);
-        }
-        let ws = personal_continuity_topic_id(&user_public_key);
-        if !self.join_topic(ws) {
-            return Err("personal fabric transport is unavailable".into());
-        }
-        Ok(PreparedPersonalMediaTransfer {
-            ws,
-            user_public_key,
-            target: transport_target,
-            transfer_id,
-            file_name,
-            total_bytes,
-            file,
-        })
-    }
-
-    /// Start a previously prepared transfer after its authenticated handoff
-    /// action has been queued. Command-channel ordering lets the destination
-    /// authorize the random transfer id before accepting any file bytes.
-    pub(crate) fn start_personal_media_transfer(
-        &self,
-        transfer: PreparedPersonalMediaTransfer,
-    ) -> Result<(), String> {
-        let target = crate::shell::personal_continuity::DeviceId::new(hex::encode(
-            transfer.target.as_bytes(),
-        ))
-        .map_err(|_| "target is not a certified transport device id")?;
-        self.record_outgoing_personal_media_transfer(OutgoingPersonalMediaTransfer {
-            target: target.clone(),
-            transfer_id: transfer.transfer_id,
-            sent_bytes: 0,
-            total_bytes: transfer.total_bytes,
-            status: PersonalMediaTransferStatus::Started,
-        });
-        let transfer_id = transfer.transfer_id;
-        let result = self
-            .cmd_tx
-            .try_send(NetCmd::PublishPersonalMedia {
-                ws: transfer.ws,
-                user_public_key: transfer.user_public_key,
-                target: transfer.target,
-                transfer_id: transfer.transfer_id,
-                file_name: transfer.file_name,
-                total_bytes: transfer.total_bytes,
-                file: transfer.file,
-            })
-            .map_err(|error| error.to_string());
-        if result.is_err()
-            && let Ok(mut transfers) = self.outgoing_personal_media_transfers.lock()
-            && let Some(entry) = transfers.get_mut(&(target, transfer_id))
-        {
-            entry.transfer.status = PersonalMediaTransferStatus::Failed;
-            entry.updated = std::time::Instant::now();
-        }
-        result
-    }
-
-    /// Stop only the source stream bound to this exact certified target/id.
-    pub(crate) fn cancel_personal_media_transfer(
+    /// Returns an error for a malformed target or a full command queue.
+    pub(crate) fn cancel_nearby_transfer_stream(
         &self,
         target: &crate::shell::personal_continuity::DeviceId,
         transfer_id: [u8; 16],
@@ -4948,7 +4783,7 @@ impl ShellNetwork {
         let target =
             iroh::EndpointId::from_bytes(&target_bytes).map_err(|_| "invalid transfer target")?;
         self.cmd_tx
-            .try_send(NetCmd::CancelPersonalMedia {
+            .try_send(NetCmd::CancelNearbyTransfer {
                 target,
                 transfer_id,
             })
@@ -5004,59 +4839,6 @@ impl ShellNetwork {
                 file,
             })
             .map_err(|error| error.to_string())
-    }
-
-    fn record_outgoing_personal_media_transfer(&self, transfer: OutgoingPersonalMediaTransfer) {
-        let Ok(mut transfers) = self.outgoing_personal_media_transfers.lock() else {
-            return;
-        };
-        let now = std::time::Instant::now();
-        transfers.retain(|_, entry| {
-            !matches!(
-                entry.transfer.status,
-                PersonalMediaTransferStatus::Completed
-                    | PersonalMediaTransferStatus::Failed
-                    | PersonalMediaTransferStatus::Cancelled
-            ) || now.saturating_duration_since(entry.updated) <= OUTGOING_PERSONAL_MEDIA_RETENTION
-        });
-        transfers.insert(
-            (transfer.target.clone(), transfer.transfer_id),
-            OutgoingPersonalMediaTransferEntry {
-                transfer,
-                updated: now,
-            },
-        );
-        while transfers.len() > MAX_OUTGOING_PERSONAL_MEDIA_TRANSFERS {
-            let oldest = transfers
-                .iter()
-                .min_by_key(|(_, entry)| entry.updated)
-                .map(|(id, _)| id.clone());
-            let Some(oldest) = oldest else {
-                break;
-            };
-            transfers.remove(&oldest);
-        }
-    }
-
-    pub(crate) fn outgoing_personal_media_transfers(&self) -> Vec<OutgoingPersonalMediaTransfer> {
-        let Ok(mut transfers) = self.outgoing_personal_media_transfers.lock() else {
-            return Vec::new();
-        };
-        let now = std::time::Instant::now();
-        transfers.retain(|_, entry| {
-            !matches!(
-                entry.transfer.status,
-                PersonalMediaTransferStatus::Completed
-                    | PersonalMediaTransferStatus::Failed
-                    | PersonalMediaTransferStatus::Cancelled
-            ) || now.saturating_duration_since(entry.updated) <= OUTGOING_PERSONAL_MEDIA_RETENTION
-        });
-        let mut snapshot = transfers
-            .values()
-            .map(|entry| (entry.updated, entry.transfer.clone()))
-            .collect::<Vec<_>>();
-        snapshot.sort_by_key(|(updated, _)| *updated);
-        snapshot.into_iter().map(|(_, transfer)| transfer).collect()
     }
 
     /// Send one non-durable command to exactly one certified personal device.
@@ -5243,41 +5025,6 @@ impl ShellNetwork {
         self.personal_fabric_actions
             .lock()
             .map_or_else(|_| Vec::new(), |mut actions| actions.drain(..).collect())
-    }
-
-    pub(crate) fn revoke_queued_personal_action_authority(
-        &self,
-        envelope: &crate::shell::device_fabric::PersonalFabricActionEnvelope,
-    ) {
-        if let crate::shell::device_fabric::PersonalFabricAction::ResumeMedia {
-            locator:
-                crate::shell::device_fabric::MediaSourceLocator::PersonalTransfer {
-                    transfer_id, ..
-                },
-            ..
-        } = &envelope.action
-            && let Ok(mut transfers) = self.personal_media_transfers.lock()
-        {
-            discard_personal_media_transfer(
-                &mut transfers,
-                &(envelope.source.clone(), *transfer_id),
-            );
-        }
-    }
-
-    /// Revoke one exact certified sender/transfer binding and any receiver
-    /// spool state it created. A verified object remains on disk while another
-    /// binding or an active player lease still references it.
-    pub(crate) fn discard_personal_media_transfer(
-        &self,
-        source: &crate::shell::personal_continuity::DeviceId,
-        transfer_id: [u8; 16],
-    ) -> bool {
-        self.personal_media_transfers
-            .lock()
-            .is_ok_and(|mut transfers| {
-                discard_personal_media_transfer(&mut transfers, &(source.clone(), transfer_id))
-            })
     }
 
     fn display_observations_path(path: &Path) -> PathBuf {
@@ -5525,7 +5272,7 @@ impl ShellNetwork {
         };
         update(&mut snapshot.unlock, &stamp);
         snapshot.presence.stamp = stamp;
-        snapshot.presence.last_seen_unix_ms = now_unix_seconds().saturating_mul(1000);
+        snapshot.presence.last_seen_unix_ms = tilo_clock::unix_now().saturating_mul(1000);
         self.upsert_local_device_fabric(snapshot)
             .map(|_| ())
             .map_err(|error| error.to_string())
@@ -5591,7 +5338,7 @@ impl ShellNetwork {
             .retain(|saved| saved.network_id != credential.network_id);
         snapshot.wifi.push(credential);
         snapshot.presence.stamp = stamp;
-        snapshot.presence.last_seen_unix_ms = now_unix_seconds().saturating_mul(1000);
+        snapshot.presence.last_seen_unix_ms = tilo_clock::unix_now().saturating_mul(1000);
         self.upsert_local_device_fabric(snapshot)
             .map(|_| ())
             .map_err(|error| error.to_string())
@@ -6100,23 +5847,59 @@ impl ShellNetwork {
         true
     }
 
-    /// [`Self::publish_sync_requests`], rate-limited to
-    /// [`SYNC_KICK_INTERVAL`]. Called from every frame tick, which runs
-    /// far more often than a room changes.
+    /// Called from every frame tick, which runs far more often than a room
+    /// changes. Every [`SYNC_KICK_INTERVAL`] it does the local upkeep that
+    /// keeps revocation prompt and continuity current, which sends nothing
+    /// unless something changed; [`Self::publish_sync_requests`] goes out
+    /// only when [`Self::schedule_repair_pull`] or [`SYNC_SAFETY_INTERVAL`]
+    /// made it due.
     fn kick_periodic_sync(&self) {
-        let Ok(mut last) = self.last_sync_kick.lock() else {
-            return;
-        };
         let now = std::time::Instant::now();
-        if let Some(prev) = *last
-            && now.duration_since(prev) < SYNC_KICK_INTERVAL
-        {
-            return;
+        let upkeep = self.last_sync_kick.lock().is_ok_and(|mut last| {
+            let due = last.is_none_or(|prev| now.duration_since(prev) >= SYNC_KICK_INTERVAL);
+            if due {
+                *last = Some(now);
+            }
+            due
+        });
+        if upkeep {
+            self.refresh_authenticated_persons();
+            self.publish_personal_continuity_if_changed();
         }
-        *last = Some(now);
-        drop(last);
-        self.refresh_authenticated_persons();
-        self.publish_sync_requests();
+        // A guest still redeeming an invite keeps asking at the repair pace
+        // until the authority answers: its request is what redeems.
+        let redeeming = self
+            .pending_redemptions
+            .lock()
+            .is_ok_and(|pending| !pending.is_empty());
+        let pull = self.next_sync_pull.lock().is_ok_and(|mut next| {
+            let due = next.is_none_or(|at| now >= at);
+            if due {
+                let wait = if redeeming {
+                    SYNC_REPAIR_DELAY
+                } else {
+                    SYNC_SAFETY_INTERVAL
+                };
+                *next = Some(now.checked_add(wait).unwrap_or(now));
+            }
+            due
+        });
+        if pull {
+            self.publish_sync_requests();
+        }
+    }
+
+    /// A room changed: pull [`SYNC_REPAIR_DELAY`] from now, unless a pull is
+    /// due sooner.
+    fn schedule_repair_pull(&self) {
+        let now = std::time::Instant::now();
+        let due = now.checked_add(SYNC_REPAIR_DELAY).unwrap_or(now);
+        if let Ok(mut next) = self.next_sync_pull.lock()
+            && let Some(at) = *next
+            && at > due
+        {
+            *next = Some(due);
+        }
     }
 
     /// Announce every room document change since the last announcement as a
@@ -6146,8 +5929,14 @@ impl ShellNetwork {
         let due = push
             .last_full
             .is_none_or(|last| now.duration_since(last) >= ROOM_PUSH_FALLBACK_INTERVAL);
-        if push.trigger.as_ref() == Some(&trigger) && !due {
+        let moved = push.trigger.as_ref() != Some(&trigger);
+        if !moved && !due {
             return;
+        }
+        if moved {
+            // Once this activity settles, ask the rooms for what this shell
+            // or a peer missed of it.
+            self.schedule_repair_pull();
         }
         push.trigger = Some(trigger);
         push.last_full = Some(now);
@@ -6241,6 +6030,7 @@ impl ShellNetwork {
                 self.handle_host_ready(ws, peer);
             }
             NetEvent::PeerJoined { ws, peer, .. } => {
+                self.note_peer_joined();
                 if let Ok(mut connected) = self.dialed_direct_peers.lock() {
                     connected.insert(peer);
                 }
@@ -6267,6 +6057,7 @@ impl ShellNetwork {
                 if let Ok(mut connected) = self.dialed_direct_peers.lock() {
                     connected.remove(&peer);
                 }
+                self.drop_held_remote_actions(peer);
                 if let Ok(mut live) = self.live_room_peers.lock() {
                     live.remove(&(ws, peer));
                 }
@@ -6298,6 +6089,9 @@ impl ShellNetwork {
                         });
                 if !has_live_route {
                     let handle = crate::network::behaviour::peer_liveness_handle(&peer);
+                    // Adverts are not restated on a timer, so they do not
+                    // go stale by themselves: a departure forgets them.
+                    crate::network::media_caps::forget(handle);
                     self.peer_identities
                         .remove(&crate::shell::state::PeerOrigin::peer(&peer));
                     if let Ok(replica) = self.replica.lock() {
@@ -6321,26 +6115,6 @@ impl ShellNetwork {
                 payload,
             } => {
                 self.dispatch_personal_fabric(ws, peer, membership_epoch, user_public_key, payload);
-            }
-            NetEvent::PersonalMediaTransfer {
-                target,
-                transfer_id,
-                sent_bytes,
-                total_bytes,
-                status,
-            } => {
-                let Ok(target) = crate::shell::personal_continuity::DeviceId::new(hex::encode(
-                    target.as_bytes(),
-                )) else {
-                    return;
-                };
-                self.record_outgoing_personal_media_transfer(OutgoingPersonalMediaTransfer {
-                    target,
-                    transfer_id,
-                    sent_bytes: sent_bytes.min(total_bytes),
-                    total_bytes,
-                    status,
-                });
             }
             NetEvent::NearbyTransferProgress {
                 target,
@@ -6430,13 +6204,11 @@ impl ShellNetwork {
             PersonalFabricPayload::Action(bytes) => {
                 self.dispatch_personal_fabric_action(peer, identity.device_pubkey, route, &bytes);
             }
-            PersonalFabricPayload::MediaTransfer(frame) => {
-                let Ok(source) = crate::shell::personal_continuity::DeviceId::new(hex::encode(
-                    identity.device_pubkey,
-                )) else {
-                    return;
-                };
-                self.dispatch_personal_media_transfer(source, frame);
+            PersonalFabricPayload::MediaTransfer(_) => {
+                // The retired media lane: a device that predates the unified
+                // transfer lane. Its bytes are never accepted; the handoff
+                // fails on the sender's timeout like any other unanswered one.
+                tracing::debug!(peer = %peer, "dropping legacy personal media transfer frame");
             }
             PersonalFabricPayload::NearbyTransfer(frame) => {
                 let Ok(source) = crate::shell::personal_continuity::DeviceId::new(hex::encode(
@@ -6503,202 +6275,6 @@ impl ShellNetwork {
         }
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one exhaustive transfer-state machine keeps authorization, offsets, hashing, cleanup, and publication auditable together"
-    )]
-    fn dispatch_personal_media_transfer(
-        &self,
-        source: crate::shell::personal_continuity::DeviceId,
-        frame: PersonalMediaTransferFrame,
-    ) {
-        let Some(root) = self.personal_media_cache_root.as_ref() else {
-            return;
-        };
-        let Ok(mut state) = self.personal_media_transfers.lock() else {
-            return;
-        };
-        match frame {
-            PersonalMediaTransferFrame::Start {
-                transfer_id,
-                file_name,
-                total_bytes,
-            } => {
-                let key = (source.clone(), transfer_id);
-                if transfer_id == [0; 16]
-                    || portable_media_file_name(&file_name).as_deref() != Some(file_name.as_str())
-                    || total_bytes == 0
-                    || total_bytes > MAX_PERSONAL_MEDIA_BYTES
-                    || state.incoming.len() >= MAX_INCOMING_PERSONAL_MEDIA_TRANSFERS
-                    || !state.authorized.contains(&key)
-                    || state.incoming.contains_key(&key)
-                    || state.completed.contains_key(&key)
-                {
-                    return;
-                }
-                let reserved = state.incoming_reserved_bytes();
-                let Some(object_budget) = MAX_PERSONAL_MEDIA_CACHE_BYTES
-                    .checked_sub(reserved)
-                    .and_then(|remaining| remaining.checked_sub(total_bytes))
-                else {
-                    return;
-                };
-                let protected = state.protected_paths();
-                if prune_personal_media_objects(root, &protected, object_budget) > object_budget {
-                    return;
-                }
-                let disk_required = state
-                    .incoming_remaining_bytes()
-                    .saturating_add(total_bytes)
-                    .saturating_add(MIN_PERSONAL_MEDIA_FREE_BYTES);
-                if available_bytes(root).is_none_or(|available| available < disk_required) {
-                    return;
-                }
-                let incoming_dir = root.join("incoming");
-                if ensure_private_dir(&incoming_dir).is_err() {
-                    return;
-                }
-                let part_path = incoming_dir.join(format!(
-                    "{}-{}.part",
-                    source.as_str(),
-                    hex::encode(transfer_id)
-                ));
-                let Ok(file) = std::fs::OpenOptions::new()
-                    .write(true)
-                    .create_new(true)
-                    .mode(0o600)
-                    .open(&part_path)
-                else {
-                    return;
-                };
-                state.incoming.insert(
-                    key,
-                    IncomingPersonalMediaTransfer {
-                        file,
-                        part_path,
-                        file_name,
-                        total_bytes,
-                        received_bytes: 0,
-                        hasher: blake3::Hasher::new(),
-                    },
-                );
-            }
-            PersonalMediaTransferFrame::Chunk {
-                transfer_id,
-                offset,
-                bytes,
-            } => {
-                let key = (source, transfer_id);
-                let invalid = bytes.is_empty()
-                    || bytes.len() > PERSONAL_MEDIA_CHUNK_BYTES
-                    || state.incoming.get(&key).is_none_or(|transfer| {
-                        offset != transfer.received_bytes
-                            || u64::try_from(bytes.len()).map_or(true, |length| {
-                                transfer.received_bytes.saturating_add(length)
-                                    > transfer.total_bytes
-                            })
-                    });
-                if invalid {
-                    discard_personal_media_transfer(&mut state, &key);
-                    return;
-                }
-                let failed = state.incoming.get_mut(&key).is_none_or(|transfer| {
-                    if transfer.file.write_all(&bytes).is_err() {
-                        return true;
-                    }
-                    transfer.hasher.update(&bytes);
-                    transfer.received_bytes = transfer
-                        .received_bytes
-                        .saturating_add(u64::try_from(bytes.len()).unwrap_or(0));
-                    false
-                });
-                if failed {
-                    discard_personal_media_transfer(&mut state, &key);
-                }
-            }
-            PersonalMediaTransferFrame::Finish {
-                transfer_id,
-                content_hash,
-            } => {
-                let key = (source, transfer_id);
-                let Some(mut transfer) = state.incoming.remove(&key) else {
-                    return;
-                };
-                state.authorized.remove(&key);
-                if transfer.received_bytes != transfer.total_bytes
-                    || *transfer.hasher.finalize().as_bytes() != content_hash
-                    || transfer.file.flush().is_err()
-                    || transfer.file.sync_all().is_err()
-                {
-                    let _ = std::fs::remove_file(transfer.part_path);
-                    return;
-                }
-                drop(transfer.file);
-                let object_dir = root.join("objects").join(hex::encode(content_hash));
-                if ensure_private_dir(&object_dir).is_err() {
-                    let _ = std::fs::remove_file(transfer.part_path);
-                    return;
-                }
-                let object_path = object_dir.join(&transfer.file_name);
-                let stored = if object_path.exists() {
-                    let valid = personal_media_object_matches(
-                        &object_path,
-                        transfer.total_bytes,
-                        content_hash,
-                    );
-                    if valid {
-                        let _ = std::fs::remove_file(&transfer.part_path);
-                        true
-                    } else if std::fs::remove_file(&object_path).is_ok() {
-                        std::fs::rename(&transfer.part_path, &object_path).is_ok()
-                    } else {
-                        false
-                    }
-                } else {
-                    std::fs::rename(&transfer.part_path, &object_path).is_ok()
-                };
-                if !stored {
-                    let _ = std::fs::remove_file(transfer.part_path);
-                    return;
-                }
-                while state.completed.len() >= MAX_COMPLETED_PERSONAL_MEDIA_TRANSFERS {
-                    if !state.evict_oldest_completed() {
-                        break;
-                    }
-                }
-                state.completed.insert(key.clone(), object_path);
-                state.completed_order.push_back(key);
-            }
-            PersonalMediaTransferFrame::Abort { transfer_id } => {
-                discard_personal_media_transfer(&mut state, &(source, transfer_id));
-            }
-        }
-    }
-
-    /// Resolve one fully verified incoming transfer to a local cache path.
-    /// Incomplete, aborted, or hash-mismatched transfers remain unavailable.
-    pub fn completed_personal_media_transfer(
-        &self,
-        source: &crate::shell::personal_continuity::DeviceId,
-        transfer_id: [u8; 16],
-    ) -> Option<PathBuf> {
-        self.personal_media_transfers
-            .lock()
-            .ok()
-            .and_then(|mut state| {
-                let path = state
-                    .completed
-                    .get(&(source.clone(), transfer_id))
-                    .cloned()?;
-                let now = std::time::Instant::now();
-                state.leased_until.insert(
-                    path.clone(),
-                    now.checked_add(PERSONAL_MEDIA_LEASE).unwrap_or(now),
-                );
-                Some(path)
-            })
-    }
-
     fn dispatch_personal_fabric_action(
         &self,
         peer: iroh::EndpointId,
@@ -6741,20 +6317,6 @@ impl ShellNetwork {
             return;
         }
         drop(replays);
-        let transfer_authorization =
-            if let crate::shell::device_fabric::PersonalFabricAction::ResumeMedia {
-                locator:
-                    crate::shell::device_fabric::MediaSourceLocator::PersonalTransfer {
-                        transfer_id,
-                        ..
-                    },
-                ..
-            } = &envelope.action
-            {
-                Some((envelope.source.clone(), *transfer_id))
-            } else {
-                None
-            };
         let Ok(mut actions) = self.personal_fabric_actions.lock() else {
             return;
         };
@@ -6766,24 +6328,12 @@ impl ShellNetwork {
                 received_monotonic_us,
             },
         );
+        drop(actions);
         if outcome == PersonalFabricQueueOutcome::Saturated {
             tracing::warn!(
                 peer = %peer,
                 "personal fabric action queue saturated; rejecting action without evicting control"
             );
-            return;
-        }
-        drop(actions);
-        if outcome == PersonalFabricQueueOutcome::Queued
-            && let Some(key) = transfer_authorization
-            && let Ok(mut transfers) = self.personal_media_transfers.lock()
-        {
-            if transfers.authorized.len() >= MAX_COMPLETED_PERSONAL_MEDIA_TRANSFERS
-                && let Some(oldest) = transfers.authorized.iter().next().cloned()
-            {
-                discard_personal_media_transfer(&mut transfers, &oldest);
-            }
-            transfers.authorized.insert(key);
         }
     }
 
@@ -6934,6 +6484,12 @@ impl ShellNetwork {
         replayed: bool,
         msg: NeighbourMsg,
     ) {
+        // The one boundary for retired wire generations: no build produces
+        // them, so nothing past this point handles or authorizes them.
+        if msg.is_retired() {
+            tracing::debug!(%peer, ws, "dropping a retired collaboration message");
+            return;
+        }
         // A record of the person's own room arrives from another of their
         // devices over the personal fabric, or kept by their always-on host
         // on their continuity topic; never as room traffic.
@@ -6959,7 +6515,6 @@ impl ShellNetwork {
                 NeighbourMsg::SyncReq { .. }
                     | NeighbourMsg::SyncResp { .. }
                     | NeighbourMsg::AppDocument { .. }
-                    | NeighbourMsg::IdentityAnnouncement { .. }
                     | NeighbourMsg::IdentityAnnouncementV2 { .. }
             )
         {
@@ -7056,7 +6611,17 @@ impl ShellNetwork {
             && self.peer_identities.get(&origin).is_none()
             && !governed_action
         {
-            tracing::warn!(peer = %peer, "dropping collaboration message from an unauthenticated device");
+            if let NeighbourMsg::RemoteAction { frame } = msg {
+                self.hold_remote_action(HeldRemoteAction {
+                    workspace_topic: ws,
+                    peer,
+                    membership_epoch,
+                    replayed,
+                    frame,
+                });
+            } else {
+                tracing::warn!(peer = %peer, "dropping collaboration message from an unauthenticated device");
+            }
             return;
         }
         if self.require_peer_identity
@@ -7106,13 +6671,12 @@ impl ShellNetwork {
         {
             self.redeem_invited_identity(ws, *invite_id, &peer, &identity.device_cert);
         }
-        if self.require_peer_identity
-            && !governed_action
-            && !matches!(&msg, NeighbourMsg::IdentityHello { .. })
-        {
+        if self.require_peer_identity && !governed_action {
             let required = Self::required_room_verb(&msg);
             let pinned_authority_may_bootstrap = matches!(&msg, NeighbourMsg::SyncResp { .. });
-            if !self.peer_room_allows(&origin, ws, required, pinned_authority_may_bootstrap) {
+            if !required.is_some_and(|required| {
+                self.peer_room_allows(&origin, ws, required, pinned_authority_may_bootstrap)
+            }) {
                 tracing::warn!(
                     peer = %peer,
                     workspace_topic = ws,
@@ -7129,9 +6693,6 @@ impl ShellNetwork {
             pending.remove(&room);
         }
         match msg {
-            NeighbourMsg::IdentityAnnouncement { room, device_cert } => {
-                self.handle_identity_announcement(&peer, &room, &device_cert, &[]);
-            }
             NeighbourMsg::IdentityAnnouncementV2 {
                 room,
                 device_cert,
@@ -7471,21 +7032,6 @@ impl ShellNetwork {
         }
     }
 
-    /// Workspace capability required before variant-specific validation.
-    /// Publishing media, injecting input, granting control, and changing room
-    /// state are active collaboration actions and never ride on read access.
-    fn required_room_verb(msg: &NeighbourMsg) -> crate::shell::state::Verb {
-        match msg {
-            NeighbourMsg::SyncResp { .. }
-            | NeighbourMsg::SurfaceFrame { .. }
-            | NeighbourMsg::SurfaceStreamStart { .. }
-            | NeighbourMsg::SurfaceStreamEnd { .. }
-            | NeighbourMsg::RemoteInput { .. }
-            | NeighbourMsg::PermissionGrant { .. } => crate::shell::state::Verb::Write,
-            _ => crate::shell::state::Verb::Read,
-        }
-    }
-
     /// Resolve a transport shard to exactly one local room. Although a room
     /// topic is derived from a UUID, it is only 64 bits; an ambiguous collision
     /// must not let membership in one room authorize traffic for another.
@@ -7665,6 +7211,7 @@ impl ShellNetwork {
         if cert.device_public_key != *peer.as_bytes() || revocations.len() > 4096 {
             tracing::warn!(peer = %peer, "rejecting invalid peer identity handshake");
             self.peer_identities.remove(origin);
+            self.drop_held_remote_actions(*peer);
             return;
         }
         let mut list = tilo_user_identity::RevocationList::new();
@@ -7673,17 +7220,14 @@ impl ShellNetwork {
             {
                 tracing::warn!(peer = %peer, "rejecting peer identity with invalid revocation set");
                 self.peer_identities.remove(origin);
+                self.drop_held_remote_actions(*peer);
                 return;
             }
         }
         self.peer_identities
             .set_revocations(cert.user_public_key, &list);
         let was_known = self.peer_identities.get(origin).is_some();
-        let now_ns = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .ok()
-            .and_then(|duration| u64::try_from(duration.as_nanos()).ok())
-            .unwrap_or(u64::MAX);
+        let now_ns = now_unix_nanos();
         if self
             .peer_identities
             .insert(origin.clone(), cert.clone(), now_ns)
@@ -7696,6 +7240,7 @@ impl ShellNetwork {
         {
             tracing::warn!(peer = %peer, "rejecting expired, invalid, or revoked peer device");
             self.peer_identities.remove(origin);
+            self.drop_held_remote_actions(*peer);
             return;
         }
         tracing::debug!(
@@ -7718,9 +7263,12 @@ impl ShellNetwork {
         // The initial SyncReq can race ahead of the identity hello and is
         // intentionally dropped. Re-kick anti-entropy after trust is
         // established so joining never waits for another topology event.
+        // Presence sent before trust was dropped the same way: say it again.
         if !was_known {
+            self.note_peer_joined();
             self.publish_sync_requests();
         }
+        self.release_held_remote_actions(*peer);
     }
 
     /// Give another of this person's devices its certified label in a room
@@ -8065,6 +7613,10 @@ impl Drop for ShellNetwork {
 /// a caller-owned receiver, bypassing the iroh actor. `pub(crate)` so
 /// the broker's own tests can drive the inbound side of the peer bridge too.
 #[cfg(test)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "the fixture spells out every field of `ShellNetwork` in one literal, as `spawn_with` does"
+)]
 pub(crate) fn shell_network_for_test(
     tree: WorkspaceTreeHandle,
     local_peer_hash: u64,
@@ -8090,6 +7642,7 @@ pub(crate) fn shell_network_for_test(
         host_identity: None,
         local_peer_id,
         listen_addrs: Arc::new(Mutex::new(Vec::new())),
+        reachability: crate::network::Reachability::default(),
         host_addrs: Mutex::new(Vec::new()),
         registered_home_peer_ids: Mutex::new(std::collections::HashSet::new()),
         dialed_direct_peers: Mutex::new(std::collections::HashSet::new()),
@@ -8098,6 +7651,8 @@ pub(crate) fn shell_network_for_test(
         personal_device_peers: Mutex::default(),
         last_home_peer_refresh: Mutex::new(None),
         last_sync_kick: Mutex::new(None),
+        next_sync_pull: Mutex::new(None),
+        peers_joined: std::sync::atomic::AtomicU64::new(0),
         room_push: Mutex::new(RoomPush::default()),
         personal_continuity: Mutex::default(),
         personal_continuity_user: None,
@@ -8135,9 +7690,6 @@ pub(crate) fn shell_network_for_test(
         personal_fabric_actions: Mutex::new(VecDeque::new()),
         authenticated_personal_routes: Mutex::new(std::collections::HashMap::new()),
         personal_fabric_action_replays: Mutex::new(PersonalFabricReplayWindow::default()),
-        personal_media_cache_root: None,
-        personal_media_transfers: Mutex::new(PersonalMediaTransferState::default()),
-        outgoing_personal_media_transfers: Mutex::new(std::collections::BTreeMap::new()),
         peer_identities: PeerIdentityStore::new(),
         require_peer_identity: false,
         pending_identity_admissions: Mutex::new(std::collections::HashMap::new()),
@@ -8158,9 +7710,11 @@ pub(crate) fn shell_network_for_test(
         live_presence: Mutex::default(),
         live_labels: Mutex::default(),
         peer_colours: Mutex::default(),
+        peer_colours_epoch: std::sync::atomic::AtomicU64::new(0),
         inbound_scrollback_request: Arc::new(Mutex::new(Vec::new())),
         inbound_scrollback_response: Arc::new(Mutex::new(Vec::new())),
         inbound_remote_actions: Arc::new(Mutex::new(Vec::new())),
+        held_remote_actions: Mutex::new(std::collections::VecDeque::new()),
         remote_action_replies: crate::shell::remote_action_link::ReplyWaiters::default(),
         remote_use: Mutex::default(),
         inbound_legacy: Arc::new(Mutex::new(std::collections::VecDeque::new())),
@@ -8181,6 +7735,39 @@ pub(crate) fn native_read_network_for_test(
     network.local_peer_id = network.keypair.public();
     network.host_identity = Some(identity);
     (network, commands)
+}
+
+/// Deliver a fixture response through production peer authentication and RPC matching.
+#[cfg(test)]
+pub(crate) fn native_remote_answer_for_test(
+    network: &ShellNetwork,
+    workspace: u64,
+    from: iroh::EndpointId,
+    message: tilo_actions::remote::RemoteActionMessage,
+) {
+    let frame = tilo_actions::remote::RemoteActionFrame::new(message)
+        .encode()
+        .unwrap();
+    network.dispatch_neighbour_msg(
+        workspace,
+        from,
+        None,
+        false,
+        NeighbourMsg::RemoteAction { frame },
+    );
+}
+
+/// Give a fixture network the worker runtime a spawned one owns, so governor
+/// invocations are answered instead of refused as "the network is not running".
+#[cfg(test)]
+pub(crate) fn with_test_runtime(network: &mut ShellNetwork) {
+    network.runtime = Some(
+        tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .expect("fixture network runtime"),
+    );
 }
 
 impl crate::shell::remote_action_link::RemoteActionLink for ShellNetwork {
@@ -8914,353 +8501,30 @@ mod tests {
     }
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
-    fn personal_media_cache_prunes_leases_and_discards_only_unreferenced_objects() {
-        fn personal_media_cache_prunes_only_unprotected_regular_objects() {
-            use std::os::unix::fs::symlink;
-
-            let cache = tempfile::tempdir().unwrap();
-            let first_dir = cache.path().join("objects").join("11".repeat(32));
-            let second_dir = cache.path().join("objects").join("22".repeat(32));
-            ensure_private_dir(&first_dir).unwrap();
-            ensure_private_dir(&second_dir).unwrap();
-            let protected_path = first_dir.join("keep.mp4");
-            let evictable_path = second_dir.join("old.mp4");
-            std::fs::write(&protected_path, [1_u8; 4]).unwrap();
-            std::fs::write(&evictable_path, [2_u8; 4]).unwrap();
-            let outside = cache.path().join("outside");
-            std::fs::write(&outside, b"do not follow").unwrap();
-            symlink(&outside, second_dir.join("link.mp4")).unwrap();
-
-            let retained = prune_personal_media_objects(
-                cache.path(),
-                &std::collections::BTreeSet::from([protected_path.clone()]),
-                4,
-            );
-            assert_eq!(retained, 4);
-            assert!(protected_path.exists());
-            assert!(!evictable_path.exists());
-            assert_eq!(std::fs::read(outside).unwrap(), b"do not follow");
-        }
-
-        fn player_lease_keeps_evicted_transfer_object_alive() {
-            let cache = tempfile::tempdir().unwrap();
-            let object_dir = cache.path().join("objects").join("33".repeat(32));
-            ensure_private_dir(&object_dir).unwrap();
-            let path = object_dir.join("film.mkv");
-            std::fs::write(&path, b"film").unwrap();
-            let key = (test_device(0x44), [0x55; 16]);
-            let mut state = PersonalMediaTransferState::default();
-            state.completed.insert(key.clone(), path.clone());
-            state.completed_order.push_back(key);
-            let now = std::time::Instant::now();
-            state.leased_until.insert(
-                path.clone(),
-                now.checked_add(PERSONAL_MEDIA_LEASE).unwrap_or(now),
-            );
-
-            assert!(state.evict_oldest_completed());
-            assert!(path.exists());
-            assert!(state.completed.is_empty());
-        }
-
-        fn personal_media_directories_are_owner_only() {
-            use std::os::unix::fs::PermissionsExt as _;
-
-            let cache = tempfile::tempdir().unwrap();
-            let private = cache.path().join("private");
-            ensure_private_dir(&private).unwrap();
-            assert_eq!(
-                std::fs::metadata(private).unwrap().permissions().mode() & 0o777,
-                0o700
-            );
-        }
-
-        fn personal_media_discard_is_exact_and_preserves_referenced_objects() {
-            let (mut net, _commands) =
-                shell_network_for_test(WorkspaceTree::default().shared(), 0xCA16);
-            let cache = tempfile::tempdir().expect("cache");
-            net.personal_media_cache_root = Some(cache.path().to_path_buf());
-            let source = test_device(0x71);
-            let sibling = test_device(0x72);
-            let transfer_id = [0x73; 16];
-            {
-                let mut state = net.personal_media_transfers.lock().expect("transfer state");
-                state.authorized.insert((source.clone(), transfer_id));
-                state.authorized.insert((sibling.clone(), transfer_id));
-            }
-            net.dispatch_personal_media_transfer(
-                source.clone(),
-                PersonalMediaTransferFrame::Start {
-                    transfer_id,
-                    file_name: "partial.webm".into(),
-                    total_bytes: 8,
-                },
-            );
-            let part_path = cache.path().join("incoming").join(format!(
-                "{}-{}.part",
-                source.as_str(),
-                hex::encode(transfer_id)
-            ));
-            assert!(part_path.exists());
-            assert!(net.discard_personal_media_transfer(&source, transfer_id));
-            assert!(!part_path.exists());
-            let state = net.personal_media_transfers.lock().expect("transfer state");
-            assert!(!state.authorized.contains(&(source.clone(), transfer_id)));
-            assert!(state.authorized.contains(&(sibling.clone(), transfer_id)));
-            drop(state);
-
-            let object_dir = cache.path().join("objects").join("44".repeat(32));
-            ensure_private_dir(&object_dir).unwrap();
-            let object = object_dir.join("shared.webm");
-            std::fs::write(&object, b"verified").unwrap();
-            let source_key = (source.clone(), transfer_id);
-            let sibling_key = (sibling.clone(), transfer_id);
-            {
-                let mut state = net.personal_media_transfers.lock().expect("transfer state");
-                state.completed.insert(source_key.clone(), object.clone());
-                state.completed.insert(sibling_key.clone(), object.clone());
-                state.completed_order.push_back(source_key);
-                state.completed_order.push_back(sibling_key);
-                state.leased_until.insert(
-                    object.clone(),
-                    std::time::Instant::now()
-                        .checked_add(PERSONAL_MEDIA_LEASE)
-                        .unwrap(),
-                );
-            }
-            assert!(net.discard_personal_media_transfer(&source, transfer_id));
-            assert!(
-                object.exists(),
-                "sibling mapping and player lease protect bytes"
-            );
-            assert!(
-                net.completed_personal_media_transfer(&source, transfer_id)
-                    .is_none()
-            );
-            assert!(
-                net.completed_personal_media_transfer(&sibling, transfer_id)
-                    .is_some()
-            );
-        }
-
-        personal_media_cache_prunes_only_unprotected_regular_objects();
-        player_lease_keeps_evicted_transfer_object_alive();
-        personal_media_directories_are_owner_only();
-        personal_media_discard_is_exact_and_preserves_referenced_objects();
-    }
-
-    #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
-    fn personal_media_ingest_requires_verification_and_a_prior_authorized_handoff() {
-        fn personal_media_becomes_visible_only_after_size_and_hash_verification() {
-            let (mut net, _commands) =
-                shell_network_for_test(WorkspaceTree::default().shared(), 0xCA12);
-            let cache = tempfile::tempdir().expect("cache");
-            net.personal_media_cache_root = Some(cache.path().to_path_buf());
-            let source = test_device(0x22);
-            let transfer_id = [0x33; 16];
-            let bytes = vec![0x5a; PERSONAL_MEDIA_CHUNK_BYTES.saturating_add(17)];
-            net.personal_media_transfers
-                .lock()
-                .expect("transfer state")
-                .authorized
-                .insert((source.clone(), transfer_id));
-            net.dispatch_personal_media_transfer(
-                source.clone(),
-                PersonalMediaTransferFrame::Start {
-                    transfer_id,
-                    file_name: "concert.webm".into(),
-                    total_bytes: u64::try_from(bytes.len()).expect("fixture length"),
-                },
-            );
-            assert!(
-                net.completed_personal_media_transfer(&source, transfer_id)
-                    .is_none(),
-                "a manifest is not playable bytes"
-            );
-            for (index, chunk) in bytes.chunks(PERSONAL_MEDIA_CHUNK_BYTES).enumerate() {
-                net.dispatch_personal_media_transfer(
-                    source.clone(),
-                    PersonalMediaTransferFrame::Chunk {
-                        transfer_id,
-                        offset: u64::try_from(index.saturating_mul(PERSONAL_MEDIA_CHUNK_BYTES))
-                            .expect("fixture offset"),
-                        bytes: chunk.to_vec(),
-                    },
-                );
-            }
-            assert!(
-                net.completed_personal_media_transfer(&source, transfer_id)
-                    .is_none(),
-                "all chunks still require an authenticated finish hash"
-            );
-            net.dispatch_personal_media_transfer(
-                source.clone(),
-                PersonalMediaTransferFrame::Finish {
-                    transfer_id,
-                    content_hash: *blake3::hash(&bytes).as_bytes(),
-                },
-            );
-            let path = net
-                .completed_personal_media_transfer(&source, transfer_id)
-                .expect("verified transfer");
-            assert_eq!(std::fs::read(path).expect("cached bytes"), bytes);
-        }
-
-        fn malformed_personal_media_never_leaves_a_playable_cache_entry() {
-            let (mut net, _commands) =
-                shell_network_for_test(WorkspaceTree::default().shared(), 0xCA13);
-            let cache = tempfile::tempdir().expect("cache");
-            net.personal_media_cache_root = Some(cache.path().to_path_buf());
-            let source = test_device(0x44);
-            let transfer_id = [0x55; 16];
-            net.personal_media_transfers
-                .lock()
-                .expect("transfer state")
-                .authorized
-                .insert((source.clone(), transfer_id));
-            net.dispatch_personal_media_transfer(
-                source.clone(),
-                PersonalMediaTransferFrame::Start {
-                    transfer_id,
-                    file_name: "movie.mp4".into(),
-                    total_bytes: 4,
-                },
-            );
-            net.dispatch_personal_media_transfer(
-                source.clone(),
-                PersonalMediaTransferFrame::Chunk {
-                    transfer_id,
-                    offset: 1,
-                    bytes: b"evil".to_vec(),
-                },
-            );
-            net.dispatch_personal_media_transfer(
-                source.clone(),
-                PersonalMediaTransferFrame::Finish {
-                    transfer_id,
-                    content_hash: *blake3::hash(b"evil").as_bytes(),
-                },
-            );
-            assert!(
-                net.completed_personal_media_transfer(&source, transfer_id)
-                    .is_none()
-            );
-            assert_eq!(
-                std::fs::read_dir(cache.path().join("incoming"))
-                    .expect("incoming directory")
-                    .count(),
-                0,
-                "rejected transfers remove partial bytes"
-            );
-        }
-
-        fn personal_media_bytes_require_a_prior_authenticated_handoff_action() {
-            let (mut net, _commands) =
-                shell_network_for_test(WorkspaceTree::default().shared(), 0xCA14);
-            let cache = tempfile::tempdir().expect("cache");
-            net.personal_media_cache_root = Some(cache.path().to_path_buf());
-            let source = test_device(0x66);
-            let transfer_id = [0x77; 16];
-            net.dispatch_personal_media_transfer(
-                source.clone(),
-                PersonalMediaTransferFrame::Start {
-                    transfer_id,
-                    file_name: "unsolicited.mp4".into(),
-                    total_bytes: 4,
-                },
-            );
-            assert!(
-                net.personal_media_transfers
-                    .lock()
-                    .expect("transfer state")
-                    .incoming
-                    .is_empty(),
-                "an enrolled device alone cannot allocate transfer cache storage"
-            );
-            assert!(
-                net.completed_personal_media_transfer(&source, transfer_id)
-                    .is_none()
-            );
-        }
-
-        fn media_handoff_authorization_is_queued_before_its_file_stream() {
-            let (mut net, mut commands) =
-                shell_network_for_test(WorkspaceTree::default().shared(), 0xCA15);
-            let local = test_device(0x88);
-            let user = [0x89; 32];
-            let target_endpoint = iroh::SecretKey::generate().public();
-            let target = crate::shell::personal_continuity::DeviceId::new(hex::encode(
-                target_endpoint.as_bytes(),
-            ))
-            .expect("target device");
-            net.personal_continuity_user = Some(user);
-            net.personal_continuity_device = Some(local);
-            net.update_registered_home_device_ids(|ids| {
-                ids.insert(*target_endpoint.as_bytes());
-            });
-            let dir = tempfile::tempdir().expect("media source");
-            let path = dir.path().join("song.flac");
-            std::fs::write(&path, b"audio bytes").expect("source bytes");
-            let transfer = net
-                .prepare_personal_media_transfer(&target, &path)
-                .expect("prepared transfer");
-            let transfer_id = transfer.transfer_id;
-            net.send_personal_fabric_action(
-                &target,
-                crate::shell::device_fabric::PersonalFabricAction::ResumeMedia {
-                    session_id: "so.tilo.music:1".into(),
-                    app_id: "so.tilo.music".into(),
-                    workspace_id: "11111111-1111-1111-1111-111111111111".into(),
-                    title: "Song".into(),
-                    locator: crate::shell::device_fabric::MediaSourceLocator::PersonalTransfer {
-                        transfer_id,
-                        file_name: transfer.file_name.clone(),
-                    },
-                    position_ms: 0,
-                    resume_playing: true,
-                    has_video: false,
-                },
-            )
-            .expect("handoff action");
-            net.start_personal_media_transfer(transfer)
-                .expect("stream command");
-            net.cancel_personal_media_transfer(&target, transfer_id)
-                .expect("cancel command");
-            let commands = std::iter::from_fn(|| commands.try_recv().ok()).collect::<Vec<_>>();
-            let action_index = commands
-                .iter()
-                .position(|command| matches!(command, NetCmd::PublishPersonalFabricTarget { .. }))
-                .expect("action command");
-            let media_index = commands
-                .iter()
-                .position(|command| matches!(command, NetCmd::PublishPersonalMedia { .. }))
-                .expect("media command");
-            let cancel_index = commands
-                .iter()
-                .position(|command| {
-                    matches!(
-                        command,
-                        NetCmd::CancelPersonalMedia { target: cancelled_target, transfer_id: cancelled_id }
-                            if *cancelled_target == target_endpoint && *cancelled_id == transfer_id
-                    )
-                })
-                .expect("exact cancel command");
-            assert!(action_index < media_index);
-            assert!(media_index < cancel_index);
-        }
-
-        personal_media_becomes_visible_only_after_size_and_hash_verification();
-        malformed_personal_media_never_leaves_a_playable_cache_entry();
-        personal_media_bytes_require_a_prior_authenticated_handoff_action();
-        media_handoff_authorization_is_queued_before_its_file_stream();
+    fn nearby_stream_cancel_targets_only_the_exact_peer_and_transfer() {
+        let (net, mut commands) = shell_network_for_test(WorkspaceTree::default().shared(), 0xCA15);
+        let target_endpoint = iroh::SecretKey::from_bytes(&[0xC1; 32]).public();
+        let target = crate::shell::personal_continuity::DeviceId::new(hex::encode(
+            target_endpoint.as_bytes(),
+        ))
+        .expect("target device");
+        let transfer_id = [0xC2; 16];
+        net.cancel_nearby_transfer_stream(&target, transfer_id)
+            .expect("cancel command");
+        assert!(matches!(
+            commands.try_recv(),
+            Ok(NetCmd::CancelNearbyTransfer {
+                target: cancelled_target,
+                transfer_id: cancelled_id,
+            }) if cancelled_target == target_endpoint && cancelled_id == transfer_id
+        ));
+        let malformed = crate::shell::personal_continuity::DeviceId::new("not-a-transport-id")
+            .expect("device id");
+        assert!(
+            net.cancel_nearby_transfer_stream(&malformed, transfer_id)
+                .is_err()
+        );
+        assert!(commands.try_recv().is_err());
     }
 
     #[test]
@@ -9296,6 +8560,7 @@ mod tests {
                     context: None,
                     confirmation: None,
                     revision: None,
+                    wait_ms: None,
                 },
             ),
         )
@@ -9405,6 +8670,7 @@ mod tests {
                 context: None,
                 confirmation: None,
                 revision: None,
+                wait_ms: None,
             });
 
             let mut round_trip = |request: RemoteActionMessage| {
@@ -9482,6 +8748,82 @@ mod tests {
             assert!(net.inbound_remote_actions.lock().expect("queue").is_empty());
         }
 
+        fn a_remote_action_that_races_the_identity_hello_is_delivered_once_admitted() {
+            let root_a = ed25519_dalek::SigningKey::from_bytes(&[0xA1; 32]);
+            let root_b = ed25519_dalek::SigningKey::from_bytes(&[0xB1; 32]);
+            let device_a = iroh::SecretKey::from_bytes(&[0xA2; 32]);
+            let stranger_root = ed25519_dalek::SigningKey::from_bytes(&[0xD1; 32]);
+            let stranger = iroh::SecretKey::from_bytes(&[0xD2; 32]);
+            let person_a = crate::shell::collab_broker_capnp::principal_id_for_root(
+                root_a.verifying_key().to_bytes(),
+            );
+            let person_b = crate::shell::collab_broker_capnp::principal_id_for_root(
+                root_b.verifying_key().to_bytes(),
+            );
+            let (room_workspace, room) = remote_action_room(&person_a, &person_b);
+            let topic = room_topic_id(room);
+            let mut tree = WorkspaceTree::default();
+            tree.desktop.workspaces.push(room_workspace);
+            let (mut net, _commands) = shell_network_for_test(tree.shared(), 0xB);
+            net.require_peer_identity = true;
+            let request = || {
+                tilo_actions::remote::RemoteActionFrame::new(
+                    tilo_actions::remote::RemoteActionMessage::CatalogueRequest {
+                        correlation: 1,
+                        query: tilo_actions::remote::CatalogueQuery::default(),
+                    },
+                )
+                .encode()
+                .expect("frame")
+            };
+            let epoch = crate::network::actor::MembershipEpoch::for_test(1);
+            for sender in [&device_a, &stranger] {
+                net.dispatch_neighbour_msg(
+                    topic,
+                    sender.public(),
+                    Some(epoch),
+                    false,
+                    NeighbourMsg::RemoteAction { frame: request() },
+                );
+            }
+            assert!(
+                net.inbound_remote_actions.lock().expect("queue").is_empty(),
+                "nothing runs before the sender's identity is accepted"
+            );
+            assert_eq!(net.held_remote_actions.lock().expect("held").len(), 2);
+
+            authenticated_personal_peer_on_topic(&net, &root_a, &device_a, epoch, topic);
+            assert_eq!(
+                net.inbound_remote_actions.lock().expect("queue").len(),
+                1,
+                "the held request runs once its sender is admitted"
+            );
+
+            // A certified device that is not a member of the room is still
+            // refused by room authority after its hello.
+            authenticated_personal_peer_on_topic(&net, &stranger_root, &stranger, epoch, topic);
+            assert_eq!(net.inbound_remote_actions.lock().expect("queue").len(), 1);
+            assert!(net.held_remote_actions.lock().expect("held").is_empty());
+
+            net.dispatch_neighbour_msg(
+                topic,
+                iroh::SecretKey::from_bytes(&[0xE2; 32]).public(),
+                Some(epoch),
+                false,
+                NeighbourMsg::RemoteAction { frame: request() },
+            );
+            net.dispatch_net_event(NetEvent::PeerLeft {
+                ws: topic,
+                peer: iroh::SecretKey::from_bytes(&[0xE2; 32]).public(),
+                cause: PeerDepartureCause::LivenessTimedOut,
+                membership_epoch: Some(epoch),
+            });
+            assert!(
+                net.held_remote_actions.lock().expect("held").is_empty(),
+                "a peer that leaves before its hello takes its requests with it"
+            );
+        }
+
         fn workspace_control_uses_exact_target_direct_and_refuses_fanout_relay() {
             let (net, mut commands) =
                 shell_network_for_test(WorkspaceTree::default().shared(), 0xCA11);
@@ -9556,7 +8898,46 @@ mod tests {
 
         a_peer_invokes_an_app_action_on_another_peer_and_gets_the_receipt();
         remote_actions_from_unauthenticated_devices_are_dropped();
+        a_remote_action_that_races_the_identity_hello_is_delivered_once_admitted();
         workspace_control_uses_exact_target_direct_and_refuses_fanout_relay();
+    }
+
+    #[test]
+    fn workspace_control_with_only_relays_reports_fan_out_error() {
+        let (net, _commands) = shell_network_for_test(WorkspaceTree::default().shared(), 0xCA12);
+        let target = iroh::SecretKey::generate().public();
+        let relay = iroh::SecretKey::generate().public();
+        let open = || net.open_workspace_control(DEFAULT_WS_TOPIC, target).err();
+
+        assert_eq!(
+            open().as_deref(),
+            Some("no authenticated direct workspace-control path is online"),
+            "neither a direct path nor a relay"
+        );
+
+        // A relay for another workspace, or one that is the target itself,
+        // offers no path to this target.
+        net.workspace_control_relays
+            .lock()
+            .expect("relay routes")
+            .extend([(DEFAULT_WS_TOPIC ^ 1, relay), (DEFAULT_WS_TOPIC, target)]);
+        assert_eq!(
+            open().as_deref(),
+            Some("no authenticated direct workspace-control path is online"),
+            "only foreign-workspace and target relays"
+        );
+
+        net.workspace_control_relays
+            .lock()
+            .expect("relay routes")
+            .insert((DEFAULT_WS_TOPIC, relay));
+        assert_eq!(
+            open().as_deref(),
+            Some(
+                "workspace control needs an exact-target route; this relay only supports workspace-wide fan-out"
+            ),
+            "a workspace-wide relay without a direct path"
+        );
     }
 
     fn personal_continuity_network_for_test(
@@ -11960,14 +11341,15 @@ mod tests {
                     surface: 7,
                     event: Vec::new(),
                 }),
-                crate::shell::state::Verb::Write,
+                Some(crate::shell::state::Verb::Write),
             );
+            // Retired: never admitted as room traffic, not even on read.
             assert_eq!(
                 ShellNetwork::required_room_verb(&NeighbourMsg::PermissionRequest {
                     peer: 42,
                     capability: "remote-input".into(),
                 }),
-                crate::shell::state::Verb::Read,
+                None,
             );
             assert_eq!(
                 ShellNetwork::claimed_publisher(&NeighbourMsg::RemoteInput {
@@ -12865,7 +12247,15 @@ mod tests {
                     crate::network::invite::InviteRole::Editor,
                 )
                 .expect_err("a guest must not sign invites for somebody else's room");
-            assert!(error.contains("governing workspace administrator"));
+            // The guest holds no Invite grant, so the one invitation policy
+            // refuses before asking who governs the room.
+            assert_eq!(
+                Some(error.as_str()),
+                crate::shell::invite_policy::InviteRoute::Refused(
+                    crate::shell::invite_policy::InviteRefusal::NotPermitted,
+                )
+                .refusal(),
+            );
         }
 
         /// A token that does not verify joins nothing and asks nothing.
@@ -13204,11 +12594,7 @@ mod tests {
             };
             sign_device_cert(&mut cert, &authority_key).expect("certificate");
             let origin = crate::shell::state::PeerOrigin::peer(&peer);
-            let now_ns = SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .ok()
-                .and_then(|duration| u64::try_from(duration.as_nanos()).ok())
-                .unwrap_or(u64::MAX);
+            let now_ns = now_unix_nanos();
             net.peer_identities
                 .insert(origin.clone(), cert.clone(), now_ns)
                 .expect("admitted peer identity");
@@ -14587,8 +13973,12 @@ mod tests {
     fn a_peer_wears_the_colour_its_presence_said() {
         let (net, _cmds) = shell_network_for_test(WorkspaceTree::bootstrap_demo().shared(), 0x1234);
         assert_eq!(net.peer_colour(7), None);
+        let before = net.peer_colours_epoch();
         net.note_peer_colour(7, Some("violet"));
         assert_eq!(net.peer_colour(7), Some(ui::tokens::PresenceHue::Violet));
+        let heard = net.peer_colours_epoch();
+        assert_ne!(heard, before, "a new colour is announced");
+        net.note_peer_colour(7, Some("violet"));
         net.note_peer_colour(7, Some("chartreuse"));
         net.note_peer_colour(7, None);
         assert_eq!(
@@ -14596,8 +13986,14 @@ mod tests {
             Some(ui::tokens::PresenceHue::Violet),
             "an unknown or missing colour leaves what was heard"
         );
+        assert_eq!(
+            net.peer_colours_epoch(),
+            heard,
+            "restating a colour, or saying none, changes nothing to re-apply"
+        );
         net.note_peer_colour(0x1234, Some("teal"));
         assert_eq!(net.peer_colour(0x1234), None, "never this session's own");
+        assert_eq!(net.peer_colours_epoch(), heard);
         assert_eq!(
             net.peer_colours(),
             vec![(7, ui::tokens::PresenceHue::Violet)]

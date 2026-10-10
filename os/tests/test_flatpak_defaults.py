@@ -3,6 +3,7 @@
 import base64
 import configparser
 import hashlib
+import shlex
 from pathlib import Path
 import unittest
 
@@ -30,10 +31,35 @@ class FlatpakDefaults(unittest.TestCase):
         self.assertIn(f"COPY {DESCRIPTOR} /usr/share/flatpak/remotes.d/flathub.flatpakrepo", image)
         self.assertTrue(any(line.strip().removesuffix(chr(92)).strip() == "flatpak"
                             for line in image.splitlines()))
-        # The predefined-remotes mechanism owns one-time application. A boot
-        # remote-add would recreate an intentionally removed source.
+        # The predefined-remotes history owns one-time application. Boot may
+        # initialize it, but an unconditional remote-add would recreate removals.
         for unit in (ROOT / "os/usr/lib/systemd").rglob("*.service"):
             self.assertNotIn("flathub.flatpakrepo", unit.read_text(), str(unit))
+
+    def test_root_initializer_is_shipped_enabled_ordered_and_offline(self):
+        unit = configparser.ConfigParser(interpolation=None)
+        unit.read_string((ROOT / "os/usr/lib/systemd/system/tilo-flatpak-defaults.service").read_text())
+        command = shlex.split(unit["Service"]["ExecStart"])
+        image = (ROOT / "os/Containerfile").read_text()
+        self.assertIn("os/usr/lib/systemd/system/tilo-flatpak-defaults.service", image)
+        self.assertIn("systemctl enable tilo-flatpak-defaults.service", image)
+        self.assertEqual(command, ["/usr/bin/flatpak", "remotes", "--system", "--columns=name"])
+        # It holds the greeter, so it applies only when the predefined remotes or the
+        # repository changed, judged against the descriptors kept after a successful run.
+        condition = unit["Service"]["ExecCondition"]
+        kept = unit["Service"]["ExecStartPost"]
+        descriptors = "cat /usr/share/flatpak/remotes.d/* /etc/flatpak/remotes.d/* 2>/dev/null"
+        self.assertIn(f"{descriptors} | cmp -s - /var/lib/flatpak/.tilo-applied-remotes && exit 1", condition)
+        self.assertIn("[ -e /var/lib/flatpak/repo/config ] &&", condition)
+        self.assertIn(f"{descriptors} > /var/lib/flatpak/.tilo-applied-remotes", kept)
+        self.assertIn("greetd.service", unit["Unit"]["Before"].split())
+        self.assertIn("flatpak-add-fedora-repos.service", unit["Unit"]["After"].split())
+        self.assertEqual(unit["Service"].get("User", "root"), "root")
+        self.assertEqual(unit["Service"]["StateDirectory"], "flatpak")
+        self.assertEqual(unit["Service"]["ProtectSystem"], "strict")
+        self.assertTrue(unit["Service"].getboolean("PrivateNetwork"))
+        self.assertTrue(unit["Service"].getboolean("NoNewPrivileges"))
+        self.assertEqual(unit["Install"]["WantedBy"], "multi-user.target")
 
 
 if __name__ == "__main__":

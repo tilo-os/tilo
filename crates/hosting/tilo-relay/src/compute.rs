@@ -25,7 +25,7 @@ use std::time::Duration;
 use launcher::capture::{
     CaptureCancellation, CapturedResourcePlan, CapturedRunOutput, CapturedTermination,
 };
-use launcher::manifest::{MinimalManifest, read_manifest};
+use launcher::manifest::{ManifestView, read_manifest};
 #[cfg(target_os = "linux")]
 use launcher::run::{IdentitySource, LaunchMode, RunOptions, run_with_captured_bounded};
 use package_store::InstalledPackage;
@@ -33,7 +33,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::mesh::DeviceKey;
-use crate::{ComputeAccelerator, PowerAvailability, ServerAdvertisement};
+use crate::{ComputeAccelerator, ServerAdvertisement};
 
 pub const COMPUTE_JOB_SCHEMA_VERSION: u16 = 1;
 pub const MAX_COMPUTE_JOB_LIFETIME_MS: u64 = 5 * 60 * 1_000;
@@ -147,7 +147,7 @@ pub fn admit_compute_job(
         || worker.assignment_capacity == 0
         || worker.active_assignments >= worker.assignment_capacity
         || worker.energy_saver
-        || matches!(worker.power, PowerAvailability::Battery(percent) if percent <= 15)
+        || worker.power.is_critically_constrained()
     {
         return Err(ComputeError::WorkerUnavailable);
     }
@@ -304,7 +304,7 @@ pub trait ComputeContentStore: Send + Sync {
 /// Information passed only to the trusted, local sandbox adapter.
 pub struct ComputeSandboxInvocation<'a> {
     pub package: &'a InstalledPackage,
-    pub manifest: &'a MinimalManifest,
+    pub manifest: &'a ManifestView,
     pub entrypoint: &'a str,
     pub workspace_slug: &'a str,
     pub host_job_dir: &'a Path,
@@ -1104,7 +1104,7 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use super::*;
-    use crate::{DeviceRole, ServiceCapabilities};
+    use crate::{DeviceRole, PowerAvailability, ServiceCapabilities};
     use ed25519_dalek::{Signer, SigningKey};
     use tilo_app_package::blobs::{BlobHash, Collection};
     use tilo_app_package::signed::SignedRoot;
@@ -1253,10 +1253,15 @@ mod tests {
     fn installed_fixture(root: &Path, spec: &mut ComputeJobSpec) -> InstalledPackage {
         let data_root = root.join("apps");
         let manifest = format!(
-            "[package]\nid = {:?}\nversion = \"1.0.0\"\n\
+            "[package]\nid = {:?}\nversion = \"1.0.0\"\nkind = \"app\"\n\
+             [publisher]\nidentity = \"ed25519:{}\"\n\
+             [sandbox]\nnamespaces = []\nseccomp = \"tilo-default\"\nlandlock = \"strict\"\n\
+             [sandbox.net]\nmode = \"off\"\n\
              [entrypoint]\nbin = \"bin/worker\"\ntype = \"cli\"\n\
              [cli]\ncommands = [{:?}]\n",
-            spec.app_id, spec.entrypoint
+            spec.app_id,
+            "00".repeat(32),
+            spec.entrypoint
         );
         let collection =
             Collection::from_entries([("bin/worker".to_string(), BlobHash::of(b"signed worker"))]);

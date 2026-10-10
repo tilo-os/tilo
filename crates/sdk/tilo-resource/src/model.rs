@@ -191,6 +191,40 @@ pub trait Model: Sized {
     /// Returns the document's write error.
     fn store(&self, doc: &mut Doc, slot: Slot<'_>) -> Result<(), ModelError>;
 
+    /// Whether writing `self` over a slot that holds `before`, as a
+    /// [`store`](Self::store) left it, would change nothing: an in-memory
+    /// comparison, so an action that changed one item of a long collection
+    /// does not visit the others. Must only answer `true` when `store` would
+    /// write no operation; the default answers `false` (unknown).
+    fn stores_as(&self, before: &Self) -> bool {
+        let _ = before;
+        false
+    }
+
+    /// Write `self` into `slot`, which holds `before`: exactly the operations
+    /// [`store`](Self::store) would write, found by comparing with `before`
+    /// where `store` would read the document.
+    ///
+    /// `before` is what [`load`](Self::load) reads from the slot now, and the
+    /// slot is as a `store` left it except where `dirty` (changes written by
+    /// someone else since) says otherwise: a slot `dirty` touched is written
+    /// as `store` would. The default is `store`. An action's write is
+    /// replayed on every replica, so an override that writes anything else
+    /// forks the document.
+    ///
+    /// # Errors
+    /// Returns the document's write error.
+    fn store_changed(
+        &self,
+        before: &Self,
+        doc: &mut Doc,
+        slot: Slot<'_>,
+        dirty: &Delta,
+    ) -> Result<(), ModelError> {
+        let _ = (before, dirty);
+        self.store(doc, slot)
+    }
+
     /// Bring a value read earlier up to date after the changes in `delta`,
     /// re-reading only what they touched. `value` and `id` are what the
     /// parent's slot holds now — the same object as when `self` was read, or
@@ -233,6 +267,36 @@ pub trait Fields: Model {
         Vec::new()
     }
 
+    /// How many items each [`Collection`](crate::Collection) field holds, by
+    /// field, in the order of [`item_collections`](Self::item_collections),
+    /// without listing them. `#[derive(Model)]` counts them; the default
+    /// lists them.
+    fn item_collection_sizes(&self) -> Vec<(&'static str, usize)> {
+        self.item_collections()
+            .iter()
+            .map(|collection| (collection.field, collection.items.len()))
+            .collect()
+    }
+
+    /// Write the fields to the map `obj`, which holds `before`: the
+    /// operations [`write_fields`](Self::write_fields) would write, with
+    /// each field compared to its value in `before` rather than read back
+    /// (see [`Model::store_changed`]). `#[derive(Model)]` writes only the
+    /// fields that changed; the default writes every field.
+    ///
+    /// # Errors
+    /// Returns the document's write error.
+    fn write_changed_fields(
+        &self,
+        before: &Self,
+        doc: &mut Doc,
+        obj: &ObjId,
+        dirty: &Delta,
+    ) -> Result<(), ModelError> {
+        let _ = (before, dirty);
+        self.write_fields(doc, obj)
+    }
+
     /// Bring fields read earlier from the map `obj` up to date after the
     /// changes in `delta`, re-reading only the fields they touched.
     ///
@@ -251,11 +315,121 @@ pub trait Fields: Model {
 /// # Errors
 /// Returns [`ModelError`] located at `key`.
 pub fn read_key<T: Model>(doc: &Doc, obj: &ObjId, key: &str) -> Result<T, ModelError> {
-    match doc.get(obj, key)? {
-        Some((value, id)) => T::load(doc, &value, &id),
+    let slot = get_slot(doc, obj, key)?;
+    load_at(doc, slot.as_ref().map(|(value, id)| (value, id)), key)
+}
+
+/// What `key` of the map `obj` holds, as [`ReadDoc::get`] answers it.
+///
+/// Every lookup and walk of the document here is a function that is not
+/// generic, and the generic ones only call it. A generic function is
+/// compiled again into each app that instantiates it, and Automerge's
+/// generic lookup and op-tree walk with it; these are compiled once, into
+/// the shared runtime every app maps (TIL-765).
+#[inline(never)]
+fn get_slot<'doc>(
+    doc: &'doc Doc,
+    obj: &ObjId,
+    key: &str,
+) -> Result<Option<(Value<'doc>, ObjId)>, ModelError> {
+    Ok(doc.get(obj, key)?)
+}
+
+/// What `index` of the list `obj` holds; not generic, as [`get_slot`].
+#[inline(never)]
+fn get_item<'doc>(
+    doc: &'doc Doc,
+    obj: &ObjId,
+    index: usize,
+) -> Result<Option<(Value<'doc>, ObjId)>, ModelError> {
+    Ok(doc.get(obj, index)?)
+}
+
+/// `T` read from what a key holds, or [`Model::missing`] when it holds
+/// nothing: the one generic body behind [`read_key`] and [`load_slot`].
+fn load_at<T: Model>(
+    doc: &Doc,
+    slot: Option<(&Value<'_>, &ObjId)>,
+    key: &str,
+) -> Result<T, ModelError> {
+    match slot {
+        Some((value, id)) => T::load(doc, value, id),
         None => T::missing(),
     }
     .map_err(|error| error.at(key))
+}
+
+/// What a key of a map holds: its current value and the id of the op that
+/// wrote it, as [`ReadDoc::get`] returns them.
+pub type MapSlot = Option<(Value<'static>, ObjId)>;
+
+/// What each of `keys` holds in the map `obj`, read in one ordered walk of
+/// the map instead of one lookup per key: a lookup opens the map anew each
+/// time, and a struct of `N` fields read field by field opens it `N` times.
+/// The walk stops once every key is found. Each slot is exactly what
+/// [`ReadDoc::get`] answers for its key (the winning value of a conflict, a
+/// counter with its increments).
+pub fn read_slots<const N: usize>(doc: &Doc, obj: &ObjId, keys: [&str; N]) -> [MapSlot; N] {
+    let mut slots = [const { None }; N];
+    fill_slots(doc, obj, &keys, &mut slots);
+    slots
+}
+
+/// [`read_slots`]' walk, out of its generic shell so that it is compiled once
+/// into the shared runtime rather than into every app that derives a
+/// [`Model`] with another number of fields (TIL-765).
+#[inline(never)]
+fn fill_slots(doc: &Doc, obj: &ObjId, keys: &[&str], slots: &mut [MapSlot]) {
+    let mut missing = keys.len();
+    if missing == 0 {
+        return;
+    }
+    for item in doc.map_range(obj, ..) {
+        let mut matched = false;
+        for (key, slot) in keys.iter().zip(slots.iter_mut()) {
+            if *key == item.key {
+                *slot = Some((item.value.clone().into_value(), item.id()));
+                missing = missing.saturating_sub(1);
+                matched = true;
+            }
+        }
+        if matched && missing == 0 {
+            break;
+        }
+    }
+}
+
+/// Every key of the map `obj` with what it holds, in key order, in one walk
+/// of the map. Not generic, for the reason [`fill_slots`] is not.
+#[inline(never)]
+fn map_slots(doc: &Doc, obj: &ObjId) -> Vec<(String, MapSlot)> {
+    doc.map_range(obj, ..)
+        .map(|item| {
+            let slot = Some((item.value.clone().into_value(), item.id()));
+            (item.key.into_owned(), slot)
+        })
+        .collect()
+}
+
+/// The slot at `index` of what [`read_slots`] returned, taken out of it, or
+/// an empty slot past its end. Not generic over the number of slots, so the
+/// derived reads share one copy (TIL-765).
+#[must_use]
+#[inline(never)]
+pub fn take_slot(slots: &mut [MapSlot], index: usize) -> MapSlot {
+    slots.get_mut(index).and_then(Option::take)
+}
+
+/// `T` read from a slot [`read_slots`] found under `key`, or
+/// [`Model::missing`]: what [`read_key`] answers for that key.
+///
+/// # Errors
+/// Returns [`ModelError`] located at `key`.
+pub fn load_slot<T: Model>(doc: &Doc, slot: MapSlot, key: &str) -> Result<T, ModelError> {
+    match slot {
+        Some((value, id)) => load_at(doc, Some((&value, &id)), key),
+        None => load_at(doc, None, key),
+    }
 }
 
 /// Bring `target`, read earlier from `key` of the map `obj`, up to date
@@ -277,7 +451,7 @@ pub fn refresh_key<T: Model>(
             *target = read_key(doc, obj, key)?;
             Ok(())
         }
-        Touch::Below => match doc.get(obj, key)? {
+        Touch::Below => match get_slot(doc, obj, key)? {
             Some((value, id)) => target.refresh(doc, &value, &id, delta),
             None => T::missing().map(|missing| *target = missing),
         }
@@ -300,6 +474,29 @@ pub fn write_key<T: Model>(
         .map_err(|error| error.at(key))
 }
 
+/// Write `value` under `key` of the map `obj`, which holds `before`: the
+/// operations [`write_key`] would write, without reading back what did not
+/// change. See [`Model::store_changed`].
+///
+/// # Errors
+/// Returns [`ModelError`] located at `key`.
+pub fn write_key_changed<T: Model>(
+    doc: &mut Doc,
+    obj: &ObjId,
+    key: &str,
+    value: &T,
+    before: &T,
+    dirty: &Delta,
+) -> Result<(), ModelError> {
+    match dirty.key(obj, key) {
+        Touch::Written => write_key(doc, obj, key, value),
+        Touch::Untouched if value.stores_as(before) => Ok(()),
+        Touch::Untouched | Touch::Below => value
+            .store_changed(before, doc, Slot::Key(obj, key), dirty)
+            .map_err(|error| error.at(key)),
+    }
+}
+
 fn scalar<'v>(value: &'v Value<'_>) -> Option<&'v ScalarValue> {
     match value {
         Value::Scalar(scalar) => Some(scalar.as_ref()),
@@ -320,6 +517,9 @@ impl Model for bool {
     }
     fn store(&self, doc: &mut Doc, slot: Slot<'_>) -> Result<(), ModelError> {
         slot.put_scalar(doc, ScalarValue::Boolean(*self))
+    }
+    fn stores_as(&self, before: &Self) -> bool {
+        self == before
     }
 }
 
@@ -347,6 +547,9 @@ macro_rules! integer_model {
                     .map_err(|_| ModelError::invalid("integer out of range"))?;
                 slot.put_scalar(doc, value)
             }
+            fn stores_as(&self, before: &Self) -> bool {
+                self == before
+            }
         }
     )*};
 }
@@ -372,6 +575,9 @@ impl Model for f64 {
     fn store(&self, doc: &mut Doc, slot: Slot<'_>) -> Result<(), ModelError> {
         slot.put_scalar(doc, ScalarValue::F64(*self))
     }
+    fn stores_as(&self, before: &Self) -> bool {
+        self.to_bits() == before.to_bits()
+    }
 }
 
 impl Model for f32 {
@@ -387,6 +593,9 @@ impl Model for f32 {
     }
     fn store(&self, doc: &mut Doc, slot: Slot<'_>) -> Result<(), ModelError> {
         f64::from(*self).store(doc, slot)
+    }
+    fn stores_as(&self, before: &Self) -> bool {
+        self.to_bits() == before.to_bits()
     }
 }
 
@@ -414,6 +623,24 @@ impl Model for String {
         let current = doc.text(&text)?;
         if current != *self {
             splice_changed_span(doc, &text, &current, self)?;
+        }
+        Ok(())
+    }
+    fn stores_as(&self, before: &Self) -> bool {
+        self == before
+    }
+    /// The one splice [`store`](Model::store) makes, found from `before`
+    /// instead of reading the whole text back.
+    fn store_changed(
+        &self,
+        before: &Self,
+        doc: &mut Doc,
+        slot: Slot<'_>,
+        _dirty: &Delta,
+    ) -> Result<(), ModelError> {
+        let text = slot.object(doc, ObjType::Text)?;
+        if before != self {
+            splice_changed_span(doc, &text, before, self)?;
         }
         Ok(())
     }
@@ -496,6 +723,9 @@ impl Model for Atom {
     fn store(&self, doc: &mut Doc, slot: Slot<'_>) -> Result<(), ModelError> {
         slot.put_scalar(doc, ScalarValue::Str(self.0.as_str().into()))
     }
+    fn stores_as(&self, before: &Self) -> bool {
+        self == before
+    }
 }
 
 impl Model for uuid::Uuid {
@@ -509,6 +739,9 @@ impl Model for uuid::Uuid {
     }
     fn store(&self, doc: &mut Doc, slot: Slot<'_>) -> Result<(), ModelError> {
         slot.put_scalar(doc, ScalarValue::Str(self.to_string().into()))
+    }
+    fn stores_as(&self, before: &Self) -> bool {
+        self == before
     }
 }
 
@@ -529,6 +762,25 @@ impl<T: Model> Model for Option<T> {
         match self {
             Some(value) => value.store(doc, slot),
             None => slot.remove(doc),
+        }
+    }
+    fn stores_as(&self, before: &Self) -> bool {
+        match (self, before) {
+            (Some(value), Some(before)) => value.stores_as(before),
+            (None, None) => true,
+            _ => false,
+        }
+    }
+    fn store_changed(
+        &self,
+        before: &Self,
+        doc: &mut Doc,
+        slot: Slot<'_>,
+        dirty: &Delta,
+    ) -> Result<(), ModelError> {
+        match (self, before) {
+            (Some(value), Some(before)) => value.store_changed(before, doc, slot, dirty),
+            _ => self.store(doc, slot),
         }
     }
     fn refresh(
@@ -567,6 +819,18 @@ impl<T: Model> Model for Box<T> {
     fn store(&self, doc: &mut Doc, slot: Slot<'_>) -> Result<(), ModelError> {
         (**self).store(doc, slot)
     }
+    fn stores_as(&self, before: &Self) -> bool {
+        (**self).stores_as(before)
+    }
+    fn store_changed(
+        &self,
+        before: &Self,
+        doc: &mut Doc,
+        slot: Slot<'_>,
+        dirty: &Delta,
+    ) -> Result<(), ModelError> {
+        (**self).store_changed(before, doc, slot, dirty)
+    }
     fn refresh(
         &mut self,
         doc: &Doc,
@@ -592,7 +856,7 @@ impl<T: Model> Model for Vec<T> {
         }
         (0..doc.length(id))
             .map(|index| {
-                match doc.get(id, index)? {
+                match get_item(doc, id, index)? {
                     Some((value, item)) => T::load(doc, &value, &item),
                     None => T::missing(),
                 }
@@ -620,6 +884,13 @@ impl<T: Model> Model for Vec<T> {
         }
         Ok(())
     }
+    fn stores_as(&self, before: &Self) -> bool {
+        self.len() == before.len()
+            && self
+                .iter()
+                .zip(before)
+                .all(|(value, before)| value.stores_as(before))
+    }
     fn collect_text(&self, out: &mut Vec<String>) {
         for item in self {
             item.collect_text(out);
@@ -633,8 +904,11 @@ impl<T: Model> Model for BTreeMap<String, T> {
         if !matches!(value, Value::Object(ObjType::Map)) {
             return Err(ModelError::shape("a map"));
         }
-        doc.keys(id)
-            .map(|key| read_key(doc, id, &key).map(|value| (key, value)))
+        // One walk of the map rather than a lookup per key (TIL-758), made
+        // outside this generic impl (TIL-765).
+        map_slots(doc, id)
+            .into_iter()
+            .map(|(key, slot)| load_slot(doc, slot, &key).map(|value| (key, value)))
             .collect()
     }
     fn missing() -> Result<Self, ModelError> {
@@ -654,6 +928,13 @@ impl<T: Model> Model for BTreeMap<String, T> {
         }
         Ok(())
     }
+    fn stores_as(&self, before: &Self) -> bool {
+        self.len() == before.len()
+            && self
+                .iter()
+                .zip(before)
+                .all(|((key, value), (was, before))| key == was && value.stores_as(before))
+    }
     fn refresh(
         &mut self,
         doc: &Doc,
@@ -667,7 +948,7 @@ impl<T: Model> Model for BTreeMap<String, T> {
             return Ok(());
         }
         for key in touched.keys() {
-            match doc.get(id, key)? {
+            match get_slot(doc, id, key)? {
                 None => {
                     self.remove(key);
                 }

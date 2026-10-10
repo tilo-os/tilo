@@ -6,7 +6,8 @@ use std::sync::OnceLock;
 
 use serde::{Deserialize, Serialize};
 use tilo_actions::{
-    ActionContract, ActionSpec, EncodedAction, OperationKind, Resource, ResultSpec,
+    ActionContract, ActionParam, ActionSpec, EncodedAction, OperationKind, ParamType, Resource,
+    ResultSpec,
 };
 use ui::semantic_document_read::{
     MAX_REQUEST_BYTES, ReadPage, RegisteredSemanticReader, SemanticReadError,
@@ -18,11 +19,17 @@ pub(crate) const READER: RegisteredSemanticReader =
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Request {
-    id: String,
+pub(super) struct Request {
+    pub(super) id: String,
+    #[serde(
+        default,
+        rename = "expectedAuthor",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub(super) expected_author: Option<String>,
 }
 
-fn validate(resource: &Resource, payload: &[u8]) -> Result<(), SemanticReadError> {
+pub(super) fn validate(resource: &Resource, payload: &[u8]) -> Result<(), SemanticReadError> {
     if payload.len() > MAX_REQUEST_BYTES {
         return Err(SemanticReadError::Limit);
     }
@@ -33,6 +40,11 @@ fn validate(resource: &Resource, payload: &[u8]) -> Result<(), SemanticReadError
         || resource.kind != "chat.feedback"
         || resource.id.as_str() != format!("chat.feedback:{}", request.id)
     {
+        return Err(SemanticReadError::InvalidRequest);
+    }
+    if request.expected_author.as_ref().is_some_and(|author| {
+        author.len() != 64 || !author.bytes().all(|byte| byte.is_ascii_hexdigit())
+    }) {
         return Err(SemanticReadError::InvalidRequest);
     }
     Ok(())
@@ -46,14 +58,26 @@ pub(super) fn spec(id: &str) -> ActionSpec {
         "Read this report from its canonical destination",
         OperationKind::Effect,
         OPERATION,
-        Vec::new(),
-        move |_| {
-            EncodedAction::encode_operation(OPERATION, &Request { id: id.clone() }).unwrap_or_else(
-                |_| EncodedAction {
-                    type_id: OPERATION.into(),
-                    payload: Vec::new(),
+        vec![ActionParam::optional(
+            "expectedAuthor",
+            ParamType::Text,
+            "Require the attributed reporter root",
+        )],
+        move |args| {
+            let expected_author = args
+                .get("expectedAuthor")
+                .and_then(|value| value.to_json().as_str().map(str::to_owned));
+            EncodedAction::encode_operation(
+                OPERATION,
+                &Request {
+                    id: id.clone(),
+                    expected_author,
                 },
             )
+            .unwrap_or_else(|_| EncodedAction {
+                type_id: OPERATION.into(),
+                payload: Vec::new(),
+            })
         },
     )
     .with_contract(ActionContract {
@@ -69,6 +93,18 @@ fn project(
     heads: &[automerge::ChangeHash],
     payload: &[u8],
 ) -> Result<ReadPage, SemanticReadError> {
+    let (receipt, _) = snapshot(document, heads, payload)?;
+    Ok(ReadPage {
+        content: serde_json::to_value(receipt).map_err(|_| SemanticReadError::Malformed)?,
+        next_cursor: None,
+    })
+}
+
+pub(super) fn snapshot(
+    document: &automerge::AutoCommit,
+    heads: &[automerge::ChangeHash],
+    payload: &[u8],
+) -> Result<(ui::feedback::Receipt, Vec<super::TriageEntry>), SemanticReadError> {
     let request: Request =
         serde_json::from_slice(payload).map_err(|_| SemanticReadError::InvalidRequest)?;
     let document = document
@@ -79,18 +115,22 @@ fn project(
         .map_err(|_| SemanticReadError::Malformed)?
         .ok_or(SemanticReadError::InvalidRequest)?;
     let destination = &report.submission.destination;
+    if request
+        .expected_author
+        .as_ref()
+        .is_some_and(|author| *author != report.author)
+    {
+        return Err(SemanticReadError::InvalidOwner);
+    }
     if ui::record::room_scope(&document).is_some_and(|room| room != destination.room) {
         return Err(SemanticReadError::InvalidOwner);
     }
     let receipt = super::receipt_content(&document, &request.id, destination)
         .map_err(|_| SemanticReadError::Malformed)?;
-    Ok(ReadPage {
-        content: serde_json::to_value(receipt).map_err(|_| SemanticReadError::Malformed)?,
-        next_cursor: None,
-    })
+    Ok((receipt, report.triage))
 }
 
-fn schema() -> &'static serde_json::Value {
+pub(super) fn schema() -> &'static serde_json::Value {
     static SCHEMA: OnceLock<serde_json::Value> = OnceLock::new();
     SCHEMA.get_or_init(|| {
         let mut schema = crate::semantic_read::action::result_schema().clone();

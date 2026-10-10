@@ -8,7 +8,6 @@
 //! └── workspaces/
 //!     └── <workspace_id>/
 //!         ├── snapshot.automerge    # full pinned CRDT snapshot
-//!         ├── log.jsonl             # append-only delta metadata (audit)
 //!         ├── retained/v2/<author>-<channel>/
 //!         │   ├── CURRENT          # atomic generation selector
 //!         │   └── <generation>/    # shared checkpoint + immutable tail
@@ -46,9 +45,6 @@ use thiserror::Error;
 /// Filename used for the pinned Automerge snapshot inside a
 /// workspace directory.
 pub const SNAPSHOT_FILE: &str = "snapshot.automerge";
-
-/// Filename used for the append-only audit log.
-pub const LOG_FILE: &str = "log.jsonl";
 
 /// Durable device membership for offline store-and-forward.
 pub const MEMBERSHIP_FILE: &str = "membership.json";
@@ -96,8 +92,83 @@ pub fn save_revocations(
     fs::create_dir_all(state_root)?;
     let bytes =
         serde_json::to_vec_pretty(entries).map_err(|error| StoreError::Json(error.to_string()))?;
-    tilo_files::native::atomic::write(&state_root.join(REVOCATIONS_FILE), &bytes)?;
+    atomic_write(&state_root.join(REVOCATIONS_FILE), &bytes)?;
     Ok(())
+}
+
+/// fsyncs the relay's workspace stores issued since this process started.
+static FSYNCS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+#[cfg(test)]
+thread_local! {
+    /// [`FSYNCS`] of this thread only: tests run in parallel, and a store
+    /// driven synchronously issues its barriers on the calling thread.
+    static THREAD_FSYNCS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// `tilo_files::native::atomic::write` syncs the staged file, and after the
+/// rename the directory holding it.
+const ATOMIC_WRITE_FSYNCS: u64 = 2;
+
+fn count_fsyncs(count: u64) {
+    FSYNCS.fetch_add(count, std::sync::atomic::Ordering::Relaxed);
+    #[cfg(test)]
+    THREAD_FSYNCS.with(|fsyncs| fsyncs.set(fsyncs.get().saturating_add(count)));
+}
+
+/// fsyncs (file and directory barriers) the relay's workspace stores have
+/// issued in this process: the cost the hosting bench divides by edits.
+#[must_use]
+pub fn fsyncs() -> u64 {
+    FSYNCS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+#[cfg(test)]
+pub(crate) fn thread_fsyncs() -> u64 {
+    THREAD_FSYNCS.with(std::cell::Cell::get)
+}
+
+/// Directory entries the relay's workspace stores listed to commit retained
+/// history since this process started.
+static LISTED_ENTRIES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+#[cfg(test)]
+thread_local! {
+    /// [`LISTED_ENTRIES`] of this thread only, as [`THREAD_FSYNCS`].
+    static THREAD_LISTED_ENTRIES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// Count one directory entry a retention pass listed.
+pub(crate) fn count_listed_entry() {
+    LISTED_ENTRIES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    #[cfg(test)]
+    THREAD_LISTED_ENTRIES.with(|listed| listed.set(listed.get().saturating_add(1)));
+}
+
+/// Directory entries the relay's workspace stores have listed to retain
+/// history in this process: what a commit's cost grows with when it lists a
+/// lineage instead of using the index of it (TIL-742). The hosting bench
+/// divides it by edits.
+#[must_use]
+pub fn listed_entries() -> u64 {
+    LISTED_ENTRIES.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+#[cfg(test)]
+pub(crate) fn thread_listed_entries() -> u64 {
+    THREAD_LISTED_ENTRIES.with(std::cell::Cell::get)
+}
+
+/// `file.sync_all()`, counted in [`fsyncs`].
+pub(crate) fn fsync(file: &fs::File) -> io::Result<()> {
+    count_fsyncs(1);
+    file.sync_all()
+}
+
+/// `tilo_files::native::atomic::write`, counted in [`fsyncs`].
+pub(crate) fn atomic_write(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    count_fsyncs(ATOMIC_WRITE_FSYNCS);
+    tilo_files::native::atomic::write(path, bytes)
 }
 
 /// Errors from store operations.
@@ -106,25 +177,9 @@ pub enum StoreError {
     /// I/O failure.
     #[error("io: {0}")]
     Io(#[from] io::Error),
-    /// JSON encode/decode failure for the audit log.
+    /// JSON encode/decode failure for a metadata file.
     #[error("json: {0}")]
     Json(String),
-}
-
-/// One line in `log.jsonl` — an audit trail of every delta the
-/// relay received.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct LogEntry {
-    /// Workspace id.
-    pub workspace_id: u64,
-    /// Received-at nanoseconds since epoch (relay clock).
-    pub received_at_ns: u64,
-    /// Author device pubkey, hex-encoded.
-    pub author_device_hex: String,
-    /// Author's own authored-at timestamp.
-    pub authored_at_ns: u64,
-    /// Delta size in bytes.
-    pub delta_len: u64,
 }
 
 /// Ledger of admitted `Commit`s, see [`CommitRecord`].
@@ -173,6 +228,8 @@ pub struct WorkspaceStore {
     workspace_id: u64,
     pinned: bool,
     shell_authority: Option<tilo_peer_state::retained_proof::RetentionAuthority>,
+    /// Shared by every handle on `root`; see `shell_selection::tail_cache`.
+    tail_cache: shell_selection::tail_cache::SharedTailCache,
 }
 
 /// One server-local projection of the native room governor. Both sets share a
@@ -217,6 +274,25 @@ pub(crate) struct PendingEntry {
     pub bytes: Vec<u8>,
 }
 
+/// Older relays appended one JSON line per admitted delta to this file and
+/// never read it back, so it only grew (~170 B per keystroke). Nothing writes
+/// it any more; [`WorkspaceStore::open`] reclaims what an older relay left.
+const LEGACY_DELTA_LOG: &str = "log.jsonl";
+
+fn remove_legacy_delta_log(root: &Path) {
+    match fs::remove_file(root.join(LEGACY_DELTA_LOG)) {
+        Ok(()) => {
+            tracing::info!(root = %root.display(), "removed the legacy per-delta log");
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        // Best effort: the file is inert, and opening the store must not
+        // depend on reclaiming it.
+        Err(error) => {
+            tracing::warn!(root = %root.display(), %error, "legacy per-delta log not removed");
+        }
+    }
+}
+
 impl WorkspaceStore {
     /// Open (creating if necessary) the on-disk state for
     /// `workspace_id` under `state_root/workspaces/<id>/`.
@@ -237,7 +313,9 @@ impl WorkspaceStore {
         fs::create_dir_all(root.join(RETAINED_DIR))?;
         fs::create_dir_all(root.join(COMPUTE_DIR))?;
         fs::create_dir_all(root.join(COMPUTE_PENDING_DIR))?;
+        remove_legacy_delta_log(&root);
         Ok(Self {
+            tail_cache: shell_selection::tail_cache::SharedTailCache::for_root(&root),
             root,
             workspace_id,
             pinned,
@@ -293,7 +371,7 @@ impl WorkspaceStore {
                 }
                 // Re-establish the durability barrier even after an interrupted
                 // previous attempt left the exact file visible.
-                fs::File::open(&path)?.sync_all()?;
+                fsync(&fs::File::open(&path)?)?;
             }
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
                 let bytes = serde_json::to_vec(&Binding {
@@ -301,12 +379,13 @@ impl WorkspaceStore {
                     authority: authority.clone(),
                 })
                 .map_err(|e| StoreError::Json(e.to_string()))?;
-                tilo_files::native::atomic::write(&path, &bytes)?;
+                atomic_write(&path, &bytes)?;
             }
             Err(error) => return Err(error.into()),
         }
-        fs::File::open(&self.root)?.sync_all()?;
+        fsync(&fs::File::open(&self.root)?)?;
         self.shell_authority = Some(authority);
+        self.tail_cache.invalidate();
         Ok(())
     }
 
@@ -345,7 +424,7 @@ impl WorkspaceStore {
         if !self.pinned {
             return Ok(());
         }
-        tilo_files::native::atomic::write(&self.root.join(SNAPSHOT_FILE), bytes)?;
+        atomic_write(&self.root.join(SNAPSHOT_FILE), bytes)?;
         Ok(())
     }
 
@@ -401,7 +480,7 @@ impl WorkspaceStore {
             .map_err(|error| StoreError::Json(error.to_string()))?;
         #[cfg(test)]
         test_barrier::pause(&self.root, "membership-write");
-        tilo_files::native::atomic::write(&self.root.join(MEMBERSHIP_FILE), &bytes)?;
+        atomic_write(&self.root.join(MEMBERSHIP_FILE), &bytes)?;
         Ok(())
     }
 
@@ -451,7 +530,7 @@ impl WorkspaceStore {
         };
         let bytes = serde_json::to_vec_pretty(&encoded)
             .map_err(|error| StoreError::Json(error.to_string()))?;
-        tilo_files::native::atomic::write(&self.root.join(GOVERNED_ACCESS_FILE), &bytes)?;
+        atomic_write(&self.root.join(GOVERNED_ACCESS_FILE), &bytes)?;
         Ok(())
     }
 
@@ -477,7 +556,7 @@ impl WorkspaceStore {
         {
             Ok(mut file) => {
                 file.write_all(&bytes)?;
-                file.sync_all()?;
+                fsync(&file)?;
                 Ok(None)
             }
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
@@ -524,7 +603,7 @@ impl WorkspaceStore {
         }
         let bytes =
             serde_json::to_vec(record).map_err(|error| StoreError::Json(error.to_string()))?;
-        tilo_files::native::atomic::write(&path, &bytes)?;
+        atomic_write(&path, &bytes)?;
         Ok(())
     }
 
@@ -554,7 +633,7 @@ impl WorkspaceStore {
             .join(hex::encode(device));
         fs::create_dir_all(&directory)?;
         let path = directory.join(format!("{sequence:016x}.compute"));
-        tilo_files::native::atomic::write(&path, bytes)?;
+        atomic_write(&path, bytes)?;
         Ok(path)
     }
 
@@ -611,25 +690,6 @@ impl WorkspaceStore {
         }
     }
 
-    /// Append an audit log entry. Non-fatal if the log file fails —
-    /// the audit trail is best-effort, forwarding must not depend
-    /// on it.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the log file can't be opened for append,
-    /// `entry` can't be JSON-encoded, or the write fails.
-    pub fn append_log(&self, entry: &LogEntry) -> Result<(), StoreError> {
-        let path = self.root.join(LOG_FILE);
-        let mut file = fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(path)?;
-        let line = serde_json::to_string(entry).map_err(|e| StoreError::Json(e.to_string()))?;
-        writeln!(file, "{line}")?;
-        Ok(())
-    }
-
     /// Enqueue a delta for later delivery to `device_pubkey`. Each
     /// enqueue produces a new file `<seq>.delta` where seq is a
     /// monotonically increasing hex nanosecond timestamp; the
@@ -655,14 +715,25 @@ impl WorkspaceStore {
         // receive. The temp file is process-scoped, so two writers filling the
         // same peer's queue cannot publish each other's half-written bytes —
         // the fixed `.partial` name this used to use could.
-        tilo_files::native::atomic::write(&path, bytes)?;
-        // A live fanout may now rely on this exact fallback. Require directory
-        // durability instead of treating the atomic helper's best effort as a
-        // successful publication barrier.
-        for directory in pending_dir.ancestors().take(3) {
-            fs::File::open(directory)?.sync_all()?;
-        }
+        atomic_write(&path, bytes)?;
+        // A live fanout may now rely on this exact fallback.
+        Self::pending_durable(&pending_dir)?;
         Ok(path)
+    }
+
+    /// Complete the barrier for a file `atomic_write` just published in the
+    /// queue `directory`: it synced `directory` after the rename (Apple
+    /// repeats that with `F_FULLFSYNC`, as `retained::durable_write` does).
+    /// The queue's two ancestors change only when a queue is first created,
+    /// so they are synced whenever their entries changed since this process
+    /// last synced them.
+    fn pending_durable(directory: &Path) -> Result<(), StoreError> {
+        #[cfg(target_vendor = "apple")]
+        fsync(&fs::File::open(directory)?)?;
+        for ancestor in directory.ancestors().skip(1).take(2) {
+            retained::sync_dir_once(ancestor)?;
+        }
+        Ok(())
     }
 
     pub(crate) fn enqueue_continuity_pending(
@@ -679,10 +750,8 @@ impl WorkspaceStore {
             hex::encode(rand::random::<[u8; 16]>())
         ));
         continuity::write(self, &path, bytes, receipt)?;
-        tilo_files::native::atomic::write(&path, bytes)?;
-        for directory in directory.ancestors().take(3) {
-            fs::File::open(directory)?.sync_all()?;
-        }
+        atomic_write(&path, bytes)?;
+        Self::pending_durable(&directory)?;
         Ok(path)
     }
 
@@ -848,7 +917,7 @@ impl WorkspaceStore {
         for record in records {
             bytes.extend_from_slice(&record.encode());
         }
-        tilo_files::native::atomic::write(&self.root.join(COMMITS_FILE), &bytes)?;
+        atomic_write(&self.root.join(COMMITS_FILE), &bytes)?;
         Ok(())
     }
 
@@ -954,21 +1023,14 @@ mod tests {
             store.save_snapshot(b"HELLO").unwrap();
             assert!(store.load_snapshot().unwrap().is_none());
         }
-        // Phase `log_append`.
+        // Phase `open_reclaims_the_legacy_delta_log`.
         {
             let tmp = tempfile::tempdir().unwrap();
+            let root = tmp.path().join("workspaces").join("7");
+            fs::create_dir_all(&root).unwrap();
+            fs::write(root.join(LEGACY_DELTA_LOG), b"{\"workspace_id\":7}\n").unwrap();
             let store = WorkspaceStore::open(tmp.path(), 7, true).unwrap();
-            store
-                .append_log(&LogEntry {
-                    workspace_id: 7,
-                    received_at_ns: 1,
-                    author_device_hex: "aa".repeat(32),
-                    authored_at_ns: 0,
-                    delta_len: 42,
-                })
-                .unwrap();
-            let text = fs::read_to_string(store.root().join(LOG_FILE)).unwrap();
-            assert!(text.contains("\"workspace_id\":7"));
+            assert!(!store.root().join(LEGACY_DELTA_LOG).exists());
         }
         // Phase `pending_queue_orderly_drain`.
         {

@@ -654,7 +654,7 @@ fn capability_kind_and_scope(capability: &Capability) -> Option<(CapabilityKind,
 /// Both variables follow the XDG rule: an empty or relative value is ignored
 /// rather than resolved against the compositor's working directory.
 pub(crate) fn private_state_root() -> Option<PathBuf> {
-    xdg_paths::state_dir().or_else(xdg_paths::runtime_dir)
+    tilo_paths::state_dir().or_else(tilo_paths::runtime_dir)
 }
 
 fn default_portal_consent_path() -> Option<PathBuf> {
@@ -853,16 +853,6 @@ impl PromptQueueHandle {
     pub fn queued_len(&self) -> usize {
         self.state.lock().map_or(0, |state| state.pending.len())
     }
-
-    /// Direct accessor (test only): peek at the front entry's caller + capability without removing it.
-    #[cfg(any(test, debug_assertions))]
-    pub fn front_for_tests(&self) -> Option<(PortalCaller, Capability)> {
-        let state = self.state.lock().ok()?;
-        state
-            .pending
-            .first()
-            .map(|p| (p.caller.clone(), p.capability.clone()))
-    }
 }
 
 /// Configuration handed to [`serve`] / interface constructors.
@@ -884,7 +874,7 @@ pub struct PortalContext {
     /// [`ScreenCastStreamProvisioner::provision_stream`] on `Start` Allow; tests use [`MockScreenCastProvisioner`] instead of the system Pipewire daemon.
     pub screencast_provisioner: ScreenCastStreamProvisionerHandle,
     /// The `RemoteDesktop` backend hands each granted `Notify*` action here;
-    /// production wires a [`ChannelInjector`] the compositor loop drains, and `--portal-server-only` mode uses the null handle.
+    /// production wires a [`ChannelInjector`] the compositor loop drains, and tests use the null handle.
     pub remote_input_injector: RemoteInputInjectorHandle,
     /// Compositor authority for InputCapture.  Native mode supplies live
     /// output zones; hosted/headless contexts deliberately keep it unavailable.
@@ -1018,19 +1008,7 @@ pub mod flow {
         kind: CapabilityKind,
         cap_template: Capability,
     ) -> PromptOutcome {
-        // Fast path — `Always`-scoped grant already present.
-        let Some(consent_key) = ctx.grants().portal_consent_key(&caller, kind) else {
-            return PromptOutcome::Deny;
-        };
-        if matches!(ctx.grants().lookup(&caller, kind), Some(GRANT_ALWAYS)) {
-            return PromptOutcome::AllowAlways;
-        }
-        let rx = ctx.prompts().enqueue(caller.clone(), cap_template);
-        match rx.await {
-            Ok(outcome) => finish(ctx, &caller, kind, consent_key, outcome),
-            // A dead channel means the prompt pump shut down mid-flight — deny rather than hang the caller forever.
-            Err(_) => PromptOutcome::Deny,
-        }
+        resolve_inner(ctx, caller, kind, cap_template, None).await
     }
 
     /// Request-owned variant of [`resolve`]. It lets a portal close remove
@@ -1042,38 +1020,29 @@ pub mod flow {
         cap_template: Capability,
         request_key: String,
     ) -> PromptOutcome {
+        resolve_inner(ctx, caller, kind, cap_template, Some(request_key)).await
+    }
+
+    async fn resolve_inner(
+        ctx: &impl ConsentContext,
+        caller: PortalCaller,
+        kind: CapabilityKind,
+        cap_template: Capability,
+        request_key: Option<String>,
+    ) -> PromptOutcome {
         let Some(consent_key) = ctx.grants().portal_consent_key(&caller, kind) else {
             return PromptOutcome::Deny;
         };
+        // Fast path — `Always`-scoped grant already present.
         if matches!(ctx.grants().lookup(&caller, kind), Some(GRANT_ALWAYS)) {
             return PromptOutcome::AllowAlways;
         }
         let rx = ctx
             .prompts()
-            .enqueue_for_request(caller.clone(), cap_template, request_key);
+            .enqueue_inner(caller.clone(), cap_template, request_key);
         match rx.await {
             Ok(outcome) => finish(ctx, &caller, kind, consent_key, outcome),
-            Err(_) => PromptOutcome::Deny,
-        }
-    }
-
-    /// Consent path for portal-only capability kinds. It deliberately never
-    /// falls through to a broader workspace capability with a similar name.
-    pub async fn resolve_local(
-        ctx: &impl ConsentContext,
-        caller: PortalCaller,
-        kind: CapabilityKind,
-        cap_template: Capability,
-    ) -> PromptOutcome {
-        let Some(consent_key) = ctx.grants().portal_consent_key(&caller, kind) else {
-            return PromptOutcome::Deny;
-        };
-        if matches!(ctx.grants().lookup(&caller, kind), Some(GRANT_ALWAYS)) {
-            return PromptOutcome::AllowAlways;
-        }
-        let rx = ctx.prompts().enqueue(caller.clone(), cap_template);
-        match rx.await {
-            Ok(outcome) => finish(ctx, &caller, kind, consent_key, outcome),
+            // A dead channel means the prompt pump shut down mid-flight — deny rather than hang the caller forever.
             Err(_) => PromptOutcome::Deny,
         }
     }
@@ -1096,21 +1065,6 @@ pub mod flow {
             ctx.grants().insert_portal_consent_key(consent_key, scope);
         }
         outcome
-    }
-}
-
-/// Helper: rewrite a [`Capability`] template's `scope` field. Duplicated
-/// from `overlay_host::with_grant_scope` so the portal module doesn't take a hard dep on `shell::overlay_host` (pulls the whole UI stack).
-pub fn with_scope(cap: Capability, scope: GrantScope) -> Capability {
-    match cap {
-        Capability::Filesystem { path, mode, .. } => Capability::Filesystem { path, mode, scope },
-        Capability::Camera { .. } => Capability::Camera { scope },
-        Capability::Microphone { .. } => Capability::Microphone { scope },
-        Capability::Screencast { .. } => Capability::Screencast { scope },
-        Capability::RemoteDesktop { .. } => Capability::RemoteDesktop { scope },
-        Capability::Print { .. } => Capability::Print { scope },
-        Capability::Network { hosts, .. } => Capability::Network { hosts, scope },
-        Capability::HostShell { .. } => Capability::HostShell { scope },
     }
 }
 
@@ -1360,7 +1314,7 @@ pub async fn serve_with_inhibit_and_clipboard(
     }
 
     Ok(ServerHandle {
-        connection,
+        _connection: connection,
         owns_name,
     })
 }
@@ -1368,11 +1322,9 @@ pub async fn serve_with_inhibit_and_clipboard(
 /// RAII handle keeping the portal D-Bus connection alive; drop releases the bus name and tears down the object server.
 #[cfg(target_os = "linux")]
 pub struct ServerHandle {
-    #[allow(
-        dead_code,
-        reason = "never read on purpose: holding the Connection keeps the bus name and object server alive until drop"
-    )]
-    connection: zbus::Connection,
+    /// Never read: holding the connection keeps the bus name and object
+    /// server alive until drop.
+    _connection: zbus::Connection,
     owns_name: bool,
 }
 
@@ -1397,7 +1349,7 @@ mod tests {
 
     #[tokio::test]
     async fn private_portal_prompt_cannot_approve_a_different_room() {
-        for variant in 0..3 {
+        for variant in 0..2 {
             for outcome in [
                 PromptOutcome::AllowOnce,
                 PromptOutcome::AllowSession,
@@ -1411,7 +1363,7 @@ mod tests {
                     let cap = Capability::Camera { scope: GRANT_ONCE };
                     match variant {
                         0 => flow::resolve(&ctx, caller.clone(), CapabilityKind::Camera, cap).await,
-                        1 => {
+                        _ => {
                             flow::resolve_for_request(
                                 &ctx,
                                 caller.clone(),
@@ -1420,10 +1372,6 @@ mod tests {
                                 "/request/camera".into(),
                             )
                             .await
-                        }
-                        _ => {
-                            flow::resolve_local(&ctx, caller.clone(), CapabilityKind::Camera, cap)
-                                .await
                         }
                     }
                 };

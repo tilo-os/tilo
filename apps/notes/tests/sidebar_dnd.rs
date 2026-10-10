@@ -18,38 +18,19 @@ use notes::sidebar::OutEvent;
 use notes::{NotesShell, PageId};
 use ui::framework::testing::TestApp;
 use winit::event::{ElementState, MouseButton, WindowEvent};
-use winit::keyboard::{Key, NamedKey};
+use winit::keyboard::NamedKey;
 
-fn cursor_moved(x: f64, y: f64) -> WindowEvent {
-    WindowEvent::CursorMoved {
-        device_id: unsafe { std::mem::zeroed() },
-        position: winit::dpi::PhysicalPosition::new(x, y),
-    }
-}
+use ui::synthetic_input::cursor_moved;
 
 fn mouse(state: ElementState, button: MouseButton) -> WindowEvent {
     WindowEvent::MouseInput {
-        device_id: unsafe { std::mem::zeroed() },
+        device_id: winit::event::DeviceId::dummy(),
         state,
         button,
     }
 }
 
-fn named_key(key: NamedKey) -> WindowEvent {
-    let mut ev: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
-    ev.logical_key = Key::Named(key);
-    ev.physical_key =
-        winit::keyboard::PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
-    ev.location = winit::keyboard::KeyLocation::Standard;
-    ev.state = ElementState::Pressed;
-    ev.repeat = false;
-    ev.text = None;
-    WindowEvent::KeyboardInput {
-        device_id: unsafe { std::mem::zeroed() },
-        event: ev,
-        is_synthetic: false,
-    }
-}
+use ui::synthetic_input::named_key;
 
 /// Notes with three root notes: [Welcome, One, Two].
 fn three_page_app() -> (TestApp<NotesShell>, PageId, PageId, PageId) {

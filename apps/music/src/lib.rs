@@ -9,8 +9,7 @@
 //!   across devices; audio transport/cache never do.
 //! - [`backend`] — the swappable YouTube-Music data source
 //!   ([`backend::MusicBackend`]): a hermetic offline sample impl and the
-//!   shipping-default rustypipe impl (`live` feature). `PoToken` is a seam
-//!   ([`backend::potoken`]).
+//!   shipping-default rustypipe impl (`live` feature).
 //! - [`stream`] — the non-blocking worker driving [`backend`] off the UI thread.
 //! - [`audio`] — `GStreamer` `playbin` output + live position query (`audio`
 //!   feature).
@@ -38,11 +37,7 @@
 #![cfg_attr(
     test,
     allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
         clippy::string_slice,
-        clippy::panic,
         clippy::unreachable,
         reason = "in a test these are the assertion, not a hazard"
     )
@@ -55,6 +50,7 @@ pub mod backend;
 pub mod commands;
 pub mod doc;
 mod files;
+mod i18n;
 #[cfg(test)]
 pub mod live_search;
 pub mod local_file;

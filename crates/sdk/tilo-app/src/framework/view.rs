@@ -32,24 +32,40 @@ type Update<R> = Box<dyn FnMut(&<R as Resource>::State)>;
 type Updater<R> = (Weak<()>, Update<R>);
 
 /// Model-to-widget refreshers registered by bound controls. Each is tied to
-/// the lifetime of the view scope that created it (a row of an [`Each`]).
-pub(crate) struct Updaters<R: Resource>(Rc<RefCell<Vec<Updater<R>>>>);
+/// the lifetime of the view scope that created it (a part a
+/// [`ViewCx::switch`] built). The root view has one list; each row of an
+/// [`Each`] has its own, which the list runs while the row is mounted and
+/// catches up when it mounts again.
+pub(crate) struct Updaters<R: Resource> {
+    list: Rc<RefCell<Vec<Updater<R>>>>,
+    /// Whether something besides the row's own widgets reads what these
+    /// updaters feed — an edit the scope binds into the published tree, an
+    /// effect's availability — so they must stay current while the row is
+    /// not mounted.
+    read_unmounted: Rc<std::cell::Cell<bool>>,
+}
 
 impl<R: Resource> Clone for Updaters<R> {
     fn clone(&self) -> Self {
-        Self(Rc::clone(&self.0))
+        Self {
+            list: Rc::clone(&self.list),
+            read_unmounted: Rc::clone(&self.read_unmounted),
+        }
     }
 }
 
 impl<R: Resource> Updaters<R> {
     pub(crate) fn new() -> Self {
-        Self(Rc::default())
+        Self {
+            list: Rc::default(),
+            read_unmounted: Rc::default(),
+        }
     }
 
     pub(crate) fn run(&self, state: &R::State) {
         // Take the list so an updater may register more (a rebuilt row)
         // without a reentrant borrow.
-        let mut current = std::mem::take(&mut *self.0.borrow_mut());
+        let mut current = std::mem::take(&mut *self.list.borrow_mut());
         current.retain_mut(|(alive, update)| {
             if alive.strong_count() == 0 {
                 return false;
@@ -57,13 +73,23 @@ impl<R: Resource> Updaters<R> {
             update(state);
             true
         });
-        let mut list = self.0.borrow_mut();
+        let mut list = self.list.borrow_mut();
         current.append(&mut list);
         *list = current;
     }
 
     fn push(&self, alive: Weak<()>, update: Update<R>) {
-        self.0.borrow_mut().push((alive, update));
+        self.list.borrow_mut().push((alive, update));
+    }
+
+    /// Something outside the scope's widgets reads its local state.
+    fn read_while_unmounted(&self) {
+        self.read_unmounted.set(true);
+    }
+
+    /// Whether the updaters must run while their row is not mounted.
+    pub(crate) fn read_unmounted(&self) -> bool {
+        self.read_unmounted.get()
     }
 }
 
@@ -93,6 +119,10 @@ impl<R: Resource> Bindings<R> {
         bindings.iter().flat_map(|(_, bind)| bind(state)).collect()
     }
 }
+
+/// The collection a list built by [`ViewCx::each`] follows, read from what
+/// its scope reads; shared by the list and each of its rows.
+type Items<T, I> = Rc<dyn Fn(&T) -> &Collection<I>>;
 
 /// Projects the resource state onto the value a view scope reads: the whole
 /// state at the root, one item inside an [`Each`] row.
@@ -575,22 +605,37 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
     }
 
     /// One row per item of a collection, kept in collection order. A row is
-    /// built once per item and retained while the item exists, so focus and
-    /// caret inside it survive other items changing. A row's context menu
-    /// (right-click, the Menu key or Shift+F10) offers the actions the
-    /// resource publishes on its item, with the item already bound.
+    /// built when it is first shown and retained while the item exists, so
+    /// focus and caret inside it survive other items changing, and opening
+    /// a list builds the rows it shows however long it is. Inside a scroll
+    /// view only the rows near what it shows are mounted, and only theirs
+    /// follow each change; a row out of view catches up as it scrolls back
+    /// in, so a change costs the rows shown however long the list. A row's
+    /// context menu (right-click, the Menu key or Shift+F10) offers the
+    /// actions the resource publishes on its item, with the item already
+    /// bound.
+    ///
+    /// Offer what acts on one item as an action of the resource that takes
+    /// the item (published on every item, shown or not). A row view that
+    /// binds declarations or effects of its own makes the list build every
+    /// row, since each is then published.
     pub fn each<I: 'static>(
         &self,
-        items: fn(&T) -> &Collection<I>,
+        items: impl Fn(&T) -> &Collection<I> + 'static,
         row: impl Fn(&mut ViewCx<R, I>) -> Element + 'static,
     ) -> Each<R> {
+        let items: Items<T, I> = Rc::new(items);
         let focus = Rc::clone(&self.focus);
-        let ids = move |state: &R::State| -> Vec<Id> {
-            (focus)(state).map_or_else(Vec::new, |value| items(value).ids().cloned().collect())
-        };
+        let collection = Rc::clone(&items);
+        let ids: super::each::Ids<R> = Box::new(move |state, visit| match (focus)(state) {
+            Some(value) => {
+                let items = collection(value);
+                visit(Some(items.membership()), &mut items.ids());
+            }
+            None => visit(None, &mut std::iter::empty()),
+        });
         let parent_focus = Rc::clone(&self.focus);
         let live = self.live.clone();
-        let updaters = self.updaters.clone();
         let dispatch = self.dispatch.clone();
         let action_bindings = self.action_bindings.clone();
         let controls = Rc::clone(&self.controls);
@@ -604,12 +649,19 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
         Each::new(
             self.live.clone(),
             self.dispatch.clone(),
-            Box::new(ids),
-            Box::new(move |id: &Id, alive: &Rc<()>| {
+            ids,
+            Box::new(move |id: &Id, alive: &Rc<()>, updaters: &Updaters<R>| {
                 let parent = Rc::clone(&parent_focus);
+                let items = Rc::clone(&items);
                 let key = id.clone();
-                let focus: Focus<R, I> =
-                    Rc::new(move |state| (parent)(state).and_then(|value| items(value).get(&key)));
+                // Where the item stood last time: a row reads its item
+                // without scanning the collection.
+                let near = std::cell::Cell::new(0_usize);
+                let focus: Focus<R, I> = Rc::new(move |state| {
+                    let (at, item) = items((parent)(state)?).get_near(&key, near.get())?;
+                    near.set(at);
+                    Some(item)
+                });
                 let mut cx = ViewCx {
                     live: live.clone(),
                     focus,
@@ -642,6 +694,8 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
     /// an id the resource already publishes keeps the resource's action
     /// unless the bound one refines it ([`tilo_resource::bind_declaration`]).
     pub fn bind_declarations(&self, bind: impl Fn(&R::State) -> Vec<ActionDecl<R>> + 'static) {
+        // The published tree reads what `bind` captured, mounted row or not.
+        self.updaters.read_while_unmounted();
         self.bindings
             .0
             .borrow_mut()
@@ -790,6 +844,9 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
         handle: impl FnMut(E, &mut EffectCx<R>) -> EffectAnswer + 'static,
     ) -> EffectsHandle {
         let status: StatusSource = Rc::default();
+        // The handler and the status the resource publishes read the
+        // scope's local state, mounted row or not.
+        self.updaters.read_while_unmounted();
         // Captures and History still describe the controls they draw. Only
         // execution needs a live environment; publication is inert metadata.
         let source = Rc::clone(&status);
@@ -836,6 +893,8 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
         K: Eq + Hash + Clone + 'static,
         I: 'static,
     {
+        // A drain runs after every change, mounted row or not.
+        self.updaters.read_while_unmounted();
         self.effects.drain(self.alive.clone(), pending, run)
     }
 
@@ -851,6 +910,7 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
         K: Eq + Hash + Clone + 'static,
         I: 'static,
     {
+        self.updaters.read_while_unmounted();
         self.effects.drain_causal(self.alive.clone(), pending, run);
     }
 

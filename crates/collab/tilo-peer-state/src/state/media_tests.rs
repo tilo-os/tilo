@@ -260,7 +260,7 @@ fn room_media_restore_rejects_present_mismatched_bound_chat() {
             record: String::new(),
         })
         .unwrap()
-        .doc = AutoCommit::load(&bytes).unwrap();
+        .doc = AutoCommit::load(&bytes).unwrap().into();
     assert!(
         StatePeer::restore(
             &peer.durable().unwrap(),
@@ -587,7 +587,7 @@ fn room_media_security_basis_excludes_labels_and_normalizes_identity_json() {
     let ids = room.get(ROOT, "peer_identities_v1").unwrap().unwrap().1;
     let id = hex::encode(peer.core.authority.device_public_key);
     let row: GovernedIdentity =
-        serde_json::from_slice(&room::governance_of(Some(&room)).3[&id]).unwrap();
+        serde_json::from_slice(&room::governance_of(Some(&room)).identities[&id]).unwrap();
     room.put(
         &ids,
         id,
@@ -689,7 +689,7 @@ fn room_media_verified_independent_revocation_denies_before_promotion() {
     let ids = room.get(ROOT, "peer_identities_v1").unwrap().unwrap().1;
     let id = hex::encode(members[0].1.device_public_key);
     let mut row: GovernedIdentity =
-        serde_json::from_slice(&room::governance_of(Some(&room)).3[&id]).unwrap();
+        serde_json::from_slice(&room::governance_of(Some(&room)).identities[&id]).unwrap();
     row.revocations.push(revoked);
     room.put(
         &ids,
@@ -771,7 +771,7 @@ fn room_media_restore_rejects_governed_certificate_replacement() {
     let ids = room.get(ROOT, "peer_identities_v1").unwrap().unwrap().1;
     let id = hex::encode(peer.core.authority.device_public_key);
     let mut row: GovernedIdentity =
-        serde_json::from_slice(&room::governance_of(Some(&room)).3[&id]).unwrap();
+        serde_json::from_slice(&room::governance_of(Some(&room)).identities[&id]).unwrap();
     row.device_cert.device_label = "replacement certificate".into();
     sign_device_cert(&mut row.device_cert, &SigningKey::from_bytes(&[101; 32])).unwrap();
     room.put(
@@ -1068,7 +1068,7 @@ fn room_media_governed_revocation_fence_cannot_be_removed_by_higher_revision() {
     let ids = current.get(ROOT, "peer_identities_v1").unwrap().unwrap().1;
     let id = hex::encode(peer.core.authority.device_public_key);
     let mut row: GovernedIdentity =
-        serde_json::from_slice(&room::governance_of(Some(&current)).3[&id]).unwrap();
+        serde_json::from_slice(&room::governance_of(Some(&current)).identities[&id]).unwrap();
     row.revocations.clear();
     current
         .put(

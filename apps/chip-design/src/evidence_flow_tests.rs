@@ -2,7 +2,6 @@
 use crate::{ChipDesignShell, VerificationRecord};
 use serde_json::{Value, json};
 use sha2::Digest;
-use std::fmt::Write;
 use ui::framework::testing::TestApp;
 use ui::tilo_actions::Action;
 use ui::tilo_resource::{Doc, Resource};
@@ -114,13 +113,7 @@ fn referenced_subflow_resolves_only_exact_imported_summary_bytes() {
     child["evidence_flow"]["title"] = json!("Synthetic layer detail");
     child["evidence_flow"]["subflows"] = json!([]);
     let raw = child.to_string();
-    let hash = sha2::Sha256::digest(raw.as_bytes())
-        .iter()
-        .try_fold(String::with_capacity(64), |mut output, byte| {
-            write!(&mut output, "{byte:02x}")?;
-            Ok::<_, std::fmt::Error>(output)
-        })
-        .unwrap();
+    let hash = hex::encode(sha2::Sha256::digest(raw.as_bytes()));
     let mut root = fixture();
     root["artifact_sha256"]["next.json"] = json!(hash);
     let root_id = import(&mut app, &root);

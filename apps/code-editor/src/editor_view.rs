@@ -16,6 +16,7 @@
 //! characters (not bytes), matching Automerge Text's char addressing. Multiple
 //! carets are supported; the primary caret drives the status bar and scrolling.
 
+use crate::app::replace_chars;
 use automerge::{AutoCommit, ObjId, ReadDoc};
 use std::collections::HashMap;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -31,6 +32,7 @@ use ui::text_selection::{
 };
 use ui::theme::Theme;
 use ui::tokens::TextRole;
+use ui::widget::TaffyTreeExt;
 use ui::widget::{
     AppModel, Button, ButtonFace, ControlSize, EmptyState, ModelPath, Suggestion, SuggestionList,
     Widget,
@@ -1056,22 +1058,6 @@ impl EditorView {
 
     // ---- editing primitives (all request an action before CRDT mutation) ----
 
-    /// Replace a character range in a local, ephemeral string.  This is only
-    /// used to prepare an action request; it never touches Automerge.
-    fn splice_local(text: &mut String, start: usize, delete: usize, insert: &str) {
-        let chars = text.chars().count();
-        let start = start.min(chars);
-        let end = start.saturating_add(delete).min(chars);
-        let byte_at = |n: usize| {
-            text.char_indices()
-                .nth(n)
-                .map_or_else(|| text.len(), |(byte, _)| byte)
-        };
-        let start_byte = byte_at(start);
-        let end_byte = byte_at(end);
-        text.replace_range(start_byte..end_byte, insert);
-    }
-
     /// Optimistically rebuild the render cache and coalesce the requested
     /// change. The caller is responsible for dispatching it; a refusal calls
     /// `reconcile_from_doc` and puts this cache back on the real document.
@@ -1214,6 +1200,9 @@ impl EditorView {
     }
 
     fn handle_ime(&mut self, ime: &Ime, handled: &mut bool) {
+        if !self.is_focused && !matches!(ime, Ime::Disabled) {
+            return;
+        }
         match ime {
             Ime::Preedit(text, _) if text.is_empty() => self.composition.clear_preedit(),
             Ime::Preedit(text, cursor) => self.composition.set_preedit(text, *cursor),
@@ -1420,7 +1409,7 @@ impl EditorView {
             .unwrap_or_default();
         let end_of_b = self.char_index(b, self.lines.get(b).map_or(0, |l| l.chars().count()));
         let mut next = self.cached_text.clone();
-        Self::splice_local(&mut next, end_of_b, 0, &format!("\n{block}"));
+        replace_chars(&mut next, end_of_b, 0, &format!("\n{block}"));
         self.request_text_edit(&next);
         if focus_copy {
             self.shift_primary_lines((b - a + 1) as isize);
@@ -1452,7 +1441,7 @@ impl EditorView {
             let to = self.char_index(b, self.lines.get(b).map_or(0, |l| l.chars().count()));
             // Region is "{prev}\n{block}" → swap to "{block}\n{prev}".
             let mut next = self.cached_text.clone();
-            Self::splice_local(&mut next, from, to - from, &format!("{block}\n{prev}"));
+            replace_chars(&mut next, from, to - from, &format!("{block}\n{prev}"));
             self.request_text_edit(&next);
             self.shift_primary_lines(-1);
         } else {
@@ -1469,7 +1458,7 @@ impl EditorView {
             );
             // Region is "{block}\n{next}" → swap to "{next}\n{block}".
             let mut updated = self.cached_text.clone();
-            Self::splice_local(&mut updated, from, to - from, &format!("{next}\n{block}"));
+            replace_chars(&mut updated, from, to - from, &format!("{next}\n{block}"));
             self.request_text_edit(&updated);
             self.shift_primary_lines(1);
         }
@@ -1502,7 +1491,7 @@ impl EditorView {
             )
         };
         let mut next = self.cached_text.clone();
-        Self::splice_local(&mut next, from, to - from, "");
+        replace_chars(&mut next, from, to - from, "");
         self.request_text_edit(&next);
         let target = a.min(self.lines.len().saturating_sub(1));
         self.carets = vec![Caret::at(target, 0)];
@@ -1561,11 +1550,11 @@ impl EditorView {
                         remove += 1;
                     }
                     let at = self.char_index(l, lead);
-                    Self::splice_local(&mut next, at, remove, "");
+                    replace_chars(&mut next, at, remove, "");
                 }
             } else {
                 let at = self.char_index(l, indent);
-                Self::splice_local(&mut next, at, 0, &format!("{token} "));
+                replace_chars(&mut next, at, 0, &format!("{token} "));
             }
         }
         self.request_text_edit(&next);
@@ -1588,7 +1577,7 @@ impl EditorView {
                 continue;
             }
             let at = self.line_start_index(l);
-            Self::splice_local(&mut next, at, 0, &pad);
+            replace_chars(&mut next, at, 0, &pad);
         }
         self.request_text_edit(&next);
         self.clamp_carets();
@@ -1617,7 +1606,7 @@ impl EditorView {
             };
             if remove > 0 {
                 let at = self.line_start_index(l);
-                Self::splice_local(&mut next, at, remove, "");
+                replace_chars(&mut next, at, remove, "");
             }
         }
         self.request_text_edit(&next);
@@ -2665,22 +2654,15 @@ impl Widget for EditorView {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        #[allow(
-            clippy::unwrap_used,
-            reason = "Widget::build_layout is infallible by trait contract; inserting a single leaf with a fixed Style cannot fail short of an already-corrupted taffy arena, which nothing here could recover from"
-        )]
-        let node = taffy
-            .new_leaf(Style {
-                size: Size {
-                    width: Dimension::percent(1.0),
-                    height: Dimension::percent(1.0),
-                },
-                flex_grow: 1.0,
-                ..Default::default()
-            })
-            .unwrap();
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        let style = Style {
+            size: Size {
+                width: Dimension::percent(1.0),
+                height: Dimension::percent(1.0),
+            },
+            flex_grow: 1.0,
+            ..Default::default()
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
@@ -2689,12 +2671,7 @@ impl Widget for EditorView {
             reason = "node was just created by this widget's own build_layout in the same tree; a lookup failure means the taffy tree is already corrupted and there is no meaningful layout to fall back to"
         )]
         let layout = taffy.layout(node).unwrap();
-        self.rect = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
-            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
-        );
+        self.rect = ui::widget::placed(layout, origin);
     }
 
     fn draw(
@@ -2872,8 +2849,24 @@ impl Widget for EditorView {
     }
 
     fn ime_purpose(&self) -> Option<winit::window::ImePurpose> {
-        self.is_bound()
-            .then_some(winit::window::ImePurpose::Terminal)
+        // This is an action-owned source buffer, not input to a live process.
+        (self.is_focused && self.is_bound()).then_some(winit::window::ImePurpose::Normal)
+    }
+
+    fn ime_edit_fingerprint(&self, key: &[u8; 32]) -> Option<[u8; 32]> {
+        self.ime_purpose()?;
+        if self.composition.has_preedit() || self.pending_text_edit.is_some() {
+            return None;
+        }
+        let object = self.text_obj.as_ref()?;
+        let mut stamp = ui::ime::edit_fingerprint(&self.cached_text, 0, 0, key);
+        stamp = ui::ime::scoped_fingerprint(object.to_string().as_bytes(), stamp, key);
+        // Include every selection, even when the primary caret stays put.
+        for caret in &self.carets {
+            let scope = format!("{}:{}:{:?}", caret.line, caret.col, caret.anchor);
+            stamp = ui::ime::scoped_fingerprint(scope.as_bytes(), stamp, key);
+        }
+        Some(stamp)
     }
 
     fn ime_cursor_rect(&self) -> Option<Rect> {
@@ -3330,6 +3323,45 @@ mod tests {
     }
 
     #[test]
+    fn dictation_target_tracks_code_selection_content_and_pending_edits() {
+        use automerge::transaction::Transactable;
+        let (mut view, mut doc) = bound_editor("same source");
+        view.set_focus(true);
+        assert_eq!(view.ime_purpose(), Some(winit::window::ImePurpose::Normal));
+        let key = [17; 32];
+        let stamp = view.ime_edit_fingerprint(&key).expect("editable code");
+        let caret = view.ime_cursor_rect();
+        view.carets[0].anchor = Some((0, 4));
+        assert_eq!(view.ime_cursor_rect(), caret);
+        assert_ne!(view.ime_edit_fingerprint(&key), Some(stamp));
+        let selected = view.ime_edit_fingerprint(&key).unwrap();
+        let object = view.text_obj.clone().unwrap();
+        doc.splice_text(&object, 0, 11, "same change").unwrap();
+        view.sync(&doc, &automerge::ROOT);
+        assert_eq!(view.ime_cursor_rect(), caret);
+        assert_ne!(view.ime_edit_fingerprint(&key), Some(selected));
+        let original = view.ime_edit_fingerprint(&key).unwrap();
+        let carets = view.carets.clone();
+        let other = EditorDoc::ensure_buffer(&mut doc, 1, "same change");
+        view.bind(other, Language::Rust);
+        view.sync(&doc, &automerge::ROOT);
+        view.carets = carets;
+        assert_eq!(view.ime_cursor_rect(), caret);
+        assert_ne!(view.ime_edit_fingerprint(&key), Some(original));
+        ime(&mut view, &mut doc, Ime::Preedit("draft".into(), None));
+        assert!(view.ime_edit_fingerprint(&key).is_none());
+        ime(&mut view, &mut doc, Ime::Disabled);
+        assert!(view.ime_edit_fingerprint(&key).is_some());
+        ime(&mut view, &mut doc, Ime::Commit("日本語 café".into()));
+        assert!(view.ime_edit_fingerprint(&key).is_none());
+        assert!(view.take_text_edit().is_some());
+        assert!(view.ime_edit_fingerprint(&key).is_some());
+        view.set_focus(false);
+        assert!(view.ime_purpose().is_none());
+        assert!(view.ime_edit_fingerprint(&key).is_none());
+    }
+
+    #[test]
     fn typing_requests_action_owned_edits_and_keeps_the_caret_in_chars() {
         // Each phase builds a fresh bound editor.
         insert_text_requests_an_action_owned_edit();
@@ -3388,12 +3420,8 @@ mod tests {
     // `ui::gesture::DragSelect` ladder + `ui::text_selection` boundary walkers),
     // not a test-only shortcut.
 
-    use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, WindowEvent};
-    use winit::keyboard::{Key, ModifiersState, NamedKey, PhysicalKey};
-
-    fn fake_device_id() -> winit::event::DeviceId {
-        unsafe { std::mem::zeroed() }
-    }
+    use winit::event::{ElementState, Modifiers, MouseButton, WindowEvent};
+    use winit::keyboard::{Key, ModifiersState, NamedKey};
 
     fn geom_editor(seed: &str) -> (EditorView, AutoCommit) {
         let (mut ev, doc) = bound_editor(seed);
@@ -3415,38 +3443,16 @@ mod tests {
     }
 
     fn move_to(ev: &mut EditorView, doc: &mut AutoCommit, p: Point) {
-        let m = Modifiers::default();
-        let mut handled = false;
-        let mut focus = None;
-        let taffy = TaffyTree::<()>::new();
-        let node = NodeId::new(0);
         let win_ev = WindowEvent::CursorMoved {
-            device_id: fake_device_id(),
+            device_id: winit::event::DeviceId::dummy(),
             position: winit::dpi::PhysicalPosition::new(p.x, p.y),
         };
-        ev.handle_event(
-            &win_ev,
-            &mut ui::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &m,
-                state: ui::widget::Edits::lend(doc),
-                path: &automerge::ROOT,
-                handled: &mut handled,
-                focus_target: &mut focus,
-                node_id: node,
-                taffy: &taffy,
-            },
-        );
+        ui::testing::Dispatch::new().doc(doc).send(ev, &win_ev);
     }
 
     fn left(ev: &mut EditorView, doc: &mut AutoCommit, pressed: bool, shift: bool) {
-        let m = mods(false, shift);
-        let mut handled = false;
-        let mut focus = None;
-        let taffy = TaffyTree::<()>::new();
-        let node = NodeId::new(0);
         let win_ev = WindowEvent::MouseInput {
-            device_id: fake_device_id(),
+            device_id: winit::event::DeviceId::dummy(),
             state: if pressed {
                 ElementState::Pressed
             } else {
@@ -3454,72 +3460,33 @@ mod tests {
             },
             button: MouseButton::Left,
         };
-        ev.handle_event(
-            &win_ev,
-            &mut ui::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &m,
-                state: ui::widget::Edits::lend(doc),
-                path: &automerge::ROOT,
-                handled: &mut handled,
-                focus_target: &mut focus,
-                node_id: node,
-                taffy: &taffy,
-            },
-        );
+        ui::testing::Dispatch::new()
+            .modifiers(mods(false, shift))
+            .doc(doc)
+            .send(ev, &win_ev);
     }
 
     fn key(ev: &mut EditorView, doc: &mut AutoCommit, k: Key, ctrl: bool, shift: bool) {
-        let m = mods(ctrl, shift);
-        let mut handled = false;
-        let mut focus = None;
-        let taffy = TaffyTree::<()>::new();
-        let node = NodeId::new(0);
-        let mut ke: KeyEvent = unsafe { std::mem::zeroed() };
-        ke.logical_key = k;
-        ke.physical_key = PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
-        ke.location = winit::keyboard::KeyLocation::Standard;
-        ke.state = ElementState::Pressed;
-        ke.repeat = false;
-        ke.text = None;
+        let ke = ui::synthetic_input::key_event(k, None, ElementState::Pressed);
         let win_ev = WindowEvent::KeyboardInput {
-            device_id: fake_device_id(),
+            device_id: winit::event::DeviceId::dummy(),
             event: ke,
             is_synthetic: false,
         };
-        ev.handle_event(
-            &win_ev,
-            &mut ui::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &m,
-                state: ui::widget::Edits::lend(doc),
-                path: &automerge::ROOT,
-                handled: &mut handled,
-                focus_target: &mut focus,
-                node_id: node,
-                taffy: &taffy,
-            },
-        );
+        ui::testing::Dispatch::new()
+            .modifiers(mods(ctrl, shift))
+            .doc(doc)
+            .send(ev, &win_ev);
     }
 
     fn ime(ev: &mut EditorView, doc: &mut AutoCommit, ime: Ime) {
-        let m = Modifiers::default();
-        let mut handled = false;
-        let mut focus = None;
-        let taffy = TaffyTree::<()>::new();
-        ev.handle_event(
-            &WindowEvent::Ime(ime),
-            &mut ui::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &m,
-                state: ui::widget::Edits::lend(doc),
-                path: &automerge::ROOT,
-                handled: &mut handled,
-                focus_target: &mut focus,
-                node_id: NodeId::new(0),
-                taffy: &taffy,
-            },
-        );
+        // Positive composition cases model delivery to the active field.
+        // The app-level journey separately verifies refusal after focus loss.
+        ev.set_focus(true);
+        let handled = ui::testing::Dispatch::new()
+            .doc(doc)
+            .send(ev, &WindowEvent::Ime(ime))
+            .handled;
         assert!(handled, "the editor consumes input-method events");
     }
 

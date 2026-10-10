@@ -2,8 +2,10 @@
 name = "tilo-cpu-raster"
 version = "0.1.0"
 edition = "2024"
-publish.workspace = true
+publish = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
 description = "Rasterizes a recorded vello scene on the CPU through vello_cpu, for GPUs that cannot run vello's compute pipeline. Renders whole frames or damaged regions into caller-owned premultiplied RGBA8 buffers."
 
 [dependencies]

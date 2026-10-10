@@ -44,6 +44,27 @@ impl TaskReviewProvider {
                 .directions
                 .last()
                 .map_or(0, |direction| direction.revision);
+            if task.status == crate::shell::state::WorkspaceTaskStatus::Queued
+                && control.active_run.is_none()
+                && task.route != crate::shell::state::WorkspaceTaskRoute::Manual
+                && task
+                    .resource
+                    .as_ref()
+                    .is_none_or(|resource| resource.agent_request.is_none())
+                && let Some(agent_id) = &task.assigned_agent
+            {
+                rows.push(self.edit(
+                    snapshot,
+                    &task.id,
+                    &task.title,
+                    TaskReviewCommand::Approve {
+                        task_id: task.id.clone(),
+                        agent_id: agent_id.clone(),
+                        run_epoch: control.run_epoch,
+                        after_revision: revision,
+                    },
+                ));
+            }
             if !task.status.is_finished() && control.active_run.is_some() {
                 rows.push(self.edit(
                     snapshot,
@@ -185,6 +206,11 @@ impl TaskReviewProvider {
         command: TaskReviewCommand,
     ) -> SearchResult {
         let (verb, epoch, revision) = match &command {
+            TaskReviewCommand::Approve {
+                run_epoch,
+                after_revision,
+                ..
+            } => ("approve", *run_epoch, *after_revision),
             TaskReviewCommand::Steer {
                 run_epoch,
                 after_revision,
@@ -208,6 +234,7 @@ impl TaskReviewProvider {
             format!(
                 "{}: {title}",
                 t(match verb {
+                    "approve" => "task-review-approve",
                     "steer" => "task-review-steer",
                     "cancel" => "task-review-cancel",
                     _ => "task-review-retry",

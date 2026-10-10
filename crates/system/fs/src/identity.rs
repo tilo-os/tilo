@@ -305,6 +305,36 @@ pub fn load_certified_mount_identity(
     Ok(CertifiedMountIdentity { mount, credentials })
 }
 
+/// Read an already-certified device for recovery without first-boot key creation.
+///
+/// # Errors
+///
+/// Returns an error for missing, insecure or inconsistent existing credentials,
+/// or a certificate that is not valid at `now_ns`. No directory or key is made.
+pub fn load_existing_certified_mount_identity(
+    paths: &IdentityPaths,
+    now_ns: u64,
+) -> std::result::Result<CertifiedMountIdentity, CertifiedIdentityError> {
+    let signing = tilo_user_identity::persist::load_device_key(paths)
+        .map_err(|error| CertifiedIdentityError::DeviceKey(error.into()))?;
+    let cert = tilo_user_identity::persist::read_device_cert(&paths.device_cert)?;
+    tilo_user_identity::verify_device_cert_at(&cert, now_ns)?;
+    let public = signing.verifying_key().to_bytes();
+    if cert.device_public_key != public {
+        return Err(CertifiedIdentityError::DeviceKeyMismatch);
+    }
+    let mount = MountIdentity {
+        secret: iroh::SecretKey::from_bytes(&signing.to_bytes()),
+        public,
+        created: false,
+        signing: signing.clone(),
+    };
+    Ok(CertifiedMountIdentity {
+        mount,
+        credentials: PeerCredentials { cert, signing },
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -41,10 +41,14 @@ Network hints live in `tilo_net::status`: `current()`, `watch().last()`, and
 `Watch::changed().await`. Online means "worth trying", not server reachability.
 Metering is `Option<bool>`: an unavailable/refusing platform can return `None`.
 Do not cache a metering answer for the app's lifetime or treat unknown as proof
-that speculative downloads are safe. The standard Linux portal can collapse
-unknown metering to false; a policy requiring proven unmetered transport must
-use the richer host-owned state. Explicit user requests still handle their
-actual network errors.
+that speculative downloads are safe. Tilo's native host automatically supplies
+lossless hints to app launches with network access: `Some(false)` means known
+unmetered. Older hosts and ordinary Linux desktops use the standard portal;
+its false answer stays unknown because it can include unknown transport cost.
+Host disconnects discard the snapshot and leave the same app on portable
+fallback; the inherited host connection is consumed once, without automatic
+reconnection. A normal app relaunch receives a fresh launcher-authenticated
+connection and snapshot. Explicit user requests still handle actual errors.
 
 For external writes, declare resource effects with the appropriate identity,
 role and confirmation. Shared undo does not reverse a request to a server.

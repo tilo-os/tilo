@@ -93,10 +93,6 @@ pub struct WorkspaceMeta {
 /// workspace off its desktop; the rest of the key is the device's hex key.
 const KEPT_OFF_PREFIX: &str = "kept_off:";
 
-fn hex_key(device: &[u8; 32]) -> String {
-    hex::encode(device)
-}
-
 /// A signed, incremental directory delta. Produced by
 /// [`WorkspaceDirectory::sync_incremental`] and consumed by
 /// [`WorkspaceDirectory::apply_incremental`].
@@ -115,7 +111,7 @@ pub struct DirectoryUpdate {
     /// Ed25519 signature over
     /// `blake3(DIR_DELTA_PREIMAGE_TAG || postcard(view))` where
     /// `view` is the update without the signature.
-    #[serde(with = "serde_bytes_64")]
+    #[serde(with = "crate::cert::serde_bytes_64")]
     pub signature: [u8; 64],
 }
 
@@ -418,11 +414,7 @@ impl WorkspaceDirectory {
     }
 
     fn device_key(device: &[u8; 32]) -> String {
-        use std::fmt::Write as _;
-        device.iter().fold(String::from("d:"), |mut key, byte| {
-            let _ = write!(key, "{byte:02x}");
-            key
-        })
+        format!("d:{}", hex::encode(device))
     }
 
     fn read_text(&self, obj: &ObjId, key: &str) -> Option<String> {
@@ -486,7 +478,7 @@ impl WorkspaceDirectory {
         kept_off: bool,
     ) -> Result<(), DirectoryError> {
         let obj = self.ensure_workspace_obj(id)?;
-        let key = format!("{KEPT_OFF_PREFIX}{}", hex_key(&device));
+        let key = format!("{KEPT_OFF_PREFIX}{}", hex::encode(device));
         let present = matches!(self.doc.get(&obj, key.as_str()), Ok(Some(_)));
         let written = match (kept_off, present) {
             (true, false) => self.doc.put(&obj, key.as_str(), true),
@@ -796,29 +788,6 @@ impl WorkspaceDirectory {
             .into_iter()
             .map(|w| (w.id, w))
             .collect()
-    }
-}
-
-mod serde_bytes_64 {
-    use serde::de::Error as _;
-    use serde::{Deserialize, Deserializer, Serialize, Serializer};
-
-    pub fn serialize<S: Serializer>(bytes: &[u8; 64], s: S) -> Result<S::Ok, S::Error> {
-        serde_bytes::Bytes::new(bytes).serialize(s)
-    }
-
-    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<[u8; 64], D::Error> {
-        let v: serde_bytes::ByteBuf = serde_bytes::ByteBuf::deserialize(d)?;
-        let bytes = v.into_vec();
-        if bytes.len() != 64 {
-            return Err(D::Error::custom(format!(
-                "expected 64-byte signature, got {}",
-                bytes.len()
-            )));
-        }
-        let mut out = [0u8; 64];
-        out.copy_from_slice(&bytes);
-        Ok(out)
     }
 }
 

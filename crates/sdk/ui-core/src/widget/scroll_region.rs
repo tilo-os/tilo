@@ -260,6 +260,13 @@ impl ScrollRegion {
         })
     }
 
+    /// Whether a bar's thumb is being dragged: the host keeps the pointer
+    /// captured until it is released (`Widget::wants_pointer_capture`).
+    #[must_use]
+    pub fn is_dragging(&self) -> bool {
+        self.vbar.is_dragging() || self.hbar.is_dragging()
+    }
+
     fn held(&self, theme: &Theme) -> bool {
         theme.reduce_motion
             || self.pointer_near
@@ -598,14 +605,14 @@ mod tests {
         send(
             &mut region,
             &WindowEvent::CursorMoved {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 position: winit::dpi::PhysicalPosition::new(100.0, 100.0),
             },
         );
         assert!(send(
             &mut region,
             &WindowEvent::MouseWheel {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 delta: MouseScrollDelta::LineDelta(0.0, -1.0),
                 phase: winit::event::TouchPhase::Moved,
             },
@@ -614,7 +621,7 @@ mod tests {
         assert!((region.offset().y - line).abs() < 1e-9);
         region.set_focused(true);
         let end =
-            crate::synthetic_input::key_event(&Key::Named(NamedKey::End), ElementState::Pressed);
+            crate::synthetic_input::key_input(&Key::Named(NamedKey::End), ElementState::Pressed);
         assert!(send(&mut region, &end));
         assert!(
             (region.offset().y - 800.0).abs() < 1e-9,

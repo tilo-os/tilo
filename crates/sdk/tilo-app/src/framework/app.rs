@@ -438,19 +438,20 @@ pub(crate) fn build_root<A: ResourceApp>(
         .following(permissions, scope)
         .with_presentation(A::local_operations());
     if !A::DOCUMENT_HISTORY {
-        root.without_history()
-    } else if live {
-        root.drawing_past(super::preview::draw_past::<A>)
-    } else {
-        root
+        return root.without_history();
     }
+    if live {
+        #[cfg(not(target_family = "wasm"))]
+        return root.drawing_past(super::preview::draw_past::<A>);
+    }
+    root
 }
 
 /// The decoders of every edit `A`'s document takes: its resource's actions
 /// and History's restores.
 pub(crate) fn action_registry<A: ResourceApp>() -> tilo_actions::ActionRegistry {
-    let mut registry = tilo_actions::ActionRegistry::new();
-    tilo_resource::group::register::<A::Resource>(&mut registry);
+    let mut registry =
+        tilo_actions::ActionRegistry::with(tilo_resource::group::register::<A::Resource>);
     registry
         .register::<super::history::ResourceHistoryEdit<A::Resource>>(super::history::EDIT_TYPE);
     registry
@@ -721,10 +722,6 @@ pub(crate) fn role_permissions(author: &str, role: Role) -> Rc<RefCell<Permissio
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-/// Keeps a capture's temporary profile alive for as long as the host needs it.
-struct CaptureProfile(#[allow(dead_code, reason = "held for its Drop")] tempfile::TempDir);
-
-#[cfg(not(target_arch = "wasm32"))]
 fn operation(error: impl std::fmt::Display) -> LaunchError {
     LaunchError::Operation(error.to_string())
 }
@@ -956,7 +953,7 @@ fn prepare_named(
             UserId("capture-author".into()),
             role_permissions("capture-author", Role::Owner),
             tilo_actions::ActionContext::default(),
-            Rc::new(CaptureProfile(profile)),
+            Rc::new(profile),
         )?;
         let mut prepared = prepare_on(&mut host, definition, CAPTURE_INSTANCE, named, inputs)?;
         prepared.context.provide_content(content);

@@ -23,12 +23,6 @@ pub(super) struct ReviewPanel {
     pub(super) dialog: ModalDialog<Text>,
     token: Option<crate::history_mode::RestoreReview>,
 }
-pub(super) fn unix_now() -> Option<u64> {
-    crate::time::wall()
-        .duration_since(crate::time::UNIX_EPOCH)
-        .ok()
-        .map(|time| time.as_secs())
-}
 impl HistoryHost {
     #[cfg(test)]
     pub(crate) fn set_clock(&mut self, clock: fn() -> Option<u64>) {

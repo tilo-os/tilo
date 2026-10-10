@@ -27,6 +27,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, TryRecvError};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+use ui::widget::TaffyTreeExt;
 use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId, ReadDoc, ScalarValue, Value};
@@ -38,7 +39,7 @@ use ui::widget::{
     ProgressBar, Row, Scrollable, Section, Spacer, Spinner, Text, TextInput, Widget,
 };
 use vello::Scene;
-use vello::kurbo::{Affine, Circle, Point, Rect, RoundedRect};
+use vello::kurbo::{Affine, Circle, Point, Rect};
 use vello::peniko::{BlendMode, Fill};
 use winit::event::{ElementState, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
@@ -2979,23 +2980,7 @@ impl OnboardingView {
             // nothing — the edge does the separating (§9.3) — so the former
             // by-name high-contrast guard is not needed. Ground is
             // `panel_ground`, edge the derived Panel border.
-            let radius = ui::chrome::ChromeRole::Panel.radius(theme, panel.height());
-            ui::chrome::shell::panel_shadow(scene, transform, panel, radius, theme, 1.0);
-            let shape = RoundedRect::from_rect(panel, radius);
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                ui::chrome::shell::panel_ground(theme),
-                None,
-                &shape,
-            );
-            scene.stroke(
-                &vello::kurbo::Stroke::new(1.0),
-                transform,
-                ui::chrome::shell::panel_border(theme),
-                None,
-                &shape,
-            );
+            ui::chrome::shell::paint_panel(scene, transform, panel, theme, 1.0);
         }
 
         let mut local = Scene::new();
@@ -3687,19 +3672,11 @@ impl Widget for OnboardingView {
             },
             ..Default::default()
         };
-        let node = taffy.new_with_children(style, &[child]).unwrap_or(child);
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        taffy.widget_node(style, &[child], node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(l.location.x),
-            origin.y + f64::from(l.location.y),
-            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
-            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
-        );
+        self.rect = ui::widget::layout_rect(taffy, node, origin);
         if let Some(c) = &mut self.composed
             && let Ok(children) = taffy.children(node)
             && let Some(&cn) = children.first()
@@ -3978,7 +3955,7 @@ mod tests {
     use std::sync::atomic::AtomicBool;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use tempfile::TempDir;
-    use ui::widget::identity_flow::{IdentityRecord, SerializableIdentity};
+    use tilo_identity_ceremony::{IdentityRecord, SerializableIdentity};
     use winit::event::Modifiers;
 
     fn view() -> (OnboardingView, Arc<AtomicUsize>) {
@@ -4165,70 +4142,37 @@ mod tests {
     }
 
     fn escape_event() -> WindowEvent {
-        use winit::event::KeyEvent;
-        use winit::keyboard::{KeyLocation, NativeKeyCode, PhysicalKey};
-
         // winit keeps the platform field private. These inert placeholders
         // match the toolkit and greeter keyboard-event tests.
-        let mut event: KeyEvent = unsafe { std::mem::zeroed() };
-        event.logical_key = Key::Named(NamedKey::Escape);
-        event.physical_key = PhysicalKey::Unidentified(NativeKeyCode::Unidentified);
-        event.location = KeyLocation::Standard;
-        event.state = ElementState::Pressed;
-        event.repeat = false;
-        event.text = None;
+        let event = ui::synthetic_input::key_event(
+            Key::Named(NamedKey::Escape),
+            None,
+            ElementState::Pressed,
+        );
         WindowEvent::KeyboardInput {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             event,
             is_synthetic: false,
         }
     }
 
     fn dispatch_escape(view: &mut OnboardingView, document: &mut AutoCommit) -> bool {
-        let mut taffy = TaffyTree::<()>::new();
-        let node = taffy
-            .new_leaf(taffy::Style::default())
-            .expect("event target");
-        let mut handled = false;
-        let mut focus_target = None;
-        view.handle_event(
-            &escape_event(),
-            &mut ui::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &Modifiers::default(),
-                state: ui::widget::Edits::lend(document),
-                path: &automerge::ROOT,
-                handled: &mut handled,
-                focus_target: &mut focus_target,
-                node_id: node,
-                taffy: &taffy,
-            },
-        );
-        handled
+        ui::testing::Dispatch::new()
+            .doc(document)
+            .send(view, &escape_event())
+            .handled
     }
 
     fn pointer_event(position: Point) -> WindowEvent {
         WindowEvent::CursorMoved {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             position: winit::dpi::PhysicalPosition::new(position.x, position.y),
         }
     }
 
-    fn primary_press_event() -> WindowEvent {
-        WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
-            state: ElementState::Pressed,
-            button: winit::event::MouseButton::Left,
-        }
-    }
+    use ui::synthetic_input::mouse_press;
 
-    fn primary_release_event() -> WindowEvent {
-        WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
-            state: ElementState::Released,
-            button: winit::event::MouseButton::Left,
-        }
-    }
+    use ui::synthetic_input::mouse_release;
 
     fn accessible_names(widget: &dyn Widget, names: &mut Vec<String>) {
         if let Some(name) = widget.accessibility().and_then(|node| node.name) {
@@ -6362,11 +6306,11 @@ mod tests {
                 )
                 .expect("host acknowledgement layout");
             view.apply_layout(&taffy, node, Point::ZERO);
-            let row = node_map
-                .values()
-                .find_map(|&pointer| unsafe {
+            let (row_node, row) = node_map
+                .iter()
+                .find_map(|(&node, &pointer)| unsafe {
                     ((*pointer).test_id() == Some("onboarding.understood.row"))
-                        .then(|| (*pointer).get_rect())
+                        .then(|| (node, (*pointer).get_rect()))
                 })
                 .expect("labelled acknowledgement row");
             let label_point = Point::new(row.x1 - 8.0, row.center().y);
@@ -6376,7 +6320,7 @@ mod tests {
             );
 
             let mut focus = None;
-            for event in [pointer_event(label_point), primary_press_event()] {
+            for event in [pointer_event(label_point), mouse_press()] {
                 let mut handled = false;
                 view.handle_event(
                     &event,
@@ -6391,7 +6335,19 @@ mod tests {
                         taffy: &taffy,
                     },
                 );
-                assert!(handled, "the labelled checkbox row must handle {event:?}");
+                if matches!(event, WindowEvent::CursorMoved { .. }) {
+                    assert!(
+                        !handled,
+                        "hover movement must remain available to sibling controls"
+                    );
+                } else {
+                    assert!(handled, "the labelled checkbox row must handle {event:?}");
+                    assert_eq!(
+                        focus,
+                        Some(row_node),
+                        "the label press must focus the acknowledgement checkbox"
+                    );
+                }
             }
             view.settle(
                 &mut ui::widget::Edits::lend(&mut document),
@@ -6455,8 +6411,8 @@ mod tests {
             let mut focus = None;
             for event in [
                 pointer_event(button.center()),
-                primary_press_event(),
-                primary_release_event(),
+                mouse_press(),
+                mouse_release(),
             ] {
                 let mut handled = false;
                 view.handle_event(
@@ -6472,7 +6428,12 @@ mod tests {
                         taffy: &taffy,
                     },
                 );
-                if !matches!(event, WindowEvent::CursorMoved { .. }) {
+                if matches!(event, WindowEvent::CursorMoved { .. }) {
+                    assert!(
+                        !handled,
+                        "hover movement must remain available to sibling controls"
+                    );
+                } else {
                     assert!(
                         handled,
                         "the backup continuation button must handle {event:?}"

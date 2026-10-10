@@ -21,6 +21,8 @@ mod admissions;
 mod applications;
 mod collaboration;
 mod pages;
+#[cfg(feature = "agents")]
+mod steward_endpoint;
 mod stewardship;
 #[cfg(test)]
 mod tests;
@@ -437,6 +439,12 @@ pub(crate) struct RoomHost {
     pub(crate) cert: DeviceCert,
     pub(crate) key: SigningKey,
     pub(crate) revocations: Arc<std::sync::RwLock<RevocationList>>,
+    /// The live handshake trust policy, for [`crate::room_access::decide`].
+    #[cfg(feature = "agents")]
+    pub(crate) trust_policy: Arc<std::sync::RwLock<crate::policy::TrustPolicy>>,
+    /// Agent delegations, for [`crate::room_access::decide`].
+    #[cfg(feature = "agents")]
+    pub(crate) agents: crate::peer::AgentRegistry,
 }
 
 /// The rooms this relay governs.
@@ -458,6 +466,10 @@ struct RoomsInner {
 pub(crate) struct RoomAuthority {
     rooms: std::sync::Weak<RoomsInner>,
     room: String,
+    /// The device governing the room: this relay's own, which also stewards
+    /// the room's channels. Read by the steward-key decision only.
+    #[cfg(any(test, feature = "agents"))]
+    governor: [u8; 32],
 }
 
 impl RoomAuthority {
@@ -469,6 +481,22 @@ impl RoomAuthority {
     /// The governed room.
     pub(crate) fn room(&self) -> &str {
         &self.room
+    }
+
+    /// The device governing the room, which stewards its channels.
+    #[cfg(any(test, feature = "agents"))]
+    pub(crate) const fn governor(&self) -> &[u8; 32] {
+        &self.governor
+    }
+
+    /// An authority governed by `governor`, for a test of the decision.
+    #[cfg(test)]
+    pub(crate) fn governed_by(room: &str, governor: [u8; 32]) -> Self {
+        Self {
+            rooms: std::sync::Weak::new(),
+            room: room.to_owned(),
+            governor,
+        }
     }
 }
 
@@ -582,10 +610,6 @@ impl Rooms {
 
     /// The current role of `device` only when room Write permission is allowed,
     /// including live capability restrictions; `None` otherwise.
-    #[cfg_attr(
-        not(feature = "web"),
-        allow(dead_code, reason = "read by the web listener")
-    )]
     pub(crate) async fn legacy_writer_role(
         &self,
         room: &str,
@@ -655,16 +679,26 @@ impl Rooms {
             host.access.state_root().to_path_buf(),
             workspace_id,
             true,
-            false,
+            crate::room_access::AdmissionMode::Governed,
             crate::peer::MAX_AUTOBOUND_WORKSPACES,
         )
         .await
         .map_err(|error| error.to_string())?;
         let mut runtime = workspace.lock().await;
-        runtime.admit_authenticated = false;
+        // This relay's room authority governs the room: never auto-enrol,
+        // even if the room was autobound before the authority took it.
+        if std::mem::replace(
+            &mut runtime.admission,
+            crate::room_access::AdmissionMode::Governed,
+        ) != crate::room_access::AdmissionMode::Governed
+        {
+            crate::authority_epoch::bump();
+        }
         runtime.room_authority = Some(RoomAuthority {
             rooms: Arc::downgrade(&self.inner),
             room: room.room().to_owned(),
+            #[cfg(any(test, feature = "agents"))]
+            governor: host.cert.device_public_key,
         });
         if runtime.governor_tap.is_none() {
             let (tap, notices) = tokio::sync::mpsc::channel(RECORD_NOTICES);
@@ -744,10 +778,7 @@ impl Rooms {
         }
         let now = SystemTime::now();
         let (role, ..) = room.peer().permissions(author, now)?;
-        if !matches!(
-            role,
-            collab_types::role::Role::Owner | collab_types::role::Role::Editor
-        ) {
+        if !crate::room_access::role_grants(role, collab_types::caps::Verb::Write) {
             return Err(format!(
                 "{app_id} record written by a device that may not edit"
             ));
@@ -922,10 +953,6 @@ impl Rooms {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone()
     }
-}
-
-fn now_ns() -> u64 {
-    tilo_clock::unix_now_ns()
 }
 
 fn system_time(now_ns: u64) -> SystemTime {

@@ -40,7 +40,7 @@ use ui::widget::{
 use crate::form::EditForm;
 use crate::model::{Contact, ContactId, ContactStore, Labeled, SortKey, group_names_equal};
 use crate::vcard::VCardVersion;
-use crate::view::{Bridge, ContactList, EmptyPane, ListEntry, Request, Shared, queue};
+use crate::view::{Bridge, ContactList, ListEntry, Request, Shared, empty_pane, queue};
 
 mod dialogs;
 mod effects;
@@ -470,11 +470,7 @@ impl ContactsApp {
             .with_id("contacts.shell")
             .sidebar(Box::new(Self::sidebar_list(&[], &destination)))
             .overview(Box::new(ContactList::new(std::rc::Rc::clone(&shared))))
-            .content(Box::new(EmptyPane::new(
-                std::rc::Rc::clone(&shared),
-                "No contact selected",
-                None,
-            )))
+            .content(empty_pane(&shared, "No contact selected", None))
             .overview_header("All contacts", overview_actions(&shared, Vec::new()));
         shell.show(NavPane::Overview);
         Self {
@@ -1306,16 +1302,12 @@ impl ContactsApp {
         let content = self.content_key();
         if self.content_shown.as_ref() != Some(&content) {
             let element: Element = match &content {
-                ContentKey::FirstRun => Box::new(EmptyPane::new(
-                    std::rc::Rc::clone(&self.shared),
+                ContentKey::FirstRun => empty_pane(
+                    &self.shared,
                     "No contacts yet",
                     Some(("New contact", Request::NewContact)),
-                )),
-                ContentKey::Nothing => Box::new(EmptyPane::new(
-                    std::rc::Rc::clone(&self.shared),
-                    "No contact selected",
-                    None,
-                )),
+                ),
+                ContentKey::Nothing => empty_pane(&self.shared, "No contact selected", None),
                 ContentKey::Contact(contact) => {
                     if self.detail_scroll.0 != Some(contact.id) {
                         self.detail_scroll = (Some(contact.id), std::rc::Rc::default());
@@ -1710,30 +1702,20 @@ impl Widget for ContactsApp {
             }
             children.push(node);
         }
-        let node = taffy.parent_node(
-            Style {
-                display: taffy::Display::Flex,
-                flex_grow: 1.0,
-                size: Size {
-                    width: Dimension::percent(1.0),
-                    height: Dimension::percent(1.0),
-                },
-                ..Default::default()
+        let style = Style {
+            display: taffy::Display::Flex,
+            flex_grow: 1.0,
+            size: Size {
+                width: Dimension::percent(1.0),
+                height: Dimension::percent(1.0),
             },
-            &children,
-        );
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+            ..Default::default()
+        };
+        taffy.widget_node(style, &children, node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(l.location.x),
-            origin.y + f64::from(l.location.y),
-            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
-            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
-        );
+        self.rect = ui::widget::layout_rect(taffy, node, origin);
         let child_origin = Point::new(self.rect.x0, self.rect.y0);
         if let Some(shell) = child_node(taffy, node, 0) {
             self.shell.apply_layout(taffy, shell, child_origin);

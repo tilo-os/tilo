@@ -676,6 +676,14 @@ impl Widget for FormSection {
         self.effective_layout().map(LayoutInfo::Section)
     }
     retained_parts!("FormSection");
+    fn is_layout_dirty(&self) -> bool {
+        // A collapsed section can contain no rows. It is still a layout
+        // container, whose intrinsic size changes only with its children.
+        self.parts
+            .children
+            .iter()
+            .any(|child| child.is_layout_dirty())
+    }
     fn build_layout(
         &mut self,
         tree: &mut TaffyTree<()>,

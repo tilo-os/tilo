@@ -35,8 +35,8 @@ use std::time::{Duration, Instant, SystemTime};
 use getrandom::{SysRng, rand_core::UnwrapErr};
 use smithay::input::keyboard::xkb::keysyms;
 use threshold_identity::ThresholdIdentity;
+use tilo_identity_ceremony::IdentityRecord;
 use ui::clipboard::{ClipboardBackend, ClipboardTarget};
-use ui::widget::identity_flow::IdentityRecord;
 use wayland_client::protocol::{
     wl_buffer::WlBuffer,
     wl_compositor::WlCompositor,
@@ -63,7 +63,7 @@ use wayland_protocols::wp::primary_selection::zv1::client::{
 use wayland_protocols::xdg::shell::client::{
     xdg_surface::{self, XdgSurface},
     xdg_toplevel::{self, XdgToplevel},
-    xdg_wm_base::{self, XdgWmBase},
+    xdg_wm_base::XdgWmBase,
 };
 
 /// The mime type Tilo offers text selections as. Must match
@@ -788,6 +788,20 @@ impl Compositor {
 
 impl Drop for Compositor {
     fn drop(&mut self) {
+        if std::thread::panicking() {
+            // Observe the owned child before cleanup kills it. A client's
+            // BrokenPipe alone cannot distinguish a compositor exit from a
+            // closed Wayland connection. Keep the original panic and never
+            // make diagnostics a second panic during unwinding.
+            use std::io::Write as _;
+            let status = self.child.try_wait();
+            let log: String = self.recent_log().chars().take(16_384).collect();
+            let _ = writeln!(
+                std::io::stderr().lock(),
+                "owned compositor status before failure cleanup: {status:?}\n\
+                 compositor log tail (at most 40 lines / 16384 characters):\n{log}"
+            );
+        }
         let _ = self.child.kill();
         let _ = self.child.wait();
         let _ = std::fs::remove_dir_all(&self.runtime_dir);
@@ -1085,14 +1099,18 @@ fn wait_for_clipboard_before(
     failure: &str,
     end: Instant,
 ) {
-    while !condition() && Instant::now() < end {
+    // Retain the successful production read: another short-budget read can
+    // return None even after the selection was observed.
+    let mut observed = condition();
+    while !observed && Instant::now() < end {
         dispatch_any(&mut [&mut *client], None, Duration::from_millis(5));
+        observed = condition();
     }
     assert!(
         Instant::now() < end,
         "{failure}: fixture exceeded its deadline"
     );
-    assert!(condition(), "{failure}");
+    assert!(observed, "{failure}");
 }
 
 fn cancellation_clipboard(app: &TestClient) -> (ui::clipboard::WaylandClipboard, Instant) {
@@ -1561,6 +1579,46 @@ impl TestClient {
 }
 
 #[test]
+fn clipboard_mirror_never_requests_gtk_save_targets_as_payload() {
+    let compositor = Compositor::start();
+    let mut client = TestClient::new(compositor.connect(), "org.tilo.test.gtk-clipboard-source");
+    client.assert_is_tilo_compositor();
+    client.map_window(&compositor);
+    let manager = client.state.data_manager.clone().expect("data manager");
+    let device = client.data_device.clone().expect("data device");
+
+    for payload in ["first GTK copy", "replacement GTK copy"] {
+        let source = manager.create_data_source(&client.qh, payload.to_owned());
+        source.offer(TEXT_MIME.to_owned());
+        source.offer("SAVE_TARGETS".to_owned());
+        device.set_selection(Some(&source), client.state.last_serial);
+        client.roundtrip();
+        wait_for_clipboard(
+            &mut client,
+            || compositor.chrome_paste(false).as_deref() == Some(payload),
+            "chrome never observed the current GTK-style selection",
+        );
+        assert!(
+            client
+                .state
+                .send_requests
+                .iter()
+                .any(|mime| mime == TEXT_MIME),
+            "the live client must supply the clipboard bytes"
+        );
+        assert!(
+            !client
+                .state
+                .send_requests
+                .iter()
+                .any(|mime| mime == "SAVE_TARGETS"),
+            "SAVE_TARGETS is a clipboard-manager operation, not a data format: {:?}",
+            client.state.send_requests
+        );
+    }
+}
+
+#[test]
 #[allow(
     clippy::too_many_lines,
     reason = "one scenario test keeps each merged phase and its fresh fixture visible"
@@ -1735,11 +1793,25 @@ fn native_borrowed_display_pastes_the_compositors_current_selection() {
     client.roundtrip();
     let payload = "https://example.com/native-paste";
     compositor.chrome_copy(payload, false);
-    client.roundtrip();
-    assert_eq!(
-        clipboard.text(ClipboardTarget::Clipboard).as_deref(),
-        Some(payload),
-        "the actual native reader lost a selection published by the compositor"
+    // Each read is bounded by the UI's short read budget; a loaded runner can
+    // need several before the compositor serves the selection. Once the real
+    // reader observes it, another poll must not discard that observation.
+    let observed_payload = std::cell::Cell::new(false);
+    wait_for_clipboard_before(
+        &mut client,
+        || {
+            assert!(
+                !observed_payload.get(),
+                "polling continued after the native reader observed the selection"
+            );
+            let matches = clipboard.text(ClipboardTarget::Clipboard).as_deref() == Some(payload);
+            if matches {
+                observed_payload.set(true);
+            }
+            matches
+        },
+        "the actual native reader lost a selection published by the compositor",
+        tilo_test_env::hang_deadline(),
     );
     assert_eq!(
         clipboard
@@ -1749,6 +1821,27 @@ fn native_borrowed_display_pastes_the_compositors_current_selection() {
             .as_deref(),
         Some(payload),
         "explicit paste must read the focused compositor selection"
+    );
+}
+
+#[test]
+#[should_panic(expected = "missing native selection: fixture exceeded its deadline")]
+fn native_borrowed_display_wait_refuses_a_missing_selection() {
+    let compositor = Compositor::start();
+    let mut client = TestClient::new(compositor.connect(), "org.tilo.test.native-missing-paste");
+    client.assert_is_tilo_compositor();
+    // SAFETY: client owns the display and outlives this backend.
+    let clipboard =
+        unsafe { ui::clipboard::WaylandClipboard::new(client.conn.backend().display_ptr().cast()) };
+    assert!(clipboard.wait_ready_for_wayland_test(deadline()));
+    client.map_window(&compositor);
+    client.roundtrip();
+    assert_eq!(clipboard.text(ClipboardTarget::Clipboard), None);
+    wait_for_clipboard_before(
+        &mut client,
+        || clipboard.text(ClipboardTarget::Clipboard).is_some(),
+        "missing native selection",
+        Instant::now() + Duration::from_millis(100),
     );
 }
 
@@ -2424,20 +2517,7 @@ impl Dispatch<WlTouch, ()> for ClientState {
     }
 }
 
-impl Dispatch<XdgWmBase, ()> for ClientState {
-    fn event(
-        _: &mut Self,
-        wm_base: &XdgWmBase,
-        event: xdg_wm_base::Event,
-        (): &(),
-        _: &Connection,
-        _: &QueueHandle<Self>,
-    ) {
-        if let xdg_wm_base::Event::Ping { serial } = event {
-            wm_base.pong(serial);
-        }
-    }
-}
+crate::support::wayland::test_client!(ClientState: ping);
 
 impl Dispatch<XdgSurface, ()> for ClientState {
     fn event(

@@ -126,7 +126,16 @@ scratch target and is copied into the retained target—there is no lower-
 resolution render or upscale. Layout/structure/model synchronization, overlays,
 post-processing, invalid retained contents, and damage covering at least half
 the surface fall back to a full render. A clean compositor-only presentation
-performs no Vello raster pass. Spatial culling still avoids visiting
+performs no Vello raster pass. Inside the compositor, an app hosted in a tab
+gets the same treatment from the other side: a widget may mark what it draws
+as a keyed damage part with the bounds it paints (`ui::scene_parts::part`),
+and the compositor repaints only the parts whose encoded commands changed;
+the app's frames hand over the same widget damage a window submits, plus the
+old and new bounds of a tooltip, so the compositor repaints that rather than
+the whole tile (see docs/architecture/compositor.md, "Frame damage"). In a
+window of its own, a tooltip still repaints the window: its floating
+material blurs what is under it, and the render worker repaints in full while
+any backdrop is on screen. Spatial culling still avoids visiting
 off-viewport widgets during scene recording; cached scrollable subtrees retain
 all of their commands so scrolling cannot reveal a hole.
 

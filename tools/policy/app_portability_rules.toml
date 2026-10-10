@@ -43,7 +43,6 @@ rules = ["R1", "R2", "R3", "R4", "W1", "W2", "W3"]
 allowed = [
     "crates/platform/*",
     "crates/sdk/runner-native",
-    "crates/sdk/runner-web",
     # `tilo-app` selects exactly one runner per target.
     "crates/sdk/tilo-app/Cargo.toml",
     "crates/sdk/tilo-app/src/runner.rs",
@@ -175,7 +174,6 @@ crates = [
     "tilo-content",
     "settings-store",
     # Absorbed into platform crates; their shims count down.
-    "tilo-xdg-paths",
     "private-fs",
     "tilo-advisory-lock",
     "bounded-command",

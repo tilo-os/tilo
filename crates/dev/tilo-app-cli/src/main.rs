@@ -88,12 +88,50 @@ enum Command {
     Ui(UiArgs),
     /// Build, assemble, sign, and verify an installable Tilo package.
     Package(PackageArgs),
+    /// Capture and seal a reusable compiler interface for an exact native SDK.
+    Sdk(SdkArgs),
     /// Create or show the publisher key that signs packages and entries.
     Keys(publishing::KeysArgs),
     /// Ask a registry to let your key publish under namespaces you prove.
     Apply(publishing::ApplyArgs),
     /// Upload packages and ask the registry to list them.
     Publish(publishing::PublishArgs),
+}
+
+#[derive(clap::Args)]
+struct SdkArgs {
+    #[command(subcommand)]
+    command: SdkCommand,
+}
+
+#[derive(Subcommand)]
+enum SdkCommand {
+    /// Read the canonical source SDK resource declarations without running app code.
+    Declarations,
+    /// Capture metadata from the actual canonical Cargo artifact stream (on its builder).
+    Capture {
+        #[arg(long)]
+        units: PathBuf,
+        #[arg(long)]
+        output: PathBuf,
+    },
+    /// Sign a captured compiler interface bound to an independently verified runtime.
+    Export {
+        #[arg(long)]
+        capture: PathBuf,
+        #[arg(long)]
+        sdk_bundle: PathBuf,
+        #[arg(long)]
+        sdk_publisher: String,
+        #[arg(long)]
+        sdk_root: String,
+        #[arg(long)]
+        identity: PathBuf,
+        #[arg(long)]
+        bundle_tool: PathBuf,
+        #[arg(long)]
+        output: PathBuf,
+    },
 }
 
 #[derive(clap::Args)]
@@ -871,6 +909,26 @@ struct PackageArgs {
     #[arg(long)]
     identity: Option<PathBuf>,
 
+    /// Signed native SDK directory. Its publisher and root must be selected independently.
+    #[arg(long, requires_all = ["sdk_publisher", "sdk_root"])]
+    sdk_bundle: Option<PathBuf>,
+
+    /// Expected SDK publisher public key, from the authenticated SDK receipt.
+    #[arg(long, requires = "sdk_bundle")]
+    sdk_publisher: Option<String>,
+
+    /// Expected signed SDK payload root, from the authenticated SDK receipt.
+    #[arg(long, requires = "sdk_bundle")]
+    sdk_root: Option<String>,
+
+    /// Separately signed compiler interface bound to the selected SDK.
+    #[arg(long, requires_all = ["sdk_bundle", "sdk_compiler_root"])]
+    sdk_compiler_bundle: Option<PathBuf>,
+
+    /// Independently selected compiler-interface content root.
+    #[arg(long, requires = "sdk_compiler_bundle")]
+    sdk_compiler_root: Option<String>,
+
     /// Cargo profile used to build the declared entrypoints. Defaults to
     /// `thin-app`, or `release` with `--static`.
     #[arg(long)]
@@ -1124,6 +1182,7 @@ fn main() -> ExitCode {
         Command::Inspect(args) => run_inspect(args),
         Command::Ui(args) => run_ui(args),
         Command::Package(args) => run_package(args),
+        Command::Sdk(args) => run_sdk(args, interactive),
         Command::Keys(args) => publishing::run_keys(args),
         Command::Apply(args) => publishing::run_apply(args),
         Command::Publish(args) => publishing::run_publish(args),
@@ -1229,6 +1288,7 @@ impl Command {
             Self::Inspect(_) => "inspect",
             Self::Ui(_) => "ui",
             Self::Package(_) => "package",
+            Self::Sdk(_) => "sdk",
             Self::Keys(_) => "keys",
             Self::Apply(_) => "apply",
             Self::Publish(_) => "publish",
@@ -1707,6 +1767,79 @@ fn platform_and_arch(
     ))
 }
 
+fn run_sdk(args: SdkArgs, interactive: bool) -> Result<Value> {
+    let cwd = std::env::current_dir()?;
+    let repo = cwd
+        .ancestors()
+        .find(|path| path.join("os/dev/export-sdk-compiler.py").is_file())
+        .context("SDK export requires its canonical checkout")?;
+    let mut command = std::process::Command::new("python3");
+    command
+        .arg(repo.join("os/dev/export-sdk-compiler.py"))
+        .current_dir(repo);
+    let mut resource_file = None;
+    match args.command {
+        SdkCommand::Declarations => {
+            let report =
+                json!({"resources": tilo_app_cli::native_sdk::compiler::capture_resources(repo)?});
+            if interactive {
+                println!("{}", serde_json::to_string_pretty(&report)?);
+            }
+            return Ok(report);
+        }
+        SdkCommand::Capture { units, output } => {
+            let resources = tilo_app_cli::native_sdk::compiler::capture_resources(repo)?;
+            let temporary = tempfile::NamedTempFile::new()?;
+            std::fs::write(temporary.path(), serde_json::to_vec(&resources)?)?;
+            command.arg("--resources").arg(temporary.path());
+            resource_file = Some(temporary);
+            command
+                .args(["--capture-only", "--repo"])
+                .arg(repo)
+                .arg("--units")
+                .arg(units)
+                .arg("--capture")
+                .arg(output);
+        }
+        SdkCommand::Export {
+            capture,
+            sdk_bundle,
+            sdk_publisher,
+            sdk_root,
+            identity,
+            bundle_tool,
+            output,
+        } => {
+            command
+                .arg("--capture")
+                .arg(capture)
+                .arg("--sdk")
+                .arg(sdk_bundle)
+                .arg("--sdk-publisher")
+                .arg(sdk_publisher)
+                .arg("--sdk-root")
+                .arg(sdk_root)
+                .arg("--identity")
+                .arg(identity)
+                .arg("--bundle-tool")
+                .arg(bundle_tool)
+                .arg("--out-root")
+                .arg(output);
+        }
+    }
+    let output = command.output()?;
+    drop(resource_file);
+    std::io::Write::write_all(&mut std::io::stderr(), &output.stderr)?;
+    if !output.status.success() {
+        anyhow::bail!("SDK compiler capture/export failed");
+    }
+    let report: Value = serde_json::from_slice(&output.stdout)?;
+    if interactive {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    }
+    Ok(report)
+}
+
 fn run_package(args: PackageArgs) -> Result<Value> {
     let path = args.path.map_or_else(std::env::current_dir, Ok)?;
     let sdk_target = match args.target.as_deref() {
@@ -1716,6 +1849,11 @@ fn run_package(args: PackageArgs) -> Result<Value> {
         _ => None,
     };
     if let Some(target) = sdk_target {
+        if args.sdk_bundle.is_some() {
+            anyhow::bail!(
+                "--sdk-bundle requires --platform tilo and a Rust target triple, not an SDK target alias"
+            );
+        }
         let mut build = tilo_app_cli::targets::TargetRequest::new(target);
         build.allow_planned = args.allow_planned;
         build.features = args.features;
@@ -1746,7 +1884,26 @@ fn run_package(args: PackageArgs) -> Result<Value> {
     {
         anyhow::bail!("--keystore and --no-bundle are for --platform android");
     }
+    let sdk = match (args.sdk_bundle, args.sdk_publisher, args.sdk_root) {
+        (Some(bundle), Some(publisher), Some(root)) => {
+            Some(tilo_app_cli::native_sdk::SdkSelection {
+                compiler: match (args.sdk_compiler_bundle, args.sdk_compiler_root) {
+                    (Some(bundle), Some(root)) => {
+                        Some(tilo_app_cli::native_sdk::compiler::CompilerSelection { bundle, root })
+                    }
+                    (None, None) => None,
+                    _ => anyhow::bail!("compiler bundle and root must be selected together"),
+                },
+                bundle,
+                publisher,
+                root,
+            })
+        }
+        (None, None, None) => None,
+        _ => anyhow::bail!("native SDK selection requires bundle, publisher and root"),
+    };
     let request = tilo_app_cli::PackageRequest {
+        sdk,
         output: args.output,
         identity: args.identity,
         profile: args.profile,
@@ -2020,6 +2177,7 @@ fn build_native(
     let build = tilo_app_cli::build_native(
         path,
         &tilo_app_cli::PackageRequest {
+            sdk: None,
             output: None,
             identity: None,
             profile: args.profile.clone(),
@@ -2205,6 +2363,8 @@ fn run_check(args: CheckArgs) -> Result<Value> {
         return Err(failed("app checks failed", json!({"stages": stages})));
     }
 
+    check_runtime_fonts(&mut stages)?;
+
     let format_mode = if args.fix {
         tilo_app_cli::AppFormatMode::Apply
     } else {
@@ -2222,10 +2382,7 @@ fn run_check(args: CheckArgs) -> Result<Value> {
         (
             "test",
             "Rust tests and generated accessibility contract",
-            &|| {
-                tilo_app_cli::native_libs::require_fonts()?;
-                quality.test.execute()
-            },
+            &|| quality.test.execute(),
         ),
         ("certify", "Tilo-native runtime certification", &|| {
             certify_one(&path)
@@ -2268,6 +2425,19 @@ fn run_check(args: CheckArgs) -> Result<Value> {
     }
     println!("All app checks passed");
     Ok(json!({"stages": stages}))
+}
+
+fn check_runtime_fonts(stages: &mut Vec<Value>) -> Result<()> {
+    println!("[check] runtime fonts");
+    if let Err(error) = tilo_app_cli::native_libs::require_fonts() {
+        stages.push(json!({"stage": "fonts", "passed": false}));
+        return Err(error.context(failed(
+            "runtime fonts preflight failed",
+            json!({"stages": stages}),
+        )));
+    }
+    stages.push(json!({"stage": "fonts", "passed": true}));
+    Ok(())
 }
 
 /// `check --target`: the SDK targets' declared platforms, capabilities and
@@ -4051,5 +4221,91 @@ mod tests {
             [PackagePlatform::Android]
         );
         assert!(check_platforms(&[CheckPlatformArg::All]).contains(&PackagePlatform::Android));
+    }
+    #[test]
+    fn compiler_interface_selection_requires_runtime_and_independent_root() {
+        for flags in [
+            vec!["--sdk-compiler-bundle", "compiler"],
+            vec!["--sdk-compiler-root", "root"],
+            vec![
+                "--sdk-compiler-bundle",
+                "compiler",
+                "--sdk-compiler-root",
+                "root",
+            ],
+        ] {
+            let mut args = vec!["tilo-app", "package"];
+            args.extend(flags);
+            assert!(Cli::try_parse_from(args).is_err());
+        }
+        let parsed = Cli::try_parse_from([
+            "tilo-app",
+            "package",
+            "--sdk-bundle",
+            "runtime",
+            "--sdk-root",
+            "runtime-root",
+            "--sdk-publisher",
+            "publisher",
+            "--sdk-compiler-bundle",
+            "compiler",
+            "--sdk-compiler-root",
+            "compiler-root",
+        ])
+        .expect("complete independent selections");
+        let Command::Package(args) = parsed.command else {
+            panic!("package command")
+        };
+        assert_eq!(args.sdk_compiler_bundle, Some(PathBuf::from("compiler")));
+        assert_eq!(args.sdk_compiler_root.as_deref(), Some("compiler-root"));
+    }
+
+    #[test]
+    fn native_sdk_selection_requires_independent_publisher_and_root() {
+        assert!(Cli::try_parse_from(["tilo-app", "package", "--sdk-bundle", "sdk"]).is_err());
+        assert!(
+            Cli::try_parse_from(["tilo-app", "package", "--sdk-publisher", "publisher"]).is_err()
+        );
+        let parsed = Cli::try_parse_from([
+            "tilo-app",
+            "package",
+            "--sdk-bundle",
+            "sdk",
+            "--sdk-publisher",
+            "publisher",
+            "--sdk-root",
+            "root",
+        ])
+        .expect("complete SDK selection");
+        let Command::Package(args) = parsed.command else {
+            panic!("package command");
+        };
+        assert_eq!(args.sdk_bundle, Some(PathBuf::from("sdk")));
+        assert_eq!(args.sdk_publisher.as_deref(), Some("publisher"));
+        assert_eq!(args.sdk_root.as_deref(), Some("root"));
+        for alias in ["linux", "macos", "web"] {
+            let parsed = Cli::try_parse_from([
+                "tilo-app",
+                "package",
+                "--sdk-bundle",
+                "sdk",
+                "--sdk-publisher",
+                "publisher",
+                "--sdk-root",
+                "root",
+                "--target",
+                alias,
+            ])
+            .expect("SDK target alias is parsed before production admission");
+            let Command::Package(args) = parsed.command else {
+                panic!("package command");
+            };
+            assert!(
+                run_package(args)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("not an SDK target alias")
+            );
+        }
     }
 }

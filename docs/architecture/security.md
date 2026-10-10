@@ -65,6 +65,19 @@ The governed implementation uses the Linux host's PipeWire backend. An unavailab
 service or device is a playback error. It does not relax the app sandbox or use
 capture access as an output fallback.
 
+### Native media plugin discovery
+
+The signed application runtime supplies GStreamer core libraries. Platform
+GStreamer decoder plugins remain in the existing read-only system library
+profile, as graphics drivers do. GStreamer normally locates plugins beside its
+own library; relocating that library into `/run/tilo-runtime/<version>/lib`
+therefore needs an explicit search path. The launcher sets
+`GST_PLUGIN_SYSTEM_PATH_1_0` to that runtime's `lib/gstreamer-1.0` followed by fixed
+system plugin directories already covered by the profile. It does not inherit
+session plugin paths, expose a user plugin directory, bind a new host path, or
+change Landlock, seccomp, network or audio-output authority. The same native
+media libraries and platform plugins must remain ABI-compatible.
+
 ## Seccomp-bpf blocklist
 
 `tilo-launcher` compiles the filter for every launch with the `seccompiler` crate (`sandbox_core::seccomp`) and hands it to `bwrap --seccomp <fd>`. It is a default-allow deny-list answering `EPERM`, derived from Flatpak's profile:
@@ -79,6 +92,77 @@ mount_setattr, quotactl, acct
 ```
 
 The default profile, `tilo-default`, also refuses any `mmap`/`mprotect`/`pkey_mprotect` asking for writable and executable memory at once. `tilo-jit` drops only that rule, and a manifest's request for it is honoured only for packages the image entitles (`/usr/lib/tilo/jit-entitled.conf`; `launcher::seccomp::resolve_profile`). `tilo-web-engine` is `tilo-jit` for a web engine that confines its own renderers: it also permits `clone`/`unshare` with `CLONE_NEWUSER`, `CLONE_NEWPID` and `CLONE_NEWNET` and `chroot`, the parts of Chromium's renderer sandbox, and still refuses `setns`, `mount`, `pivot_root` and every other namespace kind. It is honoured only for packages in `/usr/lib/tilo/web-engine-entitled.conf` (built in: the browser); a package entitled to the JIT but not to this gets `tilo-jit`. The compiled programs are pinned byte for byte by the launcher's tests, so any change to the filter is reviewed as a policy change.
+
+## App workers for host agents and room actions
+
+A host running agents (`tilo-relay --features agents`) acts on its rooms'
+records for agents and for the owner's pages (`RoomActions`). That host
+process holds its device signing key, every agent's device key
+(`agents.json`) and every room it serves, so no app code runs in it. Each
+record is held in its own app worker (`crates/agent/agent-participant/src/worker`):
+
+- **Process.** The host's executable started again in worker mode
+  (`worker::dispatch_early`), one per record, with a cleared environment and
+  its supervisor's socket as stdin. Registered reads and view discovery of an
+  existing record each get a worker too.
+- **Confinement**, before it reads a request, from the shared primitives:
+  `tilo-sandbox`'s `detach` (inherited descriptors closed, dies with its
+  supervisor) and resource caps; on Linux a Landlock ruleset granting no path
+  or port (best effort), the seccomp parser policy (`sandbox_core::seccomp::parser_program`:
+  application baseline with write-xor-execute, no socket, `connect`, `bind`
+  or `exec`) after the `clone3` compatibility filter, and a deny-list
+  refusing every syscall that opens, creates, removes, renames or relinks a
+  path, `io_uring`, and signals to any other process. The seccomp layers are
+  enforced on every kernel, so the state directory stays out of reach where
+  Landlock is missing. On macOS, `tilo-sandbox`'s Seatbelt profile with no
+  readable path. A worker that cannot confine itself serves nothing and the
+  operation is refused; there is no unconfined fallback.
+- **Keys.** The protocol (`worker/proto.rs`) carries app and record ids, the
+  participant's public name, Automerge bytes and a caller's read policy,
+  never a key. The supervisor seals and signs.
+- **Untrusted output.** A worker's Automerge bytes are admitted to the
+  supervisor's own copy of the record through `tilo-automerge-isolate`
+  before they are signed: a whole document must load, an increment must
+  apply on top of the record with nothing missing. Incoming changes are
+  admitted the same way before a worker sees them, and so are the changes
+  of records no worker holds: an agent's unopened records and the room's
+  shared desktop, whose tabs agents and room actions read
+  (`participant/unopened.rs`). With no isolate those changes wait and the
+  record does not open; nothing decodes them in the host instead. A worker
+  that dies is replaced from that copy, at most twice per record.
+- **Keys before acting.** Room actions act on a record only once the host
+  holds that record's channel keys. The wait is woken by the key's arrival
+  and covers only the record the request names, so a record whose keys are
+  withheld holds back no other. When the keys have not arrived after 10 s,
+  the invocation is refused as unavailable; it never runs on a record seen
+  only in part. A catalogue waits for the same keys once, then lists what
+  opened.
+
+Still in the host process: the app catalogue is linked statically (each
+app's `definition()` builds there), and agents' device keys are kept in
+`agents.json`. Moving the catalogue to installed packages and the agent keys
+to the secret store are tracked follow-ups.
+
+### Load hints beside local records
+
+Loading a large record spends most of its time rebuilding every change to
+learn its hash, so a full save of a record of 64 KiB or more also writes the
+change hashes it listed to `state.hashes` beside `state.automerge`
+(`crates/system/app-state/src/load_hint.rs`), and the next load takes them
+instead (TIL-762). A hint skips verifying that each change matches its hash,
+so it is trusted exactly as far as the record bytes beside it:
+
+- Only `DocWriter` makes one, from the document it holds, whose changes were
+  verified when they entered it; the store keeps it on this device and never
+  syncs, sends or receives it. Documents and changes from peers are always
+  rebuilt and verified in full, through the isolate where it applies.
+- It names the document chunk it was made for by BLAKE3 digest and is used
+  for those bytes only; anything else (a replacement, a restored file, a
+  torn write) makes it stale and the load rebuilds every change.
+- Automerge still requires one distinct hash per change whose tips are the
+  stored heads. A keyed MAC would add nothing: its key would sit in the same
+  device-local directory, behind the same write access that already decides
+  what the record contains.
 
 ## Per-workspace Wayland bridge socket
 
@@ -141,7 +225,7 @@ Per request:
 
 Step 3 needs something to empty that queue. The compositor drains `PromptQueueHandle` onto `ChromeState::pending_grants` every frame (`ShellOverlayHost::drain_portal_prompts`), and each entry carries the portal's reply channel, so the user's click resolves the D-Bus method that is parked on it. An entry dropped without an answer reads as deny — the failure mode is a refusal, not a hang.
 
-**The portal is served by the compositor**, in-process, in both native and hosted mode (`compositor::native::start_portal_backend`). It is not a separate daemon: the questions the portal answers are all about the live session — which workspace the caller is in, what it has been granted, what the person here decides now — and all of them live in the `WorkspaceTree` the compositor owns. The former `shell --portal-server-only` unit built its context on an empty tree and had no output to draw a dialog on, so it could answer none of them; it is removed, and D-Bus permits one owner per name, so leaving it in place would have been a race whose loser served nobody while looking healthy. `ServerHandle::owns_name` reports whether the name was actually acquired, and the compositor logs at error level when it was not.
+**The portal is served by the compositor**, in-process, in both native and hosted mode (`compositor::native::start_portal_backend`). It is not a separate daemon: the questions the portal answers are all about the live session — which workspace the caller is in, what it has been granted, what the person here decides now — and all of them live in the `WorkspaceTree` the compositor owns. The former `shell --portal-server-only` unit built its context on an empty tree and had no output to draw a dialog on, so it could answer none of them; it is removed (the binary refuses the flag with exit status 2 rather than ignoring it into a second compositor), and D-Bus permits one owner per name, so leaving it in place would have been a race whose loser served nobody while looking healthy. `ServerHandle::owns_name` reports whether the name was actually acquired, and the compositor logs at error level when it was not.
 
 `xdg-desktop-portal`'s config (`os/usr/share/xdg-desktop-portal/portals/tilo.portal`) registers `org.freedesktop.impl.portal.desktop.tilo` as the backend for these interfaces. ScreenCast output streams use PipeWire (`crates/session/shell/src/portal/screencast_pipewire.rs`); the provisioner is a seam (`MockScreenCastProvisioner` for headless/tests, a real libpipewire connection in the production OS build). RemoteDesktop seat injection reuses the same `RemoteInputSink`/seat path as peer-sync remote input.
 
@@ -258,6 +342,7 @@ Steps 3-6 live in `crates/session/shell/src/network/input_firewall.rs`. Every on
 ## Encryption
 
 - Iroh provides encrypted QUIC transport, authenticated endpoint ids, NAT traversal, and encrypted relay fallback. Workspace hosts add mutual device-certificate authentication.
+- **A cross-device action is signed by the device that sends it, not vouched for by the host that routes it.** Device certificates are public, so a workspace host — including a hosted server operated for the user — could otherwise name any member it has seen as the source of an action it invented. The sending device signs the exact action and its issue time; the target broker refuses any effect without that signature, outside a 60-second freshness window, or already admitted, and still checks the certificate against the room's current authority. Payloads are not hidden from the host. See `docs/architecture/collaboration.md`, "Private actions are signed by their source device".
 - iroh's FUSE traffic (`fs`) is QUIC + TLS 1.3.
 - At-rest encryption for cloud-backed `/var/workspace` is a follow-up.
 
@@ -272,10 +357,12 @@ Steps 3-6 live in `crates/session/shell/src/network/input_firewall.rs`. Every on
 | Clipboard data leak        | `wl_data_device` blocked at bridge v1                   | `compositor/bridge.rs`             |
 | Input injection (remote)   | Region + Z-order + scrubber + rate limit                | `network/input_firewall.rs`, driven from `compositor/state.rs::review_remote_input` |
 | Sandbox escape via syscall | seccomp-bpf blocklist + Landlock                        | `system/sandbox-core`, `packaging/launcher/landlock_shim.rs` |
+| Host key theft via a hostile record (agents, room actions) | One confined app worker per record; keys and signing stay in the host; worker output admitted through the isolate | `agent/agent-participant/src/worker/` |
 | Network exfil to an ungranted host | Empty netns + name-matched SOCKS5 egress gate   | `packaging/launcher/netgate.rs`    |
 | Clickjacking               | Z-order verification before remote input inject         | `network/input_firewall.rs`, over the tile order `compositor/client_input.rs` publishes |
 | Privilege escalation       | Owner-only grant authority + CRDT-persisted grants       | `crates/session/shell/src/shell/state.rs::Workspace.grants` |
 | Room takeover via replication | Governance written only by the room's authority, pinned from the invite signature, never from a first answer; one admission for every receiver | `crates/collab/tilo-peer-state/src/room/admit.rs::admit_room_changes` |
+| Action forged by the workspace host | Source-device signature over the exact action + freshness window + replay window at the target broker | `tilo-delivery-protocol/src/peer_actions/signed.rs`, `tilo-action-broker/src/peer_action_broker.rs` |
 | Traffic snoop              | QUIC/TLS end-to-end                                     | Iroh                               |
 | Token forgery              | ed25519 signature + canonical payload + expiry          | `network/invite.rs`                |
 | Host takeover by peer      | Physical-input priority + `Super+Esc` kill switch        | `network/input_firewall.rs`, `compositor/native.rs` |

@@ -1093,6 +1093,7 @@ fn publish_channel(
         );
         channel = channel.with_action(share_resource_spec(&ch.id));
         channel = channel.with_action(crate::feedback::submit_spec(&ch.id));
+        channel = channel.with_action(crate::feedback::destination_read::spec(&ch.id));
         channel = channel.with_action(ActionSpec::prompted(
             "post",
             "Post message",
@@ -1685,23 +1686,6 @@ fn new_category_action_spec(workspace_id: &str) -> ActionSpec {
     )
 }
 
-/// What `read-message` returns for a message.
-pub fn message_read_schema() -> &'static serde_json::Value {
-    static SCHEMA: std::sync::OnceLock<serde_json::Value> = std::sync::OnceLock::new();
-    SCHEMA.get_or_init(|| {
-        serde_json::json!({"type":"object",
-            "required":["id","channel","parent","author","authorName","agent","mine","ts","edited","text","work","reference","sourceProvider"],
-            "properties":{
-                "id":{"type":"string"},"channel":{"type":"string"},"parent":{"type":["string","null"]},
-                "author":{"type":"string"},"authorName":{"type":"string"},"agent":{"type":"boolean"},
-                "mine":{"type":"boolean"},"ts":{"type":"integer"},"edited":{"type":"boolean"},
-                "text":{"type":"string"},"work":{"type":["object","null"]},
-                "reference":{"type":["object","null"]},
-                "sourceProvider":{"type":["string","null"]}
-            }})
-    })
-}
-
 /// An agent's record of what it did, on a message it wrote: the same
 /// [`ChatAction::SetAgentWork`] a delivered agent task writes.
 fn set_work_spec(channel: &str, message: &str) -> ActionSpec {
@@ -1871,9 +1855,7 @@ mod tests {
     const TS: i64 = 1_782_000_000;
 
     fn registry() -> ActionRegistry {
-        let mut r = ActionRegistry::new();
-        register(&mut r);
-        r
+        ActionRegistry::with(register)
     }
 
     /// Apply `action` as the demo's own person did, as a window's

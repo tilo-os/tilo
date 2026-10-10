@@ -608,6 +608,7 @@ mod whatsapp_subscription;
 #[cfg(feature = "whatsapp-sdk")]
 pub use whatsapp_subscription::WhatsappReceiptSubscription;
 
-#[cfg(all(test, feature = "whatsapp-sdk"))]
+#[cfg(test)]
+#[cfg(feature = "whatsapp-sdk")]
 #[path = "external_broker/supervisor_tests.rs"]
 mod supervisor_tests;

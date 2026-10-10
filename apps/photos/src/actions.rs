@@ -71,7 +71,7 @@ pub const TIMELINE_MONTH_KIND: &str = "photos.timeline.month";
 pub const TIMELINE_DAY_KIND: &str = "photos.timeline.day";
 pub const EXPORT_EDITED_CONTENT_ACTION_ID: &str = "export-edited-content";
 /// Contextual enumeration is intentionally small; callers resolve any stable
-/// id outside this window through `ResourceProvider::resource`.
+/// id outside this window through `PublishesResources::resource`.
 const LIBRARY_CONTEXT_LIMIT: usize = 48;
 const ALBUM_CONTEXT_LIMIT: usize = 24;
 const FOLDER_CONTEXT_LIMIT: usize = 24;
@@ -5315,8 +5315,7 @@ mod tests {
 
         eprintln!("phase an_action_round_trips_through_the_registry");
         {
-            let mut registry = ActionRegistry::new();
-            register(&mut registry);
+            let registry = ActionRegistry::with(register);
             let mut doc = doc_with_image();
             let original = PhotosAction::set(&first_id(&doc), &Edits::default().rotated_left());
             let decoded = registry.decode(&encode(&original)).expect("decode");
@@ -5368,9 +5367,7 @@ mod tests {
             let tilo_actions::ActionInput::Prompted { build, .. } = &crop.input else {
                 panic!("crop collects an argument");
             };
-            let mut registry = ActionRegistry::new();
-            register(&mut registry);
-            registry
+            ActionRegistry::with(register)
                 .decode(&build("0,0,0.5,0.5"))
                 .unwrap()
                 .apply(&mut doc)
@@ -5412,8 +5409,7 @@ mod tests {
         let tilo_actions::ActionInput::Immediate(encoded) = &remove.input else {
             panic!("a bound removal asks nothing");
         };
-        let mut registry = ActionRegistry::new();
-        register(&mut registry);
+        let registry = ActionRegistry::with(register);
         registry.decode(encoded).unwrap().apply(&mut doc).unwrap();
         assert!(PhotosDoc::photo(&doc, &id).is_none());
     }
@@ -5430,8 +5426,7 @@ mod tests {
                 .iter()
                 .find(|action| action.id == "remove-photo")
                 .expect("the selected photo still offers removal");
-            let mut registry = ActionRegistry::new();
-            register(&mut registry);
+            let registry = ActionRegistry::with(register);
             let tilo_actions::ActionInput::Immediate(encoded) = &remove.input else {
                 panic!("removal is immediate");
             };
@@ -5820,8 +5815,7 @@ mod tests {
             let tilo_actions::ActionInput::Prompted { build, .. } = &crop.input else {
                 panic!("crop collects an argument");
             };
-            let mut registry = ActionRegistry::new();
-            register(&mut registry);
+            let registry = ActionRegistry::with(register);
             assert!(registry.decode(&build("nonsense")).is_err());
             let e = first_edits(&doc);
             assert!(
@@ -5931,9 +5925,7 @@ mod tests {
             }
             .apply(&mut replica)
             .unwrap();
-            let mut registry = ActionRegistry::new();
-            register(&mut registry);
-            registry
+            ActionRegistry::with(register)
                 .decode(&encoded)
                 .unwrap()
                 .apply(&mut replica)
@@ -5980,9 +5972,7 @@ mod tests {
             let encoded = encode(&batch);
             let mut replica = AutoCommit::new();
             PhotosDoc::set_library(&mut replica, &initial);
-            let mut registry = ActionRegistry::new();
-            register(&mut registry);
-            registry
+            ActionRegistry::with(register)
                 .decode(&encoded)
                 .expect("the canonical registry decodes the selection result")
                 .apply(&mut replica)
@@ -5999,9 +5989,7 @@ mod tests {
     const CROP_ARG: &str = "0.25,0.25,0.5,0.5";
 
     fn registry() -> ActionRegistry {
-        let mut registry = ActionRegistry::new();
-        register(&mut registry);
-        registry
+        ActionRegistry::with(register)
     }
 
     fn apply_all(doc: &mut AutoCommit, actions: Vec<PhotosAction>) {

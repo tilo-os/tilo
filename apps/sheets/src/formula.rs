@@ -28,9 +28,7 @@ use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 use std::hash::BuildHasher;
 
-use crate::model::{
-    Addr, CellFormat, CellValue, FormatCategory, FormulaError, GridEdit, a1_to_addr, addr_to_a1,
-};
+use crate::model::{Addr, CellFormat, CellValue, FormulaError, GridEdit, a1_to_addr, addr_to_a1};
 
 // ---------------------------------------------------------------------------
 // Character cursor
@@ -2476,13 +2474,13 @@ enum Unit {
     /// scalar by a currency yields that currency (`5 * $100 = $500`).
     Scalar,
     /// Money in a specific currency.
-    Currency(crate::model::Currency),
+    Currency(tilo_locale::Currency),
     /// A percentage value.
     Percent,
     /// A date serial.
-    Date(crate::model::DateStyle),
+    Date(tilo_locale::DateStyle),
     /// A time/duration serial.
-    Time(crate::model::TimeStyle),
+    Time(tilo_locale::TimeStyle),
     /// Conflicting units (e.g. USD + EUR) — render plain.
     Mixed,
 }
@@ -2609,8 +2607,8 @@ fn unit_of_call<S: BuildHasher>(
         }
         // Date/time builders render as dates/times so a bare `=TODAY()` shows
         // a date rather than its underlying serial number.
-        "DATE" | "TODAY" | "NOW" => Unit::Date(crate::model::DateStyle::Iso),
-        "TIME" => Unit::Time(crate::model::TimeStyle::H24),
+        "DATE" | "TODAY" | "NOW" => Unit::Date(tilo_locale::DateStyle::Iso),
+        "TIME" => Unit::Time(tilo_locale::TimeStyle::H24),
         // Counting / text / logical / lookup functions are unitless.
         _ => Unit::Scalar,
     }
@@ -2637,18 +2635,6 @@ fn arg_units<S: BuildHasher>(arg: &Expr, formats: &HashMap<Addr, CellFormat, S>)
         }
         _ => vec![unit_of(arg, formats)],
     }
-}
-
-/// True when a category should be allowed to propagate at all (kept for
-/// callers that want to gate by category without importing `Unit`).
-pub fn category_propagates(cat: FormatCategory) -> bool {
-    matches!(
-        cat,
-        FormatCategory::Currency
-            | FormatCategory::Percent
-            | FormatCategory::Date
-            | FormatCategory::Time
-    )
 }
 
 #[cfg(test)]
@@ -2961,7 +2947,8 @@ mod tests {
 
     // --- format propagation -------------------------------------------------
 
-    use crate::model::{CellFormat, Currency, DateStyle};
+    use crate::model::CellFormat;
+    use tilo_locale::{Currency, DateStyle};
 
     fn fmts(pairs: &[(&str, CellFormat)]) -> HashMap<Addr, CellFormat> {
         pairs

@@ -23,7 +23,7 @@
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::{Arc, Mutex, RwLock};
 
-use collab_types::FileRecordId;
+use fs_protocol::FileRecordId;
 use iroh_blobs::Hash;
 
 use crate::acl::IdentityKey;

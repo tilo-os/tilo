@@ -168,10 +168,6 @@ impl<'a> BadgeFace<'a> {
         }
     }
 
-    /// The side of a badge dot in `theme`.
-    pub fn dot_size(theme: &Theme) -> f64 {
-        BadgeMetrics::of(theme).dot
-    }
     #[must_use]
     pub fn style(mut self, style: ChipStyle) -> Self {
         self.style = style;
@@ -351,7 +347,7 @@ impl Widget for Badge {
             clippy::cast_possible_truncation,
             reason = "bounded logical-pixel layout size; f32 precision is sufficient"
         )]
-        let node = taffy.leaf_node(Style {
+        let style = Style {
             size: Size {
                 width: if width < 0.0 {
                     Dimension::auto()
@@ -363,9 +359,8 @@ impl Widget for Badge {
             // Fixed target: never the item that gives in an overflowing row.
             flex_shrink: 0.0,
             ..Default::default()
-        });
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
 
     /// A text or count badge is as wide as its measured label.
@@ -414,13 +409,7 @@ impl Widget for Badge {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
-            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
-        );
+        self.rect = crate::widget::layout_rect(taffy, node, origin);
         // Exact equality is the point — this is change detection for the
         // paint cache, not a numerical comparison that needs a tolerance.
         #[allow(

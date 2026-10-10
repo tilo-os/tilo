@@ -40,17 +40,39 @@ package_public_api=${TILO_PACKAGE_PUBLIC_BASE_URL%/}
   exit 1
 }
 
+host_arch=$(uname -m)
+registry_cli=
+for index in release/*/index.json; do
+  if [[ $(jq -er .architecture "$index") == "$host_arch" ]]; then
+    registry_cli="${index%/index.json}/tilo-app-package"
+    break
+  fi
+done
+[[ -n $registry_cli && -f $registry_cli ]] || {
+  printf 'no native tilo-app-package registry client artifact found for %s\n' "$host_arch" >&2
+  exit 1
+}
+chmod 0755 "$registry_cli"
+
 # Every app/version/architecture is independently addressable. A
 # one-app update uploads one tapp; collection assembly below fetches
-# all unchanged members instead of rebuilding them.
+# all unchanged members instead of rebuilding them. Beside each tapp
+# goes its compressed twin, <file>.zst, which clients download first
+# (a third of the bytes) and decompress, bounded by the signed size,
+# before the signed hash check; the registry entry signs only the tapp.
 upload_manifest="$RUNNER_TEMP/tilo-package-uploads.tsv"
+twins="$RUNNER_TEMP/tilo-tapp-twins"
+mkdir -p "$twins"
 : > "$upload_manifest"
 for index in release/*/index.json; do
   while IFS=$'\t' read -r name version file; do
     tapp="${index%/index.json}/tapp/$file"
     test -f "$tapp"
+    "$registry_cli" compress -o "$twins/$file.zst" "$tapp"
     printf '%s\t%s\n' "$tapp" \
       "$package_api/tilo-app-$name/$VERSION/$file" >> "$upload_manifest"
+    printf '%s\t%s\n' "$twins/$file.zst" \
+      "$package_api/tilo-app-$name/$VERSION/$file.zst" >> "$upload_manifest"
   done < <(jq -r '.apps[] | [.name,.version,.file] | @tsv' "$index")
 done
 TILO_PACKAGE_TOKEN="$jwt" TILO_PACKAGE_UPLOAD_WORKERS=8 \
@@ -154,24 +176,12 @@ tr '\t' '\n' < "$registry_media_urls" \
 registry_identity="$RUNNER_TEMP/tilo-registry-publisher.json"
 (umask 077; printf '%s' "$TAPP_PUBLISHER_IDENTITY" > "$registry_identity")
 trap 'rm -f "$registry_identity"' EXIT
-host_arch=$(uname -m)
-registry_cli=
-for index in release/*/index.json; do
-  if [[ $(jq -er .architecture "$index") == "$host_arch" ]]; then
-    registry_cli="${index%/index.json}/tilo-app-package"
-    break
-  fi
-done
-[[ -n $registry_cli && -f $registry_cli ]] || {
-  printf 'no native tilo-app-package registry client artifact found for %s\n' "$host_arch" >&2
-  exit 1
-}
-chmod 0755 "$registry_cli"
 export SOURCE_DATE_EPOCH
 SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)
 snapshot="$RUNNER_TEMP/tilo-registry-snapshot.json"
 response="$RUNNER_TEMP/tilo-registry-response.txt"
 publication_plan="$RUNNER_TEMP/tilo-registry-publication.tsv"
+: "${TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY:?existing registry owner pin required}"
 : > "$publication_plan"
 for index in release/*/index.json; do
   arch=$(jq -er '.architecture | select(. == "x86_64" or . == "aarch64")' "$index")
@@ -229,7 +239,9 @@ while IFS= read -r id; do
       test -f "$metadata"
       tapp_url="$registry_url/artifacts/$owner/generic/tilo-app-$name/$VERSION/$file"
       args=(entry --arch "$arch" --identity "$registry_identity" \
-        --metadata "$metadata" --action "$action" --url "$tapp_url")
+        --metadata "$metadata" --action "$action" --url "$tapp_url"
+        --runtime-catalogue "$snapshot"
+        --registry-owner-pubkey "$TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY")
       [[ -f $aggregate ]] && args+=(--previous-entry "$aggregate")
       "$registry_cli" "${args[@]}" "$tapp" > "$request"
       jq -e --arg id "$id" '.entry | select(.package_id == $id)' \

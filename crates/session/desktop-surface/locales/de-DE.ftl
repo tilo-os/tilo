@@ -39,6 +39,9 @@ topbar-viewer-entry = { $name } ({ $kind ->
 topbar-collaborators-visible = Bildschirm sichtbar für { $viewers }. Mitwirkende anzeigen
 topbar-capture-privacy = Datenschutzeinstellungen für aktive Aufnahme
 topbar-control = Steuerelement der oberen Leiste
+topbar-network-offline = Offline
+topbar-tray-open = { $app } öffnen
+topbar-tray-menu = Menü für { $app }
 topbar-editor-control = Bearbeitungselement der oberen Leiste
 topbar-editor-remove-clock = Uhr aus der oberen Leiste entfernen
 topbar-editor-remove-system-monitor = Systemmonitor aus der oberen Leiste entfernen
@@ -1012,3 +1015,13 @@ activity-task-review-status = { $status } · Agent: { $agent }
 activity-task-review-frontier = Lauf { $epoch } · Anweisungen { $revision } · vom Agenten angewendet { $applied }
 activity-task-review-direction = { $author }: { $text }
 activity-task-review-missing = Diese Aufgabe ist in diesem Arbeitsbereich nicht mehr verfügbar.
+
+activity-task-approve-run = Ausführung freigeben
+activity-task-run-approved = Genehmigt von { $person } · { $time }
+activity-task-awaiting-acceptance = Warte auf Annahme · Agent möglicherweise offline
+activity-task-run-accepted = Agent hat diesen Lauf angenommen · letzter Bericht { $time }
+activity-task-run-planning = Agent plant diesen Lauf · letzter Bericht { $time }
+activity-task-run-executing = Agent bearbeitet diesen Lauf · letzter Bericht { $time }
+
+topbar-cpu-reading = CPU { $value }
+topbar-monitor-summary = CPU { $cpu }, RAM { $ram }, Temperatur { $temperature }

@@ -35,6 +35,9 @@ mod encrypted_resource;
 #[cfg(test)]
 #[path = "room_actions/feedback_journey.rs"]
 mod feedback_journey;
+#[cfg(test)]
+#[path = "room_actions/governed_sealed.rs"]
+mod governed_sealed;
 #[path = "room_actions/resource_support.rs"]
 mod resource_support;
 
@@ -42,6 +45,9 @@ mod resource_support;
 pub mod mounted_resource;
 
 tilo_automerge_isolate::test_worker!();
+// Room actions hold each record in a confined app worker: this binary,
+// started again.
+tilo_agent_participant::app_worker!();
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -727,7 +733,198 @@ fn request(provider: &str, address: ActionAddress, argument: InvokeArgument) -> 
         context: None,
         confirmation: None,
         revision: None,
+        wait_ms: None,
     }
+}
+
+/// The record `create_before_publish` makes, with the host device's
+/// admission to its channel held: the host sees it sealed and cannot open it
+/// until the hold is dropped.
+async fn create_withheld(
+    browser: &mut Browser,
+    steward: &steward::Steward,
+    host_key: [u8; 32],
+) -> (DocumentRoute, steward::HeldAdmission) {
+    let mut held = None;
+    let route = browser.create_before_publish(SHEETS, |route| {
+        held = Some(steward.hold_admission(route, host_key));
+    });
+    let held = held.unwrap();
+    browser.peer.barrier().unwrap().recv().unwrap().unwrap();
+    held.requested().await;
+    (route, held)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_record_whose_keys_are_withheld_holds_back_no_other() {
+    let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
+    let host = enrol(&root, "home-server", DeviceCapabilities::host());
+    let browser_device = enrol(&root, "browser", DeviceCapabilities::member());
+    let state = tempfile::tempdir().unwrap();
+    let hosted = start(&root, &host, state.path()).await;
+    let steward = steward::Steward::start(&hosted.relay, &root).await;
+    let mut browser = Browser::open(&hosted, &browser_device, &host).await;
+    let host_key = host.cert.device_public_key;
+
+    // A record the host holds keys for. The room's first listing joins it
+    // and waits, once, for every record's keys.
+    let open = browser.create(SHEETS);
+    browser.peer.barrier().unwrap().recv().unwrap().unwrap();
+    let open_provider = record_provider(&open);
+    let started = Instant::now();
+    let listing = browser.catalogue(CatalogueQuery::default()).await.unwrap();
+    let joined = started.elapsed();
+    assert!(
+        listing
+            .providers
+            .iter()
+            .any(|p| p.provider == open_provider),
+        "{:?}",
+        listing.providers
+    );
+    let by_name = CatalogueQuery {
+        provider: Some(open_provider.clone()),
+        max_results: 200,
+        ..CatalogueQuery::default()
+    };
+    let new_sheet = browser
+        .catalogue(by_name.clone())
+        .await
+        .unwrap()
+        .rows
+        .iter()
+        .filter_map(|row| row.action.as_ref())
+        .find(|action| action.address.action == "new-sheet")
+        .expect("Sheets offers New sheet")
+        .address
+        .clone();
+    let started = Instant::now();
+    let warm = browser
+        .invoke(request(
+            &open_provider,
+            new_sheet.clone(),
+            sheet_named("Keys held"),
+        ))
+        .await;
+    let acted_with_keys = started.elapsed();
+    eprintln!(
+        "room actions latency: join and first listing {joined:?}, invoke with keys {acted_with_keys:?}"
+    );
+    assert!(
+        matches!(warm.status, ReceiptStatus::Completed { .. }),
+        "{warm:?}"
+    );
+
+    // A second record arrives sealed, and the host's admission to it is held.
+    let (withheld, held) = create_withheld(&mut browser, &steward, host_key).await;
+
+    // Nothing about the first record waits for the second's keys.
+    let started = Instant::now();
+    browser.catalogue(by_name).await.unwrap();
+    let named_while_held = started.elapsed();
+    let started = Instant::now();
+    let listing = browser.catalogue(CatalogueQuery::default()).await.unwrap();
+    let listed_while_held = started.elapsed();
+    let started = Instant::now();
+    let acted = browser
+        .invoke(request(
+            &open_provider,
+            new_sheet.clone(),
+            sheet_named("Keys withheld elsewhere"),
+        ))
+        .await;
+    let acted_while_held = started.elapsed();
+    eprintln!(
+        "room actions latency, another record's keys withheld: named catalogue \
+         {named_while_held:?}, listing {listed_while_held:?}, invoke {acted_while_held:?}"
+    );
+    assert!(
+        matches!(acted.status, ReceiptStatus::Completed { .. }),
+        "{acted:?}"
+    );
+    assert!(
+        !listing
+            .providers
+            .iter()
+            .any(|p| p.provider == record_provider(&withheld)),
+        "a record the host cannot open is not listed"
+    );
+
+    // An invoke on the withheld record waits for its keys, then runs as
+    // soon as they arrive: the key's arrival wakes the wait.
+    let pending = request(
+        &record_provider(&withheld),
+        new_sheet.clone(),
+        sheet_named("After the keys"),
+    );
+    browser.send(RemoteActionMessage::Invoke(pending.clone()));
+    tokio::time::sleep(Duration::from_millis(1_000)).await;
+    browser.pump();
+    assert!(
+        !browser.answers.iter().any(|answer| matches!(
+            answer,
+            RemoteActionMessage::Receipt(receipt) if receipt.invocation == pending.invocation
+        )),
+        "nothing runs on a record before its keys: {:?}",
+        browser.answers
+    );
+    let released = Instant::now();
+    drop(held);
+    let after_keys = browser.receipt(pending.invocation).await;
+    let ran_after_keys = released.elapsed();
+    eprintln!("room actions latency: the withheld record ran {ran_after_keys:?} after its keys");
+    assert!(
+        matches!(after_keys.status, ReceiptStatus::Completed { .. }),
+        "{after_keys:?}"
+    );
+
+    // Keys that never arrive refuse the invocation clearly; nothing runs.
+    let (refused, held) = create_withheld(&mut browser, &steward, host_key).await;
+    let started = Instant::now();
+    let never = browser
+        .invoke(request(
+            &record_provider(&refused),
+            new_sheet,
+            sheet_named("Never"),
+        ))
+        .await;
+    let refused_after = started.elapsed();
+    eprintln!("room actions latency: a record without keys refused after {refused_after:?}");
+    match &never.status {
+        ReceiptStatus::Rejected {
+            error: ActionHostError::Unavailable { reason },
+        } => assert!(
+            reason.contains(&refused.record),
+            "the refusal names the record: {reason}"
+        ),
+        other => panic!("an invocation without keys is refused: {other:?}"),
+    }
+    browser.pump();
+    assert!(
+        !browser
+            .documents
+            .get(&refused)
+            .is_some_and(|changes| changes.iter().any(|(author, _)| *author == host_key)),
+        "the host wrote nothing to a record it could not open"
+    );
+    // The steward stops before the hold is released, so it never admits
+    // the host into a relay that is shutting down.
+    drop(steward);
+    drop(held);
+
+    let prompt = Duration::from_secs(5);
+    assert!(
+        named_while_held < prompt && listed_while_held < prompt && acted_while_held < prompt,
+        "another record's missing keys held a request back: catalogue {named_while_held:?}, \
+         listing {listed_while_held:?}, invoke {acted_while_held:?}"
+    );
+    assert!(
+        ran_after_keys < prompt,
+        "the wait did not end when the keys arrived: {ran_after_keys:?}"
+    );
+    drop(hosted.web);
+    hosted.agents.shutdown();
+    hosted.relay.shutdown().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -1015,9 +1212,7 @@ async fn a_page_acts_on_records_nobody_has_open_through_the_host() {
                 matches!(queued_receipt.status, ReceiptStatus::Cancelled { .. }),
                 "{queued_receipt:?}"
             );
-            browser.send(RemoteActionMessage::Observe {
-                invocation: queued.invocation,
-            });
+            browser.send(RemoteActionMessage::observe(queued.invocation));
             let observed = browser
                 .answer("observe", |answer| match answer {
                     RemoteActionMessage::Update { invocation, state }

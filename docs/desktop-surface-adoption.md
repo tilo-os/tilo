@@ -20,13 +20,14 @@ solid surfaces and reduced-motion behavior; no new desktop visual language.
 | Surface | Current observation | Next verification |
 | --- | --- | --- |
 | Notification center | #3039 landed: shared buttons, measured geometry, stable Clear/Undo focus. #3067 landed: shared Read control and wrapped ScrollRegion reading page, nested Back/Esc, accessible scrolling and covered-banner pointer precedence | [First increment captures](evidence/notification-center/README.md); [full-text reader evidence](evidence/notification-reader/README.md); reading, scrolling, cancellation, repeated actions, privacy, removal and resize |
-| Notification banners | Portable NotificationStack now measures enlarged attribution/title/body and action rows through the shared toast card; the 200% text/action overlap is reproduced and repaired | [Measured-banner qualification](evidence/notification-banner-sizing/README.md) covers six before/after and six error captures, choice routing/stale geometry and capacity; hover/keyboard affordances, quiet/locked and live-device states remain |
+| Notification banners | Portable NotificationStack measures through ToastCard and now delegates completed clicks, cancellation and matching releases to shared PaintedTargets. Both desktop hosts forward the same pointer stream; existing shared close/choice faces receive hover and pressed state | [Measured-banner qualification](evidence/notification-banner-sizing/README.md) and [completed-click qualification](evidence/notification-banner-pointer/README.md) cover enlarged type, stale geometry, drag-out/Esc/focus/resize/retirement, repeated clicks and foreground history. Six error-banner variants preserve idle pixels and expose shared hover/pressed feedback; keyboard banner entry, quiet/locked and installed-device states remain |
 | Launcher / search | Shared CommandPalette now retains refused-action query/focus/selection with existing accessible status feedback, ignores held-Enter repeats, reuses callback errors, reserves both theme scales and uses shared armed-row ink. [Recovery qualification](evidence/launcher-recovery/README.md): 12 shared cases, seven native cases, six inspected variants and private live search/Escape pass | Provider revisions now preserve the selected stable resource and invoke refreshed callbacks; [ranking qualification](evidence/launcher-ranking/README.md) covers keyboard, pointer, query correction, removal, resize and three inspected variants. Empty-workspace launchpad now delegates pointer activation, release ownership, focus loss, Escape and held-submit suppression to shared PaintedTargets; native Search opens only on completed clicks. [Launchpad qualification](evidence/launchpad-release/README.md). Empty/loading and real sandboxed app launch remain; VM/device coverage is blocked on this runner |
 | Overview | #3057 and #3076 landed: shared creation/focus controls, compact scrolling, stable tab identity and interrupted activation. Exact #3076 merged-main checks passed 26 focused cases, seven native journeys and shell test compilation | Mixed-window preview and live device/workspace transitions remain; framing repair #3100 is integrated |
 | Window chrome | DesktopSurface composes toolkit GroupRow/StripView/WindowGroup | Inactive/focused tabs, close/menu states, resizing and shared header controls |
 | Restored app cards | Symbolic LocalApp notices decline scratch-document custody; matching launch failures/timeouts and orphaned exact-tab placements settle without removing saved tabs or record associations. Shared EmptyState recovery controls support keyboard, pointer and the native action door; focused Applications activation reuses the saved window | [Restore-card qualification](evidence/localapp-notice-custody/README.md): original masking, orphaned-opening and missing action-door regressions reproduced; dark/light/high-contrast, 200% text, focus and resize inspected. Exact-record adoption, repeated/stale recovery and Applications reuse pass. Installed repaired-layer acceptance and cold-launch attribution remain |
 | Menus / dialogs | #3110 and #3205 landed: shared ListRowFace/TooltipHost and ContextMenu current-output placement. Exact #3205 merged-main passes three output/capture cases, keyboard, pointer open/dismiss, action parity and shell test compilation; all six capture variants match inspected originals | Additional dialog/long-label/error states and VM hotplug/input coverage remain |
-| Status / quick settings | Top bar already uses some ButtonFace controls; portable drill-in uses shared back face | Status indicators, paging, focus/hover, offline states; no real device effects during evidence capture |
+| Emoji picker | Shared SearchField and ToggleGroup faces; interrupted pointer selection repaired after focus loss/search replacement, with scroll/layout cancellation | [Interruption qualification](evidence/emoji-picker-interruption/README.md); 200% text footer overlap (including 800 px skin-tone hints) and narrow group icon elision remain; installed-device coverage separate |
+| Status / quick settings | Top bar already uses some ButtonFace controls; portable drill-in uses shared back face. The coherent People increment adopts shared input, measured controls, navigation row and ScrollRegion | [People qualification](evidence/people-panel/README.md); remaining primary-bar indicators/overflow and narrow Devices/Clipboard summaries, plus installed-device states |
 | Workspace controls | Shared desktop model owns intent/state; workspace rename now paints with FieldFace/TextInput, including shaped selection, horizontal scrolling, idle elision and composed scale geometry; Create-invite uses shared primary ButtonFace and the footer reserves measured Caption space | [Shared name-field qualification](evidence/workspace-name-field/README.md); pointer/keyboard cancel, reopen, Unicode commit, held-submit repeat/release ownership, resize and selection captures; nine desktop/six native cases, compile and Clippy pass. Live workspace/device transitions and header states remain |
 | Window switcher | #3159 landed normally at 6476c63a, conflict repaired: stable live identities, selected-close cancellation, moved-address refresh and stale-pointer guard. Fresh 11 desktop/seven native cases, compile and Clippy pass; six inspected variants | Exact merged-main 11 desktop/seven native cases and shell test compilation passed; live multi-workspace/preview/device coverage remains |
 
@@ -122,6 +123,49 @@ Launcher recovery #3277 merged normally at 4e2c99589a8d669e2626018a0f7b30a7183cf
 
 The live full-loop example now positively checks painted query pixels within the named input bounds. An actual nonblank closed-desktop capture is rejected; the production private search/Escape journey passes all existing and new assertions. [Qualification](evidence/headless-palette-visibility/README.md) distinguishes this observability improvement from an unproven animation failure.
 
+## Top-bar editor increment
+
+The editor adopts shared ButtonFace and ListRowFace, measured title/hint/rows and
+wrapped Add controls. Actual production regressions qualify drag cancellation,
+release activation, stable keyboard focus and submit ownership; theme changes
+invalidate the retained scene. [Qualification](evidence/topbar-editor/README.md).
+Primary chrome at 320px still collides above the editor and remains the next
+independent increment alongside status/device/offline and live window states.
+
+The action catalogue uses dedicated shell English/German Fluent entries; CI's
+all-action catalogue regression is retained and strengthened across both locales.
+The locale files overlap Dictation #2974 only at file level in independent hunks;
+the top-bar entries are beside overview, and Dictation owns its later namespace.
+Messages #2881 and Files #3009 still have no edited-path overlap.
+
+## Responsive primary bar (2026-10-07)
+
+At 320 logical pixels the previous primary bar put Workspace Up over Clock by
+21 pixels. Constrained primary chrome now mounts the library Toolbar in the
+retained layout tree, using themed icon targets, priority overflow, native view
+actions and shared ContextMenu. The selected center reading stays visible; offline status is named and
+painted, and lower-priority commands remain available through More.
+
+The host respects popup pointer capture through release, cancels on focus loss,
+and updates unchanged toolbar names/toggles only when their state changes.
+Overflow can open the existing widget editor without losing the opening click;
+its existing semantic edit actions remain reachable. The shared Toolbar rejects
+held Enter/Space activation while allowing repeated directional navigation.
+
+Nine new production desktop regressions cover geometry, native certification,
+pointer/semantic intent delivery, repeated Escape, outside cancellation, resize,
+focus loss, visible semantic focus without continuous idle painting, editor
+semantic editing, monitor/calendar readings and offline presentation. Retained before
+captures and actual dark/light/high-contrast, 200% text and combined-scale row
+and overflow captures qualify this increment separately from overview's ambient
+avatar and intentional focus/shared-row baseline differences.
+
+Remaining inventory: live device/status and notification states; constrained
+workspace identity and collaborator/sharing density; full window resize and
+interrupted chrome journeys. The existing editor increment remains separately
+frozen pending its Files prerequisite. No Files broker, transfer or undo code is
+part of this responsive change.
+
 ## Owned overview clock fixture (2026-10-07)
 
 On base 411d51e9, the overview harness's ambient clock pin was ignored by the
@@ -137,9 +181,84 @@ This runner reproduces 7,082 differing pixels before and 6,807 after; the clock
 region now matches exactly, and all 275 before/after differences are confined
 to that region. The existing Home focus ring, shared creation row and fixture
 avatar differences remain for maintenance review. No baseline has been refreshed.
-The ready source PR carries inspected original PNG attachments and qualification
-results; protected landing and exact merged-main checks remain pending.
+Source PR #3413 merged through protected CI at
+337cfb86767cb3c6f2f450430732e3c01acb4f99. Exact-commit native/overview cases,
+shell test compilation and all-target Clippy passed; the unchanged full pixel
+oracle remains red as described above.
 
 Remaining primary-bar work is separate: collisions at 320 px, retained shared
 overflow controls and status/offline states. The qualified top-bar editor
 increment remains frozen while the Files CI prerequisite is resolved.
+
+## People Follow identity follow-up
+
+People Follow now resolves the painted participant identity against the live roster.
+Keyboard focus follows a surviving person across reordering and clears when that
+person departs or becomes unavailable; the Follow button uses shared ButtonFace
+focus painting. [Qualification](evidence/roster-follow-identity/README.md) covers
+stale pointer/keyboard activation, accessible focus, repeated Follow/Stop and
+Escape/reopen. Broader People text scaling, status-entry controls, paging and
+installed-device acceptance remain in the inventory.
+
+## People completed activation follow-up
+
+People now uses shared PaintedTargets for completed pointer gestures and
+ButtonFace pressed states. Stable person targets cancel across movement,
+departure/return, resize, focus loss and dismissal/reopen. Held Enter/Space
+repeat and key-up stay owned after Activity opens; a repeat cannot reverse
+Follow's existing local-key handoff. [Qualification](evidence/people-completed-activation/README.md)
+records native baseline failures, actual post-input screenshots and reuse of
+unaffected light/dark/high-contrast identity captures. Existing prompt and
+capability-gate tests retain their assertions at release. Follow-label elision
+at 125% text, status-entry controls, broader viewport/paging and installed-device
+acceptance remain open; protected landing and exact merged-main postchecks are
+independent integration gates.
+
+## People status draft lifecycle follow-up
+
+Closing People now ends its status edit lifecycle before hidden input, hidden
+paint or reopen can resurrect the discarded draft. Completed Activity/Invite/
+Join/dismiss actions cancel the edit without publishing it. Existing shared
+EditCore-backed selection, IME, navigation, explicit Enter submission and
+two-step Escape behavior remain intact. [Qualification](evidence/people-status-lifecycle/README.md)
+records four production baseline failures, native journeys and two inspected
+light/dark125 screenshot pairs. The portable component and broader existing
+render suites are unchanged. Status field/control rendering, text scaling,
+viewport/paging and installed-device acceptance remain open.
+
+## Coherent People panel follow-up
+
+The current-main delivery preserves the authored #3736 source and combines the
+remaining People viewport, paging, status-rendering and scaling work. Shared
+ScrollRegion, FieldFace/TextInput, measured ButtonFace/SegmentedFace and
+ListRowFace keep controls reachable, selection accurate, labels legible and
+empty/error/disclosure content in separate measured bands. Native acceptance
+includes repeated paging, stationary-pointer reopen, pointer/semantic scroll,
+Unicode editing, Esc, focus loss, resize cancellation and visible-only scroll
+fade scheduling. [Qualification](evidence/people-panel/README.md) records the
+bounded checklist and production capture matrix. Protected integration and
+exact merged-main postchecks remain independent gates; installed-device and
+the broader remaining rows above stay open.
+
+## Emoji picker measured-layout follow-up
+
+The enlarged-text footer and narrow group glyph defects observed during #3719
+are repaired through shared Caption shaping and SegmentedFace target metrics.
+Names and hints stack only when needed; narrow group controls wrap while
+preserving keyboard/pointer identity and localized accessible bounds. Resize
+keeps the selected emoji visible. [Focused evidence](evidence/emoji-picker-responsive/README.md)
+reuses the unchanged inspected hints and qualifies the failing 200% / 320 px
+states plus normal comparison. Installed-device and extremely small viewport
+coverage remain separate from this source layout correction.
+
+
+## Top-bar original-request reconciliation (2026-10-10)
+
+The combined PR3386/3446 delivery preserves both authored heads and all 23
+original regression assertions, and composes the measured shared-face editor
+with the constrained primary Toolbar. The historical 320px collision above is
+addressed by this combined source. Current main placement helpers and locale
+catalogue entries are retained. Editor semantic opening, pointer cancellation
+and focus trapping compose with Toolbar overflow ownership rather than losing
+either original surface. Qualification and historical-source distinctions are
+recorded in [top-bar editor evidence](evidence/topbar-editor/README.md).

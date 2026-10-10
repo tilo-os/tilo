@@ -15,10 +15,10 @@ use tilo_desktop_model::Workspace;
 
 use tilo_actions::remote::{
     APPLICATION_CLOSE_ACTION, APPLICATION_OPEN_ACTION, APPLICATION_RESOURCE_PREFIX,
-    ActionHostError, Caller, CallerPrincipal, CataloguePage, CatalogueProvider, CatalogueQuery,
-    CatalogueResource, CatalogueRow, Completer, Confirmation, InvocationReceipt, InvocationState,
-    InvokeRequest, OWN_PROVIDER, Pending, ReceiptStatus, Reservation, RowVisibility,
-    application_provider, pending, workspace_provider, workspace_provider_room,
+    ActionHostError, CONFIRMED_ACTION_NEEDS_REVISION, Caller, CallerPrincipal, CataloguePage,
+    CatalogueProvider, CatalogueQuery, CatalogueResource, CatalogueRow, Completer, Confirmation,
+    InvocationReceipt, InvocationState, InvokeRequest, OWN_PROVIDER, Pending, ReceiptStatus,
+    Reservation, application_provider, pending, workspace_provider, workspace_provider_room,
 };
 use tilo_actions::{ActionAddress, ActionDescriptor, Collects, ExecutionLocus, InputSpec};
 
@@ -83,6 +83,7 @@ impl BrokerActor {
 /// The broker as the [`ActionHost`](tilo_actions::remote::ActionHost) an
 /// admitted application or agent connection reaches over its channel's
 /// `remoteAction` door. [`OWN_PROVIDER`] names that connection itself.
+#[derive(Clone)]
 pub(super) struct ConnectionActionHost {
     pub(super) state: Arc<CapnpBrokerState>,
     pub(super) own_peer: u64,
@@ -292,6 +293,40 @@ fn app_close_descriptor(package_id: &str, display_name: &str) -> ActionDescripto
     }
 }
 
+/// Which rows a [`CapnpBrokerState::eager_catalogue`] pass builds. Every
+/// scope lists the same providers and puts each row it builds through the
+/// same checks; a narrower one only skips the rows of providers nobody asked
+/// about.
+#[derive(Clone, Copy, Debug)]
+pub(super) enum RowScope<'a> {
+    /// Who publishes, and no rows.
+    None,
+    /// Every row the caller is offered.
+    All,
+    /// The rows of this one provider.
+    Provider(&'a str),
+}
+
+impl RowScope<'_> {
+    /// Whether rows of `provider` are built.
+    fn wants(self, provider: &str) -> bool {
+        match self {
+            Self::None => false,
+            Self::All => true,
+            Self::Provider(wanted) => wanted == provider,
+        }
+    }
+
+    /// Whether rows of the live instance `peer_id` are built.
+    fn wants_peer(self, peer_id: u64) -> bool {
+        match self {
+            Self::None => false,
+            Self::All => true,
+            Self::Provider(wanted) => wanted == peer_id.to_string(),
+        }
+    }
+}
+
 /// The content an application's open action is asked to show. Its text
 /// argument is a content hash; a typed caller (MCP) sends its argument map
 /// in the canonical envelope, and an empty map is a plain open.
@@ -376,7 +411,7 @@ impl CapnpBrokerState {
                     access.invoke.then_some(as_app)
                 }
             }
-            RemoteActionMessage::Observe { invocation }
+            RemoteActionMessage::Observe { invocation, .. }
             | RemoteActionMessage::Cancel { invocation } => {
                 Some(if self.remote_job(&as_app, invocation).is_some() {
                     as_app
@@ -386,12 +421,14 @@ impl CapnpBrokerState {
             }
             // Records are read device to device by the shell; an application
             // does not reach another device's records through this door.
-            RemoteActionMessage::RecordRequest { .. } => None,
+            RemoteActionMessage::RecordRequest { .. }
+            | RemoteActionMessage::FeedbackRequest { .. } => None,
             RemoteActionMessage::CatalogueResponse { .. }
             | RemoteActionMessage::Receipt(_)
             | RemoteActionMessage::Update { .. }
             | RemoteActionMessage::CancelResponse { .. }
-            | RemoteActionMessage::RecordResponse { .. } => Some(person.clone()),
+            | RemoteActionMessage::RecordResponse { .. }
+            | RemoteActionMessage::FeedbackResponse { .. } => Some(person.clone()),
         };
         permitted.ok_or_else(|| {
             Box::new(refuse(message, ActionHostError::NotPermitted).unwrap_or(
@@ -447,7 +484,7 @@ impl CapnpBrokerState {
             return true;
         }
         if let Some(row) = self
-            .eager_catalogue(person, true)
+            .eager_catalogue(person, RowScope::Provider(&target.provider))
             .0
             .into_iter()
             .find(|row| {
@@ -472,9 +509,73 @@ impl CapnpBrokerState {
                 .any(|root| root.peer_id == peer_id && root.app_id == app_id)
     }
 
-    /// Workspaces `caller` may act in, with the policy actor for each. A
-    /// caller confined to a room was admitted to it by its connection; any
-    /// other caller must be a member.
+    /// Whether `caller` may act in `workspace`. A caller confined to a room
+    /// was admitted to it by its connection; any other caller must be a
+    /// member.
+    fn may_act_in(caller: &Caller, workspace: &Workspace, now: u64) -> bool {
+        match caller.room() {
+            Some(confined) => confined == workspace.room.to_string(),
+            None => match caller.principal() {
+                CallerPrincipal::Person(id) => workspace.role_of_at(id, now).is_some(),
+                CallerPrincipal::Agent(id) => workspace.role_of_agent_at(id, now).is_some(),
+                // An application is always admitted into one room;
+                // unconfined, it is a member of none.
+                CallerPrincipal::App(_) => false,
+            },
+        }
+    }
+
+    /// One policy sample of `room` for `caller`: `decide` runs once on the
+    /// borrowed committed workspace with the caller's policy actor there, or
+    /// not at all (`None`) when `caller` may not act in `room`. Nothing is
+    /// copied; `decide` must not block or call host services.
+    fn decide_for<R>(
+        &self,
+        caller: &Caller,
+        room: &str,
+        decide: impl FnOnce(&Workspace, &Actor, u64) -> R,
+    ) -> Option<R> {
+        let membership = self.membership.as_ref()?;
+        // An unavailable clock offers nothing rather than deciding at an
+        // unknown time.
+        let now = self.policy_now_ns().ok()? / 1_000_000_000;
+        // The actor consults the certificate authority: asked before the
+        // workspace is borrowed, never under it.
+        let actor = self.caller_actor(caller, room);
+        membership
+            .decide_in_room(room, |workspace| {
+                let workspace =
+                    workspace.filter(|workspace| Self::may_act_in(caller, workspace, now))?;
+                Some(decide(workspace, &actor.policy_in(workspace, now), now))
+            })
+            .ok()
+            .flatten()
+    }
+
+    /// The rooms `caller` may act in, decided on one borrowed sample.
+    fn rooms_for(&self, caller: &Caller) -> Vec<String> {
+        let (Some(membership), Ok(now)) = (
+            self.membership.as_ref(),
+            self.policy_now_ns().map(|now| now / 1_000_000_000),
+        ) else {
+            return Vec::new();
+        };
+        membership
+            .decide_in_tree(|tree| {
+                tree.workspaces
+                    .iter()
+                    .filter(|workspace| Self::may_act_in(caller, workspace, now))
+                    .map(|workspace| workspace.room.to_string())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Owned copies of the workspaces `caller` may act in, with the policy
+    /// actor for each, all from one sample. Only for a pass that hands each
+    /// workspace to host services (which read the host's authority
+    /// themselves) and so cannot run under the borrow; only the caller's
+    /// own workspaces are copied.
     fn workspaces_for(&self, caller: &Caller) -> Vec<(Workspace, Actor, u64)> {
         let Some(membership) = self.membership.as_ref() else {
             return Vec::new();
@@ -484,24 +585,17 @@ impl CapnpBrokerState {
         let Ok(now) = self.policy_now_ns().map(|now| now / 1_000_000_000) else {
             return Vec::new();
         };
-        let Ok(tree) = membership.snapshot() else {
+        let Ok(workspaces) = membership.decide_in_tree(|tree| {
+            tree.workspaces
+                .iter()
+                .filter(|workspace| Self::may_act_in(caller, workspace, now))
+                .cloned()
+                .collect::<Vec<_>>()
+        }) else {
             return Vec::new();
         };
-        tree.workspaces
+        workspaces
             .into_iter()
-            .filter(|workspace| {
-                let room = workspace.room.to_string();
-                match caller.room() {
-                    Some(confined) => confined == room,
-                    None => match caller.principal() {
-                        CallerPrincipal::Person(id) => workspace.role_of_at(id, now).is_some(),
-                        CallerPrincipal::Agent(id) => workspace.role_of_agent_at(id, now).is_some(),
-                        // An application is always admitted into one room;
-                        // unconfined, it is a member of none.
-                        CallerPrincipal::App(_) => false,
-                    },
-                }
-            })
             .map(|workspace| {
                 let policy = self
                     .caller_actor(caller, &workspace.room.to_string())
@@ -541,22 +635,58 @@ impl CapnpBrokerState {
         })
     }
 
+    /// Every live published surface, carrying its actions only where
+    /// `scope` builds that surface's rows: who publishes is copied, not every
+    /// app's whole surface, when that is all a caller asked.
+    fn live_surfaces(&self, scope: RowScope<'_>) -> Vec<PublishedSurface> {
+        self.surfaces
+            .lock()
+            .map(|surfaces| {
+                surfaces
+                    .values()
+                    .filter(|surface| surface.live)
+                    .map(|surface| PublishedSurface {
+                        peer_id: surface.peer_id,
+                        app_id: surface.app_id.clone(),
+                        route: surface.route.clone(),
+                        actions: if scope.wants_peer(surface.peer_id) {
+                            surface.actions.clone()
+                        } else {
+                            Vec::new()
+                        },
+                        live: true,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
     #[allow(
         clippy::too_many_lines,
         reason = "one authorization pass projects live surfaces, directories, governance and launchers so no source can skip the caller's checks"
     )]
-    /// Every eager row `caller` is offered: live application actions its
-    /// role may invoke, the workspace's own governance actions, and — for a
-    /// caller on this machine — launching an application it may open. An
-    /// action the caller may not use is absent. Alongside them, the
-    /// publishers the caller may browse or invoke.
+    /// Every eager row `caller` is offered within `scope`: live application
+    /// actions its role may invoke, the workspace's own governance actions,
+    /// and — for a caller on this machine — launching an application it may
+    /// open. An action the caller may not use is absent. Alongside them, the
+    /// publishers the caller may browse or invoke, whatever the scope.
+    ///
+    /// A narrower scope only leaves other providers' rows out: each row it
+    /// builds passes the same checks, and comes out the same, as in
+    /// [`RowScope::All`]. The installed applications and the keyboard
+    /// shortcut settings are read at most once, and only when a workspace
+    /// provider's rows are built.
     pub(super) fn eager_catalogue(
         &self,
         caller: &Caller,
-        with_rows: bool,
+        scope: RowScope<'_>,
     ) -> (Vec<CatalogueRow>, Vec<CatalogueProvider>) {
-        let surfaces = self.published_surfaces();
+        // Retained surfaces of closed apps are the launchable catalogue's,
+        // and only the providers whose rows are built need their actions.
+        let surfaces = self.live_surfaces(scope);
         let roots = self.action_directory_roots();
+        // Listed at most once, for every workspace's open and close rows.
+        let mut applications = None;
         let mut rows = Vec::new();
         let mut providers = Vec::new();
         // Keyboard shortcuts are this device's own settings: offered to
@@ -565,8 +695,8 @@ impl CapnpBrokerState {
             .services
             .keyboard_shortcuts
             .as_ref()
-            .filter(|_| with_rows && caller.device_public_key().is_none())
-            .map(|service| (service, settings_store::hardware::ShortcutConfig::load()));
+            .filter(|_| caller.device_public_key().is_none());
+        let mut keymap = None;
         for (workspace, policy, now) in self.workspaces_for(caller) {
             let room = workspace.room.to_string();
             let mut live_apps = std::collections::HashSet::new();
@@ -582,7 +712,7 @@ impl CapnpBrokerState {
                     record_id: surface.route.record_id.clone(),
                     browsable: roots.iter().any(|root| root.peer_id == surface.peer_id),
                 });
-                if !with_rows {
+                if !scope.wants_peer(surface.peer_id) {
                     continue;
                 }
                 rows.extend(
@@ -615,7 +745,7 @@ impl CapnpBrokerState {
                     &policy,
                     now,
                     &live_apps,
-                    with_rows.then_some(&mut rows),
+                    (scope, &mut rows),
                     &mut providers,
                 );
             }
@@ -638,7 +768,8 @@ impl CapnpBrokerState {
                     browsable: true,
                 });
             }
-            if !with_rows {
+            let provider = workspace_provider(&room);
+            if !scope.wants(&provider) {
                 continue;
             }
             if let Some(governance) = self.services.workspace_governance.as_ref() {
@@ -658,7 +789,7 @@ impl CapnpBrokerState {
                             )
                         })
                         .map(|descriptor| {
-                            action_row(workspace_provider(&room), governance.app_id(), descriptor)
+                            action_row(provider.clone(), governance.app_id(), descriptor)
                         }),
                 );
             }
@@ -678,14 +809,16 @@ impl CapnpBrokerState {
                             )
                         })
                         .map(|descriptor| {
-                            action_row(workspace_provider(&room), SHORTCUTS_APP_ID, descriptor)
+                            action_row(provider.clone(), SHORTCUTS_APP_ID, descriptor)
                         }),
                 );
             }
-            if let Some((service, keymap)) = &keyboard {
+            if let Some(service) = keyboard {
+                let keymap =
+                    keymap.get_or_insert_with(settings_store::hardware::ShortcutConfig::load);
                 rows.extend(
                     service
-                        .catalogue_rows(&workspace_provider(&room), keymap)
+                        .catalogue_rows(&provider, keymap)
                         .into_iter()
                         .filter(|row| {
                             row.action.as_ref().is_some_and(|descriptor| {
@@ -702,14 +835,16 @@ impl CapnpBrokerState {
                         }),
                 );
             }
-            if caller.room().is_some() {
+            if caller.room().is_some()
+                && let Some(launcher) = self.services.launcher.as_ref()
+            {
+                let applications = applications.get_or_insert_with(|| {
+                    (launcher.applications(), launcher.closes_applications())
+                });
+                let (applications, closes_applications) = (&applications.0, applications.1);
                 rows.extend(
-                    self.services
-                        .launcher
-                        .as_ref()
-                        .map(|launcher| launcher.applications())
-                        .unwrap_or_default()
-                        .into_iter()
+                    applications
+                        .iter()
                         .filter(|app| !live_apps.contains(&app.package_id))
                         .filter(|app| {
                             workspace.decide_at(
@@ -720,21 +855,13 @@ impl CapnpBrokerState {
                             ) == CapDecision::Allow
                         })
                         .map(|app| {
-                            action_row(
-                                workspace_provider(&room),
-                                &app.package_id,
-                                app_open_descriptor(&app),
-                            )
+                            action_row(provider.clone(), &app.package_id, app_open_descriptor(app))
                         }),
                 );
                 rows.extend(
-                    self.services
-                        .launcher
-                        .as_ref()
-                        .filter(|launcher| launcher.closes_applications())
-                        .map(|launcher| launcher.applications())
-                        .unwrap_or_default()
-                        .into_iter()
+                    applications
+                        .iter()
+                        .filter(|_| closes_applications)
                         .filter(|app| live_apps.contains(&app.package_id))
                         .filter(|app| {
                             workspace.decide_at(
@@ -746,7 +873,7 @@ impl CapnpBrokerState {
                         })
                         .map(|app| {
                             action_row(
-                                workspace_provider(&room),
+                                provider.clone(),
                                 &app.package_id,
                                 app_close_descriptor(&app.package_id, &app.display_name),
                             )
@@ -766,7 +893,7 @@ impl CapnpBrokerState {
         policy: &Actor,
         now: u64,
         live_apps: &std::collections::HashSet<String>,
-        mut rows: Option<&mut Vec<CatalogueRow>>,
+        (scope, rows): (RowScope<'_>, &mut Vec<CatalogueRow>),
         providers: &mut Vec<CatalogueProvider>,
     ) {
         let room = workspace.room.to_string();
@@ -781,7 +908,7 @@ impl CapnpBrokerState {
                 ) == CapDecision::Allow
         }) {
             let provider = launchable_provider(&surface);
-            if let Some(rows) = rows.as_deref_mut() {
+            if scope.wants(&provider) {
                 rows.extend(
                     surface
                         .actions
@@ -815,11 +942,7 @@ impl CapnpBrokerState {
     /// The directory root publishing `peer_id` in a workspace `caller` may
     /// act in, with the actor the caller is admitted as there.
     fn directory_root_for(&self, caller: &Caller, peer_id: u64) -> Option<ActionDirectoryRoot> {
-        let rooms = self
-            .workspaces_for(caller)
-            .into_iter()
-            .map(|(workspace, _, _)| workspace.room.to_string())
-            .collect::<Vec<_>>();
+        let rooms = self.rooms_for(caller);
         self.action_directory_roots()
             .into_iter()
             .find(|root| root.peer_id == peer_id && rooms.contains(&root.cluster_id))
@@ -876,12 +999,14 @@ impl CapnpBrokerState {
         {
             return self.query_directory(caller, &root, query);
         }
-        // `max_results: 0` asks only who publishes; skip building rows.
-        let providers_only = query.provider.is_none() && query.max_results == 0;
-        let (mut rows, providers) = self.eager_catalogue(caller, !providers_only);
-        if let Some(provider) = &query.provider {
-            rows.retain(|row| &row.provider == provider);
-        }
+        // `max_results: 0` asks only who publishes, and a named provider
+        // only its own rows: build no row nobody asked for.
+        let scope = match query.provider.as_deref() {
+            Some(provider) => RowScope::Provider(provider),
+            None if query.max_results == 0 => RowScope::None,
+            None => RowScope::All,
+        };
+        let (rows, providers) = self.eager_catalogue(caller, scope);
         let revision = format!(
             "{}.{}",
             self.published_surfaces_generation(),
@@ -917,11 +1042,7 @@ impl CapnpBrokerState {
                 reason: "a canonical route lookup must request only its provider".into(),
             });
         }
-        if !self
-            .workspaces_for(caller)
-            .iter()
-            .any(|(workspace, _, _)| workspace.room.to_string() == route.room)
-        {
+        if self.decide_for(caller, &route.room, |_, _, _| ()).is_none() {
             return Err(ActionHostError::NotPermitted);
         }
         let mut page = CataloguePage {
@@ -1203,34 +1324,36 @@ impl CapnpBrokerState {
         if caller.room().is_none() {
             return Err(ActionHostError::UnknownAction);
         }
-        let (workspace, policy, now) = self
-            .workspaces_for(caller)
-            .into_iter()
-            .find(|(workspace, _, _)| workspace.room.to_string() == room)
-            .ok_or(ActionHostError::UnknownAction)?;
-        if workspace.decide_at(&policy, &ResourceRef::App(app_id.clone()), Verb::Write, now)
-            != CapDecision::Allow
-        {
-            return Err(refusal(
-                "the caller is not allowed to launch that application".into(),
-            ));
-        }
-        if let Some(action) = offered {
-            if !Self::allowed(
-                &workspace,
-                &policy,
-                now,
-                &app_id,
-                &action.resource,
-                &action.action,
-                action.contract.permission,
-            ) {
-                return Err(ActionHostError::UnknownAction);
-            }
-            if !confirmation_satisfied(&action, request.confirmation.as_ref()) {
-                return Err(ActionHostError::ConfirmationRequired);
-            }
-        }
+        // The launcher keeps the workspace past the read: only this room's
+        // workspace is copied, once every check on the same sample passed.
+        let workspace = self
+            .decide_for(caller, &room, |workspace, policy, now| {
+                if workspace.decide_at(policy, &ResourceRef::App(app_id.clone()), Verb::Write, now)
+                    != CapDecision::Allow
+                {
+                    return Err(refusal(
+                        "the caller is not allowed to launch that application".into(),
+                    ));
+                }
+                if let Some(action) = &offered {
+                    if !Self::allowed(
+                        workspace,
+                        policy,
+                        now,
+                        &app_id,
+                        &action.resource,
+                        &action.action,
+                        action.contract.permission,
+                    ) {
+                        return Err(ActionHostError::UnknownAction);
+                    }
+                    if !confirmation_satisfied(action, request.confirmation.as_ref()) {
+                        return Err(ActionHostError::ConfirmationRequired);
+                    }
+                }
+                Ok(workspace.clone())
+            })
+            .ok_or(ActionHostError::UnknownAction)??;
         Ok(LaunchDestination {
             workspace,
             app_id,
@@ -1492,12 +1615,13 @@ impl CapnpBrokerState {
     ) -> Option<ActionDirectoryRoot> {
         let peer_id = request.target.provider.parse::<u64>().ok()?;
         let address = &request.target.address;
-        let eager = self.published_surfaces().into_iter().any(|surface| {
-            surface.peer_id == peer_id
-                && surface.live
-                && surface.actions.iter().any(|action| {
-                    action.resource == address.resource && action.action == address.action
-                })
+        let eager = self.surfaces.lock().is_ok_and(|surfaces| {
+            surfaces.get(&peer_id).is_some_and(|surface| {
+                surface.live
+                    && surface.actions.iter().any(|action| {
+                        action.resource == address.resource && action.action == address.action
+                    })
+            })
         });
         (!eager)
             .then(|| self.directory_root_for(caller, peer_id))
@@ -1514,14 +1638,20 @@ impl CapnpBrokerState {
         let unavailable = || ActionHostError::Unavailable {
             reason: "the invocation ledger is unavailable".into(),
         };
-        let Some(revision) = request
-            .revision
-            .clone()
-            .filter(|revision| !revision.is_empty())
-        else {
-            return Pending::ready(Err(ActionHostError::InvalidRequest {
-                reason: "a directory action needs the revision it was chosen at".into(),
-            }));
+        // A request naming no revision acts on the directory as it is now:
+        // its owner resolves it so, in the same turn this broker admits it,
+        // instead of the caller first reading the revision across the same
+        // two hops.
+        let revision = match request.revision.as_deref() {
+            None => String::new(),
+            Some("") => {
+                return Pending::ready(Err(ActionHostError::InvalidRequest {
+                    reason:
+                        "an empty revision names none; omit it to act on the directory as it is now"
+                            .into(),
+                }));
+            }
+            Some(revision) => revision.to_owned(),
         };
         let argument = request.argument.to_slot();
         let address = &request.target.address;
@@ -1637,17 +1767,16 @@ impl CapnpBrokerState {
         argument: Option<&str>,
         reply: Option<ActionDirectoryBridgeReply>,
     ) -> Result<u64, ActionHostError> {
-        let row = match reply {
+        let stale = || ActionHostError::InvalidRequest {
+            reason: "the action changed since that revision; list it again".into(),
+        };
+        let (row, resolved) = match reply {
             Some(Ok(ActionDirectoryBridgeResponse::Resolution(
-                runtime_collab::ActionDirectoryResolution::Found(row),
-            ))) => row,
+                runtime_collab::ActionDirectoryResolution::Found { row, revision },
+            ))) => (row, revision),
             Some(Ok(ActionDirectoryBridgeResponse::Resolution(
                 runtime_collab::ActionDirectoryResolution::StaleRevision,
-            ))) => {
-                return Err(ActionHostError::InvalidRequest {
-                    reason: "the action changed since that revision; list it again".into(),
-                });
-            }
+            ))) => return Err(stale()),
             Some(Ok(_)) => return Err(ActionHostError::UnknownAction),
             Some(Err(error)) => return Err(bridge_error(error)),
             None => {
@@ -1656,8 +1785,25 @@ impl CapnpBrokerState {
                 });
             }
         };
+        // The admission is bound to the revision the caller chose the target
+        // at or, when it named none, the one its owner resolved it against
+        // just now: a host refuses to run it once the directory moved on.
+        // An owner that names no revision for an empty one resolved nothing
+        // the host could check against later.
+        let revision = request.revision.clone().or(resolved).ok_or_else(stale)?;
         let offered =
             published_directory_action(&row).map_err(|_| ActionHostError::UnknownAction)?;
+        // A person's confirmation covers the action as they were shown it.
+        // Without the revision it was shown at, the broker cannot tell that
+        // from the action as it is now, so only reads and plain edits act on
+        // the directory as it is now.
+        if request.revision.is_none()
+            && offered.contract.advertised_confirmation() != tilo_actions::ConfirmationPolicy::None
+        {
+            return Err(ActionHostError::InvalidRequest {
+                reason: CONFIRMED_ACTION_NEEDS_REVISION.into(),
+            });
+        }
         let actor = self.caller_actor(caller, &root.cluster_id);
         let token = self.confirmation_token(
             root.peer_id,
@@ -1705,7 +1851,7 @@ impl CapnpBrokerState {
             },
             super::AdmissionProvenance {
                 durable: None,
-                revision: request.revision.as_deref(),
+                revision: Some(&revision),
                 origin: origin.cloned(),
                 retained_time: None,
             },
@@ -1742,35 +1888,37 @@ impl CapnpBrokerState {
                 .parse::<u64>()
                 .map_err(|_| ActionHostError::UnknownAction)?
         };
+        // Only the one action this peer offers is copied out, not every
+        // app's published surface.
+        let (app_id, room, action) = self
+            .surfaces
+            .lock()
+            .ok()
+            .and_then(|surfaces| {
+                let surface = surfaces.get(&peer_id).filter(|surface| surface.live)?;
+                let action = surface.actions.iter().find(|action| {
+                    action.resource == address.resource && action.action == address.action
+                })?;
+                Some((
+                    surface.app_id.clone(),
+                    surface.route.cluster_id.clone(),
+                    action.clone(),
+                ))
+            })
+            .ok_or(ActionHostError::UnknownAction)?;
         let (offered, room) = self
-            .published_surfaces()
-            .into_iter()
-            .find(|surface| surface.peer_id == peer_id && surface.live)
-            .and_then(|surface| {
-                let (workspace, policy, now) =
-                    self.workspaces_for(caller)
-                        .into_iter()
-                        .find(|(workspace, _, _)| {
-                            workspace.room.to_string() == surface.route.cluster_id
-                        })?;
-                let action = surface
-                    .actions
-                    .iter()
-                    .find(|action| {
-                        action.resource == address.resource && action.action == address.action
-                    })?
-                    .clone();
+            .decide_for(caller, &room, |workspace, policy, now| {
                 Self::allowed(
-                    &workspace,
-                    &policy,
+                    workspace,
+                    policy,
                     now,
-                    &surface.app_id,
+                    &app_id,
                     &action.resource,
                     &action.action,
                     action.contract.permission,
                 )
-                .then_some((action, surface.route.cluster_id))
             })
+            .and_then(|allowed| allowed.then_some((action, room)))
             .ok_or(ActionHostError::UnknownAction)?;
         let actor = self.caller_actor(caller, &room);
         let token = self.confirmation_token(
@@ -1809,10 +1957,13 @@ impl CapnpBrokerState {
         argument: Option<&str>,
     ) -> Result<u64, ActionHostError> {
         let address = &request.target.address;
-        let Some((workspace, policy, now)) = self
-            .workspaces_for(caller)
-            .into_iter()
-            .find(|(workspace, _, _)| workspace.room.to_string() == room)
+        // Workspace actions hand the workspace to host services (launcher,
+        // shortcut library), which cannot run under the borrow: copy only
+        // this one room's workspace.
+        let Some((workspace, policy, now)) =
+            self.decide_for(caller, room, |workspace, policy, now| {
+                (workspace.clone(), policy.clone(), now)
+            })
         else {
             return Err(ActionHostError::UnknownAction);
         };
@@ -1926,7 +2077,8 @@ impl CapnpBrokerState {
         }
         let operation = automation::decode_library(action, argument)
             .map_err(|reason| ActionHostError::InvalidRequest { reason })?;
-        let catalog = tilo_automation::ActionCatalog::new(self.eager_catalogue(caller, true).0);
+        let catalog =
+            tilo_automation::ActionCatalog::new(self.eager_catalogue(caller, RowScope::All).0);
         let keymap = library.keymap();
         let room = workspace.room.to_string();
         let plan = automation::plan_library(
@@ -2171,12 +2323,10 @@ impl CapnpBrokerState {
                 reason: "the shortcut no longer has that trigger".into(),
             });
         }
-        let catalog = tilo_automation::ActionCatalog::new(self.eager_catalogue(caller, true).0);
+        let catalog =
+            tilo_automation::ActionCatalog::new(self.eager_catalogue(caller, RowScope::All).0);
         let others = self
-            .workspaces_for(caller)
-            .into_iter()
-            .find(|(workspace, _, _)| workspace.room.to_string() == room)
-            .map(|(workspace, _, _)| workspace.shortcuts)
+            .decide_for(caller, room, |workspace, _, _| workspace.shortcuts.clone())
             .unwrap_or_default();
         let resolver = |id: &str| others.iter().find(|other| other.id == id).cloned();
         tilo_automation::check(&shortcut, &catalog, &resolver).map_err(|errors| {
@@ -2227,15 +2377,14 @@ impl CapnpBrokerState {
         room: &str,
         shortcut_id: &str,
     ) -> Option<tilo_automation::Shortcut> {
-        self.workspaces_for(caller)
-            .into_iter()
-            .find(|(workspace, _, _)| workspace.room.to_string() == room)
-            .and_then(|(workspace, _, _)| {
-                workspace
-                    .shortcuts
-                    .into_iter()
-                    .find(|shortcut| shortcut.id == shortcut_id)
-            })
+        self.decide_for(caller, room, |workspace, _, _| {
+            workspace
+                .shortcuts
+                .iter()
+                .find(|shortcut| shortcut.id == shortcut_id)
+                .cloned()
+        })
+        .flatten()
     }
 
     /// Run `shortcut` as `caller` through this broker, reporting on a new
@@ -2316,6 +2465,11 @@ impl CapnpBrokerState {
     /// Shortcut runs finished since the last call, oldest first.
     pub fn take_finished_shortcut_runs(&self) -> Vec<automation::FinishedShortcutRun> {
         self.shortcut_runs.take()
+    }
+
+    /// Whether a finished shortcut run is waiting to be taken.
+    pub fn has_finished_shortcut_runs(&self) -> bool {
+        self.shortcut_runs.has_finished()
     }
 
     /// Execute a host-owned workspace governance action (permission
@@ -2522,10 +2676,26 @@ impl CapnpBrokerState {
             tokio::select! {
                 _ = seen.changed() => {}
                 () = tilo_rt::sleep(CHANGE_SAFETY_INTERVAL) => {}
+                // A waiter that found its answer some other way (it observed
+                // the invocation finished) holds no task for the interval.
+                () = changed.abandoned() => return,
             }
             changed.complete(());
         });
         Some(change)
+    }
+
+    /// [`Self::action_next_change`] counting only changes after this call:
+    /// the `next_change` of a host whose waiter asks before it observes, so a
+    /// change between the two still wakes it. Authorized exactly as
+    /// [`Self::action_observe`]: `None` for an invocation `caller` did not
+    /// admit.
+    pub fn action_next_change_after_now(
+        &self,
+        caller: &Caller,
+        id: &tilo_actions::InvocationId,
+    ) -> Option<Pending<()>> {
+        self.action_next_change(caller, id, self.invocation_changes())
     }
 
     /// Ask an invocation `caller` admitted to stop.
@@ -2583,20 +2753,11 @@ fn directory_row(
             id: row.resource.clone(),
             kind: row.resource_kind.clone(),
             label: row.resource_label.clone(),
-            presentation: serde_json::from_str::<tilo_actions::ResourcePresentation>(
-                &row.resource_presentation_json,
-            )
-            .ok()
-            .filter(tilo_actions::ResourcePresentation::is_valid),
+            presentation: row.presentation.clone(),
         },
         action,
         has_children: row.has_children,
-        visibility: row.visibility_action.clone().and_then(|action| {
-            Some(RowVisibility {
-                action,
-                contract: serde_json::from_str(&row.visibility_contract_json).ok()?,
-            })
-        }),
+        visibility: row.visibility.clone(),
     })
 }
 
@@ -2625,7 +2786,7 @@ fn directory_page(
                 ..CataloguePage::default()
             };
             match resolution {
-                runtime_collab::ActionDirectoryResolution::Found(row) => {
+                runtime_collab::ActionDirectoryResolution::Found { row, .. } => {
                     page.rows.extend(directory_row(root, &row));
                 }
                 runtime_collab::ActionDirectoryResolution::StaleRevision => {
@@ -2740,6 +2901,7 @@ mod app_close_tests {
     use super::super::{
         BrokerActor, BrokerChannels, CapnpBrokerState, FanoutState, PeerPublisher, PublishedSurface,
     };
+    use super::RowScope;
     use crate::route::CrdtRoute;
     use crate::test_support::{Workspace, WorkspaceId, WorkspaceTree};
     use std::sync::{Arc, Mutex};
@@ -2749,10 +2911,14 @@ mod app_close_tests {
     struct Launcher {
         closes: bool,
         closed: Mutex<Vec<(String, String)>>,
+        /// How often the installed-application list was read.
+        listed: std::sync::atomic::AtomicUsize,
     }
 
     impl crate::services::LauncherServices for Launcher {
         fn applications(&self) -> Vec<crate::services::LaunchableApplication> {
+            self.listed
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             vec![crate::services::LaunchableApplication {
                 package_id: "so.tilo.word-processor".into(),
                 display_name: "Writer".into(),
@@ -2815,7 +2981,7 @@ mod app_close_tests {
 
     fn app_actions(state: &CapnpBrokerState, caller: &Caller) -> Vec<String> {
         state
-            .eager_catalogue(caller, true)
+            .eager_catalogue(caller, RowScope::All)
             .0
             .into_iter()
             .filter_map(|row| row.action)
@@ -2869,6 +3035,90 @@ mod app_close_tests {
                 )
                 .is_err()
         );
+    }
+
+    /// The page `query` answers `caller`, and how often it read the
+    /// installed-application list.
+    fn answered(
+        state: &Arc<CapnpBrokerState>,
+        launcher: &Launcher,
+        caller: &Caller,
+        query: &tilo_actions::remote::CatalogueQuery,
+    ) -> (tilo_actions::remote::CataloguePage, usize) {
+        let before = launcher.listed.load(std::sync::atomic::Ordering::SeqCst);
+        let page = state
+            .action_query(caller, query)
+            .wait_timeout(std::time::Duration::from_secs(5))
+            .ok()
+            .flatten()
+            .expect("an eager query answers at once")
+            .expect("the caller may query");
+        let after = launcher.listed.load(std::sync::atomic::Ordering::SeqCst);
+        (page, after.saturating_sub(before))
+    }
+
+    #[test]
+    fn a_provider_scoped_query_builds_only_that_provider() {
+        let launcher = Arc::new(Launcher {
+            closes: true,
+            ..Default::default()
+        });
+        let (state, caller, room) = broker(Arc::clone(&launcher), true);
+        let workspace = tilo_actions::remote::workspace_provider(&room);
+        let query = |provider: Option<&str>, max_results| tilo_actions::remote::CatalogueQuery {
+            provider: provider.map(str::to_owned),
+            max_results,
+            ..Default::default()
+        };
+
+        // An application instance's own rows never read the installed list.
+        let (page, listed) = answered(&state, &launcher, &caller, &query(Some("4"), 1));
+        assert_eq!(listed, 0);
+        assert!(page.rows.iter().all(|row| row.provider == "4"));
+        // Nor does asking only who publishes; the instance is still listed.
+        let (page, listed) = answered(&state, &launcher, &caller, &query(None, 0));
+        assert_eq!(listed, 0);
+        assert!(page.rows.is_empty());
+        assert!(
+            page.providers
+                .iter()
+                .any(|provider| provider.provider == "4")
+        );
+        // The workspace's own rows read it once, for open and close alike.
+        let (page, listed) = answered(&state, &launcher, &caller, &query(Some(&workspace), 64));
+        assert_eq!(listed, 1);
+        assert!(page.rows.iter().all(|row| row.provider == workspace));
+        assert!(page.rows.iter().any(|row| {
+            row.action
+                .as_ref()
+                .is_some_and(|action| action.address.action == "close")
+        }));
+        let (_, listed) = answered(&state, &launcher, &caller, &query(None, 64));
+        assert_eq!(listed, 1);
+
+        // A scope only leaves other providers' rows out: what it builds is
+        // what the whole catalogue offers that provider, and nothing else.
+        let (all, providers) = state.eager_catalogue(&caller, RowScope::All);
+        for provider in ["4", workspace.as_str()] {
+            let (scoped, scoped_providers) =
+                state.eager_catalogue(&caller, RowScope::Provider(provider));
+            let expected = all
+                .iter()
+                .filter(|row| row.provider == provider)
+                .cloned()
+                .collect::<Vec<_>>();
+            assert_eq!(scoped, expected, "{provider}");
+            assert_eq!(scoped_providers, providers);
+        }
+        let (none, none_providers) = state.eager_catalogue(&caller, RowScope::None);
+        assert!(none.is_empty());
+        assert_eq!(none_providers, providers);
+
+        // Authority is still decided per row: a caller without a role is
+        // offered nothing, scoped or not.
+        let stranger = Caller::authenticated([99; 32], [98; 32]).in_room(room);
+        let (rows, _) = state.eager_catalogue(&stranger, RowScope::Provider(&workspace));
+        assert!(rows.is_empty());
     }
 
     #[test]

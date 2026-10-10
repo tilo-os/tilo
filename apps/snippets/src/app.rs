@@ -31,7 +31,7 @@ use ui::widget::{
     NavSection, NavShell, SidebarPlacement, Widget,
 };
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
+use vello::kurbo::{Affine, Point, Rect, Vec2};
 use winit::event::{ElementState, KeyEvent, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
@@ -156,7 +156,7 @@ impl Action {
 #[derive(Clone)]
 struct Toast {
     message: String,
-    shown_at: ui::clock::Instant,
+    shown_at: ui::time::Instant,
 }
 
 /// An open menu of the snippet: its language picker or its overflow menu.
@@ -256,7 +256,7 @@ impl Core {
             return;
         }
         self.selection = sel;
-        self.list.scroll = 0.0;
+        self.list.scroller.set_offset(Vec2::ZERO);
         self.recompute_visible();
     }
 
@@ -621,7 +621,7 @@ impl Core {
     fn toast(&mut self, message: &str) {
         self.toast = Some(Toast {
             message: message.to_string(),
-            shown_at: ui::clock::now(),
+            shown_at: ui::time::now(),
         });
     }
 
@@ -747,7 +747,7 @@ impl Core {
 
     fn update_toast(&mut self) {
         if self.toast.as_ref().is_some_and(|toast| {
-            ui::clock::now().saturating_duration_since(toast.shown_at)
+            ui::time::now().saturating_duration_since(toast.shown_at)
                 >= ui::widget::toast::DEFAULT_TTL
         }) {
             self.toast = None;

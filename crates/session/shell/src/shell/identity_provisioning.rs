@@ -3,15 +3,13 @@
 //! trigger, invite-URL parsing, and the session pairing-broker boundary.
 //!
 //! New ceremonies emit schema-1 JSON matching
-//! [`ui::widget::identity_flow::IdentityRecord`] in memory, then the runtime
+//! [`tilo_identity_ceremony::IdentityRecord`] in memory, then the runtime
 //! lifecycle store atomically imports it as public schema-2 metadata backed by
 //! Secret Service or a host-only broker file before the ceremony returns.
 //!
 //! Intentionally thin: cryptographic logic stays in
 //! `threshold-identity`, visual logic stays in `ui`.
 
-use getrandom::{SysRng, rand_core::UnwrapErr};
-use rand_core::Rng;
 use serde::{Deserialize, Serialize};
 use std::fs::OpenOptions;
 use std::io::{self, Read};
@@ -25,7 +23,7 @@ use std::fs;
 #[cfg(unix)]
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 
-use ui::widget::identity_flow::{
+use tilo_identity_ceremony::{
     IdentityFlowError, IdentityRecord, IdentityStore, InviteEnvelope, PAIRING_FRAMING,
     PairingBrokerRequest, PairingBrokerResponse, PairingHandshake, pairing_io_timeout,
 };
@@ -412,7 +410,7 @@ fn serve_pairing_request(
             PairingBrokerResponse::PairerExchange(
                 authority
                     .take_pairer_exchange(&n)
-                    .map(|(a, b, m)| (a, b, ui::widget::identity_flow::PairingMac::from_bytes(m))),
+                    .map(|(a, b, m)| (a, b, tilo_identity_ceremony::PairingMac::from_bytes(m))),
             )
         }
         PairingBrokerRequest::PutHostRound2(n, value, mac) if matches!(purpose, BrokerPurpose::Pairing(allowed) if n == *allowed) =>
@@ -430,7 +428,7 @@ fn serve_pairing_request(
             PairingBrokerResponse::HostRound2(
                 authority
                     .take_host_round2(&n)
-                    .map(|(r, m)| (r, ui::widget::identity_flow::PairingMac::from_bytes(m))),
+                    .map(|(r, m)| (r, tilo_identity_ceremony::PairingMac::from_bytes(m))),
             )
         }
         PairingBrokerRequest::RedeemInvite(capability) => {
@@ -440,14 +438,11 @@ fn serve_pairing_request(
             // Expiry is decided by the trusted authority clock. Letting the
             // remote bearer supply this timestamp would make an expired
             // capability redeemable simply by replaying an older time.
-            let now = SystemTime::now()
-                .duration_since(SystemTime::UNIX_EPOCH)
-                .map_or(u64::MAX, |duration| duration.as_secs());
-            let secret =
-                ui::widget::identity_flow::InviteRedemptionAuthority::at(&**authority_root)
-                    .and_then(|authority| authority.redeem(&capability, now))
-                    .ok()
-                    .map(|secret| secret.to_vec());
+            let now = tilo_clock::try_unix_now().unwrap_or(u64::MAX);
+            let secret = tilo_identity_ceremony::InviteRedemptionAuthority::at(&**authority_root)
+                .and_then(|authority| authority.redeem(&capability, now))
+                .ok()
+                .map(|secret| secret.to_vec());
             PairingBrokerResponse::InviteSecret(secret)
         }
         _ => PairingBrokerResponse::Denied,
@@ -490,6 +485,42 @@ pub fn host_identity_root(
     Ok(base.join("tilo"))
 }
 
+/// Paths shared by the host Files service and its native clients.
+fn host_files_environment(
+    home: Option<std::ffi::OsString>,
+    state_home: Option<std::ffi::OsString>,
+    runtime_dir: Option<std::ffi::OsString>,
+) -> io::Result<Vec<(&'static str, PathBuf)>> {
+    let state = match state_home.filter(|value| !value.is_empty()) {
+        Some(value) => PathBuf::from(value),
+        None => PathBuf::from(
+            home.ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "HOME is unavailable"))?,
+        )
+        .join(".local/state"),
+    };
+    let runtime = PathBuf::from(runtime_dir.ok_or_else(|| {
+        io::Error::new(io::ErrorKind::NotFound, "XDG_RUNTIME_DIR is unavailable")
+    })?);
+    if !state.is_absolute() || !runtime.is_absolute() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "host Files directories must be absolute",
+        ));
+    }
+    let cache = state.join("tilo/files");
+    let runtime = runtime.join("tilo/files-workspace");
+    Ok(vec![
+        ("TILO_FS_CONTENT_PEER_CACHE_DIR", cache.clone()),
+        ("TILO_WORKSPACE_ROOTS", cache.join("mount")),
+        ("TILO_AUTHORITY_SOCKET_DIR", runtime.clone()),
+        ("TILO_FS_BLOB_SOCKET", runtime.join("fs-blobs.sock")),
+        (
+            "TILO_FS_AUTHORITY_PUBLISHER",
+            PathBuf::from("/usr/bin/tilo-relay-admin"),
+        ),
+    ])
+}
+
 /// Select the per-user identity tree for a host-installed desktop session.
 ///
 /// Must run while process startup is still single-threaded. The environment
@@ -515,6 +546,17 @@ pub fn configure_host_identity_root() -> io::Result<PathBuf> {
             io::ErrorKind::InvalidInput,
             "TILO_IDENTITY_ROOT must be absolute",
         ));
+    }
+    let files_environment = host_files_environment(
+        std::env::var_os("HOME"),
+        std::env::var_os("XDG_STATE_HOME"),
+        std::env::var_os("XDG_RUNTIME_DIR"),
+    )?;
+    for (name, value) in files_environment {
+        if std::env::var_os(name).is_none_or(|existing| existing.is_empty()) {
+            // SAFETY: same single-threaded startup contract as the identity root.
+            unsafe { std::env::set_var(name, value) };
+        }
     }
     prepare_private_host_identity_tree(&root)?;
     // SAFETY: `main` calls this before it starts the warm-up thread or any
@@ -780,29 +822,6 @@ pub fn pairing_channel_at(
     }))
 }
 
-/// Create a private, bounded broker spool under the runtime identity root.
-/// The returned handle can be dropped and reopened with [`pairing_channel_at`]
-/// by another process; protocol state is not owned by the UI lifetime.
-///
-/// # Errors
-///
-/// Returns an error when the identity root is unavailable or the durable
-/// pairing protocol cannot be initialized.
-pub fn new_pairing_channel() -> Result<SharedPairingChannel, IdentityFlowError> {
-    let root = std::env::var_os("TILO_IDENTITY_ROOT")
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from)
-        .ok_or_else(|| {
-            IdentityFlowError::Io(io::Error::new(
-                io::ErrorKind::NotFound,
-                "pairing broker unavailable: TILO_IDENTITY_ROOT is not configured",
-            ))
-        })?;
-    let mut id = [0u8; 16];
-    UnwrapErr(SysRng).fill_bytes(&mut id);
-    pairing_channel_at(root.join("pairing-broker").join(hex::encode(id)))
-}
-
 /// Start the long-lived invite broker when the administrator has provided a
 /// reachable bind/advertise pair. With neither variable set the feature is
 /// honestly unavailable; a half-configuration is rejected.
@@ -862,7 +881,7 @@ pub fn start_configured_invite_broker() -> io::Result<Option<PairingBrokerServer
     if advertised.port() == 0 {
         advertised.set_port(server.endpoint().port());
     }
-    ui::widget::identity_flow::configure_invite_broker(
+    tilo_identity_ceremony::configure_invite_broker(
         advertised.to_string(),
         server.certificate_der().to_vec(),
         invite_authority_root,
@@ -874,9 +893,10 @@ pub fn start_configured_invite_broker() -> io::Result<Option<PairingBrokerServer
 #[cfg(test)]
 mod tests {
     use super::*;
+    use getrandom::{SysRng, rand_core::UnwrapErr};
     use std::time::SystemTime;
     use threshold_identity::ThresholdIdentity;
-    use ui::widget::identity_flow::MemoryIdentityStore;
+    use tilo_identity_ceremony::MemoryIdentityStore;
 
     fn fixture_record() -> IdentityRecord {
         let mut rng = UnwrapErr(SysRng);
@@ -997,6 +1017,33 @@ mod tests {
     }
 
     #[test]
+    fn host_files_paths_match_the_user_service() {
+        let environment = host_files_environment(
+            Some("/home/alice".into()),
+            None,
+            Some("/run/user/1000".into()),
+        )
+        .unwrap();
+        assert_eq!(
+            environment[0].1,
+            PathBuf::from("/home/alice/.local/state/tilo/files")
+        );
+        assert_eq!(environment[1].1, environment[0].1.join("mount"));
+        assert_eq!(
+            environment[2].1,
+            PathBuf::from("/run/user/1000/tilo/files-workspace")
+        );
+        assert_eq!(environment[3].1, environment[2].1.join("fs-blobs.sock"));
+        let custom =
+            host_files_environment(None, Some("/state".into()), Some("/runtime".into())).unwrap();
+        assert_eq!(custom[0].1, PathBuf::from("/state/tilo/files"));
+        assert!(
+            host_files_environment(None, Some("relative".into()), Some("/runtime".into())).is_err()
+        );
+        assert!(host_files_environment(Some("/home/alice".into()), None, None).is_err());
+    }
+
+    #[test]
     fn first_run_and_recovery_trigger_only_for_missing_or_unavailable_identity() {
         fn first_run_flow_triggers_only_on_missing_identity() {
             let store = MemoryIdentityStore::new();
@@ -1042,7 +1089,7 @@ mod tests {
     fn invite_urls_are_signature_checked() {
         fn parse_invite_url_validates_signature() {
             use collab_types::{ChannelId, Role, generate_keypair};
-            use ui::widget::identity_flow::{
+            use tilo_identity_ceremony::{
                 InviteBrokerLocator, InviteTerms, mint_invite_for_broker,
             };
             let tmp = tempfile::tempdir().expect("tempdir");
@@ -1195,8 +1242,8 @@ mod tests {
             let invite_root = tmp.path().join("invite-redemption-authority");
             let server = PairingBrokerServer::start_invites(authority, &invite_root).unwrap();
             let (owner_secret, owner_public) = collab_types::generate_keypair();
-            let invite = ui::widget::identity_flow::mint_invite_for_broker(
-                ui::widget::identity_flow::InviteTerms {
+            let invite = tilo_identity_ceremony::mint_invite_for_broker(
+                tilo_identity_ceremony::InviteTerms {
                     channel: collab_types::ChannelId::new(),
                     channel_name: "remote".into(),
                     owner_pubkey: owner_public,
@@ -1205,7 +1252,7 @@ mod tests {
                     expires_at: SystemTime::now() + Duration::from_secs(60),
                 },
                 &owner_secret,
-                ui::widget::identity_flow::InviteBrokerLocator {
+                tilo_identity_ceremony::InviteBrokerLocator {
                     endpoint: server.endpoint().to_string(),
                     certificate: server.certificate_der().to_vec(),
                     authority_root: invite_root,
@@ -1213,7 +1260,7 @@ mod tests {
             )
             .unwrap();
             let (_, invitee) = collab_types::generate_keypair();
-            ui::widget::identity_flow::build_attestation_from_invite(
+            tilo_identity_ceremony::build_attestation_from_invite(
                 &invite,
                 invitee,
                 SystemTime::now(),
@@ -1221,7 +1268,7 @@ mod tests {
             .unwrap();
             let (_, replay) = collab_types::generate_keypair();
             assert!(
-                ui::widget::identity_flow::build_attestation_from_invite(
+                tilo_identity_ceremony::build_attestation_from_invite(
                     &invite,
                     replay,
                     SystemTime::now()
@@ -1235,7 +1282,7 @@ mod tests {
             let pairing = pairing_channel_at(tmp.path().join("pairing")).unwrap();
             let invite_root = tmp.path().join("invite-redemption-authority");
             let invite_authority =
-                ui::widget::identity_flow::InviteRedemptionAuthority::at(&invite_root).unwrap();
+                tilo_identity_ceremony::InviteRedemptionAuthority::at(&invite_root).unwrap();
             invite_authority.issue([3; 32], [4; 32], 1).unwrap();
             let server = PairingBrokerServer::start_invites(pairing, invite_root).unwrap();
             let response = PairingHandshake::remote_call(
@@ -1314,8 +1361,8 @@ mod tests {
             let endpoint = first.endpoint();
             let certificate = first.certificate_der().to_vec();
             let (owner_secret, owner_public) = collab_types::generate_keypair();
-            let invite = ui::widget::identity_flow::mint_invite_for_broker(
-                ui::widget::identity_flow::InviteTerms {
+            let invite = tilo_identity_ceremony::mint_invite_for_broker(
+                tilo_identity_ceremony::InviteTerms {
                     channel: collab_types::ChannelId::new(),
                     channel_name: "restart-safe".into(),
                     owner_pubkey: owner_public,
@@ -1324,7 +1371,7 @@ mod tests {
                     expires_at: SystemTime::now() + Duration::from_secs(60),
                 },
                 &owner_secret,
-                ui::widget::identity_flow::InviteBrokerLocator {
+                tilo_identity_ceremony::InviteBrokerLocator {
                     endpoint: endpoint.to_string(),
                     certificate: certificate.clone(),
                     authority_root: tmp.path().join("invite-redemption-authority"),
@@ -1342,7 +1389,7 @@ mod tests {
             .unwrap();
             assert_eq!(restarted.certificate_der(), certificate);
             let (_, invitee) = collab_types::generate_keypair();
-            ui::widget::identity_flow::build_attestation_from_invite(
+            tilo_identity_ceremony::build_attestation_from_invite(
                 &invite,
                 invitee,
                 SystemTime::now(),
@@ -1350,7 +1397,7 @@ mod tests {
             .unwrap();
             let (_, replay) = collab_types::generate_keypair();
             assert!(
-                ui::widget::identity_flow::build_attestation_from_invite(
+                tilo_identity_ceremony::build_attestation_from_invite(
                     &invite,
                     replay,
                     SystemTime::now()

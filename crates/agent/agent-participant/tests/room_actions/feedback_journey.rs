@@ -112,8 +112,23 @@ async fn signed_reviewed_feedback_retries_once_and_reads_a_retained_receipt() {
     let route = create_feedback_record(&mut browser).await;
     browser.peer.barrier().unwrap().recv().unwrap().unwrap();
     let submission = approved(&route);
+    let mut queued = participant(&mut browser, &route, &person);
+    queued
+        .invoke(
+            &ActionAddress::new("chat.channel:feedback", "submit-feedback"),
+            serde_json::json!({"submission": submission})
+                .as_object()
+                .unwrap(),
+            false,
+        )
+        .unwrap();
+    let mutation = queued.take_mutation().unwrap();
+    browser.peer.close();
+    drop(browser);
+    browser = Browser::open_room(&hosted, &device, &host, &room.room).await;
+    publish_participant(&mut browser, &route, &mutation);
     submit_local_participant(&mut browser, &route, &submission, &person);
-    submit_local_participant(&mut browser, &route, &submission, &person);
+    assert_signed_canonical(&mut browser, &submission, &host.cert, &device.cert).await;
     let read_address = ActionAddress::new(
         format!("chat.feedback:{}", submission.id),
         "read-feedback-receipt",
@@ -164,9 +179,43 @@ async fn signed_reviewed_feedback_retries_once_and_reads_a_retained_receipt() {
     ));
     assert_one_report(&mut browser, &route, &submission, &person).await;
     assert_local_only_report_is_not_a_receipt(&mut browser, &route, &submission).await;
+    let mut maintainer = participant(&mut browser, &route, &person);
+    maintainer
+        .invoke(
+            &ActionAddress::new(format!("chat.feedback:{}", submission.id), "triage"),
+            serde_json::json!({"update":{"status":"resolved"}})
+                .as_object()
+                .unwrap(),
+            false,
+        )
+        .unwrap();
+    publish_participant(&mut browser, &route, &maintainer.take_mutation().unwrap());
+    let before = resolved_status(&mut browser, &submission).await;
+    browser.peer.close();
+    drop(browser);
+    drop(maintainer);
+    drop(queued);
     drop(hosted.web);
     hosted.agents.shutdown();
     hosted.relay.shutdown().await;
+    let restored = start(&identity, &host, state.path()).await;
+    let mut returning = Browser::open_room(&restored, &device, &host, &room.room).await;
+    let after = resolved_status(&mut returning, &submission).await;
+    assert_signed_canonical(&mut returning, &submission, &host.cert, &device.cert).await;
+    assert_eq!(
+        before["content"], after["content"],
+        "cold canonical triage must survive host restart"
+    );
+    assert_eq!(
+        after["content"]["receipt"]["digest"],
+        submission.digest().unwrap()
+    );
+    assert_eq!(after["content"]["triage"][0]["author"], person);
+    assert_one_report(&mut returning, &route, &submission, &person).await;
+    returning.peer.close();
+    drop(restored.web);
+    restored.agents.shutdown();
+    restored.relay.shutdown().await;
 }
 
 async fn retained_receipt(
@@ -262,26 +311,7 @@ fn submit_local_participant(
     submission: &Submission,
     person: &str,
 ) {
-    browser.pump();
-    let changes = browser
-        .documents
-        .get(route)
-        .unwrap()
-        .iter()
-        .map(|(_, bytes)| bytes.clone())
-        .collect();
-    let mut replica = Replica::open(
-        &common::catalogue(),
-        &route.app_id,
-        &route.cluster_id,
-        person,
-        false,
-        Seed::Existing {
-            record: ui::record::RecordId::package_primary(),
-            changes,
-        },
-    )
-    .unwrap();
+    let mut replica = participant(browser, route, person);
     replica
         .invoke(
             &ActionAddress::new("chat.channel:feedback", "submit-feedback"),
@@ -292,14 +322,169 @@ fn submit_local_participant(
         )
         .unwrap();
     if let Some(mutation) = replica.take_mutation() {
-        browser.peer.publish(route.clone(), &mutation).unwrap();
-        let (collab_types::DocumentMutation::Snapshot(bytes)
-        | collab_types::DocumentMutation::Incremental(bytes)) = mutation;
-        browser
-            .documents
-            .entry(route.clone())
-            .or_default()
-            .push(([0; 32], bytes));
+        publish_participant(browser, route, &mutation);
     }
+}
+
+fn participant(browser: &mut Browser, route: &DocumentRoute, person: &str) -> Replica {
+    browser.pump();
+    let changes = browser
+        .documents
+        .get(route)
+        .unwrap()
+        .iter()
+        .map(|(_, bytes)| bytes.clone())
+        .collect();
+    Replica::open(
+        &common::catalogue(),
+        &route.app_id,
+        &route.cluster_id,
+        person,
+        false,
+        Seed::Existing {
+            record: ui::record::RecordId::package_primary(),
+            changes,
+        },
+    )
+    .unwrap()
+}
+
+fn publish_participant(
+    browser: &mut Browser,
+    route: &DocumentRoute,
+    mutation: &collab_types::DocumentMutation,
+) {
+    browser.peer.publish(route.clone(), mutation).unwrap();
+    let (collab_types::DocumentMutation::Snapshot(bytes)
+    | collab_types::DocumentMutation::Incremental(bytes)) = mutation;
+    browser
+        .documents
+        .entry(route.clone())
+        .or_default()
+        .push(([0; 32], bytes.clone()));
     browser.peer.barrier().unwrap().recv().unwrap().unwrap();
+}
+
+async fn resolved_status(browser: &mut Browser, submission: &Submission) -> serde_json::Value {
+    let deadline = Instant::now().checked_add(Duration::from_secs(30)).unwrap();
+    loop {
+        let result = browser
+            .invoke(request(
+                &submission.destination.provider,
+                ActionAddress::new(
+                    format!("chat.feedback:{}", submission.id),
+                    "read-feedback-status",
+                ),
+                InvokeArgument::None,
+            ))
+            .await;
+        if let ReceiptStatus::Completed { output } = result.status {
+            let value = output.value.unwrap();
+            if value["content"]["triage"][0]["update"]["status"] == "resolved" {
+                assert_eq!(value["record"]["roomId"], submission.destination.room);
+                assert_eq!(value["record"]["appId"], "so.tilo.chat");
+                assert_eq!(value["record"]["recordId"], "");
+                return value;
+            }
+        }
+        assert!(
+            Instant::now() < deadline,
+            "canonical resolved feedback unavailable"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+async fn owner_feedback(
+    browser: &mut Browser,
+    submission: &Submission,
+    include_report: bool,
+) -> Result<tilo_actions::remote::feedback::FeedbackAnswer, ActionHostError> {
+    use tilo_actions::remote::feedback::{FeedbackDestination, FeedbackPublication, FeedbackQuery};
+    browser.correlation = browser.correlation.checked_add(1).unwrap();
+    let correlation = browser.correlation;
+    browser.send(RemoteActionMessage::FeedbackRequest {
+        correlation,
+        query: FeedbackQuery {
+            destination: FeedbackDestination {
+                room: submission.destination.room.clone(),
+                provider: submission.destination.provider.clone(),
+                channel: submission.destination.channel.clone(),
+            },
+            publication: FeedbackPublication::Write,
+            submission: include_report.then(|| serde_json::to_value(submission).unwrap()),
+        },
+    });
+    browser
+        .answer("signed canonical feedback", |message| match message {
+            RemoteActionMessage::FeedbackResponse {
+                correlation: received,
+                result,
+            } if *received == correlation => Some(result.clone()),
+            _ => None,
+        })
+        .await
+}
+async fn assert_signed_canonical(
+    browser: &mut Browser,
+    submission: &Submission,
+    owner: &tilo_user_identity::DeviceCert,
+    reporter: &tilo_user_identity::DeviceCert,
+) {
+    use tilo_actions::remote::Caller;
+    use tilo_desktop::feedback::transport::{Enrollment, SignedReceipt};
+    let admission = owner_feedback(browser, submission, false).await.unwrap();
+    assert!(
+        admission.receipt.is_none(),
+        "admission must not fabricate report persistence"
+    );
+    assert_eq!(
+        admission.admission.owner_device,
+        hex::encode(owner.device_public_key)
+    );
+    assert_eq!(
+        admission.admission.reporter_device,
+        hex::encode(reporter.device_public_key)
+    );
+    let enrollment = Enrollment {
+        destination: submission.destination.clone(),
+        owner: Caller::authenticated(owner.user_public_key, owner.device_public_key)
+            .in_room(&submission.destination.room),
+        reporter: Caller::authenticated(reporter.user_public_key, reporter.device_public_key)
+            .in_room(&submission.destination.room),
+        permissions: ui::permissions::PermissionContext::from_capabilities(
+            ui::permissions::Actor::person(
+                Some(serde_json::from_value(admission.admission.role).unwrap()),
+                hex::encode(reporter.user_public_key),
+            )
+            .in_room(&submission.destination.room),
+            serde_json::from_value(admission.admission.caps).unwrap(),
+        )
+        .at_unix_time(admission.admission.unix_time),
+        publication: ui::permissions::Verb::Write,
+    };
+    let answer = owner_feedback(browser, submission, true).await.unwrap();
+    let receipt =
+        SignedReceipt::decode(&serde_json::to_vec(&answer.receipt.unwrap()).unwrap()).unwrap();
+    assert_eq!(
+        receipt.verify(submission, &enrollment).unwrap().digest,
+        submission.digest().unwrap()
+    );
+    let mut changed = submission.clone();
+    changed.feedback.text.push_str(" changed approved content");
+    assert!(receipt.verify(&changed, &enrollment).is_err());
+    assert!(owner_feedback(browser, &changed, true).await.is_err());
+    let mut absent = submission.clone();
+    absent.id = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee".into();
+    assert!(
+        owner_feedback(browser, &absent, true).await.is_err(),
+        "a locally approved but unretained report has no canonical acknowledgment"
+    );
+    let mut wrong_destination = submission.clone();
+    wrong_destination.destination.channel = "missing-existing-destination".into();
+    assert!(
+        owner_feedback(browser, &wrong_destination, false)
+            .await
+            .is_err()
+    );
 }

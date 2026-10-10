@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import re
 import time
 import traceback
 from dataclasses import dataclass, field
 from pathlib import Path
+
+from .vm import VmError, wait_until
 
 # Who fixes what: each area's failures are routed to its owner.
 AREAS = {
@@ -84,9 +87,139 @@ def run_check(ctx, chk: Check) -> Result:
         res.detail = _join(res.detail, f"{type(exc).__name__}: {exc}")
         (ctx.out / "errors").mkdir(exist_ok=True)
         (ctx.out / "errors" / f"{chk.id}.txt").write_text(traceback.format_exc())
+    leave_unlocked(ctx, chk, res)
+    leave_no_dialog(ctx, chk, res)
     res.seconds = round(time.monotonic() - started, 2)
     ctx.current = None
     return res
+
+
+LEFT_LOCKED = "left the session locked"
+
+
+def leave_unlocked(ctx, chk: Check, res: Result) -> None:
+    """Every check runs in the one session the run shares, so none may hand the next a locked
+    one: while locked the compositor refuses every action and snapshot (on purpose), and every
+    later check would report `session_locked` instead of its subject. A check that ends with
+    the session locked fails, however it ended, and the harness restarts the slot's session
+    (a fresh compositor starts unlocked; nothing goes around the lock itself)."""
+    try:
+        locked = ctx.state()["chrome"].get("session_locked")
+    except (VmError, KeyError, TypeError):
+        return  # no state to read: the next check that needs one reports why
+    if not locked:
+        return
+    res.status = "fail"
+    ctx.facts.setdefault("session_recovered_after", []).append(chk.id)
+    try:
+        ctx.vm.restart_session()
+    except VmError as exc:
+        res.detail = _join(res.detail, f"{LEFT_LOCKED}, and restarting the slot session failed: "
+                                       f"{exc.reason()}")
+        return
+    res.detail = _join(res.detail, f"{LEFT_LOCKED}; the harness restarted the slot session")
+
+
+LEFT_OPEN = "left a dialog open"
+
+# Escape presses before the harness gives up on closing what a check left open: the
+# Invite composer's review step takes two (review, then the composer), a stack of
+# surfaces one each.
+DISMISS_ESCAPES = 4
+
+# Shell surfaces the state dump reports under `input_capture`, beside `overlays`.
+_CAPTURING = (("onboarding", "first-login onboarding"),
+              ("shortcut_help", "the shortcut help"),
+              ("projection", "the projection picker"))
+
+
+def open_surfaces(state: dict) -> list[str]:
+    """Every modal, overlay, prompt or dialog the state dump shows open, by name.
+
+    Each of these takes the keyboard from the window behind it (the compositor's
+    `chrome_captures_input`), so one left open by a check receives the next check's typing:
+    run 89618's A01 typed its Terminal command into the Invite composer W20 had opened.
+    `input_capture.chrome` is that same predicate, so it catches a capturing surface the
+    dump has no field of its own for; pointer hover over a maximized window's controls
+    (`maximized_controls`) is part of it too, and is not a dialog."""
+    chrome = state.get("chrome") or {}
+    found = [f"the {name.replace('_', ' ')} overlay"
+             for name, on in (chrome.get("overlays") or {}).items() if on]
+    if (chrome.get("palette") or {}).get("visible"):
+        found.append("search")
+    if (chrome.get("window_switcher") or {}).get("open"):
+        found.append("the window switcher")
+    peer = chrome.get("peer_sync") or {}
+    if peer.get("invite_name") is not None:
+        found.append("the Invite someone composer")
+    elif peer.get("invite_token") is not None:
+        found.append("an invite card showing a live token")
+    if peer.get("connect_input") is not None:
+        found.append("the Join card")
+    portal = chrome.get("portal_dialog")
+    if portal:
+        kind = portal.get("kind") if isinstance(portal, dict) else None
+        found.append(f"a portal dialog ({kind})" if kind else "a portal dialog")
+    if chrome.get("pending_grants_count"):
+        found.append("a permission prompt")
+    if chrome.get("editing_workspace_name") is not None:
+        found.append("the workspace-name editor")
+    capture = chrome.get("input_capture") or {}
+    found += [label for key, label in _CAPTURING if capture.get(key)]
+    # The power menu is an inner surface the overlays already name.
+    if capture.get("inner_surface") and not (chrome.get("overlays") or {}).get("power_menu"):
+        found.append("a modal shell surface (screenshot markup or capture)")
+    if not found and capture.get("chrome") and not capture.get("maximized_controls"):
+        found.append("a shell surface that captures input")
+    return found
+
+
+def dismiss_surfaces(ctx) -> str:
+    """Close whatever `open_surfaces` reports, the way a person cancels: Escape, re-reading
+    the dump after each press. Escape on a prompt answers it as dismissed (deny), never
+    confirmed. Still open after that, restart the slot's session: a fresh compositor opens
+    with none of them. Returns how it went; never raises."""
+    for _ in range(DISMISS_ESCAPES):
+        try:
+            ctx.vm.key("Escape")
+            time.sleep(0.6)
+            if not open_surfaces(ctx.state()):
+                return "the harness closed it with Escape"
+        except (VmError, KeyError, TypeError):
+            break
+    try:
+        ctx.vm.restart_session()
+    except VmError as exc:
+        return f"Escape did not close it, and restarting the slot session failed: {exc.reason()}"
+    try:
+        still = open_surfaces(ctx.state())
+    except (VmError, KeyError, TypeError):
+        still = []
+    if still:
+        return f"Escape did not close it, and after a slot session restart {', '.join(still)} is still open"
+    return "Escape did not close it; the harness restarted the slot session"
+
+
+def leave_no_dialog(ctx, chk: Check, res: Result) -> None:
+    """No check may hand the next one a desktop with a modal, overlay, prompt or dialog
+    open: it takes the keyboard, and the next check's input lands in it instead of in its
+    subject. A check that ends with any `open_surfaces` fails ("left a dialog open"), however
+    it ended, and the harness closes them before the next check. Runs after
+    `leave_unlocked`, which owns a locked session."""
+    try:
+        state = ctx.state()
+        if state["chrome"].get("session_locked"):
+            return
+        left = open_surfaces(state)
+    except (VmError, KeyError, TypeError):
+        return  # no state to read: the next check that needs one reports why
+    if not left:
+        return
+    res.status = "fail"
+    route = dismiss_surfaces(ctx)
+    ctx.facts.setdefault("dialog_recovered_after", []).append(
+        {"check": chk.id, "open": left, "route": route})
+    res.detail = _join(res.detail, f"{LEFT_OPEN} ({', '.join(left)}); {route}")
 
 
 def _join(a: str, b: str) -> str:
@@ -187,6 +320,39 @@ def overlap(a, b) -> float:
 
 TRACE = "$HOME/.local/state/tilo/session-logs/frame-trace.csv"
 TRACE_FLUSH_S = 1.05
+SESSION_LOG = "$HOME/.local/state/tilo/session-logs/latest.log"
+
+# The compositor's own timing of each workspace switch
+# (crates/session/shell/src/compositor/switch_latency.rs), one session-log line each.
+SWITCH_FIELDS = ("first_queued_us", "first_shown_us", "settled_queued_us", "settled_shown_us",
+                 "frames", "dropped", "interval_us")
+SWITCH_LINE = re.compile(r"(?:^|\s)WORKSPACE-SWITCH ((?:[a-z_]+=[0-9]+ ?)+)$")
+
+
+def parse_switch_lines(text: str) -> list[dict]:
+    """Every `WORKSPACE-SWITCH` line in `text`, in order."""
+    samples = []
+    for line in text.splitlines():
+        match = SWITCH_LINE.search(line.rstrip())
+        if match is None:
+            continue
+        fields = dict(pair.split("=", 1) for pair in match.group(1).split())
+        if any(name not in fields for name in SWITCH_FIELDS):
+            raise Unobservable(f"a WORKSPACE-SWITCH line lacks fields: {line.strip()}")
+        samples.append({name: int(fields[name]) for name in SWITCH_FIELDS})
+    return samples
+
+
+def session_log_mark(ctx) -> int:
+    """Lines in the session log now; `switch_lines_after` reads past them."""
+    out = ctx.vm.exec(f'wc -l < "{SESSION_LOG}" 2>/dev/null || echo 0', check=False)
+    digits = [l.strip() for l in out.splitlines() if l.strip().isdigit()]
+    return int(digits[0]) if digits else 0
+
+
+def switch_lines_after(ctx, mark: int) -> list[dict]:
+    return parse_switch_lines(ctx.vm.exec(
+        f'tail -n +{mark + 1} "{SESSION_LOG}" 2>/dev/null | grep -a "WORKSPACE-SWITCH"; true', check=False))
 
 
 def _parse_trace(text: str) -> tuple[list[dict], str]:
@@ -457,14 +623,30 @@ def save_thumb(src: Path, dst: Path, width: int = 1600) -> Path:
 
 # -- processes, the app each belongs to, and its cgroup --------------------------
 
-# Read as root: the compositor is not dumpable. One line per process with its parent,
-# owner, RSS, anonymous RSS, cgroup and, for `tilo-launcher`, the `--app-id` it runs;
-# then one line per cgroup seen with memory.current and the memory.stat anon/file split.
+# Read as root: the compositor is not dumpable, and every user's processes count. One
+# line per process with its parent, owner, RSS split into anon, file and shmem, swap, its
+# cgroup and, for `tilo-launcher`, the `--app-id` it runs. (Tilo's kernel is built
+# without CONFIG_PROC_PAGE_MONITOR, so there is no smaps or smaps_rollup and no PSS: a
+# process's own memory is its RssAnon; shmem and file pages are shared and are counted
+# once, per cgroup, below.) Then one line per cgroup seen, and per ancestor a cgroup
+# without a memory controller of its own is charged to, with memory.current and
+# memory.stat's anon, file (which holds shmem), shmem, file_mapped, kernel and sock.
+# Then the whole of /proc/meminfo, every zone's managed pages, low and high watermarks
+# and largest lowmem protection (which make up the reserve MemAvailable withholds), the
+# page size, greetd's uid (whose slice is the seat0 greeter) and each tmpfs's use.
 PROCESSES = r'''
+STAT='{v[$1] = $2} END {n = split("anon file shmem file_mapped kernel sock", k, " "); s = ""
+      for (i = 1; i <= n; i++) s = s "\t" ((k[i] in v) ? v[k[i]] : "-"); print substr(s, 2)}'
+charged_at() {
+  at=$1
+  while [ -n "$at" ] && [ ! -r "/sys/fs/cgroup$at/memory.current" ]; do at=${at%/*}; done
+  printf '%s\n' "${at:--}"
+}
 cgs=""
 for d in /proc/[0-9]*; do
-  st=$(awk '/^PPid:/ {p=$2} /^Uid:/ {u=$2} /^VmRSS:/ {r=$2} /^RssAnon:/ {a=$2}
-            END {if (r) print p, u, r, a+0}' $d/status 2>/dev/null)
+  st=$(awk '/^PPid:/ {p=$2} /^Uid:/ {u=$2} /^VmRSS:/ {r=$2} /^RssAnon:/ {a=$2} /^RssFile:/ {f=$2}
+            /^RssShmem:/ {s=$2} /^VmSwap:/ {w=$2}
+            END {if (r) print p, u, r, a+0, f+0, s+0, w+0}' $d/status 2>/dev/null)
   [ -n "$st" ] || continue
   comm=$(tr ' \t' '__' 2>/dev/null < $d/comm)
   cg=$(sed -n "s/^0:://p" 2>/dev/null < $d/cgroup)
@@ -472,21 +654,33 @@ for d in /proc/[0-9]*; do
   [ "$comm" = tilo-launcher ] && \
     app=$(tr '\0' '\n' 2>/dev/null < $d/cmdline | awk 'p {print; exit} $0 == "--app-id" {p = 1}')
   set -- $st
-  printf 'P\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "${d#/proc/}" "$1" "$2" "$comm" "$3" "$4" "${app:--}" "$cg"
-  cgs="$cgs$cg
+  printf 'P\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "${d#/proc/}" "$1" "$2" "$comm" \
+    "$3" "$4" "$5" "$6" "$7" "${app:--}" "$cg"
+  [ -z "$cg" ] || cgs="$cgs$cg
 "
 done
-printf '%s' "$cgs" | sort -u | while IFS= read -r cg; do
+{ printf '%s' "$cgs"; printf '%s' "$cgs" | sort -u | while IFS= read -r cg; do charged_at "$cg"; done; } \
+  | grep -v '^-$' | sort -u | while IFS= read -r cg; do
   f="/sys/fs/cgroup$cg"
   if [ -r "$f/memory.current" ]; then
-    printf 'C\t%s\t%s\t%s\n' "$cg" "$(cat "$f/memory.current")" \
-      "$(awk '$1 == "anon" {a=$2} $1 == "file" {f=$2} END {print a+0 "\t" f+0}' "$f/memory.stat")"
+    printf 'C\t%s\t%s\t%s\t%s\n' "$cg" "$cg" "$(cat "$f/memory.current")" "$(awk "$STAT" "$f/memory.stat")"
   else
-    printf 'C\t%s\t-\t-\t-\n' "$cg"
+    printf 'C\t%s\t%s\t-\t-\t-\t-\t-\t-\t-\n' "$cg" "$(charged_at "$cg")"
   fi
 done
-awk '/MemTotal|MemAvailable/ {print "M", $1, $2}' /proc/meminfo
+awk '{print "M", $1, $2}' /proc/meminfo
+awk 'function out() {if (z != "") print "Z", z, managed + 0, low + 0, high + 0, prot + 0}
+     /^Node/ {out(); z = $2 $4; managed = low = high = prot = 0}
+     $1 == "managed" {managed = $2} $1 == "low" {low = $2} $1 == "high" {high = $2}
+     $1 == "protection:" {gsub(/[(),]/, " "); for (i = 2; i <= NF; i++) if ($i + 0 > prot) prot = $i + 0}
+     END {out()}' /proc/zoneinfo
+echo "PS $(getconf PAGESIZE)"
+echo "G $(id -u greetd 2>/dev/null || echo -)"
+df -kP -t tmpfs 2>/dev/null | awk 'NR > 1 {print "T", $3, $6}'
 '''
+
+# The memory.stat fields of a `C` line, after memory.current.
+CGROUP_STAT = ("anon", "file", "shmem", "file_mapped", "kernel", "sock")
 
 
 def _mb(kib_or_bytes: str, unit: int) -> float | None:
@@ -494,33 +688,146 @@ def _mb(kib_or_bytes: str, unit: int) -> float | None:
 
 
 def parse_processes(text: str) -> dict:
-    """`PROCESSES` output -> {"procs": {pid: ...}, "cgroups": {path: ...}, "meminfo_mb": {...}}.
+    """`PROCESSES` output -> {"procs": {pid: ...}, "cgroups": {path: ...}, "meminfo_mb",
+    "meminfo_kib", "zones", "page_size", "greeter_uid", "tmpfs"}.
 
     Each process carries `app`: the `--app-id` of the nearest `tilo-launcher` at or above it,
-    so an app is its launcher's whole process tree, whatever its processes are called."""
-    procs, cgroups, mem = {}, {}, {}
+    so an app is its launcher's whole process tree, whatever its processes are called. Each
+    cgroup carries `charged_at`: itself, or the nearest ancestor with a memory controller,
+    where its memory is charged (None: nowhere the dump could read)."""
+    procs, cgroups, kib, zones, tmpfs, greeter, page = {}, {}, {}, {}, [], None, None
     for line in text.splitlines():
         f = line.split("\t")
-        if f[0] == "P" and len(f) == 9 and f[1].isdigit():
+        if f[0] == "P" and len(f) == 12 and f[1].isdigit():
             procs[int(f[1])] = {"pid": int(f[1]), "ppid": int(f[2]), "uid": int(f[3]), "comm": f[4],
                                 "rss_mb": _mb(f[5], 1024), "anon_rss_mb": _mb(f[6], 1024),
-                                "launches": None if f[7] == "-" else f[7], "cgroup": f[8]}
-        elif f[0] == "C" and len(f) == 5:
-            cgroups[f[1]] = {"memory_mb": _mb(f[2], 1), "anon_mb": _mb(f[3], 1), "file_mb": _mb(f[4], 1)}
-        elif line.startswith("M "):
-            _, key, kib = line.split()[:3]
-            mem[key.rstrip(":")] = int(kib) // 1024
+                                "file_rss_mb": _mb(f[7], 1024), "shmem_rss_mb": _mb(f[8], 1024),
+                                "swap_mb": _mb(f[9], 1024),
+                                "launches": None if f[10] == "-" else f[10], "cgroup": f[11]}
+        elif f[0] == "C" and len(f) == 4 + len(CGROUP_STAT):
+            cgroups[f[1]] = {"charged_at": None if f[2] == "-" else f[2], "memory_mb": _mb(f[3], 1),
+                             **{f"{k}_mb": _mb(v, 1) for k, v in zip(CGROUP_STAT, f[4:])}}
+        else:
+            w = line.split()
+            if len(w) >= 3 and w[0] == "M" and w[2].isdigit():
+                kib[w[1].rstrip(":")] = int(w[2])
+            elif len(w) == 6 and w[0] == "Z" and all(v.isdigit() for v in w[2:]):
+                zones[w[1]] = dict(zip(("managed", "low", "high", "protection"), map(int, w[2:])))
+            elif len(w) == 2 and w[0] == "PS" and w[1].isdigit():
+                page = int(w[1])
+            elif len(w) == 2 and w[0] == "G" and w[1].isdigit():
+                greeter = int(w[1])
+            elif len(w) >= 3 and w[0] == "T" and w[1].isdigit():
+                tmpfs.append({"mount": " ".join(w[2:]), "used_mib": round(int(w[1]) / 1024, 1)})
     for p in procs.values():
         cur, seen = p, set()
         while cur and cur["launches"] is None and cur["pid"] not in seen:
             seen.add(cur["pid"])
             cur = procs.get(cur["ppid"])
         p["app"] = cur["launches"] if cur else None
-    return {"procs": procs, "cgroups": cgroups, "meminfo_mb": mem}
+    return {"procs": procs, "cgroups": cgroups, "meminfo_kib": kib,
+            "meminfo_mb": {k: v // 1024 for k, v in kib.items()}, "zones": zones, "page_size": page,
+            "greeter_uid": greeter, "tmpfs": sorted(tmpfs, key=lambda t: -t["used_mib"])}
 
 
 def processes(ctx) -> dict:
     return parse_processes(ctx.vm.root_exec(PROCESSES))
+
+
+# Read as root, for one process (the compositor): what its anonymous memory is. Its
+# status lines, its smaps_rollup (Anonymous, Pss_Anon, Rss, ...), and its 20 largest
+# mappings by Anonymous kB: one `[heap]` or a run of 64 MiB-aligned `[anon]` regions
+# (glibc arenas) reads differently from one GPU buffer that doubled. Tilo's own kernel
+# has no smaps (CONFIG_PROC_PAGE_MONITOR=n, os/kernel/config-fragments/tilo.config), so
+# there only the status lines exist. Its shmem is read by fd instead: per memfd, dma-buf,
+# DRM and /dev/shm fd, its size and the bytes allocated to it (`stat -L` through the fd:
+# a memfd's st_blocks are its shmem pages, mapped or not), and from fdinfo a dma-buf's
+# size and exporter and a DRM fd's GEM totals. Shmem the compositor's cgroup holds that
+# nothing maps (TIL-731) is named here.
+SHELL_MEMORY = r'''
+pid=__PID__
+awk '/^(VmRSS|RssAnon|RssFile|RssShmem|VmSwap|Threads):/ {print "S", $1, $2}' /proc/$pid/status
+for fd in /proc/$pid/fd/*; do
+  target=$(readlink "$fd" 2>/dev/null) || continue
+  case "$target" in
+    /memfd:*|anon_inode:dmabuf*|/dmabuf:*|/dev/dri/*|/dev/udmabuf|/dev/shm/*) ;;
+    *) continue ;;
+  esac
+  n=${fd##*/}
+  sizes=$(stat -L -c '%s %b %B' "$fd" 2>/dev/null || echo '- - -')
+  info=$(awk '$1 ~ /^(size|exp_name|drm-driver|drm-total-[a-z0-9-]+|drm-resident-[a-z0-9-]+):$/ {
+              sub(/:$/, "", $1); v = $2; for (i = 3; i <= NF; i++) v = v "_" $i; printf "%s=%s ", $1, v}' \
+            "/proc/$pid/fdinfo/$n" 2>/dev/null)
+  printf 'F\t%s\t%s\t%s\t%s\n' "$n" "$sizes" "$info" "$target"
+done
+[ -d /proc/$pid ] && [ ! -e /proc/$pid/smaps_rollup ] && echo "PAGE-MONITOR no" && exit 0
+awk 'NR > 1 && $3 == "kB" {print "R", $1, $2}' /proc/$pid/smaps_rollup
+awk '/^[0-9a-f]+-[0-9a-f]+ / {range = $1; name = "[anon]"; if (NF >= 6) {name = $6; for (i = 7; i <= NF; i++) name = name " " $i}}
+     /^Anonymous:/ && $2 > 0 {print "A", $2, range, name}' /proc/$pid/smaps | sort -k2,2nr | head -n 20
+'''
+
+
+def _shm_fd(f: list[str]) -> dict | None:
+    """One `F` line, split on tabs: fd, `size blocks block_size`, fdinfo `key=value`s, target."""
+    sizes = f[2].split()
+    if not f[1].isdigit() or len(sizes) != 3:
+        return None
+    size, blocks, unit = (int(v) if v.isdigit() else None for v in sizes)
+    target = f[4]
+    kind = ("memfd" if target.startswith("/memfd:") else "dmabuf" if "dmabuf" in target
+            else "drm" if target.startswith("/dev/dri/") else "udmabuf" if target == "/dev/udmabuf"
+            else "shm")
+    name = target.removeprefix("/memfd:").removesuffix(" (deleted)") if kind == "memfd" else target
+    return {"fd": int(f[1]), "kind": kind, "name": name, "size_bytes": size,
+            "allocated_bytes": blocks * unit if blocks is not None and unit is not None else None,
+            "fdinfo": dict(kv.split("=", 1) for kv in f[3].split() if "=" in kv)}
+
+
+def shm_by_name(fds: list[dict]) -> dict:
+    """The compositor's memfds and /dev/shm files summed by name: how many, their size and
+    the shmem allocated to them, in MiB, largest allocation first."""
+    out: dict[str, dict] = {}
+    for f in fds:
+        if f["kind"] not in ("memfd", "shm") or f["allocated_bytes"] is None:
+            continue
+        o = out.setdefault(f["name"], {"count": 0, "size_mib": 0.0, "allocated_mib": 0.0})
+        o["count"] += 1
+        o["size_mib"] = round(o["size_mib"] + (f["size_bytes"] or 0) / 2**20, 1)
+        o["allocated_mib"] = round(o["allocated_mib"] + f["allocated_bytes"] / 2**20, 1)
+    return dict(sorted(out.items(), key=lambda kv: -kv[1]["allocated_mib"]))
+
+
+def parse_shell_memory(text: str) -> dict:
+    """`SHELL_MEMORY` output -> {"status_kib", "smaps_rollup_kib", "top_anon_mappings",
+    "shm_fds", "shm_by_name"}."""
+    status, rollup, top, fds = {}, {}, [], []
+    for line in text.splitlines():
+        if line.startswith("F\t"):
+            parts = line.split("\t", 4)
+            fd = _shm_fd(parts) if len(parts) == 5 else None
+            if fd:
+                fds.append(fd)
+            continue
+        f = line.split()
+        if len(f) >= 3 and f[0] in ("S", "R") and f[2].isdigit():
+            (status if f[0] == "S" else rollup)[f[1].rstrip(":")] = int(f[2])
+        elif len(f) >= 4 and f[0] == "A" and f[1].isdigit():
+            top.append({"anon_kib": int(f[1]), "range": f[2], "name": " ".join(f[3:])})
+    return {"status_kib": status, "smaps_rollup_kib": rollup, "top_anon_mappings": top,
+            "shm_fds": fds, "shm_by_name": shm_by_name(fds)}
+
+
+def shell_memory(ctx, pid: int) -> dict:
+    """The compositor's memory breakdown; Unobservable when its anonymous RSS cannot be read."""
+    text = ctx.vm.root_exec(SHELL_MEMORY.replace("__PID__", str(int(pid))))
+    m = parse_shell_memory(text)
+    # A kernel without the page monitor has no smaps to read: only its status is evidence.
+    m["page_monitor"] = "PAGE-MONITOR no" not in text
+    if "RssAnon" not in m["status_kib"] or (m["page_monitor"] and "Anonymous" not in m["smaps_rollup_kib"]):
+        raise Unobservable(f"the compositor's (pid {pid}) status and smaps_rollup could not be read")
+    m["pid"] = pid
+    m["anon_rss_mib"] = round(m["status_kib"]["RssAnon"] / 1024, 1)
+    return m
 
 
 def app_cgroup(table: dict, app_id: str) -> dict:
@@ -536,3 +843,98 @@ def app_cgroup(table: dict, app_id: str) -> dict:
     return {"pids": sorted(p["pid"] for p in mine), "cgroups": paths,
             "shared_with": {k: v for k, v in strangers.items() if v},
             "anon_rss_mb": round(sum(p["anon_rss_mb"] or 0 for p in mine), 1)}
+
+
+# -- Terminal: where its shell writes, and what its runtime is doing -----------
+
+# Terminal's shell runs in a `tilo-ush` guest whose `~` is the environment's own
+# home in the ush store, not the session's $HOME (docs/app-model/ush.md, "Storage").
+# A host shell (foot, a legacy terminal) writes to $HOME itself.
+_TERMINAL_HOMES = ('"$HOME" "${XDG_DATA_HOME:-$HOME/.local/share}"/ush/environments/*/home '
+                   '"${XDG_DATA_HOME:-$HOME/.local/share}"/ush/sessions/*/home')
+
+
+def terminal_probe(ctx, name: str) -> list[str]:
+    """Paths of `name` in any home a terminal's `~` can be: the session's and every
+    ush environment's (persistent) or session's (ephemeral)."""
+    out = ctx.vm.exec(f"for h in {_TERMINAL_HOMES}; do [ -e \"$h/{name}\" ] && echo \"$h/{name}\"; "
+                      "done; true")
+    return [l.strip() for l in out.splitlines() if l.strip() and not l.startswith("receipt:")]
+
+
+# How long a new Terminal window may stand before its shell runs. The first
+# session of an account also imports the environment's runtime into the user's
+# package store: 7.5-21 s on the CI VM depending on its load, 40-46 s while the
+# import synced once per file (TIL-708; runs 90460, 90980 and 90397, 90249).
+TERMINAL_SHELL_S = 45
+
+# Performance is a separate verdict from eventual readiness. The batched
+# import measured 7.5–21 s in runs 90460/90980; 30 s allows nine seconds of
+# load headroom but rejects the old 39.6 s baseline and 40–46 s imports.
+TERMINAL_SHELL_PERFORMANCE_S = 30
+
+
+def assert_terminal_shell_performance(seconds: float | None) -> None:
+    expect(seconds is not None, "Terminal shell readiness was not observed")
+    expect(seconds < TERMINAL_SHELL_PERFORMANCE_S,
+           f"Terminal shell startup took {seconds} s; performance requires "
+           f"less than {TERMINAL_SHELL_PERFORMANCE_S} s (readiness timeout is "
+           f"{TERMINAL_SHELL_S} s)")
+
+# Terminal's shells are not the app's processes: each runs in a guest the
+# `tilo-ush` user service starts, so they are found in its cgroup.
+_USH_SHELLS = ('cg=$(systemctl --user show -p ControlGroup --value tilo-ush.service 2>/dev/null); '
+               '[ -n "$cg" ] || exit 0; '
+               'for p in $(cat $(find "/sys/fs/cgroup$cg" -name cgroup.procs 2>/dev/null) 2>/dev/null); do '
+               '[ "$(cat /proc/$p/comm 2>/dev/null)" = bash ] && echo "$p"; done; true')
+
+
+def terminal_shells(ctx) -> set[int]:
+    """Pids of the shells running in Terminal's ush guests."""
+    out = ctx.vm.exec(_USH_SHELLS)
+    return {int(l) for l in out.split() if l.isdigit()}
+
+
+def wait_new_terminal_shell(ctx, before: set[int], timeout: float) -> float | None:
+    """Seconds until a shell not in `before` runs in a ush guest, or None after `timeout`.
+    A Terminal shows its pane and echoes keys before its guest exists; only a running
+    shell reads what is typed."""
+    started = time.monotonic()
+    if wait_until(lambda: terminal_shells(ctx) - before, timeout, 0.5):
+        return round(time.monotonic() - started, 1)
+    return None
+
+
+_USH_DIAGNOSTICS = r'''set +e
+data=${XDG_DATA_HOME:-$HOME/.local/share}
+echo "== units"
+systemctl --user status --no-pager -l tilo-ush.socket tilo-ush.service 2>&1 | head -40
+echo "== journal"
+journalctl --user -u tilo-ush.service -u tilo-ush.socket --no-pager -o short-precise -n 300 2>&1 | cut -c1-400
+echo "== processes"
+ps -u "$(id -u)" -o pid,ppid,etimes,time,pcpu,stat,wchan:24,args --forest 2>&1 | cut -c1-300
+for round in 1 2; do
+  echo "== tilo-ush threads (round $round): tid comm utime stime state"
+  for p in $(pgrep -u "$(id -u)" -x tilo-ush); do
+    echo "-- $p $(tr '\0' ' ' < /proc/$p/cmdline | cut -c1-200)"
+    for t in /proc/$p/task/*; do
+      printf '%s %s %s\n' "${t##*/}" "$(cat $t/comm)" "$(sed 's/.*) //' $t/stat | cut -d' ' -f1,12,13)"
+    done
+  done
+  [ $round = 2 ] || sleep 5
+done
+echo "== store"
+ls -la "$data/ush" "$data/ush/environments" "$data/ush/sessions" 2>&1 | head -40
+echo "== session logs mentioning ush or terminal"
+grep -rIh -i -E "tilo-ush|ush\.sock|so\.tilo\.terminal" "$HOME/.local/state/tilo/session-logs" 2>/dev/null \
+  | grep -v APP-STARTUP | tail -80 | cut -c1-400
+'''
+
+
+def ush_diagnostics(ctx) -> str:
+    """The shell runtime's units, journal, process tree, per-thread CPU over 5 s,
+    store layout and the session log's lines about it."""
+    try:
+        return ctx.vm.exec(_USH_DIAGNOSTICS, timeout=90, check=False)
+    except VmError as exc:
+        return f"diagnostics unavailable: {exc}"

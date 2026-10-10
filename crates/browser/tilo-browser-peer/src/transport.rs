@@ -171,7 +171,7 @@ impl RelayCollabTransport {
         Self {
             inbound: peer.events(),
             peer,
-            live: crate::live::LiveState::new(crate::clock::now_ms()),
+            live: crate::live::LiveState::new(tilo_clock::unix_now_ms()),
             primary: None,
             confirm_pending: false,
             primary_results: VecDeque::new(),
@@ -228,7 +228,7 @@ impl RelayCollabTransport {
             });
         let frame = self
             .live
-            .publish_presence(crate::clock::now_ms(), |presence| {
+            .publish_presence(tilo_clock::unix_now_ms(), |presence| {
                 presence.focus.clone_from(&focus);
                 match payload {
                     PresencePayload::Pointer { x, y } => presence.pointer = Some([*x, *y]),
@@ -308,7 +308,7 @@ impl RelayCollabTransport {
         };
         if self
             .live
-            .receive(from, frame, crate::clock::now_ms())
+            .receive(from, frame, tilo_clock::unix_now_ms())
             .is_none()
         {
             return;

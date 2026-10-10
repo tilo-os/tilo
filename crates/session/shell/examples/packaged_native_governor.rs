@@ -6,7 +6,7 @@ use std::{
     net::Ipv4Addr,
     path::PathBuf,
     sync::{Arc, Mutex},
-    time::{Duration, SystemTime},
+    time::Duration,
 };
 use tilo_delivery_protocol::workspace_join::{WORKSPACE_JOIN_ALPN, WorkspaceJoinService};
 use tilo_joined_room::testing::governor::TestGovernor;
@@ -83,13 +83,10 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         .bind()
         .await?;
     let hint = governor.hint(endpoint.addr());
-    let expires = u64::try_from(
-        SystemTime::now()
-            .duration_since(SystemTime::UNIX_EPOCH)?
-            .as_nanos(),
-    )?
-    .checked_add(120_000_000_000)
-    .ok_or("fixture expiry overflow")?;
+    let expires = tilo_clock::try_unix_now_ns()
+        .ok_or("fixture clock is before the Unix epoch")?
+        .checked_add(120_000_000_000)
+        .ok_or("fixture expiry overflow")?;
     let signed = governor.issue(
         vec![hint],
         MemberRole::Editor,

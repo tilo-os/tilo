@@ -211,14 +211,14 @@ impl ToastStack {
     /// Push a new toast. If the stack is at capacity the oldest entry
     /// is dropped to make room (FIFO drop policy).
     pub fn push(&mut self, text: impl Into<String>, kind: ToastKind) {
+        // Charge elapsed time only to entries that existed during that time.
+        // A new notice gets its full lifetime even if the previous frame stalled.
+        self.advance(crate::time::now());
         let toast = Toast {
             text: text.into(),
             kind,
             ttl_remaining: self.default_ttl,
         };
-        if self.toasts.is_empty() {
-            self.advanced_at = Some(crate::time::now());
-        }
         self.toasts.push(toast);
         // Drop oldest entries until we are back within the cap.
         while self.toasts.len() > self.max {
@@ -452,6 +452,8 @@ pub struct ToastCard<'a> {
     pub closable: bool,
     /// Hover state for the dismiss button, when the caller tracks the cursor.
     pub close_hovered: bool,
+    /// Whether the shared pointer controller has armed this control.
+    pub close_pressed: bool,
     /// Draw an "actionable" chevron at the trailing edge (the card carries
     /// activatable actions).
     pub actionable: bool,
@@ -462,9 +464,13 @@ pub struct ToastCard<'a> {
     pub secondary_action: &'a str,
     pub secondary_action_icon: Option<crate::icons::Icon>,
     pub secondary_action_hovered: bool,
+    /// Whether the shared pointer controller has armed this control.
+    pub secondary_action_pressed: bool,
     pub primary_action: &'a str,
     pub primary_action_icon: Option<crate::icons::Icon>,
     pub primary_action_hovered: bool,
+    /// Whether the shared pointer controller has armed this control.
+    pub primary_action_pressed: bool,
 }
 
 impl<'a> ToastCard<'a> {
@@ -477,13 +483,16 @@ impl<'a> ToastCard<'a> {
             alpha: 1.0,
             closable: false,
             close_hovered: false,
+            close_pressed: false,
             actionable: false,
             secondary_action: "",
             secondary_action_icon: None,
             secondary_action_hovered: false,
+            secondary_action_pressed: false,
             primary_action: "",
             primary_action_icon: None,
             primary_action_hovered: false,
+            primary_action_pressed: false,
         }
     }
     #[must_use]
@@ -752,7 +761,8 @@ fn paint_card_actions(
     }
     let mut secondary_face = ButtonFace::new(secondary, card.secondary_action)
         .control_size(crate::widget::ControlSize::Small)
-        .hovered(card.secondary_action_hovered);
+        .hovered(card.secondary_action_hovered)
+        .pressed(card.secondary_action_pressed);
     if let Some(icon) = card.secondary_action_icon {
         secondary_face = secondary_face.icon(icon);
     }
@@ -760,7 +770,8 @@ fn paint_card_actions(
     let mut primary_face = ButtonFace::new(primary, card.primary_action)
         .role(ButtonRole::Primary)
         .control_size(crate::widget::ControlSize::Small)
-        .hovered(card.primary_action_hovered);
+        .hovered(card.primary_action_hovered)
+        .pressed(card.primary_action_pressed);
     if let Some(icon) = card.primary_action_icon {
         primary_face = primary_face.icon(icon);
     }
@@ -842,7 +853,8 @@ fn paint_single_action(
         theme,
         &ButtonFace::new(rect, card.primary_action)
             .control_size(crate::widget::ControlSize::Small)
-            .hovered(card.primary_action_hovered),
+            .hovered(card.primary_action_hovered)
+            .pressed(card.primary_action_pressed),
     );
     if faded {
         scene.pop_layer();
@@ -1002,6 +1014,7 @@ fn paint_dismiss_button(
             .icon(crate::icons::Icon::X)
             .control_size(crate::widget::control_size::ControlSize::Small)
             .hovered(card.close_hovered)
+            .pressed(card.close_pressed)
             .accessible_name("Dismiss"),
     );
     if faded {
@@ -1171,15 +1184,14 @@ impl Widget for ToastStack {
         self.theme = theme.clone();
         let (w, h) = self.stack_size();
         self.laid_out = self.toasts.len();
-        let node = taffy.leaf_node(Style {
+        let style = Style {
             size: Size {
                 width: Dimension::length(w),
                 height: Dimension::length(h),
             },
             ..Default::default()
-        });
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
 
     fn sync(&mut self, _state: &crate::widget::AppModel, _path: &crate::widget::ModelPath) {
@@ -1228,13 +1240,7 @@ impl Widget for ToastStack {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(l.location.x),
-            origin.y + f64::from(l.location.y),
-            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
-            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
-        );
+        self.rect = crate::widget::layout_rect(taffy, node, origin);
     }
 
     fn draw(
@@ -1332,9 +1338,9 @@ impl Widget for ToastStack {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use automerge::AutoCommit;
+    use crate::testing::dispatch;
     use std::collections::HashMap;
-    use winit::event::{DeviceId, ElementState, MouseButton};
+    use winit::event::{ElementState, MouseButton};
 
     fn lay_out(stack: &mut ToastStack) {
         let mut tree = TaffyTree::<()>::new();
@@ -1350,32 +1356,6 @@ mod tests {
         )
         .unwrap();
         stack.apply_layout(&tree, node, Point::ZERO);
-    }
-
-    fn device() -> DeviceId {
-        unsafe { std::mem::zeroed() }
-    }
-
-    fn feed(s: &mut ToastStack, ev: &WindowEvent) {
-        let mut tree = TaffyTree::<()>::new();
-        let node = tree.leaf_node(Style::default());
-        let mut handled = false;
-        let mut focus = None;
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        s.handle_event(
-            ev,
-            &mut crate::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &winit::event::Modifiers::default(),
-                state: crate::widget::Edits::lend(&mut doc),
-                path: &root,
-                handled: &mut handled,
-                focus_target: &mut focus,
-                node_id: node,
-                taffy: &tree,
-            },
-        );
     }
 
     #[test]
@@ -1697,17 +1677,17 @@ mod tests {
             s.push("second", ToastKind::Error);
             lay_out(&mut s);
             // Card 1 ("second") spans y ∈ [56, 104); centre ≈ (160, 80).
-            feed(
+            dispatch(
                 &mut s,
                 &WindowEvent::CursorMoved {
-                    device_id: device(),
+                    device_id: winit::event::DeviceId::dummy(),
                     position: (160.0, 80.0).into(),
                 },
             );
-            feed(
+            dispatch(
                 &mut s,
                 &WindowEvent::MouseInput {
-                    device_id: device(),
+                    device_id: winit::event::DeviceId::dummy(),
                     state: ElementState::Pressed,
                     button: MouseButton::Left,
                 },
@@ -1747,10 +1727,10 @@ mod tests {
             s.push("stay", ToastKind::Info);
             lay_out(&mut s);
             // Hover over the only card.
-            feed(
+            dispatch(
                 &mut s,
                 &WindowEvent::CursorMoved {
-                    device_id: device(),
+                    device_id: winit::event::DeviceId::dummy(),
                     position: (160.0, 24.0).into(),
                 },
             );
@@ -1759,10 +1739,10 @@ mod tests {
             s.tick(Duration::from_millis(500));
             assert_eq!(s.len(), 1, "hovered toast does not expire");
             // Move away → expiry resumes.
-            feed(
+            dispatch(
                 &mut s,
                 &WindowEvent::CursorMoved {
-                    device_id: device(),
+                    device_id: winit::event::DeviceId::dummy(),
                     position: (900.0, 900.0).into(),
                 },
             );

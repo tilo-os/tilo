@@ -70,7 +70,8 @@ messages-setup-scan = Scan this private code from Linked devices on your phone, 
 messages-setup-code = Private device linking code for the selected account
 messages-setup-unavailable = Private linking is unavailable for this account on this device.
 messages-setup-active = This account already has a linking attempt. Finish or close it before starting another.
-messages-setup-interrupted = Linking stopped. Review this account before starting a new attempt.
+messages-setup-interrupted = Linking stopped. Return to account selection to start a new attempt.
+messages-first-reset = Return to account selection
 messages-setup-linked = Device linked. Messaging resumes after its connection and inbox are ready.
 
 messages-setup-selected = { $service } · { $account }
@@ -85,5 +86,10 @@ messages-select-sim = Use this SIM
 messages-no-sims = No available SIMs were found on this device.
 messages-select-sim-name = Use { $sim }
 
+messages-first-whatsapp = Link a WhatsApp account
+messages-whatsapp-show-code = Show private linking code
+messages-whatsapp-review-storage = Review protected storage access
+messages-whatsapp-refresh-code = Refresh private linking code
+messages-whatsapp-storage-explanation = Review private encrypted storage access before linking. After linking, confirm the identity reported by WhatsApp.
 messages-first-tilo = Use my Tilo identity
 messages-first-account-prepare = Set up a private Messages account

@@ -58,11 +58,7 @@
 #![cfg_attr(
     test,
     allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
         clippy::string_slice,
-        clippy::panic,
         clippy::unreachable,
         reason = "in a test these are the assertion, not a hazard"
     )
@@ -72,6 +68,8 @@
 pub mod agents;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod app_serving;
+#[cfg(not(target_arch = "wasm32"))]
+mod authority_epoch;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod certification;
 #[cfg(not(target_arch = "wasm32"))]
@@ -97,11 +95,15 @@ pub mod environment_routing;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod environment_tools;
 #[cfg(not(target_arch = "wasm32"))]
+mod handshake;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod legacy_host;
 #[cfg(target_os = "linux")]
 pub mod legacy_route;
 #[cfg(target_os = "linux")]
 pub mod legacy_vm_host;
+#[cfg(not(target_arch = "wasm32"))]
+mod membership_watch;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod metrics;
 #[cfg(not(target_arch = "wasm32"))]
@@ -109,7 +111,11 @@ pub mod peer;
 #[cfg(not(target_arch = "wasm32"))]
 mod persistence;
 #[cfg(not(target_arch = "wasm32"))]
+pub mod presence_mailbox;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod relay_offers;
+#[cfg(not(target_arch = "wasm32"))]
+mod room_access;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod room_records;
 #[cfg(not(target_arch = "wasm32"))]
@@ -124,8 +130,11 @@ pub mod workspace;
 mod workspace_io;
 pub mod workspace_join;
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 tilo_automerge_isolate::test_worker!();
+#[cfg(all(test, feature = "agents"))]
+tilo_agent_participant::app_worker!();
 
 // The records and wire messages shared with relay clients live in
 // `tilo-relay-protocol`, the frame codec in `tilo-relay-client`, and the
@@ -136,7 +145,7 @@ pub use tilo_relay_client::frame;
 pub use tilo_relay_protocol::{
     auth, certify, config, home_peer, live, mesh, policy, process_lease,
 };
-pub use tilo_relay_session::{antientropy, client, coedit, framing, position};
+pub use tilo_relay_session::{antientropy, client, coedit, position};
 
 /// The relay wire messages ([`tilo_relay_protocol::transport`]) together with
 /// the envelope frame codec ([`frame`]), under the path the daemon and its
@@ -176,9 +185,8 @@ pub use config::{CheckpointPrefixRecovery, PeerRelayConfig, RelayConfig, Workspa
 pub use daemon::{Relay, RelayError, RelayHandle};
 pub use home_peer::{HomePeerRegistration, home_peer_registry_path, valid_home_peer_label};
 pub use mesh::{
-    ComputeAccelerator, DeviceMeshProfile, DeviceRole, Placement, PlacementRequest,
-    PowerAvailability, RemoteControlRoute, ReplicationIntent, ReplicationResource,
-    ServerAdvertisement, ServiceCapabilities, Workload, place, route_remote_control,
+    ComputeAccelerator, DeviceMeshProfile, DeviceRole, PowerAvailability, ReplicationIntent,
+    ReplicationResource, ServerAdvertisement, ServiceCapabilities,
 };
 pub use policy::TrustPolicy;
 pub use process_lease::ProcessLease;

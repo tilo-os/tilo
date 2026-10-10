@@ -95,6 +95,7 @@ pub struct LoadOptions<'a> {
     patch_log: Option<&'a mut PatchLog>,
     text_encoding: TextEncoding,
     author: Option<Author<'static>>,
+    known_hashes: Option<&'a [ChangeHash]>,
 }
 
 impl<'a> LoadOptions<'a> {
@@ -169,6 +170,24 @@ impl<'a> LoadOptions<'a> {
             ..self
         }
     }
+
+    /// Tilo patch (TILO-PATCH.md): the hash of every change in the
+    /// document chunk the data starts with, in the order
+    /// [`Automerge::change_hashes`] listed them for the document that saved
+    /// it. Loading then takes them instead of rebuilding and hashing every
+    /// change, which is most of the cost of loading a large document.
+    ///
+    /// Pass only hashes this program listed itself for exactly these bytes
+    /// (keyed by a digest of them): they are not checked against the
+    /// changes, only for being one per change, distinct, and having the
+    /// document's heads as the changes nothing depends on. Hashes that
+    /// fail that are ignored and the changes rebuilt as usual.
+    pub fn known_change_hashes(self, hashes: &'a [ChangeHash]) -> Self {
+        Self {
+            known_hashes: Some(hashes),
+            ..self
+        }
+    }
 }
 
 impl std::default::Default for LoadOptions<'static> {
@@ -180,6 +199,7 @@ impl std::default::Default for LoadOptions<'static> {
             string_migration: StringMigration::NoMigration,
             text_encoding: TextEncoding::platform_default(),
             author: None,
+            known_hashes: None,
         }
     }
 }
@@ -925,7 +945,11 @@ impl Automerge {
             storage::Chunk::Document(d) => {
                 tracing::trace!("first chunk is document chunk, inflating");
                 first_chunk_was_doc = true;
-                match d.reconstruct(options.verification_mode, options.text_encoding) {
+                match d.reconstruct(
+                    options.verification_mode,
+                    options.text_encoding,
+                    options.known_hashes,
+                ) {
                     Ok(doc) => doc,
                     Err(ReconstructError::InvalidMarkOrderDoc {
                         doc,
@@ -1507,6 +1531,14 @@ impl Automerge {
         let mut deps: Vec<_> = self.deps.iter().copied().collect();
         deps.sort_unstable();
         deps
+    }
+
+    /// Every change's hash, in the order [`Self::get_changes`] lists them
+    /// for `&[]`: the order the changes were added to this document. Adding
+    /// changes only appends to it, so a reader that read a prefix of the log
+    /// can tell, without rebuilding any change, whether it still is one.
+    pub fn change_hashes(&self) -> &[ChangeHash] {
+        self.change_graph.hashes()
     }
 
     pub fn get_changes(&self, have_deps: &[ChangeHash]) -> Vec<Change> {

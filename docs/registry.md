@@ -122,6 +122,7 @@ POST /entries             → EntryChangeRequest body    (202/404/409/403)
 GET  /thin/<root>.tapp    → thin form of a reviewed package, by package root
 GET  /blobs/<blake3>      → one payload blob of a reviewed package
 GET  /artifacts/<blake3>.tapp → a full .tapp stored with `import-artifact`
+GET  /blobs/<blake3>.zst, /artifacts/<blake3>.tapp.zst → their compressed twins
 ```
 
 `/entries` carries `Cache-Control: no-cache` and `ETag: "<snapshot hash>"`
@@ -137,6 +138,41 @@ so browsers can compile it while it streams; everything else is
 Approving a submission (`review approve`) stores the thin form and payload
 blobs of every reviewed version, so a client that already has some blobs of
 an earlier release downloads only the new ones.
+
+### Compressed twins
+
+Packages and payload objects travel compressed. Beside each content-addressed
+object the registry keeps a **twin**, the same bytes as one zstd frame at
+level 19 (`tilo_app_package::compressed`): `/blobs/<blake3>.zst` for every
+blob and chunk, `/artifacts/<blake3>.tapp.zst` for every imported package.
+The release pipeline uploads `<file>.tapp.zst` beside every tapp it
+publishes (`tilo-app-package compress`). Measured on real packages, twins are
+34–42 % of an app tapp and 32 % of the runtime's payload (TIL-600).
+
+A twin is transport only. Signatures, `tapp_blake3_hex`, `tapp_size_bytes`,
+blob names and chunk lists all describe the uncompressed bytes, and nothing
+signs the twin. A client asks for `<url>.zst` first, decompresses it while it
+streams with a hard bound — the signed `tapp_size_bytes` for a package, the
+listed length for a chunk, the 64 MiB object ceiling for a whole blob — so a
+small twin cannot expand into more than the object it stands for, and then
+verifies the decompressed bytes exactly as it verifies a raw download. A host
+without a twin answers 404 and the client fetches the raw object, so packages
+published before twins and registries that keep none keep working; clients
+that predate twins never ask for them and get raw bytes as before. A twin is
+labelled `application/zstd` and never sent with `Content-Encoding`, so no
+proxy or HTTP client decodes it on the way.
+
+The registry writes a twin when it stores the object, from bytes it has
+already checked, and re-checks the twin against the object's hash before
+serving it. Pruning removes a twin with its object. For objects stored before
+twins existed, run once after upgrading:
+
+```
+tilo-registry-server compress-payloads
+```
+
+It prints how many twins it wrote and their size, and is safe to rerun while
+`serve` runs.
 
 **Browsers.** `serve --cors-origin <origin>` (repeatable) lets pages on an
 exact serialized origin such as `https://tilo.so` or `http://localhost:4321`
@@ -385,30 +421,12 @@ signed entry and append to its immutable version history; re-running the same
 artifact reproduces the existing entry, while reusing a version/target identity
 for different bytes fails closed.
 
-Web builds use the same flow. `tilo-app-package pack-web` packs the authored
-manifest around the WebAssembly module (see
-[packaging.md](app-model/packaging.md#target--written-by-the-packer)), and
-`entry --platform web --arch wasm32` copies the signed `[target]` into the
-version:
-
-```text
-tilo-app-package pack-web --manifest apps/ebook/tilo-app.toml \
-  --module out/apps/so.tilo.ebook/app.wasm \
-  --identity /run/secrets/app-publisher.json -o ebook-web.tapp
-tilo-app-package entry --platform web --arch wasm32 --action add \
-  --identity /run/secrets/app-publisher.json \
-  --url https://apps.tilo.so/artifacts/<blake3>.tapp ebook-web.tapp > request.json
-```
-
-The toolkit core is published the same way, as a `kind = "runtime"` package
-whose `[target].runtime` is the ABI id it provides; a browser only offers an
-app version whose `runtime` equals a published core's. Artifact URLs must be
+Artifact URLs must be
 under `https://apps.tilo.so/artifacts/`; a registry whose `base_url` is a
 loopback address (`http://127.0.0.1:<port>`, `http://localhost:<port>`,
 `http://[::1]:<port>`) also accepts its own `<base_url>/artifacts/`, where
 `tilo-registry-server import-artifact <file.tapp>` hosts a file and prints
-its URL. `tools/web/local-registry.sh` runs the whole flow against a
-throwaway local registry (see [Web apps in the browser](#web-apps-in-the-browser)).
+its URL.
 
 A publisher without its own artifact hosting uploads the file to the registry
 instead: `PUT /uploads/<blake3>.tapp` with the exact bytes, its public key in
@@ -472,20 +490,19 @@ the same fallback rule and distinguish `icon`, `screenshot`, and `banner`.
 
 Each signed version binds the package root, exact final-file BLAKE3 and size,
 platform family, architecture, minimum ISA and runtime ABI. The schema can add
-future platform families without changing the signed entry shape. Six
+future platform families without changing the signed entry shape. Five
 families are accepted (`registry_types::target`):
 
 | `platform` | `architecture` | `isa` | `runtime` |
 |---|---|---|---|
 | `tilo-os` | `x86_64`, `aarch64` | `x86_64`, `x86_64-v2`…`v4`, `aarch64`, `aarch64-v8.2`/`v8.4`/`v9` | optional, `tilo-runtime/<version>` |
-| `web` | `wasm32` | canonical wasm feature set, see below | **required**, `tilo-runtime/<version>+wasm.<32 hex>` |
 | `linux` | `x86_64`, `aarch64` | the feature level it was compiled for, non-empty | **required**, the linked `tilo-runtime/<version>` |
 | `windows` | `x86_64`, `aarch64` | the feature level it was compiled for, non-empty | **required**, the linked `tilo-runtime/<version>` |
 | `macos` | `x86_64`, `aarch64` | the feature level it was compiled for, non-empty | **required**, the linked `tilo-runtime/<version>` |
 | `android` | `x86_64`, `aarch64` | the feature level it was compiled for, non-empty | **required**, the linked `tilo-runtime/<version>` |
 
 A native release must publish a distinct `.tapp` for both architectures. Pass
-each tapp's target with `tilo-app-package entry --arch`. Web, Linux, Windows,
+each tapp's target with `tilo-app-package entry --arch`. Linux, Windows,
 macOS and Android versions sit beside Tilo OS versions in the same entry: version identity
 is `(version, platform, architecture)`, and a Tilo OS client installs only
 `tilo-os` versions.
@@ -500,35 +517,6 @@ and the linked release as `runtime`, equal to `[package].runtime`
 `MAX_DESKTOP_APP_TAPP_BYTES` (64 MiB), a distribution policy rather than a
 design target; `tilo-app-package entry --platform linux|windows|macos|android`
 binds it.
-
-**Web `isa`.** `wasm32-mvp` followed by zero or more `+<feature>`, where each
-feature is one of `atomics`, `bulk-memory`, `bulk-memory-opt`,
-`call-indirect-overlong`, `exception-handling`, `extended-const`,
-`multimemory`, `multivalue`, `mutable-globals`, `nontrapping-fptoint`,
-`reference-types`, `relaxed-simd`, `sign-ext`, `simd128`, `tail-call` (LLVM's
-`target_features` spelling). Features appear at most once and in byte-wise
-ascending order, so every feature set has exactly one spelling, for example
-`wasm32-mvp+bulk-memory+multivalue+mutable-globals+nontrapping-fptoint+reference-types+sign-ext`.
-Unknown features are refused rather than dropped: a client must be able to
-decide support from the string alone (it runs a module when the features it
-offers are a superset). The `isa` is at most 256 bytes.
-
-**Web `runtime`.** The web runtime ABI id,
-`tilo-runtime/<version>+wasm.<build>`, for example
-`tilo-runtime/2026.07+wasm.fe8836616de68a65d59c02eb73caa005`: exactly the
-bytes of the module's `tilo.runtime_abi` custom section (see
-`crates/browser/tilo-browser-runtime/WEB_RUNTIME.md`). `<version>` is the
-toolkit-core release, CalVer or a SemVer core (`2026.07`, `2026.7.0-browser.1`)
-without build metadata, and equals the authored `package.runtime` of an app;
-`<build>` is exactly 32 lower-case hex digits. The loader refuses a module
-whose ABI id differs from the loaded core, so a client only offers an app
-version when a core (`kind = "runtime"`) with the same `runtime` is
-published.
-
-Existing native clients validate every version of every entry before trusting
-a snapshot and predate the `web` family: they reject a snapshot containing a
-web version. Roll out a client that accepts web targets before the first web
-version is published to a registry those clients follow.
 
 ### 6. Moderator workflow
 
@@ -641,6 +629,34 @@ artifacts stay while a retained history snapshot (which `rollback-snapshot`
 may restore) or the previous version index (which a client one snapshot behind
 may still fetch) lists it; the prune after that deletes them.
 
+Retention is also what lets a device open an app without fetching a runtime:
+a first open takes the newest retained version whose runtime build the device
+already has (`app_cli::first_open_offer`). With the default of 20, an image or
+per-user runtime from within the last 20 releases of an app opens it with no
+runtime download; an older one downloads the runtime the newest version names.
+
+On the device, a downloaded runtime build lives in
+`$XDG_DATA_HOME/tilo-runtime/<version>/` only while something needs it
+(`runtime_bundle::gc`). After every `tilo-install install`, `update` and
+`uninstall`, and on `tilo-install gc`, a build is removed unless an installed
+package (the user's or the image's) names it as its `runtime` or among its
+`optional-runtimes`, it is pinned (`tilo-install runtime pin`, or installed
+with `--pinned`), it was installed within the last hour (an app's first open
+installs its runtime and then the app, in two steps), or a running app has it
+mounted. A build leaves its version's directory in one rename before any file
+is deleted, so a collection stopped halfway never leaves a build a launch
+would pick. Nothing runs on a timer.
+
+A launch holds what it runs on from before it looks at it until its sandbox
+exits: a shared `flock` on `.launches/<version>` in the runtime root for each
+per-user runtime build, and on `leases/<package id>` in the app store for its
+payload tree. Removal takes the same file exclusively without waiting, so an
+app opened while it is being updated keeps the build it chose, payload and
+runtime, and the collection after the launch ends takes them. A launcher that
+dies releases its holds with its descriptors. The app host's own installs and
+removals run the same collection as `tilo-install`, which also removes the
+staging a crashed install left in the store's `tmp/`.
+
 `prune-storage --dry-run --keep-releases N --keep-prereleases M` lists the
 published versions that policy drops and what pruning deletes once they are
 gone, without changing anything.
@@ -749,104 +765,6 @@ out of search while keeping its bytes and decision record recoverable.
 `review restore` re-checks the signature and current allowlist before
 making it visible again.
 
-## Web apps in the browser
-
-The browser runtime (`crates/browser/tilo-browser-runtime`, see its
-`WEB_RUNTIME.md`) links app side modules into the toolkit core. Both come
-from the registry as ordinary signed packages: the core is
-`so.tilo.runtime.web` (`kind = "runtime"`), each app is its own package, and
-the two meet on the exact runtime ABI id in their `[target].runtime`.
-
-**Verification** lives in `crates/packaging/registry-web`, plain Rust that
-builds for `wasm32-unknown-unknown` without wasm-bindgen, web-sys or
-getrandom:
-
-- `verify_snapshot(bytes, owner_pubkey_hex, checkpoint, now_unix)` runs
-  `registry_types::verify_snapshot` against the pinned owner key and enforces
-  the anti-rollback `Checkpoint` (`{"sequence", "snapshot_hash_hex"}`, the
-  native client's shape): a lower sequence, or another snapshot at the same
-  sequence, is refused. It returns a `VerifiedSnapshot` and the checkpoint to
-  keep.
-- `VerifiedSnapshot::select(package_id, &Host { features, runtime })` picks the
-  newest `web`/`wasm32` version whose `isa` features the browser offers and,
-  when `runtime` is given, whose ABI id is exactly that.
-- `verify_package(tapp_bytes, &selection)` checks a thin or full tapp: its
-  signed root hashes to the version's `tapp_root_hash_hex`, is signed by the
-  entry's publisher, commits to the manifest and collection, and the manifest's
-  id, version and `[target]` are the selected version's. It returns the module
-  and the payload files (`assets/…` separately) by BLAKE3.
-- `verify_blob(bytes, blake3_hex)` checks each payload blob.
-
-`crates/packaging/registry-web-bindgen` exposes the same functions to
-JavaScript; `crates/browser/web-registry-client/build-verifier.sh OUT` builds
-it (`registry_verifier.js` and a 440 KB, 150 KB brotli, `.wasm`).
-
-**Resolving** is `crates/browser/web-registry-client/registry-client.mjs`:
-
-```js
-import init, * as bindings from './registry_verifier.js';
-import {createVerifier} from './registry-verifier.mjs';
-import {createRegistryClient} from './registry-client.mjs';
-
-await init();
-const registry = createRegistryClient({
-  baseUrl: 'https://apps.tilo.so',
-  ownerKeyHex: '<pinned owner key>',
-  verifier: createVerifier(bindings),
-  runtimeAbi: 'tilo-runtime/2026.07+wasm.<32 hex>', // the loaded core's; optional
-  cacheName: 'tilo-registry',                       // Cache Storage bucket
-});
-setAppResolver(registry.resolveApp);          // host.mjs
-await registry.resolveApps(['so.tilo.ebook', 'so.tilo.word-processor']);
-const core = await registry.resolveRuntime(); // {module, abi, assets}
-```
-
-`resolveApp(appId, {signal})` resolves to `{module, abi, assets}`: `module`
-is a `Response` for the verified module (`application/wasm`, its URL the
-blob's, ready for `WebAssembly.compileStreaming`), `abi` the version's runtime
-ABI id and `assets` a `Map` from asset name to an object URL of the verified
-bytes. Calls made in the same task, and `resolveApps(appIds, {signal})`, share
-one batch: one snapshot request, every thin tapp (`/thin/<root>.tapp`)
-concurrently, then every blob the batch lacks (`/blobs/<blake3>`)
-concurrently, each blob once. `resolveApps` rejects with an `AggregateError`
-whose `failed` and `resolved` maps name each app's outcome. Errors carry
-`code` `TILO_APP_UNAVAILABLE` (not listed, no version for this core or
-browser), `TILO_REGISTRY_UNVERIFIED` (a proof failed) or `TILO_REGISTRY_HTTP`.
-An aborted `signal` rejects that caller only; the shared downloads finish and
-are cached.
-
-Verified thin tapps and blobs are stored in Cache Storage under their
-immutable URLs, and the checkpoint under a synthetic URL per owner key; nothing
-uses localStorage. A returning visit costs one `/entries` request, fetched with
-`cache: 'no-cache'` so the browser revalidates it with the ETag (304). Clearing
-site data also clears the checkpoint, as deleting the native client's
-checkpoint file does. Serve the page from an origin passed to
-`serve --cors-origin`.
-
-**Locally**, against a build of `build-web-dev.sh`:
-
-```text
-crates/browser/tilo-browser-runtime/scripts/build-web-dev.sh /abs/out
-tools/web/local-registry.sh --check /abs/out     # publish, verify in Node, stop
-tools/web/local-registry.sh /abs/out             # publish and keep serving
-tools/web/local-registry.sh --port 8787 --origin http://localhost:4321 \
-  --app apps/<package>/tilo-app.toml=/abs/app.wasm /abs/out  # extra side modules
-```
-
-Each run creates fresh owner and publisher keys and a fresh registry under
-`.local-registry/` (gitignored), serving `http://127.0.0.1:8787` with GET-only
-CORS for the page origins (default `http://localhost:4321`). It packs the core
-with `tools/web/web-core.tilo-app.toml` (its JavaScript glue as assets) and
-each app of `apps/index.json` with `apps/<package>/tilo-app.toml`, then for
-each tapp runs `import-artifact`, `tilo-app-package entry --platform web
---arch wasm32 --action add`, `POST /entries` and `review approve
---allow-insecure-local`, and finally `sign-snapshot`. It writes
-`.local-registry/registry.json` (`baseUrl`, `ownerKeyHex`, `runtimeAbi`,
-`apps`) for the page. `--check` builds the verifier and runs
-`web-registry-client/check-registry.mjs`: the CORS and revalidation contract,
-the core and every app resolved, verified and compiled, and a returning visit
-of exactly one request.
-
 ## TLS
 
 TLS is deliberately **out of scope** for the server binary. All
@@ -883,6 +801,36 @@ server {
     }
 }
 ```
+
+### Edge cache for apps.tilo.so
+
+Every content-addressed route above, and the generic-package files under
+`/artifacts/<owner>/generic/...` the release pipeline publishes, is immutable
+by construction: its URL names its bytes. The Tilo deployment puts Cloudflare
+in front of Caddy, whose configuration lives with the deployment, not in this
+repository. For the edge to keep these objects:
+
+- **One `Cache-Control`.** Forgejo's package route adds
+  `Cache-Control: private, max-age=300` to every file; the proxied response must
+  carry only `public, max-age=31536000, immutable`. In Caddy, inside the
+  `reverse_proxy` of the `/artifacts/*` route that proxies to Forgejo,
+  `header_down Cache-Control "public, max-age=31536000, immutable"` (setting
+  replaces Forgejo's value), and no site-level `header Cache-Control` on that
+  route: one applied before the proxy is added to, not replaced by, the
+  upstream header, which is how two arrive today.
+  The registry server already sends exactly that header for `/blobs/*`,
+  `/thin/*`, `/indexes/*` and its own `/artifacts/<blake3>.tapp[.zst]`.
+- **Eligible for cache.** `/blobs/<blake3>` has no file extension and `.tapp`
+  is not in Cloudflare's default cached set, so a Cache Rule must make
+  `/artifacts/*`, `/blobs/*`, `/thin/*` and `/indexes/*` "Eligible for cache"
+  with "Use cache-control header if present". Leave `/entries*`, `/registry`
+  and every non-GET out of it: the snapshot revalidates by ETag.
+- **No transformation.** Twins are `application/zstd`; Cloudflare's own
+  compression must not touch them (it does not by default).
+
+Check it with `tools/ci/probe-registry-edge-cache.sh <tapp-url> <blob-url>`:
+it fetches each URL twice and fails unless the second answer is a
+`cf-cache-status: HIT` with exactly one `Cache-Control`.
 
 ### Caddy example
 

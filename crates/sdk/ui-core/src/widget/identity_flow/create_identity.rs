@@ -37,10 +37,11 @@
 //! the accessibility tree and the headless driver all reach it by name.
 
 use crate::widget::{AppModel, ModelPath};
+use std::borrow::Cow;
 use std::collections::HashMap;
 
 use getrandom::{SysRng, rand_core::UnwrapErr};
-use taffy::{Dimension, Display, NodeId, Size, Style, TaffyTree};
+use taffy::{NodeId, TaffyTree};
 use threshold_identity::ThresholdIdentity;
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
@@ -54,15 +55,15 @@ use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
+use crate::widget::identity_flow::ScreenOutcome;
 use crate::widget::identity_flow::sheet::{
-    Align, BodyScroll, FORM_SHEET_WIDTH, Resolved, Role, Rows, SheetSpec, edited, line_height,
-    paint_text, paragraph_height, place_field, resolve, with_layout_renderer,
-};
-use crate::widget::identity_flow::{
-    IdentityFlowError, IdentityRecord, IdentityStore, ScreenOutcome,
+    Align, BodyScroll, Resolved, Role, Rows, SheetFrame, SheetScreen, draw_screen, edited,
+    field_leaf, layout_screen, line_height, paint_text, paragraph_height, place_field,
+    screen_style,
 };
 use crate::widget::modal_dialog::ModalAction;
 use crate::widget::text_input::TextInput;
+use tilo_identity_ceremony::{IdentityFlowError, IdentityRecord, IdentityStore};
 
 /// Default accent-tile palette. Picked so each tile reads as a
 /// distinct hue at a small swatch size. Stored as `[r, g, b]`.
@@ -104,7 +105,7 @@ fn small_f64(v: usize) -> f64 {
 /// the body rows. Built twice per frame: once unplaced to learn the body's
 /// height, once inside the sheet that height produced.
 #[derive(Clone, Debug, Default)]
-struct Plan {
+pub(super) struct Plan {
     explanation: Rect,
     name_label: Rect,
     input: Rect,
@@ -115,7 +116,7 @@ struct Plan {
 }
 
 pub struct CreateIdentityScreen {
-    rect: Rect,
+    frame: SheetFrame,
     /// The display-name field: the shared text input, embedded. Use
     /// `display_name()` / `set_display_name()` to read/write.
     name: TextInput,
@@ -139,11 +140,6 @@ pub struct CreateIdentityScreen {
     /// Last cursor position (set by `CursorMoved`) so the next
     /// `MouseInput` can hit-test against rects.
     last_cursor: Point,
-    /// The theme `build_layout` saw, so `apply_layout` can resolve the rows
-    /// without waiting for a paint.
-    layout_theme: Option<Theme>,
-    scroll: BodyScroll,
-    body_height: f64,
 }
 
 impl Default for CreateIdentityScreen {
@@ -162,7 +158,7 @@ impl CreateIdentityScreen {
             .with_accessible_name(NAME_LABEL);
         name.set_focus(true);
         Self {
-            rect: Rect::ZERO,
+            frame: SheetFrame::default(),
             name,
             name_node: None,
             last_name: String::new(),
@@ -174,9 +170,6 @@ impl CreateIdentityScreen {
             submit_error: None,
             last_record: None,
             last_cursor: Point::ZERO,
-            layout_theme: None,
-            scroll: BodyScroll::default(),
-            body_height: 0.0,
         }
     }
 
@@ -323,7 +316,7 @@ impl CreateIdentityScreen {
                     },
                 ..
             } => {
-                if self.scroll.key(logical_key, self.body_height) {
+                if self.frame.key(logical_key) {
                     *handled = true;
                     return ScreenOutcome::Stay;
                 }
@@ -335,7 +328,7 @@ impl CreateIdentityScreen {
                 ScreenOutcome::Stay
             }
             WindowEvent::MouseWheel { delta, .. } => {
-                if self.scroll.wheel(delta) {
+                if self.frame.wheel(delta) {
                     *handled = true;
                 }
                 ScreenOutcome::Stay
@@ -395,44 +388,53 @@ impl CreateIdentityScreen {
         }
     }
 
-    /// One geometry pass for both `apply_layout` and `draw`: the rects the
-    /// screen paints are the rects it hit-tests, clipped to the visible body
-    /// so a scrolled-out row can never take a button's click.
-    fn resolve(&mut self, theme: &Theme, text_renderer: &mut TextRenderer) -> Resolved<Plan> {
-        let actions = self.actions();
-        let spec = SheetSpec {
-            title: TITLE,
-            max_width: FORM_SHEET_WIDTH,
-            actions: &actions,
-        };
-        let mut scroll = self.scroll;
-        let resolved = resolve(
-            self.rect,
-            &spec,
-            &mut scroll,
-            text_renderer,
-            theme,
-            |rows, control_h, tr, theme| {
-                let plan = self.plan(rows, control_h, tr, theme);
-                let bottom = plan.bottom;
-                (plan, bottom)
-            },
-        );
-        self.scroll = scroll;
-        let body = resolved.sheet.body();
-        self.body_height = body.height();
-        // The widget takes the whole row (the body clip trims its paint);
-        // its pointer target is the part inside the visible body.
-        place_field(&mut self.name, resolved.plan.input);
-        self.input_rect = BodyScroll::visible(body, resolved.plan.input);
-        self.tile_rects = resolved
-            .plan
-            .tiles
-            .iter()
-            .map(|r| BodyScroll::visible(body, *r))
-            .collect();
-        self.submit_rect = resolved.sheet.action(0);
-        resolved
+    /// The accent-colour tiles: `radii.control` swatches, the chosen one ringed
+    /// in the card's ink a hairline outside its edge.
+    fn draw_accent_tiles(&self, scene: &mut Scene, transform: Affine, theme: &Theme, plan: &Plan) {
+        let radius = f64::from(theme.tokens.radii.control);
+        let ring_gap = f64::from(theme.tokens.spacing.s1) / 2.0;
+        for (i, r) in plan.tiles.iter().enumerate() {
+            // `tiles` is built 1:1 with `ACCENT_PALETTE`, so this is
+            // structurally in range — checked rather than indexed so the
+            // invariant can't silently regress into a panic.
+            let Some(&[r_, g_, b_]) = ACCENT_PALETTE.get(i) else {
+                continue;
+            };
+            let fill = Color::from_rgb8(r_, g_, b_);
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                fill,
+                None,
+                &RoundedRect::from_rect(*r, radius),
+            );
+            if i == self.selected_accent {
+                scene.stroke(
+                    &Stroke::new(2.0),
+                    transform,
+                    Role::Value.color(theme),
+                    None,
+                    &RoundedRect::from_rect(r.inflate(ring_gap, ring_gap), radius + ring_gap),
+                );
+            }
+        }
+    }
+}
+
+impl SheetScreen for CreateIdentityScreen {
+    type Plan = Plan;
+    type Actions = [ModalAction<'static>; 1];
+
+    fn frame(&self) -> &SheetFrame {
+        &self.frame
+    }
+
+    fn frame_mut(&mut self) -> &mut SheetFrame {
+        &mut self.frame
+    }
+
+    fn title(&self) -> Cow<'static, str> {
+        TITLE.into()
     }
 
     fn actions(&self) -> [ModalAction<'static>; 1] {
@@ -440,7 +442,6 @@ impl CreateIdentityScreen {
             .enabled(self.is_submit_enabled())
             .hovered(self.submit_hovered)]
     }
-
     /// Walk the body rows once. Related rows (a label and its field) sit
     /// `spacing.s1` apart; groups are separated by `spacing.s6`.
     fn plan(
@@ -498,35 +499,66 @@ impl CreateIdentityScreen {
         }
     }
 
-    /// The accent-colour tiles: `radii.control` swatches, the chosen one ringed
-    /// in the card's ink a hairline outside its edge.
-    fn draw_accent_tiles(&self, scene: &mut Scene, transform: Affine, theme: &Theme, plan: &Plan) {
-        let radius = f64::from(theme.tokens.radii.control);
-        let ring_gap = f64::from(theme.tokens.spacing.s1) / 2.0;
-        for (i, r) in plan.tiles.iter().enumerate() {
-            // `tiles` is built 1:1 with `ACCENT_PALETTE`, so this is
-            // structurally in range — checked rather than indexed so the
-            // invariant can't silently regress into a panic.
-            let Some(&[r_, g_, b_]) = ACCENT_PALETTE.get(i) else {
-                continue;
-            };
-            let fill = Color::from_rgb8(r_, g_, b_);
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                fill,
-                None,
-                &RoundedRect::from_rect(*r, radius),
-            );
-            if i == self.selected_accent {
-                scene.stroke(
-                    &Stroke::new(2.0),
-                    transform,
-                    Role::Value.color(theme),
-                    None,
-                    &RoundedRect::from_rect(r.inflate(ring_gap, ring_gap), radius + ring_gap),
-                );
-            }
+    fn bottom(plan: &Plan) -> f64 {
+        plan.bottom
+    }
+
+    fn place(
+        &mut self,
+        resolved: &Resolved<Plan>,
+        _text_renderer: &mut TextRenderer,
+        _theme: &Theme,
+    ) {
+        let body = resolved.sheet.body();
+        // The widget takes the whole row (the body clip trims its paint);
+        // its pointer target is the part inside the visible body.
+        place_field(&mut self.name, resolved.plan.input);
+        self.input_rect = BodyScroll::visible(body, resolved.plan.input);
+        self.tile_rects = resolved
+            .plan
+            .tiles
+            .iter()
+            .map(|r| BodyScroll::visible(body, *r))
+            .collect();
+        self.submit_rect = resolved.sheet.action(0);
+    }
+
+    fn paint_body(
+        &mut self,
+        ctx: &mut PaintCtx<'_>,
+        presence: &PresenceCtx,
+        resolved: &Resolved<Plan>,
+    ) {
+        let plan = &resolved.plan;
+        paint_text(
+            ctx,
+            plan.explanation,
+            EXPLANATION,
+            Role::Body,
+            Align::Start,
+            true,
+        );
+        paint_text(
+            ctx,
+            plan.name_label,
+            NAME_LABEL,
+            Role::Label,
+            Align::Start,
+            false,
+        );
+        self.name
+            .draw(ctx.scene, ctx.transform, ctx.text, ctx.theme, presence);
+        paint_text(
+            ctx,
+            plan.accent_label,
+            ACCENT_LABEL,
+            Role::Label,
+            Align::Start,
+            false,
+        );
+        self.draw_accent_tiles(ctx.scene, ctx.transform, ctx.theme, plan);
+        if let (Some(rect), Some(err)) = (plan.error, self.submit_error.as_deref()) {
+            paint_text(ctx, rect, err, Role::Error, Align::Start, true);
         }
     }
 }
@@ -540,47 +572,15 @@ impl Widget for CreateIdentityScreen {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        self.layout_theme = Some(theme.clone());
-        // The field is a child node of its own — placed by the sheet, not
-        // by taffy (`Display::None`), but present in the tree so the host's
-        // focus order and the accessibility tree line up with `children()`.
-        let field = taffy.leaf_node(Style {
-            display: Display::None,
-            ..Default::default()
-        });
+        self.frame.layout_theme = Some(theme.clone());
+        let field = field_leaf(taffy);
         node_map.insert(field, std::ptr::from_mut::<dyn Widget>(&mut self.name));
         self.name_node = Some(field);
-        // The screen owns the viewport, so the sheet centres on the window
-        // rather than inside a fixed box at the origin.
-        let node = taffy.parent_node(
-            Style {
-                size: Size {
-                    width: Dimension::percent(1.0),
-                    height: Dimension::percent(1.0),
-                },
-                ..Default::default()
-            },
-            &[field],
-        );
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        taffy.widget_node(screen_style(), &[field], node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
-            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
-        );
-        // Hit rects are ready before the first paint and after every
-        // state change that reshapes the body.
-        if let Some(theme) = self.layout_theme.clone() {
-            with_layout_renderer(&theme, |tr| {
-                self.resolve(&theme, tr);
-            });
-        }
+        layout_screen(self, taffy, node, origin);
     }
 
     fn draw(
@@ -591,61 +591,7 @@ impl Widget for CreateIdentityScreen {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        // Identity ceremonies, invites and joins are security surfaces:
-        // every look-alike letter is set apart.
-        text_renderer.security_surface(|text_renderer| {
-            let resolved = self.resolve(theme, text_renderer);
-            let actions = self.actions();
-            let spec = SheetSpec {
-                title: TITLE,
-                max_width: FORM_SHEET_WIDTH,
-                actions: &actions,
-            };
-            let sheet = &resolved.sheet;
-            let plan = &resolved.plan;
-
-            sheet.paint_frame(scene, transform, text_renderer, theme, &spec);
-            sheet.clip_body(scene, transform);
-            paint_text(
-                &mut PaintCtx::new(scene, transform, text_renderer, theme),
-                plan.explanation,
-                EXPLANATION,
-                Role::Body,
-                Align::Start,
-                true,
-            );
-            paint_text(
-                &mut PaintCtx::new(scene, transform, text_renderer, theme),
-                plan.name_label,
-                NAME_LABEL,
-                Role::Label,
-                Align::Start,
-                false,
-            );
-            self.name
-                .draw(scene, transform, text_renderer, theme, presence);
-            paint_text(
-                &mut PaintCtx::new(scene, transform, text_renderer, theme),
-                plan.accent_label,
-                ACCENT_LABEL,
-                Role::Label,
-                Align::Start,
-                false,
-            );
-            self.draw_accent_tiles(scene, transform, theme, plan);
-            if let (Some(rect), Some(err)) = (plan.error, self.submit_error.as_deref()) {
-                paint_text(
-                    &mut PaintCtx::new(scene, transform, text_renderer, theme),
-                    rect,
-                    err,
-                    Role::Error,
-                    Align::Start,
-                    true,
-                );
-            }
-            scene.pop_layer();
-            sheet.paint_actions(scene, transform, text_renderer, theme, &spec);
-        });
+        draw_screen(self, scene, transform, text_renderer, theme, presence);
     }
 
     fn name(&self) -> &'static str {
@@ -676,7 +622,7 @@ impl Widget for CreateIdentityScreen {
     }
 
     fn get_rect(&self) -> Rect {
-        self.rect
+        self.frame.rect
     }
 
     fn needs_redraw(&self) -> bool {
@@ -691,8 +637,9 @@ impl Widget for CreateIdentityScreen {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::widget::identity_flow::MemoryIdentityStore;
     use automerge::AutoCommit;
+    use taffy::Size;
+    use tilo_identity_ceremony::MemoryIdentityStore;
 
     #[test]
     fn create_identity_submit_validates_name_and_stores_record() {

@@ -13,10 +13,14 @@ pub(super) fn decline_recovered_receive(
     state: &mut NearbyDropState,
     transfer_id: [u8; 16],
 ) -> Result<RecoveredReceiveDecline, String> {
+    // A media handoff's receive belongs to its handoff, not to Files.
     let entry = store
         .inbox()
         .iter()
-        .find(|entry| entry.id == transfer_id)
+        .find(|entry| {
+            entry.id == transfer_id
+                && entry.kind != crate::shell::nearby_transfer::TransferKind::MediaHandoff
+        })
         .cloned()
         .ok_or_else(|| crate::shell::i18n::t("device-fabric-error-consent-expired"))?;
     let peer = DeviceId::new(entry.source).map_err(|error| error.to_string())?;

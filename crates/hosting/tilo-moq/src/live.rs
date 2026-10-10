@@ -35,7 +35,8 @@
 //! aborts only its own egress broadcast (other subscribers see stream resets,
 //! no session close) and tells the revoked session to close.
 use crate::carrier;
-pub use crate::relay::{ADMISSION_CONTENTION_WAIT, Admission, AuthorizationStatus, GOAWAY_GRACE};
+pub use crate::relay::{AuthorizationStatus, Denied, GOAWAY_GRACE};
+use crate::session_authority::{AuthorityDriver, Verdict};
 use std::collections::HashMap;
 use std::sync::{
     Arc, Mutex, PoisonError, Weak,
@@ -90,7 +91,6 @@ const INGRESS_POOL_BYTES: u64 = 512 * 1024;
 const EGRESS_POOL_BYTES: u64 = 16 * 1024 * 1024;
 /// Upper bound on bytes one subscriber's own view may buffer.
 const VIEW_POOL_BYTES: u64 = 1024 * 1024;
-const AUTHORITY_INTERVAL: Duration = Duration::from_millis(100);
 /// Delay before a revoked, host-fed namespace is re-announced.
 const REANNOUNCE_AFTER: Duration = Duration::from_millis(100);
 /// A quiet ops track is sealed with an empty group after this long, so a late
@@ -98,10 +98,9 @@ const REANNOUNCE_AFTER: Duration = Duration::from_millis(100);
 pub const SEAL_AFTER: Duration = Duration::from_millis(250);
 /// Quiet time after which a late subscriber is no longer replayed old groups.
 pub const SEAL_QUIET: Duration = Duration::from_millis(250 + 2000 + 100);
-const ADMISSION_RETRY: Duration = Duration::from_millis(5);
 const PRESENCE_RETRY: Duration = Duration::from_millis(100);
 /// An ops track without subscribers for this long is withdrawn.
-const UNUSED_GRACE: Duration = Duration::from_secs(2);
+pub(crate) const UNUSED_GRACE: Duration = Duration::from_secs(2);
 
 /// Host-internal marker for an exact raw route comparison; not authority.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -118,21 +117,20 @@ pub trait LiveSession: Send + Sync {
     fn publish(&self) -> bool;
     /// Grant allows subscribing to the room.
     fn subscribe(&self) -> bool;
-    /// Current lease, signature binding, host boot and membership. `Unavailable`
-    /// is bounded owner contention and never admits a new session.
+    /// Current lease, signature binding, host boot and membership. An
+    /// authority that cannot observe them answers `Denied`.
     fn status(&self) -> AuthorizationStatus;
 }
 
 /// Host-injected admission and frame validation. Called without awaits; must
 /// not block on network I/O.
 pub trait LiveAuthority: Send + Sync {
-    /// Verify the grant. `Busy` only before any state is consumed.
+    /// Verify the grant.
     ///
     /// # Errors
     ///
-    /// Returns [`Admission::Busy`] for transient contention before any state is
-    /// consumed, and [`Admission::Denied`] otherwise.
-    fn try_admit(&self, token: &[u8]) -> Result<Arc<dyn LiveSession>, Admission>;
+    /// Returns [`Denied`] when the grant does not authorize a session.
+    fn try_admit(&self, token: &[u8]) -> Result<Arc<dyn LiveSession>, Denied>;
     /// Validate one presence frame; returns its per-publisher sequence.
     fn presence_seq(&self, frame: &[u8]) -> Option<u64>;
     /// Validate one ops frame for the track's record digest (64 hex).
@@ -266,6 +264,7 @@ struct Ingress {
 
 struct Scopes {
     session: Arc<dyn LiveSession>,
+    authority: AuthorityDriver,
     path: String,
     ingress: Option<Ingress>,
     egress: Option<moq_net::origin::Consumer>,
@@ -670,15 +669,19 @@ impl LiveRelay {
             return;
         };
         let accepted = carrier::accept(transport, |token| async move {
-            let mut scopes = self.scopes(&token).await?;
+            let mut scopes = self.scopes(&token)?;
             let mut server = moq_net::Server::new();
             if let Some(ingress) = &scopes.ingress {
                 let own = ingress.origin.scope("", &subtree(&scopes.path)?).ok()?;
                 server = server.with_subscriber(own);
             }
             if let Some(egress) = &scopes.egress {
-                let view =
-                    crate::mirror::Mirror::start(egress.clone(), VIEW_POOL_BYTES, EGRESS_RETAIN);
+                let view = crate::mirror::Mirror::start(
+                    egress.clone(),
+                    VIEW_POOL_BYTES,
+                    EGRESS_RETAIN,
+                    None,
+                );
                 server = server.with_publisher(view.consume());
                 scopes.view = Some(view);
             }
@@ -692,35 +695,16 @@ impl LiveRelay {
         self.run_session(accepted, scopes).await;
     }
 
-    async fn scopes(&self, token: &[u8]) -> Option<Scopes> {
+    fn scopes(&self, token: &[u8]) -> Option<Scopes> {
         if token.is_empty() || token.len() > MAX_TOKEN_BYTES {
             return None;
         }
-        let deadline = crate::later(Instant::now(), ADMISSION_CONTENTION_WAIT);
-        let session = loop {
-            match self.0.authority.try_admit(token) {
-                Ok(session) => break session,
-                Err(Admission::Busy) if Instant::now() < deadline => {
-                    tokio::time::sleep(ADMISSION_RETRY).await;
-                }
-                Err(_) => return None,
-            }
-        };
+        let session = self.0.authority.try_admit(token).ok()?;
         let path = namespace_path(session.room(), session.publisher())?;
         if !session.publish() && !session.subscribe() {
             return None;
         }
-        loop {
-            match session.status() {
-                AuthorizationStatus::Current => break,
-                AuthorizationStatus::Unavailable { expires_at }
-                    if Instant::now() < deadline.min(expires_at) =>
-                {
-                    tokio::time::sleep(ADMISSION_RETRY).await;
-                }
-                _ => return None,
-            }
-        }
+        let authority = AuthorityDriver::admit(session.status())?;
         let ingress = session.publish().then(ingress_origin);
         let egress = if session.subscribe() {
             let room = format!("{NAMESPACE_ROOT}/{}", session.room());
@@ -730,6 +714,7 @@ impl LiveRelay {
         };
         Some(Scopes {
             session,
+            authority,
             path,
             ingress,
             egress,
@@ -762,37 +747,14 @@ impl LiveRelay {
         });
         let driver = moq_net::time::run(driver);
         tokio::pin!(driver);
-        let mut validity = tokio::time::interval(AUTHORITY_INTERVAL);
-        validity.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-        // Owner contention (`Unavailable`) is never revocation: sustained
-        // commits can hold the committed authority for seconds. The session
-        // then rides on its verified, renewable lease deadline alone; only an
-        // explicit `Denied` observation (or that deadline) ends it.
-        let mut unavailable: Option<Instant> = None;
         let revoked = loop {
             tokio::select! {
                 _ = session.closed() => break false,
                 _ = &mut driver => break false,
-                () = async {
-                    match unavailable {
-                        Some(deadline) => tokio::time::sleep_until(deadline.into()).await,
-                        None => std::future::pending::<()>().await,
-                    }
-                } => break true,
-                _ = validity.tick() => {
-                    let observed = scopes.session.status();
-                    let now = Instant::now();
-                    if unavailable.is_some_and(|deadline| now >= deadline) {
-                        break true;
-                    }
-                    match observed {
-                        AuthorizationStatus::Current => unavailable = None,
-                        // Renewal may extend the lease while contended: track
-                        // the latest reported deadline, not the earliest.
-                        AuthorizationStatus::Unavailable { expires_at } => unavailable = Some(expires_at),
-                        AuthorizationStatus::Denied => break true,
-                    }
-                }
+                verdict = scopes.authority.next(|| scopes.session.status()) => match verdict {
+                    Verdict::Continue => {}
+                    Verdict::Revoked => break true,
+                },
             }
         };
         if revoked {

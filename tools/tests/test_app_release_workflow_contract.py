@@ -418,6 +418,15 @@ class AppReleaseWorkflowContract(unittest.TestCase):
             self.assertIn('tilo-app-metadata/$VERSION/$media', publish)
             self.assertIn('registry_media_urls="$RUNNER_TEMP/tilo-registry-media-public-urls.tsv"', publish)
             self.assertIn('tilo-app-metadata/$VERSION/$media" >> "$registry_media_urls"', publish)
+        with self.subTest(phase='every uploaded tapp has a compressed twin beside it'):
+            script = PUBLISH_SCRIPT.read_text()
+            self.assertIn('"$registry_cli" compress -o "$twins/$file.zst" "$tapp"', script)
+            self.assertIn('"$package_api/tilo-app-$name/$VERSION/$file.zst" >> "$upload_manifest"', script)
+            # The twin is written before the upload that needs it.
+            self.assertLess(script.index('registry_cli="${index%/index.json}/tilo-app-package"'),
+                            script.index('"$registry_cli" compress'))
+            self.assertLess(script.index('"$registry_cli" compress'),
+                            script.index('tools/upload_immutable_packages.sh "$upload_manifest"'))
             self.assertIn('public registry media is unavailable or has the wrong type', publish)
             self.assertIn('curl --silent --show-error --location --head --dump-header "$headers"', publish)
             self.assertIn("*.svg) expected_type='image/svg+xml'", publish)

@@ -8,6 +8,7 @@ fn seed_text(wp: &mut WordProcessorWidget, state: &mut ui::State, text: &str) {
 use std::fmt::Write as _;
 use ui::headless::Framed;
 use ui::permissions::PermissionContext;
+use ui::testing::Dispatch;
 
 /// Minimal, valid 2×3 RGB PNG shared by image layout, accessibility, portal,
 /// and inspector tests.
@@ -3222,35 +3223,19 @@ fn press_named_with_modifiers(
     key: NamedKey,
     mods: Modifiers,
 ) {
-    use winit::keyboard::{NativeKeyCode, PhysicalKey};
-    let taffy: TaffyTree<()> = TaffyTree::new();
-    let node = NodeId::new(0);
-    let mut handled = false;
-    let mut focus: Option<NodeId> = None;
-    let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-    ev.physical_key = PhysicalKey::Unidentified(NativeKeyCode::Unidentified);
-    ev.logical_key = Key::Named(key);
-    ev.text = None;
-    ev.location = winit::keyboard::KeyLocation::Standard;
-    ev.state = ElementState::Pressed;
-    ev.repeat = false;
-    wp.handle_event(
-        &WindowEvent::KeyboardInput {
-            device_id: unsafe { std::mem::zeroed() },
-            event: ev,
-            is_synthetic: false,
-        },
-        &mut ui::widget::EventCtx {
-            scale_factor: 1.0,
-            modifiers: &mods,
-            state: edits(&mut state.doc),
-            path: &state.root,
-            handled: &mut handled,
-            focus_target: &mut focus,
-            node_id: node,
-            taffy: &taffy,
-        },
-    );
+    let ev = ui::synthetic_input::key_event(Key::Named(key), None, ElementState::Pressed);
+    Dispatch::new()
+        .modifiers(mods)
+        .doc(&mut state.doc)
+        .path(&state.root)
+        .send(
+            wp,
+            &WindowEvent::KeyboardInput {
+                device_id: winit::event::DeviceId::dummy(),
+                event: ev,
+                is_synthetic: false,
+            },
+        );
 }
 
 fn pinch(
@@ -3259,25 +3244,18 @@ fn pinch(
     delta: f64,
     phase: winit::event::TouchPhase,
 ) -> bool {
-    let mut handled = false;
-    wp.handle_event(
-        &WindowEvent::PinchGesture {
-            device_id: unsafe { std::mem::zeroed() },
-            delta,
-            phase,
-        },
-        &mut ui::widget::EventCtx {
-            scale_factor: 1.0,
-            modifiers: &Modifiers::default(),
-            state: edits(&mut state.doc),
-            path: &state.root,
-            handled: &mut handled,
-            focus_target: &mut None,
-            node_id: NodeId::new(0),
-            taffy: &TaffyTree::new(),
-        },
-    );
-    handled
+    Dispatch::new()
+        .doc(&mut state.doc)
+        .path(&state.root)
+        .send(
+            wp,
+            &WindowEvent::PinchGesture {
+                device_id: winit::event::DeviceId::dummy(),
+                delta,
+                phase,
+            },
+        )
+        .handled
 }
 
 /// Mouse selection across wrapped line boundaries keeps its column and between paragraphs stays near
@@ -5987,45 +5965,27 @@ fn the_outline_and_toc_follow_the_headings() {
 
 /// Drive a real left-click at `pt` through the production `handle_event`.
 pub(super) fn left_click(wp: &mut WordProcessorWidget, state: &mut ui::State, pt: Point) {
-    let taffy: TaffyTree<()> = TaffyTree::new();
-    let node = NodeId::new(0);
-    let mods = Modifiers::default();
-    let mut handled = false;
-    let mut focus: Option<NodeId> = None;
     // Move the pointer, then press.
-    wp.handle_event(
+    let moved = Dispatch::new().doc(&mut state.doc).path(&state.root).send(
+        wp,
         &WindowEvent::CursorMoved {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             position: (pt.x, pt.y).into(),
         },
-        &mut ui::widget::EventCtx {
-            scale_factor: 1.0,
-            modifiers: &mods,
-            state: edits(&mut state.doc),
-            path: &state.root,
-            handled: &mut handled,
-            focus_target: &mut focus,
-            node_id: node,
-            taffy: &taffy,
-        },
     );
-    wp.handle_event(
-        &WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        },
-        &mut ui::widget::EventCtx {
-            scale_factor: 1.0,
-            modifiers: &mods,
-            state: edits(&mut state.doc),
-            path: &state.root,
-            handled: &mut handled,
-            focus_target: &mut focus,
-            node_id: node,
-            taffy: &taffy,
-        },
-    );
+    Dispatch::new()
+        .doc(&mut state.doc)
+        .path(&state.root)
+        .handled(moved.handled)
+        .focus_target(moved.focus_target)
+        .send(
+            wp,
+            &WindowEvent::MouseInput {
+                device_id: winit::event::DeviceId::dummy(),
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+            },
+        );
 }
 
 #[test]
@@ -6155,22 +6115,10 @@ fn bound() -> (ui::State, WordProcessorWidget) {
 }
 
 fn send_ime(wp: &mut WordProcessorWidget, state: &mut ui::State, ime: winit::event::Ime) {
-    let taffy: TaffyTree<()> = TaffyTree::new();
-    let mut handled = false;
-    let mut focus: Option<NodeId> = None;
-    wp.handle_event(
-        &WindowEvent::Ime(ime),
-        &mut ui::widget::EventCtx {
-            scale_factor: 1.0,
-            modifiers: &Modifiers::default(),
-            state: edits(&mut state.doc),
-            path: &state.root,
-            handled: &mut handled,
-            focus_target: &mut focus,
-            node_id: NodeId::new(0),
-            taffy: &taffy,
-        },
-    );
+    Dispatch::new()
+        .doc(&mut state.doc)
+        .path(&state.root)
+        .send(wp, &WindowEvent::Ime(ime));
 }
 
 /// The input method's composition shows at the caret and reaches the
@@ -6387,24 +6335,18 @@ fn the_new_menu_paints_feedback_and_selects_by_keyboard() {
                 .template_picker
                 .item_center(crate::Template::Report)
                 .expect("the Report row is laid out");
-            let mut handled = false;
             wp.lifecycle.dirty = false;
-            wp.handle_event(
-                &WindowEvent::CursorMoved {
-                    device_id: unsafe { std::mem::zeroed() },
-                    position: (point.x * 2.0, point.y * 2.0).into(),
-                },
-                &mut ui::widget::EventCtx {
-                    scale_factor: 2.0,
-                    modifiers: &Modifiers::default(),
-                    state: edits(&mut state.doc),
-                    path: &state.root,
-                    handled: &mut handled,
-                    focus_target: &mut None,
-                    node_id: NodeId::new(0),
-                    taffy: &TaffyTree::new(),
-                },
-            );
+            Dispatch::new()
+                .scale_factor(2.0)
+                .doc(&mut state.doc)
+                .path(&state.root)
+                .send(
+                    wp,
+                    &WindowEvent::CursorMoved {
+                        device_id: winit::event::DeviceId::dummy(),
+                        position: (point.x * 2.0, point.y * 2.0).into(),
+                    },
+                );
             let mut after = Scene::new();
             wp.draw_overlay(
                 &mut after,
@@ -6587,43 +6529,19 @@ fn templates_replace_the_document_only_when_chosen() {
     }
 }
 
-/// Drive a real keypress (single typed character) through the production
-/// `handle_event` keyboard path. winit's `KeyEvent` has a private
-/// `platform_specific` field, so (per the shell's `e2e_shell_flows` pattern)
-/// zero-init the whole struct and overwrite the public fields we read.
 fn type_char(wp: &mut WordProcessorWidget, state: &mut ui::State, ch: char) {
-    use winit::keyboard::{NativeKeyCode, PhysicalKey, SmolStr};
-    let taffy: TaffyTree<()> = TaffyTree::new();
-    let node = NodeId::new(0);
-    let mods = Modifiers::default();
-    let mut handled = false;
-    let mut focus: Option<NodeId> = None;
-    // SAFETY: identical to the shell's KeyEvent synthesis — all public fields
-    // tolerate the zero bit pattern (Option → None, enums → first variant),
-    // and we overwrite the ones `handle_event` reads (`logical_key`/`text`/
-    // `state`). The private `platform_specific` field is plain/zero-sized.
-    let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-    ev.physical_key = PhysicalKey::Unidentified(NativeKeyCode::Unidentified);
-    ev.logical_key = Key::Character(SmolStr::new(ch.to_string()));
-    ev.text = Some(SmolStr::new(ch.to_string()));
-    ev.location = winit::keyboard::KeyLocation::Standard;
-    ev.state = ElementState::Pressed;
-    ev.repeat = false;
-    wp.handle_event(
+    use winit::keyboard::SmolStr;
+    let ev = ui::synthetic_input::key_event(
+        Key::Character(SmolStr::new(ch.to_string())),
+        Some(SmolStr::new(ch.to_string())),
+        ElementState::Pressed,
+    );
+    Dispatch::new().doc(&mut state.doc).path(&state.root).send(
+        wp,
         &WindowEvent::KeyboardInput {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             event: ev,
             is_synthetic: false,
-        },
-        &mut ui::widget::EventCtx {
-            scale_factor: 1.0,
-            modifiers: &mods,
-            state: edits(&mut state.doc),
-            path: &state.root,
-            handled: &mut handled,
-            focus_target: &mut focus,
-            node_id: node,
-            taffy: &taffy,
         },
     );
 }
@@ -6633,34 +6551,13 @@ fn type_char(wp: &mut WordProcessorWidget, state: &mut ui::State, ch: char) {
 /// Drive a real Tab keypress through the production `handle_event` keyboard
 /// path (no `text`, just the named key).
 fn press_tab(wp: &mut WordProcessorWidget, state: &mut ui::State) {
-    use winit::keyboard::{NativeKeyCode, PhysicalKey};
-    let taffy: TaffyTree<()> = TaffyTree::new();
-    let node = NodeId::new(0);
-    let mods = Modifiers::default();
-    let mut handled = false;
-    let mut focus: Option<NodeId> = None;
-    let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-    ev.physical_key = PhysicalKey::Unidentified(NativeKeyCode::Unidentified);
-    ev.logical_key = Key::Named(NamedKey::Tab);
-    ev.text = None;
-    ev.location = winit::keyboard::KeyLocation::Standard;
-    ev.state = ElementState::Pressed;
-    ev.repeat = false;
-    wp.handle_event(
+    let ev = ui::synthetic_input::key_event(Key::Named(NamedKey::Tab), None, ElementState::Pressed);
+    Dispatch::new().doc(&mut state.doc).path(&state.root).send(
+        wp,
         &WindowEvent::KeyboardInput {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             event: ev,
             is_synthetic: false,
-        },
-        &mut ui::widget::EventCtx {
-            scale_factor: 1.0,
-            modifiers: &mods,
-            state: edits(&mut state.doc),
-            path: &state.root,
-            handled: &mut handled,
-            focus_target: &mut focus,
-            node_id: node,
-            taffy: &taffy,
         },
     );
 }
@@ -8053,43 +7950,22 @@ fn dropped_and_selected_images_expose_their_controls() {
             .clone();
         let drop_pt = Point::new(target.text_x + 20.0, target.y_top + target.height / 2.0);
 
-        let taffy: TaffyTree<()> = TaffyTree::new();
-        let node = NodeId::new(0);
-        let mods = Modifiers::default();
-        let mut handled = false;
-        let mut focus: Option<NodeId> = None;
         // Move the pointer over the drop target (as a real drag-hover would), then
         // drop the file there.
-        wp.handle_event(
+        let hovered = Dispatch::new().doc(&mut state.doc).path(&state.root).send(
+            wp,
             &WindowEvent::CursorMoved {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 position: (drop_pt.x, drop_pt.y).into(),
-            },
-            &mut ui::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &mods,
-                state: edits(&mut state.doc),
-                path: &state.root,
-                handled: &mut handled,
-                focus_target: &mut focus,
-                node_id: node,
-                taffy: &taffy,
             },
         );
         let path = temp_png("drop");
-        wp.handle_event(
-            &WindowEvent::DroppedFile(path.clone()),
-            &mut ui::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &mods,
-                state: edits(&mut state.doc),
-                path: &state.root,
-                handled: &mut handled,
-                focus_target: &mut focus,
-                node_id: node,
-                taffy: &taffy,
-            },
-        );
+        Dispatch::new()
+            .doc(&mut state.doc)
+            .path(&state.root)
+            .handled(hovered.handled)
+            .focus_target(hovered.focus_target)
+            .send(wp, &WindowEvent::DroppedFile(path.clone()));
         let _ = std::fs::remove_file(&path);
         assert_eq!(
             image_block_count(wp, state),
@@ -8403,44 +8279,26 @@ fn the_colour_picker_applies_and_cancels_previews() {
         let sv_pt = Point::new(sv.x0 + 20.0, sv.y0 + 20.0);
         let style_before = wp.focused_style_key().map(|k| wp.sheet.get(&k).color);
         // CursorMoved (to set the picker's internal cursor) then press.
-        let taffy: TaffyTree<()> = TaffyTree::new();
-        let node = NodeId::new(0);
-        let mods = Modifiers::default();
-        let mut handled = false;
-        let mut focus: Option<NodeId> = None;
-        wp.handle_event(
+        let moved = Dispatch::new().doc(&mut state.doc).path(&state.root).send(
+            wp,
             &WindowEvent::CursorMoved {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 position: (sv_pt.x, sv_pt.y).into(),
             },
-            &mut ui::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &mods,
-                state: edits(&mut state.doc),
-                path: &state.root,
-                handled: &mut handled,
-                focus_target: &mut focus,
-                node_id: node,
-                taffy: &taffy,
-            },
         );
-        wp.handle_event(
-            &WindowEvent::MouseInput {
-                device_id: unsafe { std::mem::zeroed() },
-                state: ElementState::Pressed,
-                button: MouseButton::Left,
-            },
-            &mut ui::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &mods,
-                state: edits(&mut state.doc),
-                path: &state.root,
-                handled: &mut handled,
-                focus_target: &mut focus,
-                node_id: node,
-                taffy: &taffy,
-            },
-        );
+        Dispatch::new()
+            .doc(&mut state.doc)
+            .path(&state.root)
+            .handled(moved.handled)
+            .focus_target(moved.focus_target)
+            .send(
+                wp,
+                &WindowEvent::MouseInput {
+                    device_id: winit::event::DeviceId::dummy(),
+                    state: ElementState::Pressed,
+                    button: MouseButton::Left,
+                },
+            );
         let style_after = wp.focused_style_key().map(|k| wp.sheet.get(&k).color);
         assert_ne!(
             style_before, style_after,
@@ -8485,23 +8343,12 @@ fn preview_custom_colour(
         .expect("the picker lays out its SV square");
     left_click(wp, state, Point::new(sv.x0 + 20.0, sv.y0 + 20.0));
     // End the SV drag the press started, as the pointer would.
-    let mut handled = false;
-    let mut focus: Option<NodeId> = None;
-    wp.handle_event(
+    Dispatch::new().doc(&mut state.doc).path(&state.root).send(
+        wp,
         &WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             state: ElementState::Released,
             button: MouseButton::Left,
-        },
-        &mut ui::widget::EventCtx {
-            scale_factor: 1.0,
-            modifiers: &Modifiers::default(),
-            state: edits(&mut state.doc),
-            path: &state.root,
-            handled: &mut handled,
-            focus_target: &mut focus,
-            node_id: NodeId::new(0),
-            taffy: &TaffyTree::new(),
         },
     );
     assert_ne!(
@@ -8931,10 +8778,6 @@ fn render_responsive_review_shots() {
 /// so the Writer selected by the host can receive it instead. When a
 /// non-Writer owns focus neither retained Writer may consume or mutate it.
 #[test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "one scenario covering pinch and Ctrl+wheel across focused and unfocused Writers"
-)]
 fn pinch_and_ctrl_wheel_only_zoom_the_host_focused_writer() {
     use winit::{
         dpi::PhysicalPosition,
@@ -8975,39 +8818,23 @@ fn pinch_and_ctrl_wheel_only_zoom_the_host_focused_writer() {
         delta: MouseScrollDelta::PixelDelta(PhysicalPosition::new(0.0, 24.0)),
         phase: TouchPhase::Moved,
     };
-    let mut first_handled = false;
-    first.handle_event(
-        &ctrl_wheel,
-        &mut ui::widget::EventCtx {
-            scale_factor: 1.0,
-            modifiers: &ctrl,
-            state: edits(&mut first_state.doc),
-            path: &first_state.root,
-            handled: &mut first_handled,
-            focus_target: &mut None,
-            node_id: NodeId::new(0),
-            taffy: &TaffyTree::new(),
-        },
-    );
+    let first_handled = Dispatch::new()
+        .modifiers(ctrl)
+        .doc(&mut first_state.doc)
+        .path(&first_state.root)
+        .send(first, &ctrl_wheel)
+        .handled;
     assert!(
         !first_handled,
         "an unfocused Writer must leave browser Ctrl+wheel for the selected sibling"
     );
     assert_eq!(first.zoom.factor(), 1.0);
-    let mut second_handled = false;
-    second.handle_event(
-        &ctrl_wheel,
-        &mut ui::widget::EventCtx {
-            scale_factor: 1.0,
-            modifiers: &ctrl,
-            state: edits(&mut second_state.doc),
-            path: &second_state.root,
-            handled: &mut second_handled,
-            focus_target: &mut None,
-            node_id: NodeId::new(0),
-            taffy: &TaffyTree::new(),
-        },
-    );
+    let second_handled = Dispatch::new()
+        .modifiers(ctrl)
+        .doc(&mut second_state.doc)
+        .path(&second_state.root)
+        .send(second, &ctrl_wheel)
+        .handled;
     assert!(second_handled, "the focused Writer owns Ctrl+wheel zoom");
     assert_eq!(
         second.zoom.factor(),
@@ -9037,20 +8864,11 @@ fn pinch_and_ctrl_wheel_only_zoom_the_host_focused_writer() {
         phase: TouchPhase::Moved,
     };
     let first_scroll_before = first.scroll_y;
-    let mut plain_handled = false;
-    first.handle_event(
-        &plain_wheel,
-        &mut ui::widget::EventCtx {
-            scale_factor: 1.0,
-            modifiers: &Modifiers::default(),
-            state: edits(&mut first_state.doc),
-            path: &first_state.root,
-            handled: &mut plain_handled,
-            focus_target: &mut None,
-            node_id: NodeId::new(0),
-            taffy: &TaffyTree::new(),
-        },
-    );
+    let plain_handled = Dispatch::new()
+        .doc(&mut first_state.doc)
+        .path(&first_state.root)
+        .send(first, &plain_wheel)
+        .handled;
     assert!(plain_handled, "plain wheel remains pointer-routed");
     assert!(
         first.scroll_y > first_scroll_before,

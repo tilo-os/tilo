@@ -286,12 +286,12 @@ impl RoomAdminClient {
             .open_bi()
             .await
             .map_err(|error| RoomAdminError::Transport(error.to_string()))?;
-        crate::framing::write_frame(&mut send, &bytes)
+        tilo_relay_client::frame::write_frame(&mut send, &bytes)
             .await
             .map_err(|error| RoomAdminError::Transport(error.to_string()))?;
         send.finish()
             .map_err(|error| RoomAdminError::Transport(error.to_string()))?;
-        let reply = crate::framing::read_frame(&mut recv, ROOM_ADMIN_MAX_REPLY_BYTES)
+        let reply = tilo_relay_client::frame::read_frame(&mut recv, ROOM_ADMIN_MAX_REPLY_BYTES)
             .await
             .map_err(|error| RoomAdminError::Transport(error.to_string()))?;
         connection.close(0u32.into(), b"done");

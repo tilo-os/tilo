@@ -73,7 +73,7 @@ impl LiveState {
 
     /// [`Self::new`] at the current wall-clock time.
     pub fn starting_now() -> Self {
-        Self::new(crate::clock::now_ms())
+        Self::new(tilo_clock::unix_now_ms())
     }
 
     /// A member joined or left the room's live plane.
@@ -223,16 +223,6 @@ impl LiveState {
             ops,
         })
         .encode()
-    }
-
-    /// Encode the end of this device's previews for `record`.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the record violates the wire bounds.
-    pub fn end_preview(&mut self, record: LiveRecord) -> Result<Vec<u8>, LiveWireError> {
-        self.preview_seq.remove(&record);
-        LiveFrame::Ops(OpsFrame::End { record }).encode()
     }
 }
 

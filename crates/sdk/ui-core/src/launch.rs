@@ -159,17 +159,23 @@ impl LaunchArgs {
     pub fn positionals(&self) -> &[String] {
         &self.positionals
     }
+
+    /// This process's arguments, for a binary that runs its own live loop
+    /// (the greeter, the installer) yet takes the standard capture options,
+    /// plus its own capture-only `options`.
+    ///
+    /// # Errors
+    /// The same refusals as [`run`]: an unknown, malformed or duplicate
+    /// argument, or a capture option outside a capture.
+    #[cfg(feature = "native")]
+    pub fn from_env(options: &[&str]) -> Result<Self, LaunchError> {
+        let args: Vec<String> = std::env::args().collect();
+        parse_args_extended(&args, &[], options, &[], &[], 0)
+    }
 }
 
 /// How the standard lifecycle launches one application definition: its
 /// component host, capture scenarios, commands and accepted arguments.
-#[cfg_attr(
-    not(feature = "native"),
-    allow(
-        dead_code,
-        reason = "some fields are read only by the native event-loop runner"
-    )
-)]
 #[derive(Clone)]
 pub struct LaunchSpec {
     definition: &'static crate::application::ApplicationDefinition,
@@ -609,12 +615,6 @@ impl LaunchRecovery {
         std::thread::current().id() == self.owner
     }
 
-    /// Whether the owners are reachable from this thread.
-    #[must_use]
-    pub fn is_reachable(&self) -> bool {
-        self.here()
-    }
-
     /// How many close reports this recovery carries, on any thread.
     #[must_use]
     pub fn report_count(&self) -> usize {
@@ -826,6 +826,16 @@ fn capture_directory(directory: &std::path::Path, option: &str) -> Result<(), La
     })
 }
 
+/// Whether these arguments run the app in a live native window, rather than
+/// headless, as captures or as an audit.
+#[cfg(feature = "native")]
+fn opens_native_window(args: &LaunchArgs) -> bool {
+    args.headless.is_none()
+        && args.shots.is_none()
+        && args.responsive_matrix.is_none()
+        && !args.native_audit
+}
+
 #[allow(
     clippy::exit,
     reason = "the --headless-drive path reports the harness's pass/fail \
@@ -845,29 +855,32 @@ fn run_parsed(
     {
         return Ok(());
     }
-    if args.headless.is_none()
-        && args.shots.is_none()
-        && args.responsive_matrix.is_none()
-        && !args.native_audit
-        && (spec.runtime_attachment)(&args)
-    {
+    // Attachment can exec the runtime host in this process's place, and marks
+    // the inherited launch guard close-on-exec: it finishes before the
+    // renderer preparation below starts a thread.
+    if opens_native_window(&args) && (spec.runtime_attachment)(&args) {
         attach(spec.app_id).map_err(|error| {
             LaunchError::Operation(format!("native runtime attachment failed: {error}"))
         })?;
     }
-    #[cfg(windows)]
-    let renderer = if args.shots.is_none()
-        && args.responsive_matrix.is_none()
-        && args.headless.is_none()
-        && !args.native_audit
-    {
+    // A window's GPU device and vello's pipelines are prepared on their own
+    // thread while the app constructs, so its first redraw takes them ready
+    // instead of starting them after the compositor's first configure. Never
+    // inside the event loop's `resumed`: see `prepare_native_renderer`.
+    #[cfg(any(windows, target_os = "linux"))]
+    let renderer = if opens_native_window(&args) {
         crate::app::prepare_native_renderer()
     } else {
         None
     };
+    // The font database likewise, so the app's first text renderer finds
+    // the catalog verified and the fonts read.
+    if opens_native_window(&args) {
+        prepare_font_database_beside();
+    }
     match dispatch_definition(spec, &args)? {
         DefinitionDispatch::Native(app) => {
-            #[cfg(windows)]
+            #[cfg(any(windows, target_os = "linux"))]
             let app = Box::new((*app).with_startup_renderer(renderer));
             (*app).run();
         }
@@ -894,6 +907,20 @@ fn run_parsed(
         }
     }
     Ok(())
+}
+
+/// Start building the process's font database in the background
+/// (`text_render::prepare_font_database`): only the database, so it neither
+/// shapes text nor touches the GPU the renderer preparation is opening. Where
+/// no background work can run, the first text renderer builds it as before.
+#[cfg(feature = "native")]
+fn prepare_font_database_beside() {
+    let _ = crate::background::Background::current().spawn("font-database-prepare", || {
+        tilo_startup_metrics::span(
+            "font-database-prepare",
+            crate::text_render::prepare_font_database,
+        );
+    });
 }
 
 #[cfg(feature = "native")]
@@ -1168,17 +1195,8 @@ pub const CAPTURE_SETTLE_BOUND: crate::time::Duration = crate::time::Duration::f
 pub const MAX_SHOT_DEVICE_SCALE: u32 = 4;
 
 /// `--distinct-letters` for the capture this process writes: every capture
-/// theme ([`shot_theme`], [`capture_theme`], [`shot_theme_from_env`]) takes it.
+/// theme ([`shot_theme`], [`shot_theme_from_env`]) takes it.
 static CAPTURE_DISTINCT_LETTERS: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-
-/// What this process's capture set "Always distinguish similar letters" to
-/// (`--distinct-letters`), `None` outside a capture or without the flag: a
-/// pane that shows the setting's own control renders it as the person's
-/// choice, so the control matches the text around it.
-#[must_use]
-pub fn capture_distinct_letters() -> Option<bool> {
-    CAPTURE_DISTINCT_LETTERS.get().copied()
-}
 
 /// Pin "Always distinguish similar letters" on a capture theme when the
 /// capture asked for it (`--distinct-letters`).
@@ -1219,25 +1237,6 @@ pub fn shot_theme(args: &LaunchArgs) -> Theme {
     ));
     // Screenshot review must use the same motion policy as a real app.  The
     // headless harness does not construct `ui::App`, where this environment
-    // preference is normally read, so thread it onto the shot theme here.
-    theme.with_reduce_motion(shot_motion_reduced())
-}
-
-/// The same capture presentation for app-specific fixture drivers.
-#[must_use]
-pub fn capture_theme(text_scale: Option<f32>) -> Theme {
-    let theme = std::env::var("TILO_SHOTS_THEME")
-        .ok()
-        .and_then(|name| Theme::named(&name))
-        .unwrap_or_else(Theme::dark);
-    let theme = if let Some(scale) = text_scale {
-        theme.with_text_scale(scale)
-    } else {
-        theme
-    };
-    let theme = with_capture_letters(theme, None);
-    // Screenshot review must use the same motion policy as a real app.  The
-    // headless harness does not construct `tilo_ui::App`, where this environment
     // preference is normally read, so thread it onto the shot theme here.
     theme.with_reduce_motion(shot_motion_reduced())
 }
@@ -1657,6 +1656,16 @@ mod tests {
 
     fn strings(values: &[&str]) -> Vec<String> {
         values.iter().map(|value| (*value).to_owned()).collect()
+    }
+
+    /// `run_parsed` starts the renderer preparation thread (Windows and Linux)
+    /// and the runtime attachment exactly for these arguments.
+    #[test]
+    fn only_a_live_window_prepares_its_renderer_ahead() {
+        let live = parse_args(&strings(&["app"]), &[], &[]).unwrap();
+        assert!(opens_native_window(&live));
+        let capture = parse_args(&strings(&["app", "--shots=/tmp/shot.png"]), &[], &[]).unwrap();
+        assert!(!opens_native_window(&capture));
     }
 
     #[test]

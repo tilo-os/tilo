@@ -36,6 +36,7 @@ tilo-actions = { path = "../../collab/actions" }
 tilo-automerge.workspace = true
 tilo-resource = { path = "../../sdk/tilo-resource" }
 tilo-ui = { path = "../../sdk/ui-core", default-features = false }
+tilo-identity-ceremony = { path = "../../collab/tilo-identity-ceremony" }
 vello.workspace = true
 winit.workspace = true
 workspace-hack = { version = "0.1" }
@@ -95,6 +96,10 @@ path = "examples/manual_composition_shots.rs"
 [[example]]
 name = "block-editor-typing"
 path = "examples/block_editor_typing.rs"
+
+[[example]]
+name = "multiline-typing"
+path = "examples/multiline_typing.rs"
 
 [[example]]
 name = "type-specimen-shots"

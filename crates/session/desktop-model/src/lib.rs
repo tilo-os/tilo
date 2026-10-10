@@ -10,24 +10,15 @@
 //! writes, and [`commands`] the vocabulary a desktop surface uses to ask a
 //! room's topology owner for a change, with the owner's pure reduction.
 
-#![cfg_attr(
-    test,
-    allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
-        clippy::panic,
-        reason = "in a test these are the assertion, not a hazard"
-    )
-)]
-
 pub mod app;
 pub mod apps;
 pub mod capability;
 pub mod collaborator;
 pub mod commands;
 pub mod desktop_doc;
+pub mod first_party;
 pub mod grants;
+pub mod history;
 pub mod ids;
 pub mod layout;
 pub mod partition;
@@ -56,10 +47,10 @@ pub use shared_surfaces::SharedSurfaces;
 pub use task::{
     MAX_WORKSPACE_TASK_DIRECTION_BYTES, MAX_WORKSPACE_TASK_INSTRUCTION_BYTES,
     MAX_WORKSPACE_TASK_SUMMARY_BYTES, WorkspaceAgentRequest, WorkspaceEffectReceipt, WorkspaceTask,
-    WorkspaceTaskActiveRun, WorkspaceTaskAuditEvent, WorkspaceTaskControl, WorkspaceTaskDirection,
-    WorkspaceTaskDirectionApplied, WorkspaceTaskExecution, WorkspaceTaskExecutionPhase,
-    WorkspaceTaskMutationReceipt, WorkspaceTaskMutationResult, WorkspaceTaskResource,
-    WorkspaceTaskRoute, WorkspaceTaskStatus,
+    WorkspaceTaskActiveRun, WorkspaceTaskApproval, WorkspaceTaskAuditEvent, WorkspaceTaskControl,
+    WorkspaceTaskDirection, WorkspaceTaskDirectionApplied, WorkspaceTaskExecution,
+    WorkspaceTaskExecutionPhase, WorkspaceTaskMutationReceipt, WorkspaceTaskMutationResult,
+    WorkspaceTaskResource, WorkspaceTaskRoute, WorkspaceTaskStatus,
 };
 pub use topology::{DropTarget, GroupShape, RemovedTab, TabMove};
 pub use tree::{DesktopTree, STATE_SCHEMA_VERSION};

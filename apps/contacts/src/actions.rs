@@ -42,7 +42,7 @@ use tilo_actions::{
     EncodedAction, ExecutionLocus, ParamType, Resource,
 };
 
-use crate::doc::ContactsDoc;
+use crate::doc::{ContactsDoc, ListRow};
 use crate::model::{
     Address, Birthday, Contact, ContactId, GroupEntry, Labeled, group_names_equal, normalize_text,
 };
@@ -97,10 +97,6 @@ pub fn open_group_address(name: &str) -> ActionAddress {
 /// The filter itself is presentation state, while the membership it reveals
 /// belongs to every contact's replicated document record.
 pub const FAVORITES_RESOURCE_ID: &str = "contacts.favorites";
-
-pub fn open_favorites_address() -> ActionAddress {
-    ActionAddress::new(FAVORITES_RESOURCE_ID, "open-favorites")
-}
 
 /// The one typed external operation for exporting exactly one contact.  Both
 /// the resource catalogue and the contextual UI encode this value before it
@@ -642,10 +638,10 @@ fn apply_merge(
         return Err(contact_missing());
     }
     apply_scalar_patch(doc, survivor, patch)?;
-    apply_group_edits(doc, survivor, &patch.group_edits)?;
-    apply_labeled_edits(doc, survivor, "phones", &patch.phone_edits)?;
-    apply_labeled_edits(doc, survivor, "emails", &patch.email_edits)?;
-    apply_address_edits(doc, survivor, &patch.address_edits)?;
+    apply_list_edits(doc, survivor, "groups", &patch.group_edits)?;
+    apply_list_edits(doc, survivor, "phones", &patch.phone_edits)?;
+    apply_list_edits(doc, survivor, "emails", &patch.email_edits)?;
+    apply_list_edits(doc, survivor, "addresses", &patch.address_edits)?;
     ContactsDoc::delete_contact(doc, source);
     Ok(())
 }
@@ -657,10 +653,10 @@ fn apply_patch(doc: &mut Doc, id: &str, patch: &ContactPatch) -> Result<(), Acti
         .map_err(|_| ActionError::Refused("contact id is invalid".into()))?;
     preflight_patch(doc, id, patch)?;
     apply_scalar_patch(doc, id, patch)?;
-    apply_group_edits(doc, id, &patch.group_edits)?;
-    apply_labeled_edits(doc, id, "phones", &patch.phone_edits)?;
-    apply_labeled_edits(doc, id, "emails", &patch.email_edits)?;
-    apply_address_edits(doc, id, &patch.address_edits)
+    apply_list_edits(doc, id, "groups", &patch.group_edits)?;
+    apply_list_edits(doc, id, "phones", &patch.phone_edits)?;
+    apply_list_edits(doc, id, "emails", &patch.email_edits)?;
+    apply_list_edits(doc, id, "addresses", &patch.address_edits)
 }
 
 /// Reject an invalid/stale row target before an action mutates even one scalar
@@ -671,16 +667,16 @@ fn preflight_patch(doc: &Doc, id: ContactId, patch: &ContactPatch) -> Result<(),
         return Err(contact_missing());
     }
     preflight_list_edits(&patch.group_edits, |entry_id| {
-        ContactsDoc::group_row_exists(doc, id, entry_id)
+        ContactsDoc::entry_exists(doc, id, "groups", entry_id)
     })?;
     preflight_list_edits(&patch.phone_edits, |entry_id| {
-        ContactsDoc::labeled_row_exists(doc, id, "phones", entry_id)
+        ContactsDoc::entry_exists(doc, id, "phones", entry_id)
     })?;
     preflight_list_edits(&patch.email_edits, |entry_id| {
-        ContactsDoc::labeled_row_exists(doc, id, "emails", entry_id)
+        ContactsDoc::entry_exists(doc, id, "emails", entry_id)
     })?;
     preflight_list_edits(&patch.address_edits, |entry_id| {
-        ContactsDoc::address_row_exists(doc, id, entry_id)
+        ContactsDoc::entry_exists(doc, id, "addresses", entry_id)
     })
 }
 
@@ -733,53 +729,17 @@ fn apply_scalar_patch(
     Ok(())
 }
 
-fn apply_group_edits(
-    doc: &mut Doc,
-    id: ContactId,
-    edits: &[ListEdit<GroupEntry>],
-) -> Result<(), ActionError> {
-    for edit in edits {
-        let applied = match edit {
-            ListEdit::Add { value, .. } => ContactsDoc::add_group(doc, id, value),
-            ListEdit::Update { value, .. } => ContactsDoc::update_group(doc, id, value),
-            ListEdit::Remove { entry_id } => ContactsDoc::remove_group(doc, id, *entry_id),
-        };
-        if !applied {
-            return Err(contact_missing());
-        }
-    }
-    Ok(())
-}
-
-fn apply_labeled_edits(
+fn apply_list_edits<T: ListRow>(
     doc: &mut Doc,
     id: ContactId,
     key: &str,
-    edits: &[ListEdit<Labeled>],
+    edits: &[ListEdit<T>],
 ) -> Result<(), ActionError> {
     for edit in edits {
         let applied = match edit {
-            ListEdit::Add { value, .. } => ContactsDoc::add_labeled(doc, id, key, value),
-            ListEdit::Update { value, .. } => ContactsDoc::update_labeled(doc, id, key, value),
-            ListEdit::Remove { entry_id } => ContactsDoc::remove_labeled(doc, id, key, *entry_id),
-        };
-        if !applied {
-            return Err(contact_missing());
-        }
-    }
-    Ok(())
-}
-
-fn apply_address_edits(
-    doc: &mut Doc,
-    id: ContactId,
-    edits: &[ListEdit<Address>],
-) -> Result<(), ActionError> {
-    for edit in edits {
-        let applied = match edit {
-            ListEdit::Add { value, .. } => ContactsDoc::add_address(doc, id, value),
-            ListEdit::Update { value, .. } => ContactsDoc::update_address(doc, id, value),
-            ListEdit::Remove { entry_id } => ContactsDoc::remove_address(doc, id, *entry_id),
+            ListEdit::Add { value, .. } => ContactsDoc::add_entry(doc, id, key, value),
+            ListEdit::Update { value, .. } => ContactsDoc::update_entry(doc, id, key, value),
+            ListEdit::Remove { entry_id } => ContactsDoc::remove_entry(doc, id, key, *entry_id),
         };
         if !applied {
             return Err(contact_missing());
@@ -888,13 +848,6 @@ pub struct DuplicateCandidate {
 
 pub fn duplicate_resource_id(survivor_id: ContactId, source_id: ContactId) -> String {
     format!("contacts.duplicate:{survivor_id}:{source_id}")
-}
-
-pub fn open_duplicate_review_address(
-    survivor_id: ContactId,
-    source_id: ContactId,
-) -> ActionAddress {
-    ActionAddress::new(duplicate_resource_id(survivor_id, source_id), "open-review")
 }
 
 /// The single canonical view operation for a locally-derived duplicate
@@ -1353,14 +1306,6 @@ pub fn contact_resource(contact: &Contact) -> Resource {
     child
 }
 
-/// The minimal exact resource a retained search provider needs to invoke the
-/// canonical view action. Rich edit actions are published from the
-/// resource's state, not copied into the search index.
-pub fn contact_open_resource(id: ContactId, label: &str) -> Resource {
-    Resource::new(contact_resource_id(id), "contacts.contact", label)
-        .with_action(ContactsEffect::Open { contact: id }.bound())
-}
-
 /// Resource and canonical view action for a durable membership group. Groups
 /// are derived from UUID-addressed contact rows rather than stored as a second
 /// mutable index, so opening one is safely replayable without manufacturing
@@ -1539,9 +1484,7 @@ mod tests {
     use ui::tilo_resource::Resource as _;
 
     fn registry() -> ActionRegistry {
-        let mut r = ActionRegistry::new();
-        register(&mut r);
-        r
+        ActionRegistry::with(register)
     }
 
     fn prompted_encode(spec: &ActionSpec, arg: &str) -> EncodedAction {

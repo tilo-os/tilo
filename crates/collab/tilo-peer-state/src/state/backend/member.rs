@@ -12,7 +12,7 @@ pub(in crate::state) enum Error {
     Certificate(CertificateLookupError),
     GovernanceMissing,
     Absent,
-    LegacyJson(serde_json::Error),
+    LegacyJson(String),
     Decode(crate::resources::PeerResourceError),
     CertificateMismatch,
     RevocationRoot,
@@ -26,7 +26,7 @@ impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Certificate(e) => e.fmt(f),
-            Self::LegacyJson(e) => e.fmt(f),
+            Self::LegacyJson(e) => f.write_str(e),
             Self::Revocation(e) => e.fmt(f),
             Self::GovernanceMissing => f.write_str("room governance missing"),
             Self::Absent => f.write_str("device is absent from governed roster"),
@@ -119,7 +119,7 @@ pub(in crate::state) fn restrict_foreign_device(
 }
 struct LegacyPolicy<'a> {
     data: &'a crate::cached_document::PolicyData,
-    identity: GovernedIdentity,
+    identity: &'a GovernedIdentity,
 }
 impl Policy for LegacyPolicy<'_> {
     fn owner(&self) -> Option<&str> {
@@ -129,7 +129,7 @@ impl Policy for LegacyPolicy<'_> {
         &self.data.caps
     }
     fn identity(&self) -> &GovernedIdentity {
-        &self.identity
+        self.identity
     }
 }
 pub(in crate::state) fn legacy(
@@ -140,8 +140,13 @@ pub(in crate::state) fn legacy(
     current(peer, source, now, |room| {
         let data = room.policy();
         let key = key_text(source);
-        let bytes = data.identities.get(key.as_str()).ok_or(Error::Absent)?;
-        let identity = serde_json::from_slice(bytes).map_err(Error::LegacyJson)?;
+        // Decoded once per document state, not on every lookup.
+        let identity = room
+            .identities()
+            .get(key.as_str())
+            .ok_or(Error::Absent)?
+            .as_ref()
+            .map_err(|error| Error::LegacyJson(error.clone()))?;
         Ok(LegacyPolicy { data, identity })
     })
     .map(|(role, _, _)| role)

@@ -5,6 +5,7 @@
 # `.cargo/config.toml` applies:
 # `crates/doc/tilo-doc-codec-markdown-wasm/build.sh`.
 exclude = [
+    "vendor/buffa-build",
     "fuzz",
     "crates/doc/tilo-doc-codec-markdown-wasm",
     "vendor/vello",
@@ -46,6 +47,7 @@ members = [
     "crates/dev/registry-review",
     "apps/canvas",
     "crates/collab/tilo-action-broker",
+    "crates/collab/tilo-identity-ceremony",
     "crates/session/desktop",
     "crates/collab/tilo-peer-state",
     "crates/browser/tilo-browser-runtime",
@@ -131,7 +133,6 @@ members = [
     # SDK
     "crates/sdk/font-catalog",
     "crates/sdk/runner-native",
-    "crates/sdk/runner-web",
     "crates/sdk/tilo-app",
     "crates/sdk/tilo-caps",
     "crates/sdk/tilo-cpu-raster",
@@ -217,8 +218,6 @@ members = [
     "crates/packaging/registry-client",
     "crates/packaging/registry-server",
     "crates/packaging/registry-types",
-    "crates/packaging/registry-web",
-    "crates/packaging/registry-web-bindgen",
     "crates/packaging/runtime-bundle",
     "crates/packaging/runtime-update",
 
@@ -241,6 +240,7 @@ members = [
     "crates/platform/tilo-capture",
     "crates/platform/tilo-clipboard",
     "crates/platform/tilo-input-context",
+    "crates/platform/tilo-platform-caps",
     "crates/platform/tilo-clock",
     "crates/platform/tilo-contact-directory",
     "crates/platform/tilo-dialogs",
@@ -248,8 +248,10 @@ members = [
     "crates/platform/tilo-location",
     "crates/platform/tilo-image-codec",
     "crates/platform/tilo-keyboard-map",
+    "crates/platform/tilo-locale",
     "crates/platform/tilo-media",
     "crates/platform/tilo-spotify",
+    "crates/platform/tilo-invidious",
     "crates/platform/tilo-net",
     "crates/platform/tilo-host-search",
     "crates/platform/tilo-notify",
@@ -317,6 +319,7 @@ members = [
     "crates/system/durable-store",
     "crates/system/fs",
     "crates/system/fs-content",
+    "crates/system/fs-protocol",
     "crates/system/fs-native",
     "crates/system/host-fs",
     "crates/system/host-info",
@@ -345,7 +348,6 @@ members = [
     "crates/system/tinker",
     "crates/system/tts",
     "crates/system/wire-frame",
-    "crates/system/xdg-paths",
 
     # Text
     "crates/text/emoji",
@@ -674,6 +676,9 @@ opt-level = 3
 opt-level = 3
 [profile.test.package.hexane]
 opt-level = 3
+# crates.io automerge, the reference tilo-automerge's tests compare the fork to.
+[profile.test.package.automerge]
+opt-level = 3
 
 # The wet-media simulations re-run on every edit of a painted layer; unoptimised
 # they take seconds per stroke, and the canvas app is unusable in a dev build.
@@ -925,6 +930,8 @@ debug-assertions = true
 # Vendored winit fork adds Wayland `zwp_pointer_gestures_v1` support and maps
 # pinch events to winit's existing `PinchGesture` API.
 [patch.crates-io]
+# Build outputs must not become Cargo inputs; see vendor/buffa-build/PROVENANCE.md.
+buffa-build = { path = "vendor/buffa-build" }
 # Verify Cast TLS handshake signatures and bound cancellation; identity
 # authentication remains a separate explicit trust decision. See provenance.
 fcast-sender-sdk = { path = "vendor/fcast-sender-sdk" }

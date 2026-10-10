@@ -136,6 +136,209 @@ shared allocation experiment had no measurable benefit. Shared-layer stall is
 still unproven: next measure other widget families using the existing list and
 gallery diagnostic workloads before selecting app-specific changes.
 
+### Pointer motion keeps the published tree (TIL-628)
+
+Every input event used to drop the resource cache, and for a framework app
+every mutable record loan (each event dispatch takes one) advanced the bound
+owner's admission generation, which keys the bound resource cache. Each pointer
+move therefore rebuilt the whole publication and reprojected every control's
+availability. Now bare pointer motion (no button held, nothing handled, no
+focus change) keeps the tree when neither the app's document nor any bound
+owner's record moved and no widget reported a presentation change
+(`widget::note_resource_presentation_changed`, which the context menu calls
+when hover opens or closes a nested menu). The bound snapshot is carried to the
+owner's new generation. Hover also skips the pre-dispatch availability
+projection, since hover activates nothing and every frame refreshes
+availability again before it paints. Every other event republishes as before
+(key releases and modifiers keep the tree too since TIL-751, below).
+
+`cargo run --release -p tilo-app --features test-support --example
+framework-scaling` mounts a checklist of N tasks (title and checkbox per row) in
+a real `App` and sends 100 `CursorMoved` events through `App::surface_input`.
+Run on an Apple M5 Max, macOS 27, release build. Publication p50 is one full
+`resources_for` of the root:
+
+| Tasks | Resources | Publication p50 | Move p50 before | Publications per 100 moves before | Move p50 after | Publications per 100 moves after |
+|---:|---:|---:|---:|---:|---:|---:|
+| 10 | 11 | 0.010 ms | 0.046 ms | 100 | 0.007 ms | 0 |
+| 250 | 261 | 0.83 ms | 1.08 ms | 100 | 0.091 ms | 0 |
+| 1,000 | 1,251 | 17.5 ms | 12.7 ms | 100 | 0.37 ms | 0 |
+
+With `TILO_PROFILE_RESOURCES=1` at 1,000 tasks, the resource work left per move
+is the two `input_carry` spans: 8 µs before dispatch and 8 µs after it, p50,
+with all 100 decisions `hit`. Before the change each move spent 11.4 ms in
+`bound_discovery` and 0.55 ms in `bound_control_projection`. The 0.37 ms that
+remains is widget dispatch and hit-testing, which also grows with the number of
+rows. Each frame still runs the full availability refresh in
+`draw_frame_content`. With an unchanged tree that refresh hits every cache, but
+discovery still walks the bound owners and projection still visits every
+control.
+
+### A keystroke publishes twice (TIL-751)
+
+Traced through the hosted path (`App::surface_input` for the key's press and
+release, each followed by the host's frame, `App::surface_frame`, and its
+accessibility walk, as `EmbeddedApp` runs them), one keystroke into a bound
+field built the whole published tree four times: the bound-action door's
+broker-routing pre-check resolved the edit in a tree of its own, the door
+resolved it again, the frame after the edit republished, and the key's release
+dropped the tree so the frame after it republished once more. Now the door
+resolves the action once and asks the host, before anything runs, whether it
+goes through the broker (`ResourceActionRequest::route`); a broker-bound action
+comes back unexecuted and takes the broker path as before. A key's release, a
+modifier key's press and a modifier change are inert input like hover: unless
+consumed, and when no document, bound record, focus or reported presentation
+moved, they keep the tree. A local invocation of a bound action (a control,
+the palette, an agent) therefore builds the tree once.
+
+The `framework-scaling` example types 20 keys into the draft of the same
+checklist, press → host frame → release → host frame, and reports p50 from
+press to the end of the frame showing the key, the most publications one
+keystroke ran, and p50 of the time one keystroke spent publishing. Apple M5
+Max, macOS 27, release build, median of three interleaved runs on a shared,
+loaded machine:
+
+| Tasks | Publications before | after | Publishing per keystroke before | after | Keystroke→frame before | after |
+|---:|---:|---:|---:|---:|---:|---:|
+| 10 | 4 | 2 | 0.027 ms | 0.019 ms | 0.47 ms | 0.47 ms |
+| 250 | 4 | 2 | 0.248 ms | 0.194 ms | 1.67 ms | 1.65 ms |
+| 1,000 | 4 | 2 | 1.045 ms | 0.793 ms | 5.42 ms | 5.11 ms |
+
+The first keystroke after pointer input publishes once more: it moves the
+window to keyboard modality, which may change what it presents. The headless
+`FrameHarness` still counts three, because its undo-status discovery after
+every relayout is uncached. Publication is 0.8 ms of the 5 ms a keystroke
+takes at 1,000 tasks; the rest of the frame was not profiled here.
+
+The hosted input-cost regression scopes monotonic time to one instant while
+it drives the real press/frame/release/frame path. The record-save status
+poll is an independent 100 ms idle deadline; under CI load it can otherwise
+fall inside that observation and add a publication unrelated to input. A
+separate regression advances that scoped clock to the deadline and requires
+the real save-status frame to publish while preserving the typed draft. The
+clock override is test-support only, thread-local, and restored on unwind;
+production save sampling and clock readings keep their existing behaviour.
+
+### A frame that changes nothing no longer walks the published tree (TIL-761)
+
+`sample` on the keystroke loop at 10,000 tasks
+(`TILO_SCALING_KEYSTROKES=400`) put layout and draw at 0.4 % of the samples.
+92 % went to two consumers of the bound resource snapshot that ran on every
+frame, changed or not: control availability (before each non-hover input and
+in every `surface_frame`) deep-copied the cached snapshot, re-filtered every
+action by permission and built a descriptor per action to learn which
+addresses are available; the host's accessibility refresh copied it again and
+rebuilt and diffed a semantic node per resource. Now the snapshot's tree is
+shared (`Rc`), so a cache hit copies nothing; the controls' allowed addresses
+are derived once per snapshot, permission witness and host doors, read in
+place; and the semantic tree keeps each component's resource nodes while the
+component hands over the same snapshot. A frame that changes nothing costs
+the same at 10,000 tasks as at 10.
+
+The bench now also prints p99 from press to frame and p50 from the key's
+release to the end of the frame after it. Same machine and method as above:
+
+| Tasks | Keystroke→frame p50 before | after | p99 before | after | Release→frame p50 before | after |
+|---:|---:|---:|---:|---:|---:|---:|
+| 10 | 0.42 ms | 0.39 ms | 0.54 ms | 0.54 ms | 0.23 ms | 0.18 ms |
+| 250 | 1.37 ms | 1.01 ms | 1.56 ms | 1.15 ms | 0.79 ms | 0.22 ms |
+| 1,000 | 4.60 ms | 3.10 ms | 4.93 ms | 3.35 ms | 2.63 ms | 0.25 ms |
+| 10,000 | 59.9 ms | 42.9 ms | 64.2 ms | 45.8 ms | 35.5 ms | 0.40 ms |
+
+`publication_per_keystroke::a_hosted_frame_that_changes_nothing_costs_the_same_whatever_the_list`
+holds the release frame at 1,000 tasks within 2× of 100 (it measured 4.2×
+before). The frame that shows a key still grows with the list: the edit
+changes the snapshot, so it publishes twice (TIL-751), rebuilds the
+accessibility tree's resource nodes and the controls' allowed addresses once,
+and `ResourceRoot::nested_views` builds every child once more. Making that
+flat needs publication that shares unchanged children between snapshots.
+
+### The frame that shows a key stays flat: a shared published tree (TIL-766)
+
+After TIL-761 the frame that shows a typed key still grew with the list,
+although the key edits the draft, which no item depends on. `sample` at
+10,000 tasks: 58 % rebuilding and diffing a semantic node per item, 25 %
+rebuilding, copying and permission-filtering every item resource on the
+frame's cache miss, 12 % the same in the door that resolves the draft's edit,
+14 % `nested_views` building every item once more. `tilo_actions::Resource`
+owns its children inline, so no consumer could tell an unchanged item from a
+changed one.
+
+`ui_core::published::SharedResource` holds the same tree with its children
+behind `Rc`s, beside `tilo_actions::Resource` (whose shape does not change):
+
+* **Publication.** `ResourceRoot` builds the document tree from
+  `Resource::children_parts` (`#[resource]` splits its item collections from
+  its other children) and keeps each item child while its collection field,
+  id and label are the ones it was built with; collections unchanged since
+  the last version reuse the whole list. It answers
+  `PublishesResources::shared_resources_for` when nothing in the view
+  decorates the children (no surface, no content resource joining the root),
+  and the ordinary tree is materialised from the shared one.
+* **Snapshot and filtering.** A bound component's cached snapshot is the
+  shared forest; the ordinary trees are materialised on first use for the
+  palette, agents and search. Filtering keeps its result on each input node
+  and list of children under a token that stands for the component's
+  permission witness, so a subtree an edit did not touch is not filtered
+  again. A new witness (a grant changing or expiring) takes a new token.
+* **Controls and accessibility.** The controls' allowed addresses (counted per
+  address) and a component's semantic nodes move from one forest to the next
+  by a pointer diff: shared subtrees are skipped, nodes whose own part changed
+  are rebuilt and compared, added and removed subtrees are visited. A
+  repeated id rebuilds the component, as the full walk reports it.
+* **The door.** A local document edit resolves its node in the shared tree,
+  exactly the one the filtered tree would give, without building or
+  filtering the rest; every check after resolution runs as before. Other
+  kinds, participants' trees and the unbound fallbacks take the whole tree.
+
+M5 Max, release, `TILO_SCALING_KEYSTROKES=40`; after is the median of three
+runs (machine load 15–20 during them, about 3 for before):
+
+| Tasks | Key press→frame p50 before | after | p99 before | after |
+|---:|---:|---:|---:|---:|
+| 10 | 0.40 ms | 0.41 ms | 0.50 ms | 0.58 ms |
+| 100 | 0.63 ms | 0.45 ms | 0.72 ms | 0.62 ms |
+| 250 | 1.00 ms | 0.46 ms | 1.13 ms | 0.61 ms |
+| 1,000 | 3.01 ms | 0.53 ms | 3.34 ms | 0.72 ms |
+| 10,000 | 37.5 ms | 1.44 ms | 40.8 ms | 1.75 ms |
+
+`publication_per_keystroke::a_hosted_keystroke_costs_the_same_whatever_the_list`
+holds key press→frame at 1,000 tasks within 2× of 100 (4.7× before; 1.2× now
+in release, 1.1× in a debug test build). What remains at 10,000 is linear with
+a small constant: each of the two publications per keystroke still reads every
+item's id and label from the state (`Fields::item_collections`) to compare the
+collections, 0.54 ms of publishing per keystroke in all.
+
+### Opening a long list (TIL-758)
+
+`framework-scaling -- 5000,50000 open` reopens the checklist over a record
+already holding N tasks, five times, to its first laid-out frame. Each size
+also prints a `FRAMEWORK-OPEN` line, which the scheduled lane's render job
+records as `render.framework_open.{ms,allocations,heap_per_item}.<size>`
+(`tools/perf/adapters.py framework-open`). Apple M5 Max, macOS 27, release,
+three interleaved runs of each build, p50 of five opens:
+
+| Tasks | Open before | Open after | Heap held before | Heap held after |
+|---:|---:|---:|---:|---:|
+| 5,000 | 155–156 ms | 120–122 ms | 28.5 MB (5,472 B/task) | 24.7 MB (4,698 B/task) |
+| 50,000 | 1,820–1,836 ms | 1,163–1,174 ms | 638 MB (12,739 B/task) | 224 MB (4,454 B/task) |
+
+Two storage costs were behind most of it. Appending an item gave it an order
+key halfway between the last key and the end, so keys grew by a character
+every six appends: the 50,000th task's key was 8,334 characters, 208 MB of
+order keys in all, which the record load re-encoded and hashed, the read
+copied and the sort compared. Keys toward an open end now step instead
+(`tilo_resource::order::between`): 50,000 appends need at most seven
+characters, and a key minted the old way keeps its length. And the collection
+read looked up every key of every item separately (about six Automerge
+lookups per item); it now walks each map once (`tilo_resource::read_slots`).
+
+What remains at 50,000, from `sample`: `AutoCommit::load` 40 % (Automerge
+rebuilds and hashes every change to learn the change graph; the titles alone
+are 2.75 million text ops), the collection read 21 % (one object lookup each
+for the entry, the item and its title text), layout and the bound-control
+refresh 18 %, and closing the previous window 10 %.
+
 ## Verified shared-list CPU workload
 
 The `ui-perf perf_scenario --count 1200 --json` list case now checks the real

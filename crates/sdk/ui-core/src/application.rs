@@ -697,13 +697,6 @@ impl HostContext {
             ));
         self.control_domain.clone()
     }
-    /// Establish presentation scope before constructing a nested component.
-    pub fn inherit_control_custody(
-        &self,
-        parent: &crate::ControlDomain,
-    ) -> Result<(), crate::control_custody::CustodyError> {
-        self.control_domain().attach_to(parent)
-    }
     pub fn record(&self) -> &RecordCheckout {
         &self.record
     }
@@ -1247,21 +1240,6 @@ impl AppComponent {
         self.history = Some(HistoryRegistration::new(definition, sources)?);
         Ok(())
     }
-    /// Install an explicit multi-owner bundle after the factory has established
-    /// its owners. The destination runner validates the complete settled tree.
-    /// # Errors
-    /// Refuses invalid registrations or a bundle belonging to another application.
-    pub fn register_history(
-        &mut self,
-        registration: crate::history_mode::HistoryRegistration,
-    ) -> Result<(), crate::history_mode::HistoryRegistrationError> {
-        registration.validate()?;
-        if registration.definition.app_id != self.context.app_id {
-            return Err(crate::history_mode::HistoryRegistrationError::ForeignSource);
-        }
-        self.history = Some(registration);
-        Ok(())
-    }
 
     /// Preserve every recovery owner while a runner still has custody of this component.
     pub(crate) fn setup_error(&mut self, source: LaunchError) -> LaunchError {
@@ -1358,6 +1336,23 @@ impl AppComponent {
     /// so the window presents the new state instead of keeping the old one.
     pub(crate) fn take_save_status_changed(&mut self) -> bool {
         std::mem::take(&mut self.save_status_changed)
+    }
+
+    /// The durability last delivered, as sampled.
+    #[cfg(test)]
+    pub(crate) fn sampled_record_save(&self) -> Option<&crate::record::RecordSaveStatus> {
+        self.record_save.as_ref().map(|(status, _)| status)
+    }
+
+    /// Move the last durability sample back past its resample interval, so a
+    /// test reaches the moment its deadline comes due without waiting for it.
+    #[cfg(test)]
+    pub(crate) fn age_record_save_sample(&mut self) {
+        if let Some((_, sampled)) = &mut self.record_save {
+            *sampled = sampled
+                .checked_sub(SAVING_RESAMPLE * 2)
+                .expect("the monotonic clock started before the sample's resample interval");
+        }
     }
 
     pub fn new(

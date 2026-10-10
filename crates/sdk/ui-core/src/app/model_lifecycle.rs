@@ -60,8 +60,16 @@ pub(super) struct HostedPumpReport {
 impl super::App {
     /// A worker has no redraw loop. Advance one bounded model pass using the
     /// same phases as the window runner, without adding caller attribution.
-    pub(crate) fn pump_hosted_model(&mut self) {
+    pub fn pump_hosted_model(&mut self) {
         self.pump_hosted_model_as(host_perf_baseline());
+    }
+
+    /// [`Self::pump_hosted_model`], answering whether the app's record
+    /// changed: a different document under the same widgets, which their
+    /// damage does not describe.
+    #[cfg(feature = "native")]
+    pub(super) fn pump_hosted_model_record_changed(&mut self) -> bool {
+        self.pump_hosted_model_with_record(host_perf_baseline()).1
     }
 
     /// Advance the ordinary dirty-tracked native worker without a window.
@@ -113,6 +121,11 @@ impl super::App {
     /// no due widget deadline and no model progress keeps the resource cache
     /// and skips the action-surface rebuild.
     pub(super) fn pump_hosted_model_as(&mut self, always_refresh: bool) -> HostedPumpReport {
+        self.pump_hosted_model_with_record(always_refresh).0
+    }
+
+    /// [`Self::pump_hosted_model_as`], and whether the record changed.
+    fn pump_hosted_model_with_record(&mut self, always_refresh: bool) -> (HostedPumpReport, bool) {
         let started = hosted_pump_timing().then(crate::time::now);
         let _entry = self.enter_wake_scope();
         let (inbound, directory) = self.pump_collab_presence_inner(true);
@@ -187,7 +200,7 @@ impl super::App {
                 report.published
             );
         }
-        report
+        (report, record)
     }
 
     fn take_hosted_wakes(&self) -> Option<(bool, bool)> {
@@ -245,6 +258,14 @@ impl super::App {
             route: self.bound_broker_route().cloned(),
             revision: revision.clone(),
         })
+    }
+
+    /// A native model pass acknowledges only wakes preceding this drain.
+    /// Later worker completions retain their pending bit for the idle pass.
+    #[cfg(feature = "native")]
+    pub(super) fn update_native_model(&mut self) -> bool {
+        self.needs_sync |= self.take_hosted_wakes().is_some_and(|(_, sync)| sync);
+        self.update_model()
     }
 
     pub(super) fn update_model(&mut self) -> bool {
@@ -311,8 +332,23 @@ impl super::App {
         changed
     }
 
+    #[cfg(feature = "native")]
+    pub(super) fn service_native_idle_model(&mut self) -> IdleModelProgress {
+        let mut changed = self.service_idle_model().changed;
+        // Hidden windows may not receive frame callbacks. Only an unconsumed
+        // model wake advances their owner; presentation notifications stay on
+        // the redraw path. Prepare the checked owner exactly as a frame does.
+        if self.take_hosted_wakes().is_some_and(|(_, sync)| sync) {
+            changed |= self.swap_requested_component() | self.record_tick();
+            changed |= self.update_model();
+            changed |= self.sync_model(true);
+        }
+        IdleModelProgress { changed }
+    }
+
     pub(super) fn service_idle_model(&mut self) -> IdleModelProgress {
-        let changed = self.service_local_control_history();
+        let history_changed = self.refresh_local_undo_discovery();
+        let changed = self.service_local_control_history() || history_changed;
         // This is local writer progress, never a durable owner receipt. The
         // existing scoped publication barrier still gates terminal success.
         #[cfg(feature = "native")]
