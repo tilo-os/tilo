@@ -595,8 +595,7 @@ def ush_problems(ush: dict | None, shell_s: float | None, budgets: dict) -> list
 
 def _ush_idle(ctx, res, m: dict, budgets: dict) -> list[str]:
     """Record and judge tilo-ush in R02's window, once Terminal's shell has run."""
-    ush, shell_s = m["ush"], ctx.facts.get("terminal_shell_s")
-    res.metrics["terminal_shell_s"] = shell_s
+    ush, shell_s = m["ush"], m["terminal_shell_s"]
     if shell_s is not None and ush is not None:
         window = {"window_s": m["seconds"], "processes": ush["processes"]}
         ctx.record("idle.cpu_pct.tilo-ush.four_apps", "percent", [ush["cpu_pct"]], **window)
@@ -650,6 +649,8 @@ def idle_apps(ctx, res):
     res.metrics["opened"] = opened
     m = measure(ctx, ctx.config["idle_seconds"])
     m["guest_ram_used_mib"] = guest_ram_used_mib(ctx)
+    # Seconds from opening Terminal to its shell running: the window opened after it.
+    m["terminal_shell_s"] = ctx.facts.get("terminal_shell_s")
     res.metrics.update(m, renderer=ctx.facts.get("renderer"))
     ctx.write("R02-idle-apps.json", json.dumps(m, indent=1))
     if m["shell_cpu_pct"] is not None and len(opened) == 4:
