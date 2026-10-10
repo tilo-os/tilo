@@ -320,17 +320,13 @@ impl AreaReads {
             .enumerate()
             .skip(start)
             .find(|(_, area)| !(area.is_open)(app));
-        match found {
-            Some((index, area)) => {
-                self.next.set(index + 1);
-                Some(area)
-            }
-            None => {
-                self.next.set(LIVE_AREAS.len());
-                self.deferred.set(false);
-                None
-            }
-        }
+        let Some((index, area)) = found else {
+            self.next.set(LIVE_AREAS.len());
+            self.deferred.set(false);
+            return None;
+        };
+        self.next.set(index + 1);
+        Some(area)
     }
 
     /// Ask for a sync to read the next area, unless one is already asked
