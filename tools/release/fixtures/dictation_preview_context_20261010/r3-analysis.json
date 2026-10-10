@@ -1,0 +1,102 @@
+{
+  "stage": "paired decoder prefixes, not live worker streaming",
+  "context": 1250,
+  "source_receipt": "/tmp/dictation-preview-context-r3-evidence/receipt.json",
+  "rows": [
+    {
+      "case": "fr_fr-0",
+      "seconds": 2.0,
+      "base_ms": 5236.764,
+      "candidate_ms": 4268.97,
+      "improvement_fraction": 0.18480764074913436,
+      "identical_text": true,
+      "baseline": " ...",
+      "candidate": " ..."
+    },
+    {
+      "case": "fr_fr-0",
+      "seconds": 4.0,
+      "base_ms": 5895.733,
+      "candidate_ms": 4420.98,
+      "improvement_fraction": 0.25013904123541564,
+      "identical_text": true,
+      "baseline": " L'accident a eu lieu en terrain mondial. L'accident a eu lieu en",
+      "candidate": " L'accident a eu lieu en terrain mondial. L'accident a eu lieu en"
+    },
+    {
+      "case": "fr_fr-0",
+      "seconds": 6.0,
+      "base_ms": 5421.256,
+      "candidate_ms": 4403.084,
+      "improvement_fraction": 0.18781109027133203,
+      "identical_text": true,
+      "baseline": " L'accident a eu lieu en terrain montagneux.",
+      "candidate": " L'accident a eu lieu en terrain montagneux."
+    },
+    {
+      "case": "en_us-0",
+      "seconds": 2.0,
+      "base_ms": 5483.677,
+      "candidate_ms": 4357.1,
+      "improvement_fraction": 0.20544189601247476,
+      "identical_text": false,
+      "baseline": " However, it is not a very good idea to do this.",
+      "candidate": " However, it is not a very good idea to do it."
+    },
+    {
+      "case": "en_us-0",
+      "seconds": 4.0,
+      "base_ms": 5518.957,
+      "candidate_ms": 4387.128,
+      "improvement_fraction": 0.2050802352690917,
+      "identical_text": true,
+      "baseline": " However, due to the slow communication channels,",
+      "candidate": " However, due to the slow communication channels,"
+    },
+    {
+      "case": "en_us-0",
+      "seconds": 6.0,
+      "base_ms": 5346.178,
+      "candidate_ms": 4324.647,
+      "improvement_fraction": 0.19107687772461002,
+      "identical_text": true,
+      "baseline": " However, due to the slow communication channels, styles in the West could be more difficult.",
+      "candidate": " However, due to the slow communication channels, styles in the West could be more difficult."
+    },
+    {
+      "case": "de_de-0",
+      "seconds": 2.0,
+      "base_ms": 5295.066,
+      "candidate_ms": 4147.349,
+      "improvement_fraction": 0.2167521613517187,
+      "identical_text": true,
+      "baseline": " Danke f\u00fcrs Zusehen.",
+      "candidate": " Danke f\u00fcrs Zusehen."
+    },
+    {
+      "case": "de_de-0",
+      "seconds": 4.0,
+      "base_ms": 5385.755,
+      "candidate_ms": 4085.93,
+      "improvement_fraction": 0.2413449924848049,
+      "identical_text": true,
+      "baseline": " Danke f\u00fcrs Zusehen.",
+      "candidate": " Danke f\u00fcrs Zusehen."
+    },
+    {
+      "case": "de_de-0",
+      "seconds": 6.0,
+      "base_ms": 5230.117,
+      "candidate_ms": 4122.616,
+      "improvement_fraction": 0.21175453627519236,
+      "identical_text": true,
+      "baseline": " F\u00fcr die besten Aussichten auf die Bedeutung.",
+      "candidate": " F\u00fcr die besten Aussichten auf die Bedeutung."
+    }
+  ],
+  "median_inference_improvement_fraction": 0.20544189601247476,
+  "all_prefixes_identical": false,
+  "production_changed": false,
+  "holdout_decoded": false,
+  "remaining": "actual worker pacing, independent final policy/cache integration, broad quality and noise coverage; no rollout"
+}

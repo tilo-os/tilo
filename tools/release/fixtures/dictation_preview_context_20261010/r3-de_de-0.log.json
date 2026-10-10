@@ -1,0 +1,19 @@
+{
+  "original_stdout_sha256": "ab5ea724b9cdf94d804f48876d5ca0b1e51b142e6fee19d03d090e3ff9daf7d1",
+  "lines": [
+    "PREVIEW_PREFIX {\"samples\":32000,\"context\":0,\"inference_ms\":5295.066,\"text\":\" Danke f\u00fcrs Zusehen.\"}\n",
+    "PREVIEW_MEMORY {\"VmPeak\":886428,\"VmHWM\":355248,\"VmRSS\":355248,\"Threads\":1}\n",
+    "PREVIEW_PREFIX {\"samples\":32000,\"context\":1250,\"inference_ms\":4147.349,\"text\":\" Danke f\u00fcrs Zusehen.\"}\n",
+    "PREVIEW_MEMORY {\"VmPeak\":886428,\"VmHWM\":353828,\"VmRSS\":346096,\"Threads\":1}\n",
+    "PREVIEW_PREFIX {\"samples\":64000,\"context\":1250,\"inference_ms\":4085.930,\"text\":\" Danke f\u00fcrs Zusehen.\"}\n",
+    "PREVIEW_MEMORY {\"VmPeak\":886428,\"VmHWM\":353828,\"VmRSS\":346284,\"Threads\":1}\n",
+    "PREVIEW_PREFIX {\"samples\":64000,\"context\":0,\"inference_ms\":5385.755,\"text\":\" Danke f\u00fcrs Zusehen.\"}\n",
+    "PREVIEW_MEMORY {\"VmPeak\":886664,\"VmHWM\":364692,\"VmRSS\":364692,\"Threads\":1}\n",
+    "PREVIEW_PREFIX {\"samples\":96000,\"context\":0,\"inference_ms\":5230.117,\"text\":\" F\u00fcr die besten Aussichten auf die Bedeutung.\"}\n",
+    "PREVIEW_MEMORY {\"VmPeak\":886852,\"VmHWM\":369920,\"VmRSS\":369920,\"Threads\":1}\n",
+    "PREVIEW_PREFIX {\"samples\":96000,\"context\":1250,\"inference_ms\":4122.616,\"text\":\" F\u00fcr die besten Aussichten auf die Bedeutung.\"}\n",
+    "PREVIEW_MEMORY {\"VmPeak\":886852,\"VmHWM\":364348,\"VmRSS\":346476,\"Threads\":1}\n",
+    "PREVIEW_FINAL {\"samples\":287040,\"context\":0,\"inference_ms\":5508.470,\"text\":\" F\u00fcr die besten Aussichten auf Hongkong sollten sie die Insel verlassen und zum gegen\u00fcberliegenden Ufer von Kowloon fahren.\"}\n",
+    "PREVIEW_MEMORY {\"VmPeak\":887972,\"VmHWM\":366004,\"VmRSS\":366004,\"Threads\":1}\n"
+  ]
+}

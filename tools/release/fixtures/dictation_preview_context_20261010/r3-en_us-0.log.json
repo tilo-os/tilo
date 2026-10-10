@@ -1,0 +1,19 @@
+{
+  "original_stdout_sha256": "2eea987310cde3e2863743f94a1606f8e5ae140a356d9cb252dda47998cef06e",
+  "lines": [
+    "PREVIEW_PREFIX {\"samples\":32000,\"context\":0,\"inference_ms\":5483.677,\"text\":\" However, it is not a very good idea to do this.\"}\n",
+    "PREVIEW_MEMORY {\"VmPeak\":885968,\"VmHWM\":354832,\"VmRSS\":354832,\"Threads\":1}\n",
+    "PREVIEW_PREFIX {\"samples\":32000,\"context\":1250,\"inference_ms\":4357.100,\"text\":\" However, it is not a very good idea to do it.\"}\n",
+    "PREVIEW_MEMORY {\"VmPeak\":885968,\"VmHWM\":352624,\"VmRSS\":345684,\"Threads\":1}\n",
+    "PREVIEW_PREFIX {\"samples\":64000,\"context\":1250,\"inference_ms\":4387.128,\"text\":\" However, due to the slow communication channels,\"}\n",
+    "PREVIEW_MEMORY {\"VmPeak\":885968,\"VmHWM\":352624,\"VmRSS\":345872,\"Threads\":1}\n",
+    "PREVIEW_PREFIX {\"samples\":64000,\"context\":0,\"inference_ms\":5518.957,\"text\":\" However, due to the slow communication channels,\"}\n",
+    "PREVIEW_MEMORY {\"VmPeak\":886156,\"VmHWM\":355024,\"VmRSS\":355024,\"Threads\":1}\n",
+    "PREVIEW_PREFIX {\"samples\":96000,\"context\":0,\"inference_ms\":5346.178,\"text\":\" However, due to the slow communication channels, styles in the West could be more difficult.\"}\n",
+    "PREVIEW_MEMORY {\"VmPeak\":886344,\"VmHWM\":355212,\"VmRSS\":355212,\"Threads\":1}\n",
+    "PREVIEW_PREFIX {\"samples\":96000,\"context\":1250,\"inference_ms\":4324.647,\"text\":\" However, due to the slow communication channels, styles in the West could be more difficult.\"}\n",
+    "PREVIEW_MEMORY {\"VmPeak\":886344,\"VmHWM\":352624,\"VmRSS\":346060,\"Threads\":1}\n",
+    "PREVIEW_FINAL {\"samples\":168960,\"context\":0,\"inference_ms\":5349.118,\"text\":\" However, due to the slow communication channels, styles in the West could lag behind by 25 to 30 years.\"}\n",
+    "PREVIEW_MEMORY {\"VmPeak\":886768,\"VmHWM\":355636,\"VmRSS\":355636,\"Threads\":1}\n"
+  ]
+}

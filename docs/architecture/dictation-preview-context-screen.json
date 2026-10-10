@@ -1,0 +1,273 @@
+{
+  "schema": 1,
+  "component": "review-only Whisper conservative preview context screen",
+  "source_base_head": "6dd342652f05dd8d5847139cac08edd045bae8ac",
+  "source_receipt_head": "ba5e09cf4b656ef438187dce75d01091944eb27c",
+  "source_identity": "exact bridge/header/native-library/driver/variant hashes in archived receipt; source receipt is ancestor remote metadata, not a claim that all branch files were rebuilt for this experiment",
+  "production_changed": false,
+  "installed": false,
+  "physical_microphone": false,
+  "persistent_grants": false,
+  "holdout_decoded": false,
+  "quality_gate": "not qualified for production; StageA screen only, actual worker pacing/final-cache policy and broad quality remain untested",
+  "policy": {
+    "baseline_audio_ctx": 0,
+    "candidate_audio_ctx": 1250,
+    "candidate_seconds": 25,
+    "guard": "ceil(samples/320)+100 <= candidate <= model context, otherwise explicit refusal; no clipping",
+    "prefix_seconds": [
+      2,
+      4,
+      6
+    ],
+    "final": "fresh actual full-context0 decode; no draft reused",
+    "ordering": "paired same samples; order alternates at4s",
+    "language": "selected language only; automatic identification untested"
+  },
+  "limits": {
+    "CPUs": 2,
+    "address_space_bytes": 1073741824,
+    "container_memory_bytes": 1073741824,
+    "PID_limit": 64,
+    "network": false,
+    "hardware_mounts": false
+  },
+  "timing": {
+    "median_relative_inference_improvement": 0.20544189601247476,
+    "identical_prefix_pairs": 8,
+    "total_pairs": 9,
+    "not_end_to_end_latency": true,
+    "rows": [
+      {
+        "case": "fr_fr-0",
+        "seconds": 2.0,
+        "base_ms": 5236.764,
+        "candidate_ms": 4268.97,
+        "improvement_fraction": 0.18480764074913436,
+        "identical_text": true,
+        "baseline": " ...",
+        "candidate": " ..."
+      },
+      {
+        "case": "fr_fr-0",
+        "seconds": 4.0,
+        "base_ms": 5895.733,
+        "candidate_ms": 4420.98,
+        "improvement_fraction": 0.25013904123541564,
+        "identical_text": true,
+        "baseline": " L'accident a eu lieu en terrain mondial. L'accident a eu lieu en",
+        "candidate": " L'accident a eu lieu en terrain mondial. L'accident a eu lieu en"
+      },
+      {
+        "case": "fr_fr-0",
+        "seconds": 6.0,
+        "base_ms": 5421.256,
+        "candidate_ms": 4403.084,
+        "improvement_fraction": 0.18781109027133203,
+        "identical_text": true,
+        "baseline": " L'accident a eu lieu en terrain montagneux.",
+        "candidate": " L'accident a eu lieu en terrain montagneux."
+      },
+      {
+        "case": "en_us-0",
+        "seconds": 2.0,
+        "base_ms": 5483.677,
+        "candidate_ms": 4357.1,
+        "improvement_fraction": 0.20544189601247476,
+        "identical_text": false,
+        "baseline": " However, it is not a very good idea to do this.",
+        "candidate": " However, it is not a very good idea to do it."
+      },
+      {
+        "case": "en_us-0",
+        "seconds": 4.0,
+        "base_ms": 5518.957,
+        "candidate_ms": 4387.128,
+        "improvement_fraction": 0.2050802352690917,
+        "identical_text": true,
+        "baseline": " However, due to the slow communication channels,",
+        "candidate": " However, due to the slow communication channels,"
+      },
+      {
+        "case": "en_us-0",
+        "seconds": 6.0,
+        "base_ms": 5346.178,
+        "candidate_ms": 4324.647,
+        "improvement_fraction": 0.19107687772461002,
+        "identical_text": true,
+        "baseline": " However, due to the slow communication channels, styles in the West could be more difficult.",
+        "candidate": " However, due to the slow communication channels, styles in the West could be more difficult."
+      },
+      {
+        "case": "de_de-0",
+        "seconds": 2.0,
+        "base_ms": 5295.066,
+        "candidate_ms": 4147.349,
+        "improvement_fraction": 0.2167521613517187,
+        "identical_text": true,
+        "baseline": " Danke f\u00fcrs Zusehen.",
+        "candidate": " Danke f\u00fcrs Zusehen."
+      },
+      {
+        "case": "de_de-0",
+        "seconds": 4.0,
+        "base_ms": 5385.755,
+        "candidate_ms": 4085.93,
+        "improvement_fraction": 0.2413449924848049,
+        "identical_text": true,
+        "baseline": " Danke f\u00fcrs Zusehen.",
+        "candidate": " Danke f\u00fcrs Zusehen."
+      },
+      {
+        "case": "de_de-0",
+        "seconds": 6.0,
+        "base_ms": 5230.117,
+        "candidate_ms": 4122.616,
+        "improvement_fraction": 0.21175453627519236,
+        "identical_text": true,
+        "baseline": " F\u00fcr die besten Aussichten auf die Bedeutung.",
+        "candidate": " F\u00fcr die besten Aussichten auf die Bedeutung."
+      }
+    ]
+  },
+  "finals": [
+    {
+      "case": "fr_fr-0",
+      "native_final_ms": 5695.932,
+      "word_errors": 2,
+      "reference_words": 20,
+      "sampled_max_VmPeak_kib": 886712,
+      "sampled_max_VmHWM_kib": 355400
+    },
+    {
+      "case": "en_us-0",
+      "native_final_ms": 5349.118,
+      "word_errors": 1,
+      "reference_words": 19,
+      "sampled_max_VmPeak_kib": 886768,
+      "sampled_max_VmHWM_kib": 355636
+    },
+    {
+      "case": "de_de-0",
+      "native_final_ms": 5508.47,
+      "word_errors": 0,
+      "reference_words": 18,
+      "sampled_max_VmPeak_kib": 887972,
+      "sampled_max_VmHWM_kib": 369920
+    }
+  ],
+  "failed_iterations": [
+    {
+      "run": "r1",
+      "result": "compile refused by SELinux source mount; no inference; exact stderr preserved"
+    },
+    {
+      "run": "r2",
+      "result": "native-Werror compile PASS; container CLI refused AS ulimit; no inference; original receipt preserved"
+    },
+    {
+      "run": "r3",
+      "result": "native-Werror compile and all3 language runs PASS; unchanged1GiB AS limit through RLIMIT_AS launcher; all owned containers verified absent"
+    }
+  ],
+  "interpretation": [
+    "~20.5% median native prefix time reduction is not a measured whole-worker speedup",
+    "one2s English preview changes; eight other pairs identical",
+    "both baseline and candidate produce inaccurate short previews: generic German thank-you, English invented continuation and French repeated/wrong words; matching text does not prove accuracy",
+    "independent full-context finals retain2/20 French,1/19 English,0/18 German word errors",
+    "no production cache/admission/model/catalogue/sandbox changes; no aggressive context policy promoted",
+    "process-end memory snapshots and kernel VmPeak do not qualify physical older-device performance or peak native thread count"
+  ],
+  "primary_sources": {
+    "whisper_api": "https://github.com/ggml-org/whisper.cpp/blob/v1.8.3/include/whisper.h",
+    "whisper_inference": "https://github.com/ggml-org/whisper.cpp/blob/v1.8.3/src/whisper.cpp",
+    "public_audio_license": "https://huggingface.co/datasets/google/fleurs/blob/70bb2e84b976b7e960aa89f1c648e09c59f894dd/README.md"
+  },
+  "archives": {
+    "r1-compile.log.json": {
+      "file": "tools/release/fixtures/dictation_preview_context_20261010/r1-compile.log.json",
+      "original_sha256": "77ee76fddf7e0b1aae32ae35248159c3304ba99811c439c027269a5fe98dfb46",
+      "portable_file_sha256": "f57d823261d6e50bb40eed02d574a12e1df0c02f21fed7f6e74a414fe2fef3a0"
+    },
+    "r2-bridge.cpp": {
+      "file": "tools/release/fixtures/dictation_preview_context_20261010/r2-bridge.cpp",
+      "original_sha256": "a23899b0e16d2be9992c418f753593875c16da9563194f458d63adea395f8b70",
+      "portable_file_sha256": "a23899b0e16d2be9992c418f753593875c16da9563194f458d63adea395f8b70"
+    },
+    "r2-compile.log.json": {
+      "file": "tools/release/fixtures/dictation_preview_context_20261010/r2-compile.log.json",
+      "original_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "portable_file_sha256": "ecaf9a870860f4f32d229b7e04b633949d99b8b0f9760fe9be1e194cf15b1498"
+    },
+    "r2-driver.cpp": {
+      "file": "tools/release/fixtures/dictation_preview_context_20261010/r2-driver.cpp",
+      "original_sha256": "b72512b269c259f67ab37a90afb93adbd3a2593ab4a4b6c13b9aea74e0107971",
+      "portable_file_sha256": "b72512b269c259f67ab37a90afb93adbd3a2593ab4a4b6c13b9aea74e0107971"
+    },
+    "r2-fr_fr-0.log.json": {
+      "file": "tools/release/fixtures/dictation_preview_context_20261010/r2-fr_fr-0.log.json",
+      "original_sha256": "2cf9e8b976995708412041054d80cecd04826612fa911f118468b6066a2f223b",
+      "portable_file_sha256": "1538c7798e57e1fff75f3e7ba1d1e76fbe586036f34270bd7e9bb5b8264f0898"
+    },
+    "r2-receipt.json": {
+      "file": "tools/release/fixtures/dictation_preview_context_20261010/r2-receipt.json",
+      "original_sha256": "ae37d82eef035df2c9bef689a9f37633396ceca30242b80b284e589271c5a5a1",
+      "portable_file_sha256": "2319c7b42d6d5de38f7b47c534f0be4fc331498817a17b6c1586ea2c1c1a3ec8"
+    },
+    "r3-analysis.json": {
+      "file": "tools/release/fixtures/dictation_preview_context_20261010/r3-analysis.json",
+      "original_sha256": "d764f0d3d6e5ca262b0f5fd5d7f29c86db3bb7d89d358417ac165963f2baf72c",
+      "portable_file_sha256": "d764f0d3d6e5ca262b0f5fd5d7f29c86db3bb7d89d358417ac165963f2baf72c"
+    },
+    "r3-bridge.cpp": {
+      "file": "tools/release/fixtures/dictation_preview_context_20261010/r2-bridge.cpp",
+      "original_sha256": "a23899b0e16d2be9992c418f753593875c16da9563194f458d63adea395f8b70",
+      "portable_file_sha256": "a23899b0e16d2be9992c418f753593875c16da9563194f458d63adea395f8b70"
+    },
+    "r3-compile.log.json": {
+      "file": "tools/release/fixtures/dictation_preview_context_20261010/r2-compile.log.json",
+      "original_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "portable_file_sha256": "ecaf9a870860f4f32d229b7e04b633949d99b8b0f9760fe9be1e194cf15b1498"
+    },
+    "r3-de_de-0.log.json": {
+      "file": "tools/release/fixtures/dictation_preview_context_20261010/r3-de_de-0.log.json",
+      "original_sha256": "ab5ea724b9cdf94d804f48876d5ca0b1e51b142e6fee19d03d090e3ff9daf7d1",
+      "portable_file_sha256": "60d26bb7a739fbe62cd965dc32e4bd5eeaa73c35be8e3a61b7ea7adcf9e3fcd8"
+    },
+    "r3-driver.cpp": {
+      "file": "tools/release/fixtures/dictation_preview_context_20261010/r2-driver.cpp",
+      "original_sha256": "b72512b269c259f67ab37a90afb93adbd3a2593ab4a4b6c13b9aea74e0107971",
+      "portable_file_sha256": "b72512b269c259f67ab37a90afb93adbd3a2593ab4a4b6c13b9aea74e0107971"
+    },
+    "r3-en_us-0.log.json": {
+      "file": "tools/release/fixtures/dictation_preview_context_20261010/r3-en_us-0.log.json",
+      "original_sha256": "2eea987310cde3e2863743f94a1606f8e5ae140a356d9cb252dda47998cef06e",
+      "portable_file_sha256": "a87e6c9c6b7a037455afbcc563bdacbd5b27904285457bba81a120eb6a2f677f"
+    },
+    "r3-fr_fr-0.log.json": {
+      "file": "tools/release/fixtures/dictation_preview_context_20261010/r3-fr_fr-0.log.json",
+      "original_sha256": "79c1ff4d04163c877c2a5914396ba128300a3d483784127ea2dbaeaf055b584a",
+      "portable_file_sha256": "6fb932328816429deb509a49960e5187ea56c2271b1354b481c8b175e84065c5"
+    },
+    "r3-limit.py": {
+      "file": "tools/release/fixtures/dictation_preview_context_20261010/r3-limit.py",
+      "original_sha256": "7faa04d489342d69da99d96aa292ca3f18d3710fe69c174cf6feee45b49932db",
+      "portable_file_sha256": "7faa04d489342d69da99d96aa292ca3f18d3710fe69c174cf6feee45b49932db"
+    },
+    "r3-receipt.json": {
+      "file": "tools/release/fixtures/dictation_preview_context_20261010/r3-receipt.json",
+      "original_sha256": "d687ae9d63ad820ddaac5fd263ce6358c0845c7fe73531f6836634639d474f3d",
+      "portable_file_sha256": "2800fea6183bf65ef7004ec418e2f3cb39a8010a6c1e07df2a9af1cbc0e8164c"
+    },
+    "r3-execution.py": {
+      "file": "tools/release/fixtures/dictation_preview_context_20261010/r3-execution.py",
+      "original_sha256": "900d650b28697452ef1cedca12686bdae48bbb7d6862d1e46c41caee0b88756e",
+      "portable_file_sha256": "b84734ddafba3fb5514d8b6d1b4eba573b036751f18b7d7474f5507a7d74a566"
+    }
+  },
+  "cleanup": {
+    "all_task_owned_compile_and_inference_container_prefixes_verified_absent": true,
+    "registry_observed": "podman ps --all filtered task-owned dictation-preview-compile-/dictation-preview-case- prefixes; successful reads and empty arrays asserted",
+    "first_failure_limit": "r1 unique container name was not archived; task-owned prefix absence is the additional cleanup witness"
+  }
+}

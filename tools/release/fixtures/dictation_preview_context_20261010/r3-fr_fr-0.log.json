@@ -1,0 +1,19 @@
+{
+  "original_stdout_sha256": "79c1ff4d04163c877c2a5914396ba128300a3d483784127ea2dbaeaf055b584a",
+  "lines": [
+    "PREVIEW_PREFIX {\"samples\":32000,\"context\":0,\"inference_ms\":5236.764,\"text\":\" ...\"}\n",
+    "PREVIEW_MEMORY {\"VmPeak\":885944,\"VmHWM\":354624,\"VmRSS\":354624,\"Threads\":1}\n",
+    "PREVIEW_PREFIX {\"samples\":32000,\"context\":1250,\"inference_ms\":4268.970,\"text\":\" ...\"}\n",
+    "PREVIEW_MEMORY {\"VmPeak\":885944,\"VmHWM\":352792,\"VmRSS\":345472,\"Threads\":1}\n",
+    "PREVIEW_PREFIX {\"samples\":64000,\"context\":1250,\"inference_ms\":4420.980,\"text\":\" L'accident a eu lieu en terrain mondial. L'accident a eu lieu en\"}\n",
+    "PREVIEW_MEMORY {\"VmPeak\":885944,\"VmHWM\":352792,\"VmRSS\":345660,\"Threads\":1}\n",
+    "PREVIEW_PREFIX {\"samples\":64000,\"context\":0,\"inference_ms\":5895.733,\"text\":\" L'accident a eu lieu en terrain mondial. L'accident a eu lieu en\"}\n",
+    "PREVIEW_MEMORY {\"VmPeak\":886132,\"VmHWM\":354816,\"VmRSS\":354816,\"Threads\":1}\n",
+    "PREVIEW_PREFIX {\"samples\":96000,\"context\":0,\"inference_ms\":5421.256,\"text\":\" L'accident a eu lieu en terrain montagneux.\"}\n",
+    "PREVIEW_MEMORY {\"VmPeak\":886320,\"VmHWM\":355004,\"VmRSS\":355004,\"Threads\":2}\n",
+    "PREVIEW_PREFIX {\"samples\":96000,\"context\":1250,\"inference_ms\":4403.084,\"text\":\" L'accident a eu lieu en terrain montagneux.\"}\n",
+    "PREVIEW_MEMORY {\"VmPeak\":886320,\"VmHWM\":352792,\"VmRSS\":345852,\"Threads\":1}\n",
+    "PREVIEW_FINAL {\"samples\":163200,\"context\":0,\"inference_ms\":5695.932,\"text\":\" L'accident a eu lieu en terrain montagneux et il semblerait que cela \u00e9tait caus\u00e9 par un incendie malveillant.\"}\n",
+    "PREVIEW_MEMORY {\"VmPeak\":886712,\"VmHWM\":355400,\"VmRSS\":355400,\"Threads\":1}\n"
+  ]
+}

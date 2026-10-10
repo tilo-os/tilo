@@ -1,0 +1,96 @@
+{
+  "source_head": "ba5e09cf4b656ef438187dce75d01091944eb27c",
+  "bridge_source_sha256": "9062e7d150e8dc39666e50a53ab91e08ab7ea4a8b7440af284d3d151c2b9f7e3",
+  "private_review_only": true,
+  "production_policy_changed": false,
+  "context_guard": "ceil(samples/320)+100<=context; negative/outgrown/above-model context refuses; final is decoded at0",
+  "limits": {
+    "CPUs": 2,
+    "address_space_bytes": 1073741824,
+    "container_memory_bytes": 1073741824,
+    "PID_limit": 64,
+    "network": false,
+    "hardware_mounts": false
+  },
+  "public_cases": {
+    "public_directory": "${BUILD_ROOT}/target/dictation-preview-context-public-vv0volrg",
+    "dataset": "google/fleurs",
+    "revision": "70bb2e84b976b7e960aa89f1c648e09c59f894dd",
+    "license": "CC-BY-4.0",
+    "attribution": "Google FLEURS dataset authors",
+    "development_only": "previously exposed archive member0 only; no reserved member8..10",
+    "preparer_sha256": "b3ff77f46049405ca13e02391cb5e893d75bb84e0f2c4e41302d1c8e2a51f50e",
+    "cases": [
+      {
+        "id": "fr_fr-0",
+        "language": "fr",
+        "file": "fr_fr-0.wav",
+        "size": 326444,
+        "sha256": "f76c0a92ca39d2533aa105ac5794b08f004e15a3ff5ba32f4ba4995f45cd22fd",
+        "reference": "L\u2019accident a eu lieu en terrain montagneux, et il semblerait que cela ait \u00e9t\u00e9 caus\u00e9 par un incendie malveillant.",
+        "duration_seconds": 10.2,
+        "source_id": "1987",
+        "source_file": "10043298898524273336.wav",
+        "primary": true,
+        "source_sha256": "c834367fd212902124bdd0e0f6c1f16b5561af6386600f145e5aec50008b298d",
+        "transcription_sha256": "5d06d338b242e00786fcf12c4c92008b9f399d5a5c872c91dca90572e7869c0d"
+      },
+      {
+        "id": "en_us-0",
+        "language": "en",
+        "file": "en_us-0.wav",
+        "size": 337964,
+        "sha256": "b438b60eb4e9fddbcaa303e27070c2458c3daac42f0b08d5d8622c47335d24f7",
+        "reference": "However, due to the slow communication channels, styles in the west could lag behind by 25 to 30 year.",
+        "duration_seconds": 10.56,
+        "source_id": "1904",
+        "source_file": "1003119935936341070.wav",
+        "primary": true,
+        "source_sha256": "33aca50159ec2e3cbcc894eb26faa916d6badb1b49fb75994973561540a7f012",
+        "transcription_sha256": "74c046239374deeb60fa63f258f907388093a32bcaa3140965f70ef05c79f7ca"
+      },
+      {
+        "id": "de_de-0",
+        "language": "de",
+        "file": "de_de-0.wav",
+        "size": 574124,
+        "sha256": "cc46d12f9faf44a694e709c8bcf04028e686e6b4c1deefe3ac6dbd821a970630",
+        "reference": "F\u00fcr die besten Aussichten auf Hongkong sollten Sie die Insel verlassen und zum gegen\u00fcberliegenden Ufer von Kowloon fahren.",
+        "duration_seconds": 17.94,
+        "source_id": "2003",
+        "source_file": "10004059102127011984.wav",
+        "primary": true,
+        "source_sha256": "1603ed8fcea31a7f32f51d137eaa3516d15aca947898b81a136f4a9732f08ad2",
+        "transcription_sha256": "82fab72c58a347345675c238f2492bb997105a4ab45d69e2a2b34ed29082fa97"
+      }
+    ],
+    "model_installed": false,
+    "physical_microphone": false,
+    "persistent_grants": false
+  },
+  "compiled_files": {
+    "driver.cpp": "b72512b269c259f67ab37a90afb93adbd3a2593ab4a4b6c13b9aea74e0107971",
+    "bridge.cpp": "a23899b0e16d2be9992c418f753593875c16da9563194f458d63adea395f8b70",
+    "fr_fr-0.f32": "1880ea67d02e318d898e6ac3fd627127e7cf4097e3ec444074764d2163d66a7d",
+    "en_us-0.f32": "18999ea7a4c22600b7565020bacec2c32eea27e63d18a6c16f1acb84ffe8dcfb",
+    "de_de-0.f32": "619cd4412154d1a750505101b90f5708468fa4d66fcbdcd89168d126b4fb9bff",
+    "driver": "cb6beefeb47d15ee1fe89165663fcca8a765d485f865acdae3af5fb12e4b1e07",
+    "compile.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "native_libraries": {
+    "libwhisper.a": "86f216c0ab01b797ca5b912158343b07564f65a3debdd75ae3c4b74ff025db41",
+    "libggml-cpu.a": "2897a3eac6b730b996a6240d68ef50404e94ae119d772f3d9d0e0456ba99ae46",
+    "libggml.a": "7799a33653a32f7775e7b21301ed4b142b14c8c42284d08dbbaacd1958d11f16",
+    "libggml-base.a": "36f866034097eca3705a799abd3a576d13ee37c6073485a483e39d09ef5f69b8"
+  },
+  "runs": [
+    {
+      "case": "fr_fr-0",
+      "exit": 125,
+      "seconds": 0.15805600001476705,
+      "owned_container_verified_absent": "dictation-preview-case-70da198ef3d9",
+      "log_sha256": "2cf9e8b976995708412041054d80cecd04826612fa911f118468b6066a2f223b"
+    }
+  ],
+  "complete": false
+}

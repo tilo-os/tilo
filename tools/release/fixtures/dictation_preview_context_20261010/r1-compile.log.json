@@ -1,0 +1,9 @@
+{
+  "original_stdout_sha256": "77ee76fddf7e0b1aae32ae35248159c3304ba99811c439c027269a5fe98dfb46",
+  "lines": [
+    "cc1plus: fatal error: /review/driver.cpp: Permission denied\n",
+    "compilation terminated.\n",
+    "cc1plus: fatal error: /review/bridge.cpp: Permission denied\n",
+    "compilation terminated.\n"
+  ]
+}

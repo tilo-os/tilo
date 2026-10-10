@@ -1,0 +1,6 @@
+{
+  "original_stdout_sha256": "2cf9e8b976995708412041054d80cecd04826612fa911f118468b6066a2f223b",
+  "lines": [
+    "Error: ulimit option \"as=1073741824:1073741824\" requires name=SOFT:HARD, failed to be parsed: invalid ulimit type: as\n"
+  ]
+}
