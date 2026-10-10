@@ -1094,3 +1094,74 @@ fn native_document_checkpoint_invalidates_old_authority_snapshot_without_grant_c
     );
     assert!(witness.authority_is_current(&after.native_authority, room));
 }
+
+#[test]
+fn accepted_checkpoint_export_repairs_an_earlier_heartbeat_projection() {
+    let (_directory, owner, room, now, key) = super::tests::test_enrolled_owner();
+    let tree = tree_of(&owner);
+    let person = tree
+        .read()
+        .desktop
+        .workspaces
+        .iter()
+        .find(|workspace| workspace.room == room)
+        .and_then(|workspace| workspace.owner.clone())
+        .expect("the certified enrolled room must retain its actual owner");
+    crate::shell::launcher::action_authority::Export::of(&tree.read()).publish();
+    let (_lease, path) =
+        crate::shell::launcher::action_authority::bind_for_test(room, "so.tilo.chat", &person)
+            .unwrap();
+    let baseline: collab_types::caps::action_authority::AppActionAuthorityProjection =
+        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    assert_eq!(baseline.owner.as_deref(), Some(person.as_str()));
+
+    let writer = crate::shell::durable_writer::global();
+    let (first_started_tx, first_started_rx) = std::sync::mpsc::sync_channel(0);
+    let (release_first_tx, release_first_rx) = std::sync::mpsc::sync_channel(0);
+    writer
+        .submit_ordered(move || {
+            let _ = first_started_tx.send(());
+            let _ = release_first_rx.recv();
+        })
+        .unwrap();
+    first_started_rx
+        .recv_timeout(std::time::Duration::from_secs(3))
+        .unwrap();
+    crate::shell::launcher::action_authority::tick(
+        std::time::Instant::now() + std::time::Duration::from_secs(2),
+    );
+    let (second_started_tx, second_started_rx) = std::sync::mpsc::sync_channel(0);
+    let (release_second_tx, release_second_rx) = std::sync::mpsc::sync_channel(0);
+    writer
+        .submit_ordered(move || {
+            let _ = second_started_tx.send(());
+            let _ = release_second_rx.recv();
+        })
+        .unwrap();
+
+    let (request, _) = edit(&owner, room, &key, now, 2);
+    let committed = owner.commit_document(request, now);
+    let _ = release_first_tx.send(());
+    let second_started = second_started_rx.recv_timeout(std::time::Duration::from_secs(3));
+    let intermediate = second_started.as_ref().ok().map(|()| {
+        serde_json::from_slice::<
+            collab_types::caps::action_authority::AppActionAuthorityProjection,
+        >(&std::fs::read(&path).unwrap())
+        .unwrap()
+    });
+    let _ = release_second_tx.send(());
+    let flushed = writer.flush_timeout(std::time::Duration::from_secs(3));
+
+    committed.unwrap();
+    second_started.unwrap();
+    let intermediate = intermediate.unwrap();
+    assert_eq!(intermediate.owner, None);
+    assert!(intermediate.capabilities.is_empty());
+    assert!(flushed, "the accepted export must cross the writer barrier");
+    let repaired: collab_types::caps::action_authority::AppActionAuthorityProjection =
+        serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+    assert!(
+        baseline.same_policy(&repaired),
+        "the final accepted export must restore the unchanged Read policy"
+    );
+}

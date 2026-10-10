@@ -1896,6 +1896,65 @@ class PresentedEditorTargetTests(unittest.TestCase):
                 self.assertFalse(receipt["private_content_recorded"])
                 self.assertNotIn("PRIVATE", json.dumps(receipt))
 
+    def test_hidden_read_settlement_requires_current_exact_unexpired_qualification(self):
+        original = {**self.permission_action(),
+                    "semantic_identity": {"kind": "chat.agent", "key": "chat.person:tide"}}
+        opposite = {**original, "provider": "other", "application": "so.tilo.desktop",
+                    "resource": "desktop:tasks", "operation": "queue"}
+        read = {**original, "id": "PRIVATE-open", "operation": "open-agent-conversation"}
+        access = {"bus": "PRIVATE-bus", "process": 7, "window": "/PRIVATE-window"}
+        custody = (access, access, (7, "start"))
+
+        def qualify():
+            return PROOF.qualify_hidden_permission_offer(
+                "socket", original, opposite, "open-agent-conversation", custody, expires_unix=112)
+
+        with patch.object(PROOF, "chat_process_identity", return_value=(7, "start")), \
+                patch.object(PROOF.time, "time", return_value=100), \
+                patch.object(PROOF.time, "sleep"), \
+                patch.object(PROOF, "permission_actions_snapshot", side_effect=[None, [opposite], [opposite, read]]):
+            qualified = PROOF.wait_for("exact Read settlement", qualify, SimpleNamespace(poll=lambda: None))
+        self.assertIsInstance(qualified, PROOF.HiddenOfferObservation)
+        self.assertEqual(qualified.original, PROOF.permission_offer_identity(original))
+        for rows in ([opposite, read, read], [opposite, {**read, "resource": "PRIVATE-replacement"}],
+                     [opposite, {**read, "record": "PRIVATE-replacement"}], [read],
+                     [opposite, {**read, "semantic_identity": {"kind": "chat.agent", "key": "PRIVATE-other"}}],
+                     [opposite, original, read], ["PRIVATE malformed"]):
+            with self.subTest(rows=rows), patch.object(PROOF, "chat_process_identity", return_value=(7, "start")), \
+                    patch.object(PROOF.time, "time", return_value=100), \
+                    patch.object(PROOF, "permission_actions_snapshot", return_value=rows):
+                with self.assertRaises(RuntimeError) as refusal:
+                    qualify()
+                self.assertNotIn("PRIVATE", str(refusal.exception))
+        with patch.object(PROOF, "chat_process_identity", return_value=(7, "replacement")), \
+                patch.object(PROOF.time, "time", return_value=100), \
+                patch.object(PROOF, "permission_actions_snapshot") as snapshot:
+            with self.assertRaisesRegex(RuntimeError, "changed its mounted Chat"):
+                qualify()
+            snapshot.assert_not_called()
+        with patch.object(PROOF.time, "time", return_value=112), \
+                patch.object(PROOF, "permission_actions_snapshot") as snapshot:
+            with self.assertRaisesRegex(RuntimeError, "expired before exact Read"):
+                qualify()
+            snapshot.assert_not_called()
+        with patch.object(PROOF, "chat_process_identity", return_value=(7, "start")), \
+                patch.object(PROOF.time, "time", side_effect=[100, 112]), \
+                patch.object(PROOF, "permission_actions_snapshot", return_value=[opposite, read]):
+            with self.assertRaisesRegex(RuntimeError, "expired before exact Read"):
+                qualify()
+        with patch.object(PROOF, "chat_process_identity", return_value=(7, "start")), \
+                patch.object(PROOF.time, "time", return_value=100), \
+                patch.object(PROOF.time, "monotonic", side_effect=[0, 0, 31]), \
+                patch.object(PROOF.time, "sleep"), \
+                patch.object(PROOF, "permission_actions_snapshot", return_value=[opposite]):
+            with self.assertRaises(PROOF.ProofTimeout):
+                PROOF.wait_for("missing Read", qualify, SimpleNamespace(poll=lambda: None))
+        for flow in (PROOF.native_chat_write_downgrade, PROOF.native_task_write_downgrade):
+            source = inspect.getsource(flow)
+            self.assertIn("expires_unix=", source)
+            self.assertIn("qualified is not None else None", source)
+            self.assertNotIn("observe_hidden_permission_offer(", source)
+
     def test_stale_immediate_errors_are_not_permission_refusals(self):
         action = self.permission_action()
         observed = PROOF.HiddenOfferObservation(PROOF.permission_offer_identity(action), 100)

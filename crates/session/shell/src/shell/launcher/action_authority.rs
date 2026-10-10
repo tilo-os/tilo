@@ -276,6 +276,31 @@ pub(super) fn attach(
     })
 }
 
+#[cfg(test)]
+pub(crate) fn bind_for_test(
+    room: RoomId,
+    app: &str,
+    person: &str,
+) -> std::io::Result<(Lease, PathBuf)> {
+    let binding = (room, app.to_owned(), person.to_owned());
+    let mut published = lock(&PUBLISHED);
+    let path = write_binding(&mut published, &binding, true)?;
+    if let Some(state) = published.bindings.get_mut(&binding) {
+        state.borrowers = state.borrowers.saturating_add(1);
+    }
+    published.next_refresh = Instant::now().checked_add(Duration::from_secs(1));
+    drop(published);
+    Ok((
+        Lease {
+            binding,
+            capabilities: Vec::new(),
+            pid: None,
+            capabilities_file: None,
+        },
+        path,
+    ))
+}
+
 /// A missing projection does not grant Admin or refuse a manifest-only launch.
 pub(super) fn attach_optional(
     app: &InstalledApp,

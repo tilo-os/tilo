@@ -5419,11 +5419,21 @@ class HiddenOfferObservation(collections.namedtuple(
 
 def observe_hidden_permission_offer(socket, original, opposite, read_operation,
                                     initial_access, current_access, initial_identity, *, observation=None):
+    return qualify_hidden_permission_offer(
+        socket, original, opposite, read_operation,
+        (initial_access, current_access, initial_identity), observation=observation)
+
+
+def qualify_hidden_permission_offer(socket, original, opposite, read_operation,
+                                    custody, *, observation=None, expires_unix=None):
     """Qualify hidden-address refusal using a current catalogue and mounted restriction.
 
     The caller obtains current_access only after the exact mounted restriction
     passes. This observation is evidence, never an action capability.
     """
+    initial_access, current_access, initial_identity = custody
+    if expires_unix is not None and time.time() >= expires_unix:
+        raise RuntimeError("permission restriction expired before exact Read qualification")
     identity = permission_offer_identity(original)
     opposite_identity = permission_offer_identity(opposite)
     if opposite_identity[2] == identity[2] or opposite_identity[3] != identity[3]:
@@ -5436,6 +5446,8 @@ def observe_hidden_permission_offer(socket, original, opposite, read_operation,
         catalogue = permission_actions_snapshot(socket)
     except (RuntimeError, KeyError, TypeError):
         raise RuntimeError("permission evidence catalogue is unavailable") from None
+    if catalogue is None and expires_unix is not None:
+        return None
     if not isinstance(catalogue, list) or any(not isinstance(row, dict) for row in catalogue):
         raise RuntimeError("permission evidence catalogue has no valid public action rows")
     if any(permission_offer_matches(row, identity) for row in catalogue):
@@ -5447,7 +5459,8 @@ def observe_hidden_permission_offer(socket, original, opposite, read_operation,
                           for field in ("application", "room", "record"))]
     read = [row for row in candidates
             if all(row.get(field) == original[field]
-                    for field in ("provider", "application", "room", "record", "resource"))]
+                    for field in ("provider", "application", "room", "record", "resource"))
+            and row.get("semantic_identity") == original.get("semantic_identity")]
     if observation is not None:
         global_reads = [row for row in catalogue if row.get("operation") == read_operation]
         room_reads = [row for row in global_reads if all(
@@ -5470,8 +5483,19 @@ def observe_hidden_permission_offer(socket, original, opposite, read_operation,
             candidates[0].get("resource") == original["resource"] if len(candidates) == 1 else None)
         observation["read_unique_provider_matches"] = (
             candidates[0].get("provider") == original["provider"] if len(candidates) == 1 else None)
+    if not read and expires_unix is not None:
+        # Only an absent Read can settle. A disclosed replacement of this
+        # semantic owner is not missing publication and must not be retried.
+        replacements = [row for row in catalogue if row.get("operation") == read_operation
+                        and row.get("application") == original["application"]
+                        and row.get("room") == original["room"]
+                        and row.get("semantic_identity") == original.get("semantic_identity")]
+        if not candidates and not replacements:
+            return None
     if len(read) != 1:
         raise RuntimeError("the same live resource has no unique current Read control")
+    if expires_unix is not None and time.time() >= expires_unix:
+        raise RuntimeError("permission restriction expired before exact Read qualification")
     return HiddenOfferObservation(identity, time.monotonic())
 
 
@@ -7302,16 +7326,17 @@ def native_chat_write_downgrade(socket, room, record, person, output, size, proc
                 restricted = agent_write_restricted_accessibility(
                     "Tide", message_draft, observation=sample)
                 sample["at_matched"] = restricted is not None
-                return restricted
+                if restricted is None:
+                    return None
+                qualified = qualify_hidden_permission_offer(
+                    socket, stale_message, opposite, "open-agent-conversation",
+                    (message_access, restricted, initial_identity), observation=sample,
+                    expires_unix=chat_profile["expires_unix"])
+                return (restricted, qualified) if qualified is not None else None
             finally:
                 permission_phase_checkpoint(phase_observation, sample, "at")
 
-    restricted_chat = wait_for("mounted Chat.Write restriction", chat_restricted, process)
-    with permission_phase_sample(phase_observation) as sample:
-        observation = observe_hidden_permission_offer(
-            socket, stale_message, opposite, "open-agent-conversation",
-            message_access, restricted_chat, initial_identity, observation=sample,
-        )
+    restricted_chat, observation = wait_for("mounted Chat.Write restriction", chat_restricted, process)
     message_refusal = require_stale_action_refused(
         socket, stale_message, {"value": message_draft}, process, observation=observation
     )
@@ -7399,18 +7424,18 @@ def native_task_write_downgrade(socket, room, record, person, output, size, proc
                 sample["private_editor_state_matches"] = same_private_editor_state(observed, queue_before)
                 if "Queue task" in names:
                     return None
-                return (access, observed) if same_private_editor_state(
-                    observed, queue_before
-                ) else None
+                if not same_private_editor_state(observed, queue_before):
+                    return None
+                qualified = qualify_hidden_permission_offer(
+                    socket, stale_queue, opposite, "read-current-tasks",
+                    (queue_access, access, initial_identity), observation=sample,
+                    expires_unix=task_profile["expires_unix"])
+                return (access, observed, qualified) if qualified is not None else None
             finally:
                 permission_phase_checkpoint(phase_observation, sample, "at")
 
-    restricted_access, queue_restricted = wait_for("mounted Task.Write restriction", task_restricted, process)
-    with permission_phase_sample(phase_observation) as sample:
-        observation = observe_hidden_permission_offer(
-            socket, stale_queue, opposite, "read-current-tasks",
-            queue_access, restricted_access, initial_identity, observation=sample,
-        )
+    restricted_access, queue_restricted, observation = wait_for(
+        "mounted Task.Write restriction", task_restricted, process)
     queue_refusal = require_stale_action_refused(socket, stale_queue, {
         "instruction": queue_draft,
         "title": "Permission proof task",
