@@ -1146,6 +1146,11 @@ impl Conversation {
         }
     }
 
+    pub fn push_user(&mut self, text: &str) {
+        self.messages
+            .push(serde_json::json!({"role":"user", "content":text}));
+    }
+
     /// How many messages the conversation holds (tests and logs).
     pub fn len(&self) -> usize {
         self.messages.len()

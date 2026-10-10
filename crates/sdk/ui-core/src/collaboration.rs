@@ -444,6 +444,7 @@ pub enum CollabRequest {
         update: runtime_collab::TaskRunUpdate,
     },
     ReportTaskRun {
+        request_id: Option<u64>,
         run_id: u64,
         lease: String,
         update: runtime_collab::TaskRunUpdate,
@@ -808,6 +809,14 @@ pub enum CollabEvent {
     TaskRunCancellation {
         request_id: u64,
         result: Result<bool, String>,
+    },
+    TaskRunControl {
+        request_id: u64,
+        control: runtime_collab::TaskRunControl,
+    },
+    TaskRunReportResult {
+        request_id: u64,
+        result: Result<(), String>,
     },
     WorkspaceControl {
         session_id: u64,
