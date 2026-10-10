@@ -1864,6 +1864,14 @@ impl Widget for Toolbar {
             .draw_overlay(scene, transform, text, theme, presence);
     }
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+        if (self.focused || self.traps_focus())
+            && matches!(event, WindowEvent::KeyboardInput { event, .. }
+                if event.repeat && event.state == ElementState::Pressed
+                    && matches!(event.logical_key, Key::Named(NamedKey::Enter | NamedKey::Space)))
+        {
+            *ctx.handled = true;
+            return;
+        }
         if let WindowEvent::CursorMoved { position, .. } = event {
             self.pointer = Some(Point::new(
                 position.x / ctx.scale_factor,
@@ -2437,6 +2445,62 @@ mod tests {
             1,
             "the toolbar forwards its child's admitted operation"
         );
+    }
+
+    #[test]
+    fn held_activation_keys_do_not_repeat_admitted_toolbar_commands() {
+        use crate::headless::Framed;
+        use std::cell::Cell;
+        use std::rc::Rc;
+        for width in [800, 100] {
+            let calls = Rc::new(Cell::new(0));
+            let count = Rc::clone(&calls);
+            let toolbar = Toolbar::new(Orientation::Horizontal)
+                .push_button("Open workspace settings", move || {
+                    count.set(count.get() + 1)
+                })
+                .with_view("test.workspace-settings");
+            let mut frame = Framed::new(crate::State::new(), toolbar, (width, 480), Theme::dark());
+            assert!(Framed::harness(&frame).native_app_audit().is_certified());
+            if width == 100 {
+                Framed::harness_mut(&mut frame)
+                    .perform_named("toolbar.overflow", &Action::Activate)
+                    .unwrap();
+                Framed::harness_mut(&mut frame).poll_frame().unwrap();
+            }
+            Framed::harness_mut(&mut frame)
+                .perform_named("toolbar.item.0", &Action::Focus)
+                .unwrap();
+            let mut held = crate::synthetic_input::key_event(
+                &Key::Named(NamedKey::Enter),
+                ElementState::Pressed,
+            );
+            if let WindowEvent::KeyboardInput { event, .. } = &mut held {
+                event.repeat = true;
+            }
+            Framed::harness_mut(&mut frame).send_host_event(&held);
+            Framed::harness_mut(&mut frame).poll_frame().unwrap();
+            assert_eq!(
+                calls.get(),
+                0,
+                "{width}: a held key cannot start a new command"
+            );
+            Framed::harness_mut(&mut frame).send_host_event(&crate::synthetic_input::key_event(
+                &Key::Named(NamedKey::Enter),
+                ElementState::Pressed,
+            ));
+            Framed::harness_mut(&mut frame).poll_frame().unwrap();
+            assert_eq!(
+                calls.get(),
+                1,
+                "{width}: one deliberate key press invokes once"
+            );
+            for _ in 0..3 {
+                Framed::harness_mut(&mut frame).send_host_event(&held);
+                Framed::harness_mut(&mut frame).poll_frame().unwrap();
+            }
+            assert_eq!(calls.get(), 1, "{width}: repetition must not invoke again");
+        }
     }
 
     #[test]
