@@ -121,7 +121,7 @@ pub fn covers(region: Option<&RegionAttributes>, extent: (i32, i32)) -> bool {
         return false;
     }
     let mut undecided = vec![surface];
-    let mut rest = Vec::new();
+    let mut remaining = Vec::new();
     for (kind, rect) in region.rects.iter().rev() {
         let rect = Span::of(rect);
         match kind {
@@ -131,11 +131,11 @@ pub fn covers(region: Option<&RegionAttributes>, extent: (i32, i32)) -> bool {
                 }
             }
             RectangleKind::Add => {
-                rest.clear();
+                remaining.clear();
                 for piece in &undecided {
-                    piece.push_outside(rect, &mut rest);
+                    piece.push_outside(rect, &mut remaining);
                 }
-                std::mem::swap(&mut undecided, &mut rest);
+                std::mem::swap(&mut undecided, &mut remaining);
                 if undecided.is_empty() {
                     return true;
                 }
