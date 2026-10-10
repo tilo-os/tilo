@@ -4,8 +4,7 @@
 //! production encoding: edits are Automerge changes signed and admitted by a
 //! `StatePeer`, classified by the host retention rule and published as
 //! retained deltas; presence is the shell's own `NeighbourMsg`, wrapped by
-//! `RelayCoeditSession::publish_slotted_presence` under its production slot
-//! (`NeighbourMsg::presence_slot`). The input is deterministic: the
+//! `RelayCoeditSession::publish_presence`. The input is deterministic: the
 //! same text, the same backspaces, the same pointer path, every run.
 
 use std::collections::HashMap;
@@ -497,14 +496,9 @@ impl Collaborator {
         })
     }
 
-    /// Publish as the shell does (`network::actor::publish`): latest-state
-    /// presence in its slot, so the relay may coalesce it.
     fn presence(&self, message: &NeighbourMsg) -> anyhow::Result<()> {
-        let body = postcard::to_allocvec(message)?;
-        match message.presence_slot() {
-            Some(slot) => self.session.publish_slotted_presence(slot, body)?,
-            None => self.session.publish_presence(body)?,
-        }
+        self.session
+            .publish_presence(postcard::to_allocvec(message)?)?;
         self.fleet.presence.fetch_add(1, Ordering::Relaxed);
         Ok(())
     }
