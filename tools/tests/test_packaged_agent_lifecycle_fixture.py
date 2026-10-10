@@ -27,29 +27,111 @@ SPEC.loader.exec_module(PROOF)
 
 
 class CurrentChatControlTests(unittest.TestCase):
-    def observe(self, *, reply="(<'Show conversation navigation'>,)", error=None):
+    def observe(self, *, reply="(<'Show conversation navigation'>,)", error=None,
+                tree=None, trees=None, roles=None, clickable=None, owned_route=None,
+                process=42, expect_root_read=True):
         client = PROOF.atspi.AtspiClient("owned-address", "owned-chat")
+        tree = tree or {"/reveal": "(<'Show conversation navigation'>,)"}
+        trees = trees or {"/window": tree}
+        paths = {path for nodes in trees.values() for path in nodes}
+        roles = roles or {path: PROOF.AT_SPI_ROLE_BUTTON for path in paths}
+        clickable = paths if clickable is None else set(clickable)
+
+        def call_atspi(path, interface, *args, **_kwargs):
+            if path == PROOF.atspi.ROOT_PATH \
+                    and interface == "org.a11y.atspi.Accessible.GetChildren":
+                roots = ", ".join(f"objectpath '{window}'" for window in trees)
+                return f"([{roots}],)"
+            if interface == "org.a11y.atspi.Action.GetActions":
+                return "([('click',)],)" if path in clickable else "(@a(ssb) [],)"
+            raise AssertionError((path, interface, args))
+
         with ExitStack() as context:
             context.enter_context(patch.object(PROOF.atspi, "atspi_address", return_value="owned-address"))
             context.enter_context(patch.object(PROOF.atspi, "bus_pids", return_value={"owned-chat": 41}))
-            context.enter_context(patch.object(PROOF.atspi, "app_process", return_value=42))
+            context.enter_context(patch.object(PROOF.atspi, "app_process", return_value=process))
             context.enter_context(patch.object(PROOF, "process_program", return_value="chat"))
             context.enter_context(patch.object(PROOF.atspi, "AtspiClient", return_value=client))
-            reads = context.enter_context(patch.object(client, "call", return_value="([objectpath '/window'],)"))
-            context.enter_context(patch.object(PROOF, "accessible_subtree", return_value={
-                "/reveal": "(<'Show conversation navigation'>,)"}))
-            identity = context.enter_context(patch.object(client, "property", return_value=reply,
-                                                          side_effect=error))
-            try:
-                return PROOF.chat_accessibility_control("Show conversation navigation")
-            finally:
-                reads.assert_called_once_with(PROOF.atspi.ROOT_PATH,
-                                              "org.a11y.atspi.Accessible.GetChildren")
-                identity.assert_called_once_with("/reveal", "Name")
+            reads = context.enter_context(patch.object(client, "call", side_effect=call_atspi))
+            context.enter_context(patch.object(client, "role", side_effect=lambda path: roles[path]))
+            context.enter_context(patch.object(
+                PROOF, "accessible_subtree",
+                side_effect=lambda _client, window, _limit: trees[window]
+            ))
+            context.enter_context(patch.object(
+                client, "property", return_value=reply, side_effect=error
+            ))
+            result = PROOF.chat_accessibility_control(
+                "Show conversation navigation", owned_route=owned_route
+            )
+            root_read = call(
+                PROOF.atspi.ROOT_PATH, "org.a11y.atspi.Accessible.GetChildren"
+            )
+            if expect_root_read:
+                self.assertIn(root_read, reads.call_args_list)
+            else:
+                self.assertNotIn(root_read, reads.call_args_list)
+                reads.assert_not_called()
+            return result
 
     def test_exact_current_named_control_is_returned_without_effect_calls(self):
         self.assertEqual(self.observe(), {"bus": "owned-chat", "window": "/window",
                                          "control": "/reveal", "label": "Show conversation navigation"})
+
+    def test_same_named_non_controls_do_not_make_the_actionable_button_ambiguous(self):
+        name = "(<'Show conversation navigation'>,)"
+        self.assertEqual(self.observe(
+            tree={"/tooltip": name, "/reveal": name, "/static": name},
+            roles={"/tooltip": 66, "/reveal": PROOF.AT_SPI_ROLE_BUTTON,
+                   "/static": 29},
+            clickable={"/tooltip", "/reveal"},
+        )["control"], "/reveal")
+        self.assertIsNone(self.observe(
+            tree={"/label": name},
+            roles={"/label": PROOF.AT_SPI_ROLE_BUTTON},
+            clickable=set(),
+        ))
+
+    def test_two_actionable_exact_buttons_remain_a_hard_ambiguity(self):
+        name = "(<'Show conversation navigation'>,)"
+        with self.assertRaisesRegex(RuntimeError, "duplicate Show conversation navigation"):
+            self.observe(
+                tree={"/first": name, "/second": name},
+                roles={"/first": PROOF.AT_SPI_ROLE_BUTTON,
+                       "/second": PROOF.AT_SPI_ROLE_BUTTON},
+                clickable={"/first", "/second"},
+                owned_route={"bus": "owned-chat", "process": 42, "window": "/window"},
+            )
+
+    def test_bound_route_ignores_other_windows_but_never_substitutes_one(self):
+        name = "(<'Show conversation navigation'>,)"
+        route = {"bus": "owned-chat", "process": 42, "window": "/owned"}
+        trees = {
+            "/owned": {"/owned-reveal": name},
+            "/other": {"/other-reveal": name},
+        }
+        self.assertEqual(self.observe(
+            trees=trees,
+            roles={path: PROOF.AT_SPI_ROLE_BUTTON
+                   for path in ("/owned-reveal", "/other-reveal")},
+            clickable={"/owned-reveal", "/other-reveal"},
+            owned_route=route,
+        )["control"], "/owned-reveal")
+        self.assertIsNone(self.observe(
+            trees={"/other": {"/other-reveal": name}},
+            roles={"/other-reveal": PROOF.AT_SPI_ROLE_BUTTON},
+            clickable={"/other-reveal"},
+            owned_route=route,
+        ))
+        self.assertIsNone(self.observe(
+            trees=trees,
+            roles={path: PROOF.AT_SPI_ROLE_BUTTON
+                   for path in ("/owned-reveal", "/other-reveal")},
+            clickable={"/owned-reveal", "/other-reveal"},
+            owned_route=route,
+            process=84,
+            expect_root_read=False,
+        ))
 
     def test_retired_object_is_rediscovered_before_any_focus_or_activation(self):
         self.assertIsNone(self.observe(error=PROOF.atspi.GateError(
@@ -3979,6 +4061,25 @@ class PresentedEditorTargetTests(unittest.TestCase):
                 "socket", "Lifecycle proof", None
             ), category)
         activated.assert_not_called()
+
+        route = {"bus": "chat", "process": 42, "window": "/current"}
+        with patch.object(
+                PROOF, "chat_category_accessibility", side_effect=[None, category]
+             ) as observed, patch.object(
+                 PROOF, "chat_accessibility_control", return_value=reveal
+             ) as revealed, patch.object(
+                 PROOF, "activate_accessibility_control") as activated:
+            self.assertIs(PROOF.ensure_chat_category_visible(
+                "socket", "Lifecycle proof", None, owned_route=route
+            ), category)
+        self.assertEqual(observed.call_args_list, [
+            call("Lifecycle proof", owned_route=route),
+            call("Lifecycle proof", owned_route=route),
+        ])
+        revealed.assert_called_once_with(
+            "Show conversation navigation", owned_route=route
+        )
+        activated.assert_called_once_with(reveal, "Show conversation navigation")
 
     def test_marker_composer_uses_physical_private_drafts_and_exact_owner_frontier(self):
         source = inspect.getsource(PROOF.exercise_agent_quick_composer)

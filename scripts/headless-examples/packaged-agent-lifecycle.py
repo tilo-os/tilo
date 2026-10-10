@@ -593,25 +593,65 @@ def agent_marker_accessibility(agent, *, windows=None, observation=None):
     return matches[0] if matches else None
 
 
-def chat_category_accessibility(label):
-    """Find one exact current Chat category toggle without reading messages."""
-    names = {f"Collapse {label}", f"Expand {label}"}
+def chat_accessibility_windows(owned_route=None):
+    """Enumerate Chat windows, or revalidate one already-proven exact route."""
+    expected = None
+    if owned_route is not None:
+        expected = (
+            owned_route.get("bus"), owned_route.get("process"), owned_route.get("window")
+        )
+        if not isinstance(expected[0], str) or type(expected[1]) is not int \
+                or not isinstance(expected[2], str):
+            raise RuntimeError("the retained Chat accessibility route is malformed")
     address = atspi.atspi_address()
-    matches = []
+    windows = []
     for bus, proxy_pid in atspi.bus_pids(address).items():
+        if expected is not None and bus != expected[0]:
+            continue
         pid = atspi.app_process(proxy_pid, expected_program="chat")
         if pid is None or process_program(pid) != "chat":
+            continue
+        if expected is not None and pid != expected[1]:
             continue
         client = atspi.AtspiClient(address, bus)
         try:
             children = client.call(atspi.ROOT_PATH, "org.a11y.atspi.Accessible.GetChildren")
-            for window in dict.fromkeys(atspi.PATH_RE.findall(children)):
-                tree = accessible_subtree(client, window, atspi.APP_TREE_NODE_LIMIT)
-                for name in names:
-                    for path in client.named(tree, name):
-                        matches.append({
-                            "bus": bus, "window": window, "control": path, "label": name,
-                        })
+            current = list(dict.fromkeys(atspi.PATH_RE.findall(children)))
+        except atspi.GateError:
+            continue
+        if expected is not None:
+            if expected[2] not in current:
+                return []
+            current = [expected[2]]
+        windows.extend((bus, pid, client, window) for window in current)
+    return windows
+
+
+def chat_category_accessibility(label, *, owned_route=None):
+    """Find one exact current Chat category toggle without reading messages."""
+    names = {f"Collapse {label}", f"Expand {label}"}
+    matches = []
+    for bus, _pid, client, window in chat_accessibility_windows(owned_route):
+        try:
+            tree = accessible_subtree(client, window, atspi.APP_TREE_NODE_LIMIT)
+            for name in names:
+                for path in client.named(tree, name):
+                    if owned_route is not None:
+                        if client.role(path) != AT_SPI_ROLE_BUTTON:
+                            continue
+                        actions = client.call(
+                            path, "org.a11y.atspi.Action.GetActions", check=False
+                        )
+                        if "'click'" not in actions:
+                            continue
+                        current = atspi.property_text(client.property(path, "Name"))
+                        if current is None:
+                            raise RuntimeError("the current Chat category identity is unobservable")
+                        if current != name:
+                            continue
+                    matches.append({
+                        "bus": bus, "window": window, "control": path, "label": name,
+                    })
         except atspi.GateError:
             continue
     if len(matches) > 1:
@@ -619,23 +659,23 @@ def chat_category_accessibility(label):
     return matches[0] if matches else None
 
 
-def chat_accessibility_control(label):
+def chat_accessibility_control(label, *, owned_route=None):
     """Find one exact control in the mounted Chat process."""
-    address = atspi.atspi_address()
     matches = []
-    for bus, proxy_pid in atspi.bus_pids(address).items():
-        pid = atspi.app_process(proxy_pid, expected_program="chat")
-        if pid is None or process_program(pid) != "chat":
-            continue
-        client = atspi.AtspiClient(address, bus)
+    for bus, _pid, client, window in chat_accessibility_windows(owned_route):
         try:
-            children = client.call(atspi.ROOT_PATH, "org.a11y.atspi.Accessible.GetChildren")
-            for window in dict.fromkeys(atspi.PATH_RE.findall(children)):
-                tree = accessible_subtree(client, window, atspi.APP_TREE_NODE_LIMIT)
-                for path in client.named(tree, label):
-                    matches.append({
-                        "bus": bus, "window": window, "control": path, "label": label,
-                    })
+            tree = accessible_subtree(client, window, atspi.APP_TREE_NODE_LIMIT)
+            for path in client.named(tree, label):
+                if client.role(path) != AT_SPI_ROLE_BUTTON:
+                    continue
+                actions = client.call(
+                    path, "org.a11y.atspi.Action.GetActions", check=False
+                )
+                if "'click'" not in actions:
+                    continue
+                matches.append({
+                    "bus": bus, "window": window, "control": path, "label": label,
+                })
         except atspi.GateError:
             continue
     if len(matches) > 1:
@@ -643,7 +683,7 @@ def chat_accessibility_control(label):
     if not matches:
         return None
     access = matches[0]
-    client = atspi.AtspiClient(address, access["bus"])
+    client = atspi.AtspiClient(atspi.atspi_address(), access["bus"])
     try:
         name = atspi.property_text(client.property(access["control"], "Name"))
     except atspi.GateError as error:
@@ -657,14 +697,17 @@ def chat_accessibility_control(label):
     return access if name == label else None
 
 
-def ensure_chat_category_visible(socket, label, process, *, diagnostic_path=None):
+def ensure_chat_category_visible(
+        socket, label, process, *, diagnostic_path=None, owned_route=None):
     """Reveal compact navigation through Chat's real shared control when needed."""
-    category = chat_category_accessibility(label)
+    category = chat_category_accessibility(label, owned_route=owned_route)
     if category is not None:
         return category
     reveal = wait_for(
         "Chat's shared conversation navigation control",
-        lambda: chat_accessibility_control("Show conversation navigation"),
+        lambda: chat_accessibility_control(
+            "Show conversation navigation", owned_route=owned_route
+        ),
         process,
     )
     if diagnostic_path is None:
@@ -673,7 +716,7 @@ def ensure_chat_category_visible(socket, label, process, *, diagnostic_path=None
         activate_accessibility_control(reveal, reveal["label"], diagnostic_path=diagnostic_path)
     return wait_for(
         "Chat's exact visible marker category",
-        lambda: chat_category_accessibility(label),
+        lambda: chat_category_accessibility(label, owned_route=owned_route),
         process,
     )
 
@@ -5898,8 +5941,11 @@ def managed_agent_marker_stage(socket, room, record, provider, output, process, 
     prepared_chat = prime_chat_frontier_access("Agent marker proof", process, output=output)
     # Finish all full-tree and focus work before the real action starts its
     # finite completed-marker dwell. Direct shell children remain live reads.
-    category_access = ensure_chat_category_visible(socket, "Lifecycle proof", process,
-        diagnostic_path=output / "marker-category-activation-observation.json")
+    category_access = ensure_chat_category_visible(
+        socket, "Lifecycle proof", process,
+        diagnostic_path=output / "marker-category-activation-observation.json",
+        owned_route=prepared_chat["access"],
+    )
     shell_windows = wait_for("owned compositor accessibility windows",
                              owned_shell_accessibility_windows, process)
     category_access = {**category_access, "address": shell_windows[0]["address"]}
