@@ -102,6 +102,7 @@ tempfile.workspace = true
 
 [build-dependencies]
 cc = "=1.2.56"
+libc.workspace = true
 
 [lints]
 workspace = true
