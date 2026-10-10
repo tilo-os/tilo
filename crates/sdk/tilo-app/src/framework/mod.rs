@@ -320,8 +320,6 @@ mod participant;
 mod people;
 mod person;
 mod preview;
-#[cfg(feature = "test-support")]
-pub mod profiling;
 mod root;
 mod rows;
 mod scenario;

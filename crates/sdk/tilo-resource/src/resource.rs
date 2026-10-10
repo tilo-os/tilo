@@ -1021,7 +1021,6 @@ fn cached_schema(
     let epoch = {
         let store = cache.lock().unwrap_or_else(PoisonError::into_inner);
         if let Some(found) = store.entries.get(&key) {
-            #[cfg(all(feature = "test-support", not(target_arch = "wasm32")))]
             let _phase = crate::profiling::Phase::start("schema.cached_clone");
             return found.clone();
         }
@@ -1108,7 +1107,6 @@ pub(crate) fn group_param<R: Resource>() -> ActionParam {
 }
 
 fn apply_spec<R: Resource>() -> ActionSpec {
-    #[cfg(all(feature = "test-support", not(target_arch = "wasm32")))]
     let _phase = crate::profiling::Phase::start("resource.apply_spec");
     ActionSpec::typed(
         APPLY,
@@ -1172,7 +1170,6 @@ pub(crate) fn permission_rank(requirement: PermissionRequirement) -> u8 {
 }
 
 fn group_spec<R: Resource>() -> ActionSpec {
-    #[cfg(all(feature = "test-support", not(target_arch = "wasm32")))]
     let _phase = crate::profiling::Phase::start("resource.group_spec");
     ActionSpec::typed(
         crate::GROUP,
@@ -1275,7 +1272,6 @@ fn publish_own<R: Resource>(
     // Describe the declared domain ID before any host dispatch alias projection.
     resource.semantic_identity = tilo_actions::ResourceSemanticIdentity::new(R::KIND, id);
     for decl in R::declarations() {
-        #[cfg(all(feature = "test-support", not(target_arch = "wasm32")))]
         let _phase = crate::profiling::Phase::start("resource.declaration_spec");
         let spec = declaration_spec(&decl);
         // Offered on the items it acts on, with some of its arguments bound
