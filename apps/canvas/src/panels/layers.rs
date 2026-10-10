@@ -392,7 +392,7 @@ fn row_menu(
         let invoke = |make: fn(&LayerRow) -> Invoke<ArtworkResource>| {
             let dispatcher = dispatcher.clone();
             let row = row.clone();
-            move || dispatcher.invoke(make(&row))
+            move || dispatcher.submit(make(&row))
         };
         let has_selection = live.get().selection.is_some();
         let renaming = renaming.clone();
@@ -452,7 +452,7 @@ fn masking(
     let invoke = |make: fn(&LayerRow) -> Invoke<ArtworkResource>| {
         let dispatcher = dispatcher.clone();
         let row = row.clone();
-        move || dispatcher.invoke(make(&row))
+        move || dispatcher.submit(make(&row))
     };
     if row.mask.is_some() {
         entries.push(MenuEntry::new(

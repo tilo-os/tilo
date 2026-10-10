@@ -830,7 +830,7 @@ impl VpnApp {
                         &Profile::of(&connection),
                     );
                     if let Ok(added) = Invoke::edit(&added) {
-                        cx.invoke(added);
+                        cx.submit(added);
                     }
                 }
                 let mut saved = Ok(());
@@ -1025,7 +1025,7 @@ impl VpnApp {
         }
         // The local profile is gone; the shared fleet forgets it too.
         if let Ok(removed) = Invoke::edit(&Vpn::paths().connections.remove(&Vpn::item(id))) {
-            cx.invoke(removed);
+            cx.submit(removed);
         }
         self.local_selected = None;
         self.live_status.remove(&id);

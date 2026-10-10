@@ -469,7 +469,7 @@ impl HexView {
     fn open_bytes(&mut self, name: String, bytes: Vec<u8>) {
         let n = bytes.len();
         if let Some(dispatch) = &self.dispatch {
-            dispatch.invoke(HexEditor::loading(name, bytes));
+            dispatch.submit(HexEditor::loading(name, bytes));
             self.expect_open = true;
         }
         self.path = None;

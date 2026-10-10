@@ -697,7 +697,7 @@ fn create<A: ResourceApp>(
     let launch = root.launch().with_record(&*record);
     if !capture || !launch.is_empty() {
         for invoke in A::launch(&launch, created) {
-            root.dispatcher().invoke(invoke);
+            root.dispatcher().submit(invoke);
         }
     }
     let mut component = AppComponent::new(context, Box::new(root), action_registry::<A>());

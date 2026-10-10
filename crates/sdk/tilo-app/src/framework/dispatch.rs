@@ -79,7 +79,7 @@ impl<R: Resource> Submit<R> for Edit<R> {
 
 /// Submits a view's edits. Cloneable; clones share one queue.
 ///
-/// Two doors, one path. [`invoke`](Self::invoke) and [`apply`](Self::apply)
+/// Two doors, one path. [`submit`](Self::submit) and [`apply`](Self::apply)
 /// queue an invocation the host resolves after the event, exactly as a
 /// control bound to an action would. [`apply_now`](Self::apply_now) applies
 /// one typed action immediately, inside the event or the settle pass
@@ -365,7 +365,7 @@ impl<R: Resource> Dispatcher<R> {
     /// A dispatcher for a surface a test builds outside any host, editing as
     /// `me`: what the surface applies now ([`Self::apply_now`]) goes into the
     /// document the test hands it, as under a host. Queued edits
-    /// ([`Self::apply`], [`Self::invoke`]) wait for a host that never takes
+    /// ([`Self::apply`], [`Self::submit`]) wait for a host that never takes
     /// them; a test that needs those runs the app
     /// ([`TestApp`](super::testing::HeadlessApp)).
     #[cfg(any(test, feature = "test-support"))]
@@ -623,10 +623,13 @@ impl<R: Resource> Dispatcher<R> {
     /// Submit a field edit (`dispatcher.submit(p.favorite.set(true))`) or a
     /// verb (`dispatcher.submit(Snippets::DELETE.with(id))`) through the
     /// door, after the event, as a control bound to it would.
+    ///
+    /// An effect's invocation ([`Invoke::effect`]) reaches its handler as
+    /// [`Self::effect`] does.
     pub fn submit(&self, submit: impl Submit<R>) {
         let id = submit.action_id();
         match submit.into_invoke() {
-            Ok(invoke) => self.invoke(invoke),
+            Ok(invoke) => self.submit_invoke(invoke),
             Err(error) => {
                 super::controls::unbound::<R>(&format!("`{id}`"), &error);
                 self.refuse(id, error);
@@ -634,14 +637,7 @@ impl<R: Resource> Dispatcher<R> {
         }
     }
 
-    /// Invoke a declared action (`dispatcher.invoke(Note::EDIT.with(text))`),
-    /// or an effect ([`Invoke::effect`]), which reaches its handler as
-    /// [`Self::effect`] does.
-    pub fn invoke(&self, invoke: Invoke<R>) {
-        if let Some(refusal) = invoke.refusal() {
-            self.refuse(invoke.id, refusal.to_owned());
-            return;
-        }
+    fn submit_invoke(&self, invoke: Invoke<R>) {
         if let Some(reason) = self.unreadable()
             && !invoke.is_effect()
         {
@@ -729,7 +725,7 @@ impl<R: Resource> Dispatcher<R> {
     /// event; if it refuses it, [`Self::refused`] says why.
     pub fn apply(&self, action: &R::Action) {
         match Invoke::<R>::apply(action) {
-            Ok(invoke) => self.invoke(invoke),
+            Ok(invoke) => self.submit_invoke(invoke),
             Err(error) => self.refuse(tilo_resource::APPLY, error.to_string()),
         }
     }
@@ -785,7 +781,7 @@ impl<R: Resource> Dispatcher<R> {
     ///
     /// One that needs confirming (a destructive verb, a removal) is not
     /// applied now: it goes to the host's door, which asks first, and
-    /// applies once the person agreed, as [`Self::invoke`] does.
+    /// applies once the person agreed, as [`Self::submit`] does.
     ///
     /// # Errors
     /// Returns why the submission does not build, or as [`Self::apply_now`].
@@ -819,7 +815,7 @@ impl<R: Resource> Dispatcher<R> {
                 action
             ))));
         }
-        self.invoke(invoke);
+        self.submit_invoke(invoke);
         Ok(())
     }
 
@@ -853,7 +849,7 @@ impl<R: Resource> Dispatcher<R> {
         }
         // A group holding a removal asks first, as the queued door does.
         if group.actions.iter().any(asks) {
-            self.invoke(invoke.clone());
+            self.submit_invoke(invoke.clone());
             return Ok(());
         }
         let mut context = ActionContext::for_resource(

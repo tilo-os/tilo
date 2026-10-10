@@ -3476,7 +3476,7 @@ impl GitClientApp {
     fn submit(&self, invoke: Result<Invoke<crate::resource::GitClient>, serde_json::Error>) {
         // A path and the repository's projection always encode.
         if let (Some(dispatcher), Ok(invoke)) = (&self.dispatcher, invoke) {
-            dispatcher.invoke(invoke);
+            dispatcher.submit(invoke);
         }
     }
 }

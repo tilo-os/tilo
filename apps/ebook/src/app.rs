@@ -1967,7 +1967,7 @@ impl BooksApp {
         self.dirty = true;
         match placed {
             Ok(placed) => {
-                cx.invoke(crate::resource::shelve(&placed.entry));
+                cx.submit(crate::resource::shelve(&placed.entry));
                 self.pending_open_book = Some(placed.entry.id);
                 self.shelve(placed.book, placed.path);
                 self.load_error = None;
@@ -3532,7 +3532,7 @@ impl BooksApp {
         for book in found {
             self.local_library.remember_book(&book.entry.id, &book.path);
             if !shelved.contains(&book.entry.id) {
-                cx.invoke(crate::resource::shelve_found(&book.entry));
+                cx.submit(crate::resource::shelve_found(&book.entry));
             }
         }
         self.local_library.save();

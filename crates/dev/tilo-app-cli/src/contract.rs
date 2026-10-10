@@ -143,17 +143,11 @@ pub(crate) fn source_catalog(app_dir: &Path) -> Result<Option<BTreeSet<String>>>
 }
 
 fn message_ids(source: &str) -> Result<BTreeSet<String>> {
-    use fluent_syntax::ast::Entry;
-    let resource = fluent_syntax::parser::parse(source)
-        .map_err(|(_, errors)| anyhow::anyhow!("{errors:?}"))?;
-    Ok(resource
-        .body
-        .iter()
-        .filter_map(|entry| match entry {
-            Entry::Message(message) => Some(message.id.name.to_owned()),
-            _ => None,
-        })
-        .collect())
+    Ok(
+        crate::catalog_message_ids(&crate::parse_fluent_catalog(source)?)
+            .into_iter()
+            .collect(),
+    )
 }
 
 /// Every shipped translation carries every message of the source catalog.

@@ -346,9 +346,9 @@ impl ResourceSurface<Library, MusicEffect> for MusicApp {
             let current = cx.live().get();
             let _gesture = cx.dispatcher().begin_group();
             if !current.tracks.contains_key(track) {
-                cx.invoke(self.catalogue_import(track)?);
+                cx.submit(self.catalogue_import(track)?);
             }
-            cx.invoke(
+            cx.submit(
                 Invoke::edit(&Library::like(track, !current.is_liked(track)))
                     .map_err(|error| error.to_string())?,
             );

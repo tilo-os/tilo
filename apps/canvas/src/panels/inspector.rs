@@ -757,7 +757,7 @@ fn artwork(cx: &ViewCx<ArtworkResource>) -> Element {
         .selecting(GROUNDS.iter().position(|rgb| Some(*rgb) == ground_now))
         .on_change(move |index| {
             if let Some(rgb) = GROUNDS.get(index) {
-                dispatch.invoke(ArtworkResource::SET_GROUND.with(hex(*rgb)));
+                dispatch.submit(ArtworkResource::SET_GROUND.with(hex(*rgb)));
             }
         });
     section(vec![
@@ -1042,7 +1042,7 @@ fn paints(
         .selecting(selected)
         .on_change(move |index| {
             if let Some(value) = chosen.get(index) {
-                dispatch.invoke(picked.invoke(&targets, value.clone()));
+                dispatch.submit(picked.invoke(&targets, value.clone()));
             }
         });
     let text = LocalState::new(current.unwrap_or("none").to_owned());
@@ -1091,7 +1091,7 @@ fn paints(
             format!("{}-artwork-colours", paint.id()),
             move || current.clone(),
             move |value| {
-                dispatch.invoke(paint.invoke(&ids, value));
+                dispatch.submit(paint.invoke(&ids, value));
             },
         ));
     } else {
@@ -1118,7 +1118,7 @@ fn stroke_brush(cx: &ViewCx<ArtworkResource>, ids: &[String], mark: &Mark, plain
             preset,
             move || ink.clone(),
             move |preset| {
-                dispatch.invoke(
+                dispatch.submit(
                     ArtworkResource::SET_BRUSH.with((targets.clone(), preset.name().to_owned())),
                 );
             },

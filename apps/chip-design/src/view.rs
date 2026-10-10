@@ -175,7 +175,7 @@ impl ResourceApp for ChipDesignShell {
                     }) {
                         return Err(tr("chip-report-limit"));
                     }
-                    cx.invoke(invoke);
+                    cx.submit(invoke);
                     Ok(Effected::done())
                 },
             )),

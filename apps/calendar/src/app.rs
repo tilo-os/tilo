@@ -2328,7 +2328,7 @@ impl CalendarApp {
                 .map_err(|_| format!("{} is not an iCalendar file", file.name))?;
             let import = crate::resource::import(&payload)
                 .ok_or_else(|| format!("{} holds no events or tasks", file.name))?;
-            cx.invoke(import);
+            cx.submit(import);
             app.status = Some(format!("Imported calendar items from {}", file.name));
             app.dirty = true;
             Ok(ui::framework::Effected::done())

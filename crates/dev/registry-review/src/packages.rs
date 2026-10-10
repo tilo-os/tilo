@@ -281,7 +281,7 @@ fn start(
                     Ok(versions) => ui::serde_json::json!({"review_id": review_id, "submission": snapshot.pending, "verified_packages": versions}),
                     Err(error) => ui::serde_json::json!({"review_id": review_id, "submission": snapshot.pending, "inspection_error": error}),
                 };
-                if state.package_selected.as_ref() != Some(&snapshot) { cx.invoke(Draft::paths().feedback.replace("").into()); }
+                if state.package_selected.as_ref() != Some(&snapshot) { cx.submit(Draft::paths().feedback.replace("")); }
                 state.package_selected = Some(snapshot); state.selected = None; navigation.set(NavPane::Content); result
             }
             Err(error) => { state.error = Some(error.clone()); pane.set(state); return Err(error); }

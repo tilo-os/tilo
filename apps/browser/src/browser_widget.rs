@@ -865,7 +865,7 @@ impl BrowserWidget {
     ) -> ui::widget::Button {
         match (action, self.dispatch.clone()) {
             (Some(action), Some(dispatch)) => {
-                button.on_effect(move || dispatch.invoke(action.clone()))
+                button.on_effect(move || dispatch.submit(action.clone()))
             }
             _ => button,
         }

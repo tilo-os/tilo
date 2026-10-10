@@ -962,7 +962,7 @@ impl RemoteApp {
         #[cfg(test)]
         self.submitted.borrow_mut().push(invoke.clone());
         if let Some(dispatch) = &self.dispatch {
-            dispatch.invoke(invoke);
+            dispatch.submit(invoke);
         }
     }
 

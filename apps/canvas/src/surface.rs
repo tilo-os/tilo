@@ -2358,7 +2358,7 @@ impl CanvasSurface {
                 let CanvasAction::Select(select) = action else {
                     return Err("the finder did not produce a selection".into());
                 };
-                cx.invoke(ArtworkResource::SELECT_FOUND.with((select.d, select.matte, select.mode, select.feather)));
+                cx.submit(ArtworkResource::SELECT_FOUND.with((select.d, select.matte, select.mode, select.feather)));
                 Ok(ui::framework::Effected::value(answer))
             },
         ))

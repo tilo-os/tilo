@@ -382,7 +382,7 @@ impl ResourceSurface<Firewall, FirewallEffect> for FirewallApp {
                 |_| read_device(),
                 |app: &mut Self, read: Result<FirewallConfig, String>, cx| {
                     let config = app.finish_retry(read)?;
-                    cx.invoke(Firewall::import_of(&config));
+                    cx.submit(Firewall::import_of(&config));
                     Ok(Effected::done())
                 },
             )),

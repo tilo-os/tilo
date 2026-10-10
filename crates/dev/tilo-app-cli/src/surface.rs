@@ -105,49 +105,31 @@ pub fn parse_report(output: &str) -> Result<SurfaceReport> {
     })
 }
 
-/// Build and run the app's binary for its surface report.
+/// Run the app's binary for its surface report: `executable` when it is
+/// already built, else `cargo run`.
 ///
 /// # Errors
 /// Returns why the app does not build or report.
-pub fn read_report(app_dir: &Path) -> Result<SurfaceReport> {
-    if !is_framework_app(app_dir) {
-        bail!(
-            "{} does not run through `ui::main!(App)`, so its binary reports no surface",
-            app_dir.display()
-        );
-    }
-    let program = std::env::var_os("CARGO").unwrap_or_else(|| OsString::from("cargo"));
-    let output = ProcessCommand::new(&program)
-        .current_dir(app_dir)
-        .args(["run", "--quiet", "--manifest-path"])
-        .arg(app_dir.join("Cargo.toml"))
-        .args(["--", FLAG])
-        .stderr(std::process::Stdio::inherit())
-        .output()
-        .with_context(|| format!("starting {}", program.to_string_lossy()))?;
-    if !output.status.success() {
-        bail!("the app's surface report failed with {}", output.status);
-    }
-    parse_report(&String::from_utf8_lossy(&output.stdout))
-}
-
-/// Run an already built `executable` of the app for its surface report.
-///
-/// # Errors
-/// Returns why it did not report.
-pub fn report_of(executable: &Path, app_dir: &Path) -> Result<SurfaceReport> {
-    let output = ProcessCommand::new(executable)
+pub fn report_of(app_dir: &Path, executable: Option<&Path>) -> Result<SurfaceReport> {
+    let mut command = if let Some(executable) = executable {
+        ProcessCommand::new(executable)
+    } else {
+        let program = std::env::var_os("CARGO").unwrap_or_else(|| OsString::from("cargo"));
+        let mut cargo = ProcessCommand::new(program);
+        cargo
+            .args(["run", "--quiet", "--manifest-path"])
+            .arg(app_dir.join("Cargo.toml"))
+            .arg("--");
+        cargo
+    };
+    let output = command
         .current_dir(app_dir)
         .arg(FLAG)
         .stderr(std::process::Stdio::inherit())
         .output()
-        .with_context(|| format!("running {} {FLAG}", executable.display()))?;
+        .with_context(|| format!("running {command:?}"))?;
     if !output.status.success() {
-        bail!(
-            "{} {FLAG} failed with {}",
-            executable.display(),
-            output.status
-        );
+        bail!("{command:?} failed with {}", output.status);
     }
     parse_report(&String::from_utf8_lossy(&output.stdout))
 }
@@ -471,17 +453,36 @@ fn own_action_ids(report: &SurfaceReport) -> Vec<(&'static str, String)> {
     verbs.chain(effects).chain(views).collect()
 }
 
-/// Write the surface of the app containing `start` to its [`FILE`], from
-/// its binary's report. Returns the file and the report, whose unbound
-/// controls the caller shows.
+/// Write the surface of the app containing `start` to its [`FILE`]: from
+/// the report its binary printed for [`FLAG`], saved at `saved`, else from
+/// running it. Returns the file and the report, whose unbound controls the
+/// caller shows.
 ///
 /// # Errors
 /// Returns why the app does not report or the file cannot be written.
-pub fn write_app(start: &Path) -> Result<(PathBuf, SurfaceReport)> {
+pub fn write_app(start: &Path, saved: Option<&Path>) -> Result<(PathBuf, SurfaceReport)> {
     let app_dir = crate::resolve_app_dir(start)?;
-    let report = read_report(&app_dir)?;
+    let report = if let Some(saved) = saved {
+        parse_report(
+            &std::fs::read_to_string(saved)
+                .with_context(|| format!("reading {}", saved.display()))?,
+        )?
+    } else {
+        ensure_framework_app(&app_dir)?;
+        report_of(&app_dir, None)?
+    };
     let path = write(&app_dir, &report.resources)?;
     Ok((path, report))
+}
+
+fn ensure_framework_app(app_dir: &Path) -> Result<()> {
+    if !is_framework_app(app_dir) {
+        bail!(
+            "{} does not run through `ui::main!(App)`, so its binary reports no surface",
+            app_dir.display()
+        );
+    }
+    Ok(())
 }
 
 /// The app id `tilo-app.toml` declares.
@@ -497,38 +498,33 @@ pub fn app_id(app_dir: &Path) -> Result<String> {
     Ok(manifest.package.id)
 }
 
-/// Write the surface of the app containing `start` from the report its
-/// binary printed for [`FLAG`], saved at `report`.
-///
-/// # Errors
-/// Returns why the report does not read or the file cannot be written.
-pub fn write_reported(start: &Path, report: &Path) -> Result<(PathBuf, SurfaceReport)> {
-    let app_dir = crate::resolve_app_dir(start)?;
-    let text =
-        std::fs::read_to_string(report).with_context(|| format!("reading {}", report.display()))?;
-    let report = parse_report(&text)?;
-    let path = write(&app_dir, &report.resources)?;
-    Ok((path, report))
-}
-
-/// Check the surface of the app containing `start` against its committed
-/// [`FILE`]; `None` for an app whose binary reports none.
+/// Check the surface of the app at `start` against its committed [`FILE`]
+/// (run from `executable` when it is built), with findings at `level`;
+/// `None` for an app whose binary reports none. History messages are
+/// asked of the app's source catalog when `level` is an error.
 ///
 /// # Errors
 /// Returns why the app does not report or the files do not read.
-pub fn check_app(start: &Path) -> Result<Option<ContractReport>> {
+pub fn check_app(
+    start: &Path,
+    executable: Option<&Path>,
+    level: Level,
+) -> Result<Option<ContractReport>> {
     let app_dir = crate::resolve_app_dir(start)?;
     if !is_framework_app(&app_dir) {
         return Ok(None);
     }
-    let report = read_report(&app_dir)?;
-    let catalog = crate::contract::source_catalog(&app_dir)?;
+    let report = report_of(&app_dir, executable)?;
+    let catalog = match level {
+        Level::Error => crate::contract::source_catalog(&app_dir)?,
+        Level::Warning => None,
+    };
     Ok(Some(findings(
         &app_id(&app_dir)?,
         &report,
         committed(&app_dir)?.as_deref(),
         catalog.as_ref(),
-        Level::Error,
+        level,
     )))
 }
 

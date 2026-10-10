@@ -1767,7 +1767,7 @@ impl SheetsApp {
             Ok(built) => built,
             Err(error) => return self.failed(error),
         };
-        cx.invoke(invoke);
+        cx.submit(invoke);
         self.status = format!("Imported {total} cells from {label}");
         self.pending_reveal = Some(PendingReveal {
             sheet_id: None,

@@ -406,7 +406,7 @@ pub fn editor(
         let dispatch = cx.dispatcher();
         let targets = ids.to_vec();
         move |gradient: Gradient| {
-            dispatch.invoke(ArtworkResource::SET_GRADIENT.with((targets.clone(), gradient)));
+            dispatch.submit(ArtworkResource::SET_GRADIENT.with((targets.clone(), gradient)));
         }
     });
     let mut column = Column::new()
@@ -477,7 +477,7 @@ fn kind_picker(
                     .as_ref()
                     .and_then(|g| g.stops.first().map(|stop| stop.1.clone()))
                     .unwrap_or_else(|| fill.clone());
-                dispatch.invoke(ArtworkResource::SET_FILL.with((targets.clone(), colour)));
+                dispatch.submit(ArtworkResource::SET_FILL.with((targets.clone(), colour)));
             } else {
                 let stops = gradient.as_ref().map_or_else(
                     // A fill fading to white: document colours.

@@ -179,7 +179,7 @@ impl Widget for Remover {
                 ]),
             ),
             Now::Queued => {
-                dispatch.invoke(Invoke::edit(&Notes::paths().notes.remove(&first)).unwrap());
+                dispatch.submit(Invoke::edit(&Notes::paths().notes.remove(&first)).unwrap());
                 Ok(())
             }
             Now::Typed => {

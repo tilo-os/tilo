@@ -203,7 +203,7 @@ fn install(
                 state.package_selected = None;
                 state.error = None;
                 if changed {
-                    cx.invoke(Draft::paths().feedback.replace("").into());
+                    cx.submit(Draft::paths().feedback.replace(""));
                 }
                 pane.set(state);
                 navigation.set(NavPane::Content);

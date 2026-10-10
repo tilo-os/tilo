@@ -460,7 +460,7 @@ impl ContactsApp {
         if dispatcher.read_only() {
             return Err("you can only view this address book".into());
         }
-        dispatcher.invoke(invoke);
+        dispatcher.submit(invoke);
         Ok(())
     }
 

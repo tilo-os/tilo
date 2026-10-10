@@ -75,7 +75,7 @@ impl BrowserWidget {
             let dispatcher = self.dispatch.clone();
             Box::new(move || {
                 if let (Some(dispatcher), Some(action)) = (&dispatcher, action.clone()) {
-                    dispatcher.invoke(action);
+                    dispatcher.submit(action);
                 }
             })
         } else {

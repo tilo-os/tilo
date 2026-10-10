@@ -262,7 +262,7 @@ fn deferred_receipt(cx: &mut EffectCx<Mailbox, ()>) -> Effected {
                 .value
                 .and_then(|value| value.as_str().map(str::to_owned))
                 .ok_or("receipt has no text")?;
-            cx.invoke(Mailbox::FETCHED.with(text));
+            cx.submit(Mailbox::FETCHED.with(text));
             Ok(Effected::done())
         }));
     });
@@ -290,7 +290,7 @@ impl ResourceApp for MailApp {
                     },
                     move |(), text, cx| {
                         online.set(true);
-                        cx.invoke(Mailbox::FETCHED.with(text.clone()));
+                        cx.submit(Mailbox::FETCHED.with(text.clone()));
                         Ok(Effected::value(text))
                     },
                 ))
@@ -299,7 +299,7 @@ impl ResourceApp for MailApp {
             MailEffect::Stall => Ok(Effected::Pending),
             MailEffect::Receipt | MailEffect::ReadReceipt => Ok(deferred_receipt(cx)),
             MailEffect::Note { text } => {
-                cx.invoke(Mailbox::FETCHED.with(text));
+                cx.submit(Mailbox::FETCHED.with(text));
                 Ok(Effected::done())
             }
             MailEffect::ShowSent => {
@@ -322,7 +322,7 @@ impl ResourceApp for MailApp {
             |_, _: &String| true,
             |id, text, cx| {
                 DELIVERED.with(|delivered| delivered.borrow_mut().push(text));
-                cx.invoke(Mailbox::DELIVERED.with(id.clone()));
+                cx.submit(Mailbox::DELIVERED.with(id.clone()));
                 Ok(Effected::done())
             },
         );
@@ -827,7 +827,7 @@ impl ResourceSurface<Mailbox, TallyEffect> for Tally {
                 |_| 1,
                 |tally: &mut Self, step: u32, cx| {
                     tally.counted = tally.counted.saturating_add(step);
-                    cx.invoke(Mailbox::FETCHED.with(format!("tally {}", tally.counted)));
+                    cx.submit(Mailbox::FETCHED.with(format!("tally {}", tally.counted)));
                     Ok(Effected::value(tally.counted))
                 },
             )),
@@ -980,7 +980,7 @@ impl ResourceApp for FilesApp {
                         return Err("no file was chosen".into());
                     };
                     CHOSEN.with(|chosen| chosen.borrow_mut().clone_from(&file.identity));
-                    cx.invoke(
+                    cx.submit(
                         Mailbox::FETCHED.with(String::from_utf8_lossy(&file.bytes).into_owned()),
                     );
                     Ok(Effected::done())
@@ -1094,7 +1094,7 @@ impl ResourceSurface<Mailbox> for Fetcher {
                     move |_| format!("{text} by the surface"),
                     |fetcher: &mut Self, text, cx| {
                         fetcher.fetches = fetcher.fetches.saturating_add(1);
-                        cx.invoke(Mailbox::FETCHED.with(format!("{text} ({})", fetcher.fetches)));
+                        cx.submit(Mailbox::FETCHED.with(format!("{text} ({})", fetcher.fetches)));
                         Ok(Effected::done())
                     },
                 ))
@@ -1116,7 +1116,7 @@ impl ResourceApp for FetcherApp {
             Ok(cx.thread(
                 |_| "queued by the view".to_owned(),
                 |(), text, cx| {
-                    cx.invoke(Mailbox::SEND.with(text));
+                    cx.submit(Mailbox::SEND.with(text));
                     Ok(Effected::done())
                 },
             ))
@@ -1427,7 +1427,7 @@ impl ResourceApp for DiskApp {
     fn view(cx: &mut ViewCx<Mailbox>) -> Element {
         cx.effects(|effect: DiskEffect, cx| {
             let DiskEffect::Erase { disk } = effect;
-            cx.invoke(Mailbox::FETCHED.with(format!("erased {disk}")));
+            cx.submit(Mailbox::FETCHED.with(format!("erased {disk}")));
             Ok(Effected::done())
         });
         cx.surface(Recorder::default())

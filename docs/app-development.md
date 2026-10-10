@@ -1697,7 +1697,7 @@ cx.effects(move |effect: MailEffect, cx| match effect {
     MailEffect::Archive { conversation } => Ok(cx.thread(
         move |progress| server.archive(&conversation, &progress),
         |(), archived, cx| {
-            cx.invoke(Mail::MARK_ARCHIVED.with(archived?));
+            cx.submit(Mail::MARK_ARCHIVED.with(archived?));
             Ok(Effected::done())
         },
     )),

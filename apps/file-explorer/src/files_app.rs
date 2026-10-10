@@ -858,7 +858,7 @@ impl FileExplorerWidget {
         if let (Some(dispatcher), Some(device)) = (&self.dispatcher, &self.device)
             && let Some(queueing) = crate::resource::FileExplorer::queueing(device, op.clone())
         {
-            dispatcher.invoke(queueing);
+            dispatcher.submit(queueing);
             self.awaiting_ops.push((op, follow));
             return None;
         }
@@ -1182,7 +1182,7 @@ impl FileExplorerWidget {
     /// is refused).
     fn submit(&self, invoke: ui::tilo_resource::Invoke<crate::resource::FileExplorer>) {
         if let Some(dispatcher) = &self.dispatcher {
-            dispatcher.invoke(invoke);
+            dispatcher.submit(invoke);
         }
     }
 

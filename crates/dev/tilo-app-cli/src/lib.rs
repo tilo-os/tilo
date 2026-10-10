@@ -1598,7 +1598,7 @@ fn label_key_constant(id: &str) -> String {
 }
 
 /// The messages (not terms) of a source catalog, in catalog order of ids.
-fn catalog_message_ids(contract: &FluentCatalogContract) -> Vec<String> {
+pub(crate) fn catalog_message_ids(contract: &FluentCatalogContract) -> Vec<String> {
     contract
         .entries
         .keys()
@@ -8508,11 +8508,11 @@ struct FluentEntryContract {
 }
 
 #[derive(Debug, PartialEq, Eq)]
-struct FluentCatalogContract {
+pub(crate) struct FluentCatalogContract {
     entries: BTreeMap<String, FluentEntryContract>,
 }
 
-fn parse_fluent_catalog(source: &str) -> Result<FluentCatalogContract> {
+pub(crate) fn parse_fluent_catalog(source: &str) -> Result<FluentCatalogContract> {
     use fluent_syntax::ast::Entry;
 
     let resource = fluent::FluentResource::try_new(source.to_owned())

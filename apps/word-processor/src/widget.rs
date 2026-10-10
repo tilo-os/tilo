@@ -1606,7 +1606,7 @@ impl WordProcessorWidget {
             return;
         }
         if let Some(dispatch) = &self.dispatch {
-            dispatch.invoke(
+            dispatch.submit(
                 crate::model::Document::NOTE_FILE_WRITTEN.with(tilo_content::hash_bytes(bytes)),
             );
         }
@@ -1705,7 +1705,7 @@ impl WordProcessorWidget {
             return Some(
                 crate::actions::editing::comment_range(&view, &doc)
                     .map(|range| {
-                        dispatch.invoke(crate::model::Document::ADD_COMMENT.with(
+                        dispatch.submit(crate::model::Document::ADD_COMMENT.with(
                             crate::model::document::AddComment {
                                 block: range.block,
                                 start: range.start,
@@ -10199,7 +10199,7 @@ impl WordProcessorWidget {
         let dispatch = cx.dispatcher();
         dispatch.group(|| {
             dispatch.submit(crate::model::edit(&action));
-            dispatch.invoke(crate::model::Document::ADOPT_COMMENTS.invoke());
+            dispatch.submit(crate::model::Document::ADOPT_COMMENTS.invoke());
         });
         self.set_file(path.to_path_buf(), format);
         self.scroll_y = 0.0;
