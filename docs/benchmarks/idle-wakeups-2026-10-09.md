@@ -180,6 +180,27 @@ gates the loopback case at 2/s (measured 1.05/s, focused run 91528). The
 call table's parking is held by
 `devices::tests::the_refresh_loop_runs_only_while_a_call_watches`.
 
+### TIL-740: relays wait until something needs reachability
+
+TIL-702's residue was iroh's net report: with a non-empty relay map, iroh
+re-runs it every 20-26 s (QAD handshakes to every relay, a port-mapping
+probe) and keeps a home relay connection alive. iroh skips all of that while
+the relay map is empty, so the endpoint now binds with N0's preset and
+`RelayMode::Custom(RelayMap::empty())`, and the default relays wait in
+`network::reachability::Reachability` until something needs this device
+reachable: a shared room, an open invitation or another of the person's
+devices recorded at session start; a dial to a peer or host, an enrolment,
+a call, a send to the person's devices or a peer reaching a topic in the
+actor; an issued invitation; a bound Messages account. Then
+`Endpoint::insert_relay` adds them, with the endpoint, its key and its
+connections unchanged. Waking is sticky for the session.
+
+The lone-desktop gate now runs on that path (`Reach::LoopbackHoldingRelays`)
+and asserts the relays are still held back after its idle window: 1.05/s
+(focused run 92076), the same as loopback. `reachability_tests` holds the
+startup predicate and a pair of desktops that hold their relays back, still
+sync, and then both wake them.
+
 ## The collaboration-plane gate in the shell shard
 
 `idle_quiet_tests` (two converged desktops) had a 15/s budget, set from
