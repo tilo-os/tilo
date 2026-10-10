@@ -449,18 +449,33 @@ impl Door {
         door
     }
 
-    fn offers(&self, app: &str, resource: &str, action: &str) -> bool {
-        answer(self.host.query(
-            &self.owner,
-            CatalogueQuery {
-                max_results: MAX_CATALOGUE_PAGE,
-                ..CatalogueQuery::default()
-            },
-        ))
-        .expect("catalogue")
-        .rows
-        .iter()
-        .any(|row| {
+    fn stable_catalogue(&mut self) -> CataloguePage {
+        loop {
+            match answer(self.host.query(
+                &self.owner,
+                CatalogueQuery {
+                    max_results: MAX_CATALOGUE_PAGE,
+                    ..CatalogueQuery::default()
+                },
+            )) {
+                Ok(page) => return page,
+                Err(ActionHostError::Unavailable { reason })
+                    if reason == "the action catalogue changed while it was read" =>
+                {
+                    assert!(
+                        Instant::now() < self.deadline,
+                        "the action catalogue never settled after the fixture published"
+                    );
+                    self.app.pump();
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                Err(error) => panic!("catalogue: {error:?}"),
+            }
+        }
+    }
+
+    fn offers(&mut self, app: &str, resource: &str, action: &str) -> bool {
+        self.stable_catalogue().rows.iter().any(|row| {
             row.app_id == app
                 && row.action.as_ref().is_some_and(|descriptor| {
                     descriptor.address.resource == resource && descriptor.address.action == action
@@ -813,7 +828,7 @@ fn a_saved_shortcut_runs_its_steps_through_the_door_and_undoes_as_one() {
 
 #[test]
 fn a_shortcut_reaching_outside_its_grant_is_refused() {
-    let door = Door::open();
+    let mut door = Door::open();
     match door.save(&publish_draft("sneaky", &["draft"])) {
         Err(ActionHostError::Refused { reason }) => assert!(
             reason.contains("grant does not cover `publish`"),
