@@ -734,22 +734,138 @@ impl ChatApp {
         if side.width() <= 0.5 {
             return;
         }
-        if self.inbox_open {
-            self.draw_inbox_sidebar(scene, tf, tr, theme, side, hits);
-            return;
-        }
         // While in a call, the microphone control stays at hand here.
-        let bottom = if self.call.active {
+        let bottom = if self.call.active && !self.inbox_open {
             self.draw_voice_bar(scene, tf, tr, theme, side, hits)
         } else {
             side.y1
         };
-        self.draw_sidebar_tree(
-            PaintCtx::new(scene, tf, tr, theme),
-            presence,
-            Rect::new(side.x0, side.y0, side.x1, bottom),
-            hits,
+        let viewport = Rect::new(side.x0, side.y0, side.x1, bottom);
+        let (height, selected) = self.navigation_content_layout(theme);
+        self.navigation_scroll.set_viewport_rect(viewport);
+        self.navigation_scroll.set_content_size(
+            ui::num::f32_of_f64(viewport.width()),
+            ui::num::f32_of_f64(height),
         );
+        let selection = format!(
+            "{}:{}:{}:{}:{:?}",
+            self.active_ws,
+            self.inbox_open,
+            self.active_channel,
+            self.direct_agent.as_deref().unwrap_or_default(),
+            self.rename,
+        );
+        if self.navigation_selection.as_ref() != Some(&selection) {
+            if let Some(row) = selected {
+                self.navigation_scroll.scroll_into_view(
+                    0.0,
+                    ui::num::f32_of_f64(row.y0),
+                    ui::num::f32_of_f64(viewport.width()),
+                    ui::num::f32_of_f64(row.height()),
+                );
+            }
+            self.navigation_selection = Some(selection);
+        }
+        let top = viewport.y0 - f64::from(self.navigation_scroll.offset_y());
+        let content = Rect::new(viewport.x0, top, viewport.x1, top + height);
+        let first_hit = hits.len();
+        push_clip(scene, tf, viewport);
+        if self.inbox_open {
+            self.draw_inbox_sidebar(scene, tf, tr, theme, content, hits);
+        } else {
+            self.draw_sidebar_tree(PaintCtx::new(scene, tf, tr, theme), presence, content, hits);
+        }
+        scene.pop_layer();
+        // The same clipped inventory supplies pointer, keyboard and AT controls.
+        let navigation_hits = hits.split_off(first_hit);
+        for (rect, hit) in navigation_hits {
+            let shown = rect.intersect(viewport);
+            if shown.width() > 0.0 && shown.height() > 0.0 {
+                hits.push((shown, hit));
+            }
+        }
+        self.navigation_scroll.draw_bar_overlay(scene, tf, theme);
+    }
+
+    /// Measure the complete navigation with the same shared row/section metrics
+    /// as its painters. The selected row is in top-origin content coordinates.
+    fn navigation_content_layout(&self, theme: &Theme) -> (f64, Option<Rect>) {
+        let row_h = nav_row_height(theme);
+        let mut y = 0.0;
+        let mut selected = None;
+        let mut first = true;
+        if self.inbox_open {
+            let mut workspaces = self.workspaces.clone();
+            workspaces.sort_by(|left, right| left.name.cmp(&right.name));
+            for workspace in workspaces {
+                let mut channels: Vec<_> = self
+                    .channels
+                    .iter()
+                    .filter(|channel| {
+                        channel.workspace == workspace.id
+                            && channel.kind == ChannelKind::Text
+                            && !channel.archived
+                    })
+                    .collect();
+                if channels.is_empty() {
+                    continue;
+                }
+                channels.sort_by(|left, right| {
+                    right
+                        .unread
+                        .cmp(&left.unread)
+                        .then_with(|| left.order.cmp(&right.order))
+                });
+                y += nav_section_height(theme, first);
+                first = false;
+                for channel in channels {
+                    if channel.id == self.active_channel {
+                        selected = Some(Rect::new(0.0, y, 1.0, y + row_h));
+                    }
+                    y += row_h;
+                }
+            }
+        } else {
+            let groups = std::iter::once(None).chain(self.ws_categories().into_iter().map(Some));
+            for category in groups {
+                if let Some(category) = category {
+                    let height = nav_section_height(theme, first);
+                    if matches!(&self.rename, Some(MenuTarget::Category(id)) if id == &category.id)
+                    {
+                        selected = Some(Rect::new(0.0, y, 1.0, y + height));
+                    }
+                    y += height;
+                    first = false;
+                    if category.collapsed {
+                        continue;
+                    }
+                }
+                for channel in self.category_channels(category.map_or("", |category| &category.id))
+                {
+                    if (self.direct_agent.is_none() && channel.id == self.active_channel)
+                        || matches!(&self.rename, Some(MenuTarget::Channel(id)) if id == &channel.id)
+                    {
+                        selected = Some(Rect::new(0.0, y, 1.0, y + row_h));
+                    }
+                    y += row_h;
+                    if channel.kind == ChannelKind::Voice {
+                        y += row_h * ui::num::f64_of_usize(self.voice_in(&channel.id).len());
+                    }
+                    first = false;
+                }
+            }
+            if !self.room_agents.is_empty() {
+                y += nav_section_height(theme, first);
+                let height = nav_item_height(theme, true, false);
+                for agent in &self.room_agents {
+                    if self.direct_agent.as_ref() == Some(agent) {
+                        selected = Some(Rect::new(0.0, y, 1.0, y + height));
+                    }
+                    y += height;
+                }
+            }
+        }
+        (y, selected)
     }
 
     /// Cross-workspace conversations: one section per workspace, its text

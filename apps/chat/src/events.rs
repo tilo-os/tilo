@@ -148,6 +148,56 @@ fn drive_retained_control(
 }
 
 impl ChatApp {
+    fn route_navigation_scroll_event(
+        &mut self,
+        event: &WindowEvent,
+        scale: f64,
+        modifiers: Modifiers,
+        doc: &mut ui::widget::Edits<'_>,
+    ) -> bool {
+        if !self.left_flap.is_open() || self.emoji_open {
+            return false;
+        }
+        let wheel_inside = matches!(event, WindowEvent::MouseWheel { .. })
+            && self
+                .navigation_scroll
+                .content_viewport_rect()
+                .contains(self.last_mouse);
+        let navigation_key = matches!(
+            event,
+            WindowEvent::KeyboardInput {
+                event: KeyEvent {
+                    logical_key: Key::Named(
+                        NamedKey::PageUp | NamedKey::PageDown | NamedKey::Home | NamedKey::End
+                    ),
+                    ..
+                },
+                ..
+            }
+        ) && self.navigation_owns_scroll()
+            && !modifiers.state().control_key()
+            && !modifiers.state().super_key()
+            && !modifiers.state().alt_key();
+        if navigation_key {
+            self.navigation_scroll.set_focus(true);
+        } else if !matches!(event, WindowEvent::KeyboardInput { .. }) {
+            self.navigation_scroll.set_focus(false);
+        }
+        if matches!(
+            event,
+            WindowEvent::CursorMoved { .. }
+                | WindowEvent::MouseInput { .. }
+                | WindowEvent::MouseWheel { .. }
+        ) || navigation_key
+        {
+            let handled =
+                drive_retained_control(&mut self.navigation_scroll, event, scale, modifiers, doc);
+            // A boundary wheel belongs to navigation, never the timeline behind it.
+            return handled || wheel_inside;
+        }
+        false
+    }
+
     fn route_thread_scroll_event(
         &mut self,
         event: &WindowEvent,
@@ -174,11 +224,10 @@ impl ChatApp {
         doc: &mut ui::widget::Edits<'_>,
         handled: &mut bool,
     ) -> bool {
-        if self.route_context_menu_event(event, scale, modifiers, doc) {
-            *handled = true;
-            return false;
-        }
-        if self.route_thread_scroll_event(event, scale, modifiers, doc) {
+        if self.route_context_menu_event(event, scale, modifiers, doc)
+            || self.route_navigation_scroll_event(event, scale, modifiers, doc)
+            || self.route_thread_scroll_event(event, scale, modifiers, doc)
+        {
             *handled = true;
             return false;
         }
@@ -1077,7 +1126,12 @@ impl ChatApp {
             Hit::Search => self
                 .search_opener
                 .open(ui::search::SearchRequest::this_app()),
-            Hit::ToggleLeftFlap => self.left_flap.toggle(),
+            Hit::ToggleLeftFlap => {
+                if !self.left_flap.is_open() {
+                    self.navigation_selection = None;
+                }
+                self.left_flap.toggle();
+            }
             Hit::ToggleRightFlap => self.right_flap.toggle(),
             Hit::Dismiss => self.on_hit_dismiss(),
             // MessageMenu and floating-surface drag handles are handled at
@@ -9175,6 +9229,285 @@ mod tests {
         app.left_flap.snap(true);
         render_frame_with_theme(&mut app, width, height, theme);
         app
+    }
+
+    fn settle_navigation_drawer(
+        app: &mut ChatApp,
+        clock: &ui::background::Pumped,
+        theme: &ui::Theme,
+    ) {
+        for _ in 0..120 {
+            clock.advance(std::time::Duration::from_millis(16));
+            render_frame_with_theme(app, 800.0, 600.0, theme);
+            if !app.left_flap.is_animating() {
+                return;
+            }
+        }
+        assert!(
+            !app.left_flap.is_animating(),
+            "the actual drawer must settle"
+        );
+    }
+
+    fn rich_navigation_fixture(
+        clock: &ui::background::Pumped,
+        theme: &ui::Theme,
+    ) -> (ChatApp, AutoCommit) {
+        use ui::Widget;
+        use ui::a11y::Action;
+        let (mut app, mut doc) = app_with_doc();
+        let mut presence = ui::presence::PresenceCtx::empty();
+        let row = |id: &str, name: &str, is_agent, is_self| ui::collaboration::Collaborator {
+            id: id.into(),
+            name: name.into(),
+            colour: None,
+            is_agent,
+            is_self,
+        };
+        presence.apply_test_collaboration_snapshot(&[
+            row("u_alice", "Alice", false, true),
+            row("agent:reed", "Reed", true, false),
+            row("agent:tide", "Tide", true, false),
+        ]);
+        app.adopt_room(&presence);
+        assert_eq!(app.room_agents, ["reed", "tide"]);
+        app.call.join("c_huddle");
+        render_frame_with_theme(&mut app, 800.0, 600.0, theme);
+        if !app.left_flap_open() {
+            assert!(app.perform_semantic_action(
+                &Hit::ToggleLeftFlap.semantic_id(),
+                &Action::Activate,
+                &mut ui::widget::Edits::lend(&mut doc),
+                &automerge::ROOT
+            ));
+        }
+        settle_navigation_drawer(&mut app, clock, theme);
+        (app, doc)
+    }
+
+    #[test]
+    fn rich_compact_navigation_scrolls_reveals_agents_and_clips_semantics() {
+        use ui::Widget;
+        use ui::a11y::Action;
+        use ui::widget::{PrimaryScrollAction, PrimaryScrollResult};
+        let clock = ui::background::Pumped::new();
+        let _entered = clock.background().enter();
+        let theme = ui::Theme::high_contrast().with_text_scale(2.0);
+        let (mut app, mut doc) = rich_navigation_fixture(&clock, &theme);
+        assert!(app.navigation_scroll.vertical_overflows());
+        let timeline = app.scroll;
+        let viewport = app.navigation_scroll.content_viewport_rect();
+        let mute = navigation_hit_rect(&app, &Hit::CallMute);
+        assert!(
+            mute.y0 >= viewport.y1,
+            "the call control stays below navigation"
+        );
+        feed(
+            &mut app,
+            &mut doc,
+            &cursor_moved(viewport.center().x, viewport.center().y),
+        );
+        feed(&mut app, &mut doc, &wheel(-100.0));
+        render_frame_with_theme(&mut app, 800.0, 600.0, &theme);
+        assert_eq!(navigation_hit_rect(&app, &Hit::CallMute), mute);
+        let tide = navigation_hit_rect(&app, &Hit::Agent("tide".into()));
+        assert!(viewport.contains_rect(tide));
+        let access = app.accessibility().unwrap();
+        assert_eq!(
+            navigation_access_node(&access, &Hit::Agent("tide".into()).semantic_id())
+                .unwrap()
+                .bounds
+                .unwrap()
+                .to_rect(),
+            tide
+        );
+        for (rect, hit) in &app.hits {
+            if matches!(
+                hit,
+                Hit::Channel(_)
+                    | Hit::VoiceChannel(_)
+                    | Hit::Agent(_)
+                    | Hit::CategoryToggle(_)
+                    | Hit::AddChannel { .. }
+            ) {
+                assert!(viewport.contains_rect(*rect));
+            }
+        }
+        feed(&mut app, &mut doc, &wheel(-100.0));
+        assert_eq!(
+            app.scroll, timeline,
+            "boundary wheel never moves the hidden timeline"
+        );
+        assert!(app.perform_semantic_action(
+            &Hit::Agent("tide".into()).semantic_id(),
+            &Action::Focus,
+            &mut ui::widget::Edits::lend(&mut doc),
+            &automerge::ROOT
+        ));
+        assert!(matches!(
+            app.apply_primary_vertical_scroll(PrimaryScrollAction::Start),
+            PrimaryScrollResult::Changed(_)
+        ));
+        render_frame_with_theme(&mut app, 800.0, 600.0, &theme);
+        assert!(
+            navigation_access_node(
+                &app.accessibility().unwrap(),
+                &Hit::Agent("tide".into()).semantic_id()
+            )
+            .is_none()
+        );
+        feed(&mut app, &mut doc, &wheel(-100.0));
+        render_frame_with_theme(&mut app, 800.0, 600.0, &theme);
+        assert!(app.perform_semantic_action(
+            &Hit::Agent("tide".into()).semantic_id(),
+            &Action::Activate,
+            &mut ui::widget::Edits::lend(&mut doc),
+            &automerge::ROOT
+        ));
+        type_str(&mut app, &mut doc, "Retain this Agent draft");
+        let draft = app.composer_main.private_plain();
+        let selection = app.composer_main.selection();
+        settle_navigation_drawer(&mut app, &clock, &theme);
+        if !app.left_flap_open() {
+            assert!(app.perform_semantic_action(
+                &Hit::ToggleLeftFlap.semantic_id(),
+                &Action::Activate,
+                &mut ui::widget::Edits::lend(&mut doc),
+                &automerge::ROOT
+            ));
+        }
+        settle_navigation_drawer(&mut app, &clock, &theme);
+        assert!(
+            app.navigation_scroll
+                .content_viewport_rect()
+                .contains_rect(navigation_hit_rect(&app, &Hit::Agent("tide".into())))
+        );
+        assert_eq!(app.direct_agent.as_deref(), Some("tide"));
+        assert_eq!(app.composer_main.private_plain(), draft);
+        assert_eq!(app.composer_main.selection(), selection);
+    }
+
+    #[test]
+    fn navigation_keyboard_focus_survives_consecutive_scrolls_and_repaints() {
+        use ui::Widget;
+        let clock = ui::background::Pumped::new();
+        let _entered = clock.background().enter();
+        let theme = ui::Theme::high_contrast().with_text_scale(2.0);
+        let (mut app, mut doc) = rich_navigation_fixture(&clock, &theme);
+        let viewport = app.navigation_scroll.content_viewport_rect();
+        feed(
+            &mut app,
+            &mut doc,
+            &cursor_moved(viewport.center().x, viewport.center().y),
+        );
+        feed(&mut app, &mut doc, &wheel(-100.0));
+        render_frame_with_theme(&mut app, 800.0, 600.0, &theme);
+        assert!(app.perform_semantic_action(
+            &Hit::Agent("tide".into()).semantic_id(),
+            &ui::a11y::Action::Focus,
+            &mut ui::widget::Edits::lend(&mut doc),
+            &automerge::ROOT
+        ));
+        feed(&mut app, &mut doc, &cursor_moved(799.0, 599.0));
+        let timeline = app.scroll;
+        for key in [NamedKey::Home, NamedKey::End, NamedKey::Home, NamedKey::End] {
+            feed(&mut app, &mut doc, &named_key(key));
+            render_frame_with_theme(&mut app, 800.0, 600.0, &theme);
+            assert!(app.navigation_owns_scroll());
+            assert_eq!(app.primary_vertical_scroll().unwrap().key, "navigation");
+            assert_eq!(app.scroll, timeline);
+            if key == NamedKey::Home {
+                assert_eq!(app.navigation_scroll.offset_y(), 0.0);
+                assert!(
+                    navigation_access_node(
+                        &app.accessibility().unwrap(),
+                        &Hit::Agent("tide".into()).semantic_id()
+                    )
+                    .is_none()
+                );
+            } else {
+                assert!(
+                    viewport.contains_rect(navigation_hit_rect(&app, &Hit::Agent("tide".into())))
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn navigation_roster_removal_retires_focus_when_content_clamps() {
+        use ui::Widget;
+        let clock = ui::background::Pumped::new();
+        let _entered = clock.background().enter();
+        let theme = ui::Theme::high_contrast().with_text_scale(2.0);
+        let (mut app, mut doc) = rich_navigation_fixture(&clock, &theme);
+        let viewport = app.navigation_scroll.content_viewport_rect();
+        feed(
+            &mut app,
+            &mut doc,
+            &cursor_moved(viewport.center().x, viewport.center().y),
+        );
+        feed(&mut app, &mut doc, &wheel(-100.0));
+        render_frame_with_theme(&mut app, 800.0, 600.0, &theme);
+        assert!(app.perform_semantic_action(
+            &Hit::Agent("tide".into()).semantic_id(),
+            &ui::a11y::Action::Focus,
+            &mut ui::widget::Edits::lend(&mut doc),
+            &automerge::ROOT
+        ));
+        assert!(app.navigation_owns_scroll());
+        let before = app.navigation_scroll.offset_y();
+        let mut presence = ui::presence::PresenceCtx::empty();
+        presence.apply_test_collaboration_snapshot(&[ui::collaboration::Collaborator {
+            id: "u_alice".into(),
+            name: "Alice".into(),
+            colour: None,
+            is_agent: false,
+            is_self: true,
+        }]);
+        app.adopt_room(&presence);
+        render_frame_with_theme(&mut app, 800.0, 600.0, &theme);
+        assert!(app.room_agents.is_empty());
+        assert!(app.navigation_scroll.offset_y() < before);
+        assert!(app.keyboard_target_semantic.is_none());
+        assert!(app.resolved_keyboard_target().is_none());
+        assert!(!app.navigation_owns_scroll());
+        assert!(
+            navigation_access_node(
+                &app.accessibility().unwrap(),
+                &Hit::Agent("tide".into()).semantic_id()
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn sidebar_pointer_does_not_steal_composer_or_rename_navigation_keys() {
+        use ui::Widget;
+        let (mut app, mut doc) = app_with_doc();
+        render_frame(&mut app, 1600.0, 900.0);
+        let viewport = app.navigation_scroll.content_viewport_rect();
+        feed(
+            &mut app,
+            &mut doc,
+            &cursor_moved(viewport.center().x, viewport.center().y),
+        );
+        app.on_hit(Hit::FocusMain, &mut ui::widget::Edits::lend(&mut doc));
+        let before = app.navigation_scroll.offset_y();
+        assert_eq!(app.primary_vertical_scroll().unwrap().key, "primary");
+        feed(&mut app, &mut doc, &named_key(NamedKey::Home));
+        feed(&mut app, &mut doc, &named_key(NamedKey::End));
+        assert_eq!(app.navigation_scroll.offset_y(), before);
+        app.begin_rename(MenuTarget::Channel("c_crit".into()));
+        render_frame(&mut app, 1600.0, 900.0);
+        let before = app.navigation_scroll.offset_y();
+        feed(&mut app, &mut doc, &named_key(NamedKey::Home));
+        assert_eq!(app.rename_input.cursor_pos(), 0);
+        feed(&mut app, &mut doc, &named_key(NamedKey::End));
+        assert_eq!(
+            app.rename_input.cursor_pos(),
+            app.rename_input.value().len()
+        );
+        assert_eq!(app.navigation_scroll.offset_y(), before);
     }
 
     #[test]

@@ -45,7 +45,7 @@ use crate::call::CallState;
 use crate::doc::ChatDoc;
 use crate::geometry::Chrome;
 use crate::identity::LocalIdentity;
-use crate::model::{self, Channel, Id, Message, User, Workspace};
+use crate::model::{self, Channel, ChannelKind, Id, Message, User, Workspace};
 use crate::permissions::ChatPermissions;
 
 // --- Floating call huddle home placement (fractions of the window) --------
@@ -672,6 +672,10 @@ pub struct ChatApp {
     /// Independent, top-origin thread offset and production paint metrics.
     pub(crate) thread_scroll: ui::widget::Scrollable,
     pub(crate) thread_body: Rect,
+    /// Navigation has its own shared scroll owner, independent of either composer.
+    pub(crate) navigation_scroll: ui::widget::Scrollable,
+    pub(crate) navigation_selection: Option<String>,
+    navigation_drawn_offset: f32,
     /// A durable read watermark is only advanced while the reader can actually
     /// see the newest edge. This flag is local presentation state, refreshed
     /// from the measured timeline during paint.
@@ -1043,6 +1047,9 @@ impl ChatApp {
             focus: Focus::Main,
             scroll: 0.0,
             thread_scroll: ui::widget::Scrollable::new_vertical().always_visible(),
+            navigation_scroll: ui::widget::Scrollable::new_vertical().always_visible(),
+            navigation_selection: None,
+            navigation_drawn_offset: 0.0,
             thread_body: Rect::ZERO,
             timeline_at_end: true,
             presented: false,
@@ -2727,6 +2734,118 @@ impl ChatApp {
                 .iter()
                 .position(|(_, hit, ..)| hit.semantic_id() == semantic),
             None => self.keyboard_target.filter(|index| *index < targets.len()),
+        }
+    }
+
+    pub(crate) fn navigation_owns_scroll(&self) -> bool {
+        if !self.left_flap.is_open() {
+            return false;
+        }
+        let viewport = self.navigation_scroll.content_viewport_rect();
+        self.resolved_keyboard_target().is_some_and(|target| {
+            self.semantic_hits()
+                .get(target)
+                .is_some_and(|(rect, hit, ..)| {
+                    matches!(
+                        hit,
+                        Hit::Channel(_)
+                            | Hit::VoiceChannel(_)
+                            | Hit::Agent(_)
+                            | Hit::CategoryToggle(_)
+                            | Hit::AddChannel { .. }
+                    ) && rect.intersect(viewport).area() > 0.0
+                })
+        })
+    }
+
+    fn navigation_row_is_current(&self, hit: &Hit) -> bool {
+        match hit {
+            Hit::Agent(id) => !self.inbox_open && self.room_agents.contains(id),
+            Hit::Channel(id) | Hit::VoiceChannel(id) => self.channels.iter().any(|channel| {
+                if channel.id != *id
+                    || channel.archived
+                    || matches!(hit, Hit::VoiceChannel(_)) != (channel.kind == ChannelKind::Voice)
+                    || matches!(&self.rename, Some(MenuTarget::Channel(target)) if target == id)
+                {
+                    return false;
+                }
+                if self.inbox_open {
+                    return matches!(hit, Hit::Channel(_))
+                        && channel.kind == ChannelKind::Text
+                        && self.workspaces.iter().any(|ws| ws.id == channel.workspace);
+                }
+                channel.workspace == self.active_ws
+                    && (channel.category.is_empty()
+                        || self
+                            .ws_categories()
+                            .iter()
+                            .any(|category| category.id == channel.category && !category.collapsed))
+            }),
+            Hit::CategoryToggle(id) => {
+                !self.inbox_open
+                    && !matches!(&self.rename, Some(MenuTarget::Category(target)) if target == id)
+                    && self
+                        .ws_categories()
+                        .iter()
+                        .any(|category| category.id == *id)
+            }
+            Hit::AddChannel {
+                workspace,
+                category,
+            } => {
+                !self.inbox_open
+                    && *workspace == self.active_ws
+                    && self.ws_categories().iter().any(|row| row.id == *category)
+            }
+            _ => false,
+        }
+    }
+
+    fn retain_scrolled_navigation_focus(&mut self, hits: &[(Rect, Hit)]) {
+        if self.navigation_drawn_offset.to_bits() == self.navigation_scroll.offset_y().to_bits()
+            || !self.navigation_owns_scroll()
+        {
+            return;
+        }
+        let previous = self.semantic_hits();
+        let Some((old_rect, old_hit, ..)) = self
+            .resolved_keyboard_target()
+            .and_then(|index| previous.get(index))
+        else {
+            return;
+        };
+        if !self.navigation_row_is_current(old_hit) {
+            return;
+        }
+        let current = Self::deduplicate_semantic_hits(self.semantic_hits_from(hits));
+        if current
+            .iter()
+            .any(|(_, hit, ..)| hit.semantic_id() == old_hit.semantic_id())
+        {
+            return;
+        }
+        let viewport = self.navigation_scroll.content_viewport_rect();
+        // A scroll can clip the focused row. Move its focus to a real visible
+        // navigation row, never retain an offscreen AT node or an old ordinal.
+        if let Some((_, hit, ..)) = current
+            .iter()
+            .filter(|(rect, hit, ..)| {
+                matches!(
+                    hit,
+                    Hit::Channel(_)
+                        | Hit::VoiceChannel(_)
+                        | Hit::Agent(_)
+                        | Hit::CategoryToggle(_)
+                        | Hit::AddChannel { .. }
+                ) && rect.intersect(viewport).area() > 0.0
+            })
+            .min_by(|(left, ..), (right, ..)| {
+                left.center()
+                    .distance_squared(old_rect.center())
+                    .total_cmp(&right.center().distance_squared(old_rect.center()))
+            })
+        {
+            self.keyboard_target_semantic = Some(hit.semantic_id());
         }
     }
 
@@ -5752,6 +5871,13 @@ impl Widget for ChatApp {
     }
 
     fn primary_vertical_scroll(&self) -> Option<ui::widget::PrimaryScrollRegion> {
+        if self.navigation_owns_scroll() {
+            return Some(ui::widget::PrimaryScrollRegion {
+                key: "navigation",
+                owner_generation: None,
+                metrics: self.navigation_scroll.primary_vertical_scroll()?.metrics,
+            });
+        }
         if self.thread_open.is_some()
             && (self.thread_is_page() || matches!(self.focus, Focus::Thread))
         {
@@ -5792,7 +5918,10 @@ impl Widget for ChatApp {
         if next == region.metrics.offset {
             return PrimaryScrollResult::Unchanged(region);
         }
-        if region.key == "thread" {
+        if region.key == "navigation" {
+            self.navigation_scroll
+                .set_offset_y(ui::num::f32_of_f64(next));
+        } else if region.key == "thread" {
             self.thread_scroll.set_offset_y(ui::num::f32_of_f64(next));
         } else {
             self.scroll = region.metrics.max_scroll() - next;
@@ -6098,6 +6227,7 @@ impl Widget for ChatApp {
 
         // Immediate-mode keyboard focus needs a visible counterpart. The ring
         // is painted last so it remains legible on rail, sidebar and popovers.
+        self.retain_scrolled_navigation_focus(&hits);
         let semantic = Self::deduplicate_semantic_hits(self.semantic_hits_from(&hits));
         let focused_index = match self.keyboard_target_semantic.as_deref() {
             Some(target) => semantic
@@ -6130,6 +6260,7 @@ impl Widget for ChatApp {
         }
 
         self.hits = hits;
+        self.navigation_drawn_offset = self.navigation_scroll.offset_y();
     }
 
     fn draw_with_presence(
@@ -6505,6 +6636,7 @@ impl Widget for ChatApp {
         self.read_on_present
             || self.resource_navigation.pending()
             || (self.thread_open.is_some() && self.thread_scroll.needs_animation_frame())
+            || self.navigation_scroll.needs_animation_frame()
             || self.flap_animating
             || self.call_chrome_motion.animating
             || self.call.placement.is_dragging()
@@ -6526,6 +6658,7 @@ impl Widget for ChatApp {
                 .values()
                 .any(|surface| surface.placement.is_dragging())
             || (self.thread_open.is_some() && self.thread_scroll.wants_pointer_capture())
+            || self.navigation_scroll.wants_pointer_capture()
     }
 
     /// Attachment thumbnails still decoding: a capture waits for them.
@@ -6534,13 +6667,16 @@ impl Widget for ChatApp {
     }
 
     fn needs_redraw(&self) -> bool {
-        self.canonical_dirty || (self.thread_open.is_some() && self.thread_scroll.needs_redraw())
+        self.canonical_dirty
+            || self.navigation_scroll.needs_redraw()
+            || (self.thread_open.is_some() && self.thread_scroll.needs_redraw())
     }
     fn mark_drawn(&mut self) {
         self.canonical_dirty = false;
         self.composer_main.mark_drawn();
         self.composer_thread.mark_drawn();
         self.thread_scroll.mark_drawn();
+        self.navigation_scroll.mark_drawn();
     }
 }
 
