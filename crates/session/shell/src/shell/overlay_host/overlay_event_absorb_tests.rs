@@ -421,7 +421,9 @@ fn touch_at(id: u64, phase: winit::event::TouchPhase, x: f64, y: f64) -> WindowE
     })
 }
 
-use ui::synthetic_input::mouse_release;
+use ui::synthetic_input::{
+    mouse_press as left_button_pressed, mouse_release, mouse_release as left_button_released,
+};
 
 fn pump(h: &mut AbsorbHarness, event: &WindowEvent) -> bool {
     pump_with_modifiers(h, event, winit::event::Modifiers::default())
