@@ -24,8 +24,24 @@ fn key(seed: u8) -> ed25519_dalek::SigningKey {
 /// A device's retained frames for `mutation`, as a page signs them;
 /// `sealed` stands in for channel-crypto ciphertext.
 fn device_frames(seed: u8, mutation: &DocumentMutation, sealed: bool, seq: u64) -> Vec<Vec<u8>> {
-    let key = key(seed);
-    let author = key.verifying_key().to_bytes();
+    signed_frames(
+        &key(seed),
+        key(seed).verifying_key().to_bytes(),
+        mutation,
+        sealed,
+        seq,
+    )
+}
+
+/// Frames claiming `author`, signed with `key`: a device's own frames when
+/// `key` is the author's, a forgery otherwise.
+fn signed_frames(
+    key: &ed25519_dalek::SigningKey,
+    author: [u8; 32],
+    mutation: &DocumentMutation,
+    sealed: bool,
+    seq: u64,
+) -> Vec<Vec<u8>> {
     let route = route();
     let artifact =
         collab_types::document_artifact_id(&route.app_id, &route.cluster_id, &route.record_id);
@@ -112,12 +128,28 @@ fn retain(store: &WorkspaceStore, frames: Vec<Vec<u8>>, seq: &mut u64) {
     }
 }
 
+/// Each entry checked as a round with nothing remembered checks it.
+fn checked(entries: &[ChannelEntry]) -> Vec<Checked<'_>> {
+    let mut signatures = Signatures::default();
+    entries
+        .iter()
+        .map(|entry| signatures.check(entry))
+        .collect()
+}
+
+fn due(entries: &[ChannelEntry], min_tail: usize) -> bool {
+    compaction_due(entries, &units(checked(entries)), min_tail)
+}
+
+fn fold_all(entries: &[ChannelEntry]) -> Option<Folded> {
+    fold(entries, &units(checked(entries)))
+}
+
 /// Merge everything the channel retains the way a late joiner does.
 fn late_join(store: &WorkspaceStore) -> AutoCommit {
     let entries = store.channel_entries(&channel()).unwrap();
-    let (units, _) = units(&entries);
     let mut doc = AutoCommit::new();
-    for unit in units {
+    for unit in units(checked(&entries)).units {
         match unit.mutation {
             Some(DocumentMutation::Snapshot(bytes)) => {
                 doc.merge_incoming(&mut AutoCommit::load(&bytes).unwrap())
@@ -141,7 +173,7 @@ fn read(doc: &AutoCommit, key: &str) -> Option<String> {
 }
 
 fn compact(store: &WorkspaceStore, entries: &[ChannelEntry]) -> Replaced {
-    let folded = fold(entries).expect("something to fold");
+    let folded = fold_all(entries).expect("something to fold");
     let frames = document_frames(&key(99), WORKSPACE, &folded.route, &folded.snapshot).unwrap();
     let remove: HashSet<[u8; 32]> = folded.removed.iter().copied().collect();
     store
@@ -189,12 +221,12 @@ fn the_host_folds_a_long_tail_and_a_late_joiner_converges_from_its_snapshot() {
         );
     }
     let entries = store.channel_entries(&channel()).unwrap();
-    assert!(compaction_due(&entries, COMPACT_TAIL_ENTRIES));
+    assert!(due(&entries, COMPACT_TAIL_ENTRIES));
     let outcome = compact(&store, &entries);
     assert_eq!(outcome.removed, 301);
     assert_eq!(outcome.kept, 1, "one host snapshot, no tail");
     assert_eq!(late_join(&store).get_heads(), doc.get_heads());
-    assert!(!compaction_due(
+    assert!(!due(
         &store.channel_entries(&channel()).unwrap(),
         COMPACT_TAIL_ENTRIES
     ));
@@ -324,18 +356,21 @@ fn a_sealed_tail_is_never_folded_and_asks_for_a_member() {
     }
     let entries = store.channel_entries(&channel()).unwrap();
     assert!(
-        !compaction_due(&entries, COMPACT_TAIL_ENTRIES),
+        !due(&entries, COMPACT_TAIL_ENTRIES),
         "nothing readable to fold"
     );
-    assert!(fold(&entries).is_none());
-    assert_eq!(sealed_tail(&entries, &HashSet::new()), Some(route()));
+    assert!(fold_all(&entries).is_none());
+    assert_eq!(
+        sealed_tail(&checked(&entries), &HashSet::new()),
+        Some(route())
+    );
     let known: HashSet<[u8; 32]> = entries
         .iter()
         .take(10)
         .map(|entry| entry_id(&entry.body))
         .collect();
     assert_eq!(
-        sealed_tail(&entries, &known),
+        sealed_tail(&checked(&entries), &known),
         None,
         "a member snapshot's own entries are not a tail"
     );
@@ -442,10 +477,13 @@ fn a_large_snapshot_is_framed_in_segments_the_fold_reads_back() {
         )
         .unwrap();
     let entries = store.channel_entries(&channel()).unwrap();
-    let (units, _) = units(&entries);
-    assert_eq!(units.len(), 1, "every segment joins one snapshot");
+    assert_eq!(
+        units(checked(&entries)).units.len(),
+        1,
+        "every segment joins one snapshot"
+    );
     assert!(
-        !compaction_due(&entries, COMPACT_TAIL_ENTRIES),
+        !due(&entries, COMPACT_TAIL_ENTRIES),
         "a host snapshot alone is no tail"
     );
     assert_eq!(late_join(&store).get_heads(), doc.get_heads());
@@ -527,4 +565,216 @@ fn observe_classifies_like_full_decode() {
     }
     assert!(observed >= 4, "app documents were observed: {observed}");
     assert!(observed < deltas.len(), "other deltas were not");
+}
+
+/// A base snapshot and `edits` incremental changes by device 1: the base
+/// and the document.
+fn history(store: &WorkspaceStore, edits: u64, seq: &mut u64) -> (AutoCommit, AutoCommit) {
+    let mut doc = AutoCommit::new();
+    doc.put(ROOT, "title", "base").unwrap();
+    doc.commit();
+    retain(
+        store,
+        device_frames(1, &DocumentMutation::Snapshot(doc.save()), false, 1),
+        seq,
+    );
+    let base = doc.fork();
+    extend(store, &mut doc, edits, seq);
+    (base, doc)
+}
+
+fn extend(store: &WorkspaceStore, doc: &mut AutoCommit, edits: u64, seq: &mut u64) {
+    for _ in 0..edits {
+        let before = doc.get_heads();
+        doc.put(ROOT, format!("k{}", *seq), i64::try_from(*seq).unwrap())
+            .unwrap();
+        doc.commit();
+        let at = seq.saturating_add(10);
+        retain(
+            store,
+            device_frames(
+                1,
+                &DocumentMutation::Incremental(doc.save_after(&before)),
+                false,
+                at,
+            ),
+            seq,
+        );
+    }
+}
+
+/// A change on top of `base` that claims device 1 but is signed by another
+/// key: what a peer, or a writer with access to the store's disk, could
+/// put where device 1's entries are. Its dependencies are retained, so a
+/// fold that skipped the signature would merge it.
+fn forged_change(base: &AutoCommit) -> Vec<u8> {
+    let mut forged = base.fork();
+    let before = forged.get_heads();
+    forged.put(ROOT, "forged", "evil").unwrap();
+    forged.commit();
+    let mut frames = signed_frames(
+        &key(66),
+        key(1).verifying_key().to_bytes(),
+        &DocumentMutation::Incremental(forged.save_after(&before)),
+        false,
+        999,
+    );
+    assert_eq!(frames.len(), 1);
+    frames.remove(0)
+}
+
+/// One production round ([`plan`]) over the channel with `signatures`: the
+/// entries it read, what it folded, and the signatures it verified.
+fn round(store: &WorkspaceStore, signatures: &mut Signatures) -> (Vec<ChannelEntry>, Folded, u64) {
+    let entries = store.channel_entries(&channel()).unwrap();
+    let before = thread_signature_checks();
+    let (_, folded) = plan(&entries, signatures, &HashSet::new(), 2, |_, _| {
+        Some(Vec::new())
+    });
+    let checks = thread_signature_checks().saturating_sub(before);
+    (entries, folded.expect("a tail to fold").0, checks)
+}
+
+/// The retained file whose bytes have `digest`.
+fn retained_file(dir: &std::path::Path, digest: &[u8; 32]) -> Option<std::path::PathBuf> {
+    for entry in std::fs::read_dir(dir).unwrap() {
+        let path = entry.unwrap().path();
+        if path.is_dir() {
+            if let Some(found) = retained_file(&path, digest) {
+                return Some(found);
+            }
+        } else if file_digest(&std::fs::read(&path).unwrap()) == *digest {
+            return Some(path);
+        }
+    }
+    None
+}
+
+fn is_opaque(entries: &[ChannelEntry], digest: &[u8; 32]) -> bool {
+    let at = entries
+        .iter()
+        .position(|entry| entry.digest == *digest)
+        .expect("the entry is retained");
+    let checked = checked(entries).swap_remove(at);
+    matches!(checked.into_parts().1, Piece::Opaque)
+}
+
+fn folded_doc(folded: &Folded) -> AutoCommit {
+    AutoCommit::load(&folded.snapshot).unwrap()
+}
+
+/// A round only skips verifying bytes it verified before. A retained file
+/// rewritten on disk after its entry verified hashes differently: it is
+/// verified again, refused, neither folded nor removed.
+#[test]
+fn a_tampered_entry_is_refused_even_after_its_bytes_verified_once() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store = WorkspaceStore::open(tmp.path(), WORKSPACE, false).unwrap();
+    let mut seq = 0;
+    let (base, _) = history(&store, 10, &mut seq);
+    let mut signatures = Signatures::default();
+    let (entries, folded, checks) = round(&store, &mut signatures);
+    assert_eq!(checks, 11, "the first round verifies every entry");
+    assert_eq!(folded.removed.len(), 11);
+
+    let last = entries.last().unwrap().digest;
+    let path = retained_file(tmp.path(), &last).expect("the last edit's file");
+    let forged = forged_change(&base);
+    std::fs::write(&path, &forged).unwrap();
+
+    let (entries, folded, checks) = round(&store, &mut signatures);
+    assert_eq!(checks, 1, "only the rewritten entry is verified again");
+    assert!(is_opaque(&entries, &file_digest(&forged)));
+    assert!(!folded.removed.contains(&file_digest(&forged)));
+    assert_eq!(folded.removed.len(), 10, "the snapshot and nine edits");
+    assert_eq!(read(&folded_doc(&folded), "forged"), None);
+}
+
+/// The signer check is not remembered: the bytes of device 1's verified
+/// entry, retained in device 2's lineage, are refused.
+#[test]
+fn a_verified_body_in_another_authors_lineage_is_refused() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store = WorkspaceStore::open(tmp.path(), WORKSPACE, false).unwrap();
+    let mut seq = 0;
+    history(&store, 10, &mut seq);
+    let mut signatures = Signatures::default();
+    let (entries, _, _) = round(&store, &mut signatures);
+
+    let body = entries.last().unwrap().body.clone();
+    let rehomed = crate::transport::encode(&Envelope::Delta {
+        workspace_id: WORKSPACE,
+        author_device_public_key: key(2).verifying_key().to_bytes(),
+        authored_at_ns: 1,
+        delta: CoeditPayload::RetainedDelta {
+            channel: channel(),
+            body,
+        }
+        .encode()
+        .unwrap(),
+        signature: [0; 64],
+    })
+    .unwrap();
+    store.retain_delta(&channel(), 500, &rehomed).unwrap();
+
+    let (entries, folded, checks) = round(&store, &mut signatures);
+    assert_eq!(checks, 0, "refused before any signature is checked");
+    assert!(
+        entries
+            .iter()
+            .any(|entry| entry.author == key(2).verifying_key().to_bytes())
+    );
+    assert!(is_opaque(&entries, &file_digest(&rehomed)));
+    assert!(!folded.removed.contains(&file_digest(&rehomed)));
+    assert_eq!(folded.removed.len(), 11, "device 1's own entries only");
+}
+
+/// A forged entry as a peer could have it admitted (admission does not
+/// verify document signatures) is verified, and refused, in every round:
+/// a failure is never remembered.
+#[test]
+fn a_forged_entry_never_verifies() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store = WorkspaceStore::open(tmp.path(), WORKSPACE, false).unwrap();
+    let mut seq = 0;
+    let (base, _) = history(&store, 4, &mut seq);
+    let forged = forged_change(&base);
+    store.retain_delta(&channel(), 500, &forged).unwrap();
+    let mut signatures = Signatures::default();
+    for (round_number, expected) in [(1, 6), (2, 1), (3, 1)] {
+        let (entries, folded, checks) = round(&store, &mut signatures);
+        assert_eq!(checks, expected, "round {round_number}");
+        assert!(is_opaque(&entries, &file_digest(&forged)));
+        assert!(!folded.removed.contains(&file_digest(&forged)));
+        assert_eq!(folded.removed.len(), 5);
+        assert_eq!(read(&folded_doc(&folded), "forged"), None);
+    }
+    assert_eq!(signatures.remembered(), 5, "the forgery is not remembered");
+}
+
+/// Unchanged entries are verified once per process; new ones, entries of a
+/// fresh process (a restart) and a new snapshot are verified when first
+/// read, and what is gone is forgotten.
+#[test]
+fn a_repeat_round_verifies_only_new_entries() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store = WorkspaceStore::open(tmp.path(), WORKSPACE, false).unwrap();
+    let mut seq = 0;
+    let (_, mut doc) = history(&store, 10, &mut seq);
+    let mut signatures = Signatures::default();
+    assert_eq!(round(&store, &mut signatures).2, 11);
+    assert_eq!(round(&store, &mut signatures).2, 0);
+    extend(&store, &mut doc, 3, &mut seq);
+    assert_eq!(round(&store, &mut signatures).2, 3);
+    assert_eq!(signatures.remembered(), 14);
+
+    let mut restarted = Signatures::default();
+    assert_eq!(round(&store, &mut restarted).2, 14);
+
+    let entries = store.channel_entries(&channel()).unwrap();
+    compact(&store, &entries);
+    extend(&store, &mut doc, 2, &mut seq);
+    let (_, _, checks) = round(&store, &mut signatures);
+    assert_eq!(checks, 3, "the host snapshot and the two new edits");
+    assert_eq!(signatures.remembered(), 3, "removed entries are forgotten");
 }
