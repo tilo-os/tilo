@@ -217,7 +217,6 @@ members = [
     "crates/packaging/registry-client",
     "crates/packaging/registry-server",
     "crates/packaging/registry-types",
-    "crates/packaging/registry-web",
     "crates/packaging/runtime-bundle",
     "crates/packaging/runtime-update",
 
