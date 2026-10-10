@@ -50,11 +50,15 @@ use ui::widget::identity_flow::IdentityRecord;
 ///
 /// TIL-704 parked the audio-output authority watchdog while no output is
 /// open (20/s before, 0/s after): the parked desktop measured 31.9/s (run
-/// 89960), and with TIL-696 fixed the budget is that plus a quarter, 40/s.
+/// 89960).
 ///
 /// TIL-707 parked the collaboration broker's service thread (20.1/s before,
 /// 0.0/s after, run 90830), which comes off that parked figure too.
-const IDLE_WAKEUP_BUDGET: f64 = 40.0;
+///
+/// With all three, and TIL-702/TIL-740 quieting the network runtime, the
+/// desktop measured 7.30, 7.60 and 7.30/s (runs 92406, 92444, 92445), with the
+/// frame loop parked: 7.6/s plus a quarter, 10/s.
+const IDLE_WAKEUP_BUDGET: f64 = 10.0;
 
 /// Most iterations per second the compositor's frame loop may make while
 /// idle, from its `paint-stats` lines. A loop that wakes on a deadline that
