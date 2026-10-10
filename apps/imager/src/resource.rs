@@ -742,26 +742,60 @@ mod tests {
     #[test]
     fn malformed_enrollment_calls_preserve_the_enabled_choice_and_document() {
         let mut app = customizing();
-        app.call("enroll-identity", serde_json::json!({ "on": true }))
+        let enroll = |on: bool| {
+            serde_json::to_value(Imager::paths().profile.enroll_local_identity.set(on))
+                .expect("an edit is JSON")
+        };
+        app.call("field-edit", serde_json::json!({ "edit": enroll(true) }))
             .unwrap();
         assert!(app.state().profile.enroll_local_identity);
         let enabled_document = app.read_document(|doc| doc.clone().save());
+        // The edit turning enrollment off, with its value replaced.
+        let with_value = |value: serde_json::Value| {
+            fn replace(json: &mut serde_json::Value, value: &serde_json::Value) {
+                match json {
+                    serde_json::Value::Object(fields) => {
+                        for (key, field) in fields.iter_mut() {
+                            if key == "value" {
+                                *field = value.clone();
+                            } else {
+                                replace(field, value);
+                            }
+                        }
+                    }
+                    serde_json::Value::Array(items) => {
+                        for item in items {
+                            replace(item, value);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            let mut edit = enroll(false);
+            replace(&mut edit, &value);
+            serde_json::json!({ "edit": edit })
+        };
         for arguments in [
             serde_json::json!({}),
-            serde_json::json!({ "on": "maybe" }),
-            serde_json::json!({ "on": "false" }),
-            serde_json::json!({ "on": null }),
-            serde_json::json!({ "on": 0 }),
-            serde_json::json!({ "on": [] }),
-            serde_json::json!({ "on": {} }),
-            serde_json::json!({ "enabled": false }),
-            serde_json::json!({ "on": false, "unexpected": true }),
+            with_value(serde_json::json!("maybe")),
+            with_value(serde_json::json!("false")),
+            with_value(serde_json::Value::Null),
+            with_value(serde_json::json!(0)),
+            with_value(serde_json::json!([])),
+            with_value(serde_json::json!({})),
+            serde_json::json!({ "edit": enroll(false), "unexpected": true }),
         ] {
-            let error = app
-                .call("enroll-identity", arguments.clone())
-                .expect_err("invalid arguments must not create an enrollment edit");
+            let Err(error) = app.call("field-edit", arguments.clone()) else {
+                panic!("{arguments}: invalid arguments must not create an enrollment edit");
+            };
+            // A malformed call is invalid arguments; a value of the wrong
+            // type is refused by the field it would set.
             assert!(
-                matches!(error, ui::tilo_actions::DoorError::InvalidArguments(_)),
+                matches!(
+                    error,
+                    ui::tilo_actions::DoorError::InvalidArguments(_)
+                        | ui::tilo_actions::DoorError::Failed(_)
+                ),
                 "{arguments}: {error}"
             );
             assert!(
@@ -774,7 +808,7 @@ mod tests {
                 "{arguments}: rejected input mutated the document"
             );
         }
-        app.call("enroll-identity", serde_json::json!({ "on": false }))
+        app.call("field-edit", serde_json::json!({ "edit": enroll(false) }))
             .unwrap();
         assert!(!app.state().profile.enroll_local_identity);
         assert_ne!(
