@@ -181,6 +181,7 @@ SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)
 snapshot="$RUNNER_TEMP/tilo-registry-snapshot.json"
 response="$RUNNER_TEMP/tilo-registry-response.txt"
 publication_plan="$RUNNER_TEMP/tilo-registry-publication.tsv"
+: "${TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY:?existing registry owner pin required}"
 : > "$publication_plan"
 for index in release/*/index.json; do
   arch=$(jq -er '.architecture | select(. == "x86_64" or . == "aarch64")' "$index")
@@ -238,7 +239,9 @@ while IFS= read -r id; do
       test -f "$metadata"
       tapp_url="$registry_url/artifacts/$owner/generic/tilo-app-$name/$VERSION/$file"
       args=(entry --arch "$arch" --identity "$registry_identity" \
-        --metadata "$metadata" --action "$action" --url "$tapp_url")
+        --metadata "$metadata" --action "$action" --url "$tapp_url"
+        --runtime-catalogue "$snapshot"
+        --registry-owner-pubkey "$TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY")
       [[ -f $aggregate ]] && args+=(--previous-entry "$aggregate")
       "$registry_cli" "${args[@]}" "$tapp" > "$request"
       jq -e --arg id "$id" '.entry | select(.package_id == $id)' \
