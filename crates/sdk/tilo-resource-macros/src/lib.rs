@@ -447,6 +447,7 @@ fn derive_named(input: &DeriveInput, fields: &syn::FieldsNamed) -> syn::Result<T
     let mut texts = Vec::new();
     let mut shapes = Vec::new();
     let mut collections = Vec::new();
+    let mut sizes = Vec::new();
     let mut path_fields = Vec::new();
     let mut path_inits = Vec::new();
     let mut path_clones = Vec::new();
@@ -723,6 +724,9 @@ fn derive_named(input: &DeriveInput, fields: &syn::FieldsNamed) -> syn::Result<T
                     }
                 }
             });
+            // Whether the collection holds any item: all a publication head
+            // needs of it ([`Fields::item_collection_sizes`]).
+            sizes.push(quote!((#field_name, usize::from(#items.next().is_some()))));
             collections.push(quote!(#krate::items::ItemCollection {
                 within: ::std::vec::Vec::new(),
                 field: #field_name,
@@ -756,6 +760,10 @@ fn derive_named(input: &DeriveInput, fields: &syn::FieldsNamed) -> syn::Result<T
                 let mut out = ::std::vec![#(#collections),*];
                 #(#nested)*
                 out
+            }
+
+            fn item_collection_sizes(&self) -> ::std::vec::Vec<(&'static str, usize)> {
+                ::std::vec![#(#sizes),*]
             }
 
             fn item_label(

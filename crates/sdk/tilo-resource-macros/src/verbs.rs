@@ -1233,6 +1233,31 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
             |field, item| <Self as #krate::Fields>::item_label(state, field, item),
         )
     };
+    // The declarations offered on items are known from which collections
+    // hold items, so the record's own actions publish without a child per
+    // item ([`Resource::children_offer_bound`]).
+    let offer_bound = if item_actions.is_empty() {
+        quote!()
+    } else {
+        quote! {
+            fn children_offer_bound(state: &Self) -> ::std::vec::Vec<&'static str> {
+                let others: ::std::vec::Vec<#krate::__private::Resource> = #derived;
+                #krate::items::offered_on_items::<Self>(
+                    &others,
+                    &<Self as #krate::Fields>::item_collection_sizes(state),
+                    &[#(#item_actions),*],
+                )
+                .unwrap_or_else(|| {
+                    let children = <Self as #krate::Resource>::children(state);
+                    <Self as #krate::Resource>::declarations()
+                        .iter()
+                        .filter(|decl| #krate::items::offered_bound(&children, decl))
+                        .map(|decl| decl.id)
+                        .collect()
+                })
+            }
+        }
+    };
     let children = quote! {{
         let mut children: ::std::vec::Vec<#krate::__private::Resource> = #derived;
         children.extend(#krate::items::item_children::<Self>(
@@ -1771,6 +1796,7 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
                 #children
             }
 
+            #offer_bound
             #item_effects
             #item_views
             #answer

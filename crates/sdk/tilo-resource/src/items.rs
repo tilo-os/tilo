@@ -564,6 +564,50 @@ fn nested_item<R: Resource>(
     child
 }
 
+/// [`Resource::children_offer_bound`] of a record whose children are
+/// `others` followed by its [`item_children`]: the declarations offered
+/// bound on `others` or on the items of a collection, known from how many
+/// items each collection holds (`sizes`, by field) without building a child
+/// per item.
+pub fn offered_on_items<R: Resource>(
+    others: &[tilo_actions::Resource],
+    sizes: &[(&'static str, usize)],
+    actions: &[ItemAction],
+) -> Option<Vec<&'static str>> {
+    // Verbs on items of a nested collection are known only from the items.
+    if actions.iter().any(|action| !action.within.is_empty()) {
+        return None;
+    }
+    let fields: Vec<&str> = sizes.iter().map(|(field, _)| *field).collect();
+    let declarations = R::declarations();
+    // `item_children` binds the first declaration of an action's id.
+    let first = |id: &str| declarations.iter().find(|decl| decl.id == id);
+    declarations
+        .iter()
+        .filter(|decl| {
+            let on_items = actions.iter().any(|action| {
+                action.action == decl.id
+                    && first(action.action).is_some_and(|bound| {
+                        // What `offered_bound` asks of the item's spec: it
+                        // takes fewer parameters than the declaration.
+                        let kept = bound
+                            .params
+                            .iter()
+                            .filter(|param| param.name != action.param)
+                            .count();
+                        kept < decl.params.len()
+                    })
+                    && sizes
+                        .iter()
+                        .any(|&(field, size)| size > 0 && targets(action, &fields, field))
+            });
+            on_items || offered_bound(others, decl)
+        })
+        .map(|decl| decl.id)
+        .collect::<Vec<_>>()
+        .into()
+}
+
 /// The spec of `decl` with its item parameter bound to `item`.
 fn item_spec<R: Resource>(decl: &ActionDecl<R>, param: &'static str, item: &Id) -> ActionSpec {
     bound(
@@ -639,7 +683,7 @@ pub fn bound<R: Resource, N: AsRef<str>>(
 
 /// Whether some resource in `children`, at any depth, offers `decl` with
 /// arguments bound ([`bound`]).
-pub(crate) fn offered_bound<R: Resource>(
+pub fn offered_bound<R: Resource>(
     children: &[tilo_actions::Resource],
     decl: &ActionDecl<R>,
 ) -> bool {

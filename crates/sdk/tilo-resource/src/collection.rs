@@ -259,6 +259,20 @@ impl<T> Collection<T> {
         self.items.get(position).map(|entry| &entry.item)
     }
 
+    /// [`get`](Self::get) for a caller that remembers where the item was (a
+    /// list row): looks at `near` and beside it first, so an item that
+    /// stayed or moved by one is found without a scan. Answers where the
+    /// item is now, to remember for next time, and the item.
+    pub fn get_near(&self, id: &Id, near: usize) -> Option<(usize, &T)> {
+        let around = [Some(near), near.checked_add(1), near.checked_sub(1)];
+        around
+            .into_iter()
+            .flatten()
+            .find(|&index| self.items.get(index).is_some_and(|entry| &entry.id == id))
+            .or_else(|| self.position(id))
+            .and_then(|index| self.items.get(index).map(|entry| (index, &entry.item)))
+    }
+
     pub fn get_mut(&mut self, id: &Id) -> Option<&mut T> {
         let position = self.position(id)?;
         self.items.get_mut(position).map(|entry| &mut entry.item)
