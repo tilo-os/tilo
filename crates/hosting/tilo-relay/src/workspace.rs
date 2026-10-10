@@ -141,6 +141,13 @@ pub struct WorkspaceRuntime {
     /// right after the subscription it belongs to and dropped with it; a
     /// subscriber without one gets each presence on its frame queue.
     presence_mailboxes: HashMap<[u8; 32], Arc<crate::presence_mailbox::PresenceMailbox>>,
+    /// Authors with a delta admitted here and not yet fanned out, and when
+    /// it arrived: the caret and typing that follow it wait up to
+    /// [`crate::presence_mailbox::DELTA_HOLD`] to go with it (TIL-776).
+    /// Published deltas leave at once; entries older than the hold are
+    /// dropped whenever one is noted, so it holds at most the authors typing
+    /// right now.
+    recent_deltas: HashMap<[u8; 32], tokio::time::Instant>,
     /// Subscribers that joined the live plane, with their rate budgets.
     live_members: HashMap<[u8; 32], LiveBudget>,
     /// Host order of the last admitted delta.
@@ -355,6 +362,7 @@ impl WorkspaceRuntime {
             outbound_federation: HashMap::new(),
             checkpoint_served: HashMap::new(),
             presence_mailboxes: HashMap::new(),
+            recent_deltas: HashMap::new(),
             sync_refresh: None,
             governor_tap: None,
             room_authority: None,
@@ -929,11 +937,29 @@ impl WorkspaceRuntime {
         Ok(true)
     }
 
+    /// Note that `author` sent a delta at `now`, before it is admitted: the
+    /// caret and typing it sends next are held to go with it
+    /// ([`Self::fanout_presence`]) until it is published.
+    pub fn note_delta(&mut self, author: [u8; 32], now: tokio::time::Instant) {
+        let hold = crate::presence_mailbox::DELTA_HOLD;
+        self.recent_deltas
+            .retain(|_, at| now.saturating_duration_since(*at) < hold);
+        self.recent_deltas.insert(author, now);
+    }
+
+    /// `author`'s delta is being fanned out: what it sends from now on has
+    /// nothing to wait for.
+    pub fn delta_published(&mut self, author: &[u8; 32]) {
+        self.recent_deltas.remove(author);
+    }
+
     /// Route a presence envelope (no persistence, drop-on-empty).
     /// Same echo-suppression rule as `fanout_delta`. A subscriber whose
     /// connection has a presence mailbox gets it there, coalesced under
     /// `slot` with the author's later presence; the payload is shared by every
-    /// such subscriber, not copied.
+    /// such subscriber, not copied. Presence from an author who sent a delta
+    /// within [`crate::presence_mailbox::DELTA_HOLD`] is posted held, to go
+    /// with that delta.
     pub fn fanout_presence(
         &mut self,
         author: &[u8; 32],
@@ -945,6 +971,9 @@ impl WorkspaceRuntime {
         let mut dead: Vec<[u8; 32]> = Vec::new();
         let mut shared: Option<Arc<[u8]>> = None;
         let now = tokio::time::Instant::now();
+        let held = self.recent_deltas.get(author).is_some_and(|at| {
+            now.saturating_duration_since(*at) < crate::presence_mailbox::DELTA_HOLD
+        });
         for (peer, sub) in &self.subscribers {
             if peer == author {
                 continue;
@@ -963,7 +992,7 @@ impl WorkspaceRuntime {
                 let payload = shared
                     .get_or_insert_with(|| Arc::from(payload.as_slice()))
                     .clone();
-                if mailbox.post(*workspace_id, *author, slot, payload, now) {
+                if mailbox.post(*workspace_id, *author, slot, payload, now, held) {
                     delivered = delivered.saturating_add(1);
                 }
                 continue;
@@ -1918,5 +1947,80 @@ mod tests {
         .unwrap();
         assert!(!rt.subscribers.contains_key(&dead_peer));
         assert_eq!(rt.store.count_pending(&dead_peer).unwrap(), 1);
+    }
+
+    /// A keystroke's caret and typing follow its delta from the same author;
+    /// they are held to go with it, and nobody else's are (TIL-776).
+    #[test]
+    fn presence_after_an_authors_delta_is_held_for_it() {
+        use crate::presence_mailbox::{BATCH_WINDOW, DELTA_HOLD, PresenceMailbox};
+        use tokio::time::Instant;
+
+        const AUTHOR: [u8; 32] = [1; 32];
+        const RECIPIENT: [u8; 32] = [2; 32];
+        let tmp = tempfile::tempdir().unwrap();
+        let mut rt = WorkspaceRuntime::open(tmp.path(), 9, false, Membership::default()).unwrap();
+        let (tx, _rx) = mpsc::channel(8);
+        let (disconnect, _disconnect_rx) = mpsc::channel(1);
+        rt.add_subscriber(Subscriber {
+            device_public_key: RECIPIENT,
+            role: PeerRole::Device,
+            tx,
+            disconnect,
+        });
+        let mailbox = Arc::new(PresenceMailbox::default());
+        rt.route_presence(RECIPIENT, Arc::clone(&mailbox));
+        let caret = Some(tilo_peer_state::PresenceSlot {
+            id: 1,
+            motion: false,
+        });
+        let presence = Envelope::Presence {
+            workspace_id: 9,
+            payload: b"caret".to_vec(),
+        };
+
+        // No delta: the caret goes after the batch window.
+        assert_eq!(
+            rt.fanout_presence(&AUTHOR, PeerRole::Device, &presence, caret),
+            1
+        );
+        assert_eq!(mailbox.take(Instant::now() + BATCH_WINDOW, false).len(), 1);
+
+        // Right after the author's delta: held for it.
+        let before = Instant::now();
+        rt.note_delta(AUTHOR, before);
+        assert_eq!(
+            rt.fanout_presence(&AUTHOR, PeerRole::Device, &presence, caret),
+            1
+        );
+        assert!(
+            mailbox
+                .next_due()
+                .is_some_and(|due| due >= before + DELTA_HOLD)
+        );
+        assert_eq!(
+            mailbox.take(Instant::now(), true).len(),
+            1,
+            "it rides with the delta"
+        );
+
+        // Once the delta is published, nothing waits for it.
+        rt.note_delta(AUTHOR, Instant::now());
+        rt.delta_published(&AUTHOR);
+        assert_eq!(
+            rt.fanout_presence(&AUTHOR, PeerRole::Device, &presence, caret),
+            1
+        );
+        assert_eq!(mailbox.take(Instant::now() + BATCH_WINDOW, false).len(), 1);
+
+        // Another author's delta holds nothing of this author's.
+        rt.note_delta([3; 32], Instant::now());
+        let other = Instant::now() - DELTA_HOLD;
+        rt.note_delta(AUTHOR, other);
+        assert_eq!(
+            rt.fanout_presence(&AUTHOR, PeerRole::Device, &presence, caret),
+            1
+        );
+        assert_eq!(mailbox.take(Instant::now() + BATCH_WINDOW, false).len(), 1);
     }
 }
