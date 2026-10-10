@@ -4870,15 +4870,11 @@ impl ShellOverlayHost {
         };
         // Client `xdg_toplevel.set_fullscreen` wins over a user-expanded
         // group if both are set.
-        let (fs_group, maximize, single) = {
+        let (fs_group, single) = {
             let st = chrome.borrow();
             let client = st.fullscreen_group();
             let single = st.single_strip().then(|| st.active_strip_id()).flatten();
-            (
-                client.or_else(|| st.maximized_group()),
-                client.is_none(),
-                single,
-            )
+            (client.or_else(|| st.maximized_group()), single)
         };
         // The live client tree and this rendered tree aren't yet unified,
         // so a fullscreen id we don't host must count as "no fullscreen"
@@ -4901,9 +4897,9 @@ impl ShellOverlayHost {
             // tree, the host outlives the content, and `&mut self` gives us
             // unaliased access for the duration of this call.
             let row: &mut GroupRow = unsafe { &mut *row_ptr };
-            // A maximize fills the work area beside the wheel; a client
-            // fullscreen covers the whole output.
-            row.set_promotion_keeps_gutter(maximize);
+            // Neither keeps a gutter: a maximize tucks the wheel away
+            // (see `maximized_wheel_tucked`) rather than stopping beside it.
+            row.set_promotion_keeps_gutter(false);
             match fs_group {
                 Some(gid) if owned && row.group_ids().contains(&gid) => {
                     row.set_fullscreen(Some(gid), false);
@@ -4929,6 +4925,25 @@ impl ShellOverlayHost {
                 unsafe { (*row).group_ids().contains(&group) }
             })
         })
+    }
+
+    /// An expanded (maximized) window owns the left edge: the workspace
+    /// switcher disc is tucked away rather than drawn over it. The top bar
+    /// stays, and a wheel summon (edge gesture) shows the disc again.
+    fn maximized_wheel_tucked(&self) -> bool {
+        let Some(chrome) = self.chrome.as_ref() else {
+            return false;
+        };
+        {
+            let st = chrome.borrow();
+            if st.fullscreen_group().is_some()
+                || st.maximized_group().is_none()
+                || st.wheel_summon().is_some()
+            {
+                return false;
+            }
+        }
+        self.fullscreen_group_is_owned()
     }
 
     /// Whether the requested fullscreen/maximized group is represented by a
@@ -5053,6 +5068,21 @@ impl ShellOverlayHost {
         let Some(chrome) = self.chrome.clone() else {
             return;
         };
+        // The maximized chrome's `[Full screen]` chip: the same real
+        // fullscreen Super+F and F11 toggle, for that group.
+        let mut fullscreen = None;
+        for &ptr in self.group_row_ptrs.values() {
+            // SAFETY: as in `take_group_intents`.
+            let row: &mut GroupRow = unsafe { &mut *ptr };
+            for group in &mut row.groups {
+                if group.take_pending_fullscreen_request() {
+                    fullscreen = Some(group.id);
+                }
+            }
+        }
+        if let Some(group) = fullscreen {
+            chrome.borrow_mut().set_user_fullscreen_group(Some(group));
+        }
         let intents = self.take_group_intents(|group| {
             tilo_desktop::intents::take_maximize(group)
                 .map(tilo_desktop::intents::DesktopIntent::Local)
@@ -18085,7 +18115,7 @@ impl Widget for ShellOverlayHost {
         // so it hovers above the content pane instead of displacing it.
         let primary = self.primary_output().filter(|_| self.is_partitioned());
         let sidebar_width = self.sidebar_width();
-        let covers_wheel = self.client_fullscreen_is_owned();
+        let covers_wheel = self.client_fullscreen_is_owned() || self.maximized_wheel_tucked();
         let sidebar_node = self.sidebar.as_mut().map(|sidebar| {
             let node = sidebar.build_layout(taffy, theme, node_map);
             // See the palette override above: failure here is not
@@ -18117,8 +18147,9 @@ impl Widget for ShellOverlayHost {
                 style.flex_grow = 0.0;
                 style.flex_shrink = 0.0;
                 // A fullscreen surface covers the whole output, so the
-                // wheel is suppressed alongside the top bar. A maximized
-                // group stops beside it.
+                // wheel is suppressed alongside the top bar. An expanded
+                // group tucks it away too, but keeps the bar; a summon
+                // brings it back.
                 if covers_wheel {
                     style.display = Display::None;
                 }
