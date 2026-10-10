@@ -15,6 +15,7 @@
 #include "credential_document.h"
 #include "credential_consent.h"
 #include "credential_commands.h"
+#include "devtools_bridge.h"
 #if defined(OS_MAC)
 #include "credentials_mac.h"
 #endif
@@ -139,9 +140,14 @@ void PublishFilters();
 void PublishDownloadRuntime();
 void DownloadOwnerIdle(int id);
 void Dispatch(CefRefPtr<CefDictionaryValue> command);
+void DevToolsCall(CefRefPtr<CefDictionaryValue> d,int tab);
 bool closing=false;
 bool clear_on_exit=false;
 bool private_mode=false;
+// Extension management over Chromium's DevTools pipe (see devtools_bridge.h).
+// The host's ends of the pipe; -1 when the pipe is not available.
+int devtools_write=-1,devtools_read=-1;
+tilo::DevToolsPending devtools_pending;
 std::string downloads_directory;
 std::shared_ptr<tilo::CredentialWorker> credential_worker;
 struct CredentialDeliveryState {std::mutex mutex;bool active=false;};
@@ -1093,6 +1099,7 @@ void Dispatch(CefRefPtr<CefDictionaryValue> d) {
   const auto op=d->GetString("op");int id=d->HasKey("tab")?d->GetInt("tab"):1;
   if(op=="shutdown") {CloseHost();return;}
   if(op=="create_tab") {CreateTab(id);return;}
+  if(op=="devtools_call") {DevToolsCall(d,id);return;}
   if(op=="download_start") {
     auto found=clients.find(id);
     if(downloads->Accepting() && found!=clients.end() && found->second->accepts_downloads())
@@ -1127,6 +1134,12 @@ class App final : public CefApp,public CefBrowserProcessHandler {
     // The Rust application owns browser onboarding; Chromium's first-run UI
     // cannot be completed in an offscreen embedding and can stall Linux init.
     if(process_type.empty()) command_line->AppendSwitch("no-first-run");
+    // Chromium serves the Extensions domain on the pipe the host created;
+    // `unsafe-extension-debugging` is what enables its loadUnpacked.
+    if(process_type.empty() && devtools_write>=0) {
+      command_line->AppendSwitch("remote-debugging-pipe");
+      command_line->AppendSwitch("enable-unsafe-extension-debugging");
+    }
     // The process budget: the browser and its storage service, then one
     // renderer per site. Tabs of one site share a renderer while different
     // sites stay isolated; no spare renderer waits for a tab that may never
@@ -1310,8 +1323,66 @@ bool ValidCommand(CefRefPtr<CefDictionaryValue> d) {
     return true;
   }
   if(op=="paint_resource") return type("request_id",VTYPE_INT) && d->GetInt("request_id")>0 && type("url",VTYPE_STRING) && !d->GetString("url").empty() && d->GetString("url").length()<=1048576;
+  if(op=="devtools_call") {
+    if(!type("request_id",VTYPE_INT) || d->GetInt("request_id")<=0 || !type("method",VTYPE_STRING) || !tilo::DevToolsMethodAllowed(d->GetString("method").ToString()))return false;
+    if(d->HasKey("params") && !type("params",VTYPE_DICTIONARY))return false;
+    if(d->HasKey("session") && (!type("session",VTYPE_STRING) || d->GetString("session").length()>128))return false;
+    CefDictionaryValue::KeyList keys;d->GetKeys(keys);
+    for(const auto& key:keys)if(key!="op" && key!="tab" && key!="request_id" && key!="method" && key!="params" && key!="session")return false;
+    return true;
+  }
   if(op=="filter_rules") return type("rules",VTYPE_STRING) && (type("enabled",VTYPE_BOOL) || type("enabled",VTYPE_NULL));
   return op=="back" || op=="forward" || op=="reload" || op=="stop" || op=="clear_data" || op=="devtools" || op=="download_cancel_all" || op=="shutdown";
+}
+void DevToolsReply(int tab,int request_id,bool ok,const std::string& body) {
+  auto d=CefDictionaryValue::Create();d->SetInt("tab",tab);d->SetInt("request_id",request_id);d->SetBool("ok",ok);d->SetString("body",body);Event("devtools_result",d);
+}
+// Forward one allow-listed DevTools command; the reply arrives as a
+// `devtools_result` event for the same tab and request.
+void DevToolsCall(CefRefPtr<CefDictionaryValue> d,int tab) {
+  const int request_id=d->GetInt("request_id");
+  if(devtools_write<0) {DevToolsReply(tab,request_id,false,"Extension management is unavailable");return;}
+  auto id=devtools_pending.Add(tab,request_id);
+  if(!id) {DevToolsReply(tab,request_id,false,"Too many extension requests are pending");return;}
+  auto message=CefDictionaryValue::Create();
+  message->SetInt("id",*id);message->SetString("method",d->GetString("method"));
+  if(d->HasKey("params")) message->SetDictionary("params",d->GetDictionary("params")->Copy(true));
+  if(d->HasKey("session")) message->SetString("sessionId",d->GetString("session"));
+  auto value=CefValue::Create();value->SetDictionary(message);
+  std::string text=CefWriteJSON(value,JSON_WRITER_DEFAULT).ToString();
+  if(text.size()>tilo::kMaxDevToolsMessage) {devtools_pending.Forget(*id);DevToolsReply(tab,request_id,false,"Extension request is too large");return;}
+  text.push_back('\0');
+  // The reply thread never blocks this write: Chromium drains the pipe.
+  size_t done=0;
+  while(done<text.size()) {
+    ssize_t n=write(devtools_write,text.data()+done,text.size()-done);
+    if(n<0 && errno==EINTR) continue;
+    if(n<=0) {devtools_pending.Forget(*id);DevToolsReply(tab,request_id,false,"Extension management is unavailable");return;}
+    done+=size_t(n);
+  }
+}
+void ReadDevToolsReplies(std::atomic<bool>& stop) {
+  std::string buffer;char chunk[65536];
+  while(!stop) {
+    pollfd fd{devtools_read,POLLIN,0};int r=poll(&fd,1,100);
+    if(r<0 && errno==EINTR) continue;if(r<0) break;if(!r) continue;
+    ssize_t n=read(devtools_read,chunk,sizeof(chunk));if(n<=0) break;buffer.append(chunk,size_t(n));
+    std::string messages[16];size_t count=0;
+    do {
+      if(!tilo::TakeDevToolsMessages(buffer,messages,16,&count)) return;
+      for(size_t i=0;i<count;++i) {
+        auto parsed=CefParseJSON(messages[i],JSON_PARSER_RFC);
+        if(!parsed || parsed->GetType()!=VTYPE_DICTIONARY) continue;
+        auto reply=parsed->GetDictionary();
+        // Notifications carry no id; only commands this host sent are answered.
+        if(reply->GetType("id")!=VTYPE_INT) continue;
+        auto owner=devtools_pending.Take(reply->GetInt("id"));if(!owner) continue;
+        const bool ok=reply->HasKey("result");
+        auto payload=ok ? reply->GetValue("result") : reply->GetValue("error");
+        DevToolsReply(owner->tab,owner->request_id,ok,payload ? CefWriteJSON(payload,JSON_WRITER_DEFAULT).ToString() : std::string("{}"));
+      }
+    } while(count==16);
+  }
 }
 void ReadCommands(std::atomic<bool>& stop) {
   std::string buffer;char chunk[65536];
@@ -1353,6 +1424,26 @@ int RunHost(int argc,char** argv) {
   profile=std::filesystem::canonical(profile).string();
   if(downloads_directory.empty()) downloads_directory=profile+"/downloads";
   Output writer;output=&writer;
+#if defined(OS_LINUX)
+  // Chromium's pipe handler reads commands on fd 3 and replies on fd 4. Use
+  // them only when nothing else holds those descriptors.
+  if(fcntl(3,F_GETFD)<0 && fcntl(4,F_GETFD)<0) {
+    // Keep every pipe end clear of 3 and 4 until it is moved there on purpose.
+    auto high=[](int fd){int moved=fcntl(fd,F_DUPFD_CLOEXEC,5);close(fd);return moved;};
+    int commands[2],replies[2];
+    if(pipe2(commands,O_CLOEXEC)==0 && pipe2(replies,O_CLOEXEC)==0) {
+      int chromium_reads=high(commands[0]),host_writes=high(commands[1]);
+      int host_reads=high(replies[0]),chromium_writes=high(replies[1]);
+      if(chromium_reads>=0 && host_writes>=0 && host_reads>=0 && chromium_writes>=0 &&
+         dup2(chromium_reads,3)==3 && dup2(chromium_writes,4)==4) {
+        devtools_write=host_writes;devtools_read=host_reads;
+      } else {
+        for(int fd:{host_writes,host_reads})if(fd>=0)close(fd);
+      }
+      for(int fd:{chromium_reads,chromium_writes})if(fd>=0)close(fd);
+    }
+  }
+#endif
   CefSettings settings;settings.windowless_rendering_enabled=true;settings.log_severity=LOGSEVERITY_WARNING;
   CefString(&settings.root_cache_path)=profile;
   if(!private_mode) CefString(&settings.cache_path)=profile+"/default";
@@ -1376,7 +1467,8 @@ int RunHost(int argc,char** argv) {
 #endif
   {std::lock_guard lock(credential_delivery->mutex);credential_delivery->active=true;}
   std::atomic<bool> stop{false};std::thread reader([&]{ReadCommands(stop);});
-  CefRunMessageLoop();TraceGeometry("message-loop-return",0);stop=true;reader.join();TraceGeometry("reader-joined",0);
+  std::thread devtools_reader;if(devtools_read>=0) devtools_reader=std::thread([&]{ReadDevToolsReplies(stop);});
+  CefRunMessageLoop();TraceGeometry("message-loop-return",0);stop=true;reader.join();if(devtools_reader.joinable())devtools_reader.join();TraceGeometry("reader-joined",0);
   {std::lock_guard lock(credential_delivery->mutex);credential_delivery->active=false;}
   if(credential_worker)credential_worker->Stop();credential_worker.reset();clients.clear();shared_context=nullptr;request_filter=nullptr;TraceGeometry("cef-shutdown-begin",0);CefShutdown();TraceGeometry("cef-shutdown-end",0);writer.Stop();output=nullptr;
   if(clear_on_exit) { std::error_code ec;std::filesystem::remove_all(profile+"/default",ec);if(ec) {std::cerr<<"Could not clear Chromium profile: "<<ec.message()<<"\n";return 1;} }

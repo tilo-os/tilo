@@ -186,6 +186,16 @@ pub struct SiteStatus {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum WebViewCommand {
+    /// A DevTools command for extension management: the engine allows only
+    /// the `Extensions` domain and what reading an extension's service worker
+    /// needs. The reply is a [`WebViewEvent::DevToolsResult`] with the same
+    /// `request_id`. `session` addresses an attached service-worker target.
+    DevTools {
+        request_id: u32,
+        method: String,
+        params: serde_json::Value,
+        session: Option<String>,
+    },
     Credentials(CredentialRequest),
     SetSiteExceptions(Vec<String>),
     RequestSiteStatus {
@@ -371,6 +381,13 @@ pub enum WebViewCommand {
 /// into its own state (address bar text, title, progress) during `sync`.
 #[derive(Debug, Clone, PartialEq)]
 pub enum WebViewEvent {
+    /// The reply to a [`WebViewCommand::DevTools`]: the JSON `result` when
+    /// `ok`, otherwise the JSON `error` (or a message).
+    DevToolsResult {
+        request_id: u32,
+        ok: bool,
+        body: String,
+    },
     CredentialResult(CredentialReply),
     SiteStatus(SiteStatus),
     SiteResult {
