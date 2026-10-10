@@ -13,7 +13,7 @@
 //!   blob **and** before the renderer paints it, so an ungranted embed shows a
 //!   locked card and never asks a collaborator for bytes.
 //! * [`ChatPermissions::can_participate`] — may this peer send / react / join a
-//!   call in the current workspace? (`Write` on the room.)
+//!   call in the current workspace? (`Write` on the room and Chat app.)
 //! * [`ChatPermissions::allows`] — the call-action seam (join / speak / camera
 //!   / screen-share), backed by the same context.
 //!
@@ -69,7 +69,7 @@ impl ChatPermissions {
         (valid_hash || valid_demo) && self.ctx.check(&PermissionScope::workspace(Verb::Read))
     }
 
-    /// May this peer post / react / join a call here? `Write` on the room (a
+    /// May this peer post / react / publish a call here? `Write` on the room and Chat (a
     /// Viewer can read the channels but not write into them).
     ///
     /// "Here" is the OS's active room, not one of chat's own workspace rows.
@@ -80,6 +80,9 @@ impl ChatPermissions {
     /// that was never asked for: it describes a boundary that does not exist.
     pub fn can_participate(&self) -> bool {
         self.ctx.check(&PermissionScope::workspace(Verb::Write))
+            && self
+                .ctx
+                .check(&PermissionScope::app("so.tilo.chat", Verb::Write))
     }
 
     /// Join/listen requires Read; publication requires Write. This UI check
@@ -97,7 +100,7 @@ impl ChatPermissions {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ui::permissions::{Actor, Role};
+    use ui::permissions::{Actor, CapOverride, Effect, Role, Scope, Subject};
 
     /// A read-only member with no file capabilities — the restricted peer a
     /// real invite without write or file access would produce.
@@ -152,5 +155,57 @@ mod tests {
             "attachments stay closed"
         );
         assert!(crate::app::ChatApp::shot_permission("call").is_none());
+    }
+
+    #[test]
+    fn chat_app_read_ceiling_blocks_participation_without_removing_task_or_read_rights() {
+        let context = PermissionContext::from_capabilities(
+            Actor::person(Some(Role::Editor), "person"),
+            vec![CapOverride::new(
+                Subject::person("person"),
+                Scope::App("so.tilo.chat".into()),
+                Effect::Restrict,
+                Verb::Read,
+            )],
+        );
+        assert!(context.check(&PermissionScope::workspace(Verb::Write)));
+        assert!(context.check(&PermissionScope::app("so.tilo.desktop", Verb::Write)));
+        assert!(context.check(&PermissionScope::app("so.tilo.chat", Verb::Read)));
+        let permissions = ChatPermissions::from_context(context);
+        assert!(!permissions.can_participate());
+        assert!(permissions.can_embed(&"a".repeat(64)));
+        assert!(permissions.allows(CallAction::Join));
+        assert!(permissions.allows(CallAction::Leave));
+        assert!(!permissions.allows(CallAction::Speak));
+    }
+
+    #[test]
+    fn participation_preserves_the_workspace_gate_and_independent_app_scopes() {
+        let task_restricted = PermissionContext::from_capabilities(
+            Actor::person(Some(Role::Editor), "person"),
+            vec![CapOverride::new(
+                Subject::person("person"),
+                Scope::App("so.tilo.desktop".into()),
+                Effect::Restrict,
+                Verb::Read,
+            )],
+        );
+        assert!(!task_restricted.check(&PermissionScope::app("so.tilo.desktop", Verb::Write)));
+        assert!(ChatPermissions::from_context(task_restricted).can_participate());
+        let app_only = PermissionContext::from_capabilities(
+            Actor::person(Some(Role::Viewer), "person"),
+            vec![CapOverride::grant(
+                Subject::person("person"),
+                Scope::App("so.tilo.chat".into()),
+                Verb::Write,
+            )],
+        );
+        assert!(app_only.check(&PermissionScope::app("so.tilo.chat", Verb::Write)));
+        assert!(!ChatPermissions::from_context(app_only).can_participate());
+        let editor = PermissionContext::from_capabilities(
+            Actor::person(Some(Role::Editor), "person"),
+            vec![],
+        );
+        assert!(ChatPermissions::from_context(editor).can_participate());
     }
 }

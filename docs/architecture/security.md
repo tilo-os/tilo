@@ -401,10 +401,12 @@ workspace launch remains `author` (Editor) or `read-only` (Viewer) for its
 records. The launcher additionally mounts one host-selected app/person action
 policy directory read-only at `/run/tilo/action-authority`; it never adds these
 person capabilities to the app's sandbox grant file or changes record roles.
-The SDK borrows this current person policy only for Admin operations on the
-bound app or its declared action. Other apps, record resources and other verbs
-retain the original participation. App, agent and token actors cannot borrow
-this person authority.
+The SDK borrows this current person policy for Admin operations on the bound
+app or its declared action. For other operations on that app or action, the
+current policy may narrow an already allowed participation decision, never
+upgrade a denied one. Other apps, workspace and record resources retain their
+original participation. App, agent and token actors cannot borrow this person
+authority.
 
 Only accepted workspace-state publication exports policy. The export retains
 matching person/membership policy and exact-app/action scopes, excludes host
@@ -412,7 +414,8 @@ paths, devices, network and other apps, and checks current native custody before
 renewal. The existing launch supervisor holds the projection lease; the normal
 idle deadline and durable writer renew it once per second while that supervisor
 is live. An expired, future-dated, missing, malformed or foreign binding denies
-Admin admission. The maximum lease is three seconds: host death or failed file
+Admin admission and any own-app permission requiring the current projection.
+The maximum lease is three seconds: host death or failed file
 replacement cannot preserve stale admission indefinitely. Atomic replacement
 is visible through the read-only directory mount, and ordinary hosted model
 pumps republish changed authority without forcing a redraw.

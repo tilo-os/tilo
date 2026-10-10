@@ -336,7 +336,20 @@ impl PermissionContext {
                     current.decide(resource, op)
                 });
         }
-        decide_capability(&self.actor, resource, op, &self.caps, now)
+        let participation = decide_capability(&self.actor, resource, op, &self.caps, now);
+        // Current app policy may narrow admitted record participation, never
+        // upgrade it. Workspace and record checks retain their original scope.
+        if participation == CapDecision::Allow
+            && let Some(authority) = &self.action_authority
+            && authority.matches(resource)
+        {
+            return authority
+                .sample_for(&self.user, &self.actor)
+                .map_or(CapDecision::DeniedByRole, |current| {
+                    current.decide(resource, op)
+                });
+        }
+        participation
     }
 
     /// May the actor do this? Fail-closed: anything not affirmatively
