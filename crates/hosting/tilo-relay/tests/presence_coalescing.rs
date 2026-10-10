@@ -367,21 +367,9 @@ impl Member {
     }
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_keystrokes_caret_and_typing_ride_in_its_deltas_write() {
-    let user = TestUser::fresh("Keystroke writes");
-    let author = user.enrol("laptop", DeviceCapabilities::primary());
-    let reader = user.enrol("tilo-relay/7 peer", DeviceCapabilities::member());
-    let members = [author.device_pubkey(), reader.device_pubkey()];
-    let relay = Box::pin(spawn_relay(
-        &user,
-        user.enrol("relay", DeviceCapabilities::host()),
-        &[WORKSPACE],
-        &members,
-    ))
-    .await;
-
-    // The author's room state: one text document.
+/// The author's room state with one text document, and the author's
+/// replica of that document.
+fn seeded_room(author: &TestDevice, reader: &TestDevice) -> (StatePeer, AutoCommit) {
     let now = SystemTime::now();
     let certificates = vec![author.cert.clone(), reader.cert.clone()];
     let mut owner = StatePeer::new(
@@ -414,6 +402,24 @@ async fn a_keystrokes_caret_and_typing_ride_in_its_deltas_write() {
         .unwrap();
     let mut doc = AutoCommit::load(&owner.document(APP, RECORD).unwrap()).unwrap();
     doc.set_actor(automerge::ActorId::from(author.device_pubkey().to_vec()));
+    (owner, doc)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_keystrokes_caret_and_typing_ride_in_its_deltas_write() {
+    let user = TestUser::fresh("Keystroke writes");
+    let author = user.enrol("laptop", DeviceCapabilities::primary());
+    let reader = user.enrol("tilo-relay/7 peer", DeviceCapabilities::member());
+    let members = [author.device_pubkey(), reader.device_pubkey()];
+    let relay = Box::pin(spawn_relay(
+        &user,
+        user.enrol("relay", DeviceCapabilities::host()),
+        &[WORKSPACE],
+        &members,
+    ))
+    .await;
+
+    let (mut owner, mut doc) = seeded_room(&author, &reader);
     let body = doc.get(ROOT, "body").unwrap().unwrap().1;
 
     let mut member = Member::open(
