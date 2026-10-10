@@ -355,6 +355,18 @@ This gives three deployments without three protocols:
   is unpublished, they are held, up to 20 ms, and leave in the delta's write,
   so a member receives the character and the caret after it in one packet.
   The delta never waits, and the frames are the same on every protocol.
+- Client pointer pacing: the shell and the toolkit publish a moving pointer
+  at about 30 Hz, and the host forwards one at 20 Hz, so the client's session
+  writer (`tilo_relay_session::client`, `pointer_pacing`) writes each pointer
+  slot at most every 50 ms (`coedit::POINTER_GAP`, which is also the host's
+  pace): a move after a pause at once, a move inside the gap held and
+  replaced by newer ones, and the latest written when the gap ends, so the
+  resting position always arrives. Anything but a delta or another
+  latest-state presence takes the held pointers ahead of it in the same
+  write, so an app's `Left` never overtakes its last pointer. A move the host
+  would only have coalesced away no longer costs an upstream packet or the
+  acknowledgement it draws. The writer paces whatever session it serves,
+  whoever the author is; the frames are unchanged.
 - Remote actions (v1): versioned JSON `RemoteActionFrame`s (`tilo_actions::remote`).
   A caller follows an invocation with one waiting request at a time —
   `wait_ms` on `Invoke`, or on `Observe` with the `seen` update — which the

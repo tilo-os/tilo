@@ -14,7 +14,10 @@
 //!   glide a peer's pointer over the gap between two samples
 //!   (`ui::presence::POINTER_EASE_MAX` caps it at 100 ms), so 20 Hz moves as
 //!   smoothly as the 30 Hz the shell publishes, for a third fewer frames. The
-//!   first move after a pause goes out within [`BATCH_WINDOW`].
+//!   first move after a pause goes out within [`BATCH_WINDOW`]. Current
+//!   clients already write each pointer slot at most this often (the session
+//!   writer's pointer pacing in `tilo_relay_session::client`), so this pace
+//!   only bites on older clients and on jitter.
 //! - **Carets, selections and typing on every change**, after at most
 //!   [`BATCH_WINDOW`] (5 ms), which is what lets a keystroke's `Typing` and
 //!   `Caret` travel as one frame.
@@ -53,8 +56,10 @@ use tilo_peer_state::PresenceSlot;
 use tokio::sync::Notify;
 use tokio::time::Instant;
 
-/// The shortest gap between two moves of one pointer slot to one connection.
-pub const MOTION_GAP: Duration = Duration::from_millis(50);
+/// The shortest gap between two moves of one pointer slot to one connection:
+/// the pointer gap clients pace their own writes to
+/// ([`crate::coedit::POINTER_GAP`]), so the two cannot drift apart.
+pub const MOTION_GAP: Duration = crate::coedit::POINTER_GAP;
 /// How long presence waits for more to travel in the same frame.
 pub const BATCH_WINDOW: Duration = Duration::from_millis(5);
 /// The shortest gap after which a pointer slot may ride along with
