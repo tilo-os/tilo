@@ -63,14 +63,23 @@ commands=[['python3','/deps/usr/bin/meson','setup','/out/build','/source',
  '-Dwayland_backend=true','-Dbroadway_backend=false','-Dprint_backends=file',
  '-Dcolord=no','-Dgtk_doc=false','-Dman=false','-Dintrospection=false',
  '-Ddemos=false','-Dexamples=false','-Dtests=false','-Dinstalled_tests=false',
- '-Dbuiltin_immodules=backend'],['ninja','-C','/out/build','-j2','gtk-3']]
+ '-Dbuiltin_immodules=backend']]
 for command in commands:subprocess.run(command,check=True,env=env,timeout=1800)
-env['PKG_CONFIG_PATH']='/out/build/meson-uninstalled:'+str(pc)
-flags=shlex.split(subprocess.check_output(['pkg-config','--cflags','--libs','gtk+-3.0'],env=env,text=True))
-command=['cc','-std=c11','-O2','-Wall','-Wextra','-Werror','/entry_subject.c',
- '-Wl,-rpath,$ORIGIN/build/gtk:$ORIGIN/build/gdk',
- '-Wl,-rpath-link,/deps/usr/lib64',*flags,'-o','/out/entry_subject']
-subprocess.run(command,check=True,env=env,timeout=60);commands.append(command)
+targets=json.loads((out/'build/meson-info/intro-targets.json').read_text())
+library=[t for t in targets if t['name']=='gtk-3' and t['type']=='shared library']
+assert len(library)==1 and len(library[0]['filename'])==1
+target=str(pathlib.Path(library[0]['filename'][0]).relative_to(out/'build'))
+command=['ninja','-C','/out/build','-j2',target]
+subprocess.run(command,check=True,env=env,timeout=1800);commands.append(command)
+flags=shlex.split(subprocess.check_output(['pkg-config','--cflags','--libs',
+ 'pangocairo','atk','gdk-pixbuf-2.0','gio-2.0','cairo'],env=env,text=True))
+for source,name in [('/entry_subject.c','entry_subject'),('/native_history_gate.c','native_history_gate')]:
+ command=['cc','-std=c11','-O2','-Wall','-Wextra','-Werror',source,
+  '-Wl,-rpath,$ORIGIN/build/gtk:$ORIGIN/build/gdk',
+  '-Wl,-rpath-link,/deps/usr/lib64','-I/source','-I/out/build',
+  '-L/out/build/gtk','-L/out/build/gdk','-lgtk-3','-lgdk-3',
+  *flags,'-o','/out/'+name]
+ subprocess.run(command,check=True,env=env,timeout=60);commands.append(command)
 (out/'compile-receipt.json').write_text(json.dumps(dict(commands=commands,
  binary_sha256=hashlib.sha256((out/'entry_subject').read_bytes()).hexdigest(),
  compiled=True,installed=False,editing_qualified=False,accessibility_qualified=False),indent=2)+'\n')
@@ -100,6 +109,7 @@ def main():
         '--tmpfs', '/tmp:rw,nosuid,size=128m',
         '--volume', str(tree)+':/source:ro', '--volume', str(root)+':/deps:ro',
         '--volume', str(HERE/'entry_subject.c')+':/entry_subject.c:ro',
+        '--volume', str(HERE/'native_history_gate.c')+':/native_history_gate.c:ro',
         '--volume', str(args.out.resolve())+':/out:rw',
         '--entrypoint', 'python3', IMAGE, '-c', INNER]
     if not args.execute:

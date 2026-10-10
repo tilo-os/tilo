@@ -1,6 +1,6 @@
 # GTK3 stock-entry history source candidate
 
-This is an **uncompiled, unqualified, opt-in source candidate**, not an installed
+This is a **privately compiled, opt-in runtime candidate**, not an installed
 runtime or an existing-history adapter. It leaves GtkEntry and its GtkEntryBuffer
 in place. No UI-core or application toolkit refactor is involved.
 
@@ -116,3 +116,27 @@ network or package installation, two CPUs, 3 GiB and no swap. The source and
 extracted dependencies are read-only; only the fresh private output is writable.
 A successful compile is not the single-line speech/Undo or accessibility gate.
 Neither runtime installation nor activation is part of this driver.
+
+
+The native library and subjects compiled in the pinned private image on October
+10. The initial driver target alias and assumed Meson uninstalled-pkgconfig path
+failed and were corrected using the generated target catalogue and exact
+public/generated header paths. All failed build logs remain private evidence.
+
+`native_history_gate.c` exercises the actual GtkEntryAccessible AtkAction. It
+waits for a real compositor-to-Wayland IM selected replacement, then requires
+ONE native Undo/Redo, original selection, and the same buffer before commit and
+across Undo/Redo. It also rejects unregistered, read-only, insensitive,
+PASSWORD/PIN, unfocused and intercepted Undo owners. The unregistered and
+protected native action/status gate passed with fatal GLib warnings. The test
+controller must wait for `GTK3_NATIVE_GATE_READY_IM_REPLACEMENT`, then send `!`
+through the existing compositor `type` operation; direct programmatic insertion
+into a selected range is a different native operation and its earlier selection
+failure remains recorded. No assertion from the selected-replacement gate was
+weakened.
+
+Recorded speech and external Tilo semantic/AT-SPI history routing are still
+unqualified. Native ATK invocation inside the subject does not establish that
+an arbitrary app has registered an owner or that the shell imports legacy ATK
+actions. Flatpak/runtime delivery and custom edit callbacks remain separate
+qualification requirements.
