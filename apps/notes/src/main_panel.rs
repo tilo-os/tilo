@@ -473,7 +473,8 @@ impl MainPanel {
         // Binding the page already open again (its record re-read, a reveal)
         // keeps the caret where the person left it: a rebind that put it back
         // at the start would make the next keystroke land before the last.
-        let caret = (self.page_id == Some(page))
+        let same_page = self.page_id == Some(page);
+        let caret = same_page
             .then(|| {
                 let editor = self.editor.editor();
                 let block = editor.blocks().get(editor.focused_index()?)?;
@@ -504,7 +505,14 @@ impl MainPanel {
         self.empty_action_focused = false;
         self.set_title_value(title);
         self.body.clear();
-        self.scroll_y = 0.0;
+        // Another page starts at its top; the same page, bound again after an
+        // edit (a paste, an import), stays where the person is reading, and
+        // layout clamps the offset to the new extent.
+        if same_page {
+            self.scroll_layout_dirty = true;
+        } else {
+            self.scroll_y = 0.0;
+        }
         self.dirty = true;
         Ok(())
     }
@@ -1425,7 +1433,7 @@ impl Widget for MainPanel {
                     .any(|b| b.line.get_rect().height() > 0.0);
             if measured {
                 if self.follow_caret
-                    && let Some(caret) = self.editor.ime_cursor_rect()
+                    && let Some(caret) = self.editor.editor().document_caret_rect()
                 {
                     let viewport_top = self.rect.y0 + self.scroll_top_inset();
                     let viewport_bottom = viewport_top + viewport_h;
