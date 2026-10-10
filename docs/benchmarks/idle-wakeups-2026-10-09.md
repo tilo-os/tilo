@@ -87,17 +87,8 @@ Those are held by thread probes in their own crates.
 - `IDLE_WAKEUP_BUDGET` 3000/s and `LOOP_TICK_BUDGET` 1500/s in
   `idle_wakeups.rs`: the spinning measurement plus a half, because whether a
   run sees TIL-696 depends on the wall clock and a spin's rate on the
-  runner. TIL-696 dropped them to 75/s (60/s plus a quarter) and 1/s.
-
-## After TIL-696
-
-`EmbeddedApp::update` resamples a hosted app's due wake deadline on the
-compositor's pump, without drawing, and the loop's two per-tick continuity
-policy reads use its cached policy instead of reading settings. Run 89957
-(source d6018b47e5), same method: **51.4 wakeups/s**, 1.2 % of a core, frame
-loop **0 ticks/s**, 0 frames painted; `shell / shell` 0/s and
-`tilo-settings-read` 1/s. What remains is the parked table above (audio output
-authority 19.9/s, collaboration broker 19.4/s, network runtime, …).
+  runner. TIL-696 dropped them to the parked measurement plus a quarter
+  and 1/s (see "TIL-696" below).
 - `IDLE_WAKEUP_BUDGET` 15/s in `idle_quiet_tests.rs`: 11.6/s plus a quarter.
   TIL-690 raised it to 21/s, the shell shard's measured p95 plus a quarter
   (see "The collaboration-plane gate in the shell shard").
@@ -210,6 +201,29 @@ and asserts the relays are still held back after its idle window: 1.05/s
 (focused run 92076), the same as loopback. `reachability_tests` holds the
 startup predicate and a pair of desktops that hold their relays back, still
 sync, and then both wake them.
+
+### TIL-696: the frame loop stops spinning
+
+An in-process app whose record was still `Saving` at its last frame left a
+wake deadline that only its next draw moved. `EmbeddedApp::update` now
+samples it again on the compositor's pump, without drawing: the deadline
+moves on while the save runs, and goes away (with one frame to show it)
+once the save is durable. The loop's two per-tick continuity policy reads
+(`window_viewers`, `publish_window_views`) take the loop's cached policy, so
+an iteration no longer queues a settings refresh.
+
+| run | source | wakeups/s | CPU, % of a core | frame loop ticks/s |
+| -- | -- | --: | --: | --: |
+| 89647 (before, spinning) | 303d0009d0 | 2008.2 | 86.4 | 945.9 |
+| 89957 | d6018b47e5 | 51.4 | 1.2 | 0 |
+| 92406 | 72e3096677 (on TIL-704/707/702/740) | 7.30 | 0.2 | 0 |
+| 92444 | 72e3096677 | 7.60 | 0.3 | 0 |
+| 92445 | 72e3096677 | 7.30 | 0.2 | 0 |
+
+The gate's budgets drop to 10/s (7.6/s plus a quarter) and 1 tick/s. What is
+left: `ui-collab-shovel` 3.4/s, `tilo-identity-client` 2.0/s, the network
+runtime about 1/s, and a few tenths from the fs authority, session audio and
+secrets bus.
 
 ## The collaboration-plane gate in the shell shard
 
