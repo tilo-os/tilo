@@ -58,6 +58,35 @@ pub(super) struct HostedPumpReport {
 }
 
 impl super::App {
+    /// Whether either native authority boundary needs the projection watch.
+    /// A mounted component retains its host context separately from the
+    /// outer app assembled around it, so neither boundary substitutes for
+    /// the other.
+    #[cfg(any(feature = "native", test))]
+    pub(super) fn has_live_hosted_action_authority(&self) -> bool {
+        self.permission_ctx.has_live_action_authority()
+            || self
+                .root_widget
+                .callback_binding()
+                .is_some_and(|binding| binding.permissions.borrow().has_live_action_authority())
+    }
+
+    /// Earliest authority expiry across the standalone app and its mounted
+    /// owner. `None` means neither currently exposes a usable deadline.
+    #[cfg(any(feature = "native", test))]
+    pub(super) fn hosted_action_authority_deadline_unix_ms(&self) -> Option<u64> {
+        self.permission_ctx
+            .action_authority_deadline_unix_ms()
+            .into_iter()
+            .chain(self.root_widget.callback_binding().and_then(|binding| {
+                binding
+                    .permissions
+                    .borrow()
+                    .action_authority_deadline_unix_ms()
+            }))
+            .min()
+    }
+
     /// A worker has no redraw loop. Advance one bounded model pass using the
     /// same phases as the window runner, without adding caller attribution.
     pub(crate) fn pump_hosted_model(&mut self) {

@@ -455,6 +455,70 @@ fn hosted_pump_policy_change_and_expiry_refresh() {
     fixture.assert_idle();
 }
 
+struct OwnerAuthorityFixture {
+    permissions: Rc<RefCell<crate::permissions::PermissionContext>>,
+    current: Arc<std::sync::Mutex<bool>>,
+    deadline: Arc<std::sync::atomic::AtomicU64>,
+}
+
+fn live_owner_authority() -> OwnerAuthorityFixture {
+    let current = Arc::new(std::sync::Mutex::new(true));
+    let deadline = Arc::new(std::sync::atomic::AtomicU64::new(
+        crate::time::try_unix_now_ms().unwrap() + 60_000,
+    ));
+    let sampled_current = Arc::clone(&current);
+    let sampled_deadline = Arc::clone(&deadline);
+    let permissions = crate::permissions::PermissionContext::permissive()
+        .with_live_action_authority(
+            "test.directory".into(),
+            Arc::new(move || {
+                if *sampled_current.lock().unwrap() {
+                    Ok(crate::permissions::PermissionContext::permissive())
+                } else {
+                    sampled_deadline.store(0, Ordering::Release);
+                    Err("fixture owner authority revoked".into())
+                }
+            }),
+            Arc::clone(&deadline),
+        );
+    OwnerAuthorityFixture {
+        permissions: Rc::new(RefCell::new(permissions)),
+        current,
+        deadline,
+    }
+}
+
+fn assert_bound_owner_authority_sources(
+    app: &mut App,
+    owner_deadline: &Arc<std::sync::atomic::AtomicU64>,
+) {
+    assert_eq!(
+        app.permission_ctx,
+        crate::permissions::PermissionContext::permissive()
+    );
+    assert!(!app.permission_ctx.has_live_action_authority());
+    assert!(app.has_live_hosted_action_authority());
+    assert_eq!(
+        app.hosted_action_authority_deadline_unix_ms(),
+        Some(owner_deadline.load(Ordering::Acquire))
+    );
+    let outer_deadline = Arc::new(std::sync::atomic::AtomicU64::new(
+        owner_deadline.load(Ordering::Acquire) - 1_000,
+    ));
+    app.permission_ctx = crate::permissions::PermissionContext::permissive()
+        .with_live_action_authority(
+            "outer.test".into(),
+            Arc::new(|| Ok(crate::permissions::PermissionContext::permissive())),
+            Arc::clone(&outer_deadline),
+        );
+    assert_eq!(
+        app.hosted_action_authority_deadline_unix_ms(),
+        Some(outer_deadline.load(Ordering::Acquire)),
+        "the event loop arms the earliest independent authority boundary"
+    );
+    app.permission_ctx = crate::permissions::PermissionContext::permissive();
+}
+
 #[test]
 fn hosted_pump_host_owner_permission_replacement_refreshes() {
     use crate::application::{
@@ -484,9 +548,7 @@ fn hosted_pump_host_owner_permission_replacement_refreshes() {
         room_record: false,
         create: owned_declared_directory_factory,
     };
-    let permissions = Rc::new(RefCell::new(
-        crate::permissions::PermissionContext::permissive(),
-    ));
+    let authority = live_owner_authority();
     let context = HostContext::prepare(
         &definition,
         HostContextInputs {
@@ -494,7 +556,7 @@ fn hosted_pump_host_owner_permission_replacement_refreshes() {
             views,
             device_id: "D".into(),
             instance_id: 82,
-            permissions: permissions.clone(),
+            permissions: authority.permissions.clone(),
             author: crate::permissions::UserId("fixture-user".into()),
             action_context: tilo_actions::ActionContext::default(),
         },
@@ -513,6 +575,7 @@ fn hosted_pump_host_owner_permission_replacement_refreshes() {
         AppConstructionInputs::controlled()
     })
     .unwrap();
+    assert_bound_owner_authority_sources(&mut app, &authority.deadline);
     app.collaboration.manager = CollaborationManager::connected_for_lifecycle_test();
     app.actions.bound_broker_route_for_test = Some(crate::collaboration::PrimaryRouteWitness {
         route: binding.broker_route().unwrap(),
@@ -540,13 +603,19 @@ fn hosted_pump_host_owner_permission_replacement_refreshes() {
         model_lifecycle::HostedPumpReport::default()
     );
     assert_eq!(app.actions.resource_generation.get(), generation);
-    // What HostWorker::pump does with the host's recomputed authority.
-    *permissions.borrow_mut() = crate::permissions::PermissionContext::from_capabilities(
-        crate::permissions::Actor::person(None, "fixture-user"),
-        vec![],
-    );
+    // What the retained native owner sampler observes after host revocation.
+    let retained_scope = binding.lifetime_id;
+    let document = app.state.doc.save();
+    *authority.current.lock().unwrap() = false;
     let report = app.pump_hosted_model_as(false);
     assert!(report.synced && report.published);
+    assert_eq!(app.hosted_action_authority_deadline_unix_ms(), None);
+    assert!(app.has_live_hosted_action_authority());
+    assert_eq!(
+        app.root_widget.callback_binding().unwrap().lifetime_id,
+        retained_scope
+    );
+    assert_eq!(app.state.doc.save(), document);
     assert_ne!(app.actions.resource_generation.get(), generation);
     assert!(
         tilo_actions::door::survey(&app.publication_resources()).len() < before,
@@ -590,19 +659,33 @@ fn hosted_pump_action_authority_revoke_refreshes_without_forced_sync() {
     use std::sync::{Arc, Mutex};
     let current = Arc::new(Mutex::new(Some(Role::Owner)));
     let sample = current.clone();
+    let deadline = Arc::new(std::sync::atomic::AtomicU64::new(
+        crate::time::try_unix_now_ms().unwrap() + 90_000,
+    ));
+    let sampled_deadline = Arc::clone(&deadline);
     let mut fixture = HostedPumpFixture::new(1);
     fixture.app.permission_ctx = PermissionContext::from_capabilities(
         Actor::person(Some(Role::Editor), "fixture-user"),
         vec![],
     )
-    .with_action_authority(
+    .with_live_action_authority(
         "test.directory".into(),
         Arc::new(move || {
+            let role = *sample.lock().unwrap();
+            if role.is_none() {
+                sampled_deadline.store(0, Ordering::Release);
+            }
             Ok(PermissionContext::from_capabilities(
-                Actor::person(*sample.lock().unwrap(), "fixture-user"),
+                Actor::person(role, "fixture-user"),
                 vec![],
             ))
         }),
+        Arc::clone(&deadline),
+    );
+    assert!(fixture.app.has_live_hosted_action_authority());
+    assert_eq!(
+        fixture.app.hosted_action_authority_deadline_unix_ms(),
+        Some(deadline.load(Ordering::Acquire))
     );
     assert!(fixture.pump().synced);
     fixture.assert_idle();
@@ -613,6 +696,7 @@ fn hosted_pump_action_authority_revoke_refreshes_without_forced_sync() {
         "ordinary worker observes revoked owner authority"
     );
     assert_ne!(fixture.app.actions.resource_generation.get(), generation);
+    assert_eq!(fixture.app.hosted_action_authority_deadline_unix_ms(), None);
     fixture.assert_idle();
 }
 

@@ -166,10 +166,8 @@ struct AppHandler {
     _action_authority_watch: Option<tilo_host::action_authority::AuthorityWatch>,
 }
 
-fn action_authority_wake_deadline(
-    permissions: &crate::permissions::PermissionContext,
-) -> Option<crate::time::Instant> {
-    let deadline = permissions.action_authority_deadline_unix_ms()?;
+fn action_authority_wake_deadline(app: &App) -> Option<crate::time::Instant> {
+    let deadline = app.hosted_action_authority_deadline_unix_ms()?;
     let now_unix = crate::time::try_unix_now_ms()?;
     crate::time::now().checked_add(Duration::from_millis(deadline.saturating_sub(now_unix)))
 }
@@ -3975,7 +3973,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         }
         let force_theme = self.settings_store_changed.swap(false, Ordering::AcqRel);
         let authority_event = self.action_authority_changed.swap(false, Ordering::AcqRel);
-        let authority_due = action_authority_wake_deadline(&self.app.permission_ctx)
+        let authority_due = action_authority_wake_deadline(&self.app)
             .is_some_and(|deadline| deadline <= crate::time::now());
         let app = &mut self.app;
         if force_theme {
@@ -4227,7 +4225,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                     .busy()
                     .then(|| crate::time::now() + Duration::from_millis(50)),
             )
-            .chain(action_authority_wake_deadline(&self.app.permission_ctx))
+            .chain(action_authority_wake_deadline(&self.app))
             .min();
         match deadline {
             Some(deadline) => event_loop.set_control_flow(ControlFlow::WaitUntil(deadline)),
@@ -4799,7 +4797,7 @@ impl App {
                 .flatten()
         };
         let action_authority_changed = Arc::new(AtomicBool::new(false));
-        let action_authority_watch = if self.permission_ctx.has_live_action_authority() {
+        let action_authority_watch = if self.has_live_hosted_action_authority() {
             let watch = {
                 let _entry = self.enter_wake_scope();
                 let pending = Arc::clone(&action_authority_changed);

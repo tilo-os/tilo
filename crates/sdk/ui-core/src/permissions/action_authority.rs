@@ -123,7 +123,7 @@ impl PermissionContext {
             .and_then(ActionAuthoritySampler::deadline_unix_ms)
     }
 
-    #[cfg(feature = "native")]
+    #[cfg(any(feature = "native", test))]
     pub(crate) fn has_live_action_authority(&self) -> bool {
         self.action_authority
             .as_ref()
