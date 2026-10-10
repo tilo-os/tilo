@@ -6174,6 +6174,7 @@ impl FrameHarness {
                 source_invocation: None,
                 ambient,
                 scope: None,
+                route: None,
             },
         )?;
         if matches!(started, crate::widget::ResourceOperationStart::Accepted) {
@@ -6377,6 +6378,7 @@ impl FrameHarness {
                 source_invocation: None,
                 ambient: acting.as_ref().and_then(|acting| acting.context.as_ref()),
                 scope: None,
+                route: None,
             },
         )
         .map_err(crate::bound_dispatch::BoundActionError::into_door);
@@ -6724,6 +6726,7 @@ impl FrameHarness {
                         source_invocation: None,
                         ambient: None,
                         scope: None,
+                        route: None,
                     },
                 )
                 .map_err(crate::bound_dispatch::BoundActionError::into_door)?;
@@ -8055,6 +8058,7 @@ impl FrameHarness {
                 source_invocation: None,
                 ambient: None,
                 scope: None,
+                route: None,
             },
         )
         .map_err(crate::bound_dispatch::BoundActionError::into_door)?;

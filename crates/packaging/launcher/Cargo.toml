@@ -73,8 +73,9 @@ runtime-bundle = { path = "../runtime-bundle" }
 # The canonical manifest schema and its one decoder (`view`), so the
 # sandbox reads exactly what the registry and the installer read.
 tilo-app-package = { path = "../tilo-app-package" }
-# Which packages are installed and where: the one registry, read-only.
-package-store = { path = "../package-store" }
+# Which packages are installed and where: the one registry, read-only, and
+# the lease a launch holds on its payload tree until its sandbox exits.
+package-store = { path = "../package-store", features = ["lease"] }
 # The capability vocabulary. Workspace grants arrive as `CapOverride`
 # records and are evaluated with the same fail-closed decision function
 # the compositor and the filesystem use — a launcher-local permission
@@ -117,6 +118,9 @@ threshold-identity = { path = "../../collab/threshold-identity" }
 getrandom.workspace = true
 # Kernel probes proving the resolved seccomp profile is what the kernel enforces.
 tilo-sandbox-core = { path = "../../system/sandbox-core", features = ["test-support"] }
+# The collection `tilo-install` runs after an update, interleaved with a
+# launch by the lease tests.
+install = { path = "../install" }
 
 [[test]]
 name = "it"

@@ -508,7 +508,7 @@ mod availability_control_tests {
         );
 
         // A change that arrives without a wake (as a remote apply does) is
-        // still repaired by the next tick.
+        // still repaired, now on the namespace's own announcement.
         let late = {
             let mut namespace = namespace.lock().unwrap();
             let ino = namespace
@@ -521,6 +521,100 @@ mod availability_control_tests {
         })
         .await;
         assert!(walks() > settled);
+
+        drop(fs);
+        endpoint.close().await;
+    }
+
+    /// TIL-750. The faults the repair tick existed for, with no tick to
+    /// lean on (an hour's backstop): a pinned folder gains a file through a
+    /// namespace change no FUSE callback saw (as a remote apply does), and
+    /// a folder is pinned by a registry writer other than this mount (as
+    /// the storage socket does). Each is hydrated on its own announcement.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn pins_are_repaired_on_announcements_without_a_tick() {
+        let dir = tempfile::tempdir().unwrap();
+        let endpoint = Endpoint::bind(presets::Minimal).await.unwrap();
+        let store = Arc::new(ContentStore::memory());
+        let local = store.write_content(b"already here").await.unwrap().unwrap();
+        let hydrator = Arc::new(Hydrator::new(endpoint.clone(), store));
+        let namespace = Arc::new(Mutex::new(Namespace::new("announced-pin").unwrap()));
+        let (folder, first) = {
+            let mut namespace = namespace.lock().unwrap();
+            let folder = namespace.create_dir(ROOT_INO, "offline", 1).unwrap();
+            let first = namespace.create_file(folder, "first", None, 0, 1).unwrap();
+            (folder, namespace.record_id_for(first).unwrap())
+        };
+        let registry = Arc::new(Mutex::new(
+            AvailabilityRegistry::open(dir.path().join("availability.json")).unwrap(),
+        ));
+        let heuristics = Arc::new(Heuristics::new(Arc::clone(&hydrator)));
+        let fs = QuickFS::new(Arc::clone(&namespace), Arc::clone(&hydrator), heuristics)
+            .with_availability(Arc::clone(&registry))
+            .with_pinned_hydration_every(Duration::from_secs(3600));
+        fs.set_pin_policy(folder, AvailabilityPolicy::Pinned)
+            .unwrap();
+        wait_for_availability(&registry, first, |record| {
+            record.residency == Residency::Resident { bytes: 0 }
+        })
+        .await;
+
+        // A file arrives in the pinned folder outside every FUSE callback.
+        let remote = {
+            let mut namespace = namespace.lock().unwrap();
+            let ino = namespace
+                .create_file(folder, "arrived-remotely", None, 0, 2)
+                .unwrap();
+            namespace.record_id_for(ino).unwrap()
+        };
+        wait_for_availability(&registry, remote, |record| {
+            record.residency == Residency::Resident { bytes: 0 }
+        })
+        .await;
+
+        // Another writer of the registry pins a folder this mount never
+        // touched; the worker learns of it from the registry alone.
+        let (root, other, inside) = {
+            let mut namespace = namespace.lock().unwrap();
+            let other = namespace
+                .create_dir(ROOT_INO, "pinned-elsewhere", 3)
+                .unwrap();
+            let inside = namespace
+                .create_file(other, "inside", Some(&local), 12, 3)
+                .unwrap();
+            (
+                namespace.record_id_for(ROOT_INO).unwrap(),
+                namespace.record_id_for(other).unwrap(),
+                namespace.record_id_for(inside).unwrap(),
+            )
+        };
+        // Let the pass those namespace changes start finish first, so only
+        // the registry's announcement can bring the pin.
+        tokio::time::sleep(PINNED_CHANGE_SETTLE.saturating_mul(4)).await;
+        assert!(
+            registry
+                .lock()
+                .unwrap()
+                .get(inside)
+                .is_none_or(|record| record.residency != Residency::Resident { bytes: 12 }),
+            "an unpinned file was proven resident"
+        );
+        {
+            let mut registry = registry.lock().unwrap();
+            if registry.get(root).is_none() {
+                registry
+                    .put(RecordAvailability::new(root, RecordKind::Directory))
+                    .unwrap();
+            }
+            let mut pinned = RecordAvailability::new(other, RecordKind::Directory);
+            pinned.parent = Some(root);
+            pinned.policy = AvailabilityPolicy::Pinned;
+            registry.put(pinned).unwrap();
+        }
+        wait_for_availability(&registry, inside, |record| {
+            record.residency == Residency::Resident { bytes: 12 }
+        })
+        .await;
 
         drop(fs);
         endpoint.close().await;

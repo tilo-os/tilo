@@ -12,7 +12,6 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::time::{Duration, UNIX_EPOCH};
 
-use automerge::sync::SyncDoc;
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value};
 use fs_protocol::{
@@ -47,9 +46,11 @@ const PEER_SYNC_STATES_TAG: &[u8; 8] = b"TFPSYNC1";
 /// heads, 32 bytes each, and a document rarely has more than a few heads.
 const MAX_PEER_SYNC_STATE_BYTES: usize = 64 * 1024;
 
+mod changes;
 mod changesets;
 mod leases;
 mod posix;
+use changes::ChangeTrackedDoc;
 pub use changesets::ChangesetMark;
 pub use leases::{LeaseRequest, VersionFence, WriteLease};
 pub use posix::{DEFAULT_DIR_MODE, DEFAULT_FILE_MODE, PosixAttrs};
@@ -351,7 +352,9 @@ impl RecordIndexDigest {
 
 #[derive(Clone)]
 pub struct Namespace {
-    doc: AutoCommit,
+    /// The document; its every change is announced to
+    /// [`Self::subscribe_changes`] (see [`changes`]).
+    doc: ChangeTrackedDoc,
     nodes: ObjId,
     ino_to_id: HashMap<u64, String>,
     id_to_ino: HashMap<String, u64>,
@@ -553,7 +556,7 @@ impl Namespace {
         let mut doc = AutoCommit::new();
         let nodes = doc.put_object(&ROOT, "nodes", ObjType::Map)?;
         let mut ns = Self {
-            doc,
+            doc: ChangeTrackedDoc::new(doc),
             nodes,
             ino_to_id: HashMap::new(),
             id_to_ino: HashMap::new(),
@@ -622,7 +625,7 @@ impl Namespace {
             }
         }
         let mut ns = Self {
-            doc,
+            doc: ChangeTrackedDoc::new(doc),
             nodes,
             ino_to_id: HashMap::new(),
             id_to_ino: HashMap::new(),
@@ -947,7 +950,7 @@ impl Namespace {
                 if state
                     .shared_heads
                     .iter()
-                    .all(|hash| self.doc.get_change_meta_by_hash(hash).is_some()) =>
+                    .all(|hash| self.doc.has_change(hash)) =>
             {
                 state
             }
@@ -974,6 +977,7 @@ impl Namespace {
         if self.peer_sync_states.get(&peer) != Some(&encoded) {
             self.peer_sync_states.insert(peer, encoded);
             self.peer_sync_generation = self.peer_sync_generation.wrapping_add(1);
+            self.doc.announce();
         }
     }
 
@@ -1048,18 +1052,18 @@ impl Namespace {
                     state
                         .shared_heads
                         .iter()
-                        .all(|hash| self.doc.get_change_meta_by_hash(hash).is_some())
+                        .all(|hash| self.doc.has_change(hash))
                 })
             })
             .collect();
         self.peer_sync_generation = self.peer_sync_generation.wrapping_add(1);
+        self.doc.announce();
         Ok(self.peer_sync_states.len())
     }
 
     pub fn sync_generate(&mut self, state: &mut automerge::sync::State) -> Option<Vec<u8>> {
         let message = self
             .doc
-            .sync()
             .generate_sync_message(state)
             .map(automerge::sync::Message::encode);
         #[cfg(test)]
@@ -1086,11 +1090,10 @@ impl Namespace {
         data: &[u8],
     ) -> anyhow::Result<()> {
         let msg = automerge::sync::Message::decode(data)?;
-        let before = self.doc.get_heads();
-        self.doc.receive_incoming_sync(state, msg)?;
         // Most sync rounds carry heads and bloom filters, not changes; the
-        // indexes are rebuilt only when the document actually changed.
-        if self.doc.get_heads() != before {
+        // indexes are rebuilt, and the change announced, only when the
+        // document actually changed.
+        if self.doc.receive_sync_message(state, msg)? {
             self.merge_generation = next_verified_generation();
             self.ensure_record_ids();
             self.rebuild_record_index();
@@ -3024,6 +3027,16 @@ impl Namespace {
         self.doc.get_heads()
     }
 
+    /// A receiver that sees, after this call, every change to the
+    /// document and to the sync progress beside it
+    /// ([`Self::peer_sync_generation`]). It says that something may have
+    /// changed, never what; compare [`Self::heads`] to know. Persisting
+    /// and repairing on it replaces polling (TIL-750).
+    #[must_use]
+    pub fn subscribe_changes(&self) -> tokio::sync::watch::Receiver<()> {
+        self.doc.subscribe()
+    }
+
     /// O(heads): a token that changes whenever anything this namespace
     /// projects changes — document edits (local or remote) and verified
     /// content installs alike. Background reconcilers compare it instead of
@@ -3061,7 +3074,7 @@ impl Namespace {
         let known: Vec<automerge::ChangeHash> = heads
             .iter()
             .copied()
-            .filter(|hash| self.doc.get_change_by_hash(hash).is_some())
+            .filter(|hash| self.doc.has_change(hash))
             .collect();
         self.doc.save_after(&known)
     }
