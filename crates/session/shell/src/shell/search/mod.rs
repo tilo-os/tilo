@@ -658,6 +658,7 @@ struct ProviderQuery<'a> {
     seen: HashSet<SearchCursor>,
     results: Vec<SearchResult>,
     done: bool,
+    complete: bool,
 }
 
 impl Default for SearchRegistry {
@@ -1060,6 +1061,7 @@ impl SearchRegistry {
                     seen: HashSet::new(),
                     results: Vec::new(),
                     done: false,
+                    complete: false,
                 })
             })
             .collect();
@@ -1125,6 +1127,7 @@ impl SearchRegistry {
                     source.results.push(result);
                 }
                 if source.done || !exhaustive || page.exhausted {
+                    source.complete = !source.done && page.exhausted && !page.budget_exhausted;
                     source.done = true;
                 } else if let Some(cursor) = page.next_cursor
                     && source.seen.insert(cursor.clone())
@@ -1147,8 +1150,29 @@ impl SearchRegistry {
         exhaustive: bool,
         include_programmatic: bool,
     ) -> Vec<SearchResult> {
+        self.query_inner_complete(args, exhaustive, include_programmatic)
+            .0
+    }
+
+    /// Whether the retained rows exhaust one unchanged source projection.
+    /// A stale continuation or budget stop preserves browse rows, not proof
+    /// that an absent action is unavailable.
+    pub(super) fn query_catalogue(
+        &self,
+        args: &QueryArgs<'_>,
+        include_programmatic: bool,
+    ) -> (Vec<SearchResult>, bool) {
+        self.query_inner_complete(args, true, include_programmatic)
+    }
+
+    fn query_inner_complete(
+        &self,
+        args: &QueryArgs<'_>,
+        exhaustive: bool,
+        include_programmatic: bool,
+    ) -> (Vec<SearchResult>, bool) {
         if !query_input_is_bounded(args.needle) {
-            return Vec::new();
+            return (Vec::new(), false);
         }
         let QueryArgs {
             needle,
@@ -1159,7 +1183,11 @@ impl SearchRegistry {
         } = *args;
         let mut merged: Vec<(SearchResult, f32)> = Vec::new();
         let mut canonical_rows: HashMap<(String, String), usize> = HashMap::new();
-        for source in self.query_rounds(args, exhaustive, include_programmatic) {
+        let before = exhaustive.then(|| self.query_revision(args));
+        let sources = self.query_rounds(args, exhaustive, include_programmatic);
+        let complete = sources.iter().all(|source| source.complete)
+            && before.is_some_and(|before| before == self.query_revision(args));
+        for source in sources {
             let provider = source.provider;
             let top = provider.max_score().max(1);
             for r in source.results {
@@ -1246,7 +1274,7 @@ impl SearchRegistry {
             // results keep the provider's own order rather than being
             // re-alphabetised by title.
         });
-        merged.into_iter().map(|(r, _)| r).collect()
+        (merged.into_iter().map(|(r, _)| r).collect(), complete)
     }
 
     /// [`Self::query`], arranged into contiguous per-kind groups and
@@ -1613,6 +1641,44 @@ mod tests {
                 48
             );
         }
+    }
+
+    #[test]
+    fn catalogue_budget_stop_retains_rows_without_claiming_completeness() {
+        let chrome = mk_chrome();
+        let (doc, root) = mk_doc();
+        let args = QueryArgs {
+            needle: "",
+            scope: SearchScope::All,
+            active_provider_id: None,
+            wanted_kinds: &[],
+            chrome: &chrome.borrow(),
+            doc: &doc,
+            doc_root: &root,
+        };
+        let mut registry = SearchRegistry::new();
+        registry.register(Rc::new(PagedProvider {
+            calls: Rc::new(std::cell::Cell::new(0)),
+            id: "endless",
+            pages: None,
+        }));
+        let (rows, complete) = registry.query_catalogue(&args, false);
+        assert_eq!(rows.len(), HEADLESS_MAX_PAGES);
+        assert!(
+            !complete,
+            "bounded partial rows cannot prove an action absent"
+        );
+
+        let mut finite = SearchRegistry::new();
+        finite.register(Rc::new(FakeProvider {
+            id: "finite".into(),
+            kinds: vec![ResourceKind::Action],
+            results: vec![mk_result(ResourceKind::Action, "finite", "only", "Only", 1)],
+            max_score: None,
+        }));
+        let (rows, complete) = finite.query_catalogue(&args, false);
+        assert_eq!(rows.len(), 1);
+        assert!(complete, "an unchanged exhausted source is complete");
     }
 
     struct PagedProvider {

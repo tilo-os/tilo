@@ -4134,6 +4134,79 @@ mod tests {
     }
 
     #[test]
+    fn stale_service_continuation_keeps_browse_rows_but_not_catalogue_completeness() {
+        use crate::shell::search::action_api::{ActionCatalog, AllVisible};
+        use crate::shell::search::{QueryArgs, SearchRegistry};
+
+        let chrome = chrome();
+        let owner = chrome.borrow().active_local_user();
+        chrome.borrow().tree_handle().write().desktop.workspaces[0].set_owner(owner);
+        let broker = broker_for(&chrome);
+        let room = chrome.borrow().tree().desktop.workspaces[0]
+            .room
+            .to_string();
+        broker.replace_published_surfaces_for_test(vec![PublishedSurface {
+            peer_id: 7,
+            app_id: "so.tilo.notes".into(),
+            route: CrdtRoute::app("so.tilo.notes", &room),
+            actions: (0..60)
+                .map(|index| local_action("Read notebook", &format!("read-{index}")))
+                .collect(),
+            live: true,
+        }]);
+        let provider = Rc::new(LiveAppActionsProvider::new_with_fixture_identity(broker));
+        let mut registry = SearchRegistry::new();
+        registry.register(provider.clone());
+        let doc = AutoCommit::new();
+        let chrome_state = chrome.borrow();
+        let ctx = SearchContext {
+            query_scope: Some(crate::shell::chrome_state::SearchScope::All),
+            ..context("", &chrome_state, &doc)
+        };
+        finish_local_index(&provider, &ctx);
+        let args = QueryArgs {
+            needle: "",
+            scope: crate::shell::chrome_state::SearchScope::All,
+            active_provider_id: None,
+            wanted_kinds: &[ResourceKind::Action],
+            chrome: &chrome_state,
+            doc: &doc,
+            doc_root: &automerge::ROOT,
+        };
+        // The real first page starts the service request and fills its local
+        // budget. Its next continuation consumes the actual broker reply,
+        // advancing directory_epoch and invalidating that continuation.
+        let partial = ActionCatalog::build_query(&registry, &args, &AllVisible, false);
+        assert!(
+            !partial.is_empty(),
+            "valid earlier browse rows are retained"
+        );
+        assert!(provider.service_pending.borrow().is_empty());
+        assert!(
+            !registry.indexes_settling(&args),
+            "the reply itself has arrived"
+        );
+        assert!(
+            !partial.is_complete(),
+            "a stale continuation is not an absence proof"
+        );
+        let completed = ActionCatalog::build_query(&registry, &args, &AllVisible, false);
+        assert!(
+            completed.is_complete(),
+            "the next unchanged enumeration exhausts the source"
+        );
+        assert!(completed.len() > partial.len());
+        assert!(
+            completed.enumerate().iter().any(|row| {
+                row.hierarchy
+                    .as_ref()
+                    .is_some_and(|hierarchy| hierarchy.operation == "profile.save")
+            }),
+            "the actual broker service offer survives the fresh enumeration"
+        );
+    }
+
+    #[test]
     fn unanswered_workspace_service_page_retries_before_listing_settles() {
         for outcome in ["failed", "stale", "abandoned", "timed_out"] {
             let chrome = chrome();

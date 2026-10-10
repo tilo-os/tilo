@@ -2981,7 +2981,8 @@ impl FrameBuilderControlState<'_> {
                 .action_catalog_query(&args, gate, include_programmatic);
             // Read after the query, which may itself have started the work
             // that leaves the listing incomplete.
-            (catalog, self.fb.host().action_listing_complete(&args))
+            let complete = catalog.is_complete() && self.fb.host().action_listing_complete(&args);
+            (catalog, complete)
         })
         .map_err(test_control::ActionRefusal::listing_failed)?;
         let fingerprint = test_control::listing_fingerprint(catalog.addresses());

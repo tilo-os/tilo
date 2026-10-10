@@ -144,6 +144,7 @@ pub struct ActionCatalog {
     /// accessor works through this.
     visible: Vec<usize>,
     hierarchies: Vec<Option<ActionHierarchy>>,
+    complete: bool,
 }
 
 fn report_native_service_visibility(results: &[SearchResult], visible: &[usize]) {
@@ -210,11 +211,7 @@ impl ActionCatalog {
         // retained provider indexes. Start/poll that same asynchronous work
         // here so subsequent requests can discover cold sources too.
         registry.refresh_indexes(args);
-        let results = if include_programmatic {
-            registry.query_with_programmatic(args)
-        } else {
-            registry.query_exhaustive(args)
-        };
+        let (results, complete) = registry.query_catalogue(args, include_programmatic);
         let visible: Vec<usize> = results
             .iter()
             .enumerate()
@@ -227,7 +224,14 @@ impl ActionCatalog {
             results,
             visible,
             hierarchies,
+            complete,
         }
+    }
+
+    /// The listing exhausted a stable source, rather than retaining partial
+    /// browse rows after a stale continuation or a bounded work limit.
+    pub fn is_complete(&self) -> bool {
+        self.complete
     }
 
     /// Resolve one exact address through its owning provider. Remote
@@ -273,6 +277,7 @@ impl ActionCatalog {
             results,
             visible,
             hierarchies,
+            complete: true,
         }
     }
 
@@ -332,6 +337,7 @@ impl ActionCatalog {
             results,
             visible,
             hierarchies,
+            complete: true,
         }
     }
 
