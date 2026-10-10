@@ -1194,42 +1194,6 @@ pub(crate) fn permits_local_action(
     permissions.permits_invocation(app_id, resource, action, typed, argument)
 }
 
-/// May the component's participant take this one invocation of `action` on
-/// `resource`: what its value asks, under the same scope the published tree
-/// is filtered by.
-fn permits_invocation(
-    binding: &CallbackBinding,
-    resource: &tilo_actions::Resource,
-    action: &tilo_actions::ActionSpec,
-    typed: Option<&serde_json::Map<String, serde_json::Value>>,
-    argument: Option<&str>,
-) -> bool {
-    binding.permissions.borrow().permits_invocation(
-        &binding.app_id,
-        resource,
-        action,
-        typed,
-        argument,
-    )
-}
-
-/// Whether the room's grants ask the participant before this invocation.
-fn asks_first(
-    binding: &CallbackBinding,
-    resource: &tilo_actions::Resource,
-    action: &tilo_actions::ActionSpec,
-    typed: Option<&serde_json::Map<String, serde_json::Value>>,
-    argument: Option<&str>,
-) -> bool {
-    binding.permissions.borrow().invocation_answer(
-        &binding.app_id,
-        resource,
-        action,
-        typed,
-        argument,
-    ) == tilo_action_policy::Answer::Ask
-}
-
 /// The refusal of an invocation the participant may not take.
 pub(crate) fn denied(action: &tilo_actions::ActionSpec) -> tilo_actions::DoorError {
     tilo_actions::DoorError::Unavailable {
@@ -2323,22 +2287,41 @@ pub(crate) fn invoke_resource_action(
                     }
                     // The tree offers an action under the least it needs;
                     // this invocation needs what its value asks.
-                    if !permits_invocation(binding, resource, spec, arguments.as_ref(), argument) {
-                        return Err(denied(spec).into());
-                    }
-                    // Where the room's grants ask first, the person's
-                    // confirmation in the host is the answer; the broker
-                    // took it before admitting what it delivers.
-                    if !confirmed
-                        && !broker_admitted
-                        && asks_first(binding, resource, spec, arguments.as_ref(), argument)
-                    {
-                        return Err(tilo_actions::DoorError::ConfirmationRequired.into());
+                    let (answer, spent) = binding.permissions.borrow().invocation_verdict(
+                        &binding.app_id,
+                        resource,
+                        spec,
+                        arguments.as_ref(),
+                        argument,
+                    );
+                    let direct = binding.permissions.borrow().standing().bounds.is_empty();
+                    match answer {
+                        tilo_action_policy::Answer::Deny => return Err(denied(spec).into()),
+                        // Someone acting for the person does not get past an
+                        // ask here.
+                        tilo_action_policy::Answer::Ask if !direct => {
+                            return Err(denied(spec).into());
+                        }
+                        // Where the room's grants ask first, the person's
+                        // confirmation in the host is the answer; the broker
+                        // took it before admitting what it delivers.
+                        tilo_action_policy::Answer::Ask if !confirmed && !broker_admitted => {
+                            return Err(tilo_actions::DoorError::ConfirmationRequired.into());
+                        }
+                        tilo_action_policy::Answer::Ask | tilo_action_policy::Answer::Allow => {}
                     }
                     crate::invocation_scope::check_continuation(
                         spec,
                         spec.need_for(arguments.as_ref(), argument).kind,
                     )?;
+                    // A grant given once is spent by admitting this call,
+                    // before it runs: the host revokes it, and this door never
+                    // relies on it again.
+                    binding
+                        .permissions
+                        .borrow_mut()
+                        .spend_once(&spent)
+                        .map_err(|_| denied(spec))?;
                     // A refused private View must not invoke a Deferred encoder.
                     // The execution guard below remains an independent boundary.
                     if spec.kind == tilo_actions::OperationKind::View

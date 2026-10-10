@@ -561,6 +561,20 @@ impl<A: ResourceApp> HeadlessApp<A> {
         self.harness().relayout();
     }
 
+    /// The participant's permissions in force now.
+    #[must_use]
+    pub fn permissions(&self) -> PermissionContext {
+        self.permissions.borrow().clone()
+    }
+
+    /// Change the participant's permissions while the app runs, as the host
+    /// does when the room's grants change. Takes effect on the next frame,
+    /// which this runs.
+    pub fn set_permissions(&mut self, permissions: PermissionContext) {
+        *self.permissions.borrow_mut() = permissions;
+        self.harness().relayout();
+    }
+
     /// Take the participant out of the room while the app runs: no role and
     /// no grant left, as when the owner removes them.
     pub fn leave_room(&mut self) {

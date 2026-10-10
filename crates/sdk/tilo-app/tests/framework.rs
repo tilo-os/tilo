@@ -476,3 +476,70 @@ fn a_light_capture_repaints_framework_buttons_in_the_light_theme() {
         );
     }
 }
+
+/// A grant given once is spent by the in-app call it admits: the host
+/// revokes it as part of admitting the call, and the next call asks again.
+/// Where nothing can revoke it, it is never relied on at all.
+#[test]
+fn allowing_once_in_app_admits_one_call_and_the_next_asks_again() {
+    use std::sync::{Arc, Mutex};
+    use tilo_app::permissions::policy::{
+        Answer, Grant, GrantId, KindSet, Lifetime, Subject, TreePath,
+    };
+    let mut app = TestApp::<ChecklistApp>::new().unwrap();
+    app.set_role(tilo_app::permissions::Role::Viewer);
+    let viewer = app.permissions();
+    let mut standing = viewer.standing().clone();
+    let room = TreePath::room(&standing.policy.room);
+    let person = Subject::person(standing.person.clone());
+    standing.policy.grants.extend([
+        Grant::new(
+            "asks",
+            person.clone(),
+            room.clone(),
+            KindSet::UNDOABLE,
+            Answer::Ask,
+            Subject::person("owner"),
+        ),
+        Grant::new(
+            "once",
+            person,
+            room.app(ChecklistApp::ID),
+            KindSet::UNDOABLE,
+            Answer::Allow,
+            Subject::person("owner"),
+        )
+        .with_lifetime(Lifetime::Once),
+    ]);
+    let granted = viewer.with_standing(standing);
+
+    // Nothing here can revoke it: the grant given once is not relied on.
+    app.set_permissions(granted.clone());
+    let without_host = app.invoke(Checklist::RENAME.with("Without a host"));
+    assert!(
+        matches!(
+            without_host,
+            Err(tilo_actions::DoorError::ConfirmationRequired)
+        ),
+        "{without_host:?}"
+    );
+
+    let revoked: Arc<Mutex<Vec<GrantId>>> = Arc::default();
+    let host = Arc::clone(&revoked);
+    app.set_permissions(granted.with_once_spender(Arc::new(move |spent| {
+        host.lock().unwrap().extend_from_slice(spent);
+        Ok(())
+    })));
+    app.invoke(Checklist::RENAME.with("Once")).unwrap();
+    assert_eq!(app.state().title, "Once");
+    assert_eq!(
+        *revoked.lock().unwrap(),
+        vec![GrantId::new("once")],
+        "admitting the call handed the spent grant to the host"
+    );
+    assert!(matches!(
+        app.invoke(Checklist::RENAME.with("Twice")),
+        Err(tilo_actions::DoorError::ConfirmationRequired)
+    ));
+    assert_eq!(app.state().title, "Once", "the second call changed nothing");
+}

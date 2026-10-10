@@ -34,6 +34,24 @@ impl PartialEq for PolicyTimeSampler {
 
 impl Eq for PolicyTimeSampler {}
 
+/// The host's revocation of the `Once` grants an in-app admission spent.
+#[derive(Clone)]
+struct OnceSpender(Arc<dyn Fn(&[policy::GrantId]) -> Result<(), String> + Send + Sync>);
+
+impl std::fmt::Debug for OnceSpender {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("OnceSpender(..)")
+    }
+}
+
+impl PartialEq for OnceSpender {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl Eq for OnceSpender {}
+
 pub use collab_types::caps::{
     Access, Actor, CapDecision, CapOverride, Effect, Expiry, Principal, ResourceRef, Scope,
     Subject, decide_capability,
@@ -234,6 +252,12 @@ pub struct PermissionContext {
     now: Option<u64>,
     policy_time: Option<PolicyTimeSampler>,
     action_authority: Option<ActionAuthoritySampler>,
+    /// How the host revokes a `Once` grant an admission here spent. Without
+    /// one, no decision here relies on a `Once` grant.
+    once_spender: Option<OnceSpender>,
+    /// The `Once` grants admissions here spent, never relied on again even
+    /// before the host's revocation reaches this context.
+    spent: std::collections::BTreeSet<policy::GrantId>,
 }
 
 /// Inert directory cache identity. It cannot make a permission decision.
@@ -261,6 +285,8 @@ impl PermissionContext {
             now: crate::time::try_unix_now(),
             policy_time: None,
             action_authority: None,
+            once_spender: None,
+            spent: std::collections::BTreeSet::new(),
         }
     }
 
@@ -405,6 +431,36 @@ impl PermissionContext {
         self
     }
 
+    /// Let an admission here rely on a `Once` grant, handing what it spent to
+    /// `spend`, the host's revocation of it, as part of admitting the action.
+    #[must_use]
+    pub fn with_once_spender(
+        mut self,
+        spend: Arc<dyn Fn(&[policy::GrantId]) -> Result<(), String> + Send + Sync>,
+    ) -> Self {
+        self.once_spender = Some(OnceSpender(spend));
+        self
+    }
+
+    /// Spend the `Once` grants an admission relied on
+    /// ([`Self::invocation_verdict`]): the host revokes them, and this
+    /// context never relies on them again.
+    ///
+    /// # Errors
+    /// When the host could not revoke them: the admission must not proceed.
+    pub fn spend_once(&mut self, spent: &[policy::GrantId]) -> Result<(), String> {
+        if spent.is_empty() {
+            return Ok(());
+        }
+        let spender = self
+            .once_spender
+            .as_ref()
+            .ok_or("a grant given once cannot be spent here")?;
+        (spender.0)(spent)?;
+        self.spent.extend(spent.iter().cloned());
+        Ok(())
+    }
+
     /// Pin a context's decision time. An installed host sampler always takes
     /// precedence, including when it fails.
     #[must_use]
@@ -514,28 +570,40 @@ impl PermissionContext {
     }
 
     fn verdict(&self, node: &TreePath, kind: ActionKind) -> Result<(Answer, String), String> {
-        self.verdict_for(node, kind, false)
+        self.verdict_for(node, kind, false, false)
+            .map(|(answer, why, _)| (answer, why))
     }
 
     /// [`Self::verdict`], of a privileged action when `privileged`
-    /// ([`policy::Verdict::privileged`]).
+    /// ([`policy::Verdict::privileged`]), relying on `Once` grants only when
+    /// `once` (an admission that spends them) and this context can spend
+    /// them; with the ones it relied on.
     fn verdict_for(
         &self,
         node: &TreePath,
         kind: ActionKind,
         privileged: bool,
-    ) -> Result<(Answer, String), String> {
+        once: bool,
+    ) -> Result<(Answer, String, Vec<policy::GrantId>), String> {
         let now = self.policy_now()?;
         let cx = policy::Context::at_secs(now.unwrap_or(0));
-        let standing = match &self.action_authority {
+        let mut standing = match &self.action_authority {
             Some(authority) if authority.matches(node) => authority.sample_for(self)?.standing,
             _ => self.standing.clone(),
         };
+        let usable = once && self.once_spender.is_some();
+        let keep = |grant: &policy::Grant| {
+            grant.lifetime != policy::Lifetime::Once || (usable && !self.spent.contains(&grant.id))
+        };
+        standing.policy.grants.retain(keep);
+        for bound in &mut standing.bounds {
+            bound.grants.retain(keep);
+        }
         let mut verdict = standing.verdict(&standing.node(node), kind, &cx);
         if privileged {
             verdict = verdict.privileged();
         }
-        Ok((verdict.answer, verdict.explain()))
+        Ok((verdict.answer, verdict.explain(), verdict.spent()))
     }
 
     /// Whether the scope is permitted: an action that is allowed or asks
@@ -599,8 +667,34 @@ impl PermissionContext {
             need.field.as_deref(),
             action_id,
         );
-        self.verdict_for(&node, need.kind, need.privileged)
-            .map_or(Answer::Deny, |(answer, _)| answer)
+        self.verdict_for(&node, need.kind, need.privileged, false)
+            .map_or(Answer::Deny, |(answer, ..)| answer)
+    }
+
+    /// The answer for admitting one invocation of `action` on `resource`
+    /// with these arguments, and the `Once` grants admitting it spends: the
+    /// door that runs it hands them to [`Self::spend_once`] first.
+    pub fn invocation_verdict(
+        &self,
+        app_id: &str,
+        resource: &tilo_actions::Resource,
+        action: &tilo_actions::ActionSpec,
+        json: Option<&serde_json::Map<String, serde_json::Value>>,
+        argument: Option<&str>,
+    ) -> (Answer, Vec<policy::GrantId>) {
+        let need = action.need_for(json, argument);
+        let node = tilo_actions::action_node(
+            &TreePath::root(),
+            app_id,
+            &resource.kind,
+            resource.id.as_str(),
+            need.field.as_deref(),
+            &action.id,
+        );
+        self.verdict_for(&node, need.kind, need.privileged, true)
+            .map_or((Answer::Deny, Vec::new()), |(answer, _, spent)| {
+                (answer, spent)
+            })
     }
 
     /// May the actor take this one invocation of `action` on `resource`,
