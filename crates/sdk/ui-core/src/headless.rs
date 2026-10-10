@@ -5967,7 +5967,7 @@ impl FrameHarness {
         arguments: &serde_json::Map<String, serde_json::Value>,
     ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError> {
         self.pump_component_wakes();
-        self.invoke_bound_action_checked(address, arguments, false, None)
+        self.invoke_bound_action_for(address, arguments, false, None, None)
             .map_err(crate::bound_dispatch::BoundActionError::into_door)
     }
 
@@ -5983,7 +5983,7 @@ impl FrameHarness {
         ambient: &tilo_actions::ActionContext,
     ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError> {
         self.pump_component_wakes();
-        self.invoke_bound_action_checked(address, arguments, false, Some(ambient))
+        self.invoke_bound_action_for(address, arguments, false, Some(ambient), None)
             .map_err(crate::bound_dispatch::BoundActionError::into_door)
     }
 
@@ -5998,7 +5998,7 @@ impl FrameHarness {
         arguments: &serde_json::Map<String, serde_json::Value>,
     ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError> {
         self.pump_component_wakes();
-        self.invoke_bound_action_checked(address, arguments, true, None)
+        self.invoke_bound_action_for(address, arguments, true, None, None)
             .map_err(crate::bound_dispatch::BoundActionError::into_door)
     }
 
@@ -6095,11 +6095,16 @@ impl FrameHarness {
                     arguments,
                     confirmed,
                     continuation.context.as_ref(),
-                    invocation,
-                    &continuation.invoker.actor,
+                    Some((invocation, Some(&continuation.invoker.actor))),
                 )
             }
-            None => self.invoke_bound_action_as(address, arguments, confirmed, None, invocation),
+            None => self.invoke_bound_action_for(
+                address,
+                arguments,
+                confirmed,
+                None,
+                Some((invocation, None)),
+            ),
         };
         let started = started.map_err(crate::bound_dispatch::BoundActionError::into_door);
         if !matches!(started, Ok(crate::widget::ResourceOperationStart::Accepted)) {
@@ -6278,46 +6283,21 @@ impl FrameHarness {
             .collect()
     }
 
-    fn invoke_bound_action_checked(
-        &mut self,
-        address: &crate::bound_dispatch::BoundActionAddress,
-        arguments: &serde_json::Map<String, serde_json::Value>,
-        confirmed: bool,
-        ambient: Option<&tilo_actions::ActionContext>,
-    ) -> Result<crate::widget::ResourceOperationStart, crate::bound_dispatch::BoundActionError>
-    {
-        self.invoke_bound_action_as(
-            address,
-            arguments,
-            confirmed,
-            ambient,
-            tilo_actions::InvocationId::new(),
-        )
-    }
-
-    fn invoke_bound_action_as(
-        &mut self,
-        address: &crate::bound_dispatch::BoundActionAddress,
-        arguments: &serde_json::Map<String, serde_json::Value>,
-        confirmed: bool,
-        ambient: Option<&tilo_actions::ActionContext>,
-        invocation: tilo_actions::InvocationId,
-    ) -> Result<crate::widget::ResourceOperationStart, crate::bound_dispatch::BoundActionError>
-    {
-        let author = self.author.0.clone();
-        self.invoke_bound_action_for(address, arguments, confirmed, ambient, invocation, &author)
-    }
-
+    /// Invoke `address` as `delivered` says: under its invocation, for its
+    /// actor; a fresh invocation by the person at this device without one.
     fn invoke_bound_action_for(
         &mut self,
         address: &crate::bound_dispatch::BoundActionAddress,
         arguments: &serde_json::Map<String, serde_json::Value>,
         confirmed: bool,
         ambient: Option<&tilo_actions::ActionContext>,
-        invocation: tilo_actions::InvocationId,
-        actor: &str,
+        delivered: Option<(tilo_actions::InvocationId, Option<&str>)>,
     ) -> Result<crate::widget::ResourceOperationStart, crate::bound_dispatch::BoundActionError>
     {
+        let (invocation, actor) =
+            delivered.unwrap_or_else(|| (tilo_actions::InvocationId::new(), None));
+        let author = self.author.0.clone();
+        let actor = actor.unwrap_or(&author);
         let translated = self.bound_publication.target(&address.address)?;
         if translated
             .as_ref()
