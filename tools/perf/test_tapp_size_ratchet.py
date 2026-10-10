@@ -169,6 +169,53 @@ class Fleet(unittest.TestCase):
         self.assertIn("aarch64: not published yet, not counted: so.tilo.b", lines)
 
 
+class Select(unittest.TestCase):
+    """Which affected apps a pull request packages (tools/ci/select.sh)."""
+
+    IDS = {"a": "so.tilo.a", "b": "so.tilo.b", "tool": "so.tilo.tool"}
+
+    def test_the_app_closest_to_a_budget_on_either_architecture_goes_first(self):
+        # a: 10,000 bytes left on x86_64, 900 on aarch64; b: 2,000 on each.
+        published = {("so.tilo.a", "x86_64"): 990_000, ("so.tilo.a", "aarch64"): 899_100,
+                     ("so.tilo.b", "x86_64"): 2_998_000, ("so.tilo.b", "aarch64"): 2_798_000}
+        chosen, lines = ratchet.select_apps(["b", "a"], self.IDS, budget(), published, limit=1)
+        self.assertEqual(chosen, ["a"])
+        self.assertIn("  a: 900 bytes of headroom on its tightest architecture", lines)
+        self.assertIn("further from their budgets, measured on main by Release / apps: b", lines)
+
+    def test_a_raise_counts_toward_the_headroom(self):
+        published = {("so.tilo.a", "x86_64"): 999_000, ("so.tilo.b", "x86_64"): 2_998_000}
+        raised = budget(dictation=app_raise(added=65536))
+        self.assertEqual(ratchet.select_apps(["a", "b"], self.IDS, raised, published, limit=1)[0], ["b"])
+
+    def test_an_unpublished_app_goes_before_every_published_one(self):
+        published = {("so.tilo.a", "x86_64"): 999_999}
+        self.assertEqual(ratchet.select_apps(["a", "b"], self.IDS, budget(), published, limit=1)[0], ["b"])
+
+    def test_an_app_without_a_budget_is_not_measured(self):
+        chosen, lines = ratchet.select_apps(["tool"], self.IDS, budget(), {}, limit=8)
+        self.assertEqual(chosen, [])
+        self.assertIn("no tapp to measure", lines[0])
+
+    def test_without_a_registry_index_the_apps_are_taken_by_name(self):
+        chosen, lines = ratchet.select_apps(["b", "a"], self.IDS, budget(), None, limit=8)
+        self.assertEqual(chosen, ["a", "b"])
+        self.assertTrue(any(line.startswith("warning: no registry index") for line in lines))
+
+    def test_the_command_writes_the_selection_for_the_workflow(self):
+        directory = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: subprocess.run(["rm", "-rf", str(directory)], check=False))
+        index, output = directory / "entries.json", directory / "output"
+        index.write_text(json.dumps(entries({("so.tilo.settings", "x86_64"): 1_000})))
+        self.assertEqual(ratchet.main(["select", "--apps", "settings not-an-app",
+                                       "--entries", str(index), "--github-output", str(output)]), 0)
+        self.assertEqual(output.read_text(), "tapp_apps=settings\ntapp_required=true\n")
+        output.unlink()
+        self.assertEqual(ratchet.main(["select", "--apps", "", "--entries", str(index),
+                                       "--github-output", str(output)]), 0)
+        self.assertEqual(output.read_text(), "tapp_apps=\ntapp_required=false\n")
+
+
 class CheckBudget(unittest.TestCase):
     def test_an_unchanged_budget_passes(self):
         self.assertEqual(ratchet.check(budget(), budget(), COLLECTION), [])
