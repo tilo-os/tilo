@@ -100,7 +100,7 @@ pub const SEAL_AFTER: Duration = Duration::from_millis(250);
 pub const SEAL_QUIET: Duration = Duration::from_millis(250 + 2000 + 100);
 const PRESENCE_RETRY: Duration = Duration::from_millis(100);
 /// An ops track without subscribers for this long is withdrawn.
-const UNUSED_GRACE: Duration = Duration::from_secs(2);
+pub(crate) const UNUSED_GRACE: Duration = Duration::from_secs(2);
 
 /// Host-internal marker for an exact raw route comparison; not authority.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

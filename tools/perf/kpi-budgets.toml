@@ -488,6 +488,65 @@ p99_tolerance = 2.0
 min_delta = 1000.0
 source = "KPI document: Frame time p99 at 4K/144 Hz, damage-limited (lavapipe; reported only)"
 
+# Opening a framework app over a long list (TIL-758): the framework-scaling
+# example (crates/sdk/tilo-app/examples/framework-scaling.rs, `open` mode)
+# reopens a checklist holding 5,000 and 50,000 items five times, to its first
+# laid-out frame, through adapters.py framework-open in the render job. Time
+# on the shared runner is noisy, so it takes the render group's tolerances;
+# allocations and heap per item are deterministic for one build, so a few
+# per cent is a regression. The time ceilings are the warm app-open target
+# (300 ms p95, TIL-691), reported and not yet met at 50,000 items; the count
+# ceilings are a quarter above the M5 Max measurement in the PR, reported
+# too. The relative rule is what guards each.
+
+[kpi."render.framework_open.ms.5k"]
+unit = "ms"
+p95 = 300.0
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 20.0
+source = "framework-scaling open to first frame, 5,000 items (TIL-758)"
+
+[kpi."render.framework_open.ms.50k"]
+unit = "ms"
+p95 = 300.0
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 200.0
+source = "framework-scaling open to first frame, 50,000 items (TIL-758)"
+
+[kpi."render.framework_open.allocations.5k"]
+unit = "count"
+max = 2150000.0
+p50_tolerance = 1.05
+p99_tolerance = 1.05
+min_delta = 1000.0
+source = "framework-scaling allocations of one open, 5,000 items (TIL-758)"
+
+[kpi."render.framework_open.allocations.50k"]
+unit = "count"
+max = 20700000.0
+p50_tolerance = 1.05
+p99_tolerance = 1.05
+min_delta = 10000.0
+source = "framework-scaling allocations of one open, 50,000 items (TIL-758)"
+
+[kpi."render.framework_open.heap_per_item.5k"]
+unit = "bytes"
+max = 5900.0
+p50_tolerance = 1.1
+p99_tolerance = 1.1
+min_delta = 64.0
+source = "framework-scaling heap held per item with the window open, 5,000 items (TIL-758)"
+
+[kpi."render.framework_open.heap_per_item.50k"]
+unit = "bytes"
+max = 5600.0
+p50_tolerance = 1.1
+p99_tolerance = 1.1
+min_delta = 64.0
+source = "framework-scaling heap held per item with the window open, 50,000 items (TIL-758)"
+
 # The installed desktop (TIL-589): Dev / VM acceptance's nightly run on the newest
 # published dev disk, a KVM guest on `runner-disk-100g` rendering with lavapipe
 # (scripts/vm-acceptance, acceptance/records.py). Those runs compare and publish
