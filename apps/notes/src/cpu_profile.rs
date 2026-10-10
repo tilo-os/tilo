@@ -396,3 +396,171 @@ fn unchanged_publication_reuses_tree_and_remote_and_locale_changes_refresh_it() 
         "the cache must expose collaborator changes at the new revision"
     );
 }
+
+#[test]
+fn mounted_text_note_view_only_scroll_contract_respects_title_editing() {
+    use automerge::transaction::Transactable;
+    let (mut app, target) = fixture(1);
+    let body = "Ordinary text-note scrolling words.\n\n".repeat(32);
+    let blocks = crate::MainPanel::seed_blocks(&body, |_| None);
+    app.invoke(
+        ui::tilo_resource::Invoke::apply(&crate::actions::write_body_action(target, &blocks))
+            .unwrap(),
+    )
+    .unwrap();
+    app.harness().relayout_at((1051, 240)).unwrap();
+    let rect = app
+        .harness()
+        .targets()
+        .get("block_editor")
+        .copied()
+        .expect("mounted canonical editor");
+    app.harness()
+        .dispatch_to_root(&winit::event::WindowEvent::CursorMoved {
+            device_id: winit::event::DeviceId::dummy(),
+            position: winit::dpi::PhysicalPosition::new(rect.x0 + 40.0, rect.y0 + 20.0),
+        });
+    let event = winit::event::WindowEvent::MouseWheel {
+        device_id: winit::event::DeviceId::dummy(),
+        delta: winit::event::MouseScrollDelta::LineDelta(0.0, -1.0),
+        phase: winit::event::TouchPhase::Moved,
+    };
+    assert!(
+        app.harness().root_widget().view_only_scroll(&event),
+        "mounted canonical text-note wheel opts in through its bound owner"
+    );
+    app.surface(|notes: &mut crate::NotesApp| notes.main_panel_mut().begin_title_edit())
+        .unwrap();
+    assert!(
+        !app.harness().root_widget().view_only_scroll(&event),
+        "title editing keeps the full input path"
+    );
+    app.harness()
+        .dispatch_to_root(&winit::event::WindowEvent::KeyboardInput {
+            device_id: winit::event::DeviceId::dummy(),
+            event: winit::event::KeyEvent::synthetic(
+                winit::event::RawKeyEvent {
+                    physical_key: winit::keyboard::PhysicalKey::Code(
+                        winit::keyboard::KeyCode::Escape,
+                    ),
+                    state: winit::event::ElementState::Pressed,
+                },
+                winit::keyboard::Key::Named(winit::keyboard::NamedKey::Escape),
+                None,
+                winit::keyboard::KeyLocation::Standard,
+                false,
+                None,
+                winit::keyboard::Key::Named(winit::keyboard::NamedKey::Escape),
+            ),
+            is_synthetic: false,
+        });
+    assert!(
+        app.harness().root_widget().view_only_scroll(&event),
+        "cancelled title resumes text-note scrolling"
+    );
+
+    let before = app.read_document(|doc| (doc.base_heads(), doc.pending_ops()));
+    assert!(
+        app.harness().dispatch_to_root(&event),
+        "real text-note wheel is handled"
+    );
+    let scrolled = app
+        .surface(|notes: &mut crate::NotesApp| notes.main_panel_mut().scroll_y_for_test())
+        .unwrap();
+    assert!(scrolled > 0.0, "real note body scrolls");
+    assert_eq!(
+        app.read_document(|doc| (doc.base_heads(), doc.pending_ops())),
+        before
+    );
+}
+
+#[test]
+fn mounted_text_note_wheel_avoids_editor_projection_and_still_edits() {
+    use automerge::transaction::Transactable;
+    use std::fmt::Write as _;
+    let (mut app, target) = fixture(1);
+    let mut body = String::new();
+    let paragraph = "Measured scrolling text with ordinary words. ".repeat(6);
+    for index in 0..180 {
+        write!(&mut body, "Paragraph {index}: {paragraph}\n\n").unwrap();
+    }
+    let blocks = crate::MainPanel::seed_blocks(&body, |_| None);
+    app.invoke(
+        ui::tilo_resource::Invoke::apply(&crate::actions::write_body_action(target, &blocks))
+            .unwrap(),
+    )
+    .unwrap();
+    app.harness().relayout_at((1051, 952)).unwrap();
+    let rect = app
+        .harness()
+        .targets()
+        .get("block_editor")
+        .copied()
+        .expect("mounted canonical editor");
+    app.harness()
+        .dispatch_to_root(&winit::event::WindowEvent::CursorMoved {
+            device_id: winit::event::DeviceId::dummy(),
+            position: winit::dpi::PhysicalPosition::new(rect.x0 + 40.0, rect.y0 + 20.0),
+        });
+    let before = app.read_document(|doc| (doc.base_heads(), doc.pending_ops()));
+    let event = winit::event::WindowEvent::MouseWheel {
+        device_id: winit::event::DeviceId::dummy(),
+        delta: winit::event::MouseScrollDelta::LineDelta(0.0, -1.0),
+        phase: winit::event::TouchPhase::Moved,
+    };
+    let (elapsed, rows) = observe(|| {
+        for _ in 0..100 {
+            assert!(
+                app.harness().dispatch_to_root(&event),
+                "real note wheel handled"
+            );
+        }
+    });
+    let editor_calls = rows
+        .iter()
+        .filter(|row| row.phase == "rich_text_input")
+        .map(|row| row.calls)
+        .sum::<usize>();
+    eprintln!(
+        "notes-wheel-editor-boundary {}",
+        serde_json::json!({
+            "paragraphs":180,"markdown_bytes":body.len(),"viewport":[1051,952],"wheel_events":100,
+            "elapsed_ns":elapsed,"editor_input_calls":editor_calls,"phases":rows,
+            "canonical_notes_framework":true,"native_window_runner":false,"gpu_or_scanout":false,
+            "architecture":std::env::consts::ARCH,"profile":if cfg!(debug_assertions) {"test-debug"} else {"optimized"},
+        })
+    );
+    assert_eq!(
+        editor_calls, 0,
+        "handled scrolling must not enter the editor's document-projection path"
+    );
+    assert_eq!(
+        app.read_document(|doc| (doc.base_heads(), doc.pending_ops())),
+        before,
+        "view scrolling leaves the canonical note untouched"
+    );
+    assert!(
+        app.surface(|notes: &mut crate::NotesApp| notes.main_panel_mut().scroll_y_for_test())
+            .unwrap()
+            > 0.0
+    );
+    app.harness().relayout();
+    app.harness().click_at(rect.x0 + 40.0, rect.y0 + 20.0);
+    let (_, editing) = observe(|| app.harness().type_text("verified "));
+    assert!(
+        editing
+            .iter()
+            .any(|row| row.phase == "rich_text_input" && row.calls > 0),
+        "a real text edit must still reach the instrumented editor"
+    );
+    assert_ne!(
+        app.read_document(|doc| (doc.base_heads(), doc.pending_ops())),
+        before,
+        "the real edit reaches the canonical record"
+    );
+    assert!(
+        app.surface(|notes: &mut crate::NotesApp| notes.editor_text_for_test())
+            .unwrap()
+            .contains("verified ")
+    );
+}

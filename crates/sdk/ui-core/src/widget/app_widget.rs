@@ -827,6 +827,17 @@ mod component_adapter {
                 .flatten()
         }
 
+        fn view_only_scroll(&self, event: &WindowEvent) -> bool {
+            let binding = self.component.callback_binding();
+            let Ok(_entry) = binding.enter() else {
+                return false;
+            };
+            self.component
+                .root
+                .as_deref()
+                .is_some_and(|root| root.view_only_scroll(event))
+        }
+
         fn primary_vertical_scroll(&self) -> Option<crate::widget::PrimaryScrollRegion> {
             let binding = self.component.callback_binding();
             let _entry = binding.enter().ok()?;
