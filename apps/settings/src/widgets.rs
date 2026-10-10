@@ -58,7 +58,7 @@ pub fn cards(items: Vec<El>) -> El {
 
 /// A vertical stack of pre-built rows — the standard body for a section.
 /// It is a form section, so its labelled rows ([`setting_row`],
-/// [`choice_row`] and the like) share one label column and decide together,
+/// [`setting_row`] and the like) share one label column and decide together,
 /// at layout and from the width they really get, whether their controls
 /// stand beside their labels or beneath them.
 pub fn rows(items: Vec<El>) -> El {
@@ -199,19 +199,6 @@ pub fn set_compose_text_growth(growth: f32) {
     COMPOSE_TEXT_GROWTH.set(growth);
 }
 
-/// A settings row whose trailing control is a compact chooser (dropdown,
-/// segmented picker): at least the compact chooser width at the row's right
-/// edge beside the label. When the section is too narrow for its labels and
-/// choosers, every row of it puts its chooser beneath the label, full width.
-pub fn choice_row(label: &str, control: El) -> El {
-    labelled_row(label, None, control)
-}
-
-/// [`choice_row`] with a helper line under the label.
-pub fn choice_row_described(label: &str, description: &str, control: El) -> El {
-    labelled_row(label, Some(description), control)
-}
-
 fn stacked_block(items: Vec<El>, gap: Rhythm) -> El {
     let mut column = Column::new()
         .with_no_padding()
@@ -223,7 +210,7 @@ fn stacked_block(items: Vec<El>, gap: Rhythm) -> El {
     Box::new(column)
 }
 
-/// The narrow form of [`choice_row`]: the label on its own line and the
+/// The narrow form of [`setting_row`]: the label on its own line and the
 /// chooser beneath it, spanning the section.
 pub fn choice_row_stacked(label: &str, control: El) -> El {
     stacked_block(

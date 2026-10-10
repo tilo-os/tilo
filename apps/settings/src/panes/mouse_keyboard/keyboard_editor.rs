@@ -668,7 +668,7 @@ impl MouseKeyboardPane {
         let selected = self.selected_source();
         let mut content = Vec::new();
         if self.scopes.len() > 1 {
-            content.push(choice_row(
+            content.push(setting_row(
                 &t("input-keyboard-scope"),
                 Box::new(
                     id_dropdown(
@@ -775,7 +775,7 @@ impl MouseKeyboardPane {
     fn selected_source_options(&self, source: &str) -> Vec<El> {
         let input = self.preview_input(source);
         vec![
-            choice_row(
+            setting_row(
                 &t("input-map-model"),
                 Box::new(
                     id_dropdown(
@@ -792,7 +792,7 @@ impl MouseKeyboardPane {
                     .bound(&self.cx, effect(InputEffect::SET_KEYBOARD_MODEL)),
                 ),
             ),
-            choice_row(
+            setting_row(
                 &t("input-compose-key"),
                 Box::new(
                     Dropdown::from_state(
@@ -813,7 +813,7 @@ impl MouseKeyboardPane {
                     .with_id("input.compose_key"),
                 ),
             ),
-            choice_row(
+            setting_row(
                 &t("input-caps-lock-key"),
                 Box::new(
                     Dropdown::from_state(
@@ -873,7 +873,7 @@ impl MouseKeyboardPane {
             .into_iter()
             .map(|entry| (entry.id, entry.label))
             .collect();
-        content.push(choice_row(
+        content.push(setting_row(
             &t("input-sources-choose"),
             Box::new(
                 id_dropdown(

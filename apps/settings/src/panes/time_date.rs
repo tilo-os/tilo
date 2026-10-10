@@ -39,7 +39,7 @@ use crate::i18n::{t, t_args};
 use crate::region::{Locale, TimeStyle};
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
-use crate::widgets::{caption, card, choice_row, error_row, rows, setting_row, value_row};
+use crate::widgets::{caption, card, error_row, rows, setting_row, value_row};
 use ui::i18n::ArgValue;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -926,7 +926,7 @@ impl TimeDatePane {
                 &t("time-timezone"),
                 &t_args("time-zones-error", &[("error", error.as_str().into())]),
             ),
-            None => choice_row(
+            None => setting_row(
                 &t("time-timezone"),
                 Box::new(
                     self.cx.bind(

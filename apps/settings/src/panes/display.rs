@@ -37,7 +37,7 @@ use crate::prefs::DisplayPrefs;
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
 use crate::widgets::{
-    El, caption, card, choice_row, error_row, rows, setting_row, setting_row_described, value_row,
+    El, caption, card, error_row, rows, setting_row, setting_row_described, value_row,
 };
 use settings_store::hardware::{
     DisplayConfig, DisplayHardwareSnapshot, DisplaySet, DisplayTransaction,
@@ -2215,7 +2215,7 @@ impl DisplayModel {
                         ),
                     ),
                 ),
-                choice_row(
+                setting_row(
                     &t("display-night-light-warmth"),
                     Box::new(
                         self.cx.bind_field_with(
@@ -2332,7 +2332,7 @@ impl DisplayModel {
                     )
                 }),
             ),
-            choice_row(
+            setting_row(
                 &t("display-scale"),
                 Box::new(self.choice(
                     &output.connector,
@@ -2342,7 +2342,7 @@ impl DisplayModel {
                     effect(DisplayEffect::SET_OUTPUT_SCALE),
                 )),
             ),
-            choice_row(
+            setting_row(
                 &t("display-position"),
                 Box::new(self.choice(
                     &output.connector,
@@ -2352,7 +2352,7 @@ impl DisplayModel {
                     effect(DisplayEffect::PLACE_DISPLAY),
                 )),
             ),
-            choice_row(
+            setting_row(
                 &t("display-mirroring"),
                 Box::new(self.choice(
                     &output.connector,
@@ -2388,7 +2388,7 @@ impl DisplayModel {
                 .mode
                 .or(output.current_mode)
                 .map_or_else(|| "Preferred".into(), OutputMode::label);
-            out_rows.push(choice_row(
+            out_rows.push(setting_row(
                 "Resolution & refresh rate",
                 Box::new(self.choice(
                     &output.connector,
@@ -2401,7 +2401,7 @@ impl DisplayModel {
         }
         let rotation = transform_options();
         let rotation_current = transform_label(config.transform);
-        out_rows.push(choice_row(
+        out_rows.push(setting_row(
             &t("display-rotation"),
             Box::new(self.choice(
                 &output.connector,
@@ -2495,7 +2495,7 @@ impl DisplayModel {
                         .map(|label| format!("{label} ({id})"))
                 })
                 .unwrap_or_else(|| "System default".into());
-            out_rows.push(choice_row(
+            out_rows.push(setting_row(
                 &t("display-colour-profile"),
                 Box::new(self.choice(
                     &output.connector,

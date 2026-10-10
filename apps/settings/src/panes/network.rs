@@ -32,8 +32,7 @@ use crate::panes::model::{PaneModel, Shared};
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
 use crate::widgets::{
-    El, caption, card, card_with_action, choice_row, error_caption, error_row, rows, setting_row,
-    value_row,
+    El, caption, card, card_with_action, error_caption, error_row, rows, setting_row, value_row,
 };
 
 /// The bands a hotspot can use.
@@ -2331,7 +2330,7 @@ impl NetworkModel {
                     .with_secret(true)
                     .with_placeholder(t("net-hotspot-password")),
             ),
-            choice_row(
+            setting_row(
                 &t("net-band"),
                 Box::new(
                     Dropdown::from_state(
@@ -2484,7 +2483,7 @@ impl NetworkModel {
             return;
         };
         if wifi_profiles.len() > 1 {
-            rows_out.push(choice_row(
+            rows_out.push(setting_row(
                 &t("net-edit-profile"),
                 Box::new(
                     Dropdown::from_state(
@@ -2503,7 +2502,7 @@ impl NetworkModel {
             rows_out.push(caption(&t("net-policy-unread")));
             return;
         };
-        rows_out.push(choice_row(
+        rows_out.push(setting_row(
             &t("net-metered"),
             Box::new(
                 Dropdown::from_state(
@@ -2517,7 +2516,7 @@ impl NetworkModel {
                 .with_placeholder(&form.metered.get()),
             ),
         ));
-        rows_out.push(choice_row(
+        rows_out.push(setting_row(
             &t("net-mac"),
             Box::new(
                 Dropdown::from_state(
@@ -2636,7 +2635,7 @@ impl NetworkModel {
             caption(&t("net-sim-pin-caption")),
         ]);
         if !self.sims.is_empty() {
-            rows.push(choice_row(
+            rows.push(setting_row(
                 &t("net-sim"),
                 Box::new(
                     Dropdown::from_state(
@@ -2664,7 +2663,7 @@ impl NetworkModel {
     fn enterprise_rows(&self) -> Vec<El> {
         let form = &self.enterprise;
         vec![
-            choice_row(
+            setting_row(
                 &t("net-method"),
                 Box::new(
                     Dropdown::from_state(
@@ -2674,7 +2673,7 @@ impl NetworkModel {
                     .with_placeholder(&form.method.get()),
                 ),
             ),
-            choice_row(
+            setting_row(
                 &t("net-inner-auth"),
                 Box::new(
                     Dropdown::from_state(
@@ -2857,7 +2856,7 @@ impl NetworkModel {
             return out;
         };
         if wired_profiles.len() > 1 {
-            out.push(choice_row(
+            out.push(setting_row(
                 &t("net-edit-profile"),
                 Box::new(
                     Dropdown::from_state(

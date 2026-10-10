@@ -41,8 +41,7 @@ use crate::prefs::InputPrefs;
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
 use crate::widgets::{
-    El, caption, card, choice_row, choice_row_described, error_caption, field_row, rows,
-    setting_row, setting_row_described,
+    El, caption, card, error_caption, field_row, rows, setting_row, setting_row_described,
 };
 
 /// Bind a control to a Settings effect where it is built.
@@ -1671,7 +1670,7 @@ impl MouseKeyboardPane {
             .keyboard_preview_level
             .min(map.level_count().saturating_sub(1));
         let mut content = Vec::new();
-        content.push(choice_row(
+        content.push(setting_row(
             &t("input-map-level"),
             Box::new(
                 id_dropdown(
@@ -1691,7 +1690,7 @@ impl MouseKeyboardPane {
             ),
         ));
         let inspected = self.last.keyboard_inspected_key.clone();
-        content.push(choice_row(
+        content.push(setting_row(
             &t("input-map-inspect-key"),
             Box::new(
                 id_dropdown(
@@ -2062,7 +2061,7 @@ impl MouseKeyboardPane {
         card(
             &t("input-clicking-title"),
             rows(vec![
-                choice_row(
+                setting_row(
                     &t("input-click-method"),
                     Box::new(
                         id_dropdown(
@@ -2082,7 +2081,7 @@ impl MouseKeyboardPane {
                     ),
                 ),
                 caption(&t("input-click-method-caption")),
-                choice_row(
+                setting_row(
                     &t("input-scroll-method"),
                     Box::new(
                         id_dropdown(
@@ -2159,7 +2158,7 @@ impl MouseKeyboardPane {
                     "input.middle_emulation",
                     self.last.middle_emulation,
                 ),
-                choice_row(
+                setting_row(
                     &t("input-acceleration"),
                     Box::new(
                         Dropdown::from_state(
@@ -2271,7 +2270,7 @@ impl MouseKeyboardPane {
                             .bound_field(&self.cx, TextAssistancePrefs::paths().auto_correct),
                     ),
                 ),
-                choice_row(
+                setting_row(
                     &t("input-spell-language"),
                     Box::new(
                         id_dropdown(
@@ -2457,7 +2456,7 @@ impl MouseKeyboardPane {
                 card(
                     &device_title(device),
                     rows(vec![
-                        choice_row(
+                        setting_row(
                             &t("input-tablet-map-to"),
                             Box::new(self.device_dropdown(
                                 &resource,
@@ -2500,7 +2499,7 @@ impl MouseKeyboardPane {
                                 ),
                             )),
                         ),
-                        choice_row(
+                        setting_row(
                             &t("input-tablet-lower-button"),
                             Box::new(self.device_dropdown(
                                 &resource,
@@ -2511,7 +2510,7 @@ impl MouseKeyboardPane {
                                 &t("input-tablet-lower-button"),
                             )),
                         ),
-                        choice_row(
+                        setting_row(
                             &t("input-tablet-upper-button"),
                             Box::new(self.device_dropdown(
                                 &resource,
@@ -2522,7 +2521,7 @@ impl MouseKeyboardPane {
                                 &t("input-tablet-upper-button"),
                             )),
                         ),
-                        choice_row_described(
+                        setting_row_described(
                             &t("input-tablet-third-button"),
                             &t("input-tablet-third-button-description"),
                             Box::new(self.device_dropdown(
@@ -2534,7 +2533,7 @@ impl MouseKeyboardPane {
                                 &t("input-tablet-third-button"),
                             )),
                         ),
-                        choice_row_described(
+                        setting_row_described(
                             &t("input-tablet-eraser"),
                             &t("input-tablet-eraser-description"),
                             Box::new(self.device_dropdown(
@@ -2574,7 +2573,7 @@ impl MouseKeyboardPane {
                                 Box::new(Spacer::new()),
                             );
                         }
-                        choice_row(
+                        setting_row(
                             &label,
                             Box::new(self.device_dropdown(
                                 &resource,
@@ -2593,7 +2592,7 @@ impl MouseKeyboardPane {
                 for (dial, modes) in pad_dials(device) {
                     for mode in 0..modes {
                         let label = dial_label(dial, mode, modes);
-                        items.push(choice_row(
+                        items.push(setting_row(
                             &label,
                             Box::new(self.device_dropdown(
                                 &resource,

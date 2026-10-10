@@ -53,7 +53,7 @@ use crate::prefs::AudioPrefs;
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
 use crate::widgets::{
-    caption, card, choice_row_described, error_caption, error_row, rows, setting_row,
+    caption, card, error_caption, error_row, rows, setting_row, setting_row_described,
 };
 
 /// How often the pane re-reads the `PipeWire` graph while it is open, so a
@@ -1357,7 +1357,7 @@ impl AudioModel {
                 .active_profile
                 .and_then(|i| hw.profiles.iter().find(|p| p.index == i))
                 .map_or_else(|| t("sound-choose-profile"), |p| p.description.clone());
-            hardware_rows.push(choice_row_described(
+            hardware_rows.push(setting_row_described(
                 &hw.description,
                 &t("sound-profile"),
                 Box::new(
@@ -1415,7 +1415,7 @@ impl AudioModel {
                 effect(AudioEffect::ROUTE_STREAM).map(move |device: String| (id, device)),
             );
             let route_row =
-                choice_row_described(&s.app, s.media_name.as_deref().unwrap_or(""), Box::new(dd));
+                setting_row_described(&s.app, s.media_name.as_deref().unwrap_or(""), Box::new(dd));
             let vol_row = setting_row(
                 &t("sound-volume"),
                 Box::new(

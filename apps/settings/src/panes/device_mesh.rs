@@ -25,8 +25,8 @@ use crate::panes::model::{PaneModel, Shared};
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
 use crate::widgets::{
-    StatusTone, caption, card, card_with_action, cards, choice_row_described, error_caption, rows,
-    semantic_status_pill, setting_row_described, value_row,
+    StatusTone, caption, card, card_with_action, cards, error_caption, rows, semantic_status_pill,
+    setting_row_described, value_row,
 };
 use settings_store::roaming_provenance::{Origin, RoamingProvenance};
 
@@ -1109,7 +1109,7 @@ impl DeviceMeshModel {
                 .cx
                 .bind(replication, effect(DeviceMeshEffect::SET_REPLICATION));
             let repl_desc = replication_description(&self.common_replication());
-            continuation_rows.push(choice_row_described(
+            continuation_rows.push(setting_row_described(
                 &files,
                 &repl_desc,
                 Box::new(replication),
@@ -1129,7 +1129,7 @@ impl DeviceMeshModel {
 
         let this_device = t("mesh-this-device");
         let this_device_desc = t("mesh-this-device-desc");
-        let mut availability_rows = vec![choice_row_described(
+        let mut availability_rows = vec![setting_row_described(
             &this_device,
             &this_device_desc,
             Box::new(role),

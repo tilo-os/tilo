@@ -23,9 +23,7 @@ use crate::effects::effect;
 use crate::host::PaneCx;
 use crate::i18n::{t, t_args};
 use crate::prefs::UpdatePrefs;
-use crate::widgets::{
-    El, caption, card, choice_row, error_caption, error_row, rows, setting_row, value_row,
-};
+use crate::widgets::{El, caption, card, error_caption, error_row, rows, setting_row, value_row};
 
 const UPDATE_SCHEDULES: &[&str] = &["System schedule", "Daily", "Weekly"];
 const STATUS_TIMEOUT: Duration = Duration::from_secs(10);
@@ -1424,7 +1422,7 @@ impl UpdatesModel {
                     None => value_row(&automatic, &unavailable),
                 },
                 match &schedule_placeholder {
-                    Some(schedule) => choice_row(
+                    Some(schedule) => setting_row(
                         &schedule_label,
                         Box::new(
                             self.cx.bind(

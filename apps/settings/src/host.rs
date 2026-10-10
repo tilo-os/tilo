@@ -205,7 +205,6 @@ impl PaneCx {
         }
     }
 
-    /// The published actions of section `T`; `None` outside a host.
     /// `decl`, a bound field edit or verb of section `T`, as an operation a
     /// live row offers (one app's notification rule on that app's row).
     /// `None` outside a host, or where the section is read only here.
@@ -217,6 +216,7 @@ impl PaneCx {
         self.section::<T>()?.operation(decl)
     }
 
+    /// The published actions of section `T`; `None` outside a host.
     fn section<T: Section>(&self) -> Option<&Actions<T>> {
         self.door
             .as_ref()?

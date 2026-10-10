@@ -34,7 +34,7 @@ use crate::host::{Followed, PaneCx};
 use crate::i18n::{english, t, t_args};
 use crate::prefs::NotificationPrefs;
 use crate::widgets::{
-    El, StatusTone, caption, card, choice_row, error_row, rows, semantic_status_pill,
+    El, StatusTone, caption, card, error_row, rows, semantic_status_pill, setting_row,
     setting_row_described, value_row,
 };
 
@@ -735,7 +735,7 @@ impl NotificationsPane {
                         NotificationPrefs::paths().focus.enabled,
                     ),
                 ),
-                choice_row(
+                setting_row(
                     &t("notif-focus-from"),
                     Self::choice(focus_options.clone(), &self.shown.focus_start, |control| {
                         cx.bind_field_with(
@@ -745,7 +745,7 @@ impl NotificationsPane {
                         )
                     }),
                 ),
-                choice_row(
+                setting_row(
                     &t("notif-focus-days"),
                     Self::choice(focus_days_options(), &self.shown.focus_days, |control| {
                         cx.bind_field_with(
@@ -758,7 +758,7 @@ impl NotificationsPane {
                         )
                     }),
                 ),
-                choice_row(
+                setting_row(
                     &t("notif-focus-until"),
                     Self::choice(focus_options, &self.shown.focus_end, |control| {
                         cx.bind_field_with(
@@ -851,7 +851,7 @@ impl NotificationsPane {
                         &shown.priority_contacts,
                         AppChoice::PriorityContacts,
                     ),
-                    choice_row(&t("notif-app-mute"), mute),
+                    setting_row(&t("notif-app-mute"), mute),
                     caption(&app_caption),
                 ]),
             ));

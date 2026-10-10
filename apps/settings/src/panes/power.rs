@@ -32,7 +32,7 @@ use crate::i18n::{english, t, t_args};
 use crate::prefs::{PowerActionPref, PowerPrefs};
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
-use crate::widgets::{El, caption, card, choice_row, error_caption, rows, setting_row, value_row};
+use crate::widgets::{El, caption, card, error_caption, rows, setting_row, value_row};
 use ui::i18n::ArgValue;
 
 /// Idle-suspend timeout options, `(label, minutes)`. `0` = never.
@@ -711,7 +711,7 @@ impl PowerPane {
                 .map(|limit| format!("{limit}%"))
                 .collect();
             let current = format!("{}%", capability.current);
-            battery_rows.push(choice_row(
+            battery_rows.push(setting_row(
                 &t("power-charge-cap"),
                 Box::new(
                     self.cx.bind(
@@ -766,7 +766,7 @@ impl PowerPane {
                 &t("power-profile-unavailable"),
             )]
         } else {
-            vec![choice_row(
+            vec![setting_row(
                 &t("power-profile"),
                 self.choice(
                     Some("power.profile"),
@@ -848,11 +848,11 @@ impl PowerPane {
                         ),
                     ),
                 ),
-                choice_row(
+                setting_row(
                     &t("power-suspend-after"),
                     self.suspend_timeout("default", &suspend_label(prefs.suspend_minutes)),
                 ),
-                choice_row(
+                setting_row(
                     &t("power-blank"),
                     self.timeout(
                         Some("power.blank"),
@@ -861,7 +861,7 @@ impl PowerPane {
                         PowerPrefs::paths().blank_minutes,
                     ),
                 ),
-                choice_row(
+                setting_row(
                     &t("power-lock-after"),
                     self.timeout(
                         Some("power.lock"),
@@ -871,18 +871,18 @@ impl PowerPane {
                     ),
                 ),
                 caption(&t("power-idle-caption")),
-                choice_row(
+                setting_row(
                     &t("power-saver-suspend"),
                     self.suspend_timeout("saver", &suspend_label(prefs.saver_suspend_minutes)),
                 ),
-                choice_row(
+                setting_row(
                     &t("power-balanced-suspend"),
                     self.suspend_timeout(
                         "balanced",
                         &suspend_label(prefs.balanced_suspend_minutes),
                     ),
                 ),
-                choice_row(
+                setting_row(
                     &t("power-performance-suspend"),
                     self.suspend_timeout(
                         "performance",
@@ -927,7 +927,7 @@ impl PowerPane {
         card(
             &t("power-behaviour-title"),
             rows(vec![
-                choice_row(
+                setting_row(
                     &t("power-lid"),
                     self.action_choice(
                         "power.lid",
@@ -935,7 +935,7 @@ impl PowerPane {
                         PowerPrefs::paths().lid_close_action,
                     ),
                 ),
-                choice_row(
+                setting_row(
                     &t("power-power-key"),
                     self.action_choice(
                         "power.power_key",
@@ -943,7 +943,7 @@ impl PowerPane {
                         PowerPrefs::paths().power_key_action,
                     ),
                 ),
-                choice_row(
+                setting_row(
                     &t("power-critical"),
                     self.action_choice(
                         "power.critical",

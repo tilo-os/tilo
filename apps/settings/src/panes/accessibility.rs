@@ -22,7 +22,7 @@ use ui::LocalState;
 use ui::framework::{EffectAnswer, EffectCx, EffectStatus};
 use ui::theme::Theme;
 use ui::tilo_resource::{self, ActionRef};
-use ui::widget::{AppModel, Dropdown, ModelPath, Toggle, Widget};
+use ui::widget::{AppModel, Dropdown, ModelPath, Widget};
 
 use crate::effects::{SettingsEffect, effect};
 use crate::host::{Followed, PaneCx};
@@ -34,9 +34,7 @@ use crate::prefs::{
 };
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
-use crate::widgets::{
-    El, caption, card, choice_row, error_row, rows, setting_row_described, value_row,
-};
+use crate::widgets::{El, caption, card, error_row, rows, setting_row, value_row};
 
 fn executable_available(name: &str) -> bool {
     std::env::var_os("PATH").is_some_and(|path| {
@@ -402,66 +400,6 @@ impl AccessibilityPane {
         self.appearance.get()
     }
 
-    fn toggle(
-        &self,
-        id: &str,
-        state: &LocalState<bool>,
-        field: ui::tilo_resource::Path<AccessibilityPrefs, bool>,
-    ) -> El {
-        Box::new(
-            self.cx
-                .bind_field(Toggle::from_state(state).with_id(id), field),
-        )
-    }
-
-    fn effect_toggle<E>(&self, id: &str, state: &LocalState<bool>, on: ActionRef<E, bool>) -> El {
-        Box::new(
-            self.cx
-                .bind(Toggle::from_state(state).with_id(id), effect(on)),
-        )
-    }
-
-    fn choice<E>(
-        &self,
-        id: &str,
-        options: impl IntoIterator<Item = impl Into<String>>,
-        state: &LocalState<String>,
-        set: ActionRef<E, String>,
-    ) -> El {
-        let placeholder = state.get();
-        Box::new(
-            self.cx.bind(
-                Dropdown::from_state(options.into_iter().map(Into::into).collect(), state)
-                    .with_id(id)
-                    .with_placeholder(&placeholder),
-                effect(set),
-            ),
-        )
-    }
-
-    fn field_choice<V>(
-        &self,
-        id: &str,
-        options: impl IntoIterator<Item = impl Into<String>>,
-        state: &LocalState<String>,
-        field: ui::tilo_resource::Path<AccessibilityPrefs, V>,
-        value: fn(&str) -> Result<V, String>,
-    ) -> El
-    where
-        V: ui::tilo_resource::Model + ui::tilo_resource::Settable + 'static,
-    {
-        let placeholder = state.get();
-        Box::new(
-            self.cx.bind_field_with(
-                Dropdown::from_state(options.into_iter().map(Into::into).collect(), state)
-                    .with_id(id)
-                    .with_placeholder(&placeholder),
-                field,
-                move |label: String| value(&label),
-            ),
-        )
-    }
-
     fn build_composition(&self) -> Box<dyn Widget> {
         crate::widgets::cards(vec![
             self.build_vision_card(),
@@ -475,66 +413,55 @@ impl AccessibilityPane {
     // --- Vision: high contrast, reduce motion, text size.
     fn build_vision_card(&self) -> Box<dyn Widget> {
         let shown = &self.shown;
-        let placeholder = shown.text_size.get();
-        let size = Box::new(
-            self.cx.bind_field_with(
-                Dropdown::from_state(text_size_options(), &shown.text_size)
-                    .with_id("a11y.text_size")
-                    .with_placeholder(&placeholder),
-                AppearancePrefs::paths().text_scale,
-                |label: String| crate::panes::appearance::text_size_value(&label),
-            ),
-        );
         card(
             &t("a11y-vision-title"),
             rows(vec![
-                setting_row_described(
-                    &t("a11y-high-contrast"),
-                    &t("a11y-high-contrast-desc"),
-                    Box::new(self.cx.bind_field(
-                        Toggle::from_state(&shown.high_contrast).with_id("a11y.high_contrast"),
-                        AppearancePrefs::paths().high_contrast,
-                    )),
-                ),
-                setting_row_described(
-                    &t("a11y-reduce-motion"),
-                    &t("a11y-reduce-motion-desc"),
-                    Box::new(self.cx.bind_field(
-                        Toggle::from_state(&shown.reduce_motion).with_id("a11y.reduce_motion"),
-                        AppearancePrefs::paths().reduce_motion,
-                    )),
-                ),
-                choice_row(&t("a11y-text-size"), size),
-                choice_row(
-                    &t("a11y-colour-filter"),
-                    self.field_choice(
-                        "a11y.color_filter",
+                self.cx
+                    .row(t("a11y-high-contrast"))
+                    .described(t("a11y-high-contrast-desc"))
+                    .id("a11y.high_contrast")
+                    .toggle(&shown.high_contrast, AppearancePrefs::paths().high_contrast),
+                self.cx
+                    .row(t("a11y-reduce-motion"))
+                    .described(t("a11y-reduce-motion-desc"))
+                    .id("a11y.reduce_motion")
+                    .toggle(&shown.reduce_motion, AppearancePrefs::paths().reduce_motion),
+                self.cx
+                    .row(t("a11y-text-size"))
+                    .id("a11y.text_size")
+                    .choice(
+                        text_size_options(),
+                        &shown.text_size,
+                        AppearancePrefs::paths().text_scale,
+                        |label: String| crate::panes::appearance::text_size_value(&label),
+                    ),
+                self.cx
+                    .row(t("a11y-colour-filter"))
+                    .id("a11y.color_filter")
+                    .choice(
                         ColorFilter::OPTIONS.iter().copied(),
                         &shown.color_filter,
                         AccessibilityPrefs::paths().color_filter,
-                        colour_filter,
+                        |label: String| colour_filter(&label),
                     ),
-                ),
-                choice_row(
-                    &t("a11y-magnifier"),
-                    self.field_choice(
-                        "a11y.magnifier",
+                self.cx
+                    .row(t("a11y-magnifier"))
+                    .id("a11y.magnifier")
+                    .choice(
                         magnifier::ZOOM_LABELS,
                         &shown.magnifier,
                         AccessibilityPrefs::paths().magnifier_zoom,
-                        magnifier_zoom,
+                        |label: String| magnifier_zoom(&label),
                     ),
-                ),
-                choice_row(
-                    &t("a11y-magnifier-view"),
-                    self.field_choice(
-                        "a11y.magnifier_view",
+                self.cx
+                    .row(t("a11y-magnifier-view"))
+                    .id("a11y.magnifier_view")
+                    .choice(
                         magnifier::MagnifierView::ALL.map(magnifier::MagnifierView::label),
                         &shown.magnifier_view,
                         AccessibilityPrefs::paths().magnifier_view,
-                        magnifier_view,
+                        |label: String| magnifier_view(&label),
                     ),
-                ),
             ]),
         )
     }
@@ -545,53 +472,45 @@ impl AccessibilityPane {
         card(
             &t("a11y-pointer-title"),
             rows(vec![
-                setting_row_described(
-                    &t("a11y-mouse-keys"),
-                    &t("a11y-mouse-keys-desc"),
-                    self.toggle(
-                        "a11y.mouse_keys",
-                        &shown.mouse_keys,
-                        AccessibilityPrefs::paths().mouse_keys,
-                    ),
-                ),
+                self.cx
+                    .row(t("a11y-mouse-keys"))
+                    .described(t("a11y-mouse-keys-desc"))
+                    .id("a11y.mouse_keys")
+                    .toggle(&shown.mouse_keys, AccessibilityPrefs::paths().mouse_keys),
                 caption(&t("a11y-mouse-keys-caption")),
-                setting_row_described(
-                    &t("a11y-large-cursor"),
-                    &t("a11y-large-cursor-desc"),
-                    self.toggle(
-                        "a11y.large_cursor",
+                self.cx
+                    .row(t("a11y-large-cursor"))
+                    .described(t("a11y-large-cursor-desc"))
+                    .id("a11y.large_cursor")
+                    .toggle(
                         &shown.large_cursor,
                         AccessibilityPrefs::paths().large_cursor,
                     ),
-                ),
-                choice_row(
-                    &t("a11y-cursor-size"),
-                    self.field_choice(
-                        "a11y.cursor_size",
+                self.cx
+                    .row(t("a11y-cursor-size"))
+                    .id("a11y.cursor_size")
+                    .choice(
                         labels(AccessibilityPrefs::CURSOR_SIZES),
                         &shown.cursor_size,
                         AccessibilityPrefs::paths().cursor_size,
-                        cursor_size,
+                        |label: String| cursor_size(&label),
                     ),
-                ),
-                setting_row_described(
-                    &t("a11y-pointer-crosshair"),
-                    &t("a11y-pointer-crosshair-desc"),
-                    self.toggle(
-                        "a11y.cursor_crosshair",
+                self.cx
+                    .row(t("a11y-pointer-crosshair"))
+                    .described(t("a11y-pointer-crosshair-desc"))
+                    .id("a11y.cursor_crosshair")
+                    .toggle(
                         &shown.cursor_crosshair,
                         AccessibilityPrefs::paths().cursor_crosshair,
                     ),
-                ),
-                setting_row_described(
-                    &t("a11y-thick-caret"),
-                    &t("a11y-thick-caret-desc"),
-                    self.toggle(
-                        "a11y.thick_text_caret",
+                self.cx
+                    .row(t("a11y-thick-caret"))
+                    .described(t("a11y-thick-caret-desc"))
+                    .id("a11y.thick_text_caret")
+                    .toggle(
                         &shown.thick_text_caret,
                         AccessibilityPrefs::paths().thick_text_caret,
                     ),
-                ),
             ]),
         )
     }
@@ -599,96 +518,79 @@ impl AccessibilityPane {
     // --- Typing.
     fn build_typing_card(&self) -> Box<dyn Widget> {
         let shown = &self.shown;
-        let osk_row = setting_row_described(
-            &t("a11y-osk"),
-            &t("a11y-osk-desc"),
-            self.field_choice(
-                "a11y.on_screen_keyboard",
+        let osk_row = self
+            .cx
+            .row(t("a11y-osk"))
+            .described(t("a11y-osk-desc"))
+            .id("a11y.on_screen_keyboard")
+            .choice(
                 OnScreenKeyboard::OPTIONS.iter().copied(),
                 &shown.on_screen_keyboard,
                 AccessibilityPrefs::paths().on_screen_keyboard,
-                osk_mode,
-            ),
-        );
+                |label: String| osk_mode(&label),
+            );
         card(
             &t("a11y-typing-title"),
             rows(vec![
-                setting_row_described(
-                    &t("a11y-sticky-keys"),
-                    &t("a11y-sticky-keys-desc"),
-                    self.toggle(
-                        "a11y.sticky_keys",
-                        &shown.sticky_keys,
-                        AccessibilityPrefs::paths().sticky_keys,
-                    ),
-                ),
-                setting_row_described(
-                    &t("a11y-slow-keys"),
-                    &t("a11y-slow-keys-desc"),
-                    self.toggle(
-                        "a11y.slow_keys",
-                        &shown.slow_keys,
-                        AccessibilityPrefs::paths().slow_keys,
-                    ),
-                ),
-                setting_row_described(
-                    &t("a11y-bounce-keys"),
-                    &t("a11y-bounce-keys-desc"),
-                    self.toggle(
-                        "a11y.bounce_keys",
-                        &shown.bounce_keys,
-                        AccessibilityPrefs::paths().bounce_keys,
-                    ),
-                ),
-                choice_row(
-                    &t("a11y-bounce-delay"),
-                    self.field_choice(
-                        "a11y.bounce_delay",
+                self.cx
+                    .row(t("a11y-sticky-keys"))
+                    .described(t("a11y-sticky-keys-desc"))
+                    .id("a11y.sticky_keys")
+                    .toggle(&shown.sticky_keys, AccessibilityPrefs::paths().sticky_keys),
+                self.cx
+                    .row(t("a11y-slow-keys"))
+                    .described(t("a11y-slow-keys-desc"))
+                    .id("a11y.slow_keys")
+                    .toggle(&shown.slow_keys, AccessibilityPrefs::paths().slow_keys),
+                self.cx
+                    .row(t("a11y-bounce-keys"))
+                    .described(t("a11y-bounce-keys-desc"))
+                    .id("a11y.bounce_keys")
+                    .toggle(&shown.bounce_keys, AccessibilityPrefs::paths().bounce_keys),
+                self.cx
+                    .row(t("a11y-bounce-delay"))
+                    .id("a11y.bounce_delay")
+                    .choice(
                         labels(AccessibilityPrefs::BOUNCE_DELAYS),
                         &shown.bounce_delay,
                         AccessibilityPrefs::paths().bounce_keys_delay_ms,
-                        bounce_delay,
+                        |label: String| bounce_delay(&label),
                     ),
-                ),
-                setting_row_described(
-                    &t("a11y-bounce-alert"),
-                    &t("a11y-bounce-alert-desc"),
-                    self.toggle(
-                        "a11y.bounce_keys_alert",
+                self.cx
+                    .row(t("a11y-bounce-alert"))
+                    .described(t("a11y-bounce-alert-desc"))
+                    .id("a11y.bounce_keys_alert")
+                    .toggle(
                         &shown.bounce_alert,
                         AccessibilityPrefs::paths().bounce_keys_alert,
                     ),
-                ),
                 osk_row,
-                setting_row_described(
-                    &t("a11y-switch-control"),
-                    &t("a11y-switch-control-desc"),
-                    self.toggle(
-                        "a11y.switch_control",
+                self.cx
+                    .row(t("a11y-switch-control"))
+                    .described(t("a11y-switch-control-desc"))
+                    .id("a11y.switch_control")
+                    .toggle(
                         &shown.switch_control,
                         AccessibilityPrefs::paths().switch_control,
                     ),
-                ),
-                choice_row(
-                    &t("a11y-switch-keys"),
-                    self.field_choice(
-                        "a11y.switch_keys",
+                self.cx
+                    .row(t("a11y-switch-keys"))
+                    .id("a11y.switch_keys")
+                    .choice(
                         SwitchKeyPair::OPTIONS.iter().copied(),
                         &shown.switch_keys,
                         AccessibilityPrefs::paths().switch_key_pair,
-                        switch_keys,
+                        |label: String| switch_keys(&label),
                     ),
-                ),
-                choice_row(
-                    &t("a11y-switch-scan"),
-                    self.field_choice(
-                        "a11y.switch_scan",
+                self.cx
+                    .row(t("a11y-switch-scan"))
+                    .id("a11y.switch_scan")
+                    .choice(
                         labels(&SWITCH_SCANS),
                         &shown.switch_scan,
                         AccessibilityPrefs::paths().switch_scan_ms,
-                        switch_scan,
+                        |label: String| switch_scan(&label),
                     ),
-                ),
             ]),
         )
     }
@@ -700,34 +602,31 @@ impl AccessibilityPane {
         let shown = &self.shown;
         let reader_rows = if let Some(backend) = self.speech {
             vec![
-                setting_row_described(
-                    &t("a11y-screen-reader"),
-                    &t("a11y-screen-reader-desc"),
-                    self.effect_toggle(
-                        "a11y.screen_reader",
+                self.cx
+                    .row(t("a11y-screen-reader"))
+                    .described(t("a11y-screen-reader-desc"))
+                    .id("a11y.screen_reader")
+                    .toggle_effect(
                         &shown.screen_reader,
-                        AccessibilityEffect::SET_SCREEN_READER,
+                        effect(AccessibilityEffect::SET_SCREEN_READER),
                     ),
-                ),
                 value_row(&t("a11y-speech-engine"), backend),
-                choice_row(
-                    &t("a11y-speech-rate"),
-                    self.choice(
-                        "a11y.reader_rate",
+                self.cx
+                    .row(t("a11y-speech-rate"))
+                    .id("a11y.reader_rate")
+                    .choice_effect(
                         labels(&SPEECH_RATES),
                         &shown.speech_rate,
-                        AccessibilityEffect::SET_SPEECH_RATE,
+                        effect(AccessibilityEffect::SET_SPEECH_RATE),
                     ),
-                ),
-                choice_row(
-                    &t("a11y-voice"),
-                    self.choice(
-                        "a11y.reader_voice",
+                self.cx
+                    .row(t("a11y-voice"))
+                    .id("a11y.reader_voice")
+                    .choice_effect(
                         ScreenReaderVoice::OPTIONS.iter().copied(),
                         &shown.speech_voice,
-                        AccessibilityEffect::SET_SPEECH_VOICE,
+                        effect(AccessibilityEffect::SET_SPEECH_VOICE),
                     ),
-                ),
             ]
         } else if let Some(error) = super::installed_programs_unreadable() {
             vec![error_row(
@@ -746,29 +645,27 @@ impl AccessibilityPane {
                 reader_rows
                     .into_iter()
                     .chain([
-                        choice_row(
+                        setting_row(
                             &t("a11y-dictation-language"),
                             self.dictation_language_choice(),
                         ),
                         caption(&t("a11y-dictation-language-desc")),
-                        setting_row_described(
-                            &t("a11y-dictation-literal"),
-                            &t("a11y-dictation-literal-desc"),
-                            self.toggle(
-                                "a11y.dictation_literal",
+                        self.cx
+                            .row(t("a11y-dictation-literal"))
+                            .described(t("a11y-dictation-literal-desc"))
+                            .id("a11y.dictation_literal")
+                            .toggle(
                                 &shown.dictation_literal,
                                 AccessibilityPrefs::paths().dictation_literal,
                             ),
-                        ),
-                        setting_row_described(
-                            &t("a11y-visual-alerts"),
-                            &t("a11y-visual-alerts-desc"),
-                            self.toggle(
-                                "a11y.visual_alerts",
+                        self.cx
+                            .row(t("a11y-visual-alerts"))
+                            .described(t("a11y-visual-alerts-desc"))
+                            .id("a11y.visual_alerts")
+                            .toggle(
                                 &shown.visual_alerts,
                                 AccessibilityPrefs::paths().visual_alerts,
                             ),
-                        ),
                         value_row(
                             &t("a11y-focus-highlight"),
                             &t("a11y-focus-highlight-status"),

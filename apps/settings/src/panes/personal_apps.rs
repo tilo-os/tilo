@@ -23,7 +23,7 @@ use crate::host::{Followed, PaneCx};
 use crate::i18n::{t, t_args};
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
-use crate::widgets::{caption, card, choice_row_described, rows, value_row};
+use crate::widgets::{caption, card, rows, setting_row_described, value_row};
 
 /// The most kinds of file and link the published tree lists.
 const MAX_KIND_ROWS: usize = 256;
@@ -349,7 +349,7 @@ impl PersonalAppsPane {
                     (named.clone(), app)
                 }),
             );
-            file_rows.push(choice_row_described(
+            file_rows.push(setting_row_described(
                 &Self::resource_label(&kind),
                 &t("settings-personal-apps-choice-follows"),
                 Box::new(picker),
