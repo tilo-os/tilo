@@ -2174,7 +2174,7 @@ fn settle(frame: &mut FrameBuilder, frames: usize) {
 #[cfg(target_os = "linux")]
 fn open_a_note(frame: &mut FrameBuilder, label: &str) -> Point {
     settle_notes(frame);
-    let action = with_notes_on_screen(frame, |rect, notes| {
+    let action = with_notes_on_screen(&*frame, |rect, notes| {
         notes
             .main_panel_mut()
             .empty_action_center_for_test()
@@ -2186,7 +2186,7 @@ fn open_a_note(frame: &mut FrameBuilder, label: &str) -> Point {
         settle(frame, 4);
         settle_notes(frame);
     }
-    let (opened, title) = with_notes_on_screen(frame, |rect, notes| {
+    let (opened, title) = with_notes_on_screen(&*frame, |rect, notes| {
         let title = notes.main_title_center_for_test();
         (
             notes.selected_for_test().is_some(),
@@ -2207,13 +2207,13 @@ fn typing_in_notes_repaints_what_changed_not_the_tile() {
         let (mut frame, _clock) = desktop_in(theme());
         let label = format!("naming a note, {name}");
         let title = open_a_note(&mut frame, &label);
-        if !with_notes_on_screen(&mut frame, |_, notes| notes.main_title_editing_for_test()) {
+        if !with_notes_on_screen(&frame, |_, notes| notes.main_title_editing_for_test()) {
             point_at(&mut frame, title);
             press(&mut frame, winit::event::MouseButton::Left);
             settle(&mut frame, 2);
         }
         assert!(
-            with_notes_on_screen(&mut frame, |_, notes| notes.main_title_editing_for_test()),
+            with_notes_on_screen(&frame, |_, notes| notes.main_title_editing_for_test()),
             "{label}: the note's title is being named"
         );
         type_text(&mut frame, "Plan");
@@ -2230,7 +2230,7 @@ fn typing_in_notes_repaints_what_changed_not_the_tile() {
         // key, so it still repaints the tile (as it repaints a window of its
         // own); its frame must stay exact.
         let label = format!("typing in a note, {name}");
-        let body = with_notes_on_screen(&mut frame, |rect, notes| {
+        let body = with_notes_on_screen(&frame, |rect, notes| {
             let panel = notes.main_panel_mut();
             let title = panel.title_rect_for_test();
             let line = Point::new(title.x0 + 24.0, panel.body_top_for_test() + 12.0);
@@ -2241,12 +2241,12 @@ fn typing_in_notes_repaints_what_changed_not_the_tile() {
         settle(&mut frame, 3);
         type_text(&mut frame, "The quick brown fox ");
         settle(&mut frame, 3);
-        let before = with_notes_on_screen(&mut frame, |_, notes| notes.editor_text_for_test());
+        let before = with_notes_on_screen(&frame, |_, notes| notes.editor_text_for_test());
         let _ = assert_change_repaints_under(&mut frame, &label, 100, |frame| {
             type_text(frame, "j");
             frame.relayout();
         });
-        let after = with_notes_on_screen(&mut frame, |_, notes| notes.editor_text_for_test());
+        let after = with_notes_on_screen(&frame, |_, notes| notes.editor_text_for_test());
         assert!(
             after.len() > before.len() && after.contains("fox j"),
             "{label}: the key reached the note's text: {before:?} -> {after:?}"
