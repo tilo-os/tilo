@@ -386,39 +386,31 @@ source = "KPI document: Workspace switch, dropped frames (compositor side, headl
 # wakeups/s); reported, not enforced: the pull-request gate's budgets fail a
 # regression, and are lowered there as each idle fix lands.
 #
-# A count of timers moves little with the runner, but TIL-696 makes these
-# bimodal: until an unrelated paint, the frame loop spins at a rate that
-# follows the runner, and whether a run measures inside the spin depends on
-# the wall clock (60/s parked, 2008/s spinning, docs/benchmarks/
-# idle-wakeups-2026-10-09.md). Until TIL-696 lands the relative rule would
-# call that a regression every other night, so its tolerances are wide; the
-# fix restores the defaults. The floor keeps a single extra timer tick from
-# reading as a percentage regression.
+# A count of timers moves little with the runner, so the default tolerances
+# hold (TIL-696 removed the frame-loop spin that once made these bimodal,
+# docs/benchmarks/idle-wakeups-2026-10-09.md). The floor keeps a single
+# extra timer tick from reading as a percentage regression.
 
 [kpi."wakeups.headless_two_apps"]
 unit = "per_s"
 max = 5.0
-p50_tolerance = 40.0
-p99_tolerance = 40.0
 min_delta = 1.0
 source = "KPI document: idle desktop <= 5 wakeups/s (headless share)"
 
 [kpi."wakeups.headless_two_apps.shell"]
 unit = "per_s"
 max = 5.0
-p50_tolerance = 40.0
-p99_tolerance = 40.0
 min_delta = 1.0
 source = "KPI document: idle desktop <= 5 wakeups/s (compositor process)"
 
 # The compositor's frame loop parks while nothing asks for a frame, so an
 # idle loop iterates about never; any rate here is a deadline or a source
 # that keeps it awake. Its baseline is 0 while parked, which has no ratio;
-# min_delta is the TIL-696 spin's floor until that lands.
+# the floor is one iteration a second.
 [kpi."wakeups.frame_loop_ticks.headless_two_apps"]
 unit = "per_s"
 max = 1.0
-min_delta = 1500.0
+min_delta = 1.0
 source = "the frame loop parks while idle (TIL-136, TIL-614)"
 
 # Latency on reference hardware (scripts/perf/device_latency_bench.py,
