@@ -8,7 +8,8 @@
 //! character spacing, kerning, hidden text, the original font names, … — likewise ride on the
 //! run's text as a [`MARK_RPR`] mark and are merged back in `CT_RPr` order.
 
-use super::styles::{attr_val, generic_font, line_spacing_from_spacing, mark_from_rpr_child};
+use super::styles::{attr_val, line_spacing_from_spacing, mark_from_rpr_child};
+use crate::generic_font;
 use quick_xml::events::{BytesStart, Event};
 use quick_xml::reader::Reader;
 
