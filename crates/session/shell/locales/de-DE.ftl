@@ -1038,7 +1038,7 @@ notification-source-caption = { $app } · Von { $device }
 notification-app-host-apps = Host-Apps
 notification-app-power = Energie
 notification-remote-input-stopped = Fernsteuerung beendet
-notification-remote-input-stopped-sessions = Fernsteuerungs- und Freigabesitzungen wurden beendet.
+notification-remote-input-stopped-sessions = Alle mit diesem Computer verbundenen Personen wurden getrennt.
 notification-remote-input-stopped-shares = { $count ->
     [one] Die Fernsteuerung wurde entzogen und die Freigabe beendet.
    *[other] Die Fernsteuerung wurde { $count } Freigaben entzogen; die Freigabe wurde beendet.
