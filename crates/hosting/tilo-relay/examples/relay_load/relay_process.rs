@@ -58,6 +58,9 @@ pub struct Sample {
     pub deltas_received: u64,
     pub deltas_fanned_out: u64,
     pub subscriber_dropped: u64,
+    /// File and directory barriers the relay's workspace stores issued
+    /// ([`tilo_relay::store::fsyncs`]).
+    pub store_fsyncs: u64,
 }
 
 /// The parent's handle on the relay process.
@@ -215,6 +218,7 @@ fn sample(relay: &Relay) -> Sample {
         deltas_received: metrics.deltas_received,
         deltas_fanned_out: metrics.deltas_fanned_out,
         subscriber_dropped: metrics.subscriber_dropped,
+        store_fsyncs: tilo_relay::store::fsyncs(),
     }
 }
 
