@@ -861,6 +861,61 @@ pub(super) async fn accept(handle: &Context, json: &str) -> Result<(), String> {
     Ok(())
 }
 
+fn report_command(
+    update: &TaskRunUpdate,
+    accepted: &EnrolledTaskAcceptance,
+    epoch: u64,
+    sequence: u64,
+    phase: tilo_desktop_model::WorkspaceTaskExecutionPhase,
+) -> (WorkspaceTaskCommand, bool) {
+    match update {
+        TaskRunUpdate::DirectionsApplied { revision } => (
+            WorkspaceTaskCommand::AppliedAck {
+                task_id: accepted.task_id.clone(),
+                run_epoch: epoch,
+                revision: *revision,
+            },
+            false,
+        ),
+        TaskRunUpdate::Accepted => (
+            WorkspaceTaskCommand::ExecutionPhase {
+                task_id: accepted.task_id.clone(),
+                run_epoch: epoch,
+                sequence,
+                phase: tilo_desktop_model::WorkspaceTaskExecutionPhase::Accepted,
+            },
+            false,
+        ),
+        TaskRunUpdate::Progress { .. } => (
+            WorkspaceTaskCommand::ExecutionPhase {
+                task_id: accepted.task_id.clone(),
+                run_epoch: epoch,
+                sequence,
+                phase,
+            },
+            false,
+        ),
+        TaskRunUpdate::Succeeded { message }
+        | TaskRunUpdate::Failed { message }
+        | TaskRunUpdate::Cancelled { message } => {
+            let outcome = match update {
+                TaskRunUpdate::Succeeded { .. } => WorkspaceTaskFinish::Done,
+                TaskRunUpdate::Failed { .. } => WorkspaceTaskFinish::Waiting,
+                _ => WorkspaceTaskFinish::Cancelled,
+            };
+            (
+                WorkspaceTaskCommand::Finish {
+                    task_id: accepted.task_id.clone(),
+                    run_epoch: epoch,
+                    outcome,
+                    summary: message.clone(),
+                },
+                true,
+            )
+        }
+    }
+}
+
 pub(super) async fn report(
     handle: &Context,
     json: &str,
@@ -899,52 +954,7 @@ pub(super) async fn report(
         .and_then(|c| c.execution.as_ref())
         .map(|e| e.phase)
         .ok_or("accepted native phase is not observable")?;
-    let (command, terminal) = match &update {
-        TaskRunUpdate::DirectionsApplied { revision } => (
-            WorkspaceTaskCommand::AppliedAck {
-                task_id: accepted.task_id.clone(),
-                run_epoch: epoch,
-                revision: *revision,
-            },
-            false,
-        ),
-        TaskRunUpdate::Accepted => (
-            WorkspaceTaskCommand::ExecutionPhase {
-                task_id: accepted.task_id.clone(),
-                run_epoch: epoch,
-                sequence,
-                phase: tilo_desktop_model::WorkspaceTaskExecutionPhase::Accepted,
-            },
-            false,
-        ),
-        TaskRunUpdate::Progress { .. } => (
-            WorkspaceTaskCommand::ExecutionPhase {
-                task_id: accepted.task_id.clone(),
-                run_epoch: epoch,
-                sequence,
-                phase,
-            },
-            false,
-        ),
-        TaskRunUpdate::Succeeded { message }
-        | TaskRunUpdate::Failed { message }
-        | TaskRunUpdate::Cancelled { message } => {
-            let outcome = match &update {
-                TaskRunUpdate::Succeeded { .. } => WorkspaceTaskFinish::Done,
-                TaskRunUpdate::Failed { .. } => WorkspaceTaskFinish::Waiting,
-                _ => WorkspaceTaskFinish::Cancelled,
-            };
-            (
-                WorkspaceTaskCommand::Finish {
-                    task_id: accepted.task_id.clone(),
-                    run_epoch: epoch,
-                    outcome,
-                    summary: message.clone(),
-                },
-                true,
-            )
-        }
-    };
+    let (command, terminal) = report_command(&update, &accepted, epoch, sequence, phase);
     let agent_authority = authority(handle, &connection)?;
     fence(&handle.state, &accepted.run_id)?;
     commit(
