@@ -319,3 +319,72 @@ fn an_overdue_save_status_frame_still_publishes_and_preserves_typed_content() {
     });
     seen.expect("a live window whose durability timer becomes due");
 }
+
+/// p50, in ms, of the second half of `KEYS` keystrokes into the draft of a
+/// live window with `tasks` tasks: from the key's release to the end of the
+/// host frame after it, a frame that changes nothing. Driven as
+/// [`hosted_keystrokes`] drives it, with the app's monotonic clock held for
+/// the same reason: an idle save-status frame is not this frame's cost. The
+/// stopwatch is `Instant::elapsed`, which that hold does not touch.
+fn settled_frame_ms(tasks: u32) -> Result<f64, String> {
+    use tilo_app::synthetic_input::key_input;
+    use tilo_app::winit::event::ElementState;
+    const KEYS: usize = 12;
+    GENESIS_TASKS.set(tasks);
+    let timed = tilo_app::time::testing::with_monotonic_time(tilo_app::time::now(), || {
+        drive_live_window::<Keystrokes, _>(|app| {
+            app.init_layout();
+            host_frame(app);
+            if !app.focus_order_edge(false) {
+                return Err("the window has no control to type into".to_owned());
+            }
+            host_frame(app);
+            let key = tilo_app::winit::keyboard::Key::Character("a".into());
+            let mut samples = Vec::with_capacity(KEYS);
+            // The first key moves the window to keyboard modality; not timed.
+            for typed in 0..=KEYS {
+                app.surface_input(&Region, key_input(&key, ElementState::Pressed), false);
+                host_frame(app);
+                let start = std::time::Instant::now();
+                app.surface_input(&Region, key_input(&key, ElementState::Released), false);
+                host_frame(app);
+                if typed > 0 {
+                    samples.push(start.elapsed().as_secs_f64() * 1e3);
+                }
+            }
+            Ok((samples, draft_value(app)))
+        })
+    });
+    GENESIS_TASKS.set(0);
+    let (mut samples, draft) = timed.map_err(failure)??;
+    if draft.map(|draft| draft.chars().count()) != Some(KEYS + 1) {
+        return Err("the keystrokes missed the draft".to_owned());
+    }
+    samples.sort_by(f64::total_cmp);
+    samples
+        .get(samples.len() / 2)
+        .copied()
+        .ok_or_else(|| "no frame was timed".to_owned())
+}
+
+#[test]
+fn a_hosted_frame_that_changes_nothing_costs_the_same_whatever_the_list() {
+    // Both windows are full: they mount the same rows, so only work that
+    // grows with the list can tell them apart. Before TIL-761 each such
+    // frame copied the whole published tree, re-filtered and re-surveyed
+    // every action for the controls, and rebuilt a semantic node per
+    // resource: at 1,000 tasks it cost several times what it does at 100.
+    // Best of three rounds: a loaded runner slows a round, never speeds one.
+    let best = |tasks| {
+        (0..3)
+            .map(|_| settled_frame_ms(tasks).expect("keystrokes into a live window"))
+            .fold(f64::INFINITY, f64::min)
+    };
+    let full = best(100);
+    let long = best(1_000);
+    assert!(
+        long <= 2.0 * full,
+        "a frame that changes nothing took {long:.3} ms with 1,000 tasks and {full:.3} ms with \
+         100: it grows with the list"
+    );
+}
