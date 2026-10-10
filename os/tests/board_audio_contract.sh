@@ -34,7 +34,9 @@ check_sources() {
   profile="$repo/os/hardware/profiles/lenovo-83ed.json"
 
   # The audio stack step: pipewire, wireplumber and the UCM profiles they read.
-  if awk '/^# Audio\/Video$/ { s = 1 } s && /^$/ { exit } s' "$containerfile" \
+  # The step is a group of the one package RUN (TIL-733): its comment is
+  # indented and the group ends with its own `dnf clean all`.
+  if awk '/^[[:space:]]*# Audio\/Video$/ { s = 1 } s && (/^$/ || /dnf clean all/) { exit } s' "$containerfile" \
     | grep -q '^    alsa-ucm \\$'; then
     ok 'the audio stack installs the ALSA UCM profiles'
   else
