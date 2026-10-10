@@ -464,7 +464,7 @@ impl Theme {
     /// unreadable path yields the dark default.
     pub fn configured_from(settings: Option<&std::path::Path>) -> Self {
         let text = settings
-            .and_then(|path| std::fs::read_to_string(path).ok())
+            .map(|path| serde_json::Value::Object(settings_store::load_at(path)).to_string())
             .unwrap_or_default();
         let reduce_motion_override = crate::host::environment().accessibility.reduce_motion;
         Self::configured_from_text(&text, reduce_motion_override)

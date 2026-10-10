@@ -16952,6 +16952,7 @@ dependencies = [
  "image",
  "jni 0.21.1",
  "ndk-context",
+ "tempfile",
  "tilo-clipboard",
  "tilo-clock",
  "tilo-dialogs",

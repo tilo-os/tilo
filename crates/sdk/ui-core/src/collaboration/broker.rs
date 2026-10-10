@@ -2557,21 +2557,15 @@ fn sdk_join_identity(cluster_id: Uuid) -> Result<SdkJoinIdentity, runtime_portal
     sdk_join_identity_from(runtime_identity::load()?, cluster_id)
 }
 
-#[cfg(unix)]
 fn sdk_agent_join_identity(
     cluster_id: Uuid,
 ) -> Result<SdkJoinIdentity, runtime_portal::NotAvailable> {
-    sdk_agent_join_identity_from(runtime_identity::load()?, cluster_id)
+    sdk_join_identity(cluster_id).map(sdk_agent_join_identity_from)
 }
 
-#[cfg(unix)]
-fn sdk_agent_join_identity_from<I: SdkCertifiedIdentity + 'static>(
-    identity: I,
-    cluster_id: Uuid,
-) -> Result<SdkJoinIdentity, runtime_portal::NotAvailable> {
-    let mut identity = sdk_join_identity_from(identity, cluster_id)?;
+fn sdk_agent_join_identity_from(mut identity: SdkJoinIdentity) -> SdkJoinIdentity {
     identity.participant_kind = "agent";
-    Ok(identity)
+    identity
 }
 
 #[cfg_attr(
@@ -2653,13 +2647,6 @@ async fn sdk_join_identity_from_host(
 
 #[cfg(not(unix))]
 fn sdk_join_identity(_cluster_id: Uuid) -> Result<SdkJoinIdentity, runtime_portal::NotAvailable> {
-    Err(runtime_portal::NotAvailable::ServiceFdMissing)
-}
-
-#[cfg(not(unix))]
-fn sdk_agent_join_identity(
-    _cluster_id: Uuid,
-) -> Result<SdkJoinIdentity, runtime_portal::NotAvailable> {
     Err(runtime_portal::NotAvailable::ServiceFdMissing)
 }
 
@@ -9245,12 +9232,13 @@ mod tests {
     #[cfg(unix)]
     fn managed_agent_fd_identity_is_the_inherited_certified_device() {
         let room = Uuid::new_v4();
-        let identity = sdk_agent_join_identity_from(
+        let identity = sdk_join_identity_from(
             KeyedIdentity {
                 asked: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             },
             room,
         )
+        .map(sdk_agent_join_identity_from)
         .unwrap();
         assert_eq!(identity.participant_kind, "agent");
         assert!(matches!(identity.signer, SdkDocumentSigner::Certified(_)));
@@ -9260,7 +9248,11 @@ mod tests {
         assert_eq!(presentation.workspace_id, room.to_string());
         assert_eq!(presentation.device_certificate, b"fixture");
         assert_eq!(presentation.proof, [7; 64]);
-        assert!(sdk_agent_join_identity_from(UncertifiedIdentity, room).is_err());
+        assert!(
+            sdk_join_identity_from(UncertifiedIdentity, room)
+                .map(sdk_agent_join_identity_from)
+                .is_err()
+        );
     }
 
     /// How often a certified endpoint asked for channel keys after joining a

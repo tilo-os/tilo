@@ -159,6 +159,19 @@ struct AppHandler {
     /// Lives for the event loop so an idle app still hears Theme Studio
     /// and compositor appearance writes.
     _settings_watch: Option<settings_store::watch::SettingsWatch>,
+    /// Projection replacement only schedules a semantic recheck. Lease-only
+    /// renewals update their deadline without forcing a frame.
+    action_authority_changed: Arc<AtomicBool>,
+    /// Tied to this exact app/event-loop incarnation.
+    _action_authority_watch: Option<tilo_host::action_authority::AuthorityWatch>,
+}
+
+fn action_authority_wake_deadline(
+    permissions: &crate::permissions::PermissionContext,
+) -> Option<crate::time::Instant> {
+    let deadline = permissions.action_authority_deadline_unix_ms()?;
+    let now_unix = crate::time::try_unix_now_ms()?;
+    crate::time::now().checked_add(Duration::from_millis(deadline.saturating_sub(now_unix)))
 }
 
 #[cfg(test)]
@@ -440,13 +453,14 @@ mod floating_source_focus_tests {
         assert_eq!((native.width, native.height), (shared.width, shared.height));
         assert_eq!(native.purpose, shared.purpose);
         assert_eq!(native.multiline, shared.multiline);
-        assert_eq!(native.shared(), shared);
+        assert_eq!(ImeWindowState::from(native), shared);
         let outside = NativeImeWindowState::from_rect(
             shared.purpose,
             KurboRect::new(-112.0, -10.0, -111.0, 0.0),
         );
         assert_eq!((outside.x, outside.y), (-112, -10));
-        assert_eq!((outside.shared().x, outside.shared().y), (0, 0));
+        let outside_shared = ImeWindowState::from(outside);
+        assert_eq!((outside_shared.x, outside_shared.y), (0, 0));
         assert_eq!((outside.width, outside.height), (1, 10));
     }
 
@@ -890,17 +904,18 @@ impl NativeImeWindowState {
             height: shared.height,
         }
     }
+}
 
-    #[cfg(any(target_os = "android", test))]
-    fn shared(self) -> ImeWindowState {
-        let mut shared = ImeWindowState::from_rect(
-            self.purpose,
+impl From<NativeImeWindowState> for ImeWindowState {
+    fn from(native: NativeImeWindowState) -> Self {
+        let mut shared = Self::from_rect(
+            native.purpose,
             KurboRect::from_origin_size(
-                (f64::from(self.x), f64::from(self.y)),
-                (f64::from(self.width), f64::from(self.height)),
+                (f64::from(native.x), f64::from(native.y)),
+                (f64::from(native.width), f64::from(native.height)),
             ),
         );
-        shared.multiline = self.multiline;
+        shared.multiline = native.multiline;
         shared
     }
 }
@@ -1875,7 +1890,7 @@ impl AppHandler {
                         .flatten()
                 });
                 super::android_text_input::bridge::update(
-                    next.map(NativeImeWindowState::shared).as_ref(),
+                    next.map(ImeWindowState::from).as_ref(),
                     surrounding.as_ref(),
                     window.scale_factor(),
                     restart,
@@ -3959,11 +3974,25 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             audience.window.request_redraw();
         }
         let force_theme = self.settings_store_changed.swap(false, Ordering::AcqRel);
+        let authority_event = self.action_authority_changed.swap(false, Ordering::AcqRel);
+        let authority_due = action_authority_wake_deadline(&self.app.permission_ctx)
+            .is_some_and(|deadline| deadline <= crate::time::now());
         let app = &mut self.app;
         if force_theme {
             if let Some(due) = crate::time::now().checked_sub(std::time::Duration::from_millis(750))
             {
                 app.last_theme_store_check = due;
+            }
+        }
+        if (authority_event || authority_due) && app.refresh_hosted_authority() {
+            app.needs_sync = true;
+            app.invalidate_widget_resource_cache();
+            request_primary_redraw();
+            for surface in &self.floating_windows {
+                surface.window.request_redraw();
+            }
+            if let Some(audience) = &self.audience_presentation {
+                audience.window.request_redraw();
             }
         }
 
@@ -4198,6 +4227,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                     .busy()
                     .then(|| crate::time::now() + Duration::from_millis(50)),
             )
+            .chain(action_authority_wake_deadline(&self.app.permission_ctx))
             .min();
         match deadline {
             Some(deadline) => event_loop.set_control_flow(ControlFlow::WaitUntil(deadline)),
@@ -4768,6 +4798,38 @@ impl App {
                 })
                 .flatten()
         };
+        let action_authority_changed = Arc::new(AtomicBool::new(false));
+        let action_authority_watch = if self.permission_ctx.has_live_action_authority() {
+            let watch = {
+                let _entry = self.enter_wake_scope();
+                let pending = Arc::clone(&action_authority_changed);
+                let wake = crate::wake::WakeHandle::new();
+                tilo_host::action_authority::watch(
+                    std::path::Path::new(collab_types::caps::action_authority::PROJECTION_PATH),
+                    move || {
+                        pending.store(true, Ordering::Release);
+                        wake.notify_events();
+                    },
+                )
+            };
+            match watch {
+                Ok(watch) => Some(watch),
+                Err(error) => {
+                    tracing::warn!(
+                        target: "tilo.app.authority",
+                        error,
+                        "live action-authority watch is unavailable; expiry remains fail closed"
+                    );
+                    None
+                }
+            }
+        } else {
+            None
+        };
+        // Close the read-then-subscribe race before this app can settle idle.
+        if action_authority_watch.is_some() {
+            action_authority_changed.store(true, Ordering::Release);
+        }
         let host_appearance = {
             let _entry = self.enter_wake_scope();
             setup(proxy);
@@ -4844,6 +4906,8 @@ impl App {
             host_appearance,
             settings_store_changed,
             _settings_watch: settings_watch,
+            action_authority_changed,
+            _action_authority_watch: action_authority_watch,
         };
         match event_loop.run_app(&mut handler) {
             Ok(()) => {}

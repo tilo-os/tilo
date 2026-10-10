@@ -40,7 +40,7 @@ notifications = ["native"]
 # The authenticated host updates the app process's portable network hints.
 tilo-net = { version = "0.1.0", path = "../../platform/tilo-net", default-features = false }
 # Bounded reads of the host-selected read-only policy projection.
-tilo-files = { version = "0.1.0", path = "../../platform/tilo-files", optional = true }
+tilo-files = { version = "0.1.0", path = "../../platform/tilo-files", optional = true, features = ["watch"] }
 hex.workspace = true
 image = { workspace = true, features = ["png"] }
 tilo-rt.workspace = true
@@ -86,3 +86,6 @@ winit = { workspace = true, features = ["android-native-activity"] }
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # The workspace-hack's native feature set does not build for wasm32.
 workspace-hack = { version = "0.1" }
+
+[dev-dependencies]
+tempfile.workspace = true

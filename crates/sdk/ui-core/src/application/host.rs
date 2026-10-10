@@ -12,6 +12,7 @@ use std::cell::RefCell;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 const PERSONAL_WORKSPACE: &str = "personal";
 /// Names the directory the launcher keeps the person's own records of an
@@ -215,13 +216,26 @@ impl NativeProcessEnvironment {
             let room = workspace_id.clone();
             let person = author.clone();
             let current_source = source.clone();
-            let initial = read_action_authority_projection(&source, &room, &app, &person);
-            if initial.is_ok() {
-                permissions = permissions.with_action_authority(
+            let deadline_unix_ms = std::sync::Arc::new(AtomicU64::new(0));
+            let initial = action_authority_context(&source, &room, &app, &person);
+            if let Ok(initial) = initial {
+                deadline_unix_ms.store(initial.deadline_unix_ms, Ordering::Release);
+                let current_deadline = std::sync::Arc::clone(&deadline_unix_ms);
+                permissions = permissions.with_live_action_authority(
                     app.clone(),
                     std::sync::Arc::new(move || {
-                        action_authority_context(&current_source, &room, &app, &person)
+                        match action_authority_context(&current_source, &room, &app, &person) {
+                            Ok(current) => {
+                                current_deadline.store(current.deadline_unix_ms, Ordering::Release);
+                                Ok(current.permissions)
+                            }
+                            Err(error) => {
+                                current_deadline.store(0, Ordering::Release);
+                                Err(error)
+                            }
+                        }
                     }),
+                    deadline_unix_ms,
                 );
             }
         }
@@ -408,12 +422,17 @@ fn permissions_for_participation(
     ))
 }
 
+struct CurrentActionAuthority {
+    permissions: PermissionContext,
+    deadline_unix_ms: u64,
+}
+
 fn action_authority_context(
     source: &tilo_host::action_authority::AuthoritySource,
     room: &str,
     app: &str,
     person: &UserId,
-) -> Result<PermissionContext, String> {
+) -> Result<CurrentActionAuthority, String> {
     let projection = read_action_authority_projection(source, room, app, person)?;
     let now_ms = crate::time::try_unix_now_ms().ok_or("host action policy time is unavailable")?;
     if !projection.is_current_at(now_ms) {
@@ -426,11 +445,29 @@ fn action_authority_context(
         &person.0,
         now_secs,
     );
-    Ok(PermissionContext::from_capabilities(
-        crate::permissions::Actor::person(role, person.0.clone()).in_room(room),
-        projection.capabilities,
-    )
-    .at_unix_time(now_secs))
+    let capability_expiry = projection
+        .capabilities
+        .iter()
+        .filter_map(|capability| match capability.expiry {
+            collab_types::caps::Expiry::AtUnix(deadline) if deadline > now_secs => {
+                Some(deadline.saturating_mul(1_000))
+            }
+            _ => None,
+        })
+        .min();
+    let deadline_unix_ms = capability_expiry
+        .into_iter()
+        .chain(std::iter::once(projection.valid_until_unix_ms))
+        .min()
+        .unwrap_or(projection.valid_until_unix_ms);
+    Ok(CurrentActionAuthority {
+        permissions: PermissionContext::from_capabilities(
+            crate::permissions::Actor::person(role, person.0.clone()).in_room(room),
+            projection.capabilities,
+        )
+        .at_unix_time(now_secs),
+        deadline_unix_ms,
+    })
 }
 
 fn read_action_authority_projection(
@@ -1115,8 +1152,8 @@ mod native_process_tests {
             person: author.0.clone(),
             owner: Some(author.0.clone()),
             capabilities: vec![],
-            issued_at_unix_ms: now_ms,
-            valid_until_unix_ms: now_ms + 3_000,
+            issued_at_unix_ms: now_ms - 10,
+            valid_until_unix_ms: now_ms + 2_900,
         };
         let bytes = Arc::new(Mutex::new(Some(serde_json::to_vec(&original).unwrap())));
         let source: tilo_host::action_authority::AuthoritySource = {
@@ -1146,6 +1183,27 @@ mod native_process_tests {
             crate::permissions::CapDecision::Allow
         );
         let allowed = permissions.directory_witness().unwrap();
+        assert_eq!(
+            permissions.action_authority_deadline_unix_ms(),
+            Some(original.valid_until_unix_ms)
+        );
+        let mut renewed = original.clone();
+        renewed.issued_at_unix_ms += 1;
+        renewed.valid_until_unix_ms += 1;
+        *bytes.lock().unwrap() = Some(serde_json::to_vec(&renewed).unwrap());
+        assert_eq!(permissions.directory_witness().unwrap(), allowed);
+        assert_eq!(
+            permissions.action_authority_deadline_unix_ms(),
+            Some(renewed.valid_until_unix_ms)
+        );
+        let mut shortened = original.clone();
+        shortened.valid_until_unix_ms = now_ms + 1_500;
+        *bytes.lock().unwrap() = Some(serde_json::to_vec(&shortened).unwrap());
+        assert_eq!(permissions.directory_witness().unwrap(), allowed);
+        assert_eq!(
+            permissions.action_authority_deadline_unix_ms(),
+            Some(shortened.valid_until_unix_ms)
+        );
         let mut revoked = original.clone();
         revoked.owner = None;
         *bytes.lock().unwrap() = Some(serde_json::to_vec(&revoked).unwrap());
@@ -1162,6 +1220,7 @@ mod native_process_tests {
                 permissions.decide(&own, Verb::Admin),
                 crate::permissions::CapDecision::Allow
             );
+            assert_eq!(permissions.action_authority_deadline_unix_ms(), None);
         }
         for (field, value) in [
             ("room", "foreign-room"),

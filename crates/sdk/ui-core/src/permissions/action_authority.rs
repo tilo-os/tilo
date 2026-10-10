@@ -1,11 +1,14 @@
 //! Host action authority is separate from a record's participation.
 use super::{Actor, PermissionContext, Principal, ResourceRef, UserId};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 #[derive(Clone)]
 pub(super) struct ActionAuthoritySampler {
     pub(super) app_id: String,
     sample: Arc<dyn Fn() -> Result<PermissionContext, String> + Send + Sync>,
+    deadline_unix_ms: Arc<AtomicU64>,
+    watches_native_projection: bool,
 }
 
 impl std::fmt::Debug for ActionAuthoritySampler {
@@ -17,7 +20,10 @@ impl std::fmt::Debug for ActionAuthoritySampler {
 }
 impl PartialEq for ActionAuthoritySampler {
     fn eq(&self, other: &Self) -> bool {
-        self.app_id == other.app_id && Arc::ptr_eq(&self.sample, &other.sample)
+        self.app_id == other.app_id
+            && Arc::ptr_eq(&self.sample, &other.sample)
+            && Arc::ptr_eq(&self.deadline_unix_ms, &other.deadline_unix_ms)
+            && self.watches_native_projection == other.watches_native_projection
     }
 }
 impl Eq for ActionAuthoritySampler {}
@@ -65,6 +71,13 @@ impl ActionAuthoritySampler {
         }
         Ok(current)
     }
+
+    pub(super) fn deadline_unix_ms(&self) -> Option<u64> {
+        match self.deadline_unix_ms.load(Ordering::Acquire) {
+            0 => None,
+            deadline => Some(deadline),
+        }
+    }
 }
 
 impl PermissionContext {
@@ -77,8 +90,39 @@ impl PermissionContext {
         app_id: String,
         sample: Arc<dyn Fn() -> Result<PermissionContext, String> + Send + Sync>,
     ) -> Self {
-        self.action_authority = Some(ActionAuthoritySampler { app_id, sample });
+        self.action_authority = Some(ActionAuthoritySampler {
+            app_id,
+            sample,
+            deadline_unix_ms: Arc::new(AtomicU64::new(0)),
+            watches_native_projection: false,
+        });
         self
+    }
+
+    pub(crate) fn with_live_action_authority(
+        self,
+        app_id: String,
+        sample: Arc<dyn Fn() -> Result<PermissionContext, String> + Send + Sync>,
+        deadline_unix_ms: Arc<AtomicU64>,
+    ) -> Self {
+        let mut current = self.with_action_authority(app_id, sample);
+        if let Some(authority) = current.action_authority.as_mut() {
+            authority.deadline_unix_ms = deadline_unix_ms;
+            authority.watches_native_projection = true;
+        }
+        current
+    }
+
+    pub(crate) fn action_authority_deadline_unix_ms(&self) -> Option<u64> {
+        self.action_authority
+            .as_ref()
+            .and_then(ActionAuthoritySampler::deadline_unix_ms)
+    }
+
+    pub(crate) fn has_live_action_authority(&self) -> bool {
+        self.action_authority
+            .as_ref()
+            .is_some_and(|authority| authority.watches_native_projection)
     }
 }
 
