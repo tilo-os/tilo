@@ -59,11 +59,20 @@ use crate::smart::Heuristics;
 use crate::sync::SyncHandle;
 
 const TTL: Duration = Duration::from_secs(10);
-// Namespace changes normally wake the worker directly.  This tick is solely a
-// repair path for changes received outside the FUSE callbacks (remote applies,
-// ACL and registry changes) and for backoff deadlines; it compares cheap change
-// tokens and walks the namespace only when one of them moved.
-const PINNED_HYDRATION_INTERVAL: Duration = Duration::from_secs(5);
+// The pinned-hydration worker wakes for everything that can change its plan:
+// a local publish (its own wake), any namespace change (remote applies
+// included), an ACL replacement, a change to what the availability registry
+// says it acts on, and the earliest retry deadline. This backstop only bounds
+// how long something none of those announce could go unrepaired; it compares
+// cheap change tokens and walks the namespace only when one of them moved.
+// It used to be the repair path itself, at 5 s (TIL-750).
+const PINNED_HYDRATION_BACKSTOP: Duration = Duration::from_secs(300);
+// A namespace change wakes the worker after this long, so a burst of remote
+// applies is one pass rather than one per change.
+const PINNED_CHANGE_SETTLE: Duration = Duration::from_millis(500);
+// While a pinned fetch runs, the worker cannot see a remote change that would
+// make it stale; the fetch re-checks its candidate this often.
+const PINNED_FETCH_RECHECK: Duration = Duration::from_secs(5);
 const MAX_PINNED_FETCHES_PER_PASS: usize = 4;
 const HYDRATION_PROGRESS_PERSIST_BYTES: u64 = 8 * 1024 * 1024;
 
@@ -1992,10 +2001,10 @@ impl QuickFS {
     /// worker never hydrates records outside this mount's current view.
     #[must_use]
     pub fn with_pinned_hydration(self) -> Self {
-        self.with_pinned_hydration_every(PINNED_HYDRATION_INTERVAL)
+        self.with_pinned_hydration_every(PINNED_HYDRATION_BACKSTOP)
     }
 
-    /// [`Self::with_pinned_hydration`] with its repair tick every `repair`.
+    /// [`Self::with_pinned_hydration`] with its backstop tick every `repair`.
     fn with_pinned_hydration_every(mut self, repair: Duration) -> Self {
         let Some(registry) = self.availability.clone() else {
             return self;
@@ -2008,6 +2017,17 @@ impl QuickFS {
         let enforcement = self.enforcement.clone();
         let (wake, mut wakes) = tokio::sync::watch::channel(0_u64);
         wake.send_modify(|generation| *generation = generation.wrapping_add(1));
+        let mut namespace_changes = namespace
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .subscribe_changes();
+        let mut registry_changes = registry
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .subscribe_hydration();
+        let mut acl_changes = enforcement
+            .as_ref()
+            .map(|(acl, _)| acl.subscribe_revision());
         let task = self.hydrator.runtime_handle.spawn(async move {
             let mut interval = tokio::time::interval(repair);
             interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -2016,18 +2036,26 @@ impl QuickFS {
             loop {
                 let mut woken = outcome.more_due;
                 if !outcome.more_due {
+                    let retry = outcome.next_retry_at_ms.map(retry_instant);
                     tokio::select! {
                         _ = interval.tick() => {}
                         changed = wakes.changed() => {
                             if changed.is_err() { break; }
                             woken = true;
                         }
+                        () = next_change(Some(&mut namespace_changes)) => {
+                            tokio::time::sleep(PINNED_CHANGE_SETTLE).await;
+                        }
+                        () = next_change(Some(&mut registry_changes)) => {}
+                        () = next_change(acl_changes.as_mut()) => {}
+                        () = until(retry) => {}
                     }
                 }
                 let inputs = PinnedPassInputs::capture(&namespace, &registry, enforcement.as_ref());
-                // A tick repairs only what nothing woke the worker for: when
-                // the namespace, ACL and registry are as the last pass left
-                // them and no backoff fell due, there is nothing to walk.
+                // Only a local wake asks for a pass outright. Anything else
+                // is acted on when the namespace, ACL or registry moved since
+                // the last pass, or a backoff fell due: otherwise there is
+                // nothing to walk.
                 if !woken
                     && last_inputs.as_ref() == Some(&inputs)
                     && outcome
@@ -5987,7 +6015,7 @@ async fn await_current_pinned_hydration<T>(
     // The worker cannot observe a remote namespace change while this batch is
     // active, so periodically validate the candidate as well as validating on
     // every local wake.
-    let mut repair = tokio::time::interval(PINNED_HYDRATION_INTERVAL);
+    let mut repair = tokio::time::interval(PINNED_FETCH_RECHECK);
     repair.tick().await;
     loop {
         tokio::select! {
@@ -6004,6 +6032,34 @@ async fn await_current_pinned_hydration<T>(
             }
         }
     }
+}
+
+/// Resolves when `changes` moves on. Never, when there is nothing to watch
+/// or its sender is gone (a dropped sender cannot announce anything again).
+async fn next_change<T: Send + Sync>(changes: Option<&mut tokio::sync::watch::Receiver<T>>) {
+    if let Some(changes) = changes
+        && changes.changed().await.is_ok()
+    {
+        return;
+    }
+    std::future::pending::<()>().await;
+}
+
+/// Resolves at `deadline`; never without one.
+async fn until(deadline: Option<tokio::time::Instant>) {
+    match deadline {
+        Some(deadline) => tokio::time::sleep_until(deadline).await,
+        None => std::future::pending().await,
+    }
+}
+
+/// The runtime instant of a wall-clock retry deadline, at least a moment
+/// from now, so a deadline already past cannot spin the worker.
+fn retry_instant(retry_at_ms: u64) -> tokio::time::Instant {
+    let wait =
+        Duration::from_millis(retry_at_ms.saturating_sub(now_ms())).max(Duration::from_millis(100));
+    let now = tokio::time::Instant::now();
+    now.checked_add(wait).unwrap_or(now)
 }
 
 fn pinned_candidate_is_current(
