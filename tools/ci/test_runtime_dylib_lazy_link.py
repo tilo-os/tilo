@@ -228,14 +228,17 @@ class RealLink(unittest.TestCase):
                 self.assertEqual(direct.returncode, 0, direct.stderr)
                 self.assertEqual(direct.stderr.count("stand-in glib loaded"), 1, direct.stderr)
 
-    def test_a_missing_library_aborts_at_first_use_and_names_it(self):
+    def test_a_library_without_a_function_aborts_at_first_use_and_names_it(self):
+        # A missing library would fall back to the host's own GLib, so take
+        # the function away instead: the stand-in now exports nothing.
         self.assertEqual(self.lazy_link("runtime.o").returncode, 0)
         self.build_apps()
-        (self.directory / "libglib-2.0.so.0").unlink()
+        (self.directory / "empty.c").write_text("int g_unrelated(void) { return 0; }\n")
+        self.cc("-shared", "-fPIC", "empty.c", "-Wl,-soname,libglib-2.0.so.0", "-o", "libglib-2.0.so.0")
         self.assertEqual(self.run_app("app").returncode, 0)
         media = self.run_app("app", "media")
         self.assertNotEqual(media.returncode, 0)
-        self.assertIn("tilo runtime: cannot load libglib-2.0.so.0", media.stderr)
+        self.assertRegex(media.stderr, r"tilo runtime: cannot resolve g_\w+ for media")
 
     def test_reading_a_variable_of_a_lazy_library_fails_the_link(self):
         linked = self.lazy_link("runtime.o", "bad.o")
