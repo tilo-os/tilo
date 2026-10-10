@@ -47,7 +47,9 @@ fn runtime(root: &Path, stream: UnixStream) -> SignalRuntime {
 fn event(account: &str) -> Vec<u8> {
     let value = serde_json::json!({"jsonrpc":"2.0","method":"receive","params":{
         "account":account,"envelope":{"sourceUuid":"01234567-89ab-cdef-0123-456789abcdef",
-        "dataMessage":{"timestamp":42,"message":"received text"}}}});
+        "dataMessage":{"timestamp":42,"message":"received text","expiresInSeconds":0,
+        "isExpirationUpdate":false,"viewOnce":false,"isEndSession":false,
+        "isProfileKeyUpdate":false,"hasProfileKey":true}}}});
     let mut encoded = serde_json::to_vec(&value).unwrap();
     encoded.push(b'\n');
     encoded
@@ -284,7 +286,16 @@ fn manual_receiver_resolves_aci_to_number_and_requires_its_subscription() {
             reader.read_line(&mut line).unwrap();
             let request: serde_json::Value = serde_json::from_str(&line).unwrap();
             assert_eq!(request["method"], "listAccounts");
-            writeln!(peer, "{}", serde_json::json!({"jsonrpc":"2.0","id":request["id"],"result":[{"aci":aci,"number":"+15555550101"}]})).unwrap();
+            writeln!(peer, "{}", serde_json::json!({"jsonrpc":"2.0","id":request["id"],"result":[{"number":"+15555550101"}]})).unwrap();
+            let mut own_line = String::new();
+            reader.read_line(&mut own_line).unwrap();
+            let own_probe: serde_json::Value = serde_json::from_str(&own_line).unwrap();
+            assert_eq!(own_probe["method"], "listIdentities");
+            assert_eq!(
+                own_probe["params"]["number"],
+                own_probe["params"]["account"]
+            );
+            writeln!(peer, "{}", serde_json::json!({"jsonrpc":"2.0","id":own_probe["id"],"result":serde_json::json!([{"uuid":aci,"number":"+15555550101","trustLevel":"TRUSTED_VERIFIED","fingerprint":format!("05 {}", vec!["aa"; 32].join(" "))}])})).unwrap();
             line.clear();
             reader.read_line(&mut line).unwrap();
             let request: serde_json::Value = serde_json::from_str(&line).unwrap();

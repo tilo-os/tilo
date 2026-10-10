@@ -74,10 +74,21 @@ impl EnrollmentView {
         }
         self.state.set(Projection::default());
     }
+    fn can_reset(&self) -> bool {
+        self.phase() == EnrollmentPhase::Interrupted
+            && self.state.with(|state| {
+                state
+                    .account
+                    .as_ref()
+                    .zip(self.client.as_ref())
+                    .is_some_and(|(account, client)| client.linked(account).is_none())
+            })
+    }
     pub(crate) fn handles(effect: &MessagesEffect) -> bool {
         matches!(
             effect,
-            MessagesEffect::BeginFirstEnrollment { .. }
+            MessagesEffect::ResetFirstEnrollment
+                | MessagesEffect::BeginFirstEnrollment { .. }
                 | MessagesEffect::ListSmsSims
                 | MessagesEffect::SelectSmsSim { .. }
                 | MessagesEffect::CompleteFirstEnrollment { .. }
@@ -94,6 +105,13 @@ impl EnrollmentView {
             .clone()
             .ok_or_else(|| CATALOG.t("messages-setup-unavailable"))?;
         match effect {
+            MessagesEffect::ResetFirstEnrollment => {
+                if !self.can_reset() {
+                    return Err(CATALOG.t("messages-setup-active"));
+                }
+                self.close();
+                Ok(Effected::done())
+            }
             MessagesEffect::ListSmsSims => self.sims(client, cx),
             MessagesEffect::SelectSmsSim { selection } => self.select_sim(client, selection, cx),
             MessagesEffect::BeginFirstEnrollment { service } if service == "tilo" => {
@@ -334,6 +352,19 @@ impl EnrollmentView {
     pub(crate) fn panel(&self, mut content: Column, actions: &Actions<Messages>) -> Column {
         let state = self.state.get();
         let phase = self.phase();
+        if phase == EnrollmentPhase::Interrupted {
+            return content
+                .push(Box::new(Text::new(
+                    &CATALOG.t("messages-setup-interrupted"),
+                )))
+                .push(Box::new(
+                    actions.bind_effect_invocation(
+                        Button::new("messages.first-account-reset", "messages-first-reset")
+                            .with_enabled(self.can_reset()),
+                        &MessagesEffect::ResetFirstEnrollment,
+                    ),
+                ));
+        }
         if let Some(private) = &state.pairing
             && phase == EnrollmentPhase::Linking
         {
@@ -344,11 +375,6 @@ impl EnrollmentView {
         }
         if let Some(review) = &state.review {
             return Self::review_panel(content, actions, &state, phase, review);
-        }
-        if phase == EnrollmentPhase::Interrupted {
-            return content.push(Box::new(Text::new(
-                &CATALOG.t("messages-setup-interrupted"),
-            )));
         }
         content = self.sim_panel(content, actions, &state);
         content =
