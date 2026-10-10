@@ -622,22 +622,7 @@ impl DisplayConfirmPrompt {
             Focus::AlwaysKeep => None,
         };
         for card in self.cards(outputs) {
-            let radius = ui::chrome::ChromeRole::Panel.radius(theme, card.card.height());
-            ui::chrome::shell::panel_shadow(scene, transform, card.card, radius, theme, 1.0);
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                ui::chrome::shell::panel_ground(theme),
-                None,
-                &RoundedRect::from_rect(card.card, radius),
-            );
-            scene.stroke(
-                &vello::kurbo::Stroke::new(1.0),
-                transform,
-                ui::chrome::shell::panel_border(theme),
-                None,
-                &RoundedRect::from_rect(card.card, radius),
-            );
+            ui::chrome::shell::paint_panel(scene, transform, card.card, theme, 1.0);
             paint_keep_revert_band(
                 scene,
                 transform,
