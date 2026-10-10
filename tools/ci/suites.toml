@@ -443,6 +443,7 @@ suites = [
   "scripts/perf/physical_notes_latency_test.py",
   "scripts/perf/physical_notes_stages_test.py",
   "scripts/perf/agent_rtt_test.py",
+  "scripts/perf/agent_task_test.py",
   "scripts/perf/main_stages_test.py",
   "scripts/perf/native_app_capture_test.py",
   "scripts/perf/native_delivery_test.py",
