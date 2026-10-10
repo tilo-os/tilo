@@ -1599,22 +1599,31 @@ class PresentedEditorTargetTests(unittest.TestCase):
     def test_task_restriction_retries_only_a_retired_complete_at_sample(self):
         access = {"bus": "owned", "window": "/window", "process": 7,
                   "agent": "Tide", "detached": False, "composer": "/composer"}
-        state = {"draft_matches": True, "caret": 3, "selection": [1, 3]}
+        client = unittest.mock.Mock()
+        client.role.side_effect = lambda path: {
+            "/heading": PROOF.AT_SPI_ROLE_HEADING,
+            "/float": PROOF.AT_SPI_ROLE_BUTTON,
+            "/drag": PROOF.AT_SPI_ROLE_BUTTON,
+            "/draft": PROOF.AT_SPI_ROLE_STATIC,
+        }[path]
+        client.interfaces.return_value = []
+        tree = {"/heading": "(<'Tide, agent'>,)",
+                "/float": "(<'Float conversation'>,)",
+                "/drag": "(<'Drag conversation'>,)",
+                "/draft": "(<'PRIVATE'>,)"}
         stale = PROOF.atspi.GateError("org.freedesktop.DBus.Error.UnknownObject retired-node")
         samples = [{}, {}]
-        with patch.object(PROOF, "agent_conversation_accessibility", return_value=access), \
+        with patch.object(PROOF, "chat_accessibility_windows",
+                          return_value=[("owned", 7, client, "/window")]), \
                 patch.object(PROOF, "chat_process_identity", return_value=(7, "start")), \
-                patch.object(PROOF, "private_editor_observation", return_value=state), \
                 patch.object(PROOF, "accessible_subtree", side_effect=[
-                    stale, {"/composer": "wire"}
-                ]) as trees, \
-                patch.object(PROOF, "decoded_accessible_names",
-                             return_value={"/composer": "Task instruction composer"}):
-            self.assertIsNone(PROOF.restricted_task_editor_sample(
+                    stale, tree
+                ]) as trees:
+            self.assertIsNone(PROOF.restricted_task_read_only_sample(
                 (access, (7, "start")), "PRIVATE", samples[0]))
-            self.assertEqual(PROOF.restricted_task_editor_sample(
+            self.assertEqual(PROOF.restricted_task_read_only_sample(
                 (access, (7, "start")), "PRIVATE", samples[1]),
-                (access, state, False))
+                (access, {"draft_matches": True}, False))
         self.assertEqual(trees.call_count, 2)
         self.assertTrue(samples[0]["at_unknown_object"])
         self.assertTrue(samples[0]["at_known_stale_transport"])
@@ -1624,62 +1633,150 @@ class PresentedEditorTargetTests(unittest.TestCase):
     def test_task_restriction_propagates_nonstale_at_failure_and_owner_change(self):
         access = {"bus": "owned", "window": "/window", "process": 7,
                   "agent": "Tide", "detached": False, "composer": "/composer"}
-        state = {"draft_matches": True, "caret": 3, "selection": [1, 3]}
+        client = unittest.mock.Mock()
         error = PROOF.atspi.GateError(
             "org.freedesktop.DBus.Error.UnknownInterface org.a11y.atspi.Accessible")
         sample = {}
-        with patch.object(PROOF, "agent_conversation_accessibility", return_value=access), \
+        with patch.object(PROOF, "chat_accessibility_windows",
+                          return_value=[("owned", 7, client, "/window")]), \
                 patch.object(PROOF, "chat_process_identity", return_value=(7, "start")), \
-                patch.object(PROOF, "private_editor_observation", return_value=state), \
                 patch.object(PROOF, "accessible_subtree", side_effect=error), \
                 self.assertRaises(PROOF.atspi.GateError):
-            PROOF.restricted_task_editor_sample(
+            PROOF.restricted_task_read_only_sample(
                 (access, (7, "start")), "PRIVATE", sample)
         self.assertTrue(sample["at_unknown_interface"])
         self.assertFalse(sample["at_known_stale_transport"])
         self.assertTrue(sample["at_other_transport_failure"])
 
-        with patch.object(PROOF, "agent_conversation_accessibility",
-                          return_value={**access, "composer": "/replacement"}), \
+        root_client = unittest.mock.Mock()
+        root_client.call.side_effect = error
+        root_sample = {}
+        with patch.object(PROOF.atspi, "atspi_address", return_value="address"), \
+                patch.object(PROOF.atspi, "bus_pids", return_value={"owned": 7}), \
+                patch.object(PROOF.atspi, "app_process", return_value=7), \
+                patch.object(PROOF.atspi, "AtspiClient", return_value=root_client), \
+                patch.object(PROOF, "process_program", return_value="chat"), \
                 patch.object(PROOF, "chat_process_identity", return_value=(7, "start")), \
-                patch.object(PROOF, "private_editor_observation") as read, \
-                self.assertRaisesRegex(RuntimeError, "changed its owned private editor"):
-            PROOF.restricted_task_editor_sample(
+                self.assertRaises(PROOF.atspi.GateError):
+            PROOF.restricted_task_read_only_sample(
+                (access, (7, "start")), "PRIVATE", root_sample)
+        self.assertTrue(root_sample["at_unknown_interface"])
+        self.assertFalse(root_sample["at_known_stale_transport"])
+
+        with patch.object(PROOF, "chat_process_identity", return_value=(8, "replacement")), \
+                patch.object(PROOF, "chat_accessibility_windows") as windows, \
+                self.assertRaisesRegex(RuntimeError, "changed its owned Chat process"):
+            PROOF.restricted_task_read_only_sample(
                 (access, (7, "start")), "PRIVATE", {})
-        read.assert_not_called()
+        windows.assert_not_called()
 
     def test_task_restriction_classifies_queue_mutation_roles_without_accepting_them(self):
         access = {"bus": "owned", "window": "/window", "process": 7,
                   "agent": "Tide", "detached": False, "composer": "/composer"}
-        state = {"draft_matches": True, "caret": 3, "selection": [1, 3]}
         client = unittest.mock.Mock()
         client.role.side_effect = lambda path: {
             "/tab": PROOF.AT_SPI_ROLE_TAB,
             "/button": PROOF.AT_SPI_ROLE_BUTTON,
             "/other": PROOF.AT_SPI_ROLE_LIST_ITEM,
         }[path]
+        client.interfaces.return_value = []
         client.call.side_effect = ["([('click', '', '')],)", "(@a(sss) [],)"]
+        tree = {"/heading": "(<'Tide, agent'>,)",
+                "/float": "(<'Float conversation'>,)",
+                "/drag": "(<'Drag conversation'>,)",
+                "/draft": "(<'PRIVATE'>,)",
+                "/tab": "(<'Queue task'>,)",
+                "/button": "(<'Queue task'>,)",
+                "/other": "(<'Queue task'>,)"}
+        roles = {"/heading": PROOF.AT_SPI_ROLE_HEADING,
+                 "/float": PROOF.AT_SPI_ROLE_BUTTON,
+                 "/drag": PROOF.AT_SPI_ROLE_BUTTON,
+                 "/draft": PROOF.AT_SPI_ROLE_STATIC,
+                 "/tab": PROOF.AT_SPI_ROLE_TAB,
+                 "/button": PROOF.AT_SPI_ROLE_BUTTON,
+                 "/other": PROOF.AT_SPI_ROLE_LIST_ITEM}
+        client.role.side_effect = roles.__getitem__
         sample = {}
-        with patch.object(PROOF.atspi, "AtspiClient", return_value=client), \
-                patch.object(PROOF, "agent_conversation_accessibility", return_value=access), \
+        with patch.object(PROOF, "chat_accessibility_windows",
+                          return_value=[("owned", 7, client, "/window")]), \
                 patch.object(PROOF, "chat_process_identity", return_value=(7, "start")), \
-                patch.object(PROOF, "private_editor_observation", return_value=state), \
-                patch.object(PROOF, "accessible_subtree", return_value={}), \
-                patch.object(PROOF, "decoded_accessible_names", return_value={
-                    "/tab": "Queue task", "/button": "Queue task", "/other": "Queue task",
-                }), \
+                patch.object(PROOF, "accessible_subtree", return_value=tree), \
                 patch.object(PROOF, "accessibility_control_enabled",
                              side_effect=[True, False]):
-            result = PROOF.restricted_task_editor_sample(
+            result = PROOF.restricted_task_read_only_sample(
                 (access, (7, "start")), "PRIVATE", sample)
-        self.assertEqual(result, (access, state, True))
+        self.assertEqual(result, (access, {"draft_matches": True}, True))
         self.assertEqual(sample["queue_tabs"], 1)
         self.assertEqual(sample["queue_buttons"], 1)
         self.assertEqual(sample["queue_other_controls"], 1)
         self.assertEqual(sample["queue_enabled_controls"], 1)
         self.assertEqual(sample["queue_action_controls"], 1)
+        other_client = unittest.mock.Mock()
+        other_client.role.side_effect = {
+            "/heading": PROOF.AT_SPI_ROLE_HEADING,
+            "/float": PROOF.AT_SPI_ROLE_BUTTON,
+            "/drag": PROOF.AT_SPI_ROLE_BUTTON,
+            "/draft": PROOF.AT_SPI_ROLE_STATIC,
+            "/other": PROOF.AT_SPI_ROLE_LIST_ITEM,
+        }.__getitem__
+        other_client.interfaces.return_value = []
+        other_tree = {path: value for path, value in tree.items()
+                      if path not in ("/tab", "/button")}
+        other_sample = {}
+        with patch.object(PROOF, "chat_accessibility_windows",
+                          return_value=[("owned", 7, other_client, "/window")]), \
+                patch.object(PROOF, "chat_process_identity", return_value=(7, "start")), \
+                patch.object(PROOF, "accessible_subtree", return_value=other_tree):
+            result = PROOF.restricted_task_read_only_sample(
+                (access, (7, "start")), "PRIVATE", other_sample)
+        self.assertEqual(result, (access, {"draft_matches": True}, False))
+        self.assertEqual(other_sample["queue_other_controls"], 1)
         restricted = inspect.getsource(PROOF.native_task_write_downgrade)
         self.assertIn("if queue_control_present:\n                    return None", restricted)
+
+    def test_task_restriction_requires_one_static_draft_and_no_editor(self):
+        access = {"bus": "owned", "window": "/window", "process": 7,
+                  "agent": "Tide", "detached": False, "composer": "/retired"}
+        base = {"/heading": "(<'Tide, agent'>,)",
+                "/float": "(<'Float conversation'>,)",
+                "/drag": "(<'Drag conversation'>,)",
+                "/draft": "(<'PRIVATE'>,)"}
+
+        def sample(tree, roles, editable=()):
+            client = unittest.mock.Mock()
+            client.role.side_effect = roles.__getitem__
+            client.interfaces.side_effect = lambda path: (
+                ["org.a11y.atspi.EditableText"] if path in editable else [])
+            with patch.object(PROOF, "chat_accessibility_windows",
+                              return_value=[("owned", 7, client, "/window")]), \
+                    patch.object(PROOF, "chat_process_identity", return_value=(7, "start")), \
+                    patch.object(PROOF, "accessible_subtree", return_value=tree):
+                return PROOF.restricted_task_read_only_sample(
+                    (access, (7, "start")), "PRIVATE", {})
+
+        roles = {"/heading": PROOF.AT_SPI_ROLE_HEADING,
+                 "/float": PROOF.AT_SPI_ROLE_BUTTON,
+                 "/drag": PROOF.AT_SPI_ROLE_BUTTON,
+                 "/draft": PROOF.AT_SPI_ROLE_STATIC}
+        self.assertEqual(sample(base, roles),
+                         (access, {"draft_matches": True}, False))
+        self.assertIsNone(sample(base, roles, editable=("/draft",)))
+        composer = {**base, "/composer": "(<'Task instruction composer'>,)"}
+        self.assertIsNone(sample(composer, {**roles, "/composer": 30}))
+        duplicate = {**base, "/draft-2": "(<'PRIVATE'>,)"}
+        with self.assertRaisesRegex(RuntimeError, "invalid retained Task draft"):
+            sample(duplicate, {**roles, "/draft-2": PROOF.AT_SPI_ROLE_STATIC})
+        with self.assertRaisesRegex(RuntimeError, "invalid retained Task draft"):
+            sample(base, {**roles, "/draft": PROOF.AT_SPI_ROLE_BUTTON})
+        with self.assertRaisesRegex(RuntimeError, "invalid Agent heading"):
+            sample(base, {**roles, "/heading": PROOF.AT_SPI_ROLE_BUTTON})
+        client = unittest.mock.Mock()
+        with patch.object(PROOF, "chat_process_identity", return_value=(7, "start")), \
+                patch.object(PROOF, "chat_accessibility_windows",
+                             return_value=[("owned", 7, client, "/replacement")]), \
+                self.assertRaisesRegex(RuntimeError, "changed its owned Chat window"):
+            PROOF.restricted_task_read_only_sample(
+                (access, (7, "start")), "PRIVATE", {})
 
     def test_read_only_and_restricted_views_cannot_hide_serialized_mutable_controls(self):
         client = PROOF.atspi.AtspiClient("address", "owned")
@@ -2254,7 +2351,8 @@ class PresentedEditorTargetTests(unittest.TestCase):
                 patch.object(PROOF, "require_chat_keyboard_focus_after_click"), \
                 patch.object(PROOF, "physical_chord"), \
                 patch.object(PROOF, "call", return_value={"ok": {}}) as input_call, \
-                patch.object(PROOF, "wait_for_private_selection", return_value=selected) as observe:
+                patch.object(PROOF, "wait_for_private_selection", return_value=selected) as observe, \
+                patch.object(PROOF.time, "monotonic", return_value=100):
             self.assertEqual(PROOF.prepare_private_permission_draft(
                 "socket", access, "abcdef", 4, output, None,
             ), selected)
@@ -2267,7 +2365,37 @@ class PresentedEditorTargetTests(unittest.TestCase):
             *({"op": "key", "key": "ArrowLeft"} for _ in range(4)),
             {"op": "key_up", "key": "Shift"},
         ])
-        observe.assert_called_once_with("socket", access, "abcdef", [2, 6], None, output)
+        self.assertEqual(observe.call_args_list, [
+            call("socket", access, "abcdef", [5, 6], None, output,
+                 expected_caret=5, require_focused=True, deadline=130),
+            call("socket", access, "abcdef", [4, 6], None, output,
+                 expected_caret=4, require_focused=True, deadline=130),
+            call("socket", access, "abcdef", [3, 6], None, output,
+                 expected_caret=3, require_focused=True, deadline=130),
+            call("socket", access, "abcdef", [2, 6], None, output,
+                 expected_caret=2, require_focused=True, deadline=130),
+        ])
+
+    def test_permission_selection_uses_one_total_deadline_without_retrying_a_key(self):
+        access = {"bus": "bus"}
+        observed = {"selection": [8, 10], "caret": 8, "draft_matches": True,
+                    "accessibility_focused": True}
+
+        def settle(_label, predicate, _process, *, timeout):
+            self.assertEqual(timeout, 25)
+            return predicate()
+
+        with patch.object(PROOF, "private_editor_observation", return_value=observed) as read, \
+                patch.object(PROOF, "wait_for", side_effect=settle), \
+                patch.object(PROOF.time, "monotonic", return_value=5), \
+                patch.object(PROOF, "call") as inputs:
+            result = PROOF.wait_for_private_selection(
+                "socket", access, "0123456789", [8, 10], None, pathlib.Path("unused"),
+                expected_caret=8, require_focused=True, deadline=30,
+            )
+        self.assertEqual(result, observed)
+        read.assert_called_once_with(access, "0123456789", deadline=30)
+        inputs.assert_not_called()
 
     def test_physical_chord_holds_real_modifiers_and_always_releases_in_reverse(self):
         events = []
@@ -4913,21 +5041,75 @@ class PresentedEditorTargetTests(unittest.TestCase):
             ))
 
     def test_compact_category_reveal_uses_the_actual_chat_control(self):
-        category = {"bus": "chat", "control": "/category"}
+        category = {"bus": "chat", "window": "/current", "control": "/category"}
         reveal = {
             "bus": "chat", "control": "/reveal",
             "label": "Show conversation navigation",
         }
-        with patch.object(
-                PROOF, "chat_category_accessibility", side_effect=[None, category]
-             ) as observed, patch.object(
-                 PROOF, "chat_accessibility_control", return_value=reveal
-             ), patch.object(PROOF, "activate_accessibility_control") as activated:
-            self.assertIs(PROOF.ensure_chat_category_visible(
-                "socket", "Lifecycle proof", None
-            ), category)
-        self.assertEqual(observed.call_count, 2)
-        activated.assert_called_once_with(reveal, "Show conversation navigation")
+
+        def exercise(route=None, *, categories_override=None, rects_override=None):
+            clock = {"now": 100.0, "sample": 0}
+            categories = [
+                {**category, "control": "/old"},
+                {**category, "control": "/old"},
+                category, category, category,
+            ]
+            rects = [(10, 10, 100, 30), (20, 10, 100, 30),
+                     (20, 10, 100, 30), (20, 10, 100, 30), (20, 10, 100, 30)]
+            categories = categories if categories_override is None else categories_override
+            rects = rects if rects_override is None else rects_override
+            active = {"rect": rects[0]}
+            observed = unittest.mock.Mock()
+
+            def observe(*_args, **_kwargs):
+                if observed.call_count == 1:
+                    return None
+                index = min(clock["sample"], len(categories) - 1)
+                active["rect"] = rects[index]
+                clock["sample"] += 1
+                return categories[index]
+
+            observed.side_effect = observe
+            client = unittest.mock.Mock()
+            client.call.side_effect = lambda path, *_args: (
+                "((0, 0, 500, 500),)" if path == "/current"
+                else f"(({', '.join(map(str, active['rect']))}),)"
+            )
+            frame_reads = {"count": 0}
+
+            def frame(*_args):
+                frame_reads["count"] += 1
+                return {"surface_id": 9, "frame_seq": 1 if frame_reads["count"] == 1 else 2}
+
+            def waited(label, predicate, *_args, **_kwargs):
+                if "shared conversation" in label:
+                    return reveal
+                for _ in range(8):
+                    clock["now"] += 0.2
+                    result = predicate()
+                    if result is not None:
+                        return result
+                raise PROOF.ProofTimeout("category geometry did not settle")
+
+            with patch.object(PROOF, "chat_category_accessibility", observed), \
+                    patch.object(PROOF, "chat_accessibility_control", return_value=reveal), \
+                    patch.object(PROOF, "activate_accessibility_control") as activated, \
+                    patch.object(PROOF, "presented_primary_frame", side_effect=frame), \
+                    patch.object(PROOF.atspi, "AtspiClient", return_value=client), \
+                    patch.object(PROOF, "call", return_value={}), \
+                    patch.object(PROOF, "wait_for", side_effect=waited), \
+                    patch.object(PROOF.time, "monotonic",
+                                 side_effect=lambda: clock["now"]):
+                result = PROOF.ensure_chat_category_visible(
+                    "socket", "Lifecycle proof", None, owned_route=route
+                )
+            activated.assert_called_once_with(reveal, "Show conversation navigation")
+            self.assertGreaterEqual(clock["sample"], 5)
+            return result, observed
+
+        result, observed = exercise()
+        self.assertIs(result, category)
+        self.assertGreaterEqual(observed.call_count, 6)
 
         with patch.object(
                 PROOF, "chat_category_accessibility", return_value=category
@@ -4938,23 +5120,19 @@ class PresentedEditorTargetTests(unittest.TestCase):
         activated.assert_not_called()
 
         route = {"bus": "chat", "process": 42, "window": "/current"}
-        with patch.object(
-                PROOF, "chat_category_accessibility", side_effect=[None, category]
-             ) as observed, patch.object(
-                 PROOF, "chat_accessibility_control", return_value=reveal
-             ) as revealed, patch.object(
-                 PROOF, "activate_accessibility_control") as activated:
-            self.assertIs(PROOF.ensure_chat_category_visible(
-                "socket", "Lifecycle proof", None, owned_route=route
-            ), category)
-        self.assertEqual(observed.call_args_list, [
-            call("Lifecycle proof", owned_route=route),
-            call("Lifecycle proof", owned_route=route),
-        ])
-        revealed.assert_called_once_with(
-            "Show conversation navigation", owned_route=route
-        )
-        activated.assert_called_once_with(reveal, "Show conversation navigation")
+        result, observed = exercise(route)
+        self.assertIs(result, category)
+        self.assertTrue(all(entry.kwargs == {"owned_route": route}
+                            for entry in observed.call_args_list))
+        invalid = [
+            ([None] * 8, [(20, 10, 100, 30)] * 8),
+            ([category] * 8, [(20, 10, 0, 30)] * 8),
+            ([category] * 8, [(490, 10, 100, 30)] * 8),
+        ]
+        for categories, rects in invalid:
+            with self.subTest(categories=categories[0], rect=rects[0]), \
+                    self.assertRaises(PROOF.ProofTimeout):
+                exercise(route, categories_override=categories, rects_override=rects)
 
     def test_marker_composer_uses_physical_private_drafts_and_exact_owner_frontier(self):
         source = inspect.getsource(PROOF.exercise_agent_quick_composer)

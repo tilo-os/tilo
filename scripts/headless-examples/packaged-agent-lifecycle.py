@@ -48,6 +48,7 @@ AT_SPI_ROLE_TAB = 37
 AT_SPI_ROLE_BUTTON = 43
 AT_SPI_ROLE_TOGGLE_BUTTON = 62
 AT_SPI_ROLE_LIST_ITEM = 32
+AT_SPI_ROLE_STATIC = 116
 # atspi_common::State::Enabled is ordinal 8 in the two-word state set.
 AT_SPI_ENABLED_STATE_BIT = 1 << 8
 
@@ -629,7 +630,7 @@ def agent_marker_accessibility(agent, *, windows=None, observation=None):
     return matches[0] if matches else None
 
 
-def chat_accessibility_windows(owned_route=None):
+def chat_accessibility_windows(owned_route=None, *, strict=False):
     """Enumerate Chat windows, or revalidate one already-proven exact route."""
     expected = None
     if owned_route is not None:
@@ -654,6 +655,8 @@ def chat_accessibility_windows(owned_route=None):
             children = client.call(atspi.ROOT_PATH, "org.a11y.atspi.Accessible.GetChildren")
             current = list(dict.fromkeys(atspi.PATH_RE.findall(children)))
         except atspi.GateError:
+            if strict:
+                raise
             continue
         if expected is not None:
             if expected[2] not in current:
@@ -776,6 +779,7 @@ def chat_accessibility_control(label, *, owned_route=None):
 def ensure_chat_category_visible(
         socket, label, process, *, diagnostic_path=None, owned_route=None):
     """Reveal compact navigation through Chat's real shared control when needed."""
+    deadline = time.monotonic() + 30
     category = chat_category_accessibility(label, owned_route=owned_route)
     if category is not None:
         return category
@@ -784,16 +788,53 @@ def ensure_chat_category_visible(
         lambda: chat_accessibility_control(
             "Show conversation navigation", owned_route=owned_route
         ),
-        process,
+        process, timeout=max(0.0, deadline - time.monotonic()),
     )
+    before = presented_primary_frame(
+        call(socket, {"op": "foreign_frames"}), "so.tilo.chat"
+    )
+    if before is None:
+        raise RuntimeError("Chat navigation reveal has no presented owned frame")
     if diagnostic_path is None:
         activate_accessibility_control(reveal, reveal["label"])
     else:
         activate_accessibility_control(reveal, reveal["label"], diagnostic_path=diagnostic_path)
+    stable = {"identity": None, "rect": None, "since": None}
+
+    def settled_category():
+        current = presented_primary_frame(
+            call(socket, {"op": "foreign_frames"}), "so.tilo.chat"
+        )
+        if current is None or native_surface_id(current) != native_surface_id(before):
+            raise RuntimeError("Chat navigation reveal changed its owned frame")
+        category = chat_category_accessibility(label, owned_route=owned_route)
+        if category is None or current["frame_seq"] <= before["frame_seq"]:
+            return None
+        client = atspi.AtspiClient(atspi.atspi_address(), category["bus"])
+        window_rect = atspi.extents_reply(client.call(
+            owned_route["window"] if owned_route is not None else category["window"],
+            "org.a11y.atspi.Component.GetExtents", "1",
+        ))
+        rect = atspi.extents_reply(client.call(
+            category["control"], "org.a11y.atspi.Component.GetExtents", "1",
+        ))
+        if window_rect is None or rect is None or min(window_rect[2:]) <= 2 \
+                or min(rect[2:]) <= 2:
+            return None
+        wx, wy, ww, wh = window_rect
+        x, y, width, height = rect
+        if x < wx or y < wy or x + width > wx + ww or y + height > wy + wh:
+            return None
+        identity = (category["bus"], category["window"], category["control"])
+        now = time.monotonic()
+        if stable["identity"] != identity or stable["rect"] != rect:
+            stable.update(identity=identity, rect=rect, since=now)
+            return None
+        return category if now - stable["since"] >= 0.3 else None
+
     return wait_for(
-        "Chat's exact visible marker category",
-        lambda: chat_category_accessibility(label, owned_route=owned_route),
-        process,
+        "Chat's exact stable visible marker category", settled_category,
+        process, timeout=max(0.0, deadline - time.monotonic()),
     )
 
 
@@ -1583,10 +1624,11 @@ def closed_return_editor_observation(access, before, after, same_chat):
 
 
 def wait_for_private_selection(socket, access, expected, selection, process, output, *,
-                               expected_caret=None, require_focused=False):
+                               expected_caret=None, require_focused=False, deadline=None):
     """Observe dispatched physical keys; never replay them or change the assertion."""
     last = None
-    deadline = time.monotonic() + 30
+    supplied_deadline = deadline is not None
+    deadline = time.monotonic() + 30 if deadline is None else deadline
 
     def selected():
         nonlocal last
@@ -1596,6 +1638,11 @@ def wait_for_private_selection(socket, access, expected, selection, process, out
             and (not require_focused or last["accessibility_focused"] is True) else None
 
     try:
+        if supplied_deadline:
+            return wait_for(
+                "physical selection in the actual private editor", selected, process,
+                timeout=max(0.0, deadline - time.monotonic()),
+            )
         return wait_for("physical selection in the actual private editor", selected, process)
     except RuntimeError:
         # Only bounded offsets and boolean observations leave this scope.
@@ -7393,12 +7440,17 @@ def prepare_private_permission_draft(socket, access, draft, selection_length, ou
     require_ok(call(socket, {"op": "type", "text": draft}))
     wait_for("physical private permission draft", lambda: private_editor_value_matches(
         access, draft), process)
+    selection_deadline = time.monotonic() + 30
+    selected = None
     with hold_physical_modifiers(socket, shift=True):
-        for _ in range(selection_length):
+        for step in range(1, selection_length + 1):
             require_ok(call(socket, {"op": "key", "key": "ArrowLeft"}))
-    return wait_for_private_selection(
-        socket, access, draft, [len(draft) - selection_length, len(draft)], process, output
-    )
+            selected = wait_for_private_selection(
+                socket, access, draft, [len(draft) - step, len(draft)], process, output,
+                expected_caret=len(draft) - step, require_focused=True,
+                deadline=selection_deadline,
+            )
+    return selected
 
 
 def same_private_editor_state(left, right):
@@ -7406,26 +7458,52 @@ def same_private_editor_state(left, right):
                for field in ("draft_matches", "caret", "selection"))
 
 
-def restricted_task_editor_sample(custody, draft, observation):
-    """Read one exact Task editor tree; retry only a retired AT transaction."""
+def restricted_task_read_only_sample(custody, draft, observation):
+    """Read the exact retained Task draft after its editor is withdrawn."""
     original, identity = custody
     try:
-        current = agent_conversation_accessibility(
-            original["agent"], detached=original["detached"], stale_only=True,
-            composer_name="Task instruction composer", observation=observation,
-        )
-        if current is None:
+        if chat_process_identity(original) != identity:
+            raise RuntimeError("Task restriction changed its owned Chat process")
+        windows = chat_accessibility_windows(original, strict=True)
+        if not windows:
             return None
-        if any(current.get(field) != original.get(field)
-               for field in ("bus", "process", "window", "composer", "agent", "detached")) \
-                or chat_process_identity(current) != identity:
-            raise RuntimeError("Task restriction changed its owned private editor")
-        observed = private_editor_observation(current, draft)
-        client = atspi.AtspiClient(atspi.atspi_address(), current["bus"])
+        if len(windows) != 1:
+            raise RuntimeError("Task restriction has ambiguous owned Chat windows")
+        bus, process, client, window = windows[0]
+        if (bus, process, window) != (
+                original["bus"], original["process"], original["window"]):
+            raise RuntimeError("Task restriction changed its owned Chat window")
         tree = accessible_subtree(
-            client, current["window"], atspi.APP_TREE_NODE_LIMIT, observation=observation
+            client, window, atspi.APP_TREE_NODE_LIMIT, observation=observation
         )
         decoded = decoded_accessible_names(tree)
+        headings = [path for path, name in decoded.items()
+                    if name.casefold() == f"{original['agent'].casefold()}, agent"]
+        route_name = "Return conversation" if original["detached"] else "Float conversation"
+        routes = [path for path, name in decoded.items() if name == route_name]
+        drags = [path for path, name in decoded.items() if name == "Drag conversation"]
+        retained = [path for path, name in decoded.items() if name == draft]
+        task_composers = [path for path, name in decoded.items()
+                          if name == "Task instruction composer"]
+        if not headings or not routes or not drags or not retained:
+            return None
+        for label, paths, role in (
+                ("Agent heading", headings, AT_SPI_ROLE_HEADING),
+                ("conversation route", routes, AT_SPI_ROLE_BUTTON),
+                ("conversation drag", drags, AT_SPI_ROLE_BUTTON),
+                ("retained Task draft", retained, AT_SPI_ROLE_STATIC)):
+            if len(paths) != 1 or client.role(paths[0]) != role:
+                raise RuntimeError(f"Task restriction has invalid {label}")
+        editable = []
+        for path in tree:
+            permission_count(observation, "interface_queries")
+            if "org.a11y.atspi.EditableText" in client.interfaces(path):
+                editable.append(path)
+        permission_count(observation, "headings", len(headings))
+        permission_count(observation, "retained", len(retained))
+        permission_count(observation, "editable", len(editable))
+        if editable or task_composers:
+            return None
         queue_controls = [path for path, name in decoded.items() if name == "Queue task"]
         roles = {path: client.role(path) for path in queue_controls}
         tabs = [path for path, role in roles.items() if role == AT_SPI_ROLE_TAB]
@@ -7436,14 +7514,16 @@ def restricted_task_editor_sample(custody, draft, observation):
         permission_count(observation, "queue_other_controls", len(queue_controls) - len(mutations))
         for path in mutations:
             permission_count(
-                observation, "queue_enabled_controls",
-                int(accessibility_control_enabled(current, path)),
+                observation, "queue_enabled_controls", int(accessibility_control_enabled(
+                    {"bus": bus}, path
+                )),
             )
             actions = client.call(path, "org.a11y.atspi.Action.GetActions", check=False)
             permission_count(
                 observation, "queue_action_controls", int("'click'" in actions)
             )
-        return current, observed, bool(queue_controls)
+        current = {**original, "bus": bus, "process": process, "window": window}
+        return current, {"draft_matches": True}, bool(mutations)
     except atspi.GateError as error:
         text = str(error)
         observation["at_unknown_object"] = "org.freedesktop.DBus.Error.UnknownObject" in text
@@ -7573,7 +7653,7 @@ def native_task_write_downgrade(socket, room, record, person, output, size, proc
                 return None
             sample["at_attempted"] = True
             try:
-                editor = restricted_task_editor_sample(
+                editor = restricted_task_read_only_sample(
                     (queue_access, initial_identity), queue_draft, sample
                 )
                 sample["at_matched"] = editor is not None
@@ -7582,10 +7662,10 @@ def native_task_write_downgrade(socket, room, record, person, output, size, proc
                 access, observed, queue_control_present = editor
                 permission_count(sample, "retained", int(observed.get("draft_matches") is True))
                 sample["queue_control_present"] = queue_control_present
-                sample["private_editor_state_matches"] = same_private_editor_state(observed, queue_before)
+                sample["private_editor_state_matches"] = observed.get("draft_matches") is True
                 if queue_control_present:
                     return None
-                if not same_private_editor_state(observed, queue_before):
+                if observed.get("draft_matches") is not True:
                     return None
                 qualified = qualify_hidden_permission_offer(
                     socket, stale_queue, opposite, "read-current-tasks",
