@@ -467,7 +467,8 @@ pub(crate) struct RoomAuthority {
     rooms: std::sync::Weak<RoomsInner>,
     room: String,
     /// The device governing the room: this relay's own, which also stewards
-    /// the room's channels.
+    /// the room's channels. Read by the steward-key decision only.
+    #[cfg(any(test, feature = "agents"))]
     governor: [u8; 32],
 }
 
@@ -483,6 +484,7 @@ impl RoomAuthority {
     }
 
     /// The device governing the room, which stewards its channels.
+    #[cfg(any(test, feature = "agents"))]
     pub(crate) const fn governor(&self) -> &[u8; 32] {
         &self.governor
     }
@@ -695,6 +697,7 @@ impl Rooms {
         runtime.room_authority = Some(RoomAuthority {
             rooms: Arc::downgrade(&self.inner),
             room: room.room().to_owned(),
+            #[cfg(any(test, feature = "agents"))]
             governor: host.cert.device_public_key,
         });
         if runtime.governor_tap.is_none() {
