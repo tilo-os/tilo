@@ -58,7 +58,12 @@ impl ReceiptSurface for App {
 struct Source(bool);
 
 impl SurfaceSource for Source {
-    fn surface(&self, _: &Record<'_>, _: Option<&str>) -> Option<Arc<dyn ReceiptSurface>> {
+    fn surface(
+        &self,
+        _: &Record<'_>,
+        _: Option<&str>,
+        _: Option<&[u8; 32]>,
+    ) -> Option<Arc<dyn ReceiptSurface>> {
         self.0.then(|| Arc::new(App) as Arc<dyn ReceiptSurface>)
     }
 }

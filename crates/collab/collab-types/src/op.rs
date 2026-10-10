@@ -656,6 +656,11 @@ pub struct SignedOp {
     /// receiver (a relay that cannot read a sealed payload included) decides
     /// every change against the author's grants before merging it.
     pub claims: Vec<crate::claim::ChangeClaim>,
+    /// The content hash (BLAKE3) of the app surface the op's changes are
+    /// decided against: the `surface.toml` of the package that made them,
+    /// as the launcher handed it to the app. A receiver fetches it by hash
+    /// and holds the op until it has it.
+    pub surface: Option<[u8; 32]>,
     /// Detached Ed25519 signature by `author` over the canonical-bytes view
     /// of every other field. See `SignedOp::signing_bytes`.
     pub signature: Signature,
@@ -685,6 +690,7 @@ impl SignedOp {
             seq,
             encryption: None,
             claims: Vec::new(),
+            surface: None,
             signature: Signature::from_bytes([0u8; 64]),
         }
     }
@@ -713,6 +719,7 @@ impl SignedOp {
             seq,
             encryption: Some(encryption),
             claims: Vec::new(),
+            surface: None,
             signature: Signature::from_bytes([0u8; 64]),
         }
     }
@@ -721,6 +728,13 @@ impl SignedOp {
     #[must_use]
     pub fn with_claims(mut self, claims: Vec<crate::claim::ChangeClaim>) -> Self {
         self.claims = claims;
+        self
+    }
+
+    /// The op deciding its changes against the app surface `surface`.
+    #[must_use]
+    pub fn with_surface(mut self, surface: Option<[u8; 32]>) -> Self {
+        self.surface = surface;
         self
     }
 
@@ -743,6 +757,7 @@ impl SignedOp {
             seq: u64,
             encryption: encryption_wire::View<'a>,
             claims: &'a [crate::claim::ChangeClaim],
+            surface: &'a Option<[u8; 32]>,
         }
         canonical_bytes(&View {
             payload: &self.payload,
@@ -754,6 +769,7 @@ impl SignedOp {
             seq: self.seq,
             encryption: encryption_wire::View(&self.encryption),
             claims: &self.claims,
+            surface: &self.surface,
         })
     }
 }
@@ -815,7 +831,8 @@ mod tests {
                 },
             ]),
             units: vec![Vec::new()],
-        }]);
+        }])
+        .with_surface(Some([5; 32]));
         crate::crypto::sign_op(&mut op, &key).unwrap();
         let bytes = canonical_bytes(&op).unwrap();
         assert_eq!(from_canonical_bytes::<SignedOp>(&bytes).unwrap(), op);
@@ -825,7 +842,7 @@ mod tests {
         );
         assert_eq!(
             hex::encode(sha2::Sha256::digest(&bytes)),
-            "e44c34abca6a7c2f81703ad34d700ad381388fb2988ca8a6e8888f37148bfe5d",
+            "4d36ec4cbbb005c0eb17855ec94b0d7ff48f64bd0dcd31ff82e1063b3366176d",
             "{}",
             hex::encode(&bytes)
         );

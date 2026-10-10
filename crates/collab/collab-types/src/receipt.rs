@@ -256,7 +256,11 @@ pub fn check_claims(
             }
             footprint.extend(surface.footprint(member));
         }
-        if let Some(unit) = claim.units.iter().find(|unit| !footprint.contains(unit)) {
+        if let Some(unit) = claim.units.iter().find(|unit| {
+            !footprint
+                .iter()
+                .any(|allowed| crate::surface::covers(allowed, unit))
+        }) {
             return Err(ReceiptRefusal::OutsideFootprint {
                 action: label(&claim.action),
                 unit: unit_label(unit),
@@ -275,13 +279,14 @@ pub fn check_claims(
 
 /// Where a receiver finds the package surface of a record's app.
 pub trait SurfaceSource: Send + Sync {
-    /// The surface of `record`'s app for records of kind `kind` (the app's
-    /// own resource when `None`), or `None` while it is not here: the op is
-    /// held until it is.
+    /// The surface `named` (the content hash an op names) for records of
+    /// kind `kind` (the app's own resource when `None`), or `None` while it
+    /// is not here: the op is held until it is.
     fn surface(
         &self,
         record: &Record<'_>,
         kind: Option<&str>,
+        named: Option<&[u8; 32]>,
     ) -> Option<std::sync::Arc<dyn ReceiptSurface>>;
 }
 
@@ -366,7 +371,7 @@ pub fn decide_op(
                     })
                 };
             };
-            let surface = source.surface(record, kind);
+            let surface = source.surface(record, kind, op.surface.as_ref());
             let Some(changes) = cleartext_changes(op)? else {
                 // A sealed op: the relay decides the claims its envelope
                 // carries; devices check the changes once they open them.

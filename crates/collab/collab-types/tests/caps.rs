@@ -58,7 +58,12 @@ impl ReceiptSurface for Notes {
 }
 
 impl SurfaceSource for Notes {
-    fn surface(&self, _: &Record<'_>, _: Option<&str>) -> Option<Arc<dyn ReceiptSurface>> {
+    fn surface(
+        &self,
+        _: &Record<'_>,
+        _: Option<&str>,
+        _: Option<&[u8; 32]>,
+    ) -> Option<Arc<dyn ReceiptSurface>> {
         Some(Arc::new(Self))
     }
 }

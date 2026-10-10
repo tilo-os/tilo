@@ -2377,6 +2377,7 @@ dependencies = [
 name = "collab-types"
 version = "0.1.0"
 dependencies = [
+ "blake3",
  "ed25519-dalek 3.0.0",
  "getrandom 0.4.3",
  "hex",
@@ -2390,6 +2391,8 @@ dependencies = [
  "tilo-actions",
  "tilo-automerge-fork",
  "tilo-clock",
+ "tilo-resource",
+ "toml 1.0.6+spec-1.1.0",
  "tracing",
  "uuid",
  "web-time",
