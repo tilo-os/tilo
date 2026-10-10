@@ -55,6 +55,8 @@ mod inner {
     include!("target_ui.rs");
 }
 
+#[cfg(unix)]
+mod async_open;
 pub mod sessions;
 
 mod app_widget_impl;
@@ -82,6 +84,11 @@ pub fn demo_session_input() -> &'static str {
 mod target_tests;
 #[cfg(test)]
 pub(crate) mod tests;
+
+/// Permission to discover the session-owned supervisor on the open worker.
+/// A real host lends this instead of connecting on its compositor thread.
+#[derive(Clone, Copy, Debug)]
+pub struct HostedSessionSource;
 
 /// Process connections explicitly granted to one hosted Terminal instance.
 #[cfg_attr(not(unix), derive(Default))]

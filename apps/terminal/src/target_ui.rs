@@ -261,7 +261,38 @@ impl TerminalWidget {
         attach: Option<&str>,
     ) {
         self.sessions.target = Some(target.clone());
-        match self.sessions.open(target, requested_by, attach) {
+        #[cfg(unix)]
+        if let Some(socket) = self.service_lifetime.take() {
+            // Reader threads also hold a clone: dropping only the widget's
+            // descriptor would leave the old child alive.
+            let _ = socket.shutdown(std::net::Shutdown::Both);
+        }
+        if let Some(result) =
+            self.sessions
+                .begin_open(target, requested_by, attach, Arc::clone(&self.waker))
+        {
+            self.finish_session_open(target, requested_by, attach, result);
+        }
+    }
+
+    fn poll_session_open(&mut self) -> bool {
+        let Some((requester, attach, result)) = self.sessions.take_open_answer() else {
+            return false;
+        };
+        if let Some(target) = self.sessions.target.clone() {
+            self.finish_session_open(&target, requester, attach.as_deref(), result);
+        }
+        true
+    }
+
+    fn finish_session_open(
+        &mut self,
+        target: &SessionTarget,
+        requested_by: Requester,
+        attach: Option<&str>,
+        result: Result<TerminalBackend, OpenError>,
+    ) {
+        match result {
             Ok(backend) => {
                 self.record_relay_session(backend.relay_session.clone());
                 self.attach_backend(backend);
