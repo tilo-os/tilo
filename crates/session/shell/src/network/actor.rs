@@ -2905,16 +2905,21 @@ impl ActorState {
         )
     }
 
-    /// [`InternalEvent::Topic`] arm of [`Self::handle_internal`], split out
-    /// to keep that dispatcher short.
-    async fn handle_topic_event(&mut self, ws: WorkspaceId, event: GossipEvent) {
-        // A neighbour, or traffic only a neighbour delivers, or a lag that
-        // may have hidden one: from here on the topic broadcasts.
+    /// A neighbour on `ws`, traffic only a neighbour delivers, or a lag that
+    /// may have hidden one: from here on the topic broadcasts
+    /// ([`TopicRuntime::broadcast`]).
+    fn note_topic_linked(&mut self, ws: WorkspaceId, event: &GossipEvent) {
         if !matches!(event, GossipEvent::NeighborDown(_))
             && let Some(topic) = self.topics.get_mut(&ws)
         {
             topic.linked = true;
         }
+    }
+
+    /// [`InternalEvent::Topic`] arm of [`Self::handle_internal`], split out
+    /// to keep that dispatcher short.
+    async fn handle_topic_event(&mut self, ws: WorkspaceId, event: GossipEvent) {
+        self.note_topic_linked(ws, &event);
         if matches!(event, GossipEvent::NeighborUp(_)) {
             // Authenticate this device, and say what it can decode, as soon
             // as the link is usable: once per link, never on a timer. State
