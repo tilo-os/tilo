@@ -218,7 +218,9 @@ def main():
     target.mkdir()
     (target / '.native-width-owned').touch()
     receipts = []
-    for index, jobs in enumerate((8, 8, 6, 6, 8)):
+    # The cold eight-job primer hit the memory ceiling before comparison.
+    # Prime at six jobs; all measured widths still retain the same strict guards.
+    for index, jobs in enumerate((6, 8, 6, 6, 8)):
         phase = output / str(index)
         phase.mkdir()
         receipt = build_phase(jobs, phase, target, package_ids, root)
