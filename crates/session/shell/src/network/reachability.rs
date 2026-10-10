@@ -76,8 +76,7 @@ impl Reachability {
     pub fn is_dormant(&self) -> bool {
         self.deferred
             .lock()
-            .map(|deferred| deferred.is_some())
-            .unwrap_or(false)
+            .is_ok_and(|deferred| deferred.is_some())
     }
 
     /// Start the held-back relays, because of `why`. Returns whether this
@@ -131,11 +130,10 @@ mod tests {
     /// Two relays nobody listens on: the test observes the relay map, not
     /// a relay connection.
     fn unused_relays() -> RelayMap {
-        RelayMap::from_iter(
-            ["http://127.0.0.1:9/", "http://127.0.0.1:10/"]
-                .into_iter()
-                .map(|url| url.parse::<RelayUrl>().unwrap()),
-        )
+        ["http://127.0.0.1:9/", "http://127.0.0.1:10/"]
+            .into_iter()
+            .map(|url| url.parse::<RelayUrl>().unwrap())
+            .collect()
     }
 
     /// An endpoint bound the way the shell binds one, and its relay map:
@@ -154,7 +152,7 @@ mod tests {
     }
 
     async fn until_relays(relays: &RelayMap, count: usize) {
-        let deadline = Instant::now() + Duration::from_secs(10);
+        let deadline = Instant::now().checked_add(Duration::from_secs(10)).unwrap();
         while relays.len() != count {
             assert!(
                 Instant::now() < deadline,
