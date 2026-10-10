@@ -1,6 +1,13 @@
 name: CI / browser compilation trial
 on:
   workflow_dispatch:
+    inputs:
+      candidate:
+        description: 'Diagnostic only: bounded compilation tasks or generated code cache'
+        required: true
+        default: '2'
+        type: choice
+        options: ['2', 'cache-2gb']
 concurrency:
   group: browser-compilation-${{ github.ref }}
   cancel-in-progress: false
@@ -59,6 +66,8 @@ jobs:
           echo "CHROME=$(awk '{print $2}' "$RUNNER_TEMP/chrome.txt" | tail -n 1)" >> "$GITHUB_ENV"
       - name: Compare unchanged full mount sweeps in ABBA order
         shell: bash
+        env:
+          TRIAL_CANDIDATE: ${{ github.event.inputs.candidate || '2' }}
         run: |
           set -euo pipefail
           bundle=target/tilo-app/web/calculator/bundle
@@ -66,7 +75,7 @@ jobs:
           server=$!
           trap 'kill "$server" 2>/dev/null || true; wait "$server" 2>/dev/null || true' EXIT
           python3 tools/ci/browser_compilation_trial.py --bundle "$bundle" \
-            --output "$RUNNER_TEMP/compilation-trial"
+            --output "$RUNNER_TEMP/compilation-trial" --candidate "$TRIAL_CANDIDATE"
       - uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e
         if: always()
         with:

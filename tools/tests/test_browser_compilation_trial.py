@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import tempfile
+import subprocess
 import unittest
 from unittest import mock
 
@@ -15,14 +16,30 @@ SPEC.loader.exec_module(TRIAL)
 
 
 class BrowserCompilationTrial(unittest.TestCase):
-    def exercise(self, emitted, status=0, flag_error=False):
+    def test_wrapper_preserves_driver_arguments_and_only_the_selected_flag(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            chrome = root / "chrome"
+            chrome.write_text("#!/usr/bin/env python3\nimport sys,json\nprint(json.dumps(sys.argv[1:]))\n")
+            chrome.chmod(0o755)
+            wrapper = root / "wrapper"
+            TRIAL.write_wrapper(wrapper)
+            for mode, flags in {"default": [], **TRIAL.CANDIDATES}.items():
+                with self.subTest(mode=mode):
+                    env = dict(os.environ, TRIAL_REAL_CHROME=str(chrome), TRIAL_TASKS=mode)
+                    args = json.loads(subprocess.check_output(
+                        [str(wrapper), "--user-data-dir=/owned/profile", "about:blank"], env=env, text=True))
+                    self.assertEqual(args, [*flags, "--user-data-dir=/owned/profile", "about:blank"])
+
+    def exercise(self, emitted, status=0, flag_error=False, swap=0):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             cgroup = root / "cgroup"
             cgroup.mkdir()
             for name, value in {"cpu.stat": "usage_usec 50\n",
                                 "memory.events": "max 0\noom 0\noom_kill 0\n",
-                                "memory.current": "100", "memory.peak": "200"}.items():
+                                "memory.current": "100", "memory.peak": "200",
+                                "memory.swap.current": str(swap)}.items():
                 (cgroup / name).write_text(value)
             binary = root / "bin"
             binary.mkdir()
@@ -57,6 +74,21 @@ class BrowserCompilationTrial(unittest.TestCase):
         failed, result = self.exercise(["so.tilo.calculator", "desktop"], status=7)
         self.assertTrue(failed)
         self.assertEqual(result["exit"], 7)
+
+    def test_swap_cannot_qualify_even_when_all_probes_pass(self):
+        failed, result = self.exercise(["so.tilo.calculator", "desktop"], swap=1)
+        self.assertTrue(failed)
+        self.assertEqual(result["swap_current_sampled_peak_bytes"], 1)
+
+    def test_unseen_code_cache_is_unobserved_not_healthy_zero(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.assertIsNone(TRIAL.cache_sizes(root))
+            cache = root / "smoke-browsers.fixture/0/Default/Code Cache/wasm"
+            cache.mkdir(parents=True)
+            (cache / "entry").write_bytes(b"12345")
+            self.assertEqual(TRIAL.cache_sizes(root),
+                             {"directories": 1, "bytes": 5, "largest_file_bytes": 5})
 
     def test_zero_exit_with_missing_or_duplicate_apps_fails(self):
         for apps in (["desktop"], ["desktop", "desktop", "so.tilo.calculator"]):

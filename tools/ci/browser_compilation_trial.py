@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""One diagnostic: identical full browser probes, default/two/two/default tasks.
+"""One diagnostic: identical full browser probes in default/candidate/candidate/default order.
 
 Nothing here changes the required SDK lane or its browser driver. Each sweep
 owns fresh browser profiles and uses the production driver, bytes and probes.
@@ -11,9 +11,26 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import threading
 import time
+
+CANDIDATES = {
+    "2": ["--js-flags=--wasm-num-compilation-tasks=2"],
+    # Fits Chrome's signed integer preference. All cache files stay inside
+    # the existing driver's fresh profiles and are removed by its supervisor.
+    "cache-2gb": ["--disk-cache-size=2000000000"],
+}
+
+
+def write_wrapper(path: Path) -> None:
+    modes = {"default": [], **CANDIDATES}
+    path.write_text("#!/usr/bin/env python3\nimport os,sys\n"
+                    f"modes={modes!r}\n"
+                    "args=modes[os.environ['TRIAL_TASKS']]\n"
+                    "os.execv(os.environ['TRIAL_REAL_CHROME'],[os.environ['TRIAL_REAL_CHROME'],*args,*sys.argv[1:]])\n")
+    path.chmod(0o755)
 
 
 def counters(root: Path, name: str) -> dict[str, int]:
@@ -38,25 +55,53 @@ def probe_result(line: str) -> dict | None:
                              for item in value["log"])}
 
 
+def cache_sizes(scratch: Path) -> dict | None:
+    directories = list(scratch.glob("smoke-browsers.*/[012]/Default/Code Cache/wasm"))
+    if not directories:
+        return None
+    sizes = []
+    for directory in directories:
+        for path in directory.rglob("*"):
+            try:
+                if path.is_file():
+                    sizes.append(path.stat().st_size)
+            except FileNotFoundError:
+                # Chrome may replace an entry between traversal and stat.
+                continue
+    return {"directories": len(directories), "bytes": sum(sizes),
+            "largest_file_bytes": max(sizes, default=0)}
+
+
 def sweep(output: Path, apps: list[str], mode: str, root: Path) -> dict:
     output.mkdir()
     shots = output / "shots"
     shots.mkdir()
+    scratch = output / "scratch"
+    scratch.mkdir()
     before_cpu, before_events = counters(root, "cpu.stat"), counters(root, "memory.events")
     sampled_peak = [int((root / "memory.current").read_text())]
+    swap_peak = [int((root / "memory.swap.current").read_text())]
+    cache_peak = [None]
     failures = []
     stop = threading.Event()
 
     def sample():
+        cache_sample_at = 0
         try:
             while not stop.wait(.25):
                 sampled_peak[0] = max(sampled_peak[0], int((root / "memory.current").read_text()))
+                swap_peak[0] = max(swap_peak[0], int((root / "memory.swap.current").read_text()))
+                if time.monotonic() >= cache_sample_at:
+                    observed = cache_sizes(scratch)
+                    if observed and (cache_peak[0] is None or observed["bytes"] > cache_peak[0]["bytes"]):
+                        cache_peak[0] = observed
+                    cache_sample_at = time.monotonic() + 2
         except Exception as error:
             failures.append(type(error).__name__)
 
     environment = dict(os.environ, CHROME=str(output.parent / "chrome-wrapper"),
                        TRIAL_REAL_CHROME=os.environ["CHROME"], TRIAL_TASKS=mode,
-                       TILO_WEB_SMOKE_SHARDS="3", SHOTS_DIR=str(shots))
+                       TILO_WEB_SMOKE_SHARDS="3", SHOTS_DIR=str(shots), RUNNER_TEMP=str(scratch))
     sampler = threading.Thread(target=sample)
     sampler.start()
     started = time.monotonic()
@@ -102,12 +147,14 @@ def sweep(output: Path, apps: list[str], mode: str, root: Path) -> dict:
               "expected_apps": apps, "probes": probes, "coverage_valid": valid,
               "flag_rejected": flag_rejected, "sampling_errors": failures,
               "memory_current_sampled_peak_bytes": sampled_peak[0],
+              "swap_current_sampled_peak_bytes": swap_peak[0],
+              "wasm_code_cache_sampled_peak": cache_peak[0],
               "cgroup_memory_cumulative_peak_bytes": int((root / "memory.peak").read_text()),
               "cpu_delta": delta(before_cpu, after_cpu),
               "memory_events_delta": delta(before_events, after_events)}
     (output / "receipt.json").write_text(json.dumps(result, indent=2) + "\n")
     print("COMPILATION_TRIAL " + json.dumps(result), flush=True)
-    if (status or not valid or flag_rejected or failures
+    if (status or not valid or flag_rejected or failures or swap_peak[0]
             or result["memory_events_delta"]["oom"]
             or result["memory_events_delta"]["oom_kill"]):
         raise RuntimeError("browser sweep did not qualify; receipt preserves the failure")
@@ -118,9 +165,13 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--bundle", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--candidate", choices=CANDIDATES, default="2")
     args = parser.parse_args()
     output = args.output.resolve()
     output.mkdir()
+    disk_free = shutil.disk_usage(output).free
+    if args.candidate == "cache-2gb" and disk_free < 24 * 1024**3:
+        raise ValueError("cache trial requires 24 GiB of admitted job scratch headroom")
     root = Path("/sys/fs/cgroup")
     quota = (root / "cpu.max").read_text().strip()
     memory = int((root / "memory.max").read_text())
@@ -133,7 +184,9 @@ def main() -> int:
     module = args.bundle / "pkg/tilo_browser_runtime_bg.wasm"
     with module.open("rb") as stream:
         digest = hashlib.file_digest(stream, "sha256").hexdigest()
-    identity = {"schema": 1, "source": subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip(),
+    identity = {"schema": 2, "source": subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip(),
+                "candidate": args.candidate, "candidate_flags": CANDIDATES[args.candidate],
+                "disk_free_bytes": disk_free,
                 "wasm_sha256": digest, "wasm_bytes": module.stat().st_size,
                 "chrome": subprocess.check_output([os.environ["CHROME"], "--version"], text=True).strip(),
                 "cpu_max": quota, "memory_max": memory,
@@ -142,14 +195,9 @@ def main() -> int:
     (output / "identity.json").write_text(json.dumps(identity, indent=2) + "\n")
     print("COMPILATION_IDENTITY " + json.dumps(identity), flush=True)
     wrapper = output / "chrome-wrapper"
-    wrapper.write_text("#!/usr/bin/env python3\nimport os,sys\n"
-                       "mode=os.environ['TRIAL_TASKS']\n"
-                       "assert mode in ('default','2')\n"
-                       "args=[] if mode=='default' else ['--js-flags=--wasm-num-compilation-tasks=2']\n"
-                       "os.execv(os.environ['TRIAL_REAL_CHROME'],[os.environ['TRIAL_REAL_CHROME'],*args,*sys.argv[1:]])\n")
-    wrapper.chmod(0o755)
+    write_wrapper(wrapper)
     results = [sweep(output / f"sweep-{index}", apps, mode, root)
-               for index, mode in enumerate(("default", "2", "2", "default"), 1)]
+               for index, mode in enumerate(("default", args.candidate, args.candidate, "default"), 1)]
     with module.open("rb") as stream:
         if hashlib.file_digest(stream, "sha256").hexdigest() != digest:
             raise ValueError("WASM bytes changed during comparison")
