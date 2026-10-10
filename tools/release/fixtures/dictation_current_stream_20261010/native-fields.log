@@ -1,0 +1,803 @@
+${CARGO_DROP_IN}: seeding new builder worktree from ${USER_HOME}/.codex/worktrees/18da/tilo…
+${CARGO_DROP_IN}: removed 146 build unit(s) built from another worktree's sources; they are rebuilt here
+${CARGO_DROP_IN}: seeded builder worktree (reflink) in 2.0s
+${CARGO_DROP_IN}: syncing 11098 files (full comparison; new, seeded or changed builder worktree)…
+${CARGO_DROP_IN}: synced sources in 9.4s
+test-env: generating native NTFS fixtures in /home/quinten/.cache/tilo/test-env/ntfs-fixtures/2476fdc018339c77
+   Compiling serde_core v1.0.228
+   Compiling thiserror v2.0.21
+   Compiling portable-atomic v1.13.1
+   Compiling hashbrown v0.17.1
+   Compiling cobs v0.3.0
+   Compiling ring v0.17.14
+   Compiling rustversion v1.0.22
+   Compiling derive_more-impl v2.1.1
+   Compiling serde v1.0.228
+   Compiling bitflags v2.11.0
+   Compiling indexmap v2.14.0
+   Compiling rustix v1.1.4
+   Compiling smallvec v1.15.1
+   Compiling bytes v1.12.1
+   Compiling parking_lot_core v0.9.12
+   Compiling once_cell v1.21.4
+   Compiling parking_lot v0.12.5
+   Compiling zerovec v0.11.8
+   Compiling tokio v1.53.2
+   Compiling heapless v0.7.17
+   Compiling tinystr v0.8.4
+   Compiling tracing-core v0.1.36
+   Compiling litemap v0.8.1
+   Compiling postcard v1.1.3
+   Compiling tracing v0.1.44
+   Compiling icu_locale_core v2.3.0
+   Compiling zerotrie v0.2.5
+   Compiling potential_utf v0.1.4
+   Compiling icu_collections v2.3.0
+   Compiling toml_datetime v1.1.1+spec-1.1.0
+   Compiling icu_provider v2.3.1
+   Compiling serde_spanned v1.1.1
+   Compiling deranged v0.5.6
+   Compiling toml v1.0.6+spec-1.1.0
+   Compiling toml_edit v0.23.10+spec-1.0.0
+   Compiling icu_properties v2.3.0
+   Compiling icu_normalizer v2.3.0
+   Compiling time v0.3.47
+   Compiling quick-xml v0.41.0
+   Compiling proc-macro-crate v3.4.0
+   Compiling idna_adapter v1.2.1
+   Compiling idna v1.1.0
+   Compiling serde_json v1.0.151
+   Compiling http v1.4.0
+   Compiling kurbo v0.13.1
+   Compiling url v2.5.8
+   Compiling png v0.18.1
+   Compiling uuid v1.26.0
+   Compiling ipnet v2.12.0
+   Compiling hashbrown v0.15.5
+   Compiling tokio-util v0.7.18
+   Compiling curve25519-dalek v5.0.0
+   Compiling serdect v0.4.3
+   Compiling wayland-scanner v0.31.11
+   Compiling rustls v0.23.45
+   Compiling http-body v1.0.1
+   Compiling unic-langid-impl v0.9.6
+   Compiling icu_locale_fallback v2.3.0
+   Compiling unic-langid-macros-impl v0.9.6
+   Compiling wayland-sys v0.31.11
+   Compiling enumflags2 v0.7.12
+   Compiling rustls-native-certs v0.8.3 (${WORKTREE}/crates/system/tilo-native-certs)
+   Compiling zvariant_utils v3.4.0
+   Compiling peniko v0.6.1
+   Compiling rustls-webpki v0.103.15
+   Compiling zvariant_derive v5.12.0
+   Compiling hayro-syntax v0.7.2
+   Compiling serde_bytes v0.11.19
+   Compiling image v0.25.10
+   Compiling unic-langid-macros v0.9.6
+   Compiling unic-langid v0.9.6
+   Compiling wayland-backend v0.3.15 (${WORKTREE}/vendor/wayland-backend)
+   Compiling rustybuzz v0.20.1
+   Compiling buffa v0.9.2
+   Compiling chrono v0.4.45
+   Compiling http-body-util v0.1.3
+   Compiling zvariant v5.12.0
+   Compiling ed25519 v3.0.0
+   Compiling prefix-trie v0.8.4
+   Compiling svgtypes v0.16.1
+   Compiling derive_more v2.1.1
+   Compiling tempfile v3.27.0
+   Compiling zbus_names v4.3.2
+   Compiling bincode v1.3.3
+   Compiling ed25519-dalek v3.0.0
+   Compiling usvg v0.47.0
+   Compiling tokio-rustls v0.26.4
+   Compiling h2 v0.4.19
+   Compiling spirv v0.4.0+sdk-1.4.341.0
+   Compiling zbus_macros v5.16.0
+   Compiling async-compression v0.4.39
+   Compiling wasmparser v0.239.0
+   Compiling tower v0.5.3
+   Compiling rustix v0.38.44
+   Compiling wayland-client v0.31.14
+   Compiling arc-swap v1.9.2
+   Compiling typst-assets v0.15.1
+   Compiling smol_str v0.3.6
+   Compiling zstd-sys v2.0.16+zstd.1.5.7
+   Compiling hayro-interpret v0.7.0
+   Compiling wasmi v1.1.0
+   Compiling serde_urlencoded v0.7.1
+   Compiling hax-lib v0.3.7
+   Compiling tls_codec v0.5.0
+   Compiling icu_segmenter v2.3.0
+   Compiling hyper v1.8.1
+   Compiling wayland-server v0.31.13
+   Compiling tiny-skia v0.12.0
+   Compiling plist v1.10.0
+   Compiling wayland-protocols v0.32.12
+   Compiling syntect v5.3.0
+   Compiling hyper-util v0.1.20
+   Compiling crunchy v0.2.4
+   Compiling hickory-proto v0.26.1
+   Compiling rustls-platform-verifier v0.7.1
+   Compiling tokio-stream v0.1.18
+   Compiling ssh-encoding v0.3.0
+   Compiling tantivy-common v0.7.0
+   Compiling bitpacking v0.9.3
+   Compiling libcrux-secrets v0.0.6
+   Compiling x25519-dalek v3.0.0
+   Compiling gethostname v1.1.0
+   Compiling tantivy-bitpacker v0.6.0
+   Compiling libcrux-traits v0.0.8
+   Compiling nix v0.31.3
+   Compiling ssh-cipher v0.3.0
+   Compiling flatbuffers v25.12.19
+   Compiling libcrux-intrinsics v0.0.8
+   Compiling naga v29.0.3
+   Compiling utf-8 v0.7.6
+   Compiling tantivy-stacker v0.3.0
+   Compiling libcrux-sha3 v0.0.10
+   Compiling resvg v0.47.0
+   Compiling hyper-rustls v0.27.7
+   Compiling zbus v5.16.0
+   Compiling tower-http v0.6.8
+   Compiling vello_common v0.0.8
+   Compiling sha1_smol v1.0.1
+   Compiling vello_cpu v0.0.8
+   Compiling tokio-websockets v0.13.3
+   Compiling reqwest v0.13.4
+   Compiling russh-cryptovec v0.62.0
+   Compiling wayland-protocols-misc v0.3.10
+   Compiling wayland-protocols-wlr v0.3.10
+   Compiling zstd-safe v7.2.4
+   Compiling fs4 v0.8.4
+   Compiling lru v0.12.5
+   Compiling zstd v0.13.3
+   Compiling yasna v0.5.2
+   Compiling enum_dispatch v0.3.13
+   Compiling russh-util v0.52.0
+   Compiling tantivy-sstable v0.3.0
+   Compiling generic-array v1.4.5
+   Compiling rust-stemmers v1.2.0
+   Compiling tantivy-columnar v0.3.0
+   Compiling tantivy-tokenizer-api v0.3.0
+   Compiling sketches-ddsketch v0.2.2
+   Compiling rcgen v0.14.7
+   Compiling hayro v0.7.1
+   Compiling ssh-key v0.7.0-rc.11
+   Compiling harfrust v0.5.2
+   Compiling tungstenite v0.28.0
+   Compiling tracing-log v0.2.0
+   Compiling tracing-subscriber v0.3.22
+   Compiling tokio-tungstenite v0.28.0
+   Compiling rqrr v0.10.1
+   Compiling russh v0.63.3
+   Compiling hpke-rs v0.7.0
+   Compiling tantivy v0.22.1
+   Compiling ashpd v0.13.13
+   Compiling adblock v0.12.1
+   Compiling x11rb v0.13.2
+   Compiling x-wing v0.1.0
+   Compiling hpke-rs-rust-crypto v0.7.0
+   Compiling workspace-hack v0.1.0 (${WORKTREE}/crates/workspace-hack)
+   Compiling tilo-clock v0.1.0 (${WORKTREE}/crates/platform/tilo-clock)
+   Compiling blake3 v1.8.5
+   Compiling inotify v0.11.2
+   Compiling tilo-advisory-lock v0.1.0 (${WORKTREE}/crates/system/advisory-lock)
+   Compiling notify-types v2.1.0
+   Compiling paste v1.0.15
+   Compiling notify v8.2.0
+   Compiling hexane v1.0.0-alpha.5
+   Compiling target-lexicon v0.13.5
+   Compiling tilo-platform-caps v0.1.0 (${WORKTREE}/crates/platform/tilo-platform-caps)
+   Compiling wire-frame v0.1.0 (${WORKTREE}/crates/system/wire-frame)
+   Compiling cfg-expr v0.20.8
+   Compiling tilo-paths v0.1.0 (${WORKTREE}/crates/platform/tilo-paths)
+   Compiling tilo-rt v0.1.0 (${WORKTREE}/crates/platform/tilo-rt)
+   Compiling tilo-automerge-fork v0.12.0 (${WORKTREE}/vendor/automerge)
+   Compiling system-deps v7.0.8
+   Compiling tilo-files v0.1.0 (${WORKTREE}/crates/platform/tilo-files)
+   Compiling runtime-portal v0.1.0 (${WORKTREE}/crates/runtime/runtime-portal)
+   Compiling fs-set-times v0.20.3
+   Compiling rustix-linux-procfs v0.1.1
+   Compiling runtime-fs v0.1.0 (${WORKTREE}/crates/runtime/runtime-fs)
+   Compiling cap-primitives v3.4.6
+   Compiling pin-project-internal v1.1.10
+   Compiling cap-std v3.4.6
+   Compiling tilo-seal v0.1.0 (${WORKTREE}/crates/system/tilo-seal)
+   Compiling bounded-command v0.1.0 (${WORKTREE}/crates/system/bounded-command)
+   Compiling collab-types v0.1.0 (${WORKTREE}/crates/collab/collab-types)
+   Compiling pin-project v1.1.10
+   Compiling rustls-platform-verifier v0.6.2
+   Compiling n0-future v0.3.2
+   Compiling cordyceps v0.3.4
+   Compiling diatomic-waker v0.2.3
+   Compiling spin v0.10.1
+   Compiling tilo-net v0.1.0 (${WORKTREE}/crates/platform/tilo-net)
+   Compiling futures-buffered v0.2.12
+   Compiling rand_pcg v0.10.2
+   Compiling xml-rs v0.8.28
+   Compiling lru-slab v0.1.2
+   Compiling tilo-resource-macros v0.1.0 (${WORKTREE}/crates/sdk/tilo-resource-macros)
+   Compiling num_enum_derive v0.7.5
+   Compiling noq-udp v1.1.0
+   Compiling num_enum v0.7.5
+   Compiling netlink-packet-core v0.8.1
+   Compiling iroh-base v1.0.3
+   Compiling cloud-source v0.1.0 (${WORKTREE}/crates/system/cloud-source)
+   Compiling netlink-sys v0.8.8
+   Compiling netdev v0.45.0
+   Compiling tagptr v0.2.0
+   Compiling ref-cast v1.0.25
+   Compiling moka v0.12.15
+   Compiling tilo-content v0.1.0 (${WORKTREE}/crates/system/content)
+   Compiling netlink-packet-route v0.31.0
+   Compiling strum_macros v0.28.0
+   Compiling iroh-metrics-derive v1.0.1
+   Compiling hickory-net v0.26.1
+   Compiling landlock v0.4.5
+   Compiling iroh-dns v1.0.3
+   Compiling netwatch v0.19.1
+   Compiling noq v1.1.0
+   Compiling enum-assoc v1.3.0
+   Compiling ref-cast-impl v1.0.25
+   Compiling resolv-conf v0.7.6
+   Compiling sorted-index-buffer v0.2.1
+   Compiling identity-hash v0.1.0
+   Compiling mac-addr v0.3.0
+   Compiling hickory-resolver v0.26.1
+   Compiling noq-proto v1.1.0
+   Compiling strum v0.28.0
+   Compiling tilo-sandbox-core v0.1.0 (${WORKTREE}/crates/system/sandbox-core)
+   Compiling iroh-metrics v1.0.1
+   Compiling netlink-proto v0.12.0
+   Compiling n0-watcher v1.0.0
+   Compiling xmltree v0.10.3
+   Compiling tilo-secrets v0.1.0 (${WORKTREE}/crates/platform/tilo-secrets)
+   Compiling settings-store v0.1.0 (${WORKTREE}/crates/system/settings-store)
+   Compiling attohttpc v0.30.1
+   Compiling xattr v1.6.1
+   Compiling simple-dns v0.11.3
+   Compiling iroh-relay v1.0.3
+   Compiling igd-next v0.17.1
+   Compiling serdect v0.2.0
+   Compiling tilo-automerge v0.1.0 (${WORKTREE}/crates/doc/tilo-automerge)
+   Compiling tilo-actions v0.1.0 (${WORKTREE}/crates/collab/actions)
+   Compiling lru v0.18.3
+   Compiling iroh v1.0.3
+   Compiling seize v0.5.1
+   Compiling frost-core v3.0.0
+   Compiling papaya v0.2.3
+   Compiling tar v0.4.46
+   Compiling portmapper v0.19.1
+   Compiling private-fs v0.1.0 (${WORKTREE}/crates/system/private-fs)
+   Compiling backon v1.6.0
+   Compiling tilo-secret-vault v0.1.0 (${WORKTREE}/crates/system/secret-vault)
+   Compiling frost-rerandomized v3.0.0
+   Compiling write-fonts v0.48.1
+   Compiling pdf-writer v0.15.0
+   Compiling frost-ed25519 v3.0.0
+   Compiling subsetter v0.2.6
+   Compiling bip39 v2.2.2
+   Compiling typed-path v0.12.3
+   Compiling threshold-identity v0.1.0 (${WORKTREE}/crates/collab/threshold-identity)
+   Compiling zip v8.6.0
+   Compiling inplace-vec-builder v0.1.1
+   Compiling genawaiter-proc-macro v0.99.1 (${WORKTREE}/vendor/genawaiter-proc-macro)
+   Compiling tilo-resource v0.1.0 (${WORKTREE}/crates/sdk/tilo-resource)
+   Compiling irpc-derive v0.17.0
+   Compiling binary-merge v0.1.2
+   Compiling pulldown-cmark v0.12.2
+   Compiling tilo-font-catalog v0.1.0 (${WORKTREE}/crates/sdk/font-catalog)
+   Compiling piston-float v1.0.1
+   Compiling genawaiter-macro v0.99.1
+   Compiling accounts v0.1.0 (${WORKTREE}/crates/system/accounts)
+   Compiling pdfium-render v0.8.37
+   Compiling redb v4.1.0
+   Compiling genawaiter v0.99.1
+   Compiling tilo-doc v0.1.0 (${WORKTREE}/crates/doc/tilo-doc)
+   Compiling vecmath v1.0.0
+   Compiling range-collections v0.4.6
+   Compiling irpc v0.17.0
+   Compiling bounded-zip v0.1.0 (${WORKTREE}/crates/doc/bounded-zip)
+   Compiling tilo-user-identity v0.1.0 (${WORKTREE}/crates/collab/tilo-user-identity)
+   Compiling iroh-io v0.6.2
+   Compiling registry-types v0.1.0 (${WORKTREE}/crates/packaging/registry-types)
+   Compiling iroh-blobs v0.103.0
+   Compiling utf16string v0.2.0
+   Compiling positioned-io v0.3.5
+   Compiling tilo-pdf v0.1.0 (${WORKTREE}/crates/platform/tilo-pdf)
+   Compiling tilo-doc-codecs v0.1.0 (${WORKTREE}/crates/doc/tilo-doc-codecs)
+   Compiling bao-tree v0.16.0
+   Compiling mime_guess v2.0.5
+   Compiling tilo-app-package v0.1.0 (${WORKTREE}/crates/packaging/tilo-app-package)
+   Compiling tilo-power-mgmt v0.1.0 (${WORKTREE}/crates/system/power)
+   Compiling tilo-sandbox v0.1.0 (${WORKTREE}/crates/platform/tilo-sandbox)
+   Compiling iroh-tickets v1.0.0
+   Compiling glib-sys v0.21.5
+   Compiling tilo-nm v0.1.0 (${WORKTREE}/crates/system/tilo-nm)
+   Compiling nested_enum_utils v0.2.3
+   Compiling reflink-copy v0.1.28
+   Compiling fuser v0.18.0
+   Compiling glob v0.3.3
+   Compiling fixedbitset v0.5.7
+   Compiling futures-concurrency v7.7.1
+   Compiling fs-content v0.1.0 (${WORKTREE}/crates/system/fs-content)
+   Compiling clang-sys v1.8.1
+   Compiling iroh-util v0.6.0
+   Compiling tilo-dav v0.1.0 (${WORKTREE}/crates/system/tilo-dav)
+   Compiling gobject-sys v0.21.5
+   Compiling page_size v0.6.0
+   Compiling tilo-fs v0.1.0 (${WORKTREE}/crates/system/fs)
+   Compiling cloud-source-dav v0.1.0 (${WORKTREE}/crates/system/cloud-source-dav)
+   Compiling iroh-gossip v0.101.0
+   Compiling cloud-source-icloud v0.1.0 (${WORKTREE}/crates/system/cloud-source-icloud)
+   Compiling fs-native v0.1.0 (${WORKTREE}/crates/system/fs-native)
+   Compiling tilo-automerge-isolate v0.1.0 (${WORKTREE}/crates/doc/tilo-automerge-isolate)
+   Compiling cloud-source-onedrive v0.1.0 (${WORKTREE}/crates/system/cloud-source-onedrive)
+   Compiling cloud-source-gdrive v0.1.0 (${WORKTREE}/crates/system/cloud-source-gdrive)
+   Compiling cloud-source-dropbox v0.1.0 (${WORKTREE}/crates/system/cloud-source-dropbox)
+   Compiling fs-protocol v0.1.0 (${WORKTREE}/crates/system/fs-protocol)
+   Compiling bindgen v0.72.1
+   Compiling gstreamer-sys v0.24.5
+   Compiling tilo-thumbnail v0.1.0 (${WORKTREE}/crates/media/thumbnail)
+   Compiling annotate-snippets v0.11.5
+   Compiling cexpr v0.6.0
+   Compiling polling v3.11.0
+   Compiling calloop v0.14.4
+   Compiling gio-sys v0.21.5
+   Compiling gstreamer-base-sys v0.24.5
+   Compiling xkeysym v0.2.1
+   Compiling libspa-sys v0.10.1 (${WORKTREE}/vendor/libspa-sys)
+   Compiling glib-macros v0.21.5
+   Compiling xkbcommon v0.8.0
+   Compiling two-face v0.4.5
+   Compiling quick-xml v0.39.4
+   Compiling smithay-client-toolkit v0.20.0
+   Compiling pastey v0.2.3
+   Compiling wayland-cursor v0.31.12
+   Compiling zbus_xml v5.1.1
+   Compiling wayland-csd-frame v0.3.0
+   Compiling option-operations v0.6.1
+   Compiling calloop-wayland-source v0.4.1
+   Compiling kstring v2.0.2
+   Compiling wayland-protocols-experimental v20250721.0.1
+   Compiling num-rational v0.4.2
+   Compiling muldiv v1.0.1
+   Compiling zbus-lockstep v0.5.2
+   Compiling gstreamer-app-sys v0.24.5
+   Compiling gstreamer-video-sys v0.24.5
+   Compiling wgpu-types v29.0.3
+   Compiling gpu-descriptor-types v0.2.0
+   Compiling wgpu-hal v29.0.3 (${WORKTREE}/vendor/wgpu-hal)
+   Compiling atomic_refcell v0.1.13
+   Compiling gpu-allocator v0.28.0
+   Compiling glib v0.21.5
+   Compiling gpu-descriptor v0.3.2
+   Compiling wgpu-naga-bridge v29.0.3
+   Compiling zbus-lockstep-macros v0.5.2
+   Compiling pipewire-sys v0.10.1
+   Compiling runtime-identity v0.1.0 (${WORKTREE}/crates/runtime/runtime-identity)
+   Compiling gstreamer v0.24.5
+   Compiling tilo-startup-metrics v0.1.0 (${WORKTREE}/crates/system/tilo-startup-metrics)
+   Compiling libspa v0.10.1
+   Compiling atspi-common v0.13.0 (https://code.tilo.so/tilo/atspi.git?rev=9183f58d2e18e7c7cd76a1436f7fedc3ada015c2#9183f58d)
+   Compiling openmls_traits v0.6.0
+   Compiling tilo-winit v0.30.13 (${WORKTREE}/vendor/winit)
+   Compiling nom v8.0.0
+   Compiling gstreamer-base v0.24.5
+   Compiling cookie-factory v0.3.3
+   Compiling ahash v0.8.12
+   Compiling gstreamer-video v0.24.5
+   Compiling gstreamer-app v0.24.5
+   Compiling x11-dl v2.21.0
+   Compiling sctk-adwaita v0.11.1
+   Compiling xkbcommon-dl v0.4.2
+   Compiling tilo-automation v0.1.0 (${WORKTREE}/crates/collab/automation)
+   Compiling wayland-protocols-plasma v0.3.10
+   Compiling accesskit v0.25.0 (https://code.tilo.so/tilo/accesskit.git?rev=a76088c4c36c03de8109ded02bd42a305fb1d569#a76088c4)
+   Compiling is-docker v0.2.0
+   Compiling wgpu v29.0.3 (${WORKTREE}/vendor/wgpu)
+   Compiling tilo-media v0.1.0 (${WORKTREE}/crates/platform/tilo-media)
+   Compiling read-fonts v0.41.0
+   Compiling wgpu-core-deps-windows-linux-android v29.0.3
+   Compiling wgpu-core v29.0.3
+   Compiling is-wsl v0.4.0
+   Compiling accesskit_consumer v0.39.0 (https://code.tilo.so/tilo/accesskit.git?rev=a76088c4c36c03de8109ded02bd42a305fb1d569#a76088c4)
+   Compiling atspi-proxies v0.13.0 (https://code.tilo.so/tilo/atspi.git?rev=9183f58d2e18e7c7cd76a1436f7fedc3ada015c2#9183f58d)
+   Compiling tilo-test-env v0.1.0 (${WORKTREE}/crates/dev/test-env)
+   Compiling durable-store v0.1.0 (${WORKTREE}/crates/system/durable-store)
+   Compiling strum_macros v0.26.4
+   Compiling tilo-vello-shaders v0.9.0 (${WORKTREE}/vendor/vello_shaders)
+   Compiling tilo-vello-encoding v0.9.0 (${WORKTREE}/vendor/vello_encoding)
+   Compiling ssip-client v0.10.2
+   Compiling open v5.3.5
+   Compiling intl-memoizer v0.5.3
+   Compiling atspi v0.29.0 (https://code.tilo.so/tilo/atspi.git?rev=9183f58d2e18e7c7cd76a1436f7fedc3ada015c2#9183f58d)
+   Compiling accesskit_atspi_common v0.20.0 (https://code.tilo.so/tilo/accesskit.git?rev=a76088c4c36c03de8109ded02bd42a305fb1d569#a76088c4)
+   Compiling skrifa v0.44.0
+   Compiling openmls_memory_storage v0.6.0
+   Compiling smithay-clipboard v0.7.3
+   Compiling tilo-cli-kit v0.1.0 (${WORKTREE}/crates/runtime/cli)
+   Compiling tilo-search v0.1.0 (${WORKTREE}/crates/sdk/search)
+   Compiling arboard v3.6.1
+   Compiling intl_pluralrules v7.0.2
+   Compiling fluent-langneg v0.13.1
+   Compiling openmls_serialization_helpers v0.1.0
+   Compiling fluent-syntax v0.12.0
+   Compiling pipewire v0.10.1
+   Compiling tilo-host v0.1.0 (${WORKTREE}/crates/sdk/tilo-host)
+   Compiling runtime-collab v0.1.0 (${WORKTREE}/crates/runtime/runtime-collab)
+   Compiling swash v0.2.10
+   Compiling openmls v0.9.0
+   Compiling fluent-bundle v0.16.0
+   Compiling tilo-clipboard v0.1.0 (${WORKTREE}/crates/platform/tilo-clipboard)
+   Compiling tilo-app-state v0.1.0 (${WORKTREE}/crates/system/app-state)
+   Compiling openmls_rust_crypto v0.6.0
+   Compiling accesskit_unix v0.23.0 (https://code.tilo.so/tilo/accesskit.git?rev=a76088c4c36c03de8109ded02bd42a305fb1d569#a76088c4)
+   Compiling tilo-dialogs v0.1.0 (${WORKTREE}/crates/platform/tilo-dialogs)
+   Compiling tilo-tts v0.1.0 (${WORKTREE}/crates/system/tts)
+   Compiling openmls_basic_credential v0.6.0
+   Compiling tilo-notify v0.1.0 (${WORKTREE}/crates/platform/tilo-notify)
+   Compiling tilo-location v0.1.0 (${WORKTREE}/crates/platform/tilo-location)
+   Compiling futures-intrusive v0.5.0
+   Compiling spellbook v0.4.2
+   Compiling tilo-ui v0.1.0 (${WORKTREE}/crates/sdk/ui-core)
+   Compiling tilo-spellcheck v0.1.0 (${WORKTREE}/crates/text/spellcheck)
+   Compiling cosmic-text v0.19.0 (${WORKTREE}/vendor/cosmic-text)
+   Compiling tilo-vello v0.9.0 (${WORKTREE}/vendor/vello)
+   Compiling channel-crypto v0.1.0 (${WORKTREE}/crates/collab/channel-crypto)
+   Compiling tilo-accesskit-winit v0.34.0 (${WORKTREE}/vendor/accesskit_winit)
+   Compiling fluent v0.17.0
+   Compiling tilo-presentation v0.1.0 (${WORKTREE}/crates/platform/tilo-presentation)
+   Compiling tilo-process v0.1.0 (${WORKTREE}/crates/platform/tilo-process)
+   Compiling tilo-ui-graph v0.1.0 (${WORKTREE}/crates/dev/ui-graph)
+   Compiling tilo-host-search v0.1.0 (${WORKTREE}/crates/platform/tilo-host-search)
+   Compiling tilo-appearance v0.1.0 (${WORKTREE}/crates/platform/tilo-appearance)
+   Compiling tilo-headless-schema v0.1.0 (${WORKTREE}/crates/dev/headless-schema)
+   Compiling package-store v0.1.0 (${WORKTREE}/crates/packaging/package-store)
+   Compiling tilo-image-codec v0.1.0 (${WORKTREE}/crates/platform/tilo-image-codec)
+   Compiling tilo-paint-stream v0.1.0 (${WORKTREE}/crates/browser/paint-stream)
+   Compiling tilo-feedback-review v0.1.0 (${WORKTREE}/crates/collab/feedback-review)
+   Compiling tilo-app v0.1.0 (${WORKTREE}/crates/sdk/tilo-app)
+   Compiling icu_locale_data v2.3.0
+   Compiling ident_case v1.0.1
+   Compiling tilo-feedback v0.1.0 (${WORKTREE}/crates/collab/feedback)
+   Compiling prettyplease v0.2.37
+   Compiling icu_locale v2.3.1
+   Compiling buffa-descriptor v0.9.2
+   Compiling tilo-relay-protocol v0.1.0 (${WORKTREE}/crates/hosting/tilo-relay-protocol)
+   Compiling tilo-document v0.1.0 (${WORKTREE}/crates/doc/tilo-document)
+   Compiling buffa-codegen v0.9.2
+   Compiling desktop-policy v0.1.0 (${WORKTREE}/crates/system/desktop-policy)
+   Compiling buffa-build v0.9.2
+   Compiling launcher v0.1.0 (${WORKTREE}/crates/packaging/launcher)
+   Compiling runtime-bundle v0.1.0 (${WORKTREE}/crates/packaging/runtime-bundle)
+   Compiling tilo-desktop-entry v0.1.0 (${WORKTREE}/crates/system/desktop-entry)
+   Compiling tilo-desktop-model v0.1.0 (${WORKTREE}/crates/session/desktop-model)
+   Compiling neighbour-wire v0.1.0 (${WORKTREE}/crates/collab/neighbour-wire)
+   Compiling agent-provider-config v0.1.0 (${WORKTREE}/crates/agent/provider-config)
+   Compiling icu_collator_data v2.3.0
+   Compiling waproto v0.7.0
+   Compiling tilo-relay-client v0.1.0 (${WORKTREE}/crates/hosting/tilo-relay-client)
+   Compiling strum_macros v0.27.2
+   Compiling x509-cert v0.2.5
+   Compiling toml_datetime v0.6.11
+   Compiling serde_spanned v0.6.9
+   Compiling rusticata-macros v4.1.0
+   Compiling quinn-udp v0.5.14
+   Compiling asn1-rs-derive v0.6.0
+   Compiling asn1-rs-impl v0.2.0
+   Compiling comemo-macros v0.5.1
+   Compiling enum-ordinalize-derive v4.4.1
+   Compiling toml_write v0.1.2
+   Compiling typst-utils v0.15.1
+   Compiling ciborium-io v0.2.2
+   Compiling mutate_once v0.1.2
+   Compiling typeid v1.0.3
+   Compiling unscanny v0.1.0
+   Compiling rten-base v0.27.0
+   Compiling kamadak-exif v0.6.1
+   Compiling ciborium-ll v0.2.2
+   Compiling enum-ordinalize v4.4.1
+   Compiling toml_edit v0.22.27
+   Compiling comemo v0.5.1
+   Compiling asn1-rs v0.7.1
+   Compiling strum v0.27.2
+   Compiling cms v0.2.3
+   Compiling darling_core v0.23.0
+   Compiling darling_core v0.24.1
+   Compiling crypto-primes v0.7.2
+   Compiling wacore-binary v0.7.0
+   Compiling fastbloom v0.17.0
+   Compiling castaway v0.2.4
+   Compiling quick-xml v0.38.4
+   Compiling serde_path_to_error v0.1.20
+   Compiling pkcs1 v0.8.0-rc.4
+   Compiling emoji v0.1.0 (${WORKTREE}/crates/text/emoji)
+   Compiling mcf v0.6.0
+   Compiling quinn v0.11.9
+   Compiling password-hash v0.6.1
+   Compiling chinese-variant v1.1.6
+   Compiling palette v0.7.6
+   Compiling thin-vec v0.2.19
+   Compiling by_address v1.2.1
+   Compiling rust_decimal v1.42.1
+   Compiling prettyplease v0.3.0
+   Compiling oid-registry v0.8.1
+   Compiling codex v0.3.0
+   Compiling unicode-math-class v0.1.0
+   Compiling unsafe-libyaml v0.2.11
+   Compiling roman-numerals-rs v3.1.0
+   Compiling palette_derive v0.7.6
+   Compiling serde_yaml v0.9.34+deprecated
+   Compiling biblatex v0.12.0
+   Compiling chinese-number v0.7.8
+   Compiling sha-crypt v0.6.0
+   Compiling citationberg v0.7.0
+   Compiling rsa v0.10.0-rc.18
+   Compiling compact_str v0.10.0
+   Compiling quinn-proto v0.11.18
+   Compiling darling_macro v0.24.1
+   Compiling darling_macro v0.23.0
+   Compiling icu_collator v2.3.1
+   Compiling authenticode v0.6.0
+   Compiling toml v0.8.23
+   Compiling ciborium v0.2.2
+   Compiling rten-parallel v0.27.0
+   Compiling tilo-peer-state v0.1.0 (${WORKTREE}/crates/collab/tilo-peer-state)
+   Compiling tilo-contact-directory v0.1.0 (${WORKTREE}/crates/platform/tilo-contact-directory)
+   Compiling sfv v0.15.0
+   Compiling async-lock v3.4.2
+   Compiling typst-timing v0.15.1
+   Compiling web-transport-trait v0.4.0
+   Compiling kio v0.6.0
+   Compiling ecow v0.2.6
+   Compiling approx v0.5.1
+   Compiling wacore-derive v0.7.0
+   Compiling csv-core v0.1.13
+   Compiling fast-srgb8 v1.0.0
+   Compiling cfg_aliases v0.1.1
+   Compiling icu_calendar_data v2.3.0
+   Compiling drm-sys v0.8.0
+   Compiling khronos_api v3.1.0
+   Compiling nix v0.28.0
+   Compiling csv v1.4.0
+   Compiling typst-syntax v0.15.1
+   Compiling web-transport-proto v0.6.2 (${WORKTREE}/vendor/web-transport-proto)
+   Compiling rten-tensor v0.27.0
+   Compiling hayagriva v0.10.1
+   Compiling tilo-crypto v0.1.0 (${WORKTREE}/crates/system/tilo-crypto)
+   Compiling darling v0.24.1
+   Compiling darling v0.23.0
+   Compiling der-parser v10.0.0
+   Compiling tilo-environment v0.1.0 (${WORKTREE}/crates/runtime/environment)
+   Compiling tilo-doc-pdf v0.1.0 (${WORKTREE}/crates/doc/tilo-doc-pdf)
+   Compiling tilo-libvirt-domain v0.1.0 (${WORKTREE}/crates/system/libvirt-domain)
+   Compiling tilo-bluez v0.1.0 (${WORKTREE}/crates/system/tilo-bluez)
+   Compiling typst-macros v0.15.1
+   Compiling lipsum v0.9.1
+   Compiling web-async v0.1.5
+   Compiling moq-pattern v0.1.0
+   Compiling libudev-sys v0.1.4
+   Compiling io-lifetimes v1.0.11
+   Compiling linux-raw-sys v0.6.5
+   Compiling icu_decimal_data v2.3.0
+   Compiling glidesort v0.1.2
+   Compiling icu_time_data v2.3.0
+   Compiling typed-arena v2.0.2
+   Compiling az v1.3.0
+   Compiling rten-simd v0.27.0
+   Compiling drm-fourcc v2.2.0
+   Compiling tilo-delivery-protocol v0.1.0 (${WORKTREE}/crates/hosting/tilo-delivery-protocol)
+   Compiling icu_plurals_data v2.3.0
+   Compiling typst-library v0.15.1
+   Compiling moq-net v0.3.3
+   Compiling os-actions v0.1.0 (${WORKTREE}/crates/system/os-actions)
+   Compiling bon-macros v3.10.2
+   Compiling serde_with_macros v3.21.0
+   Compiling tilo-relay-session v0.1.0 (${WORKTREE}/crates/hosting/tilo-relay-session)
+   Compiling web-transport-quinn v0.12.1 (${WORKTREE}/vendor/web-transport-quinn)
+   Compiling wacore-libsignal v0.7.0
+   Compiling tilo-messaging v0.1.0 (${WORKTREE}/crates/platform/tilo-messaging)
+   Compiling wacore v0.7.0
+   Compiling tilo-unlock-protocol v0.1.0 (${WORKTREE}/crates/collab/tilo-unlock-protocol)
+   Compiling prost-derive v0.14.4
+   Compiling fixed_decimal v0.7.2
+   Compiling serde-big-array v0.5.1
+   Compiling calendrical_calculations v0.2.4
+   Compiling libseat-sys v0.2.0
+   Compiling acto v0.8.2
+   Compiling notes v0.1.0 (${WORKTREE}/apps/notes)
+   Compiling gbm-sys v0.4.0
+   Compiling icu_datetime_data v2.3.0
+   Compiling input-sys v1.18.0
+   Compiling ixdtf v0.6.6
+   Compiling icu_calendar v2.3.0
+   Compiling wacore-appstate v0.7.0
+   Compiling prost v0.14.4
+   Compiling bon v3.10.2
+   Compiling tilo-moq v0.1.0 (${WORKTREE}/crates/hosting/tilo-moq)
+   Compiling gl_generator v0.14.0
+   Compiling wacore-noise v0.7.0
+   Compiling serde_with v3.21.0
+   Compiling drm-ffi v0.9.0
+   Compiling rten-vecmath v0.27.0
+   Compiling rten-gemm v0.27.0
+   Compiling x509-parser v0.17.0
+   Compiling rten-shape-inference v0.27.0
+   Compiling tilo-egress v0.1.0 (${WORKTREE}/crates/runtime/egress)
+   Compiling legacy-agent-protocol v0.1.0 (${WORKTREE}/crates/runtime/legacy-agent-protocol)
+   Compiling filedescriptor v0.8.3
+   Compiling icu_provider_blob v2.3.0
+   Compiling flume v0.12.0
+   Compiling fcast-sender-sdk v0.3.0 (${WORKTREE}/vendor/fcast-sender-sdk)
+   Compiling socket-pktinfo v0.4.1
+   Compiling local-model-service v0.1.0 (${WORKTREE}/crates/agent/local-model-service)
+   Compiling serial2 v0.2.37
+   Compiling if-addrs v0.15.0
+   Compiling rten-onnx v0.27.0
+   Compiling cgmath v0.18.0
+   Compiling libseat v0.2.4
+   Compiling shell-words v1.1.1
+   Compiling smol_str v0.1.24
+   Compiling urlencoding v2.1.3
+   Compiling fearless_simd v0.7.0
+   Compiling portable-pty v0.9.0
+   Compiling trash v5.2.6
+   Compiling rten v0.27.0
+   Compiling mdns-sd v0.20.3
+   Compiling env-tools v0.1.0 (${WORKTREE}/crates/runtime/env-tools)
+   Compiling vello_common v0.3.0
+   Compiling legacy-vm v0.1.0 (${WORKTREE}/crates/runtime/legacy-vm)
+   Compiling typst-layout v0.15.1
+   Compiling fcast-protocol v0.2.0
+   Compiling icu_plurals v2.3.0
+   Compiling drm v0.14.1
+   Compiling icu_time v2.3.0
+   Compiling icu_decimal v2.3.0
+   Compiling udev v0.9.3
+   Compiling smithay v0.7.0
+   Compiling google-cast-protocol v0.1.0 (${WORKTREE}/vendor/google-cast-protocol)
+   Compiling x509-parser v0.18.1
+   Compiling tilo-oci-images v0.1.0 (${WORKTREE}/crates/packaging/oci-images)
+   Compiling system-extension v0.1.0 (${WORKTREE}/crates/system/system-extension)
+   Compiling greetd_ipc v0.10.3
+   Compiling ar_archive_writer v0.5.3
+   Compiling ordered-channel v1.2.0
+   Compiling icu_pattern v0.5.0
+   Compiling vte v0.15.0
+   Compiling approx v0.4.0
+   Compiling icu_datetime v2.3.0
+   Compiling vello_cpu v0.3.0
+   Compiling psm v0.1.31
+   Compiling greetd-client v0.1.0 (${WORKTREE}/crates/session/greetd-client)
+   Compiling ush v0.1.0 (${WORKTREE}/crates/runtime/ush)
+   Compiling whatsapp-rust v0.7.0
+   Compiling gbm v0.18.0
+   Compiling input v0.9.1
+   Compiling host-fs v0.1.0 (${WORKTREE}/crates/system/host-fs)
+   Compiling cap-fs-ext v3.4.6
+   Compiling swarm-discovery v0.6.3
+   Compiling windows-vm v0.1.0 (${WORKTREE}/crates/windows/windows-vm)
+   Compiling tilo-installed-apps v0.1.0 (${WORKTREE}/crates/packaging/installed-apps)
+   Compiling tilo-os-search v0.1.0 (${WORKTREE}/crates/runtime/os-search)
+   Compiling console-control v0.1.0 (${WORKTREE}/crates/session/console-control)
+   Compiling compat-catalogue v0.1.0 (${WORKTREE}/crates/windows/compat-catalogue)
+   Compiling host-info v0.1.0 (${WORKTREE}/crates/system/host-info)
+   Compiling appendlist v1.4.0
+   Compiling atomic_float v1.1.0
+   Compiling tilo-projector v0.1.0 (${WORKTREE}/crates/system/projector)
+   Compiling iroh-mdns-address-lookup v0.5.0
+   Compiling tilo-messaging-protocol v0.1.0 (${WORKTREE}/crates/system/messaging-protocol)
+   Compiling compat-service v0.1.0 (${WORKTREE}/crates/windows/compat-service)
+   Compiling tilo-cpu-raster v0.1.0 (${WORKTREE}/crates/sdk/tilo-cpu-raster)
+   Compiling tilo-callstream v0.1.0 (${WORKTREE}/crates/collab/tilo-callstream)
+   Compiling reis v0.7.1
+   Compiling tilo-lockdown-policy v0.1.0 (${WORKTREE}/crates/session/tilo-lockdown-policy)
+   Compiling tilo-control v0.1.0 (${WORKTREE}/crates/session/control-cli)
+   Compiling hayro-svg v0.7.0
+   Compiling stacker v0.1.24
+   Compiling sysinfo v0.32.1
+   Compiling qcms v0.3.0
+   Compiling typst-svg v0.15.1
+   Compiling hayro-write v0.7.0
+   Compiling phf_shared v0.12.1
+   Compiling chrono-tz v0.10.4
+   Compiling xmp-writer v0.3.3
+   Compiling phf v0.12.1
+   Compiling krilla v0.8.2
+   Compiling typst-html v0.15.1
+   Compiling tilo-reference v0.1.0 (${WORKTREE}/crates/collab/reference)
+   Compiling tilo-ocr v0.1.0 (${WORKTREE}/crates/media/ocr)
+   Compiling i_float v5.0.0
+   Compiling tilo-capture v0.1.0 (${WORKTREE}/crates/platform/tilo-capture)
+   Compiling i_shape v5.0.0
+   Compiling tilo-segment v0.1.0 (${WORKTREE}/crates/media/segment)
+   Compiling krilla-svg v0.8.1
+   Compiling typst-eval v0.15.1
+   Compiling typst-realize v0.15.1
+   Compiling tilo-model-gateway v0.1.0 (${WORKTREE}/crates/agent/model-gateway)
+   Compiling pim-lines v0.1.0 (${WORKTREE}/crates/text/pim-lines)
+   Compiling pixglyph v0.6.1
+   Compiling mediatype v0.21.0
+   Compiling tilo-vision v0.1.0 (${WORKTREE}/crates/media/vision)
+   Compiling video-player v0.1.0 (${WORKTREE}/apps/video-player)
+   Compiling i_key_sort v0.11.0
+   Compiling infer v0.19.0
+   Compiling pdf-viewer v0.1.0 (${WORKTREE}/apps/pdf-viewer)
+   Compiling i_tree v0.19.0
+   Compiling ebook v0.1.0 (${WORKTREE}/apps/ebook)
+   Compiling video-editor v0.1.0 (${WORKTREE}/apps/video-editor)
+   Compiling i_overlay v9.0.0
+   Compiling typst-pdf v0.15.1
+   Compiling feed-rs v2.4.0
+   Compiling typst-render v0.15.1
+   Compiling tilo-subject v0.1.0 (${WORKTREE}/crates/platform/tilo-subject)
+   Compiling typst v0.15.1
+   Compiling clap_complete v4.6.9
+   Compiling tilo-wet-media v0.1.0 (${WORKTREE}/crates/media/wet-media)
+   Compiling tilo-typst-fonts v0.1.0 (${WORKTREE}/crates/platform/tilo-typst-fonts)
+   Compiling sd-notify v0.4.5
+   Compiling app-host v0.1.0 (${WORKTREE}/crates/packaging/app-host)
+   Compiling similar v2.7.0
+   Compiling app-cli v0.1.0 (${WORKTREE}/crates/packaging/app-cli)
+   Compiling app-registry v0.1.0 (${WORKTREE}/crates/packaging/app-registry)
+   Compiling store v0.1.2 (${WORKTREE}/apps/store)
+   Compiling serial_test v3.4.0
+   Compiling collab-fixtures v0.1.0 (${WORKTREE}/crates/collab/collab-fixtures)
+   Compiling tilo-copy-lint v0.1.0 (${WORKTREE}/crates/dev/copy-lint)
+   Compiling tilo-runner-native v0.1.0 (${WORKTREE}/crates/sdk/runner-native)
+   Compiling tilo-identity-host v0.1.0 (${WORKTREE}/crates/runtime/tilo-identity-host)
+   Compiling tilo-desktop-search v0.1.0 (${WORKTREE}/crates/session/desktop-search)
+   Compiling tilo-browser-peer v0.1.0 (${WORKTREE}/crates/browser/tilo-browser-peer)
+   Compiling greeter v0.1.0 (${WORKTREE}/crates/session/greeter)
+   Compiling tilo-desktop-surface v0.1.0 (${WORKTREE}/crates/session/desktop-surface)
+   Compiling tilo-action-broker v0.1.0 (${WORKTREE}/crates/collab/tilo-action-broker)
+   Compiling tilo-joined-room v0.1.0 (${WORKTREE}/crates/collab/tilo-joined-room)
+   Compiling tilo-rich-text v0.1.0 (${WORKTREE}/crates/sdk/tilo-rich-text)
+   Compiling messages v0.1.0 (${WORKTREE}/apps/messages)
+   Compiling word-processor v0.1.0 (${WORKTREE}/apps/word-processor)
+   Compiling passwords v0.1.0 (${WORKTREE}/apps/passwords)
+   Compiling terminal v0.2.1 (${WORKTREE}/apps/terminal)
+   Compiling tilo-runtime v0.1.0 (${WORKTREE}/crates/runtime/tilo-runtime)
+   Compiling code-editor v0.1.0 (${WORKTREE}/apps/code-editor)
+   Compiling tilo-desktop v0.1.0 (${WORKTREE}/crates/session/desktop)
+   Compiling file-explorer v0.2.0 (${WORKTREE}/apps/file-explorer)
+   Compiling browser v0.1.0 (${WORKTREE}/apps/browser)
+   Compiling chat v0.1.0 (${WORKTREE}/apps/chat)
+   Compiling photos v0.1.0 (${WORKTREE}/apps/photos)
+   Compiling slides v0.1.0 (${WORKTREE}/apps/slides)
+   Compiling shell v0.1.0 (${WORKTREE}/crates/session/shell)
+   Compiling agent v0.1.0 (${WORKTREE}/apps/agent)
+   Compiling calendar v0.1.0 (${WORKTREE}/apps/calendar)
+   Compiling camera v0.1.0 (${WORKTREE}/apps/camera)
+   Compiling totp v0.1.0 (${WORKTREE}/apps/totp)
+   Compiling diffmerge v0.1.0 (${WORKTREE}/apps/diffmerge)
+   Compiling maps v0.1.0 (${WORKTREE}/apps/maps)
+   Compiling chip-design v0.1.0 (${WORKTREE}/apps/chip-design)
+   Compiling themes v0.1.0 (${WORKTREE}/apps/themes)
+   Compiling canvas v0.1.0 (${WORKTREE}/apps/canvas)
+   Compiling calculator v0.1.0 (${WORKTREE}/apps/calculator)
+   Compiling music v0.1.0 (${WORKTREE}/apps/music)
+   Compiling contacts v0.1.0 (${WORKTREE}/apps/contacts)
+   Compiling shortcuts v0.1.0 (${WORKTREE}/apps/shortcuts)
+   Compiling scratchpad v0.1.0 (${WORKTREE}/apps/scratchpad)
+   Compiling api-tester v0.1.0 (${WORKTREE}/apps/api-tester)
+   Compiling feeds v0.1.0 (${WORKTREE}/apps/feeds)
+   Compiling sheets v0.1.0 (${WORKTREE}/apps/sheets)
+   Compiling tube v0.1.0 (${WORKTREE}/apps/tube)
+   Compiling weather v0.1.0 (${WORKTREE}/apps/weather)
+   Compiling typst-editor v0.1.0 (${WORKTREE}/apps/typst-editor)
+   Compiling snippets v0.1.0 (${WORKTREE}/apps/snippets)
+   Compiling clocks v0.1.0 (${WORKTREE}/apps/clocks)
+   Compiling hex-editor v0.1.0 (${WORKTREE}/apps/hex-editor)
+   Compiling speed-test v0.1.0 (${WORKTREE}/apps/speed-test)
+   Compiling tilo-agent-participant v0.1.0 (${WORKTREE}/crates/agent/agent-participant)
+   Compiling tilo-relay v0.1.0 (${WORKTREE}/crates/hosting/tilo-relay)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 4m 22s
+info: using target runner `${WORKTREE}/tools/cargo-runner.sh` defined by `target.cfg(all(target_arch = "x86_64", target_os = "linux")).runner` within `${WORKTREE}/.cargo/config.toml`
+────────────
+ Nextest run ID 6c12e5f8-ffa4-4355-b507-431bf53eeae3 with nextest profile: ci
+    Starting 2 tests across 1 binary (440 tests skipped)
+────────────
+     Summary [   0.339s] 2 tests run: 2 passed, 440 skipped

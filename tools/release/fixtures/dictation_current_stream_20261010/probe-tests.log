@@ -1,0 +1,13 @@
+test_attention_observation_requires_bounded_typed_preparation (tools.tests.test_speech_stream_probe.PublicSpeechStressTests.test_attention_observation_requires_bounded_typed_preparation) ... ok
+test_clipping_is_reported_instead_of_claiming_requested_snr (tools.tests.test_speech_stream_probe.PublicSpeechStressTests.test_clipping_is_reported_instead_of_claiming_requested_snr) ... ok
+test_first_words_metric_refuses_punctuation_without_excluding_languages (tools.tests.test_speech_stream_probe.PublicSpeechStressTests.test_first_words_metric_refuses_punctuation_without_excluding_languages) ... ok
+test_noise_is_reproducible_measured_and_bounded (tools.tests.test_speech_stream_probe.PublicSpeechStressTests.test_noise_is_reproducible_measured_and_bounded) ... ok
+test_quantized_review_receipt_preserves_existing_models (tools.tests.test_speech_stream_probe.PublicSpeechStressTests.test_quantized_review_receipt_preserves_existing_models) ... ok
+test_small_review_model_reaches_private_namespace_gate_without_execution (tools.tests.test_speech_stream_probe.PublicSpeechStressTests.test_small_review_model_reaches_private_namespace_gate_without_execution) ... ok
+test_typed_failure_does_not_expose_peer_messages (tools.tests.test_speech_stream_probe.PublicSpeechStressTests.test_typed_failure_does_not_expose_peer_messages) ... ok
+test_unobservable_snr_or_invalid_pcm_fails (tools.tests.test_speech_stream_probe.PublicSpeechStressTests.test_unobservable_snr_or_invalid_pcm_fails) ... ok
+
+----------------------------------------------------------------------
+Ran 8 tests in 0.132s
+
+OK

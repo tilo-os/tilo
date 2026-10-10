@@ -1,0 +1,7 @@
+Traceback (most recent call last):
+  File "/tools/probe_speech_stream.py", line 481, in <module>
+    main()
+    ~~~~^^
+  File "/tools/probe_speech_stream.py", line 330, in main
+    raise RuntimeError('worker did not become ready: ' + worker_failure(ready))
+RuntimeError: worker did not become ready: worker_stopped

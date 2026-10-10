@@ -1,0 +1,136 @@
+{
+  "schema": 1,
+  "source_base_head": "feab660e727e5c5e6a852e5e356f457ebd7cd0dc",
+  "production_changed": false,
+  "probe_changed": true,
+  "installed": false,
+  "microphone": false,
+  "new_runtime_or_model_download": false,
+  "scope": "paced public German audio through current production Whisper worker; direct-pipe transport differs from compositor capture queue",
+  "result": "r4 PASS; complete audio final and observable capsule cleanup",
+  "quality": {
+    "case": "de_de-0",
+    "word_errors": 0,
+    "reference_words": 18,
+    "normalization": "case-insensitive whitespace words",
+    "first_nonempty_preview_is_hallucination": true,
+    "first_correct_opening_ms": 13570.962224010145
+  },
+  "timing": {
+    "first_nonempty_ms": 7762.444833002519,
+    "source_end_to_final_ms": 6876.333833005046,
+    "finish_exchange_ms": 5571.9176120182965,
+    "not_desktop_or_microphone_latency": true,
+    "direct_pipe_backpressure": true,
+    "no_comparison_claim_between_runs": true
+  },
+  "memory": {
+    "VmPeak": 892896,
+    "VmSize": 892896,
+    "VmHWM": 375600,
+    "VmRSS": 375600,
+    "Threads": 2
+  },
+  "memory_unit": "KiB except Threads",
+  "field_coverage": {
+    "passed": 20,
+    "recognizer": "synthetic or replayed public results, no new capture",
+    "native_notes_bridge": 2,
+    "notes_public_transcript": 1,
+    "field_refusals_and_lifecycle": 17
+  },
+  "historical_failures": {
+    "r1": "worker refused parent PID1; fixture corrected with owner launcher, production guard unchanged",
+    "r2": "successful earlier probe scheduled drafts after source end; retain receipt, timings not comparable",
+    "r3": "builder worktree and receipt disappeared; no result available, not PASS; cause unconfirmed",
+    "r4_initial_guard": "custody lock mode0600 assertion refused actual owned0644 lock; accepted owned regular non-group-writable0644 without modifying lock"
+  },
+  "custody_recovery": "validated owned worktree flock; exact-hash binary copies and receipt outside build cache; copies removed and capsule absence observed",
+  "remaining": "generic installed legacy importer, real hardware, older physical devices, noise/automatic language and broad engine performance remain unqualified",
+  "artifacts": [
+    {
+      "file": "tools/release/fixtures/dictation_current_stream_20261010/r1-run.log",
+      "raw_sha256": "8acccd72e208d1107bc0d41d97ea0e898a1af31008ad9df02563912a96357c33",
+      "sha256": "8acccd72e208d1107bc0d41d97ea0e898a1af31008ad9df02563912a96357c33",
+      "normalization": "owned paths and machine-specific build wrapper only; result unchanged"
+    },
+    {
+      "file": "tools/release/fixtures/dictation_current_stream_20261010/r1-receipt.json",
+      "raw_sha256": "026e1936d36a11bab71dcd6abb8d29cb24f7110566d59719f4090644948e92c4",
+      "sha256": "0c595af9b8119128eb448e3e50488de40cb64b251bcbc2c9885f9f3bc9629571",
+      "normalization": "owned paths and machine-specific build wrapper only; result unchanged"
+    },
+    {
+      "file": "tools/release/fixtures/dictation_current_stream_20261010/manifest.json",
+      "raw_sha256": "a19d7767fef6649e7b87e7a1de4c7ccc7257dea0a76034df43b7bec79aa44ab5",
+      "sha256": "a19d7767fef6649e7b87e7a1de4c7ccc7257dea0a76034df43b7bec79aa44ab5",
+      "normalization": "owned paths and machine-specific build wrapper only; result unchanged"
+    },
+    {
+      "file": "tools/release/fixtures/dictation_current_stream_20261010/r2-run.log",
+      "raw_sha256": "f719ac772bfbe9e93ca7ecda3eb4d60726a2f4c87e4af70d1f45a2b9cdd7bf5d",
+      "sha256": "f719ac772bfbe9e93ca7ecda3eb4d60726a2f4c87e4af70d1f45a2b9cdd7bf5d",
+      "normalization": "owned paths and machine-specific build wrapper only; result unchanged"
+    },
+    {
+      "file": "tools/release/fixtures/dictation_current_stream_20261010/r2-receipt.json",
+      "raw_sha256": "f282e56cc705e69477b2ad9d8c780a0cdeeb2418b12dbf547b9d90375860c673",
+      "sha256": "5a272b819a8a5219f3b51bae7a47a59678584cfd56a164b9aacbc9eba567b4c9",
+      "normalization": "owned paths and machine-specific build wrapper only; result unchanged"
+    },
+    {
+      "file": "tools/release/fixtures/dictation_current_stream_20261010/manifest.json",
+      "raw_sha256": "a19d7767fef6649e7b87e7a1de4c7ccc7257dea0a76034df43b7bec79aa44ab5",
+      "sha256": "a19d7767fef6649e7b87e7a1de4c7ccc7257dea0a76034df43b7bec79aa44ab5",
+      "normalization": "owned paths and machine-specific build wrapper only; result unchanged"
+    },
+    {
+      "file": "tools/release/fixtures/dictation_current_stream_20261010/r4-run.log",
+      "raw_sha256": "75da82e0ee824379b87be05c98e3bef18114d8efa5293a8f7194688298c1ae75",
+      "sha256": "75da82e0ee824379b87be05c98e3bef18114d8efa5293a8f7194688298c1ae75",
+      "normalization": "owned paths and machine-specific build wrapper only; result unchanged"
+    },
+    {
+      "file": "tools/release/fixtures/dictation_current_stream_20261010/r4-receipt.json",
+      "raw_sha256": "4265543ae5fae7d0a2e1607f90655902bab6ca6d763b8ff68ca2a5f8c94c9b64",
+      "sha256": "4a1c299f417809ba4a68b087626fee55f1f2d83277bae7370a5e314c6d6ab71a",
+      "normalization": "owned paths and machine-specific build wrapper only; result unchanged"
+    },
+    {
+      "file": "tools/release/fixtures/dictation_current_stream_20261010/manifest.json",
+      "raw_sha256": "a19d7767fef6649e7b87e7a1de4c7ccc7257dea0a76034df43b7bec79aa44ab5",
+      "sha256": "a19d7767fef6649e7b87e7a1de4c7ccc7257dea0a76034df43b7bec79aa44ab5",
+      "normalization": "owned paths and machine-specific build wrapper only; result unchanged"
+    },
+    {
+      "file": "tools/release/fixtures/dictation_current_stream_20261010/r3-lost-receipt.log",
+      "raw_sha256": "e2a04f16ba07945dbf54215fd9feff19e164ffce27ce9e89ba93a9de4f5a2a5c",
+      "sha256": "b5c2ca9d8b46062bd56748c240bc8240cf7e235f7a700c3736b866bd70609296",
+      "normalization": "owned paths and machine-specific build wrapper only; result unchanged"
+    },
+    {
+      "file": "tools/release/fixtures/dictation_current_stream_20261010/native-fields.log",
+      "raw_sha256": "2be981bf527a8ad0760b6a7bff62365337072f721baa11c26449e1d8b7c08ad2",
+      "sha256": "96797bf8dc5d1bb77d7dabaecb3c61c092869f49ad72acd8c2948027d4b058c9",
+      "normalization": "owned paths and machine-specific build wrapper only; result unchanged"
+    },
+    {
+      "file": "tools/release/fixtures/dictation_current_stream_20261010/notes-public-replay.log",
+      "raw_sha256": "d6d9d7f9576a75bdca02d1122c8d2e4afa70043f2b14d067036c1f0f0c26a53a",
+      "sha256": "4bb85271d8646419ca9f6d137ed96d39afd3825f56d352d5bb177e885d332ea4",
+      "normalization": "owned paths and machine-specific build wrapper only; result unchanged"
+    },
+    {
+      "file": "tools/release/fixtures/dictation_current_stream_20261010/field-refusals.log",
+      "raw_sha256": "beb8e7a383a36fbfa9102fc971067f4985213932ed4c2aaab0469df262d9323b",
+      "sha256": "ca0861786d015121a0347826857262ac47b6af7f6e041df61485f8c760db4702",
+      "normalization": "owned paths and machine-specific build wrapper only; result unchanged"
+    },
+    {
+      "file": "tools/release/fixtures/dictation_current_stream_20261010/probe-tests.log",
+      "raw_sha256": "fa3dd15982eba232b658f90881f87ffd7d837d15118e11a87b6fe0fe7c1264a8",
+      "sha256": "fa3dd15982eba232b658f90881f87ffd7d837d15118e11a87b6fe0fe7c1264a8",
+      "normalization": "owned paths and machine-specific build wrapper only; result unchanged"
+    }
+  ]
+}

@@ -192,7 +192,7 @@ def main():
     parser.add_argument('--vocabulary', action='append', default=[])
     parser.add_argument('--noise-snr-db', type=int, choices=(10, 20))
     parser.add_argument('--continuous-audio', action='store_true',
-                        help='deliver public PCM every20ms while inference runs; native phase review only')
+                        help='deliver public PCM every20ms while inference runs; private worker review only')
     parser.add_argument('--worker-cadence', action='store_true')
     parser.add_argument('--worker-diagnostics', action='store_true')
     parser.add_argument('--expect-attention', choices=('flash', 'standard'))
@@ -205,13 +205,15 @@ def main():
     if (os.geteuid() == 0 or os.environ.get('TILO_TEST_PRIVATE_NAMESPACE') != '1'
             or args.manifest.stat().st_size > 1048576):
         parser.error('requires an unprivileged, owned hardware-free namespace')
-    if args.continuous_audio and args.native_review_model is None:
-        parser.error('continuous public PCM requires explicit native review')
+    if args.continuous_audio and args.native_review_model is None and not args.worker_diagnostics:
+        parser.error('continuous Whisper PCM requires actual worker preparation diagnostics')
     if args.worker_diagnostics and args.native_review_model is not None:
         parser.error('Whisper diagnostics exclude the native review backend')
     if args.expect_attention and not args.worker_diagnostics:
         parser.error('attention expectation requires actual worker diagnostics')
-    if (args.worker_cadence or args.first_draft_ms is not None or args.draft_interval_ms != 1000 or args.native_right_context != 1) and (not args.continuous_audio or args.native_review_model is None):
+    if args.worker_cadence and not args.continuous_audio:
+        parser.error('worker cadence requires continuous public PCM')
+    if (args.first_draft_ms is not None or args.draft_interval_ms != 1000 or args.native_right_context != 1) and (not args.continuous_audio or args.native_review_model is None):
         parser.error('alternate cadence/context requires explicit continuous native review')
     first_draft_seconds = args.first_draft_ms / 1000 if args.first_draft_ms is not None else args.first_draft_seconds
     draft_interval_seconds = args.draft_interval_ms / 1000
@@ -330,7 +332,7 @@ def main():
         if policy not in ('full_context', 'incremental'):
             raise RuntimeError('unknown worker draft policy')
         if args.worker_cadence:
-            if policy != 'incremental':
+            if args.native_review_model is not None and policy != 'incremental':
                 raise RuntimeError('native worker did not declare incremental policy')
             if args.first_draft_ms is not None or args.draft_interval_ms != 1000:
                 raise RuntimeError('worker cadence excludes explicit timing overrides')
@@ -348,7 +350,12 @@ def main():
             # and never accelerated to make latency look better.
             arrived = None
             if source is not None:
-                time.sleep(max(0, next_draft - time.monotonic()))
+                source_end = capture + len(pcm) / 32000
+                time.sleep(max(0, min(next_draft, source_end) - time.monotonic()))
+                if time.monotonic() >= source_end:
+                    # The user has finished speaking. Retain all queued PCM,
+                    # but stop scheduling drafts ahead of their final result.
+                    break
                 inference = time.monotonic()
                 sequence, sent, arrived = source.control(2)
                 next_draft = inference + draft_interval_seconds
@@ -392,11 +399,14 @@ def main():
             if source.thread.is_alive():
                 raise RuntimeError('public PCM source did not finish')
             sequence, sent, _ = source.control(3)
+            if sent != len(pcm):
+                raise RuntimeError('public PCM source did not deliver the complete final')
         else:
             sequence += 1
             send(worker.stdin, 3, sequence)
         final = receive(worker.stdout)
-        final_ms = (time.monotonic() - final_started) * 1000
+        final_received = time.monotonic()
+        final_ms = (final_received - final_started) * 1000
         if final.get('kind') != 'done' or final.get('sequence') != sequence:
             raise RuntimeError('production final failed')
         if worker.wait(timeout=10) != 0 or first_partial is None or first_lexical_partial is None:
@@ -436,6 +446,10 @@ def main():
             'first_lexical_partial_from_source_start_ms': first_lexical_partial,
             'non_prefix_partial_revisions': revisions, 'drafts': drafts,
             'finalization_ms': final_ms, 'final_text': final['text'],
+            # Finish may reuse a just-computed complete draft. Include that
+            # decode's time after the source ended, rather than reporting only
+            # the subsequent cheap Finish exchange as user-visible latency.
+            'source_end_to_final_ms': max(0, final_received - capture - len(pcm)/32000) * 1000,
             'cpu_user_seconds': usage_after.ru_utime-usage_before.ru_utime,
             'cpu_system_seconds': usage_after.ru_stime-usage_before.ru_stime,
             'wall_seconds': time.monotonic()-started, 'worker_exit': 0,

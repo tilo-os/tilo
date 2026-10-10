@@ -1,0 +1,15 @@
+   Compiling waproto v0.7.0
+   Compiling wacore-libsignal v0.7.0
+   Compiling wacore-noise v0.7.0
+   Compiling wacore-appstate v0.7.0
+   Compiling wacore v0.7.0
+   Compiling whatsapp-rust v0.7.0
+   Compiling tilo-messaging-protocol v0.1.0 (${WORKTREE}/crates/system/messaging-protocol)
+   Compiling shell v0.1.0 (${WORKTREE}/crates/session/shell)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 44.17s
+info: using target runner `${WORKTREE}/tools/cargo-runner.sh` defined by `target.cfg(all(target_arch = "x86_64", target_os = "linux")).runner` within `${WORKTREE}/.cargo/config.toml`
+────────────
+ Nextest run ID 3912d72b-9500-48a2-b053-788c2b8c2f0d with nextest profile: ci
+    Starting 1 test across 1 binary (441 tests skipped)
+────────────
+     Summary [   0.617s] 1 test run: 1 passed, 441 skipped
