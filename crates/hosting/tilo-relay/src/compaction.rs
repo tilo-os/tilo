@@ -60,6 +60,62 @@ const POLL: Duration = Duration::from_millis(250);
 const CATCH_UP: Duration = Duration::from_secs(10);
 const CATCH_UP_POLL: Duration = Duration::from_millis(20);
 
+/// Document-envelope signatures the compactor verified in this process.
+static SIGNATURE_CHECKS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// Thread CPU time compaction spent in this process: reading a channel,
+/// deciding, folding and writing.
+static CPU_NS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Document-envelope signatures compaction verified in this process: what
+/// the hosting bench divides by edits.
+#[must_use]
+pub fn signature_checks() -> u64 {
+    SIGNATURE_CHECKS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Thread CPU nanoseconds compaction spent in this process (0 where the
+/// platform has no per-thread clock).
+#[must_use]
+pub fn cpu_ns() -> u64 {
+    CPU_NS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+#[cfg(unix)]
+fn thread_cpu_ns() -> Option<u64> {
+    let mut time = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    // SAFETY: `time` is a valid, writable timespec for the duration of the
+    // call; an unsupported clock reports an error instead of writing.
+    let status = unsafe { libc::clock_gettime(libc::CLOCK_THREAD_CPUTIME_ID, &raw mut time) };
+    if status != 0 {
+        return None;
+    }
+    u64::try_from(time.tv_sec)
+        .ok()?
+        .checked_mul(1_000_000_000)?
+        .checked_add(u64::try_from(time.tv_nsec).ok()?)
+}
+
+#[cfg(not(unix))]
+const fn thread_cpu_ns() -> Option<u64> {
+    None
+}
+
+/// Run `work` on this thread and count its CPU time in [`cpu_ns`].
+fn on_cpu<T>(work: impl FnOnce() -> T) -> T {
+    let start = thread_cpu_ns();
+    let out = work();
+    if let (Some(start), Some(end)) = (start, thread_cpu_ns()) {
+        CPU_NS.fetch_add(
+            end.saturating_sub(start),
+            std::sync::atomic::Ordering::Relaxed,
+        );
+    }
+    out
+}
+
 #[derive(Default)]
 struct Growth {
     entries: usize,
@@ -261,24 +317,28 @@ impl Compactor {
         if store.shell_authority().is_some() {
             return Ok(());
         }
-        let entries = tokio::task::spawn_blocking(move || store.channel_entries(&channel))
-            .await
-            .map_err(|error| error.to_string())?
-            .map_err(|error| error.to_string())?;
+        let entries =
+            tokio::task::spawn_blocking(move || on_cpu(|| store.channel_entries(&channel)))
+                .await
+                .map_err(|error| error.to_string())?
+                .map_err(|error| error.to_string())?;
         let known = lock(&self.0.member_snapshots)
             .get(&(workspace_id, channel))
             .cloned()
             .unwrap_or_default();
-        let sealed = sealed_tail(&entries, &known);
+        let sealed = on_cpu(|| sealed_tail(&entries, &known));
         let key = self.0.key.clone();
         let plan = tokio::task::spawn_blocking(move || {
-            if !compaction_due(&entries, min_tail) {
-                return None;
-            }
-            fold(&entries).and_then(|folded| {
-                let frames =
-                    document_frames(&key, workspace_id, &folded.route, &folded.snapshot).ok()?;
-                Some((folded, frames))
+            on_cpu(|| {
+                if !compaction_due(&entries, min_tail) {
+                    return None;
+                }
+                fold(&entries).and_then(|folded| {
+                    let frames =
+                        document_frames(&key, workspace_id, &folded.route, &folded.snapshot)
+                            .ok()?;
+                    Some((folded, frames))
+                })
             })
         })
         .await
@@ -536,7 +596,7 @@ async fn owner_run<T: Send + 'static>(
         .submit_prepared_wait(
             4096,
             async { Ok(()) },
-            move |state, ()| operation(&state.store),
+            move |state, ()| on_cpu(|| operation(&state.store)),
             |result| async { result },
         )
         .await
@@ -613,6 +673,7 @@ fn decode_entry(entry: &ChannelEntry) -> (Option<Route>, Piece) {
     // The checks a receiving device applies before it merges anything: the
     // signature verifies, the signer is the device the host authenticated,
     // and the envelope names this route.
+    SIGNATURE_CHECKS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     if collab_types::verify_op(&envelope).is_err()
         || *envelope.author.as_bytes() != entry.author
         || envelope.artifact != artifact
