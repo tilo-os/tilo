@@ -1,0 +1,30 @@
+{
+  "schema": 1,
+  "gtk3": {
+    "version": "3.24.52",
+    "commit": "6a0b360d473f7c546314738c0c8dd9829eb9d3c2",
+    "archive_url": "https://download.gnome.org/sources/gtk/3.24/gtk-3.24.52.tar.xz",
+    "archive_bytes": 13578032,
+    "archive_sha256": "80931fa472a77b9a164f6740e3c0b444fac6770054632d35a7ff9d679e5e7b9f",
+    "license": "LGPL-2.0-or-later"
+  },
+  "history": {
+    "version": "4.22.5",
+    "commit": "bd25f1e2dc2c2fbf3b8864e61afe642910ba359c",
+    "license": "LGPL-2.0-or-later",
+    "files": {
+      "gtk/gtktexthistory.c": "dfeb72fe19f5872ea4aae33f853a96715802cccc343a75b8de4838d9db04137f",
+      "gtk/gtktexthistoryprivate.h": "bf1e45cda7afa5cbc1e9893f6dfed121881121a1ac82dd84bd6d736ef0aeb26c",
+      "gtk/gtkistringprivate.h": "09058522efb1e5443a17d641a05302b0d12b26f6271c3be4885405bead194bb5"
+    }
+  },
+  "base_files": {
+    "gtk/gtkentry.c": "7b32d2169f8d8ed032a13be0395a98061af009ce82d2a5012ae5025549e16080",
+    "gtk/meson.build": "a21f9f798159b043ae49163ad21b1115c1d6b5ebe02a3bebbeeeee836f22e9a5",
+    "gtk/a11y/gtkentryaccessible.c": "1f198a9fb0c59de9ff2702a73e724333a4078139cf66f659de569a33ca1d34db"
+  },
+  "patches": {
+    "0001-stock-entry-native-history.patch": "73513ea2268a84e79f2a42c2d2a19e5801c898426a4a904a29a9b8304a160abd"
+  },
+  "production_ready": false
+}
