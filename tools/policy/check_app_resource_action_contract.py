@@ -64,7 +64,7 @@ FRAMEWORK_LAUNCH = re.compile(
 # vocabulary: a surface's `ResourceSurface::effect`, a view's `cx.effects(..)`.
 TYPED_EFFECT_HANDLER = re.compile(r"\bfn\s+effect\s*\(|\.\s*effects\s*\(\s*(?:move\s*)?\|")
 FRAMEWORK_RESOURCE = re.compile(
-    r"#\[\s*resource\s*\(|\bimpl\s+(?:[\w:]+::)?Resource\s+for\b"
+    r"#\[\s*(?:[\w:]+::)?resource\s*\(|\bimpl\s+(?:[\w:]+::)?Resource\s+for\b"
 )
 LEGACY_ENTRY_POINTS = {
     "legacy room-action override": re.compile(r"\bfn\s+apply_room_action\s*\("),

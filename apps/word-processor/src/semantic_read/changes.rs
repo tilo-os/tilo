@@ -112,7 +112,7 @@ mod tests {
 
     #[test]
     fn a_bolded_block_answers_bold() {
-        let mut source = crate::model::empty().unwrap();
+        let mut source = crate::model::testing::empty().unwrap();
         let line = source.insert_block(None, "paragraph");
         source.splice_text(&line, 0, 0, "Deadline: October 15");
         let mut doc = AutoCommit::load(&source.save()).unwrap();
@@ -131,7 +131,7 @@ mod tests {
 
     #[test]
     fn a_long_block_answers_with_its_start() {
-        let mut source = crate::model::empty().unwrap();
+        let mut source = crate::model::testing::empty().unwrap();
         let short = source.insert_block(None, "paragraph");
         source.splice_text(&short, 0, 0, "short");
         let mut doc = AutoCommit::load(&source.save()).unwrap();

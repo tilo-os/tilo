@@ -3619,9 +3619,7 @@ impl WordProcessorWidget {
             // The file keeps the comment threads in its text, as file
             // formats do.
             let file = crate::model::export_copy(state)?;
-            let c = crate::model::open(&file)?;
-            let dr = tilo_doc::DocRef { doc: &file, c: &c };
-            match format.export(dr, self.inner.content_store()) {
+            match format.export(file.as_ref(), self.inner.content_store()) {
                 Ok(bytes) => {
                     tilo_files::native::atomic::write_preserving_target(path, &bytes).map_err(
                         |e| {

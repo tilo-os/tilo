@@ -27,8 +27,8 @@ use collab_types::caps::{Access, CapOverride, Effect, Expiry, Principal, Scope, 
 use serde::Deserialize;
 use std::path::PathBuf;
 use std::time::Duration;
-use tilo_action_policy::{Grant, Level, Lifetime};
 use ui::framework::{EffectAnswer, EffectCx, Effected};
+use ui::tilo_actions::policy::{Grant, Level, Lifetime};
 use ui::tilo_resource;
 use ui::widget::{Button, Row, Spacer, Text, Widget};
 
@@ -353,7 +353,7 @@ fn cap_view(cap: &CapOverride) -> Option<CapView> {
 /// action this app may use, which the consent sheet grants. Denials and
 /// grants that ask are enforcement, not something the app holds.
 fn grant_view(grant: &Grant) -> Option<CapView> {
-    if grant.answer != tilo_action_policy::Answer::Allow {
+    if grant.answer != ui::tilo_actions::policy::Answer::Allow {
         return None;
     }
     let action = grant.node.id_at(Level::Action)?;
@@ -398,7 +398,7 @@ fn project(state_json: &str) -> Result<Vec<WsGrants>, serde_json::Error> {
             }
         }
         for grant in &ws.policy.grants {
-            let tilo_action_policy::Subject::App(app) = &grant.subject else {
+            let ui::tilo_actions::policy::Subject::App(app) = &grant.subject else {
                 continue;
             };
             if let Some(view) = grant_view(grant) {
@@ -810,15 +810,15 @@ mod tests {
             );
             let action = grant_view(&Grant::new(
                 "shortcuts-freeform",
-                tilo_action_policy::Subject::App("so.tilo.shortcuts".into()),
-                tilo_action_policy::TreePath::room("studio")
+                ui::tilo_actions::policy::Subject::App("so.tilo.shortcuts".into()),
+                ui::tilo_actions::policy::TreePath::room("studio")
                     .app("so.tilo.agent")
                     .any(Level::Kind)
                     .resource("agent.transform:freeform")
                     .action("freeform"),
-                tilo_action_policy::KindSet::ALL,
-                tilo_action_policy::Answer::Allow,
-                tilo_action_policy::Subject::person("owner"),
+                ui::tilo_actions::policy::KindSet::ALL,
+                ui::tilo_actions::policy::Answer::Allow,
+                ui::tilo_actions::policy::Subject::person("owner"),
             ))
             .unwrap();
             assert_eq!(action.kind, "App action");
@@ -927,11 +927,11 @@ mod tests {
             // grant and must not render a card.
             let person = Grant::new(
                 "alice",
-                tilo_action_policy::Subject::person("alice"),
-                tilo_action_policy::TreePath::room("room-1"),
-                tilo_action_policy::KindSet::ALL,
-                tilo_action_policy::Answer::Allow,
-                tilo_action_policy::Subject::person("owner"),
+                ui::tilo_actions::policy::Subject::person("alice"),
+                ui::tilo_actions::policy::TreePath::room("room-1"),
+                ui::tilo_actions::policy::KindSet::ALL,
+                ui::tilo_actions::policy::Answer::Allow,
+                ui::tilo_actions::policy::Subject::person("owner"),
             );
             let grants = serde_json::to_string(&vec![person]).unwrap();
             let json =

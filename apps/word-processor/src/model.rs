@@ -655,24 +655,15 @@ pub fn open(doc: &AutoCommit) -> Result<tilo_doc::Containers, String> {
 }
 
 /// `doc` as a file holds it: its body with the comment threads written
-/// into the text the way file formats keep comments, for the codecs.
+/// into the text the way file formats keep comments, for the codecs
+/// ([`tilo_doc::Document::as_ref`]).
 ///
 /// # Errors
 /// Returns why `doc` holds no Writer document.
-pub fn export_copy(doc: &AutoCommit) -> Result<AutoCommit, String> {
+pub fn export_copy(doc: &AutoCommit) -> Result<tilo_doc::Document, String> {
     let document = <Document as Resource>::read(doc).map_err(|error| error.to_string())?;
     let threads = document.comment_views(doc);
-    let mut copy = doc.clone();
-    if threads.is_empty() {
-        return Ok(copy);
-    }
-    let containers = open(&copy)?;
-    let mut ids = tilo_doc::model::seeded_id_gen(&copy, &containers);
-    let mut dm = tilo_doc::DocMut {
-        doc: &mut copy,
-        c: &containers,
-        ids: &mut ids,
-    };
+    let mut copy = reopen(doc.clone())?;
     for thread in threads {
         let Some((block, start, end)) = &thread.range else {
             continue;
@@ -683,7 +674,7 @@ pub fn export_copy(doc: &AutoCommit) -> Result<AutoCommit, String> {
             .map(|block| block.text.as_str())
             .collect::<Vec<_>>()
             .join("\n");
-        let id = dm.add_comment(block, *start, *end, &thread.author, &text);
+        let id = copy.add_comment(block, *start, *end, &thread.author, &text);
         for reply in &thread.replies {
             let text = reply
                 .blocks
@@ -691,7 +682,7 @@ pub fn export_copy(doc: &AutoCommit) -> Result<AutoCommit, String> {
                 .map(|block| block.text.as_str())
                 .collect::<Vec<_>>()
                 .join("\n");
-            let _ = dm.add_comment_reply(&id, &reply.author, &reply.date, &text);
+            let _ = copy.add_comment_reply(&id, &reply.author, &reply.date, &text);
         }
     }
     Ok(copy)
@@ -730,18 +721,6 @@ impl Document {
             "changed": crate::semantic_read::changes::summary(doc, changes),
         }))
     }
-}
-
-/// A Writer document whose body holds the schema and nothing else, as a
-/// qdoc [`tilo_doc::Document`] to build block by block: for tools and tests.
-///
-/// # Errors
-/// Returns the document's write error.
-pub fn empty() -> Result<tilo_doc::Document, String> {
-    let mut doc = AutoCommit::new();
-    init(&mut doc)?;
-    doc.commit();
-    reopen(doc)
 }
 
 /// The body of the Writer document `doc` as a qdoc [`tilo_doc::Document`].
@@ -1052,15 +1031,8 @@ mod tests {
             }))
             .unwrap();
         let file = export_copy(replica.doc()).unwrap();
-        let containers = open(&file).unwrap();
         let bytes = crate::WpFormat::Docx
-            .export(
-                tilo_doc::DocRef {
-                    doc: &file,
-                    c: &containers,
-                },
-                &tilo_content::NoContent,
-            )
+            .export(file.as_ref(), &tilo_content::NoContent)
             .unwrap();
 
         let mut reopened = Replica::<Document>::new();
@@ -1103,3 +1075,6 @@ mod tests {
         assert_eq!(iso_time(951_868_799_000), "2000-02-29T23:59:59Z");
     }
 }
+
+#[cfg(test)]
+pub(crate) mod testing;

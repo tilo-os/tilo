@@ -754,6 +754,11 @@ pub fn identity(doc: &AutoCommit) -> Option<RecordCheckout> {
     checkout.is_valid().then_some(checkout)
 }
 
+/// [`identity`] of a saved document, as a peer sends it.
+pub fn identity_saved(bytes: &[u8]) -> Option<RecordCheckout> {
+    identity(&AutoCommit::load(bytes).ok()?)
+}
+
 /// Identities this record's document was known by before adoption, oldest
 /// first (see [`RecordCheckout::formerly`]).
 pub fn former_identities(doc: &AutoCommit) -> Vec<RecordId> {

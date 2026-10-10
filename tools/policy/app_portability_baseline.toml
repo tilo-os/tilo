@@ -14,13 +14,10 @@ D2 = 2
 
 [apps.browser]
 D1 = 3
-D2 = 6
-
-[apps.calculator]
-D2 = 1
+D2 = 5
 
 [apps.calendar]
-D2 = 7
+D2 = 6
 
 [apps.camera]
 D1 = 1
@@ -39,7 +36,7 @@ D1 = 1
 D2 = 4
 
 [apps.contacts]
-D2 = 3
+D2 = 2
 
 [apps.containers]
 D1 = 2
@@ -51,7 +48,7 @@ D2 = 3
 
 [apps.ebook]
 D1 = 1
-D2 = 7
+D2 = 6
 
 [apps.file-explorer]
 D1 = 2
@@ -61,7 +58,7 @@ R3 = 3
 
 [apps.firewall]
 D1 = 1
-D2 = 3
+D2 = 2
 
 [apps.git-client]
 D1 = 1
@@ -69,7 +66,7 @@ D2 = 3
 
 [apps.imager]
 D1 = 6
-D2 = 9
+D2 = 8
 R1 = 303
 R2 = 207
 R3 = 55
@@ -109,7 +106,7 @@ D2 = 5
 
 [apps.photos]
 D1 = 1
-D2 = 8
+D2 = 7
 
 [apps.print-centre]
 D1 = 1
@@ -120,7 +117,7 @@ D2 = 2
 
 [apps.remote]
 D1 = 1
-D2 = 4
+D2 = 3
 
 [apps.settings]
 D1 = 4
@@ -134,7 +131,7 @@ D2 = 2
 
 [apps.slides]
 D1 = 1
-D2 = 8
+D2 = 7
 
 [apps.store]
 D1 = 1
@@ -142,13 +139,13 @@ D2 = 5
 
 [apps.terminal]
 D1 = 4
-D2 = 4
+D2 = 3
 R1 = 50
 R2 = 56
 R3 = 3
 
 [apps.totp]
-D2 = 2
+D2 = 1
 
 [apps.tube]
 D1 = 1
@@ -159,10 +156,10 @@ D2 = 3
 
 [apps.vpn]
 D1 = 1
-D2 = 4
+D2 = 2
 
 [apps.weather]
-D2 = 2
+D2 = 1
 
 [apps.windows]
 D1 = 2
@@ -189,7 +186,7 @@ R1 = 18
 W3 = 11
 
 [sdk.tilo-ui]
-R1 = 292
+R1 = 291
 W1 = 18
 W2 = 2
 W3 = 77

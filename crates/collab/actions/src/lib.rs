@@ -163,6 +163,8 @@ pub use schema::{
     CatalogueSchemaEntry, ContextRequirement, PARTICIPANT_VIEW_TAG, REQUIRES_TAG_PREFIX,
     catalogue_schema, catalogue_schema_bytes,
 };
+/// Grants and the decisions over them, as apps read and show them.
+pub use tilo_action_policy as policy;
 /// The field a resource's comments live in: an action that only comments
 /// is placed below it ([`ActionContract::field`]), where someone who may only
 /// comment is granted changes.

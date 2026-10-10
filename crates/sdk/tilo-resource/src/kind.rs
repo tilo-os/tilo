@@ -213,6 +213,26 @@ impl ResourceKind {
         self.read(doc).is_ok()
     }
 
+    /// [`Self::read`] of a saved document, as a peer sends it.
+    ///
+    /// # Errors
+    /// Returns [`ModelError`] when `bytes` are no document, or one that does
+    /// not hold this resource.
+    pub fn read_saved(&self, bytes: &[u8]) -> Result<Box<dyn Any>, ModelError> {
+        let doc = Doc::load(bytes).map_err(|error| ModelError::invalid(error.to_string()))?;
+        self.read(&doc)
+    }
+
+    /// [`Self::holds`] for a saved document.
+    pub fn holds_saved(&self, bytes: &[u8]) -> bool {
+        self.read_saved(bytes).is_ok()
+    }
+
+    /// The heads of a saved document; `None` when `bytes` are no document.
+    pub fn saved_heads(bytes: &[u8]) -> Option<Vec<automerge::ChangeHash>> {
+        Doc::load(bytes).ok().map(|mut doc| doc.get_heads())
+    }
+
     /// What the open resource is called, from a state [`Self::read`]
     /// returned.
     pub fn name(&self, state: &dyn Any) -> String {

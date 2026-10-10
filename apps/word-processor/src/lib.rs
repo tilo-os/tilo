@@ -313,13 +313,8 @@ pub fn save_document(
 ) -> std::io::Result<()> {
     let invalid = |e: String| std::io::Error::new(std::io::ErrorKind::InvalidData, e);
     let doc = crate::model::export_copy(doc).map_err(invalid)?;
-    let containers = crate::model::open(&doc).map_err(invalid)?;
-    let dr = tilo_doc::DocRef {
-        doc: &doc,
-        c: &containers,
-    };
     let bytes = format
-        .export(dr, content)
+        .export(doc.as_ref(), content)
         .map_err(|e| std::io::Error::other(e.to_string()))?;
     tilo_files::file_at(path)
         .and_then(|(dir, name)| tilo_files::blocking::save_document(&dir, &name, &bytes))

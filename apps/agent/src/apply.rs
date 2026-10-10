@@ -179,13 +179,14 @@ impl Editor {
         invoker: tilo_actions::ActionInvoker,
         permissions: PermissionContext,
     ) -> Result<Self> {
-        let doc = AutoCommit::load(bytes)
-            .with_context(|| format!("load {}'s document", contract.namespace))?;
         contract
             .kind
-            .read(&doc)
+            .read_saved(bytes)
             .map_err(|error| anyhow::anyhow!("{}'s document: {error}", contract.namespace))?;
         let view = open(contract, room, bytes, &invoker, &permissions)?;
+        let doc = view
+            .read(AutoCommit::clone)
+            .with_context(|| format!("{}'s view holds no document", contract.namespace))?;
         let mut editor = Self {
             view,
             doc,
@@ -225,10 +226,7 @@ impl Editor {
     /// all, which is cluster-scoped — is handed all of them, so a snapshot
     /// that is not this document is ordinary rather than an error.
     pub fn merge_full(&mut self, bytes: &[u8]) -> bool {
-        let Ok(mut incoming) = AutoCommit::load(bytes) else {
-            return false;
-        };
-        if !self.contract.kind.holds(&incoming) {
+        if !self.contract.kind.holds_saved(bytes) {
             return false;
         }
         let merged = self
@@ -236,7 +234,9 @@ impl Editor {
             .merge(&DocumentMutation::Snapshot(bytes.to_vec()))
             .unwrap_or(false);
         self.refresh();
-        merged || self.doc.get_heads() == incoming.get_heads()
+        merged
+            || ui::tilo_resource::ResourceKind::saved_heads(bytes)
+                .is_some_and(|heads| self.doc.get_heads() == heads)
     }
 
     /// Whether a peer's snapshot is a *different* document that is asking
@@ -262,10 +262,9 @@ impl Editor {
     ///
     /// When `bytes` are not a document of this replica's kind.
     pub fn replace_with(&mut self, bytes: &[u8]) -> Result<()> {
-        let doc = AutoCommit::load(bytes).context("load a peer snapshot")?;
         self.contract
             .kind
-            .read(&doc)
+            .read_saved(bytes)
             .map_err(|error| anyhow::anyhow!("a peer snapshot: {error}"))?;
         self.view = open(
             self.contract,
@@ -274,7 +273,6 @@ impl Editor {
             &self.invoker,
             &self.permissions,
         )?;
-        self.doc = doc;
         self.refresh();
         Ok(())
     }
@@ -357,11 +355,10 @@ fn open(
     permissions: &PermissionContext,
 ) -> Result<AttachedView> {
     let definition = (contract.definition)();
-    let doc = AutoCommit::load(bytes).context("load the record")?;
     // The record the document says it is; one that names none — the room's
     // own document, or a page not saved as a record yet — is held as the
     // room's document.
-    let checkout = ui::record::identity(&doc)
+    let checkout = ui::record::identity_saved(bytes)
         .filter(|_| !definition.keeps_room_record())
         .unwrap_or_else(|| RecordCheckout::package_primary(definition.record_kind.clone()));
     AttachedView::open_for(
