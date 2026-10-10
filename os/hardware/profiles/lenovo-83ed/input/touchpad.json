@@ -1,0 +1,24 @@
+{
+  "description": "Lenovo Yoga Slim 7x 83ED precision touchpad, a 130x76 mm clickpad (hid-over-i2c 0488:1054). Capabilities from /sys/class/input/event3/device; axis ranges from the HID report descriptor (/sys/.../report_descriptor): X 0..3141 over 133 mm, Y 0..1842 over 78 mm, 5 contacts.",
+  "class": "touchpad",
+  "name": "hid-over-i2c 0488:1054 Touchpad",
+  "bus": 24,
+  "vendor": 1160,
+  "product": 4180,
+  "version": 256,
+  "props": [0, 2],
+  "key": [272, 325, 328, 330, 333, 334, 335],
+  "rel": [],
+  "msc": [5],
+  "led": [],
+  "rep": false,
+  "abs": [
+    {"code": 0, "min": 0, "max": 3141, "fuzz": 0, "flat": 0, "resolution": 24},
+    {"code": 1, "min": 0, "max": 1842, "fuzz": 0, "flat": 0, "resolution": 24},
+    {"code": 47, "min": 0, "max": 4, "fuzz": 0, "flat": 0, "resolution": 0},
+    {"code": 53, "min": 0, "max": 3141, "fuzz": 0, "flat": 0, "resolution": 24},
+    {"code": 54, "min": 0, "max": 1842, "fuzz": 0, "flat": 0, "resolution": 24},
+    {"code": 55, "min": 0, "max": 2, "fuzz": 0, "flat": 0, "resolution": 0},
+    {"code": 57, "min": 0, "max": 65535, "fuzz": 0, "flat": 0, "resolution": 0}
+  ]
+}
