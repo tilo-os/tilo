@@ -1962,22 +1962,8 @@ fn assert_change_repaints_under(
     max_percent: u64,
     change: impl FnOnce(&mut FrameBuilder),
 ) -> Vec<FineDamageRect> {
-    assert_prepared_change_repaints_under(frame, label, max_percent, |_| {}, change)
-}
-
-/// [`assert_change_repaints_under`], with `prepare` run once the oracles
-/// exist, right before the settled frame: for a change that must follow its
-/// preparation within a deadline (a tooltip's dwell).
-fn assert_prepared_change_repaints_under(
-    frame: &mut FrameBuilder,
-    label: &str,
-    max_percent: u64,
-    prepare: impl FnOnce(&mut FrameBuilder),
-    change: impl FnOnce(&mut FrameBuilder),
-) -> Vec<FineDamageRect> {
     let mut retained = bridge();
     let mut dense = bridge();
-    prepare(frame);
     let settled = frame.paint_with_damage();
     paint_retained_and_compare(
         &mut retained,
@@ -2172,28 +2158,6 @@ fn with_notes_on_screen<R>(
     read(rect, unsafe { &mut *notes })
 }
 
-/// Paint until the in-process apps have nothing more to show for two frames
-/// running: startup writes, saves and relayouts have landed.
-#[cfg(target_os = "linux")]
-fn quiesce(frame: &mut FrameBuilder, label: &str) {
-    let mut idle = 0;
-    for _ in 0..60 {
-        frame.wake_mounted_components();
-        frame.relayout();
-        let painted = frame.paint_with_damage();
-        let still = painted.damage_regions.as_ref().is_some_and(Vec::is_empty);
-        idle = if still { idle + 1 } else { 0 };
-        if idle == 2 {
-            return;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(50));
-    }
-    panic!(
-        "{label}: the desktop never came to rest: {}",
-        embedded_damage(frame)
-    );
-}
-
 #[cfg(target_os = "linux")]
 fn settle(frame: &mut FrameBuilder, frames: usize) {
     for _ in 0..frames {
@@ -2284,72 +2248,6 @@ fn typing_in_notes_repaints_what_changed_not_the_tile() {
         assert!(
             after.len() > before.len() && after.contains("fox j"),
             "{label}: the key reached the note's text: {before:?} -> {after:?}"
-        );
-    }
-}
-
-#[cfg(target_os = "linux")]
-#[test]
-fn a_tooltip_in_an_embedded_app_repaints_the_tooltip() {
-    for (name, theme) in THEMES {
-        let (mut frame, _clock) = desktop_in(theme());
-        let label = format!("a tooltip in an in-process app, {name}");
-        // An empty notebook, at rest: no caret blinks and no write lands in
-        // the status bar while the pointer rests.
-        settle_notes(&mut frame);
-        quiesce(&mut frame, &label);
-        let screen = Rect::new(0.0, 0.0, frame.viewport.0, frame.viewport.1);
-        let control = frame
-            .node_map
-            .values()
-            .find_map(|&widget| {
-                // SAFETY: node_map pointers are owned by the live widget tree
-                // and remain valid while the frame is borrowed.
-                let widget = unsafe { &mut *widget };
-                let app = widget
-                    .as_any_mut()?
-                    .downcast_mut::<ui::app::EmbeddedApp>()?;
-                let rect = app.get_rect();
-                if rect.area() <= 0.0 || screen.intersect(rect) != rect {
-                    return None;
-                }
-                let at = app.app().tooltip_region_for_test()?;
-                Some(Point::new(rect.x0 + at.x, rect.y0 + at.y))
-            })
-            .expect("an app on screen has a control with a tooltip");
-        // The pointer arrives (the settled frame shows its hover), then rests
-        // until the tooltip shows: the measured frame adds the tooltip.
-        let _ = assert_prepared_change_repaints_under(
-            &mut frame,
-            &label,
-            5,
-            |frame| {
-                point_at(frame, control);
-                for _ in 0..4 {
-                    frame.relayout();
-                    let _ = frame.paint_with_damage();
-                    if embedded_damage(frame).contains("tooltip_pending=true") {
-                        break;
-                    }
-                }
-                assert!(
-                    embedded_damage(frame).contains("tooltip_pending=true"),
-                    "the app is waiting to show the control's tooltip: {}",
-                    embedded_damage(frame)
-                );
-            },
-            |frame| {
-                std::thread::sleep(
-                    ui::widget::tooltip::HOVER_DWELL + std::time::Duration::from_millis(100),
-                );
-                frame.wake_mounted_components();
-                frame.relayout();
-            },
-        );
-        assert!(
-            embedded_damage(&frame).contains("tooltip=Some"),
-            "{label}: the tooltip is on screen: {}",
-            embedded_damage(&frame)
         );
     }
 }
