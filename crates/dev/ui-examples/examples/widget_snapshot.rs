@@ -580,16 +580,7 @@ pub fn run(_args: &[String]) {
     // are the switches every other capture honours; default stays dark at
     // 1×, and motion is reduced like a real capture so nothing mid-animation
     // lands in the still.
-    let text_scale = std::env::var("TILO_SHOTS_TEXT_SCALE").ok();
-    let theme = std::env::var("TILO_SHOTS_THEME")
-        .ok()
-        .and_then(|name| Theme::named(&name))
-        .unwrap_or_else(Theme::dark)
-        .with_text_scale(tilo_ui::launch::shot_text_scale(
-            None,
-            text_scale.as_deref(),
-        ))
-        .with_reduce_motion(true);
+    let theme = crate::registry::shot_theme().with_reduce_motion(true);
     let mut tr = TextRenderer::new();
     let mut scene = Scene::new();
     let mut doc = AutoCommit::new();
