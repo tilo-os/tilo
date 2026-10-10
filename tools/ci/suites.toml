@@ -904,6 +904,12 @@ readers = ["apps/notes/build.rs"]
 [[cargo]]
 package = "shell"
 inputs = [
+  "apps/chat/Cargo.toml",
+  "apps/chat/tilo-app.toml",
+  "apps/agent/Cargo.toml",
+  "apps/agent/tilo-app.toml",
+  "apps/store/Cargo.toml",
+  "apps/store/tilo-app.toml",
   "apps/browser/tilo-app.toml",
   "apps/file-explorer/tilo-app.toml",
   "tools/protocols/airdrop_sender.py",
@@ -917,12 +923,14 @@ inputs = [
   "tools/with-test-environment.sh",
   "tools/atspi_external_client.py",
   "scripts/headless-examples/",
+  "os/usr/share/rime-data/default.custom.yaml",
 ]
 readers = [
   "crates/session/shell/examples/files_clipboard_native.rs",
   "crates/session/shell/src/shell/broker_services/file_clipboard/bridge_tests/child_tests.rs",
   "crates/session/shell/src/shell/broker_services/airdrop_transfer.rs",
   "crates/session/shell/examples/packaged_native_bootstrap.rs",
+  "crates/session/shell/examples/packaged_agent_lifecycle.rs",
   "crates/session/shell/src/linux_main.rs",
   "crates/session/shell/tests/support/snapshot.rs",
   "crates/session/shell/tests/input_method_wire.rs",

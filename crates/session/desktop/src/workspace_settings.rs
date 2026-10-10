@@ -2546,7 +2546,11 @@ pub fn agent_profile_activity_presentation(
             |at| {
                 t_args(
                     "workspace-settings-agent-last-activity",
-                    &[("when", format_relative_time(at, now).into())],
+                    &[(
+                        "when",
+                        format_relative_time(tilo_clock::from_std(at), tilo_clock::from_std(now))
+                            .into(),
+                    )],
                 )
             },
         );
