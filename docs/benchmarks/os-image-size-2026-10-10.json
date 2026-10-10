@@ -1851,6 +1851,746 @@
      2587275
     ]
    ]
+  },
+  {
+   "label": "before-til735-main-e88a45c-x86_64",
+   "image": "registry.tilo.so/tilo/tilo-ci@sha256:8fccfcedf7fad3688eb44d9cf2632a6ce296817f43709c0b8dd4421daf242dbd",
+   "revision": "e88a45c708b8fc3a8fb38f771b0b0c86ec5591b6",
+   "architecture": "x86_64",
+   "labels": {
+    "org.tilo.rust-lto": "off",
+    "org.tilo.with-windows": "1"
+   },
+   "totals": {
+    "layers": 187,
+    "compressed": 4755833467,
+    "payload": 11903191234,
+    "content": 11096171422,
+    "unique_content": 10803193523,
+    "undeployed": 545556816,
+    "redundant_payload": 383717854,
+    "files": 72263,
+    "hard_links": 29654,
+    "packages": 1342
+   },
+   "largest_layers": [
+    {
+     "digest": "sha256:abec4967a32301334acf35d8e78e00205f90dd35e3baa84effea4c18308d4c81",
+     "compressed": 1319332981,
+     "payload": 3908301628,
+     "created_by": "RUN /bin/sh -c test \"$(uname -m)\" = \"$TILO_WINDOWS_ARCH\" && dnf install -y --setopt=reposdir=/repo mesa-dri-drivers mesa-vulkan-drivers libglvnd-egl harfbuzz-ic"
+    },
+    {
+     "digest": "sha256:392622b415eef58f88d9a19e68148908dc8e857b0485096a0c466339dbf4c9fa",
+     "compressed": 451446744,
+     "payload": 1334918917,
+     "created_by": "COPY /out/proton/ /usr/lib/tilo/windows-runners/proton/"
+    },
+    {
+     "digest": "sha256:da2ffb0f94520d1020cb556637a4dd9b4a43f12c683fcf4b5500a50986b94722",
+     "compressed": 448719154,
+     "payload": 1396693924,
+     "created_by": "COPY / /"
+    },
+    {
+     "digest": "sha256:60e7aaeb5b052af1a8a9ba13570808dac4ca92ca108d020b455efa920cf102ab",
+     "compressed": 305557733,
+     "payload": 688481599,
+     "created_by": "COPY /image/usr/ /usr/"
+    },
+    {
+     "digest": "sha256:3e978a9dbcb08a45ea10e74918dfd3c826cefb7549eb407772cf7d7319e94535",
+     "compressed": 299360336,
+     "payload": 803971124,
+     "created_by": "COPY /out/steam-runtime/ /usr/lib/tilo/windows-runners/steam-runtime/"
+    },
+    {
+     "digest": "sha256:b1d8f06b09c7afb8d020bb400f06b3eaab6f4cf15a51930c539b2a83b3f92567",
+     "compressed": 262921169,
+     "payload": 311223978,
+     "created_by": "RUN /bin/sh -c set -eux; test -n \"$KERNEL_RPMS_REF\"; mkdir -p /etc/tilo-swap.d; printf '[frozen]\\nname=frozen\\nbaseurl=file:///frozen-repo\\ngpgcheck=0\\nenabled="
+    },
+    {
+     "digest": "sha256:151da405a668d125332fecbd7e2d283a772b2013ee6a3e1e128bdf76656784a8",
+     "compressed": 238610988,
+     "payload": 877373440,
+     "created_by": "COPY /out/virtio-win.iso /usr/share/virtio-win/virtio-win.iso"
+    },
+    {
+     "digest": "sha256:87950f397140ad7e43827bb1d5ef6249f1e5925bc097f9f9143ec00462c3c1aa",
+     "compressed": 188792113,
+     "payload": 467718645,
+     "created_by": "COPY /usr/share/tilo-apps/ /usr/share/tilo-apps/"
+    },
+    {
+     "digest": "sha256:23c46baa9a2d77bba5344604e06d702fbcbab6a628cb8e96dab90c6a036181e0",
+     "compressed": 131443584,
+     "payload": 178403443,
+     "created_by": "initramfs (kernel 7.2.7-200.fc44.x86_64) and rpmostree-unpackaged-content"
+    },
+    {
+     "digest": "sha256:12fd82f3b84870e7d3991520a894752df008c7fa033e2641b559ac6fab8f1198",
+     "compressed": 113908739,
+     "payload": 118874112,
+     "created_by": "COPY /out/*.efi /boot/EFI/Linux/"
+    },
+    {
+     "digest": "sha256:3512c8da9e960b5d3375f2b2593d8f9d020cba6a70be5095ece41e9a7e3d186c",
+     "compressed": 105972557,
+     "payload": 105924967,
+     "created_by": "nvidia-gpu-firmware-20260916-1.fc44.noarch"
+    },
+    {
+     "digest": "sha256:65369f78a0b8f33a5333b3b407c1cd07c9e86c479a4a1212cc767f04814dd837",
+     "compressed": 77364160,
+     "payload": 76862989,
+     "created_by": "kernel-modules-7.2.7-200.fc44.x86_64"
+    },
+    {
+     "digest": "sha256:518cd98fd2ba604f9b7406b1e79619c339d634f5852c9e016e5db622f9d6ffc7",
+     "compressed": 52247890,
+     "payload": 93919412,
+     "created_by": "12 components"
+    },
+    {
+     "digest": "sha256:705bc69270c695bc44213f80bfea62f5b3f15c84568ecf01e5954c572f3ceb4f",
+     "compressed": 50594726,
+     "payload": 55479448,
+     "created_by": "kernel-modules-core-7.2.7-200.fc44.x86_64"
+    },
+    {
+     "digest": "sha256:f180c16999038ccfeaf7b3afefc2a4cc7a86450d0cfd82083ec2382603ef7a9d",
+     "compressed": 49444909,
+     "payload": 49356249,
+     "created_by": "atheros-firmware-20260916-1.fc44.noarch"
+    },
+    {
+     "digest": "sha256:a709c7b27b347d2343233caf4eef57a98967b1fcdd76d6b7cea9af3c120ff80d",
+     "compressed": 34558895,
+     "payload": 34548520,
+     "created_by": "linux-firmware-20260916-1.fc44.noarch"
+    },
+    {
+     "digest": "sha256:d8d9a61a0338b7f4e4ba81271d25787944811e1f66deb3a6c43db52ee39e7796",
+     "compressed": 33218793,
+     "payload": 33184732,
+     "created_by": "mt7xxx-firmware-20260916-1.fc44.noarch"
+    },
+    {
+     "digest": "sha256:82f5c0aa6d51228fdb5dea419bdd717dca0995f017f8018d77dcafe46b6fa890",
+     "compressed": 31383865,
+     "payload": 31642483,
+     "created_by": "COPY /out/installer/virtio-win-guest-tools.exe /usr/share/virtio-win/installer/virtio-win-guest-tools.exe"
+    },
+    {
+     "digest": "sha256:00314e56279be68bf82395385bbf2efd3a4bcec6cc63fb642df31b711eae1c57",
+     "compressed": 29563886,
+     "payload": 29377159,
+     "created_by": "amd-gpu-firmware-20260916-1.fc44.noarch"
+    },
+    {
+     "digest": "sha256:8fb5fdc3ea8df5b4aad80ea42b461cd37845e750721c3e98db99848f394826a2",
+     "compressed": 28663139,
+     "payload": 72002770,
+     "created_by": "9 components"
+    }
+   ],
+   "directories": [
+    [
+     "/usr/lib/tilo",
+     2139057443
+    ],
+    [
+     "/usr/lib64/wine-wow64",
+     1499511780
+    ],
+    [
+     "/usr/share/virtio-win",
+     909015923
+    ],
+    [
+     "/usr/lib/tilo-runtime",
+     687764011
+    ],
+    [
+     "/sysroot/ostree/repo",
+     545556816
+    ],
+    [
+     "/usr/share/tilo-apps",
+     467718645
+    ],
+    [
+     "/usr/share/wine",
+     442194824
+    ],
+    [
+     "/usr/lib/firmware",
+     312961531
+    ],
+    [
+     "/usr/share/locale",
+     214463627
+    ],
+    [
+     "/usr/x86_64-w64-mingw32/sys-root",
+     194127564
+    ],
+    [
+     "/usr/lib/modules",
+     144973668
+    ],
+    [
+     "/boot/EFI/Linux",
+     118874112
+    ],
+    [
+     "/usr/lib/locale",
+     82512529
+    ],
+    [
+     "/usr/lib64/python3.14",
+     59549425
+    ],
+    [
+     "/usr/share/hunspell",
+     51440098
+    ],
+    [
+     "/usr/share/rpm",
+     49692672
+    ],
+    [
+     "/usr/share/doc",
+     48922909
+    ],
+    [
+     "/usr/share/edk2",
+     48668709
+    ],
+    [
+     "/usr/share/fonts",
+     34753128
+    ],
+    [
+     "/usr/lib/sysimage",
+     33718322
+    ]
+   ],
+   "packages": [
+    [
+     "wine-core",
+     1420588763
+    ],
+    [
+     "wine-mono",
+     318703141
+    ],
+    [
+     "mesa-vulkan-drivers",
+     182331338
+    ],
+    [
+     "tilo-kernel-core",
+     159291408
+    ],
+    [
+     "llvm-libs",
+     147275895
+    ],
+    [
+     "mingw64-crt",
+     141767574
+    ],
+    [
+     "nvidia-gpu-firmware",
+     105915244
+    ],
+    [
+     "qemu-system-x86-core",
+     63504893
+    ],
+    [
+     "mesa-dri-drivers",
+     55782311
+    ],
+    [
+     "mingw32-wine-gecko",
+     54809719
+    ],
+    [
+     "mingw64-wine-gecko",
+     52548727
+    ],
+    [
+     "podman",
+     51681862
+    ],
+    [
+     "atheros-firmware",
+     49377472
+    ],
+    [
+     "edk2-ovmf",
+     47634539
+    ],
+    [
+     "python3-libs",
+     46107600
+    ],
+    [
+     "libicu",
+     38393461
+    ],
+    [
+     "linux-firmware",
+     34629026
+    ],
+    [
+     "mt7xxx-firmware",
+     33180900
+    ],
+    [
+     "qemu-user-static-mips",
+     32881506
+    ],
+    [
+     "libvirt-libs",
+     31726180
+    ]
+   ],
+   "redundant_by_directory": [
+    [
+     "/usr/share/tilo-apps/pkgs",
+     117438229
+    ],
+    [
+     "/usr/lib/tilo/windows-runners",
+     106691103
+    ],
+    [
+     "/sysroot/ostree/repo/objects",
+     39814868
+    ],
+    [
+     "/usr/lib/tilo-runtime/2026.07+native.a95d2aee5615f022c873f81d0d2a9b1b",
+     16302902
+    ],
+    [
+     "/etc/selinux/targeted/active",
+     14528753
+    ],
+    [
+     "/usr/lib/udev/hwdb.bin",
+     14372567
+    ],
+    [
+     "/kernel/7.2.8/vmlinuz",
+     14299648
+    ],
+    [
+     "/usr/share/poppler/cMap",
+     8353020
+    ],
+    [
+     "/etc/selinux/targeted/policy",
+     7627387
+    ],
+    [
+     "/usr/lib/locale/it_CH.utf8",
+     2587448
+    ],
+    [
+     "/usr/lib/locale/fr_BE.utf8",
+     2587444
+    ],
+    [
+     "/usr/lib/locale/zh_HK.utf8",
+     2587275
+    ],
+    [
+     "/usr/lib/locale/pt_BR.utf8",
+     2587103
+    ],
+    [
+     "/usr/lib/locale/ru_RU.utf8",
+     2587103
+    ],
+    [
+     "/usr/lib/locale/de_AT.utf8",
+     2587041
+    ]
+   ]
+  },
+  {
+   "label": "after-til735-x86_64",
+   "image": "registry.tilo.so/tilo/tilo-ci@sha256:4cbce9371bd2a610add7b5bfb56d6f81145fc475fdbae11daa1ccb6e0036ff0d",
+   "revision": "e90b144fa5b427d299ac7c32b368e7347c252b8e",
+   "architecture": "x86_64",
+   "labels": {
+    "org.tilo.rust-lto": "off",
+    "org.tilo.with-windows": "1"
+   },
+   "totals": {
+    "layers": 187,
+    "compressed": 4711047974,
+    "payload": 11789027884,
+    "content": 10982008072,
+    "unique_content": 10803689053,
+    "undeployed": 545556816,
+    "redundant_payload": 269058974,
+    "files": 70448,
+    "hard_links": 29240,
+    "packages": 1342
+   },
+   "largest_layers": [
+    {
+     "digest": "sha256:9720544b0a29b32be4491f910d6a59484f842e30dbb89ae3bc06a5bbb8a8c98a",
+     "compressed": 1319343817,
+     "payload": 3908301628,
+     "created_by": "RUN /bin/sh -c test \"$(uname -m)\" = \"$TILO_WINDOWS_ARCH\" && dnf install -y --setopt=reposdir=/repo mesa-dri-drivers mesa-vulkan-drivers libglvnd-egl harfbuzz-ic"
+    },
+    {
+     "digest": "sha256:1ccae038282226c58ac3ec68ab82cd15bac17aa409972c3f25adae2c38295a0e",
+     "compressed": 451446680,
+     "payload": 1334918917,
+     "created_by": "COPY /out/proton/ /usr/lib/tilo/windows-runners/proton/"
+    },
+    {
+     "digest": "sha256:dc50fd2159ce6c52445a0fe15684d20938bd08a38a0143518849e742dade1672",
+     "compressed": 448672396,
+     "payload": 1396876588,
+     "created_by": "COPY / /"
+    },
+    {
+     "digest": "sha256:76db95f562a2a6e2a330e2a99cefbf2e8803a5e85e50cd9522a986035517f757",
+     "compressed": 305572084,
+     "payload": 688481599,
+     "created_by": "COPY /image/usr/ /usr/"
+    },
+    {
+     "digest": "sha256:91436f00a2ac23cbe41ce7d4357994c09a09136725fc06bb8bb06fdb8ff4e0e6",
+     "compressed": 299360338,
+     "payload": 803971124,
+     "created_by": "COPY /out/steam-runtime/ /usr/lib/tilo/windows-runners/steam-runtime/"
+    },
+    {
+     "digest": "sha256:1326f3a3bf3e5b32ce2dd5df40a498e38d4a93d6ce59341668f4fa91c8e5d522",
+     "compressed": 262920973,
+     "payload": 311223978,
+     "created_by": "RUN /bin/sh -c set -eux; test -n \"$KERNEL_RPMS_REF\"; mkdir -p /etc/tilo-swap.d; printf '[frozen]\\nname=frozen\\nbaseurl=file:///frozen-repo\\ngpgcheck=0\\nenabled="
+    },
+    {
+     "digest": "sha256:9c3b1f638c03917a5e3a64ef2f7bf937f72dbff8ca46228830746296c24bf5b7",
+     "compressed": 238610988,
+     "payload": 877373440,
+     "created_by": "COPY /out/virtio-win.iso /usr/share/virtio-win/virtio-win.iso"
+    },
+    {
+     "digest": "sha256:f22cbbb5f18cd0b8a367f0316bbeb1dc33aabe4d77350ed8b4fa6554ae28fde6",
+     "compressed": 144027112,
+     "payload": 353372631,
+     "created_by": "COPY /out/usr/share/tilo-apps/ /usr/share/tilo-apps/"
+    },
+    {
+     "digest": "sha256:23c46baa9a2d77bba5344604e06d702fbcbab6a628cb8e96dab90c6a036181e0",
+     "compressed": 131443584,
+     "payload": 178403443,
+     "created_by": "initramfs (kernel 7.2.7-200.fc44.x86_64) and rpmostree-unpackaged-content"
+    },
+    {
+     "digest": "sha256:72110ddfe29dd1c9e5ca3c32386ae47931f347c7d6f8be69c250e5cdd9a7d4bf",
+     "compressed": 113908736,
+     "payload": 118874112,
+     "created_by": "COPY /out/*.efi /boot/EFI/Linux/"
+    },
+    {
+     "digest": "sha256:3512c8da9e960b5d3375f2b2593d8f9d020cba6a70be5095ece41e9a7e3d186c",
+     "compressed": 105972557,
+     "payload": 105924967,
+     "created_by": "nvidia-gpu-firmware-20260916-1.fc44.noarch"
+    },
+    {
+     "digest": "sha256:65369f78a0b8f33a5333b3b407c1cd07c9e86c479a4a1212cc767f04814dd837",
+     "compressed": 77364160,
+     "payload": 76862989,
+     "created_by": "kernel-modules-7.2.7-200.fc44.x86_64"
+    },
+    {
+     "digest": "sha256:518cd98fd2ba604f9b7406b1e79619c339d634f5852c9e016e5db622f9d6ffc7",
+     "compressed": 52247890,
+     "payload": 93919412,
+     "created_by": "12 components"
+    },
+    {
+     "digest": "sha256:705bc69270c695bc44213f80bfea62f5b3f15c84568ecf01e5954c572f3ceb4f",
+     "compressed": 50594726,
+     "payload": 55479448,
+     "created_by": "kernel-modules-core-7.2.7-200.fc44.x86_64"
+    },
+    {
+     "digest": "sha256:f180c16999038ccfeaf7b3afefc2a4cc7a86450d0cfd82083ec2382603ef7a9d",
+     "compressed": 49444909,
+     "payload": 49356249,
+     "created_by": "atheros-firmware-20260916-1.fc44.noarch"
+    },
+    {
+     "digest": "sha256:a709c7b27b347d2343233caf4eef57a98967b1fcdd76d6b7cea9af3c120ff80d",
+     "compressed": 34558895,
+     "payload": 34548520,
+     "created_by": "linux-firmware-20260916-1.fc44.noarch"
+    },
+    {
+     "digest": "sha256:d8d9a61a0338b7f4e4ba81271d25787944811e1f66deb3a6c43db52ee39e7796",
+     "compressed": 33218793,
+     "payload": 33184732,
+     "created_by": "mt7xxx-firmware-20260916-1.fc44.noarch"
+    },
+    {
+     "digest": "sha256:9a471777c7da24dad3f74eee7b84a771b8fcf6ca01e7068d7ac2044678a6d1f8",
+     "compressed": 31383863,
+     "payload": 31642483,
+     "created_by": "COPY /out/installer/virtio-win-guest-tools.exe /usr/share/virtio-win/installer/virtio-win-guest-tools.exe"
+    },
+    {
+     "digest": "sha256:00314e56279be68bf82395385bbf2efd3a4bcec6cc63fb642df31b711eae1c57",
+     "compressed": 29563886,
+     "payload": 29377159,
+     "created_by": "amd-gpu-firmware-20260916-1.fc44.noarch"
+    },
+    {
+     "digest": "sha256:8fb5fdc3ea8df5b4aad80ea42b461cd37845e750721c3e98db99848f394826a2",
+     "compressed": 28663139,
+     "payload": 72002770,
+     "created_by": "9 components"
+    }
+   ],
+   "directories": [
+    [
+     "/usr/lib/tilo",
+     2139057443
+    ],
+    [
+     "/usr/lib64/wine-wow64",
+     1499511780
+    ],
+    [
+     "/usr/share/virtio-win",
+     909015923
+    ],
+    [
+     "/usr/lib/tilo-runtime",
+     687764011
+    ],
+    [
+     "/sysroot/ostree/repo",
+     545556816
+    ],
+    [
+     "/usr/share/wine",
+     442194824
+    ],
+    [
+     "/usr/share/tilo-apps",
+     353372631
+    ],
+    [
+     "/usr/lib/firmware",
+     312961531
+    ],
+    [
+     "/usr/share/locale",
+     214463627
+    ],
+    [
+     "/usr/x86_64-w64-mingw32/sys-root",
+     194127564
+    ],
+    [
+     "/usr/lib/modules",
+     144973668
+    ],
+    [
+     "/boot/EFI/Linux",
+     118874112
+    ],
+    [
+     "/usr/lib/locale",
+     82512529
+    ],
+    [
+     "/usr/lib64/python3.14",
+     59549425
+    ],
+    [
+     "/usr/share/hunspell",
+     51440098
+    ],
+    [
+     "/usr/share/rpm",
+     49692672
+    ],
+    [
+     "/usr/share/doc",
+     48922909
+    ],
+    [
+     "/usr/share/edk2",
+     48668709
+    ],
+    [
+     "/usr/share/fonts",
+     34753128
+    ],
+    [
+     "/usr/lib/sysimage",
+     33718322
+    ]
+   ],
+   "packages": [
+    [
+     "wine-core",
+     1420588763
+    ],
+    [
+     "wine-mono",
+     318703141
+    ],
+    [
+     "mesa-vulkan-drivers",
+     182331338
+    ],
+    [
+     "tilo-kernel-core",
+     159291408
+    ],
+    [
+     "llvm-libs",
+     147275895
+    ],
+    [
+     "mingw64-crt",
+     141767574
+    ],
+    [
+     "nvidia-gpu-firmware",
+     105915244
+    ],
+    [
+     "qemu-system-x86-core",
+     63504893
+    ],
+    [
+     "mesa-dri-drivers",
+     55782311
+    ],
+    [
+     "mingw32-wine-gecko",
+     54809719
+    ],
+    [
+     "mingw64-wine-gecko",
+     52548727
+    ],
+    [
+     "podman",
+     51681862
+    ],
+    [
+     "atheros-firmware",
+     49377472
+    ],
+    [
+     "edk2-ovmf",
+     47634539
+    ],
+    [
+     "python3-libs",
+     46107600
+    ],
+    [
+     "libicu",
+     38393461
+    ],
+    [
+     "linux-firmware",
+     34629026
+    ],
+    [
+     "mt7xxx-firmware",
+     33180900
+    ],
+    [
+     "qemu-user-static-mips",
+     32881506
+    ],
+    [
+     "libvirt-libs",
+     31726180
+    ]
+   ],
+   "redundant_by_directory": [
+    [
+     "/usr/lib/tilo/windows-runners",
+     106691103
+    ],
+    [
+     "/sysroot/ostree/repo/objects",
+     39814868
+    ],
+    [
+     "/usr/lib/tilo-runtime/2026.07+native.d9207cc0e6d227c6c5a5493e62b5642d",
+     16302902
+    ],
+    [
+     "/etc/selinux/targeted/active",
+     14528753
+    ],
+    [
+     "/usr/lib/udev/hwdb.bin",
+     14372567
+    ],
+    [
+     "/kernel/7.2.8/vmlinuz",
+     14299648
+    ],
+    [
+     "/usr/share/poppler/cMap",
+     8353020
+    ],
+    [
+     "/etc/selinux/targeted/policy",
+     7627387
+    ],
+    [
+     "/usr/share/tilo-apps/pkgs",
+     2779349
+    ],
+    [
+     "/usr/lib/locale/it_CH.utf8",
+     2587448
+    ],
+    [
+     "/usr/lib/locale/fr_BE.utf8",
+     2587444
+    ],
+    [
+     "/usr/lib/locale/zh_HK.utf8",
+     2587275
+    ],
+    [
+     "/usr/lib/locale/pt_BR.utf8",
+     2587103
+    ],
+    [
+     "/usr/lib/locale/ru_RU.utf8",
+     2587103
+    ],
+    [
+     "/usr/lib/locale/de_AT.utf8",
+     2587041
+    ]
+   ]
   }
  ]
 }

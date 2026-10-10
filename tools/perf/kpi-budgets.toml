@@ -214,7 +214,7 @@ source = "TIL-604: shared runtime budget targets"
 # fails on the second night running; an intended growth is accepted by
 # dispatch (`accept`). The ceilings are enforced, set at 5 % over the image
 # TIL-609 measured (docs/benchmarks/os-image-size-2026-10-09.md) and lowered by
-# what each later change saved (TIL-733, TIL-736: docs/benchmarks/os-image-size-2026-10-10.md),
+# what each later change saved (TIL-733, TIL-736, TIL-735: docs/benchmarks/os-image-size-2026-10-10.md),
 # so creep below the nightly rule fails too. They may only be lowered, except
 # by a change that says why. The KPI targets, 3.5 GB compressed and 7 GB of content for x86_64,
 # are not met yet: Windows compatibility is most of the gap (TIL-711).
@@ -223,11 +223,11 @@ source = "TIL-604: shared runtime budget targets"
 
 [kpi."footprint.image.compressed_bytes.x86_64"]
 unit = "bytes"
-max = 5022000000.0
+max = 4977000000.0
 enforce = true
 p50_tolerance = 1.05
 p99_tolerance = 1.05
-source = "TIL-609: 5,168,289,107 B with the font and botocore fixes, plus 5 %; TIL-733: -366,607,328 B (one package layer, no second initramfs); TIL-736: -40,963,819 B (identical files hard-linked); KPI target 3.5 GB"
+source = "TIL-609: 5,168,289,107 B with the font and botocore fixes, plus 5 %; TIL-733: -366,607,328 B (one package layer, no second initramfs); TIL-736: -40,963,819 B (identical files hard-linked); TIL-735: -44,785,493 B (env-runtime from host files); KPI target 3.5 GB"
 
 [kpi."footprint.image.unique_content_bytes.x86_64"]
 unit = "bytes"
