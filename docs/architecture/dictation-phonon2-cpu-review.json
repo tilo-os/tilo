@@ -1,0 +1,113 @@
+{
+  "schema": 1,
+  "package": "fermion-research",
+  "version": "0.2.11",
+  "wheel": {
+    "filename": "fermion_research-0.2.11-py3-none-any.whl",
+    "bytes": 1404948,
+    "sha256": "c4097574ef42e96caf31732097321da9e16c0b9108b5c616aa9d5d1f540319f8",
+    "record_entries_verified": 112
+  },
+  "native_pins_verified": {
+    "libphonon2_cpu-macos-arm64.dylib": "6d32db447eb11115c42dfe90614363e57b3a6887b188aceb69bddd32f4da8342",
+    "libphonon2_tdt-macos-arm64.dylib": "6e07d33766a8c9b4bc06b489b15ae4d0633b685e44763670f734be105f7bc179",
+    "libphonon2_enc-macos-arm64.dylib": "c5b60db830b0649c7d27884feaebf143430d23166af8620a920cbd1423d43397",
+    "libphonon2_cpu-linux-x86_64.so": "e09a7b85980cd0d6ad6b0c51430bb4115b48aa6cc7dc25d35e0d5d2f6d68201c",
+    "libphonon2_tdt-linux-x86_64.so": "7d4853cb206d1a4aeb257b91ca6fa8552c27f48c1fa7cf7f9335d3a2889a6930",
+    "libphonon2_enc-linux-x86_64.so": "57e059d726d47a0ef72dc9537d5247631a6d171ebaf036cd72df62b415d68365",
+    "libphonon2_cpu-linux-aarch64.so": "1b793b6ed03a7b57ea26b9add97f6f62a4de12fe766930ead5dec9fbaf17737c",
+    "libphonon2_tdt-linux-aarch64.so": "afa73fed5a545cd5d1193cc86773b6e6ec0fc1d0163bcbea726d32a41353105d",
+    "libphonon2_enc-linux-aarch64.so": "389a0d78d9377d63b98cd611738403815ba2c111b2caea4bbeb5ea890270093b",
+    "phonon2_cpu-windows-x64.dll": "cb5e05087dd655e9a55ae1706a1750806f2cd977730770db8a0c9bfbaaccc731",
+    "phonon2_tdt-windows-x64.dll": "c14c965752f84ceaf732f226d247a328445cb4ceee356fbd5f2817d3ba538d1f",
+    "phonon2_enc-windows-x64.dll": "ab1c6328fe3b58b46bd21e5c94eaf9c208f213d9133c6e3e14526fe0f65e3db3",
+    "libphonon2_enc-linux-aarch64-base.so": "09d8bc2967e52430408ca9dcda09d7d71a7780e2937b45abd5722471563777fa",
+    "libphonon2_tdt-linux-aarch64-base.so": "90fcf4765aecae1a86175f98488ffff1ed217a0d9d00be3b95be8d610ba2d3ce",
+    "libphonon2_enc-linux-x86_64-base.so": "ffed0c3de6c3676f80d301fcff6e57705d38d1a0fb6d23ee1a1819da29e3d3fb",
+    "phonon2_enc-windows-x64-base.dll": "5583f64e06e145ae40cd944dd640f1010db04e2d0b9382f7a9456bffb7fb9078",
+    "libphonon2_cpu-macos-x86_64.dylib": "566da8455d945cc01eb37ca36ebf2c9015076f8447d99579237367bac09d53d0",
+    "libphonon2_enc-macos-x86_64-base.dylib": "936cd51798cfbf5b3eacd1001ff224e7b1ccc494b21059d018153c6e57dd05d4",
+    "libphonon2_enc-macos-x86_64.dylib": "a93cdf1d34d1245731e4db3654c6c04ee88ff3e9bbfd2ce3d148d496d5e29a20",
+    "libphonon2_tdt-macos-x86_64.dylib": "b055e45409262741924fadbadefae8a0bda8046217d7281032f16fef628f2436"
+  },
+  "source_file_sha256": {
+    "fermion/_speech/engine_phonon2_cpu.py": "2bc893b44eb06abce29c3c13babcc0350c586de03ac45980e7a8ba706366bb0b",
+    "fermion/_speech/_engine_phonon2_cpu/__init__.py": "e4dbecb4e1e66ded955265c0c3de3d45b748ce756be5dc32944200f53aa0b968",
+    "fermion/_speech/fetch.py": "1ef797fad218aaf6874927c2e4ef7d887f842eefd1d187cd8539c55b292ffcb6",
+    "fermion/transcribe.py": "779bde640c3c0214d9139abf43d5233e118bdd9d2e80710a13a57580dc3a28d8",
+    "fermion/listen.py": "fbb84a2e6892e56383adc1d3441fff1b72a37120ab218aa95c36438ffe672de9",
+    "fermion/server.py": "9e5d17ed7d840da1a503282ab28aa3a56515c7cacbcfb087017b131a4d8fb6fe",
+    "fermion/_speech/backends.py": "750fa097fe769969201fe705990677c8e4558ef6bfcc53ffa6a33951d68b9a7f",
+    "fermion/_speech/live.py": "e5edb1fd40f29182e0676b2762c11e9c11fbf56c72ab6705eea212e3f57c8cd1",
+    "fermion_research-0.2.11.dist-info/licenses/LICENSE": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+    "fermion_research-0.2.11.dist-info/licenses/NOTICE": "c50b45af77a1598d80d1b4f1c80e9cbede69cf05de51f70d81ae7ed2e7354d84"
+  },
+  "installed": false,
+  "package_imported": false,
+  "inference_executed": false,
+  "service_started": false,
+  "review_date": "2026-10-10",
+  "production_changed": false,
+  "existing_upstream_pins_replaced": false,
+  "runtime_image": {
+    "source_revision": "cf97fdbedaf5bfd3cc8b88c946e64c0fdc2587b1",
+    "recipe_tag": "2.0.9",
+    "index_digest": "sha256:de4df884d364aec3d3867731d5145a538bc83287556a24c37e6f1d1c91895678",
+    "amd64_manifest_digest": "sha256:9abc758be7c9228121b602dc583df3948d64918144d002609cd4f9998a696d94",
+    "config_digest": "sha256:9850a5839ef51aa6c54852aa760ae7a44153b5deef5d53b3e6e07096329324d7",
+    "compressed_layer_bytes": 418078687,
+    "acquired": false,
+    "source_build_provenance_verified": false
+  },
+  "findings": {
+    "local_directory_required": [
+      "config.json",
+      "packed_manifest.json",
+      "model.fermion"
+    ],
+    "local_cpu_route": "local architecture, vocabulary and frontend; native packed C encoder/TDT; complete local-directory CLI route bypasses fetch",
+    "fallback": "native load/container/C-engine failure may enter dense expansion before later refusal; no strict-native-only flag found",
+    "streaming": "listen --wav explicitly requires MLX; Linux CPU preview needs separately qualified shared LiveSession harness or server path",
+    "live_audio_threshold_seconds": {
+      "first_attempt": 0.35,
+      "subsequent_increment": 0.5
+    },
+    "thresholds_are_not_measured_latency": true,
+    "native_kernel_source_provenance": "Python loader is inspectable; corresponding C/C++ kernel sources were not present in the wheel",
+    "hash_override_environment": "clear upstream native-library override variables; overrides bypass shipped hash verification"
+  },
+  "next_qualification": {
+    "runtime_acquisition": "approval required after automatic review rejected persistent builder image storage; no workaround attempted",
+    "limits": {
+      "cpu_affinity_count": 2,
+      "threads": 2,
+      "cgroup_memory_bytes": 1073741824,
+      "swap_bytes": 0,
+      "tasks": 64,
+      "network": false,
+      "hardware_devices": false
+    },
+    "inputs": "hash-pinned CPU dependency closure and complete local model directory; public English recording; preserved Apache-2.0 runtime and CC-BY-4.0 weights attribution",
+    "stages": [
+      "local-file transcribe with actual native encoder/TDT status and fallback rejection",
+      "source-paced shared CPU live harness with cancel/restart and bounded cleanup"
+    ],
+    "required_observations": [
+      "cold-load time",
+      "first nonempty and first useful preview",
+      "final WER",
+      "RSS and cgroup peak",
+      "memory events and threads",
+      "actual engine identity",
+      "attempted fetch/refusal",
+      "owned process cleanup"
+    ]
+  },
+  "remaining_unqualified": [
+    "Linux CPU inference",
+    "two-CPU one-GiB memory fit",
+    "source-paced useful preview latency",
+    "CPU preview cancellation/restart",
+    "runtime native-source reproducibility"
+  ]
+}
