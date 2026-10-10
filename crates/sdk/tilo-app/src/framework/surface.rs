@@ -750,6 +750,14 @@ impl<R: Resource, S: ResourceSurface<R, E> + 'static, E: Effect> Decorator
         &mut self.surface
     }
 
+    fn view_only_scroll(&self, event: &ui_core::winit::event::WindowEvent) -> bool {
+        self.live.revision() == self.presented
+            && self.staging.borrow().is_none()
+            && self.search_queries.0.borrow().pending.is_none()
+            && self.dispatch.read_only() == self.read_only
+            && self.surface.view_only_scroll(event)
+    }
+
     // The host is invisible to whoever reaches the surface by its type (a
     // test driving it, a host that embeds it): it answers as the surface.
     fn as_any(&self) -> Option<&dyn std::any::Any> {
