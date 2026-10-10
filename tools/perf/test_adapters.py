@@ -288,6 +288,8 @@ def load_report(collaborators: int = 100, minutes: int = 2) -> dict:
                   "hosting.relay.frame_bytes_per_collab_hour": ("bytes", 8e6)}
     kpis = {kpi: {"unit": unit, "samples": [value] * minutes} for kpi, (unit, value) in per_minute.items()}
     kpis["hosting.relay.fanout_ms"] = {"unit": "ms", "samples": [4.0, 6.0, 30.0]}
+    kpis["hosting.relay.presence_pointer_ms"] = {"unit": "ms", "samples": [20.0, 40.0, 55.0]}
+    kpis["hosting.relay.presence_caret_ms"] = {"unit": "ms", "samples": [6.0, 8.0, 20.0]}
     kpis["hosting.relay.store_fsyncs_per_edit"] = {"unit": "count", "samples": [2.1] * minutes}
     kpis["hosting.relay.store_listed_entries_per_edit"] = {"unit": "count", "samples": [0.0] * minutes}
     kpis["hosting.relay.compaction_cpu_ms_per_collab_hour"] = {"unit": "ms", "samples": [90.0] * minutes}
