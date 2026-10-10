@@ -64,6 +64,11 @@ pub struct Sample {
     /// Directory entries the stores listed to retain history
     /// ([`tilo_relay::store::listed_entries`]).
     pub store_listed_entries: u64,
+    /// Thread CPU time compaction spent ([`tilo_relay::compaction::cpu_ns`]).
+    pub compaction_cpu_ns: u64,
+    /// Document signatures compaction verified
+    /// ([`tilo_relay::compaction::signature_checks`]).
+    pub compaction_signature_checks: u64,
 }
 
 /// The parent's handle on the relay process.
@@ -223,6 +228,8 @@ fn sample(relay: &Relay) -> Sample {
         subscriber_dropped: metrics.subscriber_dropped,
         store_fsyncs: tilo_relay::store::fsyncs(),
         store_listed_entries: tilo_relay::store::listed_entries(),
+        compaction_cpu_ns: tilo_relay::compaction::cpu_ns(),
+        compaction_signature_checks: tilo_relay::compaction::signature_checks(),
     }
 }
 
