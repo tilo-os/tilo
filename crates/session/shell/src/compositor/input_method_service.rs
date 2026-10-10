@@ -965,30 +965,6 @@ mod tests {
         );
     }
 
-    /// Context switches of this process's one thread named `name`.
-    fn thread_context_switches(name: &str) -> u64 {
-        let threads: Vec<_> = std::fs::read_dir("/proc/self/task")
-            .unwrap()
-            .map(|task| task.unwrap().path())
-            .filter(|task| {
-                std::fs::read_to_string(task.join("comm")).is_ok_and(|comm| comm.trim() == name)
-            })
-            .collect();
-        assert_eq!(threads.len(), 1, "exactly one {name} thread must be live");
-        std::fs::read_to_string(threads[0].join("status"))
-            .unwrap()
-            .lines()
-            .filter(|line| line.contains("ctxt_switches:"))
-            .map(|line| {
-                line.split_whitespace()
-                    .last()
-                    .unwrap()
-                    .parse::<u64>()
-                    .unwrap()
-            })
-            .sum()
-    }
-
     #[test]
     #[serial_test::serial(process_env)]
     fn running_keyboard_supervisor_sleeps_until_stopped() {
@@ -1000,9 +976,10 @@ mod tests {
         let running = Arc::clone(&fixture.osk().running);
         // Let the supervisor reach its wait; the kernel truncates names to 15 bytes.
         std::thread::sleep(Duration::from_millis(100));
-        let before = thread_context_switches("tilo-input-meth");
+        let supervisor = tilo_test_env::idle::named_thread("tilo-input-meth");
+        let before = tilo_test_env::idle::context_switches(&supervisor);
         std::thread::sleep(Duration::from_millis(400));
-        let idle = thread_context_switches("tilo-input-meth").saturating_sub(before);
+        let idle = tilo_test_env::idle::context_switches(&supervisor).saturating_sub(before);
         let alive = running.load(Ordering::Acquire);
         // Dropping stops the TERM-ignoring fixture through the stop signal
         // alone, and waits (bounded) for the supervisor to finish.

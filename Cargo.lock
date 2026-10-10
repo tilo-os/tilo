@@ -1318,6 +1318,7 @@ dependencies = [
  "libc",
  "tempfile",
  "thiserror 2.0.21",
+ "tilo-test-env",
  "workspace-hack",
  "zeroize",
 ]
@@ -10620,6 +10621,7 @@ dependencies = [
  "tilo-automerge-fork",
  "tilo-input-context",
  "tilo-keyboard-map",
+ "tilo-test-env",
  "tilo-vello",
  "tilo-winit",
  "tracing",
