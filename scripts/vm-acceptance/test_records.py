@@ -173,6 +173,32 @@ class IdleThreads(unittest.TestCase):
         self.assertEqual((ush["cpu_pct"], ush["threads"][0]["name"], ush["threads"][0]["cpu_pct"]),
                          (10.0, "broker", 8.0))
 
+    def test_a_busy_process_keeps_each_threads_index_and_whether_it_is_new(self):
+        ush = next(p for p in self.summary()["top"] if p["comm"] == "tilo-ush")
+        self.assertEqual([(t["tid"], t["comm"], t["new"]) for t in ush["thread_rows"]],
+                         [(301, "broker", False), (300, "tilo-ush", False)])
+
+    def test_terminals_runtime_sums_every_tilo_ush_process_and_thread(self):
+        text = IDLE_SAMPLE.replace("@@1\n", "P 400 tilo-ush 0 0 1 2500\nH 400 400 tilo-ush 0 0\n@@1\n") \
+            .replace("HZ 100", "P 400 tilo-ush 5 20 1 2500\nH 400 400 tilo-ush 5 20\n"
+                               "H 400 401 iroh-blob-store-7 0 10\nHZ 100")
+        ush = self.summary(text)["ush"]
+        self.assertEqual((ush["processes"], ush["cpu_pct"], ush["wakeups_per_s"]), (2, 10.5, 66.0))
+        self.assertEqual([g["name"] for g in ush["thread_groups"]], ["broker", "tilo-ush", "iroh-blob-store"])
+        self.assertTrue(next(t for t in ush["threads"]["400"] if t["tid"] == 401)["new"])
+        self.assertIsNone(self.summary(IDLE_SAMPLE.replace("tilo-ush", "foot"))["ush"])
+
+    def test_tilo_ush_is_judged_only_once_terminals_shell_ran(self):
+        budgets = {"idle_apps_ush_cpu_pct": 1.0, "idle_apps_ush_wakeups_per_s": 5.0}
+        ush = self.summary()["ush"]
+        cpu, woke = resources.ush_problems(ush, 3.5, budgets)
+        self.assertEqual(cpu, "tilo-ush CPU 10.0% > 1.0% (broker 8.0%, tilo-ush 2.0%; exited threads 0.0%)")
+        self.assertEqual(woke, "tilo-ush woke 63.0/s > 5.0/s (broker 60.0/s, tilo-ush 3.0/s)")
+        [unmeasured] = resources.ush_problems(ush, None, budgets)
+        self.assertIn("was not measured idle", unmeasured)
+        quiet = {**ush, "cpu_pct": 0.2, "wakeups_per_s": 1.0}
+        self.assertEqual(resources.ush_problems(quiet, 3.5, budgets), [])
+
     def test_an_over_budget_compositor_names_its_busiest_threads_and_age(self):
         m = {**self.summary(), "frames_painted": 0, "shell_loop_ticks_per_s": 0.0}
         budgets = {"idle_shell_cpu_pct": 1.0, "idle_frames": 2, "idle_loop_ticks_per_s": 2.0,
@@ -180,6 +206,65 @@ class IdleThreads(unittest.TestCase):
         [problem] = resources._budget_problems(m, budgets, "idle")
         self.assertEqual(problem, "compositor CPU 4.5% > 1.0% (tilo-net 2.0%, llvmpipe×2 1.5%, "
                                   "tilo-present 0.3%, shell 0.2%, exited threads 0.5%; session age 30.0 s)")
+        # The same window, a frame painted in it, on a CPU rasteriser leaves llvmpipe out and says so.
+        [problem] = resources._budget_problems({**m, "frames_painted": 1}, budgets, "idle", software=True)
+        self.assertEqual(problem, "compositor CPU less its software rasteriser's 1.5% is 3.0% > 1.0% "
+                                  "(tilo-net 2.0%, tilo-present 0.3%, shell 0.2%, exited threads 0.5%; "
+                                  "session age 30.0 s)")
+
+
+# Run 91460's R01 in small (TIL-739): the clock frame rasterised by lavapipe. The compute pool
+# that ran it (`tilo-gpu-driver`, 1.4%) and the rasteriser threads (`llvmpipe-0`) next to the
+# present thread (0.1%) and the network runtime (0.2%): the compositor's own threads 0.3%.
+RASTER_SAMPLE = """\
+@@0
+U 40.00
+P 100 shell 100 100 1 1000
+H 100 100 shell 50 100
+H 100 101 tilo-present 10 10
+H 100 102 llvmpipe-0 5 0
+H 100 103 tilo-gpu-driver 5 0
+H 100 104 tilo-gpu-driver 5 0
+H 100 105 tilo-net-rt-0 10 10
+T 10000 9000
+@@1
+U 50.00
+P 100 shell 117 110 1 1000
+H 100 100 shell 50 101
+H 100 101 tilo-present 11 13
+H 100 102 llvmpipe-0 5 0
+H 100 103 tilo-gpu-driver 12 7
+H 100 104 tilo-gpu-driver 12 8
+H 100 105 tilo-net-rt-0 12 20
+T 16000 15000
+HZ 100
+"""
+
+
+class SoftwareRaster(unittest.TestCase):
+    BUDGETS = {"idle_shell_cpu_pct": 1.0, "idle_frames": 2, "idle_loop_ticks_per_s": 2.0,
+               "idle_user_cpu_pct": 100.0, "idle_software_raster_cpu_pct": 0.1}
+
+    def window(self, frames):
+        m = resources.summarize(resources._parse_sample(RASTER_SAMPLE), 10)
+        return {**m, "frames_painted": frames, "shell_loop_ticks_per_s": 0.1}
+
+    def test_the_rasterisers_threads_are_summed_apart(self):
+        m = self.window(1)
+        self.assertEqual((m["shell_cpu_pct"], m["shell_gpu_driver_cpu_pct"]), (1.7, 1.4))
+        self.assertEqual([(g["name"], g["threads"]) for g in m["shell_thread_groups"]][:2],
+                         [("tilo-gpu-driver", 2), ("tilo-net-rt", 1)])
+
+    def test_a_software_renderer_is_judged_on_the_compositors_own_threads(self):
+        self.assertEqual(resources._budget_problems(self.window(1), self.BUDGETS, "idle", software=True), [])
+
+    def test_a_gpu_renderer_counts_every_thread(self):
+        [problem] = resources._budget_problems(self.window(1), self.BUDGETS, "idle")
+        self.assertTrue(problem.startswith("compositor CPU 1.7% > 1.0% (tilo-gpu-driver×2 1.4%"), problem)
+
+    def test_a_rasteriser_busy_with_no_frame_painted_fails(self):
+        [problem] = resources._budget_problems(self.window(0), self.BUDGETS, "idle", software=True)
+        self.assertEqual(problem, "software rasteriser CPU 1.4% with no frame painted > 0.1%")
 
 
 class Gates(unittest.TestCase):

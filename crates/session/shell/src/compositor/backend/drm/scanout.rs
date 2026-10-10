@@ -5,14 +5,15 @@
 //!
 //! - **Direct** ([`DirectScanoutTargets`]): two GBM buffers the size of the output's mode,
 //!   imported as Vulkan render targets. Vello renders the output's part of the scene upright,
-//!   and the final pass writes it into the back slot turned by the output's transform
+//!   and the final pass writes it into the back slot turned by the output's transform and,
+//!   in SDR, mapped through its ICC profile
 //!   ([`super::paint::VelloDrmBridge::paint_output_until`]); nothing crosses the CPU. Each
-//!   output is judged alone (`direct_scanout_rejection` in `drm/mod.rs`): no ICC profile, a
-//!   hardware cursor plane, page-flip events, and the renderer on this card. Any rotation is
-//!   eligible.
+//!   output is judged alone (`direct_scanout_rejection` in `drm/mod.rs`): a hardware cursor
+//!   plane, page-flip events, and the renderer on this card. Any rotation and any ICC
+//!   profile is eligible.
 //! - **Readback**: two dumb buffers allocated at modeset, falling back to
 //!   `dirty_framebuffer/set_crtc` without page flips. The output's pixels are read back from
-//!   the GPU and written on the CPU (rotated, colour-managed, swizzled from vello's
+//!   the GPU and written on the CPU (rotated, colour-managed with qcms, swizzled from vello's
 //!   `Rgba8Unorm` to `Xrgb8888`). Only outputs that fail a direct check, or whose direct
 //!   frame failed, present this way.
 //!
@@ -3080,13 +3081,6 @@ impl DrmScanout {
         }
     }
 
-    /// Flush the live buffer with `DRM_IOCTL_MODE_DIRTYFB` (how virtio-gpu transfers a CPU buffer to the host), falling back to a forced `set_crtc` where dirtyfb is unsupported.
-    /// Restrict the next flush to these output-local rectangles.
-    /// An empty list, or never calling this, flushes the whole mode.
-    pub fn set_damage_clips(&mut self, clips: Vec<ClipRect>) {
-        self.damage_clips = clips;
-    }
-
     /// `None` flushes the whole mode on the next present.
     pub fn set_damage_rect(&mut self, rect: Option<(u16, u16, u16, u16)>) {
         self.damage_clips = rect
@@ -3621,32 +3615,6 @@ pub struct ScanoutBuild {
     pub crtc: crtc::Handle,
     /// Live, modeset scanout bound to this connector's crtc.
     pub scanout: DrmScanout,
-}
-
-/// Open `card_path` once and build one [`DrmScanout`] per connected connector with a usable mode,
-/// each on a distinct crtc sharing a dup of the single card fd — required since libseat refuses a
-/// second `open` of an already-open node, and it means every crtc's flip completions arrive on one
-/// event stream, drained once and routed by crtc. A connector with no free crtc/mode is logged and
-/// skipped; `Err` only when nothing came up. The runtime normally retains the [`CardHandle`]
-/// itself and calls [`CardHandle::bring_up_all`] for every seat GPU; this helper remains a
-/// convenience for callers that need a complete one-card transaction.
-///
-/// # Errors
-///
-/// Returns `Err` if the card itself can't be opened, or if every connected connector
-/// failed to come up (each connector's own modeset failure is logged and skipped rather than
-/// propagated — this only errors when *none* came up).
-pub fn open_all_scanouts<S: Session>(
-    session: &mut S,
-    card_path: &Path,
-) -> Result<(CardHandle, Vec<ScanoutBuild>), String> {
-    let card = CardHandle::open(session, card_path)?;
-    let builds = card.bring_up_all();
-    if builds.is_empty() {
-        return Err("no connected connector could be brought up for scanout".into());
-    }
-    tracing::info!(count = builds.len(), "DRM scanout: brought up outputs");
-    Ok((card, builds))
 }
 
 /// Pick a crtc for `conn_info` not already in `used`: the current encoder's crtc if free, else one

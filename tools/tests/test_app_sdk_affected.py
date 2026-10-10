@@ -1,5 +1,6 @@
 import importlib.util
 from pathlib import Path
+import re
 import sys
 import tempfile
 import unittest
@@ -97,6 +98,146 @@ class AppSdkAffectedTests(unittest.TestCase):
     def test_a_crate_no_app_reaches_skips_the_lanes(self):
         self.assertFalse(self.check('crates/session/shell/src/lib.rs'))
         self.assertFalse(self.check('os/Containerfile', 'docs/ci.md'))
+
+    def integration_fixture(self):
+        shell = next(p for p in self.metadata['packages'] if p['name'] == 'shell')
+        test_root = self.root / 'crates/session/shell/tests/it.rs'
+        test_root.parent.mkdir()
+        test_root.write_text('#[path = "peer_sync_test.rs"]\nmod peer_sync_test;\n')
+        (test_root.parent / 'peer_sync_test.rs').write_text('#[test]\nfn peer_sync() {}\n')
+        source = self.root / 'crates/session/shell/src/lib.rs'
+        source.parent.mkdir()
+        source.write_text('pub fn production() {}\n')
+        shell['targets'] = [
+            {'kind': ['test'], 'src_path': str(test_root)},
+            {'kind': ['lib'], 'src_path': str(source)},
+        ]
+        calculator = next(p for p in self.metadata['packages'] if p['name'] == 'calculator')
+        calculator['dependencies'].append({'name': 'shell',
+                                          'path': str(source.parent.parent)})
+        return shell, test_root, source
+
+    def test_only_audited_integration_module_avoids_sdk_rebuild(self):
+        self.integration_fixture()
+        self.assertFalse(self.check('crates/session/shell/tests/peer_sync_test.rs'))
+        self.assertTrue(self.check('crates/session/shell/src/lib.rs'))
+        self.assertTrue(self.check('crates/session/shell/tests/it.rs'))
+        self.assertTrue(self.check('crates/session/shell/tests/unknown.rs'))
+        self.assertTrue(self.check('crates/session/shell/tests/fixtures/network-boundary.rs'))
+        self.assertTrue(self.check('crates/session/shell/tests/peer_sync_test.rs',
+                                   'crates/ui/src/lib.rs'))
+
+    def test_source_reference_and_missing_observation_keep_sdk_selected(self):
+        _, test_root, source = self.integration_fixture()
+        source.write_text('#[path = "../tests/peer_sync_test.rs"]\nmod imported;\n')
+        self.assertTrue(self.check('crates/session/shell/tests/peer_sync_test.rs'))
+        source.unlink()
+        self.assertTrue(self.check('crates/session/shell/tests/peer_sync_test.rs'))
+        test_root.unlink()
+        self.assertTrue(self.check('crates/session/shell/tests/peer_sync_test.rs'))
+
+    def test_standalone_binary_and_build_script_keep_sdk_selected(self):
+        shell, test_root, _ = self.integration_fixture()
+        module = test_root.parent / 'peer_sync_test.rs'
+        module.write_text('fn main() {}\n')
+        shell['targets'].append({'kind': ['bin'], 'src_path': str(module)})
+        self.assertTrue(self.check('crates/session/shell/tests/peer_sync_test.rs'))
+        shell['targets'].pop()
+        script = test_root.parent.parent / 'build.rs'
+        script.write_text('fn main() {}\n')
+        shell['targets'].append({'kind': ['custom-build'], 'src_path': str(script)})
+        self.assertTrue(self.check('crates/session/shell/tests/peer_sync_test.rs'))
+
+    def test_other_workspace_source_can_make_module_an_sdk_input(self):
+        self.integration_fixture()
+        consumer = self.root / 'apps/calculator/src/main.rs'
+        consumer.parent.mkdir()
+        consumer.write_text('const FIXTURE: &str = include_str!("peer_sync_test.rs");\n')
+        self.assertTrue(self.check('crates/session/shell/tests/peer_sync_test.rs'))
+
+    def standalone_fixture(self, name='calculator'):
+        pkg = next(p for p in self.metadata['packages'] if p['name'] == name)
+        path = Path(pkg['manifest_path']).parent / 'tests/native_flow.rs'
+        path.parent.mkdir()
+        path.write_text('#[test]\nfn native_flow() {}\n')
+        source = path.parent.parent / 'src/main.rs'
+        source.parent.mkdir()
+        source.write_text('fn main() {}\n')
+        pkg['targets'] = [{'kind': ['test'], 'src_path': str(path)},
+                          {'kind': ['bin'], 'src_path': str(source)}]
+        return pkg, path, source
+
+    def test_standalone_app_test_does_not_rebuild_sdk_but_app_source_does(self):
+        _, path, source = self.standalone_fixture()
+        self.assertFalse(self.check(str(path.relative_to(self.root))))
+        self.assertTrue(self.check(str(source.relative_to(self.root))))
+        self.assertTrue(self.check(str(path.relative_to(self.root)),
+                                   'apps/calculator/src/main.rs'))
+        path.unlink()
+        self.assertTrue(self.check(str(path.relative_to(self.root))))
+
+    def test_sdk_owned_integration_targets_remain_inputs(self):
+        _, path, _ = self.standalone_fixture('tilo-app-cli')
+        self.assertTrue(self.check(str(path.relative_to(self.root))))
+        caps = package(self.root, 'crates/caps', 'tilo-caps')
+        self.metadata['packages'].append(caps)
+        _, path, _ = self.standalone_fixture('tilo-caps')
+        self.assertTrue(self.check(str(path.relative_to(self.root))))
+
+    def test_app_test_reused_by_sdk_test_remains_an_input(self):
+        _, path, _ = self.standalone_fixture()
+        sdk_test = self.root / 'crates/dev/tilo-app-cli/tests/it.rs'
+        sdk_test.parent.mkdir()
+        sdk_test.write_text('const FIXTURE: &str = include_str!("native_flow.rs");\n')
+        self.assertTrue(self.check(str(path.relative_to(self.root))))
+
+    def test_app_test_binary_build_script_and_nested_inputs_fail_closed(self):
+        pkg, path, _ = self.standalone_fixture()
+        relative = str(path.relative_to(self.root))
+        pkg['targets'].append({'kind': ['bin'], 'src_path': str(path)})
+        self.assertTrue(self.check(relative))
+        pkg['targets'].pop()
+        pkg['targets'].append({'kind': ['custom-build'],
+                               'src_path': str(path.parent.parent / 'build.rs')})
+        self.assertTrue(self.check(relative))
+        pkg['targets'].pop()
+        self.assertTrue(self.check('apps/calculator/tests/fixtures/data.rs'))
+        self.assertTrue(self.check('apps/calculator/tests/unknown.rs'))
+        self.assertTrue(self.check('apps/calculator/tests/it.rs'))
+
+    def test_sdk_workflow_tests_stay_inside_exempt_packages(self):
+        workflow = (ROOT / '.forgejo/workflows/app-sdk.yml').read_text()
+        for command in re.findall(r'cargo test[^\n]+', workflow):
+            names = re.findall(r'-p ([a-z0-9-]+)', command)
+            self.assertTrue(names, command)
+            self.assertTrue(set(names) <= selector.SDK_PACKAGES, command)
+
+    def test_source_alias_cannot_be_a_separate_test_input(self):
+        _, path, source = self.standalone_fixture()
+        path.unlink()
+        path.symlink_to(source)
+        self.assertTrue(self.check(str(path.relative_to(self.root))))
+
+    def test_sdk_test_directory_alias_retains_its_dependency_fixture(self):
+        _, path, _ = self.standalone_fixture()
+        (path.parent / 'mod.rs').write_text('mod native_flow;\n')
+        sdk_tests = self.root / 'crates/dev/tilo-app-cli/tests'
+        sdk_tests.mkdir()
+        (sdk_tests / 'it.rs').write_text('mod shared;\n')
+        (sdk_tests / 'shared').symlink_to(path.parent, target_is_directory=True)
+        self.assertTrue(self.check(str(path.relative_to(self.root))))
+
+    def test_sdk_test_extensionless_or_broken_alias_retains_lanes(self):
+        _, path, _ = self.standalone_fixture()
+        sdk_tests = self.root / 'crates/dev/tilo-app-cli/tests'
+        sdk_tests.mkdir()
+        (sdk_tests / 'it.rs').write_text('const X: &str = include_str!("fixture");\n')
+        alias = sdk_tests / 'fixture'
+        alias.symlink_to(path)
+        self.assertTrue(self.check(str(path.relative_to(self.root))))
+        alias.unlink()
+        alias.symlink_to(path.parent / 'missing')
+        self.assertTrue(self.check(str(path.relative_to(self.root))))
 
     def test_repository_wide_inputs_run_the_lanes(self):
         self.assertTrue(self.check('rust-toolchain.toml'))

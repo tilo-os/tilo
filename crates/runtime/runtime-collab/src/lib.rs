@@ -38,6 +38,9 @@
               redesigning around the RPC library"
 )]
 
+pub mod task_control;
+pub use task_control::{TaskDirection, TaskRunControl, TaskRunStatus, native_task_revision};
+
 #[cfg(feature = "client")]
 use std::rc::Rc;
 
@@ -1660,12 +1663,43 @@ impl ChannelHandle {
     /// Returns [`NotAvailable`] if the broker connection is unavailable or
     /// drops during the call.
     pub async fn task_run_cancelled(&self, run_id: u64, lease: &str) -> Result<bool, NotAvailable> {
+        Ok(self.task_run_status(run_id, lease).await?.cancelled)
+    }
+
+    /// Observe cancellation and bounded steering on this authenticated run.
+    ///
+    /// # Errors
+    /// The host is unavailable, refuses the run or returns invalid control data.
+    pub async fn task_run_status(
+        &self,
+        run_id: u64,
+        lease: &str,
+    ) -> Result<TaskRunStatus, NotAvailable> {
         let mut request = self.inner.task_run_cancelled_request();
         let mut params = request.get();
         params.set_run_id(run_id);
         params.set_lease(lease);
         let reply = request.send().promise.await?;
-        Ok(reply.get()?.get_cancelled())
+        let value = reply.get()?;
+        let json = value
+            .get_control_json()?
+            .to_str()
+            .map_err(|_| capnp::Error::failed("invalid task control UTF-8".into()))?;
+        if json.len() > TaskRunControl::MAX_BYTES {
+            return Err(capnp::Error::failed("oversized task direction page".into()).into());
+        }
+        let control = if json.is_empty() {
+            None
+        } else {
+            let control: TaskRunControl = serde_json::from_str(json)
+                .map_err(|_| capnp::Error::failed("invalid task direction page".into()))?;
+            control.validate().map_err(capnp::Error::failed)?;
+            Some(control)
+        };
+        Ok(TaskRunStatus {
+            cancelled: value.get_cancelled(),
+            control,
+        })
     }
 
     /// Report what became of an invocation. An empty `code` means it ran;
@@ -2429,10 +2463,22 @@ pub enum TaskRunPlanning {
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum TaskRunUpdate {
     Accepted,
-    Progress { message: String },
-    Succeeded { message: String },
-    Failed { message: String },
-    Cancelled { message: String },
+    /// Sent only after the exact direction page entered the next planning context.
+    DirectionsApplied {
+        revision: u64,
+    },
+    Progress {
+        message: String,
+    },
+    Succeeded {
+        message: String,
+    },
+    Failed {
+        message: String,
+    },
+    Cancelled {
+        message: String,
+    },
 }
 
 /// Client-pulled stream of broker-addressed task leases.

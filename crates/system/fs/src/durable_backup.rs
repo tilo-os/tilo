@@ -211,10 +211,6 @@ pub fn write(path: &Path, bytes: &[u8], validate: impl Fn(&[u8]) -> bool) -> io:
     Ok(())
 }
 
-pub fn is_backup_directory_name(name: &str) -> bool {
-    name.starts_with('.') && name.ends_with(BACKUP_SUFFIX)
-}
-
 fn backup_dir(path: &Path) -> io::Result<PathBuf> {
     let name = path
         .file_name()

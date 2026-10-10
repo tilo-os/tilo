@@ -17,6 +17,8 @@ use std::{
 };
 use tilo_automerge_isolate::{Applied, Dependencies};
 
+mod tail_index;
+
 fn invalid(message: &str) -> StoreError {
     io::Error::new(io::ErrorKind::InvalidData, message).into()
 }
@@ -329,13 +331,15 @@ fn remember_digest(path: &Path, digest: &[u8; 32]) {
 
 /// One prior record of a delta's lineage: its ordinal, and whether it holds
 /// the delta's exact bytes. Only a record of the same size whose digest
-/// matches is read, and then compared in full.
+/// matches is read, and then compared in full. A scan that builds the tail
+/// index (`collected`) takes every record's digest.
 fn inspect_delta(
     entry: &fs::DirEntry,
     name: &str,
     (bytes, digest): (&[u8], &[u8; 32]),
     last: &mut u64,
     duplicate: &mut bool,
+    collected: Option<&mut std::collections::HashSet<u64>>,
     stats: &mut super::bounded::WorkStats,
 ) -> Result<(), StoreError> {
     if let Some(prefix) = name.get(..16)
@@ -347,7 +351,21 @@ fn inspect_delta(
         return Ok(());
     }
     let metadata = entry.metadata()?;
-    if metadata.len() != bytes.len() as u64 || record_digest(&entry.path(), &metadata)? != *digest {
+    let mut known = None;
+    if let Some(collected) = collected {
+        let record = record_digest(&entry.path(), &metadata)?;
+        collected.insert(tail_index::short(&record));
+        known = Some(record);
+    }
+    if metadata.len() != bytes.len() as u64 {
+        return Ok(());
+    }
+    let known = if let Some(known) = known {
+        known
+    } else {
+        record_digest(&entry.path(), &metadata)?
+    };
+    if known != *digest {
         return Ok(());
     }
     let record = Record::read_for_proof(entry.path())?;
@@ -384,7 +402,7 @@ fn records(generation: &Path) -> Result<Vec<Record>, StoreError> {
 pub(super) fn sync_dir(path: &Path) -> Result<(), StoreError> {
     #[cfg(test)]
     super::test_barrier::check(path, "sync-dir")?;
-    fs::File::open(path)?.sync_all()?;
+    crate::store::fsync(&fs::File::open(path)?)?;
     Ok(())
 }
 
@@ -403,6 +421,20 @@ fn stamp(path: &Path) -> io::Result<[i64; 7]> {
         metadata.ctime(),
         metadata.ctime_nsec(),
     ])
+}
+
+/// The stamp of an active generation the tail index is kept at; none where
+/// there are no stamps, which leaves every commit to the scan.
+fn generation_stamp(path: &Path) -> Option<tail_index::Stamp> {
+    #[cfg(unix)]
+    {
+        stamp(path).ok()
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+        None
+    }
 }
 
 /// [`sync_dir`], unless this process synced `path` before and its entries
@@ -438,7 +470,7 @@ fn sync_once(path: &Path) -> Result<(), StoreError> {
         {
             return Ok(());
         }
-        fs::File::open(path)?.sync_all()?;
+        crate::store::fsync(&fs::File::open(path)?)?;
         synced
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
@@ -447,16 +479,20 @@ fn sync_once(path: &Path) -> Result<(), StoreError> {
     }
     #[cfg(not(unix))]
     {
-        fs::File::open(path)?.sync_all()?;
+        crate::store::fsync(&fs::File::open(path)?)?;
         Ok(())
     }
 }
 
 pub(super) fn create_dir(path: &Path) -> Result<(), StoreError> {
-    match fs::create_dir(path) {
-        Ok(()) => {}
-        Err(error) if error.kind() == io::ErrorKind::AlreadyExists && path.is_dir() => {}
-        Err(error) => return Err(error.into()),
+    // Every commit passes here for directories that exist: a stat, rather
+    // than a mkdir that fails with EEXIST and a stat.
+    if !path.is_dir() {
+        match fs::create_dir(path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists && path.is_dir() => {}
+            Err(error) => return Err(error.into()),
+        }
     }
     // Also sync existing directories: a previous attempt may have returned
     // after creation but before the parent directory reached stable storage.
@@ -466,8 +502,17 @@ pub(super) fn create_dir(path: &Path) -> Result<(), StoreError> {
     Ok(())
 }
 
+/// Whether anything is at `path`.
+fn exists(path: &Path) -> Result<bool, StoreError> {
+    match fs::symlink_metadata(path) {
+        Ok(_) => Ok(true),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error.into()),
+    }
+}
+
 pub(super) fn durable_write(path: &Path, bytes: &[u8]) -> Result<(), StoreError> {
-    tilo_files::native::atomic::write(path, bytes)?;
+    crate::store::atomic_write(path, bytes)?;
     // native::atomic fsyncs the parent and fails when that fails. Apple's fsync
     // leaves the drive's cache unflushed, so there the barrier is repeated
     // with F_FULLFSYNC before destructive retirement relies on it.
@@ -486,7 +531,7 @@ fn generation_name(name: &str) -> bool {
     name.len() == 32 && name.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
-pub(super) fn current(lineage: &Path) -> Result<Option<PathBuf>, StoreError> {
+pub(crate) fn current(lineage: &Path) -> Result<Option<PathBuf>, StoreError> {
     use std::io::Read;
     let mut name = String::new();
     match fs::File::open(lineage.join("CURRENT")) {
@@ -616,6 +661,8 @@ fn known_record(name: &std::ffi::OsStr) -> bool {
 
 enum RetainPhase {
     Scan(fs::ReadDir),
+    /// A delta whose lineage the tail index describes: nothing to list.
+    Indexed,
     Sort,
     Inspect(fs::File),
     Stage(fs::File),
@@ -661,6 +708,12 @@ pub(crate) struct RetainBuild {
     staged_only: bool,
     continuity: Option<super::continuity::Receipt>,
     store: WorkspaceStore,
+    /// A delta's active generation, stamped when the build began.
+    stamp: Option<tail_index::Stamp>,
+    /// `last` came from the tail index, without listing the generation.
+    indexed: bool,
+    /// Every record digest a delta's full scan saw, to install as the index.
+    collected: Option<std::collections::HashSet<u64>>,
 }
 pub(crate) struct CheckpointStage {
     build: RetainBuild,
@@ -778,6 +831,7 @@ impl CheckpointStage {
                 .as_ref()
                 .invariant("staged missing")?
                 .clone();
+            tail_index::forget(&self.build.lineage);
             sync_dir(&staged)?;
             durable_write(
                 &self.build.lineage.join("CURRENT"),
@@ -889,15 +943,42 @@ impl RetainBuild {
                 .checked_add(1)
                 .ok_or_else(|| invalid("retained record sequence exhausted"))?;
             let path = self.active.join(format!("{next:016x}.delta"));
+            if self.indexed && exists(&path)? {
+                // Written behind the index's back: never overwrite it; list.
+                return self.rescan();
+            }
             if let Some(receipt) = &self.continuity {
                 super::continuity::account_validation(&mut self.sorter.stats, self.bytes.len());
                 super::continuity::write(&self.store, &path, &self.bytes, receipt)?;
             }
             durable_write(&path, &self.bytes)?;
             remember_digest(&path, &self.digest);
+            if let (Some(before), Some(after)) = (&self.stamp, generation_stamp(&self.active)) {
+                tail_index::appended(&self.lineage, (before, after), next, &self.digest);
+            } else {
+                tail_index::forget(&self.lineage);
+            }
             self.written = self.bytes.len() as u64;
             self.phase = RetainPhase::Done;
         }
+        Ok(())
+    }
+    /// Install what this delta's full scan found as the lineage's index.
+    fn install_index(&mut self) {
+        if let (Some(stamp), Some(digests)) = (self.stamp, self.collected.take())
+            && !self.duplicate
+        {
+            tail_index::install(&self.lineage, stamp, self.last, digests);
+        }
+    }
+    /// The index no longer matches the generation: list it after all.
+    fn rescan(&mut self) -> Result<(), StoreError> {
+        tail_index::forget(&self.lineage);
+        self.indexed = false;
+        self.last = 0;
+        self.stamp = generation_stamp(&self.active);
+        self.collected = self.stamp.map(|_| std::collections::HashSet::new());
+        self.phase = RetainPhase::Scan(fs::read_dir(&self.active)?);
         Ok(())
     }
     #[expect(
@@ -970,11 +1051,13 @@ impl RetainBuild {
                         if self.checkpoint {
                             self.phase = RetainPhase::Sort;
                         } else {
+                            self.install_index();
                             self.inspected()?;
                         }
                         return Ok(Step::More);
                     };
                     let entry = entry?;
+                    crate::store::count_listed_entry();
                     let name = entry.file_name();
                     let lossy = name.to_string_lossy();
                     if let Some(slot) = super::continuity::reserved_slot(&lossy) {
@@ -991,6 +1074,7 @@ impl RetainBuild {
                                 (&self.bytes, &self.digest),
                                 &mut self.last,
                                 &mut self.duplicate,
+                                self.collected.as_mut(),
                                 &mut self.sorter.stats,
                             )?;
                             continue;
@@ -1009,6 +1093,7 @@ impl RetainBuild {
                     }
                 }
             }
+            RetainPhase::Indexed => self.inspected()?,
             RetainPhase::Sort => {
                 if let Step::Done(path) = self.sorter.step(limit)? {
                     self.phase = RetainPhase::Inspect(fs::File::open(&path)?);
@@ -1121,6 +1206,7 @@ impl RetainBuild {
             }
             RetainPhase::Commit => {
                 let staged = self.staged.as_ref().invariant("staged missing")?;
+                tail_index::forget(&self.lineage);
                 sync_dir(staged)?;
                 durable_write(
                     &self.lineage.join("CURRENT"),
@@ -1298,22 +1384,45 @@ impl WorkspaceStore {
             None => commit_generation(&lineage, &[], None)?,
         };
         let scratch_root = self.root.join("store-work-v1");
-        fs::create_dir_all(&scratch_root)?;
         let scratch = scratch.unwrap_or_else(|| {
             scratch_root.join(format!(
                 "retain-{}",
                 hex::encode(rand::random::<[u8; 16]>())
             ))
         });
-        fs::create_dir(&scratch)?;
-        let sorter = super::bounded::Sorter::new(scratch.join("sort"))?;
-        let phase = RetainPhase::Scan(fs::read_dir(&active)?);
+        // Only a checkpoint's ordered pass spills metadata to scratch. A
+        // delta's scan compares sizes and cached digests and its append names
+        // the next ordinal, so it creates no directory to remove afterwards;
+        // a shell selection creates the scratch it needs itself.
+        let sorter = if checkpoint {
+            fs::create_dir_all(&scratch_root)?;
+            fs::create_dir(&scratch)?;
+            super::bounded::Sorter::new(scratch.join("sort"))?
+        } else {
+            super::bounded::Sorter::unspilled(scratch.join("sort"))
+        };
+        let digest = *blake3::hash(&bytes).as_bytes();
+        // A delta needs the generation's last ordinal and whether it already
+        // holds these bytes; the tail index answers both without listing it.
+        let stamp = if checkpoint {
+            None
+        } else {
+            generation_stamp(&active)
+        };
+        let indexed = stamp
+            .as_ref()
+            .and_then(|stamp| tail_index::last(&lineage, stamp, &digest));
+        let phase = if indexed.is_some() {
+            RetainPhase::Indexed
+        } else {
+            RetainPhase::Scan(fs::read_dir(&active)?)
+        };
         let key = checkpoint_key(&bytes, self.workspace_id);
         Ok(RetainBuild {
             lineage,
             active,
             scratch,
-            digest: *blake3::hash(&bytes).as_bytes(),
+            digest,
             bytes,
             checkpoint,
             workspace: self.workspace_id,
@@ -1322,7 +1431,7 @@ impl WorkspaceStore {
             phase,
             duplicate: false,
             opaque: false,
-            last: 0,
+            last: indexed.unwrap_or(0),
             key,
             staged: None,
             staged_append: false,
@@ -1342,6 +1451,11 @@ impl WorkspaceStore {
             staged_only: false,
             continuity: None,
             store: self.clone(),
+            collected: stamp
+                .filter(|_| indexed.is_none())
+                .map(|_| std::collections::HashSet::new()),
+            indexed: indexed.is_some(),
+            stamp,
         })
     }
     pub(super) fn retain_shared(

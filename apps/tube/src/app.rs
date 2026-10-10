@@ -850,28 +850,10 @@ impl TubeApp {
         self.follow_history();
     }
 
-    /// `--shots` builder: start on an EMPTY Home in its loading state, so a still
-    /// captures the skeleton the real (online) app shows on a cold start before
-    /// live results land — proving the no-fake-content default reads as
-    /// "loading", not a blank page.
-    #[must_use]
-    pub fn with_loading_home_shot(mut self) -> Self {
-        self.show_loading_home();
-        self
-    }
-
     fn show_loading_home(&mut self) {
         self.model = TubeModel::default();
         self.model.feed_loading = true;
         self.model.route = Route::Home;
-    }
-
-    /// `--shots` builder for the terminal offline/empty state after a live
-    /// fetch failed. Kept distinct from the cold-start loading skeleton.
-    #[must_use]
-    pub fn with_empty_home_shot(mut self) -> Self {
-        self.show_empty_home();
-        self
     }
 
     fn show_empty_home(&mut self) {
@@ -922,16 +904,6 @@ impl TubeApp {
         self.model.route = route;
     }
 
-    /// Secret-free offscreen proof of the real device lifecycle surface. The
-    /// route is scrolled to the card so wide and narrow screenshots exercise
-    /// pending approval, active sync, revocation, and broker-key messaging.
-    #[cfg(feature = "grayjay-sync")]
-    #[must_use]
-    pub fn with_device_sync_shot(mut self) -> Self {
-        self.show_device_sync_sample();
-        self
-    }
-
     #[cfg(feature = "grayjay-sync")]
     fn show_device_sync_sample(&mut self) {
         self.model.route = Route::Settings;
@@ -940,26 +912,6 @@ impl TubeApp {
         self.scroll_cells
             .borrow_mut()
             .insert("settings".into(), Rc::new(Cell::new((0.0, f32::MAX))));
-    }
-
-    /// Test/shots hook: the first video's watch page as playback starts,
-    /// opened from Home. Without a network there is no stream to decode, so
-    /// the player shows the video's art in its place, as it does in the live
-    /// app until the first frame arrives; a hermetic capture never shows a
-    /// synthesized picture as if it were the video. (The real decode path is
-    /// captured by `with_live_frame_for_shot` under `--live-shots`.)
-    #[must_use]
-    pub fn with_playing_demo_for_test(self) -> Self {
-        let id = self
-            .model
-            .videos
-            .first()
-            .map_or_else(|| "vid_donut".to_string(), |v| v.id.clone());
-        let mut app = self.with_route_shot(Route::Watch(id.clone()));
-        app.player_video = Some(id);
-        // A video just started shows its transport, as the live player does.
-        app.player.borrow_mut().reveal_controls();
-        app
     }
 
     /// `--live-shots` hook: open the shared player on a real, directly-playable

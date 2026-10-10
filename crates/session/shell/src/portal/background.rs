@@ -396,14 +396,6 @@ impl BackgroundBackend {
         before != after
     }
 
-    /// Remove state when the package is uninstalled. This also forgets portal
-    /// consent; package reinstall must ask again.
-    pub fn remove_app(&self, app_id: &str) -> bool {
-        self.apps
-            .lock()
-            .is_ok_and(|mut apps| apps.remove(app_id).is_some())
-    }
-
     pub fn app_state(&self, app_id: &str) -> Option<u32> {
         self.apps.lock().ok()?.get(app_id).map(|entry| entry.state)
     }

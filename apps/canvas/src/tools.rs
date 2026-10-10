@@ -132,11 +132,6 @@ impl Tool {
         Self::Eyedropper,
     ];
 
-    /// Whether the tool selects an area of the artwork.
-    pub fn selects_area(self) -> bool {
-        matches!(self, Self::Marquee | Self::Oval | Self::Lasso | Self::Wand)
-    }
-
     /// The Fluent id of the tool's name.
     pub fn label(self) -> &'static str {
         match self {

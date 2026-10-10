@@ -2452,17 +2452,6 @@ impl ShellOverlayHost {
         }
     }
 
-    /// Gate this host behind the shell-owned identity ceremony.
-    ///
-    /// This lives on the compositor root rather than in a pre-session winit
-    /// window: on a fresh machine there is no display server before `shell`,
-    /// and an application-shaped setup window could be imitated by an app.
-    #[must_use]
-    pub fn with_onboarding(mut self, identity_dir: std::path::PathBuf) -> Self {
-        self.onboarding = Some(crate::onboarding_view::OnboardingView::new(identity_dir));
-        self
-    }
-
     /// Activate first-login chrome on an already constructed compositor
     /// host. Production uses this after resolving the canonical XDG path.
     pub fn enable_onboarding(&mut self, identity_dir: std::path::PathBuf) {
@@ -2546,17 +2535,6 @@ impl ShellOverlayHost {
     /// Whether first-login chrome is still withholding the desktop.
     pub fn onboarding_active(&self) -> bool {
         self.onboarding.is_some()
-    }
-
-    /// Replace the protocol broker. Headless tests use this to drive
-    /// discovery, connection and failure states without receiver hardware.
-    #[must_use]
-    pub fn with_projection_backend(
-        mut self,
-        backend: Box<dyn crate::shell::projection::ProjectionBackend>,
-    ) -> Self {
-        self.projection_overlay = ProjectionOverlay::with_backend(backend);
-        self
     }
 
     pub fn projection(&self) -> &crate::shell::projection::ProjectionController {
@@ -4991,16 +4969,12 @@ impl ShellOverlayHost {
             .count()
     }
 
-    /// Every group's pending maximize toggle, persisted through the desktop
-    /// controller — without this the toggle lives only on the widget and
-    /// resets on the next restart.
-    fn harvest_pending_maximize_changes(&self) {
-        if self.group_row_ptrs.is_empty() {
-            return;
-        }
-        let Some(chrome) = self.chrome.clone() else {
-            return;
-        };
+    /// Drain every row's groups through `take`, collecting the intents it
+    /// finds pending.
+    fn take_group_intents(
+        &self,
+        mut take: impl FnMut(&mut UiWindowGroup) -> Option<tilo_desktop::intents::DesktopIntent>,
+    ) -> Vec<tilo_desktop::intents::DesktopIntent> {
         let mut intents = Vec::new();
         for &ptr in self.group_row_ptrs.values() {
             // SAFETY: see field doc on `group_row_ptrs` — pointer was
@@ -5008,13 +4982,22 @@ impl ShellOverlayHost {
             // tree, the host outlives the content, and reconcile sweeps
             // run sequentially so no other path is aliasing this row.
             let row: &mut GroupRow = unsafe { &mut *ptr };
-            intents.extend(
-                row.groups
-                    .iter_mut()
-                    .filter_map(tilo_desktop::intents::take_maximize)
-                    .map(tilo_desktop::intents::DesktopIntent::Local),
-            );
+            intents.extend(row.groups.iter_mut().filter_map(&mut take));
         }
+        intents
+    }
+
+    /// Every group's pending maximize toggle, persisted through the desktop
+    /// controller — without this the toggle lives only on the widget and
+    /// resets on the next restart.
+    fn harvest_pending_maximize_changes(&self) {
+        let Some(chrome) = self.chrome.clone() else {
+            return;
+        };
+        let intents = self.take_group_intents(|group| {
+            tilo_desktop::intents::take_maximize(group)
+                .map(tilo_desktop::intents::DesktopIntent::Local)
+        });
         if intents.is_empty() {
             return;
         }
@@ -5301,23 +5284,13 @@ impl ShellOverlayHost {
     }
 
     fn harvest_pending_width_changes(&self) {
-        if self.group_row_ptrs.is_empty() {
-            return;
-        }
         let Some(chrome) = self.chrome.clone() else {
             return;
         };
-        let mut intents = Vec::new();
-        for &ptr in self.group_row_ptrs.values() {
-            // SAFETY: see field doc on `group_row_ptrs`.
-            let row: &mut GroupRow = unsafe { &mut *ptr };
-            intents.extend(
-                row.groups
-                    .iter_mut()
-                    .filter_map(tilo_desktop::intents::take_width)
-                    .map(tilo_desktop::intents::DesktopIntent::Local),
-            );
-        }
+        let intents = self.take_group_intents(|group| {
+            tilo_desktop::intents::take_width(group)
+                .map(tilo_desktop::intents::DesktopIntent::Local)
+        });
         Self::dispatch_desktop_intents(&chrome, intents);
     }
 
@@ -5433,23 +5406,13 @@ impl ShellOverlayHost {
     /// Same as [`Self::harvest_pending_group_reorder`], for an
     /// *intra-group* tab reorder.
     fn harvest_pending_tab_reorder(&self) {
-        if self.group_row_ptrs.is_empty() {
-            return;
-        }
         let Some(chrome) = self.chrome.clone() else {
             return;
         };
-        let mut intents = Vec::new();
-        for &ptr in self.group_row_ptrs.values() {
-            // SAFETY: see field doc on `group_row_ptrs`.
-            let row: &mut GroupRow = unsafe { &mut *ptr };
-            intents.extend(
-                row.groups
-                    .iter_mut()
-                    .filter_map(tilo_desktop::intents::take_tab_reorder)
-                    .map(tilo_desktop::intents::DesktopIntent::Session),
-            );
-        }
+        let intents = self.take_group_intents(|group| {
+            tilo_desktop::intents::take_tab_reorder(group)
+                .map(tilo_desktop::intents::DesktopIntent::Session)
+        });
         Self::dispatch_desktop_intents(&chrome, intents);
     }
 
@@ -6437,11 +6400,6 @@ impl ShellOverlayHost {
     #[cfg(any(test, debug_assertions))]
     pub fn tick_pending_tab_reorder_harvest_for_tests(&mut self) {
         self.harvest_pending_tab_reorder();
-    }
-
-    /// Test and deterministic-scenario entry point for same-strip tab moves.
-    pub fn tick_pending_group_topology_harvest_for_tests(&mut self) {
-        self.harvest_pending_group_topology();
     }
 
     /// Test-only: runs the per-frame decoration-search-chip handling outside `update`.
@@ -12063,16 +12021,47 @@ impl ShellOverlayHost {
         })
     }
 
-    /// Absorbs every non-`Pressed` pointer event over an open overlay so
-    /// a hover/drag can't continue underneath it (`Pressed` is excluded
-    /// so the per-overlay branches later still get clicks), and a
-    /// left-click on an uncovered toast dismisses it. Foreground notification
-    /// history receives its own presses rather than dismissing a covered toast.
+    /// Banners own completed clicks before ordinary overlay absorption.
+    /// Foreground history cancels covered gestures and keeps its own presses.
     fn route_absorbable_pointer_and_toast_click(
         &mut self,
         event: &WindowEvent,
+        scale_factor: f64,
         handled: &mut bool,
     ) -> bool {
+        let covered = self
+            .last_cursor
+            .is_some_and(|point| self.notification_history_covers_pointer(point));
+        if covered {
+            self.notification_stack.cancel_pointer_press();
+        }
+        if let Some(chrome) = self.chrome.clone()
+            && (!covered
+                || (self.notification_stack.wants_pointer_capture()
+                    && !matches!(
+                        event,
+                        WindowEvent::MouseInput {
+                            state: ElementState::Pressed,
+                            button: winit::event::MouseButton::Left,
+                            ..
+                        }
+                    )))
+        {
+            let mut banner_handled = false;
+            let changed = self.notification_stack.handle_pointer_event(
+                &ChromeNotifications::new(&chrome),
+                event,
+                scale_factor,
+                &mut banner_handled,
+            );
+            if changed {
+                chrome.borrow_mut().bump();
+            }
+            if banner_handled {
+                *handled = true;
+                return true;
+            }
+        }
         let is_absorbable_pointer = matches!(
             event,
             WindowEvent::CursorMoved { .. }
@@ -12085,24 +12074,6 @@ impl ShellOverlayHost {
         if is_absorbable_pointer
             && let Some(p) = self.last_cursor
             && self.cursor_over_open_overlay(p)
-        {
-            *handled = true;
-            return true;
-        }
-
-        if let (
-            Some(chrome),
-            WindowEvent::MouseInput {
-                state: ElementState::Pressed,
-                button: winit::event::MouseButton::Left,
-                ..
-            },
-        ) = (self.chrome.as_ref(), event)
-            && let Some(p) = self.last_cursor
-            && !self.notification_history_covers_pointer(p)
-            && self
-                .notification_stack
-                .click_at(&ChromeNotifications::new(chrome), p)
         {
             *handled = true;
             return true;
@@ -18878,7 +18849,7 @@ impl Widget for ShellOverlayHost {
         {
             return;
         }
-        if self.route_absorbable_pointer_and_toast_click(event, ctx.handled) {
+        if self.route_absorbable_pointer_and_toast_click(event, ctx.scale_factor, ctx.handled) {
             return;
         }
         if self.route_permission_prompt_event(

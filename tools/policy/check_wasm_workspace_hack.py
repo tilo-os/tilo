@@ -27,12 +27,11 @@ WASM = "wasm32-unknown-unknown"
 HACK = "workspace-hack"
 
 # What the browser builds for wasm32: the desktop bundle, which links the
-# browser runtime and every web app, and the registry verifier.
+# browser runtime and every web app, and the image compute worker.
 ROOTS = (
     ("tilo-web-desktop", ()),
     ("tilo-browser-runtime", ()),
     ("tilo-browser-compute", ()),
-    ("registry-web-bindgen", ()),
 )
 
 

@@ -111,6 +111,8 @@ pub mod peer;
 #[cfg(not(target_arch = "wasm32"))]
 mod persistence;
 #[cfg(not(target_arch = "wasm32"))]
+pub mod presence_mailbox;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod relay_offers;
 #[cfg(not(target_arch = "wasm32"))]
 mod room_access;
@@ -143,7 +145,7 @@ pub use tilo_relay_client::frame;
 pub use tilo_relay_protocol::{
     auth, certify, config, home_peer, live, mesh, policy, process_lease,
 };
-pub use tilo_relay_session::{antientropy, client, coedit, framing, position};
+pub use tilo_relay_session::{antientropy, client, coedit, position};
 
 /// The relay wire messages ([`tilo_relay_protocol::transport`]) together with
 /// the envelope frame codec ([`frame`]), under the path the daemon and its

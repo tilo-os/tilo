@@ -86,25 +86,6 @@ pub const SHARE_CONTROL_XATTR: &str = "user.tilo.share-control";
 pub const HISTORY_XATTR: &str = "user.tilo.history";
 pub const HISTORY_CONTROL_XATTR: &str = "user.tilo.history-control";
 
-/// Fetch a bounded immutable version preview from the collaborative
-/// filesystem. Binary/invalid UTF-8 versions intentionally return `None`.
-pub fn read_history_text_preview(
-    path: &Path,
-    version_id: fs_protocol::FileVersionId,
-) -> Option<String> {
-    let name = format!(
-        "{}{}",
-        fs_protocol::HISTORY_PREVIEW_XATTR_PREFIX,
-        version_id.0
-    );
-    let bytes = xattr::get(path, name).ok()??;
-    if bytes.len() > fs_protocol::MAX_HISTORY_PREVIEW_BYTES {
-        return None;
-    }
-    let text = String::from_utf8(bytes).ok()?;
-    (!text.chars().any(|character| character == '\0')).then_some(text)
-}
-
 /// Read the daemon's non-committing classification for one open conflict.
 /// The daemon loads the exact immutable members and base, so this result is
 /// intentionally more authoritative than a filename or timestamp heuristic.

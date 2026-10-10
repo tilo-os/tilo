@@ -130,6 +130,8 @@ pub struct SettingsApp {
     accounts: panes::accounts::AccountsArea,
     displays: panes::display::DisplayArea,
     network: panes::network::NetworkArea,
+    /// When the areas above read what their live rows show.
+    area_reads: crate::effects::AreaReads,
     /// The text scale the shell was built for. A large-text preference widens
     /// the docked sidebar and its breakpoint with the type (the same policy
     /// the Store applies to its card grid), so a change rebuilds the shell.
@@ -183,6 +185,7 @@ impl SettingsApp {
                 .with_account_root(account_root.clone()),
             displays: panes::display::DisplayArea::new(&cx),
             network: panes::network::NetworkArea::new(&cx),
+            area_reads: crate::effects::AreaReads::of(&cx),
             selected: Category::DEFAULT,
             structure_dirty: false,
             cx,
@@ -359,14 +362,7 @@ impl SettingsApp {
     pub(crate) fn publish_browser_identity(&self, origin: String) -> Result<(), String> {
         let identity =
             ui::local_identity::bound().ok_or("Sign in before publishing this identity")?;
-        let root = identity
-            .group_public_key
-            .iter()
-            .fold(String::new(), |mut text, byte| {
-                use std::fmt::Write as _;
-                let _ = write!(text, "{byte:02x}");
-                text
-            });
+        let root = hex::encode(identity.group_public_key);
         self.account_root
             .publish_browser_identity(root, origin, identity.display_name)
     }
@@ -413,10 +409,29 @@ impl SettingsApp {
             panes::accounts::AccountsArea::new(&cx).with_account_root(self.account_root.clone());
         self.displays = panes::display::DisplayArea::new(&cx);
         self.network = panes::network::NetworkArea::new(&cx);
+        self.area_reads = crate::effects::AreaReads::of(&cx);
         self.software = panes::accessibility::Software::for_host(&cx);
         self.cx = cx;
         self.structure_dirty = true;
         self.refresh_shell_children();
+    }
+
+    /// Whether the published live rows include `area`'s: those of an area
+    /// that has read and of the pane shown, which reads it anyway — every
+    /// area's when reading is not put off ([`crate::effects::AreaReads`]).
+    pub(crate) fn publishes_area(&self, area: &crate::effects::LiveArea) -> bool {
+        !self.area_reads.deferred() || area.pane == self.selected || (area.is_open)(self)
+    }
+
+    /// Read the next area that has not, so the published rows fill in a
+    /// frame at a time after the first. `false` once every area has read,
+    /// from when on every area is published.
+    pub(crate) fn read_next_area(&self) -> bool {
+        let Some(area) = self.area_reads.take_next(self) else {
+            return false;
+        };
+        let _ = (area.rows)(self);
+        true
     }
 
     /// Where the last wallpaper request stands.
@@ -791,6 +806,11 @@ impl Widget for SettingsApp {
         self.accounts.poll();
         self.displays.poll();
         self.network.poll();
+        // After the first frame, one more area reads per sync until every
+        // area's rows are published.
+        if self.area_reads.take_due() && self.read_next_area() {
+            self.area_reads.wake();
+        }
         // A sidebar row opens its pane through the pane row's open effect;
         // only a bare app outside a host selects here. Search is local
         // presentation state: no CRDT text, collaboration traffic or undo.
@@ -893,6 +913,8 @@ impl Widget for SettingsApp {
         if let Some(shell) = &mut self.shell {
             shell.draw(scene, transform, text_renderer, theme, presence);
         }
+        self.area_reads.presented();
+        self.area_reads.wake();
     }
 
     fn draw_with_presence(
@@ -914,6 +936,8 @@ impl Widget for SettingsApp {
                 permissions,
             );
         }
+        self.area_reads.presented();
+        self.area_reads.wake();
     }
 
     fn observe_physical_input(&mut self, input: ui::widget::PhysicalInput) {

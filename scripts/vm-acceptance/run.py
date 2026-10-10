@@ -42,6 +42,16 @@ BUDGETS = {
     "idle_shell_cpu_pct": 1.0, "idle_frames": 2, "idle_user_cpu_pct": 3.0,
     "idle_apps_shell_cpu_pct": 1.5, "idle_apps_frames": 2, "idle_apps_user_cpu_pct": 5.0,
     "idle_loop_ticks_per_s": 2.0,
+    # On a software-rendered VM the compositor's CPU is judged without its CPU rasteriser's
+    # threads, whose work a GPU does on a real desktop (TIL-739). With no frame painted in
+    # the window those threads have nothing to do and must stay idle.
+    "idle_software_raster_cpu_pct": 0.1,
+    # Terminal's shell runtime with its shell running and nothing typed (R02, TIL-701):
+    # every `tilo-ush` process summed, CPU and context switches of all their threads.
+    # Measured 0.0% and 0.0/s (run 91757) once the egress DNS stub's threads block
+    # on their sockets (TIL-737); before, its 200 ms stop-flag polls were all
+    # 10.7/s (run 91741). 1/s is 30 wakeups in the 30 s window.
+    "idle_apps_ush_cpu_pct": 1.0, "idle_apps_ush_wakeups_per_s": 1.0,
     # Memory. An app is budgeted by its own cgroup (memory.current, and its anon share);
     # processes and the compositor by anonymous RSS, the memory they hold privately.
     "app_memory_mb": 400, "app_anon_mb": 250,
@@ -442,6 +452,9 @@ def main() -> int:
         if ctx is not None and ctx.facts.get("session_recovered_after"):
             # The checks after which the harness restarted a session left locked.
             meta["session_recovered_after"] = ctx.facts["session_recovered_after"]
+        if ctx is not None and ctx.facts.get("dialog_recovered_after"):
+            # The checks that left a dialog open, what it was, and how the harness closed it.
+            meta["dialog_recovered_after"] = ctx.facts["dialog_recovered_after"]
         if not args.keep:
             try:
                 vm.vm_cmd("stop", vm_name, timeout=300, check=False)

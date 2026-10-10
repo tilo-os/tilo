@@ -33,7 +33,7 @@ use rand_core::Rng;
 use serde::{Deserialize, Serialize};
 use serde_bytes as serde_bytes_codec;
 use sha2::{Digest, Sha512};
-use taffy::{NodeId, Style, TaffyTree};
+use taffy::{NodeId, TaffyTree};
 use threshold_identity::{EnrolmentRound1, EnrolmentRound2, ThresholdError, ThresholdIdentity};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -2425,13 +2425,6 @@ impl Widget for IdentityFlow {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let fill = Style {
-            size: taffy::Size {
-                width: taffy::Dimension::percent(1.0),
-                height: taffy::Dimension::percent(1.0),
-            },
-            ..Default::default()
-        };
         let screen = match self.current_widget_mut() {
             Some(screen) => vec![screen.build_layout(taffy, theme, node_map)],
             // The terminal card owns the viewport like every other screen;
@@ -2439,7 +2432,7 @@ impl Widget for IdentityFlow {
             // edge, half off-screen.
             None => Vec::new(),
         };
-        taffy.widget_node(fill, &screen, node_map, self)
+        taffy.widget_node(sheet::screen_style(), &screen, node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {

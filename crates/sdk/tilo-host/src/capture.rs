@@ -59,8 +59,3 @@ pub enum ScreenCaptureOutcome {
 /// A pending screen-capture request: the receiver the UI thread drains each
 /// frame.
 pub type ScreenCaptureChannel = Receiver<ScreenCaptureOutcome>;
-
-/// Ask the current host for a screen-capture stream.
-pub fn request_screen_capture(request: ScreenCaptureRequest) -> ScreenCaptureChannel {
-    crate::host::current().screen_capture.request(request)
-}

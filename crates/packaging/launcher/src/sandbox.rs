@@ -1,4 +1,4 @@
-//! Bubblewrap argv construction from a [`MinimalManifest`].
+//! Bubblewrap argv construction from a [`ManifestView`].
 //!
 //! Pure function: given a manifest, payload root, optional runtime root,
 //! and resolved service fds, returns the argv for `bwrap`. No I/O — fd
@@ -7,7 +7,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::capabilities::CapabilityPlan;
-use crate::manifest::{MinimalManifest, PortalPolicy};
+use crate::manifest::ManifestView;
 
 /// In-sandbox mount root for the package payload.
 pub fn payload_mount_for(package_id: &str) -> PathBuf {
@@ -336,7 +336,7 @@ pub fn push_gpu_landlock_rules(argv: &mut Vec<String>, selection: &crate::gpu::G
 /// sources rather than a constant, since [`push_gpu_selection`]'s
 /// narrowing needs something actually mounted regardless of a future
 /// profile change.
-pub fn grants_drm(_manifest: &MinimalManifest, capabilities: &CapabilityPlan) -> bool {
+pub fn grants_drm(_manifest: &ManifestView, capabilities: &CapabilityPlan) -> bool {
     let from_profile = crate::profile::SYSTEM_DEVICE_PATHS
         .iter()
         .any(|entry| is_drm_path(Path::new(entry)));
@@ -393,7 +393,7 @@ pub fn push_action_authority_bind(argv: &mut Vec<String>, host_path: &Path) {
 /// renders exactly the sandbox the manifest alone describes, the whole
 /// enforcement story for a revoked or never-granted permission.
 pub fn build_bwrap_argv(
-    manifest: &MinimalManifest,
+    manifest: &ManifestView,
     payload_root: &Path,
     runtime: Option<(&Path, &str)>,
     service_binds: &[ServiceBind],
@@ -497,7 +497,7 @@ fn is_plain_absolute_path(value: &str) -> bool {
         })
 }
 
-fn push_app_metadata(argv: &mut Vec<String>, manifest: &MinimalManifest, payload_mount: &Path) {
+fn push_app_metadata(argv: &mut Vec<String>, manifest: &ManifestView, payload_mount: &Path) {
     if let Some(name) = manifest
         .name
         .as_deref()
@@ -602,7 +602,7 @@ fn push_runtime_bundle(argv: &mut Vec<String>, runtime: Option<(&Path, &str)>) {
 
 /// `build_bwrap_argv` variant for `run-installed`'s CLI entrypoint.
 pub fn build_bwrap_argv_for_entry(
-    manifest: &MinimalManifest,
+    manifest: &ManifestView,
     payload_root: &Path,
     runtime: Option<(&Path, &str)>,
     service_binds: &[ServiceBind],
@@ -758,7 +758,7 @@ pub fn build_bwrap_argv_for_entry(
 /// alternative is an empty namespace with no gate (silently offline)
 /// or a gate plus `--share-net` (a hole beside the filter).
 pub fn egress_decision(
-    manifest: &MinimalManifest,
+    manifest: &ManifestView,
     capabilities: &CapabilityPlan,
 ) -> crate::netgate::EgressDecision {
     let decision = crate::netgate::EgressDecision::resolve(
@@ -770,7 +770,8 @@ pub fn egress_decision(
     // must come from the same answer, or the app gets an empty namespace
     // with nothing to reach through it.
     if matches!(decision, crate::netgate::EgressDecision::Filtered(_))
-        && crate::dev_env::dev_override(crate::dev_env::NET_GATE_ENV).is_some_and(|v| v == "off")
+        && package_store::dev_env::dev_override(crate::dev_env::NET_GATE_ENV)
+            .is_some_and(|v| v == "off")
     {
         tracing::warn!(
             hosts = ?decision.policy().map(super::netgate::EgressPolicy::describe),
@@ -935,18 +936,6 @@ fn push_bind(argv: &mut Vec<String>, kind: &str, src: &Path, dst: &Path) {
     argv.push(dst.display().to_string());
 }
 
-/// If the manifest declared at least one portal as `ViaHost`, return the
-/// current `$DBUS_SESSION_BUS_ADDRESS` — else `None`.
-pub fn host_dbus_bus_address_if_needed(
-    portals: &std::collections::BTreeMap<String, PortalPolicy>,
-) -> Option<String> {
-    let wants_bus = portals.values().any(|p| matches!(p, PortalPolicy::ViaHost));
-    if !wants_bus {
-        return None;
-    }
-    std::env::var("DBUS_SESSION_BUS_ADDRESS").ok()
-}
-
 /// Extract the `unix:path=<path>` from a D-Bus bus address, or `None`
 /// otherwise. Abstract sockets can't be bind-mounted, so callers
 /// surface that as "portal unavailable".
@@ -970,6 +959,7 @@ pub fn parse_unix_path_bus_address(addr: &str) -> Option<String> {
 mod tests {
     use super::*;
     use crate::manifest::Entrypoint;
+    use crate::manifest::PortalPolicy;
     use std::collections::BTreeMap;
 
     #[test]
@@ -1058,8 +1048,8 @@ mod tests {
         }
     }
 
-    fn mk_manifest(net_mode: &str) -> MinimalManifest {
-        MinimalManifest {
+    fn mk_manifest(net_mode: &str) -> ManifestView {
+        ManifestView {
             package_id: "com.example.notes".to_string(),
             name: Some("Notes".to_string()),
             localized_names: BTreeMap::default(),

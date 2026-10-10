@@ -30,7 +30,7 @@
 //! observed environment and renders the operator-facing message.
 
 use std::fmt;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 /// Where seatd's control socket lives when the daemon is running.
 pub const SEATD_SOCKET: &str = "/run/seatd.sock";
@@ -274,12 +274,6 @@ pub fn classify(raw: &str, env: &SeatEnvironment) -> SeatFailureKind {
 /// libseat error. Kept here so the hardware path has one call to make.
 pub fn diagnose_live(raw: impl Into<String>) -> SeatFailure {
     SeatFailure::diagnose(raw, SeatEnvironment::detect())
-}
-
-/// Paths this module probes, exposed so a caller can log what it looked
-/// at. Not used by [`classify`] — it reads the booleans instead.
-pub fn probed_paths() -> [PathBuf; 2] {
-    [PathBuf::from(SEATD_SOCKET), PathBuf::from(LOGIND_SEAT_DIR)]
 }
 
 #[cfg(test)]

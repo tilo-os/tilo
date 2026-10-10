@@ -546,7 +546,7 @@ fn invite_token_carries_an_authenticated_iroh_address() {
 }
 
 async fn spawn_same_identity_actor(
-    device_seed: u8,
+    device_label: u8,
 ) -> (
     mpsc::Sender<NetCmd>,
     mpsc::Receiver<NetEvent>,
@@ -557,11 +557,14 @@ async fn spawn_same_identity_actor(
     use std::sync::{Arc, Mutex};
     use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
     let root = ed25519_dalek::SigningKey::from_bytes(&[41; 32]);
-    let key = ed25519_dalek::SigningKey::from_bytes(&[device_seed; 32]);
+    // Parallel CI jobs must not claim the same Iroh device identity on N0's
+    // shared relays. Keep the fixture's person, but give each device its own key.
+    let transport_key = iroh::SecretKey::generate();
+    let key = ed25519_dalek::SigningKey::from_bytes(&transport_key.to_bytes());
     let mut cert = DeviceCert {
         user_public_key: root.verifying_key().to_bytes(),
         device_public_key: key.verifying_key().to_bytes(),
-        device_label: format!("Synthetic device {device_seed}"),
+        device_label: format!("Synthetic device {device_label}"),
         capabilities: DeviceCapabilities::primary(),
         issued_at_ns: 1,
         expires_at_ns: None,
@@ -570,7 +573,7 @@ async fn spawn_same_identity_actor(
     sign_device_cert(&mut cert, &root).unwrap();
     let lookup = MemoryLookup::new();
     let endpoint = iroh::Endpoint::builder(presets::N0)
-        .secret_key(iroh::SecretKey::from_bytes(&key.to_bytes()))
+        .secret_key(transport_key)
         .address_lookup(lookup.clone())
         .bind()
         .await
@@ -844,7 +847,11 @@ async fn send_native_connector_observation(
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn native_screen_crossing_reaches_the_two_peer_seat_without_video() {
     let (cmd_a, mut events_a, addr_a) = spawn_same_identity_actor(42).await;
-    let (cmd_b, mut events_b, addr_b) = spawn_same_identity_actor(43).await;
+    let (cmd_b, mut events_b, addr_b) = spawn_same_identity_actor(42).await;
+    assert_ne!(
+        addr_a.id, addr_b.id,
+        "equal device labels must retain distinct authenticated endpoints"
+    );
     let source = DeviceId::new(hex::encode(addr_a.id.as_bytes())).unwrap();
     let target = DeviceId::new(hex::encode(addr_b.id.as_bytes())).unwrap();
     let endpoint_a = addr_a.id;

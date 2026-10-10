@@ -16,8 +16,10 @@
 pub mod colorimetry;
 pub mod contribution;
 pub mod hdr_metadata;
+pub mod presence_slot;
 pub mod retention;
 
+pub use presence_slot::PresenceSlot;
 pub use retention::{Retention, app_document_channel, retention};
 
 use serde::{Deserialize, Serialize};
@@ -1002,14 +1004,6 @@ mod tests {
 
     const VARIANT_COUNT: usize = 28;
 
-    fn hex(bytes: &[u8]) -> String {
-        use std::fmt::Write;
-        bytes.iter().fold(String::new(), |mut out, byte| {
-            let _ = write!(out, "{byte:02x}");
-            out
-        })
-    }
-
     /// Postcard encodings pinned byte for byte. Peers running older builds
     /// decode these frames, so a change here is a wire break, not a refactor.
     const GOLDEN: &[(&str, &str)] = &[
@@ -1219,7 +1213,7 @@ mod tests {
         let mut actual = Vec::new();
         for (case, message) in &fixtures {
             let bytes = postcard::to_allocvec(message).expect("fixture encodes");
-            actual.push((*case, hex(&bytes)));
+            actual.push((*case, hex::encode(&bytes)));
         }
         let expected: Vec<_> = GOLDEN
             .iter()

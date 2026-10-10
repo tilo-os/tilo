@@ -1936,54 +1936,15 @@ impl FrameHarness {
     /// [`UndoButton`](crate::widget::UndoButton) both arrive here, so a
     /// scenario cannot pass against a path the user never takes.
     pub fn perform_undo(&mut self) -> bool {
-        if self.pump_component_wakes_checked().is_err() {
-            return false;
-        }
-        if crate::history_mode::embedded::keyboard_captured(
-            self.root.as_ref(),
-            self.focused,
-            &self.taffy,
-        ) || self
-            .history
-            .as_ref()
-            .is_some_and(|history| history.captures_input())
-        {
-            return false;
-        }
-        let author = self.author.clone();
-        let done = if let Some(binding) = self
-            .focused
-            .and_then(|node| self.bindings.binding_for(node))
-            .or_else(|| self.root.callback_binding())
-        {
-            Self::history_through_component(
-                &mut *self.root,
-                &mut self.state.doc,
-                &binding,
-                crate::undo::UndoRequest::Undo,
-                &self.action_registry,
-            )
-        } else if let Some(owner) = self.focused.and_then(|node| self.bindings.legacy_for(node)) {
-            crate::bound_dispatch::legacy_history_request(
-                &owner,
-                crate::undo::UndoRequest::Undo,
-                &self.permissions,
-                &author,
-            )
-            .ok()
-            .flatten()
-            .is_some()
-        } else {
-            self.state.undo_as(Some(&author), None, None).is_some()
-        };
-        if done {
-            self.relayout();
-        }
-        done
+        self.perform_history(crate::undo::UndoRequest::Undo)
     }
 
     /// Redo the last undone action. The mirror of [`Self::perform_undo`].
     pub fn perform_redo(&mut self) -> bool {
+        self.perform_history(crate::undo::UndoRequest::Redo)
+    }
+
+    fn perform_history(&mut self, request: crate::undo::UndoRequest) -> bool {
         if self.pump_component_wakes_checked().is_err() {
             return false;
         }
@@ -2008,13 +1969,13 @@ impl FrameHarness {
                 &mut *self.root,
                 &mut self.state.doc,
                 &binding,
-                crate::undo::UndoRequest::Redo,
+                request,
                 &self.action_registry,
             )
         } else if let Some(owner) = self.focused.and_then(|node| self.bindings.legacy_for(node)) {
             crate::bound_dispatch::legacy_history_request(
                 &owner,
-                crate::undo::UndoRequest::Redo,
+                request,
                 &self.permissions,
                 &author,
             )
@@ -2022,7 +1983,11 @@ impl FrameHarness {
             .flatten()
             .is_some()
         } else {
-            self.state.redo_as(Some(&author), None, None).is_some()
+            match request {
+                crate::undo::UndoRequest::Undo => self.state.undo_as(Some(&author), None, None),
+                crate::undo::UndoRequest::Redo => self.state.redo_as(Some(&author), None, None),
+            }
+            .is_some()
         };
         if done {
             self.relayout();
@@ -5748,16 +5713,6 @@ impl FrameHarness {
         }
     }
 
-    /// Diagnostics only: record which dirty widget paths made unconsumed
-    /// pointer motion produce a frame. Off by default; no document content.
-    pub fn set_pointer_redraw_diagnostics(&mut self, enabled: bool) {
-        self.pointer_redraw_diagnostics = enabled;
-        self.pointer_redraw_sources.clear();
-    }
-    pub fn take_pointer_redraw_sources(&mut self) -> Vec<String> {
-        std::mem::take(&mut self.pointer_redraw_sources)
-    }
-
     fn frame_schedule_demands_frame(&self) -> bool {
         let schedule = self.frame_schedule();
         schedule.needs_redraw
@@ -7427,6 +7382,14 @@ impl FrameHarness {
     /// Returns an error when `name` is absent or its widget has no tappable
     /// layout rectangle.
     pub fn tap_named(&mut self, name: &str) -> Result<(), String> {
+        let center = self.named_center(name)?;
+        self.tap_at(center.x, center.y);
+        Ok(())
+    }
+
+    /// The centre of the named widget's laid-out rect, once pending
+    /// component wakes have landed.
+    fn named_center(&mut self, name: &str) -> Result<Point, String> {
         self.pump_component_wakes();
         let rect = self
             .targets()
@@ -7436,9 +7399,7 @@ impl FrameHarness {
         if rect.width() <= 0.0 || rect.height() <= 0.0 {
             return Err(format!("widget {name:?} has an empty rect: {rect:?}"));
         }
-        let center = rect.center();
-        self.tap_at(center.x, center.y);
-        Ok(())
+        Ok(rect.center())
     }
 
     /// Click the centre of the named widget. `Err` names the target when it
@@ -7449,17 +7410,8 @@ impl FrameHarness {
     ///
     /// Returns an error if the widget is not found or has a zero-sized rect.
     pub fn click_named(&mut self, name: &str) -> Result<(), String> {
-        self.pump_component_wakes();
-        let rect = self
-            .targets()
-            .get(name)
-            .copied()
-            .ok_or_else(|| format!("no addressable widget named {name:?}"))?;
-        if rect.width() <= 0.0 || rect.height() <= 0.0 {
-            return Err(format!("widget {name:?} has an empty rect: {rect:?}"));
-        }
-        let c = rect.center();
-        self.click_at(c.x, c.y);
+        let center = self.named_center(name)?;
+        self.click_at(center.x, center.y);
         Ok(())
     }
 

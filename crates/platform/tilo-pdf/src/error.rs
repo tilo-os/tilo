@@ -1,5 +1,6 @@
 //! Errors of the PDF API.
 
+#[cfg(unix)]
 use crate::proto::FailureKind;
 
 /// Why a PDF operation failed.
@@ -41,10 +42,7 @@ pub enum Error {
 }
 
 impl Error {
-    #[cfg_attr(
-        not(unix),
-        allow(dead_code, reason = "pdfium failures exist on Unix only")
-    )]
+    #[cfg(unix)]
     pub(crate) fn from_failure(kind: FailureKind, message: String) -> Self {
         match kind {
             FailureKind::Format => Self::Format(message),
@@ -65,7 +63,7 @@ impl Error {
 
 pub type Result<T> = std::result::Result<T, Error>;
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
 

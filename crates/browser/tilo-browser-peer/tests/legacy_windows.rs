@@ -11,8 +11,9 @@ mod support;
 
 use neighbour_wire::NeighbourMsg;
 use tilo_browser_peer::Host;
-use tilo_relay_client::{AttributedPresence, Envelope, RelayClient};
+use tilo_relay_client::{AttributedPresence, Envelope};
 use tilo_relay_protocol::legacy_window as wire;
+use tilo_relay_session::RelayClient;
 use tilo_user_identity::{DeviceCapabilities, RevocationList, UserIdentity};
 
 use support::{enrol, ready, start_host, start_peer, workspace};

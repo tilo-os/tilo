@@ -98,10 +98,6 @@ pub fn open_group_address(name: &str) -> ActionAddress {
 /// belongs to every contact's replicated document record.
 pub const FAVORITES_RESOURCE_ID: &str = "contacts.favorites";
 
-pub fn open_favorites_address() -> ActionAddress {
-    ActionAddress::new(FAVORITES_RESOURCE_ID, "open-favorites")
-}
-
 /// The one typed external operation for exporting exactly one contact.  Both
 /// the resource catalogue and the contextual UI encode this value before it
 /// reaches the shared operation handler.
@@ -854,13 +850,6 @@ pub fn duplicate_resource_id(survivor_id: ContactId, source_id: ContactId) -> St
     format!("contacts.duplicate:{survivor_id}:{source_id}")
 }
 
-pub fn open_duplicate_review_address(
-    survivor_id: ContactId,
-    source_id: ContactId,
-) -> ActionAddress {
-    ActionAddress::new(duplicate_resource_id(survivor_id, source_id), "open-review")
-}
-
 /// The single canonical view operation for a locally-derived duplicate
 /// candidate.  The candidate remains a review suggestion, never a mutation:
 /// the destructive merge still requires the field-by-field confirmation in
@@ -1315,14 +1304,6 @@ pub fn contact_resource(contact: &Contact) -> Resource {
     );
 
     child
-}
-
-/// The minimal exact resource a retained search provider needs to invoke the
-/// canonical view action. Rich edit actions are published from the
-/// resource's state, not copied into the search index.
-pub fn contact_open_resource(id: ContactId, label: &str) -> Resource {
-    Resource::new(contact_resource_id(id), "contacts.contact", label)
-        .with_action(ContactsEffect::Open { contact: id }.bound())
 }
 
 /// Resource and canonical view action for a durable membership group. Groups

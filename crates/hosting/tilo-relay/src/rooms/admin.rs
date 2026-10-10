@@ -49,7 +49,7 @@ impl RoomAdminProtocol {
             .accept_bi()
             .await
             .map_err(|error| RoomAdminError::Transport(error.to_string()))?;
-        let bytes = crate::framing::read_frame(&mut recv, MAX_REQUEST_BYTES)
+        let bytes = crate::frame::read_frame(&mut recv, MAX_REQUEST_BYTES)
             .await
             .map_err(|error| RoomAdminError::Transport(error.to_string()))?;
         let request: RoomAdminRequest = postcard::from_bytes(&bytes)
@@ -65,7 +65,7 @@ impl RoomAdminProtocol {
                 "room reply exceeds the wire limit".into(),
             ));
         }
-        crate::framing::write_frame(&mut send, &bytes)
+        crate::frame::write_frame(&mut send, &bytes)
             .await
             .map_err(|error| RoomAdminError::Transport(error.to_string()))?;
         send.finish()

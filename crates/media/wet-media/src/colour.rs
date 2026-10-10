@@ -85,10 +85,6 @@ impl Rgb {
     pub fn channels(self) -> [f32; 3] {
         [self.r, self.g, self.b]
     }
-
-    pub fn from_channels([r, g, b]: [f32; 3]) -> Self {
-        Self { r, g, b }
-    }
 }
 
 /// sRGB transfer to linear light.

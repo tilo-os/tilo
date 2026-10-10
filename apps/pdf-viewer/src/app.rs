@@ -526,7 +526,6 @@ pub struct PdfApp {
     shots_context_menu: bool,
     shots_panel: Option<SidebarTab>,
     shots_colours: bool,
-    shots_no_comments: bool,
     shots_selection: bool,
     // CRDT-backed caches (refreshed from the shared document each frame).
     annotations: Vec<Annotation>,
@@ -999,34 +998,6 @@ impl PdfApp {
         self.sig_strokes = crate::scenarios::sample_drawn_signature();
     }
 
-    /// Screenshot-only: the Signatures panel composing a typed signature.
-    pub fn arm_shots_sign_type(&mut self) {
-        self.show_sidebar = true;
-        self.shots_panel = Some(SidebarTab::Signatures);
-        self.tool = Tool::Sign;
-        self.sig_mode = SigMode::Type;
-    }
-
-    /// Screenshot-only: the review panel open on `tab`.
-    pub fn arm_shots_panel(&mut self, tab: SidebarTab) {
-        self.show_sidebar = true;
-        self.shots_panel = Some(tab);
-    }
-
-    /// Screenshot-only: the Highlight tool armed with its colour popover
-    /// open under the toolbar's colour well.
-    pub fn arm_shots_marker_colours(&mut self) {
-        self.tool = Tool::Highlight;
-        self.shots_colours = true;
-    }
-
-    /// Screenshot-only: the demonstration markup with no comments yet, so
-    /// the Comments tab shows its empty state.
-    pub fn arm_shots_no_comments(&mut self) {
-        self.shots_no_comments = true;
-        self.arm_shots_panel(SidebarTab::Comments);
-    }
-
     /// Screenshot-only: stage a settled text selection over a word of page
     /// 1's first paragraph, so a still frame shows the shared selection HUD —
     /// highlight swatches + Copy + Note — over the page. The glyph layer is
@@ -1137,7 +1108,6 @@ impl PdfApp {
             shots_context_menu: false,
             shots_panel: None,
             shots_colours: false,
-            shots_no_comments: false,
             shots_selection: false,
             annotations: Vec::new(),
             comments: Vec::new(),

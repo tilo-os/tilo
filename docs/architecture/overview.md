@@ -103,6 +103,14 @@ Owner: surface commit → damage hint → media real-time encode (cap; a held fr
   → peer: decoder → peer_view widget draws decoded frames into that tab
 ```
 
+Raw captures may be coalesced before encoding. Encoded video units preserve
+reference order within the existing 64 MiB pending storage budget, including
+payload and queue allocations. A fresh keyframe replaces the older pending
+chain. After overflow or a failed direct send, dependent units wait for the
+next codec-specific keyframe; share encoders already emit periodic keyframes.
+Independent pictures keep newest-picture coalescing. Fanout completion carries
+a generation, so an old send cannot change a restarted stream's task or queue.
+
 ### Remote input replay
 ```
 Peer pointer/keyboard event on a peer_view widget

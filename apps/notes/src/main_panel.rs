@@ -452,38 +452,6 @@ impl MainPanel {
         self.dirty = true;
     }
 
-    /// Load a page with caller-pre-resolved link page-ids. Used by
-    /// `NotesApp` so a `[[Page Title]]` in the markdown resolves to
-    /// the actual `PageId` at load time (otherwise links would be
-    /// `Mark::Link(Uuid::nil())` placeholders).
-    pub fn load_page_with_link_resolver<F>(
-        &mut self,
-        id: PageId,
-        title: &str,
-        body: impl AsRef<str>,
-        resolver: F,
-    ) where
-        F: FnMut(&str) -> Option<PageId>,
-    {
-        let body = body.as_ref();
-        self.page_id = Some(id);
-        self.dates = self.date_index.get(id);
-        self.refresh_captions();
-        self.set_title_value(title);
-        let mut specs = crate::markdown::parse(body);
-        crate::markdown::resolve_link_ids(&mut specs, resolver);
-        let blocks = crate::markdown::specs_to_blocks(&specs);
-        self.editor = self.fresh_editor(None);
-        self.editor.editor_mut().set_blocks(blocks);
-        self.editor.set_focus(true);
-        self.editor
-            .editor_mut()
-            .focus_block(0, ui::widget::CursorPlacement::Start);
-        self.take_body_snapshot();
-        self.scroll_y = 0.0;
-        self.dirty = true;
-    }
-
     /// Bind the panel's editor to a page's body in the shared document,
     /// showing it as it is now. The editor edits it through its action host
     /// from then on; binding itself writes nothing.
@@ -1729,10 +1697,16 @@ impl Widget for MainPanel {
                 if (self.scroll_y - prev).abs() > f64::EPSILON {
                     self.dirty = true;
                     *ctx.handled = true;
+                    // This event belongs to the viewport. Lending it to the
+                    // rich-text editor snapshots and compares every block as
+                    // though it might be an edit, even though it only scrolled.
+                    return;
                 }
             }
         }
         if let Some(n) = self.editor_node {
+            #[cfg(test)]
+            let _profile = crate::cpu_profile::Phase::start("rich_text_input");
             self.editor
                 .handle_event(event, &mut ctx.reborrow(ctx.path, n));
             if self.editor.is_focused()
@@ -2010,6 +1984,31 @@ impl Widget for MainPanel {
 }
 
 impl MainPanel {
+    pub(crate) fn view_only_scroll(&self, event: &WindowEvent) -> bool {
+        let delta = match event {
+            WindowEvent::MouseWheel { delta, .. } => match delta {
+                winit::event::MouseScrollDelta::LineDelta(_, y) => -f64::from(*y) * 40.0,
+                winit::event::MouseScrollDelta::PixelDelta(position) => -position.y,
+            },
+            _ => return false,
+        };
+        let target = (self.scroll_y + delta).clamp(0.0, self.scroll_metrics().max_scroll());
+        (target - self.scroll_y).abs() > f64::EPSILON
+            && self.page_id.is_some()
+            && self.scroll_viewport().contains(self.last_pointer)
+            && !self.title_label.is_editing()
+            && !self.has_editor_popup()
+            && self.pending_rename.is_none()
+            && self.pending_tag_open.is_none()
+            && self.pending_backlink_open.is_none()
+            && self.editor.blocks().iter().all(|block| {
+                matches!(
+                    block.kind,
+                    ui::widget::BlockKind::Paragraph | ui::widget::BlockKind::Heading(_)
+                )
+            })
+    }
+
     pub(crate) fn has_editor_popup(&self) -> bool {
         self.editor.editor().has_open_popup()
     }

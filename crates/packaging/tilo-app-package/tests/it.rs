@@ -23,5 +23,3 @@ mod manifest;
 mod pack_unpack;
 #[path = "verify_attest.rs"]
 mod verify_attest;
-#[path = "web_build.rs"]
-mod web_build;

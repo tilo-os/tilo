@@ -4703,6 +4703,19 @@ impl App {
         let after = build::sccache_stats(&mut self.runner);
         self.receipt
             .set("cache", build::cache_summary(before, after));
+        for native in build::native_builds(component, &target) {
+            let runner = &mut self.runner;
+            if !self
+                .receipt
+                .phase("native-build", || runner.interactive(&native))?
+            {
+                return Err(CliError::CommandFailed {
+                    command: native.display(),
+                    status: "build failed".into(),
+                    stderr: String::new(),
+                });
+            }
+        }
         let staging = build::Staging::new(&worktree)?;
         let install = build::install(component, &target, &staging.tree());
         let runner = &mut self.runner;
