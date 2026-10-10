@@ -186,6 +186,9 @@ impl ComponentNodes {
             return None;
         }
         drop((gone, seen));
+        // The nodes built from here on carry the binding the component
+        // hands over now, as a rebuild's would.
+        self.binding = component.binding.clone();
 
         let mut delta = TreeDelta::default();
         let mut removed_nodes = HashMap::with_capacity(removed_ids.len());
