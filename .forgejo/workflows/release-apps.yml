@@ -834,7 +834,11 @@ jobs:
     needs: [plan, authorize-publish, build]
     # Execute tools from the first selected native architecture. Those tools can
     # verify either target archive without executing its application payloads.
-    runs-on: ${{ fromJSON(needs.plan.outputs.matrix).include[0].runner }}
+    # With both native artifacts, publish-collections.sh selects the tool
+    # matching uname -m. Reuse admitted portable pools rather than pinning
+    # the release lock to the first architecture's saturated test runners.
+    # A single-architecture release still needs its matching native pool.
+    runs-on: ${{ contains(fromJSON(needs.plan.outputs.matrix).include.*.arch, 'x86_64') && contains(fromJSON(needs.plan.outputs.matrix).include.*.arch, 'aarch64') && 'runner-native-portable' || fromJSON(needs.plan.outputs.matrix).include[0].runner }}
     container:
       # This public, immutable image is pulled before any release authorization.
       # It contains no compiler or build toolchain and needs no registry secret.
