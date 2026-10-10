@@ -167,10 +167,6 @@ impl CandlestickChart {
         self.height = height.max(160.0);
         self
     }
-    pub fn set_candles(&mut self, candles: Vec<Candle>) {
-        self.candles = candles;
-        self.hovered = None;
-    }
     pub fn take_activated(&mut self) -> Option<String> {
         self.activated.take()
     }

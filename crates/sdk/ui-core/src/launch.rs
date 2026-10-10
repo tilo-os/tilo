@@ -609,12 +609,6 @@ impl LaunchRecovery {
         std::thread::current().id() == self.owner
     }
 
-    /// Whether the owners are reachable from this thread.
-    #[must_use]
-    pub fn is_reachable(&self) -> bool {
-        self.here()
-    }
-
     /// How many close reports this recovery carries, on any thread.
     #[must_use]
     pub fn report_count(&self) -> usize {
@@ -1178,15 +1172,6 @@ pub const MAX_SHOT_DEVICE_SCALE: u32 = 4;
 /// `--distinct-letters` for the capture this process writes: every capture
 /// theme ([`shot_theme`], [`capture_theme`], [`shot_theme_from_env`]) takes it.
 static CAPTURE_DISTINCT_LETTERS: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-
-/// What this process's capture set "Always distinguish similar letters" to
-/// (`--distinct-letters`), `None` outside a capture or without the flag: a
-/// pane that shows the setting's own control renders it as the person's
-/// choice, so the control matches the text around it.
-#[must_use]
-pub fn capture_distinct_letters() -> Option<bool> {
-    CAPTURE_DISTINCT_LETTERS.get().copied()
-}
 
 /// Pin "Always distinguish similar letters" on a capture theme when the
 /// capture asked for it (`--distinct-letters`).

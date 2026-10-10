@@ -169,10 +169,6 @@ where
         &self.items
     }
 
-    pub fn item_mut(&mut self, index: usize) -> Option<&mut T> {
-        self.items.get_mut(index)
-    }
-
     /// # Errors
     ///
     /// Returns [`DuplicateListKey`] when `key` already exists.

@@ -100,13 +100,6 @@ impl ShortcutRecorder {
         self
     }
 
-    /// Show the chord as unavailable while `refused` holds.
-    #[must_use]
-    pub fn with_refused(mut self, refused: &crate::LocalState<bool>) -> Self {
-        self.rejected = Some(super::binding::local(refused).1);
-        self
-    }
-
     fn reset_rect(&self) -> Option<Rect> {
         (self.value != self.default).then(|| {
             let x0 = self.chord_rect().x1 + self.gap;

@@ -283,20 +283,6 @@ impl AgentTaskFrontiers {
         }
     }
 
-    /// Every task in the complete authenticated owner snapshot.
-    ///
-    /// Callers receive no partial list while a snapshot is loading,
-    /// incomplete or invalidated; presenting that as the available choices
-    /// would make a bounded response look authoritative.
-    #[must_use]
-    pub fn available_tasks(&self) -> Vec<AgentTaskFrontier> {
-        if self.snapshot_complete && !self.invalidated {
-            self.frontiers.clone()
-        } else {
-            Vec::new()
-        }
-    }
-
     #[must_use]
     pub fn direction_state(&self) -> &AgentDirectionState {
         &self.direction_state

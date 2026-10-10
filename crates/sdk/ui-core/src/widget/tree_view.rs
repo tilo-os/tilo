@@ -1049,13 +1049,6 @@ impl<T> TreeView<T, TreeNode<T>> {
         result
     }
 
-    pub fn replace_model(&mut self, root: TreeNode<T>) {
-        let anchor = self.capture_view_anchor();
-        self.model = root;
-        self.invalidate_all_delegates();
-        self.reconcile_model_state(anchor.as_ref());
-    }
-
     /// Enable safe before/inside/after dragging for the owned [`TreeNode`]
     /// model. Subtrees can be reordered among siblings or reparented without
     /// app-authored detach/insert bookkeeping.
