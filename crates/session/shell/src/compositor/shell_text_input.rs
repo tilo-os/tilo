@@ -23,13 +23,7 @@
 //! The client is public (no privileged or input-method credential), owns no
 //! toplevel and is never shown; it exists only to be the text-input focus.
 
-use std::os::unix::net::UnixStream;
-
-use smithay::reexports::calloop::generic::Generic;
-use smithay::reexports::calloop::{Interest, LoopHandle, Mode, PostAction, RegistrationToken};
-use smithay::reexports::wayland_server::backend::DisconnectReason;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface as ServerSurface;
-use smithay::reexports::wayland_server::{Client, DisplayHandle};
 use smithay::wayland::text_input::TextInputSeat as _;
 use wayland_client::protocol::{wl_compositor, wl_registry, wl_seat, wl_surface};
 use wayland_client::{Connection, EventQueue, Proxy as _, QueueHandle, delegate_noop};
@@ -40,6 +34,7 @@ use winit::event::{Ime, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use super::state::{ClientState, State};
+use super::text_commit::LoopbackClient;
 
 /// What a chrome field asks of an input method: its purpose and where its
 /// caret is, in desktop coordinates.
@@ -80,15 +75,13 @@ struct ClientSide {
 /// The stand-in client. Dropping it disconnects it, which also retires the
 /// text-input focus Smithay held for its surface.
 pub struct ShellTextInput {
+    /// Declared first so the server side disconnects before `conn` closes.
+    link: LoopbackClient,
     conn: Connection,
     queue: EventQueue<ClientSide>,
     state: ClientSide,
     surface: Option<wl_surface::WlSurface>,
     text_input: Option<zwp_text_input_v3::ZwpTextInputV3>,
-    server: Client,
-    display: DisplayHandle,
-    loop_handle: LoopHandle<'static, State>,
-    wake: Option<RegistrationToken>,
     /// What the client last enabled its text input for.
     enabled: Option<FieldRequest>,
     /// The field the compositor wants served, if any.
@@ -106,41 +99,17 @@ impl ShellTextInput {
     /// Returns a description when the socket pair, the client insertion or
     /// the Wayland connection fails.
     pub fn connect(state: &mut State) -> Result<Self, String> {
-        let (server, client) = UnixStream::pair().map_err(|e| e.to_string())?;
-        client.set_nonblocking(true).map_err(|e| e.to_string())?;
-        let server = state
-            .display_handle
-            .insert_client(server, ClientState::new_arc())
-            .map_err(|e| e.to_string())?;
-        let conn = Connection::from_socket(client).map_err(|e| e.to_string())?;
+        let (link, conn) = LoopbackClient::connect(state, ClientState::new_arc())?;
         let queue = conn.new_event_queue::<ClientSide>();
         let _registry = conn.display().get_registry(&queue.handle(), ());
         let _ = conn.flush();
-        // Only a wake: the loop's tick reads what arrived.
-        let wake = conn
-            .backend()
-            .poll_fd()
-            .try_clone_to_owned()
-            .ok()
-            .and_then(|fd| {
-                state
-                    .loop_handle
-                    .insert_source(
-                        Generic::new(fd, Interest::READ, Mode::Level),
-                        |_, _, _: &mut State| Ok(PostAction::Continue),
-                    )
-                    .ok()
-            });
         Ok(Self {
+            link,
             conn,
             queue,
             state: ClientSide::default(),
             surface: None,
             text_input: None,
-            server,
-            display: state.display_handle.clone(),
-            loop_handle: state.loop_handle.clone(),
-            wake,
             enabled: None,
             wanted: None,
             native_field: None,
@@ -153,8 +122,12 @@ impl ShellTextInput {
     /// rests on while a chrome field is served.
     fn server_surface(&self) -> Option<ServerSurface> {
         let surface = self.surface.as_ref()?;
-        self.server
-            .object_from_protocol_id::<ServerSurface>(&self.display, surface.id().protocol_id())
+        self.link
+            .server
+            .object_from_protocol_id::<ServerSurface>(
+                &self.link.display,
+                surface.id().protocol_id(),
+            )
             .ok()
     }
 
@@ -327,25 +300,6 @@ impl ShellTextInput {
             self.enabled = None;
         }
         let _ = self.conn.flush();
-    }
-}
-
-impl Drop for ShellTextInput {
-    fn drop(&mut self) {
-        if let Some(wake) = self.wake.take() {
-            self.loop_handle.remove(wake);
-        }
-        let id = self.server.id();
-        if self
-            .display
-            .backend_handle()
-            .get_client_data(id.clone())
-            .is_ok()
-        {
-            self.display
-                .backend_handle()
-                .kill_client(id, DisconnectReason::ConnectionClosed);
-        }
     }
 }
 

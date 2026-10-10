@@ -4991,16 +4991,12 @@ impl ShellOverlayHost {
             .count()
     }
 
-    /// Every group's pending maximize toggle, persisted through the desktop
-    /// controller — without this the toggle lives only on the widget and
-    /// resets on the next restart.
-    fn harvest_pending_maximize_changes(&self) {
-        if self.group_row_ptrs.is_empty() {
-            return;
-        }
-        let Some(chrome) = self.chrome.clone() else {
-            return;
-        };
+    /// Drain every row's groups through `take`, collecting the intents it
+    /// finds pending.
+    fn take_group_intents(
+        &self,
+        mut take: impl FnMut(&mut UiWindowGroup) -> Option<tilo_desktop::intents::DesktopIntent>,
+    ) -> Vec<tilo_desktop::intents::DesktopIntent> {
         let mut intents = Vec::new();
         for &ptr in self.group_row_ptrs.values() {
             // SAFETY: see field doc on `group_row_ptrs` — pointer was
@@ -5008,13 +5004,22 @@ impl ShellOverlayHost {
             // tree, the host outlives the content, and reconcile sweeps
             // run sequentially so no other path is aliasing this row.
             let row: &mut GroupRow = unsafe { &mut *ptr };
-            intents.extend(
-                row.groups
-                    .iter_mut()
-                    .filter_map(tilo_desktop::intents::take_maximize)
-                    .map(tilo_desktop::intents::DesktopIntent::Local),
-            );
+            intents.extend(row.groups.iter_mut().filter_map(&mut take));
         }
+        intents
+    }
+
+    /// Every group's pending maximize toggle, persisted through the desktop
+    /// controller — without this the toggle lives only on the widget and
+    /// resets on the next restart.
+    fn harvest_pending_maximize_changes(&self) {
+        let Some(chrome) = self.chrome.clone() else {
+            return;
+        };
+        let intents = self.take_group_intents(|group| {
+            tilo_desktop::intents::take_maximize(group)
+                .map(tilo_desktop::intents::DesktopIntent::Local)
+        });
         if intents.is_empty() {
             return;
         }
@@ -5301,23 +5306,13 @@ impl ShellOverlayHost {
     }
 
     fn harvest_pending_width_changes(&self) {
-        if self.group_row_ptrs.is_empty() {
-            return;
-        }
         let Some(chrome) = self.chrome.clone() else {
             return;
         };
-        let mut intents = Vec::new();
-        for &ptr in self.group_row_ptrs.values() {
-            // SAFETY: see field doc on `group_row_ptrs`.
-            let row: &mut GroupRow = unsafe { &mut *ptr };
-            intents.extend(
-                row.groups
-                    .iter_mut()
-                    .filter_map(tilo_desktop::intents::take_width)
-                    .map(tilo_desktop::intents::DesktopIntent::Local),
-            );
-        }
+        let intents = self.take_group_intents(|group| {
+            tilo_desktop::intents::take_width(group)
+                .map(tilo_desktop::intents::DesktopIntent::Local)
+        });
         Self::dispatch_desktop_intents(&chrome, intents);
     }
 
@@ -5433,23 +5428,13 @@ impl ShellOverlayHost {
     /// Same as [`Self::harvest_pending_group_reorder`], for an
     /// *intra-group* tab reorder.
     fn harvest_pending_tab_reorder(&self) {
-        if self.group_row_ptrs.is_empty() {
-            return;
-        }
         let Some(chrome) = self.chrome.clone() else {
             return;
         };
-        let mut intents = Vec::new();
-        for &ptr in self.group_row_ptrs.values() {
-            // SAFETY: see field doc on `group_row_ptrs`.
-            let row: &mut GroupRow = unsafe { &mut *ptr };
-            intents.extend(
-                row.groups
-                    .iter_mut()
-                    .filter_map(tilo_desktop::intents::take_tab_reorder)
-                    .map(tilo_desktop::intents::DesktopIntent::Session),
-            );
-        }
+        let intents = self.take_group_intents(|group| {
+            tilo_desktop::intents::take_tab_reorder(group)
+                .map(tilo_desktop::intents::DesktopIntent::Session)
+        });
         Self::dispatch_desktop_intents(&chrome, intents);
     }
 
