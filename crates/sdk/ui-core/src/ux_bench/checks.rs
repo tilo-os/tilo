@@ -138,7 +138,6 @@ pub(super) fn validate(c: &Check, viewport: [u32; 2]) -> Result<(), String> {
     clippy::arithmetic_side_effects,
     reason = "u32 coordinates widened to i64 plus shifts bounded to 256 cannot overflow"
 )]
-#[cfg(not(target_arch = "wasm32"))]
 pub(super) fn image_shift(
     before: &image::RgbaImage,
     after: &image::RgbaImage,

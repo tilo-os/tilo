@@ -117,11 +117,9 @@ pub(crate) struct Continuation {
     /// Why an edit the effect submitted was refused: the effect then fails.
     pub(crate) refused: Option<tilo_actions::ActionFailure>,
     /// The edits it submitted that the host is still admitting, by request.
-    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) outstanding: std::collections::HashSet<u64>,
     /// The effect's answer, held until those edits are admitted or refused:
     /// the wire id to send it under, and the answer.
-    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) deferred: Option<(u64, tilo_actions::InvocationUpdate)>,
 }
 
@@ -311,7 +309,6 @@ impl PublishedInvocationLease {
             "required invocation has no original admitted dispatch specification".into()
         })
     }
-    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn matches(&self, request: &PublishedInvocationRequest) -> bool {
         self.request == *request
     }
@@ -338,7 +335,6 @@ pub type PublishedInvocationAuthorizer = std::sync::Arc<
 >;
 
 #[derive(Default)]
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) struct PublishedInvocationRuntime {
     pub(crate) required: bool,
     pub(crate) authorizer: Option<PublishedInvocationAuthorizer>,
@@ -443,7 +439,6 @@ pub struct ResourceInvocationScope {
 }
 
 impl ResourceInvocationScope {
-    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn for_owner(
         owner: HistoryOwner,
         lease: PublishedInvocationLease,
@@ -481,7 +476,6 @@ impl ResourceInvocationScope {
 
     /// Retain the exact target while the SDK still holds its original alias
     /// resolution. Later dispatch cannot qualify a different same-owner action.
-    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn for_bound_target(
         target: crate::bound_dispatch::BoundActionTarget,
         lease: PublishedInvocationLease,
@@ -804,7 +798,6 @@ pub(crate) struct InvocationProvenance {
 }
 
 struct RetainedContribution {
-    #[cfg(not(target_arch = "wasm32"))]
     lease: PublishedInvocationLease,
     committed: Arc<AtomicBool>,
 }
@@ -814,7 +807,6 @@ struct MutationSpan {
 }
 
 impl InvocationProvenance {
-    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn is_required(&self) -> bool {
         self.route.is_some()
     }
@@ -880,7 +872,6 @@ impl InvocationProvenance {
         }
         Ok(())
     }
-    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn require(
         &mut self,
         route: RouteSpec,
@@ -926,7 +917,6 @@ impl InvocationProvenance {
             self.contributions
                 .entry(hash)
                 .or_insert_with(|| RetainedContribution {
-                    #[cfg(not(target_arch = "wasm32"))]
                     lease: lease.clone(),
                     committed: Arc::new(AtomicBool::new(false)),
                 });
@@ -945,14 +935,12 @@ impl InvocationProvenance {
         });
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn observe_admitted(&mut self, hashes: &[ChangeHash]) {
         if self.route.is_some() {
             self.observed.extend(hashes.iter().copied());
         }
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn capture(
         &self,
         document: &mut AutoCommit,
@@ -1265,7 +1253,6 @@ fn with_identified_document<R>(
 /// Lend the app's mounted primary document to `callback`, identified as the
 /// canonical record on `route`. Without a current primary route the document
 /// is lent unidentified.
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn with_mounted_document<R>(
     route: Option<RouteSpec>,
     document: &mut AutoCommit,

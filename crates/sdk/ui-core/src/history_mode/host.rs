@@ -229,7 +229,6 @@ impl HistoryHost {
         self.rebuild_toolbar();
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn remove_open_button(&mut self) {
         self.open_button = false;
         self.rebuild_toolbar();

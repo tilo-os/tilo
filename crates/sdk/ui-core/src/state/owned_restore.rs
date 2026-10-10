@@ -452,7 +452,6 @@ impl State {
 }
 
 impl State {
-    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn merge_remote_committed(
         &mut self,
         mutation: &collab_types::DocumentMutation,

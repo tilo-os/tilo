@@ -1,29 +1,22 @@
 //! Private native construction custody. It borrows the existing SDK worker;
 //! neither an environment value nor a data capture is a positive authority.
-#[cfg(not(target_arch = "wasm32"))]
-use super::CollaborationManager;
 #[cfg(feature = "broker-transport")]
 use super::{
     Backend, BridgeState, BrokerTransport, QueuedSdkCommand, SdkCommand, enqueue_sdk_command,
     tokio_mpsc,
 };
-use super::{CommittedDocument, RouteSpec};
-#[cfg(not(target_arch = "wasm32"))]
-use std::cell::Cell;
-use std::cell::RefCell;
+use super::{CollaborationManager, CommittedDocument, RouteSpec};
+use std::cell::{Cell, RefCell};
 use std::rc::{Rc, Weak};
 thread_local! {static CONSTRUCTION:RefCell<Option<Weak<Construction>>> = const {RefCell::new(None)};}
 struct Construction {
-    #[cfg(not(target_arch = "wasm32"))]
     manager: RefCell<Option<CollaborationManager>>,
     bridge: Option<InitialReadBridge>,
     primary: RefCell<Option<CommittedDocument>>,
     #[cfg(feature = "broker-transport")]
     creation: RefCell<std::collections::BTreeMap<String, CreationCapture>>,
     failure: RefCell<Option<String>>,
-    #[cfg(not(target_arch = "wasm32"))]
     transferring: Cell<bool>,
-    #[cfg(not(target_arch = "wasm32"))]
     component_scope: RefCell<Option<crate::wake::WakeScope>>,
 }
 #[cfg(feature = "broker-transport")]
@@ -40,7 +33,6 @@ impl CreationCapture {
         }
     }
 }
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) struct NativeConstruction {
     state: Rc<Construction>,
     previous: Option<Weak<Construction>>,
@@ -77,7 +69,6 @@ pub(crate) fn component_history_read_for_test(
         &binding.checkout,
     )
 }
-#[cfg(not(target_arch = "wasm32"))]
 impl NativeConstruction {
     #[cfg(feature = "native")]
     pub(crate) fn enter(manager: CollaborationManager) -> Result<Self, String> {
@@ -318,7 +309,6 @@ pub(crate) fn take_initialization(
     Ok(None)
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 impl Drop for NativeConstruction {
     fn drop(&mut self) {
         CONSTRUCTION.with(|slot| {
@@ -329,7 +319,6 @@ impl Drop for NativeConstruction {
 fn current() -> Option<Rc<Construction>> {
     CONSTRUCTION.with(|slot| slot.borrow().as_ref().and_then(Weak::upgrade))
 }
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn check_current() -> Result<(), String> {
     let Some(state) = current() else {
         return Ok(());
@@ -354,7 +343,6 @@ pub(crate) fn ensure_unoccupied() -> Result<(), String> {
     }
     Ok(())
 }
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn transfer_to_app<T>(construct: impl FnOnce() -> T) -> Result<T, String> {
     let Some(state) = current() else {
         return Ok(construct());
@@ -373,7 +361,6 @@ pub(crate) fn transfer_to_app<T>(construct: impl FnOnce() -> T) -> Result<T, Str
     let _transfer = Transfer(state);
     Ok(construct())
 }
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn take_component_scope() -> Option<crate::wake::WakeScope> {
     let state = current()?;
     if state.transferring.get() {
@@ -384,7 +371,6 @@ pub(crate) fn take_component_scope() -> Option<crate::wake::WakeScope> {
     }
     None
 }
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn take_manager() -> Option<CollaborationManager> {
     let state = current()?;
     if state.transferring.replace(false) {
@@ -687,7 +673,6 @@ impl InitialReadBridge {
         clippy::unnecessary_wraps,
         reason = "mirrors the broker-backed bridge's signature"
     )]
-    #[cfg(not(target_arch = "wasm32"))]
     fn from_manager(_manager: &CollaborationManager) -> Result<Option<Self>, String> {
         Ok(None)
     }
@@ -697,11 +682,9 @@ impl InitialReadBridge {
     fn check_scope(&self, _app: &str, _room: Option<&str>) -> Result<(), String> {
         match self.never {}
     }
-    #[cfg(not(target_arch = "wasm32"))]
     fn publishable(&self, _channel: &str) -> bool {
         match self.never {}
     }
-    #[cfg(not(target_arch = "wasm32"))]
     fn apply_prepared_capture(
         &self,
         _binding: &crate::bound_dispatch::CallbackBinding,
