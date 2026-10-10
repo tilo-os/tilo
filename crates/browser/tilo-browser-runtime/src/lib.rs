@@ -23,6 +23,17 @@
 mod background_work;
 #[cfg(target_arch = "wasm32")]
 mod browser;
+/// Install an already-admitted feedback transport before mounting its desktop.
+/// This Rust host hook is intentionally absent from URL/JSON launch options.
+/// # Errors
+/// Refuses a missing or mismatched certified peer and duplicate registration.
+#[cfg(target_arch = "wasm32")]
+pub fn register_feedback_startup(
+    peer: u32,
+    startup: tilo_desktop::feedback::transport::Startup,
+) -> Result<(), String> {
+    browser::register_feedback_startup(peer, startup)
+}
 #[cfg(target_arch = "wasm32")]
 mod clipboard;
 #[cfg(target_arch = "wasm32")]
