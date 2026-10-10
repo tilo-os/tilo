@@ -79,6 +79,31 @@ use tilo_user_identity::{
 use common::catalogue;
 use support::{Device, ROOM, TestHost, enrol, ready, start_peer, wait_for, workspace};
 
+/// Plans the task `gated` as a slow model would: only once its steps arrive
+/// on `release`, noting when the plan was ready. Anything else is planned as
+/// written.
+struct GatedPlanner {
+    release: std::sync::mpsc::Receiver<serde_json::Value>,
+    ready: Arc<std::sync::Mutex<Option<Instant>>>,
+}
+
+impl tilo_agent_participant::Planner for GatedPlanner {
+    fn plan(
+        &mut self,
+        task: &str,
+        context: &tilo_agent_participant::PlanContext,
+    ) -> Result<Vec<tilo_agent_participant::Step>, String> {
+        use tilo_agent_participant::Planner as _;
+        if task != "gated" {
+            return DirectPlanner.plan(task, context);
+        }
+        let steps = self.release.recv().map_err(|error| error.to_string())?;
+        let planned = DirectPlanner.plan(&steps.to_string(), context);
+        *self.ready.lock().unwrap() = Some(Instant::now());
+        planned
+    }
+}
+
 const SCRATCHPAD: &str = "so.tilo.scratchpad";
 const OTHER_ROOM: &str = "0b7f3c2e-5d41-4a8f-9e36-2c1d7a9b4e50";
 
@@ -437,6 +462,8 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
     .await;
     assert_eq!(completed(&spawned)["agentId"], "writer");
     let (identity, control) = spawned_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+    let (release_plan, release) = std::sync::mpsc::channel();
+    let plan_ready = Arc::new(std::sync::Mutex::new(None));
     let mut agent = AgentParticipant::start(
         ParticipantConfig {
             host: host.iroh(),
@@ -446,7 +473,10 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
         identity,
         control.clone(),
         catalogue.clone(),
-        Box::new(DirectPlanner),
+        Box::new(GatedPlanner {
+            release,
+            ready: Arc::clone(&plan_ready),
+        }),
     )
     .unwrap();
 
@@ -718,6 +748,64 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
         &mut page,
         agent_cert.device_public_key,
         "Step 10 of ten",
+    )
+    .await;
+
+    // 11. A plan that takes a while (a model call) is made beside the loop:
+    // the loop goes on pumping meanwhile, and the plan's first step runs as
+    // soon as it is ready.
+    let planned_steps = serde_json::json!([{
+        "app": SCRATCHPAD,
+        "record": route.record,
+        "resource": "scratchpad.note",
+        "action": "edit",
+        "arguments": {"text": "Planned beside the loop"},
+    }]);
+    let releaser = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(1_500));
+        release_plan.send(planned_steps).unwrap();
+    });
+    let gated = control.message("gated").unwrap();
+    let started = Instant::now();
+    agent.pump();
+    agent.pump();
+    let pumped = started.elapsed();
+    eprintln!("two pumps while a 1.5 s plan was being made took {pumped:?}");
+    let mut first_step = None;
+    let run = agent.run_until(Some(Instant::now() + Duration::from_secs(20)), |_| {
+        let task = control
+            .info()
+            .tasks
+            .into_iter()
+            .find(|task| task.id == gated);
+        if first_step.is_none() && task.as_ref().is_some_and(|task| !task.steps.is_empty()) {
+            first_step = Some(Instant::now());
+        }
+        task.is_some_and(|task| !matches!(task.state, TaskState::Queued | TaskState::Running))
+    });
+    releaser.join().unwrap();
+    let task = ended(&gated).expect("the planned task ended");
+    assert_eq!(task.state, TaskState::Completed, "{task:?}");
+    let ready = plan_ready.lock().unwrap().expect("the plan was made");
+    let to_first_step = first_step
+        .expect("the plan's first step ran")
+        .saturating_duration_since(ready);
+    eprintln!("plan ready to its first step done: {to_first_step:?} ({run:?})");
+    assert!(
+        pumped < Duration::from_millis(1_000),
+        "the loop waited for the planner: two pumps took {pumped:?}"
+    );
+    assert!(
+        to_first_step < Duration::from_millis(500),
+        "the plan's first step waited {to_first_step:?} after the plan was ready"
+    );
+    receive_until(
+        &mut agent,
+        &browser_events,
+        &route,
+        &mut page,
+        agent_cert.device_public_key,
+        "Planned beside the loop",
     )
     .await;
     completed(
