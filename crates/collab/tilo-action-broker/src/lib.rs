@@ -36,6 +36,14 @@ impl tilo_identity_host::broker::PersonRecordKinds for SurfacePersonRecords {
     }
 }
 
+/// Run the signed package `app_id` with `surface`, the `surface.toml` it
+/// ships: the person-record kinds it declares work as a built-in app's, and
+/// the changes it signs name that surface. A host calls it as it launches
+/// the package.
+pub fn register_package_surface(app_id: &str, surface: &[u8]) {
+    ui::app_surface::register_package(app_id, surface);
+}
+
 /// Decide every change this process's rooms receive by its claim against
 /// the app surface its op names, read by `read` (the host's content store,
 /// in the record's room and app), and name in the changes the process signs

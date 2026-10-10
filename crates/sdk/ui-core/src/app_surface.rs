@@ -37,6 +37,43 @@ pub fn register_committed(app_id: &str, bytes: Option<&'static [u8]>) {
     }
 }
 
+/// Name `bytes`, the surface the signed package `app_id` ships, as the one
+/// it runs with: a launched package's, which replaces any its host held
+/// before (an update of the app).
+pub fn register_package(app_id: &str, bytes: &[u8]) {
+    let hash = *blake3::hash(bytes).as_bytes();
+    let Ok(mut registry) = registry().lock() else {
+        return;
+    };
+    if registry
+        .get(app_id)
+        .is_some_and(|named| named.hash == hash && named.bytes.is_some())
+    {
+        return;
+    }
+    // Kept for the process's life, once per distinct surface.
+    let bytes = held_bytes(hash, bytes);
+    registry.insert(
+        app_id.to_owned(),
+        Named {
+            hash,
+            bytes: Some(bytes),
+        },
+    );
+}
+
+/// The bytes of surface `hash`, kept once however many apps or launches
+/// name it.
+fn held_bytes(hash: [u8; 32], bytes: &[u8]) -> &'static [u8] {
+    static HELD: OnceLock<Mutex<BTreeMap<[u8; 32], &'static [u8]>>> = OnceLock::new();
+    let mut held = HELD
+        .get_or_init(Mutex::default)
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    held.entry(hash)
+        .or_insert_with(|| Box::leak(bytes.to_vec().into_boxed_slice()))
+}
+
 /// Name the surface the launcher handed `app_id`, by its hash. The
 /// committed bytes stay with it when they are those.
 pub fn register_launched(app_id: &str, hash: [u8; 32]) {
@@ -129,6 +166,23 @@ mod tests {
         assert!(keeps_person_record("test.person-kinds", "test.history"));
         assert!(!keeps_person_record("test.person-kinds", "test.own"));
         assert!(!keeps_person_record("test.unknown-app", "test.history"));
+    }
+
+    #[test]
+    fn a_launched_package_surface_replaces_the_one_held() {
+        static BUILT: &[u8] = b"[[resources]]\nkind = \"test.pkg\"\nlabel = \"Pkg\"\nversion = 1\n";
+        register_committed("test.package-surface", Some(BUILT));
+        let package = b"[[resources]]\nkind = \"test.pkg\"\nlabel = \"Pkg\"\nversion = 2\n\n[[resources]]\nkind = \"test.pkg-history\"\nlabel = \"History\"\nperson = true\nversion = 1\n".to_vec();
+        register_package("test.package-surface", &package);
+        assert_eq!(
+            hash_of("test.package-surface"),
+            Some(*blake3::hash(&package).as_bytes())
+        );
+        assert_eq!(bytes_of("test.package-surface"), Some(package.as_slice()));
+        assert_eq!(
+            person_record_kinds("test.package-surface"),
+            ["test.pkg-history"]
+        );
     }
 
     #[test]

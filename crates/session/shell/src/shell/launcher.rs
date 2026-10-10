@@ -2211,6 +2211,7 @@ fn build_launch_command_for(
         uri,
     } = *extras;
     let application_creation = original_application_creation(app);
+    register_signed_surface(app);
     let mut args = vec![
         "run".to_string(),
         "--manifest".to_string(),
@@ -2296,6 +2297,25 @@ fn build_launch_command_for(
         }),
         portal_workspace_id: None,
         managed_agent_id: None,
+    }
+}
+
+/// Run the package `app` with the surface its signed package ships, so the
+/// records of the person's it declares there are kept in their room as a
+/// built-in app's are. A package whose surface no longer matches its
+/// signature declares none.
+fn register_signed_surface(app: &InstalledApp) {
+    let Some(installed) = package_store::find_installed(&app.package_id)
+        .ok()
+        .flatten()
+    else {
+        return;
+    };
+    if installed.manifest_path != app.manifest_path || installed.payload_root != app.payload_root {
+        return;
+    }
+    if let Some(surface) = package_store::integrity::signed_surface(&installed) {
+        tilo_action_broker::register_package_surface(&app.package_id, &surface);
     }
 }
 
@@ -3139,6 +3159,9 @@ fn native_launch_capabilities(
 #[cfg(test)]
 #[path = "launcher_native_open_tests.rs"]
 mod native_open_tests;
+#[cfg(test)]
+#[path = "launcher_package_surface_tests.rs"]
+mod package_surface_tests;
 
 fn native_app_open_access(
     owner: &super::native_workspace_owner::NativeWorkspaceOwner,

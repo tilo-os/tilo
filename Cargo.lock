@@ -14344,6 +14344,7 @@ dependencies = [
  "tilo-advisory-lock",
  "tilo-agent-participant",
  "tilo-app",
+ "tilo-app-package",
  "tilo-app-state",
  "tilo-automation",
  "tilo-automerge",
