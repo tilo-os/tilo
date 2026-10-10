@@ -228,12 +228,7 @@ pub fn rename(path: &Path, new_name: &str) -> Result<PathBuf, String> {
 /// fails (e.g. a path no longer exists, or crosses a filesystem the trash
 /// backend can't handle).
 pub fn delete_to_trash(paths: &[PathBuf]) -> Result<(), String> {
-    if paths.is_empty() {
-        return Ok(());
-    }
-    #[cfg(all(unix, not(target_os = "macos")))]
-    host_fs::trash::ensure_trash_dir().map_err(|error| error.to_string())?;
-    trash::delete_all(paths).map_err(|e| e.to_string())
+    host_fs::trash::delete(paths)
 }
 
 /// Recursively copy `src` into the directory `dest_dir`, choosing a

@@ -7,6 +7,22 @@
 
 use std::path::{Path, PathBuf};
 
+/// Move files to the host Trash, preparing private home Trash directories on
+/// freedesktop platforms before the legacy backend writes into them.
+///
+/// # Errors
+///
+/// Returns an error if home Trash is unsafe or unavailable on a freedesktop
+/// host, or if the host backend cannot move the files to Trash.
+pub fn delete(paths: &[PathBuf]) -> Result<(), String> {
+    if paths.is_empty() {
+        return Ok(());
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    ensure_trash_dir().map_err(|error| error.to_string())?;
+    trash::delete_all(paths).map_err(|error| error.to_string())
+}
+
 /// Prepare the home Trash without making its contents readable by other users.
 /// Existing nonprivate directories and symlinks are refused, never repaired by
 /// changing their permissions or following them into another directory.
