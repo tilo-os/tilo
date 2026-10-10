@@ -1477,10 +1477,6 @@ fn checkpoint(
 }
 
 /// Bring the record over and start the destination instance.
-#[expect(
-    clippy::too_many_lines,
-    reason = "one ordered read, arrival and launch; a governed destination hands off early"
-)]
 fn begin(
     st: &mut ChromeState,
     transfers: &mut WindowTransfers,
@@ -1581,7 +1577,20 @@ fn begin(
             },
         },
     );
-    if let Err(reason) = launch(st, transfers, plan, tab, instance, resume.clone()) {
+    start(st, transfers, plan, mode, tab, carried, resume.clone())
+}
+
+/// Start the destination instance in `tab`, or roll the transfer back.
+fn start(
+    st: &mut ChromeState,
+    transfers: &mut WindowTransfers,
+    plan: &Plan,
+    mode: TransferMode,
+    tab: TabId,
+    carried: Box<Carried>,
+    resume: Option<(u16, Vec<u8>)>,
+) -> Option<Phase> {
+    if let Err(reason) = launch(st, transfers, plan, tab, carried.instance, resume) {
         roll_back(st, plan, Some(tab), &carried, &reason);
         return None;
     }
@@ -1656,10 +1665,7 @@ fn roll_back(
     // may still hold it, in which case it stays unreferenced. A governed
     // destination's owner accepted it into their room; it stays there.
     if !plan.destination.hosted
-        && let Ok(destination) = NativeProfile::open(
-            &carried.destination_root,
-            Some(&plan.destination.room.to_string()),
-        )
+        && let Some(destination) = destination_profile(plan, carried)
     {
         let _ = transfer::retire(
             destination.store(),
@@ -1771,19 +1777,21 @@ fn close_source(
     release(st, transfers, plan, tab, carried, source_lost)
 }
 
-fn profiles(plan: &Plan, carried: &Carried) -> Option<(NativeProfile, NativeProfile)> {
-    let source =
-        NativeProfile::open(&carried.source_root, Some(&plan.source.room.to_string())).ok()?;
-    let destination = NativeProfile::open(
+fn source_profile(plan: &Plan, carried: &Carried) -> Option<NativeProfile> {
+    NativeProfile::open(&carried.source_root, Some(&plan.source.room.to_string())).ok()
+}
+
+fn destination_profile(plan: &Plan, carried: &Carried) -> Option<NativeProfile> {
+    NativeProfile::open(
         &carried.destination_root,
         Some(&plan.destination.room.to_string()),
     )
-    .ok()?;
-    Some((source, destination))
+    .ok()
 }
 
 /// Once the old instance has let go of the record, bring over whatever it
-/// wrote after the transfer read it, and retire the source.
+/// wrote after the transfer read it where that can be merged, and finish the
+/// move.
 fn release(
     st: &mut ChromeState,
     transfers: &WindowTransfers,
@@ -1792,47 +1800,35 @@ fn release(
     carried: Box<Carried>,
     source_lost: bool,
 ) -> Option<Phase> {
-    if plan.source.hosted || plan.destination.hosted {
-        return hosted::release(st, transfers, plan, tab, carried, source_lost);
-    }
-    let Some((source, destination)) = profiles(plan, &carried) else {
-        failed(st, plan, &t("window-transfer-failed-storage"));
-        return None;
+    let released = if plan.source.hosted {
+        // Its writes go through the room's owner; it has let go once its
+        // window is gone.
+        Ok(source_lost || plan.surface.is_none() || tab_tile(st, plan.tab).is_none())
+    } else {
+        source_profile(plan, &carried)
+            .ok_or_else(|| t("window-transfer-failed-storage"))
+            .and_then(|source| {
+                transfer::writer_released(
+                    source.store(),
+                    &plan.app_id,
+                    source.workspace_id(),
+                    &carried.origin,
+                )
+                .map_err(|error| transfer_reason(&error))
+            })
     };
-    match transfer::writer_released(
-        source.store(),
-        &plan.app_id,
-        source.workspace_id(),
-        &carried.origin,
-    ) {
-        Ok(false) => return Some(Phase::Releasing { tab, carried }),
+    match released {
         Ok(true) => {}
-        Err(error) => {
-            failed(st, plan, &transfer_reason(&error));
+        Ok(false) => return Some(Phase::Releasing { tab, carried }),
+        Err(reason) => {
+            failed(st, plan, &reason);
             return None;
         }
     }
-    // What the old instance wrote before it stamped its document retired is
-    // what still comes along; the stamp itself stays with the source.
-    let last = match &carried.retired_at {
-        Some(heads) => transfer::read_until(
-            source.store(),
-            &plan.app_id,
-            source.workspace_id(),
-            &carried.origin,
-            heads,
-        ),
-        None => transfer::read(
-            source.store(),
-            &plan.app_id,
-            source.workspace_id(),
-            &carried.origin,
-        ),
-    };
-    let last = match last {
+    let last = match hosted::read_last(transfers, plan, &carried) {
         Ok(last) => last,
-        Err(error) => {
-            failed(st, plan, &transfer_reason(&error));
+        Err(reason) => {
+            failed(st, plan, &reason);
             return None;
         }
     };
@@ -1840,7 +1836,13 @@ fn release(
         finish_move(st, plan, &carried, false, source_lost);
         return None;
     }
-    drop((source, destination));
+    if plan.destination.hosted {
+        // Only its owner's route writes a governed record; what the old
+        // window wrote in its last moments stays in the source's history.
+        finish_move(st, plan, &carried, false, source_lost);
+        hosted::late_edits_stay(st, plan);
+        return None;
+    }
     merge_late(st, plan, tab, carried, last, source_lost)
 }
 
@@ -1855,7 +1857,7 @@ fn merge_late(
     last: AutoCommit,
     source_lost: bool,
 ) -> Option<Phase> {
-    let Some((_, destination)) = profiles(plan, &carried) else {
+    let Some(destination) = destination_profile(plan, &carried) else {
         failed(st, plan, &t("window-transfer-failed-storage"));
         return None;
     };
@@ -1915,7 +1917,7 @@ fn redeliver(
     since: Instant,
     source_lost: bool,
 ) -> Option<Phase> {
-    let Some((_, destination)) = profiles(plan, &carried) else {
+    let Some(destination) = destination_profile(plan, &carried) else {
         failed(st, plan, &t("window-transfer-failed-storage"));
         return None;
     };
@@ -1981,7 +1983,7 @@ fn finish_move(
         if carried.retired_at.is_none() {
             hosted::not_retired(st, plan);
         }
-    } else if let Some((source, _)) = profiles(plan, carried)
+    } else if let Some(source) = source_profile(plan, carried)
         && let Err(error) = transfer::retire(
             source.store(),
             &plan.app_id,
