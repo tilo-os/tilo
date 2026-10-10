@@ -50,6 +50,8 @@ pub mod markdown;
 pub mod ods;
 #[cfg(feature = "odt")]
 pub mod odt;
+#[cfg(any(feature = "docx", feature = "odt"))]
+mod para_styles;
 #[cfg(feature = "office")]
 pub mod preserve;
 #[cfg(any(feature = "html", feature = "docx", feature = "odt"))]
