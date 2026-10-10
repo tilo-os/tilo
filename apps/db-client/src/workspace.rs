@@ -32,8 +32,6 @@ use crate::structure::StructureView;
 /// the app has nothing at all. It takes the room its parent has left.
 struct Placeholder {
     empty: EmptyState,
-    /// Where the action goes; without one there is no action.
-    link: Option<Link>,
 }
 
 impl Placeholder {
@@ -41,12 +39,12 @@ impl Placeholder {
     fn no_table(message: &str) -> Self {
         Self {
             empty: EmptyState::new("No table selected").with_message(message),
-            link: None,
         }
     }
 
     /// The first run: no connections, and the one way to add one.
     fn first_run(link: &Link) -> Self {
+        let link = link.clone();
         Self {
             empty: EmptyState::new("No connections yet")
                 .with_icon(Icon::HardDrive)
@@ -54,8 +52,8 @@ impl Placeholder {
                     "Add a PostgreSQL, MySQL or SQLite database to browse its tables and run queries.",
                 )
                 .with_action("New connection")
-                .with_action_id("db.new-connection"),
-            link: Some(link.clone()),
+                .with_action_id("db.new-connection")
+                .on_view(move || link.ask(Intent::NewConnection)),
         }
     }
 }
@@ -69,15 +67,6 @@ impl ui::widget::Decorator for Placeholder {
 
     fn inner_mut(&mut self) -> &mut EmptyState {
         &mut self.empty
-    }
-
-    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
-        if let Some(link) = &self.link
-            && self.empty.take_action()
-        {
-            link.ask(Intent::NewConnection);
-        }
-        Widget::sync(&mut self.empty, state, path);
     }
 
     fn build_layout(
