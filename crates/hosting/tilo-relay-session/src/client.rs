@@ -20,12 +20,12 @@ use tilo_relay_client::DeviceSigner;
 use tilo_user_identity::{DeviceCert, RevocationList};
 
 use crate::auth::{self, AuthenticatedPeer, Hello, HelloAck};
-use crate::framing::{read_frame, write_frame};
 use crate::transport::{
     ALPN, ContentEndpointAdvertisement, ContentEndpointRequest, ContentPeerRegistration,
     DISCOVERY_ALPN, Envelope, HomePeerManagementRequest, HomePeerManagementResponse,
     MANAGEMENT_ALPN, MAX_FRAME_BYTES,
 };
+use tilo_relay_client::frame::{read_frame, write_frame};
 
 use crate::session_carrier::{CarrierHandle, IrohCarrier, SessionChannels};
 use tilo_delivery_protocol::peer_actions::SignedDirectedAction;
