@@ -680,7 +680,19 @@ fn composition_real_two_x_retains_all_controls_and_response_space() {
     )
     .unwrap();
     assert_sidebar_targets(d, 900.0);
+    assert!(
+        d.targets().contains_key("api.env"),
+        "the scaled modal drawer remains exposed before it is closed"
+    );
+    d.perform_named("nav-shell-sidebar", &ui::a11y::Action::Focus)
+        .expect("the public sidebar control remains reachable in the drawer");
+    d.key("Enter");
+    assert!(d.settle_for_capture(ui::time::Duration::from_secs(1)));
     let targets = d.targets();
+    assert!(
+        !targets.contains_key("api.env"),
+        "closing the modal drawer removes its controls before inspecting the background"
+    );
     assert!(targets["api.request-divider"].y1 < 700.0);
     assert!(targets["api.request-tabs"].x1 <= 800.0);
     environment_command(d, "Add variable…");

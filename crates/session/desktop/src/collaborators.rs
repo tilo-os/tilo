@@ -3196,12 +3196,26 @@ mod tests {
         );
     }
 
+    fn collaborator_control_index(overlay: &CollaboratorsOverlay, name: &str) -> usize {
+        overlay
+            .accessibility_snapshot()
+            .children
+            .iter()
+            .position(|node| node.name.as_deref() == Some(name))
+            .expect("named collaborator control is published")
+    }
+
+    fn focus_collaborator_control(overlay: &mut CollaboratorsOverlay, name: &str) {
+        let index = collaborator_control_index(overlay, name);
+        assert!(overlay.focus_accessibility_path(&[index]));
+    }
+
     #[test]
     fn roster_follow_focus_tracks_a_person_across_painted_reordering() {
         let mut overlay = CollaboratorsOverlay::default();
         let mut people = roster_focus_rows();
         paint_roster_focus(&mut overlay, &people);
-        assert!(overlay.focus_accessibility_path(&[5]));
+        focus_collaborator_control(&mut overlay, "Follow Ada");
         people.swap(0, 1);
         paint_roster_focus(&mut overlay, &people);
         assert_eq!(
@@ -3223,7 +3237,7 @@ mod tests {
         let mut overlay = CollaboratorsOverlay::default();
         let mut people = roster_focus_rows();
         paint_roster_focus(&mut overlay, &people);
-        assert!(overlay.focus_accessibility_path(&[5]));
+        focus_collaborator_control(&mut overlay, "Follow Ada");
         people.remove(0);
         paint_roster_focus(&mut overlay, &people);
         assert_eq!(overlay.key(&Key::Named(NamedKey::Enter), false), None);
@@ -3244,7 +3258,7 @@ mod tests {
         let mut overlay = CollaboratorsOverlay::default();
         let mut people = roster_focus_rows();
         paint_roster_focus(&mut overlay, &people);
-        assert!(overlay.focus_accessibility_path(&[5]));
+        focus_collaborator_control(&mut overlay, "Follow Ada");
         people.first_mut().expect("Ada").followable = false;
         paint_roster_focus(&mut overlay, &people);
         assert_eq!(overlay.key(&Key::Named(NamedKey::Enter), false), None);
@@ -3262,15 +3276,16 @@ mod tests {
         let mut overlay = CollaboratorsOverlay::default();
         let mut people = roster_focus_rows();
         paint_roster_focus(&mut overlay, &people);
-        assert!(overlay.focus_accessibility_path(&[5]));
+        focus_collaborator_control(&mut overlay, "Follow Ada");
         let viewport = Rect::new(0.0, 0.0, 640.0, 480.0);
         paint_roster_focus_in(&mut overlay, &people, viewport);
         assert_eq!(
             overlay.key(&Key::Named(NamedKey::Enter), false),
             Some(CollaboratorsHit::ToggleFollow(0))
         );
+        let ada = collaborator_control_index(&overlay, "Follow Ada");
         let focus = overlay
-            .accessibility_rect_for_path(&[5])
+            .accessibility_rect_for_path(&[ada])
             .expect("Ada after resize");
         assert!(
             viewport.contains(focus.origin()) && viewport.contains(Point::new(focus.x1, focus.y1))
@@ -3287,7 +3302,7 @@ mod tests {
         overlay.change_people_page(false, people.len());
         paint_roster_focus_in(&mut overlay, &people, viewport);
         assert_eq!(overlay.key(&Key::Named(NamedKey::Enter), false), None);
-        assert!(overlay.focus_accessibility_path(&[5]));
+        focus_collaborator_control(&mut overlay, "Follow Ada");
         assert_eq!(
             overlay.key(&Key::Named(NamedKey::Enter), false),
             Some(CollaboratorsHit::ToggleFollow(0))

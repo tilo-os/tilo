@@ -6306,11 +6306,11 @@ mod tests {
                 )
                 .expect("host acknowledgement layout");
             view.apply_layout(&taffy, node, Point::ZERO);
-            let row = node_map
-                .values()
-                .find_map(|&pointer| unsafe {
+            let (row_node, row) = node_map
+                .iter()
+                .find_map(|(&node_id, &pointer)| unsafe {
                     ((*pointer).test_id() == Some("onboarding.understood.row"))
-                        .then(|| (*pointer).get_rect())
+                        .then(|| (node_id, (*pointer).get_rect()))
                 })
                 .expect("labelled acknowledgement row");
             let label_point = Point::new(row.x1 - 8.0, row.center().y);
@@ -6320,23 +6320,36 @@ mod tests {
             );
 
             let mut focus = None;
-            for event in [pointer_event(label_point), mouse_press()] {
-                let mut handled = false;
-                view.handle_event(
-                    &event,
-                    &mut ui::widget::EventCtx {
-                        scale_factor: 1.0,
-                        modifiers: &Modifiers::default(),
-                        state: ui::widget::Edits::lend(&mut document),
-                        path: &automerge::ROOT,
-                        handled: &mut handled,
-                        focus_target: &mut focus,
-                        node_id: node,
-                        taffy: &taffy,
-                    },
-                );
-                assert!(handled, "the labelled checkbox row must handle {event:?}");
-            }
+            let mut handled = false;
+            view.handle_event(
+                &pointer_event(label_point),
+                &mut ui::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &Modifiers::default(),
+                    state: ui::widget::Edits::lend(&mut document),
+                    path: &automerge::ROOT,
+                    handled: &mut handled,
+                    focus_target: &mut focus,
+                    node_id: node,
+                    taffy: &taffy,
+                },
+            );
+            handled = false;
+            view.handle_event(
+                &mouse_press(),
+                &mut ui::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &Modifiers::default(),
+                    state: ui::widget::Edits::lend(&mut document),
+                    path: &automerge::ROOT,
+                    handled: &mut handled,
+                    focus_target: &mut focus,
+                    node_id: node,
+                    taffy: &taffy,
+                },
+            );
+            assert!(handled, "the label-area pointer press is handled");
+            assert_eq!(focus, Some(row_node), "the exact checkbox takes focus");
             view.settle(
                 &mut ui::widget::Edits::lend(&mut document),
                 &automerge::ROOT,
