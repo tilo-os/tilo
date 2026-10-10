@@ -2620,34 +2620,6 @@ impl StatePeer {
         self.receive(key.verifying_key().to_bytes(), message.clone(), now)?;
         Ok(message)
     }
-    /// The claims of `mutation`'s changes on `route`, each naming the units
-    /// it writes in the record as this peer holds it.
-    fn claims_of(
-        &self,
-        route: &Route,
-        mutation: &DocumentMutation,
-    ) -> Vec<collab_types::ChangeClaim> {
-        let DocumentMutation::Incremental(bytes) = mutation else {
-            return Vec::new();
-        };
-        let held = self
-            .core
-            .documents
-            .get(route)
-            .and_then(|document| held_units(&document.doc));
-        let units = match (held, collab_types::parse_changes(bytes)) {
-            (Some(held), Ok(changes)) => collab_types::units::units_by_change(&held, &changes),
-            _ => std::collections::BTreeMap::new(),
-        };
-        collab_types::mutation_claims(mutation, |change| {
-            units
-                .get(&change.hash().0)
-                .cloned()
-                .unwrap_or_else(|| vec![Vec::new()])
-        })
-        .unwrap_or_default()
-    }
-
     #[expect(
         clippy::needless_pass_by_value,
         reason = "callers hand over freshly built mutations, as `signed_mutation` takes ownership"
@@ -2682,10 +2654,7 @@ impl StatePeer {
             OpKind::Change,
             now,
             seq,
-        )
-        // A change something other than the executor wrote names no action:
-        // its op carries no claims, which a receiver deciding claims refuses.
-        .with_claims(self.claims_of(&route, &mutation));
+        );
         collab_types::sign_op(&mut op, key).map_err(err)?;
         let message = NeighbourMsg::AppDocument {
             peer: peer_handle(author.as_bytes()),

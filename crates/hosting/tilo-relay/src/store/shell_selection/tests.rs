@@ -446,9 +446,6 @@ fn synthetic_signed_record(
         collab_types::OpKind::Change,
         now,
         seq,
-    )
-    .with_claims(
-        collab_types::mutation_claims(mutation, collab_types::record_unit).unwrap_or_default(),
     );
     collab_types::sign_op(&mut envelope, key).unwrap();
     NeighbourMsg::AppDocument {

@@ -5332,7 +5332,11 @@ async fn try_send_frame(
             seq,
         ),
     };
-    op = op.with_claims(claims.to_vec());
+    // Only a sealed op carries its changes' claims: a relay cannot read the
+    // changes, and a cleartext receiver reads each claim from its change.
+    if op.encryption.is_some() {
+        op = op.with_claims(claims.to_vec());
+    }
     let unsigned_op = match postcard::to_stdvec(&op) {
         Ok(bytes) => bytes,
         Err(error) => {

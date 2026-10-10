@@ -273,10 +273,9 @@ fn signed_tail_with_missing_causal_predecessor_is_incomplete() {
         let before = doc.get_heads();
         doc.put(automerge::ROOT, "successor", true).unwrap();
         collab_types::CommitNamed::commit_edit(&mut doc, "fixture", "successor");
-        let mutation = DocumentMutation::Incremental(doc.save_after(&before));
-        envelope.payload = mutation.encode().unwrap();
-        envelope.claims =
-            collab_types::mutation_claims(&mutation, collab_types::record_unit).unwrap();
+        envelope.payload = DocumentMutation::Incremental(doc.save_after(&before))
+            .encode()
+            .unwrap();
         envelope.seq += 1;
         collab_types::sign_op(envelope, &key).unwrap();
     }

@@ -2,7 +2,6 @@
 //! selection, and exactly the publication a full selection would choose.
 use super::*;
 use automerge::ReadDoc;
-use collab_types::CommitNamed as _;
 
 /// An owner with `routes` text records `r0..`, its first checkpoint, and the
 /// record `r0` as an editable branch at that checkpoint.

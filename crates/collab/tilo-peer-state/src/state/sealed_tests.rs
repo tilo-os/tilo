@@ -375,11 +375,6 @@ fn the_key_holder_never_opens_a_write_that_fails_its_checks() {
     let mut plain = envelope_of(sealed(&holder, &a, 2, b"ciphertext"));
     plain.encryption = None;
     plain.payload = plaintext.clone();
-    plain.claims = collab_types::mutation_claims(
-        &DocumentMutation::decode(&plaintext).unwrap(),
-        collab_types::record_unit,
-    )
-    .unwrap();
     collab_types::sign_op(&mut plain, &a).unwrap();
     refused(holder.clone(), plain, "a cleartext write");
     let (member_key, member) = {

@@ -210,7 +210,6 @@ fn guest_write(
     item: Option<&str>,
 ) -> NeighbourMsg {
     let mut doc = AutoCommit::load(&peer.document(APP, RECORD).unwrap()).unwrap();
-    let before = doc.document().clone();
     doc.set_actor(automerge::ActorId::from(
         key.verifying_key().to_bytes().to_vec(),
     ));
@@ -220,10 +219,6 @@ fn guest_write(
     // Signed as the author's device signs it, which a receiver does not
     // trust to have checked its own grants.
     let mutation = collab_types::DocumentMutation::Incremental(doc.save_after(&heads));
-    let units = collab_types::units::units_by_change(
-        &before,
-        &collab_types::parse_changes(mutation.data()).unwrap(),
-    );
     let author = collab_types::Ed25519PublicKey::from_bytes(key.verifying_key().to_bytes());
     let mut envelope = collab_types::SignedOp::new_unsigned(
         mutation.encode().unwrap(),
@@ -233,9 +228,6 @@ fn guest_write(
         collab_types::OpKind::Change,
         now(),
         1,
-    )
-    .with_claims(
-        collab_types::mutation_claims(&mutation, |change| units[&change.hash().0].clone()).unwrap(),
     );
     collab_types::sign_op(&mut envelope, key).unwrap();
     NeighbourMsg::AppDocument {
@@ -302,35 +294,43 @@ fn a_change_is_refused_when_its_action_is_not_granted_to_its_author() {
 #[test]
 fn a_granted_action_writing_another_unit_is_refused() {
     let (mut peer, key, guest) = room_with(MemberRole::Commenter);
-    // Claimed honestly: the claim names c2, which commenting on c1 may not write.
+    // The change itself says what it wrote: c2, which commenting on c1 may
+    // not write.
     let wrote_other = guest_write(&peer, &key, comment_on("c2"), comment(), Some("c1"));
     let refused = receive(&mut peer.clone(), &guest, wrote_other.clone()).unwrap_err();
     assert!(refused.contains("may not write"), "{refused}");
 
-    // Claimed dishonestly: the claim names c1, the change wrote c2.
-    let NeighbourMsg::AppDocument { mut envelope, .. } = wrote_other.clone() else {
-        panic!("a document write")
-    };
-    for claim in &mut envelope.claims {
-        claim.units = vec![
-            Vec::new(),
-            vec![
-                PathStep::Field("comments".into()),
-                PathStep::Item("c1".into()),
-            ],
-        ];
-    }
-    collab_types::sign_op(&mut envelope, &key).unwrap();
+    // A cleartext op that brings its own claims (naming c1) is refused: its
+    // changes are the one account of what it did.
     let NeighbourMsg::AppDocument {
         peer: handle,
         app_id,
         cluster_id,
         record_id,
-        ..
+        mut envelope,
     } = wrote_other
     else {
         panic!("a document write")
     };
+    let changes = collab_types::parse_changes(
+        collab_types::DocumentMutation::decode(&envelope.payload)
+            .unwrap()
+            .data(),
+    )
+    .unwrap();
+    envelope.claims = collab_types::claims_of(&changes, |_| {
+        vec![
+            Vec::new(),
+            vec![
+                PathStep::Field("comments".into()),
+                PathStep::Item("c1".into()),
+            ],
+        ]
+    })
+    .unwrap();
+    // Signed by hand: a debug build will not sign such an op.
+    let signature = ed25519_dalek::Signer::sign(&key, &envelope.signing_bytes().unwrap());
+    envelope.signature = collab_types::Signature::from_bytes(signature.to_bytes());
     let lying = NeighbourMsg::AppDocument {
         peer: handle,
         app_id,
@@ -339,7 +339,7 @@ fn a_granted_action_writing_another_unit_is_refused() {
         envelope,
     };
     let refused = receive(&mut peer, &guest, lying).unwrap_err();
-    assert!(refused.contains("does not name"), "{refused}");
+    assert!(refused.contains("do not name exactly"), "{refused}");
 }
 
 /// Without the app's surface a change is held, never merged on trust.

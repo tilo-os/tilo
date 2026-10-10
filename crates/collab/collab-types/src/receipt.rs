@@ -78,6 +78,9 @@ pub enum ReceiptRefusal {
     /// The claim names a unit its action may not write.
     #[error("{action} may not write the unit {unit}")]
     OutsideFootprint { action: String, unit: String },
+    /// A change names no action.
+    #[error("a change names no action: {0}")]
+    Unnamed(String),
     /// The change writes a unit its claim does not name.
     #[error("the change writes the unit {0}, which its claim does not name")]
     UnclaimedUnit(String),
@@ -363,28 +366,37 @@ pub fn decide_op(
                     })
                 };
             };
-            let changes = cleartext_changes(op)?;
+            let surface = source.surface(record, kind);
+            let Some(changes) = cleartext_changes(op)? else {
+                // A sealed op: the relay decides the claims its envelope
+                // carries; devices check the changes once they open them.
+                return check_claims(&op.claims, record, None, None, surface.as_deref(), allows);
+            };
+            // A cleartext change names its action in itself, under the op's
+            // signature: the envelope carries no second copy.
+            if !op.claims.is_empty() {
+                return Err(ReceiptRefusal::Unclaimed);
+            }
             // The units each change writes, read from the record as this
             // receiver holds it.
-            let written = match (&changes, held) {
-                (Some(changes), Some(held)) => Some(crate::units::units_by_change(held, changes)),
-                _ => None,
-            };
-            let units = |hash: &[u8; 32]| {
-                written
-                    .as_ref()
-                    .and_then(|written| written.get(hash).cloned())
-                    .unwrap_or_default()
-            };
-            let hashes: Option<Vec<[u8; 32]>> = changes
-                .as_ref()
-                .map(|changes| changes.iter().map(|change| change.hash().0).collect());
-            let surface = source.surface(record, kind);
+            let written = held.map(|held| crate::units::units_by_change(held, &changes));
+            let claims = changes
+                .iter()
+                .map(|change| {
+                    let units = written
+                        .as_ref()
+                        .and_then(|written| written.get(&change.hash().0).cloned())
+                        .unwrap_or_else(|| vec![Vec::new()]);
+                    ChangeClaim::of_change(change.hash().0, change.message(), units)
+                        .map_err(|error| ReceiptRefusal::Unnamed(error.to_string()))
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            let hashes: Vec<[u8; 32]> = changes.iter().map(|change| change.hash().0).collect();
             check_claims(
-                &op.claims,
+                &claims,
                 record,
-                hashes.as_deref(),
-                written.is_some().then_some(&units as WrittenUnits<'_>),
+                Some(&hashes),
+                None,
                 surface.as_deref(),
                 allows,
             )

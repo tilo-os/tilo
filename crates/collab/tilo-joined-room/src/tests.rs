@@ -696,8 +696,7 @@ fn unordered_edit(joined: &Enrolled, topic: &str) -> OwnerCommitRequest {
         OpKind::Change,
         joined.now,
         next_unordered_document_sequence(joined.now),
-    )
-    .with_claims(collab_types::mutation_claims(&mutation, collab_types::record_unit).unwrap());
+    );
     sign_op(&mut envelope, &key).unwrap();
     OwnerCommitRequest {
         room: ROOM.into(),

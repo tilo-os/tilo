@@ -485,8 +485,7 @@ pub(super) fn unordered_document_message(
         collab_types::OpKind::Change,
         now,
         collab_types::next_unordered_document_sequence(now),
-    )
-    .with_claims(collab_types::mutation_claims(&mutation, collab_types::record_unit).unwrap());
+    );
     collab_types::sign_op(&mut envelope, key).unwrap();
     NeighbourMsg::AppDocument {
         peer: tilo_peer_state::peer_handle(author.as_bytes()),

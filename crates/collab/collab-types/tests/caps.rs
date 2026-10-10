@@ -30,7 +30,7 @@ use collab_types::{
     ArtifactId, ArtifactKind, Attestation, AttestationId, ChannelId, ChannelState, Claim,
     DEFAULT_ROOM, DocumentMutation, Ed25519PublicKey, OpKind, ReceiptSurface, Record, Role,
     RoleAttestation, Signature, SignedOp, SurfaceSource, Surfaces, UnitPath, ValidationError,
-    generate_keypair, mutation_claims, record_unit, sign_event, sign_op, validate_inbound_op,
+    generate_keypair, sign_event, sign_op, validate_inbound_op,
 };
 use tilo_action_policy::{ActionKind, Answer, Grant, KindSet, Subject, TreePath, roles};
 use tilo_actions::{ActionContext, ActionKey, Did, EditOp, FieldEdit, PathStep, VerbCall};
@@ -85,8 +85,8 @@ fn named(change: Change) -> Did {
     }
 }
 
-/// One change doing `change`, as the payload of a change op with its claim.
-fn change_payload(change: Change, seq: u64) -> (Vec<u8>, Vec<collab_types::ChangeClaim>) {
+/// One change doing `change`, as the payload of a change op: the change names it.
+fn change_payload(change: Change, seq: u64) -> Vec<u8> {
     use automerge::transaction::{CommitOptions, Transactable};
     let mut doc = automerge::AutoCommit::new();
     doc.put(automerge::ROOT, "seq", seq).unwrap();
@@ -96,8 +96,7 @@ fn change_payload(change: Change, seq: u64) -> (Vec<u8>, Vec<collab_types::Chang
     };
     doc.commit_with(CommitOptions::default().with_message(context.change_message().unwrap()));
     let mutation = DocumentMutation::Incremental(doc.save_after(&[]));
-    let claims = mutation_claims(&mutation, record_unit).unwrap();
-    (mutation.encode().unwrap(), claims)
+    mutation.encode().unwrap()
 }
 
 /// The node a comment on `artifact` is decided at.
@@ -213,7 +212,7 @@ fn build_op(
     change: Change,
     seq: u64,
 ) -> SignedOp {
-    let (payload, claims) = change_payload(change, seq);
+    let payload = change_payload(change, seq);
     let mut op = SignedOp::new_unsigned(
         payload,
         artifact,
@@ -222,8 +221,7 @@ fn build_op(
         OpKind::Change,
         t(10),
         seq,
-    )
-    .with_claims(claims);
+    );
     sign_op(&mut op, author_sk).unwrap();
     op
 }

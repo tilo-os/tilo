@@ -50,8 +50,8 @@ fn history_envelope(
     sequence: u64,
 ) -> Result<SignedOp, String> {
     let mutation = DocumentMutation::Incremental(history.save());
-    let claims =
-        collab_types::mutation_claims(&mutation, collab_types::record_unit).map_err(err)?;
+    // Every change re-sent names its action, as every signed change must.
+    collab_types::mutation_claims(&mutation, collab_types::record_unit).map_err(err)?;
     Ok(SignedOp::new_unsigned(
         mutation.encode().map_err(err)?,
         collab_types::document_artifact_id(&route.app, room, &route.record),
@@ -60,8 +60,7 @@ fn history_envelope(
         OpKind::Change,
         timestamp,
         sequence,
-    )
-    .with_claims(claims))
+    ))
 }
 
 impl StatePeer {

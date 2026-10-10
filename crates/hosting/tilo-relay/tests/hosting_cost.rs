@@ -61,11 +61,11 @@ const DOCUMENT_CHARS: usize = 10_000;
 
 /// Ceiling for the median one-character keystroke frame on `tilo-relay/5`:
 /// 481 B measured on Linux CI before every change named its action, plus
-/// the keystroke's entry in the change (a field edit, ~160 B) and its claim
-/// in the envelope (~60 B). Measured here: 708 B.
-const BUDGET_COMPACT_FRAME_P50_BYTES: u64 = 712;
-/// Ceiling for the largest such frame: measured 716 B, plus 5 %.
-const BUDGET_COMPACT_FRAME_MAX_BYTES: u64 = 752;
+/// the keystroke's entry in the change (a field edit, ~170 B; a cleartext
+/// op carries no second copy of it). Measured here: 655 B.
+const BUDGET_COMPACT_FRAME_P50_BYTES: u64 = 660;
+/// Ceiling for the largest such frame: measured 663 B, plus 5 %.
+const BUDGET_COMPACT_FRAME_MAX_BYTES: u64 = 697;
 
 /// A raw subscriber on one ALPN, reading the exact bytes the relay writes.
 struct RawSubscriber {

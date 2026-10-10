@@ -330,11 +330,11 @@ pub fn named_changes(bytes: &[u8]) -> Result<Vec<automerge::Change>, String> {
     Ok(changes)
 }
 
-/// Whether `op` claims every change it carries, as its author must before
-/// signing: a cleartext incremental document op names one claim per change,
-/// in order. Ops that carry no document changes (snapshots, segments of a
-/// larger mutation, other artifacts) and sealed ops, whose changes the
-/// signer cannot read here, have nothing to check.
+/// Whether every change `op` carries names its action, as its author must
+/// ensure before signing: each change of a cleartext incremental op names
+/// it in its message, and the envelope carries no claims (only a sealed op
+/// does, which the signer cannot read here and the SDK checks before
+/// sealing). Snapshots, segments and other artifacts have nothing to check.
 ///
 /// # Errors
 /// The first change that names no action or has no claim, described.
@@ -352,17 +352,13 @@ pub fn check_claimed(op: &crate::op::SignedOp) -> Result<(), String> {
     if parse_changes(&bytes).is_err() {
         return Ok(());
     }
-    let changes = named_changes(&bytes)?;
-    let carried: Vec<[u8; 32]> = op.claims.iter().map(|claim| claim.change).collect();
-    let made: Vec<[u8; 32]> = changes.iter().map(|change| change.hash().0).collect();
-    if carried == made {
+    named_changes(&bytes)?;
+    // A cleartext change is its own claim; a second copy in the envelope
+    // would be a second source of truth, and receivers refuse it.
+    if op.claims.is_empty() {
         Ok(())
     } else {
-        Err(format!(
-            "the op claims {} changes for the {} it carries",
-            carried.len(),
-            made.len()
-        ))
+        Err("a cleartext op carries claims; its changes name their actions".into())
     }
 }
 
@@ -558,14 +554,15 @@ mod tests {
     /// The origin check every signer runs: each change of a cleartext
     /// incremental op names its action and is claimed, in order.
     #[test]
-    fn an_op_must_claim_every_change_it_carries() {
+    fn every_change_an_op_carries_must_name_its_action() {
         use automerge::transaction::Transactable;
         let (mutation, claims) = field_edit_mutation("note", "title", "a").unwrap();
-        assert_eq!(check_claimed(&op_of(&mutation).with_claims(claims)), Ok(()));
+        assert_eq!(check_claimed(&op_of(&mutation)), Ok(()));
         assert!(
-            check_claimed(&op_of(&mutation))
+            check_claimed(&op_of(&mutation).with_claims(claims))
                 .unwrap_err()
-                .contains("claims 0 changes for the 1")
+                .contains("carries claims"),
+            "a cleartext op names its actions in its changes only"
         );
         let mut raw = automerge::AutoCommit::new();
         raw.put(automerge::ROOT, "title", "a").unwrap();
@@ -587,9 +584,13 @@ mod tests {
     #[cfg(debug_assertions)]
     #[test]
     #[should_panic(expected = "not all claimed")]
-    fn a_debug_build_refuses_to_sign_an_unclaimed_change() {
-        let (mutation, _) = field_edit_mutation("note", "title", "a").unwrap();
+    fn a_debug_build_refuses_to_sign_an_unnamed_change() {
+        use automerge::transaction::Transactable;
+        let mut raw = automerge::AutoCommit::new();
+        raw.put(automerge::ROOT, "title", "a").unwrap();
+        raw.commit();
+        let unnamed = crate::op::DocumentMutation::Incremental(raw.save_after(&[]));
         let key = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
-        let _ = crate::crypto::sign_op(&mut op_of(&mutation), &key);
+        let _ = crate::crypto::sign_op(&mut op_of(&unnamed), &key);
     }
 }

@@ -268,7 +268,7 @@ mod tests {
     fn a_host_replay_of_old_history_is_admitted_where_a_live_op_that_old_is_not() {
         let key = ed25519_dalek::SigningKey::from_bytes(&[3; 32]);
         let an_hour_ago = std::time::SystemTime::now() - Duration::from_secs(3600);
-        let (mutation, claims) = collab_types::field_edit_mutation("note", "title", "old").unwrap();
+        let (mutation, _) = collab_types::field_edit_mutation("note", "title", "old").unwrap();
         let mut op = SignedOp::new_unsigned(
             mutation.encode().unwrap(),
             document_artifact_id("notes", "room", "record"),
@@ -277,8 +277,7 @@ mod tests {
             OpKind::Change,
             an_hour_ago,
             1,
-        )
-        .with_claims(claims);
+        );
         collab_types::sign_op(&mut op, &key).unwrap();
         let now = std::time::SystemTime::now();
         let channel = || {
@@ -311,8 +310,7 @@ mod tests {
     fn a_host_replay_redelivers_an_op_the_broker_already_admitted() {
         let key = ed25519_dalek::SigningKey::from_bytes(&[4; 32]);
         let op = |title: &str| {
-            let (mutation, claims) =
-                collab_types::field_edit_mutation("note", "title", title).unwrap();
+            let (mutation, _) = collab_types::field_edit_mutation("note", "title", title).unwrap();
             let mut op = SignedOp::new_unsigned(
                 mutation.encode().unwrap(),
                 document_artifact_id("notes", "room", "record"),
@@ -321,8 +319,7 @@ mod tests {
                 OpKind::Change,
                 std::time::SystemTime::now(),
                 1,
-            )
-            .with_claims(claims);
+            );
             collab_types::sign_op(&mut op, &key).unwrap();
             op
         };
