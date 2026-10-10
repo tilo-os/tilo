@@ -188,9 +188,9 @@ environment_imported=1
 "$SYSTEMCTL" --user import-environment XDG_CURRENT_DESKTOP XDG_SESSION_TYPE
 # pam_gnome_keyring starts the login keyring daemon inside the PAM session and
 # publishes its control socket in GNOME_KEYRING_CONTROL.  Hand that to the user
-# bus and manager: without it D-Bus activation of org.freedesktop.secrets runs
-# `gnome-keyring-daemon --start`, which cannot find the unlocked daemon and
-# starts a second, locked one that makes gcr-prompter ask for a password.
+# bus and manager: tilo-secret-service, which owns org.freedesktop.secrets, is
+# started by D-Bus activation and uses it to reach the unlocked login keyring
+# and import it once.  Without it the import never finds the daemon.
 if [ -n "${GNOME_KEYRING_CONTROL:-}" ]; then
   "$DBUS_UPDATE" --systemd GNOME_KEYRING_CONTROL
 fi

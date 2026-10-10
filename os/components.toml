@@ -313,6 +313,18 @@ files = [
   { from = "tilo-model-gateway", to = "/usr/bin/tilo-model-gateway", mode = "0755" },
 ]
 
+[[component]]
+name = "secret-service"
+kind = "userspace"
+scope = "session"
+packages = ["tilo-secret-service"]
+bins = ["tilo-secret-service"]
+user_units = ["tilo-secret-service.service"]
+layer = "desktop-binaries"
+files = [
+  { from = "tilo-secret-service", to = "/usr/bin/tilo-secret-service", mode = "0755" },
+]
+
 # The shared runtime and every packaged thin app. One component because Rust
 # dylib symbols carry crate hashes: a thin app only runs against the
 # libruntime_dylib.so built in the same Cargo graph (os/scripts/build-thin-apps.sh).

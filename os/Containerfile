@@ -700,9 +700,9 @@ RUN --mount=type=cache,target=/build/.cargo-home \
        else \
          DESKTOP_RELEASE_ARGS="-p shell --bin shell --bin tilo-runtime-mcp -p launcher --bin tilo-launcher -p tilo-unlock-helper --bin tilo-unlock-helper"; \
        fi \
-    && RELEASE_ARGS="${DESKTOP_RELEASE_ARGS} -p tilo-fs -p greeter -p installer -p runtime-bundle -p tilo-rollback -p tilo-sibling-unlock -p tilo-crypto -p tilo-user-identity -p tilo-cli -p app-cli -p ush -p tilo-projector -p tilo-pdf -p tilo-app-package-cli -p tilo-control -p install -p cli-shim -p app-host -p local-model-service -p tilo-model-gateway -p system-extension -p compat-service -p account-custody -p legacy-vm" \
+    && RELEASE_ARGS="${DESKTOP_RELEASE_ARGS} -p tilo-fs -p greeter -p installer -p runtime-bundle -p tilo-rollback -p tilo-sibling-unlock -p tilo-crypto -p tilo-user-identity -p tilo-cli -p app-cli -p ush -p tilo-projector -p tilo-pdf -p tilo-app-package-cli -p tilo-control -p install -p cli-shim -p app-host -p local-model-service -p tilo-model-gateway -p tilo-secret-service -p system-extension -p compat-service -p account-custody -p legacy-vm" \
     # Select the shipped executables explicitly: --bins also links shell dev tools.
-    && RELEASE_BINS="--bin fs --bin tilo-model-manager --bin tilo-speech-worker --bin tilo-model-gateway --bin tilo-greeter --bin tilo-installer --bin tilo-runtime-bundle --bin tilo-app-host --bin tilo-rollback --bin tilo-sibling-unlock --bin tilo-crypto --bin tilo-image-trust --bin tilo-device-key-init --bin tilo --bin app --bin tilo-app-package --bin tilo-control --bin tilo-install --bin tilo-cli-shim --bin tilo-ush --bin tilo-projector --bin tilo-pdf-helper --bin tilo-system-extension-manager --bin tilo-windows-runtime --bin tilo-relay --bin tilo-relay-admin --bin tilo-enroll --bin tilo-home-peer-control --bin tilo-relay-environment --bin tilo-relay-offers --bin tilo-legacy --bin tilo-account-credential" \
+    && RELEASE_BINS="--bin fs --bin tilo-model-manager --bin tilo-speech-worker --bin tilo-model-gateway --bin tilo-secret-service --bin tilo-greeter --bin tilo-installer --bin tilo-runtime-bundle --bin tilo-app-host --bin tilo-rollback --bin tilo-sibling-unlock --bin tilo-crypto --bin tilo-image-trust --bin tilo-device-key-init --bin tilo --bin app --bin tilo-app-package --bin tilo-control --bin tilo-install --bin tilo-cli-shim --bin tilo-ush --bin tilo-projector --bin tilo-pdf-helper --bin tilo-system-extension-manager --bin tilo-windows-runtime --bin tilo-relay --bin tilo-relay-admin --bin tilo-enroll --bin tilo-home-peer-control --bin tilo-relay-environment --bin tilo-relay-offers --bin tilo-legacy --bin tilo-account-credential" \
     # The thin-app profile compiles each crate as one codegen unit, for tapp
     # size. Built in the image without LTO (a dev build) the runtime and its
     # dependencies take 16: one unit made fs alone compile for ten minutes.
@@ -744,7 +744,7 @@ RUN --mount=type=cache,target=/build/.cargo-home \
          --bin tilo-windows-vm-control --bin tilo-windows-rail \
     && build_phase rust-output-validation \
     && missing=0 \
-    && for b in shell tilo-runtime-mcp tilo-projector tilo-pdf-helper fs tilo-relay tilo-relay-admin tilo-enroll tilo-home-peer-control tilo-relay-environment tilo-relay-offers tilo-legacy tilo-model-manager tilo-speech-worker tilo-model-gateway tilo-greeter tilo-installer tilo-runtime-bundle tilo-launcher tilo-app-host tilo-unlock-helper tilo-rollback tilo-sibling-unlock tilo-crypto tilo-image-trust tilo-device-key-init tilo app tilo-app-package tilo-control tilo-install tilo-cli-shim tilo-ush tilo-system-extension-manager tilo-windows-vm-control tilo-windows-rail tilo-windows-runtime tilo-account-credential; do \
+    && for b in shell tilo-runtime-mcp tilo-projector tilo-pdf-helper fs tilo-relay tilo-relay-admin tilo-enroll tilo-home-peer-control tilo-relay-environment tilo-relay-offers tilo-legacy tilo-model-manager tilo-speech-worker tilo-model-gateway tilo-secret-service tilo-greeter tilo-installer tilo-runtime-bundle tilo-launcher tilo-app-host tilo-unlock-helper tilo-rollback tilo-sibling-unlock tilo-crypto tilo-image-trust tilo-device-key-init tilo app tilo-app-package tilo-control tilo-install tilo-cli-shim tilo-ush tilo-system-extension-manager tilo-windows-vm-control tilo-windows-rail tilo-windows-runtime tilo-account-credential; do \
          case "${TILO_PREBUILT_DESKTOP}:$b" in 1:shell|1:tilo-launcher|1:tilo-unlock-helper|1:tilo-runtime-mcp) continue ;; esac; \
          if [ ! -x "target/release/$b" ]; then \
            printf 'Required build output is missing: %s\n' "$b" >&2; missing=1; \
@@ -781,6 +781,7 @@ RUN --mount=type=cache,target=/build/.cargo-home \
           target/release/tilo-model-manager \
           target/release/tilo-speech-worker \
           target/release/tilo-model-gateway \
+          target/release/tilo-secret-service \
           target/release/tilo-system-extension-manager \
           target/release/tilo-greeter \
           target/release/tilo-installer \
@@ -1509,8 +1510,9 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
     && gst-inspect-1.0 rtpstreampay >/dev/null \
     # Display manager + fingerprint auth (pam_fprintd for the greeter; the
     # greeter's PAM stack references it via a tolerant `-auth` line).  The same
-    # PAM stack unlocks Secret Service at password login, so an existing Tilo
-    # identity is available before the compositor probes it.
+    # PAM stack unlocks the old GNOME login keyring at password login so
+    # tilo-secret-service can import it once; Tilo's own store, sealed under the
+    # device identity, serves org.freedesktop.secrets after any login method.
     #
     # `polkit` is required so the greeter's power menu can drive
     # logind: `systemctl suspend` / `reboot` / `poweroff` issue the
@@ -2039,11 +2041,24 @@ RUN cp -a /etc/selinux/targeted /var/tmp/tilo-sestore \
  && rm -f /var/tmp/tilo-active-selinux-modules \
  && echo "all packaged add-on and tilo-base SELinux modules loaded"
 
+# Tilo's own Secret Service owns org.freedesktop.secrets and the portal Secret
+# backend. GNOME Keyring stays installed only so the first password login can
+# read an existing login keyring once (tilo-secret-service imports it); nothing
+# of it may claim the bus name or serve the portal, or two providers would
+# race for libsecret's clients and one would sit locked after a fingerprint or
+# automatic login.
+RUN rm -f /usr/share/xdg-desktop-portal/portals/gnome-keyring.portal \
+          /usr/share/dbus-1/services/org.freedesktop.impl.portal.Secret.service \
+          /etc/xdg/autostart/gnome-keyring-secrets.desktop \
+    && systemctl --global mask gnome-keyring-daemon.service gnome-keyring-daemon.socket
+COPY os/usr/share/dbus-1/services/org.freedesktop.secrets.service \
+    /usr/share/dbus-1/services/org.freedesktop.secrets.service
 COPY \
     os/usr/lib/systemd/user/tilo-models.service \
     os/usr/lib/systemd/user/tilo-models.socket \
     os/usr/lib/systemd/user/tilo-model-gateway.service \
     os/usr/lib/systemd/user/tilo-model-gateway.socket \
+    os/usr/lib/systemd/user/tilo-secret-service.service \
     os/usr/lib/systemd/user/tilo-app-host.socket \
     os/usr/lib/systemd/user/tilo-projector.service \
     os/usr/lib/systemd/user/tilo-projector.socket \
