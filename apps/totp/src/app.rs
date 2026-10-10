@@ -1001,19 +1001,12 @@ impl Widget for AuthenticatorApp {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).copied().unwrap_or_default();
-        let x0 = origin.x + f64::from(layout.location.x);
-        let y0 = origin.y + f64::from(layout.location.y);
-        self.rect = Rect::new(
-            x0,
-            y0,
-            x0 + f64::from(layout.size.width),
-            y0 + f64::from(layout.size.height),
-        );
-        self.add_panel.set_window_height(layout.size.height);
+        self.rect = ui::widget::layout_rect(taffy, node, origin);
+        self.add_panel
+            .set_window_height(taffy.layout(node).map_or(0.0, |layout| layout.size.height));
         let layers = taffy.children(node).unwrap_or_default();
         if let (Some(sheet), Some(layer)) = (self.add_panel.widget_mut(), layers.first()) {
-            sheet.apply_layout(taffy, *layer, Point::new(x0, y0));
+            sheet.apply_layout(taffy, *layer, self.rect.origin());
         }
     }
 

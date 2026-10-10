@@ -347,7 +347,7 @@ impl JournalPane {
         let boot = self.boot.build_layout(taffy, theme, node_map);
         let severity = self.severity.build_layout(taffy, theme, node_map);
         for facet in [unit, boot, severity] {
-            flexed(taffy, facet, 1.0);
+            ui::widget::share_row(taffy, facet, 1.0);
         }
         let band = taffy.parent_node(
             Style {
@@ -422,26 +422,6 @@ fn empty_state(kind: Placeholder, bridge: &Bridge) -> EmptyState {
             EmptyState::new("No entries match these filters").with_action("Clear filters")
         }
     }
-}
-
-/// `style` grown or shrunk along a band's main axis.
-fn flexed(taffy: &mut TaffyTree<()>, node: NodeId, grow: f32) {
-    if let Ok(mut style) = taffy.style(node).cloned() {
-        style.flex_grow = grow;
-        style.flex_shrink = 1.0;
-        style.flex_basis = length(0.0_f32);
-        style.size.width = Dimension::auto();
-        let _ = taffy.set_style(node, style);
-    }
-}
-
-fn origin_of(taffy: &TaffyTree<()>, node: NodeId, parent: Point) -> Point {
-    taffy.layout(node).map_or(parent, |layout| {
-        Point::new(
-            parent.x + f64::from(layout.location.x),
-            parent.y + f64::from(layout.location.y),
-        )
-    })
 }
 
 impl Filterable for JournalPane {
@@ -560,9 +540,9 @@ impl Widget for JournalPane {
         );
         let inner = Point::new(x0, y0);
         let band_of = |child: Option<NodeId>| {
-            child
-                .and_then(|c| taffy.parent(c))
-                .map_or(inner, |band| origin_of(taffy, band, inner))
+            child.and_then(|c| taffy.parent(c)).map_or(inner, |band| {
+                ui::widget::layout_rect(taffy, band, inner).origin()
+            })
         };
         if let Some(unit) = self.nodes.unit {
             self.unit.apply_layout(taffy, unit, band_of(Some(unit)));
@@ -575,7 +555,7 @@ impl Widget for JournalPane {
                 .apply_layout(taffy, severity, band_of(Some(severity)));
         }
         if let (Some(body), Some(child)) = (self.nodes.body, self.nodes.body_child) {
-            let body_origin = origin_of(taffy, body, inner);
+            let body_origin = ui::widget::layout_rect(taffy, body, inner).origin();
             // The table fills the body and scrolls its own rows; a selection
             // the app moved (a search result, a restored view) is brought
             // into sight by the nearest edge once the table has its height.
