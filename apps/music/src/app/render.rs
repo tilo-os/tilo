@@ -1818,6 +1818,10 @@ impl Widget for MusicApp {
 
     fn mark_drawn(&mut self) {
         self.dirty = false;
+        // Recording a frame can outlast the playback interval. Start the
+        // next interval after that work so a slow paint cannot immediately
+        // request another paint and crowd out the output worker.
+        self.last_tick = ui::time::now();
     }
 }
 
