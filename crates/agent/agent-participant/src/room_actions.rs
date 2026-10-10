@@ -569,9 +569,9 @@ fn sealed_for(
                     Needs::Joined => false,
                     Needs::Room => !gave_up.listed,
                     Needs::Read { app_id, record } => {
-                        named(*route, app_id, record) && !gave_up.records.contains(*route)
+                        named(route, app_id, record) && !gave_up.records.contains(*route)
                     }
-                    Needs::Act { app_id, record } => named(*route, app_id, record),
+                    Needs::Act { app_id, record } => named(route, app_id, record),
                 }
         })
         .map(|(route, _)| route.clone())
