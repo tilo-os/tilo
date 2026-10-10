@@ -35,8 +35,8 @@ use std::time::{Duration, Instant, SystemTime};
 use getrandom::{SysRng, rand_core::UnwrapErr};
 use smithay::input::keyboard::xkb::keysyms;
 use threshold_identity::ThresholdIdentity;
+use tilo_identity_ceremony::IdentityRecord;
 use ui::clipboard::{ClipboardBackend, ClipboardTarget};
-use ui::widget::identity_flow::IdentityRecord;
 use wayland_client::protocol::{
     wl_buffer::WlBuffer,
     wl_compositor::WlCompositor,

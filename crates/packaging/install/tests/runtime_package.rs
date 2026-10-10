@@ -589,3 +589,7 @@ fn signed_engine_runtime_preserves_executable_permissions_on_install() {
     assert!(process.status.success());
     assert_eq!(process.stdout, b"engine started\n");
 }
+
+/// Collecting the runtime builds nothing runs on, with this file's fixtures.
+#[path = "gc.rs"]
+mod gc;
