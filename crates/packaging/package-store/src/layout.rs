@@ -8,6 +8,7 @@
 //!   content/                   # the content store holding payload blobs
 //!   bin/                       # PATH shims for CLI packages
 //!   tmp/                       # staging for in-flight installs
+//!   leases/<package-id>        # held shared by each launch of that tree
 //!   .lock                      # serialises writers across processes
 //! ```
 //!
@@ -34,6 +35,7 @@ pub const CONTENT_DIR: &str = "content";
 pub const BIN_DIR: &str = "bin";
 pub const TMP_DIR: &str = "tmp";
 pub const LOCK_FILE: &str = ".lock";
+pub const LEASES_DIR: &str = "leases";
 
 /// File names inside a package's metadata directory.
 pub const SIGNED_ROOT_FILE: &str = "signed-root";
@@ -106,6 +108,11 @@ impl Layout {
 
     pub fn lock(&self) -> PathBuf {
         self.root.join(LOCK_FILE)
+    }
+
+    /// The launch lease of `id`'s payload tree; see `crate::lease`.
+    pub fn lease(&self, id: PackageId) -> PathBuf {
+        self.root.join(LEASES_DIR).join(id.to_hex())
     }
 
     /// The package id whose materialised tree `path` is, if it is one of

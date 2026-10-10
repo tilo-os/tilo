@@ -13,6 +13,7 @@
 //!   <version>/          a bundle (selected when its bundle.toml exists)
 //!   .gc.lock            installs hold it shared, a collection exclusively
 //!   .leases/<version>   unix seconds of the bundle's last install
+//!   .launches/<version> held shared by each launch that runs on the bundle
 //!   .pins/<version>     kept until unpinned
 //!   .trash/<version>.<pid>.<nanos>/
 //!                       a bundle on its way out
@@ -21,8 +22,17 @@
 //!
 //! A bundle stays while an installed package names it, while it is pinned,
 //! for a grace period after it was installed (an app's first open installs
-//! the runtime and then the app, in two processes), and while a running app
-//! has it mounted. Everything else is collected.
+//! the runtime and then the app, in two processes), while a launch holds it
+//! and while a running app has it mounted. Everything else is collected.
+//!
+//! A launch holds `.launches/<version>` shared ([`BundleRoot::hold_launch`])
+//! from before it looks the bundle up until its sandbox exits; `flock(2)`
+//! drops the hold with the launcher however it ends. That covers the moment
+//! between choosing a bundle and the sandbox mounting it, which the mount
+//! table cannot show. A collection takes the same file exclusively without
+//! waiting before it moves a bundle and keeps it across the move and the
+//! deletion, so a launch sees each bundle either whole or gone, never in
+//! between, and a busy one is kept.
 //!
 //! Collection is crash-safe because a bundle leaves the version namespace in
 //! one `rename(2)` before any of its files is deleted: a directory in
@@ -48,6 +58,8 @@ pub const TRASH_DIR: &str = ".trash";
 pub const LEASES_DIR: &str = ".leases";
 /// The bundles kept until unpinned.
 pub const PINS_DIR: &str = ".pins";
+/// The launch leases: each running launch holds its bundle's file shared.
+pub const LAUNCHES_DIR: &str = ".launches";
 /// The name prefix of an install's staging directory.
 pub const STAGING_PREFIX: &str = ".install-";
 /// How long a freshly installed bundle stays without anything naming it:
@@ -65,6 +77,9 @@ pub enum Kept {
     Leased,
     /// A running app has it mounted.
     InUse,
+    /// A launch holds it, from choosing it until its sandbox exits; it may
+    /// not have mounted it yet.
+    Launching,
 }
 
 /// What one collection did.
@@ -197,6 +212,53 @@ impl BundleRoot {
         fs::read_to_string(path).ok()?.trim().parse().ok()
     }
 
+    /// Hold `version`'s bundle for a launch: no collection or removal deletes
+    /// it until the guard is dropped or the process ends. Take it before
+    /// looking the bundle up, and keep it until the sandbox that mounts the
+    /// bundle has exited. Waits only while a collection is deleting this
+    /// very bundle; the lookup after it then finds the bundle gone.
+    ///
+    /// # Errors
+    ///
+    /// Returns a version that names no plain path component, or the error
+    /// from creating or locking the lease file.
+    pub fn hold_launch(&self, version: &str) -> io::Result<FileLock> {
+        let path = self.state_file(LAUNCHES_DIR, version)?;
+        FileLock::open_current(&path, LockMode::Shared)
+    }
+
+    /// `version`'s launch lease, exclusively, when no launch holds it.
+    fn take_launch(&self, version: &str) -> io::Result<Option<FileLock>> {
+        let path = self.state_file(LAUNCHES_DIR, version)?;
+        match FileLock::try_open_current(&path, LockMode::Exclusive) {
+            Ok(lock) => Ok(Some(lock)),
+            Err(TryLockError::WouldBlock) => Ok(None),
+            Err(TryLockError::Error(error)) => Err(error),
+        }
+    }
+
+    /// Whether a launch holds `version`, creating nothing.
+    fn launch_busy(&self, version: &str) -> io::Result<bool> {
+        check_version(version)?;
+        let path = self.root.join(LAUNCHES_DIR).join(version);
+        if !fs::symlink_metadata(&path).is_ok_and(|meta| meta.is_file()) {
+            return Ok(false);
+        }
+        match FileLock::try_open(&path, LockMode::Exclusive) {
+            Ok(_) => Ok(false),
+            Err(TryLockError::WouldBlock) => Ok(true),
+            Err(TryLockError::Error(error)) => Err(error),
+        }
+    }
+
+    /// Remove `version`'s launch lease file, which `taken` holds
+    /// exclusively; a launch waiting on it takes the next file at the name.
+    fn forget_launch(&self, version: &str, taken: FileLock) -> io::Result<()> {
+        remove_file_if_present(&self.state_file(LAUNCHES_DIR, version)?)?;
+        drop(taken);
+        Ok(())
+    }
+
     /// Take `version`'s bundle out of the version namespace in one rename,
     /// so no lookup finds it from here on, and return where it went. `None`
     /// when there is no such bundle. The caller deletes it with
@@ -226,38 +288,64 @@ impl BundleRoot {
         Ok(Some(target))
     }
 
-    /// Delete a bundle [`Self::retire`] moved to the trash, unless `holds`
-    /// says a running app has it mounted; then it stays in the trash, which
-    /// no lookup reads, until a later collection finds it free. Returns
-    /// whether it was deleted.
+    /// Delete a bundle [`Self::retire`] moved to the trash, unless a launch
+    /// holds its version ([`Self::hold_launch`]) or `holds` says a running
+    /// app has it mounted; then it stays in the trash, which no lookup
+    /// reads, until a later collection finds it free. Returns whether it
+    /// was deleted.
     ///
     /// # Errors
     ///
     /// Returns a path outside this root's trash, or the removal error.
     pub fn purge(&self, trashed: &Path, holds: &Holds) -> io::Result<bool> {
-        let trash = self.root.join(TRASH_DIR);
-        let Some(name) = trashed
-            .strip_prefix(&trash)
-            .ok()
-            .filter(|rest| rest.components().count() == 1)
-            .and_then(Path::to_str)
-        else {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                format!("{} is not in {}", trashed.display(), trash.display()),
-            ));
+        let version = self.trashed_name(trashed)?;
+        if check_version(version).is_err() {
+            // Not a bundle a launch could have looked up.
+            return self.purge_taken(trashed, holds);
+        }
+        let Some(taken) = self.take_launch(version)? else {
+            return Ok(false);
         };
-        if holds(trashed, trashed_version(name)) {
+        let purged = self.purge_taken(trashed, holds)?;
+        if purged && !self.bundle(version).exists() {
+            self.forget_launch(version, taken)?;
+        }
+        Ok(purged)
+    }
+
+    /// [`Self::purge`] for a caller that holds the version's launch lease.
+    fn purge_taken(&self, trashed: &Path, holds: &Holds) -> io::Result<bool> {
+        let version = self.trashed_name(trashed)?;
+        if holds(trashed, version) {
             return Ok(false);
         }
         remove_entry(trashed)?;
         Ok(true)
     }
 
+    /// The version a path directly inside this root's trash was.
+    fn trashed_name<'p>(&self, trashed: &'p Path) -> io::Result<&'p str> {
+        let trash = self.root.join(TRASH_DIR);
+        trashed
+            .strip_prefix(&trash)
+            .ok()
+            .filter(|rest| rest.components().count() == 1)
+            .and_then(Path::to_str)
+            .map(trashed_version)
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("{} is not in {}", trashed.display(), trash.display()),
+                )
+            })
+    }
+
     /// Remove every bundle nothing keeps; see the module documentation for
     /// what keeps one. `references` and `in_use` are read only once the
     /// collection holds the lock, and `in_use` is read again after the
-    /// renames, so a launch that mounted a bundle in between keeps it.
+    /// renames, so a launch that mounted a bundle in between keeps it. Each
+    /// bundle's launch lease is held exclusively from before its rename
+    /// until it is deleted or put back, so no launch looks it up meanwhile.
     ///
     /// # Errors
     ///
@@ -306,22 +394,37 @@ impl BundleRoot {
                 None => leaving.push((version, tree_size(&path))),
             }
         }
-        if options.dry_run {
-            out.removed = leaving;
-            return Ok(out);
-        }
+        // Held from before each rename until the bundle is gone or back: a
+        // launch that holds it already keeps it, and one that comes later
+        // waits and then finds it whole or gone.
         let mut retired = Vec::new();
         for (version, bytes) in leaving {
-            if let Some(trashed) = self.retire(&version)? {
-                retired.push((version, bytes, trashed));
+            if options.dry_run {
+                if self.launch_busy(&version)? {
+                    out.kept.push((version, Kept::Launching));
+                } else {
+                    out.removed.push((version, bytes));
+                }
+                continue;
             }
+            let Some(taken) = self.take_launch(&version)? else {
+                out.kept.push((version, Kept::Launching));
+                continue;
+            };
+            if let Some(trashed) = self.retire(&version)? {
+                retired.push((version, bytes, trashed, taken));
+            }
+        }
+        if options.dry_run {
+            return Ok(out);
         }
         // A launch may have mounted a bundle between the first look and its
         // rename: its mount follows the directory into the trash.
         let holds = in_use();
-        for (version, bytes, trashed) in retired {
-            if self.purge(&trashed, &holds)? {
+        for (version, bytes, trashed, taken) in retired {
+            if self.purge_taken(&trashed, &holds)? {
                 remove_file_if_present(&self.state_file(LEASES_DIR, &version)?)?;
+                self.forget_launch(&version, taken)?;
                 out.removed.push((version, bytes));
             } else {
                 if !self.bundle(&version).exists() {
@@ -331,6 +434,7 @@ impl BundleRoot {
             }
         }
         self.forget_stale_leases(&options)?;
+        self.forget_idle_launches()?;
         Ok(out)
     }
 
@@ -405,6 +509,28 @@ impl BundleRoot {
                 .is_none_or(|at| options.now.saturating_sub(at) >= options.grace_secs);
             if expired && !self.bundle(&version).exists() {
                 remove_file_if_present(&entry.path())?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Drop the launch lease of every version with no bundle here that no
+    /// launch holds: a launch leases its runtime before it knows which root
+    /// has it, so versions found only in the system root leave one each.
+    fn forget_idle_launches(&self) -> io::Result<()> {
+        let launches = self.root.join(LAUNCHES_DIR);
+        if !fs::symlink_metadata(&launches).is_ok_and(|meta| meta.is_dir()) {
+            return Ok(());
+        }
+        for entry in fs::read_dir(&launches)? {
+            let Some(version) = entry?.file_name().to_str().map(str::to_owned) else {
+                continue;
+            };
+            if check_version(&version).is_err() || self.bundle(&version).exists() {
+                continue;
+            }
+            if let Some(taken) = self.take_launch(&version)? {
+                self.forget_launch(&version, taken)?;
             }
         }
         Ok(())
@@ -764,6 +890,106 @@ mod tests {
         assert!(root.purge(&trashed, &nothing_held()).unwrap());
         assert!(!trashed.exists());
         assert_eq!(root.retire("2026.07+native.ab").unwrap(), None);
+    }
+
+    #[test]
+    fn a_launch_lease_keeps_an_unreferenced_bundle() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = BundleRoot::new(dir.path());
+        bundle(&root, "v1", 10);
+        let launch = root.hold_launch("v1").unwrap();
+        let dry = Options {
+            dry_run: true,
+            ..options()
+        };
+        let collected = root.collect(&refs(&[]), &nothing_held, dry).unwrap();
+        assert_eq!(collected.kept, vec![("v1".to_string(), Kept::Launching)]);
+        let collected = root.collect(&refs(&[]), &nothing_held, options()).unwrap();
+        assert!(collected.removed.is_empty());
+        assert_eq!(collected.kept, vec![("v1".to_string(), Kept::Launching)]);
+        assert!(selectable(&root, "v1"), "a held bundle stays where it is");
+        // A launcher that dies releases its hold with its descriptors.
+        drop(launch);
+        let collected = root.collect(&refs(&[]), &nothing_held, options()).unwrap();
+        assert_eq!(collected.removed, vec![("v1".to_string(), 24)]);
+        assert!(
+            !dir.path().join(LAUNCHES_DIR).join("v1").exists(),
+            "the lease went with its bundle"
+        );
+    }
+
+    #[test]
+    fn a_held_trashed_bundle_is_not_purged() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = BundleRoot::new(dir.path());
+        bundle(&root, "v1", 10);
+        let launch = root.hold_launch("v1").unwrap();
+        let trashed = root.retire("v1").unwrap().unwrap();
+        assert!(!root.purge(&trashed, &nothing_held()).unwrap());
+        assert!(trashed.join("lib/libruntime_dylib.so").exists());
+        // Nor by the trash sweep of a collection while the hold lasts.
+        root.collect(&refs(&[]), &nothing_held, options()).unwrap();
+        assert!(trashed.join("lib/libruntime_dylib.so").exists());
+        drop(launch);
+        let collected = root.collect(&refs(&[]), &nothing_held, options()).unwrap();
+        assert!(collected.swept_bytes > 0);
+        assert!(!trashed.exists());
+    }
+
+    #[test]
+    fn a_launch_waiting_on_a_collection_sees_the_bundle_whole_or_gone() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = BundleRoot::new(dir.path());
+        bundle(&root, "v1", 4096);
+        let (seen_tx, seen_rx) = std::sync::mpsc::channel();
+        let launcher = std::cell::RefCell::new(None);
+        // The collection's second look at the mount table runs after the
+        // rename and before the deletion: a launch arrives right then.
+        let looks = std::cell::Cell::new(0);
+        let in_use = || -> Holds {
+            looks.set(looks.get() + 1);
+            if looks.get() == 2 {
+                let root = root.clone();
+                let seen_tx = seen_tx.clone();
+                launcher.replace(Some(std::thread::spawn(move || {
+                    let _hold = root.hold_launch("v1").unwrap();
+                    let bundle = root.bundle("v1");
+                    let manifest = bundle.join(crate::BUNDLE_MANIFEST_FILENAME);
+                    let toolkit = bundle.join("lib/libruntime_dylib.so");
+                    seen_tx.send((manifest.exists(), toolkit.exists())).unwrap();
+                })));
+                std::thread::sleep(std::time::Duration::from_millis(50));
+                assert!(
+                    seen_rx.try_recv().is_err(),
+                    "the launch waits while the collection holds the bundle"
+                );
+            }
+            nothing_held()
+        };
+        let collected = root.collect(&refs(&[]), &in_use, options()).unwrap();
+        assert_eq!(collected.removed.len(), 1);
+        launcher.take().unwrap().join().unwrap();
+        assert_eq!(
+            seen_rx.recv().unwrap(),
+            (false, false),
+            "the launch finds the bundle gone, not half deleted"
+        );
+    }
+
+    #[test]
+    fn idle_launch_leases_of_absent_bundles_are_dropped() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = BundleRoot::new(dir.path());
+        bundle(&root, "v1", 10);
+        // Launches of builds only the system root has leave a lease here.
+        drop(root.hold_launch("system-only").unwrap());
+        let held = root.hold_launch("system-held").unwrap();
+        root.collect(&refs(&["v1"]), &nothing_held, options())
+            .unwrap();
+        let launches = dir.path().join(LAUNCHES_DIR);
+        assert!(!launches.join("system-only").exists());
+        assert!(launches.join("system-held").exists());
+        drop(held);
     }
 
     /// N runtime updates, each moving the app to a new build: the bytes the

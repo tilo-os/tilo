@@ -1800,31 +1800,13 @@ impl<C: Widget> ModalDialog<C> {
         event: &WindowEvent,
         ctx: &mut crate::widget::EventCtx<'_>,
     ) -> bool {
-        let before = std::mem::replace(ctx.handled, false);
-        if let Some(node) = self.host_content {
-            self.content
-                .handle_event(event, &mut ctx.reborrow(ctx.path, node));
-        } else if let Some(content) = &self.detached {
-            let mut detached_focus = None;
-            self.content.handle_event(
-                event,
-                &mut crate::widget::EventCtx {
-                    scale_factor: ctx.scale_factor,
-                    modifiers: ctx.modifiers,
-                    state: ctx.state.reborrow(),
-                    path: ctx.path,
-                    handled: ctx.handled,
-                    // A node of the dialog's own tree means nothing to a
-                    // host; a painted host keeps focus inside its content.
-                    focus_target: &mut detached_focus,
-                    node_id: content.node,
-                    taffy: &content.taffy,
-                },
-            );
-        }
-        let consumed = *ctx.handled;
-        *ctx.handled = before || consumed;
-        consumed
+        floating_surface::DetachedContent::forward(
+            &mut self.content,
+            self.host_content,
+            self.detached.as_ref(),
+            event,
+            ctx,
+        )
     }
 
     fn dismiss(&mut self) {
