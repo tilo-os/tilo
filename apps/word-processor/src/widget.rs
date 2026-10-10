@@ -13,7 +13,7 @@ use ui::widget::{AppModel, ModelPath};
 
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ChangeHash, ObjId};
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use taffy::{NodeId, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::{Color, Fill};
@@ -10411,14 +10411,7 @@ impl Widget for WordProcessorWidget {
         // `TaffyTreeExt` doc comment in `ui::widget::mod`), and
         // `Widget::build_layout` returns a bare `NodeId` across every
         // implementor, so there is nowhere to surface a theoretical error.
-        let style = Style {
-            size: Size {
-                width: Dimension::percent(1.0),
-                height: Dimension::percent(1.0),
-            },
-            ..Default::default()
-        };
-        taffy.widget_leaf(style, node_map, self)
+        taffy.filling_leaf(node_map, self)
     }
 
     /// Authored chrome keeps its retained toolkit children available to the

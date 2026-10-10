@@ -18,7 +18,7 @@ use ui::widget::TaffyTreeExt;
 use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ChangeHash};
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use taffy::{NodeId, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::{BlendMode, Fill, ImageData as PenikoImage};
@@ -5137,14 +5137,7 @@ impl Widget for PdfApp {
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         self.layout_theme = theme.clone();
-        let style = Style {
-            size: Size {
-                width: Dimension::percent(1.0),
-                height: Dimension::percent(1.0),
-            },
-            ..Default::default()
-        };
-        taffy.widget_leaf(style, node_map, self)
+        taffy.filling_leaf(node_map, self)
     }
 
     #[allow(
@@ -6224,6 +6217,7 @@ mod links_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use taffy::{Dimension, Size};
     use ui::search::SearchProvider as _;
 
     /// The app's search source as the framework builds it from what the open
