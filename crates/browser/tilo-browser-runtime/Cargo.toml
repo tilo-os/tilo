@@ -58,10 +58,6 @@ workspace = true
 
 [features]
 default = []
-# Kept for LIVE_V1 cfg gates in browser.rs while the Cloud/relay peer
-# paths are reattached to the current page runtime.
-cloud = []
-relay = []
 
 [dependencies]
 

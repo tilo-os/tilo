@@ -35,27 +35,11 @@ All steps share `scripts/web-runtime/env.sh`: every crate is compiled with
 import), no debug info, and `panic = "abort"`. The core and every app must be
 built with exactly these settings.
 
-The Cloud frontend's monolithic module is unchanged in behaviour:
-`scripts/build.sh` builds with `--features cloud,static-apps`.
-
 ## Cargo features of `tilo-browser-runtime`
 
-| feature | adds |
-|---|---|
-| (none, the default) | the toolkit core: toolkit, page host, catalogue, the canonical desktop over page-owned rooms (`local`); no apps, no peer |
-| `dylink` | links the cdylib as a dynamic-linking main module (see below) |
-| `static-apps` | compiles Writer, Chat, Notes, Calculator and Books into the module |
-| `cloud` | the certified peer (HTTPS delivery, onboarding, invited guests), MoQ media, the canonical desktop |
-
-Host tests (`cargo test -p tilo-browser-runtime`) always cover the peer modules
-and the catalogue's apps.
-
-`cloud` adds no dependency: every crate the peer uses is already in the core.
-Since the ABI id leaves the core crate out, `build-web-core.sh OUT --features
-cloud` builds a core with the peer (`connectPeer` in `peer.mjs`) that has the
-default core's ABI id and links the same app side modules, from the same
-registry. A page that needs the peer loads that core instead of the default
-one, not a second runtime.
+The crate has no Cargo features: the one wasm32 build carries the toolkit,
+the page host, the catalogue and the canonical desktop over page-owned rooms.
+Native builds compile an empty library.
 
 ## The web app collection
 
