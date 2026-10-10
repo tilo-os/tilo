@@ -263,8 +263,8 @@ fn classify_connect_error(error: &iroh::endpoint::ConnectError) -> ClientError {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum RelayWireProtocol {
-    /// [`Self::TiloV2Compact`] whose presence is slotted, coalesced and
-    /// batched.
+    /// [`Self::TiloV2Compact`] whose presence arrives batched and
+    /// slot-coded.
     TiloV2Presence,
     /// [`Self::TiloV2Signed`] whose zero-signature deltas omit the signature.
     TiloV2Compact,
@@ -1364,8 +1364,6 @@ async fn run_v2_reader<R>(
                     return;
                 }
             }
-            // The reader expands every batch into state frames.
-            Ok(Some(EnvelopeV2::PresenceBatch { .. })) => return,
             Ok(Some(action)) => {
                 if scope.is_some_and(|scope| !action_in_scope(scope, &action)) {
                     return;

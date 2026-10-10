@@ -31,7 +31,7 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
-use tilo_delivery_protocol::transport_v2::PresenceSlotKey;
+use tilo_delivery_protocol::transport_v2::{MAX_SLOTTED_PRESENCE_BYTES, PresenceSlotKey};
 use tilo_peer_state::PresenceSlot;
 use tokio::sync::Notify;
 use tokio::time::Instant;
@@ -40,9 +40,17 @@ use tokio::time::Instant;
 pub const MOTION_GAP: Duration = Duration::from_millis(50);
 /// How long presence waits for more to travel in the same frame.
 pub const BATCH_WINDOW: Duration = Duration::from_millis(5);
-/// Pending slots, and separately pending unslotted presence, one connection
-/// holds at most; beyond it new presence is dropped, as a full queue drops it.
+/// Pending slots one connection holds at most; a new slot beyond it is
+/// dropped, as a full queue drops presence. A slot's newer value always fits.
 const MAX_PENDING: usize = 1024;
+/// Pending slots of one author one connection holds at most, so one
+/// collaborator inventing slots cannot crowd out everybody else's.
+const MAX_SLOTS_PER_AUTHOR: usize = 64;
+/// Pending unslotted presence one connection holds at most — the frame queue
+/// it replaces held as many. Unslotted presence can be large (a shared
+/// window's video frame) and is never coalesced, so a slow reader drops it
+/// rather than falling behind.
+const MAX_PENDING_EVENTS: usize = 32;
 
 /// One presence payload the writer is to send now.
 #[derive(Debug)]
@@ -148,13 +156,20 @@ impl PresenceMailbox {
         let mut state = self.state();
         state.seq = state.seq.saturating_add(1);
         let seq = state.seq;
+        // Only small latest-state presence is held by slot; anything larger
+        // is delivered, and bounded, like an event.
+        let slot = slot.filter(|_| payload.len() <= MAX_SLOTTED_PRESENCE_BYTES);
         let due = if let Some(slot) = slot {
             let key = PresenceSlotKey {
                 workspace_id,
                 author,
                 slot: slot.id,
             };
-            if !state.slotted.contains_key(&key) && state.slotted.len() >= MAX_PENDING {
+            if !state.slotted.contains_key(&key)
+                && (state.slotted.len() >= MAX_PENDING
+                    || state.slotted.keys().filter(|k| k.author == author).count()
+                        >= MAX_SLOTS_PER_AUTHOR)
+            {
                 return false;
             }
             let pending = state.slotted.entry(key).or_insert_with(|| Pending {
@@ -169,7 +184,7 @@ impl PresenceMailbox {
             let since = pending.since;
             due_at(&state.sent, &key, since, slot.motion)
         } else {
-            if state.events.len() >= MAX_PENDING {
+            if state.events.len() >= MAX_PENDING_EVENTS {
                 return false;
             }
             state.events.push_back(Event {
@@ -374,18 +389,40 @@ mod tests {
     fn a_full_mailbox_refuses_new_presence_but_still_updates_its_slots() {
         let mailbox = PresenceMailbox::default();
         let t0 = Instant::now();
-        let max = u64::try_from(MAX_PENDING).unwrap();
-        for slot in 0..max {
+        let per_author = u64::try_from(MAX_SLOTS_PER_AUTHOR).unwrap();
+        // One author is held to its share...
+        for slot in 0..per_author {
             assert!(mailbox.post(ROOM, ALICE, Some(caret(slot)), bytes("x"), t0));
         }
-        assert!(!mailbox.post(ROOM, ALICE, Some(caret(max)), bytes("x"), t0));
+        assert!(!mailbox.post(ROOM, ALICE, Some(caret(per_author)), bytes("x"), t0));
         assert!(mailbox.post(ROOM, ALICE, Some(caret(0)), bytes("newer"), t0));
-        for _ in 0..MAX_PENDING {
-            assert!(mailbox.post(ROOM, ALICE, None, bytes("event"), t0));
+        // ...and everybody together to the connection's.
+        let authors = MAX_PENDING / MAX_SLOTS_PER_AUTHOR;
+        for author in 1..authors {
+            let author = [u8::try_from(author).unwrap().saturating_add(10); 32];
+            for slot in 0..per_author {
+                assert!(mailbox.post(ROOM, author, Some(caret(slot)), bytes("x"), t0));
+            }
         }
-        assert!(!mailbox.post(ROOM, ALICE, None, bytes("event"), t0));
+        assert!(!mailbox.post(ROOM, BOB, Some(caret(0)), bytes("x"), t0));
+        for _ in 0..MAX_PENDING_EVENTS {
+            assert!(mailbox.post(ROOM, BOB, None, bytes("event"), t0));
+        }
+        assert!(!mailbox.post(ROOM, BOB, None, bytes("event"), t0));
         let due = mailbox.take_due(t0 + BATCH_WINDOW);
-        assert_eq!(due.len(), MAX_PENDING * 2);
+        assert_eq!(due.len(), MAX_PENDING + MAX_PENDING_EVENTS);
+    }
+
+    #[test]
+    fn large_slotted_presence_is_delivered_as_an_event() {
+        let mailbox = PresenceMailbox::default();
+        let t0 = Instant::now();
+        let large: Arc<[u8]> = Arc::from(vec![7; MAX_SLOTTED_PRESENCE_BYTES + 1]);
+        mailbox.post(ROOM, ALICE, Some(caret(1)), large.clone(), t0);
+        mailbox.post(ROOM, ALICE, Some(caret(1)), large, t0);
+        let due = mailbox.take_due(t0 + BATCH_WINDOW);
+        assert_eq!(due.len(), 2, "neither copy is held by slot");
+        assert!(due.iter().all(|presence| presence.key.is_none()));
     }
 
     #[tokio::test(start_paused = true)]
