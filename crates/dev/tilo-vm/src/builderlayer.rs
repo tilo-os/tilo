@@ -190,16 +190,7 @@ pub(crate) fn pack_with_source(
         ));
     }
     let facts = build::first_elf(&tree).unwrap_or_default();
-    eprintln!(
-        "native layer facts: component={} target={:?} toolchain={:?} source_digest={:?}",
-        component.name,
-        facts.target,
-        facts
-            .toolchain
-            .as_deref()
-            .map(|value| value.chars().take(160).collect::<String>()),
-        source_digest,
-    );
+    log_native_facts(&component.name, &facts, source_digest.as_deref());
     let packed = Packed {
         component: component.name,
         binary,
@@ -211,6 +202,19 @@ pub(crate) fn pack_with_source(
     let stdout = std::io::stdout();
     let mut out = std::io::BufWriter::new(stdout.lock());
     write_layer(&tree, packed, cached, &mut out)
+}
+
+fn log_native_facts(component: &str, facts: &build::ElfFacts, source_digest: Option<&str>) {
+    eprintln!(
+        "native layer facts: component={} target={:?} toolchain={:?} source_digest={:?}",
+        component,
+        facts.target,
+        facts
+            .toolchain
+            .as_deref()
+            .map(|value| value.chars().take(160).collect::<String>()),
+        source_digest,
+    );
 }
 
 fn valid_hash(hash: &str) -> bool {
