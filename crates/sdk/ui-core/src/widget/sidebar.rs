@@ -255,9 +255,6 @@ impl SidebarDrawer {
     pub fn set_docked_width(&mut self, px: f64) {
         self.docked_width = self.docked_width.with_px(px);
     }
-    pub fn set_overlay_width(&mut self, px: f64) {
-        self.overlay_width = self.overlay_width.with_px(px);
-    }
     pub fn set_breakpoint(&mut self, px: f64) {
         self.breakpoint = self.breakpoint.with_px(px);
         self.content_min_width = None;
@@ -316,9 +313,6 @@ impl SidebarDrawer {
 
     // --- state --------------------------------------------------------------
 
-    pub fn anchored_side(&self) -> SidebarSide {
-        self.side
-    }
     /// Docked at/above the (resolved) breakpoint; always an overlay for
     /// [`Self::overlay_only`].
     pub fn layout_for(&self, width: f64) -> SplitLayout {

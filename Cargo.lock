@@ -4739,7 +4739,6 @@ dependencies = [
  "serde_json",
  "sha2 0.11.0",
  "thiserror 2.0.21",
- "tilo-clock",
  "uuid",
  "wire-frame",
  "workspace-hack",
@@ -16224,7 +16223,6 @@ dependencies = [
 name = "tilo-bluez"
 version = "0.1.0"
 dependencies = [
- "futures-util",
  "tokio",
  "tracing",
  "workspace-hack",
@@ -18146,7 +18144,6 @@ dependencies = [
 name = "tilo-startup-metrics"
 version = "0.1.0"
 dependencies = [
- "rustix 1.1.4",
  "serde",
  "serde_json",
  "tilo-clock",

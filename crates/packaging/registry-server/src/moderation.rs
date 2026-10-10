@@ -256,22 +256,6 @@ impl ModerationService {
             .collect()
     }
 
-    /// Restore submissions that arrived while a durable promotion was active.
-    /// Calling this repeatedly is safe, including after a crash between the
-    /// pending write and deferred-file removal.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if deferred state cannot be read or moved atomically.
-    pub fn activate_deferred_in_transaction(
-        &self,
-        _transaction: &SnapshotLock<'_>,
-        reviewed_submissions: &[PendingSubmission],
-    ) -> Result<(), ModerationError> {
-        let _thread_guard = thread_lock(&self.transition_lock)?;
-        self.activate_deferred_locked(reviewed_submissions)
-    }
-
     fn activate_deferred_locked(
         &self,
         reviewed_submissions: &[PendingSubmission],

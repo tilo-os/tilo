@@ -1431,13 +1431,6 @@ pub fn raise_element_action(slide: usize, id: impl Into<String>) -> SlidesAction
     }
 }
 
-pub fn lower_element_action(slide: usize, id: impl Into<String>) -> SlidesAction {
-    SlidesAction::LowerElement {
-        slide,
-        id: id.into(),
-    }
-}
-
 pub fn set_element_z_action(
     slide_id: impl Into<String>,
     element_id: impl Into<String>,

@@ -384,6 +384,44 @@ impl ChannelEncryption {
         }
     }
 
+    /// When [`Self::pump`] next has work that no inbound message brings:
+    /// `None` while there is none, so its caller can park until a message
+    /// arrives or an endpoint's access wakes it ([`ChannelKeyAccess::with_wake`]).
+    ///
+    /// A steward re-checks its access policy every [`RECONCILE_INTERVAL`],
+    /// since a grant can expire with nothing announcing it; the same pass
+    /// redelivers what its members have not acknowledged and retries an
+    /// unaccepted genesis announcement. A member is due only while it still
+    /// has to acknowledge a frame or is asking for access, on its backoff. A
+    /// member holding its keys has nothing to do until a frame arrives.
+    #[must_use]
+    pub fn next_pump_deadline(&self, now: Instant) -> Option<Instant> {
+        let steward = (!self.stewards.is_empty()).then(|| {
+            if self.stewards.values().any(|entry| entry.dirty) {
+                return now;
+            }
+            self.last_reconcile
+                .and_then(|last| last.checked_add(RECONCILE_INTERVAL))
+                .unwrap_or(now)
+        });
+        let member = self
+            .members
+            .values()
+            .filter_map(|entry| {
+                if entry.ack_due {
+                    return Some(now);
+                }
+                let asking = match entry.member.access() {
+                    Access::Waiting => true,
+                    Access::Removed => entry.rejoin,
+                    Access::Ready { .. } => false,
+                };
+                asking.then_some(entry.retry.due)
+            })
+            .min();
+        steward.into_iter().chain(member).min()
+    }
+
     fn receive(&mut self, inbound: InboundChannelGovernance, now: Instant, wall: u64) {
         match inbound {
             InboundChannelGovernance::Frame { room, frame } => {
@@ -715,6 +753,18 @@ impl ChannelEncryption {
     }
 }
 
+/// How long a pumping thread parks after a pass at `now`, given the
+/// service's [`ChannelEncryption::next_pump_deadline`]: until the deadline,
+/// or [`RECONCILE_INTERVAL`] when the pass left work due that it could not
+/// do, so a failing step is retried at the cadence it always had instead of
+/// spinning.
+fn wait_after_pass(deadline: Option<Instant>, now: Instant) -> Option<Duration> {
+    deadline.map(|deadline| match deadline.checked_duration_since(now) {
+        Some(wait) if !wait.is_zero() => wait,
+        _ => RECONCILE_INTERVAL,
+    })
+}
+
 /// Wakes a host's parked governance pump.
 pub type PumpWake = Arc<dyn Fn() + Send + Sync>;
 
@@ -893,9 +943,25 @@ impl ChannelKeyAccess {
 
     /// See [`ChannelEncryption::pump`].
     pub fn pump(&self, transport: &dyn GovernanceTransport) {
-        if let Ok(mut service) = self.inner.lock() {
-            service.pump(transport, Instant::now(), tilo_clock::unix_now());
-        }
+        let _ = self.pump_until_due(transport);
+    }
+
+    /// [`Self::pump`], then how long until the protocol next has work that
+    /// no message brings ([`ChannelEncryption::next_pump_deadline`]); `None`
+    /// while it has none, and the caller parks until a governance message
+    /// arrives or the wake given to [`Self::with_wake`] fires.
+    ///
+    /// Work this pass found due and still left due (an access request that
+    /// could not be prepared) is retried after [`RECONCILE_INTERVAL`], the
+    /// cadence every pass had while the caller woke on a fixed timer.
+    #[must_use]
+    pub fn pump_until_due(&self, transport: &dyn GovernanceTransport) -> Option<Duration> {
+        let mut service = self.inner.lock().ok()?;
+        let now = Instant::now();
+        service.pump(transport, now, tilo_clock::unix_now());
+        let deadline = service.next_pump_deadline(now);
+        drop(service);
+        wait_after_pass(deadline, now)
     }
 
     /// Whether a timer still has to pump governance. An idle device with no
@@ -1456,6 +1522,178 @@ mod tests {
 
         policy.allowed.lock().unwrap().clear();
         run(&mut [&mut owner, &mut laptop], &mut now, 3);
+        assert!(matches!(
+            laptop.service.access(room_id, channel, now),
+            ChannelAccess::Removed
+        ));
+    }
+
+    /// Run every device's protocol for `seconds` of simulated time the way
+    /// the broker's drain thread does (TIL-706): a device runs a pass only
+    /// when a message waits for it or the wait its last pass returned has
+    /// run out, and otherwise stays parked. `parked` carries each device's
+    /// wait across calls (`None`: parked until a message); a test that calls
+    /// [`ChannelEncryption::access`] wakes the device as the installed pump
+    /// wake would. Returns the passes run.
+    fn run_parked(
+        devices: &mut [&mut Device],
+        parked: &mut [Option<Instant>],
+        now: &mut Instant,
+        seconds: u64,
+    ) -> usize {
+        let end = now.checked_add(Duration::from_secs(seconds)).unwrap();
+        let mut passes = 0_usize;
+        loop {
+            let mut ran = false;
+            for (device, until) in devices.iter_mut().zip(parked.iter_mut()) {
+                let inbound = device
+                    .endpoint
+                    .room
+                    .queues
+                    .lock()
+                    .unwrap()
+                    .get(&device.endpoint.id)
+                    .is_some_and(|queue| !queue.is_empty());
+                if !inbound && until.is_none_or(|until| until > *now) {
+                    continue;
+                }
+                device.service.pump(&device.endpoint, *now, 1_000);
+                *until = wait_after_pass(device.service.next_pump_deadline(*now), *now)
+                    .map(|wait| now.checked_add(wait).unwrap());
+                passes = passes.saturating_add(1);
+                ran = true;
+                assert!(passes < 10_000, "a parked pump must not spin");
+            }
+            if ran {
+                continue;
+            }
+            match parked.iter().flatten().min() {
+                Some(next) if *next <= end => *now = *next,
+                _ => {
+                    *now = end;
+                    return passes;
+                }
+            }
+        }
+    }
+
+    /// TIL-706: a member holding its keys has nothing to pump until a frame
+    /// arrives; a steward re-checks its policy once a reconcile interval.
+    #[test]
+    fn only_a_steward_or_an_unfinished_member_has_a_pump_deadline() {
+        let room = Arc::new(Room::default());
+        let room_id = RoomId::new();
+        let channel = ChannelId::new();
+        let policy = Policy::default();
+        policy.allowed.lock().unwrap().insert(public(2));
+        let (owner_dir, member_dir) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let mut now = Instant::now();
+        let mut owner = device(&room, room_id, 0, (1, 1), &policy, owner_dir.path());
+        let mut member = device(&room, room_id, 1, (2, 1), &policy, member_dir.path());
+        assert_eq!(owner.service.next_pump_deadline(now), None, "no channel");
+        assert_eq!(member.service.next_pump_deadline(now), None, "no channel");
+
+        owner.service.access(room_id, channel, now);
+        member.service.access(room_id, channel, now);
+        assert_eq!(
+            owner.service.next_pump_deadline(now),
+            Some(now),
+            "a new group reconciles at once"
+        );
+        assert_eq!(
+            member.service.next_pump_deadline(now),
+            Some(now),
+            "a new member asks at once"
+        );
+
+        run(&mut [&mut owner, &mut member], &mut now, 5);
+        assert!(ready_epoch(&member.service.access(room_id, channel, now)).is_some());
+        assert_eq!(
+            member.service.next_pump_deadline(now),
+            None,
+            "a member holding its keys parks until a frame arrives"
+        );
+        let reconcile = owner.service.next_pump_deadline(now).unwrap();
+        assert!(reconcile > now.checked_sub(RECONCILE_INTERVAL).unwrap());
+        assert!(reconcile <= now.checked_add(RECONCILE_INTERVAL).unwrap());
+        assert_eq!(
+            wait_after_pass(Some(now), now),
+            Some(RECONCILE_INTERVAL),
+            "work a pass left due is retried at the old cadence, not spun on"
+        );
+        assert_eq!(wait_after_pass(None, now), None);
+    }
+
+    /// TIL-706: a member the steward has not admitted asks again on its
+    /// backoff, and is due exactly then.
+    #[test]
+    fn a_waiting_member_is_due_on_its_request_backoff() {
+        let room = Arc::new(Room::default());
+        let room_id = RoomId::new();
+        let channel = ChannelId::new();
+        let dir = tempfile::tempdir().unwrap();
+        let mut member = device(&room, room_id, 1, (2, 1), &Policy::default(), dir.path());
+        let now = Instant::now();
+        assert!(matches!(
+            member.service.access(room_id, channel, now),
+            ChannelAccess::Waiting
+        ));
+        member.service.pump(&member.endpoint, now, 1_000);
+        assert_eq!(
+            member.service.next_pump_deadline(now),
+            Some(now.checked_add(REQUEST_FIRST).unwrap())
+        );
+        let later = now.checked_add(REQUEST_FIRST).unwrap();
+        member.service.pump(&member.endpoint, later, 1_000);
+        assert_eq!(
+            member.service.next_pump_deadline(later),
+            Some(later.checked_add(REQUEST_FIRST.saturating_mul(2)).unwrap())
+        );
+    }
+
+    /// TIL-706: devices that park between deadlines reach the same outcome
+    /// in the same simulated time as devices pumped on a fixed tick:
+    /// admission, then removal once the policy drops the member.
+    #[test]
+    fn parked_pumps_follow_the_policy_like_a_fixed_tick() {
+        let room = Arc::new(Room::default());
+        let room_id = RoomId::new();
+        let channel = ChannelId::new();
+        let policy = Policy::default();
+        let (owner_dir, laptop_dir) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let mut now = Instant::now();
+        let mut owner = device(&room, room_id, 0, (1, 1), &policy, owner_dir.path());
+        let mut laptop = device(&room, room_id, 1, (2, 1), &policy, laptop_dir.path());
+
+        assert!(ready_epoch(&owner.service.access(room_id, channel, now)).is_some());
+        assert!(matches!(
+            laptop.service.access(room_id, channel, now),
+            ChannelAccess::Waiting
+        ));
+        // Both opened a channel, which wakes their pumps.
+        let mut parked = [Some(now), Some(now)];
+        run_parked(&mut [&mut owner, &mut laptop], &mut parked, &mut now, 5);
+        assert!(matches!(
+            laptop.service.access(room_id, channel, now),
+            ChannelAccess::Waiting
+        ));
+
+        policy.allowed.lock().unwrap().insert(public(2));
+        run_parked(&mut [&mut owner, &mut laptop], &mut parked, &mut now, 5);
+        let steward_epoch = ready_epoch(&owner.service.access(room_id, channel, now));
+        assert_eq!(
+            ready_epoch(&laptop.service.access(room_id, channel, now)),
+            steward_epoch
+        );
+        assert_eq!(parked[1], None, "the admitted member parks");
+
+        // Ten idle seconds cost the member nothing and the steward one
+        // policy re-check a reconcile interval.
+        let idle = run_parked(&mut [&mut owner, &mut laptop], &mut parked, &mut now, 10);
+        assert!(idle <= 11, "{idle} passes in ten idle seconds");
+
+        policy.allowed.lock().unwrap().clear();
+        run_parked(&mut [&mut owner, &mut laptop], &mut parked, &mut now, 3);
         assert!(matches!(
             laptop.service.access(room_id, channel, now),
             ChannelAccess::Removed

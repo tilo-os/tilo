@@ -1661,22 +1661,6 @@ pub fn set_cell_action(
     }
 }
 
-/// Set a cell's display format only.
-pub fn set_format_action(
-    sheet: usize,
-    sheet_id: impl Into<String>,
-    addr: Addr,
-    fmt: CellFormat,
-) -> SheetsAction {
-    SheetsAction::SetFormat {
-        sheet,
-        sheet_id: sheet_id.into(),
-        col: addr.0,
-        row: addr.1,
-        fmt: fmt.as_str(),
-    }
-}
-
 /// Write a batch of cells (paste / fill / `AutoSum` totals) in one change. Each
 /// entry is `(addr, raw, optional format)`; an empty `raw` clears the cell.
 pub fn set_cells_action(

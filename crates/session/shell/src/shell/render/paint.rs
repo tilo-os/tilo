@@ -2997,35 +2997,13 @@ impl VelloDrmBridge {
         sparse_dst: &mut [u8],
         dst_pitch: usize,
     ) -> Result<Option<vello::SparseRenderStats>, BridgeError> {
-        self.target.check_health()?;
-        self.last_phase_timing = None;
-        self.invalidate_retained();
-        self.reset_render_attempts();
-        let Some(damage) = Self::validate_diagnostic_damage(damage, self.target.size) else {
-            return Ok(None);
-        };
-
-        let (width, height) = self.target.size;
-        let dev_handle = self.context.devices.get(self.dev_id).ok_or_else(|| {
-            BridgeError::InvalidDevice(format!("wgpu device id {} out of range", self.dev_id))
-        })?;
-        let device = dev_handle.device.clone();
-        let (sparse_texture, sparse_view, sparse_readback, sparse_stride) =
-            Self::allocate_targets(&device, width, height);
-        let sparse_target = SharedCoarseDiagnosticTarget {
-            texture: &sparse_texture,
-            view: &sparse_view,
-            readback: &sparse_readback,
-            padded_bytes_per_row: sparse_stride,
-        };
-
-        self.render_shared_coarse_diagnostic_attempts(
+        self.shared_coarse_diagnostic(
             scene,
-            &damage,
+            damage,
             full_dst,
             sparse_dst,
             dst_pitch,
-            sparse_target,
+            Self::render_shared_coarse_diagnostic_attempts,
         )
     }
 
@@ -3040,6 +3018,35 @@ impl VelloDrmBridge {
         sparse_dst: &mut [u8],
         dst_pitch: usize,
     ) -> Result<Option<SharedCoarseGeometryDiagnostic>, BridgeError> {
+        self.shared_coarse_diagnostic(
+            scene,
+            damage,
+            full_dst,
+            sparse_dst,
+            dst_pitch,
+            Self::render_shared_coarse_geometry_diagnostic_attempts,
+        )
+    }
+
+    /// Validate `damage`, allocate the sparse diagnostic target and run
+    /// `attempts` against it on a freshly invalidated retained state.
+    fn shared_coarse_diagnostic<T>(
+        &mut self,
+        scene: &Scene,
+        damage: &[vello::FineDamageRect],
+        full_dst: &mut [u8],
+        sparse_dst: &mut [u8],
+        dst_pitch: usize,
+        attempts: impl FnOnce(
+            &mut Self,
+            &Scene,
+            &[vello::FineDamageRect],
+            &mut [u8],
+            &mut [u8],
+            usize,
+            SharedCoarseDiagnosticTarget<'_>,
+        ) -> Result<Option<T>, BridgeError>,
+    ) -> Result<Option<T>, BridgeError> {
         self.target.check_health()?;
         self.last_phase_timing = None;
         self.invalidate_retained();
@@ -3062,7 +3069,8 @@ impl VelloDrmBridge {
             padded_bytes_per_row: sparse_stride,
         };
 
-        self.render_shared_coarse_geometry_diagnostic_attempts(
+        attempts(
+            self,
             scene,
             &damage,
             full_dst,

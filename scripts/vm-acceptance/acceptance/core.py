@@ -586,6 +586,41 @@ def processes(ctx) -> dict:
     return parse_processes(ctx.vm.root_exec(PROCESSES))
 
 
+# Read as root, for one process (the compositor): what its anonymous memory is. Its
+# status lines, its smaps_rollup (Anonymous, Pss_Anon, Rss, ...), and its 20 largest
+# mappings by Anonymous kB: one `[heap]` or a run of 64 MiB-aligned `[anon]` regions
+# (glibc arenas) reads differently from one GPU buffer that doubled.
+SHELL_MEMORY = r'''
+pid=__PID__
+awk '/^(VmRSS|RssAnon|RssFile|RssShmem|VmSwap|Threads):/ {print "S", $1, $2}' /proc/$pid/status
+awk 'NR > 1 && $3 == "kB" {print "R", $1, $2}' /proc/$pid/smaps_rollup
+awk '/^[0-9a-f]+-[0-9a-f]+ / {range = $1; name = "[anon]"; if (NF >= 6) {name = $6; for (i = 7; i <= NF; i++) name = name " " $i}}
+     /^Anonymous:/ && $2 > 0 {print "A", $2, range, name}' /proc/$pid/smaps | sort -k2,2nr | head -n 20
+'''
+
+
+def parse_shell_memory(text: str) -> dict:
+    """`SHELL_MEMORY` output -> {"status_kib", "smaps_rollup_kib", "top_anon_mappings"}."""
+    status, rollup, top = {}, {}, []
+    for line in text.splitlines():
+        f = line.split()
+        if len(f) >= 3 and f[0] in ("S", "R") and f[2].isdigit():
+            (status if f[0] == "S" else rollup)[f[1].rstrip(":")] = int(f[2])
+        elif len(f) >= 4 and f[0] == "A" and f[1].isdigit():
+            top.append({"anon_kib": int(f[1]), "range": f[2], "name": " ".join(f[3:])})
+    return {"status_kib": status, "smaps_rollup_kib": rollup, "top_anon_mappings": top}
+
+
+def shell_memory(ctx, pid: int) -> dict:
+    """The compositor's memory breakdown; Unobservable when its anonymous RSS cannot be read."""
+    m = parse_shell_memory(ctx.vm.root_exec(SHELL_MEMORY.replace("__PID__", str(int(pid)))))
+    if "RssAnon" not in m["status_kib"] or "Anonymous" not in m["smaps_rollup_kib"]:
+        raise Unobservable(f"the compositor's (pid {pid}) status and smaps_rollup could not be read")
+    m["pid"] = pid
+    m["anon_rss_mib"] = round(m["status_kib"]["RssAnon"] / 1024, 1)
+    return m
+
+
 def app_cgroup(table: dict, app_id: str) -> dict:
     """Where `app_id`'s processes are accounted: its cgroups, and whether they hold the app alone.
 

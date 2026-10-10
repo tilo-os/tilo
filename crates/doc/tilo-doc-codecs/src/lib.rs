@@ -125,27 +125,8 @@ pub fn resolve_general_ref(reference: &quick_xml::events::BytesRef<'_>) -> Optio
     }
 }
 
-/// The spreadsheet codec for a file extension (`xlsx`/`ods`, case-insensitive) — separate
-/// from [`builtin_registry`] since spreadsheets speak [`SheetProvider`], not [`FormatProvider`].
-/// Only the formats this build enables resolve.
-#[cfg(any(feature = "xlsx", feature = "ods"))]
-pub fn sheet_provider_for_ext(ext: &str) -> Option<Box<dyn SheetProvider>> {
-    match ext.to_ascii_lowercase().as_str() {
-        #[cfg(feature = "xlsx")]
-        "xlsx" => Some(Box::new(XlsxCodec)),
-        #[cfg(feature = "ods")]
-        "ods" => Some(Box::new(OdsCodec)),
-        _ => None,
-    }
-}
-
 /// Spreadsheet formats the platform opens as a workbook resource, whatever this build compiles.
 pub const SHEET_EXTENSIONS: &[&str] = &["xlsx", "ods"];
-
-/// Whether `ext` names a spreadsheet format the platform opens as a workbook resource.
-pub fn is_supported_sheet_ext(ext: &str) -> bool {
-    SHEET_EXTENSIONS.iter().any(|e| e.eq_ignore_ascii_case(ext))
-}
 
 /// Document formats the platform opens as an editable rich-text resource — the OS source of
 /// truth for "this file is an editable document", independent of which codecs a given binary

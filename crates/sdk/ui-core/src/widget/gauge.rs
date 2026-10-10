@@ -735,11 +735,6 @@ impl BarGauge {
         self
     }
 
-    /// Update the fraction (clamped to `0..1`).
-    pub fn set_fraction(&mut self, frac: f32) {
-        self.frac = frac.clamp(0.0, 1.0);
-    }
-
     fn resolve_color(&self, theme: &Theme) -> Color {
         match self.fill {
             Fillcolor::Threshold(t) => t.color(theme, self.frac),

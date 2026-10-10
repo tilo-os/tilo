@@ -59,6 +59,26 @@ const IDLE_SYNC_BYTES: usize = 296;
 /// scheduler time slice would fail whenever the runner preempts the pass, so
 /// time only bounds a stall here; `IDLE_SYNC_BYTES` catches a regression.
 const IDLE_SYNC_SLO: Duration = Duration::from_millis(5);
+/// The workspace behind the conflict-watch scenario (TIL-608): 50,000
+/// files in 500 directories.
+const CONFLICT_DIRECTORIES: usize = 500;
+const CONFLICT_FILES_PER_DIRECTORY: usize = 100;
+/// An idle pass of the conflict step: the namespace's merge generation,
+/// read under one lock hold, and no node examined. The node count is the tight,
+/// runner-independent gate; as for `IDLE_SYNC_SLO`, time only bounds a
+/// stall and stays above one scheduler slice.
+const IDLE_CONFLICT_SLO: Duration = Duration::from_millis(5);
+/// A conflict scan over that workspace holds the namespace lock one step
+/// of `fs::conflict::SCAN_STEP_NODES` nodes at a time, at any workspace
+/// size. Before TIL-608 the whole walk was one hold: 2.5 s on the CI runner
+/// (1.4 s on an M-series laptop), both debug builds. The mean hold per step
+/// is the steady gate: 3.3 ms on the runner, 1.8 ms on the laptop. The
+/// longest step of the first two CI runs held 50 and 77 ms (3-5 ms on the
+/// laptop): the shared runner's tail, so the longest hold only bounds a
+/// stall, and its ceiling still fails a walk under one hold 12 times over.
+/// Both are provisional until CI runs give a p99 (TIL-595's rule).
+const CONFLICT_SCAN_MEAN_HOLD_SLO: Duration = Duration::from_millis(10);
+const CONFLICT_SCAN_LONGEST_HOLD_SLO: Duration = Duration::from_millis(200);
 /// The device keys the two writers know each other by.
 const IDLE_SYNC_HOST: [u8; 32] = [1; 32];
 const IDLE_SYNC_DEVICE: [u8; 32] = [2; 32];
@@ -213,6 +233,93 @@ fn idle_namespace_anti_entropy_performance_gate() {
         "an idle pass sent {bytes} B over {IDLE_SYNC_HISTORY} changes"
     );
     report("idle-namespace-pass-resumed-50k", time, IDLE_SYNC_SLO);
+}
+
+/// TIL-608: the conflict step every writer's reconciliation loop runs every
+/// few seconds. It used to walk every node under one hold of the namespace
+/// lock on every pass. Now a pass with nothing merged since the last scan
+/// reads the namespace's merge generation and examines no node, and a scan
+/// (after a merge, a retry, or the periodic sweep) walks the nodes a step
+/// at a time, releasing the lock between steps.
+#[test]
+fn conflict_watch_idle_pass_and_lock_hold_performance_gate() {
+    if !require_enabled() {
+        return;
+    }
+    let mut namespace = Namespace::new("perf-conflict").unwrap();
+    for directory in 0..CONFLICT_DIRECTORIES {
+        let parent = namespace
+            .create_dir(ROOT_INO, format!("dir-{directory}"), 1)
+            .expect("create conflict fixture directory");
+        for file in 0..CONFLICT_FILES_PER_DIRECTORY {
+            let content = iroh_blobs::Hash::new(format!("{directory}/{file}"));
+            namespace
+                .create_file(parent, format!("file-{file}"), Some(&content), 1, 1)
+                .expect("create conflict fixture file");
+        }
+    }
+    let nodes = CONFLICT_DIRECTORIES * (1 + CONFLICT_FILES_PER_DIRECTORY);
+    // Commit the fixture's edits, as a mounted namespace commits each
+    // change when it saves its delta.
+    namespace.heads();
+
+    let started = Instant::now();
+    assert!(fs::conflict::detect(&namespace).is_empty());
+    eprintln!(
+        "PERF conflict-detect-50k: {:.3} ms under one lock hold (each pass before TIL-608)",
+        started.elapsed().as_secs_f64() * 1_000.0
+    );
+
+    let namespace = Mutex::new(namespace);
+    let mut watch = fs::conflict::NamespaceScan::new();
+    // The first pass, and any after a merge, scans.
+    assert!(watch.due(&namespace).is_empty());
+    let scan = watch.last_pass();
+    assert!(
+        scan.nodes >= nodes,
+        "the scan examined {} nodes",
+        scan.nodes
+    );
+    // Independent of the runner: the lock is released every step.
+    assert!(
+        scan.lock_holds > scan.nodes / fs::conflict::SCAN_STEP_NODES,
+        "{} nodes in only {} lock holds",
+        scan.nodes,
+        scan.lock_holds
+    );
+    eprintln!(
+        "PERF conflict-scan-50k: {} nodes in {} lock holds, {:.3} ms held in all",
+        scan.nodes,
+        scan.lock_holds,
+        scan.total_hold.as_secs_f64() * 1_000.0
+    );
+    let steps = u32::try_from(scan.lock_holds).expect("lock holds fit u32");
+    report(
+        "conflict-scan-mean-lock-hold-50k",
+        scan.total_hold / steps,
+        CONFLICT_SCAN_MEAN_HOLD_SLO,
+    );
+    report(
+        "conflict-scan-longest-lock-hold-50k",
+        scan.longest_hold,
+        CONFLICT_SCAN_LONGEST_HOLD_SLO,
+    );
+
+    // What every pass of an idle writer now does.
+    let mut slowest = Duration::ZERO;
+    for _ in 0..3 {
+        let started = Instant::now();
+        assert!(watch.due(&namespace).is_empty());
+        slowest = slowest.max(started.elapsed());
+        let idle = watch.last_pass();
+        assert_eq!(idle.nodes, 0, "an idle pass examined nodes");
+        assert_eq!(
+            idle.lock_holds, 1,
+            "an idle pass took the lock more than once"
+        );
+    }
+    assert_eq!(watch.scans(), 1, "an idle pass scanned");
+    report("conflict-idle-pass-50k", slowest, IDLE_CONFLICT_SLO);
 }
 
 /// The ranged reads of the local-residency scenario, through the mount's

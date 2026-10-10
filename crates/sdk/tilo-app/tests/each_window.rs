@@ -66,6 +66,11 @@ impl Checklist {
 
 struct Window;
 
+thread_local! {
+    /// How many times this thread's rows read whether their task is done.
+    static READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 impl ResourceApp for Window {
     type Resource = Checklist;
     const ID: &'static str = "so.tilo.test-window-checklist";
@@ -89,7 +94,10 @@ impl ResourceApp for Window {
                     row.text(|task| task.title.clone()),
                     row.checkbox(
                         "window-done",
-                        |task| task.done,
+                        |task| {
+                            READS.with(|reads| reads.set(reads.get().saturating_add(1)));
+                            task.done
+                        },
                         Checklist::SET_DONE.map(move |done| (id.clone(), done))
                     ),
                 ]) as Element
@@ -270,6 +278,77 @@ fn adding_an_item_away_from_the_view_keeps_the_window_tree() {
     let total = usize::try_from(TASKS).unwrap().saturating_add(1);
     assert_eq!(items.len(), before, "no row mounted or dropped");
     assert!(items.iter().all(|&(_, size)| size == total), "{items:?}");
+}
+
+#[test]
+fn a_change_reads_the_rows_shown_not_every_row() {
+    let mut app = seeded();
+    let total = usize::try_from(TASKS).unwrap();
+    let shown = list_items(&mut app).len();
+    let before = READS.with(std::cell::Cell::get);
+
+    app.call("draft", serde_json::json!({ "title": "Next" }))
+        .unwrap();
+    app.harness().relayout();
+
+    let reads = READS.with(std::cell::Cell::get).saturating_sub(before);
+    assert!(
+        reads > 0,
+        "the shown rows follow the change (it ran {reads} reads)"
+    );
+    assert!(
+        reads <= shown.saturating_mul(2),
+        "{reads} rows read for a change to the draft, with {shown} of {total} mounted"
+    );
+}
+
+#[test]
+fn a_row_out_of_view_shows_its_item_as_it_is_when_it_mounts() {
+    let mut app = seeded();
+    let total = usize::try_from(TASKS).unwrap();
+    let far = task_id(&app, total.saturating_sub(3));
+    assert!(!mounted(&mut app, &far), "the row starts out unmounted");
+    // Another participant (here an agent) completes the task while its row
+    // is out of view.
+    let item = app
+        .harness()
+        .resources()
+        .iter()
+        .find(|resource| resource.kind == Checklist::KIND)
+        .and_then(|root| {
+            root.children
+                .iter()
+                .find(|child| child.label == format!("Task {}", total.saturating_sub(3)))
+        })
+        .unwrap()
+        .id
+        .clone();
+    app.call_on(
+        item.as_str(),
+        "set-done",
+        serde_json::json!({ "done": true }),
+    )
+    .unwrap();
+    app.harness().relayout();
+
+    app.harness().send(&WindowEvent::CursorMoved {
+        device_id: tilo_app::winit::event::DeviceId::dummy(),
+        position: tilo_app::winit::dpi::PhysicalPosition::new(200.0, 300.0),
+    });
+    for _ in 0..200 {
+        app.harness().scroll(0.0, -400.0);
+    }
+    app.harness().relayout();
+    assert!(mounted(&mut app, &far), "the row mounted at the end");
+
+    // The checkbox shows the task completed: clicking it reopens the task.
+    // A checkbox still showing it open would complete it again.
+    app.harness().click_named(&control(&far)).unwrap();
+    app.harness().relayout();
+    assert!(
+        !app.state().tasks.get(&far).unwrap().done,
+        "the mounted row showed the task as completed"
+    );
 }
 
 #[test]

@@ -101,12 +101,7 @@ pub struct LineSpans {
     pub carry: HlState,
 }
 
-impl LineSpans {
-    /// No carry — for a line-local highlighter.
-    pub fn line_local(spans: Vec<Span>) -> Self {
-        Self { spans, carry: 0 }
-    }
-}
+impl LineSpans {}
 
 /// A pluggable, per-line source tokenizer. The [`CodeEditor`] owns rendering,
 /// caret, and selection; a `Highlighter` owns *only* the language lexing —
