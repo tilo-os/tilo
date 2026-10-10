@@ -118,6 +118,62 @@ class Recorder:
             self.records[kpi] = item["samples"]
 
 
+class IdleDiagnostics(unittest.TestCase):
+    def test_zero_cpu_helper_wakeups_remain_in_session_attribution(self):
+        parsed = resources._parse_sample(
+            "@@0\nP 30 helper 10 1 1 2\nH 30 31 helper-worker 10 2\n"
+            "@@1\nP 30 helper 10 1 1 2\nH 30 31 helper-worker 10 12\nHZ 100\n")
+        measured = resources.summarize(parsed, 2)
+        self.assertIsNone(measured["compositor_pid"])
+        self.assertEqual(measured["busy_threads"], [{
+            "pid": 30, "tid": 31, "comm": "helper-worker", "cpu_pct": 0.0,
+            "ctxt_switches_per_s": 5.0, "new": False,
+        }])
+        self.assertEqual(resources.busy_threads(parsed, 2, limit=0), [])
+
+
+    def test_measure_keeps_the_measured_window_and_only_paint_diagnostics(self):
+        from types import SimpleNamespace
+        from unittest.mock import patch
+
+        rows = [
+            {"seq": 11, "wake": "io", "painted": 1, "cpu_us": 7,
+             "redraw": "apps/content"},
+            {"seq": 12, "wake": "widget", "painted": 0, "cpu_us": ""},
+            {"seq": 13, "wake": "io", "painted": 0, "cpu_us": 3},
+        ]
+        class VM:
+            def slot_uid(self):
+                return SLOT
+
+            def exec(self, script, **kwargs):
+                if script.startswith("wc -c"):
+                    return "100\n"
+                self.log_script = script
+                return "unrelated private content\npaint-stats: still redraw /Notes\nreceipt: hidden"
+
+            def root_exec(self, script, **kwargs):
+                self.sample_script = script
+                return "@@0\nU 1\n@@1\nU 3\nHZ 100\n"
+
+        vm = VM()
+        with patch.object(core, "trace_mark", return_value=10), \
+                patch.object(core, "trace_after", return_value=rows) as after:
+            measured = resources.measure(SimpleNamespace(vm=vm), 2)
+        after.assert_called_once()
+        self.assertEqual(after.call_args.args[1], 10)
+        self.assertIn("tail -c +101", vm.log_script)
+        self.assertIn("tail -c 262144", vm.log_script)
+        self.assertIn("sleep 2", vm.sample_script)
+        self.assertEqual(measured["frames_painted"], 1)
+        self.assertEqual(measured["trace"], rows)
+        self.assertEqual(measured["loop_wakes"], {
+            "io": {"ticks": 2, "painted": 1, "cpu_us": 10},
+            "widget": {"ticks": 1, "painted": 0, "cpu_us": 0},
+        })
+        self.assertEqual(measured["paint_stats"], "paint-stats: still redraw /Notes")
+
+
 class Parse(unittest.TestCase):
     def test_every_process_carries_its_rss_split_and_every_cgroup_its_charge_point(self):
         table = core.parse_processes(dump())
