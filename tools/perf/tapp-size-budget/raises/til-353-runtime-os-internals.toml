@@ -1,9 +1,5 @@
-reason = "TIL-353 takes the launcher, app host, install CLI and filesystem out of the shared runtime every app maps. Store now links the app-host client, app-cli and the launcher's manifest reader itself, Settings the manifest reader (until TIL-309 moves manifest reading out of the launcher), and Agent clap, which only those OS crates had kept in the runtime"
+reason = "TIL-353 takes the launcher, app host, install CLI and filesystem out of the shared runtime every app maps. Store now links the app-host client and app-cli itself, and Agent clap, which only those OS crates had kept in the runtime. Settings left this raise when TIL-309 moved manifest reading out of the launcher (Release / apps run 91625)"
 run = 90544
-
-[apps."so.tilo.settings"]
-x86_64 = 262144
-aarch64 = 196608
 
 [apps."so.tilo.store"]
 x86_64 = 851968
@@ -12,7 +8,3 @@ aarch64 = 786432
 [apps."so.tilo.agent"]
 x86_64 = 327680
 aarch64 = 262144
-
-# Settings is the largest app; its growth lifts the interim x86_64 maximum.
-[fleet.x86_64]
-max = 262144

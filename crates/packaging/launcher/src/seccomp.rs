@@ -124,6 +124,14 @@ pub fn resolve_profile(requested: &str, package_id: &str) -> ProfileDecision {
     }
 }
 
+/// The syscall profile a manifest's sandbox gets, resolved fail-closed
+/// against the image's entitlement policy. Takes the package id since the
+/// manifest's own answer isn't sufficient: whether a package may run
+/// without write-xor-execute is the image's decision, not the packager's.
+pub fn manifest_profile(sandbox: &crate::manifest::Sandbox, package_id: &str) -> SeccompProfile {
+    resolve_profile(&sandbox.seccomp, package_id).applied
+}
+
 /// Path the launcher checks for a pre-baked blob, preferred over
 /// compiling when present. Looked up relative to `$CARGO_MANIFEST_DIR`
 /// at build time and `<crate_root>/share/tilo-default.bpf` at runtime —
@@ -300,7 +308,7 @@ mod tests {
             }
         }
         // Phase `the_manifest_accessor_consults_the_entitlement_policy`.
-        // `Sandbox::seccomp_profile` must not be a way around [`resolve_profile`].
+        // `manifest_profile` must not be a way around [`resolve_profile`].
         {
             let _policy = JitPolicy::listing("so.tilo.browser\n");
             let sandbox = crate::manifest::Sandbox {
@@ -309,13 +317,18 @@ mod tests {
             };
 
             assert_eq!(
-                sandbox.seccomp_profile("com.example.evil"),
+                manifest_profile(&sandbox, "com.example.evil"),
                 SeccompProfile::TiloDefault,
                 "the manifest accessor must not hand out what the image refused"
             );
             assert_eq!(
-                sandbox.seccomp_profile("so.tilo.browser"),
+                manifest_profile(&sandbox, "so.tilo.browser"),
                 SeccompProfile::TiloJit
+            );
+            assert_eq!(
+                crate::manifest::Sandbox::default().seccomp,
+                SeccompProfile::TiloDefault.as_str(),
+                "the view's default profile is the launcher's strict one"
             );
         }
     }

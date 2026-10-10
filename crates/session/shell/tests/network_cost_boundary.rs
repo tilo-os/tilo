@@ -131,6 +131,13 @@ fn launch(root: &std::path::Path, mode: &str) -> std::thread::JoinHandle<Capture
 [package]
 id = "so.tilo.network-boundary"
 version = "0.0.0"
+kind = "app"
+[publisher]
+identity = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
+[sandbox]
+namespaces = []
+seccomp = "tilo-default"
+landlock = "strict"
 [entrypoint]
 bin = "bin/network-boundary-fixture"
 type = "gui"
