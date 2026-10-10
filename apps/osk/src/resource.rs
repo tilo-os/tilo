@@ -213,21 +213,24 @@ mod tests {
             !published.contains("secret") && !published.contains("Composing"),
             "neither the word being typed nor what was learned reaches a palette, agent or script: {published}"
         );
-        // The person's record of what was learned offers taking a change
-        // back, never what it holds.
+        // The person's record of what was learned offers changing it and
+        // taking a change back, never a way to read what it holds.
         let surface = app.agent_surface();
-        let learned_actions: Vec<&str> = surface
+        let learned: Vec<&serde_json::Value> = surface
             .as_array()
             .into_iter()
             .flatten()
             .filter(|action| action["resource"] == "person:osk.learned")
-            .filter_map(|action| action["action"].as_str())
             .collect();
         assert!(
-            learned_actions
+            learned.iter().any(|action| action["action"] == "undo"),
+            "{learned:?}"
+        );
+        assert!(
+            learned
                 .iter()
-                .all(|action| matches!(*action, "undo" | "redo")),
-            "{learned_actions:?}"
+                .all(|action| action["operation"] != "View" && action["action"] != "history"),
+            "{learned:?}"
         );
     }
 

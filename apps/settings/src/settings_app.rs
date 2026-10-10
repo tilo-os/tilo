@@ -383,11 +383,13 @@ impl SettingsApp {
             self.account_root = self.account_root.clone().with_person(record);
             // What the device's file held before it followed the record is
             // taken in once; then the services outside any app read the file
-            // as the record's projection.
-            if let Err(error) = self
-                .account_root
-                .take_in_device_accounts()
-                .and_then(|()| self.account_root.project())
+            // as the record's projection. A window that does not reach this
+            // device (a test's) leaves the device's file alone.
+            if cx.reaches_devices()
+                && let Err(error) = self
+                    .account_root
+                    .take_in_device_accounts()
+                    .and_then(|()| self.account_root.project())
             {
                 tracing::warn!(%error, "the device's account file could not follow the person's accounts");
             }

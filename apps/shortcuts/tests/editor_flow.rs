@@ -412,8 +412,7 @@ fn add_steps_bind_them_validate_and_save_through_the_door() {
             "id": shortcut_id,
             "name": "Tidy",
             "inputs": [{
-                "name": "who", "ty": "text", "required": true, "description": "who",
-                "nullable": false
+                "name": "who", "ty": "text", "required": true, "description": "who"
             }],
             "steps": [
                 {"id": "list", "step": "invoke", "action": {"app": NOTES, "kind": "notes.folder", "action": "list"},
