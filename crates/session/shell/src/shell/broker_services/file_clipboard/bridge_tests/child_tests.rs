@@ -167,17 +167,22 @@ async fn child_journey(info: &ChildInfo) {
             b"actual sandboxed source"
         );
         assert_eq!(source.exists(), !cut);
-        assert!(matches!(
-            b.compensate(Command::Undo { operation })
-                .await
-                .expect("sandboxed native Undo"),
-            Reply::Settled {
-                completed: 1,
-                error: None,
-                undone: true,
-                ..
-            }
-        ));
+        let undone = b
+            .compensate(Command::Undo { operation })
+            .await
+            .expect("sandboxed native Undo");
+        assert!(
+            matches!(
+                undone,
+                Reply::Settled {
+                    completed: 1,
+                    error: None,
+                    undone: true,
+                    ..
+                }
+            ),
+            "sandboxed native Undo settled as {undone:?}"
+        );
         assert_eq!(
             fs::read(&source).expect("source remains or is restored"),
             b"actual sandboxed source"
