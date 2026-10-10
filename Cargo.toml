@@ -198,7 +198,6 @@ members = [
     # Media
     "crates/media/ocr",
     "crates/media/segment",
-    "crates/media/tilo-invidious",
     "crates/media/thumbnail",
     "crates/media/vision",
     "crates/media/wet-media",
@@ -251,6 +250,7 @@ members = [
     "crates/platform/tilo-keyboard-map",
     "crates/platform/tilo-media",
     "crates/platform/tilo-spotify",
+    "crates/platform/tilo-invidious",
     "crates/platform/tilo-net",
     "crates/platform/tilo-host-search",
     "crates/platform/tilo-notify",
