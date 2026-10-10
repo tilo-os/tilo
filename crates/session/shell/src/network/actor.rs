@@ -3534,6 +3534,7 @@ async fn run(
     let (input_tx, mut input_rx) = mpsc::channel(64);
     let gossip = Gossip::builder()
         .max_message_size(MAX_GOSSIP_MESSAGE_BYTES)
+        .broadcast_config(broadcast_config())
         .spawn(endpoint.clone());
     let private_messages = super::private_messages::Registry::new(endpoint.id());
     let router = Router::builder(endpoint.clone())
@@ -3654,6 +3655,29 @@ async fn sleep_until_lapse(at: Option<Instant>) {
     match at {
         Some(at) => tokio::time::sleep_until(at.into()).await,
         None => std::future::pending().await,
+    }
+}
+
+/// How often gossip sweeps a topic's message caches. iroh-gossip's 1 s
+/// sweep is a timer per topic that never stops, the one thing that woke an
+/// idle, converged session several times a second; swept every
+/// [`GOSSIP_CACHE_SWEEP`] instead, an idle topic wakes its runtime a tenth
+/// as often.
+const GOSSIP_CACHE_SWEEP: Duration = Duration::from_secs(10);
+/// How long gossip keeps a message to answer a neighbour's graft for it.
+/// iroh-gossip's 30 s less the longer sweep, so a message is still gone
+/// within 30 s of arriving: a graft is asked for within a few round trips,
+/// and this cache holds whole messages of up to
+/// [`MAX_GOSSIP_MESSAGE_BYTES`].
+const GOSSIP_MESSAGE_RETENTION: Duration = Duration::from_secs(20);
+
+/// Plumtree broadcast settings: iroh-gossip's, with the cache swept every
+/// [`GOSSIP_CACHE_SWEEP`] instead of every second.
+fn broadcast_config() -> iroh_gossip::proto::PlumtreeConfig {
+    iroh_gossip::proto::PlumtreeConfig {
+        cache_evict_interval: GOSSIP_CACHE_SWEEP,
+        message_cache_retention: GOSSIP_MESSAGE_RETENTION,
+        ..iroh_gossip::proto::PlumtreeConfig::default()
     }
 }
 
