@@ -329,6 +329,13 @@ impl NotificationsArea {
         })
     }
 
+    /// Whether the area has read what its rows show: its pane was shown,
+    /// an effect or a row lookup reached it, or the window read it after
+    /// its first frame ([`crate::effects::LIVE_AREAS`]).
+    pub(crate) fn is_open(&self) -> bool {
+        self.apps.get().is_some()
+    }
+
     /// One live row per app, offering its delivery choices flipped and its
     /// mute lifted or set.
     pub(crate) fn rows(&self) -> Vec<LiveRow> {
