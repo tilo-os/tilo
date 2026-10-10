@@ -91,10 +91,15 @@ fi
 if ! compgen -G "/usr/share/fonts/*" >/dev/null; then
   step "tilo-app check names the font a bare machine lacks"
   if tilo-app check >fonts.log 2>&1; then
+    cat fonts.log >&2
     echo "check passed on a machine with no fonts" >&2
     exit 1
   fi
-  grep -F "google-noto-sans-fonts" fonts.log
+  if ! grep -F "google-noto-sans-fonts" fonts.log; then
+    cat fonts.log >&2
+    echo "check failed without naming the missing font package" >&2
+    exit 1
+  fi
   [ "$bootstrap" = 1 ] || { echo "install a font to go on" >&2; exit 1; }
   dnf -y -q install google-noto-sans-fonts
 fi
