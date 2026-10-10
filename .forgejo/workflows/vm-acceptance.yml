@@ -30,7 +30,7 @@ on:
         required: false
         default: "main"
       swap:
-        description: "What to build from the ref and swap in: default (shell plus apps+runtime when apps changed: a branch against main, a main commit against the base), none, all (every userspace component in os/components.toml), or a comma-separated list (components, app:<dir>)."
+        description: "What to build from the ref and swap in: default (shell plus apps+runtime when apps differ from the selected disk), none, all (every userspace component in os/components.toml), or a comma-separated list (components, app:<dir>)."
         required: false
         default: "default"
       only:
@@ -173,23 +173,9 @@ jobs:
           case $swap in
             none) swap="" ;;
             default)
-              swap=""
-              # The apps a branch changes are its own diff from main; for a
-              # main commit, what changed since the base.
-              from=$(git merge-base origin/main "$target")
-              [[ $from != "$target" ]] || from=$commit
-              if ! git diff --quiet "$commit" "$target"; then
-                swap=shell
-                for app in $(git diff --name-only "$from" "$target" -- apps/ | cut -d/ -f2 | sort -u); do
-                  if git cat-file -e "$target:apps/$app/Cargo.toml" 2>/dev/null; then
-                    # A selected app carries an exact SDK requirement, not its
-                    # runtime. Keep the signed, verified cohort together rather
-                    # than discard the SDK and rebuild it for every changed app.
-                    swap+=",apps+runtime"
-                    break
-                  fi
-                done
-              fi ;;
+              # The installed baseline is the selected disk, including main
+              # changes it lacks. Never substitute the PR's merge base.
+              swap=$(python3 scripts/vm-acceptance/plan_swaps.py "$commit" "$target") ;;
             all)
               swap=$(git show "$target:os/components.toml" | python3 -c '
           import sys, tomllib

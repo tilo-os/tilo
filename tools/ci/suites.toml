@@ -395,6 +395,7 @@ suites = [
   "scripts/vm-acceptance/test_apps.py",
   "scripts/vm-acceptance/test_app_startup.py",
   "scripts/vm-acceptance/test_ci_select.py",
+  "scripts/vm-acceptance/test_plan_swaps.py",
   "scripts/vm-acceptance/test_frames.py",
   "scripts/vm-acceptance/test_provenance.py",
   "scripts/vm-acceptance/test_records.py",
