@@ -307,6 +307,29 @@ This gives three deployments without three protocols:
   falls back to `/4`, then `/3`, on `no_application_protocol`. A host writes
   `UnsignedDelta` only to `/5` sessions; older ones get the full envelope they
   know.
+- Presence (TIL-710): the host coalesces, paces and batches the presence it
+  forwards, per receiving connection (`tilo_relay::presence_mailbox`).
+  Latest-state presence — a pointer, a caret, a selection, the range being
+  typed — has a slot (`NeighbourMsg::presence_slot`, which the host reads
+  from the message, decoding only the two variants that can have one); a
+  newer message in the same slot from the same author replaces one still
+  pending, so a busy connection gets where things are, never a backlog, and
+  never loses the last caret to a full queue. Rates: a moving pointer at most
+  every 50 ms (20 Hz) per slot, which receivers' glide (`POINTER_EASE_MAX`)
+  draws as smoothly as the shell's 30 Hz; carets, selections and typing on
+  every change, after a 5 ms batching window; unslotted presence (heartbeats,
+  `SyncReq`, arrivals) never coalesced, in order, and never overtaking
+  presence posted before it. Deltas never wait for presence. Every presence
+  still travels the state lane it always did, so a client's presence keeps
+  its order. `tilo-relay/6` (`ALPN_PRESENCE_BATCH_V1`) is `/5` on which the
+  host writes each flush as one `EnvelopeV2::PresenceBatch` per room, every
+  item coded against what that
+  session last received in the same slot (kept prefix and suffix, changed
+  bytes between): a pointer move costs a few dozen bytes instead of ~236. The
+  session reader expands a batch into ordinary `Envelope::Presence` values.
+  Clients dial `/6` first and fall back to `/5`; older sessions get the same
+  coalesced presence, one frame each. A slot can only supersede the same
+  authenticated author's presence, and the host forwards the bytes unchanged.
 - Remote actions (v1): versioned JSON `RemoteActionFrame`s (`tilo_actions::remote`).
   A caller follows an invocation with one waiting request at a time —
   `wait_ms` on `Invoke`, or on `Observe` with the `seen` update — which the
