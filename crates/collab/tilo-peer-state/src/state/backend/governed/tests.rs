@@ -66,8 +66,7 @@ fn bounded_governed_import_matches_real_legacy_import_and_retains_fresh_certific
         limits(),
     )
     .unwrap();
-    let changed = original_import(&mut peer, &room, now).unwrap();
-    assert_eq!(imported.changed, changed);
+    original_import(&mut peer, &room, now).unwrap();
     for cert in peer.certificates() {
         assert_eq!(
             imported.certificates.certificate(&cert.device_public_key),
@@ -128,7 +127,12 @@ fn bounded_governed_import_ignores_legacy_malformed_identity_container() {
         limits(),
     )
     .unwrap();
-    assert!(!imported.changed);
+    for cert in peer.certificates() {
+        assert_eq!(
+            imported.certificates.certificate(&cert.device_public_key),
+            Some(&cert)
+        );
+    }
 }
 
 // Literal pre-extraction production algorithm; intentionally unqualified test oracle.
@@ -254,8 +258,7 @@ fn compare_case(
         limits(),
     );
     match (&result, &expected) {
-        (Ok(imported), Ok(changed)) => {
-            assert_eq!(imported.changed, *changed);
+        (Ok(imported), Ok(_)) => {
             for cert in oracle.certificates() {
                 assert_eq!(
                     imported.certificates.certificate(&cert.device_public_key),

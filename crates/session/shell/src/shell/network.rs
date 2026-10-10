@@ -517,10 +517,7 @@ enum Reach {
     /// Any, through the public relays and discovery.
     Internet,
     /// Only this machine's (tests).
-    #[cfg_attr(
-        not(test),
-        allow(dead_code, reason = "tests reach only loopback peers")
-    )]
+    #[cfg(test)]
     Loopback,
 }
 
@@ -1526,6 +1523,7 @@ impl ShellNetwork {
         let lookup = MemoryLookup::new();
         let builder = match reach {
             Reach::Internet => iroh::Endpoint::builder(presets::N0),
+            #[cfg(test)]
             Reach::Loopback => iroh::Endpoint::builder(presets::Minimal)
                 .relay_mode(iroh::RelayMode::Disabled)
                 .bind_addr((std::net::Ipv4Addr::LOCALHOST, 0))
@@ -1542,6 +1540,7 @@ impl ShellNetwork {
             .map_err(|e| std::io::Error::other(format!("iroh bind: {e}")))?;
         let mdns = match reach {
             Reach::Internet => init_lan_discovery(&endpoint),
+            #[cfg(test)]
             Reach::Loopback => None,
         };
         tracing::info!(
