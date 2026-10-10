@@ -88,5 +88,6 @@ notes-duplicate = { $item } dupliziert
 notes-new-tag = Schlagwort { $name } erstellt
 notes-tag = { $item } mit { $name } verschlagwortet
 notes-delete-tag = Schlagwort { $item } gelöscht
+notes-keep-image = Ein Bild im Notizbuch abgelegt
 notes-place-image = Bild zu { $item } hinzugefügt
 notes-import-markdown = { $title } importiert

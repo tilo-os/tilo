@@ -90,5 +90,6 @@ notes-duplicate = Duplicated { $item }
 notes-new-tag = Created the tag { $name }
 notes-tag = Tagged { $item } with { $name }
 notes-delete-tag = Deleted the tag { $item }
+notes-keep-image = Kept a picture with the notebook
 notes-place-image = Added a picture to { $item }
 notes-import-markdown = Imported { $title }

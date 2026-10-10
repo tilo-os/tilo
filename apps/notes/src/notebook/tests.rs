@@ -474,7 +474,7 @@ fn pictures_are_kept_by_digest_and_shown_in_their_note() {
         Notebook::PLACE_IMAGE.with(notebook::PlaceImage {
             page: page.clone(),
             bytes: png.clone(),
-            show: None,
+            alt: None,
         }),
     )
     .unwrap();
@@ -496,7 +496,7 @@ fn pictures_are_kept_by_digest_and_shown_in_their_note() {
             Notebook::PLACE_IMAGE.with(notebook::PlaceImage {
                 page,
                 bytes: b"not a picture".to_vec(),
-                show: None,
+                alt: None,
             }),
         )
         .is_err()

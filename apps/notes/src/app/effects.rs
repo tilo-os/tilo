@@ -342,7 +342,7 @@ impl NotesApp {
                 .and_then(|stem| stem.to_str())
                 .unwrap_or("Image")
                 .replace([']', '[', '(', ')'], " ");
-            cx.apply(&app.image_insertion(page, alt.trim(), file.bytes));
+            cx.submit(app.image_insertion(page, alt.trim(), file.bytes));
             app.bound_page = None;
             app.self_dirty = true;
             app.transfer_toasts
@@ -351,14 +351,14 @@ impl NotesApp {
         })
     }
 
-    /// The action adding image `bytes` to `page`, after the block the
+    /// The change adding image `bytes` to `page`, after the block the
     /// caret is in when the note is the one shown, else at its end.
     pub(super) fn image_insertion(
         &self,
         page: PageId,
         alt: &str,
         bytes: Vec<u8>,
-    ) -> actions::Action {
+    ) -> ui::tilo_resource::Invoke<crate::notebook::Notebook> {
         let digest = blake3::hash(&bytes).to_hex().to_string();
         let after = (self.main.page_id() == Some(page))
             .then(|| {
@@ -375,7 +375,7 @@ impl NotesApp {
             Some(after) => tilo_document::RichTextAction::InsertParagraph { after, text },
             None => tilo_document::RichTextAction::AppendParagraph { text },
         };
-        actions::place_image_action(page, bytes, Some(edit))
+        actions::show_image(page, bytes, edit)
     }
 }
 

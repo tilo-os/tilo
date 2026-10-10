@@ -152,15 +152,46 @@ pub fn duplicate_action(page: PageId) -> Action {
     }))
 }
 
-/// Keep the picture `bytes` with the notebook and show it in note `page`
-/// by `show` (at the end of the note when none).
+/// Keep the picture `bytes` with the notebook and show it at the end of
+/// note `page`, described by `alt`.
 #[must_use]
-pub fn place_image_action(page: PageId, bytes: Vec<u8>, show: Option<RichTextAction>) -> Action {
+pub fn place_image_action(page: PageId, bytes: Vec<u8>, alt: Option<&str>) -> Action {
     stamped(NotebookAction::PlaceImage(notebook::notebook::PlaceImage {
         page: page_id(page),
         bytes,
-        show,
+        alt: alt.map(str::to_owned),
     }))
+}
+
+/// Keep the picture `bytes` with the notebook, for a body to show.
+#[must_use]
+pub fn keep_image_action(bytes: Vec<u8>) -> Action {
+    stamped(NotebookAction::KeepImage(notebook::notebook::KeepImage {
+        bytes,
+    }))
+}
+
+/// Keep the picture `bytes` with the notebook and show it in note `page` by
+/// `show`, the edit of its body naming it: one change, one undo step.
+///
+/// # Panics
+/// Never: the actions are plain data that always serialize.
+#[allow(
+    clippy::expect_used,
+    reason = "the notebook's actions serialize with serde_json over owned plain data"
+)]
+#[must_use]
+pub fn show_image(
+    page: PageId,
+    bytes: Vec<u8>,
+    show: impl std::borrow::Borrow<RichTextAction>,
+) -> ui::tilo_resource::Invoke<Notebook> {
+    let keep = keep_image_action(bytes);
+    ui::tilo_resource::Invoke::group([
+        ui::tilo_resource::Invoke::apply(&keep).expect("a notebook action serializes"),
+        ui::tilo_resource::Invoke::apply(&edit_body_action(page, show))
+            .expect("a notebook action serializes"),
+    ])
 }
 
 /// Import `markdown` as a new top-level note titled `title` (kept under

@@ -960,7 +960,7 @@ impl NotesApp {
                         format!("![Pasted image]({source})"),
                     )
                     .map_err(|error| error.to_string())?;
-                self.dispatch(edits, &actions::place_image_action(page, bytes, Some(edit)))
+                self.submit_now(edits, actions::show_image(page, bytes, edit))
             });
             match result {
                 Ok(()) => {
@@ -981,7 +981,7 @@ impl NotesApp {
             return;
         };
         let inserted = fit_image_asset(bytes)
-            .and_then(|bytes| self.dispatch(edits, &self.image_insertion(page, alt, bytes)));
+            .and_then(|bytes| self.submit_now(edits, self.image_insertion(page, alt, bytes)));
         match inserted {
             Ok(()) => {
                 self.bound_page = None;
@@ -1159,6 +1159,21 @@ impl NotesApp {
             .ok_or("this notebook is open to view only")?;
         dispatcher
             .apply_now(edits, action)
+            .map_err(|error| error.to_string())
+    }
+
+    /// Submit `invoke` (a group of actions) to `edits` now, as one change.
+    fn submit_now(
+        &self,
+        edits: &mut ui::widget::Edits<'_>,
+        invoke: ui::tilo_resource::Invoke<crate::notebook::Notebook>,
+    ) -> Result<(), String> {
+        let dispatcher = self
+            .dispatcher
+            .as_ref()
+            .ok_or("this notebook is open to view only")?;
+        dispatcher
+            .submit_now(edits, invoke)
             .map_err(|error| error.to_string())
     }
 
@@ -3633,13 +3648,7 @@ mod tests {
         let source = format!("asset:{}", blake3::hash(&bytes).to_hex());
         for action in [
             actions::create_page_action(page, None, "Shots"),
-            actions::place_image_action(
-                page,
-                bytes,
-                Some(tilo_document::RichTextAction::AppendParagraph {
-                    text: format!("![Settings]({source})"),
-                }),
-            ),
+            actions::place_image_action(page, bytes, Some("Settings")),
         ] {
             app.invoke(ui::tilo_resource::Invoke::apply(&action).unwrap())
                 .unwrap();

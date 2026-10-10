@@ -4,7 +4,6 @@
 
 use std::fmt::Write as _;
 
-use tilo_document::RichTextAction;
 use ui::headless::{FrameHarness, SemanticExpectation};
 use vello::kurbo::{Point, Rect};
 use winit::event::{ElementState, MouseButton, WindowEvent};
@@ -317,13 +316,7 @@ pub fn actions(scenario: Option<&str>) -> Vec<Action> {
     }
     if matches!(scenario, Some("image" | "image_edit")) {
         // The image itself: the body already names it by its digest.
-        out.push(actions::place_image_action(
-            launch,
-            IMAGE.to_vec(),
-            Some(RichTextAction::AppendParagraph {
-                text: "Captured from the settings window.".into(),
-            }),
-        ));
+        out.push(actions::keep_image_action(IMAGE.to_vec()));
     }
     if scenario == Some("import_success") {
         // The note a Markdown file became, the moment its import succeeded.

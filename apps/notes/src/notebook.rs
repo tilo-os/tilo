@@ -413,26 +413,41 @@ impl Notebook {
         Ok(())
     }
 
+    /// Keep image
+    ///
+    /// Keep a PNG, JPEG or WebP picture with the notebook, for a note's body
+    /// to show by `![alt](asset:<digest>)`.
+    #[action]
+    pub fn keep_image(
+        &mut self,
+        cx: &mut ActionCx,
+        #[param("The picture")] bytes: Vec<u8>,
+    ) -> Result<(), Refusal> {
+        self.store_image(cx, &bytes).map(drop)
+    }
+
     /// Place image
     ///
-    /// Keep a PNG, JPEG or WebP picture with the notebook and show it in the
-    /// note: `show` is the edit of its body that places it (a paragraph
-    /// `![alt](asset:<digest>)`); at the end of the note when none.
+    /// Keep a PNG, JPEG or WebP picture with the notebook and show it at the
+    /// end of the note, described by `alt`.
     #[action(item = pages)]
     pub fn place_image(
         &mut self,
         cx: &mut ActionCx,
         page: &Id,
         #[param("The picture")] bytes: Vec<u8>,
-        #[param("The edit of the note's body that shows it")] show: Option<RichTextAction>,
+        #[param("A short description of it")] alt: Option<String>,
     ) -> Result<(), Refusal> {
         self.pages.get(page).ok_or("no such note")?;
-        let digest = self.keep_image(cx, &bytes)?;
-        let show = show.unwrap_or_else(|| RichTextAction::AppendParagraph {
-            text: format!("![Image](asset:{digest})"),
-        });
+        let digest = self.store_image(cx, &bytes)?;
+        let alt = alt
+            .filter(|alt| !alt.trim().is_empty())
+            .unwrap_or_else(|| "Image".to_owned())
+            .replace([']', '[', '(', ')'], " ");
         if let Some(note) = self.pages.get_mut(page) {
-            note.body.perform(show);
+            note.body.perform(RichTextAction::AppendParagraph {
+                text: format!("![{}](asset:{digest})", alt.trim()),
+            });
         }
         Ok(())
     }
@@ -463,7 +478,7 @@ impl Notebook {
             None => Id::from(cx.uuid().to_string()),
         };
         for bytes in images {
-            self.keep_image(cx, &bytes)?;
+            self.store_image(cx, &bytes)?;
         }
         let page = Page::titled(
             if title.trim().is_empty() {
@@ -534,7 +549,7 @@ impl Notebook {
     }
 
     /// Keep picture `bytes` under its digest; the digest.
-    fn keep_image(&mut self, cx: &ActionCx, bytes: &[u8]) -> Result<String, Refusal> {
+    fn store_image(&mut self, cx: &ActionCx, bytes: &[u8]) -> Result<String, Refusal> {
         let (digest, stored) = image(bytes)?;
         if stored.needs_store() {
             let store = cx.content().ok_or("no content store keeps pictures here")?;
