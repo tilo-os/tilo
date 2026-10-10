@@ -185,9 +185,11 @@ pub(super) fn record(source: DeviceId, views: Vec<WindowView>, decode: &[Hardwar
 }
 
 /// The person's other devices showing each tab, by tab, while app
-/// continuity is on; this device streams the windows it hosts among them.
-pub fn window_viewers() -> BTreeMap<u64, Vec<WindowViewer>> {
-    if !ContinuityPolicySnapshot::load().permits(ContinuityCapability::AppContinuations) {
+/// continuity is on in `policy`; this device streams the windows it hosts
+/// among them. The policy is the caller's cached one: this runs every loop
+/// tick, and reading settings per tick wakes the settings reader per tick.
+pub fn window_viewers(policy: ContinuityPolicySnapshot) -> BTreeMap<u64, Vec<WindowViewer>> {
+    if !policy.permits(ContinuityCapability::AppContinuations) {
         if let Ok(mut state) = inbound().lock() {
             state.devices.clear();
         }
@@ -201,10 +203,14 @@ pub fn window_viewers() -> BTreeMap<u64, Vec<WindowViewer>> {
 
 /// Tell each host which of its legacy windows this device shows, given as
 /// (host device key, window) pairs; cheap when nothing changed, so call it
-/// every tick. Only the person's own online devices are told.
-pub fn publish_window_views(network: &ShellNetwork, shown: Vec<(String, WindowView)>) {
-    let shown = if ContinuityPolicySnapshot::load().permits(ContinuityCapability::AppContinuations)
-    {
+/// every tick, with the caller's cached continuity `policy`. Only the
+/// person's own online devices are told.
+pub fn publish_window_views(
+    network: &ShellNetwork,
+    shown: Vec<(String, WindowView)>,
+    policy: ContinuityPolicySnapshot,
+) {
+    let shown = if policy.permits(ContinuityCapability::AppContinuations) {
         by_online_host(network, shown)
     } else {
         BTreeMap::new()
