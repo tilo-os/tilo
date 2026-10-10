@@ -485,10 +485,48 @@ summary` counts `client_scanout_frames` beside `direct_frames`.
 `TILO_CLIENT_SCANOUT=0` composites every frame, for A/B measurement or a
 driver that misbehaves.
 
-**Not yet:** clients that allocate `ARGB8888` (an opaque region covering the
-surface would let them qualify), linux-dmabuf v4 feedback with a scanout
-tranche (so clients allocate a modifier the plane takes), and windowed
-video on overlay planes, which needs atomic presentation.
+**Telling the client (dma-buf feedback).** Whether a client's buffer can be
+flipped depends on how it was allocated — format, modifier, and whether the
+driver placed it for scanout, which Mesa only does when the compositor's
+linux-dmabuf v4 feedback names a tranche flagged `scanout`. Every surface
+starts on the default feedback (the render node, the formats the compositor
+composites). After each frame is final, the loop hands
+`State::update_scanout_feedback` the frame's candidate with the plane of the
+output it covers (`compositor::scanout_feedback::offer`, the plane from
+`Backend::scanout_plane`). While the candidate is the fullscreen surface and
+its latest buffer is opaque (an 8-bit `X` format, or `ARGB`/`ABGR` with a
+covering opaque region: `ScanoutOpacity`, recorded by the pre-commit hook),
+its feedback gains a tranche flagged `scanout` on the output's KMS device,
+before the default tranche. The tranche lists only what the plane scans out
+*and* the compositor can import (`scanout_tranche`), so a buffer allocated
+from it is still drawn when a popup opens over it. The frame the candidate
+is voided — chrome, a popup, the on-screen keyboard, night light — or the
+buffer turns translucent, the output has no plane, or the client leaves
+fullscreen, the surface is sent the default again; unchanged frames resend
+nothing, and a surface that asks for feedback while offered a plane gets it
+in its first batch (`DmabufHandler::new_surface_feedback`). The feedback only
+steers allocation: each frame's scanout is still the presenter's decision.
+
+The plane comes from the presenter. On every frame whose candidate covers
+an output, `refresh_client_offer` (`backend/drm/mod.rs`) checks the
+output's own facts with `client_scanout_rejection` (every buffer fact
+granted) and, when they allow client scanout, probes the primary plane —
+the probe the first client buffer would have made anyway — and lists the
+client formats and modifiers that scan out as the targets' format
+(`client_scanout::client_formats`: `XRGB8888`, and `ARGB8888` shown as it,
+on `XRGB8888` targets). Changed offers are published per output into
+`ClientPlanes`, which the loop thread reads; a replugged output starts
+without one. The CPU renderer, the readback path, a rotated, calibrated or
+HDR output and `TILO_CLIENT_SCANOUT=0` publish none, so headless and
+lavapipe sessions keep the default feedback everywhere. The importer accepts
+linear buffers only, so the tranche offers linear today.
+
+**Not yet:** windowed video on overlay planes — the presenter flips with
+legacy page flips, and assigning a client buffer to an overlay plane needs
+atomic presentation with a `TEST_ONLY` commit per frame. `ABGR8888` declared
+opaque still composites on `XRGB8888` targets for the same reason (a legacy
+flip cannot change format). Tiled and compressed modifiers in the scanout
+tranche need the importer to accept them first.
 
 **Verifying on hardware.** CI's llvmpipe cannot exercise KMS planes; the
 decision logic is unit-tested (`scanout_candidate`, `client_scanout`, the
@@ -496,7 +534,12 @@ fullscreen phases in `shell::frame`). On a `tilo-vm` slot with a real GPU —
 a `device` target (`tilo-vm vm add`) or a VM with the GPU passed through:
 
 1. `tilo-vm swap shell` from the branch, then play a 4K60 video fullscreen
-   in an opaque client (`mpv --fs`, or `vkcube` made fullscreen).
+   in an opaque client (`mpv --fs`, or `vkcube` made fullscreen). With
+   `WAYLAND_DEBUG=1` the client's log shows a second
+   `zwp_linux_dmabuf_feedback_v1` batch once it is fullscreen, whose first
+   tranche has `tranche_flags 1` (scanout) and the card's `dev_t` as
+   `tranche_target_device`; it gets a batch without it when an overlay
+   appears.
 2. `tilo-vm logs -n 400` shows `client_scanout_status=active`, and the
    phase summaries count `client_scanout_frames` at the refresh rate while
    `direct_frames` stays near zero. `intel_gpu_top` (or `radeontop`) shows
