@@ -578,6 +578,46 @@ pub fn install_runtime_reporting(
     Ok(offer)
 }
 
+/// Install the runtime `runtime` from the first enabled repository that
+/// offers exactly that build, through the same verified pipeline an app's
+/// own runtime takes. The caller names only the runtime: which repository,
+/// which signed package and which publisher key are the device's decision.
+/// Nothing is done when it is already installed.
+///
+/// # Errors
+///
+/// Returns [`InstallError::NotOffered`] when no enabled repository offers
+/// the build, or the first error of the repository that did.
+pub fn install_runtime_from_enabled(
+    runtime: &str,
+    on_progress: &mut dyn FnMut(DownloadProgress),
+) -> Result<(), InstallError> {
+    if crate::runtime_installed(runtime) {
+        return Ok(());
+    }
+    let registries = crate::config::load_registries();
+    let mut last_error = None;
+    for registry in registries.enabled() {
+        match crate::runtime_offer(runtime, &registry.name) {
+            Ok(Some(offer)) => {
+                install_or_update_app_reporting(&offer, on_progress, Change::Install)?;
+                return if crate::runtime_installed(runtime) {
+                    Ok(())
+                } else {
+                    Err(InstallError::NotOffered {
+                        package_id: runtime.to_owned(),
+                    })
+                };
+            }
+            Ok(None) => {}
+            Err(detail) => last_error = Some(InstallError::Download { detail }),
+        }
+    }
+    Err(last_error.unwrap_or_else(|| InstallError::NotOffered {
+        package_id: runtime.to_owned(),
+    }))
+}
+
 /// What [`install_or_update_app_reporting`] does with the verified package.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Change {
@@ -646,7 +686,10 @@ fn install_or_update_app_reporting(
 
     let downloaded = fetch_verified(app, &dest, on_progress)?;
 
-    install_optional_runtimes(app, &dest, on_progress);
+    if let Err(error) = install_optional_runtimes(app, &dest, on_progress) {
+        let _ = std::fs::remove_file(&dest);
+        return Err(error);
+    }
     let payload_from = payload_source(app);
     let mut command = Command::new(tilo_install_bin());
     if change == Change::Install {
@@ -729,45 +772,33 @@ fn ensure_runtime(
     }
 }
 
-/// Install the optional runtimes the downloaded app mounts when present —
-/// a browser's engine — that its registry offers. The app starts without
-/// one and says so, so a runtime that cannot be fetched now is reported and
-/// does not stop the install.
+/// Make the optional runtimes the downloaded app pins (`optional-runtimes`:
+/// a browser's engine) available, as [`ensure_runtime`] does for its
+/// runtime.
+///
+/// They are part of the app: it pins them by exact version, and replacing a
+/// working build with one whose engine is absent would leave it saying "not
+/// installed" until someone fetched the engine by hand. So an engine that
+/// cannot be fetched refuses the install or update, and nothing changes.
 fn install_optional_runtimes(
     app: &CatalogueApp,
     staged: &Path,
     on_progress: &mut dyn FnMut(DownloadProgress),
-) {
-    let Ok(file) = std::fs::File::open(staged) else {
-        return;
-    };
-    let Ok(tapp) = tilo_app_package::tapp::read(
+) -> Result<(), InstallError> {
+    let file = std::fs::File::open(staged).map_err(|error| InstallError::Download {
+        detail: format!("{}: {error}", staged.display()),
+    })?;
+    let tapp = tilo_app_package::tapp::read(
         std::io::BufReader::new(file),
         &mut tilo_app_package::DiscardBlobs,
-    ) else {
-        return;
-    };
-    for runtime in &tapp.meta.manifest.package.optional_runtimes {
-        if crate::runtime_installed(runtime) {
-            continue;
-        }
-        let outcome = crate::runtime_offer(runtime, &app.registry)
-            .map_err(|detail| InstallError::Download { detail })
-            .and_then(|offer| match offer {
-                Some(offer) => {
-                    install_or_update_app_reporting(&offer, on_progress, Change::Install)
-                }
-                None => Err(InstallError::NotOffered {
-                    package_id: runtime.clone(),
-                }),
-            });
-        if let Err(error) = outcome {
-            eprintln!(
-                "app: {} can use runtime {runtime}, which was not installed: {error}",
-                app.package_id
-            );
-        }
+    )
+    .map_err(|error| InstallError::Integrity {
+        detail: error.to_string(),
+    })?;
+    for runtime in tilo_app_package::desktop::optional_runtime_dependencies(&tapp.meta.manifest) {
+        ensure_runtime(app, runtime, on_progress)?;
     }
+    Ok(())
 }
 
 /// Download and atomically update an installed app from a verified offer.

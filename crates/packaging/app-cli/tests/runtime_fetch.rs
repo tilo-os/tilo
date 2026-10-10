@@ -141,18 +141,27 @@ fn tapp(manifest: &str, payload: &Path) -> Vec<u8> {
 }
 
 fn app_tapp(root: &Path, runtime: &str) -> Vec<u8> {
-    let payload = root.join("app-payload");
+    app_tapp_pinning(root, APP_ID, runtime, None)
+}
+
+/// An app on `runtime` that also pins `optional` (an engine) by exact version.
+fn app_tapp_pinning(root: &Path, id: &str, runtime: &str, optional: Option<&str>) -> Vec<u8> {
+    let optional_line = optional.map_or_else(String::new, |engine| {
+        format!("optional-runtimes = [\"{engine}\"]")
+    });
+    let payload = root.join(format!("payload-{id}"));
     std::fs::create_dir_all(payload.join("bin")).unwrap();
     std::fs::write(payload.join("bin/app"), b"#!/bin/true\n").unwrap();
     tapp(
         &format!(
             r#"
 [package]
-id = "{APP_ID}"
+id = "{id}"
 version = "2.0.0"
 kind = "app"
 name = "Linked"
 runtime = "{runtime}"
+{optional_line}
 
 [package.isa]
 {isa}
@@ -181,11 +190,15 @@ type = "gui"
 }
 
 fn runtime_tapp(bundle: &Path, provides: &str, version: &str) -> Vec<u8> {
+    runtime_package_tapp(bundle, "so.tilo.runtime", provides, version)
+}
+
+fn runtime_package_tapp(bundle: &Path, id: &str, provides: &str, version: &str) -> Vec<u8> {
     tapp(
         &format!(
             r#"
 [package]
-id = "so.tilo.runtime"
+id = "{id}"
 version = "{version}"
 kind = "runtime"
 name = "Tilo runtime"
@@ -510,6 +523,107 @@ fn a_registry_build_for_another_runtime_fetches_that_runtime_or_is_refused() {
         .find(|row| row.id == APP_ID)
         .expect("the app is installed");
     assert_eq!(linked.version, "2.0.0");
+
+    // Phase `an_app_pinning_an_engine_installs_with_it_or_not_at_all`.
+    // The Browser pins its engine runtime by exact version. Whatever installs
+    // the Browser brings that engine first; where the registry offers none,
+    // the install is refused and the working state stays.
+    let engine_id = "so.tilo.runtime.engine";
+    let browser_id = "so.tilo.engine-e2e";
+    let (engine_version, engine_bundle) =
+        runtime_bundle(root, "engine", b"the engine build", &identity_path);
+    let engine = format!("tilo-runtime/{engine_version}");
+    let browser = app_tapp_pinning(
+        root,
+        browser_id,
+        &format!("tilo-runtime/{device_version}"),
+        Some(&engine),
+    );
+    served.put("/browser.tapp", browser.clone());
+    let browser_entry = entry(
+        browser_id,
+        "2.0.0",
+        &format!("{base}/browser.tapp"),
+        &browser,
+        &format!("tilo-runtime/{device_version}"),
+    );
+    let current = &second;
+    let mut entries = current.entries.clone();
+    entries.push(browser_entry);
+    let third = snapshot(entries.clone(), &owner, Some(current));
+    served.put("/entries", serde_json::to_vec(&third).unwrap());
+    let offer = app_cli::available()
+        .apps
+        .into_iter()
+        .find(|app| app.package_id == browser_id)
+        .expect("the browser is offered");
+    let error = app_cli::install::install_app(&offer).expect_err("no engine on offer, no install");
+    assert!(
+        matches!(
+            error,
+            app_cli::install::InstallError::RuntimeUnavailable { .. }
+        ),
+        "{error:?}"
+    );
+    assert!(
+        error.user_message().contains(&engine),
+        "{}",
+        error.user_message()
+    );
+    assert!(
+        package_store::list_installed()
+            .unwrap()
+            .iter()
+            .all(|row| row.id != browser_id),
+        "a refused install leaves nothing behind"
+    );
+    assert!(!app_cli::runtime_installed(&engine));
+
+    // The registry offers the engine: installing the Browser fetches it first.
+    let engine_full = runtime_package_tapp(&engine_bundle, engine_id, &engine, "0.1.7");
+    let engine_objects = root.join("engine-objects");
+    std::fs::create_dir_all(&engine_objects).unwrap();
+    let split = tilo_app_package::chunks::split(engine_full.as_slice(), &engine_objects).unwrap();
+    let engine_thin = tilo_app_package::tapp::to_bytes(&split.meta, None).unwrap();
+    for object in std::fs::read_dir(&engine_objects).unwrap() {
+        let object = object.unwrap().path();
+        let name = object.file_name().unwrap().to_str().unwrap().to_string();
+        let served_as = name
+            .strip_suffix(".blob")
+            .map_or_else(|| format!("/blobs/{name}"), |hex| format!("/blobs/{hex}"));
+        served.put(&served_as, std::fs::read(&object).unwrap());
+    }
+    served.put("/engine.tapp", engine_thin.clone());
+    entries.push(entry(
+        engine_id,
+        "0.1.7",
+        &format!("{base}/engine.tapp"),
+        &engine_thin,
+        &engine,
+    ));
+    let fourth = snapshot(entries, &owner, Some(&third));
+    served.put("/entries", serde_json::to_vec(&fourth).unwrap());
+    let offer = app_cli::available()
+        .apps
+        .into_iter()
+        .find(|app| app.package_id == browser_id)
+        .unwrap();
+    app_cli::install::install_app(&offer).unwrap_or_else(|error| {
+        panic!(
+            "the Browser must bring its engine: {}",
+            error.user_message()
+        )
+    });
+    assert!(
+        app_cli::runtime_installed(&engine),
+        "the engine came with the Browser"
+    );
+    assert!(
+        package_store::list_installed()
+            .unwrap()
+            .iter()
+            .any(|row| row.id == browser_id)
+    );
 
     // A subsequent runtime package update must materialize its provided bundle,
     // not merely replace the package row while leaving its libraries absent.
