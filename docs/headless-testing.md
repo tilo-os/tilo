@@ -502,8 +502,12 @@ An idle desktop should leave the CPU asleep. `idle_wakeups::` in the shell's
 a signed-in desktop, restores a Notes tab, opens a Terminal through
 `window.new.terminal`, waits out startup work and 5 s more, then samples every thread of the
 compositor's process tree from `/proc` for 10 s and fails above
-`IDLE_WAKEUP_BUDGET` context switches per second, or if the compositor painted
-while nobody touched it.
+`IDLE_WAKEUP_BUDGET` wakeups per second (voluntary context switches: how often
+a thread blocked again), above `IDLE_CPU_BUDGET` percent of a core, or if the
+compositor painted while nobody touched it. It also holds the in-process apps'
+collaboration shovel and the identity service's client thread to
+`KEY_ASK_BUDGET` together, so a route asking for its channel keys on a 1 s
+timer again (TIL-754) fails by name.
 
 ```bash
 cargo test --locked -p shell --test it idle_wakeups:: -- --nocapture

@@ -12,8 +12,9 @@
 //! (`window.new.terminal`), both framework apps the compositor hosts. Once both
 //! are drawn it is left alone for [`SETTLE`], then every thread of the
 //! compositor's process tree is sampled over [`window`] from `/proc`
-//! (`tilo_test_env::idle`). The gate is the whole tree's context switches per
-//! second, voluntary and involuntary. The table it prints names the process
+//! (`tilo_test_env::idle`). The gate is how often the whole tree's threads
+//! blocked per second (voluntary context switches, one per wakeup), and its
+//! CPU time; the table also shows preemptions. The table names the process
 //! and thread of every wakeup, and the compositor's own `paint-stats` lines
 //! (`TILO_PAINT_STATS`) say what woke its frame loop and whether it painted.
 //!
@@ -38,8 +39,13 @@ use getrandom::{SysRng, rand_core::UnwrapErr};
 use threshold_identity::ThresholdIdentity;
 use tilo_identity_ceremony::IdentityRecord;
 
-/// Most wakeups per second the idle desktop may cost, across every thread of
-/// the compositor and its children. The product target is 5/s.
+/// Most times per second the idle desktop's threads may wake, across every
+/// thread of the compositor and its children. The product target is 5/s.
+///
+/// Counted as voluntary switches, one per wakeup: preemptions measure what
+/// else the runner runs (TIL-749), and the shell shard runs this beside other
+/// tests. [`IDLE_CPU_BUDGET`] still catches a thread that spins without
+/// blocking.
 ///
 /// Measured on CI's shared x86-64 runner (headless, llvmpipe, debug build;
 /// `docs/benchmarks/idle-wakeups-2026-10-09.md` has the tables): 60/s with
@@ -59,8 +65,33 @@ use tilo_identity_ceremony::IdentityRecord;
 /// desktop measured 7.30, 7.60 and 7.30/s alone on a runner (runs 92406,
 /// 92444, 92445) with the frame loop parked, and 10.29/s in the shell shard
 /// beside other tests (run 92498: the collaboration shovel and the identity
-/// client preempted by its neighbours). The shard's figure plus a half, 15/s.
-const IDLE_WAKEUP_BUDGET: f64 = 15.0;
+/// client preempted by its neighbours).
+///
+/// TIL-754 let the Terminal's collaboration shovel wait for channel key
+/// changes instead of asking the identity service once a second: the shovel
+/// went from 3.3 to 0.4–0.5/s and the identity client from 2.0 to 0.2/s.
+/// Seven runs alone on a runner then blocked 2.60–3.10/s with the frame loop
+/// parked (runs 92855, 92857, 92945, 92947), and 4.90–5.00/s in the three
+/// whose window held one frame-loop wake: the top bar's minute repaint
+/// (92944, 92946) or a late Terminal repaint (92856), each also waking the
+/// settings reader and the network runtime. A ten-second window holds a
+/// minute boundary one run in six, so that is part of the spread: its top
+/// plus a half, 7.5/s.
+const IDLE_WAKEUP_BUDGET: f64 = 7.5;
+
+/// Most CPU the idle desktop's threads may use, in percent of one core over
+/// the window. The wakeup count leaves out preemptions, so this is what
+/// catches a thread that spins without blocking. Measured 0.1–0.5 % in the
+/// same seven runs.
+const IDLE_CPU_BUDGET: f64 = 1.5;
+
+/// Most times per second the Terminal's collaboration shovel
+/// (`ui-collab-shovel`) and the identity service's thread serving it
+/// (`tilo-identity-client`) may wake together. A route that holds no keys
+/// asks for them on a timer backing off from 1 s to 30 s, and is told when
+/// they change; asking once a second cost 5.3/s together (TIL-754, run
+/// 92445); after it they measured 0.60–0.70/s in all seven runs.
+const KEY_ASK_BUDGET: f64 = 1.5;
 
 /// Most iterations per second the compositor's frame loop may make while
 /// idle, from its `paint-stats` lines. A loop that wakes on a deadline that
@@ -409,6 +440,28 @@ impl LoopStats {
     }
 }
 
+/// How often the threads that ask for and answer a route's channel keys
+/// blocked, per second: the in-process apps' collaboration shovel and the
+/// identity service's per-client thread. Fails if the shovel is not there to
+/// observe: the Terminal opens a route, so a desktop without one did not
+/// measure what this bounds.
+fn key_ask_wakeups(wakeups: &tilo_test_env::idle::Wakeups) -> f64 {
+    // The kernel truncates thread names to 15 bytes.
+    const SHOVEL: &str = "ui-collab-shove";
+    const IDENTITY_CLIENT: &str = "tilo-identity-c";
+    let rows: Vec<_> = wakeups
+        .rows
+        .iter()
+        .filter(|row| row.process == "shell")
+        .filter(|row| row.thread == SHOVEL || row.thread == IDENTITY_CLIENT)
+        .collect();
+    assert!(
+        rows.iter().any(|row| row.thread == SHOVEL),
+        "no collaboration shovel ran in the compositor, so the Terminal's route was not measured:\n{wakeups}"
+    );
+    wakeups.rate(rows.iter().map(|row| row.voluntary).sum())
+}
+
 /// Whether a process named `name` runs in the compositor's tree.
 fn running(desktop: &Desktop, name: &str) -> bool {
     tilo_test_env::idle::process_tree(desktop.pid())
@@ -487,8 +540,10 @@ fn an_idle_desktop_with_two_apps_stays_within_its_wakeup_budget() {
         desktop.log_tail()
     );
 
+    let key_asks = key_ask_wakeups(&wakeups);
     let report = format!(
-        "{wakeups}\ncompositor frame loop: {:.1} ticks/s, {} frames painted; its paint-stats in the window:\n  {}",
+        "{wakeups}\nblocked {:.2} times a second; the collaboration shovel and identity client {key_asks:.2}\ncompositor frame loop: {:.1} ticks/s, {} frames painted; its paint-stats in the window:\n  {}",
+        wakeups.blocking_per_second(),
         frame_loop.ticks_per_second(),
         frame_loop.painted,
         frame_loop.lines.join("\n  ")
@@ -497,8 +552,9 @@ fn an_idle_desktop_with_two_apps_stays_within_its_wakeup_budget() {
     // One machine-readable line for the scheduled lane's adapter
     // (tools/perf/adapters.py idle-wakeups).
     println!(
-        "IDLE-WAKEUPS total_per_s={:.3} shell_per_s={:.3} loop_ticks_per_s={:.3} cpu_percent={:.3} window_ms={} threads_started={}",
+        "IDLE-WAKEUPS total_per_s={:.3} blocking_per_s={:.3} shell_per_s={:.3} loop_ticks_per_s={:.3} cpu_percent={:.3} window_ms={} threads_started={}",
         wakeups.per_second(),
+        wakeups.blocking_per_second(),
         wakeups.process_per_second("shell"),
         frame_loop.ticks_per_second(),
         wakeups.total_cpu_percent(),
@@ -506,9 +562,18 @@ fn an_idle_desktop_with_two_apps_stays_within_its_wakeup_budget() {
         wakeups.threads_started,
     );
     assert!(
-        wakeups.per_second() <= IDLE_WAKEUP_BUDGET,
+        wakeups.blocking_per_second() <= IDLE_WAKEUP_BUDGET,
         "the idle desktop woke {:.2} times a second, over its budget of {IDLE_WAKEUP_BUDGET}/s:\n{report}",
-        wakeups.per_second(),
+        wakeups.blocking_per_second(),
+    );
+    assert!(
+        wakeups.total_cpu_percent() <= IDLE_CPU_BUDGET,
+        "the idle desktop used {:.2} % of a core, over its budget of {IDLE_CPU_BUDGET} %:\n{report}",
+        wakeups.total_cpu_percent(),
+    );
+    assert!(
+        key_asks <= KEY_ASK_BUDGET,
+        "the Terminal's collaboration shovel and the identity client woke {key_asks:.2} times a second, over {KEY_ASK_BUDGET}/s: is a route asking for its channel keys on a 1 s timer again?\n{report}",
     );
     assert!(
         frame_loop.ticks_per_second() <= LOOP_TICK_BUDGET,
