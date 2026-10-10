@@ -19,9 +19,18 @@ struct Fixture {
     tree: WorkspaceTreeHandle,
     clipboard: Arc<NativeFileClipboard>,
     _broker: BrokerHandle,
+    /// This test's own data home, where its Trash lives: never the host's,
+    /// nor one another test running alongside creates at the same time.
+    _data_home: tilo_test_env::ScopedEnv,
+    _data: tempfile::TempDir,
 }
 impl Fixture {
     fn new() -> Self {
+        let data = tempfile::tempdir().expect("private data home");
+        fs::set_permissions(data.path(), fs::Permissions::from_mode(0o700))
+            .expect("owner-only data home");
+        let mut data_home = tilo_test_env::ScopedEnv::new();
+        data_home.set("XDG_DATA_HOME", data.path());
         let directory = tempfile::tempdir().expect("private clipboard fixture");
         fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700))
             .expect("owner-only fixture socket directory");
@@ -100,6 +109,8 @@ impl Fixture {
             tree,
             clipboard,
             _broker: broker,
+            _data_home: data_home,
+            _data: data,
         }
     }
     #[expect(
