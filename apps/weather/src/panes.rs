@@ -25,7 +25,7 @@ use ui::a11y::{AccessNode, Action};
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::widget::Widget;
+use ui::widget::{Widget, layout_rect};
 
 use crate::core::{Core, OverviewEventCtx};
 
@@ -87,15 +87,6 @@ fn leaf(
     node
 }
 
-#[allow(
-    clippy::unwrap_used,
-    reason = "node is an id this module just registered with the same taffy tree, so TaffyTree::layout always finds it, and the Widget trait's apply_layout signature isn't ours to change to Result"
-)]
-fn store_rect(taffy: &TaffyTree<()>, node: NodeId, origin: Point) -> Rect {
-    let l = taffy.layout(node).unwrap();
-    ui::widget::placed(l, origin)
-}
-
 impl Widget for OverviewPane {
     fn build_layout(
         &mut self,
@@ -107,7 +98,7 @@ impl Widget for OverviewPane {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = store_rect(taffy, node, origin);
+        self.rect = layout_rect(taffy, node, origin);
     }
 
     fn draw(
@@ -233,7 +224,7 @@ impl Widget for DetailPane {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = store_rect(taffy, node, origin);
+        self.rect = layout_rect(taffy, node, origin);
     }
 
     fn draw(

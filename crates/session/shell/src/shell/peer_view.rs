@@ -540,10 +540,7 @@ impl Widget for PeerView {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let Ok(l) = taffy.layout(node) else {
-            return;
-        };
-        let new_rect = ui::widget::placed(l, origin);
+        let new_rect = ui::widget::layout_rect(taffy, node, origin);
         // Rect changed → the placement matrix in `draw` changes too. Exact
         // equality is safe: taffy produces integer-valued logical pixels.
         if new_rect != self.rect {

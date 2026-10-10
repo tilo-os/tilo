@@ -110,15 +110,11 @@ fn encoded_scene_color_reader_uses_scene_offsets_after_mixed_draws() {
 }
 // Test wrappers expose one child, so build one corresponding parent node.
 fn apply_wrapper(child: &mut dyn Widget, tree: &TaffyTree<()>, node: NodeId, origin: Point) {
-    let layout = tree.layout(node).unwrap();
     let child_node = tree.children(node).unwrap()[0];
     child.apply_layout(
         tree,
         child_node,
-        Point::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-        ),
+        crate::widget::layout_rect(tree, node, origin).origin(),
     );
 }
 impl Widget for Owner {

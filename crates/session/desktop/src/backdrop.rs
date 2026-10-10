@@ -487,10 +487,7 @@ impl Widget for DesktopBackdrop {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let Ok(layout) = taffy.layout(node) else {
-            return;
-        };
-        self.rect = ui::widget::placed(layout, origin);
+        self.rect = ui::widget::layout_rect(taffy, node, origin);
 
         if let Some(child) = &mut self.child {
             let Ok(children) = taffy.children(node) else {

@@ -2780,10 +2780,7 @@ impl Widget for OskWidget {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let Ok(l) = taffy.layout(node) else {
-            return;
-        };
-        self.rect = ui::widget::placed(l, origin);
+        self.rect = ui::widget::layout_rect(taffy, node, origin);
         self.layout_bands();
         if let Some(pose) = self.pose.take() {
             self.take_pose(pose);
