@@ -712,8 +712,11 @@ async fn separate_process_exact_share_evicts_restarts_and_rehydrates() {
 /// persist poll, a 50 ms session-supervisor poll, repair ticks), 6.5-7.9/s
 /// after (two runs). TIL-774 runs the daemon as `fs.service` does, with
 /// the shipped capability list: 9.95/s before (probe run 94694; its two
-/// one-second file polls were 3-4/s, iroh's relays 5.8/s).
-const IDLE_SERVE_WAKEUP_BUDGET: f64 = 2.0;
+/// one-second file polls were 3-4/s, iroh's relays 5.8/s), 0.60/s after
+/// (run 94886: one runtime worker, on iroh's own netwatch and re-STUN
+/// timers). The budget is the 1/s target: any of those timers coming back
+/// breaks it.
+const IDLE_SERVE_WAKEUP_BUDGET: f64 = 1.0;
 
 /// How long the mount may keep serving a file after its capability is
 /// revoked: the one-second poll's bound, which the file watch must keep.
