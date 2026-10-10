@@ -5,14 +5,15 @@
 //!
 //! - **Direct** ([`DirectScanoutTargets`]): two GBM buffers the size of the output's mode,
 //!   imported as Vulkan render targets. Vello renders the output's part of the scene upright,
-//!   and the final pass writes it into the back slot turned by the output's transform
+//!   and the final pass writes it into the back slot turned by the output's transform and,
+//!   in SDR, mapped through its ICC profile
 //!   ([`super::paint::VelloDrmBridge::paint_output_until`]); nothing crosses the CPU. Each
-//!   output is judged alone (`direct_scanout_rejection` in `drm/mod.rs`): no ICC profile, a
-//!   hardware cursor plane, page-flip events, and the renderer on this card. Any rotation is
-//!   eligible.
+//!   output is judged alone (`direct_scanout_rejection` in `drm/mod.rs`): a hardware cursor
+//!   plane, page-flip events, and the renderer on this card. Any rotation and any ICC
+//!   profile is eligible.
 //! - **Readback**: two dumb buffers allocated at modeset, falling back to
 //!   `dirty_framebuffer/set_crtc` without page flips. The output's pixels are read back from
-//!   the GPU and written on the CPU (rotated, colour-managed, swizzled from vello's
+//!   the GPU and written on the CPU (rotated, colour-managed with qcms, swizzled from vello's
 //!   `Rgba8Unorm` to `Xrgb8888`). Only outputs that fail a direct check, or whose direct
 //!   frame failed, present this way.
 //!

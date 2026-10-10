@@ -507,6 +507,53 @@ measures main's newest image for both architectures and records
   x86_64) are written beside the ceilings. Windows compatibility is most of
   the gap; TIL-711 moves it to a downloaded system extension.
 
+### Content-based layers (rechunking)
+
+An update downloads every layer whose digest the device does not have. A
+Containerfile layer is a new blob whenever its instruction runs again, so
+with one layer per instruction an update between two commits that changed one
+app pulled about 78 % of the image (TIL-747). Release / OS therefore re-lays
+every generic image it publishes out by content before anything consumes it
+("Rechunk the image", `os/dev/rechunk-image.sh`):
+
+- `os/Containerfile.rechunk` runs [chunkah](https://github.com/coreos/chunkah)
+  (built offline from its checksum-pinned release) over the raw image's root:
+  one component per RPM package, read from the image's rpmdb, files over 1 MB
+  on their own, the rest grouped, packed into at most 128 layers. An unchanged
+  component is the same blob in the next build. Whited-out bytes, the base's
+  old kernel and `/sysroot`'s ostree objects are in no layer. Trees that change
+  on their own schedule get a chunkah run and layers of their own
+  (`os/scripts/rechunk-chunkah.py`, today Proton and the Steam runtime):
+  otherwise their small files share one layer with Tilo's, which change with
+  almost every build.
+- `os/scripts/oci-rechunk.py` takes extended attributes from the raw image's
+  layers where chunkah's differ (BuildKit's snapshot of the image, which
+  chunkah reads, lacks the base binaries' file capabilities), adds one layer
+  with every directory's exact metadata (chunkah caps a directory's time per
+  layer; fontconfig's cache needs font directories' times unchanged), gives
+  the result the raw image's config,
+  and refuses it unless every path matches the raw image: type, mode, owner,
+  xattrs, bytes, symlink target. Only file times may be lower (capped at the
+  package's build time, or for files no package owns at an epoch that moves
+  with the base and the RPM snapshot only), `/sysroot`'s contents are gone,
+  and a hard-link group may be split across layers.
+- The dev lane pushes the rechunked image as `tilo-ci:<ref>-<sha7>-<arch>`
+  and the raw one beside it as `…-<arch>-layered`; a release rechunks its
+  archive, and its independent rebuild's, before the install gate seals it.
+  The repository variable `TILO_RECHUNK=0` turns it off without a commit.
+
+Local images (`os/dev/build-image.sh`, `tilo-vm vm upgrade --from local`) keep
+their Containerfile layers: podman's layer cache is what makes those rebuilds
+cheap, and tilo-vm sends the VM only the blobs it lacks either way.
+
+`--update-from OLD` measures an update: the compressed layers the image has
+and OLD does not. `--update-only` reads only the two manifests:
+
+```bash
+python3 tools/perf/image_size.py --image registry.tilo.so/tilo/tilo-ci:main-<new>-x86_64 \
+  --update-from registry.tilo.so/tilo/tilo-ci:main-<old>-x86_64 --update-only
+```
+
 ## Fast checks before assembly
 
 For a native integration test without a full workspace dispatch, use

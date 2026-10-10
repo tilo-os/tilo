@@ -188,7 +188,9 @@ try {
   await tab.waitFor('document.querySelector("#status").textContent.includes("no existing browser device")');
   stage('explicit-unadmitted-account-refused-without-enrollment');
   await tab.evaluate('document.querySelector("select").value = Array.from(document.querySelector("select").options).find(option=>option.textContent === "Fixture reader").value; document.querySelector("#open").requestSubmit();');
-  await tab.waitFor('document.querySelector("#status").textContent === "Shared resource open. Leave to close this session."');
+  await tab.waitFor('document.querySelector("#status").textContent !== "Checking your existing admission…" && document.querySelector("#status").textContent !== ""');
+  assert.equal(await tab.evaluate('document.querySelector("#status").textContent'),
+    'Shared resource open. Leave to close this session.', 'the admitted reader must reopen the shared resource');
   assert.ok(await tab.evaluate('document.querySelector("#surface canvas")?.width > 0'));
   stage('production-account-choice-and-resource-page-mount');
   await tab.evaluate('document.querySelector("#leave").click()');
@@ -207,6 +209,16 @@ try {
   stage('governed-revocation-refuses-link-reopen');
   writeFileSync(join(evidence, 'journey.json'), JSON.stringify({mode: fixture.encryptedRestart ? 'certified-browser-encrypted-cold' : fixture.disconnectRetry ? 'certified-browser-disconnect-retry' : 'certified-browser-viewer',
     app:'so.tilo.chat', stages}, null, 2) + '\n');
+} catch (error) {
+  const pageStatus = await Promise.race([
+    tab?.evaluate('document.querySelector("#status")?.textContent ?? ""', {timeout:250})
+      .catch(() => 'status unavailable'),
+    new Promise(resolve => setTimeout(() => resolve('status observation unavailable'), 250)),
+  ]);
+  writeFileSync(join(evidence, 'failure.json'), JSON.stringify({phase:'error',
+    lastStage:stages.at(-1) ?? null, pageStatus:String(pageStatus ?? '').slice(0, 500),
+    error:String(error).slice(0, 500)}, null, 2) + '\n');
+  throw error;
 } finally {
   clearTimeout(deadline);
   input.close();

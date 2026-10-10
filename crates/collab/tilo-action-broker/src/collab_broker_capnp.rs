@@ -608,12 +608,7 @@ impl BrokerActor {
         if self.is_agent {
             workspace.actor_for_agent(self.id.strip_prefix("agent:").unwrap_or(&self.id))
         } else {
-            crate::policy::WorkspacePolicy::actor_for_person_on_device_at(
-                workspace,
-                &self.id,
-                self.capped,
-                now,
-            )
+            workspace.actor_for_person_on_device_at(&self.id, self.capped, now)
         }
     }
 }
@@ -3387,11 +3382,12 @@ impl CapnpBrokerState {
                 }
                 previous.request.clone()
             } else {
-                let receipt = crate::policy::redacted_effect_receipt(
+                let receipt = tilo_desktop_model::WorkspaceEffectReceipt::redacted(
                     update.invocation(),
                     &pending.actor,
                     pending.context.clone(),
                     status,
+                    tilo_clock::unix_now_i64(),
                 );
                 let request = tilo_peer_state::owner_commit::OwnerCommitRequest {
                     room: pending.cluster_id.clone(),
@@ -8150,11 +8146,12 @@ impl channel_handle::Server for CapnpChannelHandle {
                 .requires_owner_for(&surface.route.cluster_id)
         {
             context.purpose = None;
-            let receipt = crate::policy::redacted_effect_receipt(
+            let receipt = tilo_desktop_model::WorkspaceEffectReceipt::redacted(
                 update.invocation(),
                 &actor,
                 context,
                 status,
+                tilo_clock::unix_now_i64(),
             );
             let state = self.state.clone();
             let route = self.route();

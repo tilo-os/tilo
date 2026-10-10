@@ -19,6 +19,7 @@ use vello::{FineDamageRect, Scene, wgpu};
 
 use settings_store::hardware::OutputTransform;
 
+use super::super::icc_lut::IccLut;
 use super::super::orientation::turned;
 use super::{BridgeError, GpuFrameStats, RetainedGpuTarget, SceneDamage, VelloDrmBridge};
 use crate::shell::hdr_surface::HdrLayer;
@@ -121,12 +122,15 @@ impl OutputView {
     }
 }
 
-/// How the final pass encodes an output: where SDR white sits for a PQ target, and the HDR
-/// layers it composites, in scene coordinates.
+/// How the final pass encodes an output: where SDR white sits for a PQ target, the HDR
+/// layers it composites, in scene coordinates, and the ICC calibration of an SDR target.
 #[derive(Clone, Copy)]
 pub struct OutputSignal<'a> {
     pub sdr_white_nits: f32,
     pub hdr_layers: &'a [HdrLayer],
+    /// The output's ICC profile, sampled. An SDR target is written through it; an HDR one
+    /// ignores it, as the readback does (the profile describes the panel's SDR response).
+    pub color_lut: Option<&'a IccLut>,
 }
 
 /// The texture the final pass writes: an imported scanout buffer, or any render target of
@@ -363,6 +367,7 @@ impl VelloDrmBridge {
             OutputSignal {
                 sdr_white_nits: signal.sdr_white_nits,
                 hdr_layers: &layers,
+                color_lut: signal.color_lut,
             },
         );
         surface.swap(&mut self.target);

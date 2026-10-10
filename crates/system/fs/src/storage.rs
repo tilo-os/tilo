@@ -13,7 +13,7 @@ use runtime_fs::storage::{
     StorageResponse, SyncStorageSnapshot, SyncedFileState,
 };
 
-use crate::availability::{AvailabilityPolicy, AvailabilityRegistry, RecordAvailability};
+use crate::availability::{AvailabilityRegistry, RecordAvailability, pinned_in_snapshot};
 use crate::clock::unix_now_ms;
 use crate::eviction::{EvictionCoordinator, EvictionPlan, EvictionQueue, EvictionRequestId};
 use crate::namespace::NodeKind;
@@ -157,7 +157,7 @@ impl StorageAuthority {
         } = file;
         let is_dirty = dirty.contains(&inode);
         let record = records.iter().find(|record| record.record_id == record_id);
-        let is_pinned = effective_pinned(records, record_id);
+        let is_pinned = pinned_in_snapshot(records, record_id);
         let Some(hash) = hash else {
             return FileBlobs {
                 state: SyncedFileState {
@@ -440,27 +440,6 @@ fn app_from_path(path: &str) -> Option<String> {
     }
 }
 
-fn effective_pinned(records: &[RecordAvailability], record_id: fs_protocol::FileRecordId) -> bool {
-    let mut current = Some(record_id);
-    let mut remaining = records.len().saturating_add(1);
-    while let Some(record_id) = current {
-        if remaining == 0 {
-            return true;
-        }
-        remaining = remaining.saturating_sub(1);
-        let Some(record) = records.iter().find(|record| record.record_id == record_id) else {
-            // Missing ancestry is invalid durable state and must never become
-            // a Settings-side permission to release local data.
-            return true;
-        };
-        if record.policy == AvailabilityPolicy::Pinned {
-            return true;
-        }
-        current = record.parent;
-    }
-    false
-}
-
 fn has_fresh_signed_ack(record: &RecordAvailability) -> bool {
     has_fresh_signed_ack_at(record, unix_now_ms())
 }
@@ -505,7 +484,7 @@ fn snapshot_candidate_ids(
                     .find(|record| record.record_id == file.record_id)
                     .is_some_and(|record| {
                         !record.transfer.phase.is_active()
-                            && !effective_pinned(records, file.record_id)
+                            && !pinned_in_snapshot(records, file.record_id)
                             && has_fresh_signed_ack_at(record, now)
                     })
         })
@@ -626,7 +605,7 @@ mod tests {
             let missing_parent = fs_protocol::FileRecordId::new();
             let mut row = RecordAvailability::new(record, crate::availability::RecordKind::File);
             row.parent = Some(missing_parent);
-            assert!(effective_pinned(&[row], record));
+            assert!(pinned_in_snapshot(&[row], record));
         }
         // Phase `snapshot_candidates_skip_rows_that_cannot_be_reclaimed`.
         {

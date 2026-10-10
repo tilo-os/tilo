@@ -62,7 +62,7 @@ class FsGate(unittest.TestCase):
             name, unit, value = match.groups()
             slos[name] = float(value) * (1000.0 if unit == "secs" else 1.0)
         reports = dict(re.findall(r'report\(\s*"([a-z0-9-]+)",\s*[^,]+,\s*(\w+_SLO),?\s*\)', source))
-        self.assertEqual(len(reports), 10, reports)
+        self.assertEqual(len(reports), 11, reports)
         budgets = compare.load_budgets(compare.BUDGETS)
         expected = {f"fs.{name}": slos[constant] for name, constant in reports.items()}
         got = {kpi: entry["max"] for kpi, entry in budgets.kpis.items() if kpi.startswith("fs.")}
@@ -245,6 +245,9 @@ def load_report(collaborators: int = 100, minutes: int = 2) -> dict:
     kpis = {kpi: {"unit": unit, "samples": [value] * minutes} for kpi, (unit, value) in per_minute.items()}
     kpis["hosting.relay.fanout_ms"] = {"unit": "ms", "samples": [4.0, 6.0, 30.0]}
     kpis["hosting.relay.store_fsyncs_per_edit"] = {"unit": "count", "samples": [2.1] * minutes}
+    kpis["hosting.relay.store_listed_entries_per_edit"] = {"unit": "count", "samples": [0.0] * minutes}
+    kpis["hosting.relay.compaction_cpu_ms_per_collab_hour"] = {"unit": "ms", "samples": [90.0] * minutes}
+    kpis["hosting.relay.compaction_signature_checks_per_edit"] = {"unit": "count", "samples": [1.0] * minutes}
     return {"collaborators": collaborators, "rooms": collaborators // 4, "room_size": 4, "window_s": 60,
             "windows": minutes, "relay_idle_rss_mib": 20.0, "edits": 6000, "presence": 36000,
             "undelivered_edits": 0, "kpis": kpis}

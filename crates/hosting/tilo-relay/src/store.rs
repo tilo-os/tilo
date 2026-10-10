@@ -128,6 +128,37 @@ pub(crate) fn thread_fsyncs() -> u64 {
     THREAD_FSYNCS.with(std::cell::Cell::get)
 }
 
+/// Directory entries the relay's workspace stores listed to commit retained
+/// history since this process started.
+static LISTED_ENTRIES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+#[cfg(test)]
+thread_local! {
+    /// [`LISTED_ENTRIES`] of this thread only, as [`THREAD_FSYNCS`].
+    static THREAD_LISTED_ENTRIES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// Count one directory entry a retention pass listed.
+pub(crate) fn count_listed_entry() {
+    LISTED_ENTRIES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    #[cfg(test)]
+    THREAD_LISTED_ENTRIES.with(|listed| listed.set(listed.get().saturating_add(1)));
+}
+
+/// Directory entries the relay's workspace stores have listed to retain
+/// history in this process: what a commit's cost grows with when it lists a
+/// lineage instead of using the index of it (TIL-742). The hosting bench
+/// divides it by edits.
+#[must_use]
+pub fn listed_entries() -> u64 {
+    LISTED_ENTRIES.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+#[cfg(test)]
+pub(crate) fn thread_listed_entries() -> u64 {
+    THREAD_LISTED_ENTRIES.with(std::cell::Cell::get)
+}
+
 /// `file.sync_all()`, counted in [`fsyncs`].
 pub(crate) fn fsync(file: &fs::File) -> io::Result<()> {
     count_fsyncs(1);

@@ -750,7 +750,7 @@ pub fn remove_identity(dir: &std::path::Path, id: &str) -> io::Result<()> {
 }
 
 /// Wire-format types the loader deserialises from disk, mirroring
-/// `ui::widget::identity_flow::IdentityRecord`; unknown fields are ignored.
+/// `tilo_identity_ceremony::IdentityRecord`; unknown fields are ignored.
 mod ondisk {
     use std::fmt;
 

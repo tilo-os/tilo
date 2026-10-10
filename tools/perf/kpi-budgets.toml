@@ -104,6 +104,18 @@ p99_tolerance = 2.0
 min_delta = 1.0
 source = "IDLE_SYNC_SLO"
 
+# A device's first exchange with a peer after a restart over a 50,000-file
+# namespace (TIL-745): resumed from the sync progress persisted beside the
+# document, so heads only; the gate also asserts the bytes.
+[kpi."fs.restart-resync-50k-files"]
+unit = "ms"
+max = 5.0
+enforce = true
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 1.0
+source = "RESTART_RESYNC_SLO"
+
 # The conflict step of a writer's reconciliation pass over a 50,000-file
 # workspace (TIL-608). Idle: the namespace merge generation under one lock hold,
 # no node examined (the gate also asserts that count). After a merge: the
@@ -214,7 +226,8 @@ source = "TIL-604: shared runtime budget targets"
 # fails on the second night running; an intended growth is accepted by
 # dispatch (`accept`). The ceilings are enforced, set at 5 % over the image
 # TIL-609 measured (docs/benchmarks/os-image-size-2026-10-09.md) and lowered by
-# what each later change saved (TIL-733, TIL-736, TIL-735: docs/benchmarks/os-image-size-2026-10-10.md),
+# what each later change saved (TIL-733, TIL-736, TIL-735: docs/benchmarks/os-image-size-2026-10-10.md;
+# TIL-747, content-based layers: docs/benchmarks/os-image-size-2026-10-10-rechunk.md),
 # so creep below the nightly rule fails too. They may only be lowered, except
 # by a change that says why. The KPI targets, 3.5 GB compressed and 7 GB of content for x86_64,
 # are not met yet: Windows compatibility is most of the gap (TIL-711).
@@ -223,11 +236,11 @@ source = "TIL-604: shared runtime budget targets"
 
 [kpi."footprint.image.compressed_bytes.x86_64"]
 unit = "bytes"
-max = 4977000000.0
+max = 4520000000.0
 enforce = true
 p50_tolerance = 1.05
 p99_tolerance = 1.05
-source = "TIL-609: 5,168,289,107 B with the font and botocore fixes, plus 5 %; TIL-733: -366,607,328 B (one package layer, no second initramfs); TIL-736: -40,963,819 B (identical files hard-linked); TIL-735: -44,785,493 B (env-runtime from host files); KPI target 3.5 GB"
+source = "TIL-609: 5,168,289,107 B with the font and botocore fixes, plus 5 %; TIL-733: -366,607,328 B (one package layer, no second initramfs); TIL-736: -40,963,819 B (identical files hard-linked); TIL-735: -44,785,493 B (env-runtime from host files); TIL-747: -456,868,541 B (content-based layers); KPI target 3.5 GB"
 
 [kpi."footprint.image.unique_content_bytes.x86_64"]
 unit = "bytes"
@@ -239,11 +252,11 @@ source = "TIL-609: 10,909,686,891 B with the font and botocore fixes, plus 5 %; 
 
 [kpi."footprint.image.compressed_bytes.aarch64"]
 unit = "bytes"
-max = 4156000000.0
+max = 3727000000.0
 enforce = true
 p50_tolerance = 1.05
 p99_tolerance = 1.05
-source = "TIL-609: 4,304,306,967 B on db91126b44, plus 5 %; TIL-733: -363,422,293 B"
+source = "TIL-609: 4,304,306,967 B on db91126b44, plus 5 %; TIL-733: -363,422,293 B; TIL-747: -428,950,281 B (content-based layers)"
 
 [kpi."footprint.image.unique_content_bytes.aarch64"]
 unit = "bytes"
@@ -374,39 +387,31 @@ source = "KPI document: Workspace switch, dropped frames (compositor side, headl
 # wakeups/s); reported, not enforced: the pull-request gate's budgets fail a
 # regression, and are lowered there as each idle fix lands.
 #
-# A count of timers moves little with the runner, but TIL-696 makes these
-# bimodal: until an unrelated paint, the frame loop spins at a rate that
-# follows the runner, and whether a run measures inside the spin depends on
-# the wall clock (60/s parked, 2008/s spinning, docs/benchmarks/
-# idle-wakeups-2026-10-09.md). Until TIL-696 lands the relative rule would
-# call that a regression every other night, so its tolerances are wide; the
-# fix restores the defaults. The floor keeps a single extra timer tick from
-# reading as a percentage regression.
+# A count of timers moves little with the runner, so the default tolerances
+# hold (TIL-696 removed the frame-loop spin that once made these bimodal,
+# docs/benchmarks/idle-wakeups-2026-10-09.md). The floor keeps a single
+# extra timer tick from reading as a percentage regression.
 
 [kpi."wakeups.headless_two_apps"]
 unit = "per_s"
 max = 5.0
-p50_tolerance = 40.0
-p99_tolerance = 40.0
 min_delta = 1.0
 source = "KPI document: idle desktop <= 5 wakeups/s (headless share)"
 
 [kpi."wakeups.headless_two_apps.shell"]
 unit = "per_s"
 max = 5.0
-p50_tolerance = 40.0
-p99_tolerance = 40.0
 min_delta = 1.0
 source = "KPI document: idle desktop <= 5 wakeups/s (compositor process)"
 
 # The compositor's frame loop parks while nothing asks for a frame, so an
 # idle loop iterates about never; any rate here is a deadline or a source
 # that keeps it awake. Its baseline is 0 while parked, which has no ratio;
-# min_delta is the TIL-696 spin's floor until that lands.
+# the floor is one iteration a second.
 [kpi."wakeups.frame_loop_ticks.headless_two_apps"]
 unit = "per_s"
 max = 1.0
-min_delta = 1500.0
+min_delta = 1.0
 source = "the frame loop parks while idle (TIL-136, TIL-614)"
 
 # Latency on reference hardware (scripts/perf/device_latency_bench.py,
@@ -588,6 +593,15 @@ max = 1.0
 min_delta = 1.0
 source = "compositor anon must return after an app closes (TIL-694)"
 
+# Per-user runtime builds on disk after R03 closed its apps (TIL-748, TIL-753).
+# Collection after every change keeps the builds installed apps run on, plus one
+# installed within the last hour; at ~205 MB a build on x86_64, two builds.
+[kpi."disk.runtime_mib.per_user"]
+unit = "MiB"
+max = 450.0
+min_delta = 16.0
+source = "vm-acceptance R03: du of the slot user's $XDG_DATA_HOME/tilo-runtime"
+
 [kpi."memory.session_mib"]
 unit = "MiB"
 max = 2500.0
@@ -706,6 +720,41 @@ unit = "count"
 p50 = 2.4
 enforce = true
 source = "relay_load: workspace-store fsyncs per committed delta (store::fsyncs)"
+
+# Directory entries listed per committed edit (TIL-742): a delta's commit
+# used to list its lineage's whole active generation, so this grew with the
+# document's history, 163 per edit at p50 and 313 by the tenth minute
+# (Perf / scheduled run 92268). The tail index answers from memory: 0.000 in
+# every window after (run 92278). It is deterministic, so the ceiling sits
+# just above zero: an edit that lists its history again fails at once.
+[kpi."hosting.relay.store_listed_entries_per_edit.n100"]
+unit = "count"
+p50 = 1.0
+enforce = true
+source = "relay_load: directory entries retention listed per committed delta (store::listed_entries)"
+
+# Compaction (TIL-743): each round verified every retained entry's document
+# signature 2-3 times, and every later round again, 23.47 per edit at p50
+# (max 45.6) and 2,115 ms of compaction CPU per collaborator-hour (Perf /
+# scheduled run 92376). Verifying each entry's bytes once per process: 1.11
+# per edit (max 1.14) and 325 ms (run 92377). Checks per edit are nearly
+# deterministic, so their ceiling sits about 35 % above: a round verifying
+# its whole channel again fails at once. CPU shares the runner and gets the
+# relay CPU's tolerances, at about twice the measurement.
+[kpi."hosting.relay.compaction_signature_checks_per_edit.n100"]
+unit = "count"
+p50 = 1.5
+enforce = true
+source = "relay_load: document signatures compaction verified per committed delta (compaction::signature_checks)"
+
+[kpi."hosting.relay.compaction_cpu_ms_per_collab_hour.n100"]
+unit = "ms"
+p50 = 700.0
+enforce = true
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 100.0
+source = "relay_load: compaction thread CPU per active collaborator-hour (compaction::cpu_ns)"
 
 # Not met on AWS: egress at $0.09/GB is $0.00099 of the measured $0.00113.
 [kpi."hosting.relay.cost_usd_per_collab_hour.aws-t4g-small.n100"]

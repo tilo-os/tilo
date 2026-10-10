@@ -160,11 +160,10 @@ impl FilesIndex {
                     };
                     let existing = index.versions().unwrap_or_default();
                     walk_and_index(&home, &existing, &mut writer);
+                    // Each commit reloads the reader on this worker, so the
+                    // reconciled generation is published here and never on
+                    // the compositor's per-keystroke query path.
                     let _ = writer.commit();
-                    // Publish the reconciled generation from the indexing
-                    // worker. `reload()` may touch disk and must never move
-                    // back onto the compositor's per-keystroke query path.
-                    let _ = index.reload();
                 })
                 .ok();
             if let Ok(mut slot) = writer_handle.write() {
@@ -183,9 +182,9 @@ impl FilesIndex {
         if needle.trim().is_empty() {
             return Vec::new();
         }
-        // `OnCommitWithDelay` refreshes the reader outside this call. Never
+        // The walker's commits reload the reader on its own thread. Never
         // perform a disk-backed reader reload on the compositor's keystroke
-        // path; a just-committed generation can appear on the next poll.
+        // path.
         let generation = self.index.generation();
         if let Ok(cache) = self.cache.lock()
             && let Some(hit) = cache.get(needle, limit, generation)

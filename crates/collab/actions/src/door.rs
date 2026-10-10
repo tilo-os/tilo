@@ -695,15 +695,10 @@ fn find_resource<'a>(resources: &'a [Resource], id: &str) -> Option<&'a Resource
 }
 
 #[cfg(test)]
-#[allow(
-    deprecated,
-    reason = "tests pin ResourceProvider behaviour while the trait stays re-exported"
-)]
 mod tests {
     use super::*;
     use crate::action::{Action, ActionError, Doc};
     use crate::executor::{LocalTransport, replay};
-    use crate::resource::ResourceProvider;
     use automerge::transaction::Transactable;
     use automerge::{AutoCommit, ROOT, ReadDoc, ScalarValue};
     use serde::{Deserialize, Serialize};
@@ -974,8 +969,9 @@ mod tests {
     fn a_payload_its_decoder_cannot_read_is_not_called_unregistered() {
         #[derive(Debug, Serialize, Deserialize)]
         struct OtherShape {
-            #[allow(dead_code, reason = "only its shape is decoded")]
-            pinned: bool,
+            // Only its shape is decoded.
+            #[serde(rename = "pinned")]
+            _pinned: bool,
         }
         impl Action for OtherShape {
             fn apply(&self, _doc: &mut Doc) -> Result<(), ActionError> {
@@ -1006,24 +1002,20 @@ mod tests {
         assert_eq!(doc.get_heads(), before);
     }
 
-    /// A provider that reads the document to build its tree, so enumeration
-    /// exercises the path an app actually takes.
-    struct Notes;
-
-    impl ResourceProvider for Notes {
-        fn resources(&self, doc: &AutoCommit) -> Vec<Resource> {
-            let label = doc
-                .get(&ROOT, "title")
-                .ok()
-                .flatten()
-                .and_then(|(v, _)| v.into_string().ok())
-                .unwrap_or_else(|| "Untitled".into());
-            vec![
-                Resource::new("notes.note:1", "notes.note", label).with_action(
-                    ActionSpec::immediate("star", "Star", NOTE_TYPE, &Note::Star).unwrap(),
-                ),
-            ]
-        }
+    /// Build the tree by reading the document, so enumeration exercises the
+    /// path an app actually takes.
+    fn notes(doc: &AutoCommit) -> Vec<Resource> {
+        let label = doc
+            .get(&ROOT, "title")
+            .ok()
+            .flatten()
+            .and_then(|(v, _)| v.into_string().ok())
+            .unwrap_or_else(|| "Untitled".into());
+        vec![
+            Resource::new("notes.note:1", "notes.note", label).with_action(
+                ActionSpec::immediate("star", "Star", NOTE_TYPE, &Note::Star).unwrap(),
+            ),
+        ]
     }
 
     /// Asking what can be done here is not doing it: building the tree and
@@ -1037,8 +1029,8 @@ mod tests {
         let heads = doc.get_heads();
         let saved = doc.save();
 
-        let first = survey(&Notes.resources(&doc));
-        let second = survey(&Notes.resources(&doc));
+        let first = survey(&notes(&doc));
+        let second = survey(&notes(&doc));
 
         assert_eq!(first, second);
         assert_eq!(

@@ -9,6 +9,9 @@
 //! - [`catalog`] — the user's store merged over the read-only system store:
 //!   what a session can run.
 //! - [`layout`] — where a store keeps its files, and where the stores are.
+//! - [`mounts`] — which installed trees running apps have mounted.
+//! - `lease` (feature `lease`) — the hold a launch keeps on its payload
+//!   tree from choosing it until its sandbox exits.
 //! - [`integrity`] — replay an installed package's signature chain against
 //!   its files.
 //! - `PackageStore` (feature `store`) — install, remove, pin and collect.
@@ -30,6 +33,9 @@ pub mod dev_env;
 pub mod integrity;
 pub mod interfaces;
 pub mod layout;
+#[cfg(feature = "lease")]
+pub mod lease;
+pub mod mounts;
 pub mod registry;
 
 #[cfg(feature = "store")]
@@ -52,7 +58,10 @@ pub use image::{
 pub use layout::Layout;
 pub use registry::{InstalledPackage, Pinning, Registry, RegistryError};
 #[cfg(feature = "store")]
-pub use store::{Admission, DiskUsage, InstallSelection, Installed, PackageStore, Removed};
+pub use store::{
+    Admission, DEFAULT_MAX_STORE_BYTES, DiskUsage, InstallSelection, Installed, Orphans,
+    PackageStore, Removed,
+};
 pub use tilo_app_package::BlobFetcher;
 #[cfg(feature = "store")]
 pub use tilo_user_identity::{CertifiedFleet, DeviceStanding};

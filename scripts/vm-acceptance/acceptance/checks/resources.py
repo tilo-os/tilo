@@ -783,12 +783,58 @@ def mem(ctx, res):
         write_footprint(ctx, "R03-footprint-after-close.json", after, ram, "after_close")
         ctx.record("idle.ram_mib.after_close", "MiB", [ram], what="guest MemTotal - MemAvailable")
         res.metrics["after_close_mib"] = _footprint_summary(after, ram)
+    try:
+        res.metrics["disk"] = record_disk(ctx)
+    except core.Unobservable as e:
+        unobserved.append(f"per-user disk use: {e}")
     expect(not problems, "; ".join(problems + unobserved))
     if unobserved:
         raise core.Unobservable("; ".join(unobserved))
 
 
 AFTER_CLOSE_SETTLE_S = 5
+
+# The slot user's per-user runtime builds and app store, in bytes: what downloaded
+# runtimes and apps hold on disk once collection after each change ran (TIL-748,
+# TIL-753). A build is a directory under tilo-runtime whose name has no leading dot.
+DISK = r"""
+data=${XDG_DATA_HOME:-$HOME/.local/share}
+for d in tilo-runtime tilo-apps; do
+  if [ -d "$data/$d" ]; then echo "$d $(du -sb "$data/$d" | cut -f1)"; else echo "$d 0"; fi
+done
+if [ -d "$data/tilo-runtime" ]; then
+  echo "builds $(find "$data/tilo-runtime" -mindepth 1 -maxdepth 1 -type d ! -name '.*' | wc -l)"
+else
+  echo "builds 0"
+fi
+"""
+
+
+def parse_disk(text: str) -> dict:
+    """`DISK` output -> {"runtime_bytes", "app_store_bytes", "runtime_builds"}."""
+    values = {}
+    for line in text.splitlines():
+        f = line.split()
+        if len(f) == 2 and f[1].isdigit():
+            values[f[0]] = int(f[1])
+    missing = {"tilo-runtime", "tilo-apps", "builds"} - values.keys()
+    if missing:
+        raise core.Unobservable(f"per-user disk use not reported for {sorted(missing)}: {text[-200:]!r}")
+    return {"runtime_bytes": values["tilo-runtime"], "app_store_bytes": values["tilo-apps"],
+            "runtime_builds": values["builds"]}
+
+
+def record_disk(ctx) -> dict:
+    """`disk.runtime_mib.per_user`, `disk.app_store_mib.per_user` and
+    `disk.runtime_builds.per_user`: the slot user's downloaded runtimes and apps."""
+    disk = parse_disk(ctx.vm.exec(DISK))
+    ctx.record("disk.runtime_mib.per_user", "MiB", [round(disk["runtime_bytes"] / 2**20, 1)],
+               what="du of $XDG_DATA_HOME/tilo-runtime", builds=disk["runtime_builds"])
+    ctx.record("disk.app_store_mib.per_user", "MiB", [round(disk["app_store_bytes"] / 2**20, 1)],
+               what="du of $XDG_DATA_HOME/tilo-apps")
+    ctx.record("disk.runtime_builds.per_user", "count", [disk["runtime_builds"]],
+               what="runtime builds under $XDG_DATA_HOME/tilo-runtime")
+    return disk
 
 
 def _footprint_after_close(ctx) -> dict:

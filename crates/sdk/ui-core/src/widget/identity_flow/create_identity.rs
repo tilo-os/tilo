@@ -54,16 +54,15 @@ use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
+use crate::widget::identity_flow::ScreenOutcome;
 use crate::widget::identity_flow::sheet::{
     Align, BodyScroll, FORM_SHEET_WIDTH, Resolved, Role, Rows, SheetSpec, edited, field_leaf,
     line_height, paint_text, paragraph_height, place_field, resolve, screen_style,
     with_layout_renderer,
 };
-use crate::widget::identity_flow::{
-    IdentityFlowError, IdentityRecord, IdentityStore, ScreenOutcome,
-};
 use crate::widget::modal_dialog::ModalAction;
 use crate::widget::text_input::TextInput;
+use tilo_identity_ceremony::{IdentityFlowError, IdentityRecord, IdentityStore};
 
 /// Default accent-tile palette. Picked so each tile reads as a
 /// distinct hue at a small swatch size. Stored as `[r, g, b]`.
@@ -667,9 +666,9 @@ impl Widget for CreateIdentityScreen {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::widget::identity_flow::MemoryIdentityStore;
     use automerge::AutoCommit;
     use taffy::Size;
+    use tilo_identity_ceremony::MemoryIdentityStore;
 
     #[test]
     fn create_identity_submit_validates_name_and_stores_record() {
