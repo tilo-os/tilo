@@ -141,7 +141,7 @@ jobs:
         env:
           XDG_RUNTIME_DIR: /tmp/tilo-focused-runtime
           BUILDER_IMAGE: ${{ needs.builder.outputs.image }}
-        run: bash control/tools/with-headless-audio.sh python3 -I control/tools/ci/focused_test.py run --root source --receipt control/target/focused-test/receipt.json
+        run: bash control/tools/with-headless-audio.sh python3 -I control/tools/ci/focused_test.py run --root source --receipt focused-receipt/receipt.json
       - name: Inspect normal native job environment without mounts or device access
         if: github.event.inputs.operation == 'inspect-native'
         env:
@@ -152,7 +152,7 @@ jobs:
         uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
         with:
           name: focused-test-${{ github.run_attempt }}
-          path: control/target/focused-test/receipt.json
+          path: focused-receipt/receipt.json
           if-no-files-found: error
       - name: Save source lockfile downloads
         if: always() && steps.downloads.outputs.cache-hit != 'true' && steps.downloads.outputs.cache-key != ''

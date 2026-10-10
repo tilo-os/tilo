@@ -126,8 +126,8 @@ class FocusedTests(unittest.TestCase):
         self.assertIn("REPEAT_COUNT: ${{ github.event.inputs.repeat_count }}", workflow)
         self.assertIn("CARGO_BUILD_JOBS: '4'", workflow)
         self.assertIn('timeout-minutes: 90', workflow)
-        self.assertIn('--receipt control/target/focused-test/receipt.json', workflow)
-        self.assertIn('path: control/target/focused-test/receipt.json', workflow)
+        self.assertIn('--receipt focused-receipt/receipt.json', workflow)
+        self.assertIn('path: focused-receipt/receipt.json', workflow)
         self.assertIn('if-no-files-found: error', workflow)
 
     def test_package_sets_keep_exact_source_membership_and_failure_guards(self):
