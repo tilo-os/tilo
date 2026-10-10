@@ -805,7 +805,7 @@ pub mod live {
                 .await
                 .map_err(|(e, _)| classify_conn_failure(&e.to_string())),
             AuthCreds::XOAuth2 { user, token } => {
-                let auth = XOAuth2 {
+                let auth = crate::oauth::XOAuth2 {
                     user: user.clone(),
                     token: token.clone(),
                 };
@@ -814,20 +814,6 @@ pub mod live {
                     .await
                     .map_err(|(e, _)| classify_conn_failure(&e.to_string()))
             }
-        }
-    }
-
-    /// async-imap `XOAUTH2` authenticator. `process` returns the RAW SASL
-    /// string; async-imap base64-encodes it before sending.
-    struct XOAuth2 {
-        user: String,
-        token: String,
-    }
-
-    impl async_imap::Authenticator for XOAuth2 {
-        type Response = String;
-        fn process(&mut self, _challenge: &[u8]) -> Self::Response {
-            format!("user={}\x01auth=Bearer {}\x01\x01", self.user, self.token)
         }
     }
 
