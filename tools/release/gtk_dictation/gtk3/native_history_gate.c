@@ -29,9 +29,9 @@ static void attr (AtkObject *object, const char *name, const char *expected)
   atk_attribute_set_free (set);
   g_assert_true (found);
 }
-static void intercept (GtkEntry *object, gpointer unused)
+static gboolean intercept (GtkEntry *object, gpointer unused)
 {
-  (void) object; (void) unused; intercepted++;
+  (void) object; (void) unused; intercepted++; return FALSE;
 }
 static void baseline (void)
 {
@@ -64,6 +64,7 @@ static gboolean gate (gpointer unused)
   g_assert_cmpstr (atk_action_get_name (action, 0), ==, "activate");
   g_assert_cmpint (atk_action_get_n_actions (action), ==, 1);
   g_assert_false (flag ("history-registered"));
+  g_assert_false (gtk_bindings_activate (G_OBJECT (entry), GDK_KEY_z, GDK_CONTROL_MASK));
   g_object_set (entry, "enable-undo", TRUE, NULL);
   baseline (); insert (); g_assert_false (flag ("can-undo"));
   g_assert_false (atk_action_do_action (action, 1));
@@ -96,22 +97,26 @@ static gboolean gate (gpointer unused)
   g_print ("PASS native ATK undo/redo and original selection; same stock buffer\n");
   gtk_editable_set_editable (GTK_EDITABLE (entry), FALSE);
   g_assert_false (flag ("history-available")); g_assert_false (atk_action_do_action (action, 1));
+  g_assert_false (gtk_bindings_activate (G_OBJECT (entry), GDK_KEY_z, GDK_CONTROL_MASK));
   gtk_editable_set_editable (GTK_EDITABLE (entry), TRUE);
   gtk_widget_set_sensitive (entry, FALSE);
   g_assert_false (flag ("history-available")); g_assert_false (atk_action_do_action (action, 1));
+  g_assert_false (gtk_bindings_activate (G_OBJECT (entry), GDK_KEY_z, GDK_CONTROL_MASK));
   gtk_widget_set_sensitive (entry, TRUE); gtk_widget_grab_focus (entry);
   gtk_entry_set_visibility (GTK_ENTRY (entry), FALSE);
   attr (object, "tilo-can-undo", "false"); g_assert_false (atk_action_do_action (action, 1));
   gtk_entry_set_visibility (GTK_ENTRY (entry), TRUE);
   gtk_entry_set_input_purpose (GTK_ENTRY (entry), GTK_INPUT_PURPOSE_PASSWORD);
   g_assert_false (flag ("history-available")); g_assert_false (atk_action_do_action (action, 1));
+  g_assert_false (gtk_bindings_activate (G_OBJECT (entry), GDK_KEY_z, GDK_CONTROL_MASK));
   gtk_entry_set_input_purpose (GTK_ENTRY (entry), GTK_INPUT_PURPOSE_PIN);
   g_assert_false (flag ("history-available")); g_assert_false (atk_action_do_action (action, 2));
   gtk_entry_set_input_purpose (GTK_ENTRY (entry), GTK_INPUT_PURPOSE_FREE_FORM);
   gtk_widget_grab_focus (other);
   g_assert_false (flag ("history-available")); g_assert_false (atk_action_do_action (action, 1));
+  g_assert_false (gtk_bindings_activate (G_OBJECT (entry), GDK_KEY_z, GDK_CONTROL_MASK));
   gtk_widget_grab_focus (entry); baseline (); insert ();
-  handler = g_signal_connect (entry, "undo", G_CALLBACK (intercept), NULL);
+  handler = g_signal_connect (entry, "tilo-native-undo", G_CALLBACK (intercept), NULL);
   g_assert_false (flag ("history-registered")); g_assert_cmpint (atk_action_get_n_actions (action), ==, 1);
   g_assert_false (atk_action_do_action (action, 1)); g_assert_cmpuint (intercepted, ==, 0);
   g_assert_cmpstr (gtk_entry_get_text (GTK_ENTRY (entry)), ==, "alpha beta! gamma");
@@ -119,6 +124,7 @@ static gboolean gate (gpointer unused)
   g_object_set (entry, "history-owner", NULL, NULL);
   g_assert_false (flag ("history-available")); g_assert_cmpint (atk_action_get_n_actions (action), ==, 1);
   attr (object, "tilo-history-registered", "false");
+  g_assert_false (gtk_bindings_activate (G_OBJECT (entry), GDK_KEY_z, GDK_CONTROL_MASK));
   g_print ("PASS unregistered, readonly, insensitive, protected, focus and intercepted history refusal\n");
   g_clear_object (&before_commit);
   g_print ("GTK3_NATIVE_ATK_GATE_COMPLETE\n");

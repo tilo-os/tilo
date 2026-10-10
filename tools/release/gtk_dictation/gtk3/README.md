@@ -44,7 +44,7 @@ Undo index 1 and Redo index 2 only for a supported registered owner. Invocation
 rechecks availability and possible history, then emits the same native signal.
 ATK attributes `tilo-history-registered`, `tilo-history-available`, `tilo-can-undo`
 and `tilo-can-redo` report booleans; they disclose no text or owner identifier.
-History notifications use the existing ATK visible-data-changed signal. Native `undo`/`redo` action signals
+History notifications use the existing ATK visible-data-changed signal. Namespaced native `tilo-native-undo`/`tilo-native-redo` action signals
 have keyboard bindings; these are ordinary entry history, not dictation history.
 The candidate **does not** add a Tilo semantic bridge or permission bypass.
 
@@ -135,8 +135,36 @@ into a selected range is a different native operation and its earlier selection
 failure remains recorded. No assertion from the selected-replacement gate was
 weakened.
 
-Recorded speech and external Tilo semantic/AT-SPI history routing are still
-unqualified. Native ATK invocation inside the subject does not establish that
+The previous patch passed the strict recorded public German speech journey:
+selected replacement, one Undo/Redo, cancel/restart, focus retirement, clipboard
+preservation and password/PIN refusal, on two CPUs with a 3 GiB/no-swap bound.
+First nonempty preview was 8.563 seconds and final text 25.479 seconds, with
+0/18 word errors in this one recording. These are Tilo fixture measurements,
+not a general accuracy or latency benchmark. `qualification-evidence.json`
+pins that patch separately from the newer fallback regression. External Tilo
+semantic/AT-SPI history routing remains unqualified. Native ATK invocation
+inside the subject does not establish that
 an arbitrary app has registered an owner or that the shell imports legacy ATK
 actions. Flatpak/runtime delivery and custom edit callbacks remain separate
 qualification requirements.
+
+
+The native history signals have Boolean returns: failed owner/focus/privacy
+admission returns false, so GTK's existing binding propagation continues for
+unregistered fields. Namespacing avoids declaring an inherited `undo`/`redo`
+signal that could collide with a subclass's existing history. Native ATK action
+names remain `undo` and `redo`, and their implementation checks the same native
+admission and reports the actual signal result. New fallback assertions in the
+native gate exercise real `gtk_bindings_activate`, not a separate helper.
+The earlier qualified native/speech receipts pin the previous patch; this
+fallback increment has now passed its own bounded incremental native compile,
+actual binding/ATK gate and strict recorded public speech journey. Unregistered
+Ctrl+Z was first reproduced as a failing assertion on the previous library; the
+repaired library returns false and preserves ordinary binding propagation. The
+new German speech measurement is 8.594 seconds to first nonempty preview and
+25.406 seconds to final, with 0/18 word errors. All old failed and passed
+receipts remain distinct in `qualification-evidence.json`. Builder source-head
+metadata is a base identifier; the manifest also pins actual source-file and
+production binary hashes, including the parent's independently built SDK repair.
+No full fresh rebuild of the corrected driver was repeated: the initial toolkit
+build and this verified incremental build are recorded separately.
