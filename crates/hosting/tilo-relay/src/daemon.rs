@@ -811,6 +811,10 @@ impl Relay {
                         cert: identity.device_cert.clone(),
                         key: identity.device_signing_key.clone(),
                         revocations: revocations.clone(),
+                        #[cfg(feature = "agents")]
+                        trust_policy: handler.trust_policy.clone(),
+                        #[cfg(feature = "agents")]
+                        agents: handler.agents.clone(),
                     },
                     cfg.state_root.join("rooms"),
                 )

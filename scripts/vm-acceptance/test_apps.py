@@ -7,7 +7,10 @@ folder listing and GPU adapter verdicts.
 import contextlib
 import io
 import json
+import os
+import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -321,8 +324,45 @@ class ListingTests(unittest.TestCase):
     def test_an_unreadable_tree_is_unobservable(self):
         self.assertEqual(judge_listing({"error": "no AT-SPI bus"}, "m")[0], "unobservable")
 
-    def test_the_guest_probe_is_valid_python(self):
-        compile(ATSPI_PROBE, "atspi-probe", "exec")
+
+class GuestAtspiProbeTests(unittest.TestCase):
+    def probe(self, client, no_commands):
+        proc = subprocess.run(
+            [sys.executable, "-", "file-explorer", "Files activity", "Files", "0"],
+            input=ATSPI_PROBE, text=True, capture_output=True, timeout=10,
+            env={**os.environ, "TILO_ATSPI_CLIENT": str(client), "PATH": str(no_commands)})
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        return json.loads(proc.stdout)
+
+    def test_the_guest_probe_loads_the_real_client(self):
+        client = Path(__file__).resolve().parents[2] / "tools/atspi_external_client.py"
+        with tempfile.TemporaryDirectory() as empty:
+            probe = self.probe(client, empty)
+        self.assertTrue(probe["error"].startswith("no AT-SPI bus:"), probe)
+        self.assertIn("gdbus", probe["error"])
+        self.assertEqual(judge_listing(probe, "m")[0], "unobservable")
+
+    def test_a_missing_client_reports_its_path(self):
+        with tempfile.TemporaryDirectory() as empty:
+            client = Path(empty) / "missing.py"
+            probe = self.probe(client, empty)
+        self.assertTrue(probe["error"].startswith(f"no AT-SPI client at {client}:"), probe)
+
+    def test_an_existing_client_import_error_is_a_load_failure(self):
+        with tempfile.TemporaryDirectory() as empty:
+            client = Path(empty) / "broken.py"
+            client.write_text("raise RuntimeError('broken client')\n")
+            probe = self.probe(client, empty)
+        self.assertIn("failed to load: RuntimeError: broken client", probe["error"])
+        self.assertNotIn("no AT-SPI client", probe["error"])
+
+    def test_a_missing_import_dependency_is_a_load_failure(self):
+        with tempfile.TemporaryDirectory() as empty:
+            client = Path(empty) / "dependency.py"
+            client.write_text(f"open({str(Path(empty) / 'missing-data')!r})\n")
+            probe = self.probe(client, empty)
+        self.assertIn("failed to load: FileNotFoundError:", probe["error"])
+        self.assertNotIn("no AT-SPI client", probe["error"])
 
 
 def adapter_line(app, kind, name="llvmpipe (LLVM 19.1.7, 256 bits)", backend="Vulkan", driver="llvmpipe"):
