@@ -64,7 +64,11 @@ match the repository licence; its repository builder corroborates identical comp
 (SHA-256 `5853c6c79c37bddadad65c3c89696c72ff2075ac7314014537cd50a3d48fd4d7`).
 
 Production signed-model admission, compatible legacy-runtime packaging/activation,
-GTK3/Qt/X11/Flatpak coverage, physical microphones, ARM/older devices and broader
+GTK3/X11/Flatpak coverage, physical microphones, ARM/older devices and broader
 editor/language acceptance remain unqualified. No microphone permission, persistent
-access grant, global input-method selection, image deployment or PR metadata change
-is part of this increment.
+access grant, global input-method selection, image deployment or removal of the
+explicit merge hold is part of this increment.
+
+[Additional native Qt acceptance](dictation-qt-native-evidence.md) qualifies three
+standard editable widgets and separately observes protected-field refusal. It
+does not establish universal third-party app coverage.
