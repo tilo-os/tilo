@@ -60,6 +60,33 @@ impl RiskLevel {
     pub fn requires_confirmation(self) -> bool {
         matches!(self, Self::Destructive | Self::Privileged | Self::Sensitive)
     }
+
+    /// The level's name, as it is written outside a typed message (a
+    /// question a host relays, an activity facet).
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Low => "low",
+            Self::Destructive => "destructive",
+            Self::Privileged => "privileged",
+            Self::Sensitive => "sensitive",
+        }
+    }
+
+    /// The level [`Self::name`] names; `None` for any other word.
+    #[must_use]
+    pub fn from_name(name: &str) -> Option<Self> {
+        [
+            Self::None,
+            Self::Low,
+            Self::Destructive,
+            Self::Privileged,
+            Self::Sensitive,
+        ]
+        .into_iter()
+        .find(|level| level.name() == name)
+    }
 }
 
 /// [`ActionContract::tags`] entry of an action offered only to programmatic

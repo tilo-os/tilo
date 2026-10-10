@@ -297,6 +297,9 @@ tilo-relay-protocol = { path = "../../hosting/tilo-relay-protocol" }
 # provider host, plus room administration and the workspace join client.
 # The relay daemon itself (`tilo-relay`) is a dev-dependency only.
 tilo-relay-session = { path = "../../hosting/tilo-relay-session" }
+# The approver session that answers the questions this person's agents on
+# their hosts put to them.
+tilo-relay-client = { path = "../../hosting/tilo-relay-client" }
 tilo-delivery-protocol = { path = "../../hosting/tilo-delivery-protocol" }
 # The native durable owner of enrolled rooms, kept inside the state file.
 tilo-joined-room = { path = "../../collab/tilo-joined-room" }

@@ -566,6 +566,10 @@ impl AgentParticipant {
             )
             .with_app(&route.app_id, &route.app_id)
             .with_purpose(&descriptor.action_label)
+            .with_facet(tilo_actions::ActionFacet::new(
+                tilo_actions::RISK_FACET,
+                descriptor.contract.risk.name(),
+            ))
         });
         let request = tilo_actions::remote::InvokeRequest {
             invocation: tilo_actions::InvocationId::new(),

@@ -109,7 +109,7 @@ pub use content::{CONTENT_PART_THRESHOLD, CONTENT_REFERENCE_KEY, MissingContent,
 pub use context::{
     AGENT_TASK_PARTICIPANT_PREFIX, ActionApp, ActionContext, ActionFacet, ActionGroup,
     ActionInvoker, ActionResource, CHANGE_MESSAGE_PREFIX, ChangeKind, MAX_PARTICIPANT_ID_BYTES,
-    ParticipantId,
+    ParticipantId, RISK_FACET,
 };
 pub use contract::{
     ARGUMENT_RISK_TAG, ActionContract, ActionKind, ActionNeed, Availability, ConfirmationPolicy,

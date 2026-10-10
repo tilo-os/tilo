@@ -24,6 +24,8 @@ mod personal_device_peers;
 mod record_content;
 pub use record_content::InboundRecordContent;
 #[cfg(test)]
+mod agent_question_tests;
+#[cfg(test)]
 mod node_member_tests;
 mod relay_rooms;
 mod room_gate;

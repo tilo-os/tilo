@@ -802,7 +802,10 @@ as a question (`ApproverRequest::Confirmations` lists `PendingConfirmation`s,
 as the host's confirmation sheet ("<agent> wants to …, for you"). The agent
 shows it is waiting meanwhile, runs the step only on the witnessed answer, and
 takes no answer within two minutes as a refusal. `tilo-relay dev`'s approver
-allows each once.
+allows each once. A Tilo shell that holds the person's root keeps an approver
+session with each host it connects to and shows every question on its own
+confirmation sheet, the one an agent acting for the person on that machine is
+confirmed on.
 
 `Relay::register_agent` verifies the delegation against the host's user:
 

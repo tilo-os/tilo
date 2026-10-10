@@ -14411,6 +14411,7 @@ dependencies = [
  "tilo-power-mgmt",
  "tilo-projector",
  "tilo-relay",
+ "tilo-relay-client",
  "tilo-relay-protocol",
  "tilo-relay-session",
  "tilo-resource",

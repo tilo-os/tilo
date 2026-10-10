@@ -564,6 +564,7 @@ mod confirmation_tests {
             agent_label: "Careful".into(),
             action_label: "Clear history".into(),
             resource_label: "Calculator".into(),
+            risk: "destructive".into(),
             room: "room".into(),
             expires_at_ns: unix_now_ns().saturating_add(u64::try_from(wait.as_nanos()).unwrap()),
         }
