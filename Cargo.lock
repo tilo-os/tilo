@@ -16252,6 +16252,7 @@ dependencies = [
  "blake3",
  "bytes",
  "channel-crypto",
+ "chat",
  "collab-types",
  "ed25519-dalek 3.0.0",
  "getrandom 0.4.3",

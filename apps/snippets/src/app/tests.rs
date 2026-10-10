@@ -452,7 +452,7 @@ fn focusing_new_snippet_does_not_activate_it() {
         &automerge::ROOT,
     ));
     assert!(
-        app.core.borrow().pending_open.is_none(),
+        !app.core.borrow().open_minted,
         "focusing a button authors nothing"
     );
     assert!(Widget::perform_semantic_action(
@@ -463,7 +463,7 @@ fn focusing_new_snippet_does_not_activate_it() {
         &automerge::ROOT,
     ));
     assert!(
-        app.core.borrow().pending_open.is_some(),
+        app.core.borrow().open_minted,
         "activating it creates a snippet"
     );
 }

@@ -95,6 +95,11 @@ impl StubHost {
     }
 }
 
+/// The confirmation the person gives `request` on their device.
+fn witnessed(request: &InvokeRequest) -> tilo_actions::remote::Confirmation {
+    tilo_actions::remote::Confirmation::Witnessed(format!("person:{}", request.invocation.0))
+}
+
 impl ActionHost for StubHost {
     fn query(
         &self,
@@ -140,9 +145,12 @@ impl ActionHost for StubHost {
         request: InvokeRequest,
     ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
         let invocation = request.invocation;
-        if let tilo_actions::ConfirmationPolicy::Phrase { phrase } = &self.confirmation
-            && request.confirmation
-                != Some(tilo_actions::remote::Confirmation::Phrase(phrase.clone()))
+        // Only the person's own answer, witnessed on their device, gets past
+        // a contract that asks for a phrase.
+        if matches!(
+            self.confirmation,
+            tilo_actions::ConfirmationPolicy::Phrase { .. }
+        ) && request.confirmation != Some(witnessed(&request))
         {
             return Pending::ready(Err(ActionHostError::ConfirmationRequired));
         }
@@ -153,6 +161,16 @@ impl ActionHost for StubHost {
             InvocationUpdate::Accepted { invocation },
         )
         .receipt()))
+    }
+
+    /// The person answers on their own device: the host hands the agent
+    /// the token naming that answer.
+    fn confirm(
+        &self,
+        _caller: &Caller,
+        request: &InvokeRequest,
+    ) -> Pending<Result<tilo_actions::remote::Confirmation, ActionHostError>> {
+        Pending::ready(Ok(witnessed(request)))
     }
 
     fn observe(
@@ -619,21 +637,15 @@ fn a_connection_continues_the_run_an_earlier_one_was_answered_with() {
 }
 
 #[test]
-fn a_contract_asking_for_confirmation_is_confirmed_by_the_admitted_call() {
-    for (policy, expected) in [
-        (
-            tilo_actions::ConfirmationPolicy::None,
-            Some(tilo_actions::remote::Confirmation::Confirmed),
-        ),
-        (
-            tilo_actions::ConfirmationPolicy::Confirm,
-            Some(tilo_actions::remote::Confirmation::Confirmed),
-        ),
+fn an_agent_never_confirms_by_its_own_word_and_carries_the_persons_answer() {
+    for (policy, asked) in [
+        (tilo_actions::ConfirmationPolicy::None, false),
+        (tilo_actions::ConfirmationPolicy::Confirm, false),
         (
             tilo_actions::ConfirmationPolicy::Phrase {
                 phrase: "ERASE".into(),
             },
-            Some(tilo_actions::remote::Confirmation::Phrase("ERASE".into())),
+            true,
         ),
     ] {
         let host = StubHost {
@@ -647,13 +659,13 @@ fn a_contract_asking_for_confirmation_is_confirmed_by_the_admitted_call() {
             invoke(&endpoint, &session).await
         });
         assert_eq!(reply["result"]["isError"], false, "{reply}");
-        let confirmations: Vec<_> = invoked
-            .lock()
-            .unwrap()
-            .iter()
-            .map(|request| request.confirmation.clone())
-            .collect();
-        assert_eq!(confirmations, vec![expected], "one admitted start");
+        let started = invoked.lock().unwrap().clone();
+        assert_eq!(started.len(), 1, "one admitted start");
+        let expected = asked.then(|| witnessed(&started[0]));
+        assert_eq!(
+            started[0].confirmation, expected,
+            "the call starts unconfirmed, or with the person's witnessed answer when the host asks"
+        );
     }
 }
 

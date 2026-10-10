@@ -26,13 +26,15 @@ use tilo_automerge::ApplyIncoming;
 
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ROOT, ReadDoc, ScalarValue};
-use collab_types::{DocumentMutation, Ed25519PublicKey, OpKind, Signature, SignedOp};
+use collab_types::{CommitNamed, DocumentMutation, Ed25519PublicKey, OpKind, Signature, SignedOp};
 
 /// Root key the probe reads and writes. One flat string is enough because the
 /// probe proves delivery, not a document model.
 const FIELD: &str = "text";
 const APP_ID: &str = "so.tilo.collab-probe";
 const RECORD_ID: &str = "";
+/// The record kind the probe's one field edit is named as.
+const RECORD_KIND: &str = "probe";
 
 fn usage() -> ExitCode {
     eprintln!(
@@ -243,6 +245,8 @@ async fn write(workspace_id: &str, text: &str) -> ExitCode {
         eprintln!("probe: FAIL building the document: {e}");
         return ExitCode::from(6);
     }
+    // Every change names the action it ran: here, an edit of the text.
+    doc.commit_edit(RECORD_KIND, FIELD);
     let bytes = doc.save_incremental();
     let signed = match signed_incremental(&identity, workspace_id, bytes) {
         Ok(signed) => signed,
@@ -329,6 +333,7 @@ mod tests {
     fn signed_change(workspace_id: &str, text: &str) -> Vec<u8> {
         let mut doc = AutoCommit::new();
         doc.put(&ROOT, FIELD, text).unwrap();
+        doc.commit_edit(RECORD_KIND, FIELD);
         let payload = DocumentMutation::Incremental(doc.save_incremental())
             .encode()
             .unwrap();
