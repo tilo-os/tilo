@@ -6,7 +6,7 @@
 //! theme decides how it looks. Interaction leaves as an [`Intent`] that the
 //! app applies to the window, the draft and the engine.
 
-use std::cell::{Cell, RefCell};
+use std::cell::Cell;
 use std::rc::Rc;
 
 use ui::icons::Icon;
@@ -59,23 +59,7 @@ pub(crate) enum Intent {
 }
 
 /// The queue controls write to and the app drains.
-#[derive(Clone, Default)]
-pub(crate) struct Intents(Rc<RefCell<Vec<Intent>>>);
-
-impl Intents {
-    pub(crate) fn push(&self, intent: Intent) {
-        self.0.borrow_mut().push(intent);
-    }
-
-    pub(crate) fn take(&self) -> Vec<Intent> {
-        std::mem::take(&mut *self.0.borrow_mut())
-    }
-
-    fn on(&self, intent: Intent) -> impl FnMut() + 'static {
-        let intents = self.clone();
-        move || intents.push(intent.clone())
-    }
-}
+pub(crate) type Intents = ui::Intents<Intent>;
 
 /// The containers of `engine` in list order: running ones first, then by name.
 pub(crate) fn listed_containers(engine: &Engine) -> Vec<&Container> {
@@ -184,7 +168,7 @@ pub(crate) fn primary(
         Button::new(id, label)
             .with_icon(icon)
             .role(ButtonRole::Primary)
-            .on_view(intents.on(intent)),
+            .on_view(intents.sender(intent)),
     )
 }
 
@@ -264,7 +248,7 @@ fn row_action(
     intent: Intent,
     intents: &Intents,
 ) -> ListRow {
-    row.action(icon, label, intents.on(intent))
+    row.action(icon, label, intents.sender(intent))
 }
 
 /// One container as the list shows it.
@@ -369,14 +353,13 @@ fn list_column(list: Element) -> Element {
 
 fn containers_empty(live: bool, intents: &Intents) -> Element {
     if live {
-        Box::new(ActOnEmpty::new(
+        Box::new(
             EmptyState::new("No containers")
                 .with_icon(Icon::Box)
                 .with_message("Create a container from an image to run it here.")
-                .with_action("New container"),
-            Intent::NewContainer,
-            intents,
-        ))
+                .with_action("New container")
+                .on_view(intents.sender(Intent::NewContainer)),
+        )
     } else {
         engine_missing(intents)
     }
@@ -384,14 +367,13 @@ fn containers_empty(live: bool, intents: &Intents) -> Element {
 
 /// Podman did not answer: say so, once, and offer to ask again.
 pub(crate) fn engine_missing(intents: &Intents) -> Element {
-    Box::new(ActOnEmpty::new(
+    Box::new(
         EmptyState::new("Podman isn't available")
             .with_icon(Icon::Box)
             .with_message("Install Podman or start its user service to manage containers here.")
-            .with_action("Try again"),
-        Intent::Reconnect,
-        intents,
-    ))
+            .with_action("Try again")
+            .on_effect(intents.sender(Intent::Reconnect)),
+    )
 }
 
 /// The content beside the list while nothing is chosen.
@@ -542,7 +524,7 @@ fn verb_button(
         .and_then(|resource| ui::tilo_actions::ActionBinding::unit_for(&resource, verb_id).ok());
     match binding {
         Some(binding) => button.on_action(binding),
-        None => button.on_view(intents.on(intent)),
+        None => button.on_view(intents.sender(intent)),
     }
 }
 
@@ -902,14 +884,13 @@ pub(crate) fn images_page(engine: &Engine, controls: bool, intents: &Intents) ->
         if !engine.live && !controls {
             return engine_missing(intents);
         }
-        return Box::new(ActOnEmpty::new(
+        return Box::new(
             EmptyState::new("No images")
                 .with_icon(Icon::Layers)
                 .with_message("Pull an image to create containers from it.")
-                .with_action("Pull image"),
-            Intent::PullImage(None),
-            intents,
-        ));
+                .with_action("Pull image")
+                .on_view(intents.sender(Intent::PullImage(None))),
+        );
     }
     let rows: Vec<Element> = engine
         .images
@@ -966,14 +947,13 @@ pub(crate) fn volumes_page(engine: &Engine, controls: bool, intents: &Intents) -
         if !engine.live && !controls {
             return engine_missing(intents);
         }
-        return Box::new(ActOnEmpty::new(
+        return Box::new(
             EmptyState::new("No volumes")
                 .with_icon(Icon::HardDrive)
                 .with_message("A volume keeps a container's data when the container is removed.")
-                .with_action("New volume"),
-            Intent::NewVolume,
-            intents,
-        ));
+                .with_action("New volume")
+                .on_view(intents.sender(Intent::NewVolume)),
+        );
     }
     let rows: Vec<Element> = engine
         .volumes
@@ -1029,94 +1009,12 @@ pub(crate) fn distrobox_page(engine: &Engine, controls: bool, intents: &Intents)
                     Intent::EnterDistrobox(b.name.clone()),
                     intents,
                 )
-                .on_activate(intents.on(Intent::EnterDistrobox(b.name.clone())));
+                .on_activate(intents.sender(Intent::EnterDistrobox(b.name.clone())));
             }
             Box::new(row) as Element
         })
         .collect();
     page(None, rows)
-}
-
-// ---- empty states with an action ------------------------------------------
-
-/// An empty state whose one action becomes an [`Intent`].
-pub(crate) struct ActOnEmpty {
-    state: EmptyState,
-    intent: Intent,
-    intents: Intents,
-}
-
-impl ActOnEmpty {
-    fn new(state: EmptyState, intent: Intent, intents: &Intents) -> Self {
-        Self {
-            state,
-            intent,
-            intents: intents.clone(),
-        }
-    }
-
-    fn forward(&mut self) {
-        if self.state.take_action() {
-            self.intents.push(self.intent.clone());
-        }
-    }
-}
-
-impl ui::widget::Decorator for ActOnEmpty {
-    type Inner = EmptyState;
-
-    fn inner(&self) -> &EmptyState {
-        &self.state
-    }
-
-    fn inner_mut(&mut self) -> &mut EmptyState {
-        &mut self.state
-    }
-
-    /// The state answers for its node, so its action reaches the queue
-    /// however the host routes to it.
-    fn build_layout(
-        &mut self,
-        taffy: &mut ui::taffy::TaffyTree<()>,
-        theme: &ui::theme::Theme,
-        node_map: &mut std::collections::HashMap<ui::taffy::NodeId, *mut dyn Widget>,
-    ) -> ui::taffy::NodeId {
-        let node = self.state.build_layout(taffy, theme, node_map);
-        ui::widget::decorator::register_node(node_map, node, self);
-        node
-    }
-
-    fn handle_event(
-        &mut self,
-        event: &ui::winit::event::WindowEvent,
-        ctx: &mut ui::widget::EventCtx<'_>,
-    ) {
-        Widget::handle_event(&mut self.state, event, ctx);
-        self.forward();
-    }
-
-    fn perform_semantic_action(
-        &mut self,
-        target: &str,
-        action: &ui::a11y::Action,
-        state: &mut ui::widget::Edits<'_>,
-        path: &ui::widget::ModelPath,
-    ) -> bool {
-        let handled = Widget::perform_semantic_action(&mut self.state, target, action, state, path);
-        self.forward();
-        handled
-    }
-
-    fn perform_action(
-        &mut self,
-        action: &ui::a11y::Action,
-        state: &mut ui::widget::Edits<'_>,
-        path: &ui::widget::ModelPath,
-    ) -> bool {
-        let handled = Widget::perform_action(&mut self.state, action, state, path);
-        self.forward();
-        handled
-    }
 }
 
 // ---- pull progress ---------------------------------------------------------
@@ -1256,7 +1154,7 @@ fn window_shell(m: &Model, parts: &Parts) -> ui::widget::NavShell {
             actions.push(Box::new(
                 Button::icon_only("containers-new", Icon::Plus, "New container")
                     .role(ButtonRole::Primary)
-                    .on_view(intents.on(Intent::NewContainer)),
+                    .on_view(intents.sender(Intent::NewContainer)),
             ));
         }
         return shell
@@ -1295,7 +1193,7 @@ fn close_detail(parts: &Parts) -> Element {
             if m.view.selected.is_some() {
                 Box::new(
                     Button::icon_only("detail-close", Icon::X, "Close details")
-                        .on_view(intents.on(Intent::Select(None))),
+                        .on_view(intents.sender(Intent::Select(None))),
                 )
             } else {
                 Box::new(Spacer::token(SpacingStep::S0))

@@ -338,7 +338,8 @@ pub use interaction::{
 };
 pub use keycaps::{KeycapLanguage, Keycaps};
 pub use local_state::{
-    LatestRequest, LatestTask, LocalState, LocalStateWriter, RequestCompletion, TaskCompletion,
+    Intents, LatestRequest, LatestTask, LocalState, LocalStateWriter, RequestCompletion,
+    TaskCompletion,
 };
 pub use nav_stack::{EdgeSwipeBack, NavAction, NavStack};
 pub use paragraph::{ComposedLine, ParagraphBox, ParagraphOptions, compose_paragraph};

@@ -723,26 +723,6 @@ impl Library {
             .collect()
     }
 
-    // --- what this window changes before the document follows -------------
-
-    pub fn mark_read(&mut self, id: &Id, read: bool) -> bool {
-        if let Some(a) = self.article_mut(id)
-            && a.read != read
-        {
-            a.read = read;
-            return true;
-        }
-        false
-    }
-
-    pub fn toggle_star(&mut self, id: &Id) -> bool {
-        if let Some(a) = self.article_mut(id) {
-            a.starred = !a.starred;
-            return true;
-        }
-        false
-    }
-
     /// Mark every article matching `filter` as read. Returns affected ids.
     pub fn mark_all_read(&mut self, filter: &Filter) -> Vec<Id> {
         let ids = self.unread_ids_for(filter);

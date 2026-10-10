@@ -350,7 +350,9 @@ pub(crate) enum Awaited {
 
 /// The state of the window.
 pub(crate) struct Core {
-    pub(crate) store: Library,
+    /// The library as it was presented last; the window changes it only
+    /// through the library's door.
+    pub(crate) store: Rc<Library>,
     pub(crate) filter: Filter,
     pub(crate) selected: Option<Id>,
     pub(crate) settings: ReadSettings,
@@ -404,11 +406,11 @@ fn read_edit(id: &Id, read: bool) -> ui::tilo_resource::Edit<Library> {
 
 impl Core {
     fn new(demo: bool) -> Self {
-        let store = if demo {
+        let store = Rc::new(if demo {
             sample::store()
         } else {
             Library::new()
-        };
+        });
         let mut core = Self {
             store,
             filter: Filter::All,
@@ -537,7 +539,7 @@ impl Core {
         self.selected = Some(id.clone());
         self.reader.scroll_to_top();
         self.list.reveal = true;
-        if self.store.mark_read(id, true) {
+        if self.store.article(id).is_some_and(|article| !article.read) {
             self.perform(doc, read_edit(id, true));
         }
         // A narrow window pushes the article in; a wide one already shows it.
@@ -570,8 +572,7 @@ impl Core {
     }
 
     pub(crate) fn toggle_star(&mut self, id: &Id, doc: &mut ui::widget::Edits<'_>) {
-        if self.store.toggle_star(id) {
-            let starred = self.store.article(id).is_some_and(|a| a.starred);
+        if let Some(starred) = self.store.article(id).map(|article| !article.starred) {
             self.perform(doc, Library::paths().articles.item(id).starred.set(starred));
             self.set_toast(if starred {
                 "Article starred"
@@ -582,16 +583,15 @@ impl Core {
     }
 
     fn toggle_read(&mut self, doc: &mut ui::widget::Edits<'_>) {
-        if let Some(id) = self.selected.clone() {
-            let now_read = self.store.article(&id).is_none_or(|a| !a.read);
-            if self.store.mark_read(&id, now_read) {
-                self.perform(doc, read_edit(&id, now_read));
-                self.set_toast(if now_read {
-                    "Marked as read"
-                } else {
-                    "Marked as unread"
-                });
-            }
+        if let Some(id) = self.selected.clone()
+            && let Some(now_read) = self.store.article(&id).map(|article| !article.read)
+        {
+            self.perform(doc, read_edit(&id, now_read));
+            self.set_toast(if now_read {
+                "Marked as read"
+            } else {
+                "Marked as unread"
+            });
         }
     }
 
@@ -608,7 +608,7 @@ impl Core {
     /// any other place.
     pub(crate) fn mark_all_read(&mut self, doc: &mut ui::widget::Edits<'_>) {
         let filter = self.filter.clone();
-        let ids = self.store.mark_all_read(&filter);
+        let ids = self.store.unread_ids_for(&filter);
         if !ids.is_empty() {
             match &filter {
                 Filter::All => self.perform(doc, Library::MARK_EVERYTHING_READ.invoke()),
@@ -1043,7 +1043,7 @@ impl Core {
     ) {
         match action {
             MenuAction::MarkFeedRead(feed_id) => {
-                let ids = self.store.mark_all_read(&Filter::Feed(feed_id.clone()));
+                let ids = self.store.unread_ids_for(&Filter::Feed(feed_id.clone()));
                 if !ids.is_empty() {
                     self.perform(doc, Library::MARK_FEED_READ.with(feed_id));
                 }
@@ -1147,9 +1147,6 @@ impl Core {
         for edit in path.edits(&before, &after) {
             self.perform(doc, edit);
         }
-        if let Some(article) = self.store.article_mut(id) {
-            article.tags = after;
-        }
         self.set_toast(if tags.is_empty() {
             "Tags removed".to_string()
         } else {
@@ -1167,8 +1164,7 @@ impl Core {
         if name.is_empty() {
             return;
         }
-        if let Some(f) = self.store.feeds.get_mut(feed_id) {
-            name.clone_into(&mut f.title);
+        if self.store.feed(feed_id).is_some() {
             self.perform(
                 doc,
                 Library::paths().feeds.item(feed_id).title.replace(name),
@@ -1432,7 +1428,7 @@ impl Core {
         self.set_filter(Filter::Feed(feed_id));
         self.selected = Some(id.clone());
         self.reader.scroll_to_top();
-        if self.store.mark_read(id, true) {
+        if self.store.article(id).is_some_and(|article| !article.read) {
             self.pending_reads.push(id.clone());
         }
         self.show_pane = Some(NavPane::Content);
@@ -2616,7 +2612,7 @@ impl Core {
 }
 
 impl FeedsApp {
-    pub(crate) fn present_library(&self, store: Library) {
+    pub(crate) fn present_library(&self, store: Rc<Library>) {
         let mut core = self.core.borrow_mut();
         let first = !core.synced;
         core.store = store;

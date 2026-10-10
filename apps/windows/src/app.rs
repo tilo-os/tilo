@@ -108,7 +108,7 @@ pub(crate) enum Intent {
     ToggleApplianceDetails,
 }
 
-type Intents = Rc<RefCell<Vec<Intent>>>;
+type Intents = ui::Intents<Intent>;
 
 /// The one status line the window shows above its content.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -167,11 +167,6 @@ struct ContentKey {
     details: bool,
 }
 
-fn queue(intents: &Intents, intent: Intent) -> impl FnMut() + 'static {
-    let intents = Rc::clone(intents);
-    move || intents.borrow_mut().push(intent)
-}
-
 fn action_button(
     id: &str,
     label_key: &str,
@@ -181,7 +176,7 @@ fn action_button(
 ) -> Button {
     Button::new(id, &strings::t(label_key))
         .role(role)
-        .on_effect(queue(intents, intent))
+        .on_effect(intents.sender(intent))
 }
 
 fn body(text: &str) -> Text {
@@ -429,13 +424,13 @@ impl WindowsApp {
         appliance_owner: ApplianceOwnerClient,
     ) -> Self {
         let catalogue = provider.catalogue();
-        let intents: Intents = Rc::default();
+        let intents = Intents::default();
         let install = Button::icon_only(
             "windows-install",
             Icon::Plus,
             &strings::t("windows-install"),
         )
-        .on_effect(queue(&intents, Intent::Install));
+        .on_effect(intents.sender(Intent::Install));
         let shell = NavShell::new()
             .with_id("windows-shell")
             .overview_header(strings::t("windows-apps-title"), vec![Box::new(install)])
@@ -829,7 +824,7 @@ impl WindowsApp {
         {
             self.apply_intent(Intent::SelectApp(index));
         }
-        let pending = std::mem::take(&mut *self.intents.borrow_mut());
+        let pending = self.intents.take();
         for intent in pending {
             self.apply_intent(intent);
         }
@@ -1311,7 +1306,7 @@ impl WindowsApp {
             let mut row = ListRow::new("windows-pending-install", &pending.display_name)
                 .secondary(strings::t("windows-pending-secondary"))
                 .selected(self.page == Page::PendingInstall)
-                .on_view(queue(&self.intents, Intent::SelectPending));
+                .on_view(self.intents.sender(Intent::SelectPending));
             if pushed {
                 row = row.disclosure();
             }
@@ -1332,7 +1327,7 @@ impl WindowsApp {
                         .secondary(app.status.label())
                         .badge(app.route.label())
                         .selected(self.page == Page::App && index == self.selected)
-                        .on_view(queue(&self.intents, Intent::SelectApp(index)));
+                        .on_view(self.intents.sender(Intent::SelectApp(index)));
                     // Every app row carries a status dot, so the route
                     // beside it keeps one trailing edge down the list.
                     row = match app.status {
@@ -1356,7 +1351,7 @@ impl WindowsApp {
         let mut appliance = ListRow::new("windows-appliance", strings::t("windows-appliance-row"))
             .secondary(appliance_summary(status, self.appliance_owner.has_status()))
             .selected(self.page == Page::Appliance)
-            .on_view(queue(&self.intents, Intent::SelectAppliance));
+            .on_view(self.intents.sender(Intent::SelectAppliance));
         appliance = if status.power_state == AppliancePowerState::Running {
             appliance.active()
         } else {
@@ -1550,7 +1545,7 @@ impl WindowsApp {
                 .position(|route| *route == app.route)
                 .unwrap_or(0);
             let routes = {
-                let intents = Rc::clone(intents);
+                let intents = intents.clone();
                 ToggleGroup::new(
                     Route::ALL
                         .iter()
@@ -1561,7 +1556,7 @@ impl WindowsApp {
                 .with_id("windows-route")
                 .on_change(move |index| {
                     if let Some(route) = Route::ALL.get(index) {
-                        intents.borrow_mut().push(Intent::Route(*route));
+                        intents.push(Intent::Route(*route));
                     }
                 })
             };
@@ -1716,7 +1711,7 @@ impl WindowsApp {
                 .icon(icon)
                 .secondary(strings::t(detail))
                 .disclosure()
-                .on_effect(queue(intents, intent))
+                .on_effect(intents.sender(intent))
         };
         let mut capsule = destination(
             "windows-confirm-capsule-install",
@@ -1956,9 +1951,9 @@ impl WindowsApp {
         };
         ModalDialog::new(title, body(&message))
             .with_test_id("windows-confirmation")
-            .primary_action(action, queue(&self.intents, confirm_intent))
-            .secondary_action(strings::t("windows-cancel"), queue(&self.intents, cancel))
-            .on_dismiss(queue(&self.intents, cancel))
+            .primary_action(action, self.intents.sender(confirm_intent))
+            .secondary_action(strings::t("windows-cancel"), self.intents.sender(cancel))
+            .on_dismiss(self.intents.sender(cancel))
             .with_destructive(destructive)
             .open(true)
     }
@@ -2024,7 +2019,7 @@ impl ui::widget::Decorator for WindowsApp {
                     _ => None,
                 };
                 if let Some(next) = next.filter(|next| *next != self.selected) {
-                    self.intents.borrow_mut().push(Intent::SelectApp(next));
+                    self.intents.push(Intent::SelectApp(next));
                     *ctx.handled = true;
                 }
             }
@@ -2110,7 +2105,7 @@ impl ui::widget::Decorator for WindowsApp {
             })
             .map(Intent::SelectApp);
         let handled = if let Some(intent) = intent {
-            self.intents.borrow_mut().push(intent);
+            self.intents.push(intent);
             true
         } else {
             self.shell
@@ -2268,7 +2263,7 @@ mod tests {
     }
 
     fn apply(app: &mut WindowsApp, intent: Intent) {
-        app.intents.borrow_mut().push(intent);
+        app.intents.push(intent);
         app.settle();
     }
 
@@ -2483,7 +2478,7 @@ mod tests {
             let capsule = app.catalogue.apps[0].capsule.clone();
             app.catalogue.apps[0].can_escalate_install_to_vm = true;
 
-            app.intents.borrow_mut().push(Intent::Escalate);
+            app.intents.push(Intent::Escalate);
             app.apply_intents();
             assert_eq!(
                 app.confirm_escalate_to_vm.as_deref(),
@@ -2491,7 +2486,7 @@ mod tests {
             );
             assert_eq!(app.catalogue.apps[0].status, crate::model::AppStatus::Ready);
 
-            app.intents.borrow_mut().push(Intent::Escalate);
+            app.intents.push(Intent::Escalate);
             app.apply_intents();
             assert_eq!(
                 app.catalogue.apps[0].status,
@@ -2510,7 +2505,7 @@ mod tests {
             assert!(!app.dialog_open());
             assert_eq!(app.confirm_vendor_uninstall, None);
             // Actions the newly selected app does not offer do nothing.
-            app.intents.borrow_mut().push(Intent::DeleteData);
+            app.intents.push(Intent::DeleteData);
             app.apply_intents();
             assert_eq!(app.confirm_delete_data, None);
         }
