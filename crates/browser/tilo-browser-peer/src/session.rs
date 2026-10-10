@@ -2565,7 +2565,7 @@ fn commit(entry: &OutboxEntry, cert: &DeviceCert) -> Envelope {
 enum Link {
     Https(HttpsLink),
     #[cfg(feature = "iroh")]
-    Iroh(tilo_relay_client::RelayClient),
+    Iroh(tilo_relay_session::RelayClient),
 }
 
 impl Link {
@@ -2627,7 +2627,7 @@ async fn connect(config: &PeerConfig, signer: &dyn DeviceSigner) -> Result<Link,
         .map(Link::Https),
         #[cfg(feature = "iroh")]
         Host::Iroh { addr, relay_url } => {
-            use tilo_relay_client::{ClientError, RelayClient};
+            use tilo_relay_session::{ClientError, RelayClient};
             let mut builder = iroh::endpoint::Endpoint::builder(iroh::endpoint::presets::Minimal);
             if let Some(url) = relay_url {
                 builder = builder.relay_mode(iroh::RelayMode::Custom(url.clone().into()));
