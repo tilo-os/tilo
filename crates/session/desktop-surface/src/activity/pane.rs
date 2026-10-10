@@ -9146,7 +9146,6 @@ fn describe_capability(cap: &CapOverride) -> String {
 
 fn describe_scope(scope: &Scope) -> String {
     match scope {
-        Scope::Workspace | Scope::Room(_) => t("activity-capability-this-workspace"),
         Scope::FsPath(p) => p.clone(),
         // Record authority intentionally has no path: it follows the file
         // across rename/move and the stable id is not useful activity copy.

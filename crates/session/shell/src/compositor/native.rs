@@ -2836,9 +2836,8 @@ impl ControlState for FrameBuilderControlState<'_> {
             .active_workspace()
             .map(|w| w.id)
             .ok_or_else(|| "no active workspace".to_string())?;
-        let room_key = ws_id.raw().to_string();
         let subject = test_control::parse_subject(subject)?;
-        let scope = test_control::parse_scope(scope, &room_key)?;
+        let scope = test_control::parse_scope(scope)?;
         let access = test_control::parse_access(access)?;
         let mut cap = CapOverride::grant(subject, scope, access);
         if let Some(id) = id {

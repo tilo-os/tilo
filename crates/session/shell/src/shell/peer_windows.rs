@@ -392,7 +392,7 @@ fn install_for(tree: &mut WorkspaceTree, tab: TabId) -> bool {
     if let Err(refusal) = admits(ws, &item.app_id) {
         return set_state(tree, tab, refusal, None);
     }
-    let (room, capabilities) = (ws.room, ws.sandbox.clone());
+    let (room, capabilities) = (ws.room, ws.launch_grants(tilo_clock::unix_now()));
     // Placement and any continued record are staged before the install
     // starts, so the window that finally maps lands in this tab.
     stage_continuation_for_tab(tree, &item);

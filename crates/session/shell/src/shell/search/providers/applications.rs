@@ -735,7 +735,7 @@ impl ApplicationsProvider {
                         );
                         tree.desktop
                             .active_workspace()
-                            .map(|ws| (ws.room, ws.sandbox.clone()))
+                            .map(|ws| (ws.room, ws.launch_grants(tilo_clock::unix_now())))
                     };
                     let Some((room, capabilities)) = context else {
                         // No active workspace is no room to launch into —

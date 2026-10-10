@@ -974,18 +974,18 @@ fn native_slot_barrier_and_stale_flush_preserve_actual_acl_and_publisher() {
         native.fs_acl_path = Some(acl.clone());
         let mut old = CapOverride::new(
             Subject::User(collab_types::Ed25519PublicKey::from_bytes([201; 32])),
-            Scope::Workspace,
+            Scope::FsPath("/var/workspace/old".into()),
             Effect::Grant,
             Access::Read,
         );
-        old.id = "old-room-only".into();
+        old.id = "old-sandbox-only".into();
         native.desktop.workspaces[0].sandbox.push(old);
     }
     let owner = open(tree.clone()).unwrap();
     tree.read().export_fs_capabilities();
     settle_publication("baseline ACL export must publish");
     let baseline_acl = std::fs::read(&acl).unwrap();
-    assert!(String::from_utf8_lossy(&baseline_acl).contains("old-room-only"));
+    assert!(String::from_utf8_lossy(&baseline_acl).contains("old-sandbox-only"));
     let (intent, bootstrap, _, _, now) = raw_fixture();
     let id = owner
         .prepare_enrollment_into(&intent, Some(local), now)
@@ -1014,7 +1014,7 @@ fn native_slot_barrier_and_stale_flush_preserve_actual_acl_and_publisher() {
     owner.install(&complete, now).unwrap();
     settle_publication("committed install must publish its ACL");
     let committed_acl = std::fs::read(&acl).unwrap();
-    assert!(!String::from_utf8_lossy(&committed_acl).contains("old-room-only"));
+    assert!(!String::from_utf8_lossy(&committed_acl).contains("old-sandbox-only"));
     assert_eq!(std::fs::read(&observed_acl).unwrap(), committed_acl);
     let published_state: serde_json::Value =
         serde_json::from_slice(&std::fs::read(&observed_state).unwrap()).unwrap();

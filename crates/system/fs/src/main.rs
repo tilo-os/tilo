@@ -801,7 +801,7 @@ async fn publish_authority(acl: PathBuf) -> Result<()> {
         }
         Err(error) => return Err(error).context("read workspace governor key"),
     };
-    let capabilities = serde_json::from_slice(
+    let capabilities: collab_types::FsAuthority = serde_json::from_slice(
         &std::fs::read(&acl).with_context(|| format!("read capability list {}", acl.display()))?,
     )?;
     let (workspace, socket) = fs::workspace_authority::find_local_authority().await?;
@@ -1078,7 +1078,8 @@ fn spawn_workspace_authority_reload(
             if previous.as_ref() == Some(&bytes) {
                 continue;
             }
-            let Ok(capabilities) = serde_json::from_slice(&bytes) else {
+            let Ok(capabilities) = serde_json::from_slice::<collab_types::FsAuthority>(&bytes)
+            else {
                 continue;
             };
             let revision = authority
@@ -1303,7 +1304,7 @@ fn export_home_peer(
         .with_context(|| format!("read capability list {}", acl.display()))?;
     let _: serde_json::Value =
         serde_json::from_str(&capability_json).context("capability list is not valid JSON")?;
-    let capabilities = serde_json::from_str(&capability_json)?;
+    let capabilities: collab_types::FsAuthority = serde_json::from_str(&capability_json)?;
     let paths = identity_paths();
     let governor = tilo_user_identity::persist::read_owned_signing_key(&paths.user_privkey)
         .context("read workspace governor key")?;

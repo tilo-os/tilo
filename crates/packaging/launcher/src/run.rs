@@ -804,17 +804,18 @@ mod managed_service_tests {
 /// for this app now. Split out so [`run_with_captured`] and tests share it.
 pub fn resolve_capabilities(manifest: &MinimalManifest, opts: &RunOptions) -> CapabilityPlan {
     let app_id = manifest.package_id.clone();
-    let records = opts
+    let grants = opts
         .capabilities_path
         .as_deref()
         .map(load_capability_file)
         .unwrap_or_default();
-    let mut plan = CapabilityPlan::for_app(&app_id, &records, Some(unix_now()));
-    // A workspace launch with no explicit author grant is a viewer. Treating
-    // missing/malformed policy as authorship made every failure permissive.
-    if opts.workspace_id.is_some()
-        && plan.participation == crate::capabilities::Participation::Unscoped
-    {
+    let mut plan = CapabilityPlan::for_app(&app_id, &grants.sandbox, Some(unix_now()));
+    // An app the room's grants make an author changes it; a workspace launch
+    // of any other app is a viewer. Treating missing or malformed policy as
+    // authorship made every failure permissive.
+    if grants.authors(&app_id) {
+        plan.participation = crate::capabilities::Participation::Author;
+    } else if opts.workspace_id.is_some() {
         plan.participation = crate::capabilities::Participation::ReadOnly;
     }
     tracing::info!(
@@ -4747,6 +4748,30 @@ mod app_dir_tests {
             assert_eq!(
                 personal.participation,
                 crate::capabilities::Participation::Unscoped
+            );
+
+            // The room's grants make the app an author.
+            let dir = tempfile::tempdir().expect("tempdir");
+            let file = dir.path().join("grants.json");
+            std::fs::write(
+                &file,
+                serde_json::to_vec(&collab_types::caps::LaunchGrants {
+                    authors: vec!["so.tilo.fixture".into()],
+                    sandbox: Vec::new(),
+                })
+                .expect("encodes"),
+            )
+            .expect("written");
+            let authored = resolve_capabilities(
+                &m,
+                &RunOptions {
+                    capabilities_path: Some(file),
+                    ..opts_in(Some("room-a"))
+                },
+            );
+            assert_eq!(
+                authored.participation,
+                crate::capabilities::Participation::Author
             );
         }
         // Phase `the_launch_resolves_one_directory_per_room`.

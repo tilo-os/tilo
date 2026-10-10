@@ -847,8 +847,9 @@ fn scoped_capabilities_carry_exactly_their_own_authority() {
             !ws.allows(&holder, &path, Access::Write),
             "a read link is not a write link"
         );
-        assert!(
-            !ws.allows(&holder, &ResourceRef::Workspace, Access::Read),
+        assert_eq!(
+            ws.room_readers_at(tilo_clock::unix_now()),
+            vec![(ALICE.to_string(), None)],
             "a share link grants no standing in the room"
         );
 
@@ -898,7 +899,7 @@ fn scoped_capabilities_carry_exactly_their_own_authority() {
             "an agent is confined to what it was given, like any other subject"
         );
         assert!(
-            !ws.allows(&agent, &ResourceRef::Workspace, Access::Write),
+            ws.agent_members_at(tilo_clock::unix_now()).is_empty(),
             "and holds no role, so it never inherits room-wide authority"
         );
 

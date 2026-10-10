@@ -1,6 +1,5 @@
 use super::{StatePeer, SystemTime};
 use crate::workspace_membership::WorkspaceMembershipCommand;
-use collab_types::caps::{Access, CapOverride, Principal, Scope};
 use ed25519_dalek::SigningKey;
 use tilo_action_policy::{ActionKind, Change, Grant, GrantId, Lifetime, Subject, TreePath, roles};
 use tilo_user_identity::DeviceCert;
@@ -67,14 +66,8 @@ impl StatePeer {
         let member = self.permissions(caller.device_public_key, now)?;
         self.require_governance_writer(key, now)?;
         if let WorkspaceMembershipCommand::GrantAppAuthorship { app } = command {
-            let capability = CapOverride::grant(
-                collab_types::caps::Subject::app(app),
-                Scope::Workspace,
-                Access::Write,
-            )
-            .with_id(format!("app-author:{app}"))
-            .granted_by(Principal::Person(member.person));
-            return self.put_governed_sandbox(&[capability], key, now);
+            let grant = roles::app_authorship(&self.core.room, app, Subject::Person(member.person));
+            return self.put_governed_grants(&[grant], key, now);
         }
         let subject = Subject::agent(command.agent().ok_or("missing agent membership target")?);
         let room = member.policy.node();

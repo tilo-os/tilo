@@ -1299,8 +1299,8 @@ fn import_home_peer_bindings(cfg: &mut RelayConfig) -> Result<(), RelayError> {
         // list.  In particular, an FsPath grant lets a collaborator read a
         // path in the global Files namespace; it must never silently give
         // that person access to every shell room wired to the namespace.
-        // Only a governor-signed, explicit Scope::Room(<relay id>) grant
-        // admits a user to that particular relay topic.
+        // Only the governor-signed members of a room admit a user to that
+        // particular relay topic.
         // Do not seed a just-restarted relay from the enrollment copy when a
         // newer materialized authority has already been observed.  The
         // refresh task starts after the router, so this check closes the
@@ -1340,17 +1340,16 @@ fn import_home_peer_bindings(cfg: &mut RelayConfig) -> Result<(), RelayError> {
             if let Some(authority) = authority.as_ref()
                 && !crate::personal_continuity_workspace_id_matches(&authority.governor, id)
             {
-                let room = id.to_string();
-                for capability in &authority.capabilities {
-                    if capability.effect == collab_types::Effect::Grant
-                        && capability.is_live_at(Some(now))
-                        && matches!(&capability.scope, collab_types::Scope::Room(scope) if scope == &room)
-                        && let collab_types::Subject::User(user) = &capability.subject
-                    {
-                        let user = hex::encode(user.as_bytes());
-                        room_users.push(user.clone());
-                        collaborators.push(user);
-                    }
+                for member in authority
+                    .room_members
+                    .get(&id.to_string())
+                    .into_iter()
+                    .flatten()
+                    .filter(|member| member.is_live_at(now))
+                {
+                    let user = hex::encode(member.user.as_bytes());
+                    room_users.push(user.clone());
+                    collaborators.push(user);
                 }
             }
             room_users.sort_unstable();
@@ -1833,26 +1832,23 @@ async fn refresh_home_peer_authority_once(
                     .or_default()
                     .insert(authority.governor);
             }
-            for capability in &authority.capabilities {
-                let collab_types::Scope::Room(room) = &capability.scope else {
-                    continue;
-                };
+            for (room, members) in &authority.room_members {
                 let Ok(room) = room.parse::<u64>() else {
                     continue;
                 };
                 if (!global_namespace && !workspace.relay_workspace_ids.contains(&room))
                     || crate::personal_continuity_workspace_id_matches(&authority.governor, room)
-                    || capability.effect != collab_types::Effect::Grant
-                    || !capability.is_live_at(Some(now))
                 {
                     continue;
                 }
-                let collab_types::Subject::User(user) = &capability.subject else {
-                    continue;
-                };
-                users.push(hex::encode(user.as_bytes()));
-                governed_rooms.insert(room);
-                room_users.entry(room).or_default().insert(*user.as_bytes());
+                for member in members.iter().filter(|member| member.is_live_at(now)) {
+                    users.push(hex::encode(member.user.as_bytes()));
+                    governed_rooms.insert(room);
+                    room_users
+                        .entry(room)
+                        .or_default()
+                        .insert(*member.user.as_bytes());
+                }
             }
         }
         users.sort_unstable();
@@ -3136,7 +3132,7 @@ mod tests {
         }
         // Phase `room_scoped_authority_admits_only_its_signed_room`.
         {
-            use collab_types::{Access, CapOverride, Effect, Expiry, Scope, Subject};
+            use collab_types::{Access, CapOverride, Effect, Scope, Subject};
 
             let temp = tempfile::tempdir().unwrap();
             let status = temp.path().join("status.json");
@@ -3151,32 +3147,36 @@ mod tests {
             let authority = fs::workspace_authority::WorkspaceAuthorityEnvelope::sign(
                 ticket.workspace_id(),
                 1,
-                vec![
-                    // The only capability that maps to a relay topic.
-                    CapOverride::new(
-                        Subject::User(collab_types::Ed25519PublicKey(collaborator_a)),
-                        Scope::Room("42".into()),
-                        Effect::Grant,
-                        Access::Read,
-                    ),
-                    // A Files grant is intentionally insufficient to subscribe
-                    // to any room, including unrelated room 43.
-                    CapOverride::new(
-                        Subject::User(collab_types::Ed25519PublicKey(path_only_collaborator)),
-                        Scope::FsPath("/".into()),
-                        Effect::Grant,
-                        Access::Read,
-                    ),
-                    // Expired room grants must not resurrect a former member
-                    // merely because the NAS reloads the signed authority.
-                    CapOverride::new(
-                        Subject::User(collab_types::Ed25519PublicKey(collaborator_a)),
-                        Scope::Room("43".into()),
-                        Effect::Grant,
-                        Access::Read,
-                    )
-                    .expiring(Expiry::AtUnix(0)),
-                ],
+                collab_types::FsAuthority {
+                    capabilities: vec![
+                        // A Files grant is intentionally insufficient to subscribe
+                        // to any room, including unrelated room 43.
+                        CapOverride::new(
+                            Subject::User(collab_types::Ed25519PublicKey(path_only_collaborator)),
+                            Scope::FsPath("/".into()),
+                            Effect::Grant,
+                            Access::Read,
+                        ),
+                    ],
+                    room_members: [
+                        (
+                            "42".to_owned(),
+                            vec![collab_types::RoomMember {
+                                user: collab_types::Ed25519PublicKey(collaborator_a),
+                                until: None,
+                            }],
+                        ),
+                        (
+                            "43".to_owned(),
+                            vec![collab_types::RoomMember {
+                                user: collab_types::Ed25519PublicKey(collaborator_a),
+                                until: Some(0),
+                            }],
+                        ),
+                    ]
+                    .into_iter()
+                    .collect(),
+                },
                 false,
                 &governor,
             )
@@ -3616,8 +3616,6 @@ mod tests {
     async fn live_authority_refresh_revokes_expires_and_resists_rollback() {
         // Phase `live_authority_refresh_removes_the_last_room_collaborator`.
         {
-            use collab_types::{Access, CapOverride, Effect, Scope, Subject};
-
             let temp = tempfile::tempdir().unwrap();
             let cache = temp.path().join("cache");
             std::fs::create_dir_all(&cache).unwrap();
@@ -3631,12 +3629,18 @@ mod tests {
             let granted = fs::workspace_authority::WorkspaceAuthorityEnvelope::sign(
                 ticket.workspace_id(),
                 1,
-                vec![CapOverride::new(
-                    Subject::User(collab_types::Ed25519PublicKey(collaborator)),
-                    Scope::Room("42".into()),
-                    Effect::Grant,
-                    Access::Read,
-                )],
+                collab_types::FsAuthority {
+                    capabilities: vec![],
+                    room_members: [(
+                        "42".to_owned(),
+                        vec![collab_types::RoomMember {
+                            user: collab_types::Ed25519PublicKey(collaborator),
+                            until: None,
+                        }],
+                    )]
+                    .into_iter()
+                    .collect(),
+                },
                 false,
                 &governor,
             )
@@ -3727,8 +3731,6 @@ mod tests {
         }
         // Phase `authority_refresh_rechecks_expiry_without_a_source_change`.
         {
-            use collab_types::{Access, CapOverride, Effect, Expiry, Scope, Subject};
-
             let temp = tempfile::tempdir().unwrap();
             let cache = temp.path().join("cache");
             let bundle_path = temp.path().join("home-peer.toml");
@@ -3741,17 +3743,18 @@ mod tests {
             let authority = fs::workspace_authority::WorkspaceAuthorityEnvelope::sign(
                 ticket.workspace_id(),
                 1,
-                vec![
-                    CapOverride::new(
-                        Subject::User(collab_types::Ed25519PublicKey(collaborator)),
-                        Scope::Room("42".into()),
-                        Effect::Grant,
-                        Access::Read,
-                    )
-                    // It is initially a future deadline, then becomes expired while
-                    // both authority files remain byte-for-byte unchanged.
-                    .expiring(Expiry::AtUnix(20)),
-                ],
+                collab_types::FsAuthority {
+                    capabilities: vec![],
+                    room_members: [(
+                        "42".to_owned(),
+                        vec![collab_types::RoomMember {
+                            user: collab_types::Ed25519PublicKey(collaborator),
+                            until: Some(20),
+                        }],
+                    )]
+                    .into_iter()
+                    .collect(),
+                },
                 false,
                 &governor,
             )
@@ -3837,8 +3840,6 @@ mod tests {
         }
         // Phase `authority_high_water_rejects_rollback_and_missing_cache_after_restart`.
         {
-            use collab_types::{Access, CapOverride, Effect, Scope, Subject};
-
             let temp = tempfile::tempdir().unwrap();
             let cache = temp.path().join("cache");
             std::fs::create_dir_all(&cache).unwrap();
@@ -3853,12 +3854,18 @@ mod tests {
             let granted = fs::workspace_authority::WorkspaceAuthorityEnvelope::sign(
                 ticket.workspace_id(),
                 1,
-                vec![CapOverride::new(
-                    Subject::User(collab_types::Ed25519PublicKey(collaborator)),
-                    Scope::Room("42".into()),
-                    Effect::Grant,
-                    Access::Read,
-                )],
+                collab_types::FsAuthority {
+                    capabilities: vec![],
+                    room_members: [(
+                        "42".to_owned(),
+                        vec![collab_types::RoomMember {
+                            user: collab_types::Ed25519PublicKey(collaborator),
+                            until: None,
+                        }],
+                    )]
+                    .into_iter()
+                    .collect(),
+                },
                 false,
                 &governor,
             )

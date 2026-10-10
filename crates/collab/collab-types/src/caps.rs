@@ -205,8 +205,6 @@ impl Actor {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub enum Scope {
-    /// Every sandboxed resource.
-    Workspace,
     /// A filesystem path and everything below it.
     FsPath(String),
     /// A device class (`camera`, `microphone`, `printer`, ...).
@@ -215,35 +213,114 @@ pub enum Scope {
     NetHost(String),
     /// A stable collaborative-file record id.
     FsRecord(String),
-    /// A room's replicated content, reached on a relay that holds it: the
-    /// shell's projection of the room's members for relays that never read
-    /// the room's policy. Never authority over the room's actions.
-    Room(String),
 }
 
 impl Scope {
     /// Does this scope cover `resource`?
     pub fn matches_resource(&self, resource: &ResourceRef) -> bool {
         match (self, resource) {
-            (Scope::Workspace, _) => true,
             (Scope::FsPath(prefix), ResourceRef::FsPath(path)) => path_covers(prefix, path),
             (Scope::Device(d), ResourceRef::Device(e))
-            | (Scope::FsRecord(d), ResourceRef::FsRecord(e))
-            | (Scope::Room(d), ResourceRef::Room(e)) => d == e,
+            | (Scope::FsRecord(d), ResourceRef::FsRecord(e)) => d == e,
             (Scope::NetHost(h), ResourceRef::NetHost(target)) => host_covers(h, target),
-            (
-                Scope::FsPath(_)
-                | Scope::Device(_)
-                | Scope::NetHost(_)
-                | Scope::FsRecord(_)
-                | Scope::Room(_),
-                _,
-            ) => false,
+            (Scope::FsPath(_) | Scope::Device(_) | Scope::NetHost(_) | Scope::FsRecord(_), _) => {
+                false
+            }
         }
     }
 }
 
-/// Does the path-prefix `prefix` cover `path`, respecting component
+/// What a governor exports to its filesystem and the relays that carry its
+/// rooms: the sandbox capabilities people hold over shared files, and who
+/// may reach each room a relay carries (keyed by the relay's room id) — the
+/// room's members, as its policy names them.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FsAuthority {
+    #[serde(default)]
+    pub capabilities: Vec<CapOverride>,
+    #[serde(default)]
+    pub room_members: std::collections::BTreeMap<String, Vec<RoomMember>>,
+}
+
+/// A person a relay admits to one room: until `until` (Unix seconds,
+/// exclusive) when their membership lapses, or for as long as they stay a
+/// member.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RoomMember {
+    pub user: crate::crypto::Ed25519PublicKey,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub until: Option<u64>,
+}
+
+impl RoomMember {
+    /// Whether the membership holds at `now` (Unix seconds).
+    #[must_use]
+    pub fn is_live_at(&self, now: u64) -> bool {
+        self.until.is_none_or(|until| now < until)
+    }
+}
+
+impl From<Vec<CapOverride>> for FsAuthority {
+    fn from(capabilities: Vec<CapOverride>) -> Self {
+        Self {
+            capabilities,
+            room_members: std::collections::BTreeMap::new(),
+        }
+    }
+}
+
+/// What a launch hands the apps of a room: which of them author the room
+/// (the room's grants let them change it; see
+/// `tilo_action_policy::roles::app_authorship`), and the room's sandbox
+/// capabilities. An app that is not an author opens as a viewer.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LaunchGrants {
+    #[serde(default)]
+    pub authors: Vec<String>,
+    #[serde(default)]
+    pub sandbox: Vec<CapOverride>,
+}
+
+impl LaunchGrants {
+    /// What reaches the app `app` itself: whether it authors, and only the
+    /// capabilities naming it. Restrictions travel too: the launcher's
+    /// decision needs them to narrow a grant.
+    #[must_use]
+    pub fn for_app(&self, app: &str) -> Self {
+        let want = Subject::app(app);
+        Self {
+            authors: self
+                .authors
+                .iter()
+                .filter(|author| author.as_str() == app)
+                .cloned()
+                .collect(),
+            sandbox: self
+                .sandbox
+                .iter()
+                .filter(|capability| capability.subject == want)
+                .cloned()
+                .collect(),
+        }
+    }
+
+    /// Whether `app` authors the room.
+    #[must_use]
+    pub fn authors(&self, app: &str) -> bool {
+        self.authors.iter().any(|author| author == app)
+    }
+
+    /// Nothing to hand over.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.authors.is_empty() && self.sandbox.is_empty()
+    }
+}
+
+/// Does the path-prefix `prefix` cover `path`, respecting component/// Does the path-prefix `prefix` cover `path`, respecting component
 /// boundaries?
 ///
 /// `/w/docs` covers `/w/docs/a.txt` but not `/w/docsX` — a prefix that
@@ -267,16 +344,10 @@ pub fn path_covers(prefix: &str, path: &str) -> bool {
 /// A sandboxed resource an app might reach.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ResourceRef {
-    /// The person's signing identity inside the app's sandbox: reading the
-    /// space without it is read-only participation, holding it is
-    /// authorship. Only a workspace-wide capability reaches it.
-    Workspace,
     FsPath(String),
     Device(String),
     NetHost(String),
     FsRecord(String),
-    /// A room's replicated content on a relay. See [`Scope::Room`].
-    Room(String),
 }
 
 /// When a capability dies — the `expiry` of `(subject, resource, verbs,
@@ -456,21 +527,6 @@ pub fn decide_capability(
         {
             continue;
         }
-        // An app's or agent's workspace grant makes it an author of the
-        // room, not a holder of storage, devices or network: it never
-        // reaches those, and never widens an explicit read-only file grant.
-        // A workspace restriction still clamps everything.
-        if cap.effect == Effect::Grant
-            && cap.scope == Scope::Workspace
-            && matches!(
-                cap.subject,
-                Subject::Principal(Principal::App(_) | Principal::Agent(_))
-            )
-            && resource != &ResourceRef::Workspace
-            && !matches!(resource, ResourceRef::Room(_))
-        {
-            continue;
-        }
         match cap.effect {
             Effect::Grant if cap.access.implies(access) => granted = true,
             Effect::Restrict if !cap.access.implies(access) => restricted = true,
@@ -487,47 +543,6 @@ pub fn decide_capability(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn an_apps_workspace_grant_reaches_no_storage_and_widens_no_file_grant() {
-        for (actor, subject) in [
-            (Actor::app("so.tilo.books"), Subject::app("so.tilo.books")),
-            (Actor::agent("reader"), Subject::agent("reader")),
-        ] {
-            let caps = vec![
-                CapOverride::grant(subject.clone(), Scope::Workspace, Access::Write),
-                CapOverride::grant(
-                    subject,
-                    Scope::FsPath("/approved/book.txt".into()),
-                    Access::Read,
-                ),
-            ];
-            let book = ResourceRef::FsPath("/approved/book.txt".into());
-            assert_eq!(
-                decide_capability(&actor, &book, Access::Read, &caps, None),
-                CapDecision::Allow
-            );
-            assert_ne!(
-                decide_capability(&actor, &book, Access::Write, &caps, None),
-                CapDecision::Allow,
-                "authorship of the room does not write the file"
-            );
-            assert_ne!(
-                decide_capability(
-                    &actor,
-                    &ResourceRef::FsPath("/home".into()),
-                    Access::Read,
-                    &caps,
-                    None
-                ),
-                CapDecision::Allow
-            );
-            assert_eq!(
-                decide_capability(&actor, &ResourceRef::Workspace, Access::Write, &caps, None),
-                CapDecision::Allow
-            );
-        }
-    }
 
     #[test]
     fn a_grant_reaches_its_scope_and_a_restriction_caps_it() {
@@ -559,7 +574,7 @@ mod tests {
         }
         caps.push(CapOverride::new(
             Subject::app("so.tilo.books"),
-            Scope::Workspace,
+            Scope::FsPath("/".into()),
             Effect::Restrict,
             Access::Read,
         ));

@@ -387,7 +387,7 @@ fn grants_and_capabilities_are_inspectable_scoped_and_expire() {
         let ctx = PermissionContext::permissive();
         // Not a bypass flag — an inspectable capability and a structural owner.
         assert_eq!(ctx.capabilities().len(), 1);
-        assert_eq!(ctx.capabilities()[0].scope, Scope::Workspace);
+        assert_eq!(ctx.capabilities()[0].scope, Scope::FsPath("/".into()));
         assert_eq!(ctx.capabilities()[0].access, Access::Write);
         assert!(ctx.check(&PermissionScope::governance(
             policy::roles::governance::SETTINGS

@@ -1,6 +1,6 @@
 //! The capability list a mount enforces, kept current while it runs.
 //!
-//! `--acl FILE` binds a JSON array of [`CapOverride`] records to a mount.
+//! `--acl FILE` binds the [`collab_types::FsAuthority`] the governor exports to a mount.
 //! `/var/workspace` stays mounted for the whole session, so binding the list
 //! by value at mount time would make "a later grant needs a remount" mean "a
 //! later grant does not apply". [`CapabilityFile`] owns the file and an
@@ -177,14 +177,14 @@ fn read_capabilities(path: &Path) -> Result<(Vec<CapOverride>, Stamp), CapsError
         path: path.to_path_buf(),
         source,
     })?);
-    let caps: Vec<CapOverride> =
+    let authority: collab_types::FsAuthority =
         serde_json::from_reader(std::io::BufReader::new(file)).map_err(|source| {
             CapsError::Parse {
                 path: path.to_path_buf(),
                 source,
             }
         })?;
-    Ok((caps, stamp))
+    Ok((authority.capabilities, stamp))
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -195,7 +195,7 @@ pub enum CapsError {
         #[source]
         source: std::io::Error,
     },
-    #[error("capability list {path} is not a JSON array of capabilities: {source}")]
+    #[error("capability list {path} is not the governor's file authority: {source}")]
     Parse {
         path: PathBuf,
         #[source]

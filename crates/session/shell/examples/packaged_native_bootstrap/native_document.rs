@@ -213,18 +213,14 @@ fn native_record_observation(
         let member = view
             .peer()
             .permissions(view.device().device_public_key, now)?;
-        let sandbox = view.peer().governed_sandbox()?;
-        let seconds = now
+        let millis = now
             .duration_since(SystemTime::UNIX_EPOCH)
             .map_err(|_| "owner policy clock is unavailable")?
-            .as_secs();
-        let app_write_permitted = collab_types::caps::decide_capability(
-            &collab_types::caps::Actor::app("so.tilo.chat").in_room(room_text),
-            &collab_types::caps::ResourceRef::Workspace,
-            collab_types::caps::Access::Write,
-            &sandbox,
-            Some(seconds),
-        ) == collab_types::caps::CapDecision::Allow;
+            .as_millis();
+        let app_write_permitted = member.policy.app_authors(
+            "so.tilo.chat",
+            &tilo_action_policy::Context::at(u64::try_from(millis).unwrap_or(u64::MAX)),
+        );
         let person_write_permitted = member.allows(
             &member.policy.node(),
             tilo_action_policy::ActionKind::Undoable,

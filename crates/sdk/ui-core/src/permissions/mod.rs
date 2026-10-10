@@ -265,7 +265,7 @@ impl PermissionContext {
     }
 
     /// The **unrestricted local user**: the owner of [`LOCAL_ROOM`] holding
-    /// one explicit sandbox capability over every sandboxed resource.
+    /// one explicit sandbox capability over the whole filesystem.
     ///
     /// Not a bypass flag — ownership is the room's structural rule and the
     /// sandbox reach is a real [`CapOverride`], both evaluated like any other.
@@ -276,8 +276,12 @@ impl PermissionContext {
         Self::new(
             Actor::person(LOCAL_USER),
             vec![
-                CapOverride::grant(Subject::person(LOCAL_USER), Scope::Workspace, Access::Write)
-                    .with_id("local-user-unrestricted"),
+                CapOverride::grant(
+                    Subject::person(LOCAL_USER),
+                    Scope::FsPath("/".into()),
+                    Access::Write,
+                )
+                .with_id("local-user-unrestricted"),
             ],
             Standing::person(policy::RoomPolicy::new(LOCAL_ROOM, LOCAL_USER), LOCAL_USER),
         )
@@ -749,7 +753,7 @@ mod tests {
             )));
             assert_eq!(ctx.capabilities().len(), 1);
             assert_eq!(ctx.capabilities()[0].access, Access::Write);
-            assert_eq!(ctx.capabilities()[0].scope, Scope::Workspace);
+            assert_eq!(ctx.capabilities()[0].scope, Scope::FsPath("/".into()));
             assert!(ctx.check(&PermissionScope::app("notes", ActionKind::Outside)));
 
             // The same owner, no capability: a room role confers no reach over

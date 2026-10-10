@@ -1,7 +1,7 @@
 //! A workspace: a unit of collaboration with its own strips, members and
 //! permissions.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use serde::{Deserialize, Serialize};
 
@@ -736,6 +736,51 @@ impl Workspace {
         roster
     }
 
+    /// The people who may read the whole room at `now`, each with when that
+    /// lapses (Unix seconds, exclusive): `None` for its members and anyone
+    /// granted until revoked, the end of a time-limited grant otherwise. A
+    /// grant that ends with the session is no standing reach and is left out.
+    #[must_use]
+    pub fn room_readers_at(&self, now: u64) -> Vec<(UserId, Option<u64>)> {
+        let room = self.node();
+        let cx = context_at(now);
+        let mut readers: BTreeMap<UserId, Option<u64>> = self
+            .roster()
+            .into_iter()
+            .map(|(person, _)| (person, None))
+            .collect();
+        for grant in &self.policy.grants {
+            let Subject::Person(person) = &grant.subject else {
+                continue;
+            };
+            if grant.answer != Answer::Allow
+                || !grant.kinds.contains(ActionKind::Read)
+                || !grant.node.covers(&room)
+            {
+                continue;
+            }
+            let until = match grant.lifetime {
+                Lifetime::Until(ms) => Some(ms / 1000),
+                Lifetime::UntilRevoked => None,
+                Lifetime::Once | Lifetime::Task(_) | Lifetime::Session(_) => continue,
+            };
+            let held = readers.entry(person.clone()).or_insert(until);
+            *held = match (*held, until) {
+                (Some(a), Some(b)) => Some(a.max(b)),
+                _ => None,
+            };
+        }
+        readers
+            .into_iter()
+            .filter(|(person, _)| {
+                Authority::person(self.policy.party(person))
+                    .decide(&room, ActionKind::Read, &cx)
+                    .answer
+                    == Answer::Allow
+            })
+            .collect()
+    }
+
     /// The agents the room admits: those holding a live grant on the room
     /// itself, with the kinds it allows them.
     #[must_use]
@@ -783,6 +828,35 @@ impl Workspace {
                 .decide(node, kind, &context_at(now))
                 .answer,
         )
+    }
+
+    /// What a launch into this room hands its apps at `now`: the apps the
+    /// room's grants make authors, and the room's sandbox.
+    #[must_use]
+    pub fn launch_grants(&self, now: u64) -> collab_types::caps::LaunchGrants {
+        let mut authors: Vec<String> = self
+            .policy
+            .grants
+            .iter()
+            .filter_map(|grant| match &grant.subject {
+                Subject::App(app) => Some(app.clone()),
+                _ => None,
+            })
+            .filter(|app| self.app_is_author_at(app, now))
+            .collect();
+        authors.sort();
+        authors.dedup();
+        collab_types::caps::LaunchGrants {
+            authors,
+            sandbox: self.sandbox.clone(),
+        }
+    }
+
+    /// Whether application `app` is an author of the room at `now`: it may
+    /// change the room's content ([`roles::app_authorship`]).
+    #[must_use]
+    pub fn app_is_author_at(&self, app: &str, now: u64) -> bool {
+        self.policy.app_authors(app, &context_at(now))
     }
 
     /// The answer the grant sets of the tasks an invocation works in give
