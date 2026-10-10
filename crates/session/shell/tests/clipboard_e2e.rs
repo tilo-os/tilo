@@ -715,7 +715,13 @@ impl Compositor {
             .lock()
             .map(|l| {
                 let start = l.len().saturating_sub(40);
-                l[start..].join("\n")
+                l[..start]
+                    .iter()
+                    .filter(|line| line.contains("Wayland client disconnected"))
+                    .chain(l[start..].iter())
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join("\n")
             })
             .unwrap_or_default()
     }
@@ -799,7 +805,7 @@ impl Drop for Compositor {
             let _ = writeln!(
                 std::io::stderr().lock(),
                 "owned compositor status before failure cleanup: {status:?}\n\
-                 compositor log tail (at most 40 lines / 16384 characters):\n{log}"
+                 compositor disconnects and log tail (16384 characters):\n{log}"
             );
         }
         let _ = self.child.kill();
@@ -1195,7 +1201,13 @@ impl TestClient {
     fn roundtrip(&mut self) {
         self.queue
             .roundtrip(&mut self.state)
-            .expect("client roundtrip");
+            .unwrap_or_else(|error| {
+                panic!(
+                    "client roundtrip: app_id={} error={error:?} protocol_error={:?}",
+                    self.app_id,
+                    self.conn.protocol_error()
+                )
+            });
     }
 
     fn clear_keyboard_trace(&mut self) {
@@ -1288,7 +1300,23 @@ impl TestClient {
     /// `wl_pointer.enter` is the only authority, so a strip-layout change moves
     /// the drag with it instead of aiming at chrome.
     fn pointer_target(&mut self, compositor: &Compositor) -> (f64, f64) {
-        if let Some(p) = self.try_pointer_target(compositor) {
+        self.pointer_target_servicing_peer(compositor, None)
+    }
+
+    fn pointer_target_with_peer(
+        &mut self,
+        compositor: &Compositor,
+        peer: &mut TestClient,
+    ) -> (f64, f64) {
+        self.pointer_target_servicing_peer(compositor, Some(peer))
+    }
+
+    fn pointer_target_servicing_peer(
+        &mut self,
+        compositor: &Compositor,
+        peer: Option<&mut TestClient>,
+    ) -> (f64, f64) {
+        if let Some(p) = self.try_pointer_target(compositor, peer) {
             return p;
         }
         let (w, h) = compositor.size;
@@ -1336,7 +1364,11 @@ impl TestClient {
     /// laid-out client surface are tried first, which finds the same first
     /// point as a whole-screen scan without moving the pointer across every
     /// empty cell; the whole screen is still scanned when that finds nothing.
-    fn try_pointer_target(&mut self, compositor: &Compositor) -> Option<(f64, f64)> {
+    fn try_pointer_target(
+        &mut self,
+        compositor: &Compositor,
+        mut peer: Option<&mut TestClient>,
+    ) -> Option<(f64, f64)> {
         // A point found while the strip still scrolls is stale once it stops.
         compositor.wait_for_layout_to_settle(
             |name| name.starts_with("foreign-surface-"),
@@ -1353,11 +1385,12 @@ impl TestClient {
             })
         };
         if !surfaces.is_empty()
-            && let Some(point) = self.scan_pointer_grid(compositor, near_a_surface)
+            && let Some(point) =
+                self.scan_pointer_grid(compositor, near_a_surface, peer.as_deref_mut())
         {
             return Some(point);
         }
-        self.scan_pointer_grid(compositor, |_, _| true)
+        self.scan_pointer_grid(compositor, |_, _| true, peer)
     }
 
     /// Move the pointer over the screen's grid points that `visit` admits, in
@@ -1367,6 +1400,7 @@ impl TestClient {
         &mut self,
         compositor: &Compositor,
         visit: impl Fn(f64, f64) -> bool,
+        mut peer: Option<&mut TestClient>,
     ) -> Option<(f64, f64)> {
         let (w, h) = compositor.size;
         self.state.pointer_entered = false;
@@ -1377,6 +1411,9 @@ impl TestClient {
                 if visit(f64::from(x), f64::from(y)) {
                     compositor.pointer_move(f64::from(x), f64::from(y));
                     self.pump();
+                    if let Some(peer) = peer.as_deref_mut() {
+                        peer.pump();
+                    }
                     if self.state.pointer_entered {
                         self.step(&format!("receives pointer input at ({x}, {y})"));
                         return Some((f64::from(x), f64::from(y)));
@@ -1387,6 +1424,16 @@ impl TestClient {
             y = y.saturating_add(POINTER_GRID_STEP);
         }
         None
+    }
+
+    /// Service the other application while pointer scans deliver events to it.
+    fn scan_pointer_grid_with_peer(
+        &mut self,
+        compositor: &Compositor,
+        visit: impl Fn(f64, f64) -> bool,
+        peer: &mut TestClient,
+    ) -> Option<(f64, f64)> {
+        self.scan_pointer_grid(compositor, visit, Some(peer))
     }
 
     /// Attach an opaque `wl_shm` buffer and commit, so the compositor has real
@@ -1468,7 +1515,13 @@ impl TestClient {
     fn pump(&mut self) {
         self.queue
             .roundtrip(&mut self.state)
-            .expect("client roundtrip while pumping");
+            .unwrap_or_else(|error| {
+                panic!(
+                    "client roundtrip while pumping: app_id={} error={error:?} protocol_error={:?}",
+                    self.app_id,
+                    self.conn.protocol_error()
+                )
+            });
     }
 
     /// Cooperate with an `xdg_toplevel.close` by destroying in reverse
@@ -4192,13 +4245,13 @@ fn client_text_drag_on_a_tiled_edge_opens_a_new_group() {
     // Click the source once before measuring anything — clicking raises its
     // window group, which scrolls the strip, so a position measured before
     // the click is stale afterward.
-    let settle_point = source.pointer_target(&compositor);
+    let settle_point = source.pointer_target_with_peer(&compositor, &mut target);
     compositor.pointer_move(settle_point.0, settle_point.1);
     compositor.pointer_button(true);
     compositor.pointer_button(false);
 
-    let target_point = target.pointer_target(&compositor);
-    let source_point = source.pointer_target(&compositor);
+    let target_point = target.pointer_target_with_peer(&compositor, &mut source);
+    let source_point = source.pointer_target_with_peer(&compositor, &mut target);
     let before = tree_shape(&compositor.workspace_tree());
 
     // Press inside the source tile for a real implicit grab; the serial must
@@ -4292,6 +4345,57 @@ fn client_text_drag_on_a_tiled_edge_opens_a_new_group() {
         [opened_title.as_str()],
         "the outer edge creates a singleton sibling group"
     );
+}
+
+/// A second native application keeps receiving input while the first discovers
+/// its pointer target. Both connections must remain usable after repeated real
+/// pointer scans; a single test thread must service both applications.
+#[test]
+fn pointer_discovery_keeps_another_tiled_client_connected() {
+    let compositor = Compositor::start();
+    compositor.place_next_window("org.tilo.test.pointer-discovery-peer");
+    let mut peer = TestClient::new(compositor.connect(), "org.tilo.test.pointer-discovery-peer");
+    peer.map_window(&compositor);
+    compositor.place_next_window("org.tilo.test.pointer-discovery-target");
+    let mut target = TestClient::new(
+        compositor.connect(),
+        "org.tilo.test.pointer-discovery-target",
+    );
+    target.map_window(&compositor);
+    let point = peer.pointer_target(&compositor);
+    compositor.pointer_move(point.0, point.1);
+    compositor.pointer_button(true);
+    compositor.pointer_button(false);
+    peer.pump();
+    let point = peer.pointer_target(&compositor);
+    target.pump();
+    peer.clear_touch_and_pointer_trace();
+
+    let started = Instant::now();
+    for _ in 0..512 {
+        let found = target.scan_pointer_grid_with_peer(
+            &compositor,
+            |x, y| x == point.0 && (y == point.1 || y == point.1 + 40.0),
+            &mut peer,
+        );
+        if found.is_some() {
+            peer.pump();
+        }
+        assert!(
+            found.is_none(),
+            "pointer scans over the peer must not enter this tiled client"
+        );
+        assert!(
+            started.elapsed() < deadline(),
+            "pointer discovery exceeded its existing hang bound"
+        );
+    }
+    peer.pump();
+    assert!(
+        peer.state.pointer_events.contains(&"motion"),
+        "the other client must receive the actual pointer scans"
+    );
+    target.pump();
 }
 
 impl Compositor {
