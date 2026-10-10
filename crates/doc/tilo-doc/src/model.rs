@@ -779,22 +779,17 @@ fn note_blocks_obj(doc: &AutoCommit, c: &Containers, id: &str) -> Option<ObjId> 
 /// The note ids present in the document, in a stable (sorted) order so two replicas converge
 /// byte-identically; citation order in the body text is recovered separately from `note-ref` marks.
 pub fn note_ids(doc: &AutoCommit, c: &Containers) -> Vec<String> {
-    match notes_obj(doc, c) {
-        Some(notes) => {
-            let mut ids: Vec<String> = doc
-                .keys(&notes)
-                .filter(|id| {
-                    matches!(
-                        doc.get(&notes, id),
-                        Ok(Some((Value::Object(ObjType::Map), _)))
-                    )
-                })
-                .collect();
-            ids.sort();
-            ids
-        }
-        None => Vec::new(),
-    }
+    notes_obj(doc, c).map_or_else(Vec::new, |notes| sorted_record_ids(doc, &notes))
+}
+
+/// The keys of `obj` that hold a record (a nested map), sorted.
+fn sorted_record_ids(doc: &AutoCommit, obj: &ObjId) -> Vec<String> {
+    let mut ids: Vec<String> = doc
+        .keys(obj)
+        .filter(|id| matches!(doc.get(obj, id), Ok(Some((Value::Object(ObjType::Map), _)))))
+        .collect();
+    ids.sort();
+    ids
 }
 
 /// A single note's kind (`Footnote`/`Endnote`), or `None` if the id is unknown.
@@ -1196,22 +1191,7 @@ fn change_obj(doc: &AutoCommit, c: &Containers, id: &str) -> Option<ObjId> {
 /// The change ids present in the document, in a stable (sorted) order so replicas converge byte-identically;
 /// anchored ranges are recovered separately from the body `ins`/`del` marks.
 pub fn change_ids(doc: &AutoCommit, c: &Containers) -> Vec<String> {
-    match changes_obj(doc, c) {
-        Some(changes) => {
-            let mut ids: Vec<String> = doc
-                .keys(&changes)
-                .filter(|id| {
-                    matches!(
-                        doc.get(&changes, id),
-                        Ok(Some((Value::Object(ObjType::Map), _)))
-                    )
-                })
-                .collect();
-            ids.sort();
-            ids
-        }
-        None => Vec::new(),
-    }
+    changes_obj(doc, c).map_or_else(Vec::new, |changes| sorted_record_ids(doc, &changes))
 }
 
 /// A change's author display name (empty if unset / unknown id).
@@ -1577,14 +1557,17 @@ pub fn doc_prop(doc: &AutoCommit, c: &Containers, name: &str) -> Option<String> 
 
 /// All document properties (`name → value`) as a sorted map, empty if none are set.
 pub fn doc_props(doc: &AutoCommit, c: &Containers) -> BTreeMap<String, String> {
+    props_obj(doc, c).map_or_else(BTreeMap::new, |props| string_entries(doc, &props))
+}
+
+/// The string-valued entries of the map `obj` (`key → value`), sorted by key.
+pub(crate) fn string_entries(doc: &AutoCommit, obj: &ObjId) -> BTreeMap<String, String> {
     let mut out = BTreeMap::new();
-    if let Some(props) = props_obj(doc, c) {
-        for k in doc.keys(&props) {
-            if let Ok(Some((v, _))) = doc.get(&props, &k)
-                && let Some(s) = v.as_str()
-            {
-                out.insert(k, s.to_string());
-            }
+    for k in doc.keys(obj) {
+        if let Ok(Some((v, _))) = doc.get(obj, &k)
+            && let Some(s) = v.as_str()
+        {
+            out.insert(k, s.to_string());
         }
     }
     out

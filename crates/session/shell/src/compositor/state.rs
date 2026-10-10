@@ -4511,7 +4511,16 @@ impl Default for ClientState {
 
 impl ClientData for ClientState {
     fn initialized(&self, _client_id: ClientId) {}
-    fn disconnected(&self, _client_id: ClientId, _reason: DisconnectReason) {}
+    fn disconnected(&self, client_id: ClientId, reason: DisconnectReason) {
+        tracing::debug!(
+            ?client_id,
+            connection = self.index,
+            pid = self.pid,
+            privileged = self.privileged,
+            ?reason,
+            "Wayland client disconnected"
+        );
+    }
 }
 
 impl ClientState {

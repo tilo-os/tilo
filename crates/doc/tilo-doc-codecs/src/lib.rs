@@ -129,6 +129,38 @@ pub fn resolve_general_ref(reference: &quick_xml::events::BytesRef<'_>) -> Optio
     }
 }
 
+#[cfg(any(feature = "docx", feature = "odt"))]
+/// The generic family (`mono`, `serif` or `sans`) a document font name falls under.
+pub(crate) fn generic_font(name: &str) -> String {
+    let n = name.to_ascii_lowercase();
+    if n.contains("mono") || n.contains("courier") || n.contains("consol") {
+        "mono".into()
+    } else if (n.contains("serif") && !n.contains("sans"))
+        || n.contains("times")
+        || n.contains("georgia")
+        || n.contains("garamond")
+        || n.contains("roman")
+    {
+        "serif".into()
+    } else {
+        "sans".into()
+    }
+}
+
+/// The spreadsheet codec for a file extension (`xlsx`/`ods`, case-insensitive) — separate
+/// from [`builtin_registry`] since spreadsheets speak [`SheetProvider`], not [`FormatProvider`].
+/// Only the formats this build enables resolve.
+#[cfg(any(feature = "xlsx", feature = "ods"))]
+pub fn sheet_provider_for_ext(ext: &str) -> Option<Box<dyn SheetProvider>> {
+    match ext.to_ascii_lowercase().as_str() {
+        #[cfg(feature = "xlsx")]
+        "xlsx" => Some(Box::new(XlsxCodec)),
+        #[cfg(feature = "ods")]
+        "ods" => Some(Box::new(OdsCodec)),
+        _ => None,
+    }
+}
+
 /// Spreadsheet formats the platform opens as a workbook resource, whatever this build compiles.
 pub const SHEET_EXTENSIONS: &[&str] = &["xlsx", "ods"];
 

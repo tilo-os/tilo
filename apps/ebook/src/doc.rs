@@ -250,39 +250,13 @@ impl BooksDoc {
     /// built-in [`default_fonts`] set is returned without writing, so the
     /// document stays clean until the user actually edits the registry.
     pub fn read_fonts(doc: &AutoCommit) -> Vec<FontEntry> {
-        let mut out = default_fonts();
-        if let Ok(Some((Value::Object(ObjType::List), list))) = doc.get(&ROOT, "fonts") {
-            out.clear();
-            for i in 0..doc.length(&list) {
-                let Ok(Some((Value::Object(ObjType::Map), e))) = doc.get(&list, i) else {
-                    continue;
-                };
-                if let Some(font) = Self::read_font_entry(doc, &e, None) {
-                    out.push(font);
-                }
-            }
-        }
-        for entries in Self::root_maps(doc, "font_entries") {
-            let keys: Vec<String> = doc.keys(&entries).collect();
-            for id in keys {
-                if Self::has_tombstone(doc, "font_tombstones", &id) {
-                    continue;
-                }
-                let Ok(Some((Value::Object(ObjType::Map), entry))) = doc.get(&entries, &id) else {
-                    continue;
-                };
-                let Some(font) = Self::read_font_entry(doc, &entry, Some(id.as_str())) else {
-                    continue;
-                };
-                if let Some(existing) = out.iter_mut().find(|existing| existing.id == font.id) {
-                    *existing = font;
-                } else {
-                    out.push(font);
-                }
-            }
-        }
-        out.retain(|font| !Self::has_tombstone(doc, "font_tombstones", &font.id));
-        if out.is_empty() { default_fonts() } else { out }
+        Self::read_registry(
+            doc,
+            default_fonts,
+            ["fonts", "font_entries", "font_tombstones"],
+            Self::read_font_entry,
+            |font| &font.id,
+        )
     }
 
     fn read_font_entry(
@@ -509,43 +483,13 @@ impl BooksDoc {
     /// Read the registered colour schemes, falling back to the built-ins when
     /// none are stored (kept out of the document until the user edits them).
     pub fn read_schemes(doc: &AutoCommit) -> Vec<ColorScheme> {
-        let mut out = default_schemes();
-        if let Ok(Some((Value::Object(ObjType::List), list))) = doc.get(&ROOT, "schemes") {
-            out.clear();
-            for i in 0..doc.length(&list) {
-                let Ok(Some((Value::Object(ObjType::Map), e))) = doc.get(&list, i) else {
-                    continue;
-                };
-                if let Some(scheme) = Self::read_scheme_entry(doc, &e, None) {
-                    out.push(scheme);
-                }
-            }
-        }
-        for entries in Self::root_maps(doc, "scheme_entries") {
-            let keys: Vec<String> = doc.keys(&entries).collect();
-            for id in keys {
-                if Self::has_tombstone(doc, "scheme_tombstones", &id) {
-                    continue;
-                }
-                let Ok(Some((Value::Object(ObjType::Map), entry))) = doc.get(&entries, &id) else {
-                    continue;
-                };
-                let Some(scheme) = Self::read_scheme_entry(doc, &entry, Some(id.as_str())) else {
-                    continue;
-                };
-                if let Some(existing) = out.iter_mut().find(|existing| existing.id == scheme.id) {
-                    *existing = scheme;
-                } else {
-                    out.push(scheme);
-                }
-            }
-        }
-        out.retain(|scheme| !Self::has_tombstone(doc, "scheme_tombstones", &scheme.id));
-        if out.is_empty() {
-            default_schemes()
-        } else {
-            out
-        }
+        Self::read_registry(
+            doc,
+            default_schemes,
+            ["schemes", "scheme_entries", "scheme_tombstones"],
+            Self::read_scheme_entry,
+            |scheme| &scheme.id,
+        )
     }
 
     fn read_scheme_entry(
@@ -680,6 +624,55 @@ impl BooksDoc {
         Self::root_maps(doc, key)
             .iter()
             .any(|tombstones| read_bool(doc, tombstones, id).unwrap_or(false))
+    }
+
+    /// Read a user-editable registry (fonts, colour schemes) stored under the
+    /// root `[list, entries, tombstones]` keys: a legacy list replaces the
+    /// `defaults`, keyed entries override or extend it by id, tombstoned ids
+    /// drop out, and an empty result falls back to the `defaults` again.
+    fn read_registry<T>(
+        doc: &AutoCommit,
+        defaults: fn() -> Vec<T>,
+        [list_key, entries_key, tombstones_key]: [&str; 3],
+        read_entry: fn(&AutoCommit, &ObjId, Option<&str>) -> Option<T>,
+        id_of: fn(&T) -> &str,
+    ) -> Vec<T> {
+        let mut out = defaults();
+        if let Ok(Some((Value::Object(ObjType::List), list))) = doc.get(&ROOT, list_key) {
+            out.clear();
+            for i in 0..doc.length(&list) {
+                let Ok(Some((Value::Object(ObjType::Map), e))) = doc.get(&list, i) else {
+                    continue;
+                };
+                if let Some(item) = read_entry(doc, &e, None) {
+                    out.push(item);
+                }
+            }
+        }
+        for entries in Self::root_maps(doc, entries_key) {
+            let keys: Vec<String> = doc.keys(&entries).collect();
+            for id in keys {
+                if Self::has_tombstone(doc, tombstones_key, &id) {
+                    continue;
+                }
+                let Ok(Some((Value::Object(ObjType::Map), entry))) = doc.get(&entries, &id) else {
+                    continue;
+                };
+                let Some(item) = read_entry(doc, &entry, Some(id.as_str())) else {
+                    continue;
+                };
+                if let Some(existing) = out
+                    .iter_mut()
+                    .find(|existing| id_of(existing) == id_of(&item))
+                {
+                    *existing = item;
+                } else {
+                    out.push(item);
+                }
+            }
+        }
+        out.retain(|item| !Self::has_tombstone(doc, tombstones_key, id_of(item)));
+        if out.is_empty() { defaults() } else { out }
     }
 
     pub fn annotation_is_deleted(doc: &AutoCommit, id: Uuid) -> bool {
