@@ -120,6 +120,8 @@ pub enum Command {
     /// Manage slots: your user, session and layer stack inside a VM.
     #[command(subcommand)]
     Slot(SlotCommand),
+    /// Import an exact same-run layer artifact without invoking Cargo or a builder.
+    SwapArtifact(ArtifactSwap),
     /// Put a build of a component (or an app) into a slot and restart what it needs.
     #[command(
         after_help = "Examples:\n  tilo-vm swap shell                      # your slot, built in the VM from this worktree\n  tilo-vm swap shell --profile dev        # faster compile, slower binary\n  tilo-vm swap --slot vm fs               # VM-wide component into the vm slot\n  tilo-vm swap app:notes                  # package and install one app; live at its next launch\n  tilo-vm swap shell --from ci:main-1a2b3c4   # the CI build of a published image\n  tilo-vm swap shell --from sha:1a2b3c4   # the CI build of a main commit\n  tilo-vm swap shell --builder host       # build on this Linux host instead\n  tilo-vm swap --slot review-a launcher --from layer:3f9c...\n  tilo-vm swap kernel                     # build os/kernel incrementally, install VM-wide, reboot\n  tilo-vm swap kernel --jobs 4            # fewer parallel compile jobs (default: half the CPUs)\n  tilo-vm swap kernel --direct            # boot the host build directly (libvirt), install nothing\n  tilo-vm swap kernel --direct --cmdline 'root=UUID=... ro console=ttyS0'   # when the VM is not up\n  tilo-vm rollback --slot vm              # back to the previous kernel (or off the direct boot)\n\nKernel: the build reuses ~/.cache/tilo-kernel/, so after the first (long) build\nonly what changed recompiles; see tilo-vm guide kernel.\n\nBuild profile: builds from this worktree use the component's manifest profile\n(release for almost all) with the manifest's features plus each package's\ndev-overrides feature, so speed is realistic and the harness variables work.\n--profile dev compiles much faster and runs slower; the layer records which."
@@ -293,6 +295,26 @@ pub enum Command {
         #[arg(long)]
         keep_targets: Option<u32>,
     },
+}
+
+/// The expected identities come from the authenticated upstream job, not the downloaded receipt.
+#[derive(Debug, Args)]
+pub struct ArtifactSwap {
+    pub component: String,
+    #[arg(long)]
+    pub slot: Option<String>,
+    #[arg(long)]
+    pub receipt: PathBuf,
+    #[arg(long)]
+    pub source: String,
+    #[arg(long)]
+    pub builder_image: String,
+    #[arg(long)]
+    pub run_id: u64,
+    #[arg(long)]
+    pub run_attempt: u32,
+    #[arg(long)]
+    pub receipt_sha256: String,
 }
 
 #[derive(Debug, Subcommand)]
