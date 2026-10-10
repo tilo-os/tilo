@@ -48,7 +48,7 @@ class AppSdkWorkflow(unittest.TestCase):
         self.assertEqual(paths("pull_request"), paths("push"))
 
     def test_jobs_test_the_same_main(self) -> None:
-        for name in ("policy", "linux", "web", "web-size"):
+        for name in ("policy", "linux", "web-tool", "web", "web-size"):
             body = job(name)
             self.assertEqual(body.count("uses: ./.forgejo/actions/merge-main"), 1, name)
             self.assertIn("main: ${{ needs.builder.outputs.main }}", body, name)
@@ -57,7 +57,7 @@ class AppSdkWorkflow(unittest.TestCase):
         self.assertIn('default: all', block('on', 0))
         self.assertIn('options: [all, linux]', block('on', 0))
         selector = "(github.event_name != 'workflow_dispatch' || github.event.inputs.lanes != 'linux')"
-        for name in ('web', 'web-size'):
+        for name in ('web-tool', 'web', 'web-size'):
             body = job(name)
             self.assertIn(selector + " && !cancelled()", body)
             self.assertIn("needs.builder.outputs.affected == 'true'", body)

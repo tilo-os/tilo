@@ -36,7 +36,7 @@ class AppSdkComputeWorkflowTests(unittest.TestCase):
     def test_release_gate_qualifies_uploaded_bytes_without_blocking_dev_mount(self):
         source = WORKFLOW.read_text()
         web, release = job(source, "web"), job(source, "web-size")
-        self.assertIn("needs: [builder, policy]", web)
+        self.assertIn("needs: [builder, policy, web-tool]", web)
         self.assertNotIn("web-size", web)
         condition = "needs.builder.outputs.affected == 'true' }}"
         self.assertIn(condition, web)
@@ -46,7 +46,8 @@ class AppSdkComputeWorkflowTests(unittest.TestCase):
         self.assertIn("--bundle desktop --release", release)
         self.assertEqual(source.count("@puppeteer/browsers@2 install"), 2)
         self.assertIn("@puppeteer/browsers@2 install", release)
-        self.assertNotIn("actions/download-artifact@", web)
+        self.assertIn("name: app-sdk-native-tool-${{ github.run_id }}-${{ github.run_attempt }}", web)
+        self.assertNotIn("name: app-sdk-release-compute", web)
         self.assertIn("@puppeteer/browsers@2 install", web)
         self.assertIn("name: app-sdk-release-compute", release)
         self.assertIn("if-no-files-found: error", release)

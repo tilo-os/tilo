@@ -18,6 +18,7 @@ on:
       - "crates/**"
       - "rust-toolchain.toml"
       - "tools/ci/app_sdk_affected.py"
+      - "tools/ci/sdk_tool_artifact.py"
       - "tools/ci/workspace_graph.py"
       - "tools/policy/app_capability*"
       - "tools/policy/app_portability*"
@@ -36,6 +37,7 @@ on:
       - "crates/**"
       - "rust-toolchain.toml"
       - "tools/ci/app_sdk_affected.py"
+      - "tools/ci/sdk_tool_artifact.py"
       - "tools/ci/workspace_graph.py"
       - "tools/policy/app_capability*"
       - "tools/policy/app_portability*"
@@ -151,6 +153,60 @@ jobs:
             python3 tools/ci/app_sdk_affected.py ${MAIN:+--base "$MAIN"} --github-output "$GITHUB_OUTPUT"
             python3 tools/ci/app_sdk_affected.py ${MAIN:+--base "$MAIN"} --lane linux --github-output "$GITHUB_OUTPUT"
           fi
+
+  # Qualification: one exact-source native CLI on existing quality capacity.
+  # Dev/release browser graphs and all their tests remain independent below.
+  # Keep the PR held until natural critical-path/resource comparison passes.
+  web-tool:
+    needs: [builder, policy]
+    if: ${{ (github.event_name != 'workflow_dispatch' || github.event.inputs.lanes != 'linux') && !cancelled() && needs.builder.result == 'success' && (github.event_name != 'pull_request' || needs.policy.result == 'success') && needs.builder.outputs.affected == 'true' }}
+    runs-on: runner-quality
+    timeout-minutes: 30
+    env:
+      CARGO_BUILD_JOBS: "2"
+    outputs:
+      receipt-sha256: ${{ steps.receipt.outputs.sha256 }}
+    container:
+      image: ${{ needs.builder.outputs.image }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 1
+      - name: Merge onto main
+        uses: ./.forgejo/actions/merge-main
+        with:
+          main: ${{ needs.builder.outputs.main }}
+      - name: Prepare Rust build caches
+        uses: ./.forgejo/actions/prepare-rust-build
+      - name: Build the exact native browser tool once
+        run: |
+          set -euo pipefail
+          bash tools/ci/assert-native-runner.sh x86_64
+          test -z "$(git status --porcelain --untracked-files=no)"
+          source_before=$(git rev-parse HEAD)
+          bash tools/ci/measure.sh "SDK shared native tool build" -- \
+            cargo build --locked -p tilo-app-cli --bin tilo-app
+          test "$source_before" = "$(git rev-parse HEAD)"
+      - name: Bind source, builder and workflow identity
+        id: receipt
+        env:
+          BUILDER_IMAGE: ${{ needs.builder.outputs.image }}
+        run: |
+          set -euo pipefail
+          digest=$(python3 tools/ci/sdk_tool_artifact.py create --repo . \
+            --directory "$RUNNER_TEMP/sdk-native-tool" --builder-image "$BUILDER_IMAGE" \
+            --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT" --toolchain "$(rustc -Vv)")
+          echo "sha256=$digest" >> "$GITHUB_OUTPUT"
+      - name: Upload the verified same-run native tool
+        uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
+        with:
+          name: app-sdk-native-tool-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/sdk-native-tool
+          if-no-files-found: error
+      - name: Report compiler cache
+        if: always()
+        run: bash tools/ci/sccache.sh report || true
 
   # Linux: the CLI's own tests, the Linux artifact and .tapp of a
   # representative app, and a generated app built outside the repository.
@@ -290,8 +346,8 @@ jobs:
   # app mounted in headless Chromium on WebGPU.
   web:
     # The dev mount does not consume release artifacts; build both lanes in parallel.
-    needs: [builder, policy]
-    if: ${{ (github.event_name != 'workflow_dispatch' || github.event.inputs.lanes != 'linux') && !cancelled() && needs.builder.result == 'success' && (github.event_name != 'pull_request' || needs.policy.result == 'success') && needs.builder.outputs.affected == 'true' }}
+    needs: [builder, policy, web-tool]
+    if: ${{ (github.event_name != 'workflow_dispatch' || github.event.inputs.lanes != 'linux') && !cancelled() && needs.builder.result == 'success' && needs.web-tool.result == 'success' && (github.event_name != 'pull_request' || needs.policy.result == 'success') && needs.builder.outputs.affected == 'true' }}
     # wasm-bindgen over the whole desktop bundle exceeds the quality lane's
     # 5 GiB.
     runs-on: runner
@@ -323,8 +379,21 @@ jobs:
           command -v node || dnf install -y nodejs
       - name: Platform crates' browser modules (node --test)
         run: node --test crates/platform/*/web/*.test.mjs
-      - name: Build tilo-app
-        run: bash tools/ci/measure.sh "SDK web tool build" -- cargo build --locked -p tilo-app-cli --bin tilo-app
+      - name: Download the same-run native tool
+        uses: actions/download-artifact@d8d0a99033603453ad2255e58720b460a0555e1e # v4
+        with:
+          name: app-sdk-native-tool-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/sdk-native-tool
+      - name: Verify and install the exact native tool
+        env:
+          BUILDER_IMAGE: ${{ needs.builder.outputs.image }}
+          RECEIPT_SHA256: ${{ needs.web-tool.outputs.receipt-sha256 }}
+        run: |
+          bash tools/ci/measure.sh "SDK native tool verified import" -- \
+            python3 tools/ci/sdk_tool_artifact.py install --repo . \
+            --directory "$RUNNER_TEMP/sdk-native-tool" --builder-image "$BUILDER_IMAGE" \
+            --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --toolchain "$(rustc -Vv)" --receipt-sha256 "$RECEIPT_SHA256"
       - name: Desktop bundle (dev profile)
         run: |
           bash tools/ci/measure.sh "SDK dev desktop bundle build" -- \
@@ -406,8 +475,8 @@ jobs:
 
   # The release desktop bundle held to its size budget, beside the mount test.
   web-size:
-    needs: [builder, policy]
-    if: ${{ (github.event_name != 'workflow_dispatch' || github.event.inputs.lanes != 'linux') && !cancelled() && needs.builder.result == 'success' && (github.event_name != 'pull_request' || needs.policy.result == 'success') && needs.builder.outputs.affected == 'true' }}
+    needs: [builder, policy, web-tool]
+    if: ${{ (github.event_name != 'workflow_dispatch' || github.event.inputs.lanes != 'linux') && !cancelled() && needs.builder.result == 'success' && needs.web-tool.result == 'success' && (github.event_name != 'pull_request' || needs.policy.result == 'success') && needs.builder.outputs.affected == 'true' }}
     # wasm-bindgen over the whole desktop bundle exceeds the quality lane's
     # 5 GiB.
     runs-on: runner
@@ -431,8 +500,21 @@ jobs:
           if [ "$(wasm-bindgen --version 2>/dev/null)" != "wasm-bindgen $WASM_BINDGEN_VERSION" ]; then
             cargo install --locked wasm-bindgen-cli --version "$WASM_BINDGEN_VERSION"
           fi
-      - name: Build tilo-app
-        run: bash tools/ci/measure.sh "SDK release web tool build" -- cargo build --locked -p tilo-app-cli --bin tilo-app
+      - name: Download the same-run native tool
+        uses: actions/download-artifact@d8d0a99033603453ad2255e58720b460a0555e1e # v4
+        with:
+          name: app-sdk-native-tool-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/sdk-native-tool
+      - name: Verify and install the exact native tool
+        env:
+          BUILDER_IMAGE: ${{ needs.builder.outputs.image }}
+          RECEIPT_SHA256: ${{ needs.web-tool.outputs.receipt-sha256 }}
+        run: |
+          bash tools/ci/measure.sh "SDK native tool verified import" -- \
+            python3 tools/ci/sdk_tool_artifact.py install --repo . \
+            --directory "$RUNNER_TEMP/sdk-native-tool" --builder-image "$BUILDER_IMAGE" \
+            --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --toolchain "$(rustc -Vv)" --receipt-sha256 "$RECEIPT_SHA256"
       - name: Release desktop bundle within its size budget
         run: |
           bash tools/ci/measure.sh "SDK release desktop bundle build" -- \

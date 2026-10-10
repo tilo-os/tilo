@@ -166,7 +166,8 @@ class AppSdkAffectedTests(unittest.TestCase):
         workflow = (ROOT / '.forgejo/workflows/app-sdk.yml').read_text()
         for event, following in (('pull_request', 'push'), ('push', 'workflow_dispatch')):
             section = workflow.split(f'  {event}:\n', 1)[1].split(f'  {following}:', 1)[0]
-            for path in ('tools/ci/app_sdk_affected.py', 'tools/ci/workspace_graph.py'):
+            for path in ('tools/ci/app_sdk_affected.py', 'tools/ci/workspace_graph.py',
+                         'tools/ci/sdk_tool_artifact.py'):
                 with self.subTest(event=event, path=path):
                     self.assertIn(f'      - "{path}"', section)
 
@@ -320,6 +321,7 @@ class AppSdkAffectedTests(unittest.TestCase):
         self.assertTrue(self.check('crates/stray-file.rs'))
         self.assertTrue(self.check('tools/ci/app_sdk_affected.py'))
         self.assertTrue(self.check('tools/ci/workspace_graph.py'))
+        self.assertTrue(self.check('tools/ci/sdk_tool_artifact.py'))
 
 
 if __name__ == '__main__':
