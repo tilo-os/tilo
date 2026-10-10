@@ -167,6 +167,11 @@ enum PipChoice {
     SelectArea,
 }
 
+/// The ids of the toolbar controls a panel opens beside.
+fn anchor_ids(ids: &[&str]) -> Vec<String> {
+    ids.iter().map(|id| (*id).to_owned()).collect()
+}
+
 /// The panel anchored to a control of the toolbar, so a dismissal can say
 /// which one closed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -175,6 +180,7 @@ enum PanelKind {
     Site,
     Prompt,
     Pip,
+    Extension,
 }
 
 impl PipFeedback {
@@ -394,9 +400,9 @@ pub struct BrowserWidget {
     // User-facing browser state.
     settings: Settings,
     capabilities: crate::capabilities::Capabilities,
-    startup_extensions: Vec<std::path::PathBuf>,
-    extension_notice: Option<String>,
-    extension_feedback: std::sync::Arc<std::sync::Mutex<Option<String>>>,
+    /// Extensions: the Web Store offer, toolbar actions, popups and the
+    /// Library manager.
+    extensions: crate::extension_controller::ExtensionController,
     settings_presentation: SettingsPresentation,
     /// History pausing is an in-memory, device-local session boundary. It is
     /// never serialized to the collaborative document or the profile.
@@ -759,13 +765,7 @@ impl BrowserWidget {
             forced_loading: false,
             settings,
             capabilities: crate::capabilities::Capabilities::default(),
-            startup_extensions: if persistent {
-                crate::extensions::approved_paths()
-            } else {
-                Vec::new()
-            },
-            extension_notice: None,
-            extension_feedback: std::sync::Arc::default(),
+            extensions: crate::extension_controller::ExtensionController::new(persistent),
             settings_presentation,
             history_paused: std::sync::Arc::default(),
             observed_history_paused: false,
@@ -1778,6 +1778,7 @@ impl BrowserWidget {
                 // Dismissing a question is declining it.
                 PanelKind::Prompt => self.capabilities.decline_prompt(&self.engine),
                 PanelKind::Pip => self.pip_feedback = None,
+                PanelKind::Extension => self.extensions.dismiss(),
             }
             self.structure_dirty = true;
         }
@@ -2340,6 +2341,13 @@ impl BrowserWidget {
                 event => event,
             };
             match event {
+                WebViewEvent::DevToolsResult {
+                    request_id,
+                    ok,
+                    body,
+                } => {
+                    self.structure_dirty |= self.extensions.on_result(request_id, ok, &body);
+                }
                 WebViewEvent::CredentialResult(reply) => {
                     let requests = self.credentials.apply(reply);
                     crate::credentials::Credentials::send(&self.engine, requests);
@@ -2952,7 +2960,7 @@ impl BrowserWidget {
         &self,
         width: f32,
         max_height: f32,
-    ) -> Option<(PanelKind, Box<dyn Widget>, Vec<&'static str>)> {
+    ) -> Option<(PanelKind, Box<dyn Widget>, Vec<String>)> {
         let width = width.max(1.0);
         if self.credentials.open {
             let opener = if self.credentials.addresses_open() {
@@ -2963,25 +2971,30 @@ impl BrowserWidget {
             return Some((
                 PanelKind::Credentials,
                 self.credentials.panel(width, max_height),
-                vec![opener, toolbar::OVERFLOW_ID, URL_INPUT_ID],
+                anchor_ids(&[opener, toolbar::OVERFLOW_ID, URL_INPUT_ID]),
             ));
         }
         if self.site.open {
             return Some((
                 PanelKind::Site,
                 self.site.panel(width, max_height),
-                vec!["browser.site.info", toolbar::OVERFLOW_ID, URL_INPUT_ID],
+                anchor_ids(&["browser.site.info", toolbar::OVERFLOW_ID, URL_INPUT_ID]),
             ));
+        }
+        if let Some((content, mut anchors)) = self.extensions.panel(width) {
+            anchors.push(toolbar::OVERFLOW_ID.to_owned());
+            anchors.push(URL_INPUT_ID.to_owned());
+            return Some((PanelKind::Extension, content, anchors));
         }
         if let Some(prompt) = self.capabilities.prompt(&self.engine) {
             let anchors = if self.capabilities.prompt_is_permission() {
-                vec!["browser.site.info", URL_INPUT_ID, toolbar::OVERFLOW_ID]
+                anchor_ids(&["browser.site.info", URL_INPUT_ID, toolbar::OVERFLOW_ID])
             } else {
-                vec![
+                anchor_ids(&[
                     "browser.download-status",
                     toolbar::OVERFLOW_ID,
                     URL_INPUT_ID,
-                ]
+                ])
             };
             return Some((PanelKind::Prompt, prompt, anchors));
         }
@@ -3024,7 +3037,7 @@ impl BrowserWidget {
         Some((
             PanelKind::Pip,
             content,
-            vec![toolbar::OVERFLOW_ID, URL_INPUT_ID],
+            anchor_ids(&[toolbar::OVERFLOW_ID, URL_INPUT_ID]),
         ))
     }
 
@@ -3045,7 +3058,7 @@ impl BrowserWidget {
         let (kind, content, anchors) = self.anchored_panel_parts(width, max_height)?;
         // A control of the toolbar row opens its panel below the whole row,
         // so the row stays uncovered.
-        let anchor = anchors.into_iter().find_map(|id| self.find_rect(id));
+        let anchor = anchors.iter().find_map(|id| self.find_rect(id));
         let anchor = anchor.map_or_else(
             || Rect::new(window.x0, toolbar_bottom, window.x1, toolbar_bottom),
             |control| {
@@ -4853,15 +4866,7 @@ impl BrowserWidget {
             self.bootstrap_done = true;
         }
 
-        if let Some(message) = self
-            .extension_feedback
-            .lock()
-            .ok()
-            .and_then(|mut slot| slot.take())
-        {
-            self.extension_notice = Some(message);
-            self.structure_dirty = true;
-        }
+        self.structure_dirty |= self.extensions.sync(&self.engine, &self.current_uri);
         self.structure_dirty |= self.daily.sync(&self.engine);
         let site_was_open = self.site.open;
         self.structure_dirty |= self.site.sync(&self.engine);
