@@ -63,7 +63,8 @@ suites = ["tools/ci/test_runtime_dylib_lazy_link.py"]
 
 [[group]]
 name = "os"
-inputs = ["os/"]
+# os/scripts/oci-rechunk.py reads OCI images through tools/perf/image_size.py.
+inputs = ["os/", "tools/perf/image_size.py"]
 suites = [
   "os/dev/test-assemble-app-runtime.py",
   "os/dev/test-export-sdk-compiler.py",
@@ -168,6 +169,7 @@ suites = [
   "os/tests/test_native_resume.py",
   "os/tests/test_native_resume_admission.py",
   "os/tests/test_oci_image_diff.py",
+  "os/tests/test_oci_rechunk.py",
   "os/tests/test_pack_apps_cleanup.py",
   "os/tests/test_prepare_windows_direct_source.py",
   "os/tests/test_read_fat32_efi.py",
