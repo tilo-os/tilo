@@ -496,8 +496,10 @@ source = "KPI document: Frame time p99 at 4K/144 Hz, damage-limited (lavapipe; r
 # allocations and heap per item are deterministic for one build, so a few
 # per cent is a regression. The time ceilings are the warm app-open target
 # (300 ms p95, TIL-691), reported and not yet met at 50,000 items; the count
-# ceilings are a quarter above the M5 Max measurement in the PR, reported
-# too. The relative rule is what guards each.
+# ceilings are a quarter above the M5 Max measurement, reported too (TIL-762:
+# loading with the hashes the last save listed, 5k 121 -> 102 ms, 50k 1,170
+# -> 945 ms, allocations 1,707,519 / 16,556,849 -> 1,681,158 / 16,294,408).
+# The relative rule is what guards each.
 
 [kpi."render.framework_open.ms.5k"]
 unit = "ms"
@@ -517,19 +519,19 @@ source = "framework-scaling open to first frame, 50,000 items (TIL-758)"
 
 [kpi."render.framework_open.allocations.5k"]
 unit = "count"
-max = 2150000.0
+max = 2100000.0
 p50_tolerance = 1.05
 p99_tolerance = 1.05
 min_delta = 1000.0
-source = "framework-scaling allocations of one open, 5,000 items (TIL-758)"
+source = "framework-scaling allocations of one open, 5,000 items (TIL-758, TIL-762)"
 
 [kpi."render.framework_open.allocations.50k"]
 unit = "count"
-max = 20700000.0
+max = 20400000.0
 p50_tolerance = 1.05
 p99_tolerance = 1.05
 min_delta = 10000.0
-source = "framework-scaling allocations of one open, 50,000 items (TIL-758)"
+source = "framework-scaling allocations of one open, 50,000 items (TIL-758, TIL-762)"
 
 [kpi."render.framework_open.heap_per_item.5k"]
 unit = "bytes"
