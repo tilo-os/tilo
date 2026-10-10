@@ -11,7 +11,7 @@ name: Dev / VM acceptance
 # before the ref, installed here exactly as Release / Dev VM disk installs it.
 # The ref's own code reaches the VM through `tilo-vm swap --builder host`,
 # built here in the CI builder (the dev image's Fedora, with the CI sccache):
-# by default the shell plus the apps the ref changed. P01
+# by default the shell plus the complete app/runtime cohort when apps changed. P01
 # states the result as "base <commit> + <components> swapped from <ref>".
 #
 # The run also measures the installed desktop's performance KPIs (boot to the
@@ -30,7 +30,7 @@ on:
         required: false
         default: "main"
       swap:
-        description: "What to build from the ref and swap in: default (shell plus the apps the ref changed: a branch against main, a main commit against the base), none, all (every userspace component in os/components.toml), or a comma-separated list (components, app:<dir>)."
+        description: "What to build from the ref and swap in: default (shell plus apps+runtime when apps changed: a branch against main, a main commit against the base), none, all (every userspace component in os/components.toml), or a comma-separated list (components, app:<dir>)."
         required: false
         default: "default"
       only:
@@ -181,7 +181,13 @@ jobs:
               if ! git diff --quiet "$commit" "$target"; then
                 swap=shell
                 for app in $(git diff --name-only "$from" "$target" -- apps/ | cut -d/ -f2 | sort -u); do
-                  git cat-file -e "$target:apps/$app/Cargo.toml" 2>/dev/null && swap+=",app:$app"
+                  if git cat-file -e "$target:apps/$app/Cargo.toml" 2>/dev/null; then
+                    # A selected app carries an exact SDK requirement, not its
+                    # runtime. Keep the signed, verified cohort together rather
+                    # than discard the SDK and rebuild it for every changed app.
+                    swap+=",apps+runtime"
+                    break
+                  fi
                 done
               fi ;;
             all)
