@@ -10245,6 +10245,9 @@ pub fn run() {
                                 &mut frame_builder,
                                 wev,
                             );
+                            if let Some(steps) = key_steps.as_mut() {
+                                steps.steps.mark("drag-handoff");
+                            }
                             // Dispatch real input through the same wire the headless `execute_planned_action` path uses.
                             chrome_handled = frame_builder.dispatch_event(
                                 wev,
@@ -10264,6 +10267,9 @@ pub fn run() {
                             // the tab that was active before the click.
                             frame_builder.host_mut().flush_active_tab_writeback();
                             client_input::sync_keyboard_focus(&mut state, &frame_builder);
+                            if let Some(steps) = key_steps.as_mut() {
+                                steps.steps.mark("focus-sync");
+                            }
                         }
                     }
                     // Touch nobody took raw becomes pointer input, processed
