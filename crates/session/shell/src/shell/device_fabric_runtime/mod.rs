@@ -7416,6 +7416,14 @@ pub fn observed_device_displays(
                         device: snapshot.owner.as_str().to_owned(),
                         device_label: snapshot.presence.label.clone(),
                         connector: output.connector.clone(),
+                        output_id: fabric
+                            .display_outputs(&snapshot.owner)
+                            .and_then(|observations| {
+                                observations
+                                    .iter()
+                                    .find(|observed| observed.connector == output.connector)
+                            })
+                            .map(|observed| observed.output.id.clone()),
                         label: output.label.clone(),
                         online: snapshot.presence.online,
                         local: local == Some(&snapshot.owner),
