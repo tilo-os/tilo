@@ -7,8 +7,8 @@
     "    Checking wacore-noise v0.7.0\n",
     "    Checking wacore v0.7.0\n",
     "    Checking whatsapp-rust v0.7.0\n",
-    "    Checking tilo-messaging-protocol v0.1.0 (/var/home/user/tilo/tilo/.worktrees/dictation-subject-candidate-source/crates/system/messaging-protocol)\n",
-    "    Checking shell v0.1.0 (/var/home/user/tilo/tilo/.worktrees/dictation-subject-candidate-source/crates/session/shell)\n",
+    "    Checking tilo-messaging-protocol v0.1.0 (/var/home/you/tilo/tilo/.worktrees/dictation-subject-candidate-source/crates/system/messaging-protocol)\n",
+    "    Checking shell v0.1.0 (/var/home/you/tilo/tilo/.worktrees/dictation-subject-candidate-source/crates/session/shell)\n",
     "    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1m 16s\n"
   ]
 }
