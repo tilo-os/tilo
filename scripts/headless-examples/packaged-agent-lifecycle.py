@@ -2,9 +2,9 @@
 """Proof through signed packages, strict launcher and the existing control socket.
 
 This never uses the operator's app store, identity, documents or compositor.
-Build the normal binaries with rcargo first, then run the shell example with
-rcargo --on-builder --fetch packaged-agent-lifecycle run --locked -p shell
---example packaged_agent_lifecycle -- --stage bootstrap. Bootstrap is only
+Build the normal binaries with the configured Cargo command first, then execute
+target/debug/examples/packaged_agent_lifecycle --stage bootstrap on its build
+host. Bootstrap is only
 package/roster evidence; it explicitly does not claim detachable Chat works.
 """
 from __future__ import annotations

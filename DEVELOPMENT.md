@@ -677,12 +677,13 @@ remains a separate acceptance requirement.
 
 Managed agent committed reads have a separate real-process qualification. The
 ordinary launcher-custody test proves that an Agent label alone is rejected; it
-does not qualify a certified managed worker. On the remote Linux builder, build
-the signed launcher fixture before running the opt-in positive test:
+does not qualify a certified managed worker. Set `CARGO` to the configured Cargo
+command or drop-in builder, then build the signed launcher fixture before
+running the opt-in positive test on its build host:
 
 ```sh
-rcargo --no-fallback --no-fetch build --locked -p launcher --features managed-tree-test --bin tilo-launcher --bin managed-tree-fixture
-rcargo --no-fallback test --locked -p tilo-action-broker --features managed-read-test --lib certified_agent_committed_read_requires_exact_live_custody_and_membership
+"$CARGO" build --locked -p launcher --features managed-tree-test --bin tilo-launcher --bin managed-tree-fixture
+"$CARGO" test --locked -p tilo-action-broker --features managed-read-test --lib certified_agent_committed_read_requires_exact_live_custody_and_membership
 ```
 
 This exercises the actual managed process, kernel/channel custody, live
