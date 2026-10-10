@@ -78,6 +78,9 @@ pub struct Hydrator {
     blob_connections:
         AsyncMutex<HashMap<(iroh_base::PublicKey, usize), iroh::endpoint::Connection>>,
     pub runtime_handle: tokio::runtime::Handle,
+    /// Woken by the first peer: a device that knows a peer may be dialled
+    /// by it (TIL-774).
+    reachability: crate::reachability::Reachability,
 }
 
 /// Chunk entries held by the manifest cache: roughly 40 bytes each, so
@@ -128,7 +131,17 @@ impl Hydrator {
             blob_bytes: std::sync::atomic::AtomicU64::new(0),
             blob_connections: AsyncMutex::new(HashMap::new()),
             runtime_handle: tokio::runtime::Handle::current(),
+            reachability: crate::reachability::Reachability::default(),
         }
+    }
+
+    /// Wake `reachability` when the first peer is added: every peer the
+    /// daemon learns of — persisted, from a ticket, met over gossip or
+    /// authenticated in a session — passes through [`Self::add_peer`].
+    #[must_use]
+    pub fn with_reachability(mut self, reachability: crate::reachability::Reachability) -> Self {
+        self.reachability = reachability;
+        self
     }
 
     /// Whether a fetch of blob `hash` is in flight right now.
@@ -197,6 +210,7 @@ impl Hydrator {
 
     /// Register a peer we can hydrate blobs from. Idempotent per endpoint id.
     pub fn add_peer(&self, addr: EndpointAddr) {
+        self.reachability.wake("a content peer is known");
         let mut peers = self
             .peers
             .write()

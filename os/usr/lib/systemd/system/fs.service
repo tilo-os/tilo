@@ -47,9 +47,10 @@ Type=simple
 # plain FUSE passthrough. Without it every open/read/write short-circuits
 # to "allowed" and the capability model stops at the compositor — a path
 # the permissions UI shows as revoked stays readable through
-# /var/workspace. The list is re-read while the mount is up (see
-# --acl-reload-secs), so a grant or a revocation takes effect without a
-# remount; /var/workspace is mounted once at boot and never again during
+# /var/workspace. The list is re-read while the mount is up, on every
+# change the kernel reports for it (inotify), and polled every
+# --acl-reload-secs only if it cannot be watched, so a grant or a
+# revocation takes effect without a remount; /var/workspace is mounted once at boot and never again during
 # a session, which is why reading it only at mount time was equivalent to
 # not reading it at all.
 #

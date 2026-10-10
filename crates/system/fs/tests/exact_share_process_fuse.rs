@@ -158,18 +158,37 @@ fn spawn_host(
     seed: &Path,
     clock: &Path,
 ) -> MountedProcess {
-    let mut child = Command::new(binary)
+    let mut command = host_command(binary, identity, authority_sockets, cache, seed, clock);
+    spawn_mounted(command.arg("--mount-point").arg(mount), mount)
+}
+
+/// `fs serve` with the host's identity, clock, cache and seed; the caller
+/// adds `--mount-point` and anything else.
+fn host_command(
+    binary: &Path,
+    identity: &Path,
+    authority_sockets: &Path,
+    cache: &Path,
+    seed: &Path,
+    clock: &Path,
+) -> Command {
+    let mut command = Command::new(binary);
+    command
         .env(fs::identity::IDENTITY_ROOT_ENV, identity)
         .env("TILO_AUTHORITY_SOCKET_DIR", authority_sockets)
         .env("TILO_FS_FUSE_OWNER_ONLY", "1")
         .arg("--test-clock-file")
         .arg(clock)
-        .args(["serve", "--mount-point"])
-        .arg(mount)
+        .arg("serve")
         .arg("--cache-dir")
         .arg(cache)
         .arg("--seed")
-        .arg(seed)
+        .arg(seed);
+    command
+}
+
+fn spawn_mounted(command: &mut Command, mount: &Path) -> MountedProcess {
+    let mut child = command
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -691,14 +710,25 @@ async fn separate_process_exact_share_evicts_restarts_and_rehydrates() {
 ///
 /// Measured on the CI `runner` class: 45.4/s before TIL-750 (a 100 ms
 /// persist poll, a 50 ms session-supervisor poll, repair ticks), 6.5-7.9/s
-/// after (two runs). The budget leaves headroom over the remainder and
-/// still fails if either poll comes back (+10/s or +20/s). Lower it as the
-/// remaining timers go.
-const IDLE_SERVE_WAKEUP_BUDGET: f64 = 12.0;
+/// after (two runs). TIL-774 runs the daemon as `fs.service` does, with
+/// the shipped capability list: 9.95/s before (probe run 94694; its two
+/// one-second file polls were 3-4/s, iroh's relays 5.8/s), 0.60/s after
+/// (run 94886: one runtime worker, on iroh's own netwatch and re-STUN
+/// timers). The budget is the 1/s target: any of those timers coming back
+/// breaks it.
+const IDLE_SERVE_WAKEUP_BUDGET: f64 = 1.0;
 
-/// The shipped daemon serving a mounted workspace that nobody touches
-/// sleeps: no persist poll, no session-supervisor poll, no repair tick.
-/// Prints the per-thread table the budget is judged on.
+/// How long the mount may keep serving a file after its capability is
+/// revoked: the one-second poll's bound, which the file watch must keep.
+const REVOKE_BOUND: Duration = Duration::from_secs(1);
+
+/// The shipped daemon, started as `fs.service` starts it (the shipped
+/// capability list, `--principal person:local`), serving a mounted
+/// workspace that nobody touches sleeps: no persist poll, no
+/// session-supervisor poll, no repair tick, no capability-list poll, and
+/// no relays for a list that names nobody else. Prints the per-thread
+/// table the budget is judged on. Then a revocation written to the list
+/// still closes the mount within the old poll's bound.
 #[cfg(target_os = "linux")]
 #[test]
 fn idle_serve_mount_stays_asleep() {
@@ -717,11 +747,26 @@ fn idle_serve_mount_stays_asleep() {
         std::fs::create_dir_all(path).unwrap();
     }
     std::fs::write(seed.join("idle.txt"), PAYLOAD).unwrap();
+    // The list the image ships, at the path `fs.service` names it by.
+    let capabilities = temp.path().join("fs-capabilities.json");
+    std::fs::copy(
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../os/usr/share/tilo/fs-capabilities.json"),
+        &capabilities,
+    )
+    .unwrap();
     let clock_now = tilo_clock::unix_now_ms();
     write_clock(&clock, clock_now);
     install_identity(&identity, rand::random(), rand::random(), true, clock_now);
     let binary = Path::new(env!("CARGO_BIN_EXE_fs"));
-    let mut host = spawn_host(binary, &identity, &sockets, &mount, &cache, &seed, &clock);
+    let mut command = host_command(binary, &identity, &sockets, &cache, &seed, &clock);
+    command
+        .arg("--mount-point")
+        .arg(&mount)
+        .arg("--acl")
+        .arg(&capabilities)
+        .args(["--principal", "person:local"]);
+    let mut host = spawn_mounted(&mut command, &mount);
     host.wait_for_line("Mounting QuickFS");
     let file = mount.join("idle.txt");
     wait_for_process(&mut host, "the mount to serve its seed", || {
@@ -737,9 +782,29 @@ fn idle_serve_mount_stays_asleep() {
     )
     .expect("the idle daemon's threads must be observable");
     eprintln!("{wakeups}");
-    let blocked: u64 = wakeups.rows.iter().map(|row| row.voluntary).sum();
-    let per_second = wakeups.rate(blocked);
-    eprintln!("TIL-750 idle fs serve: {per_second:.2} voluntary wakeups/s");
+    let per_second = wakeups.blocking_per_second();
+    eprintln!("TIL-774 idle fs serve: {per_second:.2} voluntary wakeups/s");
+    let logs = host.logs.lock().unwrap().join("\n");
+    assert!(
+        !logs.contains("relays: this device may be dialled"),
+        "a mount whose capability list names nobody else must not start its relays:\n{logs}"
+    );
+
+    // Revoke the session's grant, the way the desktop rewrites the list.
+    std::fs::write(&capabilities, b"[]").unwrap();
+    let revoked = Instant::now();
+    while std::fs::read(&file).is_ok() {
+        assert!(
+            revoked.elapsed() <= REVOKE_BOUND,
+            "the mount still served a revoked file {} ms after the revocation",
+            revoked.elapsed().as_millis()
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    eprintln!(
+        "TIL-774 revocation closed the mount {} ms after the write",
+        revoked.elapsed().as_millis()
+    );
     host.stop();
     assert!(
         per_second <= IDLE_SERVE_WAKEUP_BUDGET,
