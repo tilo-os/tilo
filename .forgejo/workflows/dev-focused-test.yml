@@ -12,8 +12,12 @@ on:
         required: true
         type: string
       package:
-        description: 'One Cargo workspace package'
-        required: true
+        description: 'One Cargo workspace package; mutually exclusive with packages'
+        required: false
+        type: string
+      packages:
+        description: 'JSON array of 1-64 workspace packages; check-tests only'
+        required: false
         type: string
       operation:
         description: 'Exact tests, package test compilation, fixed native observations, or history backtraces'
@@ -43,6 +47,7 @@ on:
 env:
   SOURCE_SHA: ${{ github.event.inputs.source_sha }}
   PACKAGE: ${{ github.event.inputs.package }}
+  PACKAGES: ${{ github.event.inputs.packages }}
   OPERATION: ${{ github.event.inputs.operation }}
   TEST_TARGET: ${{ github.event.inputs.test_target }}
   TEST_NAME: ${{ github.event.inputs.test_name }}

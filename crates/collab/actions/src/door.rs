@@ -969,8 +969,9 @@ mod tests {
     fn a_payload_its_decoder_cannot_read_is_not_called_unregistered() {
         #[derive(Debug, Serialize, Deserialize)]
         struct OtherShape {
-            #[allow(dead_code, reason = "only its shape is decoded")]
-            pinned: bool,
+            // Only its shape is decoded.
+            #[serde(rename = "pinned")]
+            _pinned: bool,
         }
         impl Action for OtherShape {
             fn apply(&self, _doc: &mut Doc) -> Result<(), ActionError> {

@@ -29,18 +29,7 @@ use shell::shell::quick_settings::QsLevel;
 use super::driver::{AgentReviewTheme, ShellDriver};
 
 /// One step in a scenario.
-///
-/// `ClickNamed`, `Modifiers`, `SetWsSettings` and `PushQsLevel` are
-/// currently unconstructed: `run_action` implements all four, but no
-/// scenario in `catalogue()` reaches for them yet. They are the DSL's
-/// surface, not dead branches — deleting them would take
-/// `resolve_named_rect`-based click targeting out of reach of the next
-/// scenario that needs it.
 #[derive(Debug, Clone)]
-#[allow(
-    dead_code,
-    reason = "the scenario DSL retains implemented actions that the current catalogue does not construct"
-)]
 pub enum Action {
     /// Click at raw screen coordinates (cursor-move + press + release).
     ClickAt(Point),
@@ -409,7 +398,6 @@ pub enum Action {
     /// screen, and the default width is the whole display.
     SetWindowWidths(u16),
     SwitchWorkspace(usize),
-    SetWsSettings(WsTab),
     PushQsLevel(QsLevel),
     /// Open the production host-session first-login chrome with an isolated,
     /// nonexistent identity path so screenshot tests cannot mutate user data.
@@ -1318,9 +1306,8 @@ fn apply_seed_wifi_and_select_group(driver: &mut ShellDriver, action: &Action) {
     }
 }
 
-/// `Action::LoneWindow`, `Action::SwitchWorkspace`, `Action::SetWsSettings`
-/// and `Action::PushQsLevel` — split out of [`apply`] to keep that
-/// dispatcher short.
+/// `Action::LoneWindow`, `Action::SwitchWorkspace` and `Action::PushQsLevel`,
+/// split out of [`apply`] to keep that dispatcher short.
 fn apply_window_and_workspace_actions(driver: &mut ShellDriver, action: &Action) {
     match action {
         Action::LoneWindow(idx) => {
@@ -1393,13 +1380,6 @@ fn apply_window_and_workspace_actions(driver: &mut ShellDriver, action: &Action)
                     drop(tree);
                     st.bump();
                 }
-            });
-        }
-        Action::SetWsSettings(tab) => {
-            let tab_copy = *tab;
-            driver.with_chrome(|st| {
-                st.overlays.ws_settings = true;
-                st.ws_settings_tab = tab_copy;
             });
         }
         Action::PushQsLevel(level) => {

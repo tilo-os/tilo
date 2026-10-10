@@ -502,8 +502,12 @@ An idle desktop should leave the CPU asleep. `idle_wakeups::` in the shell's
 a signed-in desktop, restores a Notes tab, opens a Terminal through
 `window.new.terminal`, waits out startup work and 5 s more, then samples every thread of the
 compositor's process tree from `/proc` for 10 s and fails above
-`IDLE_WAKEUP_BUDGET` context switches per second, or if the compositor painted
-while nobody touched it.
+`IDLE_WAKEUP_BUDGET` wakeups per second (voluntary context switches: how often
+a thread blocked again), above `IDLE_CPU_BUDGET` percent of a core, or if the
+compositor painted while nobody touched it. It also holds the in-process apps'
+collaboration shovel and the identity service's client thread to
+`KEY_ASK_BUDGET` together, so a route asking for its channel keys on a 1 s
+timer again (TIL-754) fails by name.
 
 ```bash
 cargo test --locked -p shell --test it idle_wakeups:: -- --nocapture
@@ -542,9 +546,10 @@ collaboration plane of two converged desktops).
 
 A gate that runs inside the pull-request test shard shares the runner with
 other tests, and preemptions grow with that load. `Wakeups::blocking_per_second`
-counts only voluntary switches, one per wakeup. The lone-desktop gate in
-`idle_quiet_tests` uses it, together with a CPU bound that catches a thread
-spinning without blocking (TIL-749).
+counts only voluntary switches, one per wakeup. Both gates in
+`idle_quiet_tests`, the lone desktop and the converged pair, use it, each
+together with a CPU bound that catches a thread spinning without blocking
+(TIL-749, TIL-752).
 
 ## Where to look in source
 

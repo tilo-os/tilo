@@ -11,12 +11,24 @@ import sys
 
 def request(env):
     values = {key: env.get(key, '') for key in
-              ('SOURCE_SHA', 'PACKAGE', 'TEST_TARGET', 'TEST_NAME', 'TEST_NAMES', 'OPERATION')}
+              ('SOURCE_SHA', 'PACKAGE', 'PACKAGES', 'TEST_TARGET', 'TEST_NAME', 'TEST_NAMES', 'OPERATION')}
     values['TARGET_KIND'] = env.get('TARGET_KIND', '') or 'integration'
     if not re.fullmatch(r'[0-9a-f]{40}', values['SOURCE_SHA']):
         raise ValueError('source must be a full lowercase commit SHA')
-    if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_-]{0,99}', values['PACKAGE']):
+    if values['PACKAGES']:
+        if values['PACKAGE'] or values['OPERATION'] != 'check-tests' or len(values['PACKAGES']) > 16_384:
+            raise ValueError('package sets are bounded check-tests requests, mutually exclusive with package')
+        names = json.loads(values['PACKAGES'])
+        if not isinstance(names, list) or not 1 <= len(names) <= 64:
+            raise ValueError('request between 1 and 64 workspace packages')
+    else:
+        names = [values['PACKAGE']]
+    if any(not isinstance(name, str) or not re.fullmatch(
+            r'[A-Za-z0-9][A-Za-z0-9_-]{0,99}', name) for name in names):
         raise ValueError('package must be a Cargo package name')
+    if len(set(names)) != len(names):
+        raise ValueError('duplicate package names are not allowed')
+    values['PACKAGE_NAMES'] = names
     if values['OPERATION'] not in ('test', 'test-lib', 'check-tests'):
         raise ValueError('operation must be test, test-lib or check-tests')
     if values['OPERATION'] == 'test-lib':
@@ -80,12 +92,17 @@ def execute(root, values, outcomes=None):
     if actual != values['SOURCE_SHA']:
         raise ValueError('checked-out source differs from requested SHA')
     metadata = json.loads(read(['cargo', 'metadata', '--locked', '--no-deps', '--format-version', '1']))
-    packages = [p for p in metadata['packages']
-                if p['name'] == values['PACKAGE'] and p['id'] in metadata['workspace_members']]
-    if len(packages) != 1:
-        raise ValueError('package is not a unique workspace member')
+    names = values.get('PACKAGE_NAMES', [values['PACKAGE']])
+    packages = []
+    for name in names:
+        matches = [p for p in metadata['packages']
+                   if p['name'] == name and p['id'] in metadata['workspace_members']]
+        if len(matches) != 1:
+            raise ValueError('package is not a unique workspace member: ' + name)
+        packages.extend(matches)
     if values['OPERATION'] == 'check-tests':
-        command = ['cargo', 'check', '--locked', '-p', values['PACKAGE'], '--tests']
+        command = ['cargo', 'check', '--locked',
+                   *[arg for name in names for arg in ('-p', name)], '--tests']
         print(json.dumps({'source_sha': actual, 'command': command}), flush=True)
         return subprocess.run(command, cwd=root).returncode
     if values['OPERATION'] == 'test-lib' or values.get('TARGET_KIND', 'integration') == 'lib':

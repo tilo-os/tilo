@@ -2521,6 +2521,7 @@ dependencies = [
  "tilo-actions",
  "tilo-paths",
  "tilo-test-env",
+ "tracing",
  "workspace-hack",
 ]
 
@@ -7079,7 +7080,6 @@ dependencies = [
  "tilo-ui",
  "tilo-vello",
  "tilo-winit",
- "tracing",
  "tracing-subscriber",
  "uuid",
  "workspace-hack",
@@ -17009,6 +17009,7 @@ dependencies = [
  "threshold-identity",
  "tilo-advisory-lock",
  "tilo-clock",
+ "tilo-net",
  "tilo-seal",
  "tilo-test-env",
  "wire-frame",

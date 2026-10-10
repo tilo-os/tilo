@@ -22,7 +22,7 @@
 
 use std::collections::HashMap;
 
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use taffy::{NodeId, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::Color;
@@ -514,14 +514,7 @@ impl Widget for ConflictPicker {
         self.keep_pad = 2.0 * f64::from(theme.tokens.spacing.s3);
         // Sized by the host: expands to fill whatever rect the parent
         // assigns — typical use is a centered modal, e.g. 720×360.
-        let style = Style {
-            size: Size {
-                width: Dimension::percent(1.0),
-                height: Dimension::percent(1.0),
-            },
-            ..Default::default()
-        };
-        taffy.widget_leaf(style, node_map, self)
+        taffy.fill_leaf(node_map, self)
     }
 
     /// The keep button's label is measured here, during layout, so the

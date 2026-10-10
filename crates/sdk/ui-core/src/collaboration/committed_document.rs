@@ -1009,6 +1009,32 @@ fn capture_budget() -> &'static ByteBudget {
 /// acknowledgement; equal to the polling Open deadline.
 const ACKNOWLEDGEMENT_DEADLINE: Duration = Duration::from_secs(2);
 
+/// Only local deadlines permit retiring a capture and renewing its read epoch.
+/// Broker refusals, invalid replies and authority failures remain terminal.
+#[derive(Debug)]
+enum CaptureFailure {
+    Deadline(&'static str),
+    Rejected(String),
+}
+impl std::fmt::Display for CaptureFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Deadline(message) => formatter.write_str(message),
+            Self::Rejected(message) => formatter.write_str(message),
+        }
+    }
+}
+impl From<String> for CaptureFailure {
+    fn from(message: String) -> Self {
+        Self::Rejected(message)
+    }
+}
+impl From<&str> for CaptureFailure {
+    fn from(message: &str) -> Self {
+        Self::Rejected(message.into())
+    }
+}
+
 #[allow(
     clippy::future_not_send,
     reason = "capnp-rpc channel futures are !Send by design; driven only on the shovel LocalSet"
@@ -1016,8 +1042,8 @@ const ACKNOWLEDGEMENT_DEADLINE: Duration = Duration::from_secs(2);
 async fn read_capture(
     channel: &runtime_collab::ChannelHandle,
     first: Reply,
-) -> Result<(CommittedDocument, [u8; 32]), String> {
-    read_capture_using(first, capture_budget(), async |request| {
+) -> Result<(CommittedDocument, [u8; 32]), CaptureFailure> {
+    capture_using(first, capture_budget(), async |request| {
         channel
             .committed_document(&request)
             .await
@@ -1025,11 +1051,21 @@ async fn read_capture(
     })
     .await
 }
+#[cfg(test)]
 pub(super) async fn read_capture_using(
     first: Reply,
     budget: &ByteBudget,
-    mut send: impl AsyncFnMut(Request) -> Result<Reply, String>,
+    send: impl AsyncFnMut(Request) -> Result<Reply, String>,
 ) -> Result<(CommittedDocument, [u8; 32]), String> {
+    capture_using(first, budget, send)
+        .await
+        .map_err(|error| error.to_string())
+}
+async fn capture_using(
+    first: Reply,
+    budget: &ByteBudget,
+    mut send: impl AsyncFnMut(Request) -> Result<Reply, String>,
+) -> Result<(CommittedDocument, [u8; 32]), CaptureFailure> {
     let (first, creation) = match first {
         Reply::Created { receipt, chunk } => (chunk.into_reply(), Some(receipt)),
         reply => (reply, None),
@@ -1067,7 +1103,7 @@ pub(super) async fn read_capture_using(
                 }),
             )
             .await;
-            return Err(error);
+            return Err(error.into());
         }
     };
     let id = assembly.id;
@@ -1084,8 +1120,8 @@ pub(super) async fn read_capture_using(
         Ok::<_, String>(())
     })
     .await
-    .map_err(|_| "committed read timed out".to_string())
-    .and_then(|v| v);
+    .map_err(|_| CaptureFailure::Deadline("committed read timed out"))
+    .and_then(|result| result.map_err(CaptureFailure::Rejected));
     if let Err(error) = result {
         let _ = tokio::time::timeout(
             Duration::from_millis(200),
@@ -1110,7 +1146,7 @@ pub(super) async fn read_capture_using(
         }),
     )
     .await
-    .map_err(|_| "committed read acknowledgement timed out")??;
+    .map_err(|_| CaptureFailure::Deadline("committed read acknowledgement timed out"))??;
     if acknowledgement != Reply::Cancelled {
         return Err("committed read acknowledgement invalid".into());
     }
@@ -1293,28 +1329,37 @@ pub(super) async fn install(
                 }),
             )
             .await;
-            match result {
+            let renew = match result {
                 Ok(Ok(Reply::Unchanged { revision: checked })) if Some(checked) == revision => {
                     if inbound.state.document_reads.ready(&key, &ready) {
                         inbound.state.notify_events();
                     }
+                    false
                 }
                 Ok(Ok(reply @ Reply::Chunk { .. })) => {
                     if !inbound.state.document_reads.applying(&key, &ready) {
                         break;
                     }
                     inbound.state.notify_events();
-                    if let Ok((read, next)) = read_capture(&channel, reply).await {
-                        current = Some(read);
-                        revision = Some(next);
-                        continue;
+                    match read_capture(&channel, reply).await {
+                        Ok((read, next)) => {
+                            current = Some(read);
+                            revision = Some(next);
+                            continue;
+                        }
+                        Err(error) => {
+                            #[cfg(any(test, feature = "test-support"))]
+                            tracing::warn!(error = %error, route = ?spec, "committed document capture failed");
+                            if matches!(error, CaptureFailure::Deadline(_)) && !renewed {
+                                true
+                            } else {
+                                inbound
+                                    .state
+                                    .fail_closed("committed document capture outcome unknown");
+                                break;
+                            }
+                        }
                     }
-                    #[cfg(any(test, feature = "test-support"))]
-                    tracing::warn!("committed document capture failed");
-                    inbound
-                        .state
-                        .fail_closed("committed document capture outcome unknown");
-                    break;
                 }
                 Ok(Ok(Reply::Unavailable)) => {
                     if !inbound.state.document_reads.applying(&key, &ready) {
@@ -1322,39 +1367,14 @@ pub(super) async fn install(
                     }
                     inbound.state.notify_events();
                     revision = None;
+                    false
                 }
-                Err(_) if !renewed => {
-                    // The timed-out handle may own an unacknowledged capture.
-                    // Fence its delivery epoch and rejoin once on the original
-                    // authenticated root; never replay Open on that handle.
-                    renewed = true;
-                    inbound.state.document_reads.unavailable(&key, &ready);
-                    inbound.state.notify_events();
-                    if !inbound.state.is_healthy()
-                        || !inbound.state.document_reads.current(&key, &ready)
-                    {
-                        break;
-                    }
-                    let Ok(next_ready) = inbound.state.document_reads.pending(&key) else {
-                        inbound
-                            .state
-                            .fail_closed("committed read generation unavailable");
-                        break;
-                    };
-                    ready = next_ready;
-                    if let Ok(next) = join.renew(&spec, &inbound.state.document_reads).await {
-                        channel = next;
-                        revision = None;
-                        #[cfg(any(test, feature = "test-support"))]
-                        tracing::warn!("original committed read generation renewed");
-                        continue;
-                    }
-                    inbound
-                        .state
-                        .fail_closed("committed read renewal unavailable");
-                    break;
-                }
+                Err(_) if !renewed => true,
                 _ => {
+                    #[cfg(any(test, feature = "test-support"))]
+                    if let Ok(Err(error)) = &result {
+                        tracing::warn!(error = %error, route = ?spec, "committed document polling RPC failed");
+                    }
                     #[cfg(any(test, feature = "test-support"))]
                     tracing::warn!(
                         timed_out = result.is_err(),
@@ -1362,9 +1382,6 @@ pub(super) async fn install(
                         unexpected_reply = matches!(&result, Ok(Ok(_))),
                         "committed document polling stopped"
                     );
-                    // An expired Open may have allocated a broker capture. Its
-                    // outcome is unknown: do not replay it or leave a stopped
-                    // reader advertising a connected, publishable route.
                     inbound
                         .state
                         .fail_closed("committed document read outcome unknown");
@@ -1372,6 +1389,37 @@ pub(super) async fn install(
                     inbound.state.notify_events();
                     break;
                 }
+            };
+            if renew {
+                // Neither an expired Open nor a timed-out capture can be
+                // replayed on its old handle. Discard unacknowledged bytes,
+                // fence delivery, then rejoin once on the authenticated root.
+                renewed = true;
+                inbound.state.document_reads.unavailable(&key, &ready);
+                inbound.state.notify_events();
+                if !inbound.state.is_healthy()
+                    || !inbound.state.document_reads.current(&key, &ready)
+                {
+                    break;
+                }
+                let Ok(next_ready) = inbound.state.document_reads.pending(&key) else {
+                    inbound
+                        .state
+                        .fail_closed("committed read generation unavailable");
+                    break;
+                };
+                ready = next_ready;
+                if let Ok(next) = join.renew(&spec, &inbound.state.document_reads).await {
+                    channel = next;
+                    revision = None;
+                    #[cfg(any(test, feature = "test-support"))]
+                    tracing::warn!("original committed read generation renewed");
+                    continue;
+                }
+                inbound
+                    .state
+                    .fail_closed("committed read renewal unavailable");
+                break;
             }
             drop(turn);
             tokio::time::sleep(Duration::from_millis(200)).await;

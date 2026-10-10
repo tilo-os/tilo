@@ -460,31 +460,13 @@ impl<C: Widget> Popover<C> {
         event: &WindowEvent,
         ctx: &mut crate::widget::EventCtx<'_>,
     ) -> bool {
-        let before = std::mem::replace(ctx.handled, false);
-        if let Some(node) = self.host_content {
-            self.content
-                .handle_event(event, &mut ctx.reborrow(ctx.path, node));
-        } else if let Some(content) = &self.detached {
-            let mut detached_focus = None;
-            self.content.handle_event(
-                event,
-                &mut crate::widget::EventCtx {
-                    scale_factor: ctx.scale_factor,
-                    modifiers: ctx.modifiers,
-                    state: ctx.state.reborrow(),
-                    path: ctx.path,
-                    handled: ctx.handled,
-                    // A node of the popover's own tree means nothing to the
-                    // window; the content keeps its own focus.
-                    focus_target: &mut detached_focus,
-                    node_id: content.node,
-                    taffy: &content.taffy,
-                },
-            );
-        }
-        let consumed = *ctx.handled;
-        *ctx.handled = before || consumed;
-        consumed
+        floating_surface::DetachedContent::forward(
+            &mut self.content,
+            self.host_content,
+            self.detached.as_ref(),
+            event,
+            ctx,
+        )
     }
 
     #[allow(

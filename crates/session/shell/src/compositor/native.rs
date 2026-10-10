@@ -8203,11 +8203,9 @@ struct PortalBackend {
     /// The on-screen file chooser's queue, shared with the chooser service
     /// that apps without a portal reach.
     pickers: crate::portal::FilePickerQueue,
-    #[allow(
-        dead_code,
-        reason = "Retaining the registration keeps its D-Bus connection, bus name, and object server alive once registered."
-    )]
-    server: crate::session_runtime::Registration<crate::portal::ServerHandle>,
+    /// Never read: retaining the registration keeps its D-Bus connection, bus
+    /// name, and object server alive once registered.
+    _server: crate::session_runtime::Registration<crate::portal::ServerHandle>,
     remote_input: std::sync::mpsc::Receiver<crate::network::streaming::RemoteAction>,
     input_capture: crate::portal::InputCaptureCompositorHandle,
     screencast: crate::portal::ScreenCastStreamProvisionerHandle,
@@ -8534,7 +8532,7 @@ fn start_portal_backend(
         media_grants: grants,
         media_prompts: prompts,
         pickers,
-        server,
+        _server: server,
         remote_input: remote_input_rx,
         input_capture,
         screencast,

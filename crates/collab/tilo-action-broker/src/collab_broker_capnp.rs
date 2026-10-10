@@ -627,12 +627,7 @@ impl BrokerActor {
         if self.is_agent {
             workspace.actor_for_agent(self.id.strip_prefix("agent:").unwrap_or(&self.id))
         } else {
-            crate::policy::WorkspacePolicy::actor_for_person_on_device_at(
-                workspace,
-                &self.id,
-                self.capped,
-                now,
-            )
+            workspace.actor_for_person_on_device_at(&self.id, self.capped, now)
         }
     }
 }

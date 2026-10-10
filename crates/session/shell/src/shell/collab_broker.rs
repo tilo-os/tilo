@@ -275,19 +275,28 @@ pub fn spawn_native_harness(
         None,
         &publisher,
         Some(membership),
-        CertificateProvisioning::HarnessDevices(Arc::new(trusted_devices)),
+        CertificateProvisioning::HarnessDevices(Arc::new(trusted_devices), None),
         None,
     )
 }
 
-/// Production owner/read pipeline with explicitly authorized synthetic devices.
-/// No enrollment or input grant is created by this test-only constructor.
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) type NativeReadHarnessWrapper = Arc<
+    dyn Fn(
+            Arc<dyn tilo_action_broker::services::NativeDocumentReads>,
+        ) -> Arc<dyn tilo_action_broker::services::NativeDocumentReads>
+        + Send
+        + Sync,
+>;
 #[cfg(test)]
-pub(crate) fn spawn_native_owner_harness(
+/// Production owner/read pipeline with already-authorized synthetic devices.
+/// The wrapper is confined to this test harness; enrollment and custody checks stay intact.
+pub(crate) fn spawn_native_owner_harness_with_reads(
     socket: PathBuf,
     membership: crate::shell::state::WorkspaceTreeHandle,
     trusted_devices: Vec<[u8; 32]>,
     network: &Arc<ShellNetwork>,
+    reads: Option<NativeReadHarnessWrapper>,
 ) -> std::io::Result<BrokerHandle> {
     let publisher = PeerPublisher::with_optional_owner_commit(
         Some(network.clone()),
@@ -301,7 +310,7 @@ pub(crate) fn spawn_native_owner_harness(
         Some(network),
         &publisher,
         Some(membership),
-        CertificateProvisioning::HarnessDevices(Arc::new(trusted_devices)),
+        CertificateProvisioning::HarnessDevices(Arc::new(trusted_devices), reads),
         None,
     )
 }
@@ -342,7 +351,7 @@ pub fn spawn_native_peer(
 enum CertificateProvisioning {
     Production,
     #[cfg(any(test, feature = "test-support"))]
-    HarnessDevices(Arc<Vec<[u8; 32]>>),
+    HarnessDevices(Arc<Vec<[u8; 32]>>, Option<NativeReadHarnessWrapper>),
 }
 
 impl CertificateProvisioning {
@@ -350,7 +359,7 @@ impl CertificateProvisioning {
         match self {
             Self::Production => false,
             #[cfg(any(test, feature = "test-support"))]
-            Self::HarnessDevices(_) => true,
+            Self::HarnessDevices(..) => true,
         }
     }
 }
@@ -843,14 +852,20 @@ fn spawn_inner(
     } else {
         tilo_action_broker::services::HostServices::default()
     };
+    #[cfg(any(test, feature = "test-support"))]
+    if let CertificateProvisioning::HarnessDevices(_, Some(wrap)) = &certificate_provisioning {
+        services.committed_documents = services.committed_documents.map(|reads| wrap(reads));
+    }
     services.record_content = record_content;
     // The same service the identity broker answers key requests from: its
-    // changes tell each route's endpoint when to ask again.
-    services.channel_keys = channel_encryption.clone().map(|access| {
-        let keys = crate::shell::channel_encryption::ChannelKeyProvider::default();
-        keys.set(Some(access));
-        keys
-    });
+    // changes tell each route's endpoint when to ask again. A session broker
+    // follows even without one; a configured peer broker never has one and
+    // still says it cannot follow.
+    services.channel_keys = if config.is_none() {
+        Some(session_channel_keys(channel_encryption.clone()))
+    } else {
+        None
+    };
     services.audio_output = Some(Arc::new(super::audio_output::AudioOutputService::new(
         local_session.lifecycle(),
     )));
@@ -917,7 +932,7 @@ fn spawn_inner(
             )?
         }
         #[cfg(any(test, feature = "test-support"))]
-        CertificateProvisioning::HarnessDevices(trusted_devices) => {
+        CertificateProvisioning::HarnessDevices(trusted_devices, _) => {
             tilo_action_broker::collab_broker::spawn_with_test_services(
                 capnp_socket_path,
                 authority,
@@ -974,6 +989,23 @@ fn spawn_inner(
         #[cfg(target_os = "linux")]
         _native_agents: native_agents,
     })
+}
+
+/// What a session broker's endpoints follow for their channels' key changes
+/// (`channelKeysChanged`): the session's channel service, or none.
+///
+/// Without a service a route holds no keys (the identity service answers
+/// from the same slot, so it says `Unavailable`), and nothing changes for
+/// this broker's lifetime. The follow then stays pending at no cost.
+/// Refusing it instead tells the endpoint that this broker cannot say when
+/// keys change, and it falls back to asking the identity service for every
+/// route once a second, forever (TIL-754).
+fn session_channel_keys(
+    access: Option<crate::shell::channel_encryption::ChannelKeyAccess>,
+) -> crate::shell::channel_encryption::ChannelKeyProvider {
+    let keys = crate::shell::channel_encryption::ChannelKeyProvider::default();
+    keys.set(access);
+    keys
 }
 
 /// The broker's session services: the durable history store and the
@@ -1284,6 +1316,37 @@ mod tests {
                 seen: None,
             },
         }
+    }
+
+    /// A session broker without a channel service answers an endpoint's
+    /// `channelKeysChanged` with a wait, not a refusal: a refusal makes the
+    /// endpoint ask the identity service for every route once a second
+    /// (TIL-754). The wait still ends when the slot it follows changes.
+    #[test]
+    fn a_session_broker_without_a_channel_service_keeps_key_follows_pending() {
+        use std::future::Future as _;
+        let keys = session_channel_keys(None);
+        let channel = collab_types::document_channel_id(
+            "so.tilo.terminal",
+            "00000000-0000-0000-0000-000000000000",
+            "tab",
+        );
+        let mut follow = std::pin::pin!(keys.channel_changed(channel, 0));
+        let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+        assert!(
+            follow.as_mut().poll(&mut cx).is_pending(),
+            "with no channel service nothing changes, so the follow waits"
+        );
+        assert!(
+            follow.as_mut().poll(&mut cx).is_pending(),
+            "and keeps waiting"
+        );
+        keys.set(None);
+        assert_eq!(
+            follow.as_mut().poll(&mut cx),
+            std::task::Poll::Ready(0),
+            "a change of the followed slot ends the wait"
+        );
     }
 
     #[test]
