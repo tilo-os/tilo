@@ -123,6 +123,21 @@ Launcher recovery #3277 merged normally at 4e2c99589a8d669e2626018a0f7b30a7183cf
 
 The live full-loop example now positively checks painted query pixels within the named input bounds. An actual nonblank closed-desktop capture is rejected; the production private search/Escape journey passes all existing and new assertions. [Qualification](evidence/headless-palette-visibility/README.md) distinguishes this observability improvement from an unproven animation failure.
 
+## Top-bar editor increment
+
+The editor adopts shared ButtonFace and ListRowFace, measured title/hint/rows and
+wrapped Add controls. Actual production regressions qualify drag cancellation,
+release activation, stable keyboard focus and submit ownership; theme changes
+invalidate the retained scene. [Qualification](evidence/topbar-editor/README.md).
+Primary chrome at 320px still collides above the editor and remains the next
+independent increment alongside status/device/offline and live window states.
+
+The action catalogue uses dedicated shell English/German Fluent entries; CI's
+all-action catalogue regression is retained and strengthened across both locales.
+The locale files overlap Dictation #2974 only at file level in independent hunks;
+the top-bar entries are beside overview, and Dictation owns its later namespace.
+Messages #2881 and Files #3009 still have no edited-path overlap.
+
 ## Owned overview clock fixture (2026-10-07)
 
 On base 411d51e9, the overview harness's ambient clock pin was ignored by the
