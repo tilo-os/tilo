@@ -336,6 +336,17 @@ pub struct Stream<R: BufRead> {
 }
 
 impl<R: BufRead> Stream<R> {
+    /// Artifact files must contain precisely one complete stream, with no trailing data.
+    pub(crate) fn finish(&mut self) -> std::io::Result<()> {
+        if std::io::Read::read(self, &mut [0u8; 1])? != 0 || !self.input.fill_buf()?.is_empty() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "unexpected trailing layer bytes",
+            ));
+        }
+        Ok(())
+    }
+
     pub fn new(input: R) -> Self {
         Self {
             input,
