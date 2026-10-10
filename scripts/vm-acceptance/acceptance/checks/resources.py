@@ -166,24 +166,6 @@ def describe_threads(groups: list[dict], n: int = 4) -> str:
                      for g in groups[:n] if g["cpu_pct"] > 0)
 
 
-def busy_threads(sample: dict, seconds: float, limit: int = 25) -> list[dict]:
-    """Bounded session-wide attribution, including helpers waking at zero CPU.
-
-    Detailed compositor/runtime accounting below is retained. Other processes
-    must not disappear merely because they fall below the CPU display cutoff.
-    """
-    rows = []
-    before, after = sample["procs"]
-    for pid, proc in after.items():
-        if pid not in before or proc["start"] != before[pid]["start"]:
-            continue
-        rows.extend({"pid": pid, **row}
-                    for row in thread_rows(sample, pid, seconds)["threads"]
-                    if row["cpu_pct"] > 0 or row["ctxt_switches_per_s"] > 0)
-    rows.sort(key=lambda row: (-row["cpu_pct"], -row["ctxt_switches_per_s"]))
-    return rows[:limit]
-
-
 def summarize(sample: dict, seconds: int) -> dict:
     """Per-process and per-thread CPU over the window, the compositor named by
     `compositor_pid` rather than by being the busiest `shell`."""
@@ -226,7 +208,6 @@ def summarize(sample: dict, seconds: int) -> dict:
         "shell_thread_groups": groups,
         "shell_gpu_driver_cpu_pct": None if groups is None else gpu_driver_cpu_pct(groups),
         "shell_threads": threads and threads["threads"],
-        "busy_threads": busy_threads(sample, seconds),
         "user_cpu_pct_total": round(sum(p["cpu_pct"] for p in procs), 2),
         "guest_cpu_pct": guest,
         "top": procs[:10],
@@ -253,48 +234,17 @@ def runtime_idle(sample: dict, procs: list[dict], seconds: float, comm: str) -> 
     }
 
 
-def _wakes(rows: list[dict]) -> dict:
-    """Measured loop ticks by wake owner, including idle ticks and their CPU."""
-    by = {}
-    for row in rows:
-        group = by.setdefault(str(row.get("wake") or "?"),
-                              {"ticks": 0, "painted": 0, "cpu_us": 0})
-        group["ticks"] += 1
-        group["painted"] += row.get("painted") == 1
-        cpu = row.get("cpu_us")
-        group["cpu_us"] += cpu if isinstance(cpu, int) else 0
-    return dict(sorted(by.items(), key=lambda item: -item[1]["ticks"]))
-
-
-SESSION_LOG = "$HOME/.local/state/tilo/session-logs/latest.log"
-
-
-def _session_log_size(ctx) -> int:
-    text = ctx.vm.exec(f'wc -c < "{SESSION_LOG}" 2>/dev/null || echo 0', check=False)
-    sizes = [line.strip() for line in text.splitlines() if line.strip().isdigit()]
-    return int(sizes[-1]) if sizes else 0
-
-
 def measure(ctx, seconds: int) -> dict:
     script = SAMPLE.replace("__SECS__", str(seconds)).replace("__UID__", str(ctx.vm.slot_uid()))
     mark = core.trace_mark(ctx)
-    log_from = _session_log_size(ctx)
     text = ctx.vm.root_exec(script, timeout=seconds + 90)
     rows = core.trace_after(ctx, mark)
     painted = [r for r in rows if r.get("painted") == 1]
-    # Keep bounded paint diagnostics only; unrelated session logs may contain
-    # user content and do not explain an idle redraw.
-    log = ctx.vm.exec(f'tail -c +{log_from + 1} "{SESSION_LOG}" 2>/dev/null '
-                      "| tail -c 262144 | sed -n '/^paint-stats:/p'", check=False)
     return {
         "seconds": seconds,
         **summarize(_parse_sample(text), seconds),
         "shell_loop_ticks_per_s": round(len(rows) / seconds, 2),
         "frames_painted": len(painted),
-        "loop_wakes": _wakes(rows),
-        "trace": rows,
-        "paint_stats": "\n".join(line for line in log.splitlines()
-                                 if line.startswith("paint-stats:")),
     }
 
 
@@ -698,8 +648,6 @@ def idle_empty(ctx, res):
     ctx.reset()
     time.sleep(5)
     m = measure(ctx, ctx.config["idle_seconds"])
-    ctx.write("R01-idle-empty-frames.csv", core.trace_csv(m.pop("trace")))
-    ctx.write("R01-idle-empty-paint-stats.log", m.pop("paint_stats"))
     m["guest_ram_used_mib"] = guest_ram_used_mib(ctx)
     res.metrics.update(m, renderer=ctx.facts.get("renderer"))
     ctx.write("R01-idle-empty.json", json.dumps(m, indent=1))
@@ -740,8 +688,6 @@ def idle_apps(ctx, res):
     opened = _open_several(ctx)
     res.metrics["opened"] = opened
     m = measure(ctx, ctx.config["idle_seconds"])
-    ctx.write("R02-idle-apps-frames.csv", core.trace_csv(m.pop("trace")))
-    ctx.write("R02-idle-apps-paint-stats.log", m.pop("paint_stats"))
     m["guest_ram_used_mib"] = guest_ram_used_mib(ctx)
     # Seconds from opening Terminal to its shell running: the window opened after it.
     m["terminal_shell_s"] = ctx.facts.get("terminal_shell_s")
