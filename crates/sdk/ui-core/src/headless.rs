@@ -5713,16 +5713,6 @@ impl FrameHarness {
         }
     }
 
-    /// Diagnostics only: record which dirty widget paths made unconsumed
-    /// pointer motion produce a frame. Off by default; no document content.
-    pub fn set_pointer_redraw_diagnostics(&mut self, enabled: bool) {
-        self.pointer_redraw_diagnostics = enabled;
-        self.pointer_redraw_sources.clear();
-    }
-    pub fn take_pointer_redraw_sources(&mut self) -> Vec<String> {
-        std::mem::take(&mut self.pointer_redraw_sources)
-    }
-
     fn frame_schedule_demands_frame(&self) -> bool {
         let schedule = self.frame_schedule();
         schedule.needs_redraw

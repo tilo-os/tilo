@@ -998,12 +998,6 @@ impl PdfApp {
         self.sig_strokes = crate::scenarios::sample_drawn_signature();
     }
 
-    /// Screenshot-only: the review panel open on `tab`.
-    pub fn arm_shots_panel(&mut self, tab: SidebarTab) {
-        self.show_sidebar = true;
-        self.shots_panel = Some(tab);
-    }
-
     /// Screenshot-only: stage a settled text selection over a word of page
     /// 1's first paragraph, so a still frame shows the shared selection HUD —
     /// highlight swatches + Copy + Note — over the page. The glyph layer is
