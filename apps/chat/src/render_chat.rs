@@ -180,26 +180,45 @@ pub(crate) fn agent_task_status_lines(
     use ui::agent_task_frontier::{AgentTaskChoice, AgentTaskDiscovery};
 
     let context = tasks.context_task();
-    let current = match tasks.choice() {
-        AgentTaskChoice::One(task) | AgentTaskChoice::Selected(task) => Some(task),
+    let choice = tasks.choice();
+    let current = match &choice {
+        AgentTaskChoice::One(task) | AgentTaskChoice::Selected(task) => Some(task.clone()),
         AgentTaskChoice::None | AgentTaskChoice::Choose(_) => None,
     };
-    let last_known = || {
-        context.as_ref().map(|task| {
-            crate::i18n::t_args(
-                "chat-agent-task-last-known",
-                &[("title", task.title.clone().into())],
-            )
-        })
+    let with_last_confirmed = |key| {
+        context
+            .as_ref()
+            .map(|task| crate::i18n::t_args(key, &[("title", task.title.clone().into())]))
     };
     let primary = current.as_ref().map_or_else(
-        || match tasks.discovery() {
-            AgentTaskDiscovery::Loading => crate::i18n::t("chat-agent-task-loading"),
-            AgentTaskDiscovery::Ready => {
-                last_known().unwrap_or_else(|| crate::i18n::t("chat-agent-task-none"))
+        || {
+            let can_confirm_changed = tasks.needs_frontier_confirmation()
+                && matches!(tasks.discovery(), AgentTaskDiscovery::Ready)
+                && !tasks.available_tasks().is_empty();
+            if can_confirm_changed {
+                return crate::i18n::t("chat-agent-task-changed");
             }
-            AgentTaskDiscovery::Incomplete { .. } | AgentTaskDiscovery::Unavailable => {
-                last_known().unwrap_or_else(|| crate::i18n::t("chat-agent-task-unavailable"))
+            if let AgentTaskChoice::Choose(tasks) = &choice {
+                return crate::i18n::t_args(
+                    "chat-agent-task-choose",
+                    &[(
+                        "count",
+                        i64::try_from(tasks.len()).unwrap_or(i64::MAX).into(),
+                    )],
+                );
+            }
+            match tasks.discovery() {
+                AgentTaskDiscovery::Loading => crate::i18n::t("chat-agent-task-loading"),
+                AgentTaskDiscovery::Ready => with_last_confirmed("chat-agent-task-none-last")
+                    .unwrap_or_else(|| crate::i18n::t("chat-agent-task-none")),
+                AgentTaskDiscovery::Incomplete { .. } => {
+                    with_last_confirmed("chat-agent-task-incomplete-last")
+                        .unwrap_or_else(|| crate::i18n::t("chat-agent-task-incomplete"))
+                }
+                AgentTaskDiscovery::Unavailable => {
+                    with_last_confirmed("chat-agent-task-unavailable-last")
+                        .unwrap_or_else(|| crate::i18n::t("chat-agent-task-unavailable"))
+                }
             }
         },
         |task| {
@@ -230,6 +249,23 @@ pub(crate) fn agent_task_status_lines(
         primary,
         receipt,
         queue,
+    }
+}
+
+pub(crate) fn selectable_agent_tasks(
+    tasks: &ui::agent_task_frontier::AgentTaskFrontiers,
+) -> Vec<ui::agent_task_frontier::AgentTaskFrontier> {
+    match tasks.choice() {
+        ui::agent_task_frontier::AgentTaskChoice::Choose(frontiers) => frontiers,
+        _ if tasks.needs_frontier_confirmation()
+            && matches!(
+                tasks.discovery(),
+                ui::agent_task_frontier::AgentTaskDiscovery::Ready
+            ) =>
+        {
+            tasks.available_tasks()
+        }
+        _ => Vec::new(),
     }
 }
 
@@ -2876,8 +2912,6 @@ impl ChatApp {
         rect: Rect,
         hits: &mut Vec<(Rect, Hit)>,
     ) {
-        use ui::agent_task_frontier::AgentTaskChoice;
-
         let Some(tasks) = self.direct_agent_tasks() else {
             return;
         };
@@ -2886,8 +2920,8 @@ impl ChatApp {
         let gap = f64::from(sp.s2);
         let row_h = SegmentedFace::height(ControlSize::Small, theme);
         let mut y = rect.y0;
-        let choice = tasks.choice();
-        if let AgentTaskChoice::Choose(frontiers) = &choice {
+        let frontiers = selectable_agent_tasks(&tasks);
+        if !frontiers.is_empty() {
             let chooser = Rect::new(rect.x0, y, rect.x1, (y + row_h).min(rect.y1));
             let segments = frontiers
                 .iter()
@@ -2914,7 +2948,7 @@ impl ChatApp {
                 .control_size(ControlSize::Small),
             );
             for (part, task) in parts.into_iter().zip(frontiers) {
-                ChatApp::push_hit(hits, part, Hit::AgentTask(task.task_id.clone()));
+                ChatApp::push_hit(hits, part, Hit::AgentTask(Box::new(task)));
             }
             y = chooser.y1 + gap;
         }

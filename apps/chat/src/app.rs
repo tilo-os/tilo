@@ -367,8 +367,8 @@ pub(crate) enum Hit {
     /// Choose what the direct-agent composer submits through its canonical
     /// domain action.
     AgentIntent(AgentComposerIntent),
-    /// Select one exact owner-published active task when several exist.
-    AgentTask(Id),
+    /// Select the exact owner-published active frontier that was painted.
+    AgentTask(Box<ui::agent_task_frontier::AgentTaskFrontier>),
     /// Open the existing Task Center, optionally selecting this exact task.
     AgentTaskCenter(Option<Id>),
     /// Request cancellation of the exact selected active run.
@@ -461,7 +461,10 @@ impl Hit {
             Self::AgentWindow => "chat.agent-window".into(),
             Self::AgentDragHandle => "chat.agent-drag-handle".into(),
             Self::AgentIntent(intent) => format!("chat.agent-intent:{intent:?}"),
-            Self::AgentTask(id) => format!("chat.agent-task:{id}"),
+            Self::AgentTask(frontier) => format!(
+                "chat.agent-task:{}:{}:{}",
+                frontier.task_id, frontier.run_epoch, frontier.after_revision
+            ),
             Self::AgentTaskCenter(Some(id)) => format!("chat.agent-task-center:{id}"),
             Self::AgentTaskCenter(None) => "chat.agent-task-center".into(),
             Self::AgentStop => "chat.agent-stop".into(),
@@ -4060,7 +4063,7 @@ impl ChatApp {
                 || crate::i18n::t("chat-agent-task-unavailable"),
                 |task| {
                     crate::i18n::t_args(
-                        "chat-agent-task-last-known",
+                        "chat-agent-task-unavailable-last",
                         &[("title", task.title.clone().into())],
                     )
                 },
@@ -4109,10 +4112,8 @@ impl ChatApp {
                 tasks.stop_state(),
                 ui::agent_task_frontier::AgentStopState::Stopping { .. }
             );
-            let choice = usize::from(matches!(
-                tasks.choice(),
-                ui::agent_task_frontier::AgentTaskChoice::Choose(_)
-            ));
+            let choice =
+                usize::from(!crate::render_chat::selectable_agent_tasks(&tasks).is_empty());
             let mut status = self.direct_agent_status_lines(&tasks, stopping);
             if hero_notice {
                 status.receipt = None;
@@ -4512,7 +4513,7 @@ impl ChatApp {
                     Hit::AgentTask(task) => (
                         crate::i18n::t_args(
                             "chat-agent-select-task",
-                            &[("task", task.as_str().into())],
+                            &[("task", task.title.as_str().into())],
                         ),
                         Role::ListItem,
                         false,
@@ -6376,6 +6377,10 @@ impl Widget for ChatApp {
             ui::a11y::Action::Activate | ui::a11y::Action::ToggleCheck
         ) {
             return false;
+        }
+        if let Hit::AgentTask(frontier) = &hit {
+            self.prepare_hit_activation();
+            return self.select_agent_task_frontier(frontier);
         }
         let messages_before = matches!(hit, Hit::Send)
             .then(|| ChatDoc::list_messages(state, &self.active_channel).len());

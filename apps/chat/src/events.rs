@@ -872,11 +872,7 @@ impl ChatApp {
             .map(|(_, h)| h.clone())
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "single exhaustive hit router; splitting by surface would obscure the shared pointer/keyboard activation path"
-    )]
-    pub(crate) fn on_hit(&mut self, hit: Hit, doc: &mut ui::widget::Edits<'_>) {
+    pub(crate) fn prepare_hit_activation(&mut self) {
         // Search reveal accents are transient selection affordances. Once the
         // person interacts with Chat directly, ordinary navigation takes over.
         self.revealed_message = None;
@@ -884,6 +880,28 @@ impl ChatApp {
         self.revealed_person = None;
         // Ordinary content activation dismisses the modal context menu.
         self.menu = None;
+    }
+
+    pub(crate) fn select_agent_task_frontier(
+        &mut self,
+        frontier: &ui::agent_task_frontier::AgentTaskFrontier,
+    ) -> bool {
+        let Some(agent) = self.direct_agent.clone() else {
+            return false;
+        };
+        let workspace = self.active_ws.clone();
+        self.agent_task_context(&workspace, &agent)
+            .borrow_mut()
+            .select_frontier_for(&workspace, &agent, frontier)
+            .is_ok()
+    }
+
+    #[allow(
+        clippy::too_many_lines,
+        reason = "single exhaustive hit router; splitting by surface would obscure the shared pointer/keyboard activation path"
+    )]
+    pub(crate) fn on_hit(&mut self, hit: Hit, doc: &mut ui::widget::Edits<'_>) {
+        self.prepare_hit_activation();
         match hit {
             Hit::Inbox => {
                 self.detached_agent_placeholder = None;
@@ -930,14 +948,8 @@ impl ChatApp {
                     self.set_composer_focus();
                 }
             }
-            Hit::AgentTask(task_id) => {
-                if let Some(agent) = self.direct_agent.clone() {
-                    let workspace = self.active_ws.clone();
-                    let _ = self
-                        .agent_task_context(&workspace, &agent)
-                        .borrow_mut()
-                        .select_for(&workspace, &agent, &task_id);
-                }
+            Hit::AgentTask(frontier) => {
+                let _ = self.select_agent_task_frontier(&frontier);
             }
             Hit::AgentTaskCenter(task_id) => {
                 self.host_intent = Some(ui::widget::AppHostIntent::ShowWorkspaceTasks {
@@ -2122,10 +2134,12 @@ mod tests {
         }));
     }
 
+    type MessageQuery = (Option<String>, String, Option<String>);
+
     #[derive(Default)]
     struct TaskControlHost {
         requests: Mutex<Vec<InvokeRequest>>,
-        query_parents: Mutex<Vec<Option<String>>>,
+        message_queries: Mutex<Vec<MessageQuery>>,
         current_unavailable: AtomicBool,
         current_empty: AtomicBool,
         message_refused: AtomicBool,
@@ -2152,8 +2166,8 @@ mod tests {
                 .unwrap_or(fallback)
         }
 
-        fn query_parents(&self) -> Vec<Option<String>> {
-            self.query_parents.lock().unwrap().clone()
+        fn message_queries(&self) -> Vec<MessageQuery> {
+            self.message_queries.lock().unwrap().clone()
         }
 
         fn make_current_unavailable(&self) {
@@ -2174,6 +2188,36 @@ mod tests {
 
         fn revoke_task_controls(&self) {
             self.task_controls_revoked.store(true, Ordering::Release);
+        }
+
+        fn set_current_projection(&self, value: serde_json::Value) {
+            self.visual_task_reads
+                .lock()
+                .unwrap()
+                .insert("read-current-tasks".into(), value);
+        }
+
+        fn replace_current_task(&self, run_epoch: u64, after_revision: u64) {
+            self.set_current_projection(serde_json::json!({
+                "generation": run_epoch,
+                "complete": true,
+                "total": 1,
+                "tasks": [{
+                    "task_id": "task-current",
+                    "title": "Review the release",
+                    "assigned_agent": "scribe",
+                    "status": "in_progress",
+                    "run_epoch": run_epoch,
+                    "active_agent": "scribe",
+                    "after_revision": after_revision,
+                    "applied_revision": after_revision,
+                    "route": "model",
+                    "cancellation_requested": false
+                }],
+                "pending_complete": true,
+                "pending_total": 0,
+                "pending": []
+            }));
         }
 
         fn message_catalogue_page(&self, query: &CatalogueQuery) -> CataloguePage {
@@ -2203,18 +2247,9 @@ mod tests {
             if mode == 7 {
                 return cycle_catalogue_page(query);
             }
-            let unrelated = catalogue_resource_row(
-                "opaque-unrelated-row",
-                "chat.channel",
-                "General",
-                "",
-                false,
-            );
             match (mode, query.cursor.as_slice()) {
                 (2, _) => CataloguePage {
                     revision: "chat-task-controls-1".into(),
-                    rows: vec![unrelated],
-                    next_cursor: vec![1],
                     stale_cursor: true,
                     ..CataloguePage::default()
                 },
@@ -2224,30 +2259,35 @@ mod tests {
                     exhausted: true,
                     ..CataloguePage::default()
                 },
-                (1, [] | [1]) => CataloguePage {
+                (1, [] | [1]) | (6, []) => CataloguePage {
                     revision: "chat-task-controls-1".into(),
-                    rows: vec![unrelated],
                     next_cursor: vec![1],
                     ..CataloguePage::default()
                 },
-                _ => CataloguePage::from_rows(
-                    if mode == 6 && query.parent_resource.is_some() {
-                        "chat-task-controls-2".into()
-                    } else {
-                        "chat-task-controls-1".into()
-                    },
-                    vec![
-                        catalogue_resource_row(
-                            "workspace-chat",
-                            "chat.workspace",
-                            "Chat",
-                            "",
-                            true,
-                        ),
-                        row,
-                    ],
-                    query,
-                ),
+                (4, _) => CataloguePage {
+                    revision: "chat-task-controls-1".into(),
+                    rows: vec![row],
+                    stale_cursor: true,
+                    ..CataloguePage::default()
+                },
+                (5, _) => CataloguePage {
+                    revision: "chat-task-controls-1".into(),
+                    rows: vec![row],
+                    exhausted: true,
+                    budget_exhausted: true,
+                    ..CataloguePage::default()
+                },
+                (6, _) => CataloguePage {
+                    revision: "chat-task-controls-2".into(),
+                    exhausted: true,
+                    ..CataloguePage::default()
+                },
+                _ => CataloguePage {
+                    revision: "chat-task-controls-1".into(),
+                    rows: vec![row],
+                    exhausted: true,
+                    ..CataloguePage::default()
+                },
             }
         }
     }
@@ -2281,7 +2321,7 @@ mod tests {
             "opaque-agent-row",
             "chat.agent",
             "Scribe",
-            "workspace-chat",
+            "opaque-agent-row",
             false,
         );
         row.action = Some(ActionDescriptor {
@@ -2301,6 +2341,10 @@ mod tests {
             },
             params: Vec::new(),
             view: None,
+        });
+        row.fresh_binding = Some(tilo_actions::remote::FreshActionBinding {
+            descriptor: row.action.clone().unwrap(),
+            operation_type: Some("chat.action".into()),
         });
         row
     }
@@ -2406,10 +2450,11 @@ mod tests {
                     ..CataloguePage::default()
                 }));
             }
-            self.query_parents
-                .lock()
-                .unwrap()
-                .push(query.parent_resource.clone());
+            self.message_queries.lock().unwrap().push((
+                query.parent_resource.clone(),
+                query.needle.clone(),
+                query.provider.clone(),
+            ));
             Pending::ready(Ok(self.message_catalogue_page(&query)))
         }
 
@@ -2596,14 +2641,25 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(messages.len(), 1);
         assert_eq!(messages[0].argument, InvokeArgument::Text(expected.into()));
+        let binding = messages[0]
+            .fresh_binding
+            .as_ref()
+            .expect("Message uses its owner-authored current binding");
+        assert_eq!(binding.descriptor, agent_message_row().action.unwrap());
+        assert_eq!(binding.operation_type.as_deref(), Some("chat.action"));
+        assert!(messages[0].revision.is_none());
     }
 
-    fn assert_message_hierarchy_was_queried(host: &TaskControlHost) {
+    fn assert_message_was_semantically_searched(host: &TaskControlHost) {
         assert!(
-            host.query_parents()
+            host.message_queries()
                 .iter()
-                .any(|parent| parent.as_deref() == Some("workspace-chat")),
-            "the Message action was discovered through its real resource parent"
+                .any(|(parent, needle, provider)| {
+                    parent.is_none()
+                        && needle == "message"
+                        && provider.as_deref() == Some("chat-peer")
+                }),
+            "the Message action was discovered through the provider's semantic name search"
         );
     }
 
@@ -2717,7 +2773,7 @@ mod tests {
             app.agent_submission_errors.get()
         );
         assert_one_agent_message(&host, "Keep this private");
-        assert_message_hierarchy_was_queried(&host);
+        assert_message_was_semantically_searched(&host);
         assert!(
             ChatDoc::list_messages(
                 &doc,
@@ -2974,10 +3030,10 @@ mod tests {
             ("repeated cursor", 1),
             ("stale page", 2),
             ("duplicate row", 3),
-            ("stale confirmation", 4),
-            ("confirmation budget", 5),
+            ("stale page with rows", 4),
+            ("catalogue budget", 5),
             ("revision drift", 6),
-            ("resource cycle", 7),
+            ("malformed parent", 7),
         ] {
             let mut doc = AutoCommit::new();
             ChatDoc::seed_starter(&mut doc, "u_alice", "Alice", "AL");
@@ -3088,7 +3144,7 @@ mod tests {
         );
     }
 
-    fn agent_task_control_app() -> (ChatApp, AutoCommit) {
+    fn agent_task_control_app() -> (ChatApp, AutoCommit, Arc<TaskControlHost>) {
         let mut doc = AutoCommit::new();
         ChatDoc::seed_starter(&mut doc, "u_alice", "Alice", "AL");
         let mut app = peer("u_alice", "Alice", "AL", 0);
@@ -3106,12 +3162,12 @@ mod tests {
             &mut ui::widget::Edits::lend(&mut doc),
         );
         app.poll_agent_tasks();
-        (app, doc)
+        (app, doc, host)
     }
 
     #[test]
     fn agent_task_status_opens_task_center_by_keyboard_pointer_and_accessibility() {
-        let (mut app, mut doc) = agent_task_control_app();
+        let (mut app, mut doc, _host) = agent_task_control_app();
         app.perms = crate::permissions::ChatPermissions::from_context(
             ui::permissions::PermissionContext::from_capabilities(
                 ui::permissions::Actor::person(Some(ui::permissions::Role::Viewer), model::ME),
@@ -3196,6 +3252,174 @@ mod tests {
             })
                 if source == "agent:scribe"
         ));
+    }
+
+    fn painted_agent_task(app: &ChatApp, run_epoch: u64, after_revision: u64) -> Hit {
+        app.hits
+            .iter()
+            .find_map(|(_, hit)| match hit {
+                Hit::AgentTask(frontier)
+                    if frontier.run_epoch == run_epoch
+                        && frontier.after_revision == after_revision =>
+                {
+                    Some(hit.clone())
+                }
+                _ => None,
+            })
+            .expect("the exact frontier is painted for confirmation")
+    }
+
+    #[test]
+    fn agent_task_changed_single_task_requires_the_exact_repainted_frontier() {
+        use ui::agent_task_frontier::AgentTaskChoice;
+
+        let (mut app, mut doc, host) = agent_task_control_app();
+        type_str(&mut app, &mut doc, "Keep this selected draft");
+        app.composer_main.select(5, 18);
+        let draft = app.composer_main.private_plain();
+        let selection = app.composer_main.selection();
+        let caret = app.composer_main.caret();
+        let tasks = app.direct_agent_tasks().expect("owner-backed task context");
+        host.replace_current_task(8, 5);
+        tasks.borrow_mut().set_observation_active(false);
+        tasks.borrow_mut().set_observation_active(true);
+        app.poll_agent_tasks();
+        assert!(tasks.borrow().needs_frontier_confirmation());
+        assert_eq!(
+            crate::render_chat::agent_task_status_lines(&tasks.borrow(), false).primary,
+            "Task changed — confirm a current task"
+        );
+        render_frame(&mut app, 1280.0, 800.0);
+        let stale = painted_agent_task(&app, 8, 5);
+        let target = stale.semantic_id();
+        let stale_index = app
+            .semantic_hits()
+            .iter()
+            .position(|(_, hit, name, ..)| {
+                hit.semantic_id() == target && name == "Select task Review the release"
+            })
+            .expect("the stale frontier has one exact semantic target");
+        app.focus_keyboard_target(stale_index, &stale);
+        assert_eq!(
+            app.keyboard_target_semantic.as_deref(),
+            Some(target.as_str())
+        );
+        write_frontier_shots(&mut app, "changed-unconfirmed");
+
+        host.replace_current_task(9, 6);
+        tasks.borrow_mut().set_observation_active(false);
+        tasks.borrow_mut().set_observation_active(true);
+        app.poll_agent_tasks();
+        app.on_hit(stale.clone(), &mut ui::widget::Edits::lend(&mut doc));
+        assert!(tasks.borrow().needs_frontier_confirmation());
+        assert!(!ui::Widget::perform_semantic_action(
+            &mut app,
+            &stale.semantic_id(),
+            &ui::a11y::Action::Activate,
+            &mut ui::widget::Edits::lend(&mut doc),
+            &automerge::ROOT,
+        ));
+        assert!(tasks.borrow().needs_frontier_confirmation());
+        assert_eq!(app.composer_main.private_plain(), draft);
+        assert_eq!(app.composer_main.selection(), selection);
+        assert_eq!(app.composer_main.caret(), caret);
+
+        render_frame(&mut app, 1280.0, 800.0);
+        let fresh = painted_agent_task(&app, 9, 6);
+        assert_ne!(fresh.semantic_id(), target);
+        assert!(
+            app.semantic_hits()
+                .iter()
+                .all(|(_, hit, ..)| hit.semantic_id() != target)
+        );
+        assert!(!ui::Widget::perform_semantic_action(
+            &mut app,
+            &target,
+            &ui::a11y::Action::Activate,
+            &mut ui::widget::Edits::lend(&mut doc),
+            &automerge::ROOT,
+        ));
+        assert_eq!(app.reconcile_keyboard_target(), None);
+        assert!(app.keyboard_target_semantic.is_none());
+        assert!(ui::Widget::perform_semantic_action(
+            &mut app,
+            &fresh.semantic_id(),
+            &ui::a11y::Action::Activate,
+            &mut ui::widget::Edits::lend(&mut doc),
+            &automerge::ROOT,
+        ));
+        assert!(!tasks.borrow().needs_frontier_confirmation());
+        assert!(matches!(tasks.borrow().choice(), AgentTaskChoice::One(_)));
+        assert!(tasks.borrow().can_steer());
+        assert_eq!(app.composer_main.private_plain(), draft);
+        assert_eq!(app.composer_main.selection(), selection);
+        assert_eq!(app.composer_main.caret(), caret);
+        write_frontier_shots(&mut app, "confirmed");
+    }
+
+    #[test]
+    fn agent_task_status_distinguishes_ready_multiple_and_incomplete_reads() {
+        let (app, _doc, host) = agent_task_control_app();
+        let tasks = app.direct_agent_tasks().expect("owner-backed task context");
+
+        host.set_current_projection(serde_json::json!({
+            "generation": 9,
+            "complete": true,
+            "total": 0,
+            "tasks": [],
+            "pending_complete": true,
+            "pending_total": 0,
+            "pending": []
+        }));
+        tasks.borrow_mut().refresh();
+        assert_eq!(
+            crate::render_chat::agent_task_status_lines(&tasks.borrow(), false).primary,
+            "No current task — last task: Review the release"
+        );
+
+        let task = |id: &str, title: &str, epoch: u64| {
+            serde_json::json!({
+                "task_id": id,
+                "title": title,
+                "assigned_agent": "scribe",
+                "status": "in_progress",
+                "run_epoch": epoch,
+                "active_agent": "scribe",
+                "after_revision": 4,
+                "applied_revision": 4,
+                "route": "model",
+                "cancellation_requested": false
+            })
+        };
+        host.set_current_projection(serde_json::json!({
+            "generation": 10,
+            "complete": true,
+            "total": 2,
+            "tasks": [task("task-a", "First", 1), task("task-b", "Second", 2)],
+            "pending_complete": true,
+            "pending_total": 0,
+            "pending": []
+        }));
+        tasks.borrow_mut().refresh();
+        assert_eq!(
+            crate::render_chat::agent_task_status_lines(&tasks.borrow(), false).primary,
+            "Choose a current task (2 available)"
+        );
+
+        host.set_current_projection(serde_json::json!({
+            "generation": 11,
+            "complete": false,
+            "total": 300,
+            "tasks": [],
+            "pending_complete": false,
+            "pending_total": 0,
+            "pending": []
+        }));
+        tasks.borrow_mut().refresh();
+        assert_eq!(
+            crate::render_chat::agent_task_status_lines(&tasks.borrow(), false).primary,
+            "Task list incomplete — last confirmed: Review the release"
+        );
     }
 
     fn assert_agent_task_disclosures_are_content_sized(app: &ChatApp) {
@@ -3685,7 +3909,7 @@ mod tests {
     }
 
     #[test]
-    fn unavailable_owner_read_keeps_last_title_without_claiming_working() {
+    fn agent_task_unavailable_owner_read_keeps_last_title_without_claiming_working() {
         let mut doc = AutoCommit::new();
         ChatDoc::seed_starter(&mut doc, "u_alice", "Alice", "AL");
         let mut app = peer("u_alice", "Alice", "AL", 0);
@@ -3716,7 +3940,10 @@ mod tests {
             ui::agent_task_frontier::AgentTaskDiscovery::Unavailable
         ));
         let status = crate::render_chat::agent_task_status_lines(&tasks, false);
-        assert_eq!(status.primary, "Last known task: Review the release");
+        assert_eq!(
+            status.primary,
+            "Current tasks unavailable — last confirmed: Review the release"
+        );
         assert!(status.receipt.is_none());
         assert!(status.queue.is_none());
         drop(tasks);
@@ -3755,7 +3982,10 @@ mod tests {
             .direct_agent_tasks()
             .expect("the retained exact task context remains available for audit");
         let populated = app.direct_agent_status_lines(&tasks.borrow(), false);
-        assert_eq!(populated.primary, "Last known task: Review the release");
+        assert_eq!(
+            populated.primary,
+            "Current tasks unavailable — last confirmed: Review the release"
+        );
         assert_eq!(
             populated.receipt.as_deref(),
             Some("This agent is no longer available here. Your draft is kept on this device.")
@@ -3764,7 +3994,10 @@ mod tests {
 
         app.messages.clear();
         let status = app.direct_agent_status_lines(&tasks.borrow(), false);
-        assert_eq!(status.primary, "Last known task: Review the release");
+        assert_eq!(
+            status.primary,
+            "Current tasks unavailable — last confirmed: Review the release"
+        );
         assert_eq!(
             status.receipt.as_deref(),
             Some("This agent is no longer available here. Your draft is kept on this device.")
@@ -6063,6 +6296,41 @@ mod tests {
         let output = std::path::PathBuf::from(output);
         std::fs::create_dir_all(&output).unwrap();
         for (size, width, height) in [("normal", 1600_u32, 900_u32), ("compact", 960, 720)] {
+            for (name, theme) in [
+                ("light", ui::theme::Theme::light()),
+                ("dark", ui::theme::Theme::dark()),
+                (
+                    "high-contrast-200",
+                    ui::theme::Theme::high_contrast().with_text_scale(2.0),
+                ),
+            ] {
+                app.rect = vello::kurbo::Rect::new(0.0, 0.0, f64::from(width), f64::from(height));
+                let mut scene = vello::Scene::new();
+                let mut text = ui::text_render::TextRenderer::new();
+                text.set_text_scale(theme.text_scale);
+                app.draw(
+                    &mut scene,
+                    vello::kurbo::Affine::IDENTITY,
+                    &mut text,
+                    &theme,
+                    &ui::presence::PresenceCtx::empty(),
+                );
+                ui::offscreen::OffscreenRenderer::new(width, height).render_png(
+                    &scene,
+                    theme.tokens.colors.surfaces.content,
+                    output.join(format!("{state}-{size}-{name}.png")),
+                );
+            }
+        }
+    }
+
+    fn write_frontier_shots(app: &mut ChatApp, state: &str) {
+        let Some(output) = std::env::var_os("TILO_CHAT_FRONTIER_SHOTS") else {
+            return;
+        };
+        let output = std::path::PathBuf::from(output);
+        std::fs::create_dir_all(&output).unwrap();
+        for (size, width, height) in [("normal", 1600_u32, 900_u32), ("compact", 800, 600)] {
             for (name, theme) in [
                 ("light", ui::theme::Theme::light()),
                 ("dark", ui::theme::Theme::dark()),
