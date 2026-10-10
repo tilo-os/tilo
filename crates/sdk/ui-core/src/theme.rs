@@ -434,12 +434,30 @@ impl Theme {
     /// machine with no preference and one whose settings file is corrupt
     /// both want a desktop that starts.
     pub fn configured() -> Self {
-        if let Some(source) = settings_store::installed_source() {
-            let text = serde_json::Value::Object(source.load()).to_string();
-            let reduce_motion_override = crate::host::environment().accessibility.reduce_motion;
-            return Self::configured_from_text(&text, reduce_motion_override);
-        }
-        Self::configured_from(settings_store::settings_path().as_deref())
+        Self::resolved_configured()
+            .with_component_scales(1.0, 1.0)
+            .with_reduce_motion(crate::host::environment().accessibility.reduce_motion)
+    }
+
+    /// The configured theme with its admitted accessibility scales applied.
+    ///
+    /// App hosts use [`Self::configured`] and apply their typed host inputs
+    /// exactly once. The compositor and launch/portal projections, which are
+    /// those hosts, use this form so the same validated settings layer drives
+    /// chrome geometry and the inputs handed across process boundaries.
+    #[must_use]
+    pub fn resolved_configured() -> Self {
+        let text = if let Some(source) = settings_store::installed_source() {
+            serde_json::Value::Object(source.load()).to_string()
+        } else {
+            settings_store::settings_path()
+                .and_then(|path| std::fs::read_to_string(path).ok())
+                .unwrap_or_default()
+        };
+        Self::resolved_configured_from_text(
+            &text,
+            crate::host::environment().accessibility.reduce_motion,
+        )
     }
 
     /// [`Theme::configured`] from an explicit settings file; `None` or an
@@ -453,30 +471,15 @@ impl Theme {
     }
 
     fn configured_from_text(text: &str, reduce_motion_override: bool) -> Self {
-        let mut stack =
-            crate::theme_layers::ThemeLayerStack::from_settings_json(text, local_moment());
-        // Hosts apply text and UI scale on top of this theme (`App::rebuild_theme`).
-        // Baking the file's factors here would apply them twice. Reduced motion
-        // follows the host override: the compositor is itself a UI host, so an
-        // explicitly reduced-motion session must not keep full-desktop
-        // transitions running even when settings.json has not been written yet.
-        // A file schema this build rejects does not contribute contrast or
-        // caret. The host override is its own admitted layer.
-        let file = stack.accessibility;
-        let admitted = file.validate().is_ok();
-        stack.accessibility = crate::theme_layers::AccessibilityLayer {
-            high_contrast: admitted && file.high_contrast,
-            forced_colors: admitted && file.forced_colors,
-            thick_caret: admitted && file.thick_caret,
-            reduce_transparency: admitted && file.reduce_transparency,
-            hyperlegible: admitted && file.hyperlegible,
-            distinct_letters: file.distinct_letters.filter(|_| admitted),
-            text_scale: 1.0,
-            ui_scale: 1.0,
-            reduce_motion: reduce_motion_override,
-            ..crate::theme_layers::AccessibilityLayer::default()
-        };
-        resolve_theme_layers(&stack)
+        Self::resolved_configured_from_text(text, reduce_motion_override)
+            .with_component_scales(1.0, 1.0)
+            .with_reduce_motion(reduce_motion_override)
+    }
+
+    fn resolved_configured_from_text(text: &str, reduce_motion_override: bool) -> Self {
+        let theme = Self::resolved_from_settings(text);
+        let reduce_motion = theme.reduce_motion || reduce_motion_override;
+        theme.with_reduce_motion(reduce_motion)
     }
 
     /// The user's theme in a settings document, if it names one this build
@@ -1098,6 +1101,36 @@ mod tests {
         {
             assert!(Theme::configured_from_text("", true).reduce_motion);
             assert!(!Theme::configured_from_text("", false).reduce_motion);
+            let file_motion =
+                r#"{"appearance":{"accessibility":{"schema_version":1,"reduce_motion":true}}}"#;
+            assert!(
+                Theme::resolved_configured_from_text(file_motion, false).reduce_motion,
+                "the compositor's resolved projection includes admitted file motion"
+            );
+            assert!(
+                !Theme::configured_from_text(file_motion, false).reduce_motion,
+                "an app base leaves motion policy to its typed host input"
+            );
+        }
+
+        // Case `configured_app_theme_leaves_admitted_scales_for_its_host`.
+        {
+            let text = r#"{"appearance":{"accessibility":{"schema_version":1,"text_scale":2.0,"ui_scale":1.5,"high_contrast":true}}}"#;
+            let resolved = Theme::resolved_configured_from_text(text, false);
+            assert_eq!(resolved.text_scale, 2.0);
+            assert_eq!(resolved.ui_scale, 1.5);
+            assert!(resolved.colors_are_forced());
+            let app_base = Theme::configured_from_text(text, false);
+            assert_eq!(app_base.text_scale, 1.0);
+            assert_eq!(app_base.ui_scale, 1.0);
+            assert!(app_base.colors_are_forced());
+
+            let rejected = Theme::resolved_configured_from_text(
+                r#"{"appearance":{"accessibility":{"schema_version":99,"text_scale":2.0,"ui_scale":2.0}}}"#,
+                false,
+            );
+            assert_eq!(rejected.text_scale, 1.0);
+            assert_eq!(rejected.ui_scale, 1.0);
         }
 
         // Case `with_a11y_picks_the_high_contrast_of_the_theme_s_polarity`.

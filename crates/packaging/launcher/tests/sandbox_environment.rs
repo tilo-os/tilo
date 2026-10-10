@@ -309,6 +309,22 @@ fn the_session_environment_does_not_leak_into_the_sandbox() {
                 "unrelated parent environment crossed beside {value:?}"
             );
         }
+        for value in ["NaN", "0.49", "3.01", "1.5\nTILO_ENV_LEAK_MARKER=leaked"] {
+            let _env = parent_env(&[("TILO_UI_SCALE", value), (MARKER, "the-parent-was-here")]);
+            assert_eq!(
+                run(&["env", "TILO_UI_SCALE"]),
+                "ENV TILO_UI_SCALE=<unset>",
+                "unsafe UI scale crossed the sandbox: {value:?}"
+            );
+            assert!(!env_names_inside().iter().any(|key| key == MARKER));
+        }
+        for value in ["true", " 1 ", "2", "1\nTILO_ENV_LEAK_MARKER=leaked"] {
+            let _env = parent_env(&[("TILO_A11Y_REDUCE_MOTION", value)]);
+            assert_eq!(
+                run(&["env", "TILO_A11Y_REDUCE_MOTION"]),
+                "ENV TILO_A11Y_REDUCE_MOTION=<unset>"
+            );
+        }
     }
 }
 
@@ -356,6 +372,24 @@ fn chosen_session_preferences_are_carried_across_explicitly() {
             "ENV TILO_A11Y_TEXT_SCALE=1.25"
         );
         assert_eq!(run(&["env", "TILO_TEXT_SCALE"]), "ENV TILO_TEXT_SCALE=2");
+    }
+    // Phase `validated_accessibility_ui_scale_reaches_the_app`.
+    {
+        let _env = parent_env(&[("TILO_UI_SCALE", " 1.5 "), ("TILO_A11Y_UI_SCALE", "2.0")]);
+
+        assert_eq!(run(&["env", "TILO_UI_SCALE"]), "ENV TILO_UI_SCALE=1.5");
+        assert_eq!(
+            run(&["env", "TILO_A11Y_UI_SCALE"]),
+            "ENV TILO_A11Y_UI_SCALE=2"
+        );
+    }
+    // Phase `validated_reduced_motion_reaches_the_app`.
+    for value in ["0", "1"] {
+        let _env = parent_env(&[("TILO_A11Y_REDUCE_MOTION", value)]);
+        assert_eq!(
+            run(&["env", "TILO_A11Y_REDUCE_MOTION"]),
+            format!("ENV TILO_A11Y_REDUCE_MOTION={value}")
+        );
     }
 }
 

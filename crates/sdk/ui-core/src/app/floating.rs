@@ -850,6 +850,17 @@ impl App {
                             self.set_theme(theme);
                         }
                     }
+                    if let Some((text_scale, ui_scale, reduce_motion)) =
+                        message.configured_accessibility()
+                    {
+                        let _ = self.apply_appearance_intent(crate::theme::AppearanceIntent {
+                            base_theme: self.accessibility.base_theme.clone(),
+                            high_contrast: self.accessibility.a11y.high_contrast,
+                            reduce_motion,
+                            text_scale,
+                            ui_scale,
+                        });
+                    }
                     if let Some(appearance) = message.window_appearance() {
                         self.set_window_appearance(appearance);
                     }
@@ -1049,6 +1060,88 @@ fn open_standalone_instance(target: Option<&str>) -> Result<(), String> {
 #[cfg(feature = "native")]
 mod host_shell_allow_tests {
     use super::*;
+
+    #[test]
+    fn authenticated_host_appearance_updates_live_scales_once_and_refuses_malformed_values() {
+        use crate::floating_surface::HostAccessibilityAppearance;
+
+        let mut app = App::new_with_controlled_inputs(
+            crate::State::new(),
+            Box::new(crate::widget::Container::new()),
+        );
+        app.set_theme(crate::Theme::dark());
+        assert_eq!((app.theme.text_scale, app.theme.ui_scale), (1.0, 1.0));
+
+        let theme = crate::Theme::dark()
+            .with_ui_scale(1.5)
+            .with_text_scale(2.0)
+            .with_reduce_motion(true);
+        let message = FloatingSurfaceHostMessage::appearance_with_resolved_theme(
+            &crate::theme::WindowAppearance::default(),
+            &theme,
+        );
+        app.layout.layout_dirty = false;
+        app.layout.structure_dirty = false;
+        app.apply_floating_host_messages(vec![message.clone()]);
+        assert_eq!((app.theme.text_scale, app.theme.ui_scale), (2.0, 1.5));
+        assert_eq!(app.text_renderer.text_scale(), 2.0);
+        assert!(app.theme.reduce_motion);
+        assert!(app.layout.layout_dirty && app.layout.structure_dirty);
+        let applied = app.theme.clone();
+        app.layout.layout_dirty = false;
+        app.layout.structure_dirty = false;
+        app.apply_floating_host_messages(vec![message]);
+        assert_eq!(
+            app.theme, applied,
+            "an unchanged delivery cannot rescale twice"
+        );
+        assert!(!app.layout.layout_dirty && !app.layout.structure_dirty);
+
+        let legacy = serde_json::to_vec(&FloatingSurfaceHostMessage::appearance(
+            &crate::theme::WindowAppearance::default(),
+        ))
+        .unwrap();
+        assert!(
+            serde_json::from_slice::<serde_json::Value>(&legacy)
+                .unwrap()
+                .get("accessibility")
+                .is_none(),
+            "an older wire message omits the additive accessibility object"
+        );
+        app.apply_floating_host_messages(vec![serde_json::from_slice(&legacy).unwrap()]);
+        assert_eq!(
+            app.theme, applied,
+            "an older host without accessibility fields preserves live factors"
+        );
+
+        for accessibility in [
+            HostAccessibilityAppearance {
+                schema_version: 99,
+                text_scale: 1.0,
+                ui_scale: 1.0,
+                reduce_motion: false,
+            },
+            HostAccessibilityAppearance {
+                schema_version: 1,
+                text_scale: f32::NAN,
+                ui_scale: 1.0,
+                reduce_motion: false,
+            },
+        ] {
+            let mut malformed =
+                FloatingSurfaceHostMessage::appearance(&crate::theme::WindowAppearance::default());
+            if let FloatingSurfaceHostMessage::Appearance {
+                accessibility: field,
+                ..
+            } = &mut malformed
+            {
+                *field = Some(accessibility);
+            }
+            app.apply_floating_host_messages(vec![malformed]);
+            assert_eq!(app.theme, applied);
+        }
+    }
+
     #[cfg(target_os = "linux")]
     #[test]
     fn network_status_follows_the_real_service_pump_and_discards_disconnected_host() {

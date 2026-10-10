@@ -397,6 +397,51 @@ pub struct HostNetworkStatus {
     pub metered: Option<bool>,
 }
 
+fn appearance_accessibility_schema() -> u32 {
+    crate::theme_layers::ACCESSIBILITY_SCHEMA_VERSION
+}
+
+/// Accessibility factors authored by the authenticated host alongside an
+/// [`FloatingSurfaceHostMessage::Appearance`]. Older hosts omit this object;
+/// apps then preserve the launch-time factors they already hold.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct HostAccessibilityAppearance {
+    #[serde(default = "appearance_accessibility_schema")]
+    pub schema_version: u32,
+    pub text_scale: f32,
+    pub ui_scale: f32,
+    pub reduce_motion: bool,
+}
+
+impl HostAccessibilityAppearance {
+    fn from_theme(theme: &crate::Theme) -> Self {
+        Self {
+            schema_version: crate::theme_layers::ACCESSIBILITY_SCHEMA_VERSION,
+            text_scale: theme.text_scale,
+            ui_scale: theme.ui_scale,
+            reduce_motion: theme.reduce_motion,
+        }
+    }
+
+    fn admitted(self) -> Option<Self> {
+        let layer = crate::theme_layers::AccessibilityLayer {
+            schema_version: self.schema_version,
+            text_scale: self.text_scale,
+            ui_scale: self.ui_scale,
+            reduce_motion: self.reduce_motion,
+            ..crate::theme_layers::AccessibilityLayer::default()
+        }
+        .materialize()
+        .ok()?;
+        Some(Self {
+            schema_version: layer.schema_version,
+            text_scale: layer.text_scale,
+            ui_scale: layer.ui_scale,
+            reduce_motion: layer.reduce_motion,
+        })
+    }
+}
+
 /// Shell → app lifecycle. The shell supplies one authoritative combined
 /// desktop coordinate space and explicitly acknowledges ownership changes;
 /// transports must not infer either from timing.
@@ -482,6 +527,10 @@ pub enum FloatingSurfaceHostMessage {
         /// through their private sandbox configuration directory.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         theme: Option<crate::theme_document::ThemeDocument>,
+        /// Admitted host-owned scale and motion factors. Absent on older
+        /// hosts, which leaves the app's launch-time values unchanged.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        accessibility: Option<HostAccessibilityAppearance>,
         /// Absent on older hosts or launches without network access.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         network_status: Option<HostNetworkStatus>,
@@ -507,6 +556,7 @@ impl FloatingSurfaceHostMessage {
     pub fn appearance(appearance: &crate::theme::WindowAppearance) -> Self {
         Self::Appearance {
             theme: None,
+            accessibility: None,
             network_status: None,
             workspace_hue: appearance.workspace_hue.filter(|hue| hue.is_finite()),
             your_colour: appearance.your_colour.map(|hue| hue.id().to_owned()),
@@ -529,6 +579,21 @@ impl FloatingSurfaceHostMessage {
         message
     }
 
+    /// The host's fully resolved theme, including its admitted scale and
+    /// motion factors. Kept separate from [`Self::appearance_with_theme`] so
+    /// palette-only callers preserve an app's existing accessibility intent.
+    #[must_use]
+    pub fn appearance_with_resolved_theme(
+        appearance: &crate::theme::WindowAppearance,
+        theme: &crate::Theme,
+    ) -> Self {
+        let mut message = Self::appearance_with_theme(appearance, theme);
+        if let Self::Appearance { accessibility, .. } = &mut message {
+            *accessibility = Some(HostAccessibilityAppearance::from_theme(theme));
+        }
+        message
+    }
+
     /// Validate the host's authored palette before applying it.
     #[must_use]
     pub fn configured_theme(&self) -> Option<crate::Theme> {
@@ -540,6 +605,26 @@ impl FloatingSurfaceHostMessage {
             return None;
         };
         crate::Theme::from_document(document)
+    }
+
+    /// Validate and materialize the host-authored accessibility factors.
+    /// `None` means either an older host omitted them or a malformed payload
+    /// was refused; neither case may reset the app's current values.
+    #[must_use]
+    pub fn configured_accessibility(&self) -> Option<(f32, f32, bool)> {
+        let Self::Appearance {
+            accessibility: Some(accessibility),
+            ..
+        } = self
+        else {
+            return None;
+        };
+        let accessibility = accessibility.admitted()?;
+        Some((
+            accessibility.text_scale,
+            accessibility.ui_scale,
+            accessibility.reduce_motion,
+        ))
     }
 
     /// What an [`Self::Appearance`] message says, `None` for any other. A

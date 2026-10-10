@@ -387,6 +387,9 @@ pub struct AppearanceDelivery {
 struct DeliveredAppearance {
     window: ui::WindowAppearance,
     theme: ui::theme::ThemeDocument,
+    text_scale: f32,
+    ui_scale: f32,
+    reduce_motion: bool,
     network: Option<HostNetworkStatus>,
 }
 
@@ -414,10 +417,15 @@ impl AppearanceDelivery {
             let network = network_allowed.then_some(network);
             let appearance = appearance_of(app_id);
             if told.as_ref().is_none_or(|last| {
-                last.window != appearance || last.theme != theme.document || last.network != network
+                last.window != appearance
+                    || last.theme != theme.document
+                    || last.text_scale.to_bits() != theme.text_scale.to_bits()
+                    || last.ui_scale.to_bits() != theme.ui_scale.to_bits()
+                    || last.reduce_motion != theme.reduce_motion
+                    || last.network != network
             }) {
                 let mut message =
-                    FloatingSurfaceHostMessage::appearance_with_theme(&appearance, theme);
+                    FloatingSurfaceHostMessage::appearance_with_resolved_theme(&appearance, theme);
                 if let FloatingSurfaceHostMessage::Appearance { network_status, .. } = &mut message
                 {
                     *network_status = network;
@@ -426,6 +434,9 @@ impl AppearanceDelivery {
                 *told = Some(DeliveredAppearance {
                     window: appearance,
                     theme: theme.document.clone(),
+                    text_scale: theme.text_scale,
+                    ui_scale: theme.ui_scale,
+                    reduce_motion: theme.reduce_motion,
                     network,
                 });
             }
@@ -565,6 +576,38 @@ mod tests {
             sent,
             vec![(2, Some(warm))],
             "a closed connection is forgotten"
+        );
+    }
+
+    #[test]
+    fn each_app_is_told_its_accessibility_appearance_once_per_change() {
+        let appearance_of = |_: &str| ui::WindowAppearance::default();
+        let mut delivery = AppearanceDelivery::default();
+        delivery.connected(1, "so.tilo.notes", false);
+        delivery.connected(2, "so.tilo.files", false);
+        let network = HostNetworkStatus::default();
+        delivery.publish(appearance_of, &ui::Theme::light(), network, |_, _| {});
+        let scaled = ui::Theme::light()
+            .with_ui_scale(1.5)
+            .with_text_scale(2.0)
+            .with_reduce_motion(true);
+        let mut accessibility = Vec::new();
+        delivery.publish(appearance_of, &scaled, network, |connection, message| {
+            accessibility.push((connection, message.configured_accessibility()));
+        });
+        accessibility.sort_by_key(|(connection, _)| *connection);
+        assert_eq!(
+            accessibility,
+            vec![(1, Some((2.0, 1.5, true))), (2, Some((2.0, 1.5, true)))],
+            "a scale-only host change reaches every connected app"
+        );
+        accessibility.clear();
+        delivery.publish(appearance_of, &scaled, network, |connection, message| {
+            accessibility.push((connection, message.configured_accessibility()));
+        });
+        assert!(
+            accessibility.is_empty(),
+            "an unchanged scale is not sent every frame"
         );
     }
 

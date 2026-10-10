@@ -2909,15 +2909,18 @@ impl FrameBuilder {
     /// choice, or the one their identity derives) again, and dress the
     /// chrome in them.
     fn apply_configured_theme(&mut self) {
-        self.configured_theme = Theme::configured();
+        self.configured_theme = Theme::resolved_configured();
         self.windows
             .set_your_colour(crate::shell::state::read_local_presence_hue());
         self.theme = self
             .configured_theme
             .clone()
             .in_window(&self.windows.active());
+        self.text_renderer.set_text_scale(self.theme.text_scale);
         self.text_renderer
             .set_distinct_letters(self.theme.tokens.typography.distinct_letters);
+        self.text_renderer
+            .apply_typography(&self.theme.tokens.typography);
     }
 
     /// Entering a workspace enters its temperature: the neutral material
@@ -8354,6 +8357,7 @@ mod tests {
         let dark = panel_ground(&frame.theme);
         let dark_bg = frame.theme.tokens.colors.surfaces.base;
         let dark_y = relative_luminance(dark);
+        let unit_spacing = frame.theme.tokens.spacing.s3;
 
         assert_ne!(
             (light, light_bg),
@@ -8363,6 +8367,27 @@ mod tests {
         assert!(
             (light_y - dark_y).abs() > 0.08,
             "light and dark Quick Settings chrome must not share luminance (light {light_y:.3}, dark {dark_y:.3})"
+        );
+
+        let mut accessibility = serde_json::Map::new();
+        accessibility.insert("schema_version".into(), serde_json::json!(1));
+        accessibility.insert("text_scale".into(), serde_json::json!(2.0));
+        accessibility.insert("ui_scale".into(), serde_json::json!(1.5));
+        let mut values = serde_json::Map::new();
+        values.insert("mode".into(), serde_json::Value::String("dark".into()));
+        values.insert(
+            "accessibility".into(),
+            serde_json::Value::Object(accessibility),
+        );
+        settings_store::update_section("appearance", values).expect("write accessibility");
+        frame.with_chrome(ChromeState::note_appearance_change);
+        let _ = frame.paint();
+        assert_eq!(frame.theme.text_scale, 2.0);
+        assert_eq!(frame.theme.ui_scale, 1.5);
+        assert_eq!(frame.text_renderer.text_scale(), 2.0);
+        assert!(
+            frame.theme.tokens.spacing.s3 > unit_spacing,
+            "the admitted UI scale changes chrome geometry, not only theme metadata"
         );
     }
 

@@ -2393,6 +2393,20 @@ fn build_launch_command_for(
     }
 }
 
+fn attach_accessibility_environment(command: &mut LaunchCommand, theme: &ui::Theme) {
+    command.env.push((
+        "TILO_A11Y_TEXT_SCALE".to_string(),
+        theme.text_scale.to_string(),
+    ));
+    command
+        .env
+        .push(("TILO_UI_SCALE".to_string(), theme.ui_scale.to_string()));
+    command.env.push((
+        "TILO_A11Y_REDUCE_MOTION".to_string(),
+        u8::from(theme.reduce_motion).to_string(),
+    ));
+}
+
 fn original_application_creation(
     app: &InstalledApp,
 ) -> Option<tilo_action_broker::services::ApplicationCreationEvidence> {
@@ -2889,6 +2903,7 @@ fn execute_installed_inner(
             uri,
         },
     );
+    attach_accessibility_environment(&mut command, &ui::Theme::resolved_configured());
     // This id is a durable shell-id allocation, not a random process token.
     // The pending-placement claim binds it to whichever tab the launch
     // actually adopts; sibling windows cannot overwrite each other's report.
@@ -6048,6 +6063,39 @@ mod tests {
             );
         }
 
+        fn launch_command_carries_canonical_admitted_accessibility_environment() {
+            let projected = |settings: &str| {
+                let mut command = build_launch_command(
+                    &test_app("so.tilo.books"),
+                    Path::new("/usr/bin/tilo-launcher"),
+                    Path::new("/run/user/1000/wayland-3"),
+                    RoomId::new(),
+                    None,
+                    None,
+                    None,
+                    None,
+                );
+                attach_accessibility_environment(
+                    &mut command,
+                    &ui::Theme::resolved_from_settings(settings),
+                );
+                command.env
+            };
+            let admitted = projected(
+                r#"{"appearance":{"accessibility":{"schema_version":1,"text_scale":2.0,"ui_scale":1.5,"reduce_motion":true}}}"#,
+            );
+            assert!(admitted.contains(&("TILO_A11Y_TEXT_SCALE".to_string(), "2".to_string())));
+            assert!(admitted.contains(&("TILO_UI_SCALE".to_string(), "1.5".to_string())));
+            assert!(admitted.contains(&("TILO_A11Y_REDUCE_MOTION".to_string(), "1".to_string())));
+
+            let rejected = projected(
+                r#"{"appearance":{"accessibility":{"schema_version":99,"text_scale":2.0,"ui_scale":2.0}}}"#,
+            );
+            assert!(rejected.contains(&("TILO_A11Y_TEXT_SCALE".to_string(), "1".to_string())));
+            assert!(rejected.contains(&("TILO_UI_SCALE".to_string(), "1".to_string())));
+            assert!(rejected.contains(&("TILO_A11Y_REDUCE_MOTION".to_string(), "0".to_string())));
+        }
+
         fn launch_command_names_the_workspace_selected_identity() {
             let cmd = build_launch_command(
                 &test_app("so.tilo.books"),
@@ -6137,6 +6185,7 @@ mod tests {
         launch_command_omits_the_render_node_when_none_resolved();
         launch_command_names_the_app_id_and_omits_capabilities_when_none_are_granted();
         launch_command_names_the_capability_file_when_one_was_written();
+        launch_command_carries_canonical_admitted_accessibility_environment();
         launch_command_names_the_workspace_selected_identity();
         workspace_agent_command_is_headless_fixed_package_service_argv();
     }

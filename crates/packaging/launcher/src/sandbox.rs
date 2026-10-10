@@ -4,6 +4,7 @@
 //! and resolved service fds, returns the argv for `bwrap`. No I/O — fd
 //! plumbing is `run()`'s job in `lib.rs`.
 
+use std::ops::RangeInclusive;
 use std::path::{Path, PathBuf};
 
 use crate::capabilities::CapabilityPlan;
@@ -149,9 +150,15 @@ pub const INHERITED_ENV: &[&str] = &[
 /// keeping these out of [`INHERITED_ENV`] prevents arbitrary strings from
 /// becoming app input merely because their variable name is recognised.
 pub const ACCESSIBILITY_TEXT_SCALE_ENV: &[&str] = &["TILO_A11Y_TEXT_SCALE", "TILO_TEXT_SCALE"];
+/// User-owned whole-interface scale preferences, admitted separately from
+/// text scale because their usable upper bound is lower.
+pub const ACCESSIBILITY_UI_SCALE_ENV: &[&str] = &["TILO_UI_SCALE", "TILO_A11Y_UI_SCALE"];
+/// User-owned motion preference, admitted only as the canonical booleans
+/// emitted by the authenticated desktop projection.
+pub const ACCESSIBILITY_REDUCE_MOTION_ENV: &str = "TILO_A11Y_REDUCE_MOTION";
 
-fn push_accessibility_environment(argv: &mut Vec<String>) {
-    for key in ACCESSIBILITY_TEXT_SCALE_ENV {
+fn push_scale_environment(argv: &mut Vec<String>, keys: &[&str], range: RangeInclusive<f32>) {
+    for key in keys {
         let Some(value) = std::env::var_os(key) else {
             continue;
         };
@@ -161,13 +168,27 @@ fn push_accessibility_environment(argv: &mut Vec<String>) {
         let Ok(scale) = value.trim().parse::<f32>() else {
             continue;
         };
-        if !scale.is_finite() || !(0.5..=4.0).contains(&scale) {
+        if !scale.is_finite() || !range.contains(&scale) {
             continue;
         }
         argv.extend([
             "--setenv".to_string(),
             (*key).to_string(),
             scale.to_string(),
+        ]);
+    }
+}
+
+fn push_accessibility_environment(argv: &mut Vec<String>) {
+    push_scale_environment(argv, ACCESSIBILITY_TEXT_SCALE_ENV, 0.5..=4.0);
+    push_scale_environment(argv, ACCESSIBILITY_UI_SCALE_ENV, 0.5..=3.0);
+    if let Ok(value) = std::env::var(ACCESSIBILITY_REDUCE_MOTION_ENV)
+        && matches!(value.as_str(), "0" | "1")
+    {
+        argv.extend([
+            "--setenv".to_string(),
+            ACCESSIBILITY_REDUCE_MOTION_ENV.to_string(),
+            value,
         ]);
     }
 }

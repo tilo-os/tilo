@@ -1580,11 +1580,11 @@ impl App {
     }
 
     fn rebuild_theme(&mut self) {
+        self.text_renderer
+            .set_text_scale(self.accessibility.text_scale);
+        self.accessibility.text_scale = self.text_renderer.text_scale();
         self.theme = match self.palette_source {
             PaletteSource::Host => {
-                self.text_renderer
-                    .set_text_scale(self.accessibility.text_scale);
-                self.accessibility.text_scale = self.text_renderer.text_scale();
                 let base = self
                     .accessibility
                     .base_theme

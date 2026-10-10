@@ -88,13 +88,7 @@ impl LegacyAppearance {
             accent: [accent.r, accent.g, accent.b],
             sans_family: theme.tokens.typography.sans_family.clone(),
             mono_family: theme.tokens.typography.mono_family.clone(),
-            text_scale: settings_store::f64_in(
-                &document,
-                "appearance",
-                "text_scale",
-                0.5..=4.0,
-                1.0,
-            ),
+            text_scale: f64::from(theme.text_scale),
             cursor_size,
         }
     }
@@ -402,6 +396,29 @@ mod tests {
             lookup(&settings, GNOME_INTERFACE, "cursor-size"),
             &PortalSetting::Int(48)
         );
+    }
+
+    #[test]
+    fn typed_accessibility_scale_is_the_legacy_toolkit_projection() {
+        let admitted = LegacyAppearance::from_settings_text(
+            r#"{"appearance":{"accessibility":{"schema_version":1,"text_scale":2.0,"ui_scale":1.5}}}"#,
+            false,
+        );
+        assert_eq!(admitted.text_scale, 2.0);
+        assert_eq!(
+            lookup(
+                &admitted.portal_settings(),
+                GNOME_INTERFACE,
+                "text-scaling-factor"
+            ),
+            &PortalSetting::Double(2.0)
+        );
+
+        let rejected = LegacyAppearance::from_settings_text(
+            r#"{"appearance":{"accessibility":{"schema_version":99,"text_scale":2.0}}}"#,
+            false,
+        );
+        assert_eq!(rejected.text_scale, 1.0);
     }
 
     #[test]
